@@ -31,12 +31,16 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
+from rola.state import LayerRecurrentState, RoLAState
 
 __all__ = [
     # layer
     "RoLA",
     "LevelRoutingConfig",
     "resolve_level_routing_configs",
+    # the stateful surface — a fixed-size recurrent state, NOT a KV cache
+    "RoLAState",
+    "LayerRecurrentState",
     # op
     "v3_consumer_forward",
     # oracle — ships in the wheel; it is the definition (docs/evidence.md)

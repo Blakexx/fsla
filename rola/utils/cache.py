@@ -1,38 +1,38 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# Portions derived from flash-linear-attention (`fla/layers/utils.py`),
-# Copyright (c) 2023-2025 Songlin Yang, Yu Zhang, MIT licensed. See NOTICE.
+# The layer-indexing shape (a `layer_idx` slot, `update(layer_idx=..., **kwargs)`)
+# follows flash-linear-attention's `fla/layers/utils.py`, Copyright (c) 2023-2025
+# Songlin Yang, Yu Zhang, MIT licensed. See NOTICE. No code is copied: the state
+# object being addressed is `rola.state.RoLAState`, which is this package's own.
 
-"""Layer-cache plumbing: reading and updating one layer's slot in a KV-cache object.
+"""Reading and writing one layer's slot in a :class:`~rola.state.RoLAState`.
 
-Vendored rather than imported, and the reasoning is recorded because vendoring is
-normally the wrong answer (extraction design §1.3 prefers cutting the dependency).
-The two functions the RoLA layer calls are on its **unconditional** forward path,
-so they cannot be hidden behind the optional `[fla]` import guard that
-`ShortConvolution` uses. Their source file in the fork is 218 lines, of which RoLA
-touches the last 19 — the rest is unpad/pad machinery with its own transitive
-dependencies that RoLA never calls. Copying 25 self-contained lines is cheaper and
-more honest than taking a hard dependency on a package to reach them.
-
-These helpers are cache-implementation agnostic: they require only that the cache
-object support `len()`, `__getitem__`, and `update(layer_idx=..., **kwargs)` —
-which is what `transformers`' cache classes and the fork's `Cache` both provide.
+Two functions, on the layer's unconditional forward path, kept in their own module
+because they are the entire coupling between `RoLA.forward` and the stateful
+surface. The state object is duck-typed on purpose -- `len()`, `__getitem__`, and
+`update(layer_idx=..., recurrent_state=..., conv_state=..., offset=...)` -- which is
+what lets the optional `rola/integrations/` adapters present a `transformers` or
+`flash-linear-attention` cache to the same layer body without the layer importing
+either package. `rola.state.as_layer_state` normalizes whatever `__getitem__`
+returns, so the layer reads attributes and never a dict key.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from rola.state import LayerRecurrentState, as_layer_state
+
 _LAYER_IDX_REQUIRED_MSG = "{cls} requires `layer_idx` when `past_key_values` is provided."
 
 
 def require_cache_layer_idx(module: Any, past_key_values: Any) -> int | None:
-    """The module's `layer_idx`, insisting it exists whenever a cache is in play.
+    """The module's `layer_idx`, insisting it exists whenever a state is in play.
 
-    A cache is indexed per layer; a module that was constructed without a
-    `layer_idx` cannot address its own slot, and silently writing to slot 0 would
-    corrupt another layer's state.
+    A state object is indexed per layer; a module constructed without a `layer_idx`
+    cannot address its own slot, and silently writing to slot 0 would corrupt
+    another layer's state.
     """
     layer_idx = getattr(module, "layer_idx", None)
     if past_key_values is not None and layer_idx is None:
@@ -40,16 +40,16 @@ def require_cache_layer_idx(module: Any, past_key_values: Any) -> int | None:
     return layer_idx
 
 
-def get_layer_cache(module: Any, past_key_values: Any) -> Any:
-    """This layer's cached state, or None when there is no cache or no entry yet."""
+def get_layer_cache(module: Any, past_key_values: Any) -> LayerRecurrentState | None:
+    """This layer's carried state, or None when there is none or no entry yet."""
     layer_idx = require_cache_layer_idx(module, past_key_values)
     if past_key_values is not None and len(past_key_values) > layer_idx:
-        return past_key_values[layer_idx]
+        return as_layer_state(past_key_values[layer_idx])
     return None
 
 
 def update_layer_cache(module: Any, past_key_values: Any, **kwargs: Any) -> Any:
-    """Write this layer's state back into the cache; a no-op when there is no cache."""
+    """Write this layer's state back; a no-op when there is no state object."""
     layer_idx = require_cache_layer_idx(module, past_key_values)
     if past_key_values is not None:
         return past_key_values.update(layer_idx=layer_idx, **kwargs)

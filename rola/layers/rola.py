@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -179,11 +179,7 @@ def _resolve_level_routing(config: LevelRoutingConfig):
 if TYPE_CHECKING:
     from transformers.processing_utils import Unpack
 
-    # Type-only. Any object supporting `len()`, `__getitem__`, and
-    # `update(layer_idx=..., **kwargs)` works at runtime -- see rola/utils/cache.py.
-    # `Any` rather than a hard import: the layer must not depend on a cache
-    # implementation it does not own.
-    Cache = Any
+    from rola.state import RoLAState
 
 
 class RoLA(nn.Module):
@@ -633,12 +629,12 @@ class RoLA(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        past_key_values: Cache | None = None,
+        past_key_values: RoLAState | None = None,
         use_cache: bool | None = False,
         output_attentions: bool | None = False,
         budget_r: torch.Tensor | None = None,
         **kwargs: Unpack[dict],
-    ) -> tuple[torch.Tensor, None, Cache | None]:
+    ) -> tuple[torch.Tensor, None, RoLAState | None]:
         if attention_mask is not None:
             assert attention_mask.dim() == 2, (
                 "Expected attention_mask as a [batch, seq_len] 0-1 padding matrix; "
@@ -658,7 +654,8 @@ class RoLA(nn.Module):
         v = self.v_proj(x)
 
         if self.use_short_conv:
-            conv_states = list(last_state['conv_state']) if last_state is not None else []
+            carried_conv = None if last_state is None else last_state.conv_state
+            conv_states = list(carried_conv) if carried_conv is not None else []
             while len(conv_states) < 3:
                 conv_states.append(None)
             if not cache_enabled:
@@ -684,7 +681,7 @@ class RoLA(nn.Module):
         v = rearrange(v, 'b l (h d) -> b l h d', d=self.head_v_dim)
         h_w = None if rx is wx else wx
 
-        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        recurrent_state = last_state.recurrent_state if last_state is not None else None
         if recurrent_state is not None and torch.is_grad_enabled():
             raise RuntimeError("RoLA carried-state execution is inference-only")
 

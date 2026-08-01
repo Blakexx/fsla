@@ -354,16 +354,16 @@ def test_the_two_backends_agree_on_the_carried_state_they_hand_back(norm, decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode;
     # the oracle leg below still takes 'oracle' because `x` does not require grad but
     # the (unfrozen) projection parameters do, so `v` requires grad under enable_grad.
-    from transformers.cache_utils import DynamicCache as Cache
+    from rola.state import RoLAState
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
 
     states = {}
     for tag, context in (("oracle", torch.enable_grad()), ("cuda", torch.no_grad())):
-        cache = Cache.from_legacy_cache(None)
+        cache = RoLAState()
         with context:
             layer(x, past_key_values=cache, use_cache=True)
         assert layer.last_execution_backend == tag
-        states[tag] = cache[layer.layer_idx]["recurrent_state"]
+        states[tag] = cache[layer.layer_idx].recurrent_state
 
     assert states["oracle"].shape == states["cuda"].shape
     scale = float(states["oracle"].abs().max())
@@ -393,16 +393,16 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(norm, 
     torch.manual_seed(37)
     layer = _layer(norm=norm, decay=decay)
     layer.eval()
-    from transformers.cache_utils import DynamicCache as Cache
+    from rola.state import RoLAState
     x0 = torch.randn(1, 48, _HIDDEN, device="cuda")
     x1 = torch.randn(1, 32, _HIDDEN, device="cuda")
 
     # Step 1: produce a carried state on the oracle (grad context).
-    cache = Cache.from_legacy_cache(None)
+    cache = RoLAState()
     with torch.enable_grad():
         layer(x0, past_key_values=cache, use_cache=True)
     assert layer.last_execution_backend == "oracle"
-    oracle_state = cache[layer.layer_idx]["recurrent_state"]
+    oracle_state = cache[layer.layer_idx].recurrent_state
     assert oracle_state.dtype == torch.float64
 
     # Step 2: continue on the CUDA backend, consuming that oracle-produced state.
@@ -410,7 +410,7 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(norm, 
         out, _, _ = layer(x1, past_key_values=cache, use_cache=True)
     assert layer.last_execution_backend == "cuda"
     assert torch.isfinite(out).all()
-    continued_state = cache[layer.layer_idx]["recurrent_state"]
+    continued_state = cache[layer.layer_idx].recurrent_state
     assert continued_state.dtype == torch.float32
     assert continued_state.shape == oracle_state.shape
     assert torch.isfinite(continued_state).all()

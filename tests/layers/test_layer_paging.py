@@ -190,14 +190,14 @@ def test_a_paged_use_cache_continuation_matches_the_single_forward(n_steps):
     paged = _layer(paging=True, seed=52)
     paged.load_state_dict(unpaged.state_dict())
 
-    from transformers.cache_utils import DynamicCache as Cache
+    from rola.state import RoLAState
 
     with torch.no_grad():
         y_single, _, _ = unpaged(x)
         bound = _reordering_bound(y_single, unpaged)
 
         boundaries = [0] + [round(48 * (i + 1) / n_steps) for i in range(n_steps)]
-        cache = Cache.from_legacy_cache(None)
+        cache = RoLAState()
         chunks = []
         for i in range(n_steps):
             lo, hi = boundaries[i], boundaries[i + 1]
