@@ -62,7 +62,7 @@ from rola.ops.consumer import v3_consumer_forward
 # The `P = 1` gate's own tolerance, IMPORTED rather than restated. §6.4's amended
 # discipline is "the same RTOL as P = 1, no tolerance widened anywhere"; importing
 # it is what makes that structural instead of a promise.
-from tests.ops.test_rola_v3_consumer import RTOL
+from tests.tier1_semantics.test_consumer_vs_oracle import RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -306,7 +306,7 @@ def test_P_composes_with_the_compact_template_axis(P, compact, decay_on):
 def test_P_composes_with_the_bf16_numeric_format_arm(P):
     """The performance MMA format, at its own format tolerance -- which is
     imported from the `P = 1` gate for the same reason `RTOL` is."""
-    from tests.ops.test_rola_v3_consumer import BF16_RTOL
+    from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
     fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="global", p_read=1.0, p_write=1.0,
                   seed=9100 + P, mma_precision="bf16", nonzero_m0=True)

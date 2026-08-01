@@ -20,7 +20,7 @@ are commensurable; two numbers carrying different names are not, and the name ma
 that visible instead of leaving it to be discovered later.
 
 `--manifest` prints each cell's REALIZED statistics and `--check-manifest`
-diffs them against the committed `benchmark_rola_v3_new_consumer_manifest.json`,
+diffs them against the committed `cells/topology_manifest.json`,
 so a change in torch's RNG, in the entmax solver or in the planner announces itself
 as a manifest diff rather than as a silently different benchmark.
 
@@ -88,7 +88,7 @@ from rola.routing.types import (
     SoftmaxActivation, Topology)
 from rola.ops.consumer import v3_consumer_forward
 
-MANIFEST = Path(__file__).with_name("benchmark_rola_v3_new_consumer_manifest.json")
+MANIFEST = Path(__file__).resolve().parent / "cells" / "topology_manifest.json"
 
 # ---------------------------------------------------------------------------
 # TOLERANCES -- the consumer suite's own, quoted, never widened

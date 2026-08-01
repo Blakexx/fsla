@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pprint
 import re
 import subprocess
 import sys
@@ -229,7 +230,9 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict) -> None:
         "wheel, with no repository checkout: `manifest_sha256` is the hash of the\n"
         "ratification this binary was gated against.\n"
         '"""\n\n'
-        f"BUILD_CONFIG = {json.dumps(config, indent=4)}\n\n\n"
+        #: `pprint`, not `json.dumps`: this is a PYTHON module, and JSON spells the
+        #: booleans `true`/`false`, which do not parse here.
+        f"BUILD_CONFIG = {pprint.pformat(config, indent=4, sort_dicts=False, width=88)}\n\n\n"
         "def show():\n"
         '    """A copy, so a caller cannot mutate the record."""\n'
         "    return dict(BUILD_CONFIG)\n"
