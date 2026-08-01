@@ -1286,7 +1286,7 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
             for d_v in (32, 64):
                 for decay in (False, True):
                     for compact in (False, True):
-                        blocks = int(ext.rola_v3_consumer_occupancy(decay, compact, BC, BT, d_v))
+                        blocks = int(ext.rola_consumer_occupancy(decay, compact, BC, BT, d_v))
                         seen[(BT, BC, d_v, decay, compact)] = blocks
                         assert blocks >= 2, (
                             f"BT={BT} BC={BC} d_v={d_v} decay={decay} compact={compact} "

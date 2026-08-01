@@ -16,12 +16,12 @@
 //
 // WHAT IT KEEPS FROM THE DELETED CONSUMER (deliberately, so the A/B isolated the
 // restructure and nothing else):
-//   * the same `V3ConsumerParams`, the same schedule, the same candidate walk
+//   * the same `ConsumerParams`, the same schedule, the same candidate walk
 //     (`read_union`/`write_union` AND the fixed levels' tile bitmaps, §4),
 //   * the same owner-stationary run-to-completion dataflow -- ONE CTA PER OWNER,
 //     `blockIdx.x` indexing the same work list. §10i.12 keeps this ("it was
 //     traffic-optimal all along") and so does this kernel.
-//   * the same split-K atomic `num`/`den` accumulation and the same `v3_divide`.
+//   * the same split-K atomic `num`/`den` accumulation and the same `divide_pass`.
 //
 // WHAT IT CHANGES (the three moves that ARE §10i.12, and nothing else):
 //   1. STATE LIVES IN SMEM (`S[BC][SP]`), not in `M[BC]` per thread. §10i.13: the
@@ -52,14 +52,14 @@
 // bound state in HBM at any instant. The invariant is a property of the LAUNCH
 // SHAPE, not of a policy the kernel has to implement.
 //
-// THE SUPPORTED SURFACE IS DECLARED AT `launch_consumer` (`v3_consumer.cu`) AND
+// THE SUPPORTED SURFACE IS DECLARED AT `launch_consumer` (`consumer.cu`) AND
 // NOT RESTATED HERE. The probe's five stated restrictions are all LIFTED as of
 // items 6a/6b: `decay`, `normalization`, `P > 1`/paging and `MmaPrec` are template
 // axes with every value instantiated, and `BT x BC x d_v` spans the planner's own
 // `_SUPPORTED_*` sets exactly. The instantiation matrix, its arity and the reason
 // every axis is a template rather than a runtime test live at that dispatch, which
 // is the one place a shape can be refused -- restating them here is the second
-// description of one kernel this file's own rule (`v3_consumer.cu`'s banner) bars.
+// description of one kernel this file's own rule (`consumer.cu`'s banner) bars.
 //
 // ONE SCOPE NOTE THAT IS AN ALGORITHM FACT RATHER THAN A DISPATCH FACT: under
 // `normalization = "global"` the mass column rides as column `DV` of the state,
@@ -69,88 +69,31 @@
 #include <cuda/std/type_traits>
 #include <cuda_bf16.h>
 
+#include "arch_table.cuh"
 #include "intra_panel.cuh"
-#include "v3_consumer.cuh"
-#include "v3_mma.cuh"
-#include "v3_readout_mma.cuh"
-#include "v3_segment_mask.cuh"
+#include "consumer.cuh"
+#include "mma.cuh"
+#include "readout_mma.cuh"
+#include "segment_mask.cuh"
 
-namespace fla_rola::v3 {
+namespace rola {
 namespace consumer {
 
-using fla_rola::v3::mma::mma_m16n8k16;
-using fla_rola::v3::mma::pack_bf16x2;
-using fla_rola::v3::clamp_bf16_finite;
+using rola::mma::mma_m16n8k16;
+using rola::mma::pack_bf16x2;
+using rola::clamp_bf16_finite;
 //: §12 rules 1 and 3's survival factors, taken from `intra_panel.cuh` rather than
 //: reimplemented: it is the one clamp point and the one exponent sign convention,
 //: and a second copy of `expf(fminf(x, 88.0f))` is a second thing that can drift.
-using fla_rola::v3::panel_read_factor;
-using fla_rola::v3::panel_write_factor;
-//: §6.4's per-segment tile-range mask, from `v3_segment_mask.cuh` -- one named
+using rola::panel_read_factor;
+using rola::panel_write_factor;
+//: §6.4's per-segment tile-range mask, from `segment_mask.cuh` -- one named
 //: definition, because the host-side segment partition at `P > 1` is pinned against
 //: exactly this arithmetic.
-using fla_rola::v3::detail::segment_word_mask;
+using rola::detail::segment_word_mask;
 
 constexpr int kConsumerThreads = 256;   // 8 warps -- the §10i.13 CTA-width unlock
 
-//: ---------------------------------------------------------------------------
-//: THE SM's RESOURCES, PER ARCHITECTURE -- A TABLE, NEVER A BARE LITERAL.
-//:
-//: `__launch_bounds__` needs compile-time constants, so these cannot be read from
-//: `cudaDeviceProp` at the point of use. They are therefore a COMPILE-TARGET table
-//: keyed on `__CUDA_ARCH__` -- and because a table can be wrong or stale in a way a
-//: driver query cannot, `consumer_check_arch_table()` below VALIDATES IT AGAINST
-//: `cudaDeviceProp` on the running device and fails loudly on a mismatch. The two
-//: halves are the point: the table is what the compiler can use, the check is what
-//: makes the table trustworthy.
-//:
-//: **THIS HELPER IS A HINT GENERATOR ONLY.** Spec §6.5: the DRIVER's occupancy API
-//: (`cudaOccupancyMaxActiveBlocksPerMultiprocessor`) remains the sole planning
-//: authority, and every residency number this batch reports is read from it. What
-//: this table decides is one thing: which `__launch_bounds__` the compiler is told
-//: to hit.
-//:
-//: An UNTABULATED architecture FAILS THE BUILD rather than guessing -- a wrong
-//: launch bound is silently discarded (see below), so a guess here would be a silent
-//: occupancy loss on the arch nobody checked.
-struct SmResources {
-  int smem_per_sm;         // `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
-  int max_threads_per_sm;  // `cudaDeviceProp::maxThreadsPerMultiProcessor`
-  int regs_per_sm;         // `cudaDeviceProp::regsPerMultiprocessor`
-};
-
-//: CUDA C Programming Guide, "Compute Capabilities" table. Every row is checked
-//: against the driver at runtime by `consumer_check_arch_table()`.
-constexpr bool sm_arch_tabulated(int arch) {
-  return arch == 800 || arch == 860 || arch == 870 || arch == 890;
-}
-constexpr SmResources sm_resources(int arch) {
-  return (arch == 800) ? SmResources{167936, 2048, 65536}    // 8.0  GA100
-                       : SmResources{102400, 1536, 65536};   // 8.6 / 8.7 / 8.9
-}
-
-//: The arch this translation pass is compiling FOR. In the HOST pass `__CUDA_ARCH__`
-//: is undefined and no launch bound is emitted, so the value is inert there; it is
-//: pinned to the SMALLEST tabulated configuration so that if it ever stopped being
-//: inert it would under-promise rather than over-promise.
-#ifdef __CUDA_ARCH__
-constexpr int kConsumerArch = __CUDA_ARCH__;
-#else
-constexpr int kConsumerArch = 860;
-#endif
-static_assert(sm_arch_tabulated(kConsumerArch),
-              "untabulated compute capability: add its row to sm_resources() and to "
-              "consumer_check_arch_table() rather than letting the launch bound guess");
-constexpr SmResources kSm = sm_resources(kConsumerArch);
-
-//: THE DRIVER'S PER-CTA SHARED-MEMORY RESERVE -- measured, and not an arch table
-//: entry because no attribute reports it. The driver takes ~1 KiB of shared memory
-//: per resident CTA for its own use, so the condition is
-//: `ctas * (smem_per_cta + 1024) <= smem_per_sm`, NOT `ctas * smem <= smem_per_sm`.
-//: A build at 32.94 KiB/CTA satisfies the naive form for 3 CTAs (98.8 < 100 KiB) and
-//: the driver reported 2. §10i.14's ledger and this batch's own first desk-check were
-//: both optimistic by exactly this term.
-constexpr int kDriverSmemReservePerCta = 1024;
 
 //: **A MEASURED KERNEL FACT, NOT AN ARCHITECTURE FACT AND NOT A THRESHOLD.**
 //:
@@ -197,9 +140,9 @@ constexpr int kDriverSmemReservePerCta = 1024;
 //: shared memory binds there at 3 CTAs/SM on every arm, so the register term is
 //: slack and both 66 and 80 produce the same bound.
 //:
-//: Reproduce the register/spill side with `benchmarks/ops/probe_v3_launch_bounds.cu`
-//: (`benchmarks/ops/gate_v3_launch_bounds.py` compiles it over all 256 entries) and
-//: the residency side with `rola_v3_consumer_occupancy`; if the kernel's inner loop
+//: Reproduce the register/spill side with `tools/probe_launch_bounds.cu`
+//: (`tools/ratify.py` compiles it over all 256 entries) and
+//: the residency side with `rola_consumer_occupancy`; if the kernel's inner loop
 //: changes, re-run both and update these numbers rather than the formula.
 //: **THE ROW-BLOCK TERM (item 6a, 2026-08-01) -- MEASURED OVER FIVE CANDIDATE
 //: BUDGETS, AND IT IS KEYED ON `NM` ALONE.** A `BT = 32` tile is `NM = 2` `m16` row
@@ -208,7 +151,7 @@ constexpr int kDriverSmemReservePerCta = 1024;
 //: expected to matter as well and the measurement says it does NOT -- so it is not a
 //: key, because a key nobody can point at a number for is an extrapolation.
 //:
-//: The instrument is `probe_v3_launch_bounds.cu` over all 1024 instantiations, once
+//: The instrument is `probe_launch_bounds.cu` over all 1024 instantiations, once
 //: per candidate budget, with the ratified `BT = 16, DV = 64` matrix held at its
 //: landed value as an IN-RUN CONTROL (it came back byte-identical at all five sweep
 //: points, so the numbers below are the new cells' own and nothing else's). Spill
@@ -366,7 +309,7 @@ constexpr bool banks_distinct(int stride_g, int stride_r) {
   return true;
 }
 
-//: `MmaPrec` (`v3_readout_mma.cuh`) is a PER-SITE template axis, but the two shipped
+//: `MmaPrec` (`readout_mma.cuh`) is a PER-SITE template axis, but the two shipped
 //: POINTS on it set both sites together -- see the contract above `kFoldPrecDefault`.
 //: The per-site parameterization is kept because it is what makes the contract
 //: STATEABLE and testable at the call sites, not because a mixed arm ships.
@@ -539,12 +482,12 @@ __device__ __forceinline__ float mma_src(__nv_bfloat16 x) { return __bfloat162fl
 //:   `A_T == false` : A element `(m, k)` at `A[m * lda + k]`
 //:   `A_T == true`  : A element `(m, k)` at `A[k * lda + m]`
 //: and likewise for B with `(k, n)` and `ldb`. Fragment index maps are the PTX
-//: `mma.sync.aligned` layouts, taken verbatim from `v3_readout_mma.cuh` (`g = lane
+//: `mma.sync.aligned` layouts, taken verbatim from `readout_mma.cuh` (`g = lane
 //: >> 2` is `groupID`, `r = lane & 3` is `threadID_in_group`) rather than
 //: re-derived -- that header's maps are the ones the shipped oracle gates pass on.
 //:
 //: §12 rule 3's clamp applies on the bf16 arm only, for the same reason
-//: `v3_readout_mma.cuh` gives: bf16 narrows the EXPONENT range, so the gap between
+//: `readout_mma.cuh` gives: bf16 narrows the EXPONENT range, so the gap between
 //: bf16's max finite and fp32's rounds to `inf`; tf32 carries fp32's 8-bit exponent
 //: and a clamp there would be dead code.
 template <typename TA, bool A_T, typename TB, bool B_T, MmaPrec PREC>
@@ -726,7 +669,7 @@ __global__ __launch_bounds__(
     ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, DECAY, GLOBAL,
                                         COMPACT>(),
                        consumer_reg_budget(BT, BC, DECAY)))
-void v3_consumer_forward_kernel(V3ConsumerParams p) {
+void consumer_forward_kernel(ConsumerParams p) {
   // ---- THE STATE'S ROW PITCH, AND WHY IT IS `DV + 4` ------------------------
   // **THE CONDITIONAL `state_pitch` MANDATE DISCHARGES HERE** (item 6b, 2026-08-01):
   // it required the divergence from the old consumer's `state_pitch<DV>() = DV + 1`
@@ -1345,7 +1288,7 @@ void v3_consumer_forward_kernel(V3ConsumerParams p) {
     // ---- the two coefficient blocks and the row scales (§3 steps 2-3) --------
     // `R[t, i] = scale_read[t] * prod_{l >= j} amp_read[l][t, digit_l(i)]`, with the
     // row scale held OUT of the block: it is constant along both `k` and `n`, so it
-    // applies after the accumulation (`v3_readout_mma.cuh`'s own argument) and
+    // applies after the accumulation (`readout_mma.cuh`'s own argument) and
     // keeping it out of a bf16 operand keeps its precision.
     if (is_read) {
       // The loop walks FRAGMENT SLOTS, not `(token, leaf)` pairs: `frag_a_slot` is
@@ -1508,7 +1451,7 @@ void v3_consumer_forward_kernel(V3ConsumerParams p) {
     // flag on `mma_tile_bf16`, because this is the ONE operand whose source dtype
     // differs from its fragment dtype and hiding that in a template would bury it.
     // STATE AND ACCUMULATION STAY fp32 (the authorized bf16 contract); only the
-    // MMA's own operand narrows, exactly as `v3_readout_mma.cuh`'s bf16 arm does.
+    // MMA's own operand narrows, exactly as `readout_mma.cuh`'s bf16 arm does.
     // THE y-TILE ACCUMULATOR IS REGISTERS, NOT SMEM, and that is structural rather
     // than a saving: warp `w` owns output columns `[8w, 8w+8)` for BOTH the readout
     // and the intra term, so the two GEMMs write the SAME `m16n8` fragment of the
@@ -1931,4 +1874,4 @@ void v3_consumer_forward_kernel(V3ConsumerParams p) {
 #undef CONSUMER_D_ROWS
 
 }  // namespace consumer
-}  // namespace fla_rola::v3
+}  // namespace rola

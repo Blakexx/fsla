@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace fla_rola::p0::shared_gram {
+namespace rola::paging::shared_gram {
 
 constexpr int kAbsentStatePage = -1;
 
@@ -83,4 +83,4 @@ __device__ __forceinline__ int64_t paged_mass_offset(
           feature);
 }
 
-}  // namespace fla_rola::p0::shared_gram
+}  // namespace rola::paging::shared_gram

@@ -53,13 +53,13 @@
 
 #include <cuda_bf16.h>
 
-#include "v3_mma.cuh"
+#include "mma.cuh"
 
-namespace fla_rola::v3 {
+namespace rola {
 
-using fla_rola::v3::mma::mma_m16n8k16;
-using fla_rola::v3::mma::mma_m16n8k8_tf32x3;
-using fla_rola::v3::mma::pack_bf16x2;
+using rola::mma::mma_m16n8k16;
+using rola::mma::mma_m16n8k8_tf32x3;
+using rola::mma::pack_bf16x2;
 
 //: MMA operand precision. Compile-time; `V3Plan.mma_precision` stamps it.
 enum class MmaPrec { kTf32x3 = 0, kBf16 = 1 };
@@ -166,4 +166,4 @@ __device__ __forceinline__ void readout_fragment(
   }
 }
 
-}  // namespace fla_rola::v3
+}  // namespace rola

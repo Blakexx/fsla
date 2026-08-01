@@ -37,6 +37,34 @@ dev   = ["pytest", "ruff", "pre-commit"]
 requires      = ["setuptools>=61", "wheel", "packaging", "psutil", "ninja"]
 build-backend = "setuptools.build_meta"
 
+[tool.ruff]
+# Carried from the fork's `pyproject.toml` so that "ruff clean" means the same
+# thing on both sides of the extraction; `known-first-party` is the one edit
+# (`fla` -> `rola`).
+target-version = "py310"
+line-length     = 127
+
+[tool.ruff.lint]
+select        = ["E", "F", "UP", "B", "SIM", "I", "C4", "TCH", "T"]
+extend-select = ["RUF022"]
+ignore = [
+  "E501", "E741",
+  "B023", "B006", "B007", "B008", "B028", "B904", "B905",
+  "C408", "C416", "C417",
+  "T201",
+  "TC002", "TC003",
+  "SIM102", "SIM108", "SIM118", "SIM211",
+  "COM812",
+]
+
+[tool.ruff.lint.isort]
+known-first-party        = ["rola"]
+force-sort-within-sections = false
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*/*.py" = ["UP030"]
+
 [tool.pytest.ini_options]
 markers = [
   "cuda: launches a CUDA kernel (deselect with -m 'not cuda')",

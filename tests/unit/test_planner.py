@@ -927,7 +927,7 @@ def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
 #:
 #:   * `candidate_frac`, `ksteps`, `kisteps` -- the exact stats-pass reduction over
 #:     the realized schedule at each `BT` (`--mode manifest` reproduces them);
-#:   * `bpsm` -- `rola_v3_consumer_occupancy`, the DRIVER's
+#:   * `bpsm` -- `rola_consumer_occupancy`, the DRIVER's
 #:     `cudaOccupancyMaxActiveBlocksPerMultiprocessor` on the exact consumer
 #:     instantiation, cross-checked against `ncu`'s
 #:     `min(launch__occupancy_limit_{registers,shared_mem,warps,blocks})` on all 16
@@ -953,7 +953,7 @@ _ARGMIN_STATS = {
         16: (1.0, 1.0, 1.0), 32: (1.0, 1.0, 1.0)}),
 }
 
-#: `rola_v3_consumer_occupancy(decay, compact, BC, BT, d_v)` -> CTAs/SM, the rows the
+#: `rola_consumer_occupancy(decay, compact, BC, BT, d_v)` -> CTAs/SM, the rows the
 #: eight argmins need. `(BC, BT, decay)` suffices: `compact` does not move the
 #: answer at any of them (it adds 136-520 B, inside the same CTA count), and that
 #: is asserted rather than assumed by the dump this was read back from.

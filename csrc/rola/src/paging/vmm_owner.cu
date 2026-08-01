@@ -1,4 +1,4 @@
-#include "p3_vmm_owner.cuh"
+#include "vmm_owner.cuh"
 
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime_api.h>
@@ -9,7 +9,7 @@
 #include <sstream>
 #include <utility>
 
-namespace fla_rola::p3 {
+namespace rola::paging {
 namespace {
 
 std::string driver_error(CUresult result) {
@@ -520,4 +520,4 @@ std::shared_ptr<VmmOwner> create_vmm_owner(
       device, max_physical_pages, bp, dqk, dv, global_mass, target_chunk_bytes);
 }
 
-}  // namespace fla_rola::p3
+}  // namespace rola::paging

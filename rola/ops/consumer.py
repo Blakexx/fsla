@@ -59,7 +59,7 @@ def sm_shared_bytes() -> int:
         return DEFAULT_SM_SHARED_BYTES
     try:
         from rola.ops._ext import extension
-        return int(extension().rola_v3_sm_shared_bytes())
+        return int(extension().rola_sm_shared_bytes())
     except Exception:
         # A build failure must not silently change plan SELECTION -- it must fail at
         # the launch, where it is diagnosable. Selection falls back to the declared
@@ -354,7 +354,7 @@ def v3_consumer_forward(
         sp_args = sp_tensors.as_kernel_arguments()
 
     ext = extension()
-    y_f, state_out, _num, _den = ext.rola_v3_consumer_forward(
+    y_f, state_out, _num, _den = ext.rola_consumer_forward(
         [t.to(torch.float32).contiguous() for t in schedule.read_amps],
         [t.to(torch.float32).contiguous() for t in schedule.write_amps],
         None if clock_amps is None else [t.to(torch.float32).contiguous() for t in clock_amps],

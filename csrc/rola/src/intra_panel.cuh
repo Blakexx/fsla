@@ -50,7 +50,7 @@
 // with no new interaction: every one of those axes is already exercised by the
 // path it joins. The one genuinely new object is the pair of exponentials, and
 // they are where `GLA_MASS_DECAY_SPEC.md` §12 rules 1 and 3 go live (spec §7.4's
-// per-lowering audit; `v3_readout_mma.cuh` records that rule 1 becomes live with
+// per-lowering audit; `readout_mma.cuh` records that rule 1 becomes live with
 // exactly this construct and nowhere earlier).
 //
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@
 //      walk emits one.** The walk fuses carry+intra into one accumulator per
 //      token before its single `atomicAdd`; `panel` takes the `decay = None`
 //      path, whose readout and intra term land as separate split-K atomics (see
-//      the "still scalar" note at the intra site in `v3_consumer.cu`). Under
+//      the "still scalar" note at the intra site in `consumer.cu`). Under
 //      LeafMassDecay with any write density most tiles are MIXED, so this
 //      doubles the epilogue traffic on almost every tile. Fusing the intra term
 //      into the readout epilogue is the standing follow-up for BOTH lowerings and
@@ -196,9 +196,9 @@
 // So the trade is: one extra `expf` panel and a `BT(BT+1)/2 * KI / DV` Gram, for
 // the removal of `2 * BT * BC` per-thread FMAs and of the serial `t` chain.
 
-#include "v3_consumer.cuh"
+#include "consumer.cuh"
 
-namespace fla_rola::v3 {
+namespace rola {
 
 //: §12 rule 3's clamp point, as an EXPONENT bound rather than a value bound.
 //: `expf(88) = 1.65e38 < FLT_MAX` and `< kBf16MaxFinite`, so a clamped panel
@@ -240,7 +240,7 @@ __device__ __forceinline__ float panel_write_factor(float P, float p_ref, float 
 //: this tile and its true prefix IS zero. `keep^0 == 1` then makes every factor
 //: this file computes exactly `1`, which is §2's write-conditioned quiescence.
 template <int BT, int BC, int DV, bool COMPACT>
-__device__ __forceinline__ void panel_clock_prefix(const V3ConsumerParams& p, const int* base,
+__device__ __forceinline__ void panel_clock_prefix(const ConsumerParams& p, const int* base,
                                                    int64_t tile_row, int tid,
                                                    const int* __restrict__ c_slot,
                                                    const float* __restrict__ log_keep,
@@ -275,4 +275,4 @@ __device__ __forceinline__ void panel_clock_prefix(const V3ConsumerParams& p, co
   }
 }
 
-}  // namespace fla_rola::v3
+}  // namespace rola

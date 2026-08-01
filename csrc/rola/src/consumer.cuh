@@ -4,7 +4,7 @@
 //
 // ROLA_V3_SPEC.md §3 (topology-agnostic kernel structure), §4 (schedule), §5
 // (consumer). This header holds only what both the kernel and the host binding
-// must agree on; the executable structure lives in `v3_consumer.cu`.
+// must agree on; the executable structure lives in `consumer.cu`.
 //
 // The kernel is TOPOLOGY-AGNOSTIC by construction: it never learns which levels
 // are dense, sparse, inner or outer. Every level is described by the same four
@@ -19,19 +19,19 @@
 // THE INTRA-KERNEL TRACER IS RETIRED (item 6b, 2026-08-01). `v3_trace.cuh`,
 // `v3_trace_host.{cu,cuh}` and `development/measurement/rola_trace{,_capture}.py` were
 // an instrument with 27 `V3T*` emission sites, ALL OF THEM in the REGISTER-RESIDENT
-// consumer (whose header was also named `v3_consumer_kernel.cuh`; readable at
+// consumer (whose header was also named `consumer_kernel.cuh`; readable at
 // `c3c2f845`, and a different kernel from today's file of that name). It is deleted; the surviving consumer carries
 // zero. An instrument pointed at no kernel is dead code by the standing rule, so it
 // is retired WITH the kernel rather than left to look live. Re-instrumenting the
 // surviving consumer is a new item with its own emission sites, not a revival.
 
-namespace fla_rola::v3 {
+namespace rola {
 
 constexpr int kMaxLevels = 4;   // spec §1: 1 <= D <= 4
 constexpr int kMaxWords = 128;  // candidate-tile words held in SMEM per CTA
 
 //: The DEEPEST staging-ring depth the consumer implements. The depth actually used
-//: is `V3ConsumerParams::ring_slots`, a PLAN value carried at runtime: the launch's
+//: is `ConsumerParams::ring_slots`, a PLAN value carried at runtime: the launch's
 //: dynamic shared-memory size is already a runtime argument, so the slot count sizes
 //: the ring with no template instantiation and the 256-tuple matrix is untouched.
 //: Mirrored by `schedule_v3._RING_DEPTHS`, pinned equal by the whole-matrix gate.
@@ -49,10 +49,10 @@ constexpr int kMaxRingSlots = 2;
 //                                                        modulus = width_l
 //
 // `row_offset` is the level's first row in the packed tile-bitmap array.
-// (Encoded per-level in `V3ConsumerParams`'s flat arrays below, not as a
+// (Encoded per-level in `ConsumerParams`'s flat arrays below, not as a
 // per-level struct -- there is no `LevelDesc`-shaped type in the kernel.)
 
-struct V3ConsumerParams;
+struct ConsumerParams;
 
 //: Level `level`'s DIGIT for the owner-local leaf `i`, `digit = base + (i /
 //: stride) % modulus`. A fixed level has `stride = BC, modulus = 1`, so the term
@@ -62,9 +62,9 @@ struct V3ConsumerParams;
 //: ALL levels (it is an exponent, so a fixed level cannot hoist into the row
 //: scale), which is the one operand assembly that walks the leaf digits outside
 //: the kernel translation unit. Defined below the struct.
-__device__ __forceinline__ int leaf_digit(const V3ConsumerParams& p, int level, int base, int i);
+__device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i);
 
-struct V3ConsumerParams {
+struct ConsumerParams {
   const float* amp_read[kMaxLevels];    // [BH, n_tiles, BT, pitch_read]
   const float* amp_write[kMaxLevels];   // [BH, n_tiles, BT, pitch_write]
   // LeafMassDecay clock stream, `c[t,s] = prod_l p_write_stored[t, d_l(s)]`
@@ -229,13 +229,13 @@ struct V3ConsumerParams {
   int pass_mode;
 };
 
-__device__ __forceinline__ int leaf_digit(const V3ConsumerParams& p, int level, int base, int i) {
+__device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i) {
   return base + (i / p.level_stride[level]) % p.level_modulus[level];
 }
 
-//: §6.4's three passes. Pass 2 is `v3_scan_kernel`, a separate launch, so only
+//: §6.4's three passes. Pass 2 is `scan_kernel`, a separate launch, so only
 //: the two consumer passes appear here.
-enum V3PassMode : int {
+enum PassMode : int {
   kPassRead = 0,     //: pass 3 -- reads emitted, entry state from the scan, and the
                      //: LAST segment publishes the owner's final state. At `P = 1`
                      //: this is the whole kernel and is unchanged.
@@ -247,7 +247,7 @@ enum V3PassMode : int {
 //: Pass 2: compose the per-segment summaries into the accumulated boundary states,
 //: in order. One CTA per SPLIT owner; the fold is sequential over segments inside
 //: it, so there is no inversion anywhere (P5.21's obligation).
-struct V3ScanParams {
+struct ScanParams {
   const int32_t* owners;        // [n_split, 2]  (bh, owner)
   const int32_t* nseg;          // [n_split]
   const int32_t* slot;          // [n_split]
@@ -264,4 +264,4 @@ struct V3ScanParams {
   int n_split;
 };
 
-}  // namespace fla_rola::v3
+}  // namespace rola

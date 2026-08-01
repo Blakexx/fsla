@@ -118,7 +118,7 @@ def consumer_occupancy() -> OccupancyOracle:
 
     **`global_norm` IS A REAL TEMPLATE AXIS THAT THIS ORACLE DOES NOT RESOLVE, and
     the pinning STANDS** (coordinator ruling, 2026-08-01, `rewrite.md` §2.37).
-    `launch_consumer` instantiates `GLOBAL` both ways; `rola_v3_consumer_occupancy`
+    `launch_consumer` instantiates `GLOBAL` both ways; `rola_consumer_occupancy`
     pins it to `true`. That is CONSERVATIVE rather than sloppy and the reason is at
     the `del` in the query body: `global` costs strictly more shared memory, so the
     pinned answer can only UNDER-report a raw plan's residency, and an under-report
@@ -139,7 +139,7 @@ def consumer_occupancy() -> OccupancyOracle:
               mma_precision: str, compact: bool,
               gram_cols: int, ring_slots: int) -> int:
         # `global_norm` IS a template axis of the kernel but is PINNED TO `global`
-        # inside `rola_v3_consumer_occupancy`, and that is CONSERVATIVE rather than
+        # inside `rola_consumer_occupancy`, and that is CONSERVATIVE rather than
         # sloppy: `global` costs strictly more shared memory than `raw` (one extra
         # `[BT]` float row, the `den` accumulator -- `consumer_smem_bytes`'s
         # `(GLOBAL ? 3 : 2) * BT * sizeof(float)` term), so the pinned answer can
@@ -148,7 +148,7 @@ def consumer_occupancy() -> OccupancyOracle:
         # mis-ranked only in the direction of caution. Recorded in `rewrite.md`
         # §2.36 as the one axis the oracle does not resolve.
         del global_norm, mma_precision, gram_cols, ring_slots
-        return int(ext.rola_v3_consumer_occupancy(decay, compact, BC, BT, d_v))
+        return int(ext.rola_consumer_occupancy(decay, compact, BC, BT, d_v))
 
     return query
 
@@ -223,7 +223,7 @@ MMA_PRECISIONS = ("tf32x3", "bf16")
 #: Per-SM shared-memory budget, in bytes, when no device can be asked -- the CPU-only
 #: fallback for §6 selection. 100 KiB is `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
 #: on Ampere (SM 8.0 and 8.6 alike) and is DEVICE-QUERIED whenever a device exists
-#: (`rola_v3_sm_shared_bytes`). It is a **plan field**, not a hidden default, so a
+#: (`rola_sm_shared_bytes`). It is a **plan field**, not a hidden default, so a
 #: plan built on a CPU carries the number it reasoned with and a reader can tell a
 #: fallback-selected plan from a device-selected one (§10's ruling).
 DEFAULT_SM_SHARED_BYTES = 100 * 1024
@@ -394,7 +394,7 @@ class V3Plan:
     #: on the same contract `sm_count` has -- a plan states the machine it was
     #: reasoned for, so a replayed plan is auditable -- with the difference stated
     #: rather than hidden: `sm_count` IS read (by `plan_waves`), this is not.
-    #: Deleting it cascades into `layers/rola.py`, the `rola_v3_sm_shared_bytes`
+    #: Deleting it cascades into `layers/rola.py`, the `rola_sm_shared_bytes`
     #: binding and `DEFAULT_SM_SHARED_BYTES`; it dies at the standalone-package
     #: extraction, not before.
     sm_shared_bytes: int = DEFAULT_SM_SHARED_BYTES

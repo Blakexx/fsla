@@ -1,4 +1,5 @@
-#include "p3_page_plan_pybind.cuh"
+#include "../host_api.cuh"
+#include "page_plan.cuh"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -12,7 +13,7 @@
 #include <string>
 #include <utility>
 
-namespace fla_rola::p3 {
+namespace rola::paging {
 namespace {
 
 constexpr int kPlanTensorCount = 19;
@@ -392,7 +393,7 @@ NativePagePlanContext make_context(
   PagePlanCacheView cache = make_cache(
       cache_tensors, c10::nullopt, logical_pages, value_base.size(0), page_states,
       dqk, dv, identity_physical_ids);
-  PagePlanV3StreamView stream{
+  PagePlanStreamView stream{
       reinterpret_cast<const float* const*>(d_amp_ptrs.data_ptr<int64_t>()),
       d_widths.data_ptr<int>(), d_pitches.data_ptr<int>(),
       d_write_can_zero.data_ptr<uint8_t>(),
@@ -491,7 +492,7 @@ void launch_paged_state_readiness_assert(
       static_cast<uint64_t>(generation), static_cast<uint32_t>(plan_epoch));
 }
 
-std::vector<torch::Tensor> rola_p3_page_plan_prepare_cuda(
+std::vector<torch::Tensor> rola_page_plan_prepare_cuda(
     std::vector<torch::Tensor> write_amps, std::vector<int64_t> level_widths,
     std::vector<int64_t> level_pitches, std::vector<int64_t> level_write_can_zero,
     std::vector<int64_t> owner_stride, int64_t token_count, int64_t token_tile,
@@ -527,7 +528,7 @@ std::vector<torch::Tensor> rola_p3_page_plan_prepare_cuda(
 //: Emit spec §7.1's admit mask from the published page table. Separate from
 //: `publish` because the consumer needs it as its own tensor and because it is
 //: idempotent -- re-deriving it never mutates plan or cache state.
-void rola_p3_page_admit_mask_cuda(
+void rola_page_admit_mask_cuda(
     torch::Tensor page_table, torch::Tensor admit) {
   TORCH_CHECK(page_table.defined() && page_table.is_cuda() &&
                   page_table.is_contiguous() && page_table.dim() == 2 &&
@@ -553,7 +554,7 @@ void rola_p3_page_admit_mask_cuda(
   record_tensor(admit, stream);
 }
 
-std::vector<torch::Tensor> rola_p3_page_plan_finalize_cuda(
+std::vector<torch::Tensor> rola_page_plan_finalize_cuda(
     std::vector<torch::Tensor> plan_tensors, std::vector<torch::Tensor> cache_tensors,
     c10::optional<torch::Tensor> mass_base,
     int64_t generation, int64_t epoch, int64_t page_states, int64_t dqk, int64_t dv,
@@ -608,7 +609,7 @@ std::vector<torch::Tensor> rola_p3_page_plan_finalize_cuda(
   return result_status(plan_tensors);
 }
 
-std::vector<torch::Tensor> rola_p3_page_plan_publish_cuda(
+std::vector<torch::Tensor> rola_page_plan_publish_cuda(
     std::vector<torch::Tensor> plan_tensors, std::vector<torch::Tensor> cache_tensors,
     c10::optional<torch::Tensor> mass_base,
     int64_t generation, int64_t epoch, int64_t page_states, int64_t dqk, int64_t dv,
@@ -663,7 +664,7 @@ std::vector<torch::Tensor> rola_p3_page_plan_publish_cuda(
   return result_status(plan_tensors);
 }
 
-void rola_p3_page_cache_reset_cuda(
+void rola_page_cache_reset_cuda(
     std::vector<torch::Tensor> cache_tensors) {
   check_tensor_list(cache_tensors, kCacheTensorCount, "page cache tensors");
   auto page_table = cache_tensors[kCachePageTable];
@@ -705,4 +706,4 @@ void rola_p3_page_cache_reset_cuda(
   }
 }
 
-}  // namespace fla_rola::p3
+}  // namespace rola::paging

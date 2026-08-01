@@ -1,6 +1,6 @@
-"""SPILL-MANIFEST GATE for the new V3 consumer's launch bounds.
+"""SPILL-MANIFEST GATE for the consumer kernel's launch bounds.
 
-**WHAT THIS CONVERTS, AND WHY.** `workflows/20260801-rewrite/rewrite.md` §2.21 landed a
+**WHAT THIS CONVERTS, AND WHY.** the consumer rewrite's §2.21 ruling landed a
 three-term residency formula and ACCEPTED one 4-byte spill on one of 128
 instantiations as the measured optimum -- the alternatives spill worse (the unbounded
 status quo: 20 st / 56 ld; the thread-slot cap: 70 st / 284 ld). That acceptance was a
@@ -41,8 +41,8 @@ reason they moved.
 
 Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the lock):
 
-    PYTHONPATH=<worktree> python benchmarks/ops/gate_v3_launch_bounds.py
-    PYTHONPATH=<worktree> python benchmarks/ops/gate_v3_launch_bounds.py --write
+    python tools/ratify.py
+    python tools/ratify.py --write
 
 `--self-test` re-checks the parsed result against a deliberately tightened manifest, and
 re-checks the real `ptxas` version against a deliberately perturbed one, and requires
@@ -74,12 +74,12 @@ CUDA_BIN = Path("/usr/local/cuda/bin")
 NVCC = CUDA_BIN / "nvcc"
 PTXAS = CUDA_BIN / "ptxas"
 
-PROBE = Path(__file__).with_name("probe_v3_launch_bounds.cu")
-MANIFEST = Path(__file__).with_name("gate_v3_launch_bounds_manifest.json")
-SRC = Path(__file__).resolve().parents[2] / "fla_rola" / "ops" / "rola" / "cuda" / "src"
+PROBE = Path(__file__).with_name("probe_launch_bounds.cu")
+MANIFEST = Path(__file__).resolve().parent / "manifests" / "_all_archs.json"
+SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 
-#: The extension's own `-gencode` targets (`fla_rola/ops/rola/cuda/bindings.py` sets
-#: `TORCH_CUDA_ARCH_LIST = "8.0;8.6"`). BOTH are probed, because both are in the
+#: The extension's own `-gencode` targets (`setup.py`'s `ROLA_CUDA_ARCHS`, default
+#: `80;86`). BOTH are probed, because both are in the
 #: shipped fat binary and the two allocators reach different answers: sm_80 admits
 #: more CTAs by shared memory, so its bound is a different number and its spill
 #: profile is a different measurement.

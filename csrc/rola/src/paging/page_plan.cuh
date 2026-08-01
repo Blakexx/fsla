@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace fla_rola::p3 {
+namespace rola::paging {
 
 constexpr std::uint32_t kPagePlanReady = 0;
 constexpr std::uint32_t kPagePlanNeedGrowth = 1;
@@ -23,7 +23,7 @@ constexpr std::uint32_t kPagePlanCapped = 3;
 constexpr std::int32_t kAbsentPage = -1;
 constexpr int kPagePlanMaxLevels = 8;
 
-//: The V3 write-amplitude stream (spec §4 / `schedule_v3.py:V3Schedule.write_amps`).
+//: The V3 write-amplitude stream (spec §4 / `planner/schedule.py:V3Schedule.write_amps`).
 //:
 //: Re-key note (V2 -> V3, findings `paging.md` D1). V2 fed the mark phase two
 //: arenas -- a bf16 tile-major `write_factors` and a separate
@@ -34,7 +34,7 @@ constexpr int kPagePlanMaxLevels = 8;
 //: everywhere else (§1.2 -- never a threshold), so one arena replaces two and no
 //: predicate changes: §7.1's "a zero complete write factor may neither deposit
 //: nor allocate" is evaluated directly on the amplitude.
-struct PagePlanV3StreamView {
+struct PagePlanStreamView {
   //: Device-resident array of `level_count` pointers, one per routing level.
   const float* const* level_amps;
   const int* level_width;   //: device [D]
@@ -128,12 +128,12 @@ struct PagePlanCacheView {
 
 struct PagePlanMarkArgs {
   PagePlanStorage plan;
-  PagePlanV3StreamView stream;
+  PagePlanStreamView stream;
   PagePlanOwnerGeometry owners;
   std::uint64_t generation;
   std::uint64_t epoch;
   //: §7.1: `page_states := BC`. Retained as a field rather than hardcoded so the
-  //: accessor arithmetic in `p3_paged_state.cuh` stays the SAME expression it was
+  //: accessor arithmetic in `paged_state.cuh` stays the SAME expression it was
   //: (§7.1: "V2's existing arithmetic with a chosen constant, not a new keying").
   std::uint32_t page_states;
   std::uint32_t pages_per_bh;
@@ -207,4 +207,4 @@ void launch_page_admit_mask(
 
 std::size_t page_plan_workspace_bytes(std::uint32_t touched_capacity);
 
-}  // namespace fla_rola::p3
+}  // namespace rola::paging

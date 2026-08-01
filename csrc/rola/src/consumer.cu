@@ -4,24 +4,24 @@
 // (consumer), §6.4 (sequence parallelism), §7.1 (paging).
 //
 // WHAT IS IN THIS FILE, and nothing else is:
-//   * the Torch-level entry `rola_v3_consumer_forward` -- argument checking, the
-//     `V3ConsumerParams` fill, and §6.4's three-pass sequencing;
+//   * the Torch-level entry `rola_consumer_forward` -- argument checking, the
+//     `ConsumerParams` fill, and §6.4's three-pass sequencing;
 //   * the launch dispatch `launch_consumer`, which resolves the plan's structural axes
-//     to ONE template instantiation of `consumer::v3_consumer_forward_kernel`;
-//   * the two non-template helper kernels, `v3_scan_kernel` (§6.4 pass 2's ordered
-//     fold) and `v3_divide_kernel` (`global`'s `num/den` epilogue);
+//     to ONE template instantiation of `consumer::consumer_forward_kernel`;
+//   * the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
+//     fold) and `divide_kernel` (`global`'s `num/den` epilogue);
 //   * the driver-backed residency and footprint queries, and the arch-table check;
 //   * the pybind surface.
 //
-// THE KERNEL ITSELF IS IN `v3_consumer_kernel.cuh`, which is also where the §3/§5
+// THE KERNEL ITSELF IS IN `consumer_kernel.cuh`, which is also where the §3/§5
 // algorithm and every structural decision behind it are documented. This file
 // deliberately does NOT restate them: two descriptions of one kernel is one that can
 // go stale.
 //
 // ONE CONSUMER (item 6b, 2026-08-01). The previous register-resident consumer
-// (its kernel header -- also named `v3_consumer_kernel.cuh`, readable at
+// (its kernel header -- also named `consumer_kernel.cuh`, readable at
 // `c3c2f845`, and a DIFFERENT kernel from the one this file now includes --
-// plus `intra_gram.cuh`, `v3_consumer_matrix.def` and its eight shard TUs), its `intra_lowering` template axis, its analytic SMEM mirror and
+// plus `intra_gram.cuh`, `consumer_matrix.def` and its eight shard TUs), its `intra_lowering` template axis, its analytic SMEM mirror and
 // its intra-kernel tracer are DELETED. There is one kernel family, so there is no
 // second-kernel routing argument, no `intra_lowering` argument, and no second occupancy
 // oracle: what the planner prices and what the driver launches are the same thing by
@@ -37,13 +37,12 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include "p3_page_plan_pybind.cuh"
-#include "p3_vmm_pybind.cuh"
-#include "v3_consumer_kernel.cuh"
+#include "consumer_kernel.cuh"
+#include "host_api.cuh"
 
-namespace fla_rola::v3 {
+namespace rola {
 
-// THE §10i.12 RESTRUCTURE, and the ONLY consumer. See `v3_consumer_kernel.cuh`
+// THE §10i.12 RESTRUCTURE, and the ONLY consumer. See `consumer_kernel.cuh`
 // for the algorithm; the supported shape surface is declared and TORCH_CHECKed at
 // `launch_consumer` below, which is its single authority.
 
@@ -70,7 +69,7 @@ namespace {
 // amended to match): slot `slot0` is the ENTRY-STATE STASH this kernel publishes
 // below, and slots `slot0 + 1 .. slot0 + P - 1` are the `P - 1` summaries/boundaries.
 // The stash is what removes pass 3's intra-launch dependence on `p.state`.
-__global__ void v3_scan_kernel(V3ScanParams p) {
+__global__ void scan_kernel(ScanParams p) {
   extern __shared__ float E[];
   const int u = blockIdx.x;
   const int bh = p.owners[2 * u];
@@ -139,14 +138,14 @@ __global__ void v3_scan_kernel(V3ScanParams p) {
   }
 }
 
-void v3_scan(const V3ScanParams& p) {
+void scan_pass(const ScanParams& p) {
   if (p.n_split == 0) return;
   const size_t smem = static_cast<size_t>(p.BC) * p.cols * sizeof(float);
-  v3_scan_kernel<<<p.n_split, 256, smem, at::cuda::getCurrentCUDAStream()>>>(p);
+  scan_kernel<<<p.n_split, 256, smem, at::cuda::getCurrentCUDAStream()>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-__global__ void v3_divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
+__global__ void divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
                                  float* __restrict__ out, int64_t rows, int DV, float eps) {
   const int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
   if (idx >= rows * DV) return;
@@ -165,7 +164,7 @@ __global__ void v3_divide_kernel(const float* __restrict__ num, const float* __r
 //: residency reasoning is auditable off the machine that made it. The planner's
 //: `DEFAULT_SM_SHARED_BYTES` is the CPU-only fallback and is deliberately a plan
 //: field, not a hidden default.
-int64_t rola_v3_sm_shared_bytes() {
+int64_t rola_sm_shared_bytes() {
   int value = 0;
   int device = 0;
   C10_CUDA_CHECK(cudaGetDevice(&device));
@@ -174,11 +173,11 @@ int64_t rola_v3_sm_shared_bytes() {
   return value;
 }
 
-void v3_divide(const float* num, const float* den, float* out, int64_t rows, int d_v, float eps) {
+void divide_pass(const float* num, const float* den, float* out, int64_t rows, int d_v, float eps) {
   const int64_t total = rows * d_v;
   const int threads = 256;
   const int64_t blocks = (total + threads - 1) / threads;
-  v3_divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+  divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
       num, den, out, rows, d_v, eps);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -196,19 +195,19 @@ void v3_divide(const float* num, const float* den, float* out, int64_t rows, int
 //:
 //: **THIS DOES NOT MAKE THE TABLE A PLANNING AUTHORITY.** Spec §6.5: the driver's
 //: occupancy API remains the sole authority on residency, and
-//: `rola_v3_consumer_occupancy` -- which calls it -- is what every residency claim in
+//: `rola_consumer_occupancy` -- which calls it -- is what every residency claim in
 //: this batch is read from. The table's only job is the launch bound.
-void rola_v3_consumer_check_arch_table() {
+void rola_consumer_check_arch_table() {
   int dev = 0;
   C10_CUDA_CHECK(cudaGetDevice(&dev));
   cudaDeviceProp prop{};
   C10_CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
   const int arch = prop.major * 100 + prop.minor * 10;
-  TORCH_CHECK(consumer::sm_arch_tabulated(arch),
+  TORCH_CHECK(sm_arch_tabulated(arch),
               "the new consumer's SM-resource table has no row for compute capability ",
               prop.major, ".", prop.minor,
               "; add it to sm_resources() rather than letting the launch bound guess");
-  const consumer::SmResources want = consumer::sm_resources(arch);
+  const SmResources want = sm_resources(arch);
   int smem_per_sm = 0;
   C10_CUDA_CHECK(cudaDeviceGetAttribute(
       &smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev));
@@ -225,14 +224,14 @@ void rola_v3_consumer_check_arch_table() {
 }
 
 // THE LAUNCH DISPATCH. Declared restrictions are hard checks, never coercions.
-void launch_consumer(const V3ConsumerParams& p, int BT, int BC, int DV, bool global_norm,
+void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool global_norm,
                   bool decay, const std::string& mma_precision, bool compact) {
   //: Checked ONCE per process, on the first launch rather than at import: a
   //: `cudaGetDeviceProperties` at module init would create a CUDA context as a side
   //: effect of `import`, which is a worse behaviour than the check is worth. By the
   //: first launch the context exists anyway, and nothing can reach a launch bound
   //: without passing through here.
-  static const bool arch_checked = [] { rola_v3_consumer_check_arch_table(); return true; }();
+  static const bool arch_checked = [] { rola_consumer_check_arch_table(); return true; }();
   (void)arch_checked;
   //: THE FULL PLAN SURFACE, as of item 6a: `BT in {16, 32}` (`_SUPPORTED_BT`),
   //: `BC in {16, 64}` (`_SUPPORTED_BC`), `d_v in {32, 64}` (`_SUPPORTED_DV`). These
@@ -265,12 +264,12 @@ void launch_consumer(const V3ConsumerParams& p, int BT, int BC, int DV, bool glo
   //: instantiations in this one translation unit. A `.def`-plus-shard-TU split (the
   //: mechanism the deleted consumer's 256-tuple matrix used, readable at `c3c2f845`)
   //: remains the answer if a later axis makes that false.
-#define V3_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, COMPACTV)          \
+#define ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, COMPACTV)          \
   {                                                                                    \
     constexpr size_t smem =                                                            \
         consumer::consumer_smem_bytes<BTV, BCVAL, DVV, DVAL, PRECV, DECAYV, GLOBALV,         \
                                 COMPACTV>();                                           \
-    auto kernel = consumer::v3_consumer_forward_kernel<BTV, BCVAL, DVV, DVAL, PRECV, PRECV,  \
+    auto kernel = consumer::consumer_forward_kernel<BTV, BCVAL, DVV, DVAL, PRECV, PRECV,  \
                                                  DECAYV, GLOBALV, COMPACTV>;           \
     if (smem > 48 * 1024) {                                                            \
       C10_CUDA_CHECK(cudaFuncSetAttribute(                                             \
@@ -282,53 +281,53 @@ void launch_consumer(const V3ConsumerParams& p, int BT, int BC, int DV, bool glo
     C10_CUDA_KERNEL_LAUNCH_CHECK();                                                    \
     return;                                                                            \
   }
-  //: **THE BRACES ARE LOAD-BEARING.** Every `V3_CONSUMER_ONE` is a braced block ending
+  //: **THE BRACES ARE LOAD-BEARING.** Every `ROLA_CONSUMER_ONE` is a braced block ending
   //: in `return`, so the enclosing dispatch is a chain of `if (cond) BLOCK`. This
   //: macro expands to TWO blocks, and without the outer braces the second one would
   //: escape its guard and launch UNCONDITIONALLY -- which is exactly what an earlier
   //: revision did: every call ran the `decay` instantiation, which dereferenced a
   //: null `p.dials`. Caught by the compact gate's own dense arm, i.e. by the
   //: instrument this axis was added with.
-#define V3_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV)                    \
+#define ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV)                    \
   {                                                                                    \
-    if (compact) V3_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, true)      \
-    V3_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, false)                  \
+    if (compact) ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, true)      \
+    ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, false)                  \
   }
-#define V3_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, PRECV)                                    \
-  if (decay && global_norm) V3_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, true)     \
-  if (decay) V3_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, false)                   \
-  if (global_norm) V3_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, true)             \
-  V3_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, false)
-#define V3_CONSUMER_LAUNCH(BTV, DVV, BCVAL, DVAL)                                         \
+#define ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, PRECV)                                    \
+  if (decay && global_norm) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, true)     \
+  if (decay) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, false)                   \
+  if (global_norm) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, true)             \
+  ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, false)
+#define ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, DVAL)                                         \
   case DVAL: {                                                                         \
-    if (exact) { V3_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kTf32x3) }              \
-    V3_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kBf16)                               \
+    if (exact) { ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kTf32x3) }              \
+    ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kBf16)                               \
   }
-#define V3_CONSUMER_D(BTV, DVV, BCVAL)                                                    \
+#define ROLA_CONSUMER_D(BTV, DVV, BCVAL)                                                    \
   switch (p.D) {                                                                       \
-    V3_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 1)                                                \
-    V3_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 2)                                                \
-    V3_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 3)                                                \
-    V3_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 4)                                                \
+    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 1)                                                \
+    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 2)                                                \
+    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 3)                                                \
+    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 4)                                                \
     default:                                                                           \
       TORCH_CHECK(false, "D must be in [1, 4] (spec §1), got ", p.D);                  \
   }
-#define V3_CONSUMER_BC(BTV, DVV)                                                          \
-  if (BC == 16) { V3_CONSUMER_D(BTV, DVV, 16) } else { V3_CONSUMER_D(BTV, DVV, 64) }
-#define V3_CONSUMER_DV(BTV)                                                               \
-  if (DV == 32) { V3_CONSUMER_BC(BTV, 32) } else { V3_CONSUMER_BC(BTV, 64) }
+#define ROLA_CONSUMER_BC(BTV, DVV)                                                          \
+  if (BC == 16) { ROLA_CONSUMER_D(BTV, DVV, 16) } else { ROLA_CONSUMER_D(BTV, DVV, 64) }
+#define ROLA_CONSUMER_DV(BTV)                                                               \
+  if (DV == 32) { ROLA_CONSUMER_BC(BTV, 32) } else { ROLA_CONSUMER_BC(BTV, 64) }
   if (BT == 16) {
-    V3_CONSUMER_DV(16)
+    ROLA_CONSUMER_DV(16)
   } else {
-    V3_CONSUMER_DV(32)
+    ROLA_CONSUMER_DV(32)
   }
-#undef V3_CONSUMER_DV
-#undef V3_CONSUMER_BC
-#undef V3_CONSUMER_D
-#undef V3_CONSUMER_LAUNCH
-#undef V3_CONSUMER_PREC
-#undef V3_CONSUMER_CMP
-#undef V3_CONSUMER_ONE
+#undef ROLA_CONSUMER_DV
+#undef ROLA_CONSUMER_BC
+#undef ROLA_CONSUMER_D
+#undef ROLA_CONSUMER_LAUNCH
+#undef ROLA_CONSUMER_PREC
+#undef ROLA_CONSUMER_CMP
+#undef ROLA_CONSUMER_ONE
 }
 
 //: The new consumer's own residency answer, from the DRIVER, for the report's A/B
@@ -338,7 +337,7 @@ void launch_consumer(const V3ConsumerParams& p, int BT, int BC, int DV, bool glo
 //: `__launch_bounds__` from `consumer_smem_bytes` is that a decay instantiation which
 //: regressed the budget would drop its OWN bound rather than silently over-promise,
 //: and this is how that is checked from Python rather than asserted.
-int64_t rola_v3_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT,
+int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT,
                                 int64_t DV) {
   //: Queried at `D = 2`, the at-scale cell's topology depth. `D` changes only the
   //: `[D][BC]` digit table (256 B per level), so the residency answer is reported for
@@ -349,12 +348,12 @@ int64_t rola_v3_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t
   //: FILE does (4). A residency claim about "the kernel" that quoted only `BC = 64`
   //: would be a claim about half the matrix.
   int blocks = 0;
-#define V3_CONSUMER_OCC(BTV, DVV, BCV, DECAYV, COMPACTV)                                 \
+#define ROLA_CONSUMER_OCC(BTV, DVV, BCV, DECAYV, COMPACTV)                                 \
   {                                                                                   \
     constexpr size_t smem =                                                           \
         consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault, DECAYV,    \
                                 true, COMPACTV>();                                    \
-    auto kernel = consumer::v3_consumer_forward_kernel<BTV, BCV, DVV, 2,                    \
+    auto kernel = consumer::consumer_forward_kernel<BTV, BCV, DVV, 2,                    \
                                                  consumer::kFoldPrecDefault,             \
                                                  consumer::kReadPrecDefault, DECAYV, true,\
                                                  COMPACTV>;                           \
@@ -365,17 +364,17 @@ int64_t rola_v3_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t
     C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(                     \
         &blocks, kernel, consumer::kConsumerThreads, smem));                                \
   }
-#define V3_CONSUMER_OCC_BC(BTV, DVV, BCV)                                                \
+#define ROLA_CONSUMER_OCC_BC(BTV, DVV, BCV)                                                \
   {                                                                                   \
-    if (decay && compact) V3_CONSUMER_OCC(BTV, DVV, BCV, true, true)                     \
-    else if (decay) V3_CONSUMER_OCC(BTV, DVV, BCV, true, false)                          \
-    else if (compact) V3_CONSUMER_OCC(BTV, DVV, BCV, false, true)                        \
-    else V3_CONSUMER_OCC(BTV, DVV, BCV, false, false)                                     \
+    if (decay && compact) ROLA_CONSUMER_OCC(BTV, DVV, BCV, true, true)                     \
+    else if (decay) ROLA_CONSUMER_OCC(BTV, DVV, BCV, true, false)                          \
+    else if (compact) ROLA_CONSUMER_OCC(BTV, DVV, BCV, false, true)                        \
+    else ROLA_CONSUMER_OCC(BTV, DVV, BCV, false, false)                                     \
   }
-#define V3_CONSUMER_OCC_DV(BTV, DVV)                                                     \
-  { if (BC == 16) V3_CONSUMER_OCC_BC(BTV, DVV, 16) else V3_CONSUMER_OCC_BC(BTV, DVV, 64) }
-#define V3_CONSUMER_OCC_BT(BTV)                                                          \
-  { if (DV == 32) V3_CONSUMER_OCC_DV(BTV, 32) else V3_CONSUMER_OCC_DV(BTV, 64) }
+#define ROLA_CONSUMER_OCC_DV(BTV, DVV)                                                     \
+  { if (BC == 16) ROLA_CONSUMER_OCC_BC(BTV, DVV, 16) else ROLA_CONSUMER_OCC_BC(BTV, DVV, 64) }
+#define ROLA_CONSUMER_OCC_BT(BTV)                                                          \
+  { if (DV == 32) ROLA_CONSUMER_OCC_DV(BTV, 32) else ROLA_CONSUMER_OCC_DV(BTV, 64) }
   //: `compact` joins `decay` as a QUERY AXIS for the same reason: the compact arm
   //: carries `c_idx`/`c_slot`/`c_count`, and `compact + decay` is the tightest
   //: residency cell in the kernel (~140 B of margin at 3 CTAs/SM). A single reported
@@ -388,44 +387,44 @@ int64_t rola_v3_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t
   TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
   TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
   TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  if (BT == 16) V3_CONSUMER_OCC_BT(16) else V3_CONSUMER_OCC_BT(32)
-#undef V3_CONSUMER_OCC_BT
-#undef V3_CONSUMER_OCC_DV
-#undef V3_CONSUMER_OCC_BC
-#undef V3_CONSUMER_OCC
+  if (BT == 16) ROLA_CONSUMER_OCC_BT(16) else ROLA_CONSUMER_OCC_BT(32)
+#undef ROLA_CONSUMER_OCC_BT
+#undef ROLA_CONSUMER_OCC_DV
+#undef ROLA_CONSUMER_OCC_BC
+#undef ROLA_CONSUMER_OCC
   return blocks;
 }
 
-int64_t rola_v3_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT,
+int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT,
                                  int64_t DV) {
-#define V3_CONSUMER_SMEM(BTV, DVV, BCV, DECAYV, COMPACTV)                                \
+#define ROLA_CONSUMER_SMEM(BTV, DVV, BCV, DECAYV, COMPACTV)                                \
   return static_cast<int64_t>(                                                        \
       consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault, DECAYV, true,\
                               COMPACTV>());
-#define V3_CONSUMER_SMEM_BC(BTV, DVV, BCV)                                               \
+#define ROLA_CONSUMER_SMEM_BC(BTV, DVV, BCV)                                               \
   {                                                                                   \
-    if (decay && compact) V3_CONSUMER_SMEM(BTV, DVV, BCV, true, true)                    \
-    if (decay) V3_CONSUMER_SMEM(BTV, DVV, BCV, true, false)                              \
-    if (compact) V3_CONSUMER_SMEM(BTV, DVV, BCV, false, true)                            \
-    V3_CONSUMER_SMEM(BTV, DVV, BCV, false, false)                                        \
+    if (decay && compact) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, true, true)                    \
+    if (decay) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, true, false)                              \
+    if (compact) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, false, true)                            \
+    ROLA_CONSUMER_SMEM(BTV, DVV, BCV, false, false)                                        \
   }
-#define V3_CONSUMER_SMEM_DV(BTV, DVV)                                                    \
-  { if (BC == 16) V3_CONSUMER_SMEM_BC(BTV, DVV, 16) V3_CONSUMER_SMEM_BC(BTV, DVV, 64) }
-#define V3_CONSUMER_SMEM_BT(BTV)                                                         \
-  { if (DV == 32) V3_CONSUMER_SMEM_DV(BTV, 32) V3_CONSUMER_SMEM_DV(BTV, 64) }
+#define ROLA_CONSUMER_SMEM_DV(BTV, DVV)                                                    \
+  { if (BC == 16) ROLA_CONSUMER_SMEM_BC(BTV, DVV, 16) ROLA_CONSUMER_SMEM_BC(BTV, DVV, 64) }
+#define ROLA_CONSUMER_SMEM_BT(BTV)                                                         \
+  { if (DV == 32) ROLA_CONSUMER_SMEM_DV(BTV, 32) ROLA_CONSUMER_SMEM_DV(BTV, 64) }
   TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
   TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
   TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  if (BT == 16) V3_CONSUMER_SMEM_BT(16) V3_CONSUMER_SMEM_BT(32)
-#undef V3_CONSUMER_SMEM_BT
-#undef V3_CONSUMER_SMEM_DV
-#undef V3_CONSUMER_SMEM_BC
-#undef V3_CONSUMER_SMEM
+  if (BT == 16) ROLA_CONSUMER_SMEM_BT(16) ROLA_CONSUMER_SMEM_BT(32)
+#undef ROLA_CONSUMER_SMEM_BT
+#undef ROLA_CONSUMER_SMEM_DV
+#undef ROLA_CONSUMER_SMEM_BC
+#undef ROLA_CONSUMER_SMEM
 }
 
 // ---------------------------------------------------------------------------
 // Torch-level entry. Consumes exactly the Stage 3 schedule
-// (`routing/schedule_v3.py`) plus the value stream and the dense state, and
+// (`routing/planner/schedule.py`) plus the value stream and the dense state, and
 // returns `(y, final_state)`. Every argument is checked loudly; there is no
 // silent shape coercion and no CPU fallback.
 // ---------------------------------------------------------------------------
@@ -448,7 +447,7 @@ const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
 
 }  // namespace
 
-std::vector<at::Tensor> rola_v3_consumer_forward(
+std::vector<at::Tensor> rola_consumer_forward(
     std::vector<at::Tensor> amp_read,
     std::vector<at::Tensor> amp_write,
     c10::optional<std::vector<at::Tensor>> amp_clock,
@@ -551,7 +550,7 @@ std::vector<at::Tensor> rola_v3_consumer_forward(
               "BT must be in [1, 32] (spec §6): the support word carries one bit per token "
               "of a tile, got BT=", BT);
 
-  V3ConsumerParams p{};
+  ConsumerParams p{};
   for (int64_t l = 0; l < D; ++l) {
     TORCH_CHECK(amp_read[l].dim() == 4, "amp_read[", l, "] must be [BH, n_tiles, BT, pitch]");
     p.amp_read[l] = f32_ptr(amp_read[l], "amp_read");
@@ -697,7 +696,7 @@ std::vector<at::Tensor> rola_v3_consumer_forward(
   //: different kernel from the one its siblings picked. `P` is a WORK-LIST SHAPE,
   //: not a kernel: both consumers read `work_seg`/`work_nseg`/`work_slot`/
   //: `pass_mode` out of the same parameter block.
-  auto launch_pass = [&](V3ConsumerParams& pp) {
+  auto launch_pass = [&](ConsumerParams& pp) {
     launch_consumer(pp, BT_i, BC_i, DV_i, global_norm, decay, mma_precision, compact);
   };
   if (split) {
@@ -744,7 +743,7 @@ std::vector<at::Tensor> rola_v3_consumer_forward(
     launch_pass(p);
 
     // ---- pass 2: the ordered fold ------------------------------------------
-    V3ScanParams s{};
+    ScanParams s{};
     s.owners = i32(*scan_owners, "scan_owners", n_split);
     s.nseg = i32(*scan_nseg, "scan_nseg", n_split);
     s.slot = i32(*scan_slot, "scan_slot", n_split);
@@ -759,7 +758,7 @@ std::vector<at::Tensor> rola_v3_consumer_forward(
     s.BC = BC_i;
     s.cols = static_cast<int>(cols);
     s.n_split = static_cast<int>(n_split);
-    v3_scan(s);
+    scan_pass(s);
 
     // ---- pass 3: the reads --------------------------------------------------
     p.owners = owners.data_ptr<int32_t>();
@@ -776,33 +775,10 @@ std::vector<at::Tensor> rola_v3_consumer_forward(
   at::Tensor y = num;
   if (global_norm) {
     y = at::empty_like(num);
-    v3_divide(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(),
+    divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(),
               BH * T, static_cast<int>(d_v), static_cast<float>(eps));
   }
   return {y, state, num, global_norm ? den : at::Tensor()};
 }
 
-}  // namespace fla_rola::v3
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("rola_v3_consumer_forward", &fla_rola::v3::rola_v3_consumer_forward,
-        "RoLA V3 consumer forward (ROLA_V3_SPEC.md §3/§5, increment 1)");
-  m.def("rola_v3_consumer_occupancy", &fla_rola::v3::rola_v3_consumer_occupancy,
-        "the driver's CTAs/SM for the consumer kernel at its real SMEM size");
-  m.def("rola_v3_consumer_check_arch_table", &fla_rola::v3::rola_v3_consumer_check_arch_table,
-        "validate the new consumer's compile-time SM-resource table against the driver "
-        "(the launch bounds in this binary were derived from it)");
-  m.def("rola_v3_consumer_smem_bytes", &fla_rola::v3::rola_v3_consumer_smem_bytes,
-        "the consumer kernel's dynamic shared-memory footprint per CTA");
-  m.def("rola_v3_sm_shared_bytes", &fla_rola::v3::rola_v3_sm_shared_bytes,
-        "cudaDevAttrMaxSharedMemoryPerMultiprocessor -- the per-SM SMEM budget the "
-        "plan records (§10 ruling)");
-  // Spec §7.1 page commitment. The paging arena registers into the SAME extension
-  // as the consumer, deliberately: the consumer reads the page table the plan
-  // publishes, so a second extension would put a cross-module ABI between two
-  // halves of one contract. `V3_TODO.md`'s V14 bitrot risk closes here -- the
-  // `p3_*` translation units are now compiled and gated by every consumer build.
-  fla_rola::p3::register_rola_page_plan(m);
-  fla_rola::p3::register_rola_vmm(m);
-}
-
+}  // namespace rola

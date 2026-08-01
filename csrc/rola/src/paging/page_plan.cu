@@ -11,7 +11,7 @@
 // PrefixRunSchedule families have no V3 counterpart (findings `paging.md` D1);
 // the PREDICATE it evaluates -- "a zero complete write factor may neither deposit
 // nor allocate" -- is carried over unchanged, which is what §7.1 requires.
-#include "p3_page_plan.cuh"
+#include "page_plan.cuh"
 
 #include <cub/cub.cuh>
 #include <c10/cuda/CUDAException.h>
@@ -23,7 +23,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace fla_rola::p3 {
+namespace rola::paging {
 namespace {
 
 constexpr int kThreads = 128;
@@ -75,7 +75,7 @@ __device__ __forceinline__ void mark_page(
 //: support zeros are the scheduling authority, and a tolerance here would either
 //: invent a page or drop a deposit.
 __device__ __forceinline__ float write_amp(
-    const PagePlanV3StreamView& stream, int bh, int token, int level, int digit) {
+    const PagePlanStreamView& stream, int bh, int token, int level, int digit) {
   const int tile = token / stream.token_tile;
   const int lane = token % stream.token_tile;
   const int pitch = stream.level_pitch[level];
@@ -91,7 +91,7 @@ __device__ __forceinline__ float write_amp(
 //: Evaluated over the levels BELOW the boundary (`l > j`), which the owner spans
 //: in full; the boundary level's own liveness is decided per slice inside the walk.
 __device__ __forceinline__ bool spanned_levels_live(
-    const PagePlanV3StreamView& stream, int bh, int token, int j) {
+    const PagePlanStreamView& stream, int bh, int token, int j) {
   for (int level = j + 1; level < stream.level_count; ++level) {
     bool any = false;
     const int width = stream.level_width[level];
@@ -115,7 +115,7 @@ __device__ __forceinline__ bool spanned_levels_live(
 //: the branch, and a level that cannot zero skips the test entirely.
 __device__ __forceinline__ void mark_owners_for_token(
     const PagePlanMarkArgs& args, int bh, int token, std::uint32_t tile) {
-  const PagePlanV3StreamView& stream = args.stream;
+  const PagePlanStreamView& stream = args.stream;
   const PagePlanOwnerGeometry& geom = args.owners;
   const int j = geom.first_spanned_level;
   if (!spanned_levels_live(stream, bh, token, j)) return;
@@ -211,7 +211,7 @@ __global__ void reset_state_kernel(
 }
 
 __global__ void mark_kernel(PagePlanMarkArgs args) {
-  const PagePlanV3StreamView& stream = args.stream;
+  const PagePlanStreamView& stream = args.stream;
   // §7.1's dense-write short-circuit, carried over verbatim in intent: when no
   // write level can zero (the softmax-write-level case), every owner is written by
   // the first token, and enumerating owners per token would be O(L * N / BC)
@@ -571,7 +571,7 @@ void validate_cache(const PagePlanCacheView& cache) {
 
 void validate_mark_args(const PagePlanMarkArgs& args) {
   validate_plan(args.plan, false);
-  const PagePlanV3StreamView& stream = args.stream;
+  const PagePlanStreamView& stream = args.stream;
   const PagePlanOwnerGeometry& geom = args.owners;
   if (stream.level_count <= 0 || stream.level_count > kPagePlanMaxLevels ||
       stream.batch_heads <= 0 || stream.token_count <= 0 || stream.n_tiles <= 0 ||
@@ -798,4 +798,4 @@ std::size_t page_plan_workspace_bytes(std::uint32_t touched_capacity) {
   return std::max(sort_bytes, scan_bytes);
 }
 
-}  // namespace fla_rola::p3
+}  // namespace rola::paging

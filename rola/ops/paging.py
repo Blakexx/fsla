@@ -192,7 +192,7 @@ class V3PageArena:
         scalar64 = lambda: torch.zeros((), dtype=torch.uint64, device=dev)      # noqa: E731
         scalar32 = lambda: torch.zeros((), dtype=torch.uint32, device=dev)      # noqa: E731
         tc, mn = self._touched_capacity, self._max_new_pages
-        workspace = self._ext.p3_page_plan_workspace_bytes(tc)
+        workspace = self._ext.page_plan_workspace_bytes(tc)
 
         # Plan workspace. §6.4: launch-scoped-in-lifetime torch tensors, owned by
         # the caching allocator. They are persistent across calls only because
@@ -292,7 +292,7 @@ class V3PageArena:
         would touch the DENSE footprint -- exactly the allocation §7.1 exists to
         avoid -- to re-do work publication already does on the realized set only.
         """
-        self._ext.rola_p3_page_cache_reset(cache_tensors=self._cache)
+        self._ext.rola_page_cache_reset(cache_tensors=self._cache)
         self._admit.zero_()
         self._generation += 1
         self._cache[6].fill_(self._generation)
@@ -350,7 +350,7 @@ class V3PageArena:
         # device sync per level per step on a plane that is already launch-bound.
         can_zero = [int(_write_can_zero(level)) for level in plan.topology.levels]
 
-        status, required, new_count, capped = self._ext.rola_p3_page_plan_prepare(
+        status, required, new_count, capped = self._ext.rola_page_plan_prepare(
             write_amps=[t.contiguous() for t in schedule.write_amps],
             level_widths=widths, level_pitches=pitches,
             level_write_can_zero=can_zero, owner_stride=owner_stride,
@@ -364,7 +364,7 @@ class V3PageArena:
             identity_physical_ids=False)
 
         code = int(status.item())
-        codes = self._ext.p3_page_plan_status_codes()
+        codes = self._ext.page_plan_status_codes()
         if code == codes["NEED_GROWTH"]:
             # This arena preallocates its physical extent, so growth is a driver
             # concern only for a VMM-backed plane; here it can only mean the cap
@@ -380,11 +380,11 @@ class V3PageArena:
         if code not in (codes["READY"], codes["CAPPED"]):
             raise RuntimeError(f"page plan returned an unknown status {code}")
 
-        self._ext.rola_p3_page_plan_publish(
+        self._ext.rola_page_plan_publish(
             plan_tensors=self._plan, cache_tensors=self._cache, mass_base=None,
             generation=self._generation, epoch=self._epoch,
             page_states=self.BC, dqk=1, dv=self.cols, identity_physical_ids=False)
-        self._ext.rola_p3_page_admit_mask(page_table=self._page_table, admit=self._admit)
+        self._ext.rola_page_admit_mask(page_table=self._page_table, admit=self._admit)
 
         resident = self.resident_pages
         self.peak_pages = max(self.peak_pages, resident)
@@ -434,7 +434,7 @@ class V3PageArena:
         self._cache[2].copy_(table)
         self._cache[3].fill_(self.logical_pages)
         self._cache[5].fill_(self.logical_pages)
-        self._ext.rola_p3_page_admit_mask(page_table=self._page_table, admit=self._admit)
+        self._ext.rola_page_admit_mask(page_table=self._page_table, admit=self._admit)
         self.peak_pages = max(self.peak_pages, self.logical_pages)
 
     def materialize(self) -> torch.Tensor:

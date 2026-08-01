@@ -39,7 +39,7 @@ import torch
 #   * `sms`            -- `torch.cuda.get_device_properties().multi_processor_count`
 #   * `blocks_per_sm`  -- `cudaOccupancyMaxActiveBlocksPerMultiprocessor` on the
 #                         EXACT instantiation the plan will launch, at its real
-#                         dynamic SMEM size (`rola_v3_consumer_occupancy`).
+#                         dynamic SMEM size (`rola_consumer_occupancy`).
 #
 # What remains vendored is the two bandwidths, which are benchmark results and
 # cannot be queried. THE CAVEAT from the source file travels with them.
@@ -372,7 +372,7 @@ def consumer_blocks_per_sm(plan) -> int:
     # instantiation identity is `(decay, compact, BC, BT, d_v)` and nothing else
     # moves the footprint. `_spanned_moduli`, which existed only to build the old
     # consumer's runtime `gram_cols` argument, went with it (item 6b).
-    return int(extension().rola_v3_consumer_occupancy(
+    return int(extension().rola_consumer_occupancy(
         plan.decay, plan.compact, plan.BC, plan.BT, plan.topology.d_v))
 
 

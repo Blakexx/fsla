@@ -1,5 +1,5 @@
 // LAUNCH-BOUND PROBE -- registers and spills for EVERY instantiation, read off
-// `ptxas -v`. Consumed by `gate_v3_launch_bounds.py`, which turns the reading into an
+// `ptxas -v`. Consumed by `ratify.py`, which turns the reading into an
 // asserted invariant; readable on its own when one number needs explaining.
 //
 // **WHY THIS IS A COMMITTED INSTRUMENT AND NOT A SCRATCH FILE.** The launch bound is
@@ -27,15 +27,15 @@
 //      worse defect than the one it fixes.
 //
 // Run it through the gate rather than by hand:
-//     python benchmarks/ops/gate_v3_launch_bounds.py
-#include "v3_consumer_kernel.cuh"
+//     python tools/ratify.py
+#include "consumer_kernel.cuh"
 
-namespace f = fla_rola::v3;
+namespace f = rola;
 using f::MmaPrec;
 
 #define ROLA_PROBE_INST(BT, DV, BC, D, PREC, DECAY, GLOBAL, COMPACT)              \
-  template __global__ void f::consumer::v3_consumer_forward_kernel<                     \
-      BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>(f::V3ConsumerParams);
+  template __global__ void f::consumer::consumer_forward_kernel<                     \
+      BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>(f::ConsumerParams);
 
 #define ROLA_PROBE_COMPACT(BT, DV, BC, D, PREC, DECAY, GLOBAL)                    \
   ROLA_PROBE_INST(BT, DV, BC, D, PREC, DECAY, GLOBAL, false)                      \

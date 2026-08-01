@@ -6,13 +6,13 @@
 //
 // PROVENANCE: this file was `p0_shared_gram_mma.cuh`, the only V2 header the V3
 // consumer `#include`s. The `rola-v3` purge deleted the rest of the V2 kernel
-// family; this one is load-bearing (v3_consumer.cu fails to compile without it),
+// family; this one is load-bearing (consumer.cu fails to compile without it),
 // so it was renamed into the V3 namespace rather than deleted or left carrying a
 // `p0_` prefix that no longer names anything in the tree.
 
 #include <cuda_bf16.h>
 
-namespace fla_rola::v3::mma {
+namespace rola::mma {
 
 __device__ __forceinline__ unsigned pack_bf16x2(float lo, float hi) {
   union {
@@ -106,4 +106,4 @@ __device__ __forceinline__ void mma_m16n8k8_tf32x3(
       d0, d1, d2, d3);
 }
 
-}  // namespace fla_rola::v3::mma
+}  // namespace rola::mma

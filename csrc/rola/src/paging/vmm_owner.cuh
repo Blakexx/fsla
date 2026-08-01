@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace fla_rola::p3 {
+namespace rola::paging {
 
 struct VmmProbe {
   int device = -1;
@@ -142,4 +142,4 @@ std::shared_ptr<VmmOwner> create_vmm_owner(
     bool global_mass,
     std::int64_t target_chunk_bytes);
 
-}  // namespace fla_rola::p3
+}  // namespace rola::paging
