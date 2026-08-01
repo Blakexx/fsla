@@ -1,0 +1,46 @@
+[project]
+name            = "rola"
+dynamic         = ["version"]
+description     = "Routed Linear Attention — fused CUDA kernels with a ratified supported matrix"
+readme          = "README.md"
+license         = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors         = [{ name = "Blake Bottum" }]
+# NOTE (extraction E1(b)): `triton` IS a hard dependency, contrary to the design
+# doc's first pass. `rola/routing/entmax/production.py` is RoLA's own Triton
+# kernel -- the exact alpha=1.5 entmax / alpha=2 sparsemax producer that IS the
+# production sparse-routing path. It imports nothing from flash-linear-attention.
+dependencies    = ["torch", "einops", "triton"]
+keywords        = ["cuda", "attention", "linear-attention", "pytorch", "kernels"]
+classifiers     = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Environment :: GPU :: NVIDIA CUDA :: 12",
+]
+
+[project.optional-dependencies]
+# Enables the fused short-conv layer path (`use_short_conv=True`). See E1(a):
+# `ShortConvolution` is the ONLY non-optional-able FLA module dependency, and it
+# is only constructed when the user asks for it.
+fla   = ["fla-core"]
+bench = ["matplotlib", "pandas", "pytest-benchmark"]
+test  = ["pytest", "pytest-xdist"]
+dev   = ["pytest", "ruff", "pre-commit"]
+
+[build-system]
+# torch is DELIBERATELY EXCLUDED from `requires`: pip's build isolation would
+# fetch a CPU-only torch from PyPI and build against the wrong ABI. Source
+# installs are
+#     pip install rola --no-build-isolation
+# exactly as flash-attn and mamba-ssm require.
+requires      = ["setuptools>=61", "wheel", "packaging", "psutil", "ninja"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+markers = [
+  "cuda: launches a CUDA kernel (deselect with -m 'not cuda')",
+  "tier1: inter-implementation semantics — kernel vs the fp64 oracle",
+  "tier2: intra-implementation geometry — the geometry-equivalence matrix",
+  "ratify: compile-time ratification gate; no GPU required",
+]

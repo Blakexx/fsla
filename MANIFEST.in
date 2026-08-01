@@ -1,0 +1,6 @@
+include LICENSE NOTICE README.md CITATION.cff
+recursive-include csrc *.cu *.cuh *.cpp *.h *.hpp
+recursive-include tools *.py *.cu *.toml
+recursive-include tools/manifests *.json
+recursive-include docs *.md
+global-exclude __pycache__ *.py[cod]
