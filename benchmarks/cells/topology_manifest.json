@@ -472,5 +472,419 @@
     "candidate_pairs": 322888,
     "read_only_pairs": 146816,
     "read_only_frac": 0.454696
+  },
+  "iso-tile-w16x4x64-BC64-T128": {
+    "name": "iso-tile-w16x4x64-BC64-T128",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1301,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 1024,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w16x4x64-BC64-T256": {
+    "name": "iso-tile-w16x4x64-BC64-T256",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 256,
+    "H": 2,
+    "seed": 1302,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 2048,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w16x4x64-BC64-T512": {
+    "name": "iso-tile-w16x4x64-BC64-T512",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 512,
+    "H": 2,
+    "seed": 1303,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 4096,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w16x4x64-BC16-T128": {
+    "name": "iso-tile-w16x4x64-BC16-T128",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 16,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1304,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 16.0,
+    "mean_K_candidate": 16.0,
+    "candidate_frac": 1.0,
+    "n_owners": 512,
+    "candidate_pairs": 4096,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w16x4x64-BC16-T256": {
+    "name": "iso-tile-w16x4x64-BC16-T256",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 16,
+    "D": 3,
+    "T": 256,
+    "H": 2,
+    "seed": 1305,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 16.0,
+    "mean_K_candidate": 16.0,
+    "candidate_frac": 1.0,
+    "n_owners": 512,
+    "candidate_pairs": 8192,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w16x4x64-BC16-T512": {
+    "name": "iso-tile-w16x4x64-BC16-T512",
+    "widths": [
+      16,
+      4,
+      64
+    ],
+    "BC": 16,
+    "D": 3,
+    "T": 512,
+    "H": 2,
+    "seed": 1306,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 16.0,
+    "mean_K_candidate": 16.0,
+    "candidate_frac": 1.0,
+    "n_owners": 512,
+    "candidate_pairs": 16384,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w64x64-BC64-T256": {
+    "name": "iso-tile-w64x64-BC64-T256",
+    "widths": [
+      64,
+      64
+    ],
+    "BC": 64,
+    "D": 2,
+    "T": 256,
+    "H": 2,
+    "seed": 1307,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 2048,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w64x16-BC16-T256": {
+    "name": "iso-tile-w64x16-BC16-T256",
+    "widths": [
+      64,
+      16
+    ],
+    "BC": 16,
+    "D": 2,
+    "T": 256,
+    "H": 2,
+    "seed": 1308,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 16.0,
+    "mean_K_candidate": 16.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 2048,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w256-BC64-T128": {
+    "name": "iso-tile-w256-BC64-T128",
+    "widths": [
+      256
+    ],
+    "BC": 64,
+    "D": 1,
+    "T": 128,
+    "H": 2,
+    "seed": 1309,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 8,
+    "candidate_pairs": 64,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-tile-w256-BC64-T256": {
+    "name": "iso-tile-w256-BC64-T256",
+    "widths": [
+      256
+    ],
+    "BC": 64,
+    "D": 1,
+    "T": 256,
+    "H": 2,
+    "seed": 1310,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 8,
+    "candidate_pairs": 128,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-gc-w64x16x4-BC64": {
+    "name": "iso-gc-w64x16x4-BC64",
+    "widths": [
+      64,
+      16,
+      4
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1311,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 1024,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-gc-w64x32x2-BC64": {
+    "name": "iso-gc-w64x32x2-BC64",
+    "widths": [
+      64,
+      32,
+      2
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1312,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 1024,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-gc-w32x16x8-BC64": {
+    "name": "iso-gc-w32x16x8-BC64",
+    "widths": [
+      32,
+      16,
+      8
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1313,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 1024,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-gc-w4x16x64-BC64": {
+    "name": "iso-gc-w4x16x64-BC64",
+    "widths": [
+      4,
+      16,
+      64
+    ],
+    "BC": 64,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1314,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 64.0,
+    "mean_K_candidate": 64.0,
+    "candidate_frac": 1.0,
+    "n_owners": 128,
+    "candidate_pairs": 1024,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
+  },
+  "iso-gc-w64x16x4-BC16": {
+    "name": "iso-gc-w64x16x4-BC16",
+    "widths": [
+      64,
+      16,
+      4
+    ],
+    "BC": 16,
+    "D": 3,
+    "T": 128,
+    "H": 2,
+    "seed": 1315,
+    "mode": "synthetic",
+    "route_w_mul": null,
+    "read": [
+      "dense"
+    ],
+    "write": [
+      "dense"
+    ],
+    "mean_K": 16.0,
+    "mean_K_candidate": 16.0,
+    "candidate_frac": 1.0,
+    "n_owners": 512,
+    "candidate_pairs": 4096,
+    "read_only_pairs": 0,
+    "read_only_frac": 0.0
   }
 }

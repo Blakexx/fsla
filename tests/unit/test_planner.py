@@ -31,7 +31,6 @@ from rola.planner.schedule import (
     DEFAULT_SM_COUNT,
     DEFAULT_WRITE_COST_WEIGHT,
     MMA_K_QUANTUM,
-    STAGE_COLUMN_WORK,
     LevelSupportStats,
     Plan,
     TileUnionStats,
@@ -709,11 +708,15 @@ def test_no_o_of_n_allocation_at_large_topology():
 def test_the_spanned_sum_never_exceeds_BC_and_ties_at_one_spanned_level():
     """``sum_{l>=j} m_l <= prod_{l>=j} m_l = BC``, with equality iff ``D - j == 1``.
 
-    A pure property of the OWNER RECTANGLE (§3), and it survives the deletion of the
-    intra crossover that used to motivate it: `gram_cols = sum_{l>=j} m_l` is still
-    the staging extent the cost model's `STAGE_COLUMN_WORK` term is priced on, so
-    the bound and the single-spanned-level equality are still what keep that term
-    from exceeding a `BC`-wide read."""
+    A pure property of the OWNER RECTANGLE (§3), and M-1 (2026-08-01) turned it from
+    a bound on a priced extent into the reason a whole term could hide: the EQUALITY
+    case is why no calibration cell could ever see `gram_cols` as a variable. All
+    four cells of `_CALIBRATION_ARGMIN` span ONE level, so `gram_cols == BC` on every
+    row that bound `STAGE_COLUMN_WORK`, and the term was algebraically
+    indistinguishable from a per-dense-k-quantum one. The `iso-gc-*` cells exist to
+    break exactly this degeneracy (`D - j == 2`), and they measured the per-column
+    price as exactly zero. Kept as a gate because the next term priced on a rectangle
+    statistic must be isolated on a cell where the statistic is FREE of `BC`."""
     for widths, BC, spans_one in (((8, 16), 16, True), ((8, 16), 64, False),
                                   ((4, 4), 4, True), ((4, 4, 4), 16, False)):
         topology = _topology(widths, d_v=4)
@@ -795,12 +798,11 @@ def test_select_plan_axes_prices_BT_and_compact_from_one_model():
 
     for result, reads, writes in ((saturated, dense_r, dense_r), (sparse, sparse_r, sparse_w)):
         assert result.BT in (16, 32)
-        # `ring_slots` is priced INSIDE the model now (the staging term's exposed
-        # latency divides by the ring depth), so the recorded cost is the SELECTED
-        # depth's cost and re-pricing must pass it or it re-prices a different plan.
+        # The recorded cost must re-price EXACTLY, and since M-1 retired the staging
+        # term there is no depth argument to pass: the model is ring-INVARIANT, which
+        # is why `select_plan_axes` states the depth instead of arbitrating it.
         assert result.cost_per_token == plan_cost_per_token(
-            topology, BC, result.stats, compact=result.compact,
-            decay=False, ring_slots=result.ring_slots)
+            topology, BC, result.stats, compact=result.compact, decay=False)
         for BT in (16, 32):
             stats = tile_union_stats(reads, writes, topology, BC, BT)
             for compact in (True, False):
@@ -878,8 +880,7 @@ def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
             # claim belongs -- not on a synthetic fixture no measurement covers.
             assert result.BT in (16, 32)
             assert result.cost_per_token == plan_cost_per_token(
-                topology, BC, result.stats, compact=result.compact, decay=True,
-                ring_slots=result.ring_slots), (
+                topology, BC, result.stats, compact=result.compact, decay=True), (
                 f"at BC={BC} ({label}) the decay-arm axes report a cost that "
                 "re-pricing the returned triple does not reproduce: the plan and its "
                 "recorded evidence are not the same plan")
@@ -988,11 +989,10 @@ def _modelled_argmin(cell, decay, *, sm_count=DEFAULT_SM_COUNT, **overrides):
 
     Reproduces the selection's own arithmetic on RECORDED inputs: price every
     `(BT, compact)`, multiply by `plan_waves` from the recorded occupancy and cohort
-    count, take the minimum. `ring_slots = 2` is fixed rather than arbitrated, and that is exact
-    rather than a simplification: the consumer kernel's shared memory is entirely
-    compile-time, so its occupancy oracle is ring-INVARIANT, and the cost is
-    strictly decreasing in the slot count -- depth 2 wins at every candidate for any
-    positive `STAGE_COLUMN_WORK`.
+    count, take the minimum. There is no ring argument any more: M-1 measured the
+    staging term's per-column price as EXACTLY zero and retired it, so the model is
+    ring-INVARIANT and `select_plan_axes` states the depth rather than arbitrating
+    it. This reproduction is exact rather than a simplification.
     """
     widths, d_v, BC, _n_cohorts, _ = _ARGMIN_STATS[cell]
     topology = _topology(widths, d_v=d_v)
@@ -1001,7 +1001,7 @@ def _modelled_argmin(cell, decay, *, sm_count=DEFAULT_SM_COUNT, **overrides):
         stats = _argmin_stats(cell, BT)
         for compact in (True, False):
             cost = plan_cost_per_token(topology, BC, stats, compact=compact,
-                                       decay=decay, ring_slots=2, **overrides)
+                                       decay=decay, **overrides)
             waves = plan_waves(stats.n_cohorts, _ARGMIN_BPSM[(BC, BT, decay)], sm_count)
             out[(BT, compact)] = cost * waves
     return min(out, key=out.get), out
@@ -1057,6 +1057,16 @@ def test_the_cost_model_reproduces_its_calibration():
     # measured range is asserted rather than the midpoint: every ordering must hold
     # across `[959.7, 1106.3]`, which makes the residual spread between the two
     # isolating solves a GATED property instead of a rounding choice.
+    # `TILE_FIXED_WORK` is likewise quoted as a MEAN, of the two independent
+    # isolating solves M-1 ran (`iso-tile-w16x4x64-BC{64,16}-T{128,256,512}` gives
+    # 3507.0; `topo-D2-w64x{64,16}-BC{64,16}` + `iso-tile-w64x{64,16}-BC*-T256`
+    # gives 3513.7), so the whole measured range is asserted rather than the
+    # midpoint.
+    for value in (3507.0, 3513.7):
+        assert _rows_hold(tile_fixed_work=value), (
+            f"the argmins do not survive TILE_FIXED_WORK={value}, which is an END of "
+            "the range the two isolating solves bracket -- the landed value is their "
+            "mean and the model may not depend on which solve it sits at")
     for value in (959.7, 1106.3):
         assert _rows_hold(decay_kstep_work=value), (
             f"the argmins do not survive DECAY_KSTEP_WORK={value}, which is an END "
@@ -1094,11 +1104,22 @@ def test_the_cost_model_reproduces_its_calibration():
     assert not _rows_hold(intra_gram_kstep_work=5000.0), (
         "INTRA_GRAM_KSTEP_WORK no longer binds from above: the eight argmins "
         "reproduce at 5000 as well as at its measured 144")
-    # `STAGE_COLUMN_WORK`, from BELOW. It is `BT`-invariant per tile, so per token it
-    # divides by `BT` and is the term that pays for the larger tile on a dense cell.
-    assert not _rows_hold(stage_column_work=0.0), (
-        "STAGE_COLUMN_WORK no longer binds from below: the eight argmins reproduce "
-        "at 0 as well as at its measured 85")
+    # `TILE_FIXED_WORK`, from BELOW, and it is IDENTIFIED HERE ONLY SINCE M-1
+    # (2026-08-01). It is `BT`-invariant per tile, so per token it divides by `BT`
+    # and it is the term that pays for the larger tile on a one-wave cell. Until M-1
+    # it was 120 and decision-INERT from 0 to 1e6, because the work it names was
+    # being carried by `STAGE_COLUMN_WORK` -- a term priced on `gram_cols`, a
+    # variable no calibration cell could see (all four span ONE level, so
+    # `gram_cols == BC` on every row). The `iso-gc-*` cells measured the per-column
+    # price as EXACTLY zero, the `iso-tile-*` cells measured this constant as
+    # 3510.35, and the four one-wave `topo` rows -- which flipped to `(16, dense)`
+    # when the staging term was simply zeroed -- are back on the measured
+    # `(32, dense)` because the term that carries them is now the one that was
+    # measured to carry them.
+    assert not _rows_hold(tile_fixed_work=0.0), (
+        "TILE_FIXED_WORK no longer binds from below: the eight argmins reproduce at "
+        "0 as well as at its measured 3510.35, so nothing in this gate is holding "
+        "the per-candidate-tile constant M-1 identified")
 
     # ---- AND WHAT THIS GATE DOES **NOT** IDENTIFY, RECORDED AS AN ASSERTION --
     # Two constants are measured but decision-INERT at these eight rows, and saying
@@ -1108,12 +1129,6 @@ def test_the_cost_model_reproduces_its_calibration():
     # correct response is to move the constant into the binding list above -- not to
     # delete the check.
     #
-    # `TILE_FIXED_WORK` is `BT`- and arm-invariant, so per token it is `F/BT` and
-    # can only ever favour the larger tile uniformly; it never crosses a margin on
-    # these cells at any value from 0 to 1e6. Its evidence is its own derivation.
-    assert _rows_hold(tile_fixed_work=0.0) and _rows_hold(tile_fixed_work=1e6), (
-        "TILE_FIXED_WORK is now IDENTIFIED by the joint argmin, which it was not "
-        "when this gate landed -- promote it into the binding sweep above")
     # `DECAY_KSTEP_WORK` rides the SAME `ksteps` quantum as the readout and enters
     # only the decay arms, where it scales both `(BT, compact)` legs together; on a
     # saturated cell it is identical on the compact and dense arms and cancels
@@ -1168,28 +1183,41 @@ def test_the_absolute_instruction_totals_are_a_RECORDING_not_an_assertion(capsys
     launch retires? The answer is recorded rather than asserted, and both halves of
     that sentence are deliberate.
 
-    **WHY NOTHING IS ASSERTED.** The residuals below run from -8 % to -61 %. A
-    tolerance wide enough to admit -61 % would be FITTED to the rows it must pass --
-    the standing rule forbids exactly that -- and it would certify an absolute
-    accuracy the model does not have and does not claim. Asserting a tolerance here
-    would make the gate a decoration; recording the table makes it EVIDENCE, and
-    evidence is what the missing terms will be identified from.
+    **WHY NOTHING IS ASSERTED.** The residuals below run to +45 %. A tolerance wide
+    enough to admit that would be FITTED to the rows it must pass -- the standing
+    rule forbids exactly that -- and it would certify an absolute accuracy the model
+    does not have and does not claim. Asserting a tolerance here would make the gate
+    a decoration; recording the table makes it EVIDENCE, and evidence is what the
+    missing terms are identified from. **This gate is how M-1 was found and it is
+    how the next term will be**, so it stays in recording mode.
 
-    **WHAT THE SHAPE OF THE RESIDUALS SAYS, which is the reason to record them.**
-    Without the staging term every row UNDER-predicts and the sign is CONSISTENT:
-    that is the expected shape of a model that prices only the terms it measured
-    and leaves the per-pair remainder (CTA prologue/epilogue, the state load/store,
-    the split-K emission) explicitly un-modelled. WITH the staging term the sign
-    FLIPS ON `BC` -- every `BC = 64` row over-predicts, every `BC = 16` row
-    under-predicts -- which is not that shape, and is the quantitative half of the
-    finding that `STAGE_COLUMN_WORK` prices a staging ring `v3_consumer_kernel.cuh`
-    does not have. Both columns are printed because the ring's disposition is an
-    OPEN coordinator item (see `STAGE_COLUMN_WORK`'s own docstring for why it was
-    not simply retired), so this table must stay readable across that ruling.
+    **WHAT THE SHAPE OF THE RESIDUALS SAID, AND WHAT M-1 DID WITH IT (2026-08-01).**
+    The table used to be printed in two columns, WITH and WITHOUT the staging term.
+    With it the sign FLIPPED ON `BC` (+27..+84 % at `BC = 64`, -26..-35 % at
+    `BC = 16`, max 83.9 %, mean 41.9 %) -- not the shape of a model that prices only
+    what it measured, and the quantitative half of the finding that
+    `STAGE_COLUMN_WORK` priced a staging ring the kernel does not have. Zeroing it
+    made every row UNDER-predict (-8..-61 %, mean 27.5 %, signs consistent) and
+    flipped four of the eight argmins, which is why it could not simply be deleted.
 
-    IDENTIFYING THE MISSING TERMS IS A MEASUREMENT, NOT A CONSTANT TO INVENT: it
-    needs isolating cells per the §2.19 method, and it is queued as such. Nothing
-    here may be closed by choosing a number.
+    M-1 measured the term out and measured the remainder in: the per-column price is
+    EXACTLY zero (the `iso-gc-*` cells are byte-identical across a 2.1x range of
+    `gram_cols`) and the work was a per-candidate-tile CONSTANT, `TILE_FIXED_WORK`,
+    re-measured 120 -> 3510.35 on the `iso-tile-*` cells. The residuals below are
+    the result: **max 44.8 %, mean 17.4 %, signs CONSISTENT (+)**, against 83.9 % /
+    41.9 % / mixed before -- and the `BC = 16` rows, which were -26..-35 %, are now
+    +2.9..+4.6 %.
+
+    **THE REMAINING RESIDUAL IS NAMED, MEASURED AND ONE-SIDED**, which is what makes
+    it the next item rather than noise: (1) the model charges 1899 per dense
+    k-quantum (`READOUT_FOLD_KSTEP_WORK + INTRA_GRAM_KSTEP_WORK`) where M-1's `BC`
+    sweep measures 1033 / 1155 / 1316 at `D = 1 / 2 / 3` -- so every row over-
+    predicts in proportion to its k-steps, and the quantum itself grows ~141 per
+    level, which no constant in this model expresses; (2) at `atscale-L2048` 39 % of
+    candidate pairs gather NOTHING, and such a tile skips per-tile work too, not
+    only its k-steps, which is why the two compact at-scale rows are the worst rows
+    in the table. Both are MEASUREMENTS to make, on isolating cells, exactly as this
+    one was. Nothing here may be closed by choosing a number.
 
     Runs on CPU: every input is recorded (`_ARGMIN_STATS`,
     `_RECORDED_INSTRUCTION_TOTALS`).
@@ -1203,26 +1231,21 @@ def test_the_absolute_instruction_totals_are_a_RECORDING_not_an_assertion(capsys
         # `plan_cost_per_token = candidate_frac * w_tile / BT`, so the prediction is
         # `cost * BT * n_pairs` -- the model's OWN arithmetic, with no separate
         # reimplementation of `w_tile` that could drift away from it.
-        def _pred(stage_column_work, *, topology=topology, BC=BC, stats=stats,
-                  compact=compact, decay=decay, n_pairs=n_pairs):
-            cost = plan_cost_per_token(topology, BC, stats, compact=compact,
-                                       decay=decay, ring_slots=2,
-                                       stage_column_work=stage_column_work)
-            return cost * 16 * n_pairs
-
-        with_ring, without_ring = _pred(STAGE_COLUMN_WORK), _pred(0.0)
-        rows.append((cell, decay, compact, recorded, with_ring, without_ring,
-                     with_ring / recorded - 1.0, without_ring / recorded - 1.0))
+        pred = plan_cost_per_token(topology, BC, stats, compact=compact,
+                                   decay=decay) * 16 * n_pairs
+        rows.append((cell, decay, compact, recorded, pred, pred / recorded - 1.0))
 
     hdr = (f"\n{'cell':22s} {'decay':>5s} {'compact':>7s} {'ncu (M)':>10s} "
-           f"{'pred (M)':>10s} {'resid':>8s} {'pred-nostage':>13s} {'resid':>8s}")
+           f"{'pred (M)':>10s} {'resid':>8s}")
     lines = [hdr, "-" * len(hdr)]
-    for cell, decay, compact, rec, w, wo, rw, rwo in rows:
+    for cell, decay, compact, rec, pred, resid in rows:
         lines.append(f"{cell:22s} {str(decay):>5s} {str(compact):>7s} {rec / 1e6:10.1f} "
-                     f"{w / 1e6:10.1f} {rw * 100:+7.1f}% {wo / 1e6:13.1f} {rwo * 100:+7.1f}%")
-    lines.append(f"max |resid| WITH staging {max(abs(r[6]) for r in rows) * 100:.1f} %, "
-                 f"WITHOUT {max(abs(r[7]) for r in rows) * 100:.1f} %; "
-                 f"signs WITHOUT: {sorted({'+' if r[7] > 0 else '-' for r in rows})}")
+                     f"{pred / 1e6:10.1f} {resid * 100:+7.1f}%")
+    lines.append(f"max |resid| {max(abs(r[5]) for r in rows) * 100:.1f} %, "
+                 f"mean |resid| "
+                 f"{sum(abs(r[5]) for r in rows) / len(rows) * 100:.1f} %; "
+                 f"signs {sorted({'+' if r[5] > 0 else '-' for r in rows})} "
+                 f"(pre-M-1: 83.9 %, 41.9 %, ['+', '-'])")
     with capsys.disabled():
         print("\n".join(lines))
 
@@ -1230,11 +1253,11 @@ def test_the_absolute_instruction_totals_are_a_RECORDING_not_an_assertion(capsys
     # finite positive number, i.e. the recording actually ran. It is NOT an accuracy
     # claim and must never become one by having a tolerance added to it.
     assert len(rows) == len(_RECORDED_INSTRUCTION_TOTALS)
-    for cell, decay, compact, _rec, w, wo, _rw, _rwo in rows:
-        assert math.isfinite(w) and w > 0 and math.isfinite(wo) and wo > 0, (
+    for cell, decay, compact, _rec, pred, _resid in rows:
+        assert math.isfinite(pred) and pred > 0, (
             f"the model priced {cell} decay={decay} compact={compact} to a "
-            f"non-finite or non-positive absolute total ({w}, {wo}) -- the "
-            "recording did not run, which is the one thing this gate does assert")
+            f"non-finite or non-positive absolute total ({pred}) -- the recording "
+            "did not run, which is the one thing this gate does assert")
 
 
 def test_a_saturated_dense_cell_never_argmins_onto_a_compacted_arm():

@@ -455,6 +455,51 @@ def _cells() -> dict[str, Cell]:
                        note="synthetic reconstruction, DENSER than atscale-L*; "
                             "not commensurable with the pre-loss tables"))
 
+    #: **M-1's ISOLATING CELLS** (added 2026-08-01, `STAGE_COLUMN_WORK`). Each one
+    #: exists to move EXACTLY ONE variable of the §6 cost model while every other
+    #: input to it is held structurally identical, which is the only way a constant
+    #: can be attributed rather than fitted (the §2.19 method). All of them are
+    #: dense-read + dense-write, `d_v = 64`, `H = 2`, `BT = 16`, `N = 4096`, so the
+    #: unions SATURATE (`K = KI = BC`, `candidate_frac = 1`) and no routing statistic
+    #: moves between them at all.
+    #:
+    #: **(1) THE `gram_cols` PAIRS.** `gram_cols = sum(spanned_moduli)` is the
+    #: variable `STAGE_COLUMN_WORK` was priced on, and NO calibration cell could see
+    #: it: `sum(m_l) <= prod(m_l) = BC` with equality exactly when ONE level is
+    #: spanned, and all four calibration cells span one level, so `gram_cols == BC`
+    #: on every row that ever bound the constant. These four cells are the SAME
+    #: WIDTH MULTISET permuted (`{16,4,64}`, `{64,32,2}`, `{32,16,8}`) at the same
+    #: `N`, `BC`, `D`, owner count and grid -- only the owner rectangle's level
+    #: decomposition moves, giving `gram_cols` 64 / 20 / 34 / 16 at `BC = 64` and
+    #: 16 / 8 at `BC = 16`.
+    #:
+    #: **(2) THE TILES-PER-COHORT SWEEP.** `T = 128 / 256 / 512` at fixed everything
+    #: else is `n_tiles = 8 / 16 / 32` candidate tiles per CTA, which separates a
+    #: per-CANDIDATE-TILE cost from a per-COHORT (per-CTA prologue/epilogue, state
+    #: load/store) one -- the "per-tile remainder" `rewrite.md` §2.37 names as
+    #: un-identified. Three points, not two, so the linear form is CHECKED rather
+    #: than assumed.
+    #:
+    #: **(3) THE `BC` PAIR AT FIXED GEOMETRY.** `w16x4x64` at `BC = 64` against
+    #: `BC = 16` is the same topology partitioned into 4x the owners; it separates
+    #: the per-tile constant from the per-dense-k-quantum slope.
+    for widths, BC, T, seed in (
+            ((16, 4, 64), 64, 128, 1301), ((16, 4, 64), 64, 256, 1302),
+            ((16, 4, 64), 64, 512, 1303), ((16, 4, 64), 16, 128, 1304),
+            ((16, 4, 64), 16, 256, 1305), ((16, 4, 64), 16, 512, 1306),
+            ((64, 64), 64, 256, 1307), ((64, 16), 16, 256, 1308),
+            ((256,), 64, 128, 1309), ((256,), 64, 256, 1310)):
+        w = "x".join(str(x) for x in widths)
+        cs.append(Cell(name=f"iso-tile-w{w}-BC{BC}-T{T}", widths=widths, BC=BC, T=T,
+                       seed=seed, note="M-1 isolating cell: tiles-per-cohort / BC "
+                                       "sweep at fixed geometry"))
+    for widths, BC, seed in (((64, 16, 4), 64, 1311), ((64, 32, 2), 64, 1312),
+                             ((32, 16, 8), 64, 1313), ((4, 16, 64), 64, 1314),
+                             ((64, 16, 4), 16, 1315)):
+        w = "x".join(str(x) for x in widths)
+        cs.append(Cell(name=f"iso-gc-w{w}-BC{BC}", widths=widths, BC=BC, seed=seed,
+                       note="M-1 isolating cell: gram_cols at fixed BC/D/N/grid"))
+
     return {c.name: c for c in cs}
 
 
@@ -474,6 +519,10 @@ GROUPS = {
     #: the two axes that share the STATE with it, rather than tested in a corner.
     "raw": ["topo-D1-w256-BC64", "topo-D2-w64x64-BC64",
             "topo-D3-w16x16x64-BC64", "topo-D4-w8x8x8x16-BC16"],
+    #: M-1's isolating fixtures. They are GATED like any other cell (`run_oracle`
+    #: runs this group) rather than being measurement-only scratch: a cost constant
+    #: read off a kernel that is not producing the right answer is not evidence.
+    "iso": [n for n in CELLS if n.startswith("iso-")],
 }
 
 

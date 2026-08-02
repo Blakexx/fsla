@@ -402,11 +402,14 @@ class Plan:
     #: `>= 2` pipelines the next candidate tile's gathered columns with `cp.async`;
     #: `1` DECLINES the ring and stages synchronously inside the visit.
     #:
-    #: SELECTED under the occupancy constraint, never defaulted blindly: the ring is
-    #: preferred, and is shrunk (and only in the last resort declined) when its
-    #: footprint would cost a CTA/SM at this geometry. Carried at RUNTIME -- the
-    #: launch's dynamic SMEM size is already a runtime argument -- so it costs no
-    #: template instantiation.
+    #: STATED, not selected (M-1 RULING A, 2026-08-01): every currency the planner
+    #: has -- the work model, the occupancy oracle, and the kernel's own measured
+    #: instruction count -- is INVARIANT in this field, so `select_plan_axes` sets
+    #: the deepest built depth and says why instead of running a `min` over equal
+    #: keys. The axis survives because §2.3's item buffers may build a ring that is
+    #: real, at which point its price is a NEW measurement on THAT kernel. Carried at
+    #: RUNTIME -- the launch's dynamic SMEM size is already a runtime argument -- so
+    #: it costs no template instantiation.
     ring_slots: int = _RING_DEPTHS[0]
     #: The CTAs/SM §6 reasoned about when this plan was selected, RECORDED next to
     #: the decision it drove -- the same contract `sm_shared_bytes` has, and for the
@@ -539,7 +542,62 @@ def spanned_moduli(topology: Topology, BC: int) -> tuple[int, ...]:
 #: bookkeeping, the row scales, the amplitude staging, the block barriers, the
 #: write-conditioned publish. Same units. This is the term that makes a LARGER
 #: ``BT`` cheaper, and it is the only one that does.
-TILE_FIXED_WORK = 120.0
+#:
+#: **RE-MEASURED 2026-08-01 (M-1), 120.0 -> 3510.35, AND IT ABSORBS THE DELETED
+#: `STAGE_COLUMN_WORK`.** The old value was never isolated: it was the residue of an
+#: old-consumer calibration, and the work it names was really being carried by the
+#: staging term this repository has now retired (see the deletion note below).
+#:
+#: Instrument: `ncu --clock-control base`, `smsp__inst_executed.sum`, ONE profiled
+#: launch per arm (`--launch-skip 1 --launch-count 1`), RTX 3080 Ti, 2026-08-01, on
+#: the M-1 isolating cells in `benchmarks/bench/cells.py` (all dense/dense, so the
+#: unions saturate and NO routing statistic moves between them).
+#:
+#: **TWO INDEPENDENT ISOLATING SOLVES, EACH OF THEM TWO-STAGE.** A per-candidate-
+#: tile constant cannot be read off a single cell, because a launch's instructions
+#: are `n_cohorts * (F + n_tiles * P)` -- a per-COHORT part `F` (CTA prologue and
+#: epilogue, the owner's state load and store) and a per-TILE part `P`. So each
+#: geometry is measured at three (or two) values of `n_tiles = T / BT` at fixed
+#: everything else, `F` and `P` are separated, and only then is `P` split across
+#: `BC` into a constant and a per-dense-k-quantum slope:
+#:
+#:   `iso-tile-w16x4x64-BC64-T{128,256,512}` -> P = 8771.0, F = 9041.0
+#:   `iso-tile-w16x4x64-BC16-T{128,256,512}` -> P = 4823.0, F = 4535.0
+#:       => slope 1316.0 / dense k-quantum, INTERCEPT **3507.0**
+#:   `topo-D2-w64x64-BC64` + `iso-tile-w64x64-BC64-T256` -> P = 8135.0, F = 8434.0
+#:   `topo-D2-w64x16-BC16` + `iso-tile-w64x16-BC16-T256` -> P = 4669.0, F = 4036.0
+#:       => slope 1155.3 / dense k-quantum, INTERCEPT **3513.7**
+#:
+#: The two intercepts are 0.19 % apart across a different `D`, a different width
+#: multiset and a 4x different owner count, and the three-point `T` sweep solves `F`
+#: to the same value from both of its consecutive pairs (9041.0 / 9041.0), so the
+#: `F + n_tiles * P` form is CHECKED rather than assumed. The landed value is the
+#: mean of the two intercepts and
+#: `test_the_cost_model_reproduces_its_calibration` re-runs every argmin across the
+#: whole measured range `[3507.0, 3513.7]`.
+#:
+#: **ARM-INVARIANT, MEASURED.** On `iso-tile-w16x4x64-BC64-T{128,256}` the per-tile
+#: solve is 8771.0 dense / 11125.9 compact / 13345.0 decay; the two deltas are
+#: 2355.0 (against `GATHER_CANDIDATE_*`'s prediction of 2278.25, +3.4 %) and 4574.0
+#: (against `DECAY_KSTEP_WORK * 4 = 4132.6`, +10.7 %), so this constant is the part
+#: those two arms ADD TO, and both of them re-derive on a geometry they were not
+#: measured on.
+#:
+#: **THE PER-COHORT REMAINDER `F` IS MEASURED AND DELIBERATELY NOT MODELLED**, which
+#: is the `MMA_ISSUE_WORK` rule applied to a term that is real: `F` = 7999 (D=1),
+#: 8434 (D=2), 9041 (D=3) at `BC = 64` and 4036 / 4535 at `BC = 16`, essentially
+#: arm-invariant (dense 9041, compact 8990, decay 9506). It is a per-COHORT cost, so
+#: per token it is `F / T` -- exactly `BT`-INVARIANT and arm-invariant, hence unable
+#: to move the joint `(BT, compact)` argmin at any value -- and it is 12 % of the
+#: T=128 gate cells but 0.9 % at `atscale-L2048` and below 0.1 % at the parity cell,
+#: i.e. it vanishes in exactly the regime the planner is for. Carrying it would add
+#: a constant no gate can bind and an `n_pairs / n_cohorts` input the currency does
+#: not otherwise need. It is recorded here instead, which is checkable.
+#:
+#: FALSIFIABLE: an isolating `T` sweep whose intercept falls outside
+#: `[3507.0, 3513.7]`, or a geometry on which `F + n_tiles * P` does not solve
+#: consistently from two disjoint pairs.
+TILE_FIXED_WORK = (3507.0 + 3513.7) / 2.0
 
 #: Per-candidate-tile cost of §3 step 2's gather when it is COMPILED IN: the
 #: per-(level,digit) probe over the staged rows, the per-leaf AND chain, the
@@ -651,102 +709,66 @@ INTRA_GRAM_KSTEP_WORK = 144.0
 #: `[959.7, 1106.3]`, or any cell whose delta needs a per-tile constant term.
 DECAY_KSTEP_WORK = (1106.3 + 959.7) / 2.0
 
-#: Per-candidate-tile cost of §3 step 3's STAGING, per staged COLUMN and per side --
-#: the `BT`-long load slot `harvest.md` §18.3 measured running at 340 cycles with no
-#: memory-level parallelism at all. It enters as
-#: `2 * sum_{l>=j} m_l * STAGE_COLUMN_WORK / ring_slots`.
-#:
-#: **THE ENTANGLEMENT THIS NOTE USED TO NAME IS DISCHARGED** (2026-08-01): the
-#: superseding constants are `GATHER_CANDIDATE_FIXED_WORK` and
-#: `GATHER_CANDIDATE_QUANTUM_WORK`, the MEASURED PAIR from the isolating cell pair
-#: `topo-D2-w64x64-BC64` against `topo-D2-w64x16-BC16` (2278.25 and 702.88 per tile
-#: -> 525.125 per quantum + 177.75 per tile). They replaced the single old-consumer
-#: number this note was written against, and the components it flagged as stale (a
-#: magnitude probe, two deleted barriers) went with it. `TILE_FIXED_WORK` is
-#: unchanged and still contains no staging component -- this term is the staging.
-#:
-#: ⚠ **THIS TERM IS UNDER A STANDING FINDING (item 6b, 2026-08-01).** The surviving
-#: consumer has NO STAGING RING: `v3_consumer_kernel.cuh` says so in prose ("a
-#: staging-ring probe, a third barrier; none of those terms exists here") and
-#: `p.ring_slots`, `p.gram_cols` and `p.level_gram_offset` are written by the host
-#: and read by ZERO sites in the kernel. The absolute-total gate corroborates it
-#: quantitatively: with this term the model's absolute prediction over the 12
-#: recorded `ncu` totals is +27 % to +84 % at `BC = 64` and -26 % to -35 % at
-#: `BC = 16` (signs INCONSISTENT); without it every row under-predicts (-8 % to
-#: -61 %, signs CONSISTENT), which is the shape of a model that prices only what it
-#: measured. The absolute-total gate is landed in explicit RECORDING mode as
-#: `test_the_absolute_instruction_totals_are_a_RECORDING_not_an_assertion`, which
-#: prints BOTH columns and asserts no tolerance on either -- see its docstring for
-#: why a tolerance here would be a fit.
-#:
-#: ⚠⚠ **THE COORDINATOR RULED THIS TERM RETIRED (2026-08-01) AND THE RULING IS
-#: BLOCKED BY A MEASUREMENT, `rewrite.md` §2.37.** Setting this constant to 0 --
-#: which is exactly what retiring the term does -- FLIPS FOUR OF THE EIGHT MEASURED
-#: ARGMINS. All four one-wave `topo` rows go from the measured `(BT=32, dense)` to
-#: `(BT=16, dense)`:
-#:
-#:     topo-D2-w64x64-BC64 none:  (32,F) 682.4 -> (16,F) 482.2 beats (32,F) 512.4
-#:     topo-D2-w64x64-BC64 warm:  (32,F) 940.6 -> (16,F) 740.5 beats (32,F) 770.6
-#:     topo-D2-w64x16-BC16 none:  (32,F) 173.4 -> (16,F) 126.2 beats (32,F) 130.9
-#:     topo-D2-w64x16-BC16 warm:  (32,F) 238.0 -> (16,F) 190.8 beats (32,F) 195.5
-#:
-#: and `test_the_cost_model_reproduces_its_calibration` fails. That is not an
-#: argument for keeping the mechanism -- the kernel has no ring, which the source
-#: read settles -- it is the finding that the term's SHAPE is load-bearing while its
-#: NAME is refuted: a per-tile, `BT`-invariant, `gram_cols`-scaled quantum is what
-#: carries the one-wave cells' `BT = 32` preference, and no other term in the model
-#: has that shape (`TILE_FIXED_WORK` is `gram_cols`-INVARIANT and this gate's own
-#: sweep proves it decision-inert from 0 to 1e6). Keeping the value under a new name
-#: would be asserting an attribution nobody has measured; deleting it silently
-#: breaks a calibration gate. Both are forbidden, so the term STANDS, flagged, until
-#: the missing per-tile work is IDENTIFIED by isolating cells (the §2.19 method) --
-#: a measurement, never a constant to invent.
-#:
-#: The axis is degenerate-not-wrong in the meantime: the oracle is ring-invariant
-#: and the cost is strictly decreasing in the slot count, so depth 2 is selected at
-#: every candidate and the argmin never sees the depth.
-#:
-#: **THE BRACKET IS NOT RE-DERIVED, AND WHY IT SURVIVES.** Its three cells pin
-#: `driver_blocks / cost` inequalities, and the ring is arbitrated WITHIN one
-#: `(BT, compact)` candidate where every other term is identical -- so
-#: only this term and `ring_slots` differ between the two options being compared,
-#: and re-pricing the terms that cancel cannot move the comparison. The wave term
-#: §6 gained with the new constants is deliberately NOT applied to the ring
-#: arbitration for the same reason.
-#:
-#: **WHY STAGING NOW HAS A TERM OF ITS OWN.** It used to be inside
-#: `TILE_FIXED_WORK`, which was correct while staging was a fixed `BT * gram_cols`
-#: load per tile on both `compact` arms. After the support-word increment it is
-#: neither fixed nor `compact`-keyed: the gather is PREDICATED, so the loads issued
-#: are the live `(token, digit)` count, and after the ring its EXPOSED latency
-#: depends on the ring depth. A term the plan can no longer treat as constant cannot
-#: stay in the constant.
-#:
-#: **WHY `/ ring_slots`.** Depth `n` keeps `n-1` tiles' copies in flight while one is
-#: consumed, so the transfer overlaps the previous tile's arithmetic and the exposed
-#: fraction is `1/n`. This is what puts the ring in the SAME CURRENCY as `BT`,
-#: `compact` instead of in a bolted-on side rule with a threshold of
-#: its own (Gate A rule 3, structural alternative 1, mandated 2026-07-31).
-#:
-#: **CALIBRATED, AND BOUNDED FROM BOTH SIDES -- unlike the `_RESIDENCY_SATURATION`
-#: it replaces, which its own evidence left unidentified within `(2, 8]`.** The ring
-#: decision at a candidate is `driver_blocks / cost`, so each measured cell pins an
-#: inequality on this constant, and three cells bracket it to `(40.5, 143.3)`:
-#:
-#:   `[64,32,32]` `gram` `BT=16 BC=64` gc=34, driver 3 -> 2 CTAs, ring measured
-#:       +25.5 % (must DECLINE)                                  =>  W < 143.3
-#:   `[8,16]` `BT=32 BC=16` decay gc=16, driver 6 -> 4, ring measured -12.9 %
-#:       (must RING)                                             =>  W >  40.5
-#:   `[8,16]` `BT=16 BC=16` gc=16, driver 8 -> 7, ring measured -19.5 %
-#:       (must RING)                                             =>  W >  24.1
-#:
-#: 85 sits ~2x inside both ends. The at-scale `[256,256]` cell trades no CTA at all
-#: (2 -> 2), so it constrains nothing and the ring is taken there for any `W > 0` --
-#: which is why it is not quoted as evidence for the value.
-#:
-#: FALSIFIABLE: a cell whose driver residency is unchanged across depths and where
-#: the ring measures SLOWER, or a cell outside the bracket above.
-STAGE_COLUMN_WORK = 85.0
+# ---------------------------------------------------------------------------
+# `STAGE_COLUMN_WORK` IS DELETED (M-1, RULING A, 2026-08-01) -- and it is deleted
+# ON A MEASUREMENT, not on the source read that suspected it.
+# ---------------------------------------------------------------------------
+# It priced `2 * gram_cols * W / ring_slots` per candidate tile at `W = 85`, named
+# for a staging ring, bracketed `(40.5, 143.3)` by three cells, and it was known to
+# be load-bearing: setting it to 0 flipped FOUR of the eight measured argmins. The
+# source read had already established that the surviving consumer has no staging
+# ring (`p.ring_slots`, `p.gram_cols` and `p.level_gram_offset` are written by the
+# host and read by ZERO sites in `consumer_kernel.cuh`), but a name being wrong is
+# not permission to delete a term that carries a decision, so the disposition
+# waited for the isolating cells.
+#
+# **WHY NO CALIBRATION CELL COULD SEE THE VARIABLE.** `gram_cols = sum(m_l)` over
+# the spanned levels, and `sum(m_l) <= prod(m_l) = BC` with equality exactly when
+# ONE level is spanned. All four calibration cells span one level, so `gram_cols`
+# was IDENTICALLY `BC` on all eight argmin rows and all twelve absolute-total rows:
+# the term was algebraically indistinguishable from `16 * W` per dense k-quantum,
+# and its `gram_cols` shape -- the only thing making it a STAGING term rather than
+# an extent term -- had never been observed at all.
+#
+# **THE MEASUREMENT, and it is an EXACT EQUALITY rather than a small residual.**
+# Four cells at `BC = 64`, `D = 3`, `N = 4096`, the same width MULTISET permuted so
+# that only the owner rectangle's level decomposition moves -- same grid, same 1024
+# candidate tiles, same saturated unions (`ncu --clock-control base`,
+# `smsp__inst_executed.sum`, one profiled launch each, RTX 3080 Ti, 2026-08-01):
+#
+#     `iso-gc-w32x16x8-BC64`         gram_cols = 16   10,062,336
+#     `iso-gc-w64x16x4-BC64`         gram_cols = 20   10,062,336
+#     `iso-gc-w64x32x2-BC64`         gram_cols = 34   10,062,336
+#     `iso-tile-w16x4x64-BC64-T128`  gram_cols = 64   10,138,752
+#     `iso-gc-w4x16x64-BC64`         gram_cols = 64   10,138,752
+#
+# The first three are BYTE-IDENTICAL across a 2.1x range of `gram_cols`. The
+# per-staged-column price is therefore **exactly 0.000**, not 85: at
+# `gram_cols = 34` the term was charging 2890 work-units per tile of a mechanism
+# that retires no instruction. What the counts DO separate is the number of FIXED
+# levels `j` (the two `gram_cols = 64` cells have `j = 2`, the other three
+# `j = 1`): 76,416 instructions per launch = **74.6 per candidate tile per fixed
+# level**, reproduced at the other `BC` by `iso-tile-w16x4x64-BC16-T128` (j=2)
+# against `iso-gc-w64x16x4-BC16` (j=1) as 73.6 per tile -- the SAME delta at
+# `d(gram_cols) = 8` that the `BC = 64` pair shows at `d(gram_cols) = 44`, which is
+# the second, independent refutation of the column scaling.
+#
+# **WHERE THE WORK WENT.** The magnitude the term carried was real; its variable was
+# not. It is now inside `TILE_FIXED_WORK`, re-measured by isolating cells from 120
+# to 3510.35 -- a per-candidate-tile constant, `gram_cols`-invariant, which is the
+# shape the eight argmins actually need (see that constant's own docstring). The
+# 74.6-per-fixed-level geometry term is MEASURED AND NOT MODELLED: it is 2 % of the
+# constant it would ride on and decision-inert, and this repository does not carry
+# constants no gate can bind (`MMA_ISSUE_WORK`'s deletion, 2026-07-30).
+#
+# **THE RING AXIS IS NOW UNPRICED, AND THAT IS STATED RATHER THAN HIDDEN.**
+# `ring_slots` was priced by this term and by nothing else; the occupancy oracle is
+# ring-INVARIANT (the consumer's shared memory is entirely compile-time) and the
+# kernel reads the field at zero sites, so after this deletion the depth is inert in
+# every currency the planner has. `select_plan_axes` therefore STATES the depth
+# instead of arbitrating it. If §2.3's item buffers ever build a real ring, its
+# price is a new measurement on the kernel that has one -- not this constant
+# revived.
 
 #: Where the constants above come from, carried next to them so a number cannot be
 #: quoted without its provenance (spec §8's standing warning).
@@ -771,7 +793,23 @@ COST_MODEL_PROVENANCE = (
     "where they do; INTRA_GRAM_KSTEP_WORK from `wk1-D2-w64x64-BC64` against "
     "`topo-D2-w64x64-BC64`, which differ only in KI; DECAY_KSTEP_WORK from the "
     "`BC=64`/`BC=16` pair of one topology at both compact arms, which differ only "
-    "in the k-step count. ONE machine, ONE toolchain: the constants are plan "
+    "in the k-step count; and TILE_FIXED_WORK (M-1, 2026-08-01) from TWO "
+    "independent isolating solves over the `iso-tile-*` cells, each separating a "
+    "per-COHORT cost from a per-TILE one with a three-point `T` sweep before "
+    "splitting the per-tile part across `BC`. The `iso-gc-*` cells belong to the "
+    "same batch and are the one that removed a term: they hold `BC`, `D`, `N` and "
+    "the grid fixed while permuting the owner rectangle, and measure the price of a "
+    "staged Gram column as EXACTLY zero. "
+    "KNOWN AND MEASURED, NOT MODELLED, so the next reader does not rediscover it: "
+    "(1) a per-COHORT remainder of 4036-9506 instructions (CTA prologue/epilogue, "
+    "state load/store) -- `BT`- and arm-invariant per token, hence unable to move "
+    "the argmin, and below 1 % of the at-scale cells; (2) 74.6 per candidate tile "
+    "per FIXED level, the only geometry dependence that survives measurement; "
+    "(3) the dense k-quantum is OVER-priced by this model at 1899 (readout+intra) "
+    "against 1033 (D=1) / 1155 (D=2) / 1316 (D=3) measured, which is now the "
+    "LEADING absolute-total residual and grows ~141 per level per quantum -- an "
+    "isolating re-measurement of READOUT_FOLD_KSTEP_WORK, queued, never a re-fit "
+    "against the rows it must reproduce. ONE machine, ONE toolchain: the constants are plan "
     "parameters, not machine truths, and spec §8's measurement basis replaces them "
     "without a code change. WHAT BINDS THEM is "
     "`test_the_cost_model_reproduces_its_calibration`, which asserts the JOINT "
@@ -800,14 +838,12 @@ COST_MODEL_PROVENANCE = (
 
 def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
                         compact: bool, decay: bool = False,
-                        ring_slots: int = 1,
                         tile_fixed_work: float = TILE_FIXED_WORK,
                         gather_candidate_fixed_work: float = GATHER_CANDIDATE_FIXED_WORK,
                         gather_candidate_quantum_work: float = GATHER_CANDIDATE_QUANTUM_WORK,
                         readout_fold_kstep_work: float = READOUT_FOLD_KSTEP_WORK,
                         intra_gram_kstep_work: float = INTRA_GRAM_KSTEP_WORK,
-                        decay_kstep_work: float = DECAY_KSTEP_WORK,
-                        stage_column_work: float = STAGE_COLUMN_WORK) -> float:
+                        decay_kstep_work: float = DECAY_KSTEP_WORK) -> float:
     """§6's crossover pricing, in work-units per token, over the QUANTA the kernel
     issues rather than the leafs it names.
 
@@ -815,7 +851,6 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     across ``BT``::
 
         W_tile = tile_fixed_work
-               + 2 * sum_{l>=j} m_l * stage_column_work / ring_slots
                + gather_candidate_fixed_work                      (if compact)
                + gather_candidate_quantum_work * ceil(BC / 16)     (if compact)
                + readout_fold_kstep_work * ksteps  * (BT / 16)
@@ -880,10 +915,15 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     """
     if stats.BC != BC:
         raise ValueError(f"stats were computed at BC={stats.BC}, priced at BC={BC}")
-    if ring_slots < 1:
-        raise ValueError(f"ring_slots must be >= 1, got {ring_slots}")
+    # `topology` enters this function as a PRECONDITION and no longer as a price
+    # (M-1, 2026-08-01): the owner rectangle must be admissible at this `BC` --
+    # `owner_geometry` raises otherwise, and pricing an unaligned rectangle is
+    # pricing a plan that cannot be built -- but its SHAPE costs nothing, which the
+    # `iso-gc-*` cells measure as an EXACT equality across a 2.1x range of
+    # `gram_cols`. Keeping the check is what makes that a stated finding rather than
+    # a silently dropped argument.
+    owner_geometry(topology.widths, BC)
     BT = stats.BT
-    gram_cols = sum(spanned_moduli(topology, BC))
     quantize = lambda n: float(-(-int(n) // MMA_K_QUANTUM))  # noqa: E731
 
     # The COMPILED-OUT kernel walks the full `BC` whatever the union realizes, so
@@ -895,10 +935,6 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     kisteps = stats.mean_kisteps_candidate if compact else dense_steps
 
     w_tile = tile_fixed_work
-    # §3 step 3's staging, both sides, with the RING's overlap. `ring_slots` is a
-    # plan axis and is priced here rather than by a side rule, so it competes with
-    # `BT`/`compact` in one currency (Gate A rule 3, alternative 1).
-    w_tile += 2.0 * gram_cols * stage_column_work / ring_slots
     if compact:
         # The ballot probes all `BC` leaf slots whatever the union realizes, so the
         # gather is priced on the DENSE quantum -- never on `ksteps`, which is the
@@ -1088,106 +1124,47 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     for BT in bt_candidates:
         stats = stats_by_bt[BT]
         for compact in (True, False):
-            # ---- THE RING, ARBITRATED IN THE COST CURRENCY -----------------
-            # REDESIGNED 2026-07-31 after Gate A rule 3 / Gate B invariant 2 / Gate
-            # D D1, which all found the same defect: the previous rule compared an
-            # analytic shared-memory-only residency predictor against a fitted
-            # constant (5) in exactly the range `harvest.md` §19.3 certifies that
-            # predictor as LOOSE, and the constant was unidentified within `(2, 8]`
-            # by its own evidence. That predictor is now DELETED outright (item 6b).
+            # ---- THE RING DEPTH IS STATED, NOT ARBITRATED (M-1, 2026-08-01) --
+            # It used to be arbitrated in the cost currency, because the ring's
+            # BENEFIT was a term in `plan_cost_per_token` (`STAGE_COLUMN_WORK`,
+            # divided by the depth) and its COST was the residency the deeper ring
+            # might give up, read from the driver's occupancy oracle. RULING A
+            # deleted the term on a measurement -- the per-staged-column price is
+            # EXACTLY zero, see the deletion note beside `TILE_FIXED_WORK` -- and the
+            # oracle is ring-INVARIANT because the consumer's shared memory is
+            # entirely compile-time. Both sides of that arbitration are therefore
+            # identically equal at every depth, and a `min` over equal keys is not a
+            # decision: it is a tie-break pretending to be one.
             #
-            # What replaces it, and why it needs no constant:
-            #   * the ring's BENEFIT is a term in `plan_cost_per_token` -- depth `n`
-            #     divides the staging term's exposed latency -- so depth competes
-            #     with `BT`/`compact` in one currency;
-            #   * the ring's COST is the residency it may give up, and that is read
-            #     from the DRIVER's `cudaOccupancyMaxActiveBlocksPerMultiprocessor`
-            #     for the exact instantiation, which is REGISTER-AWARE and exact.
+            # So the depth is STATED as `_RING_DEPTHS[0]`, the deepest built, with
+            # the reason attached: nothing in the kernel, the occupancy or the work
+            # model distinguishes the depths, and the field is read at zero sites in
+            # `consumer_kernel.cuh`. The FEASIBILITY check survives unchanged,
+            # because it never was about the ring: a candidate the oracle prices at
+            # 0 CTAs/SM does not fit the machine and must be refused rather than
+            # divided by.
             #
-            # The arbitration is the WAVE-WEIGHTED cost `cost * waves` taken WITHIN
-            # one (BT, compact) candidate, where the work is identical and
-            # only the overlap and the residency differ -- see the block at the
-            # `min(feasible, ...)` below for why it is that and not the
-            # `cost / blocks_per_sm` throughput ratio it was until 2026-08-01, which
-            # composed wrongly with the argmin that consumes its answer. That is NOT
-            # `harvest.md` §19.2's rejected global divisor: `harvest.md` §19.2 rejected
-            # `cost / blocks_per_sm` as a way of ranking DIFFERENT `BT` candidates (it
-            # flips the smoke cell's `BT` to a value measured slower at 23 of 24 cell
-            # groups). Comparing two ring depths of the SAME candidate has no such
-            # counterexample -- the two differ in nothing else -- and it is recorded
-            # for ruling rather than assumed settled (`harvest.md` §27.12).
+            # REOPENS ON A MEASUREMENT: if §2.3's item buffers build a real ring,
+            # its price is measured on the kernel that has one and this becomes an
+            # arbitration again -- with a constant isolated on that kernel, never
+            # this one's revived.
             #
             # THE ORACLE IS THE SOLE AUTHORITY FOR PHYSICAL FACTS (user ruling
-            # extension, 2026-07-31): the cost model owns WORK -- routing statistics,
-            # the staging term -- and the driver owns every PHYSICAL constant. Every
-            # occupancy read in selection comes from the injected oracle. There is
-            # no analytic mirror any more: it modelled the deleted consumer, and the
-            # exhaustive probe measured it inverting the bound it claimed.
-            #
-            # OCCUPANCY ENTERS AS A COST MULTIPLIER, NOT A MAXIMIZATION TARGET: the
-            # per-token work of a candidate is divided by the CTAs that run it
-            # concurrently, so `cost / occupancy` is an effective cost and selection
-            # still MINIMIZES a cost. (Applied to the ring depth, where the two
-            # options differ in nothing but overlap and residency. Ranking DIFFERENT
-            # `BT` candidates by the same divisor is rejected -- `harvest.md` §19.2
-            # has a measured counterexample -- so the cross-candidate arbitration is
-            # the WAVE term, which divides by capacity only where the grid genuinely
-            # queues and is identically 1 below one wave.)
-            def _priced(slots: int) -> tuple[int, float]:
-                return (occupancy(BT, BC, topology.d_v,
-                                  normalization == "global", decay, mma_precision,
-                                  compact, gram_cols, slots),
-                        plan_cost_per_token(
-                            topology, BC, stats, compact=compact,
-                            decay=decay, ring_slots=slots,
-                            **cost_kwargs))
-
-            priced = {slots: _priced(slots) for slots in _RING_DEPTHS}
-            # A depth the oracle prices at ZERO CTAs/SM does not fit the machine at
-            # all -- its footprint exceeds the SM's shared memory, and the launch
-            # would fail. It is EXCLUDED with that reason rather than divided by
-            # (`ZeroDivisionError`) or floored to 1 (which would price an
-            # unlaunchable plan as merely expensive).
-            feasible = [t for t in _RING_DEPTHS if priced[t][0] > 0]
-            if not feasible:
+            # extension, 2026-07-31): the cost model owns WORK -- the routing
+            # statistics and the measured per-tile quanta -- and the driver owns
+            # every PHYSICAL constant. There is no analytic mirror any more: it
+            # modelled the deleted consumer, and the exhaustive probe measured it
+            # inverting the bound it claimed.
+            ring_slots = _RING_DEPTHS[0]
+            blocks = occupancy(BT, BC, topology.d_v, normalization == "global",
+                               decay, mma_precision, compact, gram_cols, ring_slots)
+            if blocks == 0:
                 raise ValueError(
-                    f"no ring depth fits an SM at BT={BT}, BC={BC}, "
-                    f"compact={compact}: the occupancy oracle "
-                    f"reports 0 CTAs/SM at every depth in {_RING_DEPTHS}, so this "
-                    "candidate cannot be launched at all")
-            # ---- THE RING IS ARBITRATED IN THE ARGMIN'S OWN CURRENCY ---------
-            # The depth is chosen by `cost * waves` -- the SAME objective the joint
-            # argmin below minimizes -- and not by the `cost / blocks_per_sm`
-            # throughput ratio it used until 2026-08-01. That was not a refinement
-            # but a REPAIR of a composition defect, and the defect was reachable:
-            #
-            #   the within-candidate arbitration minimized `cost / blocks`, then the
-            #   cross-candidate argmin compared the resulting RAW `cost`. A depth
-            #   with a marginally better ratio but a materially worse cost was
-            #   therefore selected for the candidate and then charged its worse cost
-            #   in a comparison that never saw the residency the ratio paid for.
-            #
-            # MEASURED CONSEQUENCE, which is how it was found: on the SATURATED
-            # `[8,16], BC = 16` cell the dense arm's depth-1 price beat its depth-2
-            # price by 0.4 % in the ratio and lost by 24 % in raw cost, so the
-            # dense arm entered the argmin at 215.9 instead of 173.4 and LOST to the
-            # compacted arm at 195.4 -- a compacted plan on a cell where compaction
-            # changes no extent and can only cost. That contradicted
-            # `_CALIBRATION_ARGMIN`'s own stated unreachability property.
-            #
-            # `cost * waves` degenerates to exactly the right thing at both ends and
-            # introduces NO constant: below one wave it is `cost` (residency buys
-            # nothing when the whole grid is already resident, so the deeper ring's
-            # overlap is the only live difference), and above one wave it is
-            # `cost * n_cohorts / (SMs * blocks)`, i.e. `cost / blocks` up to a
-            # factor constant across the depths of one candidate -- so the
-            # many-wave regime the old ratio was reasoning about is preserved
-            # ORDER-FOR-ORDER. The 8/8 calibration argmin is unchanged by the
-            # repair; what changed is the saturated cells, where it was wrong.
-            ring_slots = min(feasible,
-                             key=lambda t: (priced[t][1] * plan_waves(
-                                 stats.n_cohorts, priced[t][0], sm_count), -t))
-            blocks, cost = priced[ring_slots]
+                    f"the candidate BT={BT}, BC={BC}, compact={compact} does not "
+                    f"fit an SM: the occupancy oracle reports 0 CTAs/SM, so its "
+                    "footprint exceeds the shared memory and the launch would fail")
+            cost = plan_cost_per_token(topology, BC, stats, compact=compact,
+                                       decay=decay, **cost_kwargs)
             # ---- THE WAVE REGIME, THE ONLY PHYSICAL TERM IN THE ARGMIN --------
             # `plan_cost_per_token` is per-CTA work. What a launch takes is that
             # work times the number of WAVES the grid is serialized into, and the
@@ -1200,10 +1177,6 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
             # That is the partition the §2.32 argmins exhibit, and it is why
             # `_CALIBRATION_BT`'s `(BC, decay)` key could not express the answer.
             #
-            # DELIBERATELY NOT APPLIED TO THE RING ARBITRATION above: that compares
-            # two depths of ONE candidate, where `blocks_per_sm` is the only thing
-            # that differs, and `STAGE_COLUMN_WORK`'s three-cell bracket was derived
-            # against exactly that comparison.
             waves = plan_waves(stats.n_cohorts, blocks, sm_count)
             candidates.append(PlanAxes(
                 BT=BT, compact=compact, stats=stats,
@@ -2921,7 +2894,6 @@ __all__ = [
     "PANEL_MAX_EXPONENT",
     "READOUT_FOLD_KSTEP_WORK",
     "ROLA_SCHEDULE_ABI_VERSION",
-    "STAGE_COLUMN_WORK",
     "TILE_FIXED_WORK",
     "LevelSupportStats",
     "OwnerGeometry",

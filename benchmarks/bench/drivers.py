@@ -113,6 +113,14 @@ def run_oracle(*, decay=True, hot=False, compact=False):
                      for n in GROUPS["wk1"] for p in ("bf16", "tf32x3")]),
             ("raw", [(n, "raw", t, p) for n in GROUPS["raw"]
                      for p in ("bf16", "tf32x3") for t in temps]),
+            #: M-1's isolating cells. They exist to have their INSTRUCTION COUNTS
+            #: read, so the arm gated here is the arm those counts were taken on
+            #: (`bf16`, the shipped default), crossed with `tf32x3` because a
+            #: geometry these cells reach and the `topo` group does not -- a
+            #: multi-level spanned owner rectangle -- must be shown exact and not
+            #: merely within a format tolerance.
+            ("iso", [(n, "global", t, p) for n in GROUPS["iso"]
+                     for p in ("bf16", "tf32x3") for t in temps]),
     ):
         print(f"-- group {group} ({len(arms)} arms)")
         for name, norm, temp, prec in arms:
