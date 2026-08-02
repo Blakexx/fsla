@@ -2103,15 +2103,15 @@ def test_the_quantum_is_not_a_rescaling_of_the_mean():
     assert stats.mean_K / MMA_K_QUANTUM != stats.mean_ksteps_candidate
 
 
-def test_the_support_counted_statistics_are_invariant_to_the_chunk_budget(monkeypatch):
+def test_the_bit_word_statistics_are_invariant_to_the_chunk_budget(monkeypatch):
     """Chunking is a memory bound, so it may not move a single count.
 
-    The pass chunks over whole ``max(bt_candidates)`` tiles -- the coarsest
-    granularity at which every candidate's tile still nests inside one chunk. That
-    invariant is exactly what a chunk-boundary bug would break, and it is invisible at
-    the default budget (the fixtures below run in ONE chunk). Squeezing the budget to
-    a single tile-cell forces the maximum number of chunk boundaries and the answer
-    must not move by one count.
+    The bit-word census chunks over ``(bh, tile)`` ROWS of the leaf-word plane, and
+    each candidate ``BT`` is measured in its own rows, so a chunk boundary can never
+    split a tile at any candidate -- the property a chunk-boundary bug would break.
+    It is invisible at the default budget (the fixtures below run in ONE chunk), so
+    the budget is squeezed to a single leaf word, which forces the maximum number of
+    chunk boundaries; the answer must not move by one count.
     """
     widths = (4, 4)
     B, T, H = 1, 96, 2
@@ -2121,29 +2121,26 @@ def test_the_support_counted_statistics_are_invariant_to_the_chunk_budget(monkey
     for BC in _admissible_bcs(widths):
         whole = _tile_union_stats_multi(views, topology, BC, (16, 32))
         with monkeypatch.context() as patch:
-            patch.setattr(
-                "rola.planner.schedule._STATS_TILE_CELL_CHUNK", 1)
-            patch.setattr(
-                "rola.planner.schedule._STATS_ENTRY_CHUNK", 1)
+            patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", 1)
             split = _tile_union_stats_multi(views, topology, BC, (16, 32))
         assert whole == split, f"BC={BC}: chunking moved the statistics"
 
 
-def test_the_support_counted_pass_never_materializes_an_o_of_l_times_n_object(monkeypatch):
-    """The production pass's two transients are BOUNDED, and neither is ``BH * T * N``.
+def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypatch):
+    """The production pass's ONE transient is BOUNDED, and it is not ``BH * T * N``.
 
     It has no owner axis to chunk (owners are a reshape of the leaf axis), so the
-    objects to bound are different from the reference's: the live ENTRIES it expands
-    and the ``(tile, leaf)`` CELLS it reduces over. The second is the one that scales
-    with ``N``, and it is ``BT`` times smaller than the ``(token, leaf)`` rectangle by
-    construction -- ``widths=(64,64,16)`` at ``T = 512`` gives ``BH * T * N = 33 M``
-    against a tile plane of ``2 M``.
+    object to bound is the ``[rows, N]`` LEAF-WORD plane it reduces over -- one
+    ``int32`` per ``(bh, tile, leaf)`` cell, which is ``BT`` times smaller than the
+    ``(token, leaf)`` rectangle the enumerated reference walks. ``widths=(64,64,16)``
+    at ``T = 512`` gives ``BH * T * N = 33 M`` against a finest-``BT`` leaf-word
+    plane of ``2 M``.
 
     The mutation check squeezes the cell budget instead of raising it: the guard is
-    set to the tile plane the DEFAULT budget produces, and forcing a smaller chunk
-    must drop every allocation below it. That direction is the honest one here --
-    raising the budget cannot manufacture a violation, because the un-chunked plane
-    is already what the default admits at this fixture.
+    set to the plane the DEFAULT budget produces, and forcing a smaller chunk must
+    drop every allocation below it. That direction is the honest one here -- raising
+    the budget cannot manufacture a violation, because the un-chunked plane is
+    already what the default admits at this fixture.
     """
     widths = (64, 64, 16)
     B, T, H, BC = 1, 512, 1, 16
@@ -2157,26 +2154,25 @@ def test_the_support_counted_pass_never_materializes_an_o_of_l_times_n_object(mo
     with guard:
         _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert not guard.violations, (
-        f"the support-counted pass built an object at or above BH*T*N={forbidden}: "
+        f"the bit-word pass built an object at or above BH*T*N={forbidden}: "
         f"{guard.violations[:5]}")
 
-    tile_plane = B * H * ((T + 31) // 32) * 2 * N
-    squeezed = _AllocationGuard(tile_plane // 4)
+    leaf_plane = B * H * ((T + 15) // 16) * N          # the finest candidate's rows
+    squeezed = _AllocationGuard(leaf_plane // 4)
     with monkeypatch.context() as patch:
-        patch.setattr("rola.planner.schedule._STATS_TILE_CELL_CHUNK",
-                      tile_plane // 8)
+        patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
         with squeezed:
             _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert not squeezed.violations, (
-        "mutation check: squeezing the cell budget must shrink the tile plane it "
-        f"allocates, but tensors above {tile_plane // 4} survived: "
+        "mutation check: squeezing the cell budget must shrink the leaf-word plane it "
+        f"allocates, but tensors above {leaf_plane // 4} survived: "
         f"{squeezed.violations[:5]}")
-    loose = _AllocationGuard(tile_plane // 4)
+    loose = _AllocationGuard(leaf_plane // 4)
     with loose:
         _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert loose.violations, (
         "mutation check is broken: at the DEFAULT budget this fixture must allocate "
-        f"a tile plane above {tile_plane // 4}, or the squeezed assertion is vacuous")
+        f"a leaf-word plane above {leaf_plane // 4}, or the squeezed assertion is vacuous")
 
 
 def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(monkeypatch):
