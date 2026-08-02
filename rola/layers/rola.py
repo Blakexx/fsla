@@ -643,18 +643,29 @@ class RoLA(nn.Module):
         chunk-to-footprint ratio, while a pooled arena tracks the live fraction of
         the whole layer.
 
-        Rebuilt (not resized) whenever `BH`, the device, or the plan's `BT` changes.
-        `BT` is in that list because `first_write_tile` is denominated in units of
-        the plan's `BT` (findings `paging.md` D3), so live pages carrying recorded
-        tiles cannot be reinterpreted under a different `BT`.
+        Rebuilt (not resized) whenever `BH`, the device or `BC` changes.
+
+        **`BT` LEFT THIS LIST WITH THE §4.5 RE-KEY**, and that is the point of the
+        re-key rather than an incidental simplification. It was here because the old
+        arena recorded `first_write_tile` in units of the plan's `BT` (findings
+        `paging.md` D3), so live pages could not be reinterpreted under a different
+        tile. Under PLANNED-EXACT-ASYNC allocation nothing records a tile at all: the
+        footprint is the popcount of §4.1's atom condensation, admission order is
+        ascending canonical leaf order, and neither mentions `BT`. Since `BT` is now
+        selected PER LAUNCH (§4.3), an arena that had to be rebuilt on a `BT` flip would
+        have been rebuilt constantly.
+
+        `BC` remains, and remains for a different reason: it is not stored anywhere in
+        the arena (every stored object is `BC`-invariant, gated), but it fixes the
+        owner geometry the caller reasons about, so an arena built for one topology's
+        `BC` should not silently serve another's.
         """
         from rola.ops.paging import PageArena
 
         cols = self.head_v_dim + (1 if self.state_norm == 'global' else 0)
         arena = self._page_arena
         if (arena is not None and arena.BH == BH and arena.device == device
-                and arena.cols == cols and arena.BC == plan.BC
-                and arena.planned_BT in (None, plan.BT)):
+                and arena.cols == cols and arena.BC == plan.BC):
             return arena
         arena = PageArena(
             widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
