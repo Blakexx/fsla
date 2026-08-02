@@ -197,24 +197,108 @@ def _token_support_words(masks: tuple[torch.Tensor, ...], BT: int,
     return tuple(words)
 
 
-def _leaf_words(level_words: tuple[torch.Tensor, ...], widths: tuple[int, ...],
-                lo: int, hi: int) -> torch.Tensor:
-    """``[hi-lo, N]`` ``int32`` leaf words for a run of ``(bh, tile)`` rows.
+def _leaf_words(level_words: tuple[torch.Tensor, ...], widths: tuple[int, ...]) -> torch.Tensor:
+    """``[rows, N]`` ``int32`` leaf words from one chunk's per-level ``[rows, width]`` words.
 
     Identity 1 of the module docstring: the AND over levels is a pure BROADCAST,
     because the leaf id is the row-major flattening of the ``[w_0, ..., w_{D-1}]``
-    digit grid. This is the ONE place the pass touches an ``N``-sized object, and
-    it is the answer's own granularity -- the retired pass materialized the same
+    digit grid. This is the ONE place the pass touches an ``N``-sized object, and it
+    is the answer's own granularity -- the retired scatter pass materialized the same
     plane as an ``int16`` extremes buffer, so the term is not new.
     """
     D = len(widths)
+    rows = level_words[0].shape[0]
     out = None
     for level, words in enumerate(level_words):
         shape = [1] * D
         shape[level] = widths[level]
-        block = words.reshape(-1, widths[level])[lo:hi].view(hi - lo, *shape)
+        block = words.view(rows, *shape)
         out = block if out is None else out & block
-    return out.reshape(hi - lo, -1)
+    return out.reshape(rows, -1)
+
+
+def _census_chunk(read_words: tuple[torch.Tensor, ...] | None,
+                  write_words: tuple[torch.Tensor, ...] | None,
+                  widths: tuple[int, ...], owners_total: int, BC: int,
+                  ) -> tuple[torch.Tensor, ...]:
+    """One chunk's six counters, as ONE pure function of the chunk's token words.
+
+    Returns ``(sum_K, sum_sat, sum_ks, sum_KI, sum_kis, active)``, every one a 0-dim
+    ``int64``. ``read_words``/``write_words`` are ``[rows, width]`` per level, or
+    ``None`` for a side declared dense by configuration -- in which case the
+    ``K``-family entries come back as exact zeros, and the CALLER drops them (it
+    substitutes the closed form they provably equal) rather than reading a
+    fabricated number.
+
+    **This is the whole numerical content of the census, and it is deliberately one
+    side-effect-free function of tensors.** Everything above it is bookkeeping
+    (packing, chunking, key naming). Two consequences that are the point rather than
+    a coincidence: the §2.7 relocation to the offline bench moves this function
+    unchanged, and the ~13x whole-pass fusion lever measured in
+    `planner-bitword-census.md` §4 is a wrapper on exactly this signature -- the
+    ``[rows, N]`` leaf plane it forms is an INTERMEDIATE of a reduction whose inputs
+    are ``O(rows * sum(widths))`` and whose outputs are scalars, so nothing about the
+    answer requires that plane to reach DRAM.
+    """
+    zero = torch.zeros((), dtype=torch.int64,
+                       device=(read_words or write_words)[0].device)
+    sum_K = sum_sat = sum_ks = active = zero
+    if read_words is not None and write_words is not None:
+        read_lw = _leaf_words(read_words, widths)
+        write_lw = _leaf_words(write_words, widths)
+        k_count = (read_lw | write_lw).ne(0).view(-1, owners_total, BC).sum(dim=-1)
+        sum_K = k_count.sum()
+        sum_sat = (k_count == BC).sum()
+        # The QUANTUM, summed BEFORE any mean: the kernel moves
+        # `ceil(K / MMA_K_QUANTUM)` k-steps, which is 0 at K = 0 and 1 for every K in
+        # [1, 16], and `ceil(mean) != mean(ceil)` -- the difference IS the compact
+        # saving (`TileUnionStats`' note).
+        sum_ks = ((k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
+        # SUMMARY (b) of `CensusResult`: the per-owner ACTIVE fraction's numerator.
+        # Computed unconditionally because it is one comparison-reduction over an
+        # array that is already live and already reduced three other ways; making it
+        # optional would buy nothing and would fork the graph this function is.
+        active = (k_count > 0).sum()
+        # Identity 2: the causal-intra bit, with no prefix scan and no extremes
+        # buffer. See the module docstring for the derivation.
+        ki_bit = (read_lw & -(write_lw & -write_lw)).ne(0)
+    elif read_words is None:
+        # WRITE side live, READ side dense: `last_read` is the tile's own last token,
+        # so the causal bit degenerates to "written somewhere in this tile".
+        ki_bit = _leaf_words(write_words, widths).ne(0)
+    else:
+        # READ side live, WRITE side dense: `first_write == 0`, so it degenerates to
+        # "read somewhere in this tile" -- symmetric.
+        ki_bit = _leaf_words(read_words, widths).ne(0)
+    ki_count = ki_bit.view(-1, owners_total, BC).sum(dim=-1)
+    sum_KI = ki_count.sum()
+    sum_kis = ((ki_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
+    return sum_K, sum_sat, sum_ks, sum_KI, sum_kis, active
+
+
+#: THE SHIPPED CALL. :func:`_census_chunk` is a pure function whose inputs are
+#: ``O(rows * sum(widths))`` words and whose outputs are six scalars; the ``[rows, N]``
+#: leaf plane between them is an INTERMEDIATE of a reduction and nothing about the
+#: answer requires it to reach DRAM. Eager torch has to write it and re-read it once
+#: per elementwise step, which made the pass purely memory-bound -- 112 ms of device
+#: time at the at-scale cell, 30 % of it in ``bitwise_and`` alone. Fusing it is
+#: therefore not a tuning knob but the removal of the pass's only remaining term, and
+#: it is measured at **6-9x on whole-``select_plan`` wall, bit-identical on every
+#: field of every cell class** (`planner-bitword-census.md` §4).
+#:
+#: ``dynamic=True`` from the first call, so the row extent -- the one axis that varies
+#: within a run (the last chunk is short, and ``L`` moves between calls) -- never
+#: triggers a recompile; the graph specializes on ``(D, widths, owners_total, BC,
+#: device, which sides are live)``, which is a per-CONFIGURATION set and therefore
+#: bounded. Measured cost of that specialization: +25 s on the whole
+#: ``tests/unit/test_planner.py`` run (1032 tests, 24 s -> 49 s), which is the price
+#: of compiling every toy geometry the gates sweep, not a per-call cost.
+#:
+#: **This makes `torch.compile`/inductor a RUNTIME requirement of the planner**, on
+#: CPU as well as CUDA. That is a real new dependency edge and it is stated here
+#: rather than discovered: there is no eager path kept alongside, by the no-fallback
+#: rule, so an environment without a working inductor backend fails loudly here.
+_census_chunk_fused = torch.compile(_census_chunk, dynamic=True)
 
 
 def tile_union_census(read_mask: tuple[torch.Tensor, ...],
@@ -239,11 +323,14 @@ def tile_union_census(read_mask: tuple[torch.Tensor, ...],
     digit gather: ``K`` for every owner at once is one
     ``[rows, owners, BC] -> sum`` over the union bit.
 
-    ``summaries`` controls whether the §2.7 end-state selector's SUMMARY scalars
-    are computed alongside (see :class:`CensusResult`). It defaults to on because
-    the offline auditor and the calibration fit both want them; the interim runtime
-    caller passes ``False``, since it has nothing to read them with yet and a
-    device reduction whose result is discarded is waste, not readiness.
+    ``summaries`` controls whether the §2.7 end-state selector's SUMMARY scalars are
+    PUBLISHED (see :class:`CensusResult`). It defaults to on because the offline
+    auditor and the calibration fit both want them; the interim runtime caller passes
+    ``False``, which drops the per-level occupancy reductions -- the only part with a
+    cost of its own, measured at 0.2 ms of the at-scale cell's pass. The per-owner
+    active count is NOT conditional: it is one more comparison-reduction over an
+    array :func:`_census_chunk` has already reduced three other ways, so making it
+    optional would buy nothing and would fork that function's graph.
     """
     if len(read_mask) != len(widths) or len(write_mask) != len(widths):
         raise ValueError(f"one mask per level per side required (D={len(widths)})")
@@ -280,53 +367,28 @@ def tile_union_census(read_mask: tuple[torch.Tensor, ...],
     for BT in bt_candidates:
         n_tiles = (T + BT - 1) // BT
         rows_total = BH * n_tiles
-        words = {side: _token_support_words(masks_by_side[side], BT, n_tiles)
+        words = {side: tuple(w.reshape(rows_total, -1)
+                             for w in _token_support_words(masks_by_side[side], BT, n_tiles))
                  for side in live_sides}
-
-        acc = {name: torch.zeros((), dtype=torch.int64, device=device)
-               for name in _PER_BT_COUNTERS}
         measures_k = len(live_sides) == 2
-        wants_active = measures_k and summaries
-        active = torch.zeros((), dtype=torch.int64, device=device)
 
+        acc = [torch.zeros((), dtype=torch.int64, device=device) for _ in range(6)]
         rows_per_chunk = max(1, _CENSUS_CELL_CHUNK // N)
         for lo in range(0, rows_total, rows_per_chunk):
             hi = min(lo + rows_per_chunk, rows_total)
-            leaf = {side: _leaf_words(words[side], widths, lo, hi) for side in live_sides}
-            if measures_k:
-                read_lw, write_lw = leaf[0], leaf[1]
-                k_count = (read_lw | write_lw).ne(0).view(hi - lo, owners_total, BC).sum(dim=-1)
-                acc["sum_K"] += k_count.sum()
-                acc["sum_sat"] += (k_count == BC).sum()
-                # The QUANTUM, summed BEFORE any mean: the kernel moves
-                # `ceil(K / MMA_K_QUANTUM)` k-steps, which is 0 at K = 0 and 1 for
-                # every K in [1, 16], and `ceil(mean) != mean(ceil)` -- the
-                # difference IS the compact saving (`TileUnionStats`' note).
-                acc["sum_ks"] += ((k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
-                if wants_active:
-                    active = active + (k_count > 0).sum()
-                # Identity 2: the causal-intra bit, with no prefix scan and no
-                # extremes buffer. See the module docstring for the derivation.
-                ki_bit = (read_lw & -(write_lw & -write_lw)).ne(0)
-            elif dense_side[0]:
-                # READ dense: `last_read` is the tile's own last token, so the
-                # causal bit degenerates to "written somewhere in this tile".
-                ki_bit = leaf[1].ne(0)
-            else:
-                # WRITE dense: `first_write == 0`, so it degenerates to
-                # "read somewhere in this tile" -- symmetric.
-                ki_bit = leaf[0].ne(0)
-            ki_count = ki_bit.view(hi - lo, owners_total, BC).sum(dim=-1)
-            acc["sum_KI"] += ki_count.sum()
-            acc["sum_kis"] += ((ki_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
+            chunk = tuple(None if dense_side[side]
+                          else tuple(w[lo:hi] for w in words[side])
+                          for side in (0, 1))
+            for slot, value in enumerate(_census_chunk_fused(*chunk, widths, owners_total, BC)):
+                acc[slot] = acc[slot] + value
 
-        for name in _PER_BT_COUNTERS:
+        for slot, name in enumerate(_PER_BT_COUNTERS):
             if not measures_k and name in ("sum_K", "sum_sat", "sum_ks"):
-                continue
-            per_bt[(BT, name)] = acc[name]
+                continue                       # the caller substitutes the closed form
+            per_bt[(BT, name)] = acc[slot]
         # SUMMARY (b): the per-owner active fraction at this `BT`.
-        if wants_active:
-            summary[("active_owners", BT)] = active
+        if measures_k and summaries:
+            summary[("active_owners", BT)] = acc[5]
             denominators[("active_owners", BT)] = rows_total * owners_total
 
     return CensusResult(per_bt=per_bt, summaries=summary, denominators=denominators)
