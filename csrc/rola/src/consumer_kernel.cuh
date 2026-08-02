@@ -138,6 +138,62 @@ constexpr int kMmaKQuantum = 16;
 #define ROLA_C_WT_WINDOW 0
 #endif
 
+//: ---- §8 CALIBRATION PLACEHOLDER `C_RING_DEPTH` (K3c; I5) -------------------
+//:
+//: How many TILES' worth of the STAGING SET the CTA holds at once. `1` is today's
+//: structure exactly -- stage tile `n`, rendezvous, compute tile `n` -- so an
+//: unfilled or over-large placeholder degrades to today's behaviour, never to a new
+//: one (§8's stated principle). `2` lets the staging of tile `n + 1` be issued from
+//: INSIDE tile `n`'s compute, at the one program point where the tile's work is
+//: finished and its warps would otherwise be sitting on the phase-C acquire.
+//:
+//: `2` IS THE CEILING AND IT IS STRUCTURAL, not a budget: the run-ahead is ONE tile
+//: (the CTA walks its candidate list serially and the staged slot is consumed by the
+//: very next visit), so a third slot would have no producer. A larger value clamps.
+//:
+//: **THE DEPTH IS DERIVED, BY ONE RULE, AND THE RULE IS APPLIED PER INSTANTIATION:**
+//: *the deepest staging set the arm's headroom admits, with `Vw` excluded under
+//: `DECAY` by the alias below.* Mechanically: depth 2 is taken iff it costs NO CTA
+//: -- `ctas_for_residency` returns the same answer at both depths -- which is r1
+//: §3.7's own rule ("the ring pays exactly when it does not cost a CTA") stated as
+//: arithmetic instead of as a recommendation. It is the same derivation
+//: `__launch_bounds__` already is, off the same two functions.
+//:
+//: **`DECAY` IS PINNED TO DEPTH 1, AND IT IS CORRECTNESS RATHER THAN FOOTPRINT.**
+//: D2.3 bars `Vw` from the ring because `clk` (the tile's clock prefix) ALIASES
+//: `Vw`'s bytes, so slot `s`'s `Vw` and slot `s`'s `clk` are the same storage. That
+//: exclusion PROPAGATES to the whole staging set rather than removing one member of
+//: it: BOTH panel builds READ `clk` (`panel_read_factor` / `panel_write_factor`), so
+//: staging tile `n + 1`'s `Rf` or `WT` requires tile `n + 1`'s CLOCK, which would
+//: have to be written into the one region tile `n`'s fold and intra term are still
+//: reading. There is no non-empty subset of the staging set that can run ahead under
+//: `DECAY`. Un-aliasing `clk` would dissolve it and does not fit (`BT * (BC + 4) * 4`
+//: = 4,352 B at the flagship against 2,941 B of decay-arm headroom), and that is a
+//: coordinator-level trade, not a Track K one -- so the pin is asserted below as a
+//: correctness `static_assert` and never left to the footprint arithmetic to enforce.
+//: **THE DEFAULT IS `1`, AGAINST §8's TABLED `2`, AND IT IS A MEASUREMENT.**
+//: §8 tables `2` on the principle that a wrong placeholder degrades to today's
+//: behaviour. At depth 2 it does not: `rola_consumer_occupancy` -- the DRIVER, which
+//: is spec §6.5's sole residency authority -- drops FOUR of the 32
+//: `(decay, compact, BC, BT, DV)` shapes, two by shared memory and two by registers:
+//:
+//:   `!decay !compact BC16 BT32 DV32`   4 -> 3   (registers)
+//:   `!decay !compact BC64 BT16 DV32`   4 -> 3   (registers)
+//:   `!decay  compact BC16 BT32 DV64`   3 -> 2   (shared memory)
+//:   `!decay  compact BC64 BT32 DV32`   3 -> 2   (shared memory)
+//:
+//: The SMEM pair is now caught by the derivation below and would not have shipped.
+//: **The register pair CANNOT BE CAUGHT AT COMPILE TIME**, and that is the finding
+//: rather than the workaround: the driver reports a residency HIGHER than
+//: `ctas_for_residency` states, because `ptxas` spends fewer registers than
+//: `consumer_reg_budget` budgets, and the ring's own addressing (+3 to +7 registers
+//: at the flagship, measured) eats that undeclared surplus. No `constexpr` can see a
+//: `ptxas` output. Re-deriving `consumer_reg_budget` -- D8-Q1, already open -- is the
+//: thing that would let this default move to `2`.
+#ifndef ROLA_C_RING_DEPTH
+#define ROLA_C_RING_DEPTH 1
+#endif
+
 
 //: **A MEASURED KERNEL FACT, NOT AN ARCHITECTURE FACT AND NOT A THRESHOLD.**
 //:
@@ -554,13 +610,43 @@ constexpr size_t vw_union_bytes() {
   return align4(vw > clk ? vw : clk);
 }
 
+//: THE STAGING SET, AND WHY IT IS EXACTLY THESE OBJECTS.
+//:
+//: The ring's members are the SMEM objects the tile's STAGING phase PRODUCES and the
+//: tile's COMPUTE phase CONSUMES -- `Rf`, `Vw`, the two row scales, and under
+//: `COMPACT` the gathered list. Two per-tile objects are deliberately NOT in it, and
+//: both exclusions are structural rather than budgetary:
+//:
+//:   * `Gm` is GEMM 2's OUTPUT, produced in phase B and consumed in phase C of the
+//:     SAME tile. Nothing a feeder does one tile ahead can write it, so a second
+//:     `Gm` slot would be storage with no producer -- dead memory, not a smaller
+//:     saving. (D1.3's table listed it because that table enumerated the per-tile
+//:     SMEM objects, not the staging OUTPUTS; this is that distinction landing.)
+//:   * `WT` needs no slot because the run-ahead's PROGRAM POINT is already past its
+//:     last reader: the staging of tile `n + 1` is issued after tile `n`'s window
+//:     loop, where the Gram and the fold have both retired. `WT` is ringed by the
+//:     SCHEDULE at depth 1, which is strictly cheaper than ringing it in storage.
+//:
+//: `den` is written and read inside one tile's compute and is likewise excluded.
+template <int BT, int BC, int DV, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
+          bool COMPACT>
+constexpr size_t staging_slot_bytes() {
+  size_t b = 2 * static_cast<size_t>(BT) * sizeof(float);                 // sr, sw
+  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();         // Vw (+ clk)
+  b += static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) * sizeof(unsigned);
+  if (COMPACT) b += (2 * static_cast<size_t>(BC) + 2) * sizeof(int);
+  return b;
+}
+
 template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
-          bool DECAY, bool GLOBAL, bool COMPACT>
-constexpr size_t consumer_smem_bytes() {
+          bool DECAY, bool GLOBAL, bool COMPACT, int RING>
+constexpr size_t consumer_smem_bytes_at() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);          // S
   //: `den` exists only under `global`; the `raw` arm has no denominator stream at
   //: all, so allocating its row would be dead storage rather than a rounding.
-  b += (GLOBAL ? 3 : 2) * static_cast<size_t>(BT) * sizeof(float);        // sr, sw, den
+  //: `sr`/`sw` are STAGING outputs and carry the ring; `den` is not and does not.
+  b += RING * 2 * static_cast<size_t>(BT) * sizeof(float);                // sr, sw
+  b += (GLOBAL ? 1 : 0) * static_cast<size_t>(BT) * sizeof(float);        // den
   b += 2 * static_cast<size_t>(kMaxWords) * sizeof(uint32_t);             // candidates
   b += static_cast<size_t>(D) * BC * sizeof(int);                         // dig
   // Row pitches carry the bank-conflict padding; see the kernel's ledger.
@@ -575,11 +661,13 @@ constexpr size_t consumer_smem_bytes() {
               wt_pitch<BT, READ_PREC, FOLD_PREC>() *
               (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16)
                                                        : sizeof(float)));
-  //: `Vw` and its `clk` tenant -- see `vw_union_bytes`.
-  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
+  //: `Vw` and its `clk` tenant -- see `vw_union_bytes`. RINGED (`DECAY` pins
+  //: `RING == 1`, so the `clk` tenant is never multiplied).
+  b += RING * vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
   //: `Rf` carries ONE fragment-ordered A operand PER `m16` ROW BLOCK, `BT / 16` of
   //: them. At `BT = 16` this is the single block it always was.
-  b += static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) * sizeof(unsigned);  // Rf
+  b += RING * static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) *
+       sizeof(unsigned);                                                   // Rf, RINGED
   // `Gm` follows `READ_PREC` in both type and pitch (see the kernel).
   b += (READ_PREC == MmaPrec::kBf16)
            ? static_cast<size_t>(BT) * (BT + 8) * sizeof(__nv_bfloat16)
@@ -612,7 +700,9 @@ constexpr size_t consumer_smem_bytes() {
   //: REGISTERS -- which also removes the barrier that would have published them and
   //: the aliasing argument that would have licensed the storage. Same 520 B, one
   //: fewer barrier, no alias to keep sound.
-  if (COMPACT) b += (2 * static_cast<size_t>(BC) + 2) * sizeof(int);      // c_idx, c_slot, c_count
+  //: RINGED: the gathered list is a staging OUTPUT (the panel builds and the fold's
+  //: scatter all read it), so a run-ahead gather must not overwrite the live one.
+  if (COMPACT) b += RING * (2 * static_cast<size_t>(BC) + 2) * sizeof(int);
   //: K3b's item-stream control block -- `2 + QPO` `int`s, on EVERY arm (12 B at
   //: `BC = 16`, 24 B at `BC = 64`). It is the whole storage cost of the
   //: counter-gated phase ordering and of the fold's fluid item pool (the item table
@@ -627,6 +717,54 @@ constexpr size_t consumer_smem_bytes() {
   //: that matters -- the byte count is only the reason to expect it.
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);                  // ctl
   return b;
+}
+
+//: THE RING DEPTH, DERIVED. One rule, applied per instantiation: take the deeper
+//: staging set iff it costs NO CTA. `ctas_for_residency` is the same function
+//: `__launch_bounds__` is derived from, so the ring cannot silently disagree with
+//: the bound the binary is compiled under -- they read the same arithmetic off the
+//: same two inputs.
+//:
+//: The `DECAY` pin is a CORRECTNESS term and is applied FIRST, ahead of any
+//: footprint test, exactly as D2.3 requires: `clk` aliases `Vw` and both panel
+//: builds read `clk`, so no member of the staging set can be produced a tile ahead
+//: there whatever the headroom says. A future un-aliasing of `clk` is the only thing
+//: that changes this line.
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
+          bool DECAY, bool GLOBAL, bool COMPACT>
+constexpr int consumer_ring_depth() {
+  if (DECAY) return 1;                                 // D2.3, correctness
+  constexpr int req = (ROLA_C_RING_DEPTH >= 2) ? 2 : 1;
+  if (req == 1) return 1;
+  constexpr int budget = consumer_reg_budget(BT, BC, DECAY);
+  constexpr size_t one =
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
+                             COMPACT, 1>();
+  constexpr size_t two =
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
+                             COMPACT, 2>();
+  if (ctas_for_residency(two, budget) != ctas_for_residency(one, budget)) return 1;
+  //: AND THE SHARED-MEMORY TERM ON ITS OWN, which is NOT implied by the line above.
+  //: `ctas_for_residency` takes a MIN over three terms, so a `by_regs` floor can
+  //: mask an SMEM drop entirely -- and the driver, which spends fewer registers than
+  //: the budget, then sees the drop the min hid. Measured: two shapes shipped a
+  //: 3 -> 2 driver regression through the min alone. The SMEM term is the only part
+  //: of the driver's answer a `constexpr` can see, so it is checked separately.
+  constexpr int threads = kSm.max_threads_per_sm / kConsumerThreads;
+  constexpr int smem_one = static_cast<int>(kSm.smem_per_sm / (one + kDriverSmemReservePerCta));
+  constexpr int smem_two = static_cast<int>(kSm.smem_per_sm / (two + kDriverSmemReservePerCta));
+  const int cap_one = smem_one < threads ? smem_one : threads;
+  const int cap_two = smem_two < threads ? smem_two : threads;
+  return cap_two == cap_one ? 2 : 1;
+}
+
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
+          bool DECAY, bool GLOBAL, bool COMPACT>
+constexpr size_t consumer_smem_bytes() {
+  return consumer_smem_bytes_at<
+      BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT,
+      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
+                          COMPACT>()>();
 }
 
 //: `clk`'s row pitch is `BC + 4`, token-major (`clk[t * CKP + i]`), on the same
@@ -1015,6 +1153,21 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: fp32, so `p + count` would silently mis-place every buffer after them. `align4`
   //: keeps each subsequent fp32 buffer 4-byte aligned; every shipped
   //: `(BC, BTP)` product is already a multiple of 2 elements, so it never pads.
+  //: ---- THE STAGING RING, RESOLVED (K3c; §8 placeholder `C_RING_DEPTH`) ------
+  //: `kRing` slots of the STAGING SET (`Rf`, `Vw`, `sr`/`sw`, and under `COMPACT`
+  //: the gathered list). `1` is today's structure: the `_r0` bases below ARE the
+  //: buffers, every slot expression folds to slot 0, and not one byte moves.
+  constexpr int kRing = consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC,
+                                            DECAY, GLOBAL, COMPACT>();
+  //: D2.3, AS A CORRECTNESS ASSERT AND NOT AS A FOOTPRINT ONE. `clk` aliases `Vw`'s
+  //: bytes, so a ringed `Vw` under `DECAY` would put slot `s + 1`'s clock prefix on
+  //: top of slot `s`'s value tile while the fold is still reading it. The derivation
+  //: returns 1 there for exactly this reason; this states the reason so that a
+  //: future headroom change cannot quietly turn the ring on for the wrong arm.
+  static_assert(!DECAY || kRing == 1,
+                "DECAY excludes Vw -- and hence the whole staging set -- from the "
+                "ring: clk aliases Vw's bytes and both panel builds read clk");
+  static_assert(kRing == 1 || kRing == 2, "the run-ahead is one tile deep");
   float* S = reinterpret_cast<float*>(smem_raw);
   char* carve = smem_raw + align4(static_cast<size_t>(BC) * SP * sizeof(float));
   //: `[kWinRows][BTP]`, LEAF-major, WINDOW-local rows. `kWinRows == BC` at the
@@ -1023,15 +1176,20 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: `wt_window_rows`, the same function `consumer_smem_bytes` sizes it from.
   StageT* WT = reinterpret_cast<StageT*>(carve);
   carve += align4(static_cast<size_t>(wt_window_rows(BC, DECAY)) * BTP * sizeof(StageT));
-  StageT* Vw = reinterpret_cast<StageT*>(carve);
+  //: RING BASE. `Vw_r0` is slot 0; slot `s` starts `s * kVwSlot` ELEMENTS in. The
+  //: slot stride is taken in BYTES and converted, for the same reason the carve is
+  //: byte arithmetic: `Vw`'s element size follows `StageT`.
+  constexpr size_t kVwSlotBytes = vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
+  constexpr int kVwSlot = static_cast<int>(kVwSlotBytes / sizeof(StageT));
+  StageT* Vw_r0 = reinterpret_cast<StageT*>(carve);
   //: `clk` ALIASES `Vw`'s bytes -- see `vw_union_bytes`. Declared at the carve rather
   //: than 80 lines below as `clk = Vw`, because with two element types that
   //: assignment no longer even type-checks, and the alias is the load-bearing fact.
+  //: It names SLOT 0 and needs no ring index: `DECAY` pins `kRing == 1`.
   float* clk = reinterpret_cast<float*>(carve);
-  carve += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
-  float* sr = reinterpret_cast<float*>(carve);
-  float* sw = sr + BT;
-  float* den = sw + BT;
+  carve += kRing * kVwSlotBytes;
+  float* sr_r0 = reinterpret_cast<float*>(carve);
+  float* den = sr_r0 + kRing * 2 * BT;
   uint32_t* cand_read = reinterpret_cast<uint32_t*>(den + (GLOBAL ? BT : 0));
   uint32_t* cand_write = cand_read + kMaxWords;
   // §3's leaf-digit decomposition, HOISTED TO THE OWNER. `leaf_digit` is
@@ -1050,8 +1208,8 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: of them at a FIXED block stride. `kRfBlock` is that stride; `kRfWords` the total.
   constexpr int kRfBlock = frag_a_words<READ_PREC>(BC);
   constexpr int kRfWords = NM * kRfBlock;
-  unsigned* Rf = reinterpret_cast<unsigned*>(dig + D * BC);
-  GmT* Gm = reinterpret_cast<GmT*>(Rf + kRfWords);
+  unsigned* Rf_r0 = reinterpret_cast<unsigned*>(dig + D * BC);
+  GmT* Gm = reinterpret_cast<GmT*>(Rf_r0 + kRing * kRfWords);
   // ---- DECAY's three per-leaf vectors, and the clock's ALIAS onto `Vw` --------
   // `log_keep` is per OWNER (computed once at CTA entry); `p_ref` and `s0` are per
   // owner-and-TILE. All three are `[BC]`, which is the 768 B the residency ledger
@@ -1077,9 +1235,10 @@ void consumer_forward_kernel(ConsumerParams p) {
   //                  Read ONLY by the decay clock prefix, which is where the
   //                  scatter-fill identity is realized.
   //   `c_count`      `{K, KI}` -- the list length and its §5 causal PREFIX length.
-  int* c_idx = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
-  int* c_slot = c_idx + (COMPACT ? BC : 0);
-  int* c_count = c_slot + (COMPACT ? BC : 0);
+  //: RINGED, with a slot stride of `2 * BC + 2` ints -- the gathered list is a
+  //: staging output and the run-ahead gather must not overwrite the live one.
+  constexpr int kCSlot = COMPACT ? (2 * BC + 2) : 0;
+  int* c_idx_r0 = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
   // ---- K3b's CONTROL BLOCK, and it is 12-24 BYTES ---------------------------
   // `2 + QPO` `int`s, PACKED rather than bank-separated. The separation would cost
   // `32 * 4` bytes PER COUNTER, and the decay+compact `BC = 64` arm carries the
@@ -1087,7 +1246,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   // apart would cost a CTA to decorrelate a handful of `atomicAdd`s per tile. The
   // traffic they carry is one atomic per warp per phase edge plus one per claimed
   // fold item, which is not a bank-conflict-shaped problem.
-  int* ctl = c_count + (COMPACT ? 2 : 0);
+  int* ctl = c_idx_r0 + kRing * kCSlot;
   static_assert(!DECAY || static_cast<size_t>(BT) * CKP * sizeof(float) <=
                               vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
                 "clk aliases the Vw region and must fit IN BYTES");
@@ -1105,9 +1264,12 @@ void consumer_forward_kernel(ConsumerParams p) {
   // never runs pass 1 at all. A dedicated allocation would have moved the `P = 1`
   // launch's SMEM footprint, and `P = 1` is the primary benchmarked configuration
   // (§6.4): a perturbed baseline is not a baseline.
-  float* a_state = reinterpret_cast<float*>(Rf);               // [BC]
-  int* sum_slot = reinterpret_cast<int*>(Rf) + BC;             // [BC]
-  int* sum_count = reinterpret_cast<int*>(Rf) + 2 * BC;        // [1]
+  //: SLOT 0 of the ring, and that is sound at any depth: pass 1 forces
+  //: `is_read = false` on every tile, so no slot's read coefficients are ever built
+  //: in the pass that owns this alias -- including the RUN-AHEAD's.
+  float* a_state = reinterpret_cast<float*>(Rf_r0);            // [BC]
+  int* sum_slot = reinterpret_cast<int*>(Rf_r0) + BC;          // [BC]
+  int* sum_count = reinterpret_cast<int*>(Rf_r0) + 2 * BC;     // [1]
   static_assert(frag_a_words<READ_PREC>(BC) >= 2 * BC + 1,
                 "pass 1's summary state must fit inside the read-coefficient buffer");
 
@@ -1355,61 +1517,148 @@ void consumer_forward_kernel(ConsumerParams p) {
   // the loop is a SPEED change and not a semantic one -- every tile it drops has
   // no bit set and would have hit the `continue` below. At `P = 1` the bounds are
   // `0` and `p.n_tiles`, i.e. the pre-`P` loop exactly.
-  for (int tile = tile_lo; tile < tile_hi; ++tile) {
-    const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-    const bool is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-    if (!is_read && !is_write) continue;
 
-    const int t0 = tile * BT;
-    // ---- K3b: THE TILE'S CONTROL BLOCK, RESET, AND THE DEADLOCK ARGUMENT -----
-    // The reset needs no barrier of its own on EITHER side, and both halves of
-    // that are program-order facts rather than hopes:
-    //   * BEHIND it stands the previous tile's end-of-tile `__syncthreads()` (or,
-    //     for the first tile, the CTA-init one), so no warp can still be reading
-    //     last tile's counters;
-    //   * AHEAD of it stands the staging publication `__syncthreads()`, which is
-    //     unconditional and sits between this store and the first `retire_item`.
-    //     It publishes the zeroed counters on the same trip it publishes `Rf`,
-    //     `WT` and `Vw`.
+  // ---- K3c: THE STAGING RING'S CANDIDATE WALK AND ITS TWO LAMBDAS ------------
+  //: `next_cand(t)` is the tile loop's `continue` turned into a FORWARD SCAN, and
+  //: that inversion is what makes a one-tile run-ahead expressible at all: a feeder
+  //: has to know WHICH tile comes next, and "the next candidate at or after `t`" is
+  //: exactly that question. It visits the same tiles in the same order as the
+  //: `continue` did, so at `kRing == 1` the loop below is today's loop verbatim.
+  auto next_cand = [&](int t) {
+    for (; t < tile_hi; ++t) {
+      const uint32_t cw = cand_read[t >> 5] | cand_write[t >> 5];
+      if (((cw >> (t & 31)) & 1u) != 0u) break;
+    }
+    return t;
+  };
+  //: `build_wt_rows` IS REACHED FROM TWO SCOPES -- the staging itself at the plane,
+  //: and the window loop when the window is narrower -- so everything it needs about
+  //: the tile it is building arrives as an ARGUMENT. It carries NO captured mutable
+  //: state, and that is a MEASURED constraint rather than a style choice.
+  //:
+  //: The first form of this rung carried that state (the `[D]` write-amplitude
+  //: pointer array, then a scalar row base) at KERNEL scope, captured by reference
+  //: by two lambdas. `ptxas` put it in LOCAL memory -- §2.4's rejected base-pointer
+  //: hoist arriving through a closure instead of through a runtime `D`. Measured on
+  //: the 7-entry probe against the `2501eb5` baseline: an 8-byte stack frame and
+  //: 61 -> 72 registers on the freeze arm, and 12/28 -> 52/128 spill bytes on the
+  //: `BC = 16` decay arm, with the DECAY arms regressing even though they take
+  //: `kRing == 1` and were supposed to be untouched. Parameters keep the array a
+  //: plain local with statically-indexed, fully unrolled accesses.
+
+    // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS (K3a) ---------
+    // `build_wt_rows(q_lo, q_hi)` fills the write panel's rows `[q_lo, q_hi)`. At
+    // `C_WT_WINDOW = QPO` it has ONE call site with `q_lo = 0`, so the range folds
+    // away and the emitted loop is the plane pass verbatim; windowed, the same
+    // function is the per-atom fill. Extracting it is what makes "the plane" a
+    // VALUE OF THE DIAL rather than a second code path (I4).
+  //: THE AMPLITUDE BASES ARRIVE AS A CALLABLE, NOT AS AN ARRAY, and that is the
+  //: same measured constraint stated once more. `const float* [D]` cannot cross a
+  //: lambda boundary -- by reference it must be addressable, by value it is a copy
+  //: with the same problem -- and either form lands it in LOCAL memory, which is
+  //: §2.4's rejected hoist. An ACCESSOR crosses as code: the caller's `amp_w[l]` is
+  //: statically indexed IN THE CALLER'S FRAME, under the caller's `#pragma unroll`,
+  //: so it stays a register there and nothing about this function's shape can move
+  //: it. Measured: rebuilding the array inside instead cost the `BC = 16` decay arm
+  //: 12/28 -> 40/80 spill bytes.
+  auto build_wt_rows = [&](int q_lo, int q_hi, auto&& amp_w_at, const int* cx,
+                           int Kv) {
+    // The loop's fastest axis is `t`, NOT `i`, because `WT` is leaf-major: with
+    // `i` fastest the consecutive lanes would store at stride `BTP`, which is a
+    // 4-way STORE conflict (`gcd(BTP, 32) = 4`). Walking `t` fastest makes the
+    // store contiguous. The amplitude reads are the same set either way.
+    // ---- §6.4 PASS 1's EMPTINESS ANSWER IS TAKEN HERE, PRE-QUANTIZATION -----
+    // The `P > 1` summary must include every leaf that can LEAVE `(A, B) = (1, 0)`.
+    // The test used to be a re-scan of `WT` in the fold's block below; it is moved
+    // to the panel build, where the coefficient exists as the un-narrowed fp32 `a`
+    // and BEFORE it is stored. The invariant being protected is stated in the
+    // negative, because that is the direction that is not free: OVER-inclusion
+    // costs one exactly-`(1, 0)` entry in the emitted list and the scan's fold
+    // returns the incoming value unchanged, while UNDER-inclusion SILENTLY DROPS
+    // STATE. A `WT` narrowed to bf16 (K2) can round a small-but-nonzero fp32
+    // coefficient to exactly zero, so a post-quantization scan is an
+    // under-inclusion hazard by construction -- and the whole point of doing this
+    // BEFORE K2 rather than with it is that the two land separately.
     //
-    // ---- DEADLOCK FREEDOM, as the edge DAG and the always-runnable claim -----
-    // NODES (per tile): `STAGE` (gather / clocks / row scales / the three panel
-    // builds), `A` (readout + mass term 1), `G` (Gram + `Gm` publication),
-    // `F` (fold items + mass fold), `C` (intra + mass term 2 + emission), `B7`
-    // (end of tile).
-    // EDGES, each with the mechanism that carries it:
-    //     STAGE -> A, STAGE -> G_0   the staging `__syncthreads()` (hardware)
-    //     G_w -> F_w, F_w -> G_{w+1} the window's SLOT-READY / SLOT-FREE
-    //                                `__syncthreads()` pair (`!kWtPlane` only;
-    //                                window `w+1`'s build overwrites `WT`'s rows)
-    //     A -> F                     `kCtlReadDone` reaching `kWarps` (readout
-    //                                READS `S`, the fold WRITES it). Taken ONCE,
-    //                                in window 0.
-    //     G -> C                     `kCtlGramDone` reaching `kWarps` (`G` writes
-    //                                `Gm`, `C` reads it). `G`'s publication rides
-    //                                the LAST window.
-    //     F -> B7, C -> B7           program order into the end-of-tile barrier
-    // The relation is a total order on {STAGE, {A, G_0}, F_0, G_1, F_1, ..., C, B7}
-    // and therefore ACYCLIC. (`A` is unordered with respect to every `G_w` -- the
-    // Gram reads `Rf` and `WT` and touches neither `S` nor `Gm`'s readers -- and so
-    // are `F` and `C`: `F` writes `S`, `C` reads `Gm`, `Vw`, `sr`, `den`, and the
-    // sets are disjoint. That is the overlap this rung exists to expose.)
-    // ALWAYS-RUNNABLE, and it is two facts:
-    //   (i) every warp executes `retire_item` on BOTH phase counters
-    //       unconditionally, and in program order both retirements precede both
-    //       waits. So a warp blocked in `await_count` is never waiting on an
-    //       increment a blocked warp still owes -- the increments are all issued
-    //       before any warp can reach a wait. Both counters are monotone with
-    //       target `kWarps`, so every wait terminates after at most `kWarps`
-    //       retirements.
-    //  (ii) NO `__syncthreads` IS EVER REACHED WHILE ANOTHER WARP SPINS. Every warp
-    //       executes the same `kNWin` iterations and the same barriers within them
-    //       (`is_write`, `w` and `kNWin` are all CTA-uniform), and the only wait
-    //       inside the loop -- `kCtlReadDone` in window 0 -- is on a counter every
-    //       warp has already retired, ABOVE the loop. So a warp sitting at a
-    //       SLOT-READY or SLOT-FREE barrier is never waiting on a warp that is
-    //       spinning on something that warp itself must supply.
-    if (tid < ctl_words(BC)) ctl[tid] = 0;
+    // THE REDUCTION IS OVER `t`, AND THE `t`-GROUP IS A CONTIGUOUS LANE RUN.
+    // The loop's index map is `q = idx / BT`, `t = idx % BT`, walked at
+    // `kConsumerThreads` stride, so the `BT` threads sharing a row `q` are lanes
+    // `[g0, g0 + BT)` of ONE warp (`BT` is 16 or 32, both dividing 32 or equal to
+    // it). `kRowLanes` is that group's mask. It is a lane ARITHMETIC fact of the
+    // index map, not a density or a threshold, and the `static_assert` below is
+    // what makes a future `BT` fail the build rather than silently mis-reduce.
+    constexpr unsigned kRowLanes = (BT >= 32) ? 0xffffffffu : ((1u << BT) - 1u);
+    static_assert(BT == 16 || BT == 32,
+                  "the pass-1 emptiness ballot assumes the BT threads of one WT row "
+                  "are a contiguous lane run inside one warp");
+    for (int idx = tid; idx < BT * (q_hi - q_lo); idx += kConsumerThreads) {
+      const int qr = idx / BT;
+      const int q = q_lo + qr;
+      const int t = idx - qr * BT;
+      // `WT`'s rows are WINDOW-LOCAL: the buffer holds `kWinRows` of them and
+      // `q_lo` is the window's first leaf position, so the stored row is
+      // `q - q_lo`. At the plane `q_lo == 0` and this is `q` exactly.
+      if (COMPACT && q >= Kv) { stage_put(WT[qr * BTP + t], 0.0f); continue; }
+      const int i = COMPACT ? cx[q] : q;
+      float a = 1.0f;
+#pragma unroll
+      for (int l = 0; l < D; ++l) {
+        if (l < j) continue;
+        a *= amp_w_at(l, t, i);
+      }
+      // DECAY, step (d): `fw[t,i] = keep_i^{-(P[t,i] - P_ref[i])}`, folded into
+      // the WRITE coefficient. THE SAME `WT` THEN SERVES BOTH GEMM 2 (the causal
+      // Gram, where it meets `Rf`'s `fr` and the two reconstruct
+      // `survival(j -> t)` exactly) AND GEMM 4 (the fold, where it meets the
+      // state's `s0`). One panel, two consumers -- rule 1's half-mass shift is
+      // what makes that possible and it is why decay needs no second `[BT][BC]`
+      // buffer.
+      //
+      // This is the DIVISION by cumulative survival that §12 rule 3 exists for,
+      // and with bf16 now the production fold (RULING 1 revised) rule 3's second
+      // site -- `mma_tile`'s `clamp_bf16_finite` at the narrowing point -- goes
+      // live on the WRITE side of the SHIPPED arm, which is rule 3's own
+      // motivating case. Both sites are required and both are live: the exponent
+      // clamp here bounds the value at `e^88 = 1.65e38` (finite in fp32 AND in
+      // bf16, which shares fp32's 8-bit exponent), and the format guard at the
+      // MMA catches anything the accumulated product does downstream.
+      if (DECAY) a *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+      // The pre-quantization test. `__any_sync` names ONLY this row's lane group:
+      // a COMPACT pad row `continue`s above, and `q` is group-uniform, so the whole
+      // group leaves together and the group that stayed is converged. One lane per
+      // row publishes, so `sum_slot` takes no intra-tile race (`c_idx` is
+      // injective, and without COMPACT `i == q`).
+      if (summary && __any_sync(kRowLanes << (lane & ~(BT - 1)), a != 0.0f) &&
+          (lane & (BT - 1)) == 0) {
+        sum_slot[i] = 1;
+      }
+      stage_put(WT[qr * BTP + t], a);
+    }
+  };
+
+  //: ---- THE STAGING, AS A FUNCTION OF (TILE, SLOT) ---------------------------
+  //: Everything the tile's COMPUTE consumes but does not produce: the gather, the
+  //: clock prefix, the row scales, the read panel, the write panel at the plane, and
+  //: the value tile. At `kRing == 1` it is called at the top of the tile body and
+  //: `slot` is identically 0, so the emitted code is the pre-ring one with the
+  //: braces moved. At `kRing == 2` it is called ONE VISIT EARLY, from inside the
+  //: previous tile's compute.
+  //: The schedule bits arrive as ARGUMENTS rather than being re-derived from the
+  //: candidate words: at depth 1 the caller has just computed them and a second
+  //: SMEM read cost the `BC = 64, BT = 16, DV = 32` global arm 2 registers -- which
+  //: is the 64-register allocation boundary and therefore its 4th CTA.
+  auto stage_tile = [&](int tile, int slot, bool is_read, bool is_write) {
+    const int t0 = tile * BT;
+    //: The slot's view of the staging set. At `kRing == 1` every one of these is the
+    //: base pointer and the multiply folds away.
+    float* sr = sr_r0 + slot * 2 * BT;
+    float* sw = sr + BT;
+    unsigned* Rf = Rf_r0 + slot * kRfWords;
+    StageT* Vw = Vw_r0 + slot * kVwSlot;
+    int* c_idx = c_idx_r0 + slot * kCSlot;
+    int* c_slot = c_idx + (COMPACT ? BC : 0);
+    int* c_count = c_slot + (COMPACT ? BC : 0);
+
     // ---- 64-BIT ADDRESS ARITHMETIC, PAID ONCE PER TILE INSTEAD OF PER ELEMENT ----
     // The amplitude streams are `[BH, n_tiles, BT, pitch]`, so the row base needs 64
     // bits, but the offset WITHIN a tile does not -- it is `t * pitch + digit`,
@@ -1431,7 +1680,6 @@ void consumer_forward_kernel(ConsumerParams p) {
       amp_r[l] = p.amp_read[l] + tile_row * p.level_pitch_read[l];
       amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
     }
-
     // ---- COMPACT: §3 step 2's SUPPORT-DRIVEN GATHER -------------------------
     // Three steps, none of them a branch on a density:
     //   (a') the FIXED levels' AND, folded into TOKEN VALIDITY. A fixed level
@@ -1538,23 +1786,12 @@ void consumer_forward_kernel(ConsumerParams p) {
       if (lane == 0) c_count[0] = k;
     }
     if (COMPACT) __syncthreads();
-    // Compiled out, the gather's answer is its `K == BC` degeneracy, known at
-    // compile time: every leaf is active, §5's causal sub-list is the whole
-    // ascending list, and `c_idx[k] == k`. Every site below resolves to the
-    // identity WITHOUT reading SMEM, which is what makes `COMPACT = false`
-    // bit-identical to the pre-compaction kernel rather than merely equal to it --
-    // and, in the other direction, what makes `COMPACT = true` bit-identical to
-    // `COMPACT = false` on a tile whose gather IS dense.
+
     const int K = COMPACT ? c_count[0] : BC;
-    const int KI = COMPACT ? c_count[1] : BC;
-    // `k` per MMA issue is the SHAPE's, compile-time from the format axis --
-    // `m16n8k8` on tf32x3, `m16n8k16` on bf16. Never a size, never a density.
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
     const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;      // readout k-extent
-    const int KIpad = ((KI + kUnit - 1) / kUnit) * kUnit;    // intra Gram k-extent
     const int KpadM = ((K + 15) / 16) * 16;                  // fold m-extent
-    // `KIpad <= Kpad <= KpadM <= BC`, so zeroing `WT`'s rows `[K, KpadM)` covers
-    // every pad row any of the three extents can reach.
+    const int wt_rows = COMPACT ? KpadM : BC;
 
     // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0` -- INTO `Vw` --------
     // Guarded by `is_write` exactly as the production `panel` lowering is: a
@@ -1656,7 +1893,6 @@ void consumer_forward_kernel(ConsumerParams p) {
         for (int c = lane; c < cols; c += 32) S[i * SP + c] *= s;
       }
     }
-
     // ---- §3 STEP 3's ROW SCALES, HOISTED ABOVE THE PANEL BUILDS (r1 rung 0) --
     // `sr[t]` and `sw[t]` are the tile's per-token row scales: the read/write gain
     // times the FIXED levels' amplitudes at the owner's own digit. They are constant
@@ -1716,7 +1952,6 @@ void consumer_forward_kernel(ConsumerParams p) {
     // between the panels and the staging and publishes `sw` on its way past, so a
     // second rendezvous here would order nothing.
     if (!DECAY && is_write) __syncthreads();
-
     // ---- the two coefficient blocks and the row scales (§3 steps 2-3) --------
     // `R[t, i] = scale_read[t] * prod_{l >= j} amp_read[l][t, digit_l(i)]`, with the
     // row scale held OUT of the block: it is constant along both `k` and `n`, so it
@@ -1799,92 +2034,29 @@ void consumer_forward_kernel(ConsumerParams p) {
     // GEMM 4 as `[m][k]` with `m` the compacted position. That is the second half
     // of the §2.6 dividend -- the production kernel needs a separate compacted
     // COPY (`panel_write_c`) precisely because it receives its panel dense.
-    const int wt_rows = COMPACT ? KpadM : BC;
-    // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS (K3a) ---------
-    // `build_wt_rows(q_lo, q_hi)` fills the write panel's rows `[q_lo, q_hi)`. At
-    // `C_WT_WINDOW = QPO` it has ONE call site with `q_lo = 0`, so the range folds
-    // away and the emitted loop is the plane pass verbatim; windowed, the same
-    // function is the per-atom fill. Extracting it is what makes "the plane" a
-    // VALUE OF THE DIAL rather than a second code path (I4).
-    auto build_wt_rows = [&](int q_lo, int q_hi) {
-      // The loop's fastest axis is `t`, NOT `i`, because `WT` is leaf-major: with
-      // `i` fastest the consecutive lanes would store at stride `BTP`, which is a
-      // 4-way STORE conflict (`gcd(BTP, 32) = 4`). Walking `t` fastest makes the
-      // store contiguous. The amplitude reads are the same set either way.
-      // ---- §6.4 PASS 1's EMPTINESS ANSWER IS TAKEN HERE, PRE-QUANTIZATION -----
-      // The `P > 1` summary must include every leaf that can LEAVE `(A, B) = (1, 0)`.
-      // The test used to be a re-scan of `WT` in the fold's block below; it is moved
-      // to the panel build, where the coefficient exists as the un-narrowed fp32 `a`
-      // and BEFORE it is stored. The invariant being protected is stated in the
-      // negative, because that is the direction that is not free: OVER-inclusion
-      // costs one exactly-`(1, 0)` entry in the emitted list and the scan's fold
-      // returns the incoming value unchanged, while UNDER-inclusion SILENTLY DROPS
-      // STATE. A `WT` narrowed to bf16 (K2) can round a small-but-nonzero fp32
-      // coefficient to exactly zero, so a post-quantization scan is an
-      // under-inclusion hazard by construction -- and the whole point of doing this
-      // BEFORE K2 rather than with it is that the two land separately.
-      //
-      // THE REDUCTION IS OVER `t`, AND THE `t`-GROUP IS A CONTIGUOUS LANE RUN.
-      // The loop's index map is `q = idx / BT`, `t = idx % BT`, walked at
-      // `kConsumerThreads` stride, so the `BT` threads sharing a row `q` are lanes
-      // `[g0, g0 + BT)` of ONE warp (`BT` is 16 or 32, both dividing 32 or equal to
-      // it). `kRowLanes` is that group's mask. It is a lane ARITHMETIC fact of the
-      // index map, not a density or a threshold, and the `static_assert` below is
-      // what makes a future `BT` fail the build rather than silently mis-reduce.
-      constexpr unsigned kRowLanes = (BT >= 32) ? 0xffffffffu : ((1u << BT) - 1u);
-      static_assert(BT == 16 || BT == 32,
-                    "the pass-1 emptiness ballot assumes the BT threads of one WT row "
-                    "are a contiguous lane run inside one warp");
-      for (int idx = tid; idx < BT * (q_hi - q_lo); idx += kConsumerThreads) {
-        const int qr = idx / BT;
-        const int q = q_lo + qr;
-        const int t = idx - qr * BT;
-        // `WT`'s rows are WINDOW-LOCAL: the buffer holds `kWinRows` of them and
-        // `q_lo` is the window's first leaf position, so the stored row is
-        // `q - q_lo`. At the plane `q_lo == 0` and this is `q` exactly.
-        if (COMPACT && q >= K) { stage_put(WT[qr * BTP + t], 0.0f); continue; }
-        const int i = COMPACT ? c_idx[q] : q;
-        float a = 1.0f;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l < j) continue;
-          a *= amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
-        }
-        // DECAY, step (d): `fw[t,i] = keep_i^{-(P[t,i] - P_ref[i])}`, folded into
-        // the WRITE coefficient. THE SAME `WT` THEN SERVES BOTH GEMM 2 (the causal
-        // Gram, where it meets `Rf`'s `fr` and the two reconstruct
-        // `survival(j -> t)` exactly) AND GEMM 4 (the fold, where it meets the
-        // state's `s0`). One panel, two consumers -- rule 1's half-mass shift is
-        // what makes that possible and it is why decay needs no second `[BT][BC]`
-        // buffer.
-        //
-        // This is the DIVISION by cumulative survival that §12 rule 3 exists for,
-        // and with bf16 now the production fold (RULING 1 revised) rule 3's second
-        // site -- `mma_tile`'s `clamp_bf16_finite` at the narrowing point -- goes
-        // live on the WRITE side of the SHIPPED arm, which is rule 3's own
-        // motivating case. Both sites are required and both are live: the exponent
-        // clamp here bounds the value at `e^88 = 1.65e38` (finite in fp32 AND in
-        // bf16, which shares fp32's 8-bit exponent), and the format guard at the
-        // MMA catches anything the accumulated product does downstream.
-        if (DECAY) a *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
-        // The pre-quantization test. `__any_sync` names ONLY this row's lane group:
-        // a COMPACT pad row `continue`s above, and `q` is group-uniform, so the whole
-        // group leaves together and the group that stayed is converged. One lane per
-        // row publishes, so `sum_slot` takes no intra-tile race (`c_idx` is
-        // injective, and without COMPACT `i == q`).
-        if (summary && __any_sync(kRowLanes << (lane & ~(BT - 1)), a != 0.0f) &&
-            (lane & (BT - 1)) == 0) {
-          sum_slot[i] = 1;
-        }
-        stage_put(WT[qr * BTP + t], a);
-      }
-    };
     // THE PLANE'S CALL SITE. Hoisted OUT of the window loop when the window is the
     // plane, and that placement is not cosmetic: it is what keeps the `DECAY` arm's
     // build ABOVE the `clk` -> `Vw` lifetime barrier below, where `clk` is still
     // live. `DECAY` pins `kWtPlane`, so the two facts are one fact.
-    if constexpr (kWtPlane) {
-      if (is_write) build_wt_rows(0, wt_rows);
+    //: THE PLANE'S BUILD IS HERE ONLY AT DEPTH 1, and the reason is a RACE rather
+    //: than a preference. `WT` is single-buffered at every ring depth, and its
+    //: readers -- the Gram and the fold -- retire ASYNCHRONOUSLY: the fold is a
+    //: claim pool, so a warp that exhausted the pool can reach this point while
+    //: another warp is still executing its last claimed item. A run-ahead build
+    //: here would overwrite rows that warp is reading. At depth 2 the build
+    //: therefore sits in the tile's OWN body, above the publication rendezvous,
+    //: which costs no barrier at all -- see the call site there.
+    //: At depth 1 it must be here: `DECAY` pins the plane and its build reads
+    //: `clk`, which the barrier below kills.
+    if constexpr (kWtPlane && kRing == 1) {
+      if (is_write) {
+        build_wt_rows(
+            0, wt_rows,
+            [&](int l, int t, int i) {
+              return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+            },
+            c_idx, K);
+      }
     }
     // ---- THE `clk` -> `Vw` LIFETIME BARRIER, AND IT IS DECAY'S ALONE ---------
     // `clk` (the tile's per-leaf inclusive clock prefix) ALIASES `Vw`'s bytes -- see
@@ -1909,6 +2081,149 @@ void consumer_forward_kernel(ConsumerParams p) {
         stage_put(Vw[t * VWP + ch], sw[t] * vv);
       }
     }
+  };
+
+
+  //: ---- THE CANDIDATE WALK, SOFTWARE-PIPELINED AT `kRing == 2` ---------------
+  //: The PROLOGUE stages the first candidate; thereafter each visit stages the NEXT
+  //: candidate from inside its own compute. `visit` -- not `tile` -- indexes the
+  //: ring, because the ring's slots alternate over CANDIDATE VISITS while the tile
+  //: index skips.
+  //:
+  //: **THE LOOP KEEPS ITS ORIGINAL INDUCTION (`++tile`) AND ITS `continue`, AND
+  //: THAT IS A MEASURED CONSTRAINT.** Folding the candidate scan into the loop's
+  //: INCREMENT (`for (tile = next_cand(tile_lo); ...; tile = next_cand(tile + 1))`)
+  //: is the same walk and it cost, on the 7-entry probe against `2501eb5`, **12/28
+  //: -> 94/340 spill bytes on the `BC = 16` decay arm and 36/72 -> 98/300 on the
+  //: `BC = 64` decay raw arm** -- on arms that take `kRing == 1` and were supposed
+  //: to be untouched. So the scan stays where the run-ahead needs it and NOWHERE
+  //: else: inside the `if constexpr (kRing == 2)` block, which is not emitted at
+  //: depth 1.
+  if constexpr (kRing == 2) {
+    const int first = next_cand(tile_lo);
+    if (first < tile_hi) {
+      stage_tile(first, 0,
+                 ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
+                 ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u);
+    }
+  }
+  for (int tile = tile_lo, visit = 0; tile < tile_hi; ++tile) {
+    const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+    const bool is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+    if (!is_read && !is_write) continue;
+
+    const int t0 = tile * BT;
+    //: THE COMPUTE SLOT. Constant-folded to 0 at `kRing == 1`.
+    const int slot = (kRing == 2) ? (visit & 1) : 0;
+    float* sr = sr_r0 + slot * 2 * BT;
+    float* sw = sr + BT;
+    unsigned* Rf = Rf_r0 + slot * kRfWords;
+    StageT* Vw = Vw_r0 + slot * kVwSlot;
+    int* c_idx = c_idx_r0 + slot * kCSlot;
+    int* c_count = c_idx + (COMPACT ? 2 * BC : 0);
+
+    // ---- K3b: THE TILE'S CONTROL BLOCK, RESET, AND THE DEADLOCK ARGUMENT -----
+    // The reset needs no barrier of its own on EITHER side, and both halves of
+    // that are program-order facts rather than hopes:
+    //   * BEHIND it stands the previous tile's end-of-tile `__syncthreads()` (or,
+    //     for the first tile, the CTA-init one), so no warp can still be reading
+    //     last tile's counters;
+    //   * AHEAD of it stands the staging publication `__syncthreads()`, which is
+    //     unconditional and sits between this store and the first `retire_item`.
+    //     It publishes the zeroed counters on the same trip it publishes `Rf`,
+    //     `WT` and `Vw`.
+    //
+    // ---- DEADLOCK FREEDOM, as the edge DAG and the always-runnable claim -----
+    // NODES (per tile): `STAGE` (gather / clocks / row scales / the three panel
+    // builds), `A` (readout + mass term 1), `G` (Gram + `Gm` publication),
+    // `F` (fold items + mass fold), `C` (intra + mass term 2 + emission), `B7`
+    // (end of tile).
+    // EDGES, each with the mechanism that carries it:
+    //     STAGE -> A, STAGE -> G_0   the staging `__syncthreads()` (hardware)
+    //     G_w -> F_w, F_w -> G_{w+1} the window's SLOT-READY / SLOT-FREE
+    //                                `__syncthreads()` pair (`!kWtPlane` only;
+    //                                window `w+1`'s build overwrites `WT`'s rows)
+    //     A -> F                     `kCtlReadDone` reaching `kWarps` (readout
+    //                                READS `S`, the fold WRITES it). Taken ONCE,
+    //                                in window 0.
+    //     G -> C                     `kCtlGramDone` reaching `kWarps` (`G` writes
+    //                                `Gm`, `C` reads it). `G`'s publication rides
+    //                                the LAST window.
+    //     F -> B7, C -> B7           program order into the end-of-tile barrier
+    // The relation is a total order on {STAGE, {A, G_0}, F_0, G_1, F_1, ..., C, B7}
+    // and therefore ACYCLIC. (`A` is unordered with respect to every `G_w` -- the
+    // Gram reads `Rf` and `WT` and touches neither `S` nor `Gm`'s readers -- and so
+    // are `F` and `C`: `F` writes `S`, `C` reads `Gm`, `Vw`, `sr`, `den`, and the
+    // sets are disjoint. That is the overlap this rung exists to expose.)
+    // ALWAYS-RUNNABLE, and it is two facts:
+    //   (i) every warp executes `retire_item` on BOTH phase counters
+    //       unconditionally, and in program order both retirements precede both
+    //       waits. So a warp blocked in `await_count` is never waiting on an
+    //       increment a blocked warp still owes -- the increments are all issued
+    //       before any warp can reach a wait. Both counters are monotone with
+    //       target `kWarps`, so every wait terminates after at most `kWarps`
+    //       retirements.
+    //  (ii) NO `__syncthreads` IS EVER REACHED WHILE ANOTHER WARP SPINS. Every warp
+    //       executes the same `kNWin` iterations and the same barriers within them
+    //       (`is_write`, `w` and `kNWin` are all CTA-uniform), and the only wait
+    //       inside the loop -- `kCtlReadDone` in window 0 -- is on a counter every
+    //       warp has already retired, ABOVE the loop. So a warp sitting at a
+    //       SLOT-READY or SLOT-FREE barrier is never waiting on a warp that is
+    //       spinning on something that warp itself must supply.
+    if (tid < ctl_words(BC)) ctl[tid] = 0;
+    //: AT DEPTH 1 THE STAGING IS HERE, exactly where it has always been: between
+    //: the counter reset and the publication rendezvous.
+    if constexpr (kRing == 1) stage_tile(tile, 0, is_read, is_write);
+
+    // Compiled out, the gather's answer is its `K == BC` degeneracy, known at
+    // compile time: every leaf is active, §5's causal sub-list is the whole
+    // ascending list, and `c_idx[k] == k`. Every site below resolves to the
+    // identity WITHOUT reading SMEM, which is what makes `COMPACT = false`
+    // bit-identical to the pre-compaction kernel rather than merely equal to it --
+    // and, in the other direction, what makes `COMPACT = true` bit-identical to
+    // `COMPACT = false` on a tile whose gather IS dense.
+    //: The gathered list is READ HERE, before the publication rendezvous, at BOTH
+    //: depths and for the same reason each time: at depth 1 the gather's own
+    //: `COMPACT` barrier stands behind it, and at depth 2 the PREVIOUS tile's
+    //: end-of-tile barrier does (this slot was gathered one visit ago).
+    const int K = COMPACT ? c_count[0] : BC;
+    const int KI = COMPACT ? c_count[1] : BC;
+    // `k` per MMA issue is the SHAPE's, compile-time from the format axis --
+    // `m16n8k8` on tf32x3, `m16n8k16` on bf16. Never a size, never a density.
+    constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
+    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;      // readout k-extent
+    const int KIpad = ((KI + kUnit - 1) / kUnit) * kUnit;    // intra Gram k-extent
+    const int KpadM = ((K + 15) / 16) * 16;                  // fold m-extent
+    // `KIpad <= Kpad <= KpadM <= BC`, so zeroing `WT`'s rows `[K, KpadM)` covers
+    // every pad row any of the three extents can reach.
+    const int wt_rows = COMPACT ? KpadM : BC;
+    //: The compute tile's amplitude row base, for the two builds below.
+    const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
+    //: ---- THE WRITE PANEL AT DEPTH 2, AND IT COSTS NO BARRIER -----------------
+    //: `WT` is single-buffered at every depth (the ring set has no room for it and
+    //: does not need it), so its build cannot ride the run-ahead: the fold is a
+    //: claim pool and its readers retire asynchronously. Built HERE it needs no new
+    //: rendezvous at all -- the PREVIOUS tile's end-of-tile barrier stands between
+    //: the last fold read of `WT` and this write, and the publication rendezvous
+    //: immediately below stands between this write and the Gram's read. The
+    //: operands it needs from the staging (`c_idx`, `K`) were published by that
+    //: same previous barrier.
+    if constexpr (kWtPlane && kRing == 2) {
+      if (is_write) {
+        const float* amp_w[D];
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
+        }
+        build_wt_rows(
+            0, wt_rows,
+            [&](int l, int t, int i) {
+              return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+            },
+            c_idx, K);
+      }
+    }
+
     __syncthreads();
 
     // ---- GEMM 1: the readout, y_tile = R . S -------------------------------
@@ -2076,7 +2391,22 @@ void consumer_forward_kernel(ConsumerParams p) {
       if constexpr (!kWtPlane) {
         const int b_lo = w * kWinRows;
         const int b_hi = min(wt_rows, b_lo + kWinRows);
-        if (is_write && b_lo < b_hi) build_wt_rows(b_lo, b_hi);
+        if (is_write && b_lo < b_hi) {
+          //: The compute tile's write-amplitude bases, LOCAL to this window's build:
+          //: `D` multiply-adds per window against `BT * kWinRows` element accesses,
+          //: and the array never crosses a lambda boundary.
+          const float* amp_w[D];
+#pragma unroll
+          for (int l = 0; l < D; ++l) {
+            amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
+          }
+          build_wt_rows(
+              b_lo, b_hi,
+              [&](int l, int t, int i) {
+                return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+              },
+              c_idx, K);
+        }
         // SLOT-READY. The window's rows are published to the Gram and the fold.
         // It is paired with the SLOT-FREE barrier at the foot of this loop, and the
         // pair is D8.2's `2 * QPO` sync tax, now REAL rather than deferred: with the
@@ -2334,6 +2664,38 @@ void consumer_forward_kernel(ConsumerParams p) {
     // here could not make: `__syncthreads` would have ordered phase C against the
     // FOLD as well, and the two are independent (`F` writes `S`; `C` reads `Gm`,
     // `Vw`, `sr`, `den`).
+    // ---- K3c: THE RUN-AHEAD, AND WHY IT SITS EXACTLY HERE --------------------
+    // The staging of the NEXT candidate tile is issued at the one program point
+    // where this tile has no compute left to protect and its warps would otherwise
+    // be sitting on the phase-C acquire. Four facts license the placement, and all
+    // four are properties of the program point rather than of the schedule:
+    //   * SLOT-FREE. The slot it writes is `slot ^ 1`, which this CTA last READ in
+    //     the previous visit's compute -- and the previous visit's end-of-tile
+    //     `__syncthreads()` stands between that read and this write.
+    //   * SLOT-READY. Nothing consumes `slot ^ 1` before the next visit's
+    //     publication rendezvous, which this visit's end-of-tile barrier precedes.
+    //   * `WT` IS RINGED BY THE SCHEDULE, NOT BY STORAGE. The staging rebuilds the
+    //     write panel at the plane, and its last reader -- the Gram and the fold --
+    //     retired with the window loop just above. So one `WT` buffer is enough at
+    //     any ring depth, which is what keeps the slot at 4,480 B instead of 7,552.
+    //   * NO WARP IS SPINNING. Every warp retires BOTH phase counters above this
+    //     line (the `kCtlGramDone` retirement rides the last window), so the
+    //     `__syncthreads()` inside the staging -- `sw`'s publication to the `Vw`
+    //     writers -- is reached by the whole CTA with no warp blocked in
+    //     `await_count`. That is the always-runnable clause of the deadlock
+    //     argument, discharged for the one barrier this rung adds to the interior
+    //     of a tile.
+    // `nxt` is CTA-uniform (`next_cand` reads only SMEM candidate words), so the
+    // guard cannot diverge across the barrier inside.
+    if constexpr (kRing == 2) {
+      const int nxt = next_cand(tile + 1);
+      if (nxt < tile_hi) {
+        stage_tile(nxt, slot ^ 1,
+                   ((cand_read[nxt >> 5] >> (nxt & 31)) & 1u) != 0u,
+                   ((cand_write[nxt >> 5] >> (nxt & 31)) & 1u) != 0u);
+      }
+    }
+
     await_count(&ctl[kCtlGramDone], kWarps);
 
     // ---- PHASE C ------------------------------------------------------------
@@ -2521,6 +2883,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     // into the fold's own read-modify-write removes the sweep, its traffic and its
     // barrier together.
     __syncthreads();
+    ++visit;
   }
 
   if (summary) {
