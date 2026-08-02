@@ -1083,50 +1083,6 @@ def test_the_compiled_out_gather_is_exact_under_decay(widths, BC, norm, mma_prec
               mma_precision=mma_precision)
 
 
-@pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 8), 64)])
-@pytest.mark.parametrize("BT", [16, 32])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-@pytest.mark.parametrize("decay", [False, True])
-def test_the_two_compact_arms_are_bit_identical_at_saturation(widths, BC, BT, norm, decay):
-    """At `K == BC` the two instantiations must agree BIT for BIT, not to a tolerance.
-
-    That is the whole argument for making `compact` a free plan-time choice: the
-    compaction is ASCENDING, so at saturation `c_idx[k] == k` and the compacted
-    path issues the same loads in the same order as the compiled-out one, with the
-    same FMA order. Anything less than bit equality would mean the planner's
-    performance decision moved numbers, and the scatter-fill identity argument
-    (`0.0f` for an amplitude, `1.0f` for a survival factor) would be doing work it
-    is not entitled to do.
-
-    **SINGLE-OWNER RECTANGLES ONLY, and that restriction is load-bearing.** With
-    more than one owner per head the split-K `atomicAdd` across concurrent owner
-    CTAs makes the output nondeterministic run to run by construction (see
-    `test_split_k_determinism_is_not_assumed`), so a bit comparison there would be
-    testing the scheduler, not the kernel. `(16,)/BC=16` and `(8,8)/BC=64` are
-    exactly the rectangles with `owners_total == 1`.
-
-    The fixture is fully DENSE, which is what puts every tile at `K == BC`; the
-    sparse case is not bit-identical and is not claimed to be -- it is a genuinely
-    shorter contraction, gated against the oracle above."""
-    from math import prod
-
-    assert prod(widths) // BC == 1, "this gate is only meaningful on a single-owner rectangle"
-    kwargs = dict(
-        nonzero_m0=True, seed=3141, return_outputs=True,
-        decay_dials=(_decay_dials(widths, 3, torch.Generator(device="cuda").manual_seed(3141),
-                                  "cuda") if decay else None))
-    y_c, state_c = _run_case(widths, BC, BT, 64, 2, 37, 3, norm, 1.0, 1.0,
-                             compact=True, **kwargs)
-    y_d, state_d = _run_case(widths, BC, BT, 64, 2, 37, 3, norm, 1.0, 1.0,
-                             compact=False, **kwargs)
-    for name, a, b in (("y", y_c, y_d), ("final state", state_c, state_d)):
-        assert torch.equal(a.view(torch.int32), b.view(torch.int32)), (
-            f"{name} is not BIT-identical between compact=True and compact=False at a "
-            f"saturated (fully dense) fixture: max |delta| = {float((a - b).abs().max()):.3e}. "
-            "At K == BC the gather returns the identity, so the two instantiations must "
-            "issue the same loads in the same order.")
-
-
 @pytest.mark.parametrize("compact", [True, False])
 def test_a_vanishing_write_gain_with_a_live_write_allocation(compact):
     """The bottom of spec §4.2's admitted `g_write` range, which nothing reached.

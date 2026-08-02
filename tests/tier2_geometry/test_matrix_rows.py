@@ -1,0 +1,330 @@
+"""TIER 2 — execute every row of ``matrix.py``.
+
+One test body per contract class, parametrized over the declared matrix. The
+class decides the assertion, and the row decides nothing else:
+
+* **class (a) ENGINEERED IDENTITY** -> ``torch.equal`` on the raw bits, after the
+  row's ``precondition`` has been ASSERTED (never assumed).
+* **class (b) REASSOCIATION-EQUIVALENT** -> BOTH of §6.2's required assertions:
+  each geometry independently within the tier-1 ``RTOL`` of the SAME fp64 oracle
+  point, and the two within a bound DERIVED from the reassociation.
+
+The two prohibitions are structural here rather than remembered: there is no
+``allclose`` in the class-(a) body, and there is no tolerance constant in the
+class-(b) body — only ``BOUNDS``, whose entries are functions of the geometry.
+"""
+from __future__ import annotations
+
+import pytest
+import torch
+
+from rola.ops.consumer import _consumer_forward
+from rola.ops.paging import PageArena
+from tests.tier1_semantics.test_consumer_vs_oracle import RTOL
+from tests.tier2_geometry.matrix import (
+    ENGINEERED_IDENTITY,
+    GEOMETRY_MATRIX,
+    REASSOCIATION_EQUIVALENT,
+    GeometryPair,
+)
+from tests.tier2_geometry.test_p_composition import (
+    _SPARSE_WRITE_ROUTING,
+    _Fixture,
+    _masked_simplex,
+    _relative,
+)
+
+pytestmark = [
+    pytest.mark.cuda,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="the consumer is a CUDA kernel"),
+]
+
+_EPS = torch.finfo(torch.float32).eps
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — named once, referenced by rows
+# ---------------------------------------------------------------------------
+#
+# Every fixture is a CLOSURE over its own seed, so the two geometries of a row see
+# byte-identical inputs. That is the precondition of the whole tier: a difference
+# in the inputs would be indistinguishable from a difference in the geometry.
+
+def _saturated_single_owner(**over):
+    """Dense, ONE owner. `prod(widths)//BC == 1` and `K == BC` at every tile."""
+    return _Fixture((16,), 16, 64, B=2, T=37, H=3, norm="raw", p_read=1.0, p_write=1.0,
+                    seed=3141, nonzero_m0=True, **over)
+
+
+def _multi_owner_dense(**over):
+    """widths `(8,8)` — 64 columns, so `BC = 16` gives 4 owners and `BC = 64` gives 1."""
+    over.setdefault("BC", 16)
+    return _Fixture((8, 8), over.pop("BC"), 64, B=1, T=128, H=2, norm="raw",
+                    p_read=1.0, p_write=1.0, seed=4242, **over)
+
+
+def _split_zero_init(**over):
+    return _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw", p_read=1.0, p_write=1.0,
+                    seed=6001, nonzero_m0=False, **over)
+
+
+def _split_written(**over):
+    return _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw", p_read=1.0, p_write=1.0,
+                    seed=6002, nonzero_m0=True, decay_on=True, **over)
+
+
+def _read_only_owner(**over):
+    """Level 0's write support is confined to digits {0,1}: owners over digits >= 2
+    are never written on ANY segment, which is what §6.4's carve-out is about."""
+    widths, T = (8, 8), 128
+    device = "cuda"
+    gen = torch.Generator(device=device).manual_seed(5002)
+    mask0 = torch.zeros(1, 1, 1, widths[0], dtype=torch.float64)
+    mask0[..., :2] = 1.0
+    write_levels = (
+        _masked_simplex((1, T, 1, widths[0]), mask0, gen, device),
+        _masked_simplex((1, T, 1, widths[1]), torch.ones(1, 1, 1, widths[1]), gen, device))
+    read_levels = tuple(
+        _masked_simplex((1, T, 1, w), torch.ones(1, 1, 1, w), gen, device) for w in widths)
+    return _Fixture(widths, 16, 64, B=1, T=T, H=1, norm="raw", p_read=1.0, p_write=1.0,
+                    seed=5002, read_levels=read_levels, write_levels=write_levels,
+                    nonzero_m0=True, routing=_SPARSE_WRITE_ROUTING, **over)
+
+
+def _paged_dense(**over):
+    """widths `(4,8,8)` at `BC = 16` — 16 owners, densely written, so every page is
+    admitted and the arena is fully resident (§7.1's dense short-circuit)."""
+    return _Fixture((4, 8, 8), 16, 64, B=1, T=48, H=2, norm="raw", p_read=1.0, p_write=1.0,
+                    seed=11, **over)
+
+
+FIXTURES = {
+    "saturated_single_owner": _saturated_single_owner,
+    "multi_owner_dense": _multi_owner_dense,
+    "split_zero_init": _split_zero_init,
+    "split_written": _split_written,
+    "read_only_owner": _read_only_owner,
+    "paged_dense": _paged_dense,
+}
+
+
+# ---------------------------------------------------------------------------
+# Selectors — the declared restrictions
+# ---------------------------------------------------------------------------
+
+def _never_written_leaves(fx, state):
+    """The state rows of leaves with no write on any segment (§6.4's carve-out).
+
+    Returns the selected rows; the caller compares those and nothing else, because
+    the leaves NEXT to them are legitimately re-associated and the row says so.
+    """
+    widths = fx.topology.widths
+    leaf = torch.arange(fx.topology.N, device=state.device)
+    never = (leaf // widths[1]) >= 2
+    assert int(never.sum()) > 0, "the carve-out fixture has no unwritten leaf; the row is vacuous"
+    return state.reshape(-1, fx.topology.N, fx.cols)[:, never, :]
+
+
+SELECTORS = {"never_written_leaves": _never_written_leaves}
+
+
+# ---------------------------------------------------------------------------
+# Derived bounds — class (b) only, and never a constant
+# ---------------------------------------------------------------------------
+
+def _atomic_readout_n2_eps(fx_a, fx_b, out_a, out_b):
+    """The most `y` can move under a reassociation of the §5 readout's atomics.
+
+    One output element is a sum of at most `owners_total` fp32 partials, and
+    reassociating an `n`-term fp32 sum perturbs it by at most
+    `(n-1) * eps * sum|terms|`. Bounding `sum|terms|` by `n * max|y|` (the reachable
+    scale when the partials do not catastrophically cancel) gives `n^2 * eps * max|y|`.
+    `n` is the LARGER of the two geometries' owner counts, because the bound must
+    cover whichever arm re-associates more. Derived arithmetic, not a tuned number.
+    """
+    n = max(fx_a.plan.geometry.owners_total, fx_b.plan.geometry.owners_total)
+    return n * n * _EPS * float(out_a.abs().max())
+
+
+def _carry_fold_T_eps(fx_a, fx_b, out_a, out_b):
+    """The most a leaf's state can move under a reassociation of the token walk.
+
+    A leaf's state is a sum of at most `T` fp32 deposits (one per token). Any
+    reassociation of an `n`-term fp32 sum is bounded by `(n-1) * eps * sum|terms|`;
+    bounding `sum|terms|` by `T * max|state|` gives `T^2 * eps * max|state|`, and
+    `T` here is the sequence length the fixture actually ran. Derived, and it is an
+    ENVELOPE rather than a detector — the bitwise carve-out row is the detector.
+    """
+    T = fx_a.v.shape[1]
+    return T * T * _EPS * float(out_a.abs().max())
+
+
+BOUNDS = {
+    "atomic_readout_n2_eps": _atomic_readout_n2_eps,
+    "carry_fold_T_eps": _carry_fold_T_eps,
+}
+
+
+# ---------------------------------------------------------------------------
+# The runner
+# ---------------------------------------------------------------------------
+
+_PLAN_AXES = {"BT": "BT", "BC": "BC", "COMPACT": "compact"}
+
+
+def build(row: GeometryPair, geometry: dict):
+    """Materialize one side of a row: the fixture, plus the row's own axis applied."""
+    over = {}
+    for axis, value in geometry.items():
+        if axis in _PLAN_AXES:
+            over[_PLAN_AXES[axis]] = bool(value) if axis == "COMPACT" else value
+    return FIXTURES[row.fixture](**over)
+
+
+def run(row: GeometryPair, fx, geometry: dict):
+    """Launch one side and return `(y, state)` in ONE layout for both sides."""
+    if geometry.get("paging"):
+        arena = PageArena(widths=fx.topology.widths, BC=fx.plan.BC, cols=fx.cols,
+                          BH=fx.v.shape[0] * fx.v.shape[2], device=torch.device("cuda"),
+                          max_physical_pages=None, allow_capping=False)
+        y, returned, _ = _consumer_forward(
+            fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
+            fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
+            decay=fx.decay, paging=arena)
+        assert returned is arena, "under paging the arena IS the carried state"
+        return y, arena.materialize()
+    y, state, _ = fx.run(geometry.get("P", 1))
+    if "paging" in geometry:
+        # The unpaged arm, reshaped into the arena's layout so the comparison is
+        # between the same thing addressed two ways -- which is the whole claim.
+        return y, state.reshape(-1, fx.topology.N, fx.cols)
+    return y, state
+
+
+def pick(row: GeometryPair, fx, y, state):
+    out = y if row.output == "y" else state
+    if row.restrict is not None:
+        out = SELECTORS[row.restrict](fx, out)
+    return out
+
+
+def both_sides(row: GeometryPair):
+    fx_a = build(row, dict(row.a))
+    fx_b = build(row, dict(row.b))
+    ya, sa = run(row, fx_a, dict(row.a))
+    yb, sb = run(row, fx_b, dict(row.b))
+    return fx_a, fx_b, pick(row, fx_a, ya, sa), pick(row, fx_b, yb, sb)
+
+
+def _ids(rows):
+    return [r.id for r in rows]
+
+
+_CLASS_A = [r for r in GEOMETRY_MATRIX if r.contract is ENGINEERED_IDENTITY]
+_CLASS_B = [r for r in GEOMETRY_MATRIX if r.contract is REASSOCIATION_EQUIVALENT]
+
+
+# ---------------------------------------------------------------------------
+# Preconditions — asserted, never assumed
+# ---------------------------------------------------------------------------
+
+def assert_precondition(row: GeometryPair, fx_a, fx_b):
+    """Every row's stated precondition, checked against the built geometries.
+
+    §6.2: *"a bit-identity assertion whose precondition is unstated is a future
+    flake"* — and one that is stated but not checked is the same flake with a
+    comment. The mapping from a row to its check is by AXIS and CONTRACT, so a new
+    row cannot arrive without one.
+    """
+    from math import prod
+
+    if row.axis == "COMPACT":
+        assert prod(fx_a.topology.widths) // fx_a.plan.BC == 1, (
+            f"{row.id}: not a single-owner rectangle; with more than one owner the "
+            "split-K atomicAdd makes the comparison a test of the scheduler")
+        assert fx_a.plan.geometry.owners_total == 1
+    elif row.axis == "BC":
+        assert fx_a.topology.widths == fx_b.topology.widths, (
+            f"{row.id}: the two BC values must tile the SAME state columns")
+        if row.contract is ENGINEERED_IDENTITY:
+            assert fx_a.initial_state is None and fx_b.initial_state is None
+        else:
+            assert fx_a.plan.geometry.owners_total != fx_b.plan.geometry.owners_total, (
+                f"{row.id}: both arms have the same owner count, so no split-K "
+                "reassociation is being exercised")
+    elif row.axis == "BT":
+        T = fx_a.v.shape[1]
+        assert T % fx_a.plan.BT == 0 and T % fx_b.plan.BT == 0, (
+            f"{row.id}: T={T} is ragged under BT={fx_a.plan.BT}/{fx_b.plan.BT}; a "
+            "ragged tail is a different comparison and needs its own row")
+    elif row.axis == "P":
+        if row.contract is ENGINEERED_IDENTITY and row.restrict is None:
+            assert fx_a.initial_state is None and fx_b.initial_state is None, (
+                f"{row.id}: the zero-initial-state carve-out requires a zero initial state")
+            assert row.values[1] == 2, (
+                f"{row.id}: the zero-initial-state identity is a P = 2 claim. At "
+                "P >= 3 pass 1's intermediate summaries ARE folded into the "
+                "boundaries, which re-associates -- that is a class-(b) row.")
+        elif row.contract is REASSOCIATION_EQUIVALENT:
+            assert fx_a.initial_state is not None, (
+                f"{row.id}: without a carried state, `P = 2` has no re-associated "
+                "boundary and the row would be vacuous")
+        if row.output == "y":
+            assert fx_a.plan.geometry.owners_total > 1
+    elif row.axis == "paging":
+        assert fx_a.plan.geometry.owners_total > 1 or row.output == "state"
+    else:
+        raise AssertionError(
+            f"{row.id}: axis {row.axis!r} has no precondition check. A row whose "
+            "precondition is prose only is not gated by anything.")
+
+
+# ---------------------------------------------------------------------------
+# CLASS (a) — byte equality, no tolerance, ever
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("row", _CLASS_A, ids=_ids(_CLASS_A))
+def test_an_engineered_identity_is_byte_equal(row: GeometryPair):
+    fx_a, fx_b, out_a, out_b = both_sides(row)
+    assert_precondition(row, fx_a, fx_b)
+    assert torch.equal(out_a.view(torch.int32), out_b.view(torch.int32)), (
+        f"{row.id} is declared ENGINEERED_IDENTITY and is NOT byte-equal: "
+        f"max |delta| = {float((out_a - out_b).abs().max()):.3e}.\n"
+        f"  basis: {row.basis}\n"
+        f"  precondition: {row.precondition}\n"
+        "Either the structural argument in `basis` no longer holds (a kernel change), "
+        "or the row's class is wrong (a matrix change). Loosening this to `allclose` "
+        "is not one of the options: it would mean the planner's performance decision "
+        "moved numbers.")
+
+
+# ---------------------------------------------------------------------------
+# CLASS (b) — the oracle anchor AND the derived bound. Both required.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("row", _CLASS_B, ids=_ids(_CLASS_B))
+def test_a_reassociation_is_oracle_anchored_and_within_its_derived_bound(row: GeometryPair):
+    fx_a, fx_b, out_a, out_b = both_sides(row)
+    assert_precondition(row, fx_a, fx_b)
+
+    # 1. THE ORACLE ANCHOR. Each geometry against the SAME fp64 oracle point,
+    #    independently. This is what stops two wrong geometries from agreeing --
+    #    the shared-router bug passed exactly by agreeing with a sibling.
+    y_ref, state_ref = fx_a.oracle()
+    ref = y_ref if row.output == "y" else state_ref
+    if row.restrict is not None:
+        ref = SELECTORS[row.restrict](fx_a, ref)
+    for tag, out in (("A", out_a), ("B", out_b)):
+        rel = _relative(out, ref.reshape(out.shape))
+        assert rel < RTOL, (
+            f"{row.id}: geometry {tag} is {rel:.3e} from the oracle, outside the "
+            f"tier-1 RTOL {RTOL:.0e}. A geometry that does not hit the oracle cannot "
+            "anchor its partner, whatever the two agree on.")
+
+    # 2. THE DERIVED MUTUAL BOUND. Named by the row, computed from the geometry.
+    bound = BOUNDS[row.bound](fx_a, fx_b, out_a, out_b)
+    delta = float((out_a.double() - out_b.double()).abs().max())
+    assert delta <= bound, (
+        f"{row.id}: the two geometries differ by {delta:.3e}, outside the derived "
+        f"`{row.bound}` bound {bound:.3e}. The answer is a bug hunt or a corrected "
+        "derivation -- never a bigger number.")
