@@ -33,6 +33,7 @@ from rola.planner.schedule import (
     MMA_K_QUANTUM,
     LevelSupportStats,
     Plan,
+    StaticDensity,
     TileUnionStats,
     _tile_union_stats_multi,
     _tile_union_stats_multi_enumerated,
@@ -54,6 +55,7 @@ from rola.planner.schedule import (
     unpack_bits,
 )
 from rola.routing.types import (
+    EntmaxActivation,
     IndependentRouting,
     LeafMassDecay,
     LevelConfig,
@@ -1845,6 +1847,157 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference_on_cuda(
             assert counted == reference, (
                 f"CUDA widths={widths} scenario={scenario} T={T} BC={BC} "
                 f"candidates={candidates}: {counted} != {reference}")
+
+
+def _gen_sided_density_tensors(seed, widths, B, T, H, read_dense, write_dense):
+    """Routing tensors whose REALIZED density matches a per-side declaration.
+
+    A dense side is nowhere zero (the full-support activation's realization); a
+    sparse side is a Bernoulli mask. Plain fixture plumbing, like
+    :func:`_gen_topology_tensors` -- the declaration under test is stated by the
+    caller, and this only makes it TRUE of the data, which is the closed form's
+    stated precondition.
+    """
+    g = torch.Generator().manual_seed(seed)
+    levels = {"read": [], "write": []}
+    for side, dense in (("read", read_dense), ("write", write_dense)):
+        for w in widths:
+            shape = (B, T, H, w)
+            values = torch.rand(shape, generator=g) + 0.01
+            if not dense:
+                values = values * (torch.rand(shape, generator=g) < 0.35)
+            levels[side].append(values)
+    return tuple(levels["read"]), tuple(levels["write"])
+
+
+_DECLARATIONS = [(True, False), (False, True), (True, True), (False, False)]
+_DECLARATION_IDS = ["read-dense", "write-dense", "dense-both", "sparse-both"]
+
+
+@pytest.mark.parametrize("widths", [(4, 4), (8, 16), (3, 5, 2)],
+                         ids=lambda w: "w" + "x".join(map(str, w)))
+@pytest.mark.parametrize("declared", _DECLARATIONS, ids=_DECLARATION_IDS)
+@pytest.mark.parametrize("T", [40, 64])
+def test_the_static_by_config_closed_form_equals_the_enumerated_reference(
+        widths, declared, T):
+    """A declared-dense side's SUBSTITUTED statistics equal the independent definition.
+
+    `StaticDensity` lets the pass replace a dense side's statistics with a closed
+    form (``K = BC``, ``saturated_frac = 1``, ``candidate_frac = 1``,
+    ``ksteps = ceil(BC/16)``) instead of measuring a rectangle the configuration
+    already determines. This gates that substitution against
+    ``_tile_union_stats_multi_enumerated`` -- the from-the-fold-identity walk that
+    shares no arithmetic with either the closed form or the production pass -- and
+    NOT against the production pass on its own, per
+    `[[matching-the-naive-antipattern]]`: agreeing with the implementation the
+    closed form is meant to replace would only prove self-consistency. Equality
+    with the production pass is asserted too, because bit-identity there is the
+    increment's own contract.
+
+    ``T = 40`` keeps the odd finest tile count and the half-outside coarse tile, the
+    case where "every tile that holds a token is saturated" has to exclude the
+    padded tiles the buffers carry and the ``n_pairs`` denominator has to agree.
+    """
+    B, H = 1, 2
+    read_dense, write_dense = declared
+    topology = _topology(widths)
+    read_levels, write_levels = _gen_sided_density_tensors(
+        17, widths, B, T, H, read_dense, write_dense)
+    views = routing_views(read_levels, write_levels, topology)
+    density = StaticDensity(read=(read_dense,) * len(widths),
+                            write=(write_dense,) * len(widths))
+    for BC in _admissible_bcs(widths):
+        for candidates in ((16,), (32,), (16, 32)):
+            static = _tile_union_stats_multi(views, topology, BC, candidates, density)
+            reference = _tile_union_stats_multi_enumerated(views, topology, BC, candidates)
+            measured = _tile_union_stats_multi(views, topology, BC, candidates)
+            assert static == reference, (
+                f"widths={widths} declared={declared} T={T} BC={BC} "
+                f"candidates={candidates}: {static} != {reference}")
+            assert static == measured, (
+                f"declaring a side dense changed the answer: {static} != {measured}")
+
+
+@_CUDA
+@pytest.mark.parametrize("declared", _DECLARATIONS, ids=_DECLARATION_IDS)
+def test_the_static_by_config_closed_form_equals_the_reference_on_cuda(declared):
+    """The same substitution, ON DEVICE, for the same reason the gate above it is.
+
+    The remaining live side still runs `nonzero`, `repeat_interleave` and the
+    `int16` `scatter_reduce_`, and the one-side-dense arm reaches a DIFFERENT
+    predicate on the survivor (``first_write < BT_max`` / ``last_read >= 0``) than
+    the two-sided arm does, so the device implementations of those reductions are
+    on a path the CPU grid never runs.
+    """
+    B, H, T, widths = 1, 2, 40, (4, 4)
+    read_dense, write_dense = declared
+    topology = _topology(widths)
+    read_levels, write_levels = _gen_sided_density_tensors(
+        17, widths, B, T, H, read_dense, write_dense)
+    read_levels = tuple(level.cuda() for level in read_levels)
+    write_levels = tuple(level.cuda() for level in write_levels)
+    views = routing_views(read_levels, write_levels, topology)
+    density = StaticDensity(read=(read_dense,) * len(widths),
+                            write=(write_dense,) * len(widths))
+    for BC in _admissible_bcs(widths):
+        for candidates in ((16,), (32,), (16, 32)):
+            static = _tile_union_stats_multi(views, topology, BC, candidates, density)
+            reference = _tile_union_stats_multi_enumerated(views, topology, BC, candidates)
+            assert static == reference, (
+                f"CUDA declared={declared} BC={BC} candidates={candidates}: "
+                f"{static} != {reference}")
+
+
+def test_static_density_reads_the_activation_registry_not_a_name_list():
+    """`from_topology` is the `exact_zeros` COLUMN, per level and per duty.
+
+    Softmax cannot produce a structural zero (dense by construction); exact entmax
+    can (genuinely routed). The mixed topology is the point: the flags are per
+    LEVEL, and `side_dense` is the conjunction, because a leaf is live only where
+    EVERY level's digit is -- one dense level among sparse ones does not make the
+    side's support the full rectangle.
+    """
+    sparse = IndependentRouting(tied=True, read_activation=EntmaxActivation(1.5),
+                                write_activation=EntmaxActivation(1.5))
+    mixed = Topology(levels=(LevelConfig(width=4, routing=_routing()),
+                             LevelConfig(width=4, routing=sparse)), d_v=4)
+    density = StaticDensity.from_topology(mixed)
+    assert density.read == (True, False) and density.write == (True, False)
+    assert not density.side_dense("read") and not density.side_dense("write")
+
+    dense = StaticDensity.from_topology(_topology((4, 4)))
+    assert dense.read == (True, True) and dense.write == (True, True)
+    assert dense.side_dense("read") and dense.side_dense("write")
+    with pytest.raises(ValueError, match="duty must be"):
+        dense.side_dense("both")
+
+
+def test_a_partly_dense_side_does_not_take_the_closed_form():
+    """One dense level among sparse ones must still be MEASURED, not assumed.
+
+    The failure this forbids is the tempting one: the closed form's precondition is
+    that the side's support is the whole rectangle, which needs EVERY level dense.
+    Gated by equality with the enumerated reference on a side that is dense at one
+    level and genuinely sparse at the other -- if `side_dense` were an `any`, `K`
+    would come back at `BC` on a cell whose realized union is far below it.
+    """
+    B, H, T, widths, BC = 1, 2, 40, (4, 4), 4
+    topology = _topology(widths)
+    g = torch.Generator().manual_seed(23)
+    def level(w, dense):
+        values = torch.rand((B, T, H, w), generator=g) + 0.01
+        # 5 % live: sparse enough that the 16-token tile UNION does not saturate on
+        # its own, which is what makes the assertion below discriminating.
+        return values if dense else values * (torch.rand((B, T, H, w), generator=g) < 0.05)
+    read_levels = (level(4, True), level(4, False))
+    write_levels = (level(4, False), level(4, False))
+    views = routing_views(read_levels, write_levels, topology)
+    density = StaticDensity(read=(True, False), write=(False, False))
+    assert not density.side_dense("read")
+    static = _tile_union_stats_multi(views, topology, BC, (16, 32), density)
+    reference = _tile_union_stats_multi_enumerated(views, topology, BC, (16, 32))
+    assert static == reference
+    assert static[16].mean_K < BC, "the fixture must not be accidentally saturated"
 
 
 @_CUDA

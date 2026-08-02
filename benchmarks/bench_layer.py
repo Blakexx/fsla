@@ -241,9 +241,14 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             g_read, g_write = ro.g_read, ro.g_write
             decay = layer._decay_config() if decay_on else None
 
+            # `static_density` is the LAYER's own build-time declaration, passed
+            # here for the same reason `layer.topology`/`layer.state_block` are: a
+            # plane that dropped it would time a planner call the layer never makes.
             def select():
                 return select_plan(read_levels, write_levels, layer.topology,
-                                      layer.state_block, normalization=norm, decay=decay_on)
+                                      layer.state_block, normalization=norm,
+                                      decay=decay_on,
+                                      static_density=layer.static_density)
 
             plan, axes = select()
 
@@ -262,7 +267,8 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on)
+                                            normalization=norm, decay=decay_on,
+                                            static_density=layer.static_density)
 
             planner()
 

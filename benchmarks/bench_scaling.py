@@ -74,10 +74,12 @@ import argparse
 import gc
 import json
 import math
+import sys
 import time
 
 import torch
 import torch.nn as nn
+from bench.instruments import settle_clocks
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from rola.layers import RoLA
@@ -481,6 +483,12 @@ def main() -> None:
     args = ap.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("this benchmark requires CUDA")
+    # Item 0b's protocol, for the reason that item states: this box idles at ~220 MHz
+    # of a ~2100 MHz rating, so the FIRST cell of a sweep is timed on a ramping clock
+    # and the smallest `L` -- the end the honesty rules forbid cherry-picking -- is
+    # exactly the one that inflates. Reported on stderr so the `--json` stdout of a
+    # piped run stays what it was.
+    print(f"clock-settle: {settle_clocks()}", file=sys.stderr)
 
     branches = [int(s) for s in args.branches.split(",")]
     seq_lens = [int(s) for s in args.seq_lens.split(",")]
