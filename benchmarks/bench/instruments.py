@@ -9,13 +9,19 @@ the quantities a claim about the kernel's behaviour has to cite:
   corroborates a timing claim instead of restating it.
 * :func:`_decay_preamble_ms` -- the decay arm's per-call preamble, isolated, so a
   decay price is not quietly a preamble price.
+* :func:`settle_clocks` -- item 0b's clock-settling protocol: what a timing run does
+  to the box BEFORE it measures anything, so the measurement is of the kernel and
+  not of the clock still ramping.
 
 (``ncu`` counter collection is driven externally and lands here when it is
 committed; the design's §6.9 name for this module is "ncu counters, gatherstats".)
 """
 from __future__ import annotations
 
+import shutil
 import statistics
+import subprocess
+import threading
 import time
 
 import torch
@@ -23,6 +29,115 @@ import torch
 from bench.cells import Cell
 from rola.planner.schedule import build_schedule, owner_geometry, unpack_bits
 from rola.routing.types import LeafMassDecay
+
+# ---------------------------------------------------------------------------
+# CLOCK-SETTLING PROTOCOL (item 0b)
+# ---------------------------------------------------------------------------
+
+def _nvidia_smi_clock_mhz(idx: int, field: str) -> float:
+    """One ``nvidia-smi`` clock field, in MHz, for device ``idx``.
+
+    Raises rather than returning a sentinel on failure: a settle routine that
+    cannot see the clock has to say so (`settle_clocks` catches this and reports
+    it), not proceed as though the box were settled.
+    """
+    out = subprocess.run(
+        ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits",
+         f"--id={idx}"],
+        capture_output=True, text=True, timeout=5, check=True)
+    return float(out.stdout.strip().splitlines()[0])
+
+
+def settle_clocks(*, hold_polls=4, plateau_tol_mhz=30.0, poll_interval_s=0.15,
+                   timeout_s=12.0, matmul_n=4096) -> dict:
+    """Ramp this box to a steady SM clock before ANY latency in this process is
+    timed -- the fix for the gate defect `extraction.md` "A GATE DEFECT FOUND ON THE
+    WAY" recorded rather than worked around.
+
+    **The defect.** The box idles at ~210-240 MHz of a ~2100 MHz rated max. The
+    baseline RECORDER (`bench_regression.py`'s 35 reps * 5 blocks * 7 processes)
+    ramps the clock as an incidental side effect of doing that much work; the
+    per-commit GATE (`test_latency_regression.py`, 11 reps, one process) does not do
+    enough work to ramp it the same way. The two sides of the comparison were
+    therefore starting from different clock states, and the two sub-millisecond
+    wave-quantized `topo-*` cells (`waves_per_multiprocessor = 0.53`, 128 CTAs over
+    80 SMs) are narrow enough for that gap alone to read as a regression.
+
+    **The target is a PLATEAU, not a fraction of the rated max.** The rated max
+    clock (`clocks.max.sm`) is a boost ceiling this card does not sustain under
+    continuous compute -- measured here at 100 % utilization it settles at
+    1710-1740 MHz, ~82 % of the 2100 MHz rating, and holds there (power/thermal
+    limited, not still ramping); `extraction.md`'s own "forcing 1740 MHz by hand"
+    note independently measured the same ceiling. A threshold expressed as a
+    fraction of `clocks.max.sm` is therefore unreachable and times out on every
+    call. The correct target is: the clock has STOPPED CHANGING, wherever it stops
+    -- so this polls `clocks.sm` while a continuous background load runs, and calls
+    it settled once the last `hold_polls` samples all fall within
+    `plateau_tol_mhz` of each other.
+
+    **The fix.** A background thread keeps issuing matmuls on the SAME device the
+    caller is about to time -- continuously, not start/stop per poll, because a
+    stop/query/restart cycle lets the clock relax between bursts and never
+    reflects the steady state the timed reps will actually run under. The main
+    thread polls `nvidia-smi` (a separate process; it does not contend with the
+    GIL the burn thread holds while launching kernels) until the plateau
+    criterion holds or `timeout_s` elapses.
+
+    **Reported, never silently skipped.** A box without `nvidia-smi`, or one whose
+    query fails, gets ``settled: False`` and a ``reason`` in the returned dict
+    instead of the routine pretending it settled a clock it never measured. Callers
+    print this dict so a flaky run says whether settling even ran, rather than
+    leaving the clock as an unstated variable the way the pre-existing gate did.
+    """
+    result: dict = {"settled": False}
+    if not torch.cuda.is_available():
+        result["reason"] = "no cuda device"
+        return result
+    idx = torch.cuda.current_device()
+    if shutil.which("nvidia-smi") is None:
+        result["reason"] = "nvidia-smi not found"
+        return result
+    try:
+        max_mhz = _nvidia_smi_clock_mhz(idx, "clocks.max.sm")
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
+        result["reason"] = f"could not query clocks.max.sm: {exc}"
+        return result
+
+    a = torch.randn(matmul_n, matmul_n, device="cuda", dtype=torch.float16)
+    b = torch.randn(matmul_n, matmul_n, device="cuda", dtype=torch.float16)
+    stop = threading.Event()
+
+    def _burn() -> None:
+        while not stop.is_set():
+            a @ b  # noqa: B018 -- async launch is the point; the result is unused
+
+    burner = threading.Thread(target=_burn, daemon=True)
+    burner.start()
+    try:
+        samples: list[float] = []
+        t0 = time.monotonic()
+        cur = 0.0
+        while time.monotonic() - t0 < timeout_s:
+            time.sleep(poll_interval_s)
+            try:
+                cur = _nvidia_smi_clock_mhz(idx, "clocks.sm")
+            except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
+                result["reason"] = f"could not query clocks.sm: {exc}"
+                return result
+            samples.append(cur)
+            window = samples[-hold_polls:]
+            if len(window) >= hold_polls and max(window) - min(window) <= plateau_tol_mhz:
+                result.update(settled=True, sm_mhz=cur, max_mhz=max_mhz,
+                              plateau_mhz=round(max(window) - min(window), 1),
+                              elapsed_s=round(time.monotonic() - t0, 3))
+                return result
+        result.update(reason="timeout", sm_mhz=cur, max_mhz=max_mhz,
+                      elapsed_s=round(time.monotonic() - t0, 3))
+        return result
+    finally:
+        stop.set()
+        burner.join(timeout=2.0)
+        torch.cuda.synchronize()
 
 
 def gather_stats(cell: Cell, fx=None, max_owners=48):

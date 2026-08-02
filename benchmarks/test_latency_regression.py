@@ -26,6 +26,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from bench.instruments import settle_clocks  # noqa: E402
 from bench.regression import load_baseline, summarize, threshold_ms  # noqa: E402
 from bench_regression import ARMS, arm_id, measure  # noqa: E402
 
@@ -34,6 +35,24 @@ pytestmark = [
     pytest.mark.cuda,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="the consumer is a CUDA kernel"),
 ]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clocks_settled():
+    """Item 0b: match the RECORDER's clock state before the gate times anything.
+
+    The recorder's 35 * 5 * 7 reps ramp the box as a side effect; this gate's 11
+    reps per arm do not, which is exactly the gap `extraction.md`'s gate-defect note
+    traces the two wave-quantized `topo-*` cells' flakiness to (§`bench.instruments`
+    docstring for the full account). Session-scoped and autouse: it runs once,
+    before the first parametrized arm, on the same device every arm in this process
+    will be timed on -- not per-arm, because the clock is a property of the box, not
+    of the arm.
+    """
+    if torch.cuda.is_available():
+        info = settle_clocks()
+        print(f"\nclock-settle: {info}")
+    yield
 
 
 @pytest.mark.parametrize("spec", ARMS, ids=[arm_id(*s) for s in ARMS])

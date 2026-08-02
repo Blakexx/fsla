@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bench.cells import CELLS  # noqa: E402
+from bench.instruments import settle_clocks  # noqa: E402
 from bench.pairing import _timed  # noqa: E402
 from bench.regression import BASELINE, load_baseline, summarize, threshold_ms, write_baseline  # noqa: E402
 
@@ -84,6 +85,17 @@ def measure_all(arms=ARMS, *, reps=11, blocks=5):
     the MEDIAN OF BLOCK MEDIANS with the IQR OF BLOCK MEDIANS. That IQR is the spread
     of the number being compared, which is what the threshold has to be derived from.
     """
+    # Item 0b: settle the clock BEFORE preparing/timing any arm, in every process
+    # that measures -- this is the SAME routine `test_latency_regression.py`'s
+    # session fixture calls, so the recorder and the gate share one precondition
+    # instead of the recorder ramping incidentally (35 * 5 reps) while the gate
+    # (11 reps, one process) does not. `--emit-json` subprocesses reach this too
+    # (`pooled_across_processes` -> `main` -> here), so every pooled process starts
+    # from the same clock state the pool is meant to characterize. Printed to
+    # STDERR, never stdout: `--emit-json` mode's stdout is parsed whole as JSON by
+    # the parent (`pooled_across_processes`), and a diagnostic line ahead of the
+    # payload would break that parse.
+    print(f"clock-settle: {settle_clocks()}", file=sys.stderr)
     prepared = {arm_id(*spec): _prepare(*spec) for spec in arms}
     per_block = {k: [] for k in prepared}
     for _ in range(blocks):
