@@ -7,11 +7,12 @@ token. The oracle reuses nothing from ``schedule_v3.py`` except the public
 ``owner_geometry``'s decomposition helpers, except in the one test group whose
 subject IS ``owner_geometry`` itself).
 
-CPU-only, with ONE deliberate exception: the support-counted statistics pass reaches
-`Tensor.scatter_reduce_(reduce="amin"/"amax")` on `int16`, `nonzero()` and
-`repeat_interleave`, which are backend-divergent surfaces, and the planner is the one
-thing in this file that runs on the device the routing lives on. Those two tests are
-`@_CUDA`-marked and named `..._on_cuda`; everything else is CPU and builds CPU tensors.
+CPU-only, with ONE deliberate exception: the bit-word statistics pass reaches `int32`
+bit arithmetic at the two's-complement boundary and an inductor-generated reduction
+(Triton on CUDA, C++ on CPU), which are backend-divergent surfaces, and the planner is
+the one thing in this file that runs on the device the routing lives on. Those tests
+are `@_CUDA`-marked and named `..._on_cuda`; everything else is CPU and builds CPU
+tensors.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
+from rola.planner.census import resolve_census, summary_fractions, tile_union_census
 from rola.planner.schedule import (
     _STATS_OWNER_CHUNK_ELEMS,
     CP_ASYNC_ROW_BYTES,
@@ -63,9 +65,9 @@ from rola.routing.types import (
     Topology,
 )
 
-#: The two `..._on_cuda` gates below, and nothing else in this file, run on device --
-#: the support-counted statistics pass reaches backend-divergent reductions and this
-#: file is where its bitwise gate lives.
+#: The `..._on_cuda` gates below, and nothing else in this file, run on device --
+#: the bit-word statistics pass reaches backend-divergent bit arithmetic and a
+#: separately generated fused reduction, and this file is where its bitwise gate lives.
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(),
                            reason="gates the planner's device-side reduction path")
 
@@ -1683,7 +1685,7 @@ def test_the_one_pass_bt_fold_reproduces_the_canonical_definition(widths, scenar
                 f"folded {folded[BT]} != canonical {reference}")
             assert counted[BT] == reference, (
                 f"widths={widths} scenario={scenario} T={T} BC={BC} BT={BT}: "
-                f"support-counted {counted[BT]} != canonical {reference}")
+                f"bit-word {counted[BT]} != canonical {reference}")
 
 
 def test_the_causal_carry_is_load_bearing_in_the_fold():
@@ -1718,8 +1720,12 @@ def test_the_causal_carry_is_load_bearing_in_the_fold():
     assert coarse.mean_KI_candidate > 0.0, "fixture must have a CROSS-half causal read"
     assert folded[16] == fine
     assert folded[32] == coarse
-    assert counted[16] == fine, "the support-counted pass lost the in-tile causal read"
-    assert counted[32] == coarse, "the support-counted min/max fold lost the cross-half read"
+    assert counted[16] == fine, "the bit-word pass lost the in-tile causal read"
+    assert counted[32] == coarse, (
+        "the bit-word pass lost the cross-half causal read. It has no fold and no carry "
+        "term -- it re-packs the tokens into one 32-bit word at BT = 32 -- so what this "
+        "leg actually gates is that the lowest-set-bit mask spans the whole word rather "
+        "than a half of it")
 
 
 @pytest.mark.parametrize("widths", [(2, 3), (4, 4), (2, 2, 2)],
@@ -1779,12 +1785,14 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference(widths, s
     """The production pass and the demoted enumerator agree FIELD FOR FIELD.
 
     The two share no arithmetic. The reference asks of every ``(token, owner, leaf)``
-    cell whether it is live and ORs the answers; the production pass expands the live
-    entries out of the per-level supports and records where they land, then counts
-    candidacy in closed form from the tile bitmaps' popcounts and asserts
-    ``sum_K_candidate == sum_K``. So this is the increment's exactness gate, not a
-    self-consistency check -- and every field is an exact int64 ratio, which is why it
-    is compared with ``==`` rather than a tolerance.
+    cell whether it is live and ORs the answers; the production pass packs the tile's
+    tokens into the BITS of one ``int32`` per ``(level, digit)``, ANDs those words
+    across levels by broadcast, and reads both counts off bit tests
+    (:mod:`rola.planner.census`) -- then counts candidacy in closed form from the tile
+    bitmaps' popcounts and asserts ``sum_K_candidate == sum_K``. So this is the
+    increment's exactness gate, not a self-consistency check -- and every field is an
+    exact int64 ratio, which is why it is compared with ``==`` rather than a
+    tolerance.
 
     ``T = 40`` makes the finest tile count ODD (3 tiles at ``BT = 16``), the case where
     the coarse tile is half outside ``T``; ``zero_level`` and ``sparse`` are the
@@ -1813,26 +1821,29 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference_on_cuda(
         widths, scenario, T):
     """The same bitwise gate, ON DEVICE, because the pass's reductions are not portable.
 
-    The CPU grid above cannot see the surfaces production actually runs:
-    `scatter_reduce_(reduce="amin"/"amax")` on `int16` (which is where every count in
-    this pass comes from -- `first_write` and `last_read` ARE the statistics),
-    `nonzero()`, and `repeat_interleave`. Each has a separate CUDA implementation, and
-    a CPU-only gate would have declared them equal without ever running them.
+    The CPU grid above cannot see the surfaces production actually runs: the census's
+    `int32` bit arithmetic (`&`, `|`, and unary `-` at the two's-complement boundary --
+    which is where every count comes from, since the causal bit IS
+    `(lw_r & -(lw_w & -lw_w)) != 0`) and, since the chunk body ships fused, an
+    inductor-generated Triton reduction rather than the CPU C++ one. Each has a
+    separate implementation, and a CPU-only gate would have declared them equal
+    without ever running them.
 
     **The grid is a named subset, not a silent cap.** It is 12 parameter sets against
-    the CPU grid's 60, chosen to span the axes that reach the scatter path rather than
-    to sample uniformly: two MULTI-LEVEL width sets (so the mixed-radix decode runs
-    with `D = 2` and `D = 3`, and the fixed-level AND is live at `D = 3`); `sparse`
-    (few live entries, so the sentinels survive in most cells), `union` (read and
-    write share a mask, so every live leaf has a causal read-after-write and the
-    `first_write <= last_read` comparison is exercised on BOTH sides of its answer)
-    and `zero_level` (a structurally dead level, i.e. an empty support list, where the
-    expansion must produce nothing rather than index into an empty tensor); `T = 40`
+    the CPU grid's 60, chosen to span the axes that reach the word path rather than to
+    sample uniformly: two MULTI-LEVEL width sets (so the broadcast AND runs with
+    `D = 2` and `D = 3`, and the fixed-level AND is live at `D = 3`); `sparse` (few
+    live entries, so most leaf words come out zero), `union` (read and write share a
+    mask, so every live leaf has a causal read-after-write and the
+    `first_write <= last_read` bit test is exercised on BOTH sides of its answer) and
+    `zero_level` (a structurally dead level, i.e. an all-zero word, where the AND must
+    kill the whole plane); `T = 40`
     for the odd finest tile count and the padded tail; and BOTH candidate chains plus
     every admissible `BC` inside the body. Measured runtime of the 13 `..._on_cuda`
-    tests is 1.03 s of call time against the file's ~18 s, and the largest device
+    tests is 1.03 s of call time against the file's ~24 s, and the largest device
     tensor is a few thousand elements -- VRAM-trivial, so the subset is about
-    wall-clock proportion, not memory.
+    wall-clock proportion (which the fused chunk's per-geometry compile now
+    dominates), not memory.
     """
     B, H = 1, 2
     topology = _topology(widths)
@@ -1923,11 +1934,11 @@ def test_the_static_by_config_closed_form_equals_the_enumerated_reference(
 def test_the_static_by_config_closed_form_equals_the_reference_on_cuda(declared):
     """The same substitution, ON DEVICE, for the same reason the gate above it is.
 
-    The remaining live side still runs `nonzero`, `repeat_interleave` and the
-    `int16` `scatter_reduce_`, and the one-side-dense arm reaches a DIFFERENT
-    predicate on the survivor (``first_write < BT_max`` / ``last_read >= 0``) than
-    the two-sided arm does, so the device implementations of those reductions are
-    on a path the CPU grid never runs.
+    The remaining live side still builds its token words and its leaf plane, and the
+    one-side-dense arm reaches a DIFFERENT predicate on the survivor (``lw_w != 0`` /
+    ``lw_r != 0``, i.e. the degenerate forms of ``first_write <= last_read``) than the
+    two-sided arm does -- a THIRD compiled graph of :func:`_census_chunk`, on a path
+    the CPU grid never runs.
     """
     B, H, T, widths = 1, 2, 40, (4, 4)
     read_dense, write_dense = declared
@@ -2007,9 +2018,9 @@ def test_the_causal_carry_is_load_bearing_in_the_fold_on_cuda():
     The scenario grid above cannot isolate this: it needs a leaf written ONLY in the
     first half of a coarse tile and read ONLY in the second, so that `KI` is zero at
     `BT = 16` and nonzero at `BT = 32`. That is the one case where the production
-    pass's `min`/`max` fold and the reference's `Rany_B AND Wany_A` carry could
-    disagree, and on CUDA it is also the case where the `amin` and `amax` scatters
-    must land in the same tile cell from two different entries.
+    pass's one-word-per-tile form and the reference's `Rany_B AND Wany_A` carry could
+    disagree, and on CUDA it is also the case where the fused `-(w & -w)` mask has to
+    reach across the 16-bit boundary of the coarse word.
     """
     widths = (1, 4)
     topology = _topology(widths)
@@ -2175,13 +2186,159 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
         f"a leaf-word plane above {leaf_plane // 4}, or the squeezed assertion is vacuous")
 
 
+# ---------------------------------------------------------------------------
+# 14b. The bit-word census as its own unit (fix brief #2, 2026-08-01). These gate
+#      `rola.planner.census` DIRECTLY rather than through `select_plan`, because
+#      §2.7's end-state ruling relocates it to the offline bench and its contract
+#      has to survive that move.
+# ---------------------------------------------------------------------------
+
+
+def test_the_causal_intra_bit_is_a_bit_test_that_survives_bit_31():
+    """``(r & -(w & -w)) != 0`` IS ``first_write <= last_read``, at every word.
+
+    The census reads §5's causal-intra bit off two's-complement bit arithmetic
+    instead of a prefix scan or a pair of token extremes, and the one place that
+    could go wrong is the sign bit: at ``BT = 32`` a write at token 31 makes the
+    isolated low bit ``-2**31``, and an implementation that reached for an
+    ``unsigned`` COMPARISON (``lowbit(w) <= r``) rather than a bit TEST would read
+    that as the most NEGATIVE int32 and invert the answer on exactly those words.
+
+    Exhaustive over all 65,536 ``(r, w)`` pairs of a 16-bit word plus the whole
+    sign-bit family at 32 bits, against the definition transcribed from the
+    docstring. Nothing here touches the planner: it pins the identity the pass is
+    built on, so a reviewer can check the derivation and the code separately.
+    """
+    def definition(r_bits, w_bits, BT):
+        first_write = min((t for t in range(BT) if w_bits >> t & 1), default=None)
+        last_read = max((t for t in range(BT) if r_bits >> t & 1), default=None)
+        return first_write is not None and last_read is not None and first_write <= last_read
+
+    for BT, pairs in ((16, [(r, w) for r in range(1 << 8) for w in range(1 << 8)]),
+                      (32, [(r, w) for r in (0, 1, 1 << 31, (1 << 31) | 1, (1 << 32) - 1,
+                                             (1 << 31) - 1)
+                            for w in (0, 1, 1 << 31, (1 << 31) | 1, (1 << 32) - 1,
+                                      (1 << 31) - 1)])):
+        as_int32 = lambda v: v - (1 << 32) if v >= (1 << 31) else v   # noqa: E731
+        r = torch.tensor([as_int32(a) for a, _ in pairs], dtype=torch.int32)
+        w = torch.tensor([as_int32(b) for _, b in pairs], dtype=torch.int32)
+        got = (r & -(w & -w)).ne(0).tolist()
+        want = [definition(a, b, BT) for a, b in pairs]
+        assert got == want, (
+            f"BT={BT}: the bit-word causal identity disagrees with the definition at "
+            f"{[p for p, g, e in zip(pairs, got, want) if g != e][:5]}")
+
+
+def test_the_census_summaries_measure_what_they_are_documented_to_measure():
+    """The §2.7 byproduct scalars, against a direct count of the same quantities.
+
+    They are a DELIVERABLE of this increment rather than an internal: the
+    closed-form selector §2.7's ruling replaces the census with reads exactly these
+    two families (per-level support occupancy per side; per-owner active fraction),
+    so they are gated against an independent count now rather than when that
+    selector is written. Occupancy is compared against the mask's own mean and the
+    active fraction against ``K > 0`` taken from the ENUMERATED reference's
+    population, not from the census's own ``K``.
+    """
+    widths, BC, B, T, H = (4, 4), 4, 1, 40, 2
+    topology = _topology(widths)
+    read_levels, write_levels, _, _ = _gen_topology_tensors(3, widths, B, T, H, "sparse")
+    views = routing_views(read_levels, write_levels, topology)
+    result = tile_union_census(views.read_mask, views.write_mask, widths, BC, (16, 32))
+    fractions = summary_fractions(result, resolve_census(result.summaries))
+
+    for side, masks in ((0, views.read_mask), (1, views.write_mask)):
+        for level, mask in enumerate(masks):
+            assert fractions[("occupancy", side, level)] == pytest.approx(
+                float(mask.double().mean())), f"occupancy({side},{level}) is not the mask's mean"
+
+    for BT in (16, 32):
+        n_tiles = (T + BT - 1) // BT
+        active = 0
+        for bh in range(B * H):
+            for tile in range(n_tiles):
+                tokens = range(tile * BT, min(T, (tile + 1) * BT))
+                for owner in range(math.prod(widths) // BC):
+                    live = False
+                    for leaf in range(owner * BC, (owner + 1) * BC):
+                        digits = [(leaf // math.prod(widths[l + 1:])) % widths[l]
+                                  for l in range(len(widths))]
+                        for t in tokens:
+                            r = all(views.read_mask[l][bh, t, d] for l, d in enumerate(digits))
+                            w = all(views.write_mask[l][bh, t, d] for l, d in enumerate(digits))
+                            live = live or r or w
+                    active += bool(live)
+        assert fractions[("active_owners", BT)] == pytest.approx(
+            active / (B * H * n_tiles * (math.prod(widths) // BC))), (
+            f"BT={BT}: the active-owner fraction is not |K > 0| / n_pairs")
+
+
+def test_the_census_refuses_what_its_representation_cannot_carry():
+    """Two loud refusals, both structural rather than defensive.
+
+    A ``BT`` above 32 does not fit ONE token word, and a both-sides-dense call has
+    nothing to measure at all -- the caller substitutes the closed form and must not
+    issue the pass. Neither is a runtime condition to branch on, so both raise.
+    """
+    widths, BC, B, T, H = (4, 4), 4, 1, 32, 1
+    topology = _topology(widths)
+    read_levels, write_levels, _, _ = _gen_topology_tensors(3, widths, B, T, H, "sparse")
+    views = routing_views(read_levels, write_levels, topology)
+    with pytest.raises(ValueError, match="one token bit each"):
+        tile_union_census(views.read_mask, views.write_mask, widths, BC, (64,))
+    with pytest.raises(ValueError, match="BOTH sides declared dense"):
+        tile_union_census(views.read_mask, views.write_mask, widths, BC, (16,),
+                          dense_side=(True, True))
+
+
+@_CUDA
+@pytest.mark.parametrize("declared", _DECLARATIONS, ids=_DECLARATION_IDS)
+def test_the_bit_word_pass_issues_no_host_synchronization(declared):
+    """The deliverable of fix brief #2, asserted rather than described.
+
+    The retired scatter implementation had to learn the length of a ragged expansion,
+    which cost one ``nonzero()`` per level per side, one ``.cpu()`` for the chunk
+    split and one ``int(m.sum())`` per chunk per side -- 198 synchronizations per call
+    at ``L = 16384``, tracking the CHUNK COUNT, i.e. growing with ``L``. The word pass
+    has exactly one, the final read-back, and this runs the whole of
+    ``_tile_union_stats_multi`` under ``set_sync_debug_mode("error")`` with that
+    read-back excluded by construction: the census itself must complete with none.
+
+    Parametrized over the density declarations so all three live arms (both sides,
+    read dense, write dense) are covered; the both-dense arm issues no pass at all.
+    """
+    B, H, T, widths, BC = 1, 2, 64, (4, 4), 4
+    read_dense, write_dense = declared
+    if read_dense and write_dense:
+        pytest.skip("both dense: the closed form issues no census, so there is nothing to gate")
+    topology = _topology(widths)
+    read_levels, write_levels = _gen_sided_density_tensors(
+        5, widths, B, T, H, read_dense, write_dense)
+    read_levels = tuple(level.cuda() for level in read_levels)
+    write_levels = tuple(level.cuda() for level in write_levels)
+    views = routing_views(read_levels, write_levels, topology)
+    dense_side = (read_dense, write_dense)
+    tile_union_census(views.read_mask, views.write_mask, widths, BC, (16, 32),
+                      dense_side=dense_side)                     # warm the compiled graph
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        result = tile_union_census(views.read_mask, views.write_mask, widths, BC,
+                                   (16, 32), dense_side=dense_side)
+        assert all(t.device.type == "cuda" for t in result.per_bt.values()), (
+            "the census returned a host value; every counter must stay on device until "
+            "the caller's single resolve_census transfer")
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+
 def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(monkeypatch):
     """The reference's owner axis is CHUNKED, so its transient does not scale with ``N``.
 
     Gates :func:`_tile_union_stats_multi_enumerated`, which is the TEST-ONLY
     reference since the planner increment; the production pass has no owner axis to
     chunk and is gated by
-    ``test_the_support_counted_pass_never_materializes_an_o_of_l_times_n_object``.
+    ``test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object``.
 
     Vectorizing the owner loop is what removed the per-owner synchronization, but
     the whole-owner-axis form would build ``[BH, n_tiles, BT, owners, BC]``, i.e.
