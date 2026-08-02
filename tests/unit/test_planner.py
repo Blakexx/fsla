@@ -27,8 +27,10 @@ import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from rola.planner.census import resolve_census, summary_fractions, tile_union_census
+from rola.planner.feeder import FeederFlags
 from rola.planner.schedule import (
     _STATS_OWNER_CHUNK_ELEMS,
+    _SUPPORTED_BT,
     CP_ASYNC_ROW_BYTES,
     DEFAULT_SM_COUNT,
     DEFAULT_WRITE_COST_WEIGHT,
@@ -817,6 +819,178 @@ def test_select_plan_axes_prices_BT_and_compact_from_one_model():
                     f"(BT={BT}, compact={compact}) prices {cost}")
 
 
+
+
+# ---------------------------------------------------------------------------
+# RUNG P (`THUNDER_RUN_SPEC.md` §6 P1): compact is excluded STRUCTURALLY on a
+# dense-flagged side. The gates below are the item's SELF-GATE -- "plan comparison
+# rows on the dense cells" -- plus the §4.4 bit-layout pin.
+# ---------------------------------------------------------------------------
+
+#: I1 ENFORCEMENT (`THUNDER_RUN_SPEC.md` §1): every quanta-shaped quantity is an
+#: expression in `BC` and `MMA_K_QUANTUM`, so the rows sweep the two INSTANTIATED
+#: `BC` (`_SUPPORTED_BC = (16, 64)`) AND one hypothetical `BC = 32` that no kernel
+#: implements. A `BC`-derived literal anywhere in the rule fails the fake row and
+#: passes the other two, which is the whole point of carrying it.
+_RUNG_P_BCS = [16, 64, 32]
+_RUNG_P_BC_IDS = ["BC16-instantiated", "BC64-instantiated", "BC32-FAKE"]
+
+
+def _recording_occupancy(table=None, blocks=3):
+    """A synthetic oracle that RECORDS its query keys.
+
+    Rung P's claim is not only "the selected plan is unchanged" but "the excluded arm
+    is never priced at all", and the observable that separates those two is whether
+    the oracle is asked about `compact=True`. A cost-only assertion would pass on an
+    implementation that still enumerated the arm and then lost the argmin, which is
+    exactly today's behaviour and NOT what P1 lands.
+    """
+    calls = []
+
+    def query(BT, BC, d_v, global_norm, decay, mma_precision, compact,
+              gram_cols, ring_slots):
+        calls.append(dict(BT=BT, BC=BC, compact=compact, decay=decay))
+        return blocks if table is None else table[(BT, compact)]
+
+    query.calls = calls
+    return query
+
+
+@pytest.mark.parametrize("BC", _RUNG_P_BCS, ids=_RUNG_P_BC_IDS)
+@pytest.mark.parametrize("declared", [(True, False), (False, True), (True, True)],
+                         ids=["read-dense", "write-dense", "dense-both"])
+@pytest.mark.parametrize("decay", [False, True], ids=["nodecay", "decay"])
+def test_rung_p_excludes_compact_structurally_on_a_dense_flagged_side(BC, declared, decay):
+    """§6 P1: a dense-flagged side removes the compact ARM, and the plan does not move.
+
+    Two claims, and they are different:
+
+    1. **The plan is unchanged.** The independent argmin below re-enumerates BOTH
+       compact arms with the retiring cost model and the same wave term, and the
+       structural exclusion must land on the same `(BT, compact)` and the same cost.
+       This is the "plan comparison rows on the dense cells" self-gate: rung P is a
+       RECORDING of a disposition the model already reaches (`k_hat = ds` makes the
+       readout/fold saving identically zero), so a difference here would mean the
+       exclusion is not the thing the model was doing.
+    2. **The excluded arm is never priced.** `compact=True` must not reach the
+       occupancy oracle at all. That is what makes it structural rather than a
+       cheaper way of losing an argmin, and it is what survives the retirement of
+       the six constants.
+    """
+    topology = _topology((8, 16), d_v=64)
+    T = 128
+    generator = torch.Generator().manual_seed(20260802)
+    sparse = tuple(
+        torch.where(amps < 0.12, amps, torch.zeros_like(amps))
+        for amps in (torch.rand((1, T, 1, w), generator=generator) for w in topology.widths))
+    dense = tuple(torch.ones((1, T, 1, w)) for w in topology.widths)
+    reads = dense if declared[0] else sparse
+    writes = dense if declared[1] else sparse
+    density = StaticDensity(read=(declared[0],) * topology.D,
+                            write=(declared[1],) * topology.D)
+
+    # Blocks differ per BT so the wave term is live rather than a constant multiplier.
+    table = {(16, True): 3, (16, False): 3, (32, True): 2, (32, False): 2}
+    oracle = _recording_occupancy(table)
+    selected = select_plan_axes(reads, writes, topology, BC, decay=decay,
+                                static_density=density, occupancy=oracle)
+
+    assert selected.compact is False
+    assert all(call["compact"] is False for call in oracle.calls), (
+        "the structurally-excluded compact arm still reached the occupancy oracle: it is "
+        "being enumerated and then losing an argmin, which is not what rung P lands")
+    assert len(oracle.calls) == len(_SUPPORTED_BT)
+
+    # The INDEPENDENT argmin over both arms, priced by the retiring model.
+    best = None
+    for BT in _SUPPORTED_BT:
+        stats = tile_union_stats(reads, writes, topology, BC, BT, static_density=density)
+        for compact in (True, False):
+            cost = plan_cost_per_token(topology, BC, stats, compact=compact, decay=decay)
+            waves = plan_waves(stats.n_cohorts, table[(BT, compact)], DEFAULT_SM_COUNT)
+            key = (cost * waves, BT, compact)
+            if best is None or key[0] < best[0]:
+                best = key
+    assert (selected.BT, selected.compact) == (best[1], best[2]), (
+        f"structural exclusion moved the plan: got (BT={selected.BT}, "
+        f"compact={selected.compact}), the full enumeration wants (BT={best[1]}, "
+        f"compact={best[2]})")
+    assert selected.effective_cost_per_token == pytest.approx(best[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("BC", _RUNG_P_BCS, ids=_RUNG_P_BC_IDS)
+def test_rung_p_does_not_fire_when_neither_side_is_dense_flagged(BC):
+    """The exclusion must be keyed on the FLAG, not on a measured saturation.
+
+    A sparse-both declaration keeps both arms live even when the realized routing
+    happens to saturate: the flag is a claim about the configuration (or about a
+    measured occupancy of exactly 1.0, §4.4's second trigger), and a realization that
+    merely looks dense is not one. Without this row the exclusion could quietly become
+    a density branch, which I2 forbids.
+    """
+    topology = _topology((8, 16), d_v=64)
+    dense = tuple(torch.ones((1, 128, 1, w)) for w in topology.widths)
+    oracle = _recording_occupancy()
+    select_plan_axes(dense, dense, topology, BC, decay=False,
+                     static_density=StaticDensity(read=(False,) * topology.D,
+                                                  write=(False,) * topology.D),
+                     occupancy=oracle)
+    assert any(call["compact"] is True for call in oracle.calls), (
+        "a sparse-BOTH declaration excluded the compact arm; the exclusion has become a "
+        "measured-density branch rather than a configuration one")
+
+
+def test_feeder_flags_pack_the_frozen_bit_layout_and_or_their_two_triggers():
+    """§4.4: 2 bits per level, `dense_read[l]` then `dense_write[l]`, D <= 16.
+
+    The layout is a CONTACT with Track K's kernel decode, so it is pinned here bit by
+    bit rather than round-tripped only through `unpack`: a self-consistent pack/unpack
+    pair would agree with itself under any layout at all.
+    """
+    flags = FeederFlags(read=(True, False, True), write=(False, True, True))
+    assert flags.packed() == (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5)
+    assert FeederFlags.unpack(flags.packed(), 3) == flags
+    assert FeederFlags.none(3).packed() == 0
+
+    # Two triggers, one mechanism: the OR of the declaration and the detection.
+    density = StaticDensity(read=(True, False), write=(False, False))
+    occupancy = ((1.0, 1.0), (0.5, 1.0))
+    derived = FeederFlags.derive(density, occupancy, saturation=1.0)
+    assert derived.read == (True, True)      # level 1 detected, level 0 declared
+    assert derived.write == (False, True)    # level 1 detected only
+    assert FeederFlags.derive(density, None, saturation=1.0) == FeederFlags(
+        read=(True, False), write=(False, False)), (
+        "with no summaries the detection trigger fired anyway")
+
+    with pytest.raises(ValueError, match="D <= 16"):
+        FeederFlags.none(17)
+
+
+def test_the_residual_intra_only_compact_saving_can_never_pay_at_any_instantiation():
+    """The arithmetic that licenses rung P's exclusion, re-run over the landed constants.
+
+    `CONSUMER_ACT3_PRICING.md` §2.4c grants that at `K == BC` "only the Gram's causal
+    prefix `KI` still cuts". `compact_is_structurally_inert` refuses that residual, and
+    this is the falsifier it names: an instantiated `(BC, BT)` whose LARGEST possible
+    intra saving (taken at `kisteps = 0`) exceeds the gather tax. If a constant moves
+    far enough to make one reachable, this fails loudly instead of the exclusion
+    silently becoming an approximation.
+    """
+    from rola.planner.schedule import (
+        GATHER_CANDIDATE_FIXED_WORK,
+        GATHER_CANDIDATE_QUANTUM_WORK,
+        INTRA_GRAM_KSTEP_WORK,
+    )
+    q = MMA_K_QUANTUM
+    for BC in (16, 64, 32):                       # instantiated + the fake-BC row
+        ds = -(-BC // q)
+        tax = GATHER_CANDIDATE_FIXED_WORK + GATHER_CANDIDATE_QUANTUM_WORK * ds
+        for BT in _SUPPORTED_BT:
+            max_saving = INTRA_GRAM_KSTEP_WORK * ds * (BT * (BT + 1) / float(q * (q + 1)))
+            assert max_saving < tax, (
+                f"at BC={BC}, BT={BT} the intra-only compact saving ({max_saving:.1f}) "
+                f"exceeds the gather tax ({tax:.1f}); rung P's structural exclusion is no "
+                "longer licensed by the constants and must become a priced comparison")
 
 
 def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():

@@ -39,6 +39,7 @@ from math import gcd, log1p, prod
 import torch
 
 from rola.planner.census import resolve_census, tile_union_census
+from rola.planner.feeder import FeederFlags, compact_is_structurally_inert
 from rola.routing.types import Topology, validate_normalization
 
 # Bumped whenever the emitted layout changes in a way the CUDA consumer must
@@ -1131,10 +1132,36 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     # proxy the Gates proved lies.
     occupancy = resolve_occupancy(occupancy, BC=BC, d_v=topology.d_v)
 
+    # ---- RUNG P: COMPACT IS EXCLUDED STRUCTURALLY ON A DENSE-FLAGGED SIDE ----
+    # `THUNDER_RUN_SPEC.md` §6 P1. When either side is full-support the gather's
+    # membership test `(read_word | write_word) != 0` is satisfied by every leaf of
+    # every owner at every token, so `K == BC` identically and compaction's readout
+    # and fold cuts are ZERO -- while the axis still costs a MEASURED +21 %
+    # (`CONSUMER_ACT3_PRICING.md` §2.4c). The derivation, the one residual (intra-only)
+    # saving, and the arithmetic showing it can never pay at any instantiated
+    # `(BC, BT)` are in `compact_is_structurally_inert`.
+    #
+    # WHY THIS IS A STRUCTURAL EXCLUSION AND NOT A CHEAPER COST MODEL: the predicate
+    # is a CONFIG FACT (§1 I2 -- density declarations may branch), it holds for every
+    # realization the configuration admits rather than for the one that was measured,
+    # and it survives the retirement of `plan_cost_per_token` unchanged. The excluded
+    # arm is exactly the one the retiring model's argmin already declines on every
+    # instantiated cell, so this changes no selected plan -- it changes what has to be
+    # priced to reach it, and it makes the answer independent of six measured
+    # constants.
+    #
+    # `static_density` is the only trigger available here; the saturation trigger
+    # (§4.4's second one) enters through the same `FeederFlags` object once the
+    # summary pass feeds it -- which is why the predicate is asked of FeederFlags and
+    # not of StaticDensity.
+    flags = (FeederFlags.none(topology.D) if static_density is None
+             else FeederFlags(read=static_density.read, write=static_density.write))
+    compact_candidates = (False,) if compact_is_structurally_inert(flags) else (True, False)
+
     candidates: list[PlanAxes] = []
     for BT in bt_candidates:
         stats = stats_by_bt[BT]
-        for compact in (True, False):
+        for compact in compact_candidates:
             # ---- THE RING DEPTH IS STATED, NOT ARBITRATED (M-1, 2026-08-01) --
             # It used to be arbitrated in the cost currency, because the ring's
             # BENEFIT was a term in `plan_cost_per_token` (`STAGE_COLUMN_WORK`,
