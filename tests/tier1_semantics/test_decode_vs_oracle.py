@@ -309,6 +309,33 @@ def test_more_ctas_than_rows_is_inert(n_split):
     assert float((got["y"][-1] - ref["y"][-1]).abs().max()) / scale < DECODE_RTOL
 
 
+def test_the_global_residence_expansion_arm():
+    """The expansion's SECOND residence arm, which no other row reaches.
+
+    The arm is chosen from a topology fact (``n_words``) against a hardware fact (the
+    per-block SMEM budget): the ping-pong pair is ``2 * ceil(N/32)`` words, so below
+    roughly ``N = 196,608`` on an sm_86 device the intermediate levels live in SMEM and
+    above it they live in global memory. Every other topology in this file fits SMEM, so
+    without this row the global arm would ship having never executed — which is the
+    failure mode the two-arm design is most exposed to, since the arms differ only in
+    WHERE the intermediates live and a pointer mistake in the one that is never run
+    looks exactly like a correct program.
+
+    ``widths = (256, 256, 4)`` gives ``N = 262,144`` (``n_words = 8192``, a 64 KiB
+    ping-pong pair, over the budget) and ``S_2 = 4 < 32``, so it exercises the
+    shift-and-merge copy on the global arm rather than only the aligned one.
+    """
+    widths = (256, 256, 4)
+    n_words = (math.prod(widths) + 31) // 32
+    assert 2 * n_words * 4 > 48 * 1024, "this fixture no longer selects the global arm"
+    #: `p = 0.5` rather than something thinner, and `B = 2, H = 3` rather than `1, 2`:
+    #: `_simplex` refuses a vacuously dense fixture, and the width-4 level is narrow
+    #: enough that a thin Bernoulli mask zeroes every entry and the empty-row repair
+    #: hands back a uniform (dense) row. The sparsity that matters for this row is the
+    #: TOPOLOGY's size, not the support's.
+    _assert_oracle(_case(widths, 32, 2, 3, "global", 0.5, 0.5, seed=262144))
+
+
 # ---------------------------------------------------------------------------
 # G4 -- decay
 # ---------------------------------------------------------------------------
