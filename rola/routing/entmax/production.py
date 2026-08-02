@@ -1052,7 +1052,21 @@ def _union_row_tile(block_cols: int) -> int:
     structural rule: the working set stays fixed as ``block_cols`` grows toward the
     wide-``nc`` regime, so it is not a per-width threshold.
     """
-    return min(32, max(1, _UNION_SOLVE_TILE // block_cols))
+    row_tile = min(32, max(1, _UNION_SOLVE_TILE // block_cols))
+    # HAZARD: `_launch_union_fwd`'s kernel loops `range(BLOCK_ROWS // ROW_TILE)` over
+    # exactly `BLOCK_ROWS = 32` tokens; that loop silently DROPS the last
+    # `BLOCK_ROWS % ROW_TILE` tokens of the word -- never solving them -- unless
+    # `ROW_TILE` divides `BLOCK_ROWS` evenly. Today the sole call site passes
+    # `triton.next_power_of_2(width)` capped at `MAX_BRANCH_WIDTH = 256`, both of
+    # which are themselves powers of two, so `row_tile` is always a power of two
+    # and this can never trip -- but nothing here enforces that contract, and a
+    # future caller passing a non-power-of-two `block_cols` would get a partial
+    # solve with no error (Gate 2, 2026-08-01, item 1's latent hazard).
+    assert 32 % row_tile == 0, (
+        f"_union_row_tile({block_cols}) = {row_tile} does not divide BLOCK_ROWS=32; "
+        "the union forward/backward kernels' `range(BLOCK_ROWS // ROW_TILE)` sub-tile "
+        "loop would silently skip 32 % row_tile tokens of every support word")
+    return row_tile
 
 
 def _launch_union_fwd(
