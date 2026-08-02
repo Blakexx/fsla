@@ -36,10 +36,10 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_v3_routing
+from rola.routing.producer import produce_routing
 from rola.planner.schedule import (
-    build_v3_schedule, plan_and_schedule_v3, select_v3_plan)
-from rola.ops.consumer import v3_consumer_forward
+    build_schedule, plan_and_schedule, select_plan)
+from rola.ops.consumer import _consumer_forward
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -229,7 +229,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
 
             def producer():
                 with torch.no_grad():
-                    return produce_v3_routing(
+                    return produce_routing(
                         x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
                         layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
                         budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
@@ -243,13 +243,13 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             decay = layer._decay_config() if decay_on else None
 
             def select():
-                return select_v3_plan(read_levels, write_levels, layer.topology,
+                return select_plan(read_levels, write_levels, layer.topology,
                                       layer.state_block, normalization=norm, decay=decay_on)
 
             plan, axes = select()
 
             def schedule_build():
-                return build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+                return build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
             sched = schedule_build()
 
@@ -261,7 +261,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             # their sum because the shared prefix is paid once, and the difference
             # is the point of the increment.
             def planner():
-                return plan_and_schedule_v3(read_levels, write_levels, g_read, g_write,
+                return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
                                             normalization=norm, decay=decay_on)
 
@@ -269,7 +269,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
 
             def consumer():
                 with torch.no_grad():
-                    return v3_consumer_forward(v, read_levels, write_levels, g_read, g_write,
+                    return _consumer_forward(v, read_levels, write_levels, g_read, g_write,
                                                plan, decay=decay, schedule=sched)
 
             consumer()

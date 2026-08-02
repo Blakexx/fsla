@@ -42,7 +42,7 @@ from rola.routing.types import Topology, validate_normalization
 
 # Bumped whenever the emitted layout changes in a way the CUDA consumer must
 # observe. The consumer asserts on it at load time.
-ROLA_V3_SCHEDULE_ABI_VERSION = 2  # v2: §4's support word (`read/write_token_bits`)
+ROLA_SCHEDULE_ABI_VERSION = 2  # v2: §4's support word (`read/write_token_bits`)
 
 #: A ``cp.async`` warp-wide transaction is 32 lanes x 16 B = 512 B (§5 "Staging":
 #: "innermost rows (512 B contiguous, cp.async-shaped)").
@@ -354,7 +354,7 @@ def owner_geometry(widths: tuple[int, ...], BC: int) -> OwnerGeometry:
 
 
 @dataclass(frozen=True, slots=True)
-class V3Plan:
+class Plan:
     """Compile-time-selected kernel parameters (``ROLA_V3_SPEC.md`` §6).
 
     None of these is a kernel branch on a *distributional* property; every one is
@@ -1048,11 +1048,11 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     includes ``intra_panel.cuh`` unconditionally and does one intra lowering, so
     there is nothing to select; the whole crossover -- ``INTRA_LOWERINGS``,
     ``select_intra_lowering``, ``crossover_intra_lowering``,
-    ``implemented_intra_lowerings`` and ``V3Plan.intra_lowering`` -- was
+    ``implemented_intra_lowerings`` and ``Plan.intra_lowering`` -- was
     old-consumer machinery and died with it.
 
     **This is the sanctioned §7.4.1 pattern and NOT a runtime density branch.** The
-    result is compile-time template parameters stamped into ``V3Plan`` before the
+    result is compile-time template parameters stamped into ``Plan`` before the
     launch. Device code never sees ``K``, a saturation, or a fill; the kernel it
     runs is chosen, not steered.
 
@@ -1235,7 +1235,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     return min(candidates, key=lambda c: c.effective_cost_per_token)
 
 
-def select_v3_plan(read_levels: tuple[torch.Tensor, ...],
+def select_plan(read_levels: tuple[torch.Tensor, ...],
                    write_levels: tuple[torch.Tensor, ...],
                    topology: Topology, BC: int, *, normalization: str, decay: bool,
                    mma_precision: str = "bf16",
@@ -1245,8 +1245,8 @@ def select_v3_plan(read_levels: tuple[torch.Tensor, ...],
                    sm_shared_bytes: int | None = None,
                    sm_count: int | None = None,
                    occupancy: OccupancyOracle | None = None,
-                   **cost_kwargs) -> tuple[V3Plan, PlanAxes]:
-    """THE plan build: a ``V3Plan`` whose §6 axes are SELECTED, not hand-written.
+                   **cost_kwargs) -> tuple[Plan, PlanAxes]:
+    """THE plan build: a ``Plan`` whose §6 axes are SELECTED, not hand-written.
 
     Returns the plan and the :class:`PlanAxes` evidence it was built from (the
     realized :class:`TileUnionStats` and the winning cost), so a caller can record
@@ -1271,7 +1271,7 @@ def select_v3_plan(read_levels: tuple[torch.Tensor, ...],
                             normalization=normalization, sm_count=sm_count,
                             mma_precision=mma_precision, occupancy=occupancy,
                             **cost_kwargs)
-    plan = V3Plan(topology=topology, normalization=normalization, BT=axes.BT, BC=BC,
+    plan = Plan(topology=topology, normalization=normalization, BT=axes.BT, BC=BC,
                   warp_tile=(1, max(1, topology.d_v // 32)), decay=decay,
                   compact=axes.compact,
                   mma_precision=mma_precision, amp_dtype=amp_dtype,
@@ -1280,7 +1280,7 @@ def select_v3_plan(read_levels: tuple[torch.Tensor, ...],
     return plan, axes
 
 
-def plan_and_schedule_v3(read_levels: tuple[torch.Tensor, ...],
+def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
                          write_levels: tuple[torch.Tensor, ...],
                          g_read: torch.Tensor | None,
                          g_write: torch.Tensor,
@@ -1291,10 +1291,10 @@ def plan_and_schedule_v3(read_levels: tuple[torch.Tensor, ...],
                          sm_shared_bytes: int | None = None,
                          sm_count: int | None = None,
                          occupancy: OccupancyOracle | None = None,
-                         **cost_kwargs) -> tuple[V3Plan, PlanAxes, "V3Schedule"]:
+                         **cost_kwargs) -> tuple[Plan, PlanAxes, "Schedule"]:
     """THE planner plane: select the §6 axes and build the §4 schedule in ONE pass.
 
-    :func:`select_v3_plan` and :func:`build_v3_schedule` walk the same routing
+    :func:`select_plan` and :func:`build_schedule` walk the same routing
     tensors and independently recompute the same prefix -- the ``[B,T,H,w] ->
     [BH,T,w]`` fold (a real copy), the exact-nonzero mask, and the per-``(level,
     digit)`` §4 tile bitmap. This entry point builds one :class:`RoutingViews` and
@@ -1303,21 +1303,21 @@ def plan_and_schedule_v3(read_levels: tuple[torch.Tensor, ...],
     from the finest candidate, never re-reduced).
 
     **Nothing about the SEMANTICS moves.** The returned plan is the plan
-    :func:`select_v3_plan` returns on the same inputs, bit for bit, and the
-    schedule is the schedule :func:`build_v3_schedule` builds from it; both remain
+    :func:`select_plan` returns on the same inputs, bit for bit, and the
+    schedule is the schedule :func:`build_schedule` builds from it; both remain
     callable standalone and construct their own view when none is supplied. Per-step
     selection stands -- a ``RoutingViews`` lives inside one forward and is not a
     cross-step cache.
     """
     views = routing_views(read_levels, write_levels, topology)
-    plan, axes = select_v3_plan(read_levels, write_levels, topology, BC,
+    plan, axes = select_plan(read_levels, write_levels, topology, BC,
                                 normalization=normalization, decay=decay,
                                 mma_precision=mma_precision, amp_dtype=amp_dtype,
                                 bt_candidates=bt_candidates, views=views,
                                 sm_shared_bytes=sm_shared_bytes,
                                 sm_count=sm_count, occupancy=occupancy,
                                 **cost_kwargs)
-    schedule = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan, views=views)
+    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan, views=views)
     return plan, axes, schedule
 
 
@@ -1332,7 +1332,7 @@ class RoutingViews:
     Three things were being recomputed. (1) The ``[B,T,H,w] -> [BH,T,w]`` fold,
     which is a permute-then-reshape and therefore a real copy, done once by
     :func:`tile_union_stats` per ``BT`` candidate and again by
-    :func:`build_v3_schedule`. (2) The exact-nonzero liveness mask, same. (3) The
+    :func:`build_schedule`. (2) The exact-nonzero liveness mask, same. (3) The
     per-``(level, digit)`` TILE bitmap ``[BH, n_tiles, w]``, which the selector
     forms at every candidate ``BT`` and the builder forms again at the selected
     one.
@@ -1429,7 +1429,7 @@ def _source_key(read_levels: tuple[torch.Tensor, ...],
     caching allocator can reissue a freed address, so a view held past its
     producing tensors' lifetime could collide with an unrelated later tensor's
     ``data_ptr``. Both are excluded only by the call discipline in
-    :func:`plan_and_schedule_v3` (fresh ``RoutingViews`` per call, never stored
+    :func:`plan_and_schedule` (fresh ``RoutingViews`` per call, never stored
     past it) -- if that discipline is ever relaxed, this key must be
     strengthened (e.g. a version counter or content hash) rather than trusted
     as-is.
@@ -1551,7 +1551,7 @@ def tile_union_stats(read_levels: tuple[torch.Tensor, ...],
 
     ``views`` is an optional :class:`RoutingViews` carrying the folded tensors and
     the memoized per-``BT`` tile bitmaps, so the selector and the schedule builder
-    can share one pass over the routing (see :func:`plan_and_schedule_v3`). Passing
+    can share one pass over the routing (see :func:`plan_and_schedule`). Passing
     it changes NOTHING about what is computed -- it is the same reduction over the
     same tensors -- only how many times the shared prefix is recomputed.
     """
@@ -1915,7 +1915,7 @@ def _tile_union_stats_multi_enumerated(views: "RoutingViews", topology: Topology
     decision**. It enumerates
     the FULL ``[BH, n_tiles, BT, owners, BC]`` leaf rectangle in owner chunks, so
     it costs ``Theta(BH * T * N)`` boolean work no matter how sparse the routing
-    is -- which made ``select_v3_plan`` 59-74 % of the layer at scale. The
+    is -- which made ``select_plan`` 59-74 % of the layer at scale. The
     production path is :func:`_tile_union_stats_multi`, which counts the same
     statistics from the live entries alone. This one survives because it is
     written from the fold identity below and is therefore an independent second
@@ -2249,12 +2249,12 @@ def unpack_bits(words: torch.Tensor, n: int) -> torch.Tensor:
 
 
 @dataclass(frozen=True, slots=True)
-class V3DecayStream:
+class DecayStream:
     """The LeafMassDecay artifacts a consumer launch needs, built ONCE per routing.
 
     `build_clock_stream` + `leaf_rate_dials` + `panel_exponent_bound` are a
     per-CALL cost of the decay arm and are pure functions of the write-side routing
-    tensors, the `LeafMassDecay` and `BT`. `v3_consumer_forward` used to rebuild all
+    tensors, the `LeafMassDecay` and `BT`. `_consumer_forward` used to rebuild all
     three on EVERY call, including calls handed an already-built `schedule=` --
     measured at **0.78-1.40 ms per call** on the cells in
     `benchmarks/ops/benchmark_rola_v3_new_consumer.py`, which is a pure waste term
@@ -2313,7 +2313,7 @@ class V3DecayStream:
 
 
 @dataclass(frozen=True, slots=True)
-class V3Schedule:
+class Schedule:
     """The §4 schedule plus the token-major route stream the consumer loads.
 
     ``read_tile_bits``/``write_tile_bits``: ``[BH, sum_l width_l, n_words]``
@@ -2361,7 +2361,7 @@ class V3Schedule:
     transiently for the cost sort and drops them.
     """
 
-    plan: V3Plan
+    plan: Plan
     BH: int
     T: int
     n_tiles: int
@@ -2379,10 +2379,10 @@ class V3Schedule:
     g_write: torch.Tensor
     owners: torch.Tensor
     owner_costs: torch.Tensor
-    abi_version: int = ROLA_V3_SCHEDULE_ABI_VERSION
-    #: Attached lazily by `v3_consumer_forward` on the decay arm; see
-    #: :class:`V3DecayStream`. `None` on the `decay=None` arm, always.
-    decay_stream: "V3DecayStream | None" = None
+    abi_version: int = ROLA_SCHEDULE_ABI_VERSION
+    #: Attached lazily by `_consumer_forward` on the decay arm; see
+    #: :class:`DecayStream`. `None` on the `decay=None` arm, always.
+    decay_stream: "DecayStream | None" = None
 
     def decay_artifacts(self, stored, write, decay, BT, *, build):
         """Return this schedule's decay artifacts, building them at most once.
@@ -2391,7 +2391,7 @@ class V3Schedule:
         instance with `object.__setattr__` -- deliberate and confined to this one
         method: the record is a MEMO of a pure function of inputs the schedule
         already describes, so attaching it changes no observable value, and
-        `V3DecayStream.matches` is what makes that claim checkable rather than
+        `DecayStream.matches` is what makes that claim checkable rather than
         assumed.
         """
         cached = self.decay_stream
@@ -2443,17 +2443,17 @@ def _tile_major_amps(level: torch.Tensor, BT: int, n_tiles: int, pitch: int,
     return out.view(BH, n_tiles, BT, pitch).contiguous()
 
 
-def build_v3_schedule(
+def build_schedule(
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
     g_read: torch.Tensor | None,
     g_write: torch.Tensor,
-    plan: V3Plan,
+    plan: Plan,
     views: RoutingViews | None = None,
-) -> V3Schedule:
+) -> Schedule:
     """Build the §4 schedule from the producer's per-level routing allocations.
 
-    Inputs are exactly ``naive_rola_v3``'s routing inputs (``[B,T,H,width_l]`` per
+    Inputs are exactly ``naive_rola``'s routing inputs (``[B,T,H,width_l]`` per
     level, ``[B,T,H]`` gains) so the builder and the canonical oracle consume one
     contract and cannot drift.
 
@@ -2467,7 +2467,7 @@ def build_v3_schedule(
     is not merely discouraged, it is unreachable.
 
     ``views`` is an optional :class:`RoutingViews`, normally the SAME one the
-    plan was selected from (:func:`plan_and_schedule_v3`), carrying the folded
+    plan was selected from (:func:`plan_and_schedule`), carrying the folded
     tensors and the §4 tile bitmaps at ``plan.BT`` -- both of which the selector
     has already computed over these exact tensors. It changes what is RECOMPUTED,
     never what is built: the fold, the ``!= 0`` and the tile reduction are the same
@@ -2553,7 +2553,7 @@ def build_v3_schedule(
     g_read_f = None if g_read is None else _fold_bth(g_read.unsqueeze(-1)).squeeze(-1).contiguous()
     g_write_f = _fold_bth(g_write.unsqueeze(-1)).squeeze(-1).contiguous()
 
-    return V3Schedule(
+    return Schedule(
         plan=plan, BH=BH, T=T, n_tiles=n_tiles, n_words=n_words,
         level_offsets=tuple(level_offsets),
         read_tile_bits=read_tile_bits, write_tile_bits=write_tile_bits,
@@ -2567,24 +2567,24 @@ def build_v3_schedule(
 def build_clock_stream(
     write_levels_stored: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    plan: V3Plan,
+    plan: Plan,
 ) -> tuple[torch.Tensor, ...]:
     """Stage the ``LeafMassDecay`` **clock** amplitudes, and nothing else.
 
     Returns one ``[BH, n_tiles, BT, pitch_l]`` tensor per level, laid out exactly
-    like ``V3Schedule.write_amps`` so the kernel walks it with the same
+    like ``Schedule.write_amps`` so the kernel walks it with the same
     ``(base, stride, modulus)`` triple. The clock is ``c[t,s] = prod_l
     p_write_stored[t, d_l(s)]`` (spec §2) -- a pure product of the *stored* write
     allocations with **no side gain**: ``g_write`` scales the deposit ``W``, not
     the clock.
 
-    **This is a separate function from :func:`build_v3_schedule` on purpose, and
+    **This is a separate function from :func:`build_schedule` on purpose, and
     the separation is the enforcement mechanism for `GRADIENT_PROOFS_WOLFRAM.md`
     P5.20.5 finding 2.** That finding binds tile liveness to the *live* deposit
     ``write_levels``, never to the stored clock: a storage path may flush a small
     live ``p_write`` to a stored zero, giving ``c == 0`` (``keep == 1``) with a
     live deposit ``W != 0``, and a clock-keyed bitmap would silently drop that
-    deposit. Because the stored tensor never enters ``build_v3_schedule``'s scope
+    deposit. Because the stored tensor never enters ``build_schedule``'s scope
     at all, keying a bitmap on it is not merely forbidden, it is unreachable --
     which is a stronger guarantee than a comment, and it survives refactors.
     ``write_levels`` (the live allocation) is accepted HERE, by the clock
@@ -2782,7 +2782,7 @@ def _sort_owners(
     read_live: tuple[torch.Tensor, ...],
     write_live: tuple[torch.Tensor, ...],
     geometry: OwnerGeometry,
-    plan: V3Plan,
+    plan: Plan,
     *,
     n_tiles: int,
     slice_live: tuple[torch.Tensor, torch.Tensor],
@@ -2907,14 +2907,14 @@ def _cartesian(sets: list[list[int]]):
 
 
 __all__ = [
-    "ROLA_V3_SCHEDULE_ABI_VERSION",
+    "ROLA_SCHEDULE_ABI_VERSION",
     "CP_ASYNC_ROW_BYTES",
     "DEFAULT_WRITE_COST_WEIGHT",
     "MMA_K_QUANTUM",
     "MMA_PRECISIONS",
     "select_plan_axes",
-    "select_v3_plan",
-    "plan_and_schedule_v3",
+    "select_plan",
+    "plan_and_schedule",
     "RoutingViews",
     "routing_views",
     "PlanAxes",
@@ -2933,15 +2933,15 @@ __all__ = [
     "DEFAULT_SM_COUNT",
     "OwnerGeometry",
     "owner_geometry",
-    "V3Plan",
+    "Plan",
     "LevelSupportStats",
     "TileUnionStats",
     "tile_union_stats",
     "span_score",
     "rank_spans",
     "permuted_topology",
-    "V3Schedule",
-    "build_v3_schedule",
+    "Schedule",
+    "build_schedule",
     "build_clock_stream",
     "leaf_rate_dials",
     "PANEL_MAX_EXPONENT",

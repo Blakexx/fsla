@@ -1291,7 +1291,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
     kernels, the same shared/tied/union dispatch, the same packed support -- with the
     bf16 tile-major arena replaced by one dense ``[BH, T, width_l]`` fp32 tensor per
     level-side. V3's consumer (`v3_consumer.py`) and its fp64 oracle
-    (`naive.naive_rola_v3`) both take dense levels; the arena is the V2 chunk kernel's
+    (`naive.naive_rola`) both take dense levels; the arena is the V2 chunk kernel's
     ABI, and routing through it would force a bf16 round trip that no V3 consumer asks
     for.
 
@@ -1589,7 +1589,7 @@ def production_routing_factor_levels(
     """Exact per-level ``(read, write)`` routing factors on the production solve.
 
     Returns one ``[BH, T, width_l]`` tensor per level-side -- the shape V3's producer
-    hands ``naive_rola_v3`` and ``build_v3_schedule``. Lowered to the fused Triton
+    hands ``naive_rola`` and ``build_schedule``. Lowered to the fused Triton
     kernels on CUDA fp32 and to the identical sorted closed form in torch elsewhere;
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.

@@ -12,7 +12,7 @@ layer in place, per the migration inventory row `fla_rola/layers/rola.py`.
 execution backends and the choice between them is STRUCTURAL, decided by
 :meth:`RoLA.select_execution_backend` before any of them runs:
 
-* ``'oracle'`` -- ``naive_rola_v3``, the Stage 1 canonical reference run in the
+* ``'oracle'`` -- ``naive_rola``, the Stage 1 canonical reference run in the
   layer's working dtype. It is fully differentiable and it is **the only
   implemented training path**, which is not the same thing as a fallback: nothing
   degrades into it after a failure, and no configuration reaches it because
@@ -20,9 +20,9 @@ execution backends and the choice between them is STRUCTURAL, decided by
   when the operation's own inputs carry a gradient, and when the tensors are not
   on a CUDA device.
 * ``'cuda'`` -- the plan-selected V3 consumer (`ROLA_V3_SPEC.md` §3-§6):
-  ``plan_and_schedule_v3`` measures the realized routing, returns a stamped
-  ``V3Plan`` and builds the §4 schedule from the same single pass over the routing
-  tensors, then ``v3_consumer_forward`` launches the template instantiation that
+  ``plan_and_schedule`` measures the realized routing, returns a stamped
+  ``Plan`` and builds the §4 schedule from the same single pass over the routing
+  tensors, then ``_consumer_forward`` launches the template instantiation that
   plan names. The consumer is **forward-only** -- there is no native backward for
   it yet -- so it requires eval mode AND no gradient reachability AND a CUDA device
   AND a launchable configuration; it is refused the moment any of those fails.
@@ -37,7 +37,7 @@ the decay dials (``LeafMassDecay.dials``, when a decay config is in play), which
 are the tensors the operation actually consumes, not on the module's parameters (a
 frozen-parameter, non-requiring-grad input under ``torch.no_grad`` has no graph to
 sever and correctly takes the CUDA path). The decay dials are an OPERATION input --
-``v3_consumer_forward`` is called with ``decay=decay_config`` -- and were missing
+``_consumer_forward`` is called with ``decay=decay_config`` -- and were missing
 from the predicate before the fix pass recorded at `wiring-review.md` §2; a
 dial-only-unfrozen finetune (the configuration ``decay_target_leaf_rate`` exists
 for) reached the CUDA consumer and silently produced ``decay_theta.grad = None``.
@@ -59,7 +59,7 @@ is meant to matter.
 **There is no silent degradation in the other direction either.** Once the CUDA
 backend is selected, a configuration the consumer cannot run -- an unimplemented
 intra lowering, an un-instantiated ``(d_v, BC, BT)``, an unrealized warp tile --
-raises loudly out of ``plan_and_schedule_v3``/``v3_consumer_forward``/the kernel's own
+raises loudly out of ``plan_and_schedule``/``_consumer_forward``/the kernel's own
 ``TORCH_CHECK``s. It never falls back to the oracle.
 
 **Deletion inventory applied here** (spec §1.2): `head_k_dim`, `qkv_proj`,
@@ -90,13 +90,14 @@ try:
     from fla.modules import ShortConvolution
 except ImportError:  # noqa: BLE001
     ShortConvolution = None
-from rola.ops.naive import naive_rola_v3
+from rola.ops.naive import naive_rola
 from rola.routing.budget import DEFAULT_CHUNK_SIZE
-from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_v3_routing
+from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
 from rola.planner.schedule import (
-    MMA_PRECISIONS, owner_geometry, plan_and_schedule_v3)
+    MMA_PRECISIONS, owner_geometry, plan_and_schedule)
 from rola.ops.consumer import sm_shared_bytes
-from rola.routing.side_gain import init_side_gain_bias
+from rola.interface import select_backend
+from rola.routing.side_gain import GainConfig, init_side_gain_bias
 from rola.routing.topology import resolve_b_spec
 from rola.routing.types import (
     EntmaxActivation,
@@ -107,7 +108,7 @@ from rola.routing.types import (
     Topology,
     UnionRouting,
 )
-from rola.ops.consumer import v3_consumer_forward
+from rola.ops.consumer import _consumer_forward
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,8 @@ class RoLA(nn.Module):
         state_norm: str = 'global',
         router_bias: bool = False,
         gain_bias_init: float | None = None,
+        gain: bool = True,
+        gain_config: GainConfig | None = None,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -405,11 +408,26 @@ class RoLA(nn.Module):
         else:
             self.register_parameter('route_bias_param', None)
 
-        # Side gains (spec §1.1, architecture §4.2): raw needs write+read; global fixes
-        # g_read := 1 and has no read-gain projection.
-        gain_sides = 1 if state_norm == 'global' else 2
+        # Side gains (spec §1.1, architecture §4.2; gain-surface ruling 2026-08-01).
+        # `gain_layout` decides the columns from the algebra: the write gain is a real
+        # dial (`write_gain=False` REMOVES it, rather than pinning it to 1, so no dead
+        # parameter is optimized), and the read gain is a consequence of the
+        # normalization mode -- present under `raw`, structurally absent under `global`.
+        #: PUBLIC surface is the single `gain: bool`; `gain_config` is the internal
+        #: two-boolean research surface behind it, for fine-grained combinations that
+        #: are deliberately not public parameters.
+        if gain_config is not None:
+            self.gain_config = gain_config.validate(state_norm)
+        else:
+            self.gain_config = GainConfig.from_public(gain, state_norm).validate(state_norm)
+        self.write_gain = self.gain_config.write_gain
+        self.read_gain = self.gain_config.read_gain
+        self.gain_sides = self.gain_config.layout
+        gain_sides = len(self.gain_sides)
         self.gain_W = nn.Parameter(torch.empty(num_heads, gain_sides, hidden_size))
-        nn.init.kaiming_uniform_(self.gain_W.view(num_heads * gain_sides, hidden_size), a=5 ** 0.5)
+        if gain_sides:
+            nn.init.kaiming_uniform_(
+                self.gain_W.view(num_heads * gain_sides, hidden_size), a=5 ** 0.5)
         gain_bias_value = 0.0 if gain_bias_init is None else init_side_gain_bias(gain_bias_init)
         self.gain_bias = nn.Parameter(torch.full((num_heads, gain_sides), gain_bias_value))
 
@@ -537,6 +555,11 @@ class RoLA(nn.Module):
         """
         return dict(self._execution_backend_counts)
 
+    @property
+    def has_read_gain(self) -> bool:
+        """Whether this configuration projects a read gain. Read-only, by design."""
+        return 'read' in self.gain_sides
+
     def select_execution_backend(self, *operation_inputs: torch.Tensor | None) -> str:
         """Choose ``'oracle'`` or ``'cuda'`` from the module's mode and the
         OPERATION's own inputs.
@@ -567,7 +590,7 @@ class RoLA(nn.Module):
            only implemented training path. Calling it a fallback would be wrong in
            both directions: nothing failed to reach it, and nothing else exists to
            fall back from. The decay dials are included in ``operation_inputs``
-           precisely because they are an operation input -- ``v3_consumer_forward``
+           precisely because they are an operation input -- ``_consumer_forward``
            is called with ``decay=decay_config`` -- not because they are a module
            parameter; a dial-only-unfrozen forward has no other input requiring
            grad, and without the dials in this list the predicate could not see it.
@@ -578,18 +601,19 @@ class RoLA(nn.Module):
         Everything else that could make a CUDA-context launch impossible -- an
         un-instantiated ``d_v`` or ``BC``, an unrealized warp tile -- is deliberately
         NOT a condition here. Those raise loudly downstream
-        (``v3_consumer_forward``, the kernel's ``TORCH_CHECK``s). Folding them in would turn a loud unsupported
+        (``_consumer_forward``, the kernel's ``TORCH_CHECK``s). Folding them in would turn a loud unsupported
         configuration into a silent slow path, which is the pattern spec §7.4.1
         forbids.
         """
         if self.training:
             return 'oracle'
+        # Conditions 2 and 3 are `rola.interface.select_backend`, shared verbatim with
+        # the functional op, so the layer and `rola_func` cannot drift into two
+        # slightly different answers to the same question. Condition 1 stays here:
+        # `self.training` is a property of a module and has no meaning for a free
+        # function.
         tensors = [t for t in operation_inputs if t is not None]
-        if torch.is_grad_enabled() and any(t.requires_grad for t in tensors):
-            return 'oracle'
-        if not all(t.is_cuda for t in tensors):
-            return 'oracle'
-        return 'cuda'
+        return 'oracle' if select_backend(*tensors) == 'reference' else 'cuda'
 
     def _decay_config(self) -> LeafMassDecay | None:
         if self.decay_kind == 'none':
@@ -610,7 +634,7 @@ class RoLA(nn.Module):
         the plan's `BT` (findings `paging.md` D3), so live pages carrying recorded
         tiles cannot be reinterpreted under a different `BT`.
         """
-        from rola.ops.paging import V3PageArena
+        from rola.ops.paging import PageArena
 
         cols = self.head_v_dim + (1 if self.state_norm == 'global' else 0)
         arena = self._page_arena
@@ -618,7 +642,7 @@ class RoLA(nn.Module):
                 and arena.cols == cols and arena.BC == plan.BC
                 and arena.planned_BT in (None, plan.BT)):
             return arena
-        arena = V3PageArena(
+        arena = PageArena(
             widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
             max_physical_pages=self.max_physical_pages,
             allow_capping=self.max_physical_pages is not None)
@@ -685,19 +709,20 @@ class RoLA(nn.Module):
         if recurrent_state is not None and torch.is_grad_enabled():
             raise RuntimeError("RoLA carried-state execution is inference-only")
 
-        routing_out = produce_v3_routing(
+        routing_out = produce_routing(
             rx, h_w, v, self.route_W, self.route_bias_param, self.gain_W, self.gain_bias,
             self.topology, self.state_norm,
             budget=self.budget, r=budget_r, budget_embed_W=self.budget_embed_W,
             temp_W=self.temp_W, temp_b=self.temp_b,
             usage_bias_W=self.usage_bias_W, usage_bias_b=self.usage_bias_b,
+            write_gain=self.write_gain, read_gain=self.read_gain,
         )
         decay_config = self._decay_config()
         backend = self.select_execution_backend(
             v, routing_out.g_read, routing_out.g_write,
             *routing_out.read_levels, *routing_out.write_levels,
             # fix pass (wiring-review.md §2, BLOCKER): the dials are handed straight
-            # to `v3_consumer_forward(..., decay=decay_config)` below, so they are an
+            # to `_consumer_forward(..., decay=decay_config)` below, so they are an
             # OPERATION input and must be visible to the predicate -- a dial-only
             # unfrozen forward has no other grad-requiring operand.
             *(decay_config.dials if decay_config is not None else ()),
@@ -714,18 +739,18 @@ class RoLA(nn.Module):
             # `benchmarks/ops/benchmark_rola_v3_layer.py` rather than assumed small
             # -- and that measurement is what motivated the fusion below.
             #
-            # `plan_and_schedule_v3` is that selection FUSED with the §4 schedule
+            # `plan_and_schedule` is that selection FUSED with the §4 schedule
             # build (planner increment, 2026-07-30). The two walk the same routing
             # tensors and were each recomputing the same prefix: the
             # `[B,T,H,w] -> [BH,T,w]` fold (a real copy), the exact-nonzero mask,
             # and the per-(level, digit) §4 tile bitmaps. Fusing them deletes the
             # duplicate work and NOTHING else -- the plan is the plan
-            # `select_v3_plan` returns on the same inputs and the schedule is the
-            # schedule `build_v3_schedule` builds from it, gated bit-identical by
+            # `select_plan` returns on the same inputs and the schedule is the
+            # schedule `build_schedule` builds from it, gated bit-identical by
             # `test_the_shared_view_changes_nothing_it_only_stops_recomputing`.
             # Selection stays PER-STEP: the shared view lives inside this one
             # forward, so there is nothing that can go stale across steps.
-            plan, axes, schedule = plan_and_schedule_v3(
+            plan, axes, schedule = plan_and_schedule(
                 routing_out.read_levels, routing_out.write_levels,
                 routing_out.g_read, routing_out.g_write, self.topology,
                 self.state_block, normalization=self.state_norm,
@@ -747,7 +772,7 @@ class RoLA(nn.Module):
                 arena = self._resolve_page_arena(plan, B * H, v.device)
                 continue_paging = recurrent_state is not None
                 if recurrent_state is None:
-                    # A fresh forward starts from a ZERO state. `v3_consumer_forward`
+                    # A fresh forward starts from a ZERO state. `_consumer_forward`
                     # is call-scoped by default (fix pass BLOCKER B1,
                     # `workflows/20260730-wiring/paging-review.md`): its own
                     # `paging.plan(schedule, fresh=True)` resets the arena before
@@ -764,12 +789,12 @@ class RoLA(nn.Module):
                     # contract and pays the bridge, rather than inventing a page-table
                     # continuation contract here. `arena.reset()` clears the page table
                     # before loading the dense state; `continue_paging=True` below is
-                    # what then stops `v3_consumer_forward`'s own default reset from
+                    # what then stops `_consumer_forward`'s own default reset from
                     # wiping the state `adopt_dense` just committed.
                     arena.reset()
                     arena.adopt_dense(recurrent_state.reshape(arena.BH, arena.N, arena.cols)
                                       .to(torch.float32).contiguous())
-                out, _arena, _schedule = v3_consumer_forward(
+                out, _arena, _schedule = _consumer_forward(
                     v, routing_out.read_levels, routing_out.write_levels,
                     routing_out.g_read, routing_out.g_write, plan,
                     decay=decay_config, schedule=schedule, paging=arena,
@@ -779,7 +804,7 @@ class RoLA(nn.Module):
                     if cache_enabled else None
             else:
                 self.last_paging_stats = None
-                out, final_state, _schedule = v3_consumer_forward(
+                out, final_state, _schedule = _consumer_forward(
                     v, routing_out.read_levels, routing_out.write_levels,
                     routing_out.g_read, routing_out.g_write, plan,
                     initial_state=recurrent_state, decay=decay_config, schedule=schedule)
@@ -794,7 +819,7 @@ class RoLA(nn.Module):
                     "paging=True is a CUDA-backend feature (spec §7.1); this forward "
                     "dispatched to the fp64 oracle, which has no page table. The cap "
                     "would be silently unenforced, so this raises rather than degrading.")
-            out, final_state = naive_rola_v3(
+            out, final_state = naive_rola(
                 v, routing_out.read_levels, routing_out.write_levels,
                 routing_out.g_read, routing_out.g_write, self.topology, decay_config,
                 self.state_norm, initial_state=recurrent_state,
@@ -808,7 +833,7 @@ class RoLA(nn.Module):
             # the SAME SHAPE `[B, H, N, d_v + (norm == 'global')]` and the same
             # meaning on both paths; only its dtype differs (the oracle accumulates in
             # fp64, the consumer in fp32), and BOTH entry points accept either
-            # (`naive._initial_cache` casts to fp64, `v3_consumer_forward` casts to
+            # (`naive._initial_cache` casts to fp64, `_consumer_forward` casts to
             # fp32). A continuation may therefore cross backends without
             # reinterpretation. The guard above only covers CONSUMPTION -- a
             # grad-context step with a prior `recurrent_state` raises -- so a

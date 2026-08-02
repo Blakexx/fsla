@@ -61,7 +61,7 @@ using rola::mma::mma_m16n8k16;
 using rola::mma::mma_m16n8k8_tf32x3;
 using rola::mma::pack_bf16x2;
 
-//: MMA operand precision. Compile-time; `V3Plan.mma_precision` stamps it.
+//: MMA operand precision. Compile-time; `Plan.mma_precision` stamps it.
 enum class MmaPrec { kTf32x3 = 0, kBf16 = 1 };
 
 //: bf16's largest finite magnitude. Anything above it rounds to `inf` on the

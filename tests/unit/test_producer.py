@@ -2,7 +2,7 @@
 
 Validates `rola.routing.producer` against the ONE canonical
 ground truth this branch authorizes: the Stage 1 fp64 oracle
-(`rola.ops.naive.naive_rola_v3`). Per the "matching-the-naive
+(`rola.ops.naive.naive_rola`). Per the "matching-the-naive
 anti-pattern" standing rule, nothing here is checked against a second,
 freshly written reference -- every assertion either (a) feeds the producer's
 output through the oracle and checks numerical properties the oracle itself
@@ -16,13 +16,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.naive import naive_rola_v3
+from rola.ops.naive import naive_rola
 from rola.routing.budget import chunk_boundaries
 from rola.routing.producer import (
     BudgetConditioning,
     _project_logits,
     embed_budget,
-    produce_v3_routing,
+    produce_routing,
     resolved_routing_from_topology,
 )
 from rola.routing.types import (
@@ -67,7 +67,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(normalizat
     x, route_W, gain_W, gain_bias, v = _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=sides)
 
-    out = produce_v3_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
     assert len(out.read_levels) == topology.D
     assert len(out.write_levels) == topology.D
     for level, width in enumerate(topology.widths):
@@ -87,7 +87,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(normalizat
     assert out.g_write.shape == (B, L, H)
     assert torch.all(out.g_write > 0)
 
-    y, _ = naive_rola_v3(v, out.read_levels, out.write_levels, g_read, out.g_write, topology, None, normalization)
+    y, _ = naive_rola(v, out.read_levels, out.write_levels, g_read, out.g_write, topology, None, normalization)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
@@ -104,7 +104,7 @@ def test_softmax_level_mass_is_identically_one():
     topology = Topology(levels=levels, d_v=3)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
-    out = produce_v3_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
     from rola.routing.side_gain import project_side_gains
     gains = project_side_gains(x, gain_W, gain_bias, normalization="global", projection_dtype=torch.float64)
     torch.testing.assert_close(out.g_write, gains["g_write"], rtol=1e-10, atol=1e-10)
@@ -122,7 +122,7 @@ def test_union_level_mass_is_folded_not_dropped():
     topology = Topology(levels=levels, d_v=3)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=2)
-    out = produce_v3_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
     assert torch.allclose(out.read_levels[0].sum(-1), torch.ones(B, L, H, dtype=torch.float64), atol=1e-8)
     assert torch.allclose(out.write_levels[0].sum(-1), torch.ones(B, L, H, dtype=torch.float64), atol=1e-8)
     # g_read must not be a pure function of gain_W alone (it must carry the folded read mass) --
@@ -159,7 +159,7 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=2)
     resolved = resolved_routing_from_topology(topology)
 
-    out = produce_v3_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
 
     read_logits, write_logits = _packed_router_logits(
         x, route_W, resolved, route_bias=None, h_w=None, projection_dtype=torch.float64)
@@ -204,7 +204,7 @@ def test_producer_exact_support_counts_match_a_manual_nonzero_count(normalizatio
     sides = 1 if normalization == "global" else 2
     x, route_W, gain_W, gain_bias, v = _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=sides)
-    out = produce_v3_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
 
     saw_sparse = False
     for level, width in enumerate(topology.widths):
@@ -235,7 +235,7 @@ def test_embed_budget_adds_per_sequence_constant():
 
 def test_fully_inert_budget_conditioning_warns_loudly():
     """D8 regression: a `BudgetConditioning` with no budgeted pairs and
-    `usage_bias_enabled=False` does nothing (`produce_v3_routing` always takes the
+    `usage_bias_enabled=False` does nothing (`produce_routing` always takes the
     unconditioned baseline path for it) and must not be accepted silently -- unlike the
     softmax-budget case (a loud `ValueError`), this is a loud warning, not an error,
     since an inert conditioning object is not itself invalid, just useless."""
@@ -270,7 +270,7 @@ def test_conditioned_path_matches_oracle_contract_and_differentiates_all_actuato
     budget_embed_W = (torch.randn(dm, dtype=dtype) * 0.1).requires_grad_()
     r = torch.full((B,), 0.5, dtype=dtype)
 
-    out = produce_v3_routing(
+    out = produce_routing(
         x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
         budget=budget, r=r, budget_embed_W=budget_embed_W,
         temp_W=temp_W, temp_b=temp_b, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
@@ -278,7 +278,7 @@ def test_conditioned_path_matches_oracle_contract_and_differentiates_all_actuato
     for level, width in enumerate(topology.widths):
         assert torch.allclose(
             out.read_levels[level].sum(-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
-    y, _ = naive_rola_v3(v, out.read_levels, out.write_levels, None, out.g_write, topology, None, "global")
+    y, _ = naive_rola(v, out.read_levels, out.write_levels, None, out.g_write, topology, None, "global")
     y.sum().backward()
     for name, tensor in [
         ("x", x), ("route_W", route_W), ("gain_W", gain_W),
@@ -329,7 +329,7 @@ def test_project_logits_is_chunk_invariant(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
 def test_conditioned_path_output_unchanged_by_logit_projection_hoist(dtype):
-    """V6 regression, end to end: `produce_v3_routing`'s conditioned path (temperature
+    """V6 regression, end to end: `produce_routing`'s conditioned path (temperature
     actuator + usage-bias head, both live) reduces to a call sequence that composes
     `_project_logits` once over the full sequence with the same per-chunk conditioning
     arithmetic that reads its slices. This exercises that composed path (not just the
@@ -351,7 +351,7 @@ def test_conditioned_path_output_unchanged_by_logit_projection_hoist(dtype):
     r = torch.full((B,), 0.5, dtype=dtype)
 
     with torch.no_grad():
-        out = produce_v3_routing(
+        out = produce_routing(
             x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
             budget=budget, r=r, budget_embed_W=budget_embed_W,
             temp_W=temp_W, temp_b=temp_b, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
@@ -381,12 +381,12 @@ def test_usage_bias_fires_even_when_no_tier1_budget_is_supplied():
     usage_bias_W = torch.randn(H, topology.D, 4, dtype=torch.float64) * 0.5
     usage_bias_b = torch.randn(H, topology.D, dtype=torch.float64) * 0.5
 
-    conditioned = produce_v3_routing(
+    conditioned = produce_routing(
         x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
         budget=budget, r=None, budget_embed_W=None,
         temp_W=None, temp_b=None, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
     )
-    unconditioned = produce_v3_routing(
+    unconditioned = produce_routing(
         x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
         budget=None, r=None,
     )
@@ -420,7 +420,7 @@ def test_conditioned_r_input_preserves_fp64_precision(perturbation):
     r1 = r0 + perturbation
 
     def _write(r):
-        out = produce_v3_routing(
+        out = produce_routing(
             x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
             budget=budget, r=r, budget_embed_W=None,
             temp_W=temp_W, temp_b=temp_b, usage_bias_W=None, usage_bias_b=None,

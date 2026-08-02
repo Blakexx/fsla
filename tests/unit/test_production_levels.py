@@ -36,7 +36,7 @@ import rola.routing.producer as producer_v3
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.producer import (
     BudgetConditioning,
-    produce_v3_routing,
+    produce_routing,
     resolved_routing_from_topology,
 )
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
@@ -496,7 +496,7 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
 
 def _run_producer(params, topology, normalization, *, budget=None, r=None, actuators=None):
     kwargs = dict(actuators or {})
-    return produce_v3_routing(
+    return produce_routing(
         params["x"], None, params["v"], params["route_W"], None, params["gain_W"],
         params["gain_bias"], topology, normalization, budget=budget, r=r, **kwargs)
 
@@ -507,7 +507,7 @@ def _run_producer(params, topology, normalization, *, budget=None, r=None, actua
 @pytest.mark.parametrize("conditioned", [False, True])
 def test_producer_production_path_matches_its_oracle_path(
     monkeypatch, alpha, normalization, conditioned):
-    """`produce_v3_routing` end to end: production solve vs fp64 oracle solve.
+    """`produce_routing` end to end: production solve vs fp64 oracle solve.
 
     Support sets must match EXACTLY on every zero-capable side (entmax support is
     discrete); amplitudes, side gains and the exact support counts carry the production
@@ -714,7 +714,7 @@ def test_producer_conditioned_path_backward_matches_its_oracle_path(monkeypatch,
                   for name, tensor in params.items() if name in ("route_W", "gain_W")}
         act = {name: tensor.detach().clone().requires_grad_()
                for name, tensor in actuators.items()}
-        out = produce_v3_routing(
+        out = produce_routing(
             params["x"], None, params["v"], leaves["route_W"], None, leaves["gain_W"],
             params["gain_bias"], topology, normalization, budget=budget, r=r_arg, **act)
         # A cotangent that touches every level on both sides and the side gains, so

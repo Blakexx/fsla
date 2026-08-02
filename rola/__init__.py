@@ -6,34 +6,51 @@ A linear-attention head's recurrent state is expanded into many sub-states that
 share the head's projections, with learned routing over those states. See
 docs/spec.md for the normative contract and docs/evidence.md for how it is gated.
 
-NOTE ON NAMES (extraction, in progress). Several exported names still carry the
-`v3` generation marker they had inside the fork — `naive_rola_v3`,
-`select_v3_plan`, `plan_and_schedule_v3`, `v3_consumer_forward`. Ratified design
-decision O-3 is that **no public name says `v3`**: this repository *is* that
-generation, and encoding it in the API would force a break at the next one for a
-reason that is not an API reason. The rename lands with `rola/interface.py` and
-the three-layer op stack (design §4.3), which is the commit that also gives the
-op a single autograd boundary. Until then this module exports the names as they
-are rather than inventing aliases that would leave two spellings of one function
-in the wild.
+**No public name says `v3`** (ratified decision O-3). This repository *is* that
+generation; encoding it in the API would force a break at the next one for a reason
+that is not an API reason. The names below are the only spellings — the `v3`-marked
+ones the fork used were renamed in a single commit, so no function has ever had two.
+
+Five groups, and the grouping is the contract (extraction design §4.2):
+
+| Group | Stability |
+|---|---|
+| functional op — `rola_func`, `rola_forward` | STABLE, semver-major to break |
+| layer — `RoLA`, `LevelRoutingConfig` | STABLE |
+| state — `RoLAState`, `LayerRecurrentState` | STABLE |
+| configuration — `Topology`, `LevelConfig`, `softmax()`/`entmax(alpha)`, decay types | STABLE; the semantic surface `docs/spec.md` normatively describes |
+| planner — `Plan`, `PlanAxes`, `select_plan`, `plan_and_schedule` | STABLE construction, **ADVISORY contents** (§4.4: a `Plan`'s fields move with every recalibration; construct plans and pass them, do not assert on them) |
+| oracle — `naive_rola` | STABLE signature, EXACT semantics — it is the definition |
 """
 
 __version__ = "0.1.0.dev0"
 
+from rola.interface import requires_backward, rola_forward, rola_func
 from rola.layers.rola import LevelRoutingConfig, RoLA, resolve_level_routing_configs
-from rola.ops.consumer import v3_consumer_forward
-from rola.ops.naive import naive_rola_v3
-from rola.planner.schedule import MMA_PRECISIONS, PlanAxes, plan_and_schedule_v3, select_v3_plan
+from rola.ops.naive import naive_rola
+from rola.planner.schedule import (
+    MMA_PRECISIONS,
+    Plan,
+    PlanAxes,
+    plan_and_schedule,
+    select_plan,
+)
 from rola.routing.types import (
     EntmaxActivation,
     LeafMassDecay,
     LevelConfig,
     SoftmaxActivation,
     Topology,
+    entmax,
+    softmax,
 )
 from rola.state import LayerRecurrentState, RoLAState
 
 __all__ = [
+    # functional op — the single autograd boundary (rola/interface.py)
+    "rola_func",
+    "rola_forward",
+    "requires_backward",
     # layer
     "RoLA",
     "LevelRoutingConfig",
@@ -41,20 +58,22 @@ __all__ = [
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
     "RoLAState",
     "LayerRecurrentState",
-    # op
-    "v3_consumer_forward",
     # oracle — ships in the wheel; it is the definition (docs/evidence.md)
-    "naive_rola_v3",
-    # planner
-    "select_v3_plan",
-    "plan_and_schedule_v3",
+    "naive_rola",
+    # planner — STABLE construction, ADVISORY contents (§4.4)
+    "Plan",
     "PlanAxes",
+    "select_plan",
+    "plan_and_schedule",
     "MMA_PRECISIONS",
     # configuration — the semantic surface docs/spec.md describes
     "Topology",
     "LevelConfig",
     "SoftmaxActivation",
     "EntmaxActivation",
+    # tagged activation constructors — users write these, never property metadata
+    "softmax",
+    "entmax",
     "LeafMassDecay",
     "__version__",
 ]

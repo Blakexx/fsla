@@ -23,7 +23,7 @@ constexpr std::uint32_t kPagePlanCapped = 3;
 constexpr std::int32_t kAbsentPage = -1;
 constexpr int kPagePlanMaxLevels = 8;
 
-//: The V3 write-amplitude stream (spec §4 / `planner/schedule.py:V3Schedule.write_amps`).
+//: The V3 write-amplitude stream (spec §4 / `planner/schedule.py:Schedule.write_amps`).
 //:
 //: Re-key note (V2 -> V3, findings `paging.md` D1). V2 fed the mark phase two
 //: arenas -- a bf16 tile-major `write_factors` and a separate
@@ -38,7 +38,7 @@ struct PagePlanStreamView {
   //: Device-resident array of `level_count` pointers, one per routing level.
   const float* const* level_amps;
   const int* level_width;   //: device [D]
-  const int* level_pitch;   //: device [D] -- `V3Plan.amplitude_pitch(width_l)`
+  const int* level_pitch;   //: device [D] -- `Plan.amplitude_pitch(width_l)`
   //: device [D]; 0 iff the level's write factor is structurally nonzero (a
   //: softmax write level). All-zero enables §7.1's dense short-circuit.
   const std::uint8_t* level_write_can_zero;

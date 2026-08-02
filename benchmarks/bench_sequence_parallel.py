@@ -18,7 +18,7 @@ running kernel. Here it is: `wall(P) - wall(P=1)` is the time the split actually
 and it is printed next to `sp.roundtrip_seconds` plainly and as a ratio.
 [[matching-the-naive]]: the model is NOT tuned to fit. If it is wrong the ratio says so.
 
-ONE CONFOUND, MEASURED RATHER THAN ARGUED AWAY. `v3_consumer_forward` builds the
+ONE CONFOUND, MEASURED RATHER THAN ARGUED AWAY. `_consumer_forward` builds the
 sequence-parallel work lists and workspace INSIDE the call (`v3_consumer.py:270`), so
 a `P > 1` wall-clock contains CPU apportionment plus H2D copies that a `P = 1` call
 does not perform, and those are not roundtrip traffic. This script therefore also
@@ -41,13 +41,13 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_v3_routing
-from rola.planner.schedule import V3Plan, build_v3_schedule, plan_and_schedule_v3
+from rola.routing.producer import produce_routing
+from rola.planner.schedule import Plan, build_schedule, plan_and_schedule
 from rola.routing.sequence_parallel import (
     MEASURED_HBM_BYTES_PER_S, SequenceParallelPlan, SequenceParallelPolicy,
     build_sequence_parallel_tensors, consumer_blocks_per_sm, owner_slot_counts,
     select_sequence_parallelism, slot_bytes, state_roundtrip_bytes_per_s)
-from rola.ops.consumer import v3_consumer_forward
+from rola.ops.consumer import _consumer_forward
 
 #: Extra warmup paid ONCE per process, before anything is timed. The V3 extension
 #: JIT-compiles/loads its first template instantiation on first call and the caching
@@ -137,7 +137,7 @@ def _fixture(norm: str, decay_on: bool, L: int, BC: int, device: str = "cuda",
     saturates, the occupancy gate closes and `P` is never selected at all. Defaults
     reproduce the flagship cell exactly, so no previously recorded number moves.
 
-    Routing comes from `produce_v3_routing` on a constructed `RoLA`, not from a
+    Routing comes from `produce_routing` on a constructed `RoLA`, not from a
     synthetic density dial, so the owner list and `owner_costs` the `P` apportionment
     reads are the ones the model emits. `decay` is the layer's own `_decay_config()`
     for the same reason.
@@ -160,7 +160,7 @@ def _fixture(norm: str, decay_on: bool, L: int, BC: int, device: str = "cuda",
     x = torch.randn(B, L, hidden, device=device, dtype=torch.float32)
     v = torch.randn(B, L, H, d_v, device=device, dtype=torch.float32)
     with torch.no_grad():
-        ro = produce_v3_routing(
+        ro = produce_routing(
             x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
             layer.gain_bias, topology, norm, budget=layer.budget, r=None,
             budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
@@ -186,13 +186,13 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
     # the cell the plan build would produce. `compact`/`intra_lowering` are pinned by
     # this benchmark's spec, and the planner's own choice is reported next to them so
     # an off-plan pin is visible rather than implied.
-    selected, axes, _sched0 = plan_and_schedule_v3(
+    selected, axes, _sched0 = plan_and_schedule(
         fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"], topology, BC,
         normalization=norm, decay=decay_on, mma_precision="bf16")
-    plan = V3Plan(topology=topology, normalization=norm, BT=selected.BT, BC=BC,
+    plan = Plan(topology=topology, normalization=norm, BT=selected.BT, BC=BC,
                   warp_tile=(1, topology.d_v // 32), decay=decay_on,
                   mma_precision="bf16", intra_lowering="realized_leaf", compact=False)
-    sched = build_v3_schedule(fx["read_levels"], fx["write_levels"], fx["g_read"],
+    sched = build_schedule(fx["read_levels"], fx["write_levels"], fx["g_read"],
                               fx["g_write"], plan)
     n_owners = int(sched.owners.shape[0])
 
@@ -200,7 +200,7 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
     policy_plan = select_sequence_parallelism(plan, sched, policy=SequenceParallelPolicy())
 
     def consume(sp):
-        return v3_consumer_forward(fx["v"], fx["read_levels"], fx["write_levels"],
+        return _consumer_forward(fx["v"], fx["read_levels"], fx["write_levels"],
                                    fx["g_read"], fx["g_write"], plan, decay=decay,
                                    schedule=sched, sequence_parallel=sp)
 
@@ -312,7 +312,7 @@ def _print_tables(cells: list[dict]) -> None:
           "labelled so above; quoting a headline at P>1 is a reporting defect.\n"
           "`pred rt` is sp.roundtrip_seconds -- the cost model's price for the split.\n"
           "`meas d` is wall(P) - wall(P=1); `-build` additionally subtracts the measured\n"
-          "cost of build_sequence_parallel_tensors, which v3_consumer_forward performs\n"
+          "cost of build_sequence_parallel_tensors, which _consumer_forward performs\n"
           "inside the timed call and which is NOT roundtrip traffic. `ratio` is\n"
           "measured-less-build / predicted. The model is NOT tuned to this table.")
 

@@ -33,13 +33,13 @@ from rola.planner.schedule import (
     STAGE_COLUMN_WORK,
     LevelSupportStats,
     OwnerGeometry,
-    V3Plan,
+    Plan,
     build_clock_stream,
-    build_v3_schedule,
+    build_schedule,
     leaf_rate_dials,
     owner_geometry,
     permuted_topology,
-    plan_and_schedule_v3,
+    plan_and_schedule,
     _STATS_OWNER_CHUNK_ELEMS,
     _tile_union_stats_multi,
     _tile_union_stats_multi_enumerated,
@@ -51,7 +51,7 @@ from rola.planner.schedule import (
     plan_cost_per_token,
     plan_waves,
     select_plan_axes,
-    select_v3_plan,
+    select_plan,
     span_score,
     spanned_moduli,
     tile_union_stats,
@@ -110,7 +110,7 @@ def _topology(widths, d_v=4):
 def _plan(widths, BT, BC, *, d_v=4, decay=False,
           write_cost_weight=DEFAULT_WRITE_COST_WEIGHT, warp_tile=(1, 1)):
     topo = _topology(widths, d_v=d_v)
-    return V3Plan(
+    return Plan(
         topology=topo, normalization="raw", BT=BT, BC=BC, warp_tile=warp_tile,
         decay=decay, write_cost_weight=write_cost_weight)
 
@@ -455,7 +455,7 @@ def test_tile_bitmaps_match_oracle(combo):
     """§4: per-(level,digit) tile-liveness bitmap == exact-nonzero-in-tile oracle."""
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
-    schedule = build_v3_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
+    schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
 
     unpacked_read = unpack_bits(schedule.read_tile_bits, schedule.n_tiles)
     unpacked_write = unpack_bits(schedule.write_tile_bits, schedule.n_tiles)
@@ -480,7 +480,7 @@ def test_slice_union_matches_oracle(combo):
     """§4: the boundary-level slice-union bitmap == OR over each c-run, oracle."""
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
-    schedule = build_v3_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
+    schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
 
     j, cw = _independent_owner_geometry(widths, c["BC"])
     n_slices = widths[j] // cw
@@ -506,7 +506,7 @@ def test_owners_match_oracle_set_and_order(combo):
     """§3/§4: active owners, in descending-cost order (stable ties), == oracle."""
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
-    schedule = build_v3_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
+    schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
 
     read_live = [_oracle_tile_live(_oracle_fold(c["read_levels"][lvl]), BT, c["n_tiles"]) for lvl in range(len(widths))]
     write_live = [_oracle_tile_live(_oracle_fold(c["write_levels"][lvl]), BT, c["n_tiles"]) for lvl in range(len(widths))]
@@ -531,7 +531,7 @@ def test_amplitude_stream_fidelity(combo):
     """§5 "Staging": amps reproduce the input exactly, zero-padded, cp.async-shaped."""
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
-    schedule = build_v3_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
+    schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
     itemsize = torch.empty((), dtype=c["plan"].amp_dtype).element_size()
 
     for level, width in enumerate(widths):
@@ -564,7 +564,7 @@ def test_write_liveness_uses_live_deposit_not_a_clock():
     from the live deposit ``write_levels``, never a stored/clock-summary tensor
     that could have been flushed to zero while the deposit itself was nonzero.
 
-    The strongest test of this is structural: ``build_v3_schedule`` must have NO
+    The strongest test of this is structural: ``build_schedule`` must have NO
     parameter that could carry such a clock-keyed summary at all, so the wrong
     tensor is not merely discouraged but unreachable -- confirmed here via
     ``inspect.signature`` rather than by trying to sneak a stored-zero fixture
@@ -576,13 +576,13 @@ def test_write_liveness_uses_live_deposit_not_a_clock():
     through which a clock-keyed tensor could re-enter, and it is closed by
     construction rather than by convention.** A ``RoutingViews`` carries folded
     liveness masks, so one built from ``write_levels_stored`` would be exactly the
-    forbidden object -- and ``build_v3_schedule`` calls
+    forbidden object -- and ``build_schedule`` calls
     ``views.require_source(read_levels, write_levels)``, which compares storage
     identity against the LIVE tensors it was handed. Asserted below: a view built
     from a stored/flushed clock is REJECTED rather than silently keying the
     bitmaps on it.
     """
-    sig = inspect.signature(build_v3_schedule)
+    sig = inspect.signature(build_schedule)
     names = list(sig.parameters)
     assert names == ["read_levels", "write_levels", "g_read", "g_write", "plan", "views"]
     assert "write_levels_stored" not in names
@@ -602,7 +602,7 @@ def test_write_liveness_uses_live_deposit_not_a_clock():
     g_write = torch.ones((B, T, H))
 
     n_tiles = (T + BT - 1) // BT
-    schedule = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
     unpacked_write = unpack_bits(schedule.write_tile_bits, n_tiles)
     off = schedule.level_offsets[0]
     tile_of_token_5 = 5 // BT
@@ -614,10 +614,10 @@ def test_write_liveness_uses_live_deposit_not_a_clock():
     write_stored = tuple(torch.zeros_like(level) for level in write_levels)
     stale = routing_views(read_levels, write_stored, plan.topology)
     with pytest.raises(ValueError, match="different routing tensors"):
-        build_v3_schedule(read_levels, write_levels, g_read, g_write, plan, views=stale)
+        build_schedule(read_levels, write_levels, g_read, g_write, plan, views=stale)
     # ... and the same guard on the selection side, which reads the same masks.
     with pytest.raises(ValueError, match="different routing tensors"):
-        select_v3_plan(read_levels, write_levels, plan.topology, plan.BC,
+        select_plan(read_levels, write_levels, plan.topology, plan.BC,
                        normalization="raw", decay=False, views=stale)
 
 
@@ -688,7 +688,7 @@ def test_no_o_of_n_allocation_at_large_topology():
 
     guard = _AllocationGuard(bound)
     with guard:
-        schedule = build_v3_schedule(tuple(read_levels), tuple(write_levels), g_read, g_write, plan)
+        schedule = build_schedule(tuple(read_levels), tuple(write_levels), g_read, g_write, plan)
     assert not guard.violations, guard.violations
     assert schedule.owners.shape[0] > 0  # sanity: the fixture actually produced owners
     assert schedule.owners.shape[0] < 200  # far below owners_total = N/BC = 256
@@ -853,10 +853,10 @@ def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
         for reads, writes, label in ((dense_r, dense_r, "saturated"),
                                      (sparse_r, sparse_w, "collapsing")):
             result = select_plan_axes(reads, writes, topology, BC, decay=True)
-            # The returned axes must be STAMPABLE: `V3Plan`'s own arm rules are a
+            # The returned axes must be STAMPABLE: `Plan`'s own arm rules are a
             # second authority, and axes that pass the selector and fail the plan
             # are still not a plan.
-            plan = V3Plan(topology=topology, normalization="raw", BT=result.BT, BC=BC,
+            plan = Plan(topology=topology, normalization="raw", BT=result.BT, BC=BC,
                           warp_tile=(1, 2), decay=True, compact=result.compact)
             assert (plan.BT, plan.compact) == (result.BT, result.compact)
             # THE `BT == 32` ASSERTION THAT USED TO SIT HERE IS WITHDRAWN, 2026-08-01,
@@ -1383,7 +1383,7 @@ def test_owners_match_oracle_set_and_order_nondyadic_weight(combo):
     plan = _plan(widths, BT, BC, write_cost_weight=_NONDYADIC_WRITE_COST_WEIGHT)
     n_tiles = (T + BT - 1) // BT
 
-    schedule = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
     read_live = [_oracle_tile_live(_oracle_fold(read_levels[lvl]), BT, n_tiles) for lvl in range(len(widths))]
     write_live = [_oracle_tile_live(_oracle_fold(write_levels[lvl]), BT, n_tiles) for lvl in range(len(widths))]
@@ -1508,7 +1508,7 @@ def test_panel_exponent_bound_is_an_upper_bound_and_scales_as_derived():
                                          for w in widths))
 
     def _clock(levels, BT):
-        plan = V3Plan(topology=topology, normalization="raw", BT=BT, BC=BC,
+        plan = Plan(topology=topology, normalization="raw", BT=BT, BC=BC,
                       warp_tile=(1, 1), decay=True)
         return build_clock_stream(levels, levels, plan)
 
@@ -1707,7 +1707,7 @@ def test_the_causal_carry_is_load_bearing_in_the_fold():
                          ids=lambda w: "w" + "x".join(map(str, w)))
 @pytest.mark.parametrize("scenario", ["dense", "sparse", "mixed"])
 def test_the_shared_view_changes_nothing_it_only_stops_recomputing(widths, scenario):
-    """``plan_and_schedule_v3`` returns the split path's plan and schedule, exactly.
+    """``plan_and_schedule`` returns the split path's plan and schedule, exactly.
 
     The fusion shares the fold, the ``!= 0`` mask and the §4 tile bitmaps between
     the selector and the builder. It must therefore be a pure work deletion: the
@@ -1723,12 +1723,12 @@ def test_the_shared_view_changes_nothing_it_only_stops_recomputing(widths, scena
         for decay in (False, True):
             for norm in ("raw", "global"):
                 occ = _toy_occupancy()
-                split_plan, split_axes = select_v3_plan(
+                split_plan, split_axes = select_plan(
                     read_levels, write_levels, topology, BC, normalization=norm,
                     decay=decay, occupancy=occ)
-                split_schedule = build_v3_schedule(
+                split_schedule = build_schedule(
                     read_levels, write_levels, g_read, g_write, split_plan)
-                fused_plan, fused_axes, fused_schedule = plan_and_schedule_v3(
+                fused_plan, fused_axes, fused_schedule = plan_and_schedule(
                     read_levels, write_levels, g_read, g_write, topology, BC,
                     normalization=norm, decay=decay, occupancy=occ)
                 assert fused_plan == split_plan
@@ -2082,7 +2082,7 @@ def test_the_production_default_mma_precision_is_bf16_on_every_plan_entry_point(
     `harvest.md` §30 measured bf16 at -9.5 % at the at-scale cell, -7.3 % mid and
     -6.6 % at the gram crossover, with the 43 bf16 correctness gates green at their
     own declared `BF16_RTOL` (untouched) -- so it ships as the default. The three
-    entry points must agree, because a plan built by `select_v3_plan` and one built
+    entry points must agree, because a plan built by `select_plan` and one built
     by hand would otherwise instantiate different kernels for the same cell.
 
     The counterpart of this gate is that every fp64-ORACLE exactness comparison pins
@@ -2095,13 +2095,13 @@ def test_the_production_default_mma_precision_is_bf16_on_every_plan_entry_point(
     read_levels, write_levels, g_read, g_write = _gen_topology_tensors(
         31, (4, 4), B, T, H, "sparse")
 
-    assert V3Plan(topology=topology, normalization="global", BT=16, BC=BC,
+    assert Plan(topology=topology, normalization="global", BT=16, BC=BC,
                   warp_tile=(1, 1)).mma_precision == "bf16"
-    selected, _ = select_v3_plan(read_levels, write_levels, topology, BC,
+    selected, _ = select_plan(read_levels, write_levels, topology, BC,
                                  normalization="global", decay=False,
                                  occupancy=_toy_occupancy())
     assert selected.mma_precision == "bf16"
-    fused, _, _ = plan_and_schedule_v3(read_levels, write_levels, g_read, g_write,
+    fused, _, _ = plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                        topology, BC, normalization="global",
                                        decay=False, occupancy=_toy_occupancy())
     assert fused.mma_precision == "bf16"

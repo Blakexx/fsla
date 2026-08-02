@@ -1,7 +1,7 @@
 """Python driver for the V3 consumer CUDA kernel (``ROLA_V3_SPEC.md`` §3/§5).
 
 Consumes exactly the Stage 3 schedule (``routing/schedule_v3.py``) and the same
-routing-input contract as the canonical fp64 oracle ``naive_rola_v3``, so the two
+routing-input contract as the canonical fp64 oracle ``naive_rola``, so the two
 cannot drift apart: any test may hand the identical arguments to both.
 
 This module contains no numerics. Everything it computes is the §3 owner-rectangle
@@ -32,11 +32,11 @@ from functools import lru_cache as _lru_cache
 from rola.planner.schedule import (
     DEFAULT_SM_SHARED_BYTES,
     PANEL_MAX_EXPONENT,
-    V3Plan,
-    V3Schedule,
-    V3DecayStream,
+    Plan,
+    Schedule,
+    DecayStream,
     build_clock_stream,
-    build_v3_schedule,
+    build_schedule,
     leaf_rate_dials,
     panel_exponent_bound,
 )
@@ -48,7 +48,7 @@ def sm_shared_bytes() -> int:
     """The device's per-SM shared-memory budget, for §6's residency rule.
 
     Device-queried once (`cudaDevAttrMaxSharedMemoryPerMultiprocessor`) and RECORDED
-    IN THE PLAN by `select_v3_plan`, per the §10 ruling: a plan then states the
+    IN THE PLAN by `select_plan`, per the §10 ruling: a plan then states the
     machine it reasoned for instead of silently depending on the machine it is
     replayed on. Falls back to `DEFAULT_SM_SHARED_BYTES` when there is no device or
     no extension -- the CPU-only path §6.2/§6.3 selection must keep working on, and
@@ -67,7 +67,7 @@ def sm_shared_bytes() -> int:
         return DEFAULT_SM_SHARED_BYTES
 
 
-def level_descriptors(topology: Topology, plan: V3Plan) -> dict[str, list[int]]:
+def level_descriptors(topology: Topology, plan: Plan) -> dict[str, list[int]]:
     """Lower the §3 owner rectangle to the kernel's flat per-level integer arrays."""
     widths = topology.widths
     geometry = plan.geometry
@@ -99,13 +99,13 @@ def level_descriptors(topology: Topology, plan: V3Plan) -> dict[str, list[int]]:
     }
 
 
-def v3_consumer_forward(
+def _consumer_forward(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
     g_read: torch.Tensor | None,
     g_write: torch.Tensor,
-    plan: V3Plan,
+    plan: Plan,
     *,
     initial_state: torch.Tensor | None = None,
     admit: torch.Tensor | None = None,
@@ -114,11 +114,11 @@ def v3_consumer_forward(
     decay=None,
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     eps: float = 1e-5,
-    schedule: V3Schedule | None = None,
+    schedule: Schedule | None = None,
     sequence_parallel=None,
     sequence_parallel_tensors=None,
-) -> tuple[torch.Tensor, torch.Tensor, V3Schedule]:
-    """Run the V3 consumer. Signature mirrors ``naive_rola_v3``'s routing inputs.
+) -> tuple[torch.Tensor, torch.Tensor, Schedule]:
+    """Run the V3 consumer. Signature mirrors ``naive_rola``'s routing inputs.
 
     ``v``: ``[B,T,H,d_v]``. Returns ``(y, final_state, schedule)`` with
     ``y: [B,T,H,d_v]`` and ``final_state: [B,H,N,d_v(+1)]`` -- the same shapes the
@@ -130,7 +130,7 @@ def v3_consumer_forward(
     -- two admit masks over one launch would be two answers to one question.
 
     ``paging``: an optional
-    :class:`~rola.ops.paging.V3PageArena` (spec §7.1). When given, the
+    :class:`~rola.ops.paging.PageArena` (spec §7.1). When given, the
     state is the arena's page array rather than a dense ``[BH, N, cols]`` tensor
     and the returned ``final_state`` is the ARENA, not a tensor -- materializing
     ``[BH, N, cols]`` on the way out is exactly the allocation paging exists to
@@ -144,7 +144,7 @@ def v3_consumer_forward(
     `RoLA.forward` resets the arena unless a prior `recurrent_state` is being
     continued). Pass ``True`` only to deliberately continue an arena's already-
     resident pages across this call boundary without going through
-    :meth:`~rola.ops.paging.V3PageArena.adopt_dense` -- e.g. successive
+    :meth:`~rola.ops.paging.PageArena.adopt_dense` -- e.g. successive
     chunks of one sequence. Meaningless (and rejected) without ``paging``. Fix pass
     (BLOCKER B1, `workflows/20260730-wiring/paging-review.md`): an earlier revision
     reused the arena across calls with no reset and no flag, so a second,
@@ -181,7 +181,20 @@ def v3_consumer_forward(
     if d_v != topology.d_v:
         raise ValueError(f"v's last dim {d_v} must match topology.d_v={topology.d_v}")
     if not v.is_cuda:
-        raise ValueError("the V3 consumer is a CUDA kernel; v must be on a CUDA device")
+        raise ValueError("the RoLA consumer is a CUDA kernel; v must be on a CUDA device")
+    # §4.6's `kerneled` column, enforced where the launch happens and not only where
+    # the dispatch is decided. `rola_func` routes such a config to the reference path;
+    # this refusal is what makes that routing a guarantee rather than a convention
+    # that a direct caller of the private path gets to ignore.
+    unratified = topology.unratified_activations
+    if unratified:
+        raise ValueError(
+            f"the configured activations {unratified} have no ratified kernel row "
+            "(`kerneled=False` in rola/routing/activations.py). This is NOT the kernel "
+            "declining work it was asked to do: nothing was ever measured for these, so "
+            "there is nothing to launch. Call `rola.rola_func`, which runs an unratified "
+            "activation on the reference path carrying an explicit `not_kerneled` flag "
+            "-- a labeled research surface, which a silent kernel path would not be")
     global_norm = plan.normalization == "global"
     if global_norm and g_read is not None:
         raise ValueError("normalization='global' fixes g_read := 1 (spec §1); pass g_read=None")
@@ -204,7 +217,7 @@ def v3_consumer_forward(
             "thread -> channel map from the state registers and is its own increment.")
 
     if schedule is None:
-        schedule = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+        schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
     if (decay is not None) != plan.decay:
         raise ValueError(
             f"plan.decay={plan.decay} disagrees with decay={'a LeafMassDecay' if decay is not None else 'None'}; "
@@ -235,15 +248,15 @@ def v3_consumer_forward(
         # The memo lives on the SCHEDULE because that is the object a caller already
         # reuses to say "same routing", and its validity key is identity-plus-version
         # over strongly-held references rather than `_source_key` -- see
-        # `V3DecayStream` for why the cheaper key is unsound across calls.
+        # `DecayStream` for why the cheaper key is unsound across calls.
         def _build_decay_stream():
             ca = build_clock_stream(stored_src, write_src, plan)
             dl = leaf_rate_dials(decay, topology).to(v.device)
             pb = panel_exponent_bound(ca, decay, plan.BT)
-            return V3DecayStream(
+            return DecayStream(
                 clock_amps=ca, dials=dl, panel_bound=pb,
                 src_stored=stored_src, src_write=write_src,
-                src_versions=V3DecayStream.versions(stored_src, write_src),
+                src_versions=DecayStream.versions(stored_src, write_src),
                 decay=decay, BT=plan.BT)
 
         stream = schedule.decay_artifacts(
@@ -308,7 +321,7 @@ def v3_consumer_forward(
                 "passing a second `admit` would be two answers to one question")
         if initial_state is not None:
             # The arena is the carrier of prior state under paging. Loading a dense
-            # one is `V3PageArena.adopt_dense`, an EXPLICIT bridge the caller calls
+            # one is `PageArena.adopt_dense`, an EXPLICIT bridge the caller calls
             # -- doing it implicitly here would provision the dense limit behind the
             # caller's back, which is the opposite of what §7.1 is for.
             raise ValueError(
@@ -397,4 +410,4 @@ def v3_consumer_forward(
     return y, state_out.view(B, H, N, cols), schedule
 
 
-__all__ = ["v3_consumer_forward", "level_descriptors"]
+__all__ = ["_consumer_forward", "level_descriptors"]

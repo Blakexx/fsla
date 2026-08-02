@@ -153,7 +153,7 @@ def _initial_cache(
     return initial_state.to(device=device, dtype=torch.float64)
 
 
-def naive_rola_v3(
+def naive_rola(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
@@ -282,4 +282,4 @@ def naive_rola_v3(
     )
 
 
-__all__ = ["naive_rola_v3"]
+__all__ = ["naive_rola"]

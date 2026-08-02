@@ -58,10 +58,10 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_v3_routing
+from rola.routing.producer import produce_routing
 from rola.planner.schedule import (
-    build_v3_schedule, plan_and_schedule_v3, select_v3_plan)
-from rola.ops.consumer import v3_consumer_forward
+    build_schedule, plan_and_schedule, select_plan)
+from rola.ops.consumer import _consumer_forward
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -328,7 +328,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, dec
 
             def producer():
                 with torch.no_grad():
-                    return produce_v3_routing(
+                    return produce_routing(
                         x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
                         layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
                         budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
@@ -342,22 +342,22 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, dec
             decay = layer._decay_config() if decay_on else None
 
             def planner():
-                return plan_and_schedule_v3(read_levels, write_levels, g_read, g_write,
+                return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
                                             normalization=norm, decay=decay_on)
 
             sel_plan, _axes, sched = planner()
 
             def select_only():
-                return select_v3_plan(read_levels, write_levels, layer.topology,
+                return select_plan(read_levels, write_levels, layer.topology,
                                       layer.state_block, normalization=norm, decay=decay_on)
 
             def schedule_only():
-                return build_v3_schedule(read_levels, write_levels, g_read, g_write, sel_plan)
+                return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)
 
             def consumer():
                 with torch.no_grad():
-                    return v3_consumer_forward(v, read_levels, write_levels, g_read,
+                    return _consumer_forward(v, read_levels, write_levels, g_read,
                                                g_write, sel_plan, decay=decay,
                                                schedule=sched)
 

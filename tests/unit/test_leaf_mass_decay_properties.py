@@ -6,7 +6,7 @@ exercises ``decay=None`` positively; its sole ``LeafMassDecay`` test is negative
 §2.1). As of that suite, the decay path has **no positive validation** at all.
 
 This file closes that gap by testing the §2 invariants directly against
-``naive_rola_v3`` (and, where noted, its own leaf-materializing primitive
+``naive_rola`` (and, where noted, its own leaf-materializing primitive
 ``_leaf_product``) -- never against a second, independently written reference
 implementation of the recurrence. A second reference would only prove
 self-consistency between two implementations of the same idea; these tests
@@ -41,7 +41,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.naive import _leaf_product, naive_rola_v3
+from rola.ops.naive import _leaf_product, naive_rola
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -112,7 +112,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
 
     states = []
     for prefix in range(1, T + 1):
-        _, final_state = naive_rola_v3(
+        _, final_state = naive_rola(
             v[:, :prefix], (read_levels[0][:, :prefix], read_levels[1][:, :prefix]),
             (write_levels[0][:, :prefix], write_levels[1][:, :prefix]),
             g_read[:, :prefix], g_write[:, :prefix], topology, decay, "raw",
@@ -217,7 +217,7 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     g_write_value = 1.7
     g_write = torch.full((B, T, H), g_write_value, dtype=torch.float64)
 
-    _, final_state = naive_rola_v3(
+    _, final_state = naive_rola(
         v, read_levels, write_levels, g_read, g_write, topology, decay, "raw",
         initial_state=initial_state, output_final_state=True,
     )
@@ -258,7 +258,7 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     g_read = torch.ones(B, T, H, dtype=torch.float64)
     g_write = torch.ones(B, T, H, dtype=torch.float64)
 
-    _, final_state = naive_rola_v3(
+    _, final_state = naive_rola(
         v, (read_l0,), (write_l0,), g_read, g_write, topology, decay, "raw",
         output_final_state=True,
     )
@@ -345,7 +345,7 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, sp
     )
     g_read_arg = None if normalization == "global" else g_read
 
-    y_full, state_full = naive_rola_v3(
+    y_full, state_full = naive_rola(
         v, read_levels, write_levels, g_read_arg, g_write, topology, decay, normalization,
         output_final_state=True,
     )
@@ -353,13 +353,13 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, sp
     def _slice(levels, lo, hi):
         return tuple(level[:, lo:hi] for level in levels)
 
-    y1, state1 = naive_rola_v3(
+    y1, state1 = naive_rola(
         v[:, :split_point], _slice(read_levels, 0, split_point), _slice(write_levels, 0, split_point),
         None if normalization == "global" else g_read[:, :split_point],
         g_write[:, :split_point], topology, decay, normalization,
         output_final_state=True,
     )
-    y2, state2 = naive_rola_v3(
+    y2, state2 = naive_rola(
         v[:, split_point:], _slice(read_levels, split_point, T), _slice(write_levels, split_point, T),
         None if normalization == "global" else g_read[:, split_point:],
         g_write[:, split_point:], topology, decay, normalization,

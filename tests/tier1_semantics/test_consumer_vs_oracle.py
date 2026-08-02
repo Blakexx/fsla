@@ -1,6 +1,6 @@
 """V3 consumer forward gate (``ROLA_V3_SPEC.md`` §3/§5).
 
-**The ONLY validation target is the canonical Stage 1 oracle ``naive_rola_v3``.**
+**The ONLY validation target is the canonical Stage 1 oracle ``naive_rola``.**
 Validating a kernel against a freshly written second reference proves only
 self-consistency -- the shared-router bug passed exactly that way (spec §2.1
 states the prohibition explicitly). Every test here therefore hands the *same*
@@ -28,8 +28,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.naive import naive_rola_v3
-from rola.planner.schedule import V3Plan
+from rola.ops.naive import naive_rola
+from rola.planner.schedule import Plan
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -121,7 +121,7 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
               decay_dials=None, quantize_stored=False, mma_precision="tf32x3",
               read_levels=None, write_levels=None,
               compact=True, return_outputs=False, g_write=None, plan=None):
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -163,13 +163,13 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
         # test_rola_v3_schedule.py::test_build_clock_stream_accepts_stored_zero_with_live_nonzero.
         stored = tuple(t.to(torch.bfloat16).to(torch.float64) for t in write_levels)
 
-    y_ref, state_ref = naive_rola_v3(
+    y_ref, state_ref = naive_rola(
         v, read_levels, write_levels, g_read, g_write, topology, decay, norm,
         write_levels_stored=stored,
         initial_state=initial_state, output_final_state=True)
 
     if plan is None:
-        plan = V3Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
+        plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                       warp_tile=(1, max(1, d_v // 32)), decay=decay is not None,
                       mma_precision=mma_precision, compact=compact)
     else:
@@ -178,7 +178,7 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
         # against a different problem.
         assert (plan.BC, plan.normalization, plan.decay) == (BC, norm, decay is not None)
         assert plan.topology == topology
-    y, state, _schedule = v3_consumer_forward(
+    y, state, _schedule = _consumer_forward(
         v.to(torch.float32),
         tuple(t.to(torch.float32) for t in read_levels),
         tuple(t.to(torch.float32) for t in write_levels),
@@ -442,14 +442,14 @@ def test_warp_tile_that_is_not_realized_is_a_loud_error():
     makes the CTA `d_v` threads, so the partition is purely along channels. `a > 1`
     needs more threads than channels. A plan stamping any other pair must not
     silently launch a different tiling (review F3's lesson, applied to `warp_tile`)."""
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     generator = torch.Generator(device="cuda").manual_seed(5)
     widths, d_v, B, T, H = (8, 4), 64, 1, 20, 2
     topology = _topology(widths, d_v)
-    plan = V3Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(2, 1))
+    plan = Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(2, 1))
     with pytest.raises(NotImplementedError, match="warp_tile"):
-        v3_consumer_forward(
+        _consumer_forward(
             torch.randn(B, T, H, d_v, device="cuda"),
             tuple(_simplex((B, T, H, w), 0.5, generator, "cuda").float() for w in widths),
             tuple(_simplex((B, T, H, w), 0.5, generator, "cuda").float() for w in widths),
@@ -463,7 +463,7 @@ def test_all_zero_write_level_is_read_only():
     factor zero: no leaf is ever deposited, and the run degenerates to carry-only
     reads against `M_0`. The kernel must reach that by the branchless zero
     annihilation (§12 rule 4), not by a special case."""
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(3)
@@ -481,14 +481,14 @@ def test_all_zero_write_level_is_read_only():
     m0 = 0.1 * torch.randn(B, H, topology.N, d_v, device=device, dtype=torch.float64,
                            generator=generator)
 
-    y_ref, _ = naive_rola_v3(v, read_levels, write_levels, g_read, g_write, topology, None, "raw",
+    y_ref, _ = naive_rola(v, read_levels, write_levels, g_read, g_write, topology, None, "raw",
                              initial_state=m0, output_final_state=True)
     # `mma_precision` is pinned to the EXACT arm, not defaulted: the plan default is
     # `bf16` (production), whose ~1e-2 per-product error would swamp the fp64-oracle
     # comparison below -- the split `MMA_PRECISIONS` documents.
-    plan = V3Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(1, 2),
+    plan = Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(1, 2),
                   mma_precision="tf32x3")
-    y, state, _ = v3_consumer_forward(
+    y, state, _ = _consumer_forward(
         v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
         tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
         g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32))
@@ -504,13 +504,13 @@ def test_capped_admit_bit_denies_deposits():
     Denying every owner must leave the state exactly at `M_0` while reads still
     run against it (capping changes the function computed, and is reported, not
     silent)."""
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(21)
     widths, d_v, B, T, H, BC = (8, 4), 64, 1, 20, 2, 16
     topology = _topology(widths, d_v)
-    plan = V3Plan(topology=topology, normalization="raw", BT=32, BC=BC, warp_tile=(1, 2))
+    plan = Plan(topology=topology, normalization="raw", BT=32, BC=BC, warp_tile=(1, 2))
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
@@ -522,18 +522,18 @@ def test_capped_admit_bit_denies_deposits():
     owners_total = topology.N // BC
     words = (owners_total + 31) // 32
     deny = torch.zeros((B * H, words), dtype=torch.int32, device=device)
-    _y, state, _ = v3_consumer_forward(
+    _y, state, _ = _consumer_forward(
         v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
         tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
         g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=deny)
     assert torch.equal(state, m0.to(torch.float32)), "a fully denied admit mask must deposit nothing"
 
     admit_all = torch.full((B * H, words), -1, dtype=torch.int32, device=device)
-    _y2, state2, _ = v3_consumer_forward(
+    _y2, state2, _ = _consumer_forward(
         v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
         tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
         g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=admit_all)
-    _y3, state3, _ = v3_consumer_forward(
+    _y3, state3, _ = _consumer_forward(
         v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
         tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
         g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=None)
@@ -545,13 +545,13 @@ def test_split_k_determinism_is_not_assumed():
     differ in the last bits. This test records that as an accepted property of
     the §5 epilogue rather than letting a later flake be mistaken for a bug: the
     two runs must agree to the fp32 accumulation tolerance, NOT bitwise."""
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(31)
     widths, d_v = (8, 8), 64
     topology = _topology(widths, d_v)
-    plan = V3Plan(topology=topology, normalization="raw", BT=32, BC=64, warp_tile=(1, 2))
+    plan = Plan(topology=topology, normalization="raw", BT=32, BC=64, warp_tile=(1, 2))
     args = (
         torch.randn(1, 40, 2, d_v, device=device),
         tuple(_simplex((1, 40, 2, w), 0.5, generator, device).float() for w in widths),
@@ -560,8 +560,8 @@ def test_split_k_determinism_is_not_assumed():
         (torch.rand(1, 40, 2, device=device) + 0.5),
         plan,
     )
-    y1, _, _ = v3_consumer_forward(*args)
-    y2, _, _ = v3_consumer_forward(*args)
+    y1, _, _ = _consumer_forward(*args)
+    y2, _, _ = _consumer_forward(*args)
     scale = max(1e-30, float(y1.abs().max()))
     assert float((y1 - y2).abs().max()) / scale < RTOL
 
@@ -630,7 +630,7 @@ def test_decay_stored_clock_diverges_from_live_deposit(norm):
     injection at the builder boundary instead, in
     ``test_rola_v3_schedule.py::test_build_clock_stream_accepts_stored_zero_with_live_nonzero``
     (review B2). P5.20.5 finding 2 itself rests on the structural argument
-    (``build_v3_schedule`` has no ``write_levels_stored`` parameter at all), never
+    (``build_schedule`` has no ``write_levels_stored`` parameter at all), never
     on this fixture."""
     generator = torch.Generator(device="cuda").manual_seed(31337)
     _run_case((8, 4), 16, 32, 64, 2, 37, 2, norm, 0.5, 0.4, nonzero_m0=True, seed=21,
@@ -641,7 +641,7 @@ def test_decay_plan_flag_must_agree_with_the_argument():
     """``decay`` is a compile-time template axis (spec §6), so the plan and the
     argument must agree loudly rather than the plan silently inferring one. A
     mismatched pair would launch the no-decay template against a clock stream."""
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     generator = torch.Generator(device="cuda").manual_seed(5)
     widths, d_v, B, T, H = (8, 4), 64, 1, 20, 2
@@ -654,13 +654,13 @@ def test_decay_plan_flag_must_agree_with_the_argument():
         torch.rand(B, T, H, device="cuda") + 0.5,
     )
     dials = LeafMassDecay(dials=_decay_dials(widths, H, generator, "cuda"))
-    no_decay = V3Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(1, 2))
+    no_decay = Plan(topology=topology, normalization="raw", BT=32, BC=16, warp_tile=(1, 2))
     with pytest.raises(ValueError, match="plan.decay"):
-        v3_consumer_forward(*args, no_decay, decay=dials)
-    with_decay = V3Plan(topology=topology, normalization="raw", BT=32, BC=16,
+        _consumer_forward(*args, no_decay, decay=dials)
+    with_decay = Plan(topology=topology, normalization="raw", BT=32, BC=16,
                         warp_tile=(1, 2), decay=True)
     with pytest.raises(ValueError, match="plan.decay"):
-        v3_consumer_forward(*args, with_decay, decay=None)
+        _consumer_forward(*args, with_decay, decay=None)
 
 
 # --- `panel`: the LeafMassDecay dense-limit intra lowering (spec §7.4.1) -----
@@ -905,7 +905,7 @@ def test_panel_refuses_an_out_of_domain_survival_range_rather_than_clamping():
     why every other gate in this file is."""
     from rola.planner.schedule import (
         PANEL_MAX_EXPONENT, build_clock_stream, panel_exponent_bound)
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     import math
 
@@ -926,7 +926,7 @@ def test_panel_refuses_an_out_of_domain_survival_range_rather_than_clamping():
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
 
     def _plan():
-        return V3Plan(topology=topology, normalization="raw", BT=BT, BC=BC,
+        return Plan(topology=topology, normalization="raw", BT=BT, BC=BC,
                       warp_tile=(1, max(1, d_v // 32)), decay=True)
 
     def _call(rate_target):
@@ -934,7 +934,7 @@ def test_panel_refuses_an_out_of_domain_survival_range_rather_than_clamping():
         dial = rate_target ** (1.0 / len(widths))
         decay = LeafMassDecay(dials=tuple(
             torch.full((H, w), dial, device=device, dtype=torch.float64) for w in widths))
-        return v3_consumer_forward(
+        return _consumer_forward(
             v.float(), tuple(t.float() for t in read_levels),
             tuple(t.float() for t in write_levels), g_read.float(), g_write.float(),
             _plan(), decay=decay)
@@ -989,7 +989,7 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan(norm):
     the dtype the kernel reads); ``dial = 1 - 1e-6``, which survives the fp32
     cast strictly below 1, must still run and be finite.
     """
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.consumer import _consumer_forward
 
     generator = torch.Generator(device="cuda").manual_seed(3)
     widths, d_v, B, T, H = (4, 4), 32, 1, 8, 1
@@ -1002,12 +1002,12 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan(norm):
     g_write = torch.ones(B, T, H, device="cuda", dtype=torch.float64)
     g_read = None if norm == "global" else torch.ones(B, T, H, device="cuda", dtype=torch.float64)
     v = torch.randn(B, T, H, d_v, device="cuda", dtype=torch.float64, generator=generator)
-    plan = V3Plan(topology=topology, normalization=norm, BT=32, BC=16, warp_tile=(1, 1), decay=True)
+    plan = Plan(topology=topology, normalization=norm, BT=32, BC=16, warp_tile=(1, 1), decay=True)
 
     def _call(dial_val):
         decay = LeafMassDecay(dials=tuple(
             torch.full((H, w), dial_val, device="cuda", dtype=torch.float64) for w in widths))
-        return v3_consumer_forward(
+        return _consumer_forward(
             v.float(), tuple(t.float() for t in read_levels), (w0.float(), w1.float()),
             None if g_read is None else g_read.float(), g_write.float(), plan, decay=decay)
 
@@ -1028,7 +1028,7 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan(norm):
 # ---------------------------------------------------------------------------
 # The `compact` compile axis (spec §6, ratified rev `2026-07-29.5` Q1)
 #
-# `V3Plan.compact` selects between two INSTANTIATIONS of the one kernel: the
+# `Plan.compact` selects between two INSTANTIATIONS of the one kernel: the
 # gather compiled in, and the gather compiled out at its `K == BC` degeneracy.
 # It is a plan-time structure choice from measured supports (§7.4.1's sanctioned
 # pattern), so both instantiations must be exact at every density -- the planner's
@@ -1186,8 +1186,8 @@ def test_a_vanishing_write_gain_with_a_live_write_allocation(compact):
 def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, norm, decay):
     """The WIRED path: a plan whose §6 axes are SELECTED, not hand-written.
 
-    `select_v3_plan` is the plan build -- it measures the realized routing tensors,
-    prices §6's three axes jointly, and returns a `V3Plan`. Until 2026-07-30 the
+    `select_plan` is the plan build -- it measures the realized routing tensors,
+    prices §6's three axes jointly, and returns a `Plan`. Until 2026-07-30 the
     selector was called from no path at all (adversarial review §4.3), so every
     "plan-selected" number in a findings doc described a function no build invoked.
     This gate runs the selector's own output end to end.
@@ -1206,7 +1206,7 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, no
     """
     from math import prod
 
-    from rola.planner.schedule import select_v3_plan
+    from rola.planner.schedule import select_plan
 
     assert prod(widths) // BC == 1, "this gate is only meaningful on a single-owner rectangle"
     device = "cuda"
@@ -1219,7 +1219,7 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, no
     # The SELECTED axes are what this gate is about; `mma_precision` is not one of
     # them (it is a numeric-format input, not a cost axis) and is pinned to the exact
     # arm so the fp64-oracle comparison below measures structure, not bf16 rounding.
-    plan, axes = select_v3_plan(
+    plan, axes = select_plan(
         tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
         topology, BC, normalization=norm, decay=decay, mma_precision="tf32x3")
     # The fixture is dense, so the selector must see saturation and price the

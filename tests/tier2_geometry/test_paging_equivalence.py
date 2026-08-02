@@ -47,7 +47,7 @@ a test of anything.
 
 The oracle is untouched here on purpose. `tests/ops/test_rola_v3_consumer.py`
 already gates the unpaged consumer against the canonical fp64
-`naive_rola_v3`; this file gates the paged consumer against THAT consumer, so
+`naive_rola`; this file gates the paged consumer against THAT consumer, so
 correctness composes transitively through a reference that is already canonical.
 Writing a fresh reference for the paged path is exactly the
 [[matching-the-naive-antipattern]] the shared-router bug walked through, and spec
@@ -64,8 +64,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.paging import V3PageArena
-from rola.planner.schedule import V3Plan, build_v3_schedule
+from rola.ops.paging import PageArena
+from rola.planner.schedule import Plan, build_schedule
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -74,7 +74,7 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.ops.consumer import v3_consumer_forward
+from rola.ops.consumer import _consumer_forward
 
 pytestmark = [
     pytest.mark.cuda,
@@ -129,7 +129,7 @@ def _fixture(widths, d_v, *, B=2, T=48, H=2, p_nonzero=0.4, seed=0, device="cuda
 
 def _plan(widths, d_v, *, BT, BC, normalization, decay, sparse_write=True, device="cuda"):
     topology = _topology(widths, d_v, sparse_write=sparse_write)
-    return V3Plan(topology=topology, normalization=normalization, BT=BT, BC=BC,
+    return Plan(topology=topology, normalization=normalization, BT=BT, BC=BC,
                   warp_tile=(1, max(1, d_v // 32)), decay=decay, compact=False,
                   mma_precision="tf32x3")
 
@@ -143,8 +143,8 @@ def _decay(topology, device, H, value=0.9):
 def _run(plan, fixture, *, arena=None, initial_state=None, decay=None, continue_paging=False):
     read, write, g_read, g_write, v = fixture
     global_norm = plan.normalization == "global"
-    schedule = build_v3_schedule(read, write, None if global_norm else g_read, g_write, plan)
-    return v3_consumer_forward(
+    schedule = build_schedule(read, write, None if global_norm else g_read, g_write, plan)
+    return _consumer_forward(
         v, read, write, None if global_norm else g_read, g_write, plan,
         initial_state=initial_state, decay=decay, schedule=schedule, paging=arena,
         continue_paging=continue_paging)
@@ -167,7 +167,7 @@ def _reordering_bound(y: torch.Tensor, plan) -> torch.Tensor:
 def _arena(plan, *, BH, max_physical_pages=None, allow_capping=False):
     d_v = plan.topology.d_v
     cols = d_v + (1 if plan.normalization == "global" else 0)
-    return V3PageArena(widths=plan.topology.widths, BC=plan.BC, cols=cols, BH=BH,
+    return PageArena(widths=plan.topology.widths, BC=plan.BC, cols=cols, BH=BH,
                        device=torch.device("cuda"),
                        max_physical_pages=max_physical_pages,
                        allow_capping=allow_capping)
@@ -416,7 +416,7 @@ def test_a_cap_that_can_bind_requires_opting_in():
     widths, d_v, BC = (8, 8, 8), 32, 16
     plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
     with pytest.raises(ValueError, match="CHANGES THE FUNCTION COMPUTED"):
-        V3PageArena(widths=widths, BC=BC, cols=d_v, BH=4,
+        PageArena(widths=widths, BC=BC, cols=d_v, BH=4,
                     device=torch.device("cuda"), max_physical_pages=2)
 
 
@@ -510,7 +510,7 @@ def test_paging_refuses_a_second_admit_mask():
     admit = torch.zeros((B * H, (arena.owners_total + 31) // 32),
                         dtype=torch.int32, device="cuda")
     with pytest.raises(ValueError, match="two answers to one question"):
-        v3_consumer_forward(v, read, write, g_read, g_write, plan,
+        _consumer_forward(v, read, write, g_read, g_write, plan,
                             admit=admit, paging=arena)
 
 
@@ -523,7 +523,7 @@ def test_paging_refuses_an_implicit_dense_initial_state():
     read, write, g_read, g_write, v = fixture
     state = torch.zeros((B, H, plan.topology.N, d_v), device="cuda")
     with pytest.raises(ValueError, match="adopt_dense"):
-        v3_consumer_forward(v, read, write, g_read, g_write, plan,
+        _consumer_forward(v, read, write, g_read, g_write, plan,
                             initial_state=state, paging=arena)
 
 
@@ -612,5 +612,5 @@ def test_continue_paging_requires_an_arena():
     fixture = _fixture(widths, d_v, seed=51)
     read, write, g_read, g_write, v = fixture
     with pytest.raises(ValueError, match="continue_paging=True is meaningless"):
-        v3_consumer_forward(v, read, write, g_read, g_write, plan,
+        _consumer_forward(v, read, write, g_read, g_write, plan,
                             continue_paging=True)

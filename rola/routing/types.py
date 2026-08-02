@@ -9,54 +9,103 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import prod
-from numbers import Real
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 import torch
 
+from rola.routing.activations import (
+    ActivationProperties,
+    ActivationTag,
+    properties_for,
+    validate_alpha,
+)
 from rola.routing.topology import (
     validate_routing_shape,
 )
 
-
-_SUPPORTED_ENTMAX_ALPHAS = (1.5, 2.0)
 ROUTE_DESCRIPTOR_VERSION = 2
 ROUTE_TILE_SIZE = 32
 READ_SUPPORT = 1
 WRITE_SUPPORT = 2
 
 
+def activation_properties(activation: Any, *, owner: str = "activation") -> ActivationProperties:
+    """The registry row for any activation object, by its `tag`.
+
+    The ONE way any rule in this module reads an activation's properties. Nothing
+    reads a property off the activation object itself, because then an object could
+    disagree with the table and the table would stop being the source of truth.
+    """
+    tag = getattr(activation, "tag", None)
+    if tag is None:
+        raise TypeError(
+            f"{owner} must be a routing activation carrying a registry `tag`, got {activation!r}")
+    return properties_for(tag, owner=owner)
+
+
 def _validated_alpha(alpha: float, owner: str) -> float:
-    if isinstance(alpha, bool) or not isinstance(alpha, Real):
-        raise TypeError(f"{owner}.alpha must be a real scalar, got {alpha!r}")
-    alpha = float(alpha)
-    if alpha not in _SUPPORTED_ENTMAX_ALPHAS:
-        raise ValueError(
-            f"{owner}.alpha must be one of {_SUPPORTED_ENTMAX_ALPHAS}, got {alpha!r}")
-    return alpha
+    """Kept as the module's spelling of the check; the check itself is the registry."""
+    return validate_alpha(alpha, owner=owner)
 
 
 @dataclass(frozen=True, slots=True)
 class SoftmaxActivation:
-    """The dense routing activation."""
+    """The dense routing activation. A plain tagged constructor, per §4.6.
+
+    Carries NO property metadata -- properties come from
+    `rola.routing.activations.ACTIVATION_REGISTRY`, keyed on :attr:`tag`. Metadata a
+    caller could supply is metadata a caller could supply wrong, and a validator
+    reading it would be checking a claim instead of a fact.
+    """
+
+    @property
+    def tag(self) -> ActivationTag:
+        return ("softmax", None)
+
+    @property
+    def properties(self) -> ActivationProperties:
+        return properties_for(self.tag, owner="SoftmaxActivation")
 
     @property
     def can_zero(self) -> bool:
-        return False
+        """The `exact_zeros` column, under the name the rest of the tree uses."""
+        return self.properties.exact_zeros
 
 
 @dataclass(frozen=True, slots=True)
 class EntmaxActivation:
-    """An exact alpha=1.5 entmax or alpha=2 sparsemax routing activation."""
+    """An exact entmax routing activation, at a registry-ratified `alpha`.
+
+    `alpha` is validated by REGISTRY LOOKUP (`("entmax", alpha)`), so the set of
+    admissible alphas is the set of rows and there is no second list to keep in step.
+    """
 
     alpha: float
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "alpha", _validated_alpha(self.alpha, "EntmaxActivation"))
+        object.__setattr__(self, "alpha", validate_alpha(self.alpha, owner="EntmaxActivation"))
+
+    @property
+    def tag(self) -> ActivationTag:
+        return ("entmax", self.alpha)
+
+    @property
+    def properties(self) -> ActivationProperties:
+        return properties_for(self.tag, owner="EntmaxActivation")
 
     @property
     def can_zero(self) -> bool:
-        return True
+        return self.properties.exact_zeros
+
+
+def entmax(alpha: float = 1.5) -> EntmaxActivation:
+    """User-facing constructor. `entmax(2)` is sparsemax."""
+    return EntmaxActivation(alpha)
+
+
+def softmax() -> SoftmaxActivation:
+    """User-facing constructor for the dense activation."""
+    return SoftmaxActivation()
 
 
 RoutingActivation: TypeAlias = SoftmaxActivation | EntmaxActivation
@@ -185,17 +234,37 @@ class IndependentRouting:
             ("read_activation", self.read_activation),
             ("write_activation", self.write_activation),
         ):
-            if type(activation) not in (SoftmaxActivation, EntmaxActivation):
-                raise TypeError(
-                    f"IndependentRouting.{name} must be a routing activation, got {activation!r}")
+            # Admission is a REGISTRY lookup, not an isinstance list. An isinstance
+            # list would be a second closed world, and a variant with a ratified row
+            # would still be unconfigurable until someone remembered to widen it --
+            # which is precisely the "one row and it participates in everything"
+            # property §4.6 is built to give.
+            activation_properties(activation, owner=f"IndependentRouting.{name}")
         if (
-            self.read_activation.can_zero
-            and self.write_activation.can_zero
+            activation_properties(self.read_activation).exact_zeros
+            and activation_properties(self.write_activation).exact_zeros
             and not self.shares_solve
         ):
             raise ValueError(
-                "IndependentRouting only permits sparse read/write when they share one tied solve; "
-                "use UnionRouting for untied sparse/sparse routing")
+                "IndependentRouting only permits two exact-zero (`exact_zeros`) sides when "
+                "they share one tied solve; use UnionRouting for untied sparse/sparse "
+                "routing. Stated against the registry column rather than against a list "
+                "of activation names, so a new zero-capable variant is covered the "
+                "moment its row exists")
+
+    def activation(self, duty: str):
+        """This level's activation for one DUTY, `'read'` or `'write'` (§4.6).
+
+        Per-level AND per-duty configuration is what makes level-split
+        (`docs/open-work.md` M-3) pure configuration rather than a code path, so the
+        duty axis gets a named accessor instead of two attribute reads that a caller
+        has to remember the spelling of.
+        """
+        if duty == "read":
+            return self.read_activation
+        if duty == "write":
+            return self.write_activation
+        raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
 
     @property
     def shares_solve(self) -> bool:
@@ -205,12 +274,36 @@ class IndependentRouting:
 
 @dataclass(frozen=True, slots=True)
 class UnionRouting:
-    """Exact entmax shared support followed by read/write role splitting."""
+    """Exact entmax shared support followed by read/write role splitting.
+
+    The INTERSECTION GUARANTEE -- that one solve determines a support both duties
+    then split across -- requires the activation to produce EXACT structural zeros.
+    That precondition is checked against the registry's `exact_zeros` column, not
+    against a list of activation names, so a future zero-capable family is admitted
+    by its row and a future non-zero-capable one is refused by its row.
+    """
 
     alpha: float = 1.5
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "alpha", _validated_alpha(self.alpha, "UnionRouting"))
+        alpha = validate_alpha(self.alpha, owner="UnionRouting")
+        object.__setattr__(self, "alpha", alpha)
+        if not properties_for(("entmax", alpha), owner="UnionRouting").exact_zeros:
+            raise ValueError(
+                f"UnionRouting(alpha={alpha}) names an activation whose registry row says "
+                "`exact_zeros=False`. Union routing IS the shared-support construction: "
+                "without exact structural zeros there is no support to intersect, only "
+                "small numbers, and the read/write split would be silently meaningless")
+
+    @property
+    def properties(self) -> ActivationProperties:
+        return properties_for(("entmax", self.alpha), owner="UnionRouting")
+
+    def activation(self, duty: str) -> EntmaxActivation:
+        """Union routing runs ONE solve, so both duties name the same activation."""
+        if duty not in ("read", "write"):
+            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+        return EntmaxActivation(self.alpha)
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting
 
@@ -283,7 +376,8 @@ class ResolvedRouting:
     def read_level_can_zero(self) -> tuple[bool, ...]:
         """Exact-zero capability for every level on the read side."""
         return tuple(
-            True if isinstance(level, UnionRouting) else level.read_activation.can_zero
+            True if isinstance(level, UnionRouting)
+            else activation_properties(level.read_activation).exact_zeros
             for level in self.levels
         )
 
@@ -291,7 +385,8 @@ class ResolvedRouting:
     def write_level_can_zero(self) -> tuple[bool, ...]:
         """Exact-zero capability for every level on the write side."""
         return tuple(
-            True if isinstance(level, UnionRouting) else level.write_activation.can_zero
+            True if isinstance(level, UnionRouting)
+            else activation_properties(level.write_activation).exact_zeros
             for level in self.levels
         )
 
@@ -446,6 +541,42 @@ class Topology:
         widths = self.widths
         return tuple(prod(widths[index + 1:]) for index in range(len(widths)))
 
+    # --- §4.6: the per-level per-duty activation surface, read generically ----
+
+    def activation(self, level: int, duty: str):
+        """The activation configured for one `(level, duty)` cell."""
+        return self.levels[level].routing.activation(duty)
+
+    def activation_properties(self, level: int, duty: str) -> ActivationProperties:
+        """That cell's registry row -- the ONLY source of activation properties."""
+        return activation_properties(
+            self.activation(level, duty), owner=f"Topology.levels[{level}].{duty}")
+
+    def duty_cells(self) -> tuple[tuple[int, str], ...]:
+        """Every `(level, duty)` cell, so a rule can quantify over the whole grid
+        instead of over a hand-written pair of loops per rule."""
+        return tuple((level, duty) for level in range(self.D) for duty in ("read", "write"))
+
+    @property
+    def unratified_activations(self) -> tuple[tuple[int, str, ActivationTag], ...]:
+        """The cells whose registry row says `kerneled=False`.
+
+        §4.6: a config naming one of these is a LABELED RESEARCH SURFACE -- it runs
+        on the reference path carrying an explicit `not_kerneled` flag. It is not a
+        kernel fallback, because the kernel is never asked and never declines;
+        `launch_consumer` remains the single authority on supported shapes.
+        """
+        return tuple(
+            (level, duty, self.activation(level, duty).tag)
+            for level, duty in self.duty_cells()
+            if not self.activation_properties(level, duty).kerneled
+        )
+
+    @property
+    def kerneled(self) -> bool:
+        """Whether every configured activation has a ratified kernel row."""
+        return not self.unratified_activations
+
 
 @dataclass(frozen=True, slots=True)
 class LeafMassDecay:
@@ -493,8 +624,32 @@ class LeafMassDecay:
         object.__setattr__(self, "dials", dials)
 
     def validate_against(self, topology: Topology) -> None:
-        """Check level count and per-level width against a concrete ``Topology``."""
+        """Check level count, per-level width, and the WRITE-side mass precondition.
+
+        §4.6: **mass decay requires a `normalized` write side.** The clock is
+        `c[t,s] = prod_l p_write_stored[t, d_l(s)]` and the survival factor is
+        `(1 - rate_leaf)**c` -- an expression that prices a decay per unit of MASS
+        DEPOSITED. If the write side does not land on the simplex, `c` is no longer
+        a unit-mass share and the same routing decays by an amount that depends on
+        the un-normalized scale of the logits, which is not a modeling choice anyone
+        made. Stated against the registry column, so it covers every present and
+        future activation without naming one.
+        """
         widths = topology.widths
+        unnormalized = [
+            (level, topology.activation(level, "write").tag)
+            for level in range(topology.D)
+            if not topology.activation_properties(level, "write").normalized
+        ]
+        if unnormalized:
+            raise ValueError(
+                f"LeafMassDecay requires a `normalized` write side on every level; "
+                f"levels {unnormalized} name activations whose registry row says "
+                "`normalized=False`. The decay clock prices survival per unit of "
+                "DEPOSITED MASS, so an un-normalized write side makes the amount "
+                "decayed depend on the scale of the logits rather than on the "
+                "routing. Configure a normalized write activation, or do not "
+                "configure mass decay")
         if len(self.dials) != len(widths):
             raise ValueError(
                 f"LeafMassDecay.dials must contain one tensor per level (D={len(widths)}), "

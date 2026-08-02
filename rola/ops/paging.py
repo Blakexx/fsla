@@ -26,7 +26,7 @@ axis, and one status code"):
     reached and the rest are DENIED. A denied owner's write factor is annihilated
     by the admit mask -- the same rule as a structurally zero write. Capping
     CHANGES THE FUNCTION COMPUTED, so :attr:`PagingResult.capped_pages` is
-    reported and :meth:`V3PageArena.plan` raises unless the caller opted in.
+    reported and :meth:`PageArena.plan` raises unless the caller opted in.
 
 Vocabulary, defined here and used unqualified below: ``N`` = leaf count; ``BC`` =
 leaves per owner (spec §3's owner rectangle); ``cols`` = ``d_v`` plus one mass
@@ -42,7 +42,7 @@ before every call unless the caller passes ``fresh=False``. That is a fix-pass
 correction (`workflows/20260730-wiring/paging-review.md` BLOCKER B1) -- an
 earlier revision of this module *claimed* call-scoping here without enforcing
 it, so a caller that reused one arena across two independent forwards (as
-`v3_consumer_forward`'s ``paging=`` argument invites) silently computed a
+`_consumer_forward`'s ``paging=`` argument invites) silently computed a
 continuation. ``fresh=False`` is the explicit, named opt-in for legitimate
 continuation (e.g. successive chunks of one sequence kept resident without a
 round trip through :meth:`adopt_dense`); :meth:`adopt_dense` /
@@ -119,7 +119,7 @@ class PagingResult:
         return self.resident_bytes / self.dense_bytes if self.dense_bytes else 0.0
 
 
-class V3PageArena:
+class PageArena:
     """A pooled, per-layer page arena over V3 value panels.
 
     **Pooled, not per-(batch, head)** -- this is V2's shape and it is the reason
@@ -303,7 +303,7 @@ class V3PageArena:
     def plan(self, schedule, *, fresh: bool = True) -> PagingResult:
         """Run §7.1's ``prepare -> (grow) -> publish`` against one V3 schedule.
 
-        ``schedule`` is a :class:`~rola.planner.schedule.V3Schedule`.
+        ``schedule`` is a :class:`~rola.planner.schedule.Schedule`.
         Only its ``write_amps`` and its plan's owner geometry are read: page
         commitment keys on the LIVE DEPOSIT, exactly as the §4 bitmap builder does,
         never on the clock (``build_clock_stream``'s stored tensor is not an input
@@ -454,4 +454,4 @@ class V3PageArena:
         return dense.reshape(self.BH, self.N, self.cols)
 
 
-__all__ = ["V3PageArena", "PagingResult"]
+__all__ = ["PageArena", "PagingResult"]

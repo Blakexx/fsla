@@ -26,7 +26,7 @@ as a manifest diff rather than as a silently different benchmark.
 
 Modes:
 
-  --mode oracle   correctness against the canonical fp64 oracle `naive_rola_v3`,
+  --mode oracle   correctness against the canonical fp64 oracle `naive_rola`,
                   at the declared per-arm tolerances. NEVER against a second
                   reference: validating against a freshly written one proves only
                   self-consistency (spec §2.1's prohibition; the shared-router bug
@@ -79,14 +79,14 @@ from pathlib import Path
 
 import torch
 
-from rola.ops.naive import naive_rola_v3
+from rola.ops.naive import naive_rola
 from rola.routing.entmax.reference import entmax
 from rola.planner.schedule import (
-    V3Plan, build_v3_schedule, owner_geometry, tile_union_stats, unpack_bits)
+    Plan, build_schedule, owner_geometry, tile_union_stats, unpack_bits)
 from rola.routing.types import (
     EntmaxActivation, IndependentRouting, LeafMassDecay, LevelConfig,
     SoftmaxActivation, Topology)
-from rola.ops.consumer import v3_consumer_forward
+from rola.ops.consumer import _consumer_forward
 
 MANIFEST = Path(__file__).resolve().parent / "cells" / "topology_manifest.json"
 
@@ -183,7 +183,7 @@ _DIAL_RANGE = {"warm": (0.05, 0.85), "hot": (0.90, 0.099)}
 def _with_f32(fx):
     """Materialize the consumer's fp32 inputs ONCE per fixture.
 
-    **This is load-bearing, not tidiness.** `V3DecayStream`'s validity key is
+    **This is load-bearing, not tidiness.** `DecayStream`'s validity key is
     tensor IDENTITY plus `_version` (it has to be -- a `data_ptr` key is unsound
     across calls). A harness that re-ran `t.float()` per call handed the consumer a
     NEW tensor object every time on any fp64 fixture, so the memo missed every call
@@ -213,9 +213,9 @@ class Cell:
       because the trained layer this repo ships is `decay="none"` /
       `state_norm="global"` only.
     * **PRODUCER** (`producer_route_w_mul` set). A real
-      :class:`~rola.layers.RoLA` is constructed and `produce_v3_routing` is run
+      :class:`~rola.layers.RoLA` is constructed and `produce_routing` is run
       on it, so the supports are the ones the MODEL emits. The plan is then chosen
-      by `plan_and_schedule_v3` -- the PLANNER, not a hand-built `V3Plan` -- which
+      by `plan_and_schedule` -- the PLANNER, not a hand-built `Plan` -- which
       is what makes "plan-selected" claims about this cell true.
 
     **THE SYNTHETIC MODE CANNOT IMITATE THE PRODUCER MODE'S DENSITY, and that is a
@@ -294,13 +294,13 @@ class Cell:
         return layer
 
     def _build_producer(self):
-        from rola.routing.producer import produce_v3_routing
+        from rola.routing.producer import produce_routing
         layer = self._layer()
         hidden = self.H * self.d_v
         x = torch.randn(self.B, self.T, hidden, device="cuda", dtype=torch.float32)
         with torch.no_grad():
             v = layer.v_proj(x).view(self.B, self.T, self.H, self.d_v)
-            ro = produce_v3_routing(
+            ro = produce_routing(
                 x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
                 layer.gain_bias, layer.topology, "global", budget=layer.budget, r=None,
                 budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
@@ -311,7 +311,7 @@ class Cell:
                                                  dtype=torch.float64, generator=g)
                           for w in self.widths)
                  for t, (lo, span) in _DIAL_RANGE.items()}
-        #: `produce_v3_routing(..., "global")` returns `g_read = None`, because spec
+        #: `produce_routing(..., "global")` returns `g_read = None`, because spec
         #: §4.2 FIXES `g_read := 1` under `global` and production has no read-gain
         #: projection to supply one. A `raw` arm on a producer cell therefore has no
         #: producer-supplied read gain to use, and one is synthesised here from the
@@ -372,7 +372,7 @@ class Cell:
         could actually have emitted.
         """
         if self.is_producer and fx is not None:
-            from rola.planner.schedule import plan_and_schedule_v3
+            from rola.planner.schedule import plan_and_schedule
             import dataclasses as _dc
             #: NO ORACLE IS INJECTED, and that is item 6b's point: the planner's
             #: DEFAULT occupancy oracle is now the one kernel's own. This file used
@@ -385,7 +385,7 @@ class Cell:
             kw = {}
             if bt is not None:
                 kw["bt_candidates"] = (bt,)
-            plan, _axes, sched = plan_and_schedule_v3(
+            plan, _axes, sched = plan_and_schedule(
                 fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"],
                 fx["topology"], self.BC, normalization=norm, decay=decay_on, **kw)
             #: `compact` is OVERRIDDEN rather than left to the planner, and that is
@@ -399,7 +399,7 @@ class Cell:
             if compact:
                 plan = _dc.replace(plan, compact=True)
             return _dc.replace(plan, mma_precision=prec), sched
-        return V3Plan(topology=fx["topology"] if fx else self.topology(),
+        return Plan(topology=fx["topology"] if fx else self.topology(),
                       normalization=norm, BT=self.BT if bt is None else bt, BC=self.BC,
                       warp_tile=(1, max(1, self.d_v // 32)), decay=decay_on,
                       mma_precision=prec, compact=compact), None
@@ -437,7 +437,7 @@ def _cells() -> dict[str, Cell]:
     #: AT-SCALE, PRODUCER MODE -- **THE CANONICAL CELL, AND THE HISTORICAL ONE.**
     #: `[256,256]` `N=65536`, `B=1 H=8 d_v=64`, sparse/sparse alpha=1.5 routing from
     #: a real `RoLA` layer with `route_W` scaled by 8.0, seed 0, plan chosen by
-    #: `plan_and_schedule_v3`. This is byte-for-byte the constructor the pre-loss
+    #: `plan_and_schedule`. This is byte-for-byte the constructor the pre-loss
     #: `rewrite.md` tables (§1.2, §1.6, §2.1-§2.8) were measured on, so numbers
     #: quoted against these names ARE commensurable with them.
     for L in (512, 2048):
@@ -511,14 +511,14 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
     g_read = None if norm == "global" else fx["g_read"]
     topology = fx["topology"]
 
-    y_ref, state_ref = naive_rola_v3(
+    y_ref, state_ref = naive_rola(
         fx["v"], fx["read_levels"], fx["write_levels"], g_read, fx["g_write"],
         topology, decay, norm, initial_state=None, output_final_state=True)
 
     #: THE NEW CONSUMER MUST BE STAMPED `panel` UNDER DECAY, and it is a gating
     #: requirement rather than bookkeeping. Its tile algorithm IS §7.4.1's panel
     #: lowering -- two separately exponentiated survival factors -- so it inherits
-    #: that lowering's DOMAIN, and `v3_consumer_forward` evaluates
+    #: that lowering's DOMAIN, and `_consumer_forward` evaluates
     #: `panel_exponent_bound` against `PANEL_MAX_EXPONENT` only when the plan says
     #: `panel`. Stamping anything else would let the new kernel run outside the
     #: range in which its two panels are an exact rewrite of the recurrence, with
@@ -526,7 +526,7 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
     #: unreachable by this kernel and the planner's own choice stands.
     plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec,
                             fx=fx, compact=compact)
-    y, state, _ = v3_consumer_forward(
+    y, state, _ = _consumer_forward(
         fx["v_f32"], fx["read_f32"], fx["write_f32"],
         None if g_read is None else fx["g_read_f32"], fx["g_write_f32"],
         plan, decay=decay, schedule=sched)
@@ -649,15 +649,15 @@ def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
                             fx=fx,
                             compact=compact)
     if sched is None:
-        sched = build_v3_schedule(fx["read_f32"], fx["write_f32"],
+        sched = build_schedule(fx["read_f32"], fx["write_f32"],
                                   None if g_read is None else fx["g_read_f32"],
                                   fx["g_write_f32"], plan)
-    y_ref, state_ref = naive_rola_v3(
+    y_ref, state_ref = naive_rola(
         fx["v"], fx["read_levels"], fx["write_levels"], g_read, fx["g_write"],
         fx["topology"], decay, norm, initial_state=None, output_final_state=True)
 
     def launch(sp):
-        return v3_consumer_forward(
+        return _consumer_forward(
             fx["v_f32"], fx["read_f32"], fx["write_f32"],
             None if g_read is None else fx["g_read_f32"], fx["g_write_f32"], plan,
             decay=decay, schedule=sched, sequence_parallel=sp)
@@ -745,7 +745,7 @@ def run_p1_identity():
                                     prec="bf16",
                                     fx=fx)
             if sched is None:
-                sched = build_v3_schedule(fx["read_f32"], fx["write_f32"], None,
+                sched = build_schedule(fx["read_f32"], fx["write_f32"], None,
                                           fx["g_write_f32"], plan)
             base = select_sequence_parallelism(
                 plan, sched, policy=SequenceParallelPolicy(workspace_cap=1 << 30))
@@ -759,7 +759,7 @@ def run_p1_identity():
                 n_slots=sum(owner_slot_counts(Ps)), BC=base.BC, cols=base.cols)
 
             def launch(sp):
-                return v3_consumer_forward(
+                return _consumer_forward(
                     fx["v_f32"], fx["read_f32"], fx["write_f32"], None,
                     fx["g_write_f32"], plan, decay=d, schedule=sched,
                     sequence_parallel=sp)
@@ -848,7 +848,7 @@ def _iqr(xs):
 def _timed(cell, fx, plan, decay, g_read, schedule):
     torch.cuda.synchronize()
     t0 = time.perf_counter()
-    _, _, sch = v3_consumer_forward(
+    _, _, sch = _consumer_forward(
         fx["v_f32"], fx["read_f32"], fx["write_f32"],
         None if g_read is None else fx["g_read_f32"], fx["g_write_f32"],
         plan, decay=decay, schedule=schedule)
@@ -1007,7 +1007,7 @@ def decay_price(name, *, reps=11, decay_temp="warm"):
     #: `panel_exponent_bound`) used to be rebuilt on EVERY call, including calls
     #: handed a prebuilt `schedule=`, and landed entirely in this ratio because the
     #: `decay=None` arm pays none of it. It is now memoized on the schedule
-    #: (`V3DecayStream`), so it is paid once on the warm call and is OUTSIDE the
+    #: (`DecayStream`), so it is paid once on the warm call and is OUTSIDE the
     #: timed region -- which is why it is REPORTED here but NOT subtracted.
     #: Subtracting it now would double-count.
     #:
@@ -1111,7 +1111,7 @@ def gather_stats(cell: Cell, fx=None, max_owners=48):
     fx = cell.build() if fx is None else fx
     plan, sch = cell.plan(norm="global", decay_on=False, prec="bf16", fx=fx)
     if sch is None:
-        sch = build_v3_schedule(fx["read_f32"], fx["write_f32"], None,
+        sch = build_schedule(fx["read_f32"], fx["write_f32"], None,
                                 fx["g_write_f32"], plan)
     geo = owner_geometry(tuple(cell.widths), cell.BC)
     j, nsl, nw = geo.first_spanned_level, geo.n_slices, sch.n_words
@@ -1226,7 +1226,7 @@ def skip_share(cell: Cell, fx=None):
     plan, sch = cell.plan(norm="global", decay_on=True, prec="bf16",
                           fx=fx)
     if sch is None:
-        sch = build_v3_schedule(fx["read_f32"], fx["write_f32"],
+        sch = build_schedule(fx["read_f32"], fx["write_f32"],
                                 None, fx["g_write_f32"], plan)
     geo = owner_geometry(tuple(cell.widths), cell.BC)
     j, nsl, nw = geo.first_spanned_level, geo.n_slices, sch.n_words

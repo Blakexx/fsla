@@ -47,9 +47,9 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_v3_routing
-from rola.planner.schedule import V3Plan, build_v3_schedule
-from rola.ops.consumer import v3_consumer_forward
+from rola.routing.producer import produce_routing
+from rola.planner.schedule import Plan, build_schedule
+from rola.ops.consumer import _consumer_forward
 
 
 def _median_ms(fn, reps: int, warmup: int = 4) -> float:
@@ -77,7 +77,7 @@ def run(reps: int = 20) -> list[dict]:
         states_per_level=[8, 16], decay="none", state_norm="raw",
         level_routing_configs=LevelRoutingConfig(read="dense", write="dense", tied=False),
         layer_idx=0).to("cuda", torch.float32)
-    plan = V3Plan(topology=layer.topology, normalization="raw", BT=BT, BC=BC,
+    plan = Plan(topology=layer.topology, normalization="raw", BT=BT, BC=BC,
                   warp_tile=(1, d_v // 32), decay=False)
 
     # (axis, B, L). The batch block scales the grid with the work; the sequence
@@ -93,7 +93,7 @@ def run(reps: int = 20) -> list[dict]:
         x = torch.randn(B, L, hidden, device="cuda")
         v = torch.randn(B, L, H, d_v, device="cuda")
         with torch.no_grad():
-            ro = produce_v3_routing(
+            ro = produce_routing(
                 x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
                 layer.gain_bias, layer.topology, "raw", budget=layer.budget, r=None,
                 budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
@@ -102,9 +102,9 @@ def run(reps: int = 20) -> list[dict]:
         rl = tuple(t.float() for t in ro.read_levels)
         wl = tuple(t.float() for t in ro.write_levels)
         gr, gw = ro.g_read.float(), ro.g_write.float()
-        sch = build_v3_schedule(rl, wl, gr, gw, plan)
+        sch = build_schedule(rl, wl, gr, gw, plan)
         ms = _median_ms(
-            lambda: v3_consumer_forward(v, rl, wl, gr, gw, plan, decay=None, schedule=sch),
+            lambda: _consumer_forward(v, rl, wl, gr, gw, plan, decay=None, schedule=sch),
             reps)
         grid = int(sch.owners.shape[0])
         tiles = grid * (L // BT)

@@ -1,7 +1,7 @@
 """Layer execution-backend dispatch gate (``ROLA_V3_SPEC.md`` §3-§6, §10 Stage 2).
 
 `rola/layers/rola.py`'s forward has two execution backends -- the differentiable
-Stage 1 oracle `naive_rola_v3` and the plan-selected, **forward-only** V3 CUDA
+Stage 1 oracle `naive_rola` and the plan-selected, **forward-only** V3 CUDA
 consumer -- and `RoLA.select_execution_backend` chooses between them. This file is
 the gate on that choice.
 
@@ -102,9 +102,9 @@ def _layer(*, norm: str, decay: str, router: str = "dense", device: str = "cuda"
 def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     """Realized exact-zero fraction of the router's write allocations, so a test
     that claims to exercise a sparse fixture can prove the fixture is sparse."""
-    from rola.routing.producer import produce_v3_routing
+    from rola.routing.producer import produce_routing
     with torch.no_grad():
-        out = produce_v3_routing(
+        out = produce_routing(
             x, None, torch.zeros(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim,
                                  device=x.device, dtype=x.dtype),
             layer.route_W, layer.route_bias_param, layer.gain_W, layer.gain_bias,
@@ -191,7 +191,7 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     """Property 2, asserted on the counter and on the stamped plan -- not on timing.
 
     The plan the layer ran is recorded, so this also pins that the layer went
-    through `select_v3_plan` (the axes are a QUERY of the realized routing) rather
+    through `select_plan` (the axes are a QUERY of the realized routing) rather
     than through a hand-written plan constant: `last_plan_axes` carries the measured
     `TileUnionStats` the decision was priced from.
     """
@@ -423,14 +423,14 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     """The other half of item 3f's cross-feed: a CUDA-produced (fp32) carried state
     consumed by a grad-context oracle step. The LAYER refuses this categorically
     (consuming any carried state under grad raises, regardless of which backend
-    produced it), so this calls `naive_rola_v3` directly -- exactly the surface the
+    produced it), so this calls `naive_rola` directly -- exactly the surface the
     reviewer exercised by hand in wiring-review.md §9 -- to gate the claim that both
     entry points accept either dtype, independent of the layer's stricter policy.
     """
-    from rola.ops.naive import naive_rola_v3
-    from rola.routing.producer import produce_v3_routing
-    from rola.planner.schedule import select_v3_plan
-    from rola.ops.consumer import v3_consumer_forward
+    from rola.ops.naive import naive_rola
+    from rola.routing.producer import produce_routing
+    from rola.planner.schedule import select_plan
+    from rola.ops.consumer import _consumer_forward
 
     torch.manual_seed(41)
     layer = _layer(norm=norm, decay=decay)
@@ -439,16 +439,16 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
 
     with torch.no_grad():
         v = layer.v_proj(x).view(1, 48, _H, _DV)
-        ro = produce_v3_routing(
+        ro = produce_routing(
             x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
             layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
             budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
             usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
         decay_config = layer._decay_config()
-        plan, _axes = select_v3_plan(
+        plan, _axes = select_plan(
             ro.read_levels, ro.write_levels, layer.topology, layer.state_block,
             normalization=norm, decay=decay_config is not None)
-        _out, cuda_state, _sched = v3_consumer_forward(
+        _out, cuda_state, _sched = _consumer_forward(
             v, ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, plan,
             initial_state=None, decay=decay_config)
     assert cuda_state.dtype == torch.float32
@@ -457,12 +457,12 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     # oracle step -- the direction the layer forbids, exercised at the ops level.
     v2 = layer.v_proj(x).view(1, 48, _H, _DV)
     with torch.enable_grad():
-        ro2 = produce_v3_routing(
+        ro2 = produce_routing(
             x, None, v2, layer.route_W, layer.route_bias_param, layer.gain_W,
             layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
             budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
             usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
-        out2, oracle_state2 = naive_rola_v3(
+        out2, oracle_state2 = naive_rola(
             v2, ro2.read_levels, ro2.write_levels, ro2.g_read, ro2.g_write,
             layer.topology, layer._decay_config(), norm,
             initial_state=cuda_state, output_final_state=True)
@@ -514,7 +514,7 @@ def test_the_decay_dials_are_a_grad_requiring_operation_input():
     (`v`, `g_read`, `g_write` and the read/write allocations do not, because
     `v_proj`/`route_W`/`gain_W`/`gain_bias` are frozen and `x` does not require
     grad) IS a grad-requiring operation input, because the dials are handed straight
-    to `v3_consumer_forward(..., decay=decay_config)`.
+    to `_consumer_forward(..., decay=decay_config)`.
 
     `o_proj` is left trainable (matching the reviewer's fixture, wiring-review.md
     §2): its weight requiring grad is what lets `.backward()` complete regardless of

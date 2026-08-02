@@ -138,7 +138,7 @@ class BudgetConditioning:
     must name a zero-capable (entmax) level-side -- softmax sides cannot carry
     a budget (spec: "a budget on a softmax side is a loud config validation
     error, not a no-op"); validated against a concrete topology in
-    ``produce_v3_routing``, not here (this dataclass has no topology to check
+    ``produce_routing``, not here (this dataclass has no topology to check
     against).
     ``usage_bias_enabled``: the ablation gate for the usage-conditioned
     per-digit logit bias ``g`` (applied to every write level when True).
@@ -177,7 +177,7 @@ class BudgetConditioning:
             # that does nothing.
             warnings.warn(
                 "BudgetConditioning has no budgeted pairs and usage_bias_enabled=False -- this "
-                "conditioning object is fully inert (produce_v3_routing will always take the "
+                "conditioning object is fully inert (produce_routing will always take the "
                 "unconditioned baseline path for it). If this is intentional, pass budget=None "
                 "instead.",
                 stacklevel=2,
@@ -208,8 +208,8 @@ class BudgetConditioning:
 
 
 @dataclass(frozen=True, slots=True)
-class V3RoutingOutput:
-    """The producer's public contract: exactly ``naive_rola_v3``'s routing inputs, plus diagnostics.
+class RoutingOutput:
+    """The producer's public contract: exactly ``naive_rola``'s routing inputs, plus diagnostics.
 
     ``read_levels``/``write_levels``: ``tuple[Tensor, ...]``, one ``[B,T,H,width_l]``
     simplex per level -- the Stage 1 oracle's expected input contract verbatim.
@@ -323,7 +323,7 @@ def _unconditioned_pass(
         _unfold_bth(write_mass.unsqueeze(-1), B, H).squeeze(-1)
 
 
-def produce_v3_routing(
+def produce_routing(
     x: torch.Tensor,
     x_w: torch.Tensor | None,
     v: torch.Tensor,
@@ -341,7 +341,9 @@ def produce_v3_routing(
     temp_b: torch.Tensor | None = None,
     usage_bias_W: torch.Tensor | None = None,
     usage_bias_b: torch.Tensor | None = None,
-) -> V3RoutingOutput:
+    write_gain: bool = True,
+    read_gain: bool | None = None,
+) -> RoutingOutput:
     """Produce every configured level's routing plus the §4.5 conditioning surface.
 
     ``x``: ``[B,L,hidden_size]`` read/shared router source stream.
@@ -396,7 +398,8 @@ def produce_v3_routing(
 
     gain_projection_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     gains = project_side_gains(
-        x, gain_W, gain_bias, normalization=normalization, projection_dtype=gain_projection_dtype)
+        x, gain_W, gain_bias, normalization=normalization, write_gain=write_gain,
+        read_gain=read_gain, projection_dtype=gain_projection_dtype)
     # Fold each level's mass (see `_split_level_mass`) into the side gain it belongs to
     # (spec §4.2: "multiplicative per-level masses collapse into one side-wide product").
     # `write_mass` always matters -- W directly scales the deposit under both
@@ -405,6 +408,11 @@ def produce_v3_routing(
     # ratio exactly (up to the eps term, the same reasoning
     # `test_rola_v3_migration_equivalence.py` uses at eps=0) -- production's global cells
     # have no read-gain projection to fold it into (architecture §4.2), so it is dropped.
+    # With `write_gain=False` there is no projected write gain, so this product IS the
+    # write channel: the level masses still have to ride the mass channel (the engine's
+    # factorization puts them there), and the ablation removes the LEARNED magnitude,
+    # not the algebra. `g_write = write_mass` in that case, which is exactly "salience
+    # through routing only".
     gains["g_write"] = gains["g_write"] * write_mass
     if normalization == "raw":
         gains["g_read"] = gains["g_read"] * read_mass
@@ -420,7 +428,7 @@ def produce_v3_routing(
         touched_bits[level] = touched_bitset_update(
             touched, write_levels[level].permute(0, 2, 1, 3))  # [B,H,T,width]
 
-    return V3RoutingOutput(
+    return RoutingOutput(
         read_levels=read_levels,
         write_levels=write_levels,
         g_read=gains["g_read"],
@@ -605,7 +613,7 @@ def _conditioned_pass(
             # r is off: slack stays at its clamped/inert 0 (D3), but slack_history is only
             # populated for budgeted pairs when Tier 1 is actually active -- an empty history
             # entry for an off step is correct (nothing was actuated) and matches
-            # `V3RoutingOutput.slack_history`'s "populated only for budgeted pairs" contract.
+            # `RoutingOutput.slack_history`'s "populated only for budgeted pairs" contract.
             for (level, side) in pairs:
                 slack_history[(level, side)].append(running_slack[(level, side)])
 
@@ -619,9 +627,9 @@ def _conditioned_pass(
 
 __all__ = [
     "BudgetConditioning",
-    "V3RoutingOutput",
+    "RoutingOutput",
     "embed_budget",
     "init_temp_bias",
-    "produce_v3_routing",
+    "produce_routing",
     "resolved_routing_from_topology",
 ]

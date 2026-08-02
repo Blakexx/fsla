@@ -2,7 +2,7 @@
 
 This is a faithful transcription of ``cuda/src/v3_consumer.cu``'s *control
 structure* into Python, run in float64 and compared against the canonical Stage 1
-oracle ``naive_rola_v3``. It exists to separate the two failure modes that the
+oracle ``naive_rola``. It exists to separate the two failure modes that the
 CUDA gate (``test_rola_v3_consumer.py``) cannot tell apart:
 
 * the **algorithm** is wrong -- the owner rectangle's ``(base, stride, modulus)``
@@ -31,11 +31,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.naive import naive_rola_v3
+from rola.ops.naive import naive_rola
 from rola.planner.schedule import (
-    V3Plan,
+    Plan,
     build_clock_stream,
-    build_v3_schedule,
+    build_schedule,
     unpack_bits,
 )
 from rola.routing.types import (
@@ -82,7 +82,7 @@ def emulate(v, read_levels, write_levels, g_read, g_write, plan, initial_state,
     glob = plan.normalization == "global"
     cols = d_v + (1 if glob else 0)
 
-    sched = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+    sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
     # The clock stream is built by a SEPARATE function that never sees a bitmap
     # (P5.20.5 finding 2); tile liveness above stays keyed on the live deposit.
     clock_amps = (None if decay is None else build_clock_stream(
@@ -310,11 +310,11 @@ def _check(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0, s
         # catch a clock-keyed bitmap.
         stored = tuple(t.to(torch.bfloat16).to(torch.float64) for t in write_levels)
 
-    y_ref, state_ref = naive_rola_v3(
+    y_ref, state_ref = naive_rola(
         v, read_levels, write_levels, g_read, g_write, topology, decay, norm,
         write_levels_stored=stored,
         initial_state=initial_state, output_final_state=True)
-    plan = V3Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
+    plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                   warp_tile=(1, max(1, d_v // 32)), amp_dtype=torch.float64,
                   decay=decay is not None)
     y, state = emulate(v, read_levels, write_levels, g_read, g_write, plan, initial_state,

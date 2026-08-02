@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.planner.schedule import V3Plan, build_v3_schedule
+from rola.planner.schedule import Plan, build_schedule
 from rola.routing.sequence_parallel import (
     GATES,
     MEASURED_HBM_BYTES_PER_S,
@@ -59,10 +59,10 @@ def _fixture(widths=(8, 8), BC=16, d_v=64, B=1, T=128, H=2, BT=16, norm="raw",
     g_write = torch.rand(B, T, H, generator=gen, device=device) + 0.5
     g_read = (None if norm == "global"
               else torch.rand(B, T, H, generator=gen, device=device) + 0.5)
-    plan = V3Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
+    plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                   warp_tile=(1, max(1, d_v // 32)), decay=False,
                   mma_precision="tf32x3", compact=False)
-    schedule = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
     return plan, schedule
 
 

@@ -24,7 +24,7 @@ is reported beside it and should be read as bounded by it, not as an independent
 result.
 
 **Cold vs warm (fix pass R5, `workflows/20260730-wiring/paging-review.md`).** The
-layer resets the arena on every forward (`c469b117`; `V3PageArena.plan`'s own
+layer resets the arena on every forward (`c469b117`; `PageArena.plan`'s own
 `fresh=True` default since the BLOCKER B1 fix pass), so the plane a real step
 pays is the COLD one: full reset, replan, republish. `plan_warm_ms` measures the
 SAME arena re-planning the SAME schedule with `fresh=False` (no reset, so after
@@ -56,8 +56,8 @@ import time
 import torch
 
 from rola.layers.rola import LevelRoutingConfig, RoLA
-from rola.routing.producer import produce_v3_routing
-from rola.planner.schedule import build_v3_schedule
+from rola.routing.producer import produce_routing
+from rola.planner.schedule import build_schedule
 
 
 def _routing_of(layer, x):
@@ -68,7 +68,7 @@ def _routing_of(layer, x):
     hands the arena.
     """
     v = layer.v_proj(x).view(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim)
-    out = produce_v3_routing(
+    out = produce_routing(
         x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W, layer.gain_bias,
         layer.topology, layer.state_norm,
         budget=layer.budget, r=None, budget_embed_W=layer.budget_embed_W,
@@ -141,7 +141,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     plan_obj = layer.last_selected_plan
     with torch.no_grad():
         routing = _routing_of(layer, x)
-        schedule = build_v3_schedule(routing[0], routing[1], routing[2], routing[3], plan_obj)
+        schedule = build_schedule(routing[0], routing[1], routing[2], routing[3], plan_obj)
 
     # Fix pass R5 (`workflows/20260730-wiring/paging-review.md`): the layer calls
     # `arena.plan(schedule)` with its default `fresh=True` on EVERY forward (a

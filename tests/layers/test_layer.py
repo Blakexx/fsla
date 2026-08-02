@@ -2,7 +2,7 @@
 
 Covers: the deletion inventory (no Q/K symbol importable from the layer's
 public surface), the layer's forward/backward path at fp64 through the
-canonical Stage 1 oracle (`naive_rola_v3`), and gradient flow to every
+canonical Stage 1 oracle (`naive_rola`), and gradient flow to every
 actuator parameter (side gains, budget temperature/usage-bias heads).
 """
 
@@ -54,7 +54,7 @@ def test_retained_symbols_still_exist():
 @pytest.mark.parametrize("normalization", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 def test_layer_forward_backward_at_fp64_through_the_canonical_oracle(normalization, decay):
-    """Item 4: run the layer's forward (which dispatches to `naive_rola_v3`, the only
+    """Item 4: run the layer's forward (which dispatches to `naive_rola`, the only
     V3 execution backend at Stage 2 -- see the layer module docstring) at fp64 and
     check gradients reach input, router, and gain parameters."""
     torch.manual_seed(0)

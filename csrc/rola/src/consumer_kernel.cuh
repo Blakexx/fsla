@@ -262,8 +262,8 @@ constexpr int ctas_for_residency(size_t smem, int reg_budget) {
 //: ---------------------------------------------------------------------------
 //: MMA PRECISION IS ONE AXIS WITH TWO NAMED POINTS (RULING 1, REVISED 2026-08-01).
 //:
-//:   PRODUCTION  = bf16 at BOTH sites   (`V3Plan.mma_precision == "bf16"`)
-//:   EXACTNESS   = tf32x3 at BOTH sites (`V3Plan.mma_precision == "tf32x3"`)
+//:   PRODUCTION  = bf16 at BOTH sites   (`Plan.mma_precision == "bf16"`)
+//:   EXACTNESS   = tf32x3 at BOTH sites (`Plan.mma_precision == "tf32x3"`)
 //:
 //: The split is about WHAT EACH ARM IS FOR, not about which is numerically nicer:
 //: the exactness arm exists so an oracle gate can see a STRUCTURAL bug through the

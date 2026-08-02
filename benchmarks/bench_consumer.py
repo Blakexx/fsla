@@ -7,7 +7,7 @@ reproduced them. This is that script.
 
 Matched shape: `B=1, H=8, L=2048, d_v=64, branches=[8,16], BC=16, BT=32` — the same
 cell `20260728-stage0/baseline.md` measures V2's whole layer at. Routing comes from
-the REAL V3 producer (`produce_v3_routing`) on a constructed layer, so the measured
+the REAL V3 producer (`produce_routing`) on a constructed layer, so the measured
 supports are the ones the model actually emits rather than a synthetic sparsity dial.
 
 **The comparison is NOT matched and the script says so in its own output.** V2's
@@ -37,11 +37,11 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_v3_routing
+from rola.routing.producer import produce_routing
 from rola.planner.schedule import (
-    V3Plan, build_clock_stream, build_v3_schedule, dense_limit_lowering,
-    select_v3_plan)
-from rola.ops.consumer import v3_consumer_forward
+    Plan, build_clock_stream, build_schedule, dense_limit_lowering,
+    select_plan)
+from rola.ops.consumer import _consumer_forward
 
 # V2 whole-layer medians (ms) from `20260728-stage0/baseline.md` §3 at this exact
 # cell. Carried as data, not re-measured here: this script benchmarks V3, and
@@ -228,7 +228,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
 
             def produce():
                 with torch.no_grad():
-                    return produce_v3_routing(
+                    return produce_routing(
                         x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
                         layer.gain_bias, topology, norm, budget=layer.budget, r=None,
                         budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
@@ -251,11 +251,11 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
             # exhaustive -- the selector marks the cell, it does not replace it,
             # because the A/B the constants are calibrated against IS the off-plan
             # cells.
-            selected, axes = select_v3_plan(read_levels, write_levels, topology, BC,
+            selected, axes = select_plan(read_levels, write_levels, topology, BC,
                                             normalization=norm, decay=decay_on)
             # The intra lowering is ARM-SPECIFIC by contract (spec §7.4.1): the
             # dense limit is `gram` under `decay = None` and `panel` under
-            # LeafMassDecay, and `V3Plan` REJECTS both cross pairings. So the
+            # LeafMassDecay, and `Plan` REJECTS both cross pairings. So the
             # sweep is TRANSLATED per arm rather than restricted to
             # `realized_leaf` on the decay side (which is what it did while
             # `panel` was unimplemented, and which made the decay arm's lowering
@@ -266,13 +266,13 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 dense_limit_lowering(decay_on) if low in ("gram", "panel") else low
                 for low in lowerings))
             for lowering in cell_lowerings:
-                plan = V3Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
+                plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                               warp_tile=(1, d_v // 32), decay=decay_on,
                               intra_lowering=lowering, compact=compact)
-                sched = build_v3_schedule(read_levels, write_levels, g_read, g_write, plan)
+                sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
                 def consume(plan=plan, sched=sched):
-                    return v3_consumer_forward(v, read_levels, write_levels, g_read,
+                    return _consumer_forward(v, read_levels, write_levels, g_read,
                                                g_write, plan, decay=decay, schedule=sched)
 
                 consume()
@@ -291,7 +291,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                     "selected_cost_per_token": round(axes.cost_per_token, 3),
                     "consumer_ms": round(_median_ms(consume, reps, warmup), 4),
                     "schedule_ms": round(_median_ms(
-                        lambda: build_v3_schedule(read_levels, write_levels, g_read,
+                        lambda: build_schedule(read_levels, write_levels, g_read,
                                                   g_write, plan), reps, warmup), 4),
                     "clock_ms": round(_median_ms(
                         lambda: build_clock_stream(write_levels, write_levels, plan),

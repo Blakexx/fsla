@@ -12,7 +12,7 @@ into every FMA, the fold multiplies it by a separately accumulated ``A`` and add
 once. Measured: 0 of 8 fixtures bitwise, at 1-6 fp32 ulp
 (``workflows/20260730-wiring/pincrement.md`` §1-§2). So:
 
-1. ``P > 1`` is graded against the canonical fp64 oracle ``naive_rola_v3`` at
+1. ``P > 1`` is graded against the canonical fp64 oracle ``naive_rola`` at
    :data:`RTOL` -- **the same number ``P = 1`` is held to**, imported from the
    ``P = 1`` gate file rather than restated, so it cannot drift apart from it.
 2. **The unwritten-leaf carve-out is BITWISE and is gated as such.** A leaf with no
@@ -39,8 +39,8 @@ from dataclasses import replace
 import pytest
 import torch
 
-from rola.ops.naive import naive_rola_v3
-from rola.planner.schedule import V3Plan, build_v3_schedule
+from rola.ops.naive import naive_rola
+from rola.planner.schedule import Plan, build_schedule
 from rola.routing.sequence_parallel import (
     SequenceParallelPlan,
     SequenceParallelPolicy,
@@ -48,7 +48,7 @@ from rola.routing.sequence_parallel import (
     owner_slot_counts,
     select_sequence_parallelism,
 )
-from rola.ops.paging import V3PageArena
+from rola.ops.paging import PageArena
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -57,7 +57,7 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.ops.consumer import v3_consumer_forward
+from rola.ops.consumer import _consumer_forward
 
 # The `P = 1` gate's own tolerance, IMPORTED rather than restated. §6.4's amended
 # discipline is "the same RTOL as P = 1, no tolerance widened anywhere"; importing
@@ -141,7 +141,7 @@ class _Fixture:
             if norm == "global":
                 m0[..., d_v] = m0[..., d_v].abs()
             self.initial_state = m0
-        self.plan = V3Plan(topology=self.topology, normalization=norm, BT=BT, BC=BC,
+        self.plan = Plan(topology=self.topology, normalization=norm, BT=BT, BC=BC,
                            warp_tile=(1, max(1, d_v // 32)), decay=decay_on,
                            mma_precision=mma_precision, compact=compact)
         self._f32 = dict(
@@ -150,13 +150,13 @@ class _Fixture:
             write_levels=tuple(t.to(torch.float32) for t in self.write_levels),
             g_read=None if self.g_read is None else self.g_read.to(torch.float32),
             g_write=self.g_write.to(torch.float32))
-        self.schedule = build_v3_schedule(
+        self.schedule = build_schedule(
             self._f32["read_levels"], self._f32["write_levels"],
             self._f32["g_read"], self._f32["g_write"], self.plan)
         self.n_owners = int(self.schedule.owners.shape[0])
 
     def oracle(self):
-        return naive_rola_v3(
+        return naive_rola(
             self.v, self.read_levels, self.write_levels, self.g_read, self.g_write,
             self.topology, self.decay, self.norm,
             initial_state=self.initial_state, output_final_state=True)
@@ -166,7 +166,7 @@ class _Fixture:
         sp = sequence_parallel
         if sp is None and P != 1:
             sp = self.forced(P)
-        return v3_consumer_forward(
+        return _consumer_forward(
             self._f32["v"], self._f32["read_levels"], self._f32["write_levels"],
             self._f32["g_read"], self._f32["g_write"], self.plan,
             schedule=self.schedule, sequence_parallel=sp, decay=self.decay,
@@ -658,7 +658,7 @@ def _paged_fixture(seed=7301, *, T=64, BT=16, live_digits=4):
 
 
 def _arena_for(fx, *, BH, max_physical_pages=None, allow_capping=False):
-    return V3PageArena(widths=fx.topology.widths, BC=fx.plan.BC, cols=fx.cols, BH=BH,
+    return PageArena(widths=fx.topology.widths, BC=fx.plan.BC, cols=fx.cols, BH=BH,
                        device=torch.device("cuda"),
                        max_physical_pages=max_physical_pages,
                        allow_capping=allow_capping)
@@ -666,7 +666,7 @@ def _arena_for(fx, *, BH, max_physical_pages=None, allow_capping=False):
 
 def _run_paged(fx, arena, P=1):
     sp = None if P == 1 else fx.forced(P)
-    return v3_consumer_forward(
+    return _consumer_forward(
         fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
         fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
         sequence_parallel=sp, decay=fx.decay, paging=arena)
@@ -824,7 +824,7 @@ def test_a_capacity_clamped_P_over_a_capped_arena_degrades_P_and_never_pages():
 
 
 def _run_paged_plan(fx, arena, sp):
-    return v3_consumer_forward(
+    return _consumer_forward(
         fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
         fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
         sequence_parallel=sp, decay=fx.decay, paging=arena)
@@ -849,7 +849,7 @@ def test_a_dirty_workspace_changes_nothing():
     sp = fx.forced(3)
 
     def _launch(tensors):
-        return v3_consumer_forward(
+        return _consumer_forward(
             fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
             fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
             sequence_parallel=sp, sequence_parallel_tensors=tensors, decay=fx.decay,
@@ -911,7 +911,7 @@ def test_the_sparse_summary_is_exercised_between_its_two_degeneracies():
     # "nothing did" -- which is also how the stash slots are identified below.
     t.ws_count.fill_(-1)
 
-    y, state, _ = v3_consumer_forward(
+    y, state, _ = _consumer_forward(
         fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
         fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
         sequence_parallel=sp, sequence_parallel_tensors=t, decay=fx.decay,
@@ -999,7 +999,7 @@ def test_the_pass_three_work_list_order_is_not_load_bearing():
         "it is not the ordering that broke the pre-fix kernel")
 
     def _launch(tensors):
-        return v3_consumer_forward(
+        return _consumer_forward(
             fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
             fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,
             sequence_parallel=sp, sequence_parallel_tensors=tensors, decay=fx.decay,
