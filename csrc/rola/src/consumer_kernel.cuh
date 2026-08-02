@@ -94,6 +94,43 @@ using rola::detail::segment_word_mask;
 
 constexpr int kConsumerThreads = 256;   // 8 warps -- the §10i.13 CTA-width unlock
 
+//: `MMA_K_QUANTUM` -- the hardware `mma.sync` k-extent on the sm80-class bf16 path,
+//: and THE named constant every quanta-shaped quantity in this kernel is an
+//: expression in (spec §1 I1: no `BC`-derived literals). `QPO = BC /
+//: MMA_K_QUANTUM` is "quanta per owner"; an ATOM is one `MMA_K_QUANTUM`-leaf block
+//: in canonical leaf order. The planner mirrors this value at
+//: `rola.planner.schedule.MMA_K_QUANTUM`; the two are one number and the
+//: instantiation matrix is what keeps them honest.
+constexpr int kMmaKQuantum = 16;
+
+//: ---- §8 CALIBRATION PLACEHOLDER `C_WT_WINDOW` (I5: provenance + a default that
+//: ---- degrades to TODAY'S BEHAVIOUR, never to a new one) --------------------
+//:
+//: How many `MMA_K_QUANTUM`-leaf ATOMS of the write panel `WT` the tile's second
+//: phase holds at once. `WT`'s whole-plane residency is inherited from the PHASE
+//: BARRIER STRUCTURE and not from the math: the Gram (`G += R_q . W_q`) contracts
+//: over the leaf axis and the fold (`S[i,:] += Sum_t WT[i,t] Vw[t,:]`) has the leaf
+//: axis as its OUTPUT-ROW axis, so neither ever revisits an atom and `W_q` is dead
+//: the moment both have seen it. The cross-atom carrier is exactly one object, the
+//: Gram `[BT x BT]`.
+//:
+//: `0` means `QPO`, **which IS the plane, i.e. today's structure exactly** -- so a
+//: wrong/unfilled placeholder degrades to today's behaviour. The terminal cycle
+//: (§9.2) fills it from the producer/consumer variance measurement; the two ends of
+//: the dial are one parameter, not two designs (I4).
+//:
+//: PINNED TO THE PLANE ON THE `DECAY` ARM, and it is a CORRECTNESS pin rather than a
+//: preference: the windowed form moves the `WT` BUILD inside the second phase, and
+//: that build reads `clk` (`panel_write_factor`) while `Vw` -- which the fold reads
+//: every window -- ALIASES `clk`'s bytes by the `vw_union_bytes` lifetime argument.
+//: Windowing would make two tenants of one region simultaneously live. Un-aliasing
+//: costs `clk` its own `BT * (BC + 4) * 4` = 4,352 B at the flagship against a
+//: post-K2 decay-arm headroom of 2,965 B, so it does not fit. See the
+//: `kWtWindow` derivation in the kernel.
+#ifndef ROLA_C_WT_WINDOW
+#define ROLA_C_WT_WINDOW 0
+#endif
+
 
 //: **A MEASURED KERNEL FACT, NOT AN ARCHITECTURE FACT AND NOT A THRESHOLD.**
 //:
@@ -977,6 +1014,27 @@ void consumer_forward_kernel(ConsumerParams p) {
                              : !banks_distinct(1, 2 * VWP),
                 "Vw/GEMM3: update this note if it changes");
 
+  // ---- THE `WT` WINDOW, RESOLVED (K3a; §8 placeholder `C_WT_WINDOW`) ---------
+  // `kQPO` quanta per owner; a WINDOW is `kWtWindow` atoms, i.e. `kWinRows` leaf
+  // rows, and the tile's second phase runs `kNWin` of them. `kWtPlane` -- the
+  // window IS the plane -- is the shipped default and is TODAY'S STRUCTURE: at
+  // `kNWin == 1` the loop below has one iteration, the `WT` build stays at its
+  // original program point, and no barrier is added.
+  constexpr int kQPO = BC / kMmaKQuantum;
+  static_assert(BC % kMmaKQuantum == 0, "BC must be a whole number of MMA k-quanta");
+  // `DECAY` pins the plane: the windowed build reads `clk`, which ALIASES `Vw`, and
+  // the fold reads `Vw` in every window -- two tenants of one region, simultaneously
+  // live. See the `C_WT_WINDOW` banner.
+  constexpr int kWtReq =
+      (ROLA_C_WT_WINDOW <= 0 || ROLA_C_WT_WINDOW > kQPO) ? kQPO : ROLA_C_WT_WINDOW;
+  constexpr int kWtWindow = DECAY ? kQPO : kWtReq;
+  static_assert(kQPO % kWtWindow == 0,
+                "C_WT_WINDOW must divide QPO -- the window loop's trip count is "
+                "exact, never ragged (I1: an expression in BC and MMA_K_QUANTUM)");
+  constexpr int kWinRows = kWtWindow * kMmaKQuantum;
+  constexpr int kNWin = kQPO / kWtWindow;
+  constexpr bool kWtPlane = (kNWin == 1);
+
   const int work = blockIdx.x;
   const int bh = p.owners[2 * work];
   const int owner = p.owners[2 * work + 1];
@@ -1547,18 +1605,24 @@ void consumer_forward_kernel(ConsumerParams p) {
     // there `t` is the CONTRACTION index and the scale cannot hoist out of the sum.
     // `Vw[t, ch] = scale_write[t] * v[t0 + t, ch]` then serves BOTH the intra term
     // and the boundary fold -- one staged object, two GEMMs.
-    if (is_write) {
+    // COMPACT builds only `KpadM` rows -- `K` real ones plus the fold m-tile's
+    // ragged pad, ZEROED. `WT` needs NO indirection at either consumer once it is
+    // built this way: GEMM 2 reads it as `[k][n]` with `k` the compacted position,
+    // GEMM 4 as `[m][k]` with `m` the compacted position. That is the second half
+    // of the §2.6 dividend -- the production kernel needs a separate compacted
+    // COPY (`panel_write_c`) precisely because it receives its panel dense.
+    const int wt_rows = COMPACT ? KpadM : BC;
+    // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS (K3a) ---------
+    // `build_wt_rows(q_lo, q_hi)` fills the write panel's rows `[q_lo, q_hi)`. At
+    // `C_WT_WINDOW = QPO` it has ONE call site with `q_lo = 0`, so the range folds
+    // away and the emitted loop is the plane pass verbatim; windowed, the same
+    // function is the per-atom fill. Extracting it is what makes "the plane" a
+    // VALUE OF THE DIAL rather than a second code path (I4).
+    auto build_wt_rows = [&](int q_lo, int q_hi) {
       // The loop's fastest axis is `t`, NOT `i`, because `WT` is leaf-major: with
       // `i` fastest the consecutive lanes would store at stride `BTP`, which is a
       // 4-way STORE conflict (`gcd(BTP, 32) = 4`). Walking `t` fastest makes the
       // store contiguous. The amplitude reads are the same set either way.
-      // COMPACT builds only `KpadM` rows -- `K` real ones plus the fold m-tile's
-      // ragged pad, ZEROED. `WT` needs NO indirection at either consumer once it is
-      // built this way: GEMM 2 reads it as `[k][n]` with `k` the compacted position,
-      // GEMM 4 as `[m][k]` with `m` the compacted position. That is the second half
-      // of the §2.6 dividend -- the production kernel needs a separate compacted
-      // COPY (`panel_write_c`) precisely because it receives its panel dense.
-      const int wt_rows = COMPACT ? KpadM : BC;
       // ---- §6.4 PASS 1's EMPTINESS ANSWER IS TAKEN HERE, PRE-QUANTIZATION -----
       // The `P > 1` summary must include every leaf that can LEAVE `(A, B) = (1, 0)`.
       // The test used to be a re-scan of `WT` in the fold's block below; it is moved
@@ -1583,9 +1647,10 @@ void consumer_forward_kernel(ConsumerParams p) {
       static_assert(BT == 16 || BT == 32,
                     "the pass-1 emptiness ballot assumes the BT threads of one WT row "
                     "are a contiguous lane run inside one warp");
-      for (int idx = tid; idx < BT * wt_rows; idx += kConsumerThreads) {
-        const int q = idx / BT;
-        const int t = idx - q * BT;
+      for (int idx = tid; idx < BT * (q_hi - q_lo); idx += kConsumerThreads) {
+        const int qr = idx / BT;
+        const int q = q_lo + qr;
+        const int t = idx - qr * BT;
         if (COMPACT && q >= K) { stage_put(WT[q * BTP + t], 0.0f); continue; }
         const int i = COMPACT ? c_idx[q] : q;
         float a = 1.0f;
@@ -1622,6 +1687,13 @@ void consumer_forward_kernel(ConsumerParams p) {
         }
         stage_put(WT[q * BTP + t], a);
       }
+    };
+    // THE PLANE'S CALL SITE. Hoisted OUT of the window loop when the window is the
+    // plane, and that placement is not cosmetic: it is what keeps the `DECAY` arm's
+    // build ABOVE the `clk` -> `Vw` lifetime barrier below, where `clk` is still
+    // live. `DECAY` pins `kWtPlane`, so the two facts are one fact.
+    if constexpr (kWtPlane) {
+      if (is_write) build_wt_rows(0, wt_rows);
     }
     // ---- THE `clk` -> `Vw` LIFETIME BARRIER, AND IT IS DECAY'S ALONE ---------
     // `clk` (the tile's per-leaf inclusive clock prefix) ALIASES `Vw`'s bytes -- see
@@ -1708,33 +1780,102 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
-    // ---- GEMM 2: the causal effective-score block, G = R . W^T --------------
-    // `[BT x BC] x [BC x BT]`, then the §5 INCLUSIVE causal mask (`u <= t`): a
-    // deposit at `t` is visible to the read at `t`, which is what makes the tile's
-    // read-after-write inclusive.
     const bool mixed = is_read && is_write;
-    // `G` is `[BT x BT]`: `NM` m-blocks x `BT/8` n-blocks of warp tiles, strided over
-    // the warps exactly as the readout and the fold are. At `BT = 16` the grid is
-    // `1 x 2` and warps 0-1 take one tile each -- the old `warp < BT / 8`.
-    // Forked on `NM` for the same measured reason as the readout above.
-    if constexpr (NM == 1) {
-    if (mixed && warp < BT / 8) {
-      CONSUMER_D_ROWS(lane);
-      float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-      mma_tile_fragA<BC, StageT, false, false, READ_PREC>(
-          Rf, WT, BTP, nullptr, KIpad, warp * 8, lane, d0, d1, d2, d3);
-      const int n0 = warp * 8;
-      const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
-      gm_put(Gm[_g * GMP + c0], (c0 <= _g) ? d0 : 0.0f);
-      gm_put(Gm[_g * GMP + c1], (c1 <= _g) ? d1 : 0.0f);
-      gm_put(Gm[(_g + 8) * GMP + c0], (c0 <= _g + 8) ? d2 : 0.0f);
-      gm_put(Gm[(_g + 8) * GMP + c1], (c1 <= _g + 8) ? d3 : 0.0f);
+
+    // ---- the mass column, TERM 1 -- and its placement is FORCED (K3a) --------
+    // `den[t] = scale_read[t] * ( sum_i R[t,i] * S[i][DV] + sum_{u <= t} G[t,u] *
+    // scale_write[u] )` -- the same split the value term takes, with `v := 1`. It is
+    // ONE column out of `DV + 1`, so it is ~1.5 % of the tile's arithmetic; making
+    // it an MMA `n` would waste 7/8 of an `n8` fragment -- the same argument
+    // `frag_a_get` records.
+    //
+    // **THE TWO TERMS NOW STRADDLE THE FOLD, AND THAT IS A REQUIREMENT OF THE
+    // WINDOWED PHASE B RATHER THAN A REARRANGEMENT.** The fold's own mass
+    // recurrence WRITES `S[i][DV]`; once the fold shares a phase with the Gram,
+    // term 1 -- which READS `S[·][DV]` -- must already have run. Its operands
+    // (`Rf`, `S`, `c_idx`) are exactly the readout's, so it merges with a walk that
+    // exists rather than adding one, and it needs no extra shared memory.
+    //
+    // BIT-IDENTITY OF THE SPLIT, which is the part that has to be argued: term 1
+    // completes into `den[t]` and term 2 RESUMES from it, so the sequence of fp32
+    // `+=` operations is unchanged; `den` is fp32 shared memory, so the round trip
+    // is exact; and both loops are `t = tid; t < BT; t += kConsumerThreads`, so the
+    // same thread owns `t` on both sides and the dependence is program order.
+    if (GLOBAL && is_read) {
+      for (int t = tid; t < BT; t += kConsumerThreads) {
+        float acc = 0.0f;
+        // COMPACT: `K` terms instead of `BC`, gathering the mass column through
+        // `c_idx` exactly as the readout's B operand does.
+        // `Rf`'s block for token `t`; `NM == 1` folds the arithmetic away entirely.
+        const unsigned* Rb = Rf + (NM == 1 ? 0 : (t >> 4) * kRfBlock);
+        const int tl = (NM == 1) ? t : (t & 15);
+        for (int k = 0; k < K; ++k) {
+          acc += frag_a_get<READ_PREC>(Rb, tl, k) * S[(COMPACT ? c_idx[k] : k) * SP + DV];
+        }
+        den[t] = acc;
+      }
     }
-    } else
-    for (int gt = warp; mixed && gt < NM * (BT / 8); gt += kWarps) {
-      const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
-      CONSUMER_D_ROWS(lane);
-      float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
+
+    // ---- B6: THE TILE'S READ-THEN-WRITE ORDERING ON `S` ----------------------
+    // The readout (GEMM 1) and the mass column's term 1 above consumed the state at
+    // TILE ENTRY; phase B's fold advances it. This is the tile's one real
+    // read-then-write rendezvous and it stays a FULL `__syncthreads`: `S` is the one
+    // object every warp touches, so there is no subset for a named barrier to name.
+    __syncthreads();
+
+    // ---- PHASE B: the windowed {build, Gram, fold} loop (K3a) ----------------
+    // `WT`'s whole-plane residency was a consequence of the phase structure, not of
+    // the math. GEMM 2 contracts over the LEAF axis and accumulates into ONE
+    // `[BT x BT]` Gram; GEMM 4 has the leaf axis as its OUTPUT-ROW axis and writes
+    // DISJOINT state rows. Neither revisits an atom, so `W_q` is dead as soon as
+    // both have seen it, and the only cross-atom carrier is the Gram.
+    //
+    // A window is `kWtWindow` atoms because `MMA_K_QUANTUM = 16` is simultaneously
+    // the readout's k-step, the Gram's k-step and the fold's m-block -- the three
+    // extents align exactly, which is what makes ONE loop drive all of them.
+    //
+    // AT `kNWin == 1` (the shipped default, and the `DECAY` pin) THIS LOOP HAS ONE
+    // ITERATION, the build is hoisted above it, no barrier is added, and every index
+    // expression below folds to the pre-K3a one. That is the free strong gate.
+    //
+    // THE GRAM ACCUMULATOR IS WARP-PINNED ACROSS THE WHOLE LOOP, and that is a
+    // CORRECTNESS requirement rather than a scheduling preference: it holds a
+    // partial sum in registers, so ascending-quantum accumulation order -- which is
+    // what makes the windowed Gram bit-identical to the plane one -- exists only as
+    // long as one warp owns one Gram tile for the whole tile. Any later fluid-role
+    // rung must treat the Gram items as PINNED.
+    constexpr int kGTiles = (NM * (BT / 8) + kWarps - 1) / kWarps;
+    float gd[kGTiles][4];
+#pragma unroll
+    for (int q = 0; q < kGTiles; ++q) { gd[q][0] = 0.0f; gd[q][1] = 0.0f;
+                                        gd[q][2] = 0.0f; gd[q][3] = 0.0f; }
+    // The fold's realized m-tile count -- COMPACT cuts the M EXTENT to `ceil(K/16)`
+    // warp m-tiles instead of `BC/16`, the third of the three extents compaction
+    // shrinks, and on the flagship cell's density (`mean_K_candidate = 0.9665` of
+    // `BC = 64`) it is a 4 -> 1 cut on the kernel's most expensive GEMM.
+    const int n_mt = COMPACT ? KpadM / 16 : BC / 16;
+    const int qmax = COMPACT ? K : BC;
+    for (int w = 0; w < kNWin; ++w) {
+      // ---- the window's own `WT` rows, filled here when the window is not the
+      // plane. `q_lo` is a leaf POSITION (compacted under COMPACT) exactly as the
+      // fold's `m` is, so build and fold index the same axis.
+      if constexpr (!kWtPlane) {
+        const int b_lo = w * kWinRows;
+        const int b_hi = min(wt_rows, b_lo + kWinRows);
+        if (is_write && b_lo < b_hi) build_wt_rows(b_lo, b_hi);
+        // The window's publication. Rows are DISJOINT across windows and `WT` is
+        // still plane-sized here, so there is no slot-FREE half to pair with this:
+        // the buffer narrowing (and the ring it enables) is the next rung, and this
+        // barrier is the whole of the windowed arm's `O(BC / MMA_K_QUANTUM)` sync
+        // tax today.
+        __syncthreads();
+      }
+      // ---- GEMM 2: the causal effective-score block, G += R_q . W_q^T --------
+      // `[BT x BC] x [BC x BT]`, then the §5 INCLUSIVE causal mask (`u <= t`),
+      // applied AFTER the loop because the mask is on the completed Gram: a deposit
+      // at `t` is visible to the read at `t`, which is what makes the tile's
+      // read-after-write inclusive.
+      //
       // `B_T = false`: with `WT` leaf-major, `G`'s B operand element `(k = leaf,
       // n = token)` IS `WT[leaf * BTP + token]`, i.e. already `[k][n]`. The
       // transpose that `W^T` names is now in the STORAGE, so the fragment does not
@@ -1743,27 +1884,155 @@ void consumer_forward_kernel(ConsumerParams p) {
       // No gather: `WT`'s rows are already the compacted positions. The pad rows
       // `[KI, KIpad)` are leaves in `[KI, K)` (real, but non-causal, so exactly zero
       // under the `u <= t` mask) or the zeroed rows `[K, KpadM)` -- over-inclusion,
-      // which is the direction §5's test is exact in.
-      mma_tile_fragA<BC, StageT, false, false, READ_PREC>(
-          Rf + gmb * kRfBlock, WT, BTP, nullptr, KIpad, gnt * 8, lane, d0, d1, d2, d3);
-      const int n0 = gnt * 8;
-      // The causal test is on the TILE-GLOBAL token indices, so the m-block's row
-      // offset enters both sides of `u <= t`. At `NM == 1` the offset is zero and
-      // this is the mask it always was.
-      const int m0 = gmb * 16;
-      const int r0 = m0 + _g, r1 = m0 + _g + 8;
-      const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
-      gm_put(Gm[r0 * GMP + c0], (c0 <= r0) ? d0 : 0.0f);
-      gm_put(Gm[r0 * GMP + c1], (c1 <= r0) ? d1 : 0.0f);
-      gm_put(Gm[r1 * GMP + c0], (c0 <= r1) ? d2 : 0.0f);
-      gm_put(Gm[r1 * GMP + c1], (c1 <= r1) ? d3 : 0.0f);
+      // which is the direction §5's test is exact in. Windowed, that same prefix
+      // simply STOPS the Gram some windows before the fold stops: `kw <= 0` on the
+      // tail windows and `mma_tile_fragA`'s own early exit does the rest.
+      const int kw = min(kWinRows, KIpad - w * kWinRows);
+      // `G` is `[BT x BT]`: `NM` m-blocks x `BT/8` n-blocks of warp tiles, strided
+      // over the warps exactly as the readout and the fold are. At `BT = 16` the
+      // grid is `1 x 2` and warps 0-1 take one tile each -- the old `warp < BT / 8`.
+      // Forked on `NM` for the same measured reason as the readout above.
+      if constexpr (NM == 1) {
+        if (mixed && warp < BT / 8 && kw > 0) {
+          mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
+              Rf + w * (kWinRows / kUnit) * 128, WT + w * kWinRows * BTP, BTP,
+              nullptr, kw, warp * 8, lane, gd[0][0], gd[0][1], gd[0][2], gd[0][3]);
+        }
+      } else if (mixed && kw > 0) {
+#pragma unroll
+        for (int q = 0; q < kGTiles; ++q) {
+          const int gt = warp + q * kWarps;
+          if (gt >= NM * (BT / 8)) break;
+          const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
+          mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
+              Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128,
+              WT + w * kWinRows * BTP, BTP, nullptr, kw, gnt * 8, lane,
+              gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
+        }
+      }
+      // ---- GEMM 4: the boundary fold, S += W_q^T . Vw ------------------------
+      // `W^T` is not a transpose at the fragment any more -- `WT` IS the transpose,
+      // built that way. We SYNTHESISE the write coefficients rather than receive
+      // them in someone else's layout, so storing them leaf-major costs exactly
+      // nothing at the build (one index expression) and buys the fold a
+      // conflict-free, token-contiguous A operand. The same buffer serves GEMM 2 as
+      // a `[k][n]` B operand with no orientation flag at all.
+      // `[BC x BT] x [BT x DV]` -- §10i.8 (2), the move that REPLACES the shipped
+      // kernel's per-visit scattered `d_v`-wide scalar accumulates.
+      if (is_write) {
+        const int mt_lo = w * kWtWindow;
+        const int mt_hi = min(n_mt, mt_lo + kWtWindow);
+        for (int wt = warp; wt < (mt_hi - mt_lo) * NT_DV; wt += kWarps) {
+          CONSUMER_D_ROWS(lane);
+          const int mr = wt / NT_DV;
+          const int mt = mt_lo + mr;
+          const int nt = wt - mr * NT_DV;
+          float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
+          mma_tile<StageT, false, StageT, false, FOLD_PREC>(
+              WT, BTP, Vw, VWP, BT, mt * 16, nt * 8, lane, d0, d1, d2, d3);
+          const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
+          // ---- DECAY's EXIT SCALE, RIDING THE FOLD'S EXISTING READ-MODIFY-WRITE
+          // `M_exit = s0 * (s0 * M_entry + Sum_j W~[j] v[j])`, and the inner `s0`
+          // was applied at entry, so what is left here is `S <- s0 * (S + d)`. The
+          // fold ALREADY reads `S`, adds to it and writes it back; folding the
+          // scale into that epilogue costs ONE EXTRA MULTIPLY on a value already in
+          // a register and ZERO extra shared-memory traffic.
+          //
+          // It replaces a separate `[BC x cols]` sweep, and the counters are why:
+          // decay's two `s0` sweeps were 2 x 4160 element read-modify-writes per
+          // WRITE TILE, and at the at-scale cell they accounted for the bulk of
+          // decay's +87.7 M shared-store instructions (+219.6 % over the
+          // `decay = None` arm) -- 16x the clock prefix's traffic, which is the term
+          // I had wrongly blamed. The warp tiles cover `BC x DV` exactly once, so
+          // every element is scaled exactly once and none is missed -- and the
+          // WINDOWS PARTITION those tiles, so that stays true window by window.
+          // ---- COMPACT's OUTPUT SCATTER, and its RAGGED-M GUARD ---------------
+          // The fold's `m` is a compacted position while the state is leaf-indexed
+          // and persists across tiles, so the store scatters through `c_idx`. The
+          // guard is NOT redundant with the zeroed pad rows: a pad row's DELTA is
+          // zero, but `c_idx[q >= K] = 0` aims it at LEAF 0, and under decay the
+          // epilogue's `s0` multiply would then be applied to leaf 0 a second time.
+          // Predicating the STORE is what keeps the pad inert; zeroing the A operand
+          // alone is not enough.
+          const int i0 = COMPACT ? c_idx[r0] : r0;
+          const int i1 = COMPACT ? c_idx[r0 + 8] : r0 + 8;
+          const float e0 = DECAY ? s0[i0] : 1.0f;
+          const float e1 = DECAY ? s0[i1] : 1.0f;
+          if (!COMPACT || r0 < K) {
+            S[i0 * SP + n0] = e0 * (S[i0 * SP + n0] + d0);
+            S[i0 * SP + n0 + 1] = e0 * (S[i0 * SP + n0 + 1] + d1);
+          }
+          if (!COMPACT || r0 + 8 < K) {
+            S[i1 * SP + n0] = e1 * (S[i1 * SP + n0] + d2);
+            S[i1 * SP + n0 + 1] = e1 * (S[i1 * SP + n0 + 1] + d3);
+          }
+        }
+        // The mass state's own recurrence, `mass[i] += sum_t W[t, i] * scale_write[t]`
+        // -- the `v := 1` column of the same fold. It exists only under `global`, and
+        // it is windowed on the SAME leaf-position axis as the fold's `m`, so the two
+        // together still cover `BC x (DV + 1)` exactly once.
+        if (GLOBAL) {
+          // COMPACT: the reduction runs over the gathered rows and the row it writes
+          // is scattered through `c_idx` -- the mass column IS the fold's `v := 1`
+          // column, so it takes the same compaction and the same scatter.
+          const int q_lo = w * kWinRows;
+          const int q_hi = min(qmax, q_lo + kWinRows);
+          for (int q = q_lo + tid; q < q_hi; q += kConsumerThreads) {
+            const int i = COMPACT ? c_idx[q] : q;
+            float acc = 0.0f;
+            for (int t = 0; t < BT; ++t) acc += mma_src(WT[q * BTP + t]) * sw[t];
+            // The mass column takes the identical epilogue -- it is the same
+            // recurrence with `v := 1`, so it takes the same exit scale in the same
+            // read-modify-write.
+            S[i * SP + DV] = (DECAY ? s0[i] : 1.0f) * (S[i * SP + DV] + acc);
+          }
+        }
+      }
     }
+
+    // ---- the Gram's causal mask and publication, ONCE, on the completed sum ---
+    if constexpr (NM == 1) {
+      if (mixed && warp < BT / 8) {
+        CONSUMER_D_ROWS(lane);
+        const int n0 = warp * 8;
+        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
+        gm_put(Gm[_g * GMP + c0], (c0 <= _g) ? gd[0][0] : 0.0f);
+        gm_put(Gm[_g * GMP + c1], (c1 <= _g) ? gd[0][1] : 0.0f);
+        gm_put(Gm[(_g + 8) * GMP + c0], (c0 <= _g + 8) ? gd[0][2] : 0.0f);
+        gm_put(Gm[(_g + 8) * GMP + c1], (c1 <= _g + 8) ? gd[0][3] : 0.0f);
+      }
+    } else if (mixed) {
+      CONSUMER_D_ROWS(lane);
+#pragma unroll
+      for (int q = 0; q < kGTiles; ++q) {
+        const int gt = warp + q * kWarps;
+        if (gt >= NM * (BT / 8)) break;
+        const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
+        const int n0 = gnt * 8;
+        // The causal test is on the TILE-GLOBAL token indices, so the m-block's row
+        // offset enters both sides of `u <= t`. At `NM == 1` the offset is zero and
+        // this is the mask it always was.
+        const int m0 = gmb * 16;
+        const int r0 = m0 + _g, r1 = m0 + _g + 8;
+        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
+        gm_put(Gm[r0 * GMP + c0], (c0 <= r0) ? gd[q][0] : 0.0f);
+        gm_put(Gm[r0 * GMP + c1], (c1 <= r0) ? gd[q][1] : 0.0f);
+        gm_put(Gm[r1 * GMP + c0], (c0 <= r1) ? gd[q][2] : 0.0f);
+        gm_put(Gm[r1 * GMP + c1], (c1 <= r1) ? gd[q][3] : 0.0f);
+      }
+    }
+    // Publishes `Gm` to GEMM 3 and to the mass column's term 2. It also stands
+    // between phase B's `S` writes and nothing at all in phase C -- phase C reads
+    // `y` (registers), `Gm`, `Vw`, `sr` and `den`, none of which the fold touches.
     __syncthreads();
 
+    // ---- PHASE C ------------------------------------------------------------
     // ---- GEMM 3: the intra term, y_tile += G . Vw ---------------------------
     // The SAME tile decomposition the readout used -- including the same `NM` fork
     // -- so the two GEMMs accumulate into the same warp's same fragment, which is
-    // what keeps the y-tile in registers rather than in shared memory.
+    // what keeps the y-tile in registers rather than in shared memory. It runs
+    // POST-LOOP because it needs the completed Gram, which is what keeps `y` live
+    // across phase B (the register cost the `ptxas` probe gates).
     if constexpr (NM == 1) {
       if (mixed && warp < NT_DV) {
         mma_tile<GmT, false, StageT, false, READ_PREC>(
@@ -1782,26 +2051,11 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
-    // ---- the mass column, by scalar reduction -------------------------------
-    // `den[t] = scale_read[t] * ( sum_i R[t,i] * S[i][DV] + sum_{u <= t} G[t,u] *
-    // scale_write[u] )` -- the same split the value term takes, with `v := 1`. It is
-    // ONE column out of `DV + 1`, so it is ~1.5 % of the tile's arithmetic; making
-    // it an MMA `n` would waste 7/8 of an `n8` fragment -- the same argument
-    // `frag_a_get` records.
-    if (GLOBAL && is_read) {
+    // ---- the mass column, TERM 2 -- resumed from term 1's `den[t]` -----------
+    if (GLOBAL && mixed) {
       for (int t = tid; t < BT; t += kConsumerThreads) {
-        float acc = 0.0f;
-        // COMPACT: `K` terms instead of `BC`, gathering the mass column through
-        // `c_idx` exactly as the readout's B operand does.
-        // `Rf`'s block for token `t`; `NM == 1` folds the arithmetic away entirely.
-        const unsigned* Rb = Rf + (NM == 1 ? 0 : (t >> 4) * kRfBlock);
-        const int tl = (NM == 1) ? t : (t & 15);
-        for (int k = 0; k < K; ++k) {
-          acc += frag_a_get<READ_PREC>(Rb, tl, k) * S[(COMPACT ? c_idx[k] : k) * SP + DV];
-        }
-        if (mixed) {
-          for (int u = 0; u <= t; ++u) acc += mma_src(Gm[t * GMP + u]) * sw[u];
-        }
+        float acc = den[t];
+        for (int u = 0; u <= t; ++u) acc += mma_src(Gm[t * GMP + u]) * sw[u];
         den[t] = acc;
       }
     }
@@ -1820,9 +2074,11 @@ void consumer_forward_kernel(ConsumerParams p) {
     // So the interval contains no SMEM object written by one thread and read by
     // another, in EITHER direction: nothing the emission writes is read by a lagging
     // thread's mass reduction (it writes no SMEM at all), and nothing it reads is
-    // written by one (`sr` and `den` are both already-ordered). The next barrier
-    // (before the fold) still separates the readout's consumption of `S` from the
-    // fold's advance of it, which is the tile's real read-then-write ordering.
+    // written by one (`sr` and `den` are both already-ordered). Post-K3a the
+    // read-then-write ordering on `S` is B6, which now stands EARLIER -- between the
+    // readout/mass-term-1 and phase B -- so the emission has moved to the far side
+    // of the fold and this discharge is unchanged by the move: its argument was
+    // always about the interval's read/write SETS, never about its position.
 
     // ---- split-K emission of this tile's partial (existing licensed semantics) --
     if (is_read) {
@@ -1883,85 +2139,11 @@ void consumer_forward_kernel(ConsumerParams p) {
         }
       }
     }
-    // The readout above consumed the state at TILE ENTRY; the fold below advances
-    // it. The barrier between them is the whole read-then-write ordering of the
-    // tile, and it is one barrier, not a per-visit chain.
-    __syncthreads();
-
-    // ---- GEMM 4: the boundary fold, S += W^T . Vw ---------------------------
-    // `W^T` is not a transpose at the fragment any more -- `WT` IS the transpose,
-    // built that way. We SYNTHESISE the write coefficients rather than receive them
-    // in someone else's layout, so storing them leaf-major costs exactly nothing at
-    // the build (one index expression) and buys the fold a conflict-free,
-    // token-contiguous A operand. The same buffer serves GEMM 2 as a `[k][n]` B
-    // operand with no orientation flag at all.
-    // `[BC x BT] x [BT x DV]` -- §10i.8 (2), the move that REPLACES the shipped
-    // kernel's per-visit scattered `d_v`-wide scalar accumulates. `BC/16 = 4` row
-    // blocks x `DV/8 = 8` column blocks = 32 warp tiles over 8 warps.
+    // ---- §6.4 PASS 1's PER-LEAF EPILOGUE, POST-LOOP -------------------------
+    // Both blocks below are PER-LEAF and window-independent, so they run once after
+    // phase B rather than being partitioned by it: `s0` is a per-leaf tile constant
+    // and `a_state` is a per-leaf product, and neither reads `WT`.
     if (is_write) {
-      // COMPACT cuts the M EXTENT: `ceil(K/16)` warp m-tiles instead of `BC/16`.
-      // This is the third of the three extents compaction shrinks, and on the
-      // flagship cell's density (`mean_K_candidate = 0.9665` of `BC = 64`) it is a
-      // 4 -> 1 cut on the kernel's most expensive GEMM.
-      for (int wt = warp; wt < (COMPACT ? KpadM / 16 : BC / 16) * NT_DV; wt += kWarps) {
-        CONSUMER_D_ROWS(lane);
-        const int mt = wt / NT_DV;
-        const int nt = wt - mt * NT_DV;
-        float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-        mma_tile<StageT, false, StageT, false, FOLD_PREC>(
-            WT, BTP, Vw, VWP, BT, mt * 16, nt * 8, lane, d0, d1, d2, d3);
-        const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
-        // ---- DECAY's EXIT SCALE, RIDING THE FOLD'S EXISTING READ-MODIFY-WRITE --
-        // `M_exit = s0 * (s0 * M_entry + Sum_j W~[j] v[j])`, and the inner `s0`
-        // was applied at entry, so what is left here is `S <- s0 * (S + d)`. The
-        // fold ALREADY reads `S`, adds to it and writes it back; folding the scale
-        // into that epilogue costs ONE EXTRA MULTIPLY on a value already in a
-        // register and ZERO extra shared-memory traffic.
-        //
-        // It replaces a separate `[BC x cols]` sweep, and the counters are why:
-        // decay's two `s0` sweeps were 2 x 4160 element read-modify-writes per
-        // WRITE TILE, and at the at-scale cell they accounted for the bulk of
-        // decay's +87.7 M shared-store instructions (+219.6 % over the
-        // `decay = None` arm) -- 16x the clock prefix's traffic, which is the term
-        // I had wrongly blamed. The warp tiles cover `BC x DV` exactly once, so
-        // every element is scaled exactly once and none is missed.
-        // ---- COMPACT's OUTPUT SCATTER, and its RAGGED-M GUARD -----------------
-        // The fold's `m` is a compacted position while the state is leaf-indexed
-        // and persists across tiles, so the store scatters through `c_idx`. The
-        // guard is NOT redundant with the zeroed pad rows: a pad row's DELTA is
-        // zero, but `c_idx[q >= K] = 0` aims it at LEAF 0, and under decay the
-        // epilogue's `s0` multiply would then be applied to leaf 0 a second time.
-        // Predicating the STORE is what keeps the pad inert; zeroing the A operand
-        // alone is not enough.
-        const int i0 = COMPACT ? c_idx[r0] : r0;
-        const int i1 = COMPACT ? c_idx[r0 + 8] : r0 + 8;
-        const float e0 = DECAY ? s0[i0] : 1.0f;
-        const float e1 = DECAY ? s0[i1] : 1.0f;
-        if (!COMPACT || r0 < K) {
-          S[i0 * SP + n0] = e0 * (S[i0 * SP + n0] + d0);
-          S[i0 * SP + n0 + 1] = e0 * (S[i0 * SP + n0 + 1] + d1);
-        }
-        if (!COMPACT || r0 + 8 < K) {
-          S[i1 * SP + n0] = e1 * (S[i1 * SP + n0] + d2);
-          S[i1 * SP + n0 + 1] = e1 * (S[i1 * SP + n0 + 1] + d3);
-        }
-      }
-      // The mass state's own recurrence, `mass[i] += sum_t W[t, i] * scale_write[t]`
-      // -- the `v := 1` column of the same fold. It exists only under `global`.
-      if (GLOBAL) {
-        // COMPACT: the reduction runs over the gathered rows and the row it writes
-        // is scattered through `c_idx` -- the mass column IS the fold's `v := 1`
-        // column, so it takes the same compaction and the same scatter.
-        for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
-          const int i = COMPACT ? c_idx[q] : q;
-          float acc = 0.0f;
-          for (int t = 0; t < BT; ++t) acc += mma_src(WT[q * BTP + t]) * sw[t];
-          // The mass column takes the identical epilogue -- it is the same
-          // recurrence with `v := 1`, so it takes the same exit scale in the same
-          // read-modify-write, and the two together cover `BC x (DV + 1)` exactly.
-          S[i * SP + DV] = (DECAY ? s0[i] : 1.0f) * (S[i * SP + DV] + acc);
-        }
-      }
       if (summary) {
         // ---- §6.4 pass 1: the written-leaf list, accumulated across the segment
         // A leaf enters the list iff it can LEAVE `(A, B) = (1, 0)`, and the test
