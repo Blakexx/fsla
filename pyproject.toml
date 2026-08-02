@@ -64,6 +64,10 @@ force-sort-within-sections = false
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/*/*.py" = ["UP030"]
+#: The benchmark harness is a package next to a script, so its drivers insert their
+#: own directory on `sys.path` before importing it. The import is deliberately after
+#: that line and cannot be moved above it.
+"benchmarks/*.py" = ["E402"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -71,4 +75,9 @@ markers = [
   "tier1: inter-implementation semantics — kernel vs the fp64 oracle",
   "tier2: intra-implementation geometry — the geometry-equivalence matrix",
   "ratify: compile-time ratification gate; no GPU required",
+  # A LATENCY gate, not a correctness gate: it belongs to the nightly `bench` job
+  # and is deselected everywhere else, so a noisy machine can never fail a merge.
+  "bench: per-(cell, arm) latency against the committed baseline",
 ]
+#: `bench` is opt-in. Selecting it is an explicit `-m bench`.
+addopts = "-m 'not bench'"

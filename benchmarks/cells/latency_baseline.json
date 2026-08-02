@@ -1,0 +1,39 @@
+{
+ "alarm_sigma": 3.0,
+ "arms": {
+  "topo-D2-w64x64-BC64|global|none|dense": {
+   "iqr_ms": 0.0603,
+   "median_ms": 0.2481,
+   "reps": 35
+  },
+  "topo-D2-w64x64-BC64|global|warm|dense": {
+   "iqr_ms": 0.0433,
+   "median_ms": 0.2728,
+   "reps": 35
+  },
+  "topo-D2-w64x64-BC64|raw|none|dense": {
+   "iqr_ms": 0.0324,
+   "median_ms": 0.222,
+   "reps": 35
+  },
+  "topo-D4-w8x8x8x16-BC16|global|none|compact": {
+   "iqr_ms": 0.024499,
+   "median_ms": 0.4816,
+   "reps": 35
+  },
+  "topo-D4-w8x8x8x16-BC16|global|none|dense": {
+   "iqr_ms": 0.024,
+   "median_ms": 0.4211,
+   "reps": 35
+  }
+ },
+ "provenance": {
+  "driver_cuda": "12.4",
+  "gpu": "NVIDIA GeForce RTX 3080 Ti",
+  "manifest_sha256": "c2077aa378666fa16e0d611c6e4dc251b6599b76bd589f45bc013092ba46ae4b",
+  "ptxas": "ptxas: NVIDIA (R) Ptx optimizing assembler Copyright (c) 2005-2024 NVIDIA Corporation Built on Tue_Feb_27_16:15:50_PST_2024 Cuda compilation tools, release 12.4, V12.4.99 Build cuda_12.4.r12.4/compiler.33961263_0",
+  "rola": "0.1.0.dev0",
+  "sm": "sm_86",
+  "torch": "2.6.0+cu124"
+ }
+}
