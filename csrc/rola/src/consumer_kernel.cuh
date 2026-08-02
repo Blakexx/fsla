@@ -1285,6 +1285,66 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
+    // ---- §3 STEP 3's ROW SCALES, HOISTED ABOVE THE PANEL BUILDS (r1 rung 0) --
+    // `sr[t]` and `sw[t]` are the tile's per-token row scales: the read/write gain
+    // times the FIXED levels' amplitudes at the owner's own digit. They are constant
+    // along the leaf axis, which is why they are held out of the coefficient blocks
+    // at all (`readout_mma.cuh`'s argument), and -- the point of the hoist -- they
+    // depend on NOTHING the tile computes: not the gather, not the clock prefix, not
+    // either panel. Only on `(tile, token)` and the owner's `base[]`.
+    //
+    // WHAT THE HOIST BUYS, stated as the phase count rather than as a barrier count,
+    // because the two differ per arm. Before the hoist the tile's pre-GEMM section
+    // was THREE phases -- [gather] [panels + row scales] [Vw] -- and the middle
+    // barrier existed for one reason: to publish `sw[t]` to the `Vw` writers, which
+    // are different threads (`sw`'s loop is `t = tid`, `Vw`'s is `t = tid / DV`).
+    // With the row scales computed and published FIRST, `Vw` no longer waits on the
+    // panels and the section is TWO phases -- [gather + row scales] [panels + Vw].
+    // On the `COMPACT` arms that is a barrier deleted outright; on the plain arm it
+    // is barrier-neutral and buys the `Vw` staging's global loads an overlap with
+    // the panel builds' amplitude loads instead of a rendezvous between them.
+    //
+    // THE ONE ARM THAT KEEPS THE MIDDLE BARRIER IS `DECAY`, and it is a LIFETIME
+    // constraint rather than a publication one: `clk` ALIASES `Vw`'s bytes (see
+    // `vw_union_pitch`), both panel builds READ `clk`, and the `Vw` writers would
+    // clobber it. That barrier is now WRITTEN AT ITS REASON below instead of being
+    // an incidental side effect of `sw`'s publication -- which is the whole hazard
+    // this hoist would otherwise have introduced silently.
+    if (is_read) {
+      for (int t = tid; t < BT; t += kConsumerThreads) {
+        const int token = t0 + t;
+        float s = (token < p.T)
+                      ? (p.g_read != nullptr
+                             ? p.g_read[static_cast<int64_t>(bh) * p.T + token]
+                             : 1.0f)
+                      : 0.0f;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          if (l >= j) break;
+          s *= amp_r[l][t * p.level_pitch_read[l] + base[l]];
+        }
+        sr[t] = s;
+      }
+    }
+    if (is_write) {
+      for (int t = tid; t < BT; t += kConsumerThreads) {
+        const int token = t0 + t;
+        float s = (token < p.T) ? p.g_write[static_cast<int64_t>(bh) * p.T + token] : 0.0f;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          if (l >= j) break;
+          s *= amp_w[l][t * p.level_pitch_write[l] + base[l]];
+        }
+        sw[t] = s;
+      }
+    }
+    // On `DECAY = false` this rendezvous publishes `sw` to the `Vw` writers, which is
+    // what lets the staging run inside the SAME phase as the two panel builds. On
+    // `DECAY` it is ABSENT: the `clk` -> `Vw` lifetime barrier below already stands
+    // between the panels and the staging and publishes `sw` on its way past, so a
+    // second rendezvous here would order nothing.
+    if (!DECAY && is_write) __syncthreads();
+
     // ---- the two coefficient blocks and the row scales (§3 steps 2-3) --------
     // `R[t, i] = scale_read[t] * prod_{l >= j} amp_read[l][t, digit_l(i)]`, with the
     // row scale held OUT of the block: it is constant along both `k` and `n`, so it
@@ -1356,21 +1416,6 @@ void consumer_forward_kernel(ConsumerParams p) {
           }
         }
       }
-      for (int t = tid; t < BT; t += kConsumerThreads) {
-        const int token = t0 + t;
-        float s = (token < p.T)
-                      ? (p.g_read != nullptr
-                             ? p.g_read[static_cast<int64_t>(bh) * p.T + token]
-                             : 1.0f)
-                      : 0.0f;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l >= j) break;
-          s *= amp_r[l][t * p.level_pitch_read[l] + base[l]];
-        }
-        sr[t] = s;
-      }
-      if (GLOBAL) for (int t = tid; t < BT; t += kConsumerThreads) den[t] = 0.0f;
     }
     // The write side folds `scale_write[t]` into the VALUE tile instead, because
     // there `t` is the CONTRACTION index and the scale cannot hoist out of the sum.
@@ -1418,18 +1463,20 @@ void consumer_forward_kernel(ConsumerParams p) {
         if (DECAY) a *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
         WT[q * BTP + t] = a;
       }
-      for (int t = tid; t < BT; t += kConsumerThreads) {
-        const int token = t0 + t;
-        float s = (token < p.T) ? p.g_write[static_cast<int64_t>(bh) * p.T + token] : 0.0f;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l >= j) break;
-          s *= amp_w[l][t * p.level_pitch_write[l] + base[l]];
-        }
-        sw[t] = s;
-      }
     }
-    __syncthreads();
+    // ---- THE `clk` -> `Vw` LIFETIME BARRIER, AND IT IS DECAY'S ALONE ---------
+    // `clk` (the tile's per-leaf inclusive clock prefix) ALIASES `Vw`'s bytes -- see
+    // `vw_union_pitch` and the ledger above it. Both panel builds READ `clk` (the
+    // `panel_read_factor` / `panel_write_factor` calls), and the `Vw` staging below
+    // WRITES those same bytes, so the two lifetimes need a rendezvous between them.
+    // Under `DECAY = false` there is no `clk` tenant, `Vw` is disjoint from `WT` and
+    // `Rf`, and the staging joins the panel builds' phase: one fewer rendezvous and,
+    // more to the point for r1's ranking, the staging's `BT * DV` fp32 GLOBAL loads
+    // now issue alongside the panel builds' amplitude loads instead of behind them.
+    //
+    // `is_write` is CTA-uniform (the same per-tile schedule bit the blocks above are
+    // guarded on), and a read-only tile writes neither `clk` nor `Vw`.
+    if (DECAY && is_write) __syncthreads();   // <- clk is now DEAD
     if (is_write) {
       for (int idx = tid; idx < BT * DV; idx += kConsumerThreads) {
         const int t = idx / DV;
@@ -1599,7 +1646,24 @@ void consumer_forward_kernel(ConsumerParams p) {
         den[t] = acc;
       }
     }
-    __syncthreads();
+    // ---- NO BARRIER HERE, AND THE DISCHARGE IS AN INTERVAL ARGUMENT (r1 rung 0) --
+    // A `__syncthreads()` stood between the mass reduction and the emission below.
+    // It is REMOVED, and what licenses that is the SMEM read/write sets of the
+    // interval it separated, enumerated rather than eyeballed:
+    //   * the emission READS `y[q][*]` (REGISTERS, so no barrier can order them and
+    //     none is needed -- they are the same warp's own accumulators), `sr[t]`
+    //     (published three barriers back, at the end of the panel phase) and `den[t]`;
+    //   * the emission WRITES only GLOBAL memory, through `atomicAdd`;
+    //   * `den[t]` is written at `den[t] = acc` above and read at the denominator
+    //     emit below BY THE SAME THREAD -- both loops are `t = tid; t < BT;
+    //     t += kConsumerThreads`, so the dependence is program order, not a
+    //     cross-thread one.
+    // So the interval contains no SMEM object written by one thread and read by
+    // another, in EITHER direction: nothing the emission writes is read by a lagging
+    // thread's mass reduction (it writes no SMEM at all), and nothing it reads is
+    // written by one (`sr` and `den` are both already-ordered). The next barrier
+    // (before the fold) still separates the readout's consumption of `S` from the
+    // fold's advance of it, which is the tile's real read-then-write ordering.
 
     // ---- split-K emission of this tile's partial (existing licensed semantics) --
     if (is_read) {
