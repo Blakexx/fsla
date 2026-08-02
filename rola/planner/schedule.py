@@ -1044,10 +1044,14 @@ class PlanAxes:
     #: deleted with the consumer they modelled (item 6b), after the exhaustive driver
     #: probe measured the mirror INVERTING the bound it claimed.
     blocks_per_sm: int = 0
-    #: The staging ring depth selected for this candidate, arbitrated by
-    #: `cost_per_token / occupancy` within the candidate -- an effective cost, which
-    #: selection MINIMIZES. `1` means the ring was DECLINED because the CTA it costs
-    #: outweighed its overlap.
+    #: Staging RING depth (§6 residency): slots of the `[BT, gram_cols]` staged
+    #: rows. STATED, not selected (M-1 RULING A, 2026-08-01, twin docstring at
+    #: `Plan.ring_slots` :404-412): every currency the planner has -- the work
+    #: model, the occupancy oracle, and the kernel's own measured instruction
+    #: count -- is INVARIANT in this field, so `select_plan_axes` sets the deepest
+    #: built depth and says why instead of arbitrating a `min` over equal keys.
+    #: This is EVIDENCE carried alongside the candidate that was selected, not a
+    #: separate per-candidate arbitration.
     ring_slots: int = _RING_DEPTHS[0]
     #: The launch's WAVE COUNT for the selected candidate (`plan_waves`), and the
     #: SM count it was computed against. EVIDENCE, and the evidence that matters
