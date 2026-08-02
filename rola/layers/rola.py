@@ -255,17 +255,30 @@ class RoLA(nn.Module):
             freshly budgeted level a no-op at init; pass a different target to start
             pre-biased toward a tighter/looser initial support.
         state_block (int | None): `BC`, the number of leafs one owner block owns --
-            the CTA's resident state tile, and the only §3 quantity this layer must
-            supply that §6's planner does not select (`BC` is contract, `BT` /
-            `compact` are selected per step). Default `None`
-            resolves to **the innermost level's width** `b_{D-1}`, which is a
-            STRUCTURAL choice and not a tuned threshold: it is the unique `BC` whose
-            owner rectangle is exactly one full innermost level, so `j = D-1`, the
-            inner extent is 1, and the alignment conditions `inner | BC` and
-            `c | b_j` hold identically for every topology. It is also the `BC = 16`
-            flagship cell at `branches=[8, 16]`. Any explicit value is validated against
-            `owner_geometry` at construction and raises there if it names no aligned
-            rectangle.
+            the CTA's resident state tile. **An EXPERT PIN over a planner-selected
+            axis** (`THUNDER_RUN_SPEC.md` §4.3/§6 P6), no longer a contract the caller
+            must supply: an explicit value shrinks the feasible set to itself and the
+            planner never runs; `None` takes the LARGEST FEASIBLE `BC`.
+
+            **WHAT `widths[-1]` WAS, AND WHY IT IS NOT THE DEFAULT ANY MORE.** The old
+            default was the innermost level's width, defended as the unique `BC` whose
+            owner rectangle is exactly one full innermost level (`j = D-1`, inner
+            extent 1, so both alignment conditions hold identically for every
+            topology). That defence is true and it is not the question: alignment is
+            necessary, not sufficient. `widths[-1]` is not INSTANTIATED on a topology
+            whose last level is wide -- `branches=[4, 256]` resolves it to `BC = 256`,
+            which no kernel implements -- so the caller got a plan-time
+            `NotImplementedError` out of the occupancy oracle instead of a
+            construction-time error, on a value they never chose. It is also merely
+            the smallest feasible `BC` on a topology whose last level is narrow, which
+            costs the per-leaf amortization and the `N/BC`-way atomic reduction that
+            make `BC` worth selecting at all.
+
+            The largest feasible `BC` is the alignment-admissible set intersected with
+            the instantiated ladder, maximized (`rola.planner.select.largest_feasible_bc`).
+            Both are computed AT CONSTRUCTION, so a topology the ladder cannot serve
+            and an inadmissible explicit pin are both construction-time errors and
+            never plan-time surprises.
     """
 
     def __init__(
@@ -344,7 +357,22 @@ class RoLA(nn.Module):
         # `BC` -- contract, not a §6-selected axis. `owner_geometry` is the authority
         # on admissibility and it raises rather than re-aligning, so an inadmissible
         # `state_block` is a construction-time error and never a forward-time surprise.
-        self.state_block = self.topology.widths[-1] if state_block is None else int(state_block)
+        # §6 P6: the FEASIBLE SET and the largest-feasible default, both resolved at
+        # CONSTRUCTION so an inadmissible topology or an inadmissible pin fails here and
+        # not inside a forward. `feasible_bc` raises with the topology's own diagnosis
+        # when the ladder cannot serve it at all.
+        from rola.planner.select import feasible_bc, largest_feasible_bc
+
+        if state_block is None:
+            self.state_block = largest_feasible_bc(self.topology.widths)
+            self.feasible_BC = feasible_bc(self.topology.widths)
+        else:
+            self.state_block = int(state_block)
+            # An explicit pin SHRINKS THE FEASIBLE SET TO ITSELF (§4.3) -- the planner
+            # then has nothing to choose and never runs. It is alignment-validated like
+            # any other member rather than trusted, which is what makes it a pin over a
+            # selected axis instead of a bypass of one.
+            self.feasible_BC = feasible_bc(self.topology.widths, pinned=self.state_block)
         owner_geometry(self.topology.widths, self.state_block)
 
         # Execution-backend telemetry. Plain Python attributes (not buffers, not

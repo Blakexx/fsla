@@ -3055,3 +3055,89 @@ def test_the_decode_path_issues_zero_statistics_work():
     with pytest.raises(ValueError, match="must not enable packing"):
         FrozenConfig(choice=ConfigChoice(BC=64, BT=16, packing=True,
                                          feeder_flags=choice.feeder_flags))
+
+
+# ---------------------------------------------------------------------------
+# §6 P6: the construction MATRIX. Every row is a topology whose `BC` question has a
+# different answer, and the wide-last-level row is the one `widths[-1]` got wrong.
+# ---------------------------------------------------------------------------
+
+#: `(widths, expected feasible set, what the row is FOR)`.
+_BC_CONSTRUCTION_MATRIX = [
+    ((256, 256), (16, 64), "the parity topology: both instantiated BC are aligned"),
+    ((8, 16), (16, 64), "the flagship: widths[-1] = 16 was the SMALLEST feasible"),
+    ((4, 256), (16, 64), "WIDE LAST LEVEL: widths[-1] = 256 is not instantiated at all"),
+    ((4, 3, 16), (16,), "a strict subset: BC = 64 spans 48 and 64/48 is not an integer"),
+    ((64, 64), (16, 64), "square, both aligned"),
+]
+
+
+@pytest.mark.parametrize("widths,expected,why", _BC_CONSTRUCTION_MATRIX,
+                         ids=[f"w{'x'.join(map(str, w))}" for w, _, _ in _BC_CONSTRUCTION_MATRIX])
+def test_the_bc_construction_matrix_including_a_wide_last_level(widths, expected, why):
+    """§6 P6: feasible = alignment INTERSECT instantiated, and the default is the largest.
+
+    The wide-last-level row is the whole reason the default moved. `widths[-1]` is
+    ALIGNED there -- the old defence is true -- but it is not INSTANTIATED, so the old
+    default produced a `BC` no kernel implements and the caller learned about it from
+    the occupancy oracle at plan time, on a value they never chose. Alignment is
+    necessary, not sufficient.
+    """
+    assert feasible_bc(widths) == expected, why
+    assert largest_feasible_bc(widths) == expected[-1]
+    # Every member is genuinely aligned -- the intersection is not a name list.
+    for BC in expected:
+        owner_geometry(widths, BC)
+    # ...and what the OLD default would have produced, RECORDED per row rather than
+    # asserted as a blanket claim. The row that matters most is `w256x256`: that is the
+    # PARITY topology, and `widths[-1] = 256` is not instantiated there either -- so the
+    # old default was wrong on the freeze arm itself and was only ever masked by the fact
+    # that every instrument in the tree passes `state_block` explicitly.
+    old = widths[-1]
+    verdict = ("largest-feasible by luck" if old == expected[-1]
+               else "smallest-feasible" if old in expected
+               else "NOT FEASIBLE")
+    assert verdict == {(256, 256): "NOT FEASIBLE",
+                       (8, 16): "smallest-feasible",
+                       (4, 256): "NOT FEASIBLE",
+                       (4, 3, 16): "largest-feasible by luck",
+                       (64, 64): "largest-feasible by luck"}[widths], (widths, old, verdict)
+
+
+def test_an_inadmissible_pin_and_an_unservable_topology_are_construction_time_errors():
+    """The point of P6: no plan-time surprises. Both diagnoses name the geometry."""
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((4, 3, 16), pinned=64)
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((6, 24))
+    # An out-of-ladder pin is ADMITTED (the caller takes responsibility for supplying
+    # an oracle, which is the documented contract of the injection interface) but is
+    # still alignment-validated.
+    assert feasible_bc((256, 256), pinned=1024) == (1024,)
+    owner_geometry((256, 256), 1024)
+
+
+def test_the_layer_resolves_the_largest_feasible_bc_and_records_the_feasible_set():
+    """The construction-time half, on the layer that owns it.
+
+    `branches=[4, 256]` is the row that used to resolve `state_block` to 256 -- aligned,
+    uninstantiated, and discovered at plan time. An explicit pin must still win
+    unchanged, because nine external instruments pass one.
+    """
+    from rola.layers import RoLA
+
+    layer = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+                 states_per_level=[4, 256])
+    assert layer.topology.widths == (4, 256)
+    assert layer.state_block == 64, (
+        "the layer kept the widths[-1] default; 256 is aligned but not instantiated")
+    assert layer.feasible_BC == (16, 64)
+
+    pinned = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+                  states_per_level=[4, 256], state_block=16)
+    assert pinned.state_block == 16
+    assert pinned.feasible_BC == (16,), "an explicit pin must shrink the set to itself"
+
+    with pytest.raises(ValueError):
+        RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+             states_per_level=[4, 256], state_block=24)
