@@ -34,11 +34,11 @@ from __future__ import annotations
 import torch
 
 __all__ = [
-    "entmax_tau_bisection",
-    "entmax_forward",
-    "sparsemax_forward_closed_form",
     "EntmaxFn",
     "entmax",
+    "entmax_forward",
+    "entmax_tau_bisection",
+    "sparsemax_forward_closed_form",
 ]
 
 

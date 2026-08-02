@@ -47,9 +47,9 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_routing
-from rola.planner.schedule import Plan, build_schedule
 from rola.ops.consumer import _consumer_forward
+from rola.planner.schedule import Plan, build_schedule
+from rola.routing.producer import produce_routing
 
 
 def _median_ms(fn, reps: int, warmup: int = 4) -> float:
@@ -113,7 +113,7 @@ def run(reps: int = 20) -> list[dict]:
         rows.append(row)
         print(f"{axis:>9} {B:>3} {L:>5} {grid:>5} {grid * d_v:>8} "
               f"{ms:>8.3f} {row['us_per_owner_tile']:>14.3f}")
-        del x, v, ro, rl, wl, gr, gw, sch
+        x = v = ro = rl = wl = gr = gw = sch = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
         torch.cuda.empty_cache()
     return rows
 

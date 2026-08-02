@@ -7,19 +7,18 @@ import torch.nn.functional as F
 
 from rola.routing.entmax.reference import entmax, entmax_forward
 from rola.routing.types import (
+    READ_SUPPORT,
+    ROUTE_TILE_SIZE,
+    WRITE_SUPPORT,
     EntmaxActivation,
     IndependentRouting,
     ResolvedRouting,
     RouteDescriptor,
-    ROUTE_TILE_SIZE,
-    READ_SUPPORT,
-    WRITE_SUPPORT,
     RoutingActivation,
     SoftmaxActivation,
     UnionRouting,
     _validated_alpha,
 )
-
 
 _ROUTING_REFERENCE_N_ITER = 80
 
@@ -184,7 +183,6 @@ def routing_factors(
     for index, (offset, flag) in enumerate(zip(routing.support_offsets, routing.support_side_flags)):
         if offset == -1:
             continue
-        width = routing.branches[index]
         support = torch.zeros_like(reads[index], dtype=torch.bool)
         if flag & READ_SUPPORT:
             support |= reads[index].to(torch.bfloat16) != 0

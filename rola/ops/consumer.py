@@ -23,18 +23,17 @@ topology-agnostic (§3) rather than branching on a level's role.
 
 from __future__ import annotations
 
+from functools import lru_cache as _lru_cache
 from math import prod
 
 import torch
 
-from functools import lru_cache as _lru_cache
-
 from rola.planner.schedule import (
     DEFAULT_SM_SHARED_BYTES,
     PANEL_MAX_EXPONENT,
+    DecayStream,
     Plan,
     Schedule,
-    DecayStream,
     build_clock_stream,
     build_schedule,
     leaf_rate_dials,
@@ -343,8 +342,7 @@ def _consumer_forward(
     owners_arg = schedule.owners
     sp_args: tuple = (None,) * 14
     if sequence_parallel is not None and sequence_parallel.split:
-        from rola.routing.sequence_parallel import (
-            build_sequence_parallel_tensors)
+        from rola.routing.sequence_parallel import build_sequence_parallel_tensors
         if tuple(sequence_parallel.P) and len(sequence_parallel.P) != schedule.owners.shape[0]:
             raise ValueError(
                 f"the sequence-parallel plan covers {len(sequence_parallel.P)} owners but the "

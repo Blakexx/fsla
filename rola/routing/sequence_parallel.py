@@ -21,7 +21,7 @@ into, ``n_slots`` the total workspace slots (``sum_o P_o`` over SPLIT owners --
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import ceil, floor
 
 import torch
@@ -134,7 +134,7 @@ class SequenceParallelPolicy:
             raise ValueError(f"waves_target must be positive, got {self.waves_target}")
         if self.max_p < 1:
             raise ValueError(f"max_p must be at least 1, got {self.max_p}")
-        if not 0.0 <= self.bandwidth_margin:
+        if not self.bandwidth_margin >= 0.0:
             raise ValueError(f"bandwidth_margin must be non-negative, got {self.bandwidth_margin}")
         if self.workspace_cap is not None and self.workspace_cap < 0:
             raise ValueError(f"workspace_cap must be non-negative, got {self.workspace_cap}")
@@ -458,7 +458,7 @@ def select_sequence_parallelism(
     # Traffic the P = 1 launch already moves, in bytes. Every term is a real
     # transfer this launch performs, so the base is a measurement of the plan
     # rather than a model of it.
-    BH, T, d_v = schedule.BH, schedule.T, plan.topology.d_v
+    BH, T = schedule.BH, schedule.T
     base_traffic = (schedule.stream_bytes()
                     + n_owners * BC * cols * 4 * 2        # state load + store, per CTA
                     + BH * T * cols * 4)                  # the split-K output

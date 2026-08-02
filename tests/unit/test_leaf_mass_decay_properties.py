@@ -36,8 +36,6 @@ Covered:
 
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 
@@ -140,7 +138,6 @@ def test_write_conditioned_quiescence_keep_equals_one_exactly_via_leaf_product()
     (including near-1, the ``delta -> 1`` edge) to show ``c == 0`` alone
     forces ``keep == 1`` regardless of how large the decay rate is.
     """
-    widths = (4,)
     strides = (1,)
     N = 4
     for rate_value in (0.0, 0.5, 1 - 1e-9, 1 - 1e-15):
@@ -161,7 +158,6 @@ def test_write_conditioned_quiescence_keep_equals_one_exactly_via_leaf_product()
 
 @pytest.mark.parametrize("delta_value", [0.0, 0.5, 0.9, 0.99, 1 - 1e-6, 1 - 1e-12])
 def test_keep_is_strictly_positive_near_the_delta_to_one_edge(delta_value):
-    widths = (2,)
     strides = (1,)
     N = 2
     dial = (torch.full((1, 2), delta_value, dtype=torch.float64),)
@@ -277,7 +273,6 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
 
 
 def test_keep_is_nonincreasing_in_c():
-    widths = (5,)
     strides = (1,)
     N = 5
     dial = (torch.tensor([[0.1, 0.3, 0.6, 0.8, 0.95]], dtype=torch.float64),)

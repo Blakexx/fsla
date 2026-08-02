@@ -5,7 +5,6 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-
 PUBLIC_DECAY_KERNELS = ("rla", "gla_static", "gla_mass_detached")
 
 
@@ -201,9 +200,9 @@ __all__ = [
     "PUBLIC_DECAY_KERNELS",
     "batch_compact_log_gamma",
     "compact_log_retention_from_public",
-    "decay_retention_from_strides",
     "decay_parameter_offsets",
     "decay_parameter_width",
+    "decay_retention_from_strides",
     "leaf_log_retention_from_strides",
     "validate_compact_decay_theta",
     "validate_compact_log_gamma",

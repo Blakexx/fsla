@@ -427,10 +427,10 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     reviewer exercised by hand in wiring-review.md §9 -- to gate the claim that both
     entry points accept either dtype, independent of the layer's stricter policy.
     """
-    from rola.ops.naive import naive_rola
-    from rola.routing.producer import produce_routing
-    from rola.planner.schedule import select_plan
     from rola.ops.consumer import _consumer_forward
+    from rola.ops.naive import naive_rola
+    from rola.planner.schedule import select_plan
+    from rola.routing.producer import produce_routing
 
     torch.manual_seed(41)
     layer = _layer(norm=norm, decay=decay)
@@ -489,9 +489,8 @@ def test_a_cuda_context_the_consumer_cannot_launch_raises_rather_than_using_the_
     layer = _layer(norm="raw", decay="none", head_v_dim=48)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
-    with torch.no_grad():
-        with pytest.raises(RuntimeError, match="d_v"):
-            layer(x)
+    with torch.no_grad(), pytest.raises(RuntimeError, match="d_v"):
+        layer(x)
     assert layer.execution_backend_counts["oracle"] == 0, (
         "an un-instantiated d_v silently fell back to the oracle instead of raising")
 

@@ -90,7 +90,7 @@ def test_committed_state_accounting_is_exposed_on_the_layer():
     stats = layer.last_paging_stats
     assert stats is not None and stats.status == "READY"
     assert stats.capped_pages == 0
-    assert 0 < stats.realized_owners
+    assert stats.realized_owners > 0
     assert 0 < stats.resident_pages <= stats.owners_total * 4  # BH = batch * heads = 4
     assert stats.peak_pages >= stats.resident_pages
     assert stats.resident_bytes <= stats.dense_bytes

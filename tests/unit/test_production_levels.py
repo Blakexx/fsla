@@ -517,7 +517,7 @@ def test_producer_production_path_matches_its_oracle_path(
     """
     topology = _producer_topology(alpha)
     resolved = resolved_routing_from_topology(topology)
-    budget = actuators = r = None
+    budget = r = None
     if conditioned:
         budget = BudgetConditioning(
             budgeted_write_levels=(1,), budgeted_read_levels=(0,),

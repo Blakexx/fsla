@@ -21,17 +21,18 @@ import torch
 import triton
 import triton.language as tl
 
+from rola.routing.topology import MAX_BRANCH_WIDTH
+from rola.routing.types import (
+    ROUTE_TILE_SIZE as _ROUTE_TILE_SIZE_VALUE,
+)
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     ResolvedRouting,
     RouteDescriptor,
-    ROUTE_TILE_SIZE as _ROUTE_TILE_SIZE_VALUE,
     SoftmaxActivation,
     UnionRouting,
 )
-from rola.routing.topology import MAX_BRANCH_WIDTH
-
 
 _SPARSE_ACTIVATIONS = {"entmax", "sparsemax"}
 _SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)

@@ -26,8 +26,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bench_regression import ARMS, arm_id, measure  # noqa: E402
 from bench.regression import load_baseline, summarize, threshold_ms  # noqa: E402
+from bench_regression import ARMS, arm_id, measure  # noqa: E402
 
 pytestmark = [
     pytest.mark.bench,

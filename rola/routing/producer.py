@@ -63,8 +63,8 @@ from rola.routing.budget import (
     touched_bitset_update,
     update_soft_usage,
 )
-from rola.routing.projection import _packed_router_logits
 from rola.routing.entmax.production import production_routing_factor_levels
+from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import project_side_gains
 from rola.routing.types import ResolvedRouting, Topology
 

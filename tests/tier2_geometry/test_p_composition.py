@@ -39,7 +39,9 @@ from dataclasses import replace
 import pytest
 import torch
 
+from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
+from rola.ops.paging import PageArena
 from rola.planner.schedule import Plan, build_schedule
 from rola.routing.sequence_parallel import (
     SequenceParallelPlan,
@@ -48,7 +50,6 @@ from rola.routing.sequence_parallel import (
     owner_slot_counts,
     select_sequence_parallelism,
 )
-from rola.ops.paging import PageArena
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -57,7 +58,6 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.ops.consumer import _consumer_forward
 
 # The `P = 1` gate's own tolerance, IMPORTED rather than restated. §6.4's amended
 # discipline is "the same RTOL as P = 1, no tolerance widened anywhere"; importing
@@ -186,7 +186,7 @@ class _Fixture:
         """
         base = self.policy_plan(policy=SequenceParallelPolicy(workspace_cap=1 << 30))
         n_tiles = self.schedule.n_tiles
-        assert P <= n_tiles, (
+        assert n_tiles >= P, (
             f"a fixture cannot be split {P} ways over {n_tiles} tiles; raise T or lower P, "
             "rather than letting the split silently degenerate to empty segments")
         Ps = tuple([P] * self.n_owners)

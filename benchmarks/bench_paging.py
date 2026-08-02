@@ -56,8 +56,8 @@ import time
 import torch
 
 from rola.layers.rola import LevelRoutingConfig, RoLA
-from rola.routing.producer import produce_routing
 from rola.planner.schedule import build_schedule
+from rola.routing.producer import produce_routing
 
 
 def _routing_of(layer, x):

@@ -17,7 +17,6 @@ from rola.routing.types import (
     UnionRouting,
 )
 
-
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="production entmax requires CUDA")
 
 _PRODUCTION_RTOL = 2e-5

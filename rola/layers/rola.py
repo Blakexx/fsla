@@ -81,6 +81,7 @@ import torch.nn as nn
 from einops import rearrange
 
 from rola.utils.cache import get_layer_cache, update_layer_cache
+
 # OPTIONAL: the fused short causal convolution, used only when the caller asks for
 # `use_short_conv=True` (default False). Guarded exactly as mamba-ssm guards
 # `causal_conv1d`: the import never fails, and the assert that names the remedy is
@@ -90,13 +91,11 @@ try:
     from fla.modules import ShortConvolution
 except ImportError:  # noqa: BLE001
     ShortConvolution = None
-from rola.ops.naive import naive_rola
-from rola.routing.budget import DEFAULT_CHUNK_SIZE
-from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
-from rola.planner.schedule import (
-    MMA_PRECISIONS, owner_geometry, plan_and_schedule)
-from rola.ops.consumer import sm_shared_bytes
 from rola.interface import select_backend
+from rola.ops.consumer import _consumer_forward, sm_shared_bytes
+from rola.ops.naive import naive_rola
+from rola.planner.schedule import MMA_PRECISIONS, owner_geometry, plan_and_schedule
+from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
 from rola.routing.side_gain import GainConfig, init_side_gain_bias
 from rola.routing.topology import resolve_b_spec
 from rola.routing.types import (
@@ -108,7 +107,6 @@ from rola.routing.types import (
     Topology,
     UnionRouting,
 )
-from rola.ops.consumer import _consumer_forward
 
 
 @dataclass(frozen=True)
@@ -875,4 +873,4 @@ class RoLA(nn.Module):
         return self.get_stats()['state_floats']
 
 
-__all__ = ['RoLA', 'LevelRoutingConfig', 'resolve_level_routing_configs']
+__all__ = ['LevelRoutingConfig', 'RoLA', 'resolve_level_routing_configs']

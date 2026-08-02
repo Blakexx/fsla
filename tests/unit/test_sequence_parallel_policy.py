@@ -465,7 +465,7 @@ def test_the_occupancy_gate_reads_the_driver_for_the_instantiation_it_will_launc
     assert consumer_blocks_per_sm(coarser_BT) < base, (
         "a 2x larger token tile did not lower CTAs/SM, so the query is insensitive to "
         "the other axis that sizes the kernel's SMEM")
-    assert 1 <= consumer_blocks_per_sm(bigger_BC)
+    assert consumer_blocks_per_sm(bigger_BC) >= 1
     # The DECAY and COMPACT arms are the query's other two axes, and what a
     # constant-returning stub fails is that neither can report MORE CTAs than the
     # arm carrying strictly less shared memory: the decay arm carries extra `[BC]`

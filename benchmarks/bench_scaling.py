@@ -58,10 +58,9 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_routing
-from rola.planner.schedule import (
-    build_schedule, plan_and_schedule, select_plan)
 from rola.ops.consumer import _consumer_forward
+from rola.planner.schedule import build_schedule, plan_and_schedule, select_plan
+from rola.routing.producer import produce_routing
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -195,7 +194,7 @@ def run_fa_cell(*, L, B, H, d_head, hidden, dtype, backend: str, reps, warmup) -
             "address_space_bits": round(math.log2(L), 3),
             "address_space_basis": "attention addresses TOKENS: the space is L and it GROWS",
         })
-        del layer, x
+        layer = x = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
     except torch.cuda.OutOfMemoryError as exc:
         row.update({"oom": True, "oom_stage": "forward", "error": str(exc)[:200]})
     except RuntimeError as exc:
@@ -375,8 +374,8 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, dec
                                    - row["planner_ms"] - row["consumer_ms"], 4)
             row["glue_basis"] = "RESIDUAL of total minus (producer, planner, consumer); may be negative"
             row.update(_addressing(branches, d_v, norm, read_levels, write_levels))
-            del v, ro, read_levels, write_levels, sched
-        del layer, x
+            v = ro = read_levels = write_levels = sched = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
+        layer = x = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
     except torch.cuda.OutOfMemoryError as exc:
         row.update({"oom": True, "oom_stage": "forward-or-planes", "error": str(exc)[:200]})
     except RuntimeError as exc:

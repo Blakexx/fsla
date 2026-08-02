@@ -31,6 +31,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.ops.consumer import level_descriptors
 from rola.ops.naive import naive_rola
 from rola.planner.schedule import (
     Plan,
@@ -45,7 +46,6 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.ops.consumer import level_descriptors
 
 #: Both sides run fp64, so this is a "the algorithm is exact" threshold with six
 #: orders of margin over the observed ~1e-16, not a slack knob. It must never be

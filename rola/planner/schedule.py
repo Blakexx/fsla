@@ -798,7 +798,7 @@ COST_MODEL_PROVENANCE = (
 )
 
 
-def plan_cost_per_token(topology: Topology, BC: int, stats: "TileUnionStats", *,
+def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
                         compact: bool, decay: bool = False,
                         ring_slots: int = 1,
                         tile_fixed_work: float = TILE_FIXED_WORK,
@@ -999,7 +999,7 @@ class PlanAxes:
 
     BT: int
     compact: bool
-    stats: "TileUnionStats"
+    stats: TileUnionStats
     cost_per_token: float
     #: The residency the OCCUPANCY ORACLE reports for the selected instantiation
     #: (§6 residency, item 2(a)) -- the driver's number in production and the
@@ -1029,7 +1029,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
                      write_levels: tuple[torch.Tensor, ...],
                      topology: Topology, BC: int, *, decay: bool,
                      bt_candidates: tuple[int, ...] = _SUPPORTED_BT,
-                     views: "RoutingViews | None" = None,
+                     views: RoutingViews | None = None,
                      normalization: str = "global",
                      sm_count: int | None = None,
                      mma_precision: str = "bf16",
@@ -1241,7 +1241,7 @@ def select_plan(read_levels: tuple[torch.Tensor, ...],
                    mma_precision: str = "bf16",
                    amp_dtype: torch.dtype = torch.float32,
                    bt_candidates: tuple[int, ...] = _SUPPORTED_BT,
-                   views: "RoutingViews | None" = None,
+                   views: RoutingViews | None = None,
                    sm_shared_bytes: int | None = None,
                    sm_count: int | None = None,
                    occupancy: OccupancyOracle | None = None,
@@ -1291,7 +1291,7 @@ def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
                          sm_shared_bytes: int | None = None,
                          sm_count: int | None = None,
                          occupancy: OccupancyOracle | None = None,
-                         **cost_kwargs) -> tuple[Plan, PlanAxes, "Schedule"]:
+                         **cost_kwargs) -> tuple[Plan, PlanAxes, Schedule]:
     """THE planner plane: select the §6 axes and build the §4 schedule in ONE pass.
 
     :func:`select_plan` and :func:`build_schedule` walk the same routing
@@ -1518,7 +1518,7 @@ class TileUnionStats:
 def tile_union_stats(read_levels: tuple[torch.Tensor, ...],
                      write_levels: tuple[torch.Tensor, ...],
                      topology: Topology, BC: int, BT: int, *,
-                     views: "RoutingViews | None" = None) -> TileUnionStats:
+                     views: RoutingViews | None = None) -> TileUnionStats:
     """Compute :class:`TileUnionStats` exactly, for one ``(BC, BT)`` candidate.
 
     ``K(owner, tile) = |{ i in [0,BC) : exists t in the tile, R[t, leaf(i)] != 0
@@ -1579,7 +1579,7 @@ def _bt_candidate_chain(bt_candidates: tuple[int, ...]) -> tuple[int, ...]:
     set is a spec change that must revisit the offset width rather than a runtime
     condition to branch on.
     """
-    cands = tuple(sorted(set(int(BT) for BT in bt_candidates)))
+    cands = tuple(sorted({int(BT) for BT in bt_candidates}))
     if not cands:
         raise ValueError("bt_candidates must be non-empty")
     BT0 = cands[0]
@@ -1907,7 +1907,7 @@ def _tile_union_stats_multi(views: RoutingViews, topology: Topology, BC: int,
 _STATS_OWNER_CHUNK_ELEMS = 1 << 24
 
 
-def _tile_union_stats_multi_enumerated(views: "RoutingViews", topology: Topology, BC: int,
+def _tile_union_stats_multi_enumerated(views: RoutingViews, topology: Topology, BC: int,
                                       bt_candidates: tuple[int, ...]) -> dict[int, TileUnionStats]:
     """:class:`TileUnionStats` for EVERY candidate ``BT``, from ONE pass at the finest.
 
@@ -2382,7 +2382,7 @@ class Schedule:
     abi_version: int = ROLA_SCHEDULE_ABI_VERSION
     #: Attached lazily by `_consumer_forward` on the decay arm; see
     #: :class:`DecayStream`. `None` on the `decay=None` arm, always.
-    decay_stream: "DecayStream | None" = None
+    decay_stream: DecayStream | None = None
 
     def decay_artifacts(self, stored, write, decay, BT, *, build):
         """Return this schedule's decay artifacts, building them at most once.
@@ -2907,44 +2907,44 @@ def _cartesian(sets: list[list[int]]):
 
 
 __all__ = [
-    "ROLA_SCHEDULE_ABI_VERSION",
+    "COST_MODEL_PROVENANCE",
     "CP_ASYNC_ROW_BYTES",
-    "DEFAULT_WRITE_COST_WEIGHT",
-    "MMA_K_QUANTUM",
-    "MMA_PRECISIONS",
-    "select_plan_axes",
-    "select_plan",
-    "plan_and_schedule",
-    "RoutingViews",
-    "routing_views",
-    "PlanAxes",
-    "plan_cost_per_token",
+    "DECAY_KSTEP_WORK",
+    "DEFAULT_SM_COUNT",
     "DEFAULT_SM_SHARED_BYTES",
-    "spanned_moduli",
-    "TILE_FIXED_WORK",
+    "DEFAULT_WRITE_COST_WEIGHT",
     "GATHER_CANDIDATE_FIXED_WORK",
     "GATHER_CANDIDATE_QUANTUM_WORK",
-    "READOUT_FOLD_KSTEP_WORK",
     "INTRA_GRAM_KSTEP_WORK",
-    "DECAY_KSTEP_WORK",
-    "STAGE_COLUMN_WORK",
-    "COST_MODEL_PROVENANCE",
-    "plan_waves",
-    "DEFAULT_SM_COUNT",
-    "OwnerGeometry",
-    "owner_geometry",
-    "Plan",
-    "LevelSupportStats",
-    "TileUnionStats",
-    "tile_union_stats",
-    "span_score",
-    "rank_spans",
-    "permuted_topology",
-    "Schedule",
-    "build_schedule",
-    "build_clock_stream",
-    "leaf_rate_dials",
+    "MMA_K_QUANTUM",
+    "MMA_PRECISIONS",
     "PANEL_MAX_EXPONENT",
+    "READOUT_FOLD_KSTEP_WORK",
+    "ROLA_SCHEDULE_ABI_VERSION",
+    "STAGE_COLUMN_WORK",
+    "TILE_FIXED_WORK",
+    "LevelSupportStats",
+    "OwnerGeometry",
+    "Plan",
+    "PlanAxes",
+    "RoutingViews",
+    "Schedule",
+    "TileUnionStats",
+    "build_clock_stream",
+    "build_schedule",
+    "leaf_rate_dials",
+    "owner_geometry",
     "panel_exponent_bound",
+    "permuted_topology",
+    "plan_and_schedule",
+    "plan_cost_per_token",
+    "plan_waves",
+    "rank_spans",
+    "routing_views",
+    "select_plan",
+    "select_plan_axes",
+    "span_score",
+    "spanned_moduli",
+    "tile_union_stats",
     "unpack_bits",
 ]

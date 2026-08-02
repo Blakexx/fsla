@@ -45,7 +45,7 @@ class DualAscentLambda:
 
     value: torch.Tensor  # scalar or [H]
 
-    def step(self, exact_mean: torch.Tensor, target: float, *, lr: float) -> "DualAscentLambda":
+    def step(self, exact_mean: torch.Tensor, target: float, *, lr: float) -> DualAscentLambda:
         """``lambda <- relu(lambda + lr * (exact_mean - target))`` (dual ascent, detached)."""
         updated = torch.relu(self.value.detach() + lr * (exact_mean.detach() - target))
         return DualAscentLambda(updated)
@@ -120,7 +120,7 @@ class TouchedPrefixState:
     bits: tuple[torch.Tensor, ...]
 
     @staticmethod
-    def init(widths: tuple[int, ...], *, B: int, H: int, device) -> "TouchedPrefixState":
+    def init(widths: tuple[int, ...], *, B: int, H: int, device) -> TouchedPrefixState:
         prefix_counts = []
         running = 1
         for width in widths:

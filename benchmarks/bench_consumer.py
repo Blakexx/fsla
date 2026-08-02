@@ -37,11 +37,9 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_routing
-from rola.planner.schedule import (
-    Plan, build_clock_stream, build_schedule, dense_limit_lowering,
-    select_plan)
 from rola.ops.consumer import _consumer_forward
+from rola.planner.schedule import Plan, build_clock_stream, build_schedule, dense_limit_lowering, select_plan
+from rola.routing.producer import produce_routing
 
 # V2 whole-layer medians (ms) from `20260728-stage0/baseline.md` §3 at this exact
 # cell. Carried as data, not re-measured here: this script benchmarks V3, and
@@ -306,7 +304,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 }
                 rows.append(row)
                 print(json.dumps(row), flush=True)
-            del layer
+            layer = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
             torch.cuda.empty_cache()
     return rows
 

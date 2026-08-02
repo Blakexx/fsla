@@ -26,39 +26,35 @@ import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from rola.planner.schedule import (
+    _STATS_OWNER_CHUNK_ELEMS,
     CP_ASYNC_ROW_BYTES,
     DEFAULT_SM_COUNT,
     DEFAULT_WRITE_COST_WEIGHT,
     MMA_K_QUANTUM,
     STAGE_COLUMN_WORK,
     LevelSupportStats,
-    OwnerGeometry,
     Plan,
+    TileUnionStats,
+    _tile_union_stats_multi,
+    _tile_union_stats_multi_enumerated,
     build_clock_stream,
     build_schedule,
     leaf_rate_dials,
     owner_geometry,
     permuted_topology,
     plan_and_schedule,
-    _STATS_OWNER_CHUNK_ELEMS,
-    _tile_union_stats_multi,
-    _tile_union_stats_multi_enumerated,
-    rank_spans,
-    routing_views,
-    RoutingViews,
-    PlanAxes,
-    TileUnionStats,
     plan_cost_per_token,
     plan_waves,
-    select_plan_axes,
+    rank_spans,
+    routing_views,
     select_plan,
+    select_plan_axes,
     span_score,
     spanned_moduli,
     tile_union_stats,
     unpack_bits,
 )
 from rola.routing.types import (
-    EntmaxActivation,
     IndependentRouting,
     LeafMassDecay,
     LevelConfig,
@@ -372,7 +368,6 @@ def test_owner_geometry_matches_brute_force_leaf_enumeration(widths):
     for BC in _admissible_bcs(widths):
         geom = owner_geometry(tuple(widths), BC)
         j, c = geom.first_spanned_level, geom.slice_digits
-        n_slices = geom.n_slices
         assert geom.owners_total == math.prod(widths) // BC
 
         for owner in range(geom.owners_total):
@@ -1495,8 +1490,7 @@ def test_panel_exponent_bound_is_an_upper_bound_and_scales_as_derived():
        the domain."""
     import math
 
-    from rola.planner.schedule import (
-        PANEL_MAX_EXPONENT, build_clock_stream, panel_exponent_bound)
+    from rola.planner.schedule import PANEL_MAX_EXPONENT, build_clock_stream, panel_exponent_bound
     from rola.routing.types import LeafMassDecay
 
     widths, BC, T, H = (4, 4), 16, 32, 1

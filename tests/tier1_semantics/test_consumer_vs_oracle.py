@@ -470,7 +470,7 @@ def test_all_zero_write_level_is_read_only():
     widths, d_v, B, T, H = (8, 4), 64, 1, 20, 2
     topology = _topology(widths, d_v)
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
-    write_levels = list(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
+    write_levels = [_simplex((B, T, H, w), 0.5, generator, device) for w in widths]
     # A structurally dead level: every digit zero. This is not a simplex, so the
     # oracle's validator would reject it -- instead drive the gain to zero, which
     # is the reachable form of "this token deposits nothing".
@@ -903,11 +903,10 @@ def test_panel_refuses_an_out_of_domain_survival_range_rather_than_clamping():
     clock (so the per-tile clock prefix is ~``BT``) meeting a near-unit leaf rate
     (so ``|log keep|`` is large). Either alone is far inside the domain, which is
     why every other gate in this file is."""
-    from rola.planner.schedule import (
-        PANEL_MAX_EXPONENT, build_clock_stream, panel_exponent_bound)
-    from rola.ops.consumer import _consumer_forward
-
     import math
+
+    from rola.ops.consumer import _consumer_forward
+    from rola.planner.schedule import PANEL_MAX_EXPONENT, build_clock_stream, panel_exponent_bound
 
     widths, BC, BT, d_v, B, T, H = (4, 4), 16, 16, 32, 1, 32, 1
     device = "cuda"

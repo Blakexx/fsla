@@ -52,7 +52,14 @@ ignore = [
   "B023", "B006", "B007", "B008", "B028", "B904", "B905",
   "C408", "C416", "C417",
   "T201",
-  "TC002", "TC003",
+  # TC001/2/3 -- REASON: this package does not maintain a `TYPE_CHECKING` import
+  # split. Two import lists that must be kept in agreement, one of which is never
+  # executed, is a maintenance cost paid for an import-time saving nobody measured;
+  # and a runtime import that a refactor later needs (an isinstance, a default) is
+  # then a NameError found by a user rather than by the interpreter. TC002/TC003
+  # were already ignored on that reasoning -- TC001 was an inconsistency, not a
+  # decision.
+  "TC001", "TC002", "TC003",
   "SIM102", "SIM108", "SIM118", "SIM211",
   "COM812",
 ]
@@ -68,6 +75,11 @@ force-sort-within-sections = false
 #: own directory on `sys.path` before importing it. The import is deliberately after
 #: that line and cannot be moved above it.
 "benchmarks/*.py" = ["E402"]
+# RUF022 -- REASON: `rola/__init__.py`'s `__all__` is GROUPED BY CONCEPT with a
+# comment per group (the op, the layer, the state, the configuration objects). That
+# grouping is how a reader learns the shape of the public API; alphabetical order
+# would interleave the four groups and delete the only documentation the list has.
+"rola/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 markers = [

@@ -6,15 +6,15 @@ import pytest
 import torch
 
 from rola.routing.types import (
+    READ_SUPPORT,
+    ROUTE_DESCRIPTOR_VERSION,
+    WRITE_SUPPORT,
     EntmaxActivation,
     IndependentRouting,
-    READ_SUPPORT,
-    RouteDescriptor,
     ResolvedRouting,
-    ROUTE_DESCRIPTOR_VERSION,
+    RouteDescriptor,
     SoftmaxActivation,
     UnionRouting,
-    WRITE_SUPPORT,
 )
 
 
@@ -91,7 +91,6 @@ def test_route_descriptor_has_one_compact_tile_major_and_support_arena():
 
 
 def test_route_descriptor_rejects_noncompact_or_inconsistent_metadata():
-    plan = ResolvedRouting((UnionRouting(),), (4,))
     values = torch.empty(1, 1, 4, 32, dtype=torch.bfloat16)
     support = torch.empty(1, 1, 4, dtype=torch.int32)
     with pytest.raises(ValueError, match="topology_stamp"):

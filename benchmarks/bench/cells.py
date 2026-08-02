@@ -299,7 +299,9 @@ class Cell:
         if self.is_producer:
             return self._build_producer()
         g = torch.Generator(device=device).manual_seed(self.seed)
-        shp = lambda w: (self.B, self.T, self.H, w)
+        def shp(w):
+            return (self.B, self.T, self.H, w)
+
         read_levels = tuple(_support(self.read, shp(w), g, device) for w in self.widths)
         write_levels = tuple(_support(self.write, shp(w), g, device) for w in self.widths)
         g_write = torch.rand(self.B, self.T, self.H, device=device,

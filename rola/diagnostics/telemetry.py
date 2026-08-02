@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """RoLA sparsity/collapse telemetry (remaining-tasks-spec.md TASK #2).
 
 A lightweight, opt-in, throttled JSONL sink called from inside the one compact route
@@ -42,7 +41,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-__all__ = ['RolaTelemetry', 'TELEMETRY', 'record_route_descriptor']
+__all__ = ['TELEMETRY', 'RolaTelemetry', 'record_route_descriptor']
 
 _ENV_PATH = 'ROLA_TELEMETRY'
 _ENV_EVERY = 'ROLA_TELEMETRY_EVERY'

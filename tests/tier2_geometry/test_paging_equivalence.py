@@ -64,6 +64,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.ops.consumer import _consumer_forward
 from rola.ops.paging import PageArena
 from rola.planner.schedule import Plan, build_schedule
 from rola.routing.types import (
@@ -74,7 +75,6 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.ops.consumer import _consumer_forward
 
 pytestmark = [
     pytest.mark.cuda,
@@ -414,7 +414,6 @@ def test_a_binding_cap_is_reported_and_never_silent():
 def test_a_cap_that_can_bind_requires_opting_in():
     """Reaching for `CAPPED` is a decision, not a discovery."""
     widths, d_v, BC = (8, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
     with pytest.raises(ValueError, match="CHANGES THE FUNCTION COMPUTED"):
         PageArena(widths=widths, BC=BC, cols=d_v, BH=4,
                     device=torch.device("cuda"), max_physical_pages=2)

@@ -36,10 +36,9 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_routing
-from rola.planner.schedule import (
-    build_schedule, plan_and_schedule, select_plan)
 from rola.ops.consumer import _consumer_forward
+from rola.planner.schedule import build_schedule, plan_and_schedule, select_plan
+from rola.routing.producer import produce_routing
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -318,7 +317,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
                 **_addressing(layer, branches, d_v, H, norm, read_levels, write_levels),
             })
             print(json.dumps(rows[-1]), flush=True)
-            del layer, x, v, ro, read_levels, write_levels, sched
+            layer = x = v = ro = read_levels = write_levels = sched = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
             torch.cuda.empty_cache()
     return rows
 

@@ -216,11 +216,11 @@ def project_side_gains(
 
 
 __all__ = [
+    "READ_GAIN",
+    "READ_GAIN_UNDER_GLOBAL",
+    "WRITE_GAIN",
     "GainConfig",
     "gain_layout",
-    "READ_GAIN_UNDER_GLOBAL",
-    "READ_GAIN",
-    "WRITE_GAIN",
     "init_side_gain_bias",
     "project_side_gains",
     "softplus_side_gain",

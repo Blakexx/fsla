@@ -41,13 +41,20 @@ import torch
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
-from rola.routing.producer import produce_routing
-from rola.planner.schedule import Plan, build_schedule, plan_and_schedule
-from rola.routing.sequence_parallel import (
-    MEASURED_HBM_BYTES_PER_S, SequenceParallelPlan, SequenceParallelPolicy,
-    build_sequence_parallel_tensors, consumer_blocks_per_sm, owner_slot_counts,
-    select_sequence_parallelism, slot_bytes, state_roundtrip_bytes_per_s)
 from rola.ops.consumer import _consumer_forward
+from rola.planner.schedule import Plan, build_schedule, plan_and_schedule
+from rola.routing.producer import produce_routing
+from rola.routing.sequence_parallel import (
+    MEASURED_HBM_BYTES_PER_S,
+    SequenceParallelPlan,
+    SequenceParallelPolicy,
+    build_sequence_parallel_tensors,
+    consumer_blocks_per_sm,
+    owner_slot_counts,
+    select_sequence_parallelism,
+    slot_bytes,
+    state_roundtrip_bytes_per_s,
+)
 
 #: Extra warmup paid ONCE per process, before anything is timed. The V3 extension
 #: JIT-compiles/loads its first template instantiation on first call and the caching
@@ -279,7 +286,7 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
         "cols": policy_plan.cols,
         "rows": rows,
     }
-    del fx
+    fx = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
     torch.cuda.empty_cache()
     print(json.dumps(cell), flush=True)
     return cell

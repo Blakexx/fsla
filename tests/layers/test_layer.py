@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from rola.layers import LevelRoutingConfig as ExportedLevelRoutingConfig
-from rola.layers.rola import RoLA, LevelRoutingConfig, resolve_level_routing_configs
+from rola.layers.rola import LevelRoutingConfig, RoLA, resolve_level_routing_configs
 from rola.routing.producer import BudgetConditioning
 
 _DELETED_Q_K_SYMBOLS = (
