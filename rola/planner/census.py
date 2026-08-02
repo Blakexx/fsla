@@ -394,6 +394,111 @@ def tile_union_census(read_mask: tuple[torch.Tensor, ...],
     return CensusResult(per_bt=per_bt, summaries=summary, denominators=denominators)
 
 
+def exact_routing_summaries(read_mask: tuple[torch.Tensor, ...],
+                            write_mask: tuple[torch.Tensor, ...],
+                            geometry, BT: int):
+    """The §4.2 :class:`RoutingSummaries` struct, computed EXACTLY. The AUDITOR's twin.
+
+    ``rola.routing.summaries.summarize_routing`` measures the same five fields from the
+    FACTORIZED bound ``K_hat = prod_l (owner-slice popcount)``, at
+    ``O(BH * n_tiles * owners_total)``. This computes them from the exact leaf plane at
+    ``O(BH * n_tiles * N)`` -- the cost the runtime pass exists to avoid -- so the two
+    can be compared field for field. That comparison is what the ``C_COLLISION_GAMMA``
+    fit regresses and what the auditor's upper-bound gate asserts:
+    ``sum_q q * hist_bound[q] >= sum_q q * hist_exact[q]`` on every cell, because
+    ``K_hat >= K`` pairwise.
+
+    **INDEPENDENCE IS THE POINT, so nothing here is shared with the pass it audits.**
+    Candidacy below is formed by GATHERING each owner's fixed digits and boundary slice
+    out of the per-level tile bitmaps; the production pass forms it as a successive
+    OUTER PRODUCT over the fixed levels. Those are two derivations of the same set, and
+    a shared helper would make the gate prove only self-consistency -- the failure mode
+    that let the shared-router bug through.
+
+    ``geometry`` is the §3 owner rectangle, passed for the same reason
+    :func:`rola.routing.summaries.summarize_routing_device` takes it: this module does
+    not derive it, and a second derivation would be a second authority.
+    """
+    from rola.routing.summaries import RoutingSummaries, _pack_leaf_bitmap
+
+    widths = tuple(geometry.widths)
+    BC = int(geometry.BC)
+    j = geometry.first_spanned_level
+    c = geometry.slice_digits
+    n_slices = geometry.n_slices
+    owners_total = geometry.owners_total
+    N = prod(widths)
+    QPO = BC // MMA_K_QUANTUM
+    BH, T, _ = read_mask[0].shape
+    device = read_mask[0].device
+    n_tiles = (T + BT - 1) // BT
+    rows_total = BH * n_tiles
+
+    # The owner id decomposed by GATHER: `owner = rest * n_slices + slice`, with `rest`
+    # the mixed radix of the fixed digits (level 0 most significant).
+    owner_ids = torch.arange(owners_total, device=device)
+    slice_of = owner_ids % n_slices
+    rest = owner_ids // n_slices
+    fixed_of = [(rest // max(1, prod(widths[level + 1:j]))) % widths[level]
+                for level in range(j)]
+
+    read_words = tuple(w.reshape(rows_total, -1)
+                       for w in _token_support_words(read_mask, BT, n_tiles))
+    write_words = tuple(w.reshape(rows_total, -1)
+                        for w in _token_support_words(write_mask, BT, n_tiles))
+
+    occupancy = torch.stack([
+        torch.stack([mask.sum(dtype=torch.int64).to(torch.float64)
+                     / float(BH * T * widths[level])
+                     for level, mask in enumerate(side)])
+        for side in (read_mask, write_mask)]).to(torch.float32)
+
+    hist = torch.zeros(QPO + 1, dtype=torch.int64, device=device)
+    n_candidate = torch.zeros((), dtype=torch.int64, device=device)
+    rows_per_chunk = max(1, _CENSUS_CELL_CHUNK // N)
+    for lo in range(0, rows_total, rows_per_chunk):
+        hi = min(lo + rows_per_chunk, rows_total)
+        rows = hi - lo
+        read_lw = _leaf_words(tuple(w[lo:hi] for w in read_words), widths)
+        write_lw = _leaf_words(tuple(w[lo:hi] for w in write_words), widths)
+        k_count = (read_lw | write_lw).ne(0).view(rows, owners_total, BC).sum(dim=-1)
+
+        cand = None
+        for words in (read_words, write_words):
+            tile_bits = [words[level][lo:hi] != 0 for level in range(len(widths))]
+            side_cand = tile_bits[j].view(rows, n_slices, c).any(dim=-1)[:, slice_of]
+            for level in range(j):
+                side_cand = side_cand & tile_bits[level][:, fixed_of[level]]
+            cand = side_cand if cand is None else (cand | side_cand)
+
+        q = (k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM
+        for bin_index in range(QPO + 1):
+            hist[bin_index] += ((q == bin_index) & cand).sum(dtype=torch.int64)
+        n_candidate = n_candidate + cand.sum(dtype=torch.int64)
+
+    # §4.1's canonical per-leaf write bitmap, in its own `bh`-outer loop so the OR is
+    # a whole-slab reduction rather than a per-row scatter.
+    written = torch.zeros((BH, N), dtype=torch.bool, device=device)
+    tiles_per_chunk = max(1, _CENSUS_CELL_CHUNK // N)
+    for bh in range(BH):
+        base = bh * n_tiles
+        for lo in range(0, n_tiles, tiles_per_chunk):
+            hi = min(lo + tiles_per_chunk, n_tiles)
+            chunk = tuple(w[base + lo:base + hi] for w in write_words)
+            written[bh] |= (_leaf_words(chunk, widths) != 0).any(dim=0)
+
+    n_pairs = rows_total * owners_total
+    n_owner_slots = BH * owners_total
+    return RoutingSummaries(
+        occupancy=occupancy,
+        quanta_hist=hist.to(torch.float32) / n_candidate.clamp(min=1).to(torch.float32),
+        active_owner_frac=(
+            int(written.view(BH, owners_total, BC).any(dim=-1).sum()) / n_owner_slots
+            if n_owner_slots else 0.0),
+        candidate_frac=int(n_candidate) / n_pairs if n_pairs else 0.0,
+        written_leaf_bitmap=_pack_leaf_bitmap(written))
+
+
 def summary_fractions(result: CensusResult, resolved: dict) -> dict[tuple, float]:
     """The §2.7 closed-form selector's inputs, as fractions in ``[0, 1]``.
 
