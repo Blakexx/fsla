@@ -44,9 +44,12 @@ wrongly. ``K_hat <= BC`` always, because the boundary level contributes at most
 and no clamp is needed.
 
 The residual is the cross-level COLLISION correction ``C_COLLISION_GAMMA`` (§8), whose
-conservative default ``1.0`` leaves the bound uncorrected. It is applied by the
-SELECTOR, not here: this module emits a measurement, and a fitted correction is not
-one.
+conservative default ``1.0`` leaves the bound uncorrected. The constant is OWNED by
+:mod:`rola.planner.select` -- a fitted number belongs with the rules that spend it, not
+with the pass that measures -- and is passed in as the ``gamma`` argument, because it
+has to be applied per ``(owner, tile)`` BEFORE the quantization and this is the only
+place that granularity still exists. At the default the multiply is skipped outright,
+so an uncalibrated run is bit-identical to one with no hook at all.
 
 ---- COST, STATED RATHER THAN DISCOVERED --------------------------------------
 
@@ -293,7 +296,8 @@ class _DeviceSummaries:
 
 def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
                              write_mask: tuple[torch.Tensor, ...],
-                             geometry, BT: int) -> _DeviceSummaries:
+                             geometry, BT: int, *,
+                             gamma: float = 1.0) -> _DeviceSummaries:
     """THE fused pass. Device-resident end to end; issues ZERO host synchronizations.
 
     ``read_mask``/``write_mask`` are the folded ``[BH, T, b_l]`` boolean supports, one
@@ -307,11 +311,24 @@ def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
     derivation of it would be a second authority, and a producer-side module that
     imports the planner would make the routing package depend on the package that
     depends on it.
+
+    ``gamma`` is ``C_COLLISION_GAMMA`` (§8), also passed rather than imported, for the
+    same one-owner reason. **It is applied HERE, per ``(owner, tile)``, BEFORE the
+    quantization, and that placement is the whole content of the constant.**
+    ``ceil`` is nonlinear and the ``q = 0`` mass is where the entire packing saving
+    lives, so scaling the MEAN afterwards is a different and strictly less conservative
+    correction. At the shipped default ``1.0`` this is bit-identically inert -- the
+    multiply is skipped, not merely a no-op -- so a run with no fit behaves exactly as
+    if the hook did not exist.
     """
     widths = tuple(geometry.widths)
     BC = int(geometry.BC)
     if len(read_mask) != len(widths) or len(write_mask) != len(widths):
         raise ValueError(f"one mask per level per side required (D={len(widths)})")
+    if not 0.0 < gamma <= 1.0:
+        raise ValueError(
+            f"C_COLLISION_GAMMA must lie in (0, 1]: K_hat is an UPPER bound on K and the "
+            f"correction can only shrink it toward the truth, never past it. Got {gamma!r}.")
     if BC % MMA_K_QUANTUM:
         raise ValueError(
             f"BC={BC} must be a whole number of MMA_K_QUANTUM={MMA_K_QUANTUM} atoms "
@@ -385,6 +402,10 @@ def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
             side_cand = side_cand.reshape(rows, owners_total)
             cand = side_cand if cand is None else (cand | side_cand)
 
+        if gamma != 1.0:
+            # Per (owner, tile), before the ceil. `floor(gamma * K_hat)` keeps the
+            # result an integer count of LEAVES, which is what the quantum divides.
+            k_hat = (k_hat.to(torch.float64) * gamma).floor().to(torch.int64)
         q = (k_hat + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM         # in [0, QPO]
         # Non-candidates are parked in the sentinel bin `QPO + 1` so they cannot
         # collide with the genuinely-empty candidates in bin 0 -- which is the bin the
@@ -435,7 +456,8 @@ def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
 def summarize_routing(read_mask: tuple[torch.Tensor, ...],
                       write_mask: tuple[torch.Tensor, ...],
                       geometry, BT: int, *,
-                      density=None, debug: bool | None = None) -> RoutingSummaries:
+                      density=None, gamma: float = 1.0,
+                      debug: bool | None = None) -> RoutingSummaries:
     """§4.2's struct, with ONE D2H transfer and no other host synchronization.
 
     ``density`` is the configuration's :class:`~rola.planner.schedule.StaticDensity`
@@ -450,7 +472,8 @@ def summarize_routing(read_mask: tuple[torch.Tensor, ...],
     which costs a second pass and is stated rather than hidden. See the findings note
     on the interaction between this and §4.3's joint ``(BC, BT)`` argmin.
     """
-    device_summaries = summarize_routing_device(read_mask, write_mask, geometry, BT)
+    device_summaries = summarize_routing_device(read_mask, write_mask, geometry, BT,
+                                                gamma=gamma)
     # THE ONE TRANSFER. Both host-side scalars ride it; reading them separately would
     # be two synchronizations for one answer.
     n_candidate, n_written_owners = torch.stack(
