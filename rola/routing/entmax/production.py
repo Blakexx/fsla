@@ -39,6 +39,17 @@ _SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)
 _TRITON_FP32_MAX = tl.constexpr(3.4028234663852886e38)
 _TRITON_FP32_HALF_MAX = tl.constexpr(1.7014117331926443e38)
 _TRITON_ROUTE_TILE_SIZE = tl.constexpr(_ROUTE_TILE_SIZE_VALUE)
+# Elements (rows x padded width) of one union-solve sub-tile; see `_union_row_tile`.
+# 512 = the measured sm_86 knee (2 rows x 256 cols at the parity topology), from the
+# p3 sweep of 1/2/4/8/16/32 rows at L=2048, median of 30 launches:
+#   rows  32 -> 1120 us, 255 reg, 468 spilled, 32.8 KB smem   (the pre-p3 shape)
+#   rows   8 ->  394 us, 255 reg,   0 spilled,  8.2 KB smem
+#   rows   2 ->  348 us, 128 reg,   0 spilled,  4.1 KB smem   <- knee
+#   rows   1 ->  700 us,  80 reg,   0 spilled,  1.0 KB smem   (sort too thin to amortize)
+# Capping registers instead (`maxnreg` 64/96/128) reintroduces spills and is 1.4-3.4x
+# slower; num_warps 2 or 8 are both worse. Shrinking the sub-tile is the only lever
+# that moves register demand and sort scratch together.
+_UNION_SOLVE_TILE = 512
 
 
 def _production_alpha(alpha: float) -> float:
@@ -479,143 +490,158 @@ def _production_union_fwd_kernel(
     HAS_MASK: tl.constexpr,
     TILE_MAJOR: tl.constexpr,
     BLOCK_ROWS: tl.constexpr,
+    ROW_TILE: tl.constexpr,
     BLOCK_COLS: tl.constexpr,
 ):
     program = tl.program_id(0)
     stream = program // n_words
     word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
     cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
     cmask = cols < n_cols
-    valid = rmask[:, None] & cmask[None, :]
-    if HAS_MASK:
-        valid &= tl.load(
-            mask_ptr + stream * mask_stream + token[:, None] * mask_token + cols[None, :] * mask_col,
-            mask=rmask[:, None] & cmask[None, :], other=0)
-    read_logits = tl.load(
-        read_logits_ptr + stream * read_logits_stream + token[:, None] * read_logits_token
-        + cols[None, :] * read_logits_col,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    write_logits = tl.load(
-        write_logits_ptr + stream * write_logits_stream + token[:, None] * write_logits_token
-        + cols[None, :] * write_logits_col,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    midpoint_logits = 0.5 * read_logits + 0.5 * write_logits
-    valid_count = tl.sum(valid.to(tl.int32), axis=1)[:, None]
-    has_valid = valid_count > 0
-    row_max = tl.max(
-        tl.where(valid, midpoint_logits, float("-inf")), axis=1)[:, None]
-    row_max = tl.where(has_valid, row_max, 0.0)
-    midpoint_logits = tl.where(valid, midpoint_logits - row_max, 0.0)
+    # One CTA still owns exactly the BLOCK_ROWS=32 tokens of one support word (the
+    # `1 << (token % 32)` packing below depends on it), but the entmax solve runs on
+    # ROW_TILE rows at a time. The SM-resident cost of this kernel is
+    # ROW_TILE * BLOCK_COLS * (live fp32 tiles), so the sub-tile -- not the warp
+    # count -- is what sets registers/CTA and the `tl.sort` shared scratch together.
+    packed = tl.zeros((BLOCK_COLS,), tl.int64)
+    for sub in range(BLOCK_ROWS // ROW_TILE):
+        token = word * BLOCK_ROWS + sub * ROW_TILE + tl.arange(0, ROW_TILE)
+        rmask = (stream < n_streams) & (token < tokens)
+        valid = rmask[:, None] & cmask[None, :]
+        if HAS_MASK:
+            valid &= tl.load(
+                mask_ptr + stream * mask_stream + token[:, None] * mask_token
+                + cols[None, :] * mask_col,
+                mask=rmask[:, None] & cmask[None, :], other=0)
+        read_logits = tl.load(
+            read_logits_ptr + stream * read_logits_stream + token[:, None] * read_logits_token
+            + cols[None, :] * read_logits_col,
+            mask=valid,
+            other=0.0,
+        ).to(tl.float32)
+        write_logits = tl.load(
+            write_logits_ptr + stream * write_logits_stream + token[:, None] * write_logits_token
+            + cols[None, :] * write_logits_col,
+            mask=valid,
+            other=0.0,
+        ).to(tl.float32)
+        midpoint_logits = 0.5 * read_logits + 0.5 * write_logits
+        valid_count = tl.sum(valid.to(tl.int32), axis=1)[:, None]
+        has_valid = valid_count > 0
+        row_max = tl.max(
+            tl.where(valid, midpoint_logits, float("-inf")), axis=1)[:, None]
+        row_max = tl.where(has_valid, row_max, 0.0)
+        midpoint_logits = tl.where(valid, midpoint_logits - row_max, 0.0)
 
-    row_min = tl.min(
-        tl.where(valid, midpoint_logits, float("inf")), axis=1)[:, None]
-    sentinel = tl.where(has_valid, row_min - 1.0, -1.0)
-    sorted_logits = tl.sort(
-        tl.where(valid, midpoint_logits, sentinel), dim=1, descending=True)
-    sorted_valid = cols[None, :] < valid_count
-    prefix = tl.cumsum(sorted_logits, axis=1)
-    prefix_sq = tl.cumsum(sorted_logits * sorted_logits, axis=1)
-    k = (cols[None, :] + 1).to(tl.float32)
-    if ALPHA == 2.0:
-        tau_candidates = (prefix - 1.0) / k
-        candidate = sorted_valid & (sorted_logits > tau_candidates)
-    else:
-        discriminant = prefix * prefix - k * (prefix_sq - 4.0)
-        tau_candidates = (prefix - tl.sqrt(tl.maximum(discriminant, 0.0))) / k
-        candidate = sorted_valid & (discriminant >= 0.0) & (sorted_logits > tau_candidates)
-    chosen_col = tl.max(tl.where(candidate, cols[None, :], -1), axis=1)[:, None]
-    tau = tl.sum(
-        tl.where(cols[None, :] == chosen_col, tau_candidates, 0.0), axis=1)[:, None]
-    tau = tl.where(chosen_col >= 0, tau, 0.0)
-    semantic_support = valid & (midpoint_logits > tau)
-    base = (ALPHA - 1.0) * (midpoint_logits - tau)
-    base = tl.where(semantic_support, tl.maximum(base, 0.0), 0.0)
-    if ALPHA == 2.0:
-        midpoint_values = base
-    else:
-        midpoint_values = base * base
+        # M - hi is exact where saturation is possible; clamp lo before adding magnitudes.
+        # Hoisted ahead of the sort: `delta` is a pure elementwise fold of the two logit
+        # tiles, so computing it here retires BOTH of them before the sort's live range
+        # instead of carrying them across it (one live tile instead of two).
+        read_negative = read_logits < 0.0
+        write_negative = write_logits < 0.0
+        opposite_sign = read_negative != write_negative
+        read_magnitude = tl.abs(read_logits)
+        write_magnitude = tl.abs(write_logits)
+        hi_magnitude = tl.maximum(read_magnitude, write_magnitude)
+        lo_magnitude = tl.minimum(read_magnitude, write_magnitude)
+        magnitude_room = _TRITON_FP32_MAX - hi_magnitude
+        opposite_magnitude = hi_magnitude + tl.minimum(lo_magnitude, magnitude_room)
+        opposite_delta = tl.where(read_negative, -opposite_magnitude, opposite_magnitude)
+        same_read = tl.where(opposite_sign, 0.0, read_logits)
+        same_write = tl.where(opposite_sign, 0.0, write_logits)
+        delta = tl.where(opposite_sign, opposite_delta, same_read - same_write)
 
-    # M - hi is exact where saturation is possible; clamp lo before adding magnitudes.
-    read_negative = read_logits < 0.0
-    write_negative = write_logits < 0.0
-    opposite_sign = read_negative != write_negative
-    read_magnitude = tl.abs(read_logits)
-    write_magnitude = tl.abs(write_logits)
-    hi_magnitude = tl.maximum(read_magnitude, write_magnitude)
-    lo_magnitude = tl.minimum(read_magnitude, write_magnitude)
-    magnitude_room = _TRITON_FP32_MAX - hi_magnitude
-    opposite_magnitude = hi_magnitude + tl.minimum(lo_magnitude, magnitude_room)
-    opposite_delta = tl.where(read_negative, -opposite_magnitude, opposite_magnitude)
-    same_read = tl.where(opposite_sign, 0.0, read_logits)
-    same_write = tl.where(opposite_sign, 0.0, write_logits)
-    delta = tl.where(opposite_sign, opposite_delta, same_read - same_write)
-    read_gate = tl.sigmoid(delta)
-    # log(sigmoid(-delta)) stays finite for large finite logits, unlike log(sigmoid()).
-    log_write_gate = tl.where(delta > 0.0, -delta, 0.0) - tl.log(
-        1.0 + tl.exp(-tl.abs(delta)))
-    safe_values = tl.where(semantic_support, midpoint_values, 1.0)
-    log_weight = tl.where(
-        semantic_support,
-        tl.log(safe_values) + log_write_gate,
-        float("-inf"),
-    )
-    max_log_weight = tl.max(log_weight, axis=1)[:, None]
-    has_mass = max_log_weight > float("-inf")
-    safe_max_log_weight = tl.where(has_mass, max_log_weight, 0.0)
-    scaled_weight = tl.where(
-        semantic_support & has_mass,
-        tl.exp(log_weight - safe_max_log_weight),
-        0.0,
-    )
-    denominator = tl.sum(scaled_weight, axis=1)[:, None]
-    has_weight = denominator > 0.0
-    safe_denominator = tl.where(has_weight, denominator, 1.0)
-    write = tl.where(
-        semantic_support & has_weight,
-        scaled_weight / safe_denominator,
-        0.0,
-    )
-    read = midpoint_values * read_gate
+        row_min = tl.min(
+            tl.where(valid, midpoint_logits, float("inf")), axis=1)[:, None]
+        sentinel = tl.where(has_valid, row_min - 1.0, -1.0)
+        sorted_logits = tl.sort(
+            tl.where(valid, midpoint_logits, sentinel), dim=1, descending=True)
+        sorted_valid = cols[None, :] < valid_count
+        prefix = tl.cumsum(sorted_logits, axis=1)
+        prefix_sq = tl.cumsum(sorted_logits * sorted_logits, axis=1)
+        k = (cols[None, :] + 1).to(tl.float32)
+        if ALPHA == 2.0:
+            tau_candidates = (prefix - 1.0) / k
+            candidate = sorted_valid & (sorted_logits > tau_candidates)
+        else:
+            discriminant = prefix * prefix - k * (prefix_sq - 4.0)
+            tau_candidates = (prefix - tl.sqrt(tl.maximum(discriminant, 0.0))) / k
+            candidate = sorted_valid & (discriminant >= 0.0) & (sorted_logits > tau_candidates)
+        chosen_col = tl.max(tl.where(candidate, cols[None, :], -1), axis=1)[:, None]
+        tau = tl.sum(
+            tl.where(cols[None, :] == chosen_col, tau_candidates, 0.0), axis=1)[:, None]
+        tau = tl.where(chosen_col >= 0, tau, 0.0)
+        semantic_support = valid & (midpoint_logits > tau)
+        base = (ALPHA - 1.0) * (midpoint_logits - tau)
+        base = tl.where(semantic_support, tl.maximum(base, 0.0), 0.0)
+        if ALPHA == 2.0:
+            midpoint_values = base
+        else:
+            midpoint_values = base * base
 
-    output_mask = rmask[:, None] & cmask[None, :]
-    tl.store(
-        midpoint_values_ptr + stream * midpoint_values_stream + token[:, None] * midpoint_values_token
-        + cols[None, :] * midpoint_values_col,
-        midpoint_values,
-        mask=output_mask,
-    )
-    read_offsets = tl.where(
-        TILE_MAJOR,
-        stream * read_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * read_tile
-        + cols[None, :] * read_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * read_lane,
-        stream * read_stream + token[:, None] * read_token + cols[None, :] * read_col,
-    )
-    write_offsets = tl.where(
-        TILE_MAJOR,
-        stream * write_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * write_tile
-        + cols[None, :] * write_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * write_lane,
-        stream * write_stream + token[:, None] * write_token + cols[None, :] * write_col,
-    )
-    tl.store(read_ptr + read_offsets, read, mask=output_mask)
-    tl.store(write_ptr + write_offsets, write, mask=output_mask)
-    bit_values = tl.where(
-        # Union has one scheduling stream for both roles. Pack the union of
-        # post-cast nonzeros so either side may create harmless false-live work
-        # but a numerically live stored factor is never skipped.
-        semantic_support & (
-            (read.to(tl.bfloat16).to(tl.float32) != 0.0)
-            | (write.to(tl.bfloat16).to(tl.float32) != 0.0)
-        ),
-        tl.full((BLOCK_ROWS, BLOCK_COLS), 1, tl.int64) << (token[:, None] % 32),
-        tl.zeros((BLOCK_ROWS, BLOCK_COLS), tl.int64),
-    )
-    packed = tl.sum(bit_values, axis=0)
+        read_gate = tl.sigmoid(delta)
+        # log(sigmoid(-delta)) stays finite for large finite logits, unlike log(sigmoid()).
+        log_write_gate = tl.where(delta > 0.0, -delta, 0.0) - tl.log(
+            1.0 + tl.exp(-tl.abs(delta)))
+        safe_values = tl.where(semantic_support, midpoint_values, 1.0)
+        log_weight = tl.where(
+            semantic_support,
+            tl.log(safe_values) + log_write_gate,
+            float("-inf"),
+        )
+        max_log_weight = tl.max(log_weight, axis=1)[:, None]
+        has_mass = max_log_weight > float("-inf")
+        safe_max_log_weight = tl.where(has_mass, max_log_weight, 0.0)
+        scaled_weight = tl.where(
+            semantic_support & has_mass,
+            tl.exp(log_weight - safe_max_log_weight),
+            0.0,
+        )
+        denominator = tl.sum(scaled_weight, axis=1)[:, None]
+        has_weight = denominator > 0.0
+        safe_denominator = tl.where(has_weight, denominator, 1.0)
+        write = tl.where(
+            semantic_support & has_weight,
+            scaled_weight / safe_denominator,
+            0.0,
+        )
+        read = midpoint_values * read_gate
+
+        output_mask = rmask[:, None] & cmask[None, :]
+        tl.store(
+            midpoint_values_ptr + stream * midpoint_values_stream
+            + token[:, None] * midpoint_values_token + cols[None, :] * midpoint_values_col,
+            midpoint_values,
+            mask=output_mask,
+        )
+        read_offsets = tl.where(
+            TILE_MAJOR,
+            stream * read_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * read_tile
+            + cols[None, :] * read_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * read_lane,
+            stream * read_stream + token[:, None] * read_token + cols[None, :] * read_col,
+        )
+        write_offsets = tl.where(
+            TILE_MAJOR,
+            stream * write_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * write_tile
+            + cols[None, :] * write_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * write_lane,
+            stream * write_stream + token[:, None] * write_token + cols[None, :] * write_col,
+        )
+        tl.store(read_ptr + read_offsets, read, mask=output_mask)
+        tl.store(write_ptr + write_offsets, write, mask=output_mask)
+        bit_values = tl.where(
+            # Union has one scheduling stream for both roles. Pack the union of
+            # post-cast nonzeros so either side may create harmless false-live work
+            # but a numerically live stored factor is never skipped.
+            semantic_support & (
+                (read.to(tl.bfloat16).to(tl.float32) != 0.0)
+                | (write.to(tl.bfloat16).to(tl.float32) != 0.0)
+            ),
+            tl.full((ROW_TILE, BLOCK_COLS), 1, tl.int64) << (token[:, None] % 32),
+            tl.zeros((ROW_TILE, BLOCK_COLS), tl.int64),
+        )
+        # Sub-tiles own disjoint bit positions of the same word, so accumulating
+        # their partial packs is exact integer OR, bit-for-bit the whole-word sum.
+        packed += tl.sum(bit_values, axis=0)
     tl.store(
         support_words_ptr + stream * support_stream_stride
         + word * support_word_stride + cols * support_col_stride,
@@ -1013,6 +1039,22 @@ def _value_strides(values: torch.Tensor) -> tuple[int, int, int, int, int]:
     raise ValueError(f"route values must be rank 3 (dense) or rank 4 (tile-major), got {values.ndim}")
 
 
+def _union_row_tile(block_cols: int) -> int:
+    """Rows of one 32-token support word the union solve keeps in flight at once.
+
+    The union forward kernel's SM cost is ``ROW_TILE * block_cols`` elements times the
+    number of live fp32 tiles in the closed-form solve, in BOTH registers and the
+    ``tl.sort`` shared scratch. Holding that product at ``_UNION_SOLVE_TILE`` keeps the
+    solve's live set inside the register file (128 registers/thread, zero spilled bytes)
+    and the sort scratch at 4 KB/CTA for every routing width, instead of letting both
+    scale with the level's branch count -- which is what pinned the pre-p3 shape at
+    ptxas's 255-register cap with 468 spilled bytes and 32.8 KB of scratch. This is a
+    structural rule: the working set stays fixed as ``block_cols`` grows toward the
+    wide-``nc`` regime, so it is not a per-width threshold.
+    """
+    return min(32, max(1, _UNION_SOLVE_TILE // block_cols))
+
+
 def _launch_union_fwd(
     read_source: torch.Tensor,
     write_source: torch.Tensor,
@@ -1035,6 +1077,7 @@ def _launch_union_fwd(
         support_words.stride(0), support_words.stride(1), support_words.stride(2),
         read_source.stride(0), read_source.stride(1), read_source.stride(2),
         ALPHA=alpha, HAS_MASK=False, TILE_MAJOR=read_output.ndim == 4, BLOCK_ROWS=32,
+        ROW_TILE=_union_row_tile(triton.next_power_of_2(width)),
         BLOCK_COLS=triton.next_power_of_2(width),
     )
 
