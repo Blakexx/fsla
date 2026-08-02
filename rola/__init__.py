@@ -32,6 +32,7 @@ from rola.planner.schedule import (
     MMA_PRECISIONS,
     Plan,
     PlanAxes,
+    StaticDensity,
     plan_and_schedule,
     select_plan,
 )
@@ -63,6 +64,7 @@ __all__ = [
     # planner — STABLE construction, ADVISORY contents (§4.4)
     "Plan",
     "PlanAxes",
+    "StaticDensity",
     "select_plan",
     "plan_and_schedule",
     "MMA_PRECISIONS",

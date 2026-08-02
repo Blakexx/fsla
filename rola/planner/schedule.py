@@ -1066,6 +1066,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
                      topology: Topology, BC: int, *, decay: bool,
                      bt_candidates: tuple[int, ...] = _SUPPORTED_BT,
                      views: RoutingViews | None = None,
+                     static_density: StaticDensity | None = None,
                      normalization: str = "global",
                      sm_count: int | None = None,
                      mma_precision: str = "bf16",
@@ -1107,7 +1108,12 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     # ONE stats pass at the finest candidate granularity, folded up exactly. See
     # `_tile_union_stats_multi` for why the coarser candidates fold exactly rather
     # than approximately.
-    stats_by_bt = _tile_union_stats_multi(views, topology, BC, tuple(bt_candidates))
+    # `static_density` (§2.7's ruling, fix brief #1) substitutes the closed form for
+    # any side the CONFIGURATION makes full-support, so only genuinely-routed sides
+    # pay the live-leaf expansion. It is a structural declaration, not a threshold:
+    # nothing here compares a width, a density or a size.
+    stats_by_bt = _tile_union_stats_multi(views, topology, BC, tuple(bt_candidates),
+                                          static_density)
 
     if sm_count is None:
         sm_count = DEFAULT_SM_COUNT
@@ -1215,6 +1221,7 @@ def select_plan(read_levels: tuple[torch.Tensor, ...],
                    amp_dtype: torch.dtype = torch.float32,
                    bt_candidates: tuple[int, ...] = _SUPPORTED_BT,
                    views: RoutingViews | None = None,
+                   static_density: StaticDensity | None = None,
                    sm_shared_bytes: int | None = None,
                    sm_count: int | None = None,
                    occupancy: OccupancyOracle | None = None,
@@ -1241,6 +1248,7 @@ def select_plan(read_levels: tuple[torch.Tensor, ...],
         sm_shared_bytes = DEFAULT_SM_SHARED_BYTES
     axes = select_plan_axes(read_levels, write_levels, topology, BC, decay=decay,
                             bt_candidates=bt_candidates, views=views,
+                            static_density=static_density,
                             normalization=normalization, sm_count=sm_count,
                             mma_precision=mma_precision, occupancy=occupancy,
                             **cost_kwargs)
@@ -1261,6 +1269,7 @@ def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
                          mma_precision: str = "bf16",
                          amp_dtype: torch.dtype = torch.float32,
                          bt_candidates: tuple[int, ...] = _SUPPORTED_BT,
+                         static_density: StaticDensity | None = None,
                          sm_shared_bytes: int | None = None,
                          sm_count: int | None = None,
                          occupancy: OccupancyOracle | None = None,
@@ -1287,6 +1296,7 @@ def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
                                 normalization=normalization, decay=decay,
                                 mma_precision=mma_precision, amp_dtype=amp_dtype,
                                 bt_candidates=bt_candidates, views=views,
+                                static_density=static_density,
                                 sm_shared_bytes=sm_shared_bytes,
                                 sm_count=sm_count, occupancy=occupancy,
                                 **cost_kwargs)
@@ -1436,6 +1446,71 @@ MMA_K_QUANTUM = 16
 
 
 @dataclass(frozen=True, slots=True)
+class StaticDensity:
+    """Which ``(level, side)`` cells are FULL-SUPPORT BY CONSTRUCTION (§2.7 ruling).
+
+    One boolean per level per side: ``True`` means the configured ACTIVATION for
+    that cell cannot produce an exact structural zero, so every digit of that level
+    is live at every token in every realization. That is a fact about the
+    configuration, available at model build, and it is read from the ONE place
+    activation properties live -- ``ACTIVATION_REGISTRY``'s ``exact_zeros`` column,
+    via :meth:`Topology.activation_properties` -- never from a name list and never
+    from a measurement of the data (`rola/routing/activations.py`: *"No case list
+    over activations may exist anywhere outside this module"*).
+
+    **Why this is an INPUT rather than something the planner derives from the
+    ``topology`` it already holds.** The topology states what the model's producer
+    will emit; the planner is handed tensors. Those agree in production (the
+    producer applies exactly the configured activation), and they deliberately do
+    NOT agree in the synthetic fixtures, where a support constructor imposes a
+    density the declared activation does not describe (``benchmarks/bench/cells.py``:
+    *"a synthetic cell's own sparsity comes from the support constructors"*, and
+    ``tests/unit/test_planner.py``'s scenarios build sparse tensors under a softmax
+    topology). Deriving the closed form from the tag alone would therefore price a
+    density those callers do not have. Passing it makes the claim the CALLER's --
+    :class:`~rola.layers.RoLA` builds one from its own topology once, at
+    construction -- and leaves every caller that does not pass one on the fully
+    data-dependent pass, bit for bit.
+
+    **What a wrong declaration costs, stated exactly.** Only the COST MODEL: the
+    §4 schedule the kernel executes is built by :func:`build_schedule` from the
+    realized masks and never reads this object, so a side declared dense whose
+    realization has zeros can only mis-price a plan, never mis-execute one. The
+    one realistic way that happens is float underflow -- a softmax logit far
+    enough below the row max that ``exp`` rounds to exactly ``0`` -- which shrinks
+    the realized support without changing the activation's mathematics; the closed
+    form then over-counts ``K`` by the underflowed fraction.
+    """
+
+    read: tuple[bool, ...]
+    write: tuple[bool, ...]
+
+    @classmethod
+    def from_topology(cls, topology: Topology) -> StaticDensity:
+        """Read the per-``(level, duty)`` ``exact_zeros`` column of the registry."""
+        return cls(*(tuple(not topology.activation_properties(level, duty).exact_zeros
+                           for level in range(topology.D))
+                     for duty in ("read", "write")))
+
+    def side_dense(self, duty: str) -> bool:
+        """Is the WHOLE side full-support -- the condition the closed form needs?
+
+        A leaf is live at a token iff EVERY level's digit is live there
+        (:func:`tile_union_stats`), so one dense level among sparse ones does not
+        make the side's support the full rectangle and the closed form below does
+        not apply. The per-LEVEL resolution is kept because §2.7's other planes
+        (the producer's support machinery, the consumer's feeder specialization)
+        are per level; the planner's tile statistics are the one consumer of this
+        object for which only the conjunction is actionable.
+        """
+        if duty == "read":
+            return all(self.read)
+        if duty == "write":
+            return all(self.write)
+        raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+
+
+@dataclass(frozen=True, slots=True)
 class TileUnionStats:
     """Exact per-``(owner, tile)`` statistics of §3 step 2's gather.
 
@@ -1491,7 +1566,8 @@ class TileUnionStats:
 def tile_union_stats(read_levels: tuple[torch.Tensor, ...],
                      write_levels: tuple[torch.Tensor, ...],
                      topology: Topology, BC: int, BT: int, *,
-                     views: RoutingViews | None = None) -> TileUnionStats:
+                     views: RoutingViews | None = None,
+                     static_density: StaticDensity | None = None) -> TileUnionStats:
     """Compute :class:`TileUnionStats` exactly, for one ``(BC, BT)`` candidate.
 
     ``K(owner, tile) = |{ i in [0,BC) : exists t in the tile, R[t, leaf(i)] != 0
@@ -1527,12 +1603,18 @@ def tile_union_stats(read_levels: tuple[torch.Tensor, ...],
     can share one pass over the routing (see :func:`plan_and_schedule`). Passing
     it changes NOTHING about what is computed -- it is the same reduction over the
     same tensors -- only how many times the shared prefix is recomputed.
+
+    ``static_density`` declares which ``(level, side)`` cells are full-support BY
+    CONFIGURATION (:class:`StaticDensity`). It changes NOTHING about what is
+    computed either -- a dense side's statistics are substituted by the closed form
+    they provably equal -- only how much of the data-dependent pass has to run to
+    reach them.
     """
     if views is None:
         views = routing_views(read_levels, write_levels, topology)
     else:
         views.require_source(read_levels, write_levels)
-    return _tile_union_stats_multi(views, topology, BC, (BT,))[BT]
+    return _tile_union_stats_multi(views, topology, BC, (BT,), static_density)[BT]
 
 
 def _bt_candidate_chain(bt_candidates: tuple[int, ...]) -> tuple[int, ...]:
@@ -1643,7 +1725,9 @@ _INT32_MAX = (1 << 31) - 1
 
 
 def _tile_union_stats_multi(views: RoutingViews, topology: Topology, BC: int,
-                            bt_candidates: tuple[int, ...]) -> dict[int, TileUnionStats]:
+                            bt_candidates: tuple[int, ...],
+                            static_density: StaticDensity | None = None,
+                            ) -> dict[int, TileUnionStats]:
     """:class:`TileUnionStats` for EVERY candidate ``BT``, counted from the SUPPORT.
 
     Bitwise-identical output to :func:`_tile_union_stats_multi_enumerated` (gated on
@@ -1698,12 +1782,44 @@ def _tile_union_stats_multi(views: RoutingViews, topology: Topology, BC: int,
     reference gate exercises this on the sparse and zero-level scenarios, where the
     two populations genuinely differ.
 
-    **Where this is NOT a win, stated rather than discovered later.** At a
-    dense-READ routing configuration the support IS the full rectangle
-    (``prod_l w_l`` live leafs per token), so the expansion below costs what the
-    reference costs and the win collapses to the ``BT``-fold of the reduction. That
-    is the regime, not a defect: no algorithm counts a dense union in less than its
-    own size. Measured both ways in `harvest.md` §31.
+    **Where the live pass is NOT a win, and what replaces it.** At a dense-READ
+    routing configuration the support IS the full rectangle (``prod_l w_l`` live
+    leafs per token), so expanding it costs what the reference costs and the win
+    collapses to the ``BT``-fold of the reduction -- no algorithm counts a dense
+    union in less than its own size (measured both ways in `harvest.md` §31). What
+    that argument leaves open is whether the union has to be COUNTED at all, and
+    when the side is dense BY CONFIGURATION (``static_density``, §2.7's ruling) it
+    does not: every one of the side's statistics is then a closed form in
+    ``(BC, BT, T, BH, owners_total)`` alone, derived below, and the live pass runs
+    only for the genuinely-routed side. Passing no ``static_density`` leaves this
+    function exactly as it was, on every path.
+
+    **THE CLOSED FORM, derived (fix brief #1, 2026-08-01).** Let one side be dense,
+    i.e. every level's digit live at every token. Then for every ``(owner, tile)``
+    pair whose tile holds at least one token -- and there are exactly
+    ``ceil(T / BT)`` such tiles per ``bh``, which is ``n_tiles`` -- every one of the
+    owner's ``BC`` leafs is live on that side at every token of the tile. Hence:
+
+    * ``K = BC`` on every pair, so ``sum_K = n_pairs * BC``, ``mean_K = BC`` and
+      ``saturated_frac = 1``; the tiles the buffers pad beyond ``ceil(T/BT)``
+      contribute ``K = 0`` in the live pass and are excluded from ``n_pairs`` in
+      both, so they cancel rather than needing a term.
+    * ``ksteps = ceil(BC / MMA_K_QUANTUM)`` on every pair, by the same argument
+      applied to the quantum (``sum_ks`` is summed BEFORE the mean, as always).
+    * ``candidate_frac = 1``: derivation 4's ``p`` for the dense side is
+      ``n_slices * prod_{l<j} w_l``, which is ``owners_total`` identically, and
+      ``cand = p_read + p_write - p_both`` with ``p_both = p_sparse <= p_dense``
+      collapses to ``owners_total``. The tile bitmaps are therefore not needed at
+      all, which is why the candidacy pass below is skipped whole rather than
+      simplified.
+    * ``KI`` STAYS DATA-DEPENDENT, and it is the only thing that does. The intra
+      bit is ``first_write <= last_read`` (derivation 2). With the READ side dense,
+      ``last_read`` is the tile's own last token, so the comparison degenerates to
+      ``first_write < BT_max`` -- "the leaf is written somewhere in the tile" -- and
+      the WRITE scatter still has to establish it. With the WRITE side dense,
+      ``first_write == 0`` and it degenerates to ``last_read >= 0`` symmetrically.
+      With BOTH dense the bit is constant ``True`` and ``KI = BC``, so nothing is
+      scattered at all and the whole pass is arithmetic.
     """
     cands = _bt_candidate_chain(bt_candidates)
     BT0, BT_max = cands[0], cands[-1]
@@ -1732,66 +1848,102 @@ def _tile_union_stats_multi(views: RoutingViews, topology: Topology, BC: int,
     # wall (`harvest.md` §31.2). They are the price of the sparse currency -- a
     # ragged expansion has to know its own length -- and they are named here so the
     # parked device-side-planner item inherits the number rather than rediscovering it.
-    counts: list[list[torch.Tensor]] = []
-    digits: list[list[torch.Tensor]] = []
-    offsets: list[list[torch.Tensor]] = []
-    live_per_pair: list[torch.Tensor] = []
-    for masks in (views.read_mask, views.write_mask):
+    # THE STATIC/DYNAMIC SPLIT (fix brief #1). `dense_side[side]` is a statement
+    # about the CONFIGURATION -- see the closed form in the docstring -- and every
+    # skip below is keyed on it alone, never on a width, a density measurement or a
+    # size threshold. With no declaration both sides are live and this whole
+    # function is the pass it was.
+    dense_side = (False, False) if static_density is None else (
+        static_density.side_dense("read"), static_density.side_dense("write"))
+    live_sides = tuple(side for side in (0, 1) if not dense_side[side])
+
+    counts: list[list[torch.Tensor]] = [[], []]
+    digits: list[list[torch.Tensor]] = [[], []]
+    offsets: list[list[torch.Tensor]] = [[], []]
+    live_per_pair: list[torch.Tensor | None] = [None, None]
+    for side in live_sides:
+        masks = (views.read_mask, views.write_mask)[side]
         flat = [mask.reshape(BH * T, width) for mask, width in zip(masks, widths)]
         side_counts = [mask.sum(dim=-1) for mask in flat]
-        counts.append(side_counts)
-        digits.append([mask.nonzero()[:, 1].to(torch.int32) for mask in flat])
-        offsets.append([_exclusive_cumsum(cnt) for cnt in side_counts])
+        counts[side] = side_counts
+        digits[side] = [mask.nonzero()[:, 1].to(torch.int32) for mask in flat]
+        offsets[side] = [_exclusive_cumsum(cnt) for cnt in side_counts]
         product = side_counts[0]
         for cnt in side_counts[1:]:
             product = product * cnt
-        live_per_pair.append(product)
+        live_per_pair[side] = product
 
     zero = lambda: torch.zeros((), dtype=torch.int64, device=device)  # noqa: E731
     acc = {BT: {name: zero() for name in
                 ("sum_K", "sum_sat", "sum_cand", "sum_KI", "sum_ks", "sum_kis")}
            for BT in cands}
+    #: Totals that are arithmetic in the geometry, filled only where a side is
+    #: dense by construction; they REPLACE the corresponding accumulator rather
+    #: than being checked against it, so no reduction is issued for them at all.
+    static_totals: dict[tuple[int, str], int] = {}
 
-    # Derivation 4: candidacy, closed-form from the tile bitmaps' popcounts.
-    n_tiles_at: dict[int, int] = {}
-    for BT in cands:
-        r_tile, w_tile = views.tile_live(BT)
-        n_tiles = r_tile[0].shape[1]
-        n_tiles_at[BT] = n_tiles
-        slice_r, slice_w = (side[j].reshape(BH, n_tiles, n_slices, c).any(dim=-1)
-                            for side in (r_tile, w_tile))
-        p_read = slice_r.sum(dim=-1)
-        p_write = slice_w.sum(dim=-1)
-        p_both = (slice_r & slice_w).sum(dim=-1)
-        for level in range(j):
-            p_read = p_read * r_tile[level].sum(dim=-1)
-            p_write = p_write * w_tile[level].sum(dim=-1)
-            p_both = p_both * (r_tile[level] & w_tile[level]).sum(dim=-1)
-        acc[BT]["sum_cand"] = (p_read + p_write - p_both).sum()
+    n_tiles_at = {BT: (T + BT - 1) // BT for BT in cands}
+    if any(dense_side):
+        # Closed form, per the docstring's derivation. `ceil(BC / MMA_K_QUANTUM)`
+        # is the per-pair k-step count at `K = BC`, summed (never averaged) first.
+        bc_ksteps = -(-BC // MMA_K_QUANTUM)
+        for BT in cands:
+            n_pairs = owners_total * BH * n_tiles_at[BT]
+            static_totals[(BT, "sum_K")] = n_pairs * BC
+            static_totals[(BT, "sum_sat")] = n_pairs
+            static_totals[(BT, "sum_cand")] = n_pairs
+            static_totals[(BT, "sum_ks")] = n_pairs * bc_ksteps
+            if all(dense_side):
+                # Both sides dense: the causal intra bit is constant `True`.
+                static_totals[(BT, "sum_KI")] = n_pairs * BC
+                static_totals[(BT, "sum_kis")] = n_pairs * bc_ksteps
+    else:
+        # Derivation 4: candidacy, closed-form from the tile bitmaps' popcounts.
+        for BT in cands:
+            r_tile, w_tile = views.tile_live(BT)
+            n_tiles = r_tile[0].shape[1]
+            slice_r, slice_w = (side[j].reshape(BH, n_tiles, n_slices, c).any(dim=-1)
+                                for side in (r_tile, w_tile))
+            p_read = slice_r.sum(dim=-1)
+            p_write = slice_w.sum(dim=-1)
+            p_both = (slice_r & slice_w).sum(dim=-1)
+            for level in range(j):
+                p_read = p_read * r_tile[level].sum(dim=-1)
+                p_write = p_write * w_tile[level].sum(dim=-1)
+                p_both = p_both * (r_tile[level] & w_tile[level]).sum(dim=-1)
+            acc[BT]["sum_cand"] = (p_read + p_write - p_both).sum()
 
     # A chunk is a run of whole BT_max units, which is a contiguous run of (bh, token)
     # pairs; both budgets above bound it. Everything that varies per pair rather than
     # per leaf is resolved here, once: the destination ROW of the pair's finest tile
     # (chunk-relative at use) and the token offset that is the scattered value.
-    pair_ids = torch.arange(BH * T, device=device)
-    token_of_pair = pair_ids % T
-    unit_of_pair = (pair_ids // T) * n_units + token_of_pair // BT_max
-    token_in_unit = token_of_pair % BT_max
-    cell_of_pair = (unit_of_pair * tiles_per_unit + token_in_unit // BT0) * N
-    per_unit = torch.zeros(BH * n_units, dtype=torch.int64, device=device)
-    per_unit.index_add_(0, unit_of_pair, live_per_pair[0] + live_per_pair[1])
-    unit_load = per_unit.cpu().tolist()
-    units_per_chunk = max(1, _STATS_TILE_CELL_CHUNK // max(1, tiles_per_unit * N))
+    if live_sides:
+        pair_ids = torch.arange(BH * T, device=device)
+        token_of_pair = pair_ids % T
+        unit_of_pair = (pair_ids // T) * n_units + token_of_pair // BT_max
+        token_in_unit = token_of_pair % BT_max
+        cell_of_pair = (unit_of_pair * tiles_per_unit + token_in_unit // BT0) * N
+        per_unit = torch.zeros(BH * n_units, dtype=torch.int64, device=device)
+        load_per_pair = live_per_pair[live_sides[0]]
+        for side in live_sides[1:]:
+            load_per_pair = load_per_pair + live_per_pair[side]
+        per_unit.index_add_(0, unit_of_pair, load_per_pair)
+        unit_load = per_unit.cpu().tolist()
+        units_per_chunk = max(1, _STATS_TILE_CELL_CHUNK // max(1, tiles_per_unit * N))
 
-    chunks: list[tuple[int, int]] = []
-    start, load = 0, 0
-    for unit, unit_entries in enumerate(unit_load):
-        if unit > start and (load + unit_entries > _STATS_ENTRY_CHUNK
-                             or unit - start >= units_per_chunk):
-            chunks.append((start, unit))
-            start, load = unit, 0
-        load += unit_entries
-    chunks.append((start, BH * n_units))
+        chunks: list[tuple[int, int]] = []
+        start, load = 0, 0
+        for unit, unit_entries in enumerate(unit_load):
+            if unit > start and (load + unit_entries > _STATS_ENTRY_CHUNK
+                                 or unit - start >= units_per_chunk):
+                chunks.append((start, unit))
+                start, load = unit, 0
+            load += unit_entries
+        chunks.append((start, BH * n_units))
+    else:
+        # Both sides static: nothing is expanded, so there is nothing to chunk and
+        # not one of this pass's syncs is issued.
+        chunks = []
 
     for unit_lo, unit_hi in chunks:
         n_chunk = unit_hi - unit_lo
@@ -1802,49 +1954,65 @@ def _tile_union_stats_multi(views: RoutingViews, topology: Topology, BC: int,
         # Derivation 2: the two token extremes, per (finest tile, leaf). The
         # sentinels are self-excluding -- a tile-leaf no entry ever reached keeps
         # `BT_max`/`-1`, which reads as dead on the union test and fails the causal
-        # comparison in both orders.
-        first_write = torch.full((cells,), BT_max, dtype=torch.int16, device=device)
-        last_read = torch.full((cells,), -1, dtype=torch.int16, device=device)
+        # comparison in both orders. A side that is dense BY CONFIGURATION has no
+        # extreme to establish (the docstring's closed form gives its side of every
+        # predicate in constant form), so neither its buffer nor its scatter exists.
+        extreme: list[torch.Tensor | None] = [None, None]
         chunk_cell = cell_of_pair - unit_lo * tiles_per_unit * N
-        for side, buffer, reduce_op in ((0, last_read, "amax"), (1, first_write, "amin")):
+        for side, sentinel, reduce_op in ((0, -1, "amax"), (1, BT_max, "amin")):
+            if dense_side[side]:
+                continue
+            buffer = torch.full((cells,), sentinel, dtype=torch.int16, device=device)
             entries = _live_leaf_scatter(counts[side], digits[side], offsets[side],
                                          live_per_pair[side], strides, lo, hi,
                                          chunk_cell, token_in_unit)
-            if entries is None:
-                continue
-            index, value = entries
-            buffer.scatter_reduce_(0, index, value, reduce=reduce_op)
-        first_write = first_write.view(n_chunk, tiles_per_unit, N)
-        last_read = last_read.view(n_chunk, tiles_per_unit, N)
+            if entries is not None:
+                index, value = entries
+                buffer.scatter_reduce_(0, index, value, reduce=reduce_op)
+            extreme[side] = buffer.view(n_chunk, tiles_per_unit, N)
+        last_read, first_write = extreme
 
         for step, BT in enumerate(cands):
             if step:                                    # derivation 3: fold by min/max
                 for _ in range((BT // cands[step - 1]).bit_length() - 1):
-                    first_write = first_write.view(
-                        n_chunk, first_write.shape[1] // 2, 2, N).amin(dim=2)
-                    last_read = last_read.view(
-                        n_chunk, last_read.shape[1] // 2, 2, N).amax(dim=2)
-            union = (last_read >= 0) | (first_write < BT_max)
-            k_count = union.view(n_chunk, -1, owners_total, BC).sum(dim=-1)
-            ki_count = (first_write <= last_read).view(
-                n_chunk, -1, owners_total, BC).sum(dim=-1)
+                    if first_write is not None:
+                        first_write = first_write.view(
+                            n_chunk, first_write.shape[1] // 2, 2, N).amin(dim=2)
+                    if last_read is not None:
+                        last_read = last_read.view(
+                            n_chunk, last_read.shape[1] // 2, 2, N).amax(dim=2)
             bucket = acc[BT]
-            bucket["sum_K"] += k_count.sum()
-            bucket["sum_sat"] += (k_count == BC).sum()
+            if last_read is None:
+                # READ dense: `K` and its quantum are static (they are in
+                # `static_totals`), and the causal bit is "written in this tile".
+                ki_bit = first_write < BT_max
+            elif first_write is None:
+                # WRITE dense: symmetric -- the causal bit is "read in this tile".
+                ki_bit = last_read >= 0
+            else:
+                union = (last_read >= 0) | (first_write < BT_max)
+                k_count = union.view(n_chunk, -1, owners_total, BC).sum(dim=-1)
+                bucket["sum_K"] += k_count.sum()
+                bucket["sum_sat"] += (k_count == BC).sum()
+                # The QUANTA, in the same chunk loop and off the same per-pair
+                # counts: the kernel's k-step is `ceil(K / MMA_K_QUANTUM)`, which is
+                # 0 at K = 0 and 1 for every K in [1, 16]. Summing the ceilings is
+                # the only order that survives -- `ceil(mean)` is not `mean(ceil)`
+                # and the difference IS the compact saving (`TileUnionStats`' note).
+                bucket["sum_ks"] += ((k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
+                ki_bit = first_write <= last_read
+            ki_count = ki_bit.view(n_chunk, -1, owners_total, BC).sum(dim=-1)
             bucket["sum_KI"] += ki_count.sum()
-            # The QUANTA, in the same chunk loop and off the same per-pair counts:
-            # the kernel's k-step is `ceil(K / MMA_K_QUANTUM)`, which is 0 at K = 0
-            # and 1 for every K in [1, 16]. Summing the ceilings is the only order
-            # that survives -- `ceil(mean)` is not `mean(ceil)` and the difference
-            # IS the compact saving (`TileUnionStats`' own note).
-            bucket["sum_ks"] += ((k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
             bucket["sum_kis"] += ((ki_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
 
     order_keys = [(BT, name) for BT in cands
                   for name in ("sum_K", "sum_sat", "sum_cand", "sum_KI",
                                "sum_ks", "sum_kis")]
-    flat = torch.stack([acc[BT][name] for BT, name in order_keys]).cpu().tolist()
-    totals = {key: value for key, value in zip(order_keys, flat)}
+    dynamic_keys = [key for key in order_keys if key not in static_totals]
+    totals: dict[tuple[int, str], int] = dict(static_totals)
+    if dynamic_keys:
+        flat = torch.stack([acc[BT][name] for BT, name in dynamic_keys]).cpu().tolist()
+        totals.update(zip(dynamic_keys, flat))
 
     out: dict[int, TileUnionStats] = {}
     for BT in cands:

@@ -381,16 +381,23 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             g_read, g_write = ro.g_read, ro.g_write
             decay = layer._decay_config() if decay_on else None
 
+            # `static_density` is the LAYER's own build-time declaration, and it is
+            # passed here for the same reason `layer.topology`/`layer.state_block`
+            # are: a plane that dropped it would time a planner call the whole-layer
+            # row above does not make.
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on)
+                                            normalization=norm, decay=decay_on,
+                                            static_density=layer.static_density)
 
             sel_plan, _axes, sched = planner()
 
             def select_only():
                 return select_plan(read_levels, write_levels, layer.topology,
-                                      layer.state_block, normalization=norm, decay=decay_on)
+                                      layer.state_block, normalization=norm,
+                                      decay=decay_on,
+                                      static_density=layer.static_density)
 
             def schedule_only():
                 return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)

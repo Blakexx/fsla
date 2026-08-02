@@ -94,7 +94,12 @@ except ImportError:  # noqa: BLE001
 from rola.interface import select_backend
 from rola.ops.consumer import _consumer_forward, sm_shared_bytes
 from rola.ops.naive import naive_rola
-from rola.planner.schedule import MMA_PRECISIONS, owner_geometry, plan_and_schedule
+from rola.planner.schedule import (
+    MMA_PRECISIONS,
+    StaticDensity,
+    owner_geometry,
+    plan_and_schedule,
+)
 from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
 from rola.routing.side_gain import GainConfig, init_side_gain_bias
 from rola.routing.topology import resolve_b_spec
@@ -321,6 +326,17 @@ class RoLA(nn.Module):
             for width, config in zip(branches, self.level_routing_configs)
         )
         self.topology = Topology(levels=levels, d_v=head_v_dim)
+        # WHICH (level, side) CELLS ARE FULL-SUPPORT BY CONSTRUCTION, decided ONCE,
+        # here (§2.7's level-structure-awareness ruling, 2026-08-01). This is a
+        # property of the configured activations -- read from the registry's
+        # `exact_zeros` column by `StaticDensity.from_topology` -- so it cannot
+        # change between steps, and it is what lets the planner substitute a closed
+        # form for the dense side's tile statistics instead of measuring a rectangle
+        # it already knows the shape of. The declaration is sound HERE, and only
+        # here, because this layer's `produce_routing` applies exactly the
+        # activations this topology names; a caller holding routing tensors of
+        # unrelated provenance passes nothing and gets the fully measured pass.
+        self.static_density = StaticDensity.from_topology(self.topology)
         if budget is not None:
             budget.validate_against(self.topology)
         self.budget = budget
@@ -753,6 +769,10 @@ class RoLA(nn.Module):
                 routing_out.g_read, routing_out.g_write, self.topology,
                 self.state_block, normalization=self.state_norm,
                 decay=decay_config is not None, mma_precision=self.mma_precision,
+                # The build-time density declaration (see `__init__`): every side
+                # it marks full-support skips the per-step live-leaf pass for the
+                # closed form it provably equals.
+                static_density=self.static_density,
                 # The per-SM SMEM budget, device-queried once and RECORDED in the
                 # plan (§10's ruling), so the plan carries the machine it reasoned
                 # about rather than depending on the one it is replayed on.
