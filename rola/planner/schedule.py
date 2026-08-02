@@ -1484,6 +1484,27 @@ class StaticDensity:
     enough below the row max that ``exp`` rounds to exactly ``0`` -- which shrinks
     the realized support without changing the activation's mathematics; the closed
     form then over-counts ``K`` by the underflowed fraction.
+
+    **Measured, not hypothetical (Gate 2, 2026-08-01, item 3e):** a parity-shaped
+    ``RoLA`` layer (``hidden=256``, ``H=4``, ``d_v=64``, ``branches=(64,64)``,
+    ``BC=64``, ``read="dense"``) at ``L=2048``, ``seed=11``, with ``route_W``
+    scaled by a ``logit_gain`` lever, stays true through ``logit_gain in {1.0,
+    8.0, 16.0}`` (0.0 realized zeros on the declared-dense read side at every
+    level -- the repo's own bench default is ``logit_gain=8.0``, so it is safe)
+    and goes false at ``logit_gain=32.0``: realized read-side zero fractions of
+    ``0.002056`` and ``0.001883`` across the two levels. At that cell the
+    substituted (declared) vs. measured (data-dependent) :class:`TileUnionStats`
+    differ by ~2e-4 relative on ``mean_KI_candidate`` (0.4067078 vs 0.4066162)
+    and ``mean_kisteps_candidate`` (0.2754822 vs 0.2754517); ``cost_per_token``
+    and the selected :class:`~rola.planner.schedule.Plan` were UNCHANGED at this
+    cell, i.e. the mispricing did not flip a plan here, consistent with "cost
+    model only, never mis-execute" above. There is no known upper bound on how
+    large a gain would be needed to flip a plan; this is one measured point, not
+    a proof the mispricing is always inert. A caller that scales router logits
+    by a large factor (an aggressive temperature/gain schedule, an
+    ill-conditioned ``route_W`` init) should re-check this assumption for its
+    own topology rather than assume the bench's ``logit_gain=8.0`` headroom
+    transfers.
     """
 
     read: tuple[bool, ...]
