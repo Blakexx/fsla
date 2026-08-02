@@ -26,6 +26,7 @@
 
 #include <memory>
 
+#include "src/decode_api.cuh"
 #include "src/host_api.cuh"
 #include "src/paging/page_plan.cuh"
 #include "src/paging/vmm_owner.cuh"
@@ -46,6 +47,26 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_sm_shared_bytes", &rola::rola_sm_shared_bytes,
         "cudaDevAttrMaxSharedMemoryPerMultiprocessor -- the per-SM SMEM budget the "
         "plan records (§10 ruling)");
+
+  // ---- the T=1 decode path (thunder §6b) ----------------------------------
+  //
+  // A SIBLING of the consumer, not a specialization of it: shared produce contract,
+  // own consumer, frozen config. It registers here rather than in a second extension
+  // for the same reason paging does -- one contract, one ABI boundary.
+  m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
+        "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
+        py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"),
+        py::arg("dials"), py::arg("g_read"), py::arg("g_write"), py::arg("v"),
+        py::arg("state"), py::arg("bits"), py::arg("pc_coarse"), py::arg("ws"),
+        py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"),
+        py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("heads"),
+        py::arg("n_split"), py::arg("eps"), py::arg("global_norm"));
+  m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
+        "the decode path's maximum level width; must be >= the producer's "
+        "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");
+  m.def("rola_decode_producer_width_mirror", &rola::decode::rola_decode_producer_width_mirror,
+        "the C++ mirror of the producer's MAX_BRANCH_WIDTH; pinned EQUAL to the Python "
+        "constant so a stale mirror cannot silently satisfy the capacity static_assert");
 
   // ---- spec §7.1 page commitment ------------------------------------------
   //

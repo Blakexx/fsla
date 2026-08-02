@@ -148,7 +148,7 @@ def test_a_grad_context_takes_the_oracle_and_every_parameter_gets_a_live_gradien
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "oracle"
-    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0}, (
+    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}, (
         "a grad-requiring forward reached the forward-only CUDA consumer")
     assert x.grad is not None and torch.isfinite(x.grad).all() and float(x.grad.abs().max()) > 0
 
@@ -201,7 +201,7 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
-    assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1}
+    assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
     plan, axes = layer.last_selected_plan, layer.last_plan_axes
     assert plan is not None and axes is not None
     assert plan.BC == layer.state_block == _BRANCHES[-1]
@@ -229,7 +229,7 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
         layer.route_W.mul_(16.0)
         layer(x)
         sharp_stats = layer.last_plan_axes.stats
-    assert layer.execution_backend_counts == {"oracle": 0, "cuda": 2}
+    assert layer.execution_backend_counts == {"oracle": 0, "cuda": 2, "decode": 0}
     assert sharp_stats.mean_K < dense_stats.mean_K, (
         f"the per-step selection did not re-measure: K went {dense_stats.mean_K} -> "
         f"{sharp_stats.mean_K} after a 16x router sharpening")
@@ -533,7 +533,7 @@ def test_the_decay_dials_are_a_grad_requiring_operation_input():
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "oracle"
-    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0}, (
+    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}, (
         "a context where only decay_theta requires grad reached the forward-only "
         "CUDA consumer")
     for theta in layer.decay_theta:
@@ -619,7 +619,7 @@ def test_cpu_tensors_take_the_oracle_because_no_cpu_lowering_exists():
     x = torch.randn(1, 32, _HIDDEN)
     with torch.no_grad():
         layer(x)
-    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0}
+    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}
 
 
 def test_an_inadmissible_state_block_is_rejected_at_construction():

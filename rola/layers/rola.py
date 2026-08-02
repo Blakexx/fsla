@@ -8,9 +8,10 @@ public routing configuration; it does not own, project, or reference Q or K in
 any form. Architecture §9.3 ("Delete after parity"): this replaces the Q/K-era
 layer in place, per the migration inventory row `fla_rola/layers/rola.py`.
 
-**Execution backends, and the rule that picks between them.** This layer has TWO
+**Execution backends, and the rule that picks between them.** This layer has THREE
 execution backends and the choice between them is STRUCTURAL, decided by
-:meth:`RoLA.select_execution_backend` before any of them runs:
+:meth:`RoLA.select_execution_backend` and then by the ``L == 1`` fork inside its
+``'cuda'`` arm, before any of them runs:
 
 * ``'oracle'`` -- ``naive_rola``, the Stage 1 canonical reference run in the
   layer's working dtype. It is fully differentiable and it is **the only
@@ -26,6 +27,15 @@ execution backends and the choice between them is STRUCTURAL, decided by
   plan names. The consumer is **forward-only** -- there is no native backward for
   it yet -- so it requires eval mode AND no gradient reachability AND a CUDA device
   AND a launchable configuration; it is refused the moment any of those fails.
+* ``'decode'`` -- the T=1 sibling kernel (THUNDER_RUN_SPEC.md §6b). Selected inside
+  the ``'cuda'`` arm when the call consumes exactly one token AND carries a recurrent
+  state: at ``T = 1`` every stage-2 decision is degenerate, so the decode path bypasses
+  selection architecturally and runs a token-stationary gather-GEMV over the exact
+  support bitmap instead of the tiled consumer. It is a SIBLING of ``'cuda'``, not a
+  specialization of it -- shared produce contract, own consumer, frozen config -- and it
+  is forward-only for the same reason, which is why it forks INSIDE the guard rather
+  than beside it. Counted under its own key so a dispatch test can tell the two CUDA
+  branches apart.
 
 **The autograd trap this dispatch exists to close** (memory note
 `layer-dispatch-autograd-gap`; the fleet-smoke ``x.grad=None`` failure was exactly
@@ -93,6 +103,7 @@ except ImportError:  # noqa: BLE001
     ShortConvolution = None
 from rola.interface import select_backend
 from rola.ops.consumer import _consumer_forward, sm_shared_bytes
+from rola.ops.decode import decode_forward, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.planner.schedule import (
     MMA_PRECISIONS,
@@ -112,6 +123,19 @@ from rola.routing.types import (
     Topology,
     UnionRouting,
 )
+
+
+@dataclass(frozen=True)
+class _DecodeConfigCache:
+    """§6b's frozen carrier plus the key it is valid for.
+
+    A tiny named type rather than a bare tuple because the validity KEY is the whole
+    point: the carrier is frozen for a sequence, and a cache whose key a reader has to
+    reconstruct from an unpacking site is a cache that will eventually be reused across
+    a shape it was not built for.
+    """
+    key: tuple
+    value: object
 
 
 @dataclass(frozen=True)
@@ -353,7 +377,10 @@ class RoLA(nn.Module):
         # than on wall-clock, because timing cannot distinguish "took the CUDA path"
         # from "took a fast oracle path" and this is exactly the distinction the
         # autograd trap turns on.
-        self._execution_backend_counts = {'oracle': 0, 'cuda': 0}
+        #: 'decode' is a THIRD key rather than a sub-count of 'cuda', because the two
+        #: CUDA branches are different kernels with different gates and a dispatch test
+        #: that could not tell them apart would pass while the wrong one ran.
+        self._execution_backend_counts = {'oracle': 0, 'cuda': 0, 'decode': 0}
         self.last_execution_backend: str | None = None
         self.last_selected_plan = None
         self.last_plan_axes = None
@@ -386,6 +413,12 @@ class RoLA(nn.Module):
         #: diagnostics below: it is runtime state, must not enter a `state_dict`, and
         #: must not be cast by `_apply`.
         self._page_arena = None
+        #: §6b's frozen carrier and its scratch, both built at the first decode step and
+        #: reused for the sequence. The carrier is a pure function of the topology, the
+        #: normalization arm and the device, so caching it is not a staleness risk the
+        #: way a cached PLAN would be -- there is no per-step statistic in it.
+        self._decode_config = None
+        self._decode_workspace = None
 
         self.value_dim = num_heads * head_v_dim
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
@@ -663,6 +696,23 @@ class RoLA(nn.Module):
         self._page_arena = arena
         return arena
 
+    def _resolve_decode_config(self, BH: int, device):
+        """§6b's frozen config, built once at the prefill->decode boundary.
+
+        Rebuilt only when its inputs move (``BH`` and the device; the topology and the
+        normalization arm are construction-time facts). It is FROZEN in the sense that
+        matters -- no per-step statistic enters it, so a decode step never runs a
+        selection, which is the gap §6b dissolves.
+        """
+        config = self._decode_config
+        if config is not None and config.key == (BH, torch.device(device)):
+            return config.value
+        value = freeze_decode_config(
+            self.topology, self.state_norm, decay=self.decay_kind != 'none',
+            BH=BH, device=device)
+        self._decode_config = _DecodeConfigCache(key=(BH, torch.device(device)), value=value)
+        return value
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -741,7 +791,50 @@ class RoLA(nn.Module):
             # unfrozen forward has no other grad-requiring operand.
             *(decay_config.dials if decay_config is not None else ()),
         )
-        if backend == 'cuda':
+        if backend == 'cuda' and L == 1 and recurrent_state is not None and not self.paging:
+            # ===== TRACK D / THUNDER §6b -- THE T == 1 DECODE FORK (MERGE MARKER) =====
+            # Track D owns the decode kernels; this branch is the ONE edit it needs in
+            # this file and is marked for merge reconciliation with Track P's §6b
+            # dispatch work.
+            #
+            # STRUCTURAL, NOT A THRESHOLD. `L == 1` is the NO-TILING case: there is no
+            # `BT` to choose, no `P` to split, no packing (the token's support IS the
+            # schedule) and a statistics population of one, so every stage-2 decision is
+            # degenerate. §6b requires this to bypass selection ARCHITECTURALLY rather
+            # than by running `select_config` with degenerate inputs, which is why the
+            # branch is here and not inside the planner. `recurrent_state is not None`
+            # is the second half of the predicate and is not redundant: a one-token call
+            # with no carried state is a degenerate PREFILL, not a decode step, and it
+            # has no frozen carrier -- it must take the tiled path. Neither clause
+            # compares a dimension against a tuned number (spec I2).
+            #
+            # REACHABILITY FROM A GRAD CONTEXT IS ALREADY EXCLUDED, which is why this
+            # fork sits INSIDE the `backend == 'cuda'` branch and adds no guard of its
+            # own: `select_execution_backend` above returns 'oracle' under training mode,
+            # under `torch.is_grad_enabled()` with any grad-requiring operation input, and
+            # on a non-CUDA device. The decode kernels are forward-only, so reaching them
+            # from a grad context would return a tensor with no `grad_fn` and silently
+            # sever the graph -- the [[layer-dispatch-autograd-gap]] failure class.
+            # `rola.ops.decode` re-checks and RAISES for a direct caller;
+            # `tests/layers/test_decode_dispatch.py` gates the whole table.
+            #
+            # `not self.paging`: the decode path is unpaged only until §4.5's atom re-key
+            # lands (a paged decode address would have to know `BC`, and BC-blindness is
+            # the property the kernel is built on). A paged layer keeps the tiled path,
+            # which is exact -- not a silent degradation, because paging is bitwise
+            # invisible and the cap stays enforced by the arena the tiled path uses.
+            config = self._resolve_decode_config(B * H, v.device)
+            out, final_state, self._decode_workspace = decode_forward(
+                v, routing_out.read_levels, routing_out.write_levels,
+                routing_out.g_read, routing_out.g_write, config,
+                recurrent_state.to(torch.float32).contiguous(),
+                decay=decay_config, workspace=self._decode_workspace)
+            self.last_paging_stats = None
+            backend = 'decode'
+            if not cache_enabled:
+                final_state = None
+            # ===== END TRACK D MERGE MARKER =====
+        elif backend == 'cuda':
             # THE plan build, per step. Coordinator ruling 2026-07-30: selection is
             # per-step, never cached per shape. The statistics it prices are exact
             # over the realized schedule, so a plan is only as valid as the routing
