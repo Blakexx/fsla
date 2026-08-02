@@ -62,7 +62,7 @@ identities make the whole census fall out of it:
    comparison -- which is why this form is used rather than the obvious
    ``lowbit(w) <= r``, whose comparison would be signed on torch's ``int32``. The
    negation relies on two's-complement wraparound at ``2^31`` (torch integer
-   arithmetic is C-like), and ``test_the_causal_bit_identity_holds_at_bit_31``
+   arithmetic is C-like), and ``test_the_causal_intra_bit_is_a_bit_test_that_survives_bit_31``
    pins exactly that word.
 
 WHY THERE IS NO ``BT`` FOLD ANY MORE. The previous pass measured at the finest

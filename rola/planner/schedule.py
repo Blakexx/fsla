@@ -1110,13 +1110,13 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
         views = routing_views(read_levels, write_levels, topology)
     else:
         views.require_source(read_levels, write_levels)
-    # ONE stats pass at the finest candidate granularity, folded up exactly. See
-    # `_tile_union_stats_multi` for why the coarser candidates fold exactly rather
-    # than approximately.
+    # ONE stats pass over every candidate granularity: each candidate `BT` fits one
+    # 32-bit token word, so each is measured from the definition rather than folded
+    # from a finer one (see `_tile_union_stats_multi` derivation 2).
     # `static_density` (§2.7's ruling, fix brief #1) substitutes the closed form for
     # any side the CONFIGURATION makes full-support, so only genuinely-routed sides
-    # pay the live-leaf expansion. It is a structural declaration, not a threshold:
-    # nothing here compares a width, a density or a size.
+    # are censused at all. It is a structural declaration, not a threshold: nothing
+    # here compares a width, a density or a size.
     stats_by_bt = _tile_union_stats_multi(views, topology, BC, tuple(bt_candidates),
                                           static_density)
 
@@ -1646,19 +1646,23 @@ def tile_union_stats(read_levels: tuple[torch.Tensor, ...],
 def _bt_candidate_chain(bt_candidates: tuple[int, ...]) -> tuple[int, ...]:
     """Sorted unique candidates, validated as a power-of-two chain above the finest.
 
-    Both statistics implementations require it, for the same structural reason and
-    with the same message: the sparse counter groups tokens by ``t // BT`` inside
-    ONE chunk of coarsest-candidate tiles (so every candidate's tile nests in the
-    chunk), and the enumerated reference OR-pairs adjacent tiles.
+    The ENUMERATED reference requires it structurally: it measures once at the finest
+    candidate and OR-pairs adjacent tiles, which only lands on the right tile count
+    when each candidate is ``2^k`` times the finest. The bit-word production pass no
+    longer needs the chain at all -- it re-packs the tokens at each candidate, which
+    is the definition -- but the constraint is kept and validated in ONE place so the
+    two implementations remain comparable candidate for candidate, which is what the
+    equality gate compares.
 
-    **Recorded, not enforced here (delta review R1):** the support-counted pass
-    stores a token offset within the coarsest candidate tile as ``int16``, so it
-    represents ``BT`` up to 32767. Nothing in this function bounds ``BT``; what
-    bounds it is ``_SUPPORTED_BT = (16, 32)``, checked one layer up in
-    :func:`select_plan_axes`, and spec §6's pinning of ``BT`` to that set. The
-    guarantee is therefore real but lives elsewhere, and a future ``BT`` outside that
-    set is a spec change that must revisit the offset width rather than a runtime
-    condition to branch on.
+    **Recorded, not enforced here (delta review R1, restated for fix brief #2):** the
+    bit-word pass carries a tile's tokens as the BITS of one ``int32``, so it
+    represents ``BT`` up to 32. Nothing in this function bounds ``BT``; what bounds it
+    is ``_SUPPORTED_BT = (16, 32)``, checked one layer up in
+    :func:`select_plan_axes`, and spec §6's pinning of ``BT`` to that set --
+    :func:`rola.planner.census._token_support_words` refuses anything wider outright.
+    The guarantee is therefore real but lives elsewhere, and a future ``BT`` outside
+    that set is a spec change that must widen the word rather than a runtime condition
+    to branch on.
     """
     cands = tuple(sorted({int(BT) for BT in bt_candidates}))
     if not cands:
@@ -1669,9 +1673,9 @@ def _bt_candidate_chain(bt_candidates: tuple[int, ...]) -> tuple[int, ...]:
         if rem or (ratio & (ratio - 1)):
             raise ValueError(
                 f"BT candidates must be a power-of-two chain above the finest ({BT0}); "
-                f"got {cands}. The exact fold OR-pairs adjacent tiles, so a candidate that "
-                "is not 2^k times the finest has no exact fold and would have to be "
-                "re-measured -- which is a real option, but it is not silently taken here.")
+                f"got {cands}. The enumerated reference's fold OR-pairs adjacent tiles, so a "
+                "candidate that is not 2^k times the finest has no exact fold there and could "
+                "no longer be compared against the production pass candidate for candidate.")
     return cands
 
 
@@ -1875,9 +1879,9 @@ def _tile_union_stats_multi_enumerated(views: RoutingViews, topology: Topology, 
     it costs ``Theta(BH * T * N)`` boolean work no matter how sparse the routing
     is -- which made ``select_plan`` 59-74 % of the layer at scale. The
     production path is :func:`_tile_union_stats_multi`, which counts the same
-    statistics from the live entries alone. This one survives because it is
-    written from the fold identity below and is therefore an independent second
-    derivation to gate the sparse counter against.
+    statistics from packed token words (:mod:`rola.planner.census`). This one
+    survives because it is written from the fold identity below and is therefore an
+    independent second derivation to gate the production pass against.
 
     **The fold is an identity, not an approximation, and this is the derivation.**
     Fix an owner and a coarse tile of ``2*BT`` tokens, split into halves ``A``
