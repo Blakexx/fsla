@@ -309,6 +309,84 @@ constexpr bool banks_distinct(int stride_g, int stride_r) {
   return true;
 }
 
+//: **THE SAME PROOF FOR A 16-BIT OPERAND IS NOT THE SAME PREDICATE**, and the
+//: difference is not pedantry -- `banks_distinct` above would REJECT layouts that
+//: are conflict-free and ACCEPT ones that are not, so a bf16 buffer proved with it
+//: is not proved.
+//:
+//: Two things change. (i) The addresses are 2-BYTE, so the bank of element `e` is
+//: `(e >> 1) % 32` rather than `e % 32`. (ii) Two lanes landing in the SAME 32-bit
+//: WORD do not conflict -- the SM services one word in one transaction -- so the
+//: condition is not "32 distinct banks" but "any two lanes sharing a bank share a
+//: word". A 16-bit operand read by 32 lanes typically occupies 16 words in 16
+//: banks with two lanes per word, and that is conflict-FREE, which is exactly the
+//: case `banks_distinct` cannot express.
+//:
+//: `e >> 1` is well defined here because every fragment's base offset is EVEN: the
+//: bases are `k0 * pitch + n0` with `k0` a multiple of the MMA k-extent, `n0` a
+//: multiple of 8, and every 16-bit pitch this kernel uses even. `stride_g` and
+//: `stride_r` are the address deltas in 2-BYTE ELEMENTS per unit `g` and `r`.
+constexpr bool banks_distinct_u16(int stride_g, int stride_r) {
+  int word[32] = {};
+  int bank[32] = {};
+  int n = 0;
+  for (int g = 0; g < 8; ++g) {
+    for (int r = 0; r < 4; ++r) {
+      const int e = g * stride_g + r * stride_r;
+      word[n] = e >> 1;
+      bank[n] = (e >> 1) % 32;
+      ++n;
+    }
+  }
+  for (int i = 0; i < 32; ++i) {
+    for (int k = i + 1; k < 32; ++k) {
+      if (bank[i] == bank[k] && word[i] != word[k]) return false;
+    }
+  }
+  return true;
+}
+
+//: ---------------------------------------------------------------------------
+//: THE STAGED-OPERAND STORAGE FORMAT (K2 / r1 rung 3).
+//:
+//: `WT` (the write coefficients) and `Vw` (the scale-folded value tile) are the two
+//: PER-TILE staged operands. They are stored in the MMA's own format on the bf16
+//: production arm and fp32 on the tf32x3 exactness arm, which is RULING 1 applied
+//: rather than amended: RULING 1's argument is that "the fold needs their full
+//: mantissa", and it needs it ON THE ARM THAT EXISTS TO BE EXACT. On the bf16 arm
+//: every MMA consumer of both buffers ALREADY narrows at the fragment
+//: (`pack_bf16x2(clamp_bf16_finite(x))`, and `pack_bf16x2` is
+//: `__floats2bfloat162_rn` -- the same round-to-nearest-even a store applies), so
+//: storing them narrow MOVES THE NARROWING SITE and does not change a value.
+//:
+//: The axis is the CONJUNCTION of both sites, not `READ_PREC` alone, because the
+//: two buffers feed both: `WT` is GEMM 2's B operand (`READ_PREC`) and GEMM 4's A
+//: (`FOLD_PREC`), `Vw` is GEMM 3's B and GEMM 4's B. The two shipped POINTS set
+//: both sites together, so this is the shipped surface stated exactly, not a new
+//: axis.
+template <MmaPrec READ_PREC, MmaPrec FOLD_PREC>
+constexpr bool stage_is_narrow() {
+  return READ_PREC == MmaPrec::kBf16 && FOLD_PREC == MmaPrec::kBf16;
+}
+
+//: `WT`'s row pitch, and the `+8` IS THE PROOF'S ANSWER rather than a copy of
+//: `Gm`'s. `WT` serves two operand maps and the narrow pitch has to satisfy BOTH:
+//:   GEMM 2 B (`B[k * ldb + n]`, `k` = leaf steps 2 per `r`, `n` = token per `g`)
+//:     -> `banks_distinct_u16(1, 2 * BTP)`
+//:   GEMM 4 A (`A[m * lda + k]`, `m` = leaf per `g`, `k` = token steps 2 per `r`)
+//:     -> `banks_distinct_u16(BTP, 2)`
+//: Enumerated over `pad in {4, 8, 12, 16}` at both `BT`, `BT + 8` is the UNIQUE pad
+//: that passes both (`BT + 4` fails the GEMM 4 A map, `BT + 16` fails the GEMM 2 B
+//: map), and it passes at `BT = 16` and `BT = 32` alike. The `static_assert`s in the
+//: kernel are what hold that, so a future `BT` fails the build rather than paying a
+//: wavefront amplification nobody looks for.
+template <int BT, MmaPrec READ_PREC, MmaPrec FOLD_PREC>
+constexpr int wt_pitch() {
+  return stage_is_narrow<READ_PREC, FOLD_PREC>() ? BT + 8 : BT + 4;
+}
+
+constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
+
 //: `MmaPrec` (`readout_mma.cuh`) is a PER-SITE template axis, but the two shipped
 //: POINTS on it set both sites together -- see the contract above `kFoldPrecDefault`.
 //: The per-site parameterization is kept because it is what makes the contract
@@ -371,25 +449,33 @@ __device__ __forceinline__ void frag_a_slot(int s, int& m, int& k) {
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound below can be
 //: DERIVED from it rather than restated next to it -- two numbers that must agree are
 //: one number too many.
-//: THE `Vw` / `clk` UNION, AND WHY IT IS A `max` RATHER THAN A CONDITIONAL BUFFER.
+//: THE `Vw` / `clk` UNION, AND WHY IT IS SIZED IN **BYTES** RATHER THAN ELEMENTS.
 //:
-//: `clk` (the tile's per-leaf inclusive clock prefix, `[BT][BC + 4]`) is DEAD before
-//: `Vw` (`[BT][DV + 8]`) is live, so it has always aliased `Vw`'s storage. The alias
-//: was licensed by `BC + 4 <= DV + 8`, which is true at `DV = 64` and FALSE at
-//: `DV = 32, BC = 64` -- the shape the `d_v` axis introduces.
+//: `clk` (the tile's per-leaf inclusive clock prefix, `[BT][BC + 4]`, fp32) is DEAD
+//: before `Vw` (`[BT][DV + 8]`) is live, so it has always aliased `Vw`'s storage,
+//: and the region is sized as the MAX OVER ITS LIVE TENANTS.
 //:
-//: The resolution is to size the region as the MAX OVER ITS LIVE TENANTS, which is
-//: the same rule that always governed it, now stated instead of assumed. `clk` is a
-//: tenant only under `DECAY`, so every non-decay arm is byte-for-byte unchanged, and
-//: so is every `DV = 64` arm (there `Vw` is the larger tenant on its own). No branch
-//: dodges a shape: one expression covers all four `(BT, DV)` cells.
-template <int BT, int BC, int DV, bool DECAY>
-constexpr int vw_union_pitch() {
-  return (DECAY && (BC + 4) > (DV + 8)) ? (BC + 4) : (DV + 8);
+//: **THE MAX USED TO BE TAKEN OVER PITCHES, AND THAT IS ONLY SOUND WHILE THE TWO
+//: TENANTS SHARE AN ELEMENT SIZE.** Once `Vw` is bf16 and `clk` is still fp32 an
+//: element-wise `max` under-allocates by a factor of two, silently -- so the max is
+//: taken over BYTES, which is what it always meant. The consequence is worth stating
+//: because it is a REAL limit on K2's saving rather than an accounting detail: on the
+//: DECAY arm `clk` is the larger tenant at every shipped shape (`BT * (BC + 4) * 4`
+//: against `BT * (DV + 8) * 2`), so **narrowing `Vw` frees no shared memory at all
+//: there** and the decay arm's whole K2 saving is `WT`'s. `Vw` is still ADDRESSED at
+//: its own pitch `DV + 8`; only the RESERVATION is the max.
+template <int BT, int BC, int DV, bool DECAY, MmaPrec READ_PREC, MmaPrec FOLD_PREC>
+constexpr size_t vw_union_bytes() {
+  const size_t vw =
+      static_cast<size_t>(BT) * (DV + 8) *
+      (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16) : sizeof(float));
+  const size_t clk =
+      DECAY ? static_cast<size_t>(BT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
+  return align4(vw > clk ? vw : clk);
 }
 
-template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, bool DECAY, bool GLOBAL,
-          bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
+          bool DECAY, bool GLOBAL, bool COMPACT>
 constexpr size_t consumer_smem_bytes() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);          // S
   //: `den` exists only under `global`; the `raw` arm has no denominator stream at
@@ -398,9 +484,13 @@ constexpr size_t consumer_smem_bytes() {
   b += 2 * static_cast<size_t>(kMaxWords) * sizeof(uint32_t);             // candidates
   b += static_cast<size_t>(D) * BC * sizeof(int);                         // dig
   // Row pitches carry the bank-conflict padding; see the kernel's ledger.
-  b += static_cast<size_t>(BC) * (BT + 4) * sizeof(float);                // WT (leaf-major)
-  //: `Vw` and its `clk` tenant -- see `vw_union_pitch`.
-  b += static_cast<size_t>(BT) * vw_union_pitch<BT, BC, DV, DECAY>() * sizeof(float);
+  //: `WT`, leaf-major, in the staged format -- see `wt_pitch` for why the narrow
+  //: pitch is `BT + 8` and not `Gm`'s value borrowed.
+  b += align4(static_cast<size_t>(BC) * wt_pitch<BT, READ_PREC, FOLD_PREC>() *
+              (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16)
+                                                       : sizeof(float)));
+  //: `Vw` and its `clk` tenant -- see `vw_union_bytes`.
+  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
   //: `Rf` carries ONE fragment-ordered A operand PER `m16` ROW BLOCK, `BT / 16` of
   //: them. At `BT = 16` this is the single block it always was.
   b += static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) * sizeof(unsigned);  // Rf
@@ -442,13 +532,9 @@ constexpr size_t consumer_smem_bytes() {
 
 //: `clk`'s row pitch is `BC + 4`, token-major (`clk[t * CKP + i]`), on the same
 //: bank-decorrelation argument every other pitch here uses. The alias onto `Vw` is
-//: sound because `vw_union_pitch` SIZES the region for whichever tenant is larger;
-//: this predicate is what the kernel `static_assert`s to prove that, rather than
-//: assuming the sizing and the use agree.
-template <int BT, int BC, int DV, bool DECAY>
-constexpr bool clk_fits_in_vw() {
-  return BC + 4 <= vw_union_pitch<BT, BC, DV, DECAY>();
-}
+//: sound because `vw_union_bytes` SIZES the region for whichever tenant is larger IN
+//: BYTES; the kernel `static_assert`s that sizing against the use rather than
+//: assuming the two agree.
 
 
 //: One `[16 x 8]` tile against a fragment-ordered A. `d += Af * B`.
@@ -467,6 +553,15 @@ __device__ __forceinline__ void gm_put(__nv_bfloat16& d, float x) {
   d = __float2bfloat16(x);
 }
 __device__ __forceinline__ float mma_src(__nv_bfloat16 x) { return __bfloat162float(x); }
+//: Store a STAGED OPERAND. On the fp32 arm this is the assignment it always was; on
+//: the narrow arm it is where §12 rule 3's format guard now lives, because it is
+//: where the fp32 value last exists. That is a MOVE of the clamp, not a second one:
+//: `mma_tile`'s fragment-side clamp becomes a no-op on an already-narrow operand
+//: (bf16 shares fp32's 8-bit exponent, so a finite bf16 cannot exceed the bound).
+__device__ __forceinline__ void stage_put(float& d, float x) { d = x; }
+__device__ __forceinline__ void stage_put(__nv_bfloat16& d, float x) {
+  d = __float2bfloat16(clamp_bf16_finite(x));
+}
 
 //: `D[16x8] += A[16 x K] * B[K x 8]`, fp32 accumulate, one warp.
 //:
@@ -666,8 +761,8 @@ template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
           bool DECAY, bool GLOBAL, bool COMPACT>
 __global__ __launch_bounds__(
     kConsumerThreads,
-    ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, DECAY, GLOBAL,
-                                        COMPACT>(),
+    ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY,
+                                        GLOBAL, COMPACT>(),
                        consumer_reg_budget(BT, BC, DECAY)))
 void consumer_forward_kernel(ConsumerParams p) {
   // ---- THE STATE'S ROW PITCH, AND WHY IT IS `DV + 4` ------------------------
@@ -735,11 +830,13 @@ void consumer_forward_kernel(ConsumerParams p) {
   // Pitches are DERIVED from the fragment maps and PROVEN by `banks_distinct`
   // below, not chosen. `+1` (the first-cut padding) merely decorrelates; it does not
   // make the 32 lanes distinct, and the residual was 2.71 wavefronts per load.
-  constexpr int BTP = BT + 4;   // fp32 write coefficients, LEAF-MAJOR (see WT)
-  constexpr int VWP = DV + 8;   // fp32 value tile -- `Vw`'s OWN pitch
-  //: The allocated pitch of the region `Vw` shares with `clk`; see `vw_union_pitch`.
-  //: `Vw` is still addressed at `VWP` -- only the RESERVATION is the max.
-  constexpr int VWU = vw_union_pitch<BT, BC, DV, DECAY>();
+  //: THE STAGED OPERANDS' ELEMENT TYPE AND PITCHES -- see `stage_is_narrow` and
+  //: `wt_pitch`. `StageT` is the format the MMA itself wants on the production arm,
+  //: so the narrowing happens once at the store instead of once per fragment slot.
+  constexpr bool kNarrowStage = stage_is_narrow<READ_PREC, FOLD_PREC>();
+  using StageT = typename cuda::std::conditional<kNarrowStage, __nv_bfloat16, float>::type;
+  constexpr int BTP = wt_pitch<BT, READ_PREC, FOLD_PREC>();  // WT, LEAF-MAJOR
+  constexpr int VWP = DV + 8;   // the value tile -- `Vw`'s OWN pitch, format-invariant
   // The effective-score block's STORAGE TYPE FOLLOWS `READ_PREC`, and that is a
   // correctness requirement rather than a nicety: `Gm` is an INTERMEDIATE of the `y`
   // path (`G = R.W^T`, then `y += G.Vw`), so storing it bf16 on the tf32x3 arm
@@ -752,10 +849,22 @@ void consumer_forward_kernel(ConsumerParams p) {
   // 32-bit pairs (`stride_g = GMP/2`), the tf32 map single floats (`stride_g = GMP`).
   // Both are proven by `banks_distinct` below.
   constexpr int GMP = (READ_PREC == MmaPrec::kBf16) ? BT + 8 : BT + 4;
+  //: THE CARVE IS BYTE ARITHMETIC, not pointer arithmetic, from `WT` onward: the
+  //: staged buffers' element size follows `StageT` while everything around them is
+  //: fp32, so `p + count` would silently mis-place every buffer after them. `align4`
+  //: keeps each subsequent fp32 buffer 4-byte aligned; every shipped
+  //: `(BC, BTP)` product is already a multiple of 2 elements, so it never pads.
   float* S = reinterpret_cast<float*>(smem_raw);
-  float* WT = S + BC * SP;      // [BC][BTP] -- LEAF-major, token-contiguous
-  float* Vw = WT + BC * BTP;
-  float* sr = Vw + BT * VWU;
+  char* carve = smem_raw + align4(static_cast<size_t>(BC) * SP * sizeof(float));
+  StageT* WT = reinterpret_cast<StageT*>(carve);   // [BC][BTP] LEAF-major
+  carve += align4(static_cast<size_t>(BC) * BTP * sizeof(StageT));
+  StageT* Vw = reinterpret_cast<StageT*>(carve);
+  //: `clk` ALIASES `Vw`'s bytes -- see `vw_union_bytes`. Declared at the carve rather
+  //: than 80 lines below as `clk = Vw`, because with two element types that
+  //: assignment no longer even type-checks, and the alias is the load-bearing fact.
+  float* clk = reinterpret_cast<float*>(carve);
+  carve += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
+  float* sr = reinterpret_cast<float*>(carve);
   float* sw = sr + BT;
   float* den = sw + BT;
   uint32_t* cand_read = reinterpret_cast<uint32_t*>(den + (GLOBAL ? BT : 0));
@@ -795,7 +904,6 @@ void consumer_forward_kernel(ConsumerParams p) {
   float* p_ref = log_keep + (DECAY ? BC : 0);
   float* s0 = p_ref + (DECAY ? BC : 0);
   constexpr int CKP = BC + 4;              // clk's row pitch, token-major
-  float* clk = Vw;                         // ALIASED -- see the lifetime note above
   // ---- COMPACT's gather state (§3 step 2) ----------------------------------
   //   `c_idx[0..K)`  the gathered leaf list, ASCENDING. `c_idx[q] = 0` for `q >= K`
   //                  keeps the readout's pad rows ADDRESSABLE (their A-operand
@@ -807,8 +915,9 @@ void consumer_forward_kernel(ConsumerParams p) {
   int* c_idx = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
   int* c_slot = c_idx + (COMPACT ? BC : 0);
   int* c_count = c_slot + (COMPACT ? BC : 0);
-  static_assert(!DECAY || clk_fits_in_vw<BT, BC, DV, DECAY>(),
-                "clk aliases the Vw region and must fit: BC + 4 <= vw_union_pitch");
+  static_assert(!DECAY || static_cast<size_t>(BT) * CKP * sizeof(float) <=
+                              vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
+                "clk aliases the Vw region and must fit IN BYTES");
   // ---- §6.4 PASS 1's OWN STATE, ALIASED ONTO `Rf` --------------------------
   //   `a_state[i]`  the per-leaf survival product `A` over the segment. Identically
   //                 `1` under `decay = None`; under decay it accumulates `s0^2` per
@@ -836,11 +945,20 @@ void consumer_forward_kernel(ConsumerParams p) {
   //   A, tf32           : addr banks = g * pitch    + r * 1       (k steps by 1)
   //   B, tf32           : addr banks = g * 1        + r * pitch
   static_assert(banks_distinct(1, 2 * SP), "S: GEMM1 B operand conflicts");
-  static_assert(banks_distinct(1, 2 * BTP), "WT: GEMM2 B operand conflicts");
+  //: `WT` and `Vw` prove their pitches under the predicate their STORAGE FORMAT
+  //: makes correct -- `banks_distinct_u16` when narrow (2-byte addresses, same-word
+  //: lanes do not conflict), `banks_distinct` when fp32. Using the 32-bit predicate
+  //: on a 16-bit buffer would be a proof of the wrong proposition, in both
+  //: directions.
+  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * BTP)
+                             : banks_distinct(1, 2 * BTP),
+                "WT: GEMM2 B operand conflicts");
   static_assert(banks_distinct(READ_PREC == MmaPrec::kBf16 ? GMP / 2 : GMP, 1),
                 "Gm: GEMM3 A operand conflicts");
-  static_assert(banks_distinct(BTP, 1), "WT: GEMM4 A operand conflicts");
-  static_assert(banks_distinct(1, VWP), "Vw: GEMM4 B operand conflicts");
+  static_assert(kNarrowStage ? banks_distinct_u16(BTP, 2) : banks_distinct(BTP, 1),
+                "WT: GEMM4 A operand conflicts");
+  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * VWP) : banks_distinct(1, VWP),
+                "Vw: GEMM4 B operand conflicts");
   // THE ONE OPERAND THAT IS NOT CONFLICT-FREE, AND THE TRADE IS EXPLICIT: `Vw` is
   // read by the fold under the tf32 map (`k` steps by 1) and by the intra GEMM under
   // the bf16 map (`k` steps by 2), and NO single pitch satisfies both -- the two
@@ -849,7 +967,15 @@ void consumer_forward_kernel(ConsumerParams p) {
   // k-steps against the intra term's single k-step), so `Vw` is sized for it and the
   // intra term keeps a 2-way conflict on one of its two operands. Stated here rather
   // than left for someone to rediscover with a profiler.
-  static_assert(!banks_distinct(1, 2 * VWP), "Vw/GEMM3: update this note if it changes");
+  //: **AND ON THE NARROW ARM THE TRADE ABOVE DISAPPEARS**, which is a K2 dividend
+  //: rather than a coincidence: once the operands are stored in the MMA's own format
+  //: the FOLD reads `Vw` under the bf16 map too (`FOLD_PREC` is bf16 whenever
+  //: `kNarrowStage`), so the fold and the intra term stop wanting different pitches
+  //: and ONE pitch is conflict-free for both. The `static_assert` states which world
+  //: it is in rather than asserting the conflict unconditionally.
+  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * VWP)
+                             : !banks_distinct(1, 2 * VWP),
+                "Vw/GEMM3: update this note if it changes");
 
   const int work = blockIdx.x;
   const int bh = p.owners[2 * work];
@@ -1460,7 +1586,7 @@ void consumer_forward_kernel(ConsumerParams p) {
       for (int idx = tid; idx < BT * wt_rows; idx += kConsumerThreads) {
         const int q = idx / BT;
         const int t = idx - q * BT;
-        if (COMPACT && q >= K) { WT[q * BTP + t] = 0.0f; continue; }
+        if (COMPACT && q >= K) { stage_put(WT[q * BTP + t], 0.0f); continue; }
         const int i = COMPACT ? c_idx[q] : q;
         float a = 1.0f;
 #pragma unroll
@@ -1494,7 +1620,7 @@ void consumer_forward_kernel(ConsumerParams p) {
             (lane & (BT - 1)) == 0) {
           sum_slot[i] = 1;
         }
-        WT[q * BTP + t] = a;
+        stage_put(WT[q * BTP + t], a);
       }
     }
     // ---- THE `clk` -> `Vw` LIFETIME BARRIER, AND IT IS DECAY'S ALONE ---------
@@ -1517,7 +1643,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int token = t0 + t;
         const float vv =
             (token < p.T) ? p.v[(static_cast<int64_t>(bh) * p.T + token) * DV + ch] : 0.0f;
-        Vw[t * VWP + ch] = sw[t] * vv;
+        stage_put(Vw[t * VWP + ch], sw[t] * vv);
       }
     }
     __syncthreads();
@@ -1595,7 +1721,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     if (mixed && warp < BT / 8) {
       CONSUMER_D_ROWS(lane);
       float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-      mma_tile_fragA<BC, float, false, false, READ_PREC>(
+      mma_tile_fragA<BC, StageT, false, false, READ_PREC>(
           Rf, WT, BTP, nullptr, KIpad, warp * 8, lane, d0, d1, d2, d3);
       const int n0 = warp * 8;
       const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
@@ -1618,7 +1744,7 @@ void consumer_forward_kernel(ConsumerParams p) {
       // `[KI, KIpad)` are leaves in `[KI, K)` (real, but non-causal, so exactly zero
       // under the `u <= t` mask) or the zeroed rows `[K, KpadM)` -- over-inclusion,
       // which is the direction §5's test is exact in.
-      mma_tile_fragA<BC, float, false, false, READ_PREC>(
+      mma_tile_fragA<BC, StageT, false, false, READ_PREC>(
           Rf + gmb * kRfBlock, WT, BTP, nullptr, KIpad, gnt * 8, lane, d0, d1, d2, d3);
       const int n0 = gnt * 8;
       // The causal test is on the TILE-GLOBAL token indices, so the m-block's row
@@ -1640,7 +1766,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     // what keeps the y-tile in registers rather than in shared memory.
     if constexpr (NM == 1) {
       if (mixed && warp < NT_DV) {
-        mma_tile<GmT, false, float, false, READ_PREC>(
+        mma_tile<GmT, false, StageT, false, READ_PREC>(
             Gm, GMP, Vw, VWP, BT, 0, warp * 8, lane,
             y[0][0], y[0][1], y[0][2], y[0][3]);
       }
@@ -1650,7 +1776,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int wt = warp + q * kWarps;
         if (wt >= NM * NT_DV) break;
         const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
-        mma_tile<GmT, false, float, false, READ_PREC>(
+        mma_tile<GmT, false, StageT, false, READ_PREC>(
             Gm, GMP, Vw, VWP, BT, mb * 16, nt * 8, lane,
             y[q][0], y[q][1], y[q][2], y[q][3]);
       }
@@ -1782,7 +1908,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int mt = wt / NT_DV;
         const int nt = wt - mt * NT_DV;
         float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-        mma_tile<float, false, float, false, FOLD_PREC>(
+        mma_tile<StageT, false, StageT, false, FOLD_PREC>(
             WT, BTP, Vw, VWP, BT, mt * 16, nt * 8, lane, d0, d1, d2, d3);
         const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
         // ---- DECAY's EXIT SCALE, RIDING THE FOLD'S EXISTING READ-MODIFY-WRITE --
@@ -1829,7 +1955,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
           const int i = COMPACT ? c_idx[q] : q;
           float acc = 0.0f;
-          for (int t = 0; t < BT; ++t) acc += WT[q * BTP + t] * sw[t];
+          for (int t = 0; t < BT; ++t) acc += mma_src(WT[q * BTP + t]) * sw[t];
           // The mass column takes the identical epilogue -- it is the same
           // recurrence with `v := 1`, so it takes the same exit scale in the same
           // read-modify-write, and the two together cover `BC x (DV + 1)` exactly.
