@@ -146,11 +146,19 @@ string.** It can never happen as a side effect of a kernel edit.
 ## Running it
 
 ```bash
-pytest tests/unit tests/tier1_semantics -m "not cuda"   # CPU: no device, no build
-pytest tests/tier1_semantics -m cuda                    # TIER 1
-pytest tests/tier2_geometry                             # TIER 2 (incl. the meta-tests)
-pytest tests/layers                                     # layer <-> op, at every dispatch threshold
+pytest tests/unit tests/tier1_semantics -m "not cuda"           # CPU: no device, no build
+flock /tmp/rola_gpu.lock pytest tests/unit -m cuda               # tests/unit's CUDA-marked rows
+pytest tests/tier1_semantics -m cuda                             # TIER 1
+pytest tests/tier2_geometry                                      # TIER 2 (incl. the meta-tests)
+pytest tests/layers                                               # layer <-> op, at every dispatch threshold
 ```
+
+`tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
+`test_interface.py::test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm`,
+two in `test_sequence_parallel_policy.py`) the same way it deselects `tier1_semantics`'s
+-- so the `-m cuda` line above is what makes them reachable at all. Every committed test
+must be collected by SOME line here; a test that only a `-m "not cuda"` line ever
+selects against is a test nothing runs.
 
 **Never `pytest tests/` unscoped.** The `cuda` marker exists so `-m "not cuda"`
 deselects at *collection* time, before torch initializes a CUDA context. The
