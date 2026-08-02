@@ -1433,6 +1433,30 @@ void consumer_forward_kernel(ConsumerParams p) {
       // of the §2.6 dividend -- the production kernel needs a separate compacted
       // COPY (`panel_write_c`) precisely because it receives its panel dense.
       const int wt_rows = COMPACT ? KpadM : BC;
+      // ---- §6.4 PASS 1's EMPTINESS ANSWER IS TAKEN HERE, PRE-QUANTIZATION -----
+      // The `P > 1` summary must include every leaf that can LEAVE `(A, B) = (1, 0)`.
+      // The test used to be a re-scan of `WT` in the fold's block below; it is moved
+      // to the panel build, where the coefficient exists as the un-narrowed fp32 `a`
+      // and BEFORE it is stored. The invariant being protected is stated in the
+      // negative, because that is the direction that is not free: OVER-inclusion
+      // costs one exactly-`(1, 0)` entry in the emitted list and the scan's fold
+      // returns the incoming value unchanged, while UNDER-inclusion SILENTLY DROPS
+      // STATE. A `WT` narrowed to bf16 (K2) can round a small-but-nonzero fp32
+      // coefficient to exactly zero, so a post-quantization scan is an
+      // under-inclusion hazard by construction -- and the whole point of doing this
+      // BEFORE K2 rather than with it is that the two land separately.
+      //
+      // THE REDUCTION IS OVER `t`, AND THE `t`-GROUP IS A CONTIGUOUS LANE RUN.
+      // The loop's index map is `q = idx / BT`, `t = idx % BT`, walked at
+      // `kConsumerThreads` stride, so the `BT` threads sharing a row `q` are lanes
+      // `[g0, g0 + BT)` of ONE warp (`BT` is 16 or 32, both dividing 32 or equal to
+      // it). `kRowLanes` is that group's mask. It is a lane ARITHMETIC fact of the
+      // index map, not a density or a threshold, and the `static_assert` below is
+      // what makes a future `BT` fail the build rather than silently mis-reduce.
+      constexpr unsigned kRowLanes = (BT >= 32) ? 0xffffffffu : ((1u << BT) - 1u);
+      static_assert(BT == 16 || BT == 32,
+                    "the pass-1 emptiness ballot assumes the BT threads of one WT row "
+                    "are a contiguous lane run inside one warp");
       for (int idx = tid; idx < BT * wt_rows; idx += kConsumerThreads) {
         const int q = idx / BT;
         const int t = idx - q * BT;
@@ -1461,6 +1485,15 @@ void consumer_forward_kernel(ConsumerParams p) {
         // bf16, which shares fp32's 8-bit exponent), and the format guard at the
         // MMA catches anything the accumulated product does downstream.
         if (DECAY) a *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+        // The pre-quantization test. `__any_sync` names ONLY this row's lane group:
+        // a COMPACT pad row `continue`s above, and `q` is group-uniform, so the whole
+        // group leaves together and the group that stayed is converged. One lane per
+        // row publishes, so `sum_slot` takes no intra-tile race (`c_idx` is
+        // injective, and without COMPACT `i == q`).
+        if (summary && __any_sync(kRowLanes << (lane & ~(BT - 1)), a != 0.0f) &&
+            (lane & (BT - 1)) == 0) {
+          sum_slot[i] = 1;
+        }
         WT[q * BTP + t] = a;
       }
     }
@@ -1812,26 +1845,32 @@ void consumer_forward_kernel(ConsumerParams p) {
         // drops state. So the test is over-inclusion-safe by construction, which
         // is the same direction every `!= 0.0f` skip in this kernel takes.
         //
-        // `WT` is read here while it still holds THIS tile's coefficients, which
-        // is why the test lives in the fold's block rather than in the epilogue.
+        // THE COEFFICIENT HALF OF THE TEST IS NOT HERE ANY MORE (K1). It ran as a
+        // re-scan of `WT` -- i.e. of the STORED coefficient -- and a stored
+        // coefficient is a QUANTIZED one the moment the buffer's format narrows.
+        // It now runs in the write-panel build, on the fp32 value, before the
+        // store; see the `__any_sync` there. What is left here is the term that has
+        // no pre-quantization site because it is not a coefficient at all:
+        //
+        // Under decay `WT` carries `W * fw`, and "a nonzero write forces a nonzero
+        // coefficient" is an argument about `W`, not about `W * fw`: `fw` can
+        // UNDERFLOW to zero on the early half of a tile at an extreme survival
+        // range. That range is outside what `panel_exponent_bound` admits, but the
+        // summary's inclusion test should not be the thing that depends on the
+        // admission check. `s0 != 1` is the DIRECT statement that this leaf's clock
+        // moved in this tile, which is exactly the condition under which `A` leaves
+        // `1`.
+        //
         // COMPACT: a leaf OUTSIDE the gathered list cannot enter the summary, and
-        // that is exact on both terms of the test -- it has no live write in this
-        // tile (so its write coefficients are zero) and its `s0` is exactly `1` (the
-        // scatter-fill theorem), so it cannot leave `(A, B) = (1, 0)`.
-        for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
-          const int i = COMPACT ? c_idx[q] : q;
-          bool any = false;
-          for (int t = 0; t < BT; ++t) any |= (WT[q * BTP + t] != 0.0f);
-          // Under decay `WT` carries `W * fw`, and "a nonzero write forces a
-          // nonzero coefficient" is an argument about `W`, not about `W * fw`:
-          // `fw` can UNDERFLOW to zero on the early half of a tile at an extreme
-          // survival range. That range is outside what `panel_exponent_bound`
-          // admits, but the summary's inclusion test should not be the thing that
-          // depends on the admission check. `s0 != 1` is the DIRECT statement that
-          // this leaf's clock moved in this tile, which is exactly the condition
-          // under which `A` leaves `1`.
-          if (DECAY && s0[i] != 1.0f) any = true;
-          if (any) sum_slot[i] = 1;
+        // that is exact on both terms -- it has no live write in this tile (so its
+        // write coefficients are zero, which the build's own test sees) and its `s0`
+        // is exactly `1` (the scatter-fill theorem), so it cannot leave `(A, B) =
+        // (1, 0)`.
+        if (DECAY) {
+          for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
+            const int i = COMPACT ? c_idx[q] : q;
+            if (s0[i] != 1.0f) sum_slot[i] = 1;
+          }
         }
         if (DECAY) {
           // ---- `A`, the segment's per-leaf survival product (§2.13) -----------
