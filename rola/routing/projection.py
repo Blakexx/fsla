@@ -2,9 +2,34 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import torch
 
 from rola.routing.types import ResolvedRouting
+
+
+@contextlib.contextmanager
+def _scoped_tf32_matmul():
+    """Scope ``torch.backends.cuda.matmul.allow_tf32`` to exactly one matmul call.
+
+    Ampere+ tensor cores only engage the packed-router projection GEMM when this
+    flag is set (measured: without it, the fp32 projection lowers to a plain
+    ``ampere_sgemm`` with no ``hmma``/``tf32`` in its name -- 19-20% of the
+    producer plane, see `rola-scratch/workflows/20260801-forward/producer-p1.md`
+    §2.2/§2.3). The flag is a *global* torch setting, so it is saved and restored
+    around this single call site rather than flipped for the whole process --
+    the same scoping discipline the consumer readout kernel's ``tf32x3``/``bf16``
+    ``mma_precision`` arms already apply per call (`rola/planner/schedule.py`'s
+    ``MMA_PRECISIONS``), just expressed at the torch-matmul level instead of a
+    CUDA kernel template parameter.
+    """
+    prior = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = True
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = prior
 
 
 def _packed_router_logits(
@@ -43,7 +68,15 @@ def _packed_router_logits(
 
     def project(hidden: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
         equation = "bld,hsdc->bhlsc" if hidden.ndim == 3 else "blhd,hsdc->bhlsc"
-        logits = torch.einsum(equation, hidden.to(projection_dtype), weight.to(projection_dtype))
+        hidden_c, weight_c = hidden.to(projection_dtype), weight.to(projection_dtype)
+        # TF32 is a float32-cuBLAS-only tensor-core path; scoping it to exactly this
+        # matmul leaves the fp64 oracle domain (`packed_router_logits_reference`)
+        # untouched -- the flag has no effect on float64 GEMMs regardless.
+        if projection_dtype == torch.float32:
+            with _scoped_tf32_matmul():
+                logits = torch.einsum(equation, hidden_c, weight_c)
+        else:
+            logits = torch.einsum(equation, hidden_c, weight_c)
         if bias is not None:
             logits = logits + bias.to(projection_dtype)[None, :, None]
         return logits.reshape(hidden.shape[0] * heads, hidden.shape[1], weight.shape[1], weight.shape[3])
