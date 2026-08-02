@@ -95,17 +95,25 @@ def measure_all(arms=ARMS, *, reps=11, blocks=5):
     # STDERR, never stdout: `--emit-json` mode's stdout is parsed whole as JSON by
     # the parent (`pooled_across_processes`), and a diagnostic line ahead of the
     # payload would break that parse.
-    print(f"clock-settle: {settle_clocks()}", file=sys.stderr)
+    clock_info = settle_clocks()
+    print(f"clock-settle: {clock_info}", file=sys.stderr)
+    if not clock_info["settled"]:
+        # Gate-1 remediation finding 3: don't proceed as though nothing happened --
+        # say so loudly, and hand the flag back to the caller so it can be recorded
+        # (baseline provenance / comparison row) instead of only living in this
+        # stderr line.
+        print(f"WARNING: clock did not settle before this measurement: {clock_info}",
+              file=sys.stderr)
     prepared = {arm_id(*spec): _prepare(*spec) for spec in arms}
     per_block = {k: [] for k in prepared}
     for _ in range(blocks):
         for key, state in prepared.items():
             per_block[key].append(statistics.median(
                 [_timed(*state)[0] for _ in range(reps)]))
-    return per_block
+    return per_block, clock_info["settled"]
 
 
-def pooled_across_processes(processes: int, reps: int, blocks: int) -> dict:
+def pooled_across_processes(processes: int, reps: int, blocks: int) -> tuple[dict, bool]:
     """The baseline's spread, measured ACROSS PROCESSES -- because that is the
     comparison the gate makes.
 
@@ -123,6 +131,7 @@ def pooled_across_processes(processes: int, reps: int, blocks: int) -> dict:
     the quantity actually being compared.
     """
     pool: dict[str, list[float]] = {}
+    all_settled = True
     for i in range(processes):
         proc = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--emit-json",
@@ -132,10 +141,15 @@ def pooled_across_processes(processes: int, reps: int, blocks: int) -> dict:
             sys.stderr.write(proc.stderr)
             raise SystemExit(f"baseline process {i} failed; refusing to record a "
                              f"partial measurement")
-        for key, medians in json.loads(proc.stdout).items():
+        payload = json.loads(proc.stdout)
+        if not payload["clock_settled"]:
+            all_settled = False
+            print(f"WARNING: process {i} did not settle its clock before measuring",
+                  file=sys.stderr)
+        for key, medians in payload["blocks"].items():
             pool.setdefault(key, []).extend(medians)
         print(f"  process {i + 1}/{processes} done")
-    return pool
+    return pool, all_settled
 
 
 def main() -> int:
@@ -150,14 +164,23 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.emit_json:
-        print(json.dumps(measure_all(reps=a.reps, blocks=a.blocks)))
+        per_block, settled = measure_all(reps=a.reps, blocks=a.blocks)
+        print(json.dumps({"clock_settled": settled, "blocks": per_block}))
         return 0
 
-    pool = (pooled_across_processes(a.processes, a.reps, a.blocks) if a.write
-            else measure_all(reps=a.reps, blocks=a.blocks))
+    pool, settled = (pooled_across_processes(a.processes, a.reps, a.blocks) if a.write
+                     else measure_all(reps=a.reps, blocks=a.blocks))
+    if not settled:
+        # Gate-1 remediation finding 3: don't record/compare silently against an
+        # unsettled clock -- say so on stderr, and mark every row rather than
+        # letting the JSON look identical to a settled run.
+        print("WARNING: at least one measurement in this run did not settle its "
+              "clock -- the numbers below are not comparable to a settled baseline",
+              file=sys.stderr)
     arms = {}
     for key, medians in pool.items():
         s = summarize(medians)
+        s["clock_settled"] = settled
         arms[key] = s
         print(f"{key:48s} median {s['median_ms']:.4f} ms  block IQR {s['iqr_ms']:.4f}  "
               f"-> alarm at {threshold_ms(s['median_ms'], s['iqr_ms']):.4f} ms")

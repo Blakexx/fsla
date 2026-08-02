@@ -488,7 +488,15 @@ def main() -> None:
     # and the smallest `L` -- the end the honesty rules forbid cherry-picking -- is
     # exactly the one that inflates. Reported on stderr so the `--json` stdout of a
     # piped run stays what it was.
-    print(f"clock-settle: {settle_clocks()}", file=sys.stderr)
+    clock_info = settle_clocks()
+    print(f"clock-settle: {clock_info}", file=sys.stderr)
+    if not clock_info["settled"]:
+        # Gate-1 remediation finding 3: an unsettled clock must not be a silent
+        # precondition failure. Every row this run produces is stamped
+        # `clock_settled: False` below so a reader of the JSON (not just the stderr
+        # log) can see the run's timings are not comparable to a settled baseline.
+        print(f"WARNING: clock did not settle before this sweep: {clock_info}",
+              file=sys.stderr)
 
     branches = [int(s) for s in args.branches.split(",")]
     seq_lens = [int(s) for s in args.seq_lens.split(",")]
@@ -527,6 +535,7 @@ def main() -> None:
                                   backend=backend, reps=args.reps, warmup=args.warmup)
             else:
                 raise SystemExit(f"unknown arm {arm!r}")
+            row["clock_settled"] = clock_info["settled"]
             rows.append(row)
             print(json.dumps(row), flush=True)
             if args.json:  # write incrementally: an OOM later must not lose earlier rows

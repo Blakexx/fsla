@@ -48,10 +48,18 @@ def _clocks_settled():
     before the first parametrized arm, on the same device every arm in this process
     will be timed on -- not per-arm, because the clock is a property of the box, not
     of the arm.
+
+    **A gate that times arms against an unsettled clock is not gating anything**
+    (the whole point of item 0b): if `settle_clocks()` reports `settled: False`
+    (no `nvidia-smi`, a query failure, or a genuine `timeout_s` timeout without
+    plateauing), this fails the session outright rather than proceeding to compare
+    every arm's timing against a baseline recorded under a different clock state.
     """
     if torch.cuda.is_available():
         info = settle_clocks()
         print(f"\nclock-settle: {info}")
+        if not info["settled"]:
+            pytest.fail(f"clock did not settle before the gate: {info}")
     yield
 
 
