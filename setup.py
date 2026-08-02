@@ -70,7 +70,22 @@ MANIFEST_DIR = ROOT / "tools" / "manifests"
 #: point -- the supported matrix IS the ratified set, not a wish list.
 ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
 
-MODULE_NAME = "rola_cuda"
+#: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
+#: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete
+#: cost: an in-place (``pip install -e`` / ``build_ext --inplace``) build drops the
+#: ``.so`` at the REPO ROOT, so a developer's import path is not the installed
+#: layout. A dotted name makes setuptools place the binary inside ``rola/`` in both
+#: cases, so there is ONE layout, the repo root stays clean, and the module cannot be
+#: imported by accident from a working directory that merely happens to contain it.
+#:
+#: This is a PACKAGING name only. ``PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)`` takes
+#: it from this constant, so nothing in ``csrc/`` names it; the C++ namespaces
+#: (``rola``, ``rola::mma``, ``rola::paging``) and every kernel symbol are untouched --
+#: which is why the per-arch manifests diff at ZERO value changes across this move.
+#: The manifests key on MANGLED INSTANTIATION NAMES of ``rola::consumer::
+#: consumer_forward_kernel``, and the module-init symbol they do not contain is the
+#: only thing this rename can move.
+MODULE_NAME = "rola._C"
 
 
 # ---------------------------------------------------------------------------

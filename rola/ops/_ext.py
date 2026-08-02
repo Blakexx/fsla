@@ -27,16 +27,21 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+#: PACKAGE-RELATIVE, and that is the whole of the ``rola._C`` namespacing: the binary
+#: lives INSIDE the package in both the installed and the in-place-built layout, so
+#: this import resolves the same way in both and can never pick up a stray top-level
+#: ``.so`` that happens to sit in the working directory. See ``setup.py``'s
+#: ``MODULE_NAME``.
 _IMPORT_ERROR: ImportError | None = None
 try:
-    import rola_cuda as _rola_cuda
+    from rola import _C as _rola_cuda
 except ImportError as e:  # noqa: BLE001
     _rola_cuda = None
     _IMPORT_ERROR = e
 
 
 _MISSING = """\
-The `rola` CUDA extension (`rola_cuda`) is not available, so no RoLA kernel can run.
+The `rola` CUDA extension (`rola._C`) is not available, so no RoLA kernel can run.
 
   original import error: {err}
 

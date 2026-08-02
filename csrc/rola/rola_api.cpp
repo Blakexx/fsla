@@ -14,8 +14,10 @@
 // `src/host_api.cuh`.
 //
 // The module name is supplied by the build (`TORCH_EXTENSION_NAME`), which
-// `setup.py` sets to `rola_cuda`. `rola/ops/_ext.py` imports exactly that name and
-// never builds it.
+// `setup.py` sets to `rola._C` -- NAMESPACED INSIDE THE PACKAGE, so the binary lands
+// in `rola/` for both an in-place build and a wheel. `rola/ops/_ext.py` imports it
+// package-relative and never builds it. Nothing in this file or under `src/` spells
+// the name, so the packaging layout can move without touching a kernel symbol.
 
 #include <torch/extension.h>
 
