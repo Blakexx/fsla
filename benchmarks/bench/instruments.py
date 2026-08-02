@@ -48,8 +48,42 @@ def _nvidia_smi_clock_mhz(idx: int, field: str) -> float:
     return float(out.stdout.strip().splitlines()[0])
 
 
-def settle_clocks(*, hold_polls=4, plateau_tol_mhz=30.0, poll_interval_s=0.15,
-                   timeout_s=12.0, matmul_n=4096) -> dict:
+def settle_clocks(
+    *,
+    #: Consecutive `clocks.sm` samples that must all agree before the box counts
+    #: as settled. JUDGMENT, not measured: chosen as "a handful of samples", not
+    #: swept against alternatives. `0a0b-instrument.md`'s own verification runs
+    #: (5 back-to-back gate invocations, 2026-08-01) settled in 0.9-1.2s at this
+    #: value every time, so it was never the binding constraint there -- a smaller
+    #: value was not shown to be unsafe, this one just was not tightened further.
+    hold_polls=4,
+    #: MEASURED, on this box (`0a0b-instrument.md`, 2026-08-01): a sustained fp16
+    #: matmul loop at 100% utilization holds 1710-1740 MHz continuously
+    #: (power/thermal-limited, not still ramping) -- `extraction.md`'s independent
+    #: "forcing 1740 MHz by hand" note agrees. This box idles at ~210-240 MHz
+    #: before the burn starts; the actual gate runs this settles
+    #: (`test_latency_regression.py -m bench`, 5 back-to-back invocations,
+    #: 2026-08-01) latched at 1845-1860 MHz -- a different, slightly higher
+    #: plateau than the isolated-burn measurement, not reconciled further here.
+    #: 30 MHz brackets both plateaus' observed jitter without being so tight the
+    #: poll never latches; not derived from a formal noise-floor measurement, so
+    #: treat as judgment inside an empirically-set order of magnitude.
+    plateau_tol_mhz=30.0,
+    #: JUDGMENT: fast enough that `hold_polls` samples land in ~0.6s (matching the
+    #: 0.9-1.2s settle times `0a0b-instrument.md` actually measured), slow enough
+    #: not to hammer `nvidia-smi` as a subprocess launch every tick. Not swept.
+    poll_interval_s=0.15,
+    #: JUDGMENT, a generous ceiling: every measured settle in
+    #: `0a0b-instrument.md`'s verification runs (5 back-to-back gate invocations,
+    #: 2026-08-01) finished in 0.9-1.2s, roughly 10x under this bound. Sized to
+    #: fail loudly on a genuinely stuck clock rather than to bound the common case.
+    timeout_s=12.0,
+    #: JUDGMENT: large enough that the `a @ b` burn loop keeps the SM saturated
+    #: between `nvidia-smi` polls (the failure mode this exists to avoid is the
+    #: clock relaxing between bursts -- see the "stop/query/restart" note below),
+    #: not picked from a sweep of matmul sizes against settle time or power draw.
+    matmul_n=4096,
+) -> dict:
     """Ramp this box to a steady SM clock before ANY latency in this process is
     timed -- the fix for the gate defect `extraction.md` "A GATE DEFECT FOUND ON THE
     WAY" recorded rather than worked around.
