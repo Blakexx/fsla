@@ -26,6 +26,7 @@
 
 #include <memory>
 
+#include "src/entmax.cuh"
 #include "src/host_api.cuh"
 #include "src/paging/page_plan.cuh"
 #include "src/paging/vmm_owner.cuh"
@@ -33,6 +34,12 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  // ---- the producer's union entmax solve ----------------------------------
+  m.def("entmax_union_forward", &rola::entmax::union_forward,
+        "union entmax forward: midpoint values, read/write routes, packed support");
+  m.def("entmax_union_backward", &rola::entmax::union_backward,
+        "union entmax VJP into read/write logits");
+
   // ---- the consumer -------------------------------------------------------
   m.def("rola_consumer_forward", &rola::rola_consumer_forward,
         "RoLA consumer forward (spec §3/§5)");
