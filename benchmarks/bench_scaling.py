@@ -267,8 +267,12 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, dec
             "would be an oracle timing")
         row["BC"] = layer.state_block
         plan = layer.last_selected_plan
-        row.update({"selected_BT": plan.BT, "selected_compact": plan.compact,
-                    "selected_intra_lowering": plan.intra_lowering})
+        # `Plan.intra_lowering` and the whole crossover it drove (`INTRA_LOWERINGS`,
+        # `select_intra_lowering`) were retired at item 6b (`schedule.py` §6 docstring,
+        # 2026-08-01): there is one topology-agnostic kernel family now, so there is
+        # nothing left on this axis to record. `selected_compact` is the surviving
+        # compile-time axis this row still needs.
+        row.update({"selected_BT": plan.BT, "selected_compact": plan.compact})
         if layer.last_plan_axes is not None:
             stats = layer.last_plan_axes.stats
             # `mean_K` is over ALL (owner, tile) pairs; `mean_K_candidate` is over the
