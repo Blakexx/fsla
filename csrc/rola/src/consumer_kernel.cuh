@@ -483,6 +483,15 @@ __device__ __forceinline__ void frag_a_slot(int s, int& m, int& k) {
                                : (8 * ks + ((w >> 1) << 2) + r);
 }
 
+//: K3b's item-stream control block, named here because `consumer_smem_bytes` below
+//: has to account for it and the kernel body has to index it -- one definition, two
+//: readers. What each counter MEANS is documented with the two primitives that touch
+//: it, immediately above the kernel.
+constexpr int kCtlReadDone = 0;
+constexpr int kCtlGramDone = 1;
+constexpr int kCtlFoldClaim = 2;
+constexpr int kCtlWords = 3;
+
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound below can be
 //: DERIVED from it rather than restated next to it -- two numbers that must agree are
 //: one number too many.
@@ -564,6 +573,19 @@ constexpr size_t consumer_smem_bytes() {
   //: the aliasing argument that would have licensed the storage. Same 520 B, one
   //: fewer barrier, no alias to keep sound.
   if (COMPACT) b += (2 * static_cast<size_t>(BC) + 2) * sizeof(int);      // c_idx, c_slot, c_count
+  //: K3b's item-stream control block -- three `int`s, on EVERY arm. It is the
+  //: whole storage cost of the counter-gated phase ordering and of the fold's
+  //: fluid item pool (the item table itself is DERIVED, never stored). Named here
+  //: rather than folded into a neighbour because the launch bound is derived from
+  //: this function and a footprint that is not written down is not checkable.
+  //: READ OFF THE DRIVER, not asserted: the tightest 3-CTA arm in the matrix is
+  //: `decay + compact, BC = 64, BT = 32, DV = 32` at `3 * (32916 + 1024) = 101820`
+  //: against the SM's `102400`, i.e. **580 B of total slack**, and the three ints
+  //: cost `3 * 12 = 36 B` of it. Every other arm has more. `rola_consumer_occupancy`
+  //: returns the identical CTA count on all 32 `(decay, compact, BC, BT, DV)`
+  //: shapes before and after, which is the check that matters -- the byte count is
+  //: only the reason to expect it.
+  b += static_cast<size_t>(kCtlWords) * sizeof(int);                      // ctl
   return b;
 }
 
@@ -794,6 +816,67 @@ __device__ __forceinline__ float frag_a_get(const unsigned* Af, int m, int k) {
 //: kernel's economics (a scalar walk's trip count, a dense-panel-to-compacted COPY,
 //: a staging-ring probe, a third barrier); none of those terms exists here, which is
 //: why RULING 2 required the axis to be re-derived rather than inherited.
+// ---- K3b: THE ITEM WORK STREAM'S CONTROL BLOCK AND ITS TWO PRIMITIVES -------
+//
+// The tile's intra-CTA phase ordering is carried by COUNTERS rather than by
+// `__syncthreads()`. The point is not to spell a barrier differently: a warp that
+// reaches a phase edge early goes and executes another WORK ITEM instead of
+// stalling on a rendezvous, which is what makes the fold a fluid pool and fixes
+// r1 Finding A ("6 of 8 warps idle through the Gram").
+//
+// A WORK ITEM is one `(GEMM, warp-tile)` pair with a WHOLE `k` extent (design
+// D1.1). Full-`k` is a BIT-IDENTITY requirement and not a convenience: an item
+// fixes its own accumulation order internally, so WHICH warp runs it is
+// arithmetically irrelevant, while splitting a `k` extent would be split-K inside
+// the tile and would move `y`'s summation order. Nothing here splits one.
+//
+// The item TABLE IS DERIVED, NOT STORED (design D1.2): the fold's item count is
+// `n_mt * NT_DV` and a claimed index decodes to `(m-tile, n-tile)` by the same
+// strided arithmetic the warp loop used to walk. Cost is one `atomicAdd` per
+// claim and ZERO shared memory beyond the three counters below.
+//
+//   `kCtlReadDone`   warps that have retired the READOUT phase, i.e. finished
+//                    every read of `S` this tile makes. Gates the fold, which
+//                    WRITES `S`. (This is B6, and it is a counter, not a barrier.)
+//   `kCtlGramDone`   warps that have retired the GRAM phase. Gates phase C, which
+//                    READS `Gm`. (This is B5.)
+//   `kCtlFoldClaim`  the fold's item-claim cursor -- the fluid pool's whole state.
+//
+// Both counters count WARPS and every warp retires both UNCONDITIONALLY, which is
+// what makes the deadlock argument at the tile body's head a two-line one.
+//: RELEASE. The fence comes FIRST, so every shared store the warp made for the
+//: phase it is leaving is visible CTA-wide before the counter that advertises them
+//: moves. The `atomicAdd` is executed by lane 0 ALONE because the counters count
+//: warps -- a per-lane count would make the target a lane count and the phase fact
+//: would stop being a phase fact.
+__device__ __forceinline__ void retire_item(int* counter, int lane) {
+  __threadfence_block();
+  if (lane == 0) atomicAdd(counter, 1);
+}
+
+//: ACQUIRE. The load is `volatile` because the counter is written by OTHER warps
+//: and a cached load would spin forever; the fence comes AFTER a successful test,
+//: so no subsequent shared load of the published object can be hoisted above the
+//: observation that published it. WARP-UNIFORM by construction -- every lane loads
+//: the same address, so the predicate is identical in all 32 lanes with no shuffle.
+__device__ __forceinline__ bool eligible(const volatile int* counter, int target) {
+  const bool ok = (*counter >= target);
+  if (ok) __threadfence_block();
+  return ok;
+}
+
+//: The spin. It is written in terms of `eligible` so that the release/acquire
+//: discipline lives in exactly TWO functions and can be audited there rather than
+//: at every phase edge. `__nanosleep` backs the polling warp off the issue port so
+//: a spinning warp does not compete with the warps it is waiting for.
+__device__ __forceinline__ void await_count(const volatile int* counter, int target) {
+  while (!eligible(counter, target)) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+    __nanosleep(32);
+#endif
+  }
+}
+
 template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
           bool DECAY, bool GLOBAL, bool COMPACT>
 __global__ __launch_bounds__(
@@ -952,6 +1035,14 @@ void consumer_forward_kernel(ConsumerParams p) {
   int* c_idx = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
   int* c_slot = c_idx + (COMPACT ? BC : 0);
   int* c_count = c_slot + (COMPACT ? BC : 0);
+  // ---- K3b's CONTROL BLOCK, and it is 12 BYTES ------------------------------
+  // Three `int`s, PACKED rather than bank-separated. The separation would cost
+  // `3 * 32 * 4 = 384 B`, and the decay+compact `BC = 64` arm carries ~141 B of
+  // per-CTA residency margin -- the tightest in the kernel -- so padding the
+  // counters apart would cost a CTA to decorrelate eight `atomicAdd`s per tile.
+  // The traffic they carry is one atomic per warp per phase edge plus the fold's
+  // claim cursor, which is not a bank-conflict-shaped problem.
+  int* ctl = c_count + (COMPACT ? 2 : 0);
   static_assert(!DECAY || static_cast<size_t>(BT) * CKP * sizeof(float) <=
                               vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
                 "clk aliases the Vw region and must fit IN BYTES");
@@ -1222,6 +1313,44 @@ void consumer_forward_kernel(ConsumerParams p) {
     if (!is_read && !is_write) continue;
 
     const int t0 = tile * BT;
+    // ---- K3b: THE TILE'S CONTROL BLOCK, RESET, AND THE DEADLOCK ARGUMENT -----
+    // The reset needs no barrier of its own on EITHER side, and both halves of
+    // that are program-order facts rather than hopes:
+    //   * BEHIND it stands the previous tile's end-of-tile `__syncthreads()` (or,
+    //     for the first tile, the CTA-init one), so no warp can still be reading
+    //     last tile's counters;
+    //   * AHEAD of it stands the staging publication `__syncthreads()`, which is
+    //     unconditional and sits between this store and the first `retire_item`.
+    //     It publishes the zeroed counters on the same trip it publishes `Rf`,
+    //     `WT` and `Vw`.
+    //
+    // ---- DEADLOCK FREEDOM, as the edge DAG and the always-runnable claim -----
+    // NODES (per tile): `STAGE` (gather / clocks / row scales / the three panel
+    // builds), `A` (readout + mass term 1), `G` (Gram + `Gm` publication),
+    // `F` (fold items + mass fold), `C` (intra + mass term 2 + emission), `B7`
+    // (end of tile).
+    // EDGES, each with the mechanism that carries it:
+    //     STAGE -> A, STAGE -> G     the staging `__syncthreads()` (hardware)
+    //     A -> F                     `kCtlReadDone` reaching `kWarps` (readout
+    //                                READS `S`, the fold WRITES it)
+    //     G -> C                     `kCtlGramDone` reaching `kWarps` (`G` writes
+    //                                `Gm`, `C` reads it)
+    //     F -> B7, C -> B7           program order into the end-of-tile barrier
+    // The relation is a total order on {STAGE, {A, G}, {F, C}, B7} and therefore
+    // ACYCLIC. (`A` and `G` are unordered with respect to each other -- `G` reads
+    // `Rf` and `WT` and touches neither `S` nor `Gm`'s readers -- and so are `F`
+    // and `C`: `F` writes `S`, `C` reads `Gm`, `Vw`, `sr`, `den`, and the sets are
+    // disjoint. That is the overlap this rung exists to expose.)
+    // ALWAYS-RUNNABLE: every warp executes `retire_item` on BOTH counters
+    // unconditionally, and in program order both retirements precede both waits.
+    // So a warp blocked in `await_count` is never waiting on an increment that a
+    // blocked warp still owes: the increments are all issued before any warp can
+    // reach a wait. Both counters are monotone and both targets are `kWarps`, so
+    // every wait terminates after at most `kWarps` retirements. No `__syncthreads`
+    // is ever reached while another warp spins -- the two window-loop barriers
+    // (`!kWtPlane` only) sit strictly BETWEEN the retirements and the waits, and
+    // every warp executes the same `kNWin` iterations of that loop.
+    if (tid < kCtlWords) ctl[tid] = 0;
     // ---- 64-BIT ADDRESS ARITHMETIC, PAID ONCE PER TILE INSTEAD OF PER ELEMENT ----
     // The amplitude streams are `[BH, n_tiles, BT, pitch]`, so the row base needs 64
     // bits, but the offset WITHIN a tile does not -- it is `t * pitch + digit`,
@@ -1816,14 +1945,39 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
-    // ---- B6: THE TILE'S READ-THEN-WRITE ORDERING ON `S` ----------------------
+    // ---- B6: THE TILE'S READ-THEN-WRITE ORDERING ON `S`, AS A COUNTER --------
     // The readout (GEMM 1) and the mass column's term 1 above consumed the state at
-    // TILE ENTRY; phase B's fold advances it. This is the tile's one real
-    // read-then-write rendezvous and it stays a FULL `__syncthreads`: `S` is the one
-    // object every warp touches, so there is no subset for a named barrier to name.
-    __syncthreads();
+    // TILE ENTRY; phase B's fold advances it. That IS a real read-then-write
+    // dependence and it is not being weakened -- it is being carried by
+    // `kCtlReadDone` instead of by a rendezvous.
+    //
+    // WHY THE COUNTER IS NOT A `__syncthreads` WITH EXTRA STEPS, which is the only
+    // thing that would justify the machinery: a `__syncthreads` here orders the
+    // readout against the fold AND, as a side effect, against the GRAM -- and the
+    // Gram has no dependence on `S` at all (it reads `Rf` and `WT`). Under the
+    // barrier every warp that finished its readout stood still until the slowest
+    // one arrived; under the counter it goes and accumulates its Gram tile, and
+    // only the FOLD -- which is on the far side of the Gram in program order --
+    // waits, by which time the count is long since satisfied. The wait therefore
+    // has real work standing in front of it, which is the entire mechanism.
+    //
+    // The retirement is UNCONDITIONAL (a read-only tile retires too). That costs
+    // one atomic per warp per tile and it is what makes the deadlock argument at
+    // the head of the tile body a two-line one instead of a case analysis.
+    retire_item(&ctl[kCtlReadDone], lane);
 
-    // ---- PHASE B: the windowed {build, Gram, fold} loop (K3a) ----------------
+    // ---- PHASE B-1: the windowed {build, Gram} loop (K3a, re-split at K3b) ---
+    // K3a ran ONE window loop over `{build, Gram, fold}`. K3b splits it in two --
+    // this pass (build + Gram, warp-PINNED) and the fold's fluid claim pool below
+    // -- because the fold has no window-carried state while the Gram does. The
+    // split is bit-identical at every `C_WT_WINDOW`: `WT` is plane-allocated and
+    // the windows write disjoint rows, so running every build before any fold
+    // changes WHEN a row is written, never WHAT is in it or what reads it. It also
+    // takes the `!kWtPlane` window barrier off the fold's path entirely.
+    //
+    // A DIVIDEND, not an accident: `gd[kGTiles][4]` now DIES at the publication
+    // above the fold instead of living across it, so the fold's items are claimed
+    // at a junction with strictly less live state than K3a's loop had.
     // `WT`'s whole-plane residency was a consequence of the phase structure, not of
     // the math. GEMM 2 contracts over the LEAF axis and accumulates into ONE
     // `[BT x BT]` Gram; GEMM 4 has the leaf axis as its OUTPUT-ROW axis and writes
@@ -1910,7 +2064,84 @@ void consumer_forward_kernel(ConsumerParams p) {
               gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
         }
       }
-      // ---- GEMM 4: the boundary fold, S += W_q^T . Vw ------------------------
+    }
+
+    // ---- the Gram's causal mask and publication, ONCE, on the completed sum ---
+    // MOVED AHEAD OF THE FOLD (K3b). It always could be -- the Gram's sum is
+    // complete the instant the window loop ends and the fold neither reads nor
+    // writes `Gm` -- and doing it here is what lets the phase-C gate below be
+    // satisfied before any warp arrives at it.
+    if constexpr (NM == 1) {
+      if (mixed && warp < BT / 8) {
+        CONSUMER_D_ROWS(lane);
+        const int n0 = warp * 8;
+        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
+        gm_put(Gm[_g * GMP + c0], (c0 <= _g) ? gd[0][0] : 0.0f);
+        gm_put(Gm[_g * GMP + c1], (c1 <= _g) ? gd[0][1] : 0.0f);
+        gm_put(Gm[(_g + 8) * GMP + c0], (c0 <= _g + 8) ? gd[0][2] : 0.0f);
+        gm_put(Gm[(_g + 8) * GMP + c1], (c1 <= _g + 8) ? gd[0][3] : 0.0f);
+      }
+    } else if (mixed) {
+      CONSUMER_D_ROWS(lane);
+#pragma unroll
+      for (int q = 0; q < kGTiles; ++q) {
+        const int gt = warp + q * kWarps;
+        if (gt >= NM * (BT / 8)) break;
+        const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
+        const int n0 = gnt * 8;
+        // The causal test is on the TILE-GLOBAL token indices, so the m-block's row
+        // offset enters both sides of `u <= t`. At `NM == 1` the offset is zero and
+        // this is the mask it always was.
+        const int m0 = gmb * 16;
+        const int r0 = m0 + _g, r1 = m0 + _g + 8;
+        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
+        gm_put(Gm[r0 * GMP + c0], (c0 <= r0) ? gd[q][0] : 0.0f);
+        gm_put(Gm[r0 * GMP + c1], (c1 <= r0) ? gd[q][1] : 0.0f);
+        gm_put(Gm[r1 * GMP + c0], (c0 <= r1) ? gd[q][2] : 0.0f);
+        gm_put(Gm[r1 * GMP + c1], (c1 <= r1) ? gd[q][3] : 0.0f);
+      }
+    }
+    // ---- B5, AS A COUNTER: `Gm` is published to phase C ----------------------
+    // Retired UNCONDITIONALLY by every warp, exactly as `kCtlReadDone` is, and for
+    // the same reason: the phase fact this counter states is "no warp is still
+    // writing `Gm`", and a subset count would make the deadlock argument a case
+    // analysis over `mixed` and `NM`. The warps that hold no Gram tile retire an
+    // empty phase, which is one atomic.
+    retire_item(&ctl[kCtlGramDone], lane);
+
+    // ---- PHASE B-2: THE FOLD, AND IT IS THE TILE'S FLUID ITEM POOL -----------
+    // Lifted OUT of the window loop, and that is a STRUCTURAL move rather than a
+    // rearrangement. `WT` is plane-allocated (K3a windowed the PHASE, not the
+    // buffer), the windows write DISJOINT row ranges, and by the time the Gram
+    // pass above has finished every window every row the fold can want is built.
+    // So the fold's item space is the whole `n_mt * NT_DV` grid at once, with no
+    // window index in it at all -- which is what lets it be ONE claim pool instead
+    // of `kNWin` of them. When the buffer does narrow to the window (the next
+    // rung) this pass moves back inside the loop and the pool becomes per-window;
+    // the item decode is unchanged either way.
+    //
+    // WHY THE FOLD IS THE FLUID SET AND THE OTHER THREE GEMMs ARE NOT -- this is
+    // D0.2's requirement, stated per class rather than as a preference:
+    //   * the READOUT and the INTRA term accumulate into the SAME warp's
+    //     `y[kYTiles][4]` registers across the whole tile, so an output tile is
+    //     bound to one warp from the readout to the emission. Not claimable.
+    //   * the GRAM accumulates `gd[kGTiles][4]` across the window loop, so it is
+    //     WARP-PINNED by the same argument (D8-Q3, decided at K3a).
+    //   * the FOLD's accumulators `d0..d3` are born and die INSIDE one item. The
+    //     arbitration join therefore sits exactly where D0.2 requires it -- at an
+    //     item boundary with every accumulator dead -- and `ptxas`'s max-over-paths
+    //     at the claim is taken over a live set of the CTA/owner invariants plus
+    //     the claimed index, with no accumulator in it.
+    // Bit-identity is unaffected because the items write DISJOINT `S` elements:
+    // item `(mt, nt)` owns rows `[16 mt, 16 mt + 16)` and columns `[8 nt, 8 nt + 8)`
+    // exactly once, so which warp runs it cannot change a value, only a schedule.
+    if (is_write) {
+      // The fold WRITES `S`; the readout READ it. This is B6's dependence, and it
+      // is the ONLY wait on the tile's critical path. The Gram pass above stands
+      // between the retirement and this wait, so on a balanced tile the count is
+      // already satisfied when the first warp arrives.
+      await_count(&ctl[kCtlReadDone], kWarps);
+      // ---- GEMM 4: the boundary fold, S += W^T . Vw --------------------------
       // `W^T` is not a transpose at the fragment any more -- `WT` IS the transpose,
       // built that way. We SYNTHESISE the write coefficients rather than receive
       // them in someone else's layout, so storing them leaf-major costs exactly
@@ -1919,14 +2150,23 @@ void consumer_forward_kernel(ConsumerParams p) {
       // a `[k][n]` B operand with no orientation flag at all.
       // `[BC x BT] x [BT x DV]` -- §10i.8 (2), the move that REPLACES the shipped
       // kernel's per-visit scattered `d_v`-wide scalar accumulates.
-      if (is_write) {
-        const int mt_lo = w * kWtWindow;
-        const int mt_hi = min(n_mt, mt_lo + kWtWindow);
-        for (int wt = warp; wt < (mt_hi - mt_lo) * NT_DV; wt += kWarps) {
+      {
+        // THE ITEM TABLE IS DERIVED (D1.2): `n_fold_items` is a runtime product of
+        // two extents the CTA already holds, and a claimed index decodes to
+        // `(m-tile, n-tile)` by the same arithmetic the strided warp loop used to
+        // walk. No table, no SMEM, one `atomicAdd` per item.
+        const int n_fold_items = n_mt * NT_DV;
+        for (;;) {
+          // The claim is WARP-UNIFORM and must never become per-lane: lane 0 takes
+          // the index and broadcasts it, so all 32 lanes execute the same item and
+          // the MMA below is issued once per warp, not 32 times.
+          int c = 0;
+          if (lane == 0) c = atomicAdd(&ctl[kCtlFoldClaim], 1);
+          c = __shfl_sync(0xffffffffu, c, 0);
+          if (c >= n_fold_items) break;
           CONSUMER_D_ROWS(lane);
-          const int mr = wt / NT_DV;
-          const int mt = mt_lo + mr;
-          const int nt = wt - mr * NT_DV;
+          const int mt = c / NT_DV;
+          const int nt = c - mt * NT_DV;
           float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
           mma_tile<StageT, false, StageT, false, FOLD_PREC>(
               WT, BTP, Vw, VWP, BT, mt * 16, nt * 8, lane, d0, d1, d2, d3);
@@ -1969,15 +2209,16 @@ void consumer_forward_kernel(ConsumerParams p) {
         }
         // The mass state's own recurrence, `mass[i] += sum_t W[t, i] * scale_write[t]`
         // -- the `v := 1` column of the same fold. It exists only under `global`, and
-        // it is windowed on the SAME leaf-position axis as the fold's `m`, so the two
-        // together still cover `BC x (DV + 1)` exactly once.
+        // it runs over the SAME leaf-position axis as the fold's `m`, so the two
+        // together still cover `BC x (DV + 1)` exactly once. It is THREAD-strided
+        // rather than claimed: it is a scalar reduction with no fragment and no
+        // accumulator to strand, so the 256-thread stride already balances it and a
+        // claim would only add an atomic per row.
         if (GLOBAL) {
           // COMPACT: the reduction runs over the gathered rows and the row it writes
           // is scattered through `c_idx` -- the mass column IS the fold's `v := 1`
           // column, so it takes the same compaction and the same scatter.
-          const int q_lo = w * kWinRows;
-          const int q_hi = min(qmax, q_lo + kWinRows);
-          for (int q = q_lo + tid; q < q_hi; q += kConsumerThreads) {
+          for (int q = tid; q < qmax; q += kConsumerThreads) {
             const int i = COMPACT ? c_idx[q] : q;
             float acc = 0.0f;
             for (int t = 0; t < BT; ++t) acc += mma_src(WT[q * BTP + t]) * sw[t];
@@ -1990,41 +2231,17 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
-    // ---- the Gram's causal mask and publication, ONCE, on the completed sum ---
-    if constexpr (NM == 1) {
-      if (mixed && warp < BT / 8) {
-        CONSUMER_D_ROWS(lane);
-        const int n0 = warp * 8;
-        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
-        gm_put(Gm[_g * GMP + c0], (c0 <= _g) ? gd[0][0] : 0.0f);
-        gm_put(Gm[_g * GMP + c1], (c1 <= _g) ? gd[0][1] : 0.0f);
-        gm_put(Gm[(_g + 8) * GMP + c0], (c0 <= _g + 8) ? gd[0][2] : 0.0f);
-        gm_put(Gm[(_g + 8) * GMP + c1], (c1 <= _g + 8) ? gd[0][3] : 0.0f);
-      }
-    } else if (mixed) {
-      CONSUMER_D_ROWS(lane);
-#pragma unroll
-      for (int q = 0; q < kGTiles; ++q) {
-        const int gt = warp + q * kWarps;
-        if (gt >= NM * (BT / 8)) break;
-        const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
-        const int n0 = gnt * 8;
-        // The causal test is on the TILE-GLOBAL token indices, so the m-block's row
-        // offset enters both sides of `u <= t`. At `NM == 1` the offset is zero and
-        // this is the mask it always was.
-        const int m0 = gmb * 16;
-        const int r0 = m0 + _g, r1 = m0 + _g + 8;
-        const int c0 = n0 + 2 * _r, c1 = n0 + 2 * _r + 1;
-        gm_put(Gm[r0 * GMP + c0], (c0 <= r0) ? gd[q][0] : 0.0f);
-        gm_put(Gm[r0 * GMP + c1], (c1 <= r0) ? gd[q][1] : 0.0f);
-        gm_put(Gm[r1 * GMP + c0], (c0 <= r1) ? gd[q][2] : 0.0f);
-        gm_put(Gm[r1 * GMP + c1], (c1 <= r1) ? gd[q][3] : 0.0f);
-      }
-    }
-    // Publishes `Gm` to GEMM 3 and to the mass column's term 2. It also stands
-    // between phase B's `S` writes and nothing at all in phase C -- phase C reads
-    // `y` (registers), `Gm`, `Vw`, `sr` and `den`, none of which the fold touches.
-    __syncthreads();
+    // ---- THE PHASE-C GATE, AND WHY IT IS FREE --------------------------------
+    // `Gm` is published to GEMM 3 and to the mass column's term 2 by
+    // `kCtlGramDone`, retired above -- BEFORE the fold. So by the time a warp
+    // reaches this wait it has already run the whole fold pool, and every other
+    // warp retired the Gram phase before entering that pool. The wait is real (it
+    // is what makes the acquire fence stand between `Gm`'s stores and its loads)
+    // and it is never on the critical path, which is exactly the trade a barrier
+    // here could not make: `__syncthreads` would have ordered phase C against the
+    // FOLD as well, and the two are independent (`F` writes `S`; `C` reads `Gm`,
+    // `Vw`, `sr`, `den`).
+    await_count(&ctl[kCtlGramDone], kWarps);
 
     // ---- PHASE C ------------------------------------------------------------
     // ---- GEMM 3: the intra term, y_tile += G . Vw ---------------------------
