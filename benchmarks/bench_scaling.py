@@ -10,10 +10,34 @@ the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do 
 
 * `v3`   -- `RoLA.forward`, plan-selected per step, paging optional, `P = 1`
            (spec §6.4's primary number: no sequence-parallel split is requested,
-           so the consumer runs one block per owner).
+           so the consumer runs one block per owner). **THE READ SIDE IS DENSE AND
+           THE WRITE SIDE IS ENTMAX-SPARSE by default** (ruling 2026-08-01):
+           `candidate_frac ~ 0.2` sparse-both (item 0's cell) is the case that already
+           wins on compaction and is not what the freeze criterion is stated at; a
+           dense read is the arm the freeze is defined at, because winning on the
+           sparse-both case is the trivial one. `--read-router`/`--write-router`
+           override the two sides independently (`'softmax'` = dense, `'entmax'` =
+           sparse); the default pair (`softmax`, `entmax`) IS the parity cell.
+* `v3_sparse_both` -- the SAME arm with both sides forced `entmax`, i.e. exactly item
+           0's original cell. Kept as a DIAGNOSTIC row, labelled `cell_role` in the
+           output, never conflated with the `v3` parity row: it is the regime where
+           compaction already deletes ~80% of `(owner, tile)` pairs, which is a
+           different (easier) case than the freeze arm.
 * `fa`   -- a matched attention layer: `q/k/v` projections, causal
            `scaled_dot_product_attention`, output projection. Same
            `(B, H, L, d_model)`, `d_head = d_model / H = d_v`.
+
+**Local budget note on the dense-read arm.** A dense read walks every `(owner, tile)`
+pair instead of the sparse-both cell's ~20%, so `v3` costs roughly 5x `v3_sparse_both`'s
+consumer time at the same `L` -- and, at the planner's dense-degenerate path, can cost
+far more than 5x in PLAN time (`rewrite.md` §2.28 measured 39.03 s of plan time at
+`candidate_frac = 1`, `N = L = 65,536`). Local runs of `v3` are therefore sized to
+`L <= 16,384` under this task's 8 GiB budget, footprint printed before allocation; the
+`L = 65,536` dense-read parity cell is a RENTAL cell (A100-class), same as item 0's
+§1.8 ruling for the whole-layer call at that `L`. If even `L = 16,384` turns out
+pathological on the dense-degenerate planner path locally, that number is reported as
+measured and stands as the dense-saturation lever's motivation (§2.x of the roadmap) --
+it is not worked around.
 
 The V3 forward is additionally decomposed into PLANES (producer / planner / consumer)
 on identical inputs, exactly as `benchmark_rola_v3_layer.py` does, so an at-scale row
@@ -232,11 +256,23 @@ def _addressing(branches, d_v, norm, read_levels, write_levels) -> dict:
     }
 
 
-def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, decay_on,
-                paging, planes: bool, reps, warmup, state_block=None) -> dict:
-    side = "sparse" if router == "entmax" else "dense"
-    row = {"arm": "v3", "L": L, "B": B, "H": H, "d_v": d_v, "hidden": hidden,
-           "branches": list(branches), "router": router, "logit_gain": logit_gain,
+def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, logit_gain,
+                norm, decay_on, paging, planes: bool, reps, warmup, state_block=None,
+                arm="v3", cell_role="parity") -> dict:
+    """`read_router`/`write_router` are independent (`'softmax'` = dense, `'entmax'`
+    = exact entmax sparse), per the 2026-08-01 ruling: the freeze-defining parity
+    cell is read-DENSE / write-SPARSE, not the sparse-both cell item 0 measured.
+    `arm`/`cell_role` label the row so a dense-read parity row and a sparse-both
+    diagnostic row (both produced by this same function) are never confused for
+    each other downstream.
+    """
+    def side(router: str) -> str:
+        return "sparse" if router == "entmax" else "dense"
+
+    row = {"arm": arm, "cell_role": cell_role, "L": L, "B": B, "H": H, "d_v": d_v,
+           "hidden": hidden, "branches": list(branches),
+           "read_router": read_router, "write_router": write_router,
+           "logit_gain": logit_gain,
            "norm": norm, "decay": "LeafMassDecay" if decay_on else "None",
            "paging": paging, "P": 1, "P_role": "PRIMARY (spec §6.4)",
            "requested_state_block": state_block,
@@ -247,7 +283,8 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, router, logit_gain, norm, dec
                      levels_per_head=len(branches), states_per_level=branches,
                      decay="leaf_mass" if decay_on else "none", state_norm=norm,
                      level_routing_configs=LevelRoutingConfig(
-                         read=side, write=side, tied=False, alpha=1.5),
+                         read=side(read_router), write=side(write_router),
+                         tied=False, alpha=1.5),
                      paging=paging, state_block=state_block,
                      layer_idx=0).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
@@ -402,7 +439,14 @@ def main() -> None:
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--head-v-dim", type=int, default=64)
     ap.add_argument("--branches", default="8,16")
-    ap.add_argument("--router", choices=("softmax", "entmax"), default="entmax")
+    ap.add_argument("--read-router", choices=("softmax", "entmax"), default="softmax",
+                    help="the `v3` arm's read side. Default 'softmax' (dense) -- the "
+                         "2026-08-01 ruling: the freeze-defining parity cell is "
+                         "read-dense/write-sparse, not the sparse-both cell item 0 "
+                         "measured (winning sparse-both is the trivial case).")
+    ap.add_argument("--write-router", choices=("softmax", "entmax"), default="entmax",
+                    help="the `v3` arm's write side. Default 'entmax' (sparse); see "
+                         "--read-router.")
     ap.add_argument("--logit-gain", type=float, default=8.0,
                     help="scales route_W to sharpen an UNTRAINED exact-entmax router into a "
                          "real sparse support; the support is genuine, its LEVEL is a "
@@ -419,7 +463,11 @@ def main() -> None:
     ap.add_argument("--paging", action="store_true")
     ap.add_argument("--planes", action="store_true",
                     help="decompose the V3 forward per plane (producer/planner/consumer)")
-    ap.add_argument("--arms", default="v3,fa_flash,fa_efficient")
+    ap.add_argument("--arms", default="v3,v3_sparse_both,fa_flash,fa_efficient",
+                    help="'v3' = the parity cell (--read-router/--write-router, default "
+                         "dense-read/sparse-write). 'v3_sparse_both' = the SAME cell "
+                         "with both sides forced entmax -- item 0's original cell, kept "
+                         "as a labelled diagnostic row, not the freeze arm.")
     ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--json", default=None)
@@ -438,11 +486,25 @@ def main() -> None:
         for arm in arms:
             if arm == "v3":
                 row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
-                                  router=args.router, logit_gain=args.logit_gain,
+                                  read_router=args.read_router, write_router=args.write_router,
+                                  logit_gain=args.logit_gain,
                                   norm=args.norm, decay_on=(args.decay == "leaf_mass"),
                                   paging=args.paging, planes=args.planes,
                                   reps=args.reps, warmup=args.warmup,
-                                  state_block=args.state_block)
+                                  state_block=args.state_block,
+                                  arm="v3", cell_role="parity (read-dense/write-sparse, "
+                                  "the freeze-defining arm)")
+            elif arm == "v3_sparse_both":
+                row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
+                                  read_router="entmax", write_router="entmax",
+                                  logit_gain=args.logit_gain,
+                                  norm=args.norm, decay_on=(args.decay == "leaf_mass"),
+                                  paging=args.paging, planes=args.planes,
+                                  reps=args.reps, warmup=args.warmup,
+                                  state_block=args.state_block,
+                                  arm="v3_sparse_both",
+                                  cell_role="DIAGNOSTIC: sparse-both (item 0's original "
+                                  "cell; compaction already wins here, not the freeze arm)")
             elif arm.startswith("fa_"):
                 backend = arm[3:]
                 dtype = torch.bfloat16 if backend == "flash" else torch.float32
