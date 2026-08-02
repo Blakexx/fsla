@@ -38,7 +38,7 @@ import torch
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
 from rola.ops.consumer import _consumer_forward
-from rola.planner.schedule import Plan, build_clock_stream, build_schedule, dense_limit_lowering, select_plan
+from rola.planner.schedule import Plan, build_clock_stream, build_schedule, select_plan
 from rola.routing.producer import produce_routing
 
 # V2 whole-layer medians (ms) from `20260728-stage0/baseline.md` §3 at this exact
@@ -176,15 +176,16 @@ def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
 
 
 def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
-        logit_gain: float = 1.0, lowerings: tuple[str, ...] = ("realized_leaf",),
+        logit_gain: float = 1.0,
         BC: int = 16, decays: tuple[bool, ...] = (False, True),
         BT: int = 32, compact: bool = True) -> list[dict]:
-    """Sweep the four (decay, norm) cells, and `lowerings` within each.
+    """Sweep the four (decay, norm) cells.
 
-    `lowerings` names the CHOICE, not the symbol: a requested dense limit is
-    translated to the arm's own (`gram` under `decay = None`, `panel` under
-    LeafMassDecay), because the cross pairings are rejected by contract. Passing
-    `realized_leaf,gram` therefore benchmarks the crossover on BOTH arms.
+    **THE `intra_lowering` AXIS IS GONE** (item 6b, 2026-08-01, `schedule.py` §6
+    docstring): `INTRA_LOWERINGS`/`select_intra_lowering`/`crossover_intra_lowering`/
+    `dense_limit_lowering`/`Plan.intra_lowering` were all retired -- there is one
+    topology-agnostic kernel family now, so this used to sweep `lowerings` within
+    each (decay, norm) cell and no longer does; one `Plan` per cell.
 
     `router` selects the routing ACTIVATION, which is the axis that decides FILL:
 
@@ -251,59 +252,42 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
             # cells.
             selected, axes = select_plan(read_levels, write_levels, topology, BC,
                                             normalization=norm, decay=decay_on)
-            # The intra lowering is ARM-SPECIFIC by contract (spec §7.4.1): the
-            # dense limit is `gram` under `decay = None` and `panel` under
-            # LeafMassDecay, and `Plan` REJECTS both cross pairings. So the
-            # sweep is TRANSLATED per arm rather than restricted to
-            # `realized_leaf` on the decay side (which is what it did while
-            # `panel` was unimplemented, and which made the decay arm's lowering
-            # axis unbenchmarkable): a requested `gram` becomes `panel` on the
-            # decay arm, and vice versa. `realized_leaf` means the token-
-            # sequential walk there -- spec §7.4.1's own reading of the name.
-            cell_lowerings = tuple(dict.fromkeys(
-                dense_limit_lowering(decay_on) if low in ("gram", "panel") else low
-                for low in lowerings))
-            for lowering in cell_lowerings:
-                plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
-                              warp_tile=(1, d_v // 32), decay=decay_on,
-                              intra_lowering=lowering, compact=compact)
-                sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
+            plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
+                          warp_tile=(1, d_v // 32), decay=decay_on, compact=compact)
+            sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
-                def consume(plan=plan, sched=sched):
-                    return _consumer_forward(v, read_levels, write_levels, g_read,
-                                               g_write, plan, decay=decay, schedule=sched)
+            def consume(plan=plan, sched=sched):
+                return _consumer_forward(v, read_levels, write_levels, g_read,
+                                           g_write, plan, decay=decay, schedule=sched)
 
-                consume()
-                row = {
-                    "router": router, "logit_gain": logit_gain,
-                    "decay": "LeafMassDecay" if decay_on else "None", "norm": norm,
-                    "intra_lowering": lowering,
-                    "compact": compact,
-                    "BT": BT,
-                    "plan_selected": bool(
-                        (BT, compact, lowering)
-                        == (selected.BT, selected.compact, selected.intra_lowering)),
-                    "selected_BT": selected.BT,
-                    "selected_compact": selected.compact,
-                    "selected_intra_lowering": selected.intra_lowering,
-                    "selected_cost_per_token": round(axes.cost_per_token, 3),
-                    "consumer_ms": round(_median_ms(consume, reps, warmup), 4),
-                    "schedule_ms": round(_median_ms(
-                        lambda: build_schedule(read_levels, write_levels, g_read,
-                                                  g_write, plan), reps, warmup), 4),
-                    "clock_ms": round(_median_ms(
-                        lambda: build_clock_stream(write_levels, write_levels, plan),
-                        reps, warmup), 4) if decay_on else 0.0,
-                    "producer_ms": round(_median_ms(produce, reps, warmup), 4),
-                    "active_owners": int(sched.owners.shape[0]),
-                    "owners_total": topology.N // BC * B * H,
-                    "schedule_kib": round(sched.schedule_bytes() / 1024, 1),
-                    "stream_mib": round(sched.stream_bytes() / 2 ** 20, 2),
-                    **_fill(read_levels, write_levels, topology.N, BC),
-                    **_compacted_rows(read_levels, write_levels, plan),
-                }
-                rows.append(row)
-                print(json.dumps(row), flush=True)
+            consume()
+            row = {
+                "router": router, "logit_gain": logit_gain,
+                "decay": "LeafMassDecay" if decay_on else "None", "norm": norm,
+                "compact": compact,
+                "BT": BT,
+                "plan_selected": bool(
+                    (BT, compact) == (selected.BT, selected.compact)),
+                "selected_BT": selected.BT,
+                "selected_compact": selected.compact,
+                "selected_cost_per_token": round(axes.cost_per_token, 3),
+                "consumer_ms": round(_median_ms(consume, reps, warmup), 4),
+                "schedule_ms": round(_median_ms(
+                    lambda: build_schedule(read_levels, write_levels, g_read,
+                                              g_write, plan), reps, warmup), 4),
+                "clock_ms": round(_median_ms(
+                    lambda: build_clock_stream(write_levels, write_levels, plan),
+                    reps, warmup), 4) if decay_on else 0.0,
+                "producer_ms": round(_median_ms(produce, reps, warmup), 4),
+                "active_owners": int(sched.owners.shape[0]),
+                "owners_total": topology.N // BC * B * H,
+                "schedule_kib": round(sched.schedule_bytes() / 1024, 1),
+                "stream_mib": round(sched.stream_bytes() / 2 ** 20, 2),
+                **_fill(read_levels, write_levels, topology.N, BC),
+                **_compacted_rows(read_levels, write_levels, plan),
+            }
+            rows.append(row)
+            print(json.dumps(row), flush=True)
             layer = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
             torch.cuda.empty_cache()
     return rows
@@ -334,25 +318,19 @@ def main() -> None:
                          "degeneracy. Both are exact; the pair is the A/B the plan-time "
                          "selection is priced from")
     ap.add_argument("--decays", default="0,1", help="comma-separated 0/1 decay arms to run")
-    ap.add_argument("--lowerings", default="realized_leaf",
-                    help="comma-separated intra lowerings to sweep. A dense limit is "
-                         "translated to the arm's own (gram under decay=None, panel "
-                         "under LeafMassDecay), so 'realized_leaf,gram' sweeps the "
-                         "crossover on BOTH arms")
     args = ap.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("this benchmark requires CUDA")
     torch.manual_seed(0)
     rows = run(reps=args.reps, warmup=args.warmup, L=args.seq_len, router=args.router,
                logit_gain=args.logit_gain,
-               lowerings=tuple(s.strip() for s in args.lowerings.split(",")),
                BC=args.BC, BT=args.BT, compact=bool(args.compact),
                decays=tuple(bool(int(s)) for s in args.decays.split(",")))
 
     print(f"\n=== V3 consumer, per plane (ms, median) — router={args.router} "
           f"logit_gain={args.logit_gain} ===")
     for r in rows:
-        print(f"decay={r['decay']:14s} norm={r['norm']:7s} intra={r['intra_lowering']:14s} "
+        print(f"decay={r['decay']:14s} norm={r['norm']:7s} "
               f"consumer={r['consumer_ms']:8.3f} "
               f"schedule={r['schedule_ms']:8.3f} clock={r['clock_ms']:6.3f} "
               f"producer={r['producer_ms']:7.3f} | A_r={r['A_r']} A_w={r['A_w']} "
