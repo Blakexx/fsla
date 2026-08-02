@@ -139,40 +139,55 @@ def ptxas_version() -> str:
     return " ".join(proc.stdout.split())
 
 
-def manifest_path() -> Path:
-    """Today: one file for all ratified archs.
+def manifest_path(arch: str) -> Path:
+    """ONE FILE PER ARCH (§3.7), so rule 3 is a FILE-EXISTENCE question.
 
-    ``docs/open-work.md`` W4 splits it into ``sm_80.json`` / ``sm_86.json`` so that
-    'does arch X have a ratified manifest?' becomes a file-existence question. Until
-    that lands the same question is asked of the entry keys, which are prefixed
-    ``sm_XX:`` -- a strictly equivalent check, just not a cheap one.
+    That matters because rule 3 runs BEFORE the compile: the cheapest possible check
+    is the one that must never be tempting to skip. It also makes a new
+    architecture's bring-up one reviewable file in a PR rather than a diff inside a
+    thousand-line document nobody reads to the end.
     """
-    return MANIFEST_DIR / "_all_archs.json"
+    return MANIFEST_DIR / f"sm_{arch}.json"
 
 
 def _gate_ratified(archs: list[str]) -> dict:
-    path = manifest_path()
-    if not path.exists():
-        raise RuntimeError(
-            f"CLOSED-WORLD RULE 3: no ratified manifest at {path}. Ratify first:\n"
-            f"    python tools/ratify.py --write\n"
-            f"and record why the numbers are what they are (docs/bringup.md). "
-            f"Building an architecture nobody measured is the failure this rule "
-            f"exists to prevent."
-        )
-    manifest = json.loads(path.read_text())
-    entries = manifest["entries"]
+    """RULE 3: every arch in the fatbin has a ratified manifest, and they agree.
+
+    Returns the MERGED record -- the union of exactly the archs being built, which is
+    what ``manifest_sha256`` must then describe. A wheel built for one arch is gated
+    against one arch's measurements, and its recorded digest says so.
+    """
+    toolchain = None
+    entries: dict = {}
     for a in archs:
-        prefix = f"sm_{a}:"
-        n = sum(1 for k in entries if k.startswith(prefix))
-        if n == 0:
+        path = manifest_path(a)
+        if not path.exists():
             raise RuntimeError(
-                f"CLOSED-WORLD RULE 3: sm_{a} is in ROLA_CUDA_ARCHS but {path} has no "
-                f"ratified entries for it. Ratify it first:\n"
-                f"    python tools/ratify.py --write"
+                f"CLOSED-WORLD RULE 3: sm_{a} is in ROLA_CUDA_ARCHS but there is no "
+                f"ratified manifest at {path}. Ratify it first:\n"
+                f"    python tools/ratify.py --arch {a} --write\n"
+                f"and record why the numbers are what they are (docs/bringup.md). "
+                f"Building an architecture nobody measured is the failure this rule "
+                f"exists to prevent."
             )
-        print(f"rule 3 OK  sm_{a}: {n} ratified instantiations")
-    return manifest
+        blob = json.loads(path.read_text())
+        if not blob["entries"]:
+            raise RuntimeError(
+                f"CLOSED-WORLD RULE 3: {path} exists but ratifies NOTHING. File "
+                f"existence is the cheap form of the question, not a weaker one."
+            )
+        if toolchain is None:
+            toolchain = blob["toolchain"]
+        elif blob["toolchain"] != toolchain:
+            raise RuntimeError(
+                f"CLOSED-WORLD RULE 1: {path.name} pins a different assembler than the "
+                f"other manifests. The per-arch split is a FILING decision; one fatbin "
+                f"may not be gated against two ratifications."
+            )
+        entries.update(blob["entries"])
+        print(f"rule 3 OK  sm_{a}: {len(blob['entries'])} ratified instantiations "
+              f"({path.name})")
+    return {"toolchain": toolchain, "entries": entries}
 
 
 def _gate_toolchain(manifest: dict) -> str:
@@ -302,8 +317,13 @@ class RoLABuildExtension(BuildExtension):
             print("post-build ratification SKIPPED (ROLA_SKIP_POST_BUILD_RATIFY=1)")
             return
         print("post-build: re-running the ratification gate ...")
-        proc = subprocess.run([sys.executable, str(ROOT / "tools" / "ratify.py")],
-                              cwd=str(ROOT))
+        #: EXACTLY the archs being built, passed explicitly. The gate has its own
+        #: default arch list, and a default that silently differed from
+        #: ``ROLA_CUDA_ARCHS`` would ratify a fatbin nobody produced.
+        cmd = [sys.executable, str(ROOT / "tools" / "ratify.py")]
+        for a in ROLA_CUDA_ARCHS:
+            cmd += ["--arch", a]
+        proc = subprocess.run(cmd, cwd=str(ROOT))
         if proc.returncode != 0:
             raise RuntimeError(
                 "post-build ratification FAILED: the built sources no longer match "

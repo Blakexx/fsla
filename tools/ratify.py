@@ -42,22 +42,34 @@ reason they moved.
 Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the lock):
 
     python tools/ratify.py
-    python tools/ratify.py --write
+    python tools/ratify.py --arch 80 --arch 86
+    python tools/ratify.py --arch 89 --write        # bringing up a new architecture
 
-`--self-test` re-checks the parsed result against a deliberately tightened manifest, and
-re-checks the real `ptxas` version against a deliberately perturbed one, and requires
-that the gate FAILS on BOTH -- which is what makes a green run mean something: a gate
-that cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
+`--self-test` requires the gate to FAIL on four things it must reject: a deliberately
+tightened manifest, a deliberately perturbed `ptxas` version, an arch with no committed
+manifest, and a per-arch split that does not rejoin to one digest. That is what makes a
+green run mean something: a gate that cannot fail is not a gate (`rewrite.md`'s vacuity
+discipline, applied to itself).
 
-MANIFEST FORMAT: `{"toolchain": {"ptxas": <version string>}, "entries": {<mangled
-name>: {...}}}`. The toolchain block is a sibling of the entries rather than a reserved
-key inside them, so an instantiation can never be confused for metadata by a name that
-happens to collide.
+MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH (§3.7), each
+`{"toolchain": {"ptxas": <version string>}, "entries": {<mangled name>: {...}}}`. The
+toolchain block is a sibling of the entries rather than a reserved key inside them, so
+an instantiation can never be confused for metadata by a name that happens to collide.
+
+**WHY PER ARCH.** *"Does arch X have a ratified manifest?"* becomes a file-existence
+question, which is what `setup.py`'s rule-3 gate needs to ask before it compiles
+anything; a new architecture's bring-up is then one reviewable file in a PR instead of a
+1024-line diff; and an `--arch 89` run cannot restate measurements it did not take. The
+SPLIT IS FILING ONLY, and that is checked rather than asserted: the digest
+`_build_config.py` records is taken over the merged canonical record, so N files hash to
+exactly what one file hashed to (`--self-test`, last arm).
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -65,25 +77,96 @@ import sysconfig
 import time
 from pathlib import Path
 
-#: ONE toolchain location for both binaries. `nvcc` drives the compile and `ptxas` is
-#: the assembler it invokes and whose report this gate parses, so reading the version
-#: from a DIFFERENT `ptxas` than the one that produced the numbers would defeat the
-#: check it exists to make. Deriving both from one constant is what makes that
-#: impossible rather than merely unlikely.
-CUDA_BIN = Path("/usr/local/cuda/bin")
-NVCC = CUDA_BIN / "nvcc"
-PTXAS = CUDA_BIN / "ptxas"
+
+def cuda_bin(tool: str) -> str:
+    """ONE toolchain location for both binaries, resolved the way the BUILD resolves it.
+
+    `nvcc` drives the compile and `ptxas` is the assembler it invokes and whose
+    report this gate parses, so reading the version from a DIFFERENT `ptxas` than
+    the one that produced the numbers would defeat the check it exists to make.
+    Deriving both from one function is what makes that impossible rather than merely
+    unlikely -- and the resolution order is `setup.py`'s, because the manifest must
+    describe the assembler the EXTENSION will be built with: torch's `CUDA_HOME`
+    first, then `$CUDA_HOME`, then the conventional prefix as a last resort. The
+    hard-coded `/usr/local/cuda` this replaces would silently ratify a different
+    assembler than the build uses on any host with a versioned or relocated toolkit.
+    """
+    try:
+        from torch.utils.cpp_extension import CUDA_HOME
+    except ImportError:
+        CUDA_HOME = None
+    home = CUDA_HOME or os.environ.get("CUDA_HOME") or "/usr/local/cuda"
+    return str(Path(home) / "bin" / tool)
+
 
 PROBE = Path(__file__).with_name("probe_launch_bounds.cu")
-MANIFEST = Path(__file__).resolve().parent / "manifests" / "_all_archs.json"
+MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 
 #: The extension's own `-gencode` targets (`setup.py`'s `ROLA_CUDA_ARCHS`, default
-#: `80;86`). BOTH are probed, because both are in the
-#: shipped fat binary and the two allocators reach different answers: sm_80 admits
-#: more CTAs by shared memory, so its bound is a different number and its spill
-#: profile is a different measurement.
-ARCHES = ("80", "86")
+#: `80;86`), overridable per run with `--arch`. BOTH are probed by default, because
+#: both are in the shipped fat binary and the two allocators reach different
+#: answers: sm_80 admits more CTAs by shared memory, so its bound is a different
+#: number and its spill profile is a different measurement.
+DEFAULT_ARCHES = ("80", "86")
+
+
+def manifest_path(arch: str) -> Path:
+    """ONE FILE PER ARCH (§3.7).
+
+    *"Does arch X have a ratified manifest?"* is then a FILE-EXISTENCE question --
+    which is what `setup.py`'s rule-3 gate needs to ask before it compiles anything,
+    and what makes a new-architecture bring-up a single reviewable file in a PR
+    rather than a 1024-line diff nobody can read. The union of the files is the
+    ratification; `load_manifest` is the only thing that forms it.
+    """
+    return MANIFEST_DIR / f"sm_{arch}.json"
+
+
+def load_manifest(arches) -> dict:
+    """The per-arch files, read as ONE ratification record.
+
+    Every file must pin the SAME assembler. A manifest whose halves were ratified
+    under different `ptxas` builds is not one ratification, and silently merging
+    them would produce a record that describes no binary that was ever built.
+    """
+    toolchain = None
+    entries: dict[str, dict] = {}
+    for arch in arches:
+        path = manifest_path(arch)
+        if not path.exists():
+            raise SystemExit(
+                f"no ratified manifest for sm_{arch} at {path}; run\n"
+                f"    python tools/ratify.py --arch {arch} --write\n"
+                f"and put the numbers in the findings document")
+        blob = json.loads(path.read_text())
+        if toolchain is None:
+            toolchain = blob["toolchain"]
+        elif blob["toolchain"] != toolchain:
+            raise SystemExit(
+                f"{path.name} pins a different assembler than the other manifests:\n"
+                f"    {blob['toolchain']['ptxas']}\n"
+                f"    {toolchain['ptxas']}\n"
+                "The per-arch SPLIT is a filing decision; it may not become a split "
+                "TOOLCHAIN. Re-ratify every arch under one assembler.")
+        for key, value in blob["entries"].items():
+            if key in entries:
+                raise SystemExit(f"{key} is ratified in two files")
+            entries[key] = value
+    return {"toolchain": toolchain, "entries": entries}
+
+
+def manifest_digest(manifest: dict) -> str:
+    """The digest `setup.py` stamps into `_build_config.py`.
+
+    Canonical JSON of `{toolchain, entries}` with sorted keys -- NOT the bytes of
+    any file -- so the digest is a property of the RATIFICATION and not of its
+    filing. That is what makes §3.7's split provably non-semantic: the same 1024
+    measurements in two files hash to what they hashed to in one.
+    """
+    blob = json.dumps({"toolchain": manifest["toolchain"], "entries": manifest["entries"]},
+                      sort_keys=True).encode()
+    return hashlib.sha256(blob).hexdigest()
 
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+)'")
 SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
@@ -91,7 +174,7 @@ REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
 
-def _nvcc_command() -> list[str]:
+def _nvcc_command(arches) -> list[str]:
     """The extension's own compile flags, taken from torch rather than restated.
 
     Restating them would let this gate compile the probe under different flags than
@@ -100,7 +183,7 @@ def _nvcc_command() -> list[str]:
     """
     import torch.utils.cpp_extension as ext
 
-    cmd = [str(NVCC), "-c", str(PROBE), "-o", "/dev/null",
+    cmd = [cuda_bin("nvcc"), "-c", str(PROBE), "-o", "/dev/null",
            f"-I{SRC}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-isystem", inc]
@@ -108,7 +191,7 @@ def _nvcc_command() -> list[str]:
     cmd += ["-D_GLIBCXX_USE_CXX11_ABI=0", "-D__CUDA_NO_HALF_OPERATORS__",
             "-D__CUDA_NO_HALF_CONVERSIONS__", "-D__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "-D__CUDA_NO_HALF2_OPERATORS__", "--expt-relaxed-constexpr"]
-    for a in ARCHES:
+    for a in arches:
         cmd.append(f"-gencode=arch=compute_{a},code=sm_{a}")
     cmd += ["-O3", "-std=c++17", "-lineinfo", "--threads=2", "-Xptxas", "-v"]
     return cmd
@@ -123,10 +206,11 @@ def ptxas_version() -> str:
     release number says nothing changed. Normalizing whitespace makes the comparison
     insensitive to line endings and nothing else.
     """
-    proc = subprocess.run([str(PTXAS), "--version"], capture_output=True, text=True)
+    ptxas = cuda_bin("ptxas")
+    proc = subprocess.run([ptxas, "--version"], capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
-        raise SystemExit(f"`{PTXAS} --version` FAILED (rc={proc.returncode}); the gate "
+        raise SystemExit(f"`{ptxas} --version` FAILED (rc={proc.returncode}); the gate "
                          f"cannot ratify a manifest against an assembler it cannot ask")
     return " ".join(proc.stdout.split())
 
@@ -147,16 +231,17 @@ def check_toolchain(got: str, want: str) -> bool:
     return False
 
 
-def compile_and_parse() -> tuple[dict, list[str]]:
+def compile_and_parse(arches) -> tuple[dict, list[str]]:
     """Compile the probe and read `ptxas`'s report. Returns (entries, unhonored)."""
-    cmd = _nvcc_command()
+    cmd = _nvcc_command(arches)
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, capture_output=True, text=True)
     wall = time.perf_counter() - t0
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"probe compile FAILED (rc={proc.returncode})")
-    print(f"probe compiled in {wall:.1f} s over {len(ARCHES)} targets")
+    print(f"probe compiled in {wall:.1f} s over {len(arches)} targets "
+          f"({', '.join('sm_' + a for a in arches)})")
 
     entries: dict[str, dict] = {}
     unhonored = sorted(set(OUT_OF_RANGE.findall(proc.stderr)))
@@ -247,22 +332,39 @@ def main() -> int:
     ap.add_argument("--self-test", action="store_true",
                     help="prove the gate can fail, by re-checking against a "
                          "deliberately tightened manifest")
+    ap.add_argument("--arch", action="append", metavar="XX",
+                    help="a compute capability to probe and ratify, repeatable "
+                         f"(default: {' '.join(DEFAULT_ARCHES)}). One manifest file "
+                         "per arch, so bringing up a new one touches no other arch's "
+                         "measurements.")
     a = ap.parse_args()
 
+    arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
+
     version = ptxas_version()
-    entries, unhonored = compile_and_parse()
+    entries, unhonored = compile_and_parse(arches)
     if a.write:
-        MANIFEST.write_text(json.dumps(
-            {"toolchain": {"ptxas": version},
-             "entries": dict(sorted(entries.items()))}, indent=1) + "\n")
-        print(f"wrote {MANIFEST} ({len(entries)} instantiations, "
-              f"{len(unhonored)} unhonored bounds) under ptxas: {version}")
+        #: WRITTEN PER ARCH, from the one compile. Splitting here rather than at
+        #: read time is what keeps `sm_86.json` untouched by an `--arch 80` run:
+        #: a bring-up must not restate measurements it did not take.
+        for arch in arches:
+            prefix = f"sm_{arch}:"
+            mine = {k: v for k, v in sorted(entries.items()) if k.startswith(prefix)}
+            if not mine:
+                raise SystemExit(
+                    f"the probe reported NO entries for sm_{arch}; refusing to write "
+                    f"an empty ratification. A manifest that exists but measures "
+                    f"nothing would pass rule 3 by file existence alone.")
+            path = manifest_path(arch)
+            path.write_text(json.dumps(
+                {"toolchain": {"ptxas": version}, "entries": mine}, indent=1) + "\n")
+            print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
+        print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
         return 0
-    if not MANIFEST.exists():
-        raise SystemExit(f"no committed manifest at {MANIFEST}; run --write and put "
-                         f"the numbers in the findings document")
-    manifest = json.loads(MANIFEST.read_text())
+    manifest = load_manifest(arches)
     want = manifest["entries"]
+    print(f"manifest sha256 {manifest_digest(manifest)}  "
+          f"({len(want)} entries over {', '.join('sm_' + x for x in arches)})")
     #: THE TOOLCHAIN CHECK RUNS FIRST AND ITS RESULT IS ANDed IN, rather than
     #: short-circuiting: on a version bump the entry-level report is still the most
     #: useful thing to print (it shows WHAT the new assembler did), and printing it
@@ -302,6 +404,36 @@ def main() -> int:
             return 1
         print("\nSELF-TEST PASSED: the gate rejects an assembler it was not ratified "
               "under")
+
+        #: NON-VACUITY OF THE PER-ARCH SPLIT (§3.7). Rule 3 is now a FILE-EXISTENCE
+        #: question, and a question whose answer is always yes is not a gate: an arch
+        #: nobody ratified must RAISE, not merge into an empty entry set that then
+        #: passes every comparison below it vacuously.
+        print("\n--- SELF-TEST: an arch with no committed manifest\n"
+              "    (this lookup MUST fail) ---")
+        try:
+            load_manifest(("999",))
+        except SystemExit as exc:
+            print(f"SELF-TEST PASSED: {str(exc).splitlines()[0]}")
+        else:
+            print("\nSELF-TEST FAILED: an UNRATIFIED arch loaded as though it were "
+                  "ratified; rule 3 would pass on a manifest that does not exist")
+            return 1
+
+        #: NON-VACUITY OF THE SPLIT'S CLAIM TO BE NON-SEMANTIC. The digest is over
+        #: the merged canonical record, so two files must hash to what one file hashed
+        #: to. If the filing could move the digest, `_build_config.py`'s
+        #: `manifest_sha256` would stop identifying the ratification and start
+        #: identifying a directory listing.
+        halves = [load_manifest((x,)) for x in arches]
+        rejoined = {"toolchain": halves[0]["toolchain"],
+                    "entries": {k: v for h in halves for k, v in h["entries"].items()}}
+        if manifest_digest(rejoined) != manifest_digest(manifest):
+            print("\nSELF-TEST FAILED: the per-arch files do not rejoin to the same "
+                  "record; the split is not filing-only")
+            return 1
+        print(f"SELF-TEST PASSED: {len(arches)} per-arch files rejoin to one digest "
+              f"{manifest_digest(rejoined)[:16]}...")
     return 0 if ok else 1
 
 
