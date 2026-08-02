@@ -1,8 +1,21 @@
 import inspect
+import pathlib
+import sys
 from unittest.mock import patch
 
 import pytest
 import torch
+
+# `benchmarks/` on the path, so the bench PACKAGES import by their own names -- the
+# repository's existing convention (`benchmarks/bench_regression.py` inserts the same
+# directory and imports `bench.cells`). It is needed here because
+# `THUNDER_RUN_SPEC.md` §6 P4 relocated the planner's exact census, its cost model and
+# its `(BT, compact)` argmin to `benchmarks/planner_calibration/`, and the gates that
+# bind those constants necessarily still call them. The runtime does not: `rola`
+# imports nothing from here, which is what the relocation exists to achieve.
+_BENCHMARKS = pathlib.Path(__file__).resolve().parents[1] / "benchmarks"
+if _BENCHMARKS.is_dir() and str(_BENCHMARKS) not in sys.path:
+    sys.path.insert(0, str(_BENCHMARKS))
 
 try:
     from torch.compiler import is_compiling

@@ -20,16 +20,28 @@ from __future__ import annotations
 import inspect
 import itertools
 import math
+import pathlib
 from math import prod
 
 import pytest
 import torch
+from planner_calibration.census import resolve_census, summary_fractions, tile_union_census
+from planner_calibration.cost_model import (
+    _STATS_OWNER_CHUNK_ELEMS,
+    TileUnionStats,
+    _tile_union_stats_multi,
+    _tile_union_stats_multi_enumerated,
+    plan_and_schedule,
+    plan_cost_per_token,
+    plan_waves,
+    select_plan,
+    select_plan_axes,
+    tile_union_stats,
+)
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from rola.planner.census import resolve_census, summary_fractions, tile_union_census
 from rola.planner.feeder import FeederFlags
 from rola.planner.schedule import (
-    _STATS_OWNER_CHUNK_ELEMS,
     _SUPPORTED_BT,
     CP_ASYNC_ROW_BYTES,
     DEFAULT_SM_COUNT,
@@ -38,24 +50,15 @@ from rola.planner.schedule import (
     LevelSupportStats,
     Plan,
     StaticDensity,
-    TileUnionStats,
-    _tile_union_stats_multi,
-    _tile_union_stats_multi_enumerated,
     build_clock_stream,
     build_schedule,
     leaf_rate_dials,
     owner_geometry,
     permuted_topology,
-    plan_and_schedule,
-    plan_cost_per_token,
-    plan_waves,
     rank_spans,
     routing_views,
-    select_plan,
-    select_plan_axes,
     span_score,
     spanned_moduli,
-    tile_union_stats,
     unpack_bits,
 )
 from rola.planner.select import (
@@ -65,6 +68,7 @@ from rola.planner.select import (
     derived_pack_breakeven,
     feasible_bc,
     largest_feasible_bc,
+    pack_breakeven,
     quanta_per_owner,
     select_config,
     select_config_with_evidence,
@@ -990,7 +994,7 @@ def test_the_residual_intra_only_compact_saving_can_never_pay_at_any_instantiati
     far enough to make one reachable, this fails loudly instead of the exclusion
     silently becoming an approximation.
     """
-    from rola.planner.schedule import (
+    from planner_calibration.cost_model import (
         GATHER_CANDIDATE_FIXED_WORK,
         GATHER_CANDIDATE_QUANTUM_WORK,
         INTRA_GRAM_KSTEP_WORK,
@@ -1976,7 +1980,7 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference(widths, s
     cell whether it is live and ORs the answers; the production pass packs the tile's
     tokens into the BITS of one ``int32`` per ``(level, digit)``, ANDs those words
     across levels by broadcast, and reads both counts off bit tests
-    (:mod:`rola.planner.census`) -- then counts candidacy in closed form from the tile
+    (:mod:`planner_calibration.census`) -- then counts candidacy in closed form from the tile
     bitmaps' popcounts and asserts ``sum_K_candidate == sum_K``. So this is the
     increment's exactness gate, not a self-consistency check -- and every field is an
     exact int64 ratio, which is why it is compared with ``==`` rather than a
@@ -2320,7 +2324,7 @@ def test_the_bit_word_statistics_are_invariant_to_the_chunk_budget(monkeypatch):
     for BC in _admissible_bcs(widths):
         whole = _tile_union_stats_multi(views, topology, BC, (16, 32))
         with monkeypatch.context() as patch:
-            patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", 1)
+            patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", 1)
             split = _tile_union_stats_multi(views, topology, BC, (16, 32))
         assert whole == split, f"BC={BC}: chunking moved the statistics"
 
@@ -2359,7 +2363,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
     leaf_plane = B * H * ((T + 15) // 16) * N          # the finest candidate's rows
     squeezed = _AllocationGuard(leaf_plane // 4)
     with monkeypatch.context() as patch:
-        patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
+        patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
         with squeezed:
             _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert not squeezed.violations, (
@@ -2376,7 +2380,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
 
 # ---------------------------------------------------------------------------
 # 14b. The bit-word census as its own unit (fix brief #2, 2026-08-01). These gate
-#      `rola.planner.census` DIRECTLY rather than through `select_plan`, because
+#      `planner_calibration.census` DIRECTLY rather than through `select_plan`, because
 #      §2.7's end-state ruling relocates it to the offline bench and its contract
 #      has to survive that move.
 # ---------------------------------------------------------------------------
@@ -2575,7 +2579,7 @@ def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(mo
     # whole owner axis is built in one call) must make the guard fire at this
     # fixture -- otherwise the assertion above would be vacuous.
     monkeypatch.setattr(
-        "rola.planner.schedule._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
+        "planner_calibration.cost_model._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
     mutant_guard = _AllocationGuard(bound)
     with mutant_guard:
         _tile_union_stats_multi_enumerated(views, topology, BC, (16, 32))
@@ -2875,3 +2879,109 @@ def test_select_p_routes_the_hardware_record_into_the_unchanged_6_4_policy(monke
     hw = HardwareFacts(sm_count=77, occupancy=_toy_occupancy(5))
     assert select_p(plan, object(), hw, arena_page_bytes=123) == "SP"
     assert seen == {"blocks_per_sm": 5, "sms": 77, "arena_page_bytes": 123}
+
+
+# ---------------------------------------------------------------------------
+# §6 P4: THE AUDITOR, run on recorded fixtures. This is P4's own self-gate.
+# ---------------------------------------------------------------------------
+
+#: DOCUMENTED DISAGREEMENTS at the SHIPPED §8 placeholders. Each row is
+#: `(cell, closed-form (BT, packing), exact-argmin (BT, packing), modelled regret)`.
+#: The gate asserts this set EXACTLY, in both directions: a NEW disagreement fails, and
+#: a silently-FIXED one fails too -- because a disagreement that vanishes without a
+#: re-fit means a constant moved underneath the rule that was derived from it.
+#:
+#: All four rows are the SAME finding: `C_PACK_BREAKEVEN` ships EMPTY (§8's stated
+#: conservative default) and every sparse cell therefore declines an arm the exact
+#: argmin takes. They are expected to EMPTY when §9 step 2 fills the table.
+_SELECTOR_DISAGREEMENTS = (
+    ("atscale-L2048-BC16/decay=False", (16, False), (16, True), 0.1676),
+    ("atscale-L2048-BC16/decay=True", (16, False), (16, True), 0.3252),
+    ("atscale-L2048/decay=False", (16, False), (16, True), 0.5993),
+    ("atscale-L2048/decay=True", (16, False), (16, True), 1.0121),
+)
+
+
+def _audit_rows(breakeven):
+    from planner_calibration.auditor import audit_cell, recorded_stats
+
+    rows = []
+    for (cell, decay) in sorted(_CALIBRATION_ARGMIN):
+        widths, d_v, BC, n_cohorts, per_bt = _ARGMIN_STATS[cell]
+        static = _static_for(cell, decay=decay)
+        hw = _hw_for(cell, decay)
+        summaries_by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC)
+                           for BT in (16, 32)}
+        stats_by_bt = {BT: recorded_stats(BC, BT, per_bt[BT][0], per_bt[BT][1],
+                                          per_bt[BT][2], n_cohorts)
+                       for BT in (16, 32)}
+        blocks_by_bt = {(BT, compact): _ARGMIN_BPSM[(BC, BT, decay)]
+                        for BT in (16, 32) for compact in (True, False)}
+        rows.append(audit_cell(cell, static, hw, summaries_by_bt, stats_by_bt,
+                               blocks_by_bt, breakeven=breakeven))
+    return rows
+
+
+def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
+    """P4's self-gate: the auditor, run on the recorded fixtures.
+
+    Two arms, and the pair is the finding:
+
+    * at the SHIPPED §8 placeholders the ledger is exactly `_SELECTOR_DISAGREEMENTS` --
+      four sparse cells where the empty `C_PACK_BREAKEVEN` declines an arm the exact
+      argmin takes, with the regret each one costs in the retired currency;
+    * at the DERIVED pre-K4 breakeven the ledger is EMPTY, which is what says the
+      disagreement is the placeholder's and not the rule's.
+
+    Without the second arm the first would be indistinguishable from a broken selector.
+    """
+    from planner_calibration.auditor import ledger
+
+    shipped = ledger(_audit_rows(pack_breakeven))
+    assert shipped == _SELECTOR_DISAGREEMENTS, (
+        "the disagreement ledger moved:\n"
+        f"  got      {shipped}\n  expected {_SELECTOR_DISAGREEMENTS}")
+    assert ledger(_audit_rows(derived_pack_breakeven)) == (), (
+        "the closed form disagrees with the exact argmin even at the breakeven its own "
+        "rule table implies; the disagreement is in the RULE, not in the placeholder")
+
+
+def test_the_auditor_carries_a_margin_beside_every_verdict():
+    """§2's validity domain is stated per decision, so every row carries its margin."""
+    for row in _audit_rows(derived_pack_breakeven):
+        assert row.agreed
+        assert row.regret is None
+        assert row.margin > 0.0 and math.isfinite(row.margin), (row.cell, row.margin)
+
+
+def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
+    """§6 P4: the inductor dependency leaves the shipped package's import graph.
+
+    `import rola` must not reach `benchmarks/`. The relocated names survive as PROXIES
+    that resolve on CALL, so the five bench instruments and the two out-of-track test
+    suites that call them keep working while a shipped install pays nothing -- and
+    fails at the call site with a sentence, rather than at import with a traceback.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, rola;"
+        "from rola.planner.schedule import select_plan, plan_and_schedule, TileUnionStats;"
+        "leaked = [m for m in sys.modules if 'planner_calibration' in m];"
+        "print('LEAKED' if leaked else 'CLEAN')")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                         cwd=str(pathlib.Path(__file__).resolve().parents[2]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().endswith("CLEAN"), (
+        "importing `rola` pulled the bench calibration package in; the relocation's "
+        "whole point is that the shipped package no longer carries the census's "
+        f"torch.compile/inductor runtime dependency. stdout={out.stdout!r}")
+
+    # ...and the proxy really dispatches, rather than being a decorative stub.
+    from planner_calibration.cost_model import plan_waves as real
+
+    from rola.planner import schedule
+    assert schedule.plan_waves(100, 2, 10) == real(100, 2, 10)
+    with pytest.raises(AttributeError):
+        _ = schedule.this_name_never_existed
