@@ -423,6 +423,11 @@ def exact_routing_summaries(read_mask: tuple[torch.Tensor, ...],
 
     widths = tuple(geometry.widths)
     BC = int(geometry.BC)
+    # Same input contract as the production pass and the kernel: the fp32 ALLOCATIONS,
+    # with liveness derived here as exact nonzero-ness (spec §1.2). A gate that fed one
+    # side a pre-computed boolean mask would be making that decision for it.
+    read_mask = tuple(t if t.dtype == torch.bool else t != 0 for t in read_mask)
+    write_mask = tuple(t if t.dtype == torch.bool else t != 0 for t in write_mask)
     j = geometry.first_spanned_level
     c = geometry.slice_digits
     n_slices = geometry.n_slices

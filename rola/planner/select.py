@@ -673,6 +673,124 @@ def select_p(plan, schedule, hw: HardwareFacts, *, policy=None,
 
 
 # ---------------------------------------------------------------------------
+# §6b: DECODE BYPASSES SELECTION ARCHITECTURALLY (user ruling, 2026-08-02)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenConfig:
+    """The config the PREFILL -> DECODE boundary freezes, and the reason it can.
+
+    At ``T = 1`` there is exactly ONE token tile whatever ``BT`` is, one candidate
+    window, and one owner set -- so every statistic §4.2 measures is a one-sample
+    estimate of a distribution the step does not have. Selecting from it is not
+    cheap-and-approximate, it is meaningless: ``candidate_frac`` is the fraction of
+    owners live in the single tile, the quantum histogram has one nonzero bin, and the
+    wave term is computed for a grid that does not change from step to step anyway.
+
+    So the decode path does not select. It carries this.
+
+    **WHY EACH FIELD IS WHAT IT IS.**
+
+    ``BC`` -- FROZEN BY THE STATE, not by a policy. ``BC`` fixes the state layout and
+    the paging atom keying; the state is live during decode by definition, so it cannot
+    move. This is the same latch `PLANNER_ENDSTATE_DESIGN.md` §3.2 puts at state init.
+
+    ``BT`` -- the MINIMAL tile. At ``T = 1`` the tile is one token whatever the template
+    says, so the only thing ``BT`` still buys is the size of the per-tile fixed cost,
+    and the smallest instantiated tile is the cheapest. Structural: it is the no-tiling
+    case, not a comparison against a dimension.
+
+    ``packing`` -- OFF. Packing's saving is a distribution over many tiles; at one tile
+    there is nothing to amortize its ballot over, and §8's default is off anyway.
+
+    ``feeder_flags`` -- from the STATIC declarations only. The detection trigger reads a
+    measured occupancy, and the decode path does not measure one; a flag set from a
+    single token's support would be a claim about the sequence made from one sample,
+    which is exactly the unsound direction (a false dense flag is a correctness defect
+    under §5.4's factored feeder, not a mis-pricing).
+
+    ``P = 1`` -- §6.4 gate 1 closes at decode anyway (one token, no owner has segments
+    to split), and running the policy on a degenerate schedule would apportion over a
+    ``owner_costs`` vector of ones.
+    """
+
+    choice: ConfigChoice
+    #: The prefill config this was frozen from, or ``None`` when decode began cold.
+    frozen_from: ConfigChoice | None = None
+
+    def __post_init__(self) -> None:
+        if self.choice.packing:
+            raise ValueError(
+                "a frozen decode config must not enable packing: its saving is a "
+                "distribution over many tiles and decode has one")
+
+    @property
+    def sequence_parallel(self) -> None:
+        """``P = 1``, expressed as "there is no plan" rather than as a plan of ones."""
+        return None
+
+
+def is_decode_step(T: int) -> bool:
+    """The STRUCTURAL predicate: is this the no-tiling case?
+
+    ``T == 1`` is a statement about the SHAPE of the schedule -- one tile, one token,
+    no distribution -- in the same class as `if ND_V == 1` (a tile count). It is not
+    `if T < 64` and it is not a density: there is no value of ``T`` above 1 that takes
+    this branch, and no configuration that makes ``T == 1`` take the other one.
+    """
+    return int(T) == 1
+
+
+def freeze_for_decode(static: StaticPlanInputs, *,
+                      prefill: ConfigChoice | None = None) -> FrozenConfig:
+    """Build §6b's carrier at the prefill -> decode boundary.
+
+    ``prefill`` is the config the prefill launch ran, when there was one. Its ``BC`` is
+    ADOPTED (the state it wrote is laid out for it and cannot be re-laid), and
+    everything else is re-derived from the rules above rather than inherited -- a
+    prefill that chose ``BT = 32`` and packing chose them for a statistic decode does
+    not have.
+    """
+    if prefill is not None:
+        BC = prefill.BC
+    elif static.pinned_BC is not None:
+        BC = static.pinned_BC
+    else:
+        BC = largest_feasible_bc(static.widths)
+    flags = FeederFlags.derive(static.density, None, saturation=C_SATURATION)
+    return FrozenConfig(
+        choice=ConfigChoice(BC=BC, BT=SUPPORTED_BT[0], packing=False,
+                            feeder_flags=flags),
+        frozen_from=prefill)
+
+
+def config_for_step(static: StaticPlanInputs, hw: HardwareFacts, T: int, *,
+                    summaries=None, frozen: FrozenConfig | None = None,
+                    **kwargs) -> tuple[ConfigChoice, ConfigEvidence | None]:
+    """THE DISPATCH. One structural branch, and the decode arm touches no statistic.
+
+    On the decode arm this function does not call :func:`select_config`, does not call
+    the summary pass, and does not call :func:`select_p`. It reads a carrier and
+    returns. That is the whole of §6b: the bypass is architectural, so there is no path
+    on which a degenerate statistic can reach a rule.
+
+    ``summaries`` is therefore OPTIONAL, and passing ``None`` at ``T > 1`` is an error
+    rather than a signal -- a caller that skipped the summary pass on a prefill step has
+    a bug, and inferring "decode" from a missing argument would turn a bug into a
+    silently different plan.
+    """
+    if is_decode_step(T):
+        return (frozen or freeze_for_decode(static)).choice, None
+    if summaries is None:
+        raise ValueError(
+            f"select_config needs the producer epilogue's RoutingSummaries at T={T}; "
+            "only the T == 1 decode arm bypasses selection (§6b), and it is taken on the "
+            "shape of the schedule, never on a missing argument")
+    return select_config_with_evidence(static, hw, summaries, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # SHADOW MODE (§6 P3)
 # ---------------------------------------------------------------------------
 
@@ -738,13 +856,17 @@ __all__ = [
     "SUPPORTED_BT",
     "ConfigChoice",
     "ConfigEvidence",
+    "FrozenConfig",
     "HardwareFacts",
     "ShadowRecord",
     "StaticPlanInputs",
     "atomic_work_per_token",
+    "config_for_step",
     "cost_per_token",
     "derived_pack_breakeven",
     "feasible_bc",
+    "freeze_for_decode",
+    "is_decode_step",
     "largest_feasible_bc",
     "mean_quantum",
     "pack_breakeven",

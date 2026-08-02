@@ -64,19 +64,29 @@ Two terms, and they are different orders:
   are CHUNKED so the transient is bounded independently of ``N`` and of ``L`` -- a
   structural bound under the standing "design for nc ~ 65K" rule, not a tuning knob.
 
-**NO ``torch.compile``.** :mod:`rola.planner.census` makes inductor a RUNTIME
-dependency of the planner on CPU as well as CUDA, and relocating it to the bench is
-how that dependency edge leaves the shipped package. Re-introducing it here would undo
-that, so this pass is eager. Its inner loops are whole-tensor reductions, which is the
-shape eager torch is least bad at.
+---- WHERE THE PASS ACTUALLY RUNS ---------------------------------------------
+
+**THE RUNTIME PASS IS A HAND-WRITTEN AOT CUDA KERNEL**, ``csrc/rola/src/summaries.cu``
+(spec amendment, user-ruled 2026-08-02). :func:`summarize_routing` calls it and nothing
+else. The three reasons are in that file's header; the one that governs this module is
+that the planner's whole retirement (§6 P4) exists partly to remove ``torch.compile`` as
+a RUNTIME dependency, and a fused-torch summary pass would put it straight back.
+
+**THE TORCH IMPLEMENTATION SURVIVES AS THE ENUMERATED REFERENCE**
+(:func:`summarize_routing_reference`), which is a second-derivation role and NOT a
+fallback. The distinction is enforced rather than described: no runtime path calls it,
+:func:`summarize_routing` does not degrade to it when the extension is missing, and the
+gate that compares the two is the only caller. That is the same relationship
+``_tile_union_stats_multi_enumerated`` has to the bit-word census, and it is what makes
+"the kernel is right" a checkable claim instead of a self-consistency one.
 
 ---- SYNCHRONIZATION BUDGET ---------------------------------------------------
 
-:func:`summarize_routing_device` completes with ZERO host synchronizations and returns
-everything on device; :func:`summarize_routing` adds exactly ONE D2H transfer, of two
-scalars, to fill §4.2's two ``float`` fields. That split is what makes the zero-sync
-property gateable -- the same protocol :func:`rola.planner.census.resolve_census` uses
-and for the same reason.
+The device work -- the kernel launch, or
+:func:`summarize_routing_reference_device` on the reference path -- completes with ZERO
+host synchronizations and leaves everything on device; the wrapper adds exactly ONE D2H
+transfer, of two scalars, to fill §4.2's two ``float`` fields. That split is what makes
+the zero-sync property gateable, and it is why the two halves are separate functions.
 """
 from __future__ import annotations
 
@@ -294,7 +304,7 @@ class _DeviceSummaries:
     n_owner_slots: int
 
 
-def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
+def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
                              write_mask: tuple[torch.Tensor, ...],
                              geometry, BT: int, *,
                              gamma: float = 1.0) -> _DeviceSummaries:
@@ -324,7 +334,13 @@ def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
     widths = tuple(geometry.widths)
     BC = int(geometry.BC)
     if len(read_mask) != len(widths) or len(write_mask) != len(widths):
-        raise ValueError(f"one mask per level per side required (D={len(widths)})")
+        raise ValueError(f"one allocation per level per side required (D={len(widths)})")
+    # The reference takes the same fp32 ALLOCATIONS the kernel does and derives liveness
+    # itself, so the two are gated on identical inputs: a fixture that handed one side a
+    # pre-computed boolean mask would be making the `!= 0` decision for it. Exact
+    # nonzero-ness, never a threshold (spec §1.2).
+    read_mask = tuple(t if t.dtype == torch.bool else t != 0 for t in read_mask)
+    write_mask = tuple(t if t.dtype == torch.bool else t != 0 for t in write_mask)
     if not 0.0 < gamma <= 1.0:
         raise ValueError(
             f"C_COLLISION_GAMMA must lie in (0, 1]: K_hat is an UPPER bound on K and the "
@@ -453,11 +469,11 @@ def summarize_routing_device(read_mask: tuple[torch.Tensor, ...],
         n_pairs=rows_total * owners_total, n_owner_slots=BH * owners_total)
 
 
-def summarize_routing(read_mask: tuple[torch.Tensor, ...],
-                      write_mask: tuple[torch.Tensor, ...],
-                      geometry, BT: int, *,
-                      density=None, gamma: float = 1.0,
-                      debug: bool | None = None) -> RoutingSummaries:
+def summarize_routing_reference(read_mask: tuple[torch.Tensor, ...],
+                                write_mask: tuple[torch.Tensor, ...],
+                                geometry, BT: int, *,
+                                density=None, gamma: float = 1.0,
+                                debug: bool | None = None) -> RoutingSummaries:
     """§4.2's struct, with ONE D2H transfer and no other host synchronization.
 
     ``density`` is the configuration's :class:`~rola.planner.schedule.StaticDensity`
@@ -472,8 +488,8 @@ def summarize_routing(read_mask: tuple[torch.Tensor, ...],
     which costs a second pass and is stated rather than hidden. See the findings note
     on the interaction between this and §4.3's joint ``(BC, BT)`` argmin.
     """
-    device_summaries = summarize_routing_device(read_mask, write_mask, geometry, BT,
-                                                gamma=gamma)
+    device_summaries = summarize_routing_reference_device(
+        read_mask, write_mask, geometry, BT, gamma=gamma)
     # THE ONE TRANSFER. Both host-side scalars ride it; reading them separately would
     # be two synchronizations for one answer.
     n_candidate, n_written_owners = torch.stack(
@@ -492,6 +508,104 @@ def summarize_routing(read_mask: tuple[torch.Tensor, ...],
                                 else os.environ.get(DEBUG_ASSERTS_ENV, "") not in ("", "0")):
         _assert_declared_density_is_realized(summaries, density)
     return summaries
+
+
+def summarize_routing(read_amps: tuple[torch.Tensor, ...],
+                      write_amps: tuple[torch.Tensor, ...],
+                      geometry, BT: int, *,
+                      density=None, gamma: float = 1.0,
+                      debug: bool | None = None) -> RoutingSummaries:
+    """THE runtime pass: one CUDA launch, one D2H transfer, zero host synchronizations.
+
+    ``read_amps``/``write_amps`` are the producer's FOLDED per-level allocations,
+    ``[BH, T, b_l]`` fp32 and contiguous -- exactly what ``RoutingViews.read_folded``
+    holds. Liveness is EXACT nonzero-ness of the amplitude (spec §1.2), computed inside
+    the kernel, so nothing materializes a boolean mask on the way in.
+
+    ``geometry`` is the §3 owner rectangle, passed rather than derived for the reason
+    :func:`summarize_routing_reference_device` gives: the rectangle has exactly one
+    owner, and a producer-side module that imported the planner would make the routing
+    package depend on the package that depends on it.
+
+    **THERE IS NO CPU PATH AND NO FALLBACK.** A call without the extension, or on CPU
+    tensors, raises. :func:`summarize_routing_reference` exists and computes the same
+    thing, but it is the GATE's reference and not this function's understudy -- reaching
+    for it here would be exactly the silent-degradation this codebase refuses.
+    """
+    from rola.ops._ext import extension
+
+    widths = tuple(geometry.widths)
+    BC = int(geometry.BC)
+    _validate(widths, BC, BT, gamma)
+    if not read_amps[0].is_cuda:
+        raise RuntimeError(
+            "the routing summary pass is a CUDA kernel (csrc/rola/src/summaries.cu) and "
+            "has no CPU path by design. `summarize_routing_reference` computes the same "
+            "five fields in torch, but it is the enumerated REFERENCE the kernel is "
+            "gated against, not a fallback: calling it here would make an unbuilt "
+            "extension silently change which code decides a plan.")
+
+    BH, T = read_amps[0].shape[0], read_amps[0].shape[1]
+    N = prod(widths)
+    device = read_amps[0].device
+    QPO = BC // MMA_K_QUANTUM
+    zeros = lambda n, dt: torch.zeros(n, dtype=dt, device=device)   # noqa: E731
+    occupancy = zeros(2 * len(widths), torch.int64)
+    histogram = zeros(QPO + 1, torch.int64)
+    candidate_count = zeros(1, torch.int64)
+    owner_count = zeros(1, torch.int64)
+    owners_total = N // BC
+    leaf_bitmap = zeros((BH, (N + 31) // 32), torch.int32)
+    owner_bitmap = zeros((BH, (owners_total + 31) // 32), torch.int32)
+
+    extension().rola_routing_summaries(
+        [t.contiguous() for t in read_amps], [t.contiguous() for t in write_amps],
+        list(widths), BT, BC, geometry.first_spanned_level, geometry.slice_digits,
+        geometry.n_slices,
+        occupancy, histogram, candidate_count, owner_count,
+        leaf_bitmap, owner_bitmap)
+
+    # THE ONE TRANSFER. Both host-side scalars ride it; reading them separately would be
+    # two synchronizations for one answer.
+    n_candidate, n_written_owners = torch.stack(
+        [candidate_count[0], owner_count[0]]).cpu().tolist()
+    n_pairs = BH * ((T + BT - 1) // BT) * owners_total
+    n_owner_slots = BH * owners_total
+
+    summaries = RoutingSummaries(
+        occupancy=(occupancy.view(2, len(widths)).to(torch.float32)
+                   / torch.tensor([float(BH * T * w) for w in widths], device=device)),
+        quanta_hist=histogram.to(torch.float32) / max(1, n_candidate),
+        active_owner_frac=n_written_owners / n_owner_slots if n_owner_slots else 0.0,
+        candidate_frac=n_candidate / n_pairs if n_pairs else 0.0,
+        written_leaf_bitmap=leaf_bitmap)
+
+    if density is not None and _debug_enabled(debug):
+        _assert_declared_density_is_realized(summaries, density)
+    return summaries
+
+
+def _debug_enabled(debug: bool | None) -> bool:
+    return (debug if debug is not None
+            else os.environ.get(DEBUG_ASSERTS_ENV, "") not in ("", "0"))
+
+
+def _validate(widths: tuple[int, ...], BC: int, BT: int, gamma: float) -> None:
+    """The three refusals both paths share. Each is a SPEC change, not a runtime branch."""
+    if not 1 <= BT <= _TOKEN_BITS_PER_WORD:
+        raise ValueError(
+            f"BT must be in [1, {_TOKEN_BITS_PER_WORD}] to carry one token bit each, got "
+            f"{BT}. The summary pass represents a tile as ONE token word; a wider BT is a "
+            "spec change that must widen the word, not a runtime condition to branch on.")
+    if BC % MMA_K_QUANTUM:
+        raise ValueError(
+            f"BC={BC} must be a whole number of MMA_K_QUANTUM={MMA_K_QUANTUM} atoms "
+            "(spec §1b: every legal BC is a whole number of atoms by construction)")
+    if not 0.0 < gamma <= 1.0:
+        raise ValueError(
+            f"C_COLLISION_GAMMA must lie in (0, 1]: K_hat is an UPPER bound on K and the "
+            f"correction can only shrink it toward the truth, never past it. Got {gamma!r}.")
+    del widths
 
 
 def _assert_declared_density_is_realized(summaries: RoutingSummaries, density) -> None:
@@ -546,6 +660,7 @@ __all__ = [
     "MMA_K_QUANTUM",
     "RoutingSummaries",
     "summarize_routing",
-    "summarize_routing_device",
+    "summarize_routing_reference",
+    "summarize_routing_reference_device",
     "unpack_leaf_bitmap",
 ]

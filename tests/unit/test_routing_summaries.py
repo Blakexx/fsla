@@ -26,7 +26,8 @@ from rola.planner.schedule import StaticDensity, owner_geometry
 from rola.routing.summaries import (
     MMA_K_QUANTUM,
     summarize_routing,
-    summarize_routing_device,
+    summarize_routing_reference,
+    summarize_routing_reference_device,
     unpack_leaf_bitmap,
 )
 
@@ -54,7 +55,12 @@ _TOPOLOGY_IDS = ["w8x16", "w4x4x8", "w2x4x16"]
 
 
 def _masks(seed, widths, BH, T, kind):
-    """Per-level ``[BH, T, b_l]`` boolean supports. Exact nonzero-ness, never a threshold."""
+    """Per-level ``[BH, T, b_l]`` fp32 ALLOCATIONS, the shape the producer emits.
+
+    Liveness is EXACT nonzero-ness of the amplitude (spec §1.2) and is computed by the
+    pass, not by the fixture: handing it a boolean mask would let the fixture make the
+    liveness decision the pass is being gated on.
+    """
     generator = torch.Generator().manual_seed(seed)
     out = []
     for level, width in enumerate(widths):
@@ -72,7 +78,7 @@ def _masks(seed, widths, BH, T, kind):
                     else amps < 0.4)
         else:
             raise ValueError(kind)
-        out.append(live)
+        out.append(live.to(torch.float32) * (amps + 0.5))
     return tuple(out)
 
 
@@ -203,7 +209,7 @@ def test_the_summary_pass_equals_an_independent_scalar_walk(widths, BC, kind, BT
     read = _masks(1, widths, BH, T, kind)
     write = _masks(2, widths, BH, T, kind)
     geometry = owner_geometry(widths, BC)
-    got = summarize_routing(read, write, geometry, BT)
+    got = summarize_routing_reference(read, write, geometry, BT)
     want = _oracle_summaries(read, write, widths, BC, BT)
 
     assert got.occupancy.shape == (2, len(widths))
@@ -235,7 +241,7 @@ def test_the_published_histogram_bins_are_exhaustive_and_normalized(widths, BC):
     dense = _masks(3, widths, BH, T, "dense")
     geometry = owner_geometry(widths, BC)
     for BT in (16, 32):
-        summaries = summarize_routing(dense, dense, geometry, BT)
+        summaries = summarize_routing_reference(dense, dense, geometry, BT)
         assert float(summaries.quanta_hist.sum()) == pytest.approx(1.0, abs=1e-6)
         # Dense both sides: every pair is a candidate and every K_hat is exactly BC.
         assert summaries.candidate_frac == pytest.approx(1.0)
@@ -248,7 +254,7 @@ def test_the_atom_condensation_is_derived_from_the_canonical_bitmap():
     widths, BC, BH, T = (8, 16), 64, 2, 40
     write = _masks(4, widths, BH, T, "sparse")
     geometry = owner_geometry(widths, BC)
-    summaries = summarize_routing(write, write, geometry, 16)
+    summaries = summarize_routing_reference(write, write, geometry, 16)
     N = prod(widths)
     bits = unpack_leaf_bitmap(summaries.written_leaf_bitmap, N)
     atoms = summaries.atom_bitmap(N)
@@ -287,7 +293,7 @@ def test_the_factorized_summaries_bound_the_exact_census_and_match_it_elsewhere(
     read = _masks(5, widths, BH, T, kind)
     write = _masks(6, widths, BH, T, kind)
     geometry = owner_geometry(widths, BC)
-    bound = summarize_routing(read, write, geometry, BT)
+    bound = summarize_routing_reference(read, write, geometry, BT)
     exact = exact_routing_summaries(read, write, geometry, BT)
 
     assert bound.candidate_frac == pytest.approx(exact.candidate_frac, abs=1e-12)
@@ -316,7 +322,7 @@ def test_the_bound_is_actually_loose_somewhere_so_the_gate_is_not_vacuous():
     write = _masks(8, widths, BH, T, "very_sparse")
     geometry = owner_geometry(widths, BC)
     bins = torch.arange(BC // MMA_K_QUANTUM + 1, dtype=torch.float32)
-    bound = float((bins * summarize_routing(read, write, geometry, BT).quanta_hist).sum())
+    bound = float((bins * summarize_routing_reference(read, write, geometry, BT).quanta_hist).sum())
     exact = float((bins * exact_routing_summaries(read, write, geometry, BT).quanta_hist).sum())
     assert bound > exact, (
         "no cell in this file exercises a LOOSE bound, so the one-sided gate above is "
@@ -355,17 +361,17 @@ def test_the_underflow_assertion_fires_only_when_a_declared_dense_cell_has_reali
 
     calm = tuple(_softmax_support(w, T, 1.0, 11 + i) for i, w in enumerate(widths))
     assert all(bool(mask.all()) for mask in calm), "the calm arm already underflowed"
-    summarize_routing(calm, calm, geometry, 16, density=declared, debug=True)
+    summarize_routing_reference(calm, calm, geometry, 16, density=declared, debug=True)
 
     hot = tuple(_softmax_support(w, T, 64.0, 11 + i) for i, w in enumerate(widths))
     assert not all(bool(mask.all()) for mask in hot), (
         "the hot arm did not underflow, so this gate is not exercising the assertion")
     with pytest.raises(AssertionError, match="FLOAT UNDERFLOW"):
-        summarize_routing(hot, hot, geometry, 16, density=declared, debug=True)
+        summarize_routing_reference(hot, hot, geometry, 16, density=declared, debug=True)
 
     # OFF by default: the check costs a host read and must not lengthen every forward.
-    summarize_routing(hot, hot, geometry, 16, density=declared, debug=False)
-    summarize_routing(hot, hot, geometry, 16, density=declared)
+    summarize_routing_reference(hot, hot, geometry, 16, density=declared, debug=False)
+    summarize_routing_reference(hot, hot, geometry, 16, density=declared)
 
 
 # ---------------------------------------------------------------------------
@@ -392,11 +398,11 @@ def test_the_summary_pass_issues_no_host_synchronization_on_cuda(BC):
     read = tuple(m.cuda() for m in _masks(9, widths, BH, T, "sparse"))
     write = tuple(m.cuda() for m in _masks(10, widths, BH, T, "sparse"))
     geometry = owner_geometry(widths, BC)
-    summarize_routing_device(read, write, geometry, 16)      # warm any lazy init
+    summarize_routing_reference_device(read, write, geometry, 16)      # warm any lazy init
     torch.cuda.synchronize()
     torch.cuda.set_sync_debug_mode("error")
     try:
-        out = summarize_routing_device(read, write, geometry, 16)
+        out = summarize_routing_reference_device(read, write, geometry, 16)
         assert out.n_candidate.device.type == "cuda"
         assert out.written_leaf_bitmap.device.type == "cuda"
         assert out.quanta_hist.device.type == "cuda"
@@ -409,7 +415,7 @@ def test_the_pass_refuses_a_BT_its_representation_cannot_carry():
     widths, BC = (8, 16), 16
     masks = _masks(12, widths, (BH := 1), 64, "sparse")
     with pytest.raises(ValueError, match="one token bit each"):
-        summarize_routing(masks, masks, owner_geometry(widths, BC), 64)
+        summarize_routing_reference(masks, masks, owner_geometry(widths, BC), 64)
     assert BH == 1
 
 
@@ -420,4 +426,95 @@ def test_the_pass_refuses_a_BC_that_is_not_a_whole_number_of_atoms():
     geometry = owner_geometry(widths, 8)
     masks = _masks(13, widths, 1, 32, "sparse")
     with pytest.raises(ValueError, match="whole number of MMA_K_QUANTUM"):
-        summarize_routing(masks, masks, geometry, 16)
+        summarize_routing_reference(masks, masks, geometry, 16)
+
+
+# ---------------------------------------------------------------------------
+# 5. THE KERNEL, against the reference above (spec amendment, 2026-08-02)
+# ---------------------------------------------------------------------------
+
+def _extension_available():
+    try:
+        from rola.ops._ext import extension
+        extension()
+    except Exception:
+        return False
+    return True
+
+
+_KERNEL = pytest.mark.skipif(
+    not (torch.cuda.is_available() and _extension_available()),
+    reason="the summary pass is an AOT CUDA kernel; this gate needs the built extension")
+
+
+@_KERNEL
+@pytest.mark.parametrize("widths", _TOPOLOGIES, ids=_TOPOLOGY_IDS)
+@pytest.mark.parametrize("BC", _BCS, ids=_BC_IDS)
+@pytest.mark.parametrize("kind", _KINDS)
+@pytest.mark.parametrize("BT", [16, 32], ids=["BT16", "BT32"])
+def test_the_summary_kernel_equals_the_enumerated_reference(widths, BC, kind, BT):
+    """The kernel against the torch pass, field by field, on the SAME fp32 allocations.
+
+    The reference is itself gated against an independent scalar walk above, so this is a
+    two-link chain down to a from-the-spec definition rather than a self-consistency
+    check. ``T = 40`` is ragged at both ``BT``, which is where a token-word pass can
+    invent support if its padded tail is not inert.
+    """
+    BH, T = 2, 40
+    read = tuple(t.cuda() for t in _masks(1, widths, BH, T, kind))
+    write = tuple(t.cuda() for t in _masks(2, widths, BH, T, kind))
+    geometry = owner_geometry(widths, BC)
+    got = summarize_routing(read, write, geometry, BT)
+    want = summarize_routing_reference(read, write, geometry, BT)
+
+    assert torch.allclose(got.occupancy, want.occupancy, atol=1e-6)
+    assert torch.allclose(got.quanta_hist, want.quanta_hist, atol=1e-6)
+    assert got.candidate_frac == pytest.approx(want.candidate_frac, abs=1e-12)
+    assert got.active_owner_frac == pytest.approx(want.active_owner_frac, abs=1e-12)
+    assert torch.equal(got.written_leaf_bitmap, want.written_leaf_bitmap), (
+        "§4.1's canonical per-leaf write bitmap differs between the kernel and the "
+        "reference; the warp-ballot packing or the write-candidate skip is wrong")
+
+
+@_KERNEL
+def test_the_summary_kernel_issues_no_host_synchronization():
+    """One launch, one D2H, zero host syncs -- the D2H excluded BY CONSTRUCTION.
+
+    The transfer lives in :func:`summarize_routing`'s epilogue, so what runs under
+    ``set_sync_debug_mode("error")`` here is the output allocation and the launch, which
+    must complete clean.
+    """
+    from rola.ops._ext import extension
+
+    widths, BC, BH, T = (8, 16), 64, 2, 64
+    read = [t.cuda() for t in _masks(9, widths, BH, T, "sparse")]
+    write = [t.cuda() for t in _masks(10, widths, BH, T, "sparse")]
+    geometry = owner_geometry(widths, BC)
+    summarize_routing(tuple(read), tuple(write), geometry, 16)   # warm any lazy init
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        N = prod(widths)
+        z = lambda shape, dt: torch.zeros(shape, dtype=dt, device="cuda")   # noqa: E731
+        extension().rola_routing_summaries(
+            read, write, list(widths), 16, BC,
+            geometry.first_spanned_level, geometry.slice_digits, geometry.n_slices,
+            z(2 * len(widths), torch.int64), z(BC // MMA_K_QUANTUM + 1, torch.int64),
+            z(1, torch.int64), z(1, torch.int64),
+            z((BH, (N + 31) // 32), torch.int32),
+            z((BH, (N // BC + 31) // 32), torch.int32))
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+
+def test_the_runtime_pass_refuses_to_degrade_to_its_own_reference():
+    """NO FALLBACK: an unbuilt extension or a CPU tensor must not silently re-route.
+
+    The reference computes the same five fields, which is exactly why this has to be
+    asserted rather than assumed: the cheap thing to do would be to call it, and that
+    would make "which code decided this plan" depend on whether somebody ran the build.
+    """
+    widths, BC = (8, 16), 16
+    masks = _masks(21, widths, 1, 32, "sparse")
+    with pytest.raises(RuntimeError, match="no CPU path"):
+        summarize_routing(masks, masks, owner_geometry(widths, BC), 16)

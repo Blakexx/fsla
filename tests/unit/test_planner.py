@@ -63,10 +63,12 @@ from rola.planner.schedule import (
 )
 from rola.planner.select import (
     ConfigChoice,
+    FrozenConfig,
     HardwareFacts,
     StaticPlanInputs,
     derived_pack_breakeven,
     feasible_bc,
+    freeze_for_decode,
     largest_feasible_bc,
     pack_breakeven,
     quanta_per_owner,
@@ -74,6 +76,9 @@ from rola.planner.select import (
     select_config_with_evidence,
     select_p,
     shadow_step,
+)
+from rola.planner.select import (
+    config_for_step as select_config_for_step,
 )
 from rola.routing.summaries import RoutingSummaries
 from rola.routing.types import (
@@ -2985,3 +2990,68 @@ def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
     assert schedule.plan_waves(100, 2, 10) == real(100, 2, 10)
     with pytest.raises(AttributeError):
         _ = schedule.this_name_never_existed
+
+
+# ---------------------------------------------------------------------------
+# §6b: DECODE BYPASSES SELECTION ARCHITECTURALLY (user ruling, 2026-08-02)
+# ---------------------------------------------------------------------------
+
+
+def test_the_decode_path_issues_zero_statistics_work():
+    """§6b: at `T == 1` the dispatch touches no statistic, no oracle and no policy.
+
+    The gate is a SPY on every door the decode arm must not go through: the closed-form
+    selector, the occupancy oracle (which is where a wave term would be computed for a
+    grid decode does not vary), and `select_p`. A `RoutingSummaries` is deliberately
+    passed anyway -- if the branch were on the ARGUMENT rather than on the shape, a
+    caller that happened to have summaries would silently take the prefill path.
+    """
+    import rola.planner.select as select_module
+
+    widths = (8, 16)
+    static = StaticPlanInputs(
+        widths=widths, d_v=64, normalization="global", decay=False,
+        mma_precision="bf16",
+        density=StaticDensity(read=(True, True), write=(False, False)),
+        feasible_BC=(16, 64), BH=4)
+    calls = []
+    hw = HardwareFacts(sm_count=DEFAULT_SM_COUNT,
+                       occupancy=lambda *a, **k: calls.append("oracle") or 3)
+    summaries = _summaries_with(0.5, 0.4, 64)
+
+    choice, evidence = select_config_for_step(static, hw, 1, summaries=summaries)
+    assert calls == [], "the decode arm queried the occupancy oracle"
+    assert evidence is None, "the decode arm produced selection evidence, so it selected"
+    assert choice.BT == 16, "the decode config must take the MINIMAL tile"
+    assert choice.packing is False
+    # Feeder flags come from the STATIC declarations only: a flag set from one token's
+    # support would be a claim about the sequence made from a single sample, and under
+    # the factored feeder a false dense flag is a correctness defect, not a mis-pricing.
+    assert choice.feeder_flags.read == (True, True)
+    assert choice.feeder_flags.write == (False, False)
+
+    # ...and the prefill arm at the same call site DOES select, so the branch is real.
+    calls.clear()
+    prefill, prefill_evidence = select_config_for_step(static, hw, 2048,
+                                                       summaries=summaries)
+    assert calls, "the prefill arm skipped the oracle"
+    assert prefill_evidence is not None
+
+    # The boundary carrier adopts the prefill's BC (the state is laid out for it and
+    # cannot be re-laid) and re-derives everything else.
+    frozen = freeze_for_decode(static, prefill=prefill)
+    assert frozen.choice.BC == prefill.BC
+    assert frozen.choice.BT == 16 and frozen.choice.packing is False
+    assert frozen.sequence_parallel is None, "decode must not carry a P plan"
+    assert frozen.frozen_from == prefill
+
+    # `is_decode_step` is STRUCTURAL: it is the no-tiling case, not a dimension
+    # comparison. No T above 1 takes the decode branch.
+    assert select_module.is_decode_step(1)
+    assert not any(select_module.is_decode_step(T) for T in (2, 15, 16, 17, 4096))
+
+    with pytest.raises(ValueError, match="only the T == 1 decode arm"):
+        select_config_for_step(static, hw, 2048, summaries=None)
+    with pytest.raises(ValueError, match="must not enable packing"):
+        FrozenConfig(choice=ConfigChoice(BC=64, BT=16, packing=True,
+                                         feeder_flags=choice.feeder_flags))

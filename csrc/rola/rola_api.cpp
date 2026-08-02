@@ -27,6 +27,7 @@
 #include <memory>
 
 #include "src/host_api.cuh"
+#include "src/summaries.cuh"
 #include "src/paging/page_plan.cuh"
 #include "src/paging/vmm_owner.cuh"
 
@@ -56,6 +57,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: ABI 3 is the §7.1 re-key: `page_states := BC`, `dqk := 1`, the §4 amplitude
   //: stream in place of V2's RouteDescriptor + PrefixRunSchedule, and the `CAPPED`
   //: status with its admit mask.
+  // THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS (THUNDER_RUN_SPEC.md §4.1/§4.2).
+  // One launch, no allocation, no host synchronization: every output is a caller-owned
+  // tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer.
+  m.def("rola_routing_summaries", &rola::summaries::rola_routing_summaries_cuda,
+        "Producer-epilogue routing summaries: occupancy, the quantum histogram, the "
+        "candidate count, and §4.1's canonical per-leaf write bitmap with its owner "
+        "condensation");
+
   m.def("page_plan_abi_version", []() { return 3; });
   m.def("page_plan_status_codes", []() {
     py::dict result;
