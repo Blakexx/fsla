@@ -44,12 +44,30 @@ paged decode address would have to know ``BC`` and the whole BC-blindness proper
 would be lost. Paging is refused loudly here until the merge-phase paired re-key
 lands.
 
-**THE CARRIER IS A CROSS-TRACK CONTRACT.** ``FrozenDecodeConfig`` below implements the
-fields Track D's design specified. Track P's landed ``FrozenConfig`` /
-``freeze_for_decode`` / ``config_for_step`` (``rola/planner/select.py``) is the
-canonical object; naming reconciles at merge and this dataclass is the local stand-in
-so the two tracks could be built concurrently. Any field-level mismatch found at merge
-is a merge item, not a redesign: the kernel reads only the values, never the type.
+**THE CARRIER IS A CROSS-TRACK CONTRACT -- RECONCILED (merge phase, §8b items 4 and 6).**
+The two objects are NOT two names for one thing and neither absorbs the other:
+
+* :class:`rola.planner.select.FrozenConfig` is the **SELECTION** carrier and is
+  **CANONICAL**. It answers "what did the prefill -> decode boundary freeze?" and its
+  content is §4.3's ``ConfigChoice = (BC, BT, packing, feeder_flags)``.
+* :class:`FrozenDecodeConfig` below is the **KERNEL-LAYOUT** carrier. It answers "what
+  shape is the launch?" -- widths, mixed-radix strides, spans, row offsets, word and
+  group counts, ``d_v``, the normalization and decay arms, ``eps``, ``n_split``. None of
+  that is a selected axis and none of it appears in ``ConfigChoice``.
+
+They overlap in EXACTLY ONE field, ``feeder_flags``, and the mapping is an identity
+rather than a translation: P packs bit ``2l`` = ``dense_read[l]`` and bit ``2l+1`` =
+``dense_write[l]`` (``FeederFlags.packed``), which is bit-for-bit the layout D's
+``freeze_decode_config`` derived from ``static_density``.
+``tests/unit/test_decode_capacity.py`` pins the two packings equal over a topology
+matrix, so a future edit to either layout is a test failure and not a silent drift.
+
+So **D consumes P's object**: pass ``frozen=`` and the flags come from the canonical
+carrier. ``static_density=`` remains for a caller that has no ``FrozenConfig`` (a cold
+decode with no prefill). Supplying both is refused rather than silently ordered.
+``BC``, ``BT`` and ``packing`` are deliberately NOT read: ``BC`` is not a field of the
+kernel-layout carrier at all (BC-blindness, gated), and at ``T = 1`` ``BT`` and
+``packing`` are structurally inert.
 """
 
 from __future__ import annotations
@@ -135,6 +153,7 @@ def freeze_decode_config(
     BH: int,
     device: torch.device | str,
     eps: float = 1e-5,
+    frozen=None,
     static_density: tuple[tuple[bool, bool], ...] | None = None,
     n_split: int | None = None,
 ) -> FrozenDecodeConfig:
@@ -145,6 +164,14 @@ def freeze_decode_config(
     beyond the realized touched-row count read one L2 word and exit; that
     over-launching is the price of never reading a device value back to the host, which
     is the one thing a decode step must not do.
+
+    ``frozen`` is :class:`rola.planner.select.FrozenConfig` -- the CANONICAL selection
+    carrier (§8b items 4 and 6). When supplied, ``feeder_flags`` is taken from it
+    (``frozen.choice.feeder_flags.packed()``) instead of being re-derived, so the
+    kernel-layout carrier and the selection carrier cannot disagree about the one field
+    they share. ``static_density`` is the no-``FrozenConfig`` path (a cold decode with
+    no prefill behind it). Passing BOTH is refused: two sources for one word is two
+    answers to one question, and ordering them silently is how a stale declaration wins.
     """
     widths = tuple(topology.widths)
     D = len(widths)
@@ -159,8 +186,25 @@ def freeze_decode_config(
     n_words = (N + 31) // 32
     n_groups = (n_words + 31) // 32
 
+    if frozen is not None and static_density is not None:
+        raise ValueError(
+            "freeze_decode_config takes feeder_flags from the CANONICAL FrozenConfig "
+            "(frozen=) or from a static_density declaration, never both -- two sources "
+            "for one word is two answers to one question (§8b items 4 and 6)")
+
     flags = 0
-    if static_density is not None:
+    if frozen is not None:
+        # §8b item 4: P's FrozenConfig is canonical and this reads it by VALUE. The
+        # packed word is `FeederFlags.packed()` -- bit 2l = dense_read[l], bit 2l+1 =
+        # dense_write[l] -- which is bit-for-bit the layout the static_density branch
+        # below builds, and `tests/unit/test_decode_capacity.py` pins the two equal.
+        flags = int(frozen.choice.feeder_flags.packed())
+        packed_D = frozen.choice.feeder_flags.D
+        if packed_D != D:
+            raise ValueError(
+                f"the frozen config carries feeder flags for {packed_D} levels but this "
+                f"topology has {D}; the carrier was frozen against another topology")
+    elif static_density is not None:
         if len(static_density) != D:
             raise ValueError(f"static_density must have {D} entries, got {len(static_density)}")
         for level, (dense_read, dense_write) in enumerate(static_density):

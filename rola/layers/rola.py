@@ -111,6 +111,7 @@ from rola.planner.schedule import (
     owner_geometry,
     plan_and_schedule,
 )
+from rola.planner.select import freeze_for_decode
 from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
 from rola.routing.side_gain import GainConfig, init_side_gain_bias
 from rola.routing.topology import resolve_b_spec
@@ -735,6 +736,29 @@ class RoLA(nn.Module):
         self._page_arena = arena
         return arena
 
+    def _static_plan_inputs(self, BH: int):
+        """§4.3 tier 0: everything the selector needs that is fixed at construction.
+
+        Built per call because ``BH`` is the only member that is not a construction-time
+        fact, and it is one dataclass allocation of already-computed values -- there is
+        nothing here to cache and a cache keyed on ``BH`` would be a second place for
+        the topology to be wrong.
+
+        ``pinned_BC`` is the EXPERT PIN: ``state_block`` was supplied explicitly iff the
+        feasible set was shrunk to one value at construction (§4.3, §6 P6), which is
+        exactly what ``len(self.feasible_BC) == 1 and self.feasible_BC[0] ==
+        self.state_block`` says without storing a second flag that could disagree.
+        """
+        from rola.planner.select import StaticPlanInputs
+
+        pinned = (self.state_block
+                  if self.feasible_BC == (self.state_block,) else None)
+        return StaticPlanInputs(
+            widths=tuple(self.topology.widths), d_v=self.head_v_dim,
+            normalization=self.state_norm, decay=self.decay_kind != 'none',
+            mma_precision=self.mma_precision, density=self.static_density,
+            feasible_BC=tuple(self.feasible_BC), BH=int(BH), pinned_BC=pinned)
+
     def _resolve_decode_config(self, BH: int, device):
         """§6b's frozen config, built once at the prefill->decode boundary.
 
@@ -742,13 +766,23 @@ class RoLA(nn.Module):
         normalization arm are construction-time facts). It is FROZEN in the sense that
         matters -- no per-step statistic enters it, so a decode step never runs a
         selection, which is the gap §6b dissolves.
+
+        **THE FEEDER FLAGS COME FROM THE CANONICAL CARRIER (§8b items 4 and 6).**
+        :func:`rola.planner.select.freeze_for_decode` builds Track P's ``FrozenConfig``
+        -- the object §4.3 defines and the one this layer must not re-implement -- and
+        the kernel-layout carrier reads its ``feeder_flags`` by value. Before this
+        reconciliation the layer passed NEITHER ``frozen`` nor ``static_density``, so a
+        decode step silently ran with ``feeder_flags = 0`` while the prefill path passed
+        ``static_density=self.static_density`` to its plan: the two arms of one layer
+        disagreed about a declared density. That is now one source.
         """
         config = self._decode_config
         if config is not None and config.key == (BH, torch.device(device)):
             return config.value
         value = freeze_decode_config(
             self.topology, self.state_norm, decay=self.decay_kind != 'none',
-            BH=BH, device=device)
+            BH=BH, device=device,
+            frozen=freeze_for_decode(self._static_plan_inputs(BH)))
         self._decode_config = _DecodeConfigCache(key=(BH, torch.device(device)), value=value)
         return value
 
