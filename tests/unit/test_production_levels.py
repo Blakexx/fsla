@@ -1,11 +1,21 @@
 """Gates for the dense per-level production routing solve (V3's producer path).
 
 `rola.routing.entmax.production.production_routing_factor_levels` is
-what `routing/producer_v3.py` calls. It has two lowerings of one semantics -- fused
-Triton on CUDA fp32, the identical sorted closed form in torch on CPU/fp64 -- and both
-are gated here against the ONE canonical ground truth this branch authorizes for the
-routing primitive: the fp64 bisection oracle in `routing/reference.py`
+what `routing/producer_v3.py` calls. It has two lowerings of one semantics -- a DEVICE
+lowering at CUDA fp32 and the identical sorted closed form in torch on CPU/fp64 -- and
+both are gated here against the ONE canonical ground truth this branch authorizes for
+the routing primitive: the fp64 bisection oracle in `routing/reference.py`
 (`entmax/reference.py:entmax`), which no runtime path touches.
+
+**THE DEVICE LOWERING IS NOT ONE KERNEL, and this file's wording used to say "fused
+Triton" as though it were** (corrected at the thunder merge, 2026-08-02). Independent
+levels are still fused Triton; the UNION solve is a hand-CUDA + CUB kernel
+(`csrc/rola/src/entmax.cu`, Track E), and the Triton union kernel was deleted when it
+landed -- it was measured at 255 registers with spills and an uncontrollable `tl.sort`
+scratch, and a JIT is against the closed-world AOT policy. Everything below that says
+"the two lowerings" still means exactly what it meant, device against torch; what
+changed is WHICH BINARY the union rows were measured on, and the tie table was
+re-measured on the new one (see `_TIE_DIVERGENCE_BOUND`).
 
 Support is checked for **exact** set equality, never by threshold: entmax support is a
 discrete object ([[sparsity-comes-from-entmax]]), so "the same zeros" is a hard
@@ -61,6 +71,22 @@ _PRODUCTION_GRAD_ATOL = 5e-6
 #: elements (write side, alpha=1.5, `union`), and this carries ~1.35x headroom.
 #: Tightening is the correct direction; loosening requires a re-measurement in
 #: `test_the_two_lowerings_agree_on_exact_ties`'s own table.
+#:
+#: RE-MEASURED AT THE THUNDER MERGE (2026-08-02), because the thing on the CUDA side of
+#: this comparison CHANGED. Track E replaced the union solve's fused-Triton lowering
+#: with a hand-CUDA + CUB kernel and DELETED the Triton one, so every number in the
+#: table below was a measurement of an implementation that no longer exists -- a stale
+#: provenance, not a stale bound. Re-run against the new kernel, the table reproduces to
+#: the recorded digits: union 1.5 read 31/720 (4.31%) / write 32/720 (4.44%), union 2.0
+#: read 2/720 (0.28%) / write 4/720 (0.56%), mixed_per_level 1.5 28/1800 (1.56%) /
+#: 33/1800 (1.83%), mixed_per_level 2.0 6/1800 (0.33%) both sides; complement worst case
+#: 2.673e-6 of scale, divergence floor 4.857e-6.
+#:
+#: That it reproduces is a fact about the divergence's CAUSE rather than a coincidence,
+#: and it is the reason these bounds are carried forward unchanged rather than merely
+#: re-asserted: the divergence is an ill-conditioned division by a value that is exactly
+#: 0 at a tie, so what it measures is fp32 rounding UPSTREAM of that division. Two
+#: independent closed forms round independently and land the same distance away.
 _TIE_DIVERGENCE_BOUND = 0.06
 
 #: The tie test's complement bound, applied to the elements the production

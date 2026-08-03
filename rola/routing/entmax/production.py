@@ -1123,8 +1123,10 @@ def _torch_union_split(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     z = 0.5 * read_logits + 0.5 * write_logits
     values = _SortedEntmaxFn.apply(z, alpha)
-    # Support comes from the same `z > tau` bits `_sorted_solve` (and the Triton union
-    # kernel's `semantic_support = valid & (z > tau)`) compute, not from `values > 0`: the
+    # Support comes from the same `z > tau` bits `_sorted_solve` (and the CUDA union
+    # kernel's `semantic_support = valid & (z > tau)` -- it was the Triton union kernel
+    # until Track E replaced it, and the predicate is unchanged) compute, not from
+    # `values > 0`: the
     # two conventions agree everywhere except a genuinely-supported member whose amplitude
     # underflows fp32 to exactly 0 (alpha=1.5 squares `(z-tau)/2`, so `z-tau ~ 1e-25`
     # suffices) -- adversarial review Claim 2. Recomputed directly (no grad needed; support
