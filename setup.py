@@ -347,6 +347,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) 
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     "csrc/rola/src/consumer.cu",
+    # TRACK D (thunder §6b): the T=1 decode path. Two TUs, purely additive -- the tiled
+    # consumer's sources are untouched and the decode kernels share no header with it.
+    "csrc/rola/src/decode_expand.cu",
+    "csrc/rola/src/decode.cu",
     "csrc/rola/src/entmax.cu",
     "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/page_plan.cu",
