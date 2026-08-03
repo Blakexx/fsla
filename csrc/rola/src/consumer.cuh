@@ -114,7 +114,6 @@ struct ConsumerParams {
   const uint32_t* write_tok_bits;  // [BH, n_tiles, total_rows]
   const uint32_t* read_union;   // [BH, n_slices,  n_words]
   const uint32_t* write_union;  // [BH, n_slices,  n_words]
-  const uint32_t* admit;        // [BH, ceil(owners_total/32)] or nullptr => admit all
 
   // Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   // `rate[s] = prod_l delta_l[d_l(s)]` -- a plain product of DIALS (spec §2), not
@@ -137,12 +136,13 @@ struct ConsumerParams {
   //: owner's rectangle is `BC` contiguous rows either way, because §7.1 sets
   //: `page_states := BC` so one page IS one owner.
   float* state;
-  //: `[BH, owners_total]` int32, or nullptr for the unpaged path. `kAbsentPage`
-  //: (-1) means the owner has no committed page. Under a `READY` plan that can only
-  //: happen for an owner with no write candidate at all, whose unpaged state is
-  //: identically zero; under `CAPPED` it is additionally a denied owner, whose
-  //: writes the `admit` mask has already annihilated. Both read as zeros, which is
-  //: what makes paging BITWISE INVISIBLE rather than approximately equivalent.
+  //: `[BH, atoms_per_bh]` int32, or nullptr for the unpaged path. `kAbsentPage`
+  //: (-1) means the atom has no committed slot, which can only happen for an atom
+  //: with no write candidate at all -- its unpaged state is identically zero.
+  //: Admission is TOTAL (the capped mode and its admit mask are deleted), so there
+  //: is no second reason for an absent entry. An absent atom reads as zeros and is
+  //: never stored back, which is what makes paging BITWISE INVISIBLE rather than
+  //: approximately equivalent.
   const int32_t* page_table;
 
   int64_t N;

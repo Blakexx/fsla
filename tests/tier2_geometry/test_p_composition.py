@@ -657,11 +657,10 @@ def _paged_fixture(seed=7301, *, T=64, BT=16, live_digits=4):
                     read_levels=read_levels, write_levels=write_levels)
 
 
-def _arena_for(fx, *, BH, max_physical_pages=None, allow_capping=False):
+def _arena_for(fx, *, BH, max_physical_pages=None):
     return PageArena(widths=fx.topology.widths, BC=fx.plan.BC, cols=fx.cols, BH=BH,
                        device=torch.device("cuda"),
-                       max_physical_pages=max_physical_pages,
-                       allow_capping=allow_capping)
+                       max_physical_pages=max_physical_pages)
 
 
 def _run_paged(fx, arena, P=1):
@@ -704,7 +703,6 @@ def test_P_composes_with_paging_over_a_partially_resident_arena(P):
     y_p1, _, _ = _run_paged(fx, arena, 1)
     state_p1 = arena.materialize().clone()
     result = arena.last_result
-    assert result.status == "READY"
     assert 0 < result.resident_pages < arena.logical_pages, (
         "this fixture must be PARTIALLY resident or it is not testing the composition "
         "R4 asks for; a saturated arena exercises only the dense addressing")
@@ -760,67 +758,6 @@ def test_P_composes_with_paging_over_a_partially_resident_arena(P):
     # lives, never what it is.
     _, state_dense, _ = fx.run(P)
     assert torch.equal(state_dense.reshape(B * H, N, cols), state_pk)
-
-
-def test_a_capacity_clamped_P_over_a_capped_arena_degrades_P_and_never_pages():
-    """R4's CAPPED corner: two capacities interacting, and only one of them gives.
-
-    §6.4 gate 3 is verbatim "degrade `P_o` to fit; state pages are NEVER the
-    degradable item", and §7.1's `CAPPED` is the state pages already being scarce.
-    Composed, the plan must charge the arena's committed pages FIRST and then buy
-    whatever workspace is left with `P` -- never the other way round. The launch
-    itself must still be correct against the capped arena's own `P = 1` answer (a
-    capped arena computes a DIFFERENT function -- denied writes are annihilated -- so
-    the fp64 oracle is not the reference here; §7.1's own gate file makes the same
-    move).
-    """
-    fx = _paged_fixture(seed=7302)
-    B, H = 1, 1
-    uncapped = _arena_for(fx, BH=B * H)
-    _run_paged(fx, uncapped, 1)
-    live = uncapped.last_result.resident_pages
-    assert live > 4
-
-    capped = _arena_for(fx, BH=B * H, max_physical_pages=live - 2, allow_capping=True)
-    y_cap1, _, _ = _run_paged(fx, capped, 1)
-    state_cap1 = capped.materialize().clone()
-    assert capped.last_result.status == "CAPPED"
-    arena_bytes = capped.last_result.resident_bytes
-
-    # A cap that leaves room for a couple of slots and no more. The arena's pages and
-    # the schedule materializations are charged first, so what the split can buy is
-    # exactly what is left.
-    from rola.routing.sequence_parallel import slot_bytes
-    materializations = fx.schedule.schedule_bytes() + fx.schedule.stream_bytes()
-    cap = arena_bytes + materializations + 3 * slot_bytes(fx.plan.BC, fx.cols)
-    sp = fx.policy_plan(
-        policy=SequenceParallelPolicy(workspace_cap=cap, bandwidth_margin=1e6),
-        arena_page_bytes=arena_bytes, sms=80, blocks_per_sm=8)
-    assert sp.binding_gate == "capacity"
-    assert sp.ledger.arena_page_bytes == arena_bytes, "the arena term was degraded"
-    assert sp.ledger.fits and sp.ledger.projected_peak_bytes <= cap
-    assert 0 < sp.n_slots <= 3, (
-        f"the clamp admitted {sp.n_slots} slots against a 3-slot headroom")
-    # Degrading `P` is what paid for the fit, and it is visible in `P` itself.
-    assert max(sp.P) > 1 and sum(p - 1 for p in sp.P) < sum(
-        p - 1 for p in fx.policy_plan(
-            policy=SequenceParallelPolicy(workspace_cap=1 << 34, bandwidth_margin=1e6),
-            arena_page_bytes=arena_bytes, sms=80, blocks_per_sm=8).P)
-
-    clamped = _arena_for(fx, BH=B * H, max_physical_pages=live - 2, allow_capping=True)
-    y_cap_split, _, _ = _run_paged_plan(fx, clamped, sp)
-    assert clamped.last_result.status == "CAPPED"
-    assert clamped.last_result.resident_pages == capped.last_result.resident_pages, (
-        "the split changed the arena's page commitment; `P` degrades, pages do not")
-    state_split = clamped.materialize()
-    # Correct against the capped arena's own `P = 1` answer, at the ruled discipline
-    # (the envelope, plus the carve-out on the owners the cap denied).
-    denied = (clamped.page_table.reshape(-1) < 0)
-    assert int(denied.sum()) > 0
-    rows = state_split.reshape(-1, fx.plan.BC * fx.cols)
-    assert bool((rows[denied] == 0).all())
-    assert _relative(state_split, state_cap1.double()) < REASSOCIATION_ENVELOPE
-    assert _relative(y_cap_split, y_cap1.double()) < REASSOCIATION_ENVELOPE
 
 
 def _run_paged_plan(fx, arena, sp):

@@ -35,7 +35,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     at::Tensor read_union,
     at::Tensor write_union,
     at::Tensor owners,
-    c10::optional<at::Tensor> admit,
     c10::optional<at::Tensor> g_read,
     at::Tensor g_write,
     at::Tensor v,

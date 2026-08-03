@@ -190,7 +190,6 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
         "resident_MiB": stats.resident_bytes / _MiB,
         "dense_MiB": stats.dense_bytes / _MiB,
         "resident_fraction": stats.resident_fraction,
-        "capped_pages": stats.capped_pages,
         "plan_cold_ms": plan_cold_ms,
         "plan_warm_ms": plan_warm_ms,
         "paged_ms": paged_ms,

@@ -461,7 +461,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     at::Tensor read_union,
     at::Tensor write_union,
     at::Tensor owners,
-    c10::optional<at::Tensor> admit,
     c10::optional<at::Tensor> g_read,
     at::Tensor g_write,
     at::Tensor v,
@@ -598,7 +597,6 @@ std::vector<at::Tensor> rola_consumer_forward(
   p.read_union = u32_ptr(read_union, "read_union");
   p.write_union = u32_ptr(write_union, "write_union");
   p.owners = owners.data_ptr<int32_t>();
-  p.admit = admit.has_value() ? u32_ptr(*admit, "admit") : nullptr;
   p.g_read = g_read.has_value() ? f32_ptr(*g_read, "g_read") : nullptr;
   p.g_write = f32_ptr(g_write, "g_write");
   p.v = f32_ptr(v, "v");

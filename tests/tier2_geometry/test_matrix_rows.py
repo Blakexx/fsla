@@ -186,7 +186,7 @@ def run(row: GeometryPair, fx, geometry: dict):
     if geometry.get("paging"):
         arena = PageArena(widths=fx.topology.widths, BC=fx.plan.BC, cols=fx.cols,
                           BH=fx.v.shape[0] * fx.v.shape[2], device=torch.device("cuda"),
-                          max_physical_pages=None, allow_capping=False)
+                          max_physical_pages=None)
         y, returned, _ = _consumer_forward(
             fx._f32["v"], fx._f32["read_levels"], fx._f32["write_levels"],
             fx._f32["g_read"], fx._f32["g_write"], fx.plan, schedule=fx.schedule,

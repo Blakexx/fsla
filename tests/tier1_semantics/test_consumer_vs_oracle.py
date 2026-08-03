@@ -515,48 +515,6 @@ def test_all_zero_write_level_is_read_only():
     assert torch.allclose(state.double(), m0, atol=1e-6, rtol=0)
 
 
-def test_capped_admit_bit_denies_deposits():
-    """§7.1: admission is per owner, read once at CTA init, and a denied owner's
-    write factor is annihilated -- the same rule as a structurally zero write.
-    Denying every owner must leave the state exactly at `M_0` while reads still
-    run against it (capping changes the function computed, and is reported, not
-    silent)."""
-    from rola.ops.consumer import _consumer_forward
-
-    device = "cuda"
-    generator = torch.Generator(device=device).manual_seed(21)
-    widths, d_v, B, T, H, BC = (8, 4), 64, 1, 20, 2, 16
-    topology = _topology(widths, d_v)
-    plan = Plan(topology=topology, normalization="raw", BT=32, BC=BC, warp_tile=(1, 2))
-    read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
-    write_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
-    g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
-    g_read = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
-    v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    m0 = 0.1 * torch.randn(B, H, topology.N, d_v, device=device, dtype=torch.float64,
-                           generator=generator)
-
-    owners_total = topology.N // BC
-    words = (owners_total + 31) // 32
-    deny = torch.zeros((B * H, words), dtype=torch.int32, device=device)
-    _y, state, _ = _consumer_forward(
-        v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
-        tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
-        g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=deny)
-    assert torch.equal(state, m0.to(torch.float32)), "a fully denied admit mask must deposit nothing"
-
-    admit_all = torch.full((B * H, words), -1, dtype=torch.int32, device=device)
-    _y2, state2, _ = _consumer_forward(
-        v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
-        tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
-        g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=admit_all)
-    _y3, state3, _ = _consumer_forward(
-        v.to(torch.float32), tuple(t.to(torch.float32) for t in read_levels),
-        tuple(t.to(torch.float32) for t in write_levels), g_read.to(torch.float32),
-        g_write.to(torch.float32), plan, initial_state=m0.to(torch.float32), admit=None)
-    assert torch.equal(state2, state3), "an all-ones admit mask must equal no mask at all"
-
-
 def test_split_k_determinism_is_not_assumed():
     """fp32 `atomicAdd` reduction order is nondeterministic, so two runs may
     differ in the last bits. This test records that as an accepted property of

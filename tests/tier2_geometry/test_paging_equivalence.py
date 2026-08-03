@@ -164,13 +164,12 @@ def _reordering_bound(y: torch.Tensor, plan) -> torch.Tensor:
     return n * n * torch.finfo(torch.float32).eps * y.abs().max()
 
 
-def _arena(plan, *, BH, max_physical_pages=None, allow_capping=False):
+def _arena(plan, *, BH, max_physical_pages=None):
     d_v = plan.topology.d_v
     cols = d_v + (1 if plan.normalization == "global" else 0)
     return PageArena(widths=plan.topology.widths, BC=plan.BC, cols=cols, BH=BH,
                        device=torch.device("cuda"),
-                       max_physical_pages=max_physical_pages,
-                       allow_capping=allow_capping)
+                       max_physical_pages=max_physical_pages)
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +296,8 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalizatio
     grid above -- and of `test_paging_is_bitwise_invisible_on_a_carried_state` --
     lands at 100% (or 127/128) resident, because the per-token live-owner union
     saturates. No gated cell therefore ever has a NON-RESIDENT owner, which is the
-    one path §7.1's admit mask and "a non-resident owner reads zeros and skips its
-    store" (`v3_consumer.cu`) exist to exercise. This fixture -- measured by the
+    one path "a non-resident atom reads zeros and skips its store" exists to
+    exercise. This fixture -- measured by the
     reviewer at 90.6% resident with a nearby `(16,8,8) d_v=32 BC=16 p_nonzero=0.1
     T=16` cell (findings §04); this file's default fixture shape (`B=2, H=2`)
     needs `T=8` at the same widths/`p_nonzero` to land away from saturation
@@ -352,7 +351,6 @@ def test_committed_pages_track_realized_owners_not_N():
     _run(plan, fixture, arena=arena)
     result = arena.last_result
 
-    assert result.status == "READY" and result.capped_pages == 0
     assert 0 < result.resident_pages < arena.logical_pages
     assert result.resident_bytes < result.dense_bytes
     # The page set is exactly the WRITE-live owner set: reads never commit.
@@ -372,112 +370,8 @@ def test_a_dense_write_route_commits_every_owner():
 
 
 # ---------------------------------------------------------------------------
-# §7.1's CAPPED status
-# ---------------------------------------------------------------------------
-
-def test_a_binding_cap_is_reported_and_never_silent():
-    """`CAPPED` degrades gracefully AND loudly.
-
-    Two things are asserted together because either alone would be a defect: the
-    run completes (architecture §4.5's graceful degradation, not V2's error), and
-    the degradation is visible in `capped_pages` and in a changed output (§7.1:
-    capping CHANGES THE FUNCTION COMPUTED).
-    """
-    widths, d_v, BC = (8, 8, 8), 32, 16
-    # Sparse-declared, dense-realized: the cap must bind on the owners the routing
-    # actually writes, which needs the exact walk, not the short-circuit.
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
-    fixture = _fixture(widths, d_v, p_nonzero=0.7, seed=13)
-    B, T, H, _ = fixture[4].shape
-
-    uncapped = _arena(plan, BH=B * H)
-    y_uncapped, _, _ = _run(plan, fixture, arena=uncapped)
-    # The cap's effect has to be visible ABOVE the readout's own reassociation bound
-    # (see the module docstring), not merely different from zero.
-    envelope = _reordering_bound(y_uncapped, plan)
-    live = uncapped.last_result.resident_pages
-    assert live > 2
-
-    capped = _arena(plan, BH=B * H, max_physical_pages=live - 2, allow_capping=True)
-    y_capped, _, _ = _run(plan, fixture, arena=capped)
-    result = capped.last_result
-
-    assert result.status == "CAPPED"
-    assert result.capped_pages == 2
-    assert result.resident_pages == live - 2
-    assert (y_uncapped - y_capped).abs().max() > envelope, (
-        "a binding cap annihilates denied writes, so the output MUST move by more "
-        "than the readout's own reordering envelope; anything less would mean the "
-        "cap silently did nothing")
-
-
-def test_a_cap_that_can_bind_requires_opting_in():
-    """Reaching for `CAPPED` is a decision, not a discovery."""
-    widths, d_v, BC = (8, 8, 8), 32, 16
-    with pytest.raises(ValueError, match="CHANGES THE FUNCTION COMPUTED"):
-        PageArena(widths=widths, BC=BC, cols=d_v, BH=4,
-                    device=torch.device("cuda"), max_physical_pages=2)
-
-
-def test_admission_order_is_earliest_writer_wins():
-    """§7.1's deterministic admission order, exercised at a binding cap.
-
-    The admitted set must be the owners with the smallest `first_write_tile`. This
-    is checked structurally: run once uncapped to learn each owner's first write
-    tile from the arena's own metadata, then cap and assert the survivors are a
-    prefix of that ordering.
-    """
-    widths, d_v, BC = (8, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
-    fixture = _fixture(widths, d_v, p_nonzero=0.5, seed=21, T=96)
-    B, T, H, _ = fixture[4].shape
-
-    uncapped = _arena(plan, BH=B * H)
-    _run(plan, fixture, arena=uncapped)
-    live = uncapped.last_result.resident_pages
-    tiles = uncapped.first_write_tiles()
-    budget = max(1, live // 2)
-
-    capped = _arena(plan, BH=B * H, max_physical_pages=budget, allow_capping=True)
-    _run(plan, fixture, arena=capped)
-    admitted = (capped.page_table.reshape(-1) >= 0)
-    assert int(admitted.sum().item()) == budget
-
-    admitted_tiles = tiles.reshape(-1)[admitted]
-    denied_tiles = tiles.reshape(-1)[(uncapped.page_table.reshape(-1) >= 0) & ~admitted]
-    assert admitted_tiles.max() <= denied_tiles.min(), (
-        "admission must be by increasing first_write_tile (spec §7.1)")
-
-
-# ---------------------------------------------------------------------------
 # The BT coupling (V14), settled parametric
 # ---------------------------------------------------------------------------
-
-def test_the_arena_rejects_a_BT_change_over_live_pages():
-    """`first_write_tile` is denominated in the plan's `BT` (findings D3).
-
-    Settling `token_tile` parametric is what keeps a memory-management flag from
-    moving the §6.2 compute plan -- but it makes the recorded tile index `BT`-relative,
-    and reinterpreting it under a different `BT` would be silent corruption. So the
-    contract is a hard error, and this pins it.
-    """
-    widths, d_v, BC = (4, 8, 8), 32, 16
-    fixture = _fixture(widths, d_v, p_nonzero=0.4, seed=5)
-    B, T, H, _ = fixture[4].shape
-    plan16 = _plan(widths, d_v, BT=16, BC=BC, normalization="raw", decay=False)
-    plan32 = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
-
-    arena = _arena(plan16, BH=B * H)
-    _run(plan16, fixture, arena=arena)
-    # `continue_paging=True`: the defect this guards against is specifically a
-    # caller trying to CONTINUE an arena's live pages under a different `BT`. Under
-    # the call-scoped-by-default reset (fix pass BLOCKER B1) a plain reused-arena
-    # call would silently reset first (dropping the recorded `BT` along with the
-    # pages) rather than ever reaching this check, so continuation must be
-    # requested explicitly to exercise it.
-    with pytest.raises(ValueError, match="recorded first_write_tile at BT=16"):
-        _run(plan32, fixture, arena=arena, continue_paging=True)
-
 
 def test_both_BT_values_commit_the_same_owner_set():
     """`BT` changes the tile GRANULARITY of `first_write_tile`, never WHICH owners
@@ -498,20 +392,6 @@ def test_both_BT_values_commit_the_same_owner_set():
 # ---------------------------------------------------------------------------
 # Contract surfaces that must stay loud
 # ---------------------------------------------------------------------------
-
-def test_paging_refuses_a_second_admit_mask():
-    widths, d_v, BC = (4, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
-    fixture = _fixture(widths, d_v, seed=1)
-    B, T, H, _ = fixture[4].shape
-    arena = _arena(plan, BH=B * H)
-    read, write, g_read, g_write, v = fixture
-    admit = torch.zeros((B * H, (arena.owners_total + 31) // 32),
-                        dtype=torch.int32, device="cuda")
-    with pytest.raises(ValueError, match="two answers to one question"):
-        _consumer_forward(v, read, write, g_read, g_write, plan,
-                            admit=admit, paging=arena)
-
 
 def test_paging_refuses_an_implicit_dense_initial_state():
     widths, d_v, BC = (4, 8, 8), 32, 16

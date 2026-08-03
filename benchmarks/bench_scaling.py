@@ -344,7 +344,6 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
                 "resident_bytes": stats_paging.resident_bytes,
                 "dense_state_bytes": stats_paging.dense_bytes,
                 "resident_fraction": round(stats_paging.resident_fraction, 6),
-                "capped_pages": stats_paging.capped_pages,
             })
         else:
             # Unpaged: the provisioned dense state IS the committed state. Analytic,

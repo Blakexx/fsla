@@ -1881,14 +1881,6 @@ void consumer_forward_kernel(ConsumerParams p) {
     }
   }
 
-  // ---- §7.1 admit bit: one bit per owner, read once at CTA init --------------
-  bool admitted = true;
-  if (p.admit != nullptr) {
-    const int words_per_bh = (p.owners_total + 31) / 32;
-    const uint32_t word = p.admit[static_cast<int64_t>(bh) * words_per_bh + (owner >> 5)];
-    admitted = ((word >> (owner & 31)) & 1u) != 0u;
-  }
-
   // ---- candidate tiles: the §4 word-AND chain, unchanged ---------------------
   for (int w = tid; w < p.n_words; w += kConsumerThreads) {
     const int64_t union_row = static_cast<int64_t>(bh) * p.n_slices + slice;
@@ -1900,9 +1892,6 @@ void consumer_forward_kernel(ConsumerParams p) {
       r &= p.read_bits[row * p.n_words + w];
       wr &= p.write_bits[row * p.n_words + w];
     }
-    // A denied page's write factor is annihilated -- the same rule as a structurally
-    // zero write, applied once per owner rather than per leaf (§7.1).
-    if (!admitted) wr = 0u;
     // §6.4: restrict the candidate walk to THIS SEGMENT's tile range.
     const uint32_t range = segment_word_mask(w, tile_lo, tile_hi);
     r &= range;

@@ -107,7 +107,6 @@ def _consumer_forward(
     plan: Plan,
     *,
     initial_state: torch.Tensor | None = None,
-    admit: torch.Tensor | None = None,
     paging=None,
     continue_paging: bool = False,
     decay=None,
@@ -122,11 +121,6 @@ def _consumer_forward(
     ``v``: ``[B,T,H,d_v]``. Returns ``(y, final_state, schedule)`` with
     ``y: [B,T,H,d_v]`` and ``final_state: [B,H,N,d_v(+1)]`` -- the same shapes the
     oracle returns, so a test compares them directly.
-
-    ``admit``: optional ``[BH, ceil(owners_total/32)]`` int32 bit array (§7.1's
-    ``CAPPED`` admit mask, one bit per owner). ``None`` means admit all. When
-    ``paging`` is supplied the arena's own mask is used and this must be ``None``
-    -- two admit masks over one launch would be two answers to one question.
 
     ``paging``: an optional
     :class:`~rola.ops.paging.PageArena` (spec §7.1). When given, the
@@ -314,10 +308,6 @@ def _consumer_forward(
                 raise ValueError(f"initial_state must have shape {expected}, got {tuple(initial_state.shape)}")
             state = initial_state.reshape(BH, N, cols).to(torch.float32).contiguous().clone()
     else:
-        if admit is not None:
-            raise ValueError(
-                "paging supplies §7.1's admit mask from its own published page table; "
-                "passing a second `admit` would be two answers to one question")
         if initial_state is not None:
             # The arena is the carrier of prior state under paging. Loading a dense
             # one is `PageArena.adopt_dense`, an EXPLICIT bridge the caller calls
@@ -329,7 +319,6 @@ def _consumer_forward(
         paging.plan(schedule, fresh=not continue_paging)
         state = paging.state
         page_table = paging.page_table
-        admit = paging.admit
 
     v_f = v.permute(0, 2, 1, 3).reshape(BH, T, d_v).to(torch.float32).contiguous()
     desc = level_descriptors(topology, plan)
@@ -377,7 +366,6 @@ def _consumer_forward(
         schedule.read_slice_union.contiguous(),
         schedule.write_slice_union.contiguous(),
         owners_arg.contiguous(),
-        admit,
         None if global_norm else schedule.g_read.to(torch.float32).contiguous(),
         schedule.g_write.to(torch.float32).contiguous(),
         v_f,

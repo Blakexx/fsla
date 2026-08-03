@@ -258,12 +258,12 @@ class RoLA(nn.Module):
             INVISIBLE, not an approximation. CUDA backend only; the oracle path has
             no page table and raises rather than silently ignoring the flag.
             Default False.
-        max_physical_pages (int | None): §7.1's allocator hard cap, in pages.
-            `None` (default) provisions the dense limit `BH * owners_total`, at
-            which `CAPPED` is unreachable. A finite value makes architecture §4.5's
-            graceful degradation reachable and CHANGES THE FUNCTION COMPUTED when it
-            binds -- which is reported in `last_paging_stats.capped_pages`, never
-            silent.
+        max_physical_pages (int | None): §7.1's allocator hard cap, in ATOMS.
+            `None` (default) provisions the dense limit, at which the ceiling can
+            never bind. A finite value is a POLICY limit: a launch whose realized
+            write footprint exceeds it is REFUSED, host-side, naming the demand and
+            the arena size. It is never degraded -- the capped mode that granted a
+            prefix and annihilated the denied writes is DELETED.
         budget (BudgetConditioning | None): architecture §4.5 Tier 1 + usage-conditioning
             configuration. `None` (default) disables all conditioning machinery -- the
             "zero-budget-conditioning baseline is the unconstrained measurement" path
@@ -415,7 +415,7 @@ class RoLA(nn.Module):
         self.last_plan_axes = None
         #: `PagingResult` for the most recent paged forward, or `None`. Committed-state
         #: accounting (spec §7.1): peak pages, realized owners, resident vs dense
-        #: bytes, and `capped_pages`. Same plain-attribute surface as the counters
+        #: bytes. Same plain-attribute surface as the counters
         #: above -- diagnostic state, deliberately not a buffer.
         self.last_paging_stats = None
 
@@ -731,8 +731,7 @@ class RoLA(nn.Module):
             return arena
         arena = PageArena(
             widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
-            max_physical_pages=self.max_physical_pages,
-            allow_capping=self.max_physical_pages is not None)
+            max_physical_pages=self.max_physical_pages)
         self._page_arena = arena
         return arena
 

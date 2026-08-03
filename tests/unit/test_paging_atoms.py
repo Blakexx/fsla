@@ -71,8 +71,8 @@ def test_every_stored_object_is_BC_invariant(BC):
     """THE property the re-key exists for, asserted directly.
 
     §1b: ``BC`` is a re-derivable COMPUTE tile, a page is a MEMORY-RESIDENCY atom. After
-    the re-key the table's shape, the pool's shape, the admit mask's shape and the
-    address expression mention only ``N``, ``cols`` and ``MMA_K_QUANTUM``. A single
+    the re-key the table's shape, the pool's shape and the address expression mention
+    only ``N``, ``cols`` and ``MMA_K_QUANTUM``. A single
     ``BC``-keyed survivor would show up here as a shape that moved with ``BC``.
     """
     widths, cols, BH = (8, 16), 4, 2
@@ -80,7 +80,6 @@ def test_every_stored_object_is_BC_invariant(BC):
     N = prod(widths)
     assert tuple(arena.page_table.shape) == (BH, N // MMA_K_QUANTUM)
     assert tuple(arena.state.shape) == (arena.max_physical_pages, MMA_K_QUANTUM, cols)
-    assert tuple(arena.admit.shape) == (BH, (N // MMA_K_QUANTUM + 31) // 32)
     assert arena.logical_pages == BH * N // MMA_K_QUANTUM
     assert arena.dense_bytes() == BH * N * cols * 4
     assert arena.atoms_per_owner == BC // MMA_K_QUANTUM
@@ -93,7 +92,7 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
     consecutive launches different tiles over the same live state. The re-key's whole
     claim is that those launches address the SAME bytes of the SAME slots. Here the same
     write support is admitted twice, at ``BC = 16`` and at ``BC = 64``, and the page
-    table, the pool contents and the admit mask must come out bit-identical.
+    table and the pool contents must come out bit-identical.
 
     Before the re-key this test could not even be written: the two arenas had different
     table SHAPES.
@@ -116,12 +115,11 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
                     flat = arena.state.reshape(-1)
                     flat[arena.keying.address(slot, leaf, 0)] = float(bh * N + leaf)
         results.append((arena.page_table.clone(), arena.state.clone(),
-                        arena.admit.clone(), arena.last_result))
+                        arena.last_result))
 
-    (table_a, state_a, admit_a, res_a), (table_b, state_b, admit_b, res_b) = results
+    (table_a, state_a, res_a), (table_b, state_b, res_b) = results
     assert torch.equal(table_a, table_b), "the page table moved with BC"
     assert torch.equal(state_a, state_b), "the addressed bytes moved with BC"
-    assert torch.equal(admit_a, admit_b), "the admit mask moved with BC"
     assert res_a.resident_pages == res_b.resident_pages == int(atoms.sum())
 
 
@@ -150,19 +148,11 @@ def test_planned_exact_sizes_the_pool_to_the_popcount_and_zeroes_what_it_admits(
     touched = int(atoms.sum())
     assert result.resident_pages == touched
     assert result.realized_owners == touched
-    assert result.status == "READY"
-    assert result.capped_pages == 0
     assert result.resident_bytes == touched * MMA_K_QUANTUM * cols * 4
     assert (arena.page_table >= 0).sum() == touched
     assert torch.equal(arena.page_table >= 0, atoms)
     assert float(arena.state[:touched].abs().max()) == 0.0, (
         "an admitted slot kept stale bytes; a fresh atom must read as a fresh state")
-
-    # The admit mask agrees with the table bit for bit -- one predicate, not two.
-    for bh in range(BH):
-        for atom in range(N // MMA_K_QUANTUM):
-            bit = (int(arena.admit[bh, atom // 32]) >> (atom % 32)) & 1
-            assert bool(bit) == bool(arena.page_table[bh, atom] >= 0)
 
 
 def test_a_continuation_keeps_what_it_already_holds_and_a_fresh_call_does_not():
@@ -182,39 +172,32 @@ def test_a_continuation_keeps_what_it_already_holds_and_a_fresh_call_does_not():
     assert int((arena.page_table >= 0).sum()) == 2, "a fresh call carried state forward"
 
 
-def test_capped_semantics_are_unchanged_and_stay_loud():
-    """§7.1's CAPPED, verbatim: opt-in, reported, and it DENIES rather than fails.
+def test_an_exhausted_arena_REFUSES_and_never_grants_a_prefix():
+    """The capped mode is DELETED; exhaustion is a HARD host-side refusal.
 
-    The ceiling is now a POLICY limit rather than a capacity guess -- planned-exact
-    knows the footprint before the launch -- but what it MEANS is untouched: atoms are
-    admitted in ascending logical id until it binds, the rest are denied, and a denied
-    atom's write is annihilated because it never receives an admit bit.
+    Closed-world standard: a demand the arena cannot serve names the demand and the
+    arena size and raises. It never grants a prefix, never drops a write, and never
+    computes the degraded function the old ``CAPPED`` status reported. The gate checks
+    all three: the refusal fires, its message carries both numbers, and the arena is
+    left EXACTLY as it was so a caller that catches it has not lost state.
     """
     widths, cols, BH = (8, 16), 4, 1
     N = prod(widths)
     atoms = torch.ones((BH, N // MMA_K_QUANTUM), dtype=torch.bool)
 
-    with pytest.raises(ValueError, match="allow_capping=True"):
-        _arena(widths=widths, cols=cols, BH=BH, max_physical_pages=4)
+    arena = _arena(widths=widths, cols=cols, BH=BH, max_physical_pages=4)
+    with pytest.raises(RuntimeError, match=r"8 new atoms demanded.*arena of 4 atoms"):
+        arena.plan_exact(atoms)
+    assert int((arena.page_table >= 0).sum()) == 0, (
+        "a refused plan committed atoms; refusal must be all-or-nothing")
+    assert arena.resident_pages == 0
 
-    arena = _arena(widths=widths, cols=cols, BH=BH, max_physical_pages=4,
-                   allow_capping=True)
-    result = arena.plan_exact(atoms)
-    assert result.status == "CAPPED"
+    # And the same ceiling serves a demand that FITS, so the refusal is keyed on the
+    # demand and not on the ceiling merely being finite.
+    fits = torch.zeros((BH, N // MMA_K_QUANTUM), dtype=torch.bool)
+    fits[0, :4] = True
+    result = arena.plan_exact(fits)
     assert result.resident_pages == 4
-    assert result.capped_pages == N // MMA_K_QUANTUM - 4
-    # Admission is in ASCENDING logical id, so it is the LOW atoms that survive.
-    assert torch.equal(arena.page_table[0, :4] >= 0, torch.ones(4, dtype=torch.bool))
-    assert bool((arena.page_table[0, 4:] < 0).all())
-    for atom in range(4, N // MMA_K_QUANTUM):
-        assert ((int(arena.admit[0, atom // 32]) >> (atom % 32)) & 1) == 0, (
-            "a DENIED atom received an admit bit; its write would not be annihilated")
-
-    strict = _arena(widths=widths, cols=cols, BH=BH, max_physical_pages=4,
-                    allow_capping=True)
-    strict.allow_capping = False
-    with pytest.raises(RuntimeError, match="CAPPED"):
-        strict.plan_exact(atoms)
 
 
 # ---------------------------------------------------------------------------
@@ -230,17 +213,19 @@ def test_the_extent_allocator_keeps_a_batch_contiguous_and_is_invisible_otherwis
     reads slot ids directly instead of inferring contiguity from anything else.
     """
     allocator = ExtentAllocator(capacity=32, extent_atoms=4)
-    assert allocator.take(3) == (0, 3)      # opens extent 0, leaves 1 slot
-    assert allocator.take(1) == (3, 1)      # FITS the remainder: no waste
-    assert allocator.take(4) == (4, 4)      # exactly one extent
-    assert allocator.take(3) == (8, 3)      # opens extent 2
-    assert allocator.take(3) == (12, 3), "a batch larger than the remainder straddled"
+    assert allocator.take(3) == 0           # opens extent 0, leaves 1 slot
+    assert allocator.take(1) == 3           # FITS the remainder: no waste
+    assert allocator.take(4) == 4           # exactly one extent
+    assert allocator.take(3) == 8           # opens extent 2
+    assert allocator.take(3) == 12, "a batch larger than the remainder straddled"
     assert allocator.allocated == 15
 
-    # The ceiling grants a PREFIX rather than refusing: that is what CAPPED needs.
+    # The ceiling REFUSES rather than granting a prefix, and leaves the cursor put.
     small = ExtentAllocator(capacity=5, extent_atoms=4)
-    assert small.take(9) == (0, 5)
-    assert small.take(1) == (5, 0)
+    with pytest.raises(RuntimeError, match="9 new atoms demanded"):
+        small.take(9)
+    assert small.allocated == 0, "a refused take moved the allocator cursor"
+    assert small.take(5) == 0
 
     with pytest.raises(ValueError, match="extent_atoms"):
         ExtentAllocator(capacity=8, extent_atoms=0)

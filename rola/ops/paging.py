@@ -43,12 +43,20 @@ consumer launch waits on ONE event. That is the whole of the asynchrony: no poll
 second sync, and the zeroing overlaps the schedule build rather than serializing with
 it.
 
-**THE CAP IS NOW A POLICY CEILING ONLY.** With the footprint known exactly, the
-allocator cannot be surprised; ``max_physical_pages`` stops being a capacity guess and
-becomes a deliberate limit. ``CAPPED`` semantics are UNCHANGED -- atoms are admitted in
-increasing first-write order until the ceiling is reached and the rest are DENIED, a
-denied atom's write is annihilated by the admit mask, and because that CHANGES THE
-FUNCTION COMPUTED it stays loud and opt-in.
+**THE CAP IS A POLICY CEILING, AND EXHAUSTING IT IS A REFUSAL.** With the footprint
+known exactly, the allocator cannot be surprised; ``max_physical_pages`` stops being a
+capacity guess and becomes a deliberate limit. When a launch demands more atoms than
+the ceiling leaves, the arena RAISES, naming the demand and the arena size -- it never
+grants a prefix and never drops a write. The former ``CAPPED`` mode (partial grant plus
+an admit mask that annihilated the denied atoms' writes) is DELETED: it computed a
+DIFFERENT function from the one the caller asked for, and the closed-world standard is
+that a demand the binary cannot serve is refused at the host rather than silently
+degraded. With it goes §7.1's annihilation contract, which existed only to define what
+a denied write meant.
+
+The consequence downstream is that admission is TOTAL: every atom the routing realizes
+is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one
+predicate and the arena publishes exactly one of them (the table).
 
 ---- EXTENTS ARE ALLOCATOR POLICY AND NOTHING ELSE ----------------------------
 
@@ -173,15 +181,12 @@ class AtomKeying:
 class PagingResult:
     """One call's committed-state accounting (spec §7.1's reported quantities)."""
 
-    #: ``'READY'`` or ``'CAPPED'``. Both are successful terminal states; ``CAPPED``
-    #: additionally means the function computed was degraded.
-    status: str
-    #: Atoms with a committed slot after this call's publication.
+    #: Atoms with a committed slot after this call's publication. Admission is TOTAL
+    #: (the capped mode is deleted), so this is exactly the set the routing realized
+    #: plus anything a continuation carried in.
     resident_pages: int
     #: High-water mark of :attr:`resident_pages` over the arena's lifetime.
     peak_pages: int
-    #: New atoms DENIED by the allocator ceiling this call. Nonzero iff ``CAPPED``.
-    capped_pages: int
     #: Logical atoms this call's routing actually realized on the write side -- the
     #: popcount of §4.1's atom condensation, which is EXACT rather than a bound.
     realized_owners: int
@@ -232,11 +237,13 @@ class ExtentAllocator:
     def reset(self) -> None:
         self._next = 0
 
-    def take(self, count: int) -> tuple[int, int]:
+    def take(self, count: int) -> int:
         """Reserve ``count`` slots, ALIGNED to an extent when a fresh one is opened.
 
-        Returns ``(first_slot, granted)``; ``granted < count`` exactly when the ceiling
-        binds, which is §7.1's ``CAPPED`` and is the caller's to report.
+        Returns the first slot. **ALL OR NOTHING**: a demand the ceiling cannot serve
+        RAISES, naming the demand and the arena size, and leaves the allocator
+        untouched. There is no partial grant -- the capped mode that consumed one was
+        deleted, because a prefix grant silently computes a different function.
 
         The alignment rule is one line and is the whole policy: a batch that fits the
         current extent's remainder goes there (so small admissions do not waste a whole
@@ -246,14 +253,19 @@ class ExtentAllocator:
         against a remainder, never a size against a threshold.
         """
         if count <= 0:
-            return self._next, 0
+            return self._next
         remainder = (-self._next) % self.extent_atoms
-        if remainder and count > remainder:
-            self._next = min(self.capacity, self._next + remainder)
-        first = self._next
-        granted = min(count, self.free)
-        self._next += granted
-        return first, granted
+        first = (self._next + remainder if (remainder and count > remainder)
+                 else self._next)
+        if first + count > self.capacity:
+            raise RuntimeError(
+                f"the page arena cannot serve this launch: {count} new atoms demanded, "
+                f"{self.capacity - first} free in an arena of {self.capacity} atoms. "
+                "The arena grants ALL or refuses -- there is no partial grant and no "
+                "dropped write. Raise `max_physical_pages` to the launch's realized "
+                "write footprint, or shrink the launch.")
+        self._next = first + count
+        return first
 
 
 class PageArena:
@@ -265,10 +277,10 @@ class PageArena:
     fraction up to its own extent and cap savings at the extent-to-footprint ratio.
 
     ``max_physical_pages`` is the allocator CEILING, in atoms. ``None`` provisions the
-    dense limit (``BH * atoms_per_bh``), i.e. paging can never deny a write and
-    ``CAPPED`` is unreachable. A finite value is what makes §4.5's graceful degradation
-    reachable, and under planned-exact allocation it is a deliberate POLICY limit rather
-    than a capacity guess -- the footprint is known before the launch.
+    dense limit (``BH * atoms_per_bh``), i.e. the ceiling can never bind. A finite value
+    is a deliberate POLICY limit rather than a capacity guess -- the footprint is known
+    before the launch -- and a launch that exceeds it is REFUSED, loudly and host-side.
+    It is never degraded: graceful degradation was the deleted capped mode.
 
     **NOTE ON ``BC``.** The arena takes it only to report ``QPO`` and to validate that
     the schedule it is handed is atom-compatible. Nothing it stores is ``BC``-keyed, so
@@ -278,7 +290,6 @@ class PageArena:
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,
                  device: torch.device, max_physical_pages: int | None = None,
-                 allow_capping: bool = False,
                  extent_atoms: int | None = None) -> None:
         N = prod(widths)
         self.widths = tuple(widths)
@@ -299,15 +310,6 @@ class PageArena:
             raise ValueError(
                 f"max_physical_pages must be in [1, {dense_limit}] (the dense limit, in "
                 f"ATOMS since the §4.5 re-key); got {self.max_physical_pages}")
-        self.allow_capping = bool(allow_capping)
-        if self.max_physical_pages < dense_limit and not allow_capping:
-            # Loud by construction: a ceiling that can bind CHANGES THE FUNCTION
-            # COMPUTED, and §7.1 requires that be a reported decision, never a
-            # discovered one.
-            raise ValueError(
-                "max_physical_pages below the dense limit makes spec §7.1's CAPPED "
-                "status reachable, which CHANGES THE FUNCTION COMPUTED (denied writes "
-                "are annihilated). Pass allow_capping=True to opt in.")
 
         resolved_extent = (self.atoms_per_owner if extent_atoms is None
                            else int(extent_atoms))
@@ -336,10 +338,6 @@ class PageArena:
         self._value_base = torch.zeros(
             (self.max_physical_pages, MMA_K_QUANTUM, self.cols),
             dtype=torch.float32, device=self.device)
-        #: §7.1's admit mask, at ATOM granularity -- the same granule the emptiness
-        #: quantum uses, so one predicate serves both.
-        self._admit = torch.zeros((self.BH, (self.keying.atoms_per_bh + 31) // 32),
-                                  dtype=torch.int32, device=self.device)
 
     # -- properties -------------------------------------------------------
 
@@ -352,11 +350,6 @@ class PageArena:
     def state(self) -> torch.Tensor:
         """``[slots, MMA_K_QUANTUM, cols]`` -- what the consumer indexes."""
         return self._value_base
-
-    @property
-    def admit(self) -> torch.Tensor:
-        """§7.1's admit mask, ``[BH, ceil(atoms_per_bh/32)]`` int32."""
-        return self._admit
 
     @property
     def resident_pages(self) -> int:
@@ -382,7 +375,6 @@ class PageArena:
         admission already does on the realized set only.
         """
         self._page_table.fill_(_ABSENT_PAGE)
-        self._admit.zero_()
         self._allocator.reset()
         self.peak_pages = 0
         self._ready = None
@@ -398,20 +390,24 @@ class PageArena:
           ``atom_ids``  ``[k]`` int64, device-resident, STRICTLY ASCENDING logical atom
                         ids (``bh * atoms_per_bh + leaf // MMA_K_QUANTUM``), each one
                         currently ABSENT from the table. Ascending order is what makes
-                        §7.1's admission order -- increasing first-write -- observable
-                        in the slot ids, and it is the caller's to establish.
+                        admission order observable in the slot ids, and it is the
+                        caller's to establish.
           ``first_slot`` the physical slot the run starts at, already reserved from
                         :class:`ExtentAllocator`. Slots ``[first_slot, first_slot + k)``
                         are guaranteed free and inside the ceiling.
 
-        EFFECTS, and exactly these three:
+        EFFECTS, and exactly these two:
           1. ``table[atom_ids] = first_slot + arange(k)`` (the gather-scatter);
           2. ``state[first_slot : first_slot + k] = 0`` (the zero-init, which is what
-             makes a fresh atom read as a zero state rather than as a stale one);
-          3. the admit bit for each admitted atom is set.
+             makes a fresh atom read as a zero state rather than as a stale one).
+
+        There is no third effect any more. The admit mask used to be set here, one bit
+        per admitted atom; with the capped mode deleted its bit is set for exactly the
+        atoms the table maps, so it carried no information the table did not and it was
+        removed end-to-end (arena, binding and kernel).
 
         STREAM / EVENT DISCIPLINE
-          All three run on the arena's SIDE STREAM, which waits on the current stream
+          Both run on the arena's SIDE STREAM, which waits on the current stream
           first (the atom bitmap it was handed is produced there). The caller then
           records ONE event and the consumer launch waits on it. Nothing here
           synchronizes the host: there is no ``.item()``, no ``.cpu()``, no
@@ -423,9 +419,9 @@ class PageArena:
 
         ---- WHY IT IS ONE FUNCTION -----------------------------------------
 
-        These three operations are torch ops today and want to be ONE custom CUDA
-        gather-scatter tomorrow: a single kernel that writes the table, zeroes the
-        slots and sets the admit bits in one pass over ``atom_ids``, with the zeroing
+        These two operations are torch ops today and want to be ONE custom CUDA
+        gather-scatter tomorrow: a single kernel that writes the table and zeroes the
+        slots in one pass over ``atom_ids``, with the zeroing
         vectorized over the ``[k, MMA_K_QUANTUM, cols]` run. Confining them behind one
         boundary with a stated contract is what makes that a DROP-IN replacement rather
         than an archaeology exercise -- the same relationship the summary kernel has to
@@ -444,15 +440,6 @@ class PageArena:
                                      dtype=torch.int32, device=self.device)
                 self._page_table.view(-1).index_copy_(0, atom_ids, slots)
                 self._value_base[first_slot:first_slot + count].zero_()
-                # The admit bit, at the same atom granularity as the table.
-                words = self._admit.view(-1)
-                bh = torch.div(atom_ids, self.keying.atoms_per_bh, rounding_mode="floor")
-                local = atom_ids - bh * self.keying.atoms_per_bh
-                word_index = bh * self._admit.shape[1] + torch.div(
-                    local, 32, rounding_mode="floor")
-                bits = (torch.ones_like(local, dtype=torch.int32)
-                        << (local % 32).to(torch.int32))
-                words.scatter_reduce_(0, word_index, bits, reduce="sum")
 
     # -- planning ---------------------------------------------------------
 
@@ -472,12 +459,11 @@ class PageArena:
         legitimate continuation (successive chunks of one sequence). There is no
         implicit third option.
 
-        **CAPPED, unchanged.** Atoms are admitted in ascending logical id -- which is
+        **ADMISSION IS TOTAL.** Atoms are admitted in ascending logical id -- which is
         ascending ``(bh, leaf)``, and therefore ascending first-write within a ``bh``
-        under the canonical leaf order -- until the ceiling binds; the rest are DENIED
-        and their writes are annihilated by the admit mask they never get a bit in.
-        Because that CHANGES THE FUNCTION COMPUTED it is reported and, without
-        ``allow_capping``, raised.
+        under the canonical leaf order -- and EVERY one of them is admitted. If the
+        ceiling cannot cover the demand the allocator RAISES; there is no prefix grant
+        and no denied atom, because the capped mode that produced them was deleted.
         """
         if fresh:
             self.reset()
@@ -493,21 +479,16 @@ class PageArena:
         wanted = atom_bitmap.reshape(-1) & (self._page_table.reshape(-1) < 0)
         atom_ids = wanted.nonzero(as_tuple=True)[0]
         realized = int(atom_bitmap.sum())
-        first_slot, granted = self._allocator.take(int(atom_ids.numel()))
-        capped = int(atom_ids.numel()) - granted
-        if capped and not self.allow_capping:
-            raise RuntimeError(
-                f"page plan CAPPED {capped} atoms without allow_capping=True")
-        self._admit_pages(atom_ids[:granted], first_slot)
+        first_slot = self._allocator.take(int(atom_ids.numel()))
+        self._admit_pages(atom_ids, first_slot)
         if self._stream is not None:
             self._ready = torch.cuda.Event()
             self._ready.record(self._stream)
 
         self.peak_pages = max(self.peak_pages, self._allocator.allocated)
         self.last_result = PagingResult(
-            status="CAPPED" if capped else "READY",
             resident_pages=self._allocator.allocated, peak_pages=self.peak_pages,
-            capped_pages=capped, realized_owners=realized,
+            realized_owners=realized,
             owners_total=self.keying.atoms_per_bh,
             resident_bytes=self.resident_bytes(), dense_bytes=self.dense_bytes(),
             committed_bytes=None)
@@ -572,13 +553,12 @@ class PageArena:
                 "adopt_dense commits every atom and needs the dense limit; this arena "
                 f"caps at {self.max_physical_pages} of {self.logical_pages} atoms")
         self._allocator.reset()
-        first, granted = self._allocator.take(self.logical_pages)
-        assert first == 0 and granted == self.logical_pages
+        first = self._allocator.take(self.logical_pages)
+        assert first == 0
         table = torch.arange(self.logical_pages, dtype=torch.int32, device=self.device)
         self._page_table.copy_(table.view(self.BH, self.keying.atoms_per_bh))
         self._value_base.copy_(
             state.reshape(self.logical_pages, MMA_K_QUANTUM, self.cols))
-        self._admit.fill_(-1)   # every atom admitted; trailing bits are unread
         self.peak_pages = max(self.peak_pages, self.logical_pages)
 
     def materialize(self) -> torch.Tensor:
