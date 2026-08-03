@@ -50,6 +50,7 @@ precisely so that which warp runs one cannot change a result.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -75,10 +76,15 @@ RTOL = 2e-2
 
 _CHILD = textwrap.dedent(
     '''
-    import sys, torch
+    import os, sys, torch
     sys.path.insert(0, {repo!r})
     torch.cuda.set_per_process_memory_fraction(0.65)
 
+    import rola
+    assert os.path.realpath(rola.__file__).startswith(
+        os.path.realpath({repo!r}) + os.sep), (
+        "the K3 gate is testing a FOREIGN tree: rola resolved to "
+        f"{{rola.__file__}} instead of under {repo!r}")
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
     from rola.planner.schedule import Plan
@@ -162,7 +168,8 @@ def _run_cell(**kw):
     the cell is reported as a liveness failure naming its parameters -- which is
     the attribution a bare hang inside the pytest process cannot give.
     """
-    src = _CHILD.format(repo="/home/blake/rola-thunder-trackK", rtol=RTOL, **kw)
+    repo = str(pathlib.Path(__file__).resolve().parents[2])
+    src = _CHILD.format(repo=repo, rtol=RTOL, **kw)
     try:
         proc = subprocess.run([sys.executable, "-c", src], capture_output=True,
                               text=True, timeout=TIMEOUT_S)
