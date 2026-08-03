@@ -964,10 +964,22 @@ class RoLA(nn.Module):
             # which is exact -- not a silent degradation, because paging is bitwise
             # invisible and the cap stays enforced by the arena the tiled path uses.
             config = self._resolve_decode_config(B * H, v.device)
+            # `decode_forward` updates its state argument IN PLACE, and the cached
+            # state is fp32-contiguous in steady decode, so both casts below are
+            # IDENTITY and would alias the caller's cache. Under `use_cache=True`
+            # that aliasing IS the intended in-place carry; under `use_cache=False`
+            # the caller's cache must be left untouched, so the alias is severed
+            # with a clone -- the same seam discipline as the unpaged prefill's
+            # `initial_state...clone()` (`rola/ops/consumer.py`). Only the identity
+            # case clones: a non-identity cast already copied. (H10,
+            # tests/layers/test_decode_cache_isolation.py.)
+            decode_state = recurrent_state.to(torch.float32).contiguous()
+            if not cache_enabled and decode_state.data_ptr() == recurrent_state.data_ptr():
+                decode_state = decode_state.clone()
             out, final_state, self._decode_workspace = decode_forward(
                 v, routing_out.read_levels, routing_out.write_levels,
                 routing_out.g_read, routing_out.g_write, config,
-                recurrent_state.to(torch.float32).contiguous(),
+                decode_state,
                 decay=decay_config, workspace=self._decode_workspace)
             self.last_paging_stats = None
             backend = 'decode'
