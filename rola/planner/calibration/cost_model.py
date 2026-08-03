@@ -835,8 +835,10 @@ DECAY_KSTEP_WORK = (1106.3 + 959.7) / 2.0
 # for a staging ring, bracketed `(40.5, 143.3)` by three cells, and it was known to
 # be load-bearing: setting it to 0 flipped FOUR of the eight measured argmins. The
 # source read had already established that the surviving consumer has no staging
-# ring (`p.ring_slots`, `p.gram_cols` and `p.level_gram_offset` are written by the
-# host and read by ZERO sites in `consumer_kernel.cuh`), but a name being wrong is
+# ring (`p.ring_slots`, `p.gram_cols` and `p.level_gram_offset` were written by the
+# host and read by ZERO sites in `consumer_kernel.cuh`; all three are since REMOVED
+# end-to-end -- `ring_slots` with H3's agreement gate, the two gram fields in the
+# terminal cycle), but a name being wrong is
 # not permission to delete a term that carries a decision, so the disposition
 # waited for the isolating cells.
 #

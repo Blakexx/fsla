@@ -84,15 +84,6 @@ struct ConsumerParams {
   int level_pitch_write[kMaxLevels];
   // prod(widths[l+1:j]) for the fixed levels l < j; the owner-id mixed radix.
   int owner_stride[kMaxLevels];
-  // `gram` intra lowering only: where level `l >= j`'s `modulus` columns start in
-  // the per-tile staged amplitude rows, and their total width. The factor Gram
-  // reads each level's RAW amplitude row (not the assembled leaf panel), so those
-  // rows are staged into SMEM once per tile -- `BT * gram_cols` floats, versus the
-  // `BT^2 * gram_cols` global loads a direct read would issue. Zero when the
-  // lowering is not selected.
-  int level_gram_offset[kMaxLevels];
-  int gram_cols;
-
   const int32_t* owners;        // [n_owners, 2]  (bh, owner)
   const uint32_t* read_bits;    // [BH, total_rows, n_words]
   const uint32_t* write_bits;   // [BH, total_rows, n_words]

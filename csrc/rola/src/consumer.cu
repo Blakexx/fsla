@@ -660,18 +660,6 @@ std::vector<at::Tensor> rola_consumer_forward(
                 "dials must be [H, total_rows] = [", n_heads, ", ", p.total_rows, "], got [",
                 dials->size(0), ", ", dials->size(1), "]");
   }
-  // `gram` staging geometry: level `l >= j` contributes `modulus` columns to the
-  // per-tile staged amplitude rows. Derived from the SAME per-level arrays the
-  // digit lowering uses, so it cannot drift from the owner rectangle it describes.
-  {
-    int off = 0;
-    for (int64_t l = 0; l < D; ++l) {
-      p.level_gram_offset[l] = off;
-      if (l >= first_spanned_level) off += p.level_modulus[l];
-    }
-    p.gram_cols = off;
-  }
-
   TORCH_CHECK(p.n_words <= kMaxWords,
               "n_words=", p.n_words, " exceeds the per-CTA SMEM candidate budget kMaxWords=",
               kMaxWords, " (T > ", static_cast<int64_t>(kMaxWords) * 32 * BT,

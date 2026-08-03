@@ -411,6 +411,12 @@ _MANGLED = re.compile(
     rf"L{_PREC}(\d)EL{_PREC}(\d)E"
     r"Lb(\d)ELb(\d)ELb(\d)E")
 
+#: The NON-consumer ratified families (coverage-closure item 12): the decode GEMV
+#: and the union-entmax forward/backward pair. An EXPLICIT allowlist, so that a
+#: manifest entry from any kernel nobody declared still fails the census.
+_OTHER_RATIFIED_FAMILIES = re.compile(
+    r"decode_gemv_kernelI|union_forward_kernelI|union_backward_kernelI")
+
 
 def load_manifest(directory: Path = MANIFEST_DIR) -> dict:
     """The ratification, read as ONE record however many files it is split across.
@@ -464,6 +470,16 @@ def shipped_axis_values(directory: Path = MANIFEST_DIR) -> dict[str, set[Any]]:
         mangled = key.split(":", 1)[1]
         m = _MANGLED.search(mangled)
         if m is None:
+            #: The coverage-closure census extension (item 12) ratifies THREE kernel
+            #: families, not one: the consumer matrix above, the decode GEMV and the
+            #: two union-entmax kernels. This census polices the CONSUMER's template
+            #: axes; the other ratified families are RECOGNIZED BY NAME and excluded
+            #: from it — recognized, not skipped-on-no-match, so an unparseable
+            #: consumer entry (or a fourth family nobody declared here) still fails
+            #: exactly as before. Their own gates are the ratification manifest's
+            #: six checks and the decode/entmax suites, not this matrix.
+            if _OTHER_RATIFIED_FAMILIES.search(mangled):
+                continue
             raise AssertionError(
                 f"a ratified instantiation does not match the declared template "
                 f"parameter list {TEMPLATE_PARAMETER_ORDER}: {mangled!r}. Either the "

@@ -320,20 +320,19 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         # compile-time axis this row still needs.
         row.update({"selected_BT": plan.BT, "selected_compact": plan.compact})
         if layer.last_plan_axes is not None:
-            stats = layer.last_plan_axes.stats
-            # `mean_K` is over ALL (owner, tile) pairs; `mean_K_candidate` is over the
-            # pairs the kernel actually walks (`plan_cost_per_token` in schedule_v3.py
-            # consumes `stats.mean_K_candidate`, not `stats.mean_K` -- atscale-review.md
-            # G7). At scale most (owner, tile) pairs are non-candidates, so `mean_K`
-            # alone overstates the collapse; both are recorded so neither is quoted
-            # alone. `saturated_frac` is the OTHER instrument `mean_K` collapse claims
-            # get checked against (G7's toy-scale "saturated" claim was false on this
-            # exact field: 0.00049, not saturation).
-            row["mean_K_per_tile"] = round(stats.mean_K, 4)
-            row["mean_K_candidate"] = round(stats.mean_K_candidate, 4)
-            row["candidate_frac"] = round(stats.candidate_frac, 6)
-            row["saturated_frac"] = round(stats.saturated_frac, 6)
-            row["selected_cost_per_token"] = round(layer.last_plan_axes.cost_per_token, 4)
+            # G16 RE-POINT (terminal cycle): `last_plan_axes` carries
+            # `rola.planner.select.ConfigEvidence` since the closed-form cut-over --
+            # the pre-cut-over `PlanAxes.stats` object (mean_K / mean_K_candidate /
+            # saturated_frac) was retired with the runtime argmin. `k_hat` is the
+            # SELECTOR'S OWN collapse statistic (the quanta-histogram upper bound
+            # that prices packing, spec §4.2) and `candidate_frac` survives by name;
+            # both are recorded from the evidence the decision actually used, which
+            # is stronger provenance than a re-derived statistic.
+            evidence = layer.last_plan_axes
+            row["k_hat"] = round(evidence.k_hat, 4)
+            row["candidate_frac"] = round(evidence.candidate_frac, 6)
+            row["selected_cost_per_token"] = round(evidence.cost_per_token, 4)
+            row["selection_provenance"] = evidence.provenance
         stats_paging = layer.last_paging_stats
         if stats_paging is not None:
             row.update({
