@@ -30,7 +30,6 @@
 #include "src/entmax.cuh"
 #include "src/host_api.cuh"
 #include "src/summaries.cuh"
-#include "src/paging/page_plan.cuh"
 #include "src/paging/vmm_owner.cuh"
 
 namespace py = pybind11;
@@ -76,15 +75,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "the C++ mirror of the producer's MAX_BRANCH_WIDTH; pinned EQUAL to the Python "
         "constant so a stale mirror cannot silently satisfy the capacity static_assert");
 
-  // ---- spec §7.1 page commitment ------------------------------------------
+  // ---- spec §4.1/§4.2 producer-epilogue summaries ---------------------------
   //
-  // Registration exposes ABI identity and the status constants only; the parent
-  // extension owns construction of the tensor-backed view structs and calls the
-  // typed launch functions, so there is no second Python-side page allocator.
-  //
-  //: ABI 3 is the §7.1 re-key: `page_states := BC`, `dqk := 1`, the §4 amplitude
-  //: stream in place of V2's RouteDescriptor + PrefixRunSchedule, and the `CAPPED`
-  //: status with its admit mask.
+  // THE V2 CUDA PAGE-PLAN PRODUCER IS DELETED, and with it 8 bindings
+  // (`page_plan_abi_version`, `page_plan_status_codes`, `page_plan_workspace_bytes`,
+  // `rola_page_plan_{prepare,finalize,publish}`, `rola_page_admit_mask`,
+  // `rola_page_cache_reset`). Track P replaced it entirely with the torch
+  // PLANNED-EXACT-ASYNC arena in `rola/ops/paging.py`: nothing under `rola/`,
+  // `tests/` or `benchmarks/` referenced any of them, so they were unreachable from
+  // Python and dead by the no-dead-code standard. The page table the consumer reads
+  // is now published by that arena.
   // THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS (THUNDER_RUN_SPEC.md §4.1/§4.2).
   // One launch, no allocation, no host synchronization: every output is a caller-owned
   // tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer.
@@ -92,41 +92,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Producer-epilogue routing summaries: occupancy, the quantum histogram, the "
         "candidate count, and §4.1's canonical per-leaf write bitmap with its owner "
         "condensation");
-
-  m.def("page_plan_abi_version", []() { return 3; });
-  m.def("page_plan_status_codes", []() {
-    py::dict result;
-    result["READY"] = rola::paging::kPagePlanReady;
-    result["NEED_GROWTH"] = rola::paging::kPagePlanNeedGrowth;
-    result["OVERFLOW"] = rola::paging::kPagePlanOverflow;
-    result["CAPPED"] = rola::paging::kPagePlanCapped;
-    return result;
-  });
-  m.def("page_plan_workspace_bytes", &rola::paging::page_plan_workspace_bytes);
-  m.def("rola_page_plan_prepare", &rola::paging::rola_page_plan_prepare_cuda,
-        py::arg("write_amps"), py::arg("level_widths"),
-        py::arg("level_pitches"), py::arg("level_write_can_zero"),
-        py::arg("owner_stride"), py::arg("token_count"), py::arg("token_tile"),
-        py::arg("first_spanned_level"), py::arg("slice_digits"),
-        py::arg("n_slices"), py::arg("plan_tensors"),
-        py::arg("cache_tensors"), py::arg("mass_base"), py::arg("page_states"),
-        py::arg("pages_per_bh"), py::arg("max_suffix_combinations"),
-        py::arg("generation"), py::arg("epoch"),
-        py::arg("identity_physical_ids"));
-  m.def("rola_page_admit_mask", &rola::paging::rola_page_admit_mask_cuda,
-        py::arg("page_table"), py::arg("admit"));
-  m.def("rola_page_plan_finalize", &rola::paging::rola_page_plan_finalize_cuda,
-        py::arg("plan_tensors"), py::arg("cache_tensors"),
-        py::arg("mass_base"), py::arg("generation"), py::arg("epoch"),
-        py::arg("page_states"), py::arg("dqk"), py::arg("dv"),
-        py::arg("identity_physical_ids"));
-  m.def("rola_page_plan_publish", &rola::paging::rola_page_plan_publish_cuda,
-        py::arg("plan_tensors"), py::arg("cache_tensors"),
-        py::arg("mass_base"), py::arg("generation"), py::arg("epoch"),
-        py::arg("page_states"), py::arg("dqk"), py::arg("dv"),
-        py::arg("identity_physical_ids"));
-  m.def("rola_page_cache_reset", &rola::paging::rola_page_cache_reset_cuda,
-        py::arg("cache_tensors"));
 
   // ---- the VMM owner ------------------------------------------------------
   m.def("rola_vmm_probe", [](int device) {

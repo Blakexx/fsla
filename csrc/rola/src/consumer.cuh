@@ -129,12 +129,15 @@ struct ConsumerParams {
 
   float* num;                   // [BH, T, DV]   fp32, atomically accumulated
   float* den;                   // [BH, T]       fp32, or nullptr under `raw`
-  //: Unpaged: `[BH, N, DV (+1 mass column under `global`)]`, owner `o` of batch-head
-  //: `bh` at row `bh * N + o * BC`.
-  //: Paged (spec §7.1): `[physical_pages, BC, cols]`, owner `o` at row
-  //: `page_table[bh * owners_total + o] * BC`. That is the ONLY difference -- the
-  //: owner's rectangle is `BC` contiguous rows either way, because §7.1 sets
-  //: `page_states := BC` so one page IS one owner.
+  //: Unpaged: `[BH, N, DV (+1 mass column under `global`)]`; ATOM `q` of owner `o`
+  //: of batch-head `bh` starts at row `bh * N + o * BC + q * MMA_K_QUANTUM`.
+  //: Paged (spec §4.5): `[physical_slots, MMA_K_QUANTUM, cols]`; that same atom
+  //: starts at row `page_table[bh * atoms_per_bh + o * QPO + q] * MMA_K_QUANTUM`.
+  //: A page is one `MMA_K_QUANTUM`-leaf ATOM and NOT one owner (`page_states := BC`
+  //: is dead -- §1b makes `BC` a re-derivable COMPUTE tile and the page a
+  //: MEMORY-RESIDENCY granule, so that a per-launch `BC` never rebuilds the arena).
+  //: An owner is therefore `QPO = BC / MMA_K_QUANTUM` independently paged runs, and
+  //: `atom_row_base` in `consumer_kernel.cuh` is the one place that arithmetic lives.
   float* state;
   //: `[BH, atoms_per_bh]` int32, or nullptr for the unpaged path. `kAbsentPage`
   //: (-1) means the atom has no committed slot, which can only happen for an atom
@@ -155,7 +158,6 @@ struct ConsumerParams {
   int D;
   int first_spanned_level;      // j
   int slice_digits;             // c
-  int owners_total;
   int n_owners;
   int H;                        // heads; the dial row is `bh % H` (fold is b*H+h)
 
@@ -258,7 +260,6 @@ struct ScanParams {
   const float* state;
   const int32_t* page_table;
   int64_t N;
-  int owners_total;
   int BC;
   int cols;
   int n_split;

@@ -65,7 +65,7 @@ import pytest
 import torch
 
 from rola.ops.consumer import _consumer_forward
-from rola.ops.paging import PageArena
+from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from rola.planner.schedule import Plan, build_schedule
 from rola.routing.types import (
     EntmaxActivation,
@@ -180,16 +180,29 @@ def _arena(plan, *, BH, max_physical_pages=None):
 @pytest.mark.parametrize("normalization", ["raw", "global"])
 @pytest.mark.parametrize("p_nonzero", [0.4, 1.0], ids=["sparse", "dense"])
 @pytest.mark.parametrize("BT", [16, 32])
-def test_paging_is_bitwise_invisible(decay_on, normalization, p_nonzero, BT):
+@pytest.mark.parametrize("BC", [16, 64], ids=["BC16-QPO1", "BC64-QPO4"])
+def test_paging_is_bitwise_invisible(decay_on, normalization, p_nonzero, BT, BC):
     """State exactly equal; `y` within the kernel's own reordering envelope.
 
-    Covers both decay arms, both normalizations, sparse and dense routing, and BOTH
-    values of `BT` -- the last because §7.1's `token_tile` coupling is settled
-    PARAMETRIC (findings `paging.md` D3), so `BT = 16` is a gated configuration
-    rather than an untested one. `p_nonzero = 1.0` is the dense limit, where every
-    owner is live and the mark phase takes its short-circuit.
+    Covers both decay arms, both normalizations, sparse and dense routing, BOTH
+    values of `BT` -- because §7.1's `token_tile` coupling is settled PARAMETRIC
+    (findings `paging.md` D3), so `BT = 16` is a gated configuration rather than an
+    untested one -- and BOTH instantiated `BC`. `p_nonzero = 1.0` is the dense limit,
+    where every owner is live and the mark phase takes its short-circuit.
+
+    **`BC = 64` IS THE CELL THAT WAS MISSING, AND IT IS THE ONE THAT MATTERS.**
+    Every cell of this file used to pin `BC = 16`, where `QPO = BC / MMA_K_QUANTUM`
+    is 1 and an ATOM IS AN OWNER -- so the owner keying and the atom keying are
+    indistinguishable and a half-landed re-key passes. At `BC = 64`, `QPO = 4`: an
+    owner is four independently paged atoms whose slots need not be contiguous, the
+    paged state is `[slots, 16, cols]` where an owner-keyed kernel expects
+    `[pages, 64, cols]`, and the page table's stride is `N/16` where an owner-keyed
+    kernel reads `N/BC`. `widths = (4, 8, 8)` admits it (suffix product `8*8 = 64`,
+    so `j = 0`, `slice_digits = 1`, 4 owners). This is also THE FLAGSHIP DEFAULT --
+    `largest_feasible_bc` resolves to 64 on the flagship topology -- so before this
+    cell existed, no gated configuration was the one production takes.
     """
-    widths, d_v, BC = (4, 8, 8), 64, 16
+    widths, d_v = (4, 8, 8), 64
     plan = _plan(widths, d_v, BT=BT, BC=BC, normalization=normalization, decay=decay_on,
                  sparse_write=p_nonzero < 1.0)
     fixture = _fixture(widths, d_v, p_nonzero=p_nonzero, seed=11)
@@ -332,6 +345,47 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalizatio
         "below is meaningless and the kernel, not paging, is what changed")
     assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize())
 
+    bound = _reordering_bound(y_dense, plan)
+    assert (y_dense - y_control).abs().max() <= bound
+    assert (y_dense - y_paged).abs().max() <= bound
+
+
+@pytest.mark.parametrize("normalization", ["raw", "global"])
+def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization):
+    """The structural claim of the §4.5 re-key, asserted rather than inferred.
+
+    `BC = 64` gives `QPO = 4`. The re-key's whole content is that those four atoms
+    are SEPARATE residency decisions: a partially-written owner commits only the
+    atoms its routing touches, and an owner-keyed kernel -- which resolves ONE base
+    per owner and reads `BC` contiguous rows from it -- cannot express that. So this
+    cell drives a fixture sparse enough that some owner is SPLIT (at least one atom
+    resident and at least one not) and then asserts bit-identity through it.
+
+    Without the split assertion this would silently degrade into
+    `test_paging_is_bitwise_invisible`'s `BC64` cell whenever the fixture saturated,
+    which is exactly the way the `BC = 16` grid managed to gate nothing.
+    """
+    widths, d_v, BC = (16, 8, 8), 32, 64
+    plan = _plan(widths, d_v, BT=32, BC=BC, normalization=normalization, decay=False)
+    fixture = _fixture(widths, d_v, p_nonzero=0.1, seed=23, T=8)
+    B, T, H, _ = fixture[4].shape
+
+    y_dense, state_dense, _ = _run(plan, fixture)
+    y_control, _, _ = _run(plan, fixture)
+    arena = _arena(plan, BH=B * H)
+    y_paged, returned, _ = _run(plan, fixture, arena=arena)
+
+    QPO = BC // MMA_K_QUANTUM
+    assert QPO == 4
+    present = (arena.page_table >= 0).reshape(B * H, -1, QPO)
+    split = present.any(dim=-1) & ~present.all(dim=-1)
+    assert bool(split.any()), (
+        "no owner was SPLIT across its atoms, so this cell is not exercising what "
+        "the re-key is for; the fixture saturated and needs to be sparser")
+
+    assert returned is arena
+    cols = state_dense.shape[-1]
+    assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize())
     bound = _reordering_bound(y_dense, plan)
     assert (y_dense - y_control).abs().max() <= bound
     assert (y_dense - y_paged).abs().max() <= bound

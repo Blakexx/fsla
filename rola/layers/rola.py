@@ -717,17 +717,24 @@ class RoLA(nn.Module):
         selected PER LAUNCH (§4.3), an arena that had to be rebuilt on a `BT` flip would
         have been rebuilt constantly.
 
-        `BC` remains, and remains for a different reason: it is not stored anywhere in
-        the arena (every stored object is `BC`-invariant, gated), but it fixes the
-        owner geometry the caller reasons about, so an arena built for one topology's
-        `BC` should not silently serve another's.
+        **`BC` LEAVES THIS LIST WITH THE CONSUMER'S ADDRESS RE-KEY.** It was the last
+        `BC`-keyed thing here, and it was only ever defensible while the KERNEL
+        addressed a page as an owner rectangle. Now that a page is one
+        `MMA_K_QUANTUM`-leaf atom on both sides, every stored object AND every address
+        the kernel forms is `BC`-invariant, so two launches at different `BC` over one
+        arena address the same bytes of the same slots. Since `select_config` chooses
+        `BC` per launch (§4.3), keeping it here would rebuild the arena -- dropping
+        every live page -- on a purely COMPUTE-tile decision, which is precisely the
+        arena-rebuild class §4.5 exists to kill. The arena's own `BC`-derived
+        attributes (`atoms_per_owner`, `owners_total`, the default `extent_atoms`) are
+        allocator POLICY and reporting only; nothing addressed depends on them.
         """
         from rola.ops.paging import PageArena
 
         cols = self.head_v_dim + (1 if self.state_norm == 'global' else 0)
         arena = self._page_arena
         if (arena is not None and arena.BH == BH and arena.device == device
-                and arena.cols == cols and arena.BC == plan.BC):
+                and arena.cols == cols):
             return arena
         arena = PageArena(
             widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,

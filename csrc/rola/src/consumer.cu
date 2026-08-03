@@ -69,6 +69,13 @@ namespace {
 // amended to match): slot `slot0` is the ENTRY-STATE STASH this kernel publishes
 // below, and slots `slot0 + 1 .. slot0 + P - 1` are the `P - 1` summaries/boundaries.
 // The stash is what removes pass 3's intra-launch dependence on `p.state`.
+//: §4.5's page granule, mirrored from `rola.ops.paging.MMA_K_QUANTUM` and equal by
+//: construction to `consumer_kernel.cuh`'s `kMmaKQuantum` -- one number, and
+//: `tests/unit/test_paging_atoms.py` plus the paged equivalence fixtures are what
+//: keep the mirrors honest. Declared here because `scan_kernel` lives in this TU and
+//: must not include the consumer kernel's header.
+constexpr int kScanAtomLeaves = 16;
+
 __global__ void scan_kernel(ScanParams p) {
   extern __shared__ float E[];
   const int u = blockIdx.x;
@@ -80,20 +87,28 @@ __global__ void scan_kernel(ScanParams p) {
   const int cols = p.cols;
   const int n = BC * cols;
 
-  // The owner's entry state, addressed exactly as the consumer addresses it (§7.1:
-  // paging changes which base the owner's `BC` contiguous rows start at, nothing
-  // else), so a paged and an unpaged fold see the same numbers.
-  bool resident = true;
-  int64_t base;
-  if (p.page_table != nullptr) {
-    const int physical = p.page_table[static_cast<int64_t>(bh) * p.owners_total + owner];
-    resident = physical >= 0;
-    base = static_cast<int64_t>(resident ? physical : 0) * BC;
-  } else {
-    base = static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC;
-  }
+  // The owner's entry state, addressed exactly as the consumer addresses it (§4.5:
+  // a page is one `MMA_K_QUANTUM`-leaf ATOM, so an owner is `QPO = BC / 16`
+  // independently paged runs), so a paged and an unpaged fold see the same numbers.
+  // `BC` is a runtime value here, so the per-atom base is resolved per row rather
+  // than in an unrolled loop; this is pass 2 of a split launch, one CTA per SPLIT
+  // owner, and the resolution is an L1-resident int32 load.
+  const int atoms_per_bh = static_cast<int>(p.N / kScanAtomLeaves);
   for (int e = threadIdx.x; e < n; e += blockDim.x) {
-    E[e] = resident ? p.state[base * cols + e] : 0.0f;
+    const int i = e / cols;
+    const int c = e - i * cols;
+    const int q = i / kScanAtomLeaves;
+    const int r = i - q * kScanAtomLeaves;
+    int64_t row;
+    if (p.page_table != nullptr) {
+      const int physical = p.page_table[static_cast<int64_t>(bh) * atoms_per_bh
+                                        + owner * (BC / kScanAtomLeaves) + q];
+      row = physical >= 0 ? static_cast<int64_t>(physical) * kScanAtomLeaves + r
+                          : static_cast<int64_t>(-1);
+    } else {
+      row = static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC + i;
+    }
+    E[e] = row >= 0 ? p.state[row * cols + c] : 0.0f;
   }
   __syncthreads();
 
@@ -508,21 +523,31 @@ std::vector<at::Tensor> rola_consumer_forward(
   const int64_t BH = v.size(0);
   const int64_t T = v.size(1);
   const int64_t d_v = v.size(2);
-  // §7.1: paging changes the state's SHAPE, not its addressing rule. Unpaged it is
-  // `[BH, N, cols]` and an owner starts at `bh * N + owner * BC`; paged it is
-  // `[physical_pages, BC, cols]` and an owner starts at `page_table[...] * BC`.
-  // `N` is then not readable off the state, so it is derived from the owner
-  // partition -- which is the definition, `N = owners_total * BC`.
+  // §4.5: paging changes the state's SHAPE, not its addressing rule, and the page
+  // granule is the MMA ATOM rather than the owner. Unpaged the state is
+  // `[BH, N, cols]` and atom `q` of owner `o` starts at `bh*N + o*BC + q*16`; paged
+  // it is `[physical_slots, MMA_K_QUANTUM, cols]` and that atom starts at
+  // `page_table[bh*atoms_per_bh + o*QPO + q] * 16`. `N` is then not readable off the
+  // state, so it is derived from the owner partition -- the definition,
+  // `N = owners_total * BC`.
   const int64_t cols = d_v + (global_norm ? 1 : 0);
   int64_t N;
   if (page_table.has_value()) {
-    TORCH_CHECK(state.dim() == 3 && state.size(1) == BC && state.size(2) == cols,
-                "paged state must be [physical_pages, BC, d_v(+1 under global)]");
+    TORCH_CHECK(BC % kScanAtomLeaves == 0,
+                "BC must be a whole number of MMA_K_QUANTUM=", kScanAtomLeaves,
+                "-leaf atoms under paging (spec §1b); got BC=", BC);
+    TORCH_CHECK(state.dim() == 3 && state.size(1) == kScanAtomLeaves &&
+                    state.size(2) == cols,
+                "paged state must be [physical_slots, MMA_K_QUANTUM(",
+                kScanAtomLeaves, "), d_v(+1 under global)] -- the page granule is the "
+                "ATOM, not the owner rectangle (spec §4.5)");
     const auto& table = *page_table;
+    const int64_t atoms_per_bh = owners_total * BC / kScanAtomLeaves;
     TORCH_CHECK(table.is_cuda() && table.is_contiguous() &&
                     table.scalar_type() == at::kInt && table.dim() == 2 &&
-                    table.size(0) == BH && table.size(1) == owners_total,
-                "page_table must be contiguous int32 [BH, owners_total] on the state's device");
+                    table.size(0) == BH && table.size(1) == atoms_per_bh,
+                "page_table must be contiguous int32 [BH, atoms_per_bh = N/",
+                kScanAtomLeaves, "] on the state's device");
     N = owners_total * BC;
   } else {
     TORCH_CHECK(state.dim() == 3, "state must be [BH, N, d_v(+1)]");
@@ -632,7 +657,6 @@ std::vector<at::Tensor> rola_consumer_forward(
   p.D = static_cast<int>(D);
   p.first_spanned_level = static_cast<int>(first_spanned_level);
   p.slice_digits = static_cast<int>(slice_digits);
-  p.owners_total = static_cast<int>(owners_total);
   p.n_owners = static_cast<int>(owners.size(0));
   TORCH_CHECK(n_heads >= 1 && BH % n_heads == 0,
               "H=", n_heads, " must be >= 1 and divide BH=", BH);
@@ -754,7 +778,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     s.state = p.state;
     s.page_table = p.page_table;
     s.N = N;
-    s.owners_total = p.owners_total;
     s.BC = BC_i;
     s.cols = static_cast<int>(cols);
     s.n_split = static_cast<int>(n_split);

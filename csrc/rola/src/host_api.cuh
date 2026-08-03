@@ -89,32 +89,5 @@ int64_t rola_sm_shared_bytes();
 
 namespace rola::paging {
 
-//: `paging/page_plan_host.cu` -- spec §7.1 page commitment. The paging arena binds
-//: into the SAME extension as the consumer, deliberately: the consumer reads the
-//: page table the plan publishes, so a second extension would put a cross-module ABI
-//: between two halves of one contract.
-std::vector<torch::Tensor> rola_page_plan_prepare_cuda(
-    std::vector<torch::Tensor> write_amps, std::vector<int64_t> level_widths,
-    std::vector<int64_t> level_pitches, std::vector<int64_t> level_write_can_zero,
-    std::vector<int64_t> owner_stride, int64_t token_count, int64_t token_tile,
-    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices,
-    std::vector<torch::Tensor> plan_tensors, std::vector<torch::Tensor> cache_tensors,
-    c10::optional<torch::Tensor> mass_base, int64_t page_states,
-    int64_t pages_per_bh, int64_t max_suffix_combinations,
-    int64_t generation, int64_t epoch, bool identity_physical_ids);
-
-void rola_page_admit_mask_cuda(torch::Tensor page_table, torch::Tensor admit);
-
-std::vector<torch::Tensor> rola_page_plan_finalize_cuda(
-    std::vector<torch::Tensor> plan_tensors, std::vector<torch::Tensor> cache_tensors,
-    c10::optional<torch::Tensor> mass_base, int64_t generation, int64_t epoch,
-    int64_t page_states, int64_t dqk, int64_t dv, bool identity_physical_ids);
-
-std::vector<torch::Tensor> rola_page_plan_publish_cuda(
-    std::vector<torch::Tensor> plan_tensors, std::vector<torch::Tensor> cache_tensors,
-    c10::optional<torch::Tensor> mass_base, int64_t generation, int64_t epoch,
-    int64_t page_states, int64_t dqk, int64_t dv, bool identity_physical_ids);
-
-void rola_page_cache_reset_cuda(std::vector<torch::Tensor> cache_tensors);
 
 }  // namespace rola::paging

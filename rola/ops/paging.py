@@ -282,10 +282,15 @@ class PageArena:
     before the launch -- and a launch that exceeds it is REFUSED, loudly and host-side.
     It is never degraded: graceful degradation was the deleted capped mode.
 
-    **NOTE ON ``BC``.** The arena takes it only to report ``QPO`` and to validate that
-    the schedule it is handed is atom-compatible. Nothing it stores is ``BC``-keyed, so
-    two calls at different ``BC`` share slots byte for byte -- which is the property
-    ``BC``-per-launch needs and the reason the re-key exists.
+    **NOTE ON ``BC``.** The arena takes it only to resolve the default
+    ``extent_atoms`` (§8's ``C_EXTENT_ATOMS`` default is ``QPO``) and to report the
+    owner geometry a caller reasons about. Nothing it STORES and nothing the KERNEL
+    ADDRESSES is ``BC``-keyed after the paired re-key, so two calls at different ``BC``
+    share slots byte for byte and an arena is never rebuilt on a ``BC`` flip. That is
+    the property ``BC``-per-launch needs and the reason the re-key exists;
+    :attr:`atoms_per_owner`, :attr:`owners_total` and :attr:`extent_atoms` are
+    allocator POLICY and reporting, evaluated at the construction ``BC``, and a launch
+    at a different ``BC`` neither reads nor invalidates them.
     """
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,

@@ -353,8 +353,6 @@ SOURCES = [
     "csrc/rola/src/decode.cu",
     "csrc/rola/src/entmax.cu",
     "csrc/rola/src/summaries.cu",
-    "csrc/rola/src/paging/page_plan.cu",
-    "csrc/rola/src/paging/page_plan_host.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
 ]
 

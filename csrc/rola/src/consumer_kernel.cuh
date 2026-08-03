@@ -824,6 +824,47 @@ constexpr int kCtlGramDone = 1;
 constexpr int kCtlFold0 = 2;
 constexpr int ctl_words(int BC) { return kCtlFold0 + BC / kMmaKQuantum; }
 
+//: ---- §4.5's PAGED ADDRESS, RE-KEYED TO THE ATOM ---------------------------
+//:
+//: A page is ONE `MMA_K_QUANTUM`-leaf ATOM, not one owner (`page_states := BC` is
+//: DEAD -- §1b's ruling is that `BC` is a re-derivable COMPUTE tile while a page is a
+//: MEMORY-RESIDENCY granule, and the thunder run makes `BC` per launch, so a
+//: `BC`-keyed page would have to be rebuilt whenever the planner moved it). An owner
+//: therefore spans `QPO = BC / MMA_K_QUANTUM` INDEPENDENTLY PAGED atoms whose slots
+//: are not contiguous in general, and a CTA resolves `QPO` bases at startup instead
+//: of one. `QPO <= 4` and both `BC` and the quantum are compile-time, so every call
+//: below sits inside a fully unrolled loop with a CONSTANT `q` -- there is no
+//: runtime-indexed register array here and nothing to spill.
+//:
+//: Returns the first STATE ROW of atom `q` of `owner`, or `-1` when the atom has no
+//: committed slot. Under a plan the arena produced, an absent atom is one with no
+//: write candidate at all: admission is TOTAL (the capped mode is deleted), so
+//: `page_table[atom] >= 0` and "the routing writes this atom" are the same
+//: predicate, and an absent atom's dense state is identically zero.
+//:
+//: ONE EXPRESSION SERVES BOTH LAYOUTS. Unpaged is the identity slot map -- atom `q`
+//: of owner `o` is row `bh * N + o * BC + q * MMA_K_QUANTUM` -- so the paged and
+//: unpaged paths are the same addressing strategy at different slot maps rather than
+//: two strategies to keep in sync.
+template <int BC>
+__device__ __forceinline__ int64_t atom_row_base(
+    const ConsumerParams& p, int bh, int owner, int q) {
+  constexpr int kAtomsPerOwner = BC / kMmaKQuantum;
+  if (p.page_table != nullptr) {
+    //: `atoms_per_bh = N / MMA_K_QUANTUM`, DERIVED rather than carried: the host
+    //: sets `p.N = owners_total * BC` under paging, so no ABI field is needed for
+    //: it and there is no second place for the table's stride to be wrong.
+    const int atoms_per_bh = static_cast<int>(p.N / kMmaKQuantum);
+    const int64_t entry = static_cast<int64_t>(bh) * atoms_per_bh
+                        + static_cast<int64_t>(owner) * kAtomsPerOwner + q;
+    const int physical = p.page_table[entry];
+    return physical >= 0 ? static_cast<int64_t>(physical) * kMmaKQuantum
+                         : static_cast<int64_t>(-1);
+  }
+  return static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC
+       + static_cast<int64_t>(q) * kMmaKQuantum;
+}
+
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound below can be
 //: DERIVED from it rather than restated next to it -- two numbers that must agree are
 //: one number too many.
@@ -1947,13 +1988,12 @@ void consumer_forward_kernel(ConsumerParams p) {
   }
 
   // ---- the owner's state block, read from HBM ONCE (the one-copy invariant) ---
-  // ---- §7.1 page indirection --------------------------------------------------
-  // One page is one owner (`page_states := BC`), so an owner's rectangle is `BC`
-  // contiguous rows in BOTH layouts and the only thing paging changes is which base
-  // those rows start at. `resident == false` is an owner with no committed page: its
-  // state is identically zero (nothing has ever written it) and it is never stored
-  // back, which is exactly the dense path's arithmetic on a never-written owner --
-  // hence paging is BITWISE INVISIBLE rather than approximately equivalent.
+  // ---- §4.5 page indirection, AT THE ATOM ------------------------------------
+  // One page is one `MMA_K_QUANTUM`-leaf ATOM, so the owner's `BC` rows are `kQPO`
+  // independently addressed runs and `atom_row_base` resolves one base per atom. An
+  // atom with no committed slot reads as zeros and is never stored back, which is
+  // exactly the dense path's arithmetic on a never-written atom -- hence paging is
+  // BITWISE INVISIBLE rather than approximately equivalent.
   //: `GLOBAL` is the NORMALIZATION arm, and it is a template axis rather than a
   //: runtime `p.den != nullptr` test because it changes the STATE'S SHAPE. Under
   //: `global` the state carries a `+1` mass column (spec §4.2's `y = num / den`
@@ -1962,15 +2002,6 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: value in every state-traffic address, and would keep the mass reduction's
   //: registers alive on an arm that has no mass.
   constexpr int cols = GLOBAL ? DV + 1 : DV;
-  bool resident = true;
-  int64_t state_base;
-  if (p.page_table != nullptr) {
-    const int physical = p.page_table[static_cast<int64_t>(bh) * p.owners_total + owner];
-    resident = physical >= 0;
-    state_base = static_cast<int64_t>(resident ? physical : 0) * BC;
-  } else {
-    state_base = static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC;
-  }
   // ---- WHERE THIS SEGMENT'S ENTRY STATE COMES FROM (§6.4) -------------------
   //   pass 1                : ZERO. The summary is `(A, B)` with `M_0 := 0`, which
   //                           is the definition of `B`.
@@ -1994,14 +2025,28 @@ void consumer_forward_kernel(ConsumerParams p) {
   const float* ws_entry =
       from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols)
               : nullptr;
-  for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
-    const int i = idx / cols;
-    const int c = idx - i * cols;
-    S[i * SP + c] = summary
-                        ? 0.0f
-                        : (from_ws ? ws_entry[i * cols + c]
-                                   : (resident ? p.state[(state_base + i) * cols + c]
-                                               : 0.0f));
+  if (summary || from_ws) {
+    for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
+      const int i = idx / cols;
+      const int c = idx - i * cols;
+      S[i * SP + c] = summary ? 0.0f : ws_entry[i * cols + c];
+    }
+  } else {
+    // ATOM-WISE, because the `kQPO` atoms of one owner are separately paged. The
+    // outer loop is `#pragma unroll` over a compile-time `kQPO <= 4`, so each base
+    // is a SCALAR resolved once -- not an array a runtime `i >> 4` would index into
+    // local memory. The inner walk covers `MMA_K_QUANTUM * cols` elements, so the
+    // access pattern per atom is the same contiguous run the owner-keyed load had.
+#pragma unroll
+    for (int q = 0; q < kQPO; ++q) {
+      const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
+      for (int idx = tid; idx < kMmaKQuantum * cols; idx += kConsumerThreads) {
+        const int r = idx / cols;
+        const int c = idx - r * cols;
+        S[(q * kMmaKQuantum + r) * SP + c] =
+            (row0 >= 0) ? p.state[(row0 + r) * cols + c] : 0.0f;
+      }
+    }
   }
   if (summary) {
     for (int i = tid; i < BC; i += kConsumerThreads) {
@@ -3482,17 +3527,24 @@ void consumer_forward_kernel(ConsumerParams p) {
     return;
   }
   // ---- the owner's state block, written to HBM ONCE --------------------------
-  // A non-resident owner is never stored back: it has no page, and its state was
-  // read as zeros above. `last_seg` is §6.4's publication rule and is `true` at
-  // `P = 1`: the final state is published by pass 3's LAST segment, running
-  // serially from the accumulated boundary, NOT by the scan. That is a deliberate
-  // numeric choice -- it leaves the last segment's own arithmetic in serial order
-  // and confines the fold's re-association to the `P - 1` boundaries.
-  if (!last_seg || !resident) return;
-  for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
-    const int i = idx / cols;
-    const int c = idx - i * cols;
-    p.state[(state_base + i) * cols + c] = S[i * SP + c];
+  // An atom with no committed slot is never stored back: it has no page, and its
+  // state was read as zeros above. The skip is PER ATOM because RESIDENCY is per
+  // atom after §4.5's re-key -- the same granularity the read above resolves at.
+  // `last_seg` is §6.4's publication rule and is `true` at `P = 1`: the final state
+  // is published by pass 3's LAST segment, running serially from the accumulated
+  // boundary, NOT by the scan. That is a deliberate numeric choice -- it leaves the
+  // last segment's own arithmetic in serial order and confines the fold's
+  // re-association to the `P - 1` boundaries.
+  if (!last_seg) return;
+#pragma unroll
+  for (int q = 0; q < kQPO; ++q) {
+    const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
+    if (row0 < 0) continue;
+    for (int idx = tid; idx < kMmaKQuantum * cols; idx += kConsumerThreads) {
+      const int r = idx / cols;
+      const int c = idx - r * cols;
+      p.state[(row0 + r) * cols + c] = S[(q * kMmaKQuantum + r) * SP + c];
+    }
   }
 }
 
