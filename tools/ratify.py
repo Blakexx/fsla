@@ -9,7 +9,7 @@ later codegen change grew it.** This file makes it an ASSERTED INVARIANT, the sa
 doctrine as the dense-degeneracy bit-identity gate -- a property the batch believes is
 a property the batch checks.
 
-FOUR OUTCOMES, and the difference between them is deliberate:
+SIX OUTCOMES, and the difference between them is deliberate:
 
 * **FAIL -- toolchain drift.** The `ptxas` this gate invokes reports a version string
   different from the one the manifest was ratified under. **CLOSED-WORLD CODEGEN POLICY
@@ -28,9 +28,27 @@ FOUR OUTCOMES, and the difference between them is deliberate:
   warning. That entry compiled with NO launch bound, so `ptxas` was free to spend
   registers as it liked -- correction (d)'s failure mode, and the defect §2.21 exists
   to have fixed. It is a hard failure even at zero spills.
+* **FAIL -- source drift (session 9).** The tree's `csrc/rola/src` digest differs
+  from the one the manifest was ratified against. The manifest's numbers -- and the
+  `consumer_reg_budget` derivation they justify -- describe a kernel that no longer
+  exists; re-ratify with `--write`. This is the structural fix for the
+  stale-constant trap (the budget's justification table went stale by 10x across
+  K0-K4 and nothing failed).
+* **FAIL -- hot-loop growth (session 9).** Any instantiation executing MORE
+  `LDL`/`STL` inside a loop (backward-`BRA` interval in the SASS) than its ratified
+  `hot_locals` count. In-loop spill is a memory round-trip per iteration and is
+  disqualifying whatever the byte count; the count is a RATCHET because the decay
+  arms carry structural dynamically-indexed local-array traffic in loops that no
+  budget removes (measured at 255 registers).
 * **REPORT -- register drift.** A changed `Used N registers` with no spill growth is
   printed, not failed. The register count is an ALLOCATOR OUTCOME that legitimately
   moves when the kernel changes; what must not move is the spilling.
+
+THE FORCING CENSUS (`--census [--force-ctas N] [--json PATH]`) is the measurement
+mode the register rung is derived from: one probe compile over the whole 512-entry
+dispatch matrix at a candidate launch bound, reported per structural key. It never
+touches a manifest, and `--force-ctas` outside `--census` is refused -- a forced
+bound must never be ratified.
 
 **RE-RATIFICATION IS A MEASUREMENT, NOT AN EDIT.** The manifest is regenerated only by
 `--write`, which re-runs this same compile and records what it reports. Hand-editing an
@@ -45,9 +63,11 @@ Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the l
     python tools/ratify.py --arch 80 --arch 86
     python tools/ratify.py --arch 89 --write        # bringing up a new architecture
 
-`--self-test` requires the gate to FAIL on four things it must reject: a deliberately
-tightened manifest, a deliberately perturbed `ptxas` version, an arch with no committed
-manifest, and a per-arch split that does not rejoin to one digest. That is what makes a
+`--self-test` requires the gate to FAIL on the things it must reject: a deliberately
+tightened manifest, a perturbed `ptxas` version, an arch with no committed manifest, a
+per-arch split that does not rejoin to one digest, a perturbed source digest, and
+in-loop local-access growth past a ratified count (plus the hot-loop parser proving it
+counts an in-loop `LDL` and clears a cold one on synthetic SASS). That is what makes a
 green run mean something: a gate that cannot fail is not a gate (`rewrite.md`'s vacuity
 discipline, applied to itself).
 
