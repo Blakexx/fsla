@@ -1553,13 +1553,33 @@ __device__ __forceinline__ void await_count(const volatile int* counter, int tar
   }
 }
 
+//: **THE FORCING-CENSUS INSTRUMENT (session 9, R0).** `ROLA_FORCE_CTAS`, when
+//: defined, replaces the DERIVED launch bound with a fixed CTA count on every
+//: instantiation, so a candidate register budget can be censused over the whole
+//: 512-entry dispatch matrix in one probe compile (`tools/ratify.py --census
+//: --force-ctas N`) with no build and no overlay. It exists because
+//: `consumer_reg_budget` is a MEASURED constant whose premise expires when the
+//: kernel's working set moves (D8-Q1 -- the shipped 96 was derived pre-K3/K4 and
+//: went stale by 10x), and the only way to re-measure it is to ask `ptxas` what the
+//: kernel needs at each candidate bound.
+//:
+//: IT IS A CENSUS INSTRUMENT, NEVER A SHIPPING KNOB: the extension build does not
+//: define it (`setup.py` passes no such flag), `tools/ratify.py`'s census mode is
+//: its only legitimate definer, and a manifest is only ever ratified off the
+//: UNFORCED compile. Forcing changes the REGISTER side only -- `consumer_ring_depth`
+//: and the SMEM derivation stay shipped, which is what the census wants (the
+//: register file is the axis under measurement, the footprint is not).
+#ifdef ROLA_FORCE_CTAS
+#define ROLA_CONSUMER_CTAS_EXPR (ROLA_FORCE_CTAS)
+#else
+#define ROLA_CONSUMER_CTAS_EXPR                                                     \
+  ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC,       \
+                                         DECAY, GLOBAL, COMPACT>(),                 \
+                     consumer_reg_budget(BT, BC, DECAY))
+#endif
 template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
           bool DECAY, bool GLOBAL, bool COMPACT>
-__global__ __launch_bounds__(
-    kConsumerThreads,
-    ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY,
-                                        GLOBAL, COMPACT>(),
-                       consumer_reg_budget(BT, BC, DECAY)))
+__global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR)
 void consumer_forward_kernel(ConsumerParams p) {
   // ---- THE STATE'S ROW PITCH, AND WHY IT IS `DV + 4` ------------------------
   // **THE CONDITIONAL `state_pitch` MANDATE DISCHARGES HERE** (item 6b, 2026-08-01):

@@ -137,6 +137,7 @@ def load_manifest(arches) -> dict:
     """
     toolchain = None
     entries: dict[str, dict] = {}
+    sources: dict[str, dict | None] = {}
     for arch in arches:
         path = manifest_path(arch)
         if not path.exists():
@@ -145,6 +146,7 @@ def load_manifest(arches) -> dict:
                 f"    python tools/ratify.py --arch {arch} --write\n"
                 f"and put the numbers in the findings document")
         blob = json.loads(path.read_text())
+        sources[arch] = blob.get("source")
         if toolchain is None:
             toolchain = blob["toolchain"]
         elif blob["toolchain"] != toolchain:
@@ -158,7 +160,7 @@ def load_manifest(arches) -> dict:
             if key in entries:
                 raise SystemExit(f"{key} is ratified in two files")
             entries[key] = value
-    return {"toolchain": toolchain, "entries": entries}
+    return {"toolchain": toolchain, "entries": entries, "sources": sources}
 
 
 def manifest_digest(manifest: dict) -> str:
@@ -178,6 +180,46 @@ SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
+#: The consumer kernel's mangled template arguments, in declaration order:
+#: `<int BT, int BC, int DV, int D, MmaPrec FOLD, MmaPrec READ, bool DECAY,
+#:  bool GLOBAL, bool COMPACT>`. The mangled name is the manifest key, so this is
+#: the ONE place a key is turned back into a shape; the census's per-key grouping
+#: and the hot-loop gate's reporting both go through it.
+CONSUMER_TPL = re.compile(
+    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
+    r"LNS_7MmaPrecE(\d)ELS\d?_(\d)ELb(\d)ELb(\d)ELb(\d)E")
+
+
+def parse_shape(mangled: str) -> dict | None:
+    """Shape axes off a consumer instantiation's mangled name, or None."""
+    m = CONSUMER_TPL.search(mangled)
+    if not m:
+        return None
+    #: `readout_mma.cuh`: `enum class MmaPrec { kTf32x3 = 0, kBf16 = 1 }`.
+    prec = {"0": "tf32x3", "1": "bf16"}
+    return dict(BT=int(m.group(1)), BC=int(m.group(2)), DV=int(m.group(3)),
+                D=int(m.group(4)), fold=prec[m.group(5)], read=prec[m.group(6)],
+                decay=m.group(7) == "1", glob=m.group(8) == "1",
+                compact=m.group(9) == "1")
+
+
+def csrc_digest() -> str:
+    """A digest of the kernel sources the manifest's numbers were measured against.
+
+    THE FRESHNESS TRIGGER (session 9, R1). `consumer_reg_budget` is a measured
+    constant; its justification EXPIRES when `csrc/` moves (the shipped 96 was
+    derived pre-K3/K4 and went stale by 10x -- D8-Q1). Recording the source digest
+    in the manifest and CHECKING it makes that trap structural: a ratification
+    whose sources have materially changed is a hard failure demanding `--write`,
+    which is a fresh measurement, never an edit.
+    """
+    h = hashlib.sha256()
+    for path in sorted(SRC.rglob("*")):
+        if path.is_file():
+            h.update(str(path.relative_to(SRC)).encode())
+            h.update(path.read_bytes())
+    return h.hexdigest()
+
 
 def _nvcc_command(arches) -> list[str]:
     """The extension's own compile flags, taken from torch rather than restated.
@@ -188,7 +230,7 @@ def _nvcc_command(arches) -> list[str]:
     """
     import torch.utils.cpp_extension as ext
 
-    cmd = [cuda_bin("nvcc"), "-c", str(PROBE), "-o", "/dev/null",
+    cmd = [cuda_bin("nvcc"), "-c", str(PROBE),
            f"-I{SRC}", f"-I{CUTLASS_INC}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-isystem", inc]
@@ -236,9 +278,46 @@ def check_toolchain(got: str, want: str) -> bool:
     return False
 
 
-def compile_and_parse(arches) -> tuple[dict, list[str]]:
-    """Compile the probe and read `ptxas`'s report. Returns (entries, unhonored)."""
-    cmd = _nvcc_command(arches)
+def check_freshness(manifest: dict, digest: str | None = None) -> bool:
+    """THE FRESHNESS TRIGGER (session 9, R1). The manifest's numbers -- and the
+    register-budget derivation they justify -- are dated against a source tree;
+    when `csrc/rola/src` moves materially, the ratification is a description of a
+    kernel that no longer exists and must be RE-MEASURED (`--write`), never
+    trusted. This is the structural fix for the stale-constant trap that blocked
+    K5: `consumer_reg_budget`'s justification cannot silently outlive the working
+    set it was measured on, because the gate that every build runs re-checks the
+    tree the measurement was taken from."""
+    digest = digest if digest is not None else csrc_digest()
+    ok = True
+    for arch, src in sorted(manifest["sources"].items()):
+        if src is None:
+            print(f"\nFAIL  sm_{arch}'s manifest predates the source-freshness "
+                  f"trigger (no `source` block). Re-ratify: "
+                  f"python tools/ratify.py --arch {arch} --write")
+            ok = False
+        elif src["csrc_sha256"] != digest:
+            print(f"\nFAIL  SOURCE DRIFT. sm_{arch}'s manifest was ratified against "
+                  f"csrc {src['csrc_sha256'][:16]}... on {src.get('date', '?')}; "
+                  f"the tree is now {digest[:16]}... . The register/spill numbers "
+                  f"and the budget derivation they justify describe a kernel that "
+                  f"no longer exists. Re-ratify with --write and record the new "
+                  f"numbers in the findings document.")
+            ok = False
+    if ok:
+        print(f"source freshness OK  csrc sha256 {digest[:16]}... "
+              f"({len(manifest['sources'])} arch manifest(s))")
+    return ok
+
+
+def compile_and_parse(arches, obj_path: str = "/dev/null",
+                      defines: tuple[str, ...] = ()) -> tuple[dict, list[str]]:
+    """Compile the probe and read `ptxas`'s report. Returns (entries, unhonored).
+
+    `obj_path` keeps the object file (the hot-loop gate disassembles the SASS out
+    of the SAME compile the numbers came from, so the two can never describe
+    different binaries); `defines` is the census mode's `-DROLA_FORCE_CTAS=N`.
+    """
+    cmd = _nvcc_command(arches) + ["-o", obj_path] + [f"-D{d}" for d in defines]
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, capture_output=True, text=True)
     wall = time.perf_counter() - t0
@@ -246,7 +325,8 @@ def compile_and_parse(arches) -> tuple[dict, list[str]]:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"probe compile FAILED (rc={proc.returncode})")
     print(f"probe compiled in {wall:.1f} s over {len(arches)} targets "
-          f"({', '.join('sm_' + a for a in arches)})")
+          f"({', '.join('sm_' + a for a in arches)})"
+          + (f" with {' '.join(defines)}" if defines else ""))
 
     entries: dict[str, dict] = {}
     unhonored = sorted(set(OUT_OF_RANGE.findall(proc.stderr)))
@@ -329,6 +409,202 @@ def check(entries: dict, unhonored: list[str], want: dict) -> bool:
     return ok
 
 
+#: --------------------------------------------------------------------------
+#: THE HOT-LOOP LOCAL-ACCESS GATE (session 9, R1 enforcement).
+#:
+#: A spill's COST is where it lands, not how much of it there is: the `base[D]`
+#: prologue array spilling once per CTA is free, the same bytes inside the
+#: 2,000-3,000-instruction tile loop are a memory round-trip per iteration. The
+#: register-rung scoping (REGISTER_RUNG_SCOPE.md §2.3) mechanized that as "no
+#: `LDL`/`STL` at loop depth >= 1", and this gate is that test as a BUILD FAILURE.
+#:
+#: **IT IS A RATCHET, NOT AN ABSOLUTE, and the difference was MEASURED before the
+#: gate landed (session 9).** The decay arms execute dynamically-indexed LOCAL
+#: ARRAYS (`LDL.64 R28, [R26]` -- computed addresses, `ptxas` spill bytes ZERO)
+#: inside their loops; that is §2.23's "local ARRAYS, not pressure" class,
+#: structural to the arm's indexing and unfixable by any register budget (three
+#: keys still carry it at 255 registers). An absolute in-loop ban would therefore
+#: fail every baseline forever on traffic that is not the defect. At SASS level
+#: array traffic and pressure spill are not separable by address form (both reach
+#: `[R1+imm]`), so the gate pins the MEASURED per-instantiation in-loop count in
+#: the manifest and fails on GROWTH: a budget change that pushes pressure spill
+#: into a loop adds in-loop `LDL`/`STL` and is refused; the structural array
+#: traffic is ratified as what it is. (R1's own key changes are held to the
+#: stricter reading -- no increase at all on a changed key -- by the same number.)
+#:
+#: Loop membership is computed from the SASS itself: an instruction is "in a loop"
+#: iff it lies inside the interval of a BACKWARD branch (a `BRA` whose target
+#: precedes it in the function). That is the same reading the scoping session used.
+
+_SASS_FUNC = re.compile(r"^\s*Function : (\S+)")
+_SASS_ARCH = re.compile(r"^\s*arch = sm_(\d+)\s*$")
+_SASS_INST = re.compile(r"/\*([0-9a-f]{4,})\*/\s+(.*?);")
+_SASS_LABEL_DEF = re.compile(r"^\s*(\.L_[\w.]+):")
+_SASS_LOCAL = re.compile(r"\b(LDL|STL)\b")
+_SASS_BRA = re.compile(r"\bBRA\b.*?(?:`?\((\.L_[\w.]+)\)|0x([0-9a-f]+))")
+
+
+def _hot_locals_in_function(items: list) -> list:
+    """`items` = [(pos, kind, payload)] for one function, in order; kinds are
+    'label' (payload: name), 'inst' (payload: (addr, text)). Returns the hot
+    local accesses: [(addr, opcode_text)] that sit inside a backward-BRA interval."""
+    labels: dict[str, int] = {}
+    addr_pos: dict[int, int] = {}
+    for pos, kind, payload in items:
+        if kind == "label":
+            labels[payload] = pos
+        else:
+            addr_pos.setdefault(payload[0], pos)
+    intervals = []
+    for pos, kind, payload in items:
+        if kind != "inst":
+            continue
+        addr, text = payload
+        m = _SASS_BRA.search(text)
+        if not m:
+            continue
+        target = labels.get(m.group(1)) if m.group(1) else \
+            addr_pos.get(int(m.group(2), 16))
+        if target is not None and target < pos:
+            intervals.append((target, pos))
+    if not intervals:
+        return []
+    hot = []
+    for pos, kind, payload in items:
+        if kind != "inst":
+            continue
+        addr, text = payload
+        if _SASS_LOCAL.search(text) and any(a <= pos <= b for a, b in intervals):
+            hot.append((addr, text.strip()))
+    return hot
+
+
+def hot_loop_report(sass_lines, wanted: set) -> dict:
+    """Stream `cuobjdump -sass` output; return {key: [(addr, inst), ...]} for every
+    `wanted` instantiation, listing its local accesses inside loops (possibly [])."""
+    report: dict[str, list] = {}
+    arch, key, items, pos = None, None, [], 0
+
+    def flush():
+        if key in wanted and items:
+            report[key] = _hot_locals_in_function(items)
+
+    for line in sass_lines:
+        m = _SASS_ARCH.match(line)
+        if m:
+            flush()
+            arch, key, items = f"sm_{m.group(1)}", None, []
+            continue
+        m = _SASS_FUNC.match(line)
+        if m:
+            flush()
+            key, items, pos = f"{arch}:{m.group(1)}", [], 0
+            continue
+        if key is None:
+            continue
+        m = _SASS_LABEL_DEF.match(line)
+        if m:
+            items.append((pos, "label", m.group(1)))
+            pos += 1
+            continue
+        m = _SASS_INST.search(line)
+        if m:
+            items.append((pos, "inst", (int(m.group(1), 16), m.group(2))))
+            pos += 1
+    flush()
+    return report
+
+
+def measure_hot_locals(obj_path: str, entries: dict) -> dict[str, int]:
+    """Disassemble the SAME object the register numbers came from and return the
+    per-instantiation count of local accesses inside loops."""
+    proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj_path],
+                            stdout=subprocess.PIPE, text=True)
+    report = hot_loop_report(proc.stdout, set(entries))
+    rc = proc.wait()
+    if rc != 0:
+        raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}); the hot-loop gate "
+                         f"cannot pass a binary it cannot read")
+    return {name: len(report.get(name, [])) for name in entries}
+
+
+def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
+    """The gate proper: any instantiation whose in-loop local-access count GREW
+    past its ratified count is a build failure (the ratchet)."""
+    grew = [(n, want[n].get("hot_locals", 0), c) for n, c in sorted(hot.items())
+            if n in want and c > want[n].get("hot_locals", 0)]
+    if grew:
+        print(f"\nFAIL  HOT-LOOP GROWTH: {len(grew)} instantiation(s) execute MORE "
+              f"local accesses INSIDE a loop than were ratified. In-loop spill is "
+              f"a memory round-trip per iteration and is disqualifying whatever "
+              f"the byte count; lower the pressure or raise that key's budget:")
+        for name, exp, got in grew[:10]:
+            print(f"        ratified {exp} -> realized {got}  {name}")
+        if len(grew) > 10:
+            print(f"        ... and {len(grew) - 10} more")
+        return False
+    total = sum(hot.values())
+    print(f"hot-loop gate: in-loop local accesses within ratified counts on all "
+          f"{len(hot)} entries (tree total {total}); PASS")
+    return True
+
+
+#: --------------------------------------------------------------------------
+#: THE FORCING CENSUS (session 9, R0) -- the permanent instrument the register
+#: rung is derived from. `--census` compiles the whole 512-entry probe at a
+#: candidate bound (`--force-ctas N` -> `-DROLA_FORCE_CTAS=N`; omitted -> the
+#: shipped derived bound) and prints the per-key register/spill table. It never
+#: touches a manifest: a census is a measurement of a CANDIDATE, ratification is
+#: the recording of the SHIPPED bound, and conflating them is how a stale budget
+#: constant survived three kernel rungs.
+
+def _regs_ctas(regs: int) -> int:
+    """Register-file-side CTAs/SM at 256 threads after sm_86's 8-register
+    allocation granularity. The REGISTER term only -- the driver
+    (`rola_consumer_occupancy`) stays the sole residency authority."""
+    alloc = 256 * ((regs + 7) // 8) * 8
+    return min(6, 65536 // alloc) if alloc else 6
+
+
+def census_report(entries: dict, unhonored: list[str],
+                  hot: dict[str, int] | None = None) -> None:
+    hot = hot or {}
+    by_key: dict[tuple, list] = {}
+    for name, e in sorted(entries.items()):
+        arch = name.split(":", 1)[0]
+        shape = parse_shape(name)
+        if shape is None:
+            continue
+        k = (arch, shape["BT"], shape["BC"], shape["DV"], shape["read"],
+             shape["decay"])
+        by_key.setdefault(k, []).append((e, hot.get(name, 0)))
+    print(f"\n{'arch':6} {'BT':>3} {'BC':>3} {'DV':>3} {'prec':7} {'decay':5} "
+          f"{'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
+          f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
+    for k, es in sorted(by_key.items()):
+        regs = sorted(e["regs"] for e, _ in es)
+        ctas = sorted(_regs_ctas(r) for r in regs)
+        st = sum(e["spill_stores"] for e, _ in es)
+        ld = sum(e["spill_loads"] for e, _ in es)
+        nsp = sum(1 for e, _ in es if e["spill_stores"] or e["spill_loads"])
+        worst = max(e["spill_stores"] for e, _ in es)
+        nhot = sum(h for _, h in es)
+        rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
+        cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
+        print(f"{k[0]:6} {k[1]:>3} {k[2]:>3} {k[3]:>3} {k[4]:7} "
+              f"{str(k[5]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
+              f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
+    total_st = sum(e["spill_stores"] for e in entries.values())
+    total_ld = sum(e["spill_loads"] for e in entries.values())
+    zero = sum(1 for e in entries.values()
+               if not e["spill_stores"] and not e["spill_loads"])
+    print(f"\nTOTAL {len(entries)} entries: {total_st} spill st / {total_ld} "
+          f"spill ld, {zero} zero-spill, register sum "
+          f"{sum(e['regs'] for e in entries.values())}, "
+          f"{sum(hot.values())} in-loop local accesses, "
+          f"{len(unhonored)} unhonored bound(s)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -342,12 +618,43 @@ def main() -> int:
                          f"(default: {' '.join(DEFAULT_ARCHES)}). One manifest file "
                          "per arch, so bringing up a new one touches no other arch's "
                          "measurements.")
+    ap.add_argument("--census", action="store_true",
+                    help="FORCING CENSUS: compile the whole probe matrix, print the "
+                         "per-key register/spill table, touch no manifest")
+    ap.add_argument("--force-ctas", type=int, metavar="N",
+                    help="census only: compile with -DROLA_FORCE_CTAS=N, i.e. force "
+                         "every instantiation's launch bound to N CTAs/SM")
+    ap.add_argument("--json", metavar="PATH",
+                    help="census only: dump the raw per-instantiation record for "
+                         "arm-vs-arm diffing")
     a = ap.parse_args()
 
     arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
+    if a.force_ctas is not None and not a.census:
+        raise SystemExit("--force-ctas is a CENSUS instrument; a forced bound must "
+                         "never be ratified or checked against a manifest "
+                         "(use --census)")
 
     version = ptxas_version()
-    entries, unhonored = compile_and_parse(arches)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
+        obj = str(Path(tmp) / "probe.o")
+        defines = (f"ROLA_FORCE_CTAS={a.force_ctas}",) if a.force_ctas is not None \
+            else ()
+        entries, unhonored = compile_and_parse(arches, obj_path=obj,
+                                               defines=defines)
+        hot = measure_hot_locals(obj, entries)
+        for name, count in hot.items():
+            entries[name]["hot_locals"] = count
+        if a.census:
+            census_report(entries, unhonored, hot)
+            if a.json:
+                Path(a.json).write_text(json.dumps(
+                    dict(ptxas=version, force_ctas=a.force_ctas,
+                         csrc_sha256=csrc_digest(), entries=entries),
+                    indent=1, sort_keys=True) + "\n")
+                print(f"census written to {a.json}")
+            return 0
     if a.write:
         #: WRITTEN PER ARCH, from the one compile. Splitting here rather than at
         #: read time is what keeps `sm_86.json` untouched by an `--arch 80` run:
@@ -361,8 +668,14 @@ def main() -> int:
                     f"an empty ratification. A manifest that exists but measures "
                     f"nothing would pass rule 3 by file existence alone.")
             path = manifest_path(arch)
+            #: The SOURCE DIGEST is recorded beside the toolchain: a manifest is a
+            #: measurement OF a source tree UNDER an assembler, and both halves of
+            #: that sentence must be checkable (the freshness trigger, session 9).
             path.write_text(json.dumps(
-                {"toolchain": {"ptxas": version}, "entries": mine}, indent=1) + "\n")
+                {"toolchain": {"ptxas": version},
+                 "source": {"csrc_sha256": csrc_digest(),
+                            "date": time.strftime("%Y-%m-%d")},
+                 "entries": mine}, indent=1) + "\n")
             print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
         print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
         return 0
@@ -376,7 +689,9 @@ def main() -> int:
     #: costs nothing once the compile has already happened. What it must not do is
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
+    ok = check_freshness(manifest) and ok
     ok = check(entries, unhonored, want) and ok
+    ok = check_hot_loop(hot, want) and ok
 
     if a.self_test:
         #: NON-VACUITY. Tighten one entry that actually spills (or, if nothing
@@ -439,6 +754,51 @@ def main() -> int:
             return 1
         print(f"SELF-TEST PASSED: {len(arches)} per-arch files rejoin to one digest "
               f"{manifest_digest(rejoined)[:16]}...")
+
+        #: NON-VACUITY OF THE FRESHNESS TRIGGER. A perturbed source digest must
+        #: fail: a freshness gate that passes a tree it was not measured on is the
+        #: stale-constant trap re-armed.
+        print("\n--- SELF-TEST: the manifest against a perturbed source digest\n"
+              "    (this run MUST fail) ---")
+        if check_freshness(manifest, digest="0" * 64):
+            print("\nSELF-TEST FAILED: the gate ACCEPTED a source tree the "
+                  "manifest was not measured on")
+            return 1
+        print("SELF-TEST PASSED: the gate rejects a moved source tree")
+
+        #: NON-VACUITY OF THE HOT-LOOP GATE, against synthetic SASS: one LDL
+        #: inside a backward-branch interval MUST be flagged, and the same LDL
+        #: outside every loop MUST NOT be.
+        hot_sass = [
+            "arch = sm_86",
+            "                Function : k_hot",
+            "        /*0000*/ MOV R1, c[0x0][0x28] ;",
+            ".L_x_0:",
+            "        /*0010*/ LDL R2, [R1] ;",
+            "        /*0020*/ @P0 BRA `(.L_x_0) ;",
+            "                Function : k_cold",
+            "        /*0000*/ LDL R2, [R1] ;",
+            ".L_x_1:",
+            "        /*0010*/ IADD3 R3, R3, 1, RZ ;",
+            "        /*0020*/ @P0 BRA `(.L_x_1) ;",
+        ]
+        rep = hot_loop_report(iter(hot_sass), {"sm_86:k_hot", "sm_86:k_cold"})
+        print("\n--- SELF-TEST: the hot-loop parser on synthetic SASS ---")
+        counts = {k: len(v) for k, v in rep.items()}
+        if counts != {"sm_86:k_hot": 1, "sm_86:k_cold": 0}:
+            print(f"\nSELF-TEST FAILED: hot-loop parser reported {counts}; it "
+                  f"must count exactly the in-loop LDL (k_hot=1, k_cold=0)")
+            return 1
+        print("SELF-TEST PASSED: the parser counts the in-loop LDL and clears the "
+              "cold one")
+        #: ... and the RATCHET must fail on growth past a ratified count.
+        print("\n--- SELF-TEST: hot-loop growth against a ratified count of 0\n"
+              "    (this run MUST fail) ---")
+        if check_hot_loop({"sm_86:k_hot": 1}, {"sm_86:k_hot": {"hot_locals": 0}}):
+            print("\nSELF-TEST FAILED: the ratchet PASSED an in-loop count it was "
+                  "not ratified for")
+            return 1
+        print("SELF-TEST PASSED: the ratchet rejects in-loop growth")
     return 0 if ok else 1
 
 
