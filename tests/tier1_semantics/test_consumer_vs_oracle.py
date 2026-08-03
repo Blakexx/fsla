@@ -1178,7 +1178,7 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, no
     """
     from math import prod
 
-    from rola.planner.schedule import select_plan
+    from planner_calibration.cost_model import select_plan  # G16
 
     assert prod(widths) // BC == 1, "this gate is only meaningful on a single-owner rectangle"
     device = "cuda"

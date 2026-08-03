@@ -80,12 +80,19 @@ import time
 import torch
 import torch.nn as nn
 from bench.instruments import settle_clocks
+
+# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
+# `benchmarks/planner_calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
+# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
+# proxies still resolve these names, but importing them from their real home is what
+# keeps `import rola` free of the calibration package's inductor edge.
+from planner_calibration.cost_model import plan_and_schedule, select_plan
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
 from rola.ops.consumer import _consumer_forward
-from rola.planner.schedule import build_schedule, plan_and_schedule, select_plan
+from rola.planner.schedule import build_schedule
 from rola.routing.producer import produce_routing
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was

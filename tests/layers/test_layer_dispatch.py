@@ -427,9 +427,10 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     reviewer exercised by hand in wiring-review.md §9 -- to gate the claim that both
     entry points accept either dtype, independent of the layer's stricter policy.
     """
+    from planner_calibration.cost_model import select_plan  # G16
+
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
-    from rola.planner.schedule import select_plan
     from rola.routing.producer import produce_routing
 
     torch.manual_seed(41)
