@@ -1,13 +1,21 @@
-"""SPILL-MANIFEST GATE for the consumer kernel's launch bounds.
+"""SPILL-MANIFEST GATE for the extension's launch bounds.
 
-**WHAT THIS CONVERTS, AND WHY.** the consumer rewrite's §2.21 ruling landed a
-three-term residency formula and ACCEPTED one 4-byte spill on one of 128
-instantiations as the measured optimum -- the alternatives spill worse (the unbounded
-status quo: 20 st / 56 ld; the thread-slot cap: 70 st / 284 ld). That acceptance was a
-judgment recorded in a document, and it lived nowhere else: **nothing failed if a
-later codegen change grew it.** This file makes it an ASSERTED INVARIANT, the same
-doctrine as the dense-degeneracy bit-identity gate -- a property the batch believes is
-a property the batch checks.
+**WHAT THIS CONVERTS, AND WHY.** The consumer rewrite's §2.21 ruling landed a
+three-term residency formula and ACCEPTED a measured spill profile as the optimum --
+the alternatives spill worse (the unbounded status quo and the thread-slot cap both
+measured strictly larger). That acceptance was a judgment recorded in a document, and
+it lived nowhere else: **nothing failed if a later codegen change grew it.** This file
+makes it an ASSERTED INVARIANT, the same doctrine as the dense-degeneracy bit-identity
+gate -- a property the batch believes is a property the batch checks. (The profile is
+a RATCHET per instantiation, not a spill ban: on the current 512-entry consumer
+matrix roughly a fifth of the instantiations spill by design under their derived
+register budgets -- the decay arms' structural local-array traffic -- and the gate
+holds each one AT its ratified bytes. The original "one 4-byte spill on one of 128"
+phrasing described the pre-K3/K4 kernel and went stale; coverage-closure item 12.)
+
+Since the coverage-closure census extension the probe also measures the DECODE GEMV
+(32 instantiations) and the two UNION-ENTMAX kernels (64), so their
+`__launch_bounds__` are read off `ptxas -v` instead of asserted in comments.
 
 SIX OUTCOMES, and the difference between them is deliberate:
 

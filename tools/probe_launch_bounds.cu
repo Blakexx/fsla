@@ -13,11 +13,13 @@
 // It is NOT part of the extension build: it instantiates kernels, defines no entry
 // point, and its only output is the compiler's stderr.
 //
-// **THE MATRIX IS THE WHOLE MATRIX** -- `BC(2) x D(4) x PREC(2) x DECAY(2) x
-// GLOBAL(2) x COMPACT(2)` = 128, the same 128 `launch_consumer` dispatches, compiled for
-// the same two `-gencode` targets the extension builds. A probe over a SUBSET leaves
-// the un-probed instantiations exactly as unchecked as they were before it existed,
-// and the one spill this batch accepted was found on one specific arm out of six.
+// **THE MATRIX IS THE WHOLE MATRIX** -- for the consumer, `BT(2) x d_v(2) x BC(2) x
+// D(4) x PREC(2) x DECAY(2) x GLOBAL(2) x COMPACT(2)` = 512, the exact set
+// `launch_consumer` can reach, compiled for the same `-gencode` targets the extension
+// builds; plus (census extension, below) the decode GEMV's 32 and the union-entmax
+// kernels' 64. A probe over a SUBSET leaves the un-probed instantiations exactly as
+// unchecked as they were before it existed -- historically, the spill §2.21 accepted
+// was found on one specific arm the narrower probes never compiled.
 //
 // READ THREE THINGS out of the result, and all three are load-bearing:
 //   1. any `Value of threads per SM ... is out of range` warning -- that entry
@@ -78,3 +80,31 @@ ROLA_PROBE_DV(32)
 #undef ROLA_PROBE_GLOBAL
 #undef ROLA_PROBE_COMPACT
 #undef ROLA_PROBE_INST
+
+// ---------------------------------------------------------------------------
+// CENSUS EXTENSION (coverage-closure, audit item 11): the DECODE GEMV and the
+// two UNION-ENTMAX kernels, whose `__launch_bounds__` had never been read off a
+// `ptxas -v` report -- their bounds were asserted in comments and honored (or
+// not) invisibly. Including the two translation units makes their OWN dispatch
+// closures implicitly instantiate the exact launchable sets:
+//
+//   * `decode_gemv_kernel<DV, D, DECAY, GLOBAL>` -- `DV(2) x D(4) x DECAY(2) x
+//     GLOBAL(2)` = 32, emitted by `launch_decode_gemv`'s switch tree;
+//   * `union_forward_kernel` / `union_backward_kernel`
+//     `<LW, IPT, ALPHA15, OutT>` -- 8 `(LW, IPT)` width rungs x 2 alphas x
+//     2 output types (`float`, `__nv_bfloat16`) = 32 per kernel, 64 total,
+//     emitted by `launch_forward` / `launch_backward`'s switch trees.
+//
+// The kernels live in anonymous namespaces inside their `.cu` files, so
+// inclusion into this TU is the only way a probe can reach them -- and it is
+// also the property that keeps the probe honest: the instantiation set is the
+// DISPATCH'S OWN, not a restatement that could drift from it.
+//
+// KNOWN PROPERTY, stated rather than hidden: nvcc mangles these anonymous-
+// namespace kernels with a discriminator derived from THIS file's identity
+// (`_GLOBAL__N__<hash>_probe_launch_bounds_cu_<hash>`), so ANY edit to this
+// probe changes those 96 manifest keys and the gate reports missing+added
+// entries until `--write` re-measures. That is the correct failure direction: a
+// measurement-harness change invalidates the measurements it produced.
+#include "decode.cu"
+#include "entmax.cu"
