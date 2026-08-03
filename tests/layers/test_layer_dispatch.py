@@ -708,3 +708,43 @@ def test_the_layer_selects_the_production_bf16_readout_by_default():
     assert RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
                 levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
                 layer_idx=0).mma_precision == "bf16"
+
+
+# ---------------------------------------------------------------------------
+# H2 (coverage-closure): the dispatch + selection properties on a topology where
+# BC = 64 -- the FLAGSHIP consumer instantiation -- is feasible. Every cell above
+# runs `_BRANCHES = [8, 16]`, whose feasible set is {16}, so the selection grid,
+# the evidence keying and the launch had never been exercised where the at-scale
+# default lives ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
+# ---------------------------------------------------------------------------
+
+_BC64_BRANCHES = [4, 8, 8]  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
+
+
+@pytest.mark.parametrize("norm", ["raw", "global"])
+@pytest.mark.parametrize("decay", ["none", "leaf_mass"])
+@_CUDA
+def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(norm, decay):
+    """The `test_a_no_grad_cuda_context_takes_the_plan_selected_consumer`
+    properties, on the topology whose feasible set contains the flagship BC."""
+    torch.manual_seed(7)
+    layer = _layer(norm=norm, decay=decay, branches=_BC64_BRANCHES)
+    layer.eval()
+    assert 64 in layer.feasible_BC, "fixture rot: this topology must admit BC=64"
+    x = torch.randn(1, 96, _HIDDEN, device="cuda")
+    with torch.no_grad():
+        layer(x)
+    assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
+    plan, evidence = layer.last_selected_plan, layer.last_plan_axes
+    assert plan is not None and evidence is not None
+    assert plan.BC in layer.feasible_BC
+    assert plan.decay is (decay == "leaf_mass")
+    assert plan.normalization == norm
+    assert (plan.BC, plan.BT) in evidence.grid
+    assert set(evidence.grid) == {
+        (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
+    assert any(BC == 64 for BC, _BT in evidence.grid), (
+        "the walked grid never priced BC=64; the feasible set is not reaching "
+        "selection")
+    assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
+    assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
