@@ -748,3 +748,34 @@ def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(norm, decay):
         "selection")
     assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
     assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
+
+
+@pytest.mark.cuda
+@_CUDA
+def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
+    """H12 (coverage-closure): `state_block = 32` on `_BRANCHES = [8, 16]`.
+
+    32 is geometry-ALIGNED here (2 digits of the width-8 level), so construction
+    accepts it -- `feasible_bc`'s documented contract lets an expert pin an
+    off-ladder geometry. But the consumer instantiates `BC in {16, 64}` ONLY, so
+    the first CUDA forward must be refused by a HOST-side check that names the
+    contract -- never a device-side assert, which would poison the context for
+    every subsequent test in the process (the fleet-freeze failure mode). The
+    context-health probe after the raise is the second half of the claim.
+    """
+    layer = _layer(norm="global", decay="none")
+    layer_32 = RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
+                    levels_per_head=2, states_per_level=_BRANCHES, state_block=32,
+                    level_routing_configs=LevelRoutingConfig(
+                        read='dense', write='dense', tied=False),
+                    layer_idx=0).to("cuda", torch.float32).eval()
+    assert layer_32.feasible_BC == (32,)
+    x = torch.randn(1, 32, _HIDDEN, device="cuda")
+    with pytest.raises(RuntimeError, match="BC must be 16 or 64"), torch.no_grad():
+        layer_32(x)
+    # The refusal must be host-side: the CUDA context is still usable.
+    assert float(torch.ones(4, device="cuda").sum()) == 4.0
+    with torch.no_grad():
+        layer.eval()
+        layer(x)
+    assert layer.execution_backend_counts["cuda"] == 1

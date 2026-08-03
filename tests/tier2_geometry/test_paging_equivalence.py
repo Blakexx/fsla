@@ -613,3 +613,76 @@ def test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible():
         "is addressing by atom RANK instead of through the page table")
     bound = _reordering_bound(y_dense, plan)
     assert (y_dense - y_paged).abs().max() <= bound
+
+
+@pytest.mark.parametrize("P", [1, 2, 3])
+def test_a_near_full_but_fitting_arena_survives_a_real_launch_at_P(P):
+    """H6 (coverage-closure): the arena at EXACTLY its demand, through a real
+    launch, crossed with §6.4's sequence parallelism.
+
+    `max_physical_pages` is set to the schedule's exact atom demand -- one page of
+    headroom less would raise -- so the allocator's ceiling arithmetic, the
+    planned-exact popcount and the launch's addressing are all exercised at the
+    boundary instead of in the roomy middle every other cell occupies. `P > 1`
+    adds the three-pass path over the same paged state (paging and `P` had never
+    been composed in any gate). The `P = 1` cell is bit-identity as usual; the
+    `P > 1` cells hold paged-vs-unpaged AT THE SAME `P` to bit-identity of the
+    state (no atomic touches it) and `y` to the derived envelope.
+    """
+    from rola.ops.paging import atom_bitmap_from_schedule
+    from rola.routing.sequence_parallel import (
+        SequenceParallelPlan,
+        SequenceParallelPolicy,
+        owner_slot_counts,
+        select_sequence_parallelism,
+    )
+
+    widths, d_v, BC = (16, 8, 8), 32, 16
+    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="global", decay=False)
+    fixture = _fixture(widths, d_v, p_nonzero=0.15, seed=91, T=16)
+    read, write, g_read, g_write, v = fixture
+    B, T, H, _ = v.shape
+    schedule = build_schedule(read, write, None, g_write, plan)
+
+    sp = None
+    if P > 1:
+        base = select_sequence_parallelism(
+            plan, schedule, policy=SequenceParallelPolicy(workspace_cap=1 << 30))
+        n_owners = schedule.owners.shape[0]
+        Ps = tuple([P] * n_owners)
+        sp = SequenceParallelPlan(
+            P=Ps, limiting_gate=(None,) * n_owners, binding_gate=None,
+            sms=base.sms, blocks_per_sm=base.blocks_per_sm,
+            waves_before=base.waves_before, waves_after=0.0,
+            base_traffic_bytes=0, roundtrip_bytes=0, roundtrip_seconds=0.0,
+            base_traffic_seconds=0.0, ledger=base.ledger,
+            n_slots=sum(owner_slot_counts(Ps)), BC=base.BC, cols=base.cols)
+
+    probe = _arena(plan, BH=B * H)
+    demand = int(atom_bitmap_from_schedule(schedule, probe.keying).sum())
+    assert 0 < demand < probe.logical_pages, (
+        "the fixture saturated (or wrote nothing); a near-full cell needs a real "
+        "partial demand")
+
+    y_dense, state_dense, _ = _run_sp(plan, fixture, sp=sp)
+    arena = _arena(plan, BH=B * H, max_physical_pages=demand)
+    y_paged, returned, _ = _run_sp(plan, fixture, arena=arena, sp=sp)
+
+    assert returned is arena
+    assert arena.resident_pages == demand == arena.max_physical_pages, (
+        "the cell must run the arena AT its ceiling, or it is not the near-full "
+        "gate it claims to be")
+    cols = state_dense.shape[-1]
+    assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize())
+    bound = _reordering_bound(y_dense, plan)
+    assert (y_dense - y_paged).abs().max() <= bound
+
+
+def _run_sp(plan, fixture, *, arena=None, sp=None):
+    """`_run`, with an optional pre-built sequence-parallel plan."""
+    read, write, g_read, g_write, v = fixture
+    global_norm = plan.normalization == "global"
+    schedule = build_schedule(read, write, None if global_norm else g_read, g_write, plan)
+    return _consumer_forward(
+        v, read, write, None if global_norm else g_read, g_write, plan,
+        schedule=schedule, paging=arena, sequence_parallel=sp)
