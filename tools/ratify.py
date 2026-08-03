@@ -223,6 +223,49 @@ def parse_shape(mangled: str) -> dict | None:
                 compact=m.group(9) == "1")
 
 
+#: The calibration macros a shipped binary compiles under (coverage-closure audit
+#: item 10). Neither `setup.py` nor this probe passes a `-D` for them, so the
+#: effective value is the header default; recording it in the manifest's toolchain
+#: blob is what makes a silent default flip (or a build that DID pass a `-D`) a
+#: checkable drift instead of an unverifiable claim, and it is what the ring-depth
+#: agreement gate (`tests/unit/test_ring_depth_agreement.py`) reads as the
+#: compiled truth. The values are read off the SAME digested source the manifest
+#: describes -- the one place they are defined.
+RATIFIED_DEFINES = ("ROLA_C_RING_DEPTH", "ROLA_C_WT_WINDOW")
+
+
+def shipped_defines() -> dict[str, int]:
+    """The `#define` defaults of :data:`RATIFIED_DEFINES` in the digested source."""
+    src = (SRC / "consumer_kernel.cuh").read_text()
+    out = {}
+    for name in RATIFIED_DEFINES:
+        m = re.search(rf"^#define {name} (\d+)$", src, re.MULTILINE)
+        if m is None:
+            raise SystemExit(f"consumer_kernel.cuh no longer defines a default for "
+                             f"{name}; the provenance record cannot be produced")
+        out[name] = int(m.group(1))
+    return out
+
+
+def check_defines(manifest: dict) -> bool:
+    """The recorded calibration macros and the tree's defaults must be the same.
+
+    A missing block is a failure too: a manifest ratified before audit item 10
+    landed cannot answer what the binary compiled, which is the gap the record
+    exists to close -- `--write` on the current tree produces it.
+    """
+    want = shipped_defines()
+    got = manifest["toolchain"].get("defines")
+    if got == want:
+        print(f"defines OK  {want}")
+        return True
+    print(f"\nFAIL  DEFINE DRIFT. The manifest records calibration macros {got} but "
+          f"the tree's shipped defaults are {want}. The ratified numbers were "
+          f"measured under macros the tree no longer compiles (or were never "
+          f"recorded at all); re-ratify with --write.")
+    return False
+
+
 def csrc_digest() -> str:
     """A digest of the kernel sources the manifest's numbers were measured against.
 
@@ -692,7 +735,7 @@ def main() -> int:
             #: measurement OF a source tree UNDER an assembler, and both halves of
             #: that sentence must be checkable (the freshness trigger, session 9).
             path.write_text(json.dumps(
-                {"toolchain": {"ptxas": version},
+                {"toolchain": {"ptxas": version, "defines": shipped_defines()},
                  "source": {"csrc_sha256": csrc_digest(),
                             "date": time.strftime("%Y-%m-%d")},
                  "entries": mine}, indent=1) + "\n")
@@ -709,6 +752,7 @@ def main() -> int:
     #: costs nothing once the compile has already happened. What it must not do is
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
+    ok = check_defines(manifest) and ok
     ok = check_freshness(manifest) and ok
     ok = check(entries, unhonored, want) and ok
     ok = check_hot_loop(hot, want) and ok

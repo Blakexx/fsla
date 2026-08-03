@@ -55,7 +55,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     bool global_norm,
     std::string mma_precision,
     bool compact,
-    int64_t ring_slots,
     double eps,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which

@@ -46,8 +46,8 @@ import torch
 from rola.planner.calibration.census import resolve_census, tile_union_census
 from rola.planner.feeder import FeederFlags, compact_is_structurally_inert
 from rola.planner.schedule import (
-    _RING_DEPTHS,
     _SUPPORTED_BT,
+    COMPILED_RING_DEPTH,
     DEFAULT_SM_COUNT,
     DEFAULT_SM_SHARED_BYTES,
     MMA_K_QUANTUM,
@@ -1162,15 +1162,12 @@ class PlanAxes:
     #: deleted with the consumer they modelled (item 6b), after the exhaustive driver
     #: probe measured the mirror INVERTING the bound it claimed.
     blocks_per_sm: int = 0
-    #: Staging RING depth (§6 residency): slots of the `[BT, gram_cols]` staged
-    #: rows. STATED, not selected (M-1 RULING A, 2026-08-01, twin docstring at
-    #: `Plan.ring_slots` :404-412): every currency the planner has -- the work
-    #: model, the occupancy oracle, and the kernel's own measured instruction
-    #: count -- is INVARIANT in this field, so `select_plan_axes` sets the deepest
-    #: built depth and says why instead of arbitrating a `min` over equal keys.
-    #: This is EVIDENCE carried alongside the candidate that was selected, not a
-    #: separate per-candidate arbitration.
-    ring_slots: int = _RING_DEPTHS[0]
+    #: Staging RING depth (§6 residency). STATED, not selected (M-1 RULING A,
+    #: 2026-08-01, twin docstring at `Plan.ring_slots`), and what it states is the
+    #: COMPILED depth (`ROLA_C_RING_DEPTH`, shipped 1; see
+    #: `schedule.COMPILED_RING_DEPTH` and the H3 agreement gate). EVIDENCE carried
+    #: alongside the candidate that was selected, not a per-candidate arbitration.
+    ring_slots: int = COMPILED_RING_DEPTH
     #: The launch's WAVE COUNT for the selected candidate (`plan_waves`), and the
     #: SM count it was computed against. EVIDENCE, and the evidence that matters
     #: most: the wave regime is what the §2.32 argmins partition on, so a plan that
@@ -1290,10 +1287,13 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
             # identically equal at every depth, and a `min` over equal keys is not a
             # decision: it is a tie-break pretending to be one.
             #
-            # So the depth is STATED as `_RING_DEPTHS[0]`, the deepest built, with
-            # the reason attached: nothing in the kernel, the occupancy or the work
-            # model distinguishes the depths, and the field is read at zero sites in
-            # `consumer_kernel.cuh`. The FEASIBILITY check survives unchanged,
+            # So the depth is STATED as `COMPILED_RING_DEPTH` -- the depth the
+            # binary actually compiles (`ROLA_C_RING_DEPTH`, shipped 1; the H3
+            # agreement gate pins it to the ratification manifest). The earlier
+            # "deepest built" statement (2) described a runtime carriage the kernel
+            # read at zero sites; that plumbing is deleted, and the compile-time
+            # `consumer_ring_depth()` is the sole authority on the depth run.
+            # The FEASIBILITY check survives unchanged,
             # because it never was about the ring: a candidate the oracle prices at
             # 0 CTAs/SM does not fit the machine and must be refused rather than
             # divided by.
@@ -1309,7 +1309,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
             # every PHYSICAL constant. There is no analytic mirror any more: it
             # modelled the deleted consumer, and the exhaustive probe measured it
             # inverting the bound it claimed.
-            ring_slots = _RING_DEPTHS[0]
+            ring_slots = COMPILED_RING_DEPTH
             blocks = occupancy(BT, BC, topology.d_v, normalization == "global",
                                decay, mma_precision, compact, gram_cols, ring_slots)
             if blocks == 0:

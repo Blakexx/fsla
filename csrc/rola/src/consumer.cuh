@@ -30,12 +30,13 @@ namespace rola {
 constexpr int kMaxLevels = 4;   // spec §1: 1 <= D <= 4
 constexpr int kMaxWords = 128;  // candidate-tile words held in SMEM per CTA
 
-//: The DEEPEST staging-ring depth the consumer implements. The depth actually used
-//: is `ConsumerParams::ring_slots`, a PLAN value carried at runtime: the launch's
-//: dynamic shared-memory size is already a runtime argument, so the slot count sizes
-//: the ring with no template instantiation and the 256-tuple matrix is untouched.
-//: Mirrored by `schedule_v3._RING_DEPTHS`, pinned equal by the whole-matrix gate.
-constexpr int kMaxRingSlots = 2;
+//: The staging-ring depth is COMPILE-TIME: `consumer_ring_depth()` in
+//: `consumer_kernel.cuh` resolves it per instantiation from `ROLA_C_RING_DEPTH`
+//: (shipped 1; depth 2 DECLINED on measurement, session-9 R2(b)), and the
+//: ratification manifest records the macro (`tools/ratify.py` `RATIFIED_DEFINES`).
+//: The runtime `ConsumerParams::ring_slots` this file once carried was read by no
+//: kernel line and was removed (coverage-closure H3); the agreement gate
+//: `tests/unit/test_ring_depth_agreement.py` pins planner == compiled depth.
 
 // One level's contribution to the leaf-digit decomposition of a local leaf index
 // `i` in [0, BC):
@@ -221,13 +222,6 @@ struct ConsumerParams {
   // Which of §6.4's three passes this launch is. LAUNCH-UNIFORM (every CTA in a
   // launch has the same value), so the branches it drives are uniform and are
   // structure, not a distributional property -- the same status as `is_write`.
-  //: Staging RING depth, SELECTED by §6 under the occupancy constraint (see
-  //: `schedule_v3.select_plan_axes`). `>= 2` pipelines the next candidate tile's
-  //: gathered columns with `cp.async`; `1` DECLINES the ring and stages
-  //: synchronously inside the visit, which is the pre-ring dataflow exactly.
-  //: Block-uniform and plan-derived -- §3's branch rule bars branching on a DENSITY,
-  //: not on a structural plan parameter, which is what `compact` is too.
-  int ring_slots;
   int pass_mode;
 };
 

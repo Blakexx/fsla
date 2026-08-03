@@ -62,16 +62,23 @@ _SUPPORTED_DV = (32, 64)
 #: candidate tiles. **Depth 1 is the ring DECLINED** -- the kernel stages
 #: synchronously inside the visit, which is the pre-ring dataflow exactly.
 #:
-#: This is a PLAN axis carried at RUNTIME, not a template parameter, and that is
-#: what makes it free: the launch's dynamic shared-memory size is already a runtime
-#: argument, so the slot count sizes the buffers with no new instantiation and the
-#: 256-tuple matrix is untouched. The kernel branches on it as a block-uniform,
-#: plan-selected STRUCTURAL integer -- the same class as `compact`, never a density.
-#:
-#: The accounting below is generic in the depth; the KERNEL currently implements
-#: 1 and 2, which is what this tuple advertises. A depth-3 ring needs the lookahead
-#: iterator to name two tiles ahead and is not built.
+#: The KERNEL implements depths 1 and 2, which is what this tuple advertises (a
+#: depth-3 ring needs the lookahead iterator to name two tiles ahead and is not
+#: built). The depth actually RUN is COMPILE-TIME, not a runtime plan axis:
+#: `consumer_ring_depth()` (consumer_kernel.cuh) resolves it per instantiation from
+#: `ROLA_C_RING_DEPTH`, and the runtime `ring_slots` plumbing that once carried a
+#: plan value to the launch was read by no kernel line and was removed
+#: (coverage-closure H3, 2026-08-03).
 _RING_DEPTHS = (2, 1)
+
+#: The depth the SHIPPED binary compiles: `ROLA_C_RING_DEPTH = 1` -- depth 2 was
+#: DECLINED ON MEASUREMENT (session-9 R2(b): one realized-CTA loss, hot-ratchet and
+#: spill-manifest growth). The ratification manifest records the macro
+#: (`tools/ratify.py`, `RATIFIED_DEFINES`), and the agreement gate
+#: `tests/unit/test_ring_depth_agreement.py` pins this constant, `Plan.ring_slots`
+#: and the manifest to one value -- so a macro flip that is not re-stated here is a
+#: test failure, not a silent three-way drift (the state H3 found).
+COMPILED_RING_DEPTH = 1
 
 
 #: An OCCUPANCY ORACLE: `(BT, BC, d_v, global_norm, decay, mma_precision, compact,
@@ -402,15 +409,16 @@ class Plan:
     #: `>= 2` pipelines the next candidate tile's gathered columns with `cp.async`;
     #: `1` DECLINES the ring and stages synchronously inside the visit.
     #:
-    #: STATED, not selected (M-1 RULING A, 2026-08-01): every currency the planner
-    #: has -- the work model, the occupancy oracle, and the kernel's own measured
-    #: instruction count -- is INVARIANT in this field, so `select_plan_axes` sets
-    #: the deepest built depth and says why instead of running a `min` over equal
-    #: keys. The axis survives because §2.3's item buffers may build a ring that is
-    #: real, at which point its price is a NEW measurement on THAT kernel. Carried at
-    #: RUNTIME -- the launch's dynamic SMEM size is already a runtime argument -- so
-    #: it costs no template instantiation.
-    ring_slots: int = _RING_DEPTHS[0]
+    #: STATED, not selected (M-1 RULING A, 2026-08-01), and what it states is the
+    #: COMPILED depth: the ring is resolved at COMPILE TIME from `ROLA_C_RING_DEPTH`
+    #: (`consumer_ring_depth()`, shipped 1 -- see :data:`COMPILED_RING_DEPTH`), so a
+    #: plan records the depth its launches actually run, and the agreement gate pins
+    #: this default to the ratification manifest's recorded macro. The previous
+    #: default (`_RING_DEPTHS[0] = 2`, "deepest built") described a runtime carriage
+    #: the kernel never read -- the three-way drift H3 closed. Reopens as a real
+    #: plan axis only if the ring ever becomes runtime again, priced by a NEW
+    #: measurement on that kernel.
+    ring_slots: int = COMPILED_RING_DEPTH
     #: The CTAs/SM §6 reasoned about when this plan was selected, RECORDED next to
     #: the decision it drove -- the same contract `sm_shared_bytes` has, and for the
     #: same reason (coordinator ruling 2026-07-31): a machine fact enters the plan as

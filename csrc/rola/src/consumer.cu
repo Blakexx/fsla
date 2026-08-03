@@ -496,7 +496,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     bool global_norm,
     std::string mma_precision,
     bool compact,
-    int64_t ring_slots,
     double eps,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which
@@ -568,10 +567,6 @@ std::vector<at::Tensor> rola_consumer_forward(
   TORCH_CHECK(read_tok_bits.size(0) == read_bits.size(0) &&
                   read_tok_bits.size(2) == read_bits.size(1),
               "tok_bits must carry the same [BH, total_rows] level-digit rows as the tile bitmap");
-  TORCH_CHECK(ring_slots >= 1 && ring_slots <= kMaxRingSlots,
-              "ring_slots must be in [1, ", kMaxRingSlots, "] (1 declines the staging "
-              "ring); it is a PLAN value selected under §6's occupancy constraint, got ",
-              ring_slots);
   TORCH_CHECK(BT >= 1 && BT <= 32,
               "BT must be in [1, 32] (spec §6): the support word carries one bit per token "
               "of a tile, got BT=", BT);
@@ -614,7 +609,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     p.dials = nullptr;
   }
 
-  p.ring_slots = static_cast<int>(ring_slots);
   p.read_bits = u32_ptr(read_bits, "read_bits");
   p.read_tok_bits = u32_ptr(read_tok_bits, "read_tok_bits");
   p.write_tok_bits = u32_ptr(write_tok_bits, "write_tok_bits");

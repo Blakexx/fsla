@@ -404,7 +404,6 @@ def _consumer_forward(
         global_norm,
         plan.mma_precision,
         plan.compact,
-        plan.ring_slots,
         float(eps),
         *sp_args,
     )

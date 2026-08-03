@@ -1,9 +1,13 @@
 {
  "toolchain": {
-  "ptxas": "ptxas: NVIDIA (R) Ptx optimizing assembler Copyright (c) 2005-2024 NVIDIA Corporation Built on Tue_Feb_27_16:15:50_PST_2024 Cuda compilation tools, release 12.4, V12.4.99 Build cuda_12.4.r12.4/compiler.33961263_0"
+  "ptxas": "ptxas: NVIDIA (R) Ptx optimizing assembler Copyright (c) 2005-2024 NVIDIA Corporation Built on Tue_Feb_27_16:15:50_PST_2024 Cuda compilation tools, release 12.4, V12.4.99 Build cuda_12.4.r12.4/compiler.33961263_0",
+  "defines": {
+   "ROLA_C_RING_DEPTH": 1,
+   "ROLA_C_WT_WINDOW": 0
+  }
  },
  "source": {
-  "csrc_sha256": "a82da9aa2e1d26717d8154946afe731ae68334e2f8d6aa204060c6da13b14572",
+  "csrc_sha256": "86390421db56f878f95a7e1e0054027558421364302d158f10ac7e9b75b0cc86",
   "date": "2026-08-03"
  },
  "entries": {
