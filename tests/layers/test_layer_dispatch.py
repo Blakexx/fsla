@@ -872,3 +872,54 @@ def test_compact_and_paging_compose_bit_identically(monkeypatch):
     assert dev <= max(control * 4, 1e-6), (
         f"paged compact output moved {dev:.3e} vs the unpaged run (null control "
         f"{control:.3e})")
+
+
+# ---------------------------------------------------------------------------
+# H8 (coverage-closure): bf16 x paging. Every paging gate pins tf32x3 (so the
+# derived fp32 envelope stays the one that was derived), and every bf16 gate runs
+# unpaged -- the PRODUCTION precision had never launched over a page table. The
+# state is atomic-free and deterministic at any precision, so paged-vs-unpaged
+# state stays torch.equal; y is held to the oracle at BF16_RTOL, the bf16 arm's
+# own tier bound.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("norm", ["raw", "global"])
+@_CUDA
+def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance(norm):
+    from rola.state import RoLAState
+
+    torch.manual_seed(23)
+    unpaged = _layer(norm=norm, decay="none", mma_precision="bf16")
+    paged = RoLA(
+        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
+        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
+        decay="none", state_norm=norm, mma_precision="bf16", paging=True,
+        level_routing_configs=LevelRoutingConfig(read='dense', write='dense',
+                                                 tied=False),
+        layer_idx=0).to("cuda", torch.float32)
+    paged.load_state_dict(unpaged.state_dict())
+    x = torch.randn(1, 96, _HIDDEN, device="cuda")
+
+    x_grad = x.clone().requires_grad_(True)
+    oracle_out, _, _ = unpaged(x_grad)
+    assert unpaged.last_execution_backend == "oracle"
+
+    unpaged.eval()
+    paged.eval()
+    with torch.no_grad():
+        cache_u, cache_p = RoLAState(), RoLAState()
+        y_u, _, _ = unpaged(x, past_key_values=cache_u, use_cache=True)
+        y_p, _, _ = paged(x, past_key_values=cache_p, use_cache=True)
+
+    assert unpaged.last_selected_plan.mma_precision == "bf16"
+    assert paged.last_selected_plan.mma_precision == "bf16"
+    assert paged.last_execution_backend == "cuda"
+    assert torch.equal(cache_u[0].recurrent_state, cache_p[0].recurrent_state), (
+        "bf16 x paging moved the carried state; the state path has no atomic and "
+        "no precision excuse")
+    ref = oracle_out.detach()
+    scale = float(ref.abs().max())
+    assert float((y_p - ref).abs().max()) / scale < BF16_RTOL, (
+        "the paged bf16 output left the bf16 arm's own tier bound vs the oracle")
+    assert float((y_u - ref).abs().max()) / scale < BF16_RTOL
