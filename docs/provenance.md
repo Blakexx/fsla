@@ -51,6 +51,25 @@ are noted in `NOTICE`; MIT permits the relicensing of derivative distributions
 provided the original copyright and permission notice are retained, which `NOTICE`
 does.
 
+### The vendored CUTLASS/CuTe subtree
+
+`csrc/third_party/cutlass` is NVIDIA CUTLASS, BSD-3-Clause, vendored **unmodified**:
+the `include/` subtree there is byte-identical to upstream tag `v3.5.1`, commit
+`f7b19de32c5d1f3cedfc735c2849f12b537522ee`, which is what makes the pin checkable
+against something other than itself (`git clone --branch v3.5.1 && diff -r`).
+
+It is vendored rather than fetched because the build is closed-world: a codegen input
+that a network fetch supplies at build time is an input the ratification manifest
+cannot describe. `csrc/third_party/cutlass/PIN.json` records the tag, the commit, the
+licence and a digest of the whole subtree; `setup.py::_gate_vendored` (closed-world
+rule 5) re-computes that digest before every compile and refuses a build whose
+vendored headers drifted, and the pin is stamped into `rola/_build_config.py` so an
+installed wheel answers "which CUTLASS is inside this `.so`?" with no checkout.
+
+BSD-3-Clause requires the copyright notice, the condition list and the disclaimer to
+be retained in redistributions; `csrc/third_party/cutlass/LICENSE.txt` is the upstream
+text verbatim and `NOTICE` points at it.
+
 ## Related repositories
 
 | Repository | Role |
