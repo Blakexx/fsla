@@ -20,15 +20,29 @@ from __future__ import annotations
 import inspect
 import itertools
 import math
+import pathlib
 from math import prod
 
 import pytest
 import torch
+from planner_calibration.census import resolve_census, summary_fractions, tile_union_census
+from planner_calibration.cost_model import (
+    _STATS_OWNER_CHUNK_ELEMS,
+    TileUnionStats,
+    _tile_union_stats_multi,
+    _tile_union_stats_multi_enumerated,
+    plan_and_schedule,
+    plan_cost_per_token,
+    plan_waves,
+    select_plan,
+    select_plan_axes,
+    tile_union_stats,
+)
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from rola.planner.census import resolve_census, summary_fractions, tile_union_census
+from rola.planner.feeder import FeederFlags
 from rola.planner.schedule import (
-    _STATS_OWNER_CHUNK_ELEMS,
+    _SUPPORTED_BT,
     CP_ASYNC_ROW_BYTES,
     DEFAULT_SM_COUNT,
     DEFAULT_WRITE_COST_WEIGHT,
@@ -36,26 +50,37 @@ from rola.planner.schedule import (
     LevelSupportStats,
     Plan,
     StaticDensity,
-    TileUnionStats,
-    _tile_union_stats_multi,
-    _tile_union_stats_multi_enumerated,
     build_clock_stream,
     build_schedule,
     leaf_rate_dials,
     owner_geometry,
     permuted_topology,
-    plan_and_schedule,
-    plan_cost_per_token,
-    plan_waves,
     rank_spans,
     routing_views,
-    select_plan,
-    select_plan_axes,
     span_score,
     spanned_moduli,
-    tile_union_stats,
     unpack_bits,
 )
+from rola.planner.select import (
+    ConfigChoice,
+    FrozenConfig,
+    HardwareFacts,
+    StaticPlanInputs,
+    derived_pack_breakeven,
+    feasible_bc,
+    freeze_for_decode,
+    largest_feasible_bc,
+    pack_breakeven,
+    quanta_per_owner,
+    select_config,
+    select_config_with_evidence,
+    select_p,
+    shadow_step,
+)
+from rola.planner.select import (
+    config_for_step as select_config_for_step,
+)
+from rola.routing.summaries import RoutingSummaries
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -817,6 +842,178 @@ def test_select_plan_axes_prices_BT_and_compact_from_one_model():
                     f"(BT={BT}, compact={compact}) prices {cost}")
 
 
+
+
+# ---------------------------------------------------------------------------
+# RUNG P (`THUNDER_RUN_SPEC.md` §6 P1): compact is excluded STRUCTURALLY on a
+# dense-flagged side. The gates below are the item's SELF-GATE -- "plan comparison
+# rows on the dense cells" -- plus the §4.4 bit-layout pin.
+# ---------------------------------------------------------------------------
+
+#: I1 ENFORCEMENT (`THUNDER_RUN_SPEC.md` §1): every quanta-shaped quantity is an
+#: expression in `BC` and `MMA_K_QUANTUM`, so the rows sweep the two INSTANTIATED
+#: `BC` (`_SUPPORTED_BC = (16, 64)`) AND one hypothetical `BC = 32` that no kernel
+#: implements. A `BC`-derived literal anywhere in the rule fails the fake row and
+#: passes the other two, which is the whole point of carrying it.
+_RUNG_P_BCS = [16, 64, 32]
+_RUNG_P_BC_IDS = ["BC16-instantiated", "BC64-instantiated", "BC32-FAKE"]
+
+
+def _recording_occupancy(table=None, blocks=3):
+    """A synthetic oracle that RECORDS its query keys.
+
+    Rung P's claim is not only "the selected plan is unchanged" but "the excluded arm
+    is never priced at all", and the observable that separates those two is whether
+    the oracle is asked about `compact=True`. A cost-only assertion would pass on an
+    implementation that still enumerated the arm and then lost the argmin, which is
+    exactly today's behaviour and NOT what P1 lands.
+    """
+    calls = []
+
+    def query(BT, BC, d_v, global_norm, decay, mma_precision, compact,
+              gram_cols, ring_slots):
+        calls.append(dict(BT=BT, BC=BC, compact=compact, decay=decay))
+        return blocks if table is None else table[(BT, compact)]
+
+    query.calls = calls
+    return query
+
+
+@pytest.mark.parametrize("BC", _RUNG_P_BCS, ids=_RUNG_P_BC_IDS)
+@pytest.mark.parametrize("declared", [(True, False), (False, True), (True, True)],
+                         ids=["read-dense", "write-dense", "dense-both"])
+@pytest.mark.parametrize("decay", [False, True], ids=["nodecay", "decay"])
+def test_rung_p_excludes_compact_structurally_on_a_dense_flagged_side(BC, declared, decay):
+    """§6 P1: a dense-flagged side removes the compact ARM, and the plan does not move.
+
+    Two claims, and they are different:
+
+    1. **The plan is unchanged.** The independent argmin below re-enumerates BOTH
+       compact arms with the retiring cost model and the same wave term, and the
+       structural exclusion must land on the same `(BT, compact)` and the same cost.
+       This is the "plan comparison rows on the dense cells" self-gate: rung P is a
+       RECORDING of a disposition the model already reaches (`k_hat = ds` makes the
+       readout/fold saving identically zero), so a difference here would mean the
+       exclusion is not the thing the model was doing.
+    2. **The excluded arm is never priced.** `compact=True` must not reach the
+       occupancy oracle at all. That is what makes it structural rather than a
+       cheaper way of losing an argmin, and it is what survives the retirement of
+       the six constants.
+    """
+    topology = _topology((8, 16), d_v=64)
+    T = 128
+    generator = torch.Generator().manual_seed(20260802)
+    sparse = tuple(
+        torch.where(amps < 0.12, amps, torch.zeros_like(amps))
+        for amps in (torch.rand((1, T, 1, w), generator=generator) for w in topology.widths))
+    dense = tuple(torch.ones((1, T, 1, w)) for w in topology.widths)
+    reads = dense if declared[0] else sparse
+    writes = dense if declared[1] else sparse
+    density = StaticDensity(read=(declared[0],) * topology.D,
+                            write=(declared[1],) * topology.D)
+
+    # Blocks differ per BT so the wave term is live rather than a constant multiplier.
+    table = {(16, True): 3, (16, False): 3, (32, True): 2, (32, False): 2}
+    oracle = _recording_occupancy(table)
+    selected = select_plan_axes(reads, writes, topology, BC, decay=decay,
+                                static_density=density, occupancy=oracle)
+
+    assert selected.compact is False
+    assert all(call["compact"] is False for call in oracle.calls), (
+        "the structurally-excluded compact arm still reached the occupancy oracle: it is "
+        "being enumerated and then losing an argmin, which is not what rung P lands")
+    assert len(oracle.calls) == len(_SUPPORTED_BT)
+
+    # The INDEPENDENT argmin over both arms, priced by the retiring model.
+    best = None
+    for BT in _SUPPORTED_BT:
+        stats = tile_union_stats(reads, writes, topology, BC, BT, static_density=density)
+        for compact in (True, False):
+            cost = plan_cost_per_token(topology, BC, stats, compact=compact, decay=decay)
+            waves = plan_waves(stats.n_cohorts, table[(BT, compact)], DEFAULT_SM_COUNT)
+            key = (cost * waves, BT, compact)
+            if best is None or key[0] < best[0]:
+                best = key
+    assert (selected.BT, selected.compact) == (best[1], best[2]), (
+        f"structural exclusion moved the plan: got (BT={selected.BT}, "
+        f"compact={selected.compact}), the full enumeration wants (BT={best[1]}, "
+        f"compact={best[2]})")
+    assert selected.effective_cost_per_token == pytest.approx(best[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("BC", _RUNG_P_BCS, ids=_RUNG_P_BC_IDS)
+def test_rung_p_does_not_fire_when_neither_side_is_dense_flagged(BC):
+    """The exclusion must be keyed on the FLAG, not on a measured saturation.
+
+    A sparse-both declaration keeps both arms live even when the realized routing
+    happens to saturate: the flag is a claim about the configuration (or about a
+    measured occupancy of exactly 1.0, §4.4's second trigger), and a realization that
+    merely looks dense is not one. Without this row the exclusion could quietly become
+    a density branch, which I2 forbids.
+    """
+    topology = _topology((8, 16), d_v=64)
+    dense = tuple(torch.ones((1, 128, 1, w)) for w in topology.widths)
+    oracle = _recording_occupancy()
+    select_plan_axes(dense, dense, topology, BC, decay=False,
+                     static_density=StaticDensity(read=(False,) * topology.D,
+                                                  write=(False,) * topology.D),
+                     occupancy=oracle)
+    assert any(call["compact"] is True for call in oracle.calls), (
+        "a sparse-BOTH declaration excluded the compact arm; the exclusion has become a "
+        "measured-density branch rather than a configuration one")
+
+
+def test_feeder_flags_pack_the_frozen_bit_layout_and_or_their_two_triggers():
+    """§4.4: 2 bits per level, `dense_read[l]` then `dense_write[l]`, D <= 16.
+
+    The layout is a CONTACT with Track K's kernel decode, so it is pinned here bit by
+    bit rather than round-tripped only through `unpack`: a self-consistent pack/unpack
+    pair would agree with itself under any layout at all.
+    """
+    flags = FeederFlags(read=(True, False, True), write=(False, True, True))
+    assert flags.packed() == (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5)
+    assert FeederFlags.unpack(flags.packed(), 3) == flags
+    assert FeederFlags.none(3).packed() == 0
+
+    # Two triggers, one mechanism: the OR of the declaration and the detection.
+    density = StaticDensity(read=(True, False), write=(False, False))
+    occupancy = ((1.0, 1.0), (0.5, 1.0))
+    derived = FeederFlags.derive(density, occupancy, saturation=1.0)
+    assert derived.read == (True, True)      # level 1 detected, level 0 declared
+    assert derived.write == (False, True)    # level 1 detected only
+    assert FeederFlags.derive(density, None, saturation=1.0) == FeederFlags(
+        read=(True, False), write=(False, False)), (
+        "with no summaries the detection trigger fired anyway")
+
+    with pytest.raises(ValueError, match="D <= 16"):
+        FeederFlags.none(17)
+
+
+def test_the_residual_intra_only_compact_saving_can_never_pay_at_any_instantiation():
+    """The arithmetic that licenses rung P's exclusion, re-run over the landed constants.
+
+    `CONSUMER_ACT3_PRICING.md` §2.4c grants that at `K == BC` "only the Gram's causal
+    prefix `KI` still cuts". `compact_is_structurally_inert` refuses that residual, and
+    this is the falsifier it names: an instantiated `(BC, BT)` whose LARGEST possible
+    intra saving (taken at `kisteps = 0`) exceeds the gather tax. If a constant moves
+    far enough to make one reachable, this fails loudly instead of the exclusion
+    silently becoming an approximation.
+    """
+    from planner_calibration.cost_model import (
+        GATHER_CANDIDATE_FIXED_WORK,
+        GATHER_CANDIDATE_QUANTUM_WORK,
+        INTRA_GRAM_KSTEP_WORK,
+    )
+    q = MMA_K_QUANTUM
+    for BC in (16, 64, 32):                       # instantiated + the fake-BC row
+        ds = -(-BC // q)
+        tax = GATHER_CANDIDATE_FIXED_WORK + GATHER_CANDIDATE_QUANTUM_WORK * ds
+        for BT in _SUPPORTED_BT:
+            max_saving = INTRA_GRAM_KSTEP_WORK * ds * (BT * (BT + 1) / float(q * (q + 1)))
+            assert max_saving < tax, (
+                f"at BC={BC}, BT={BT} the intra-only compact saving ({max_saving:.1f}) "
+                f"exceeds the gather tax ({tax:.1f}); rung P's structural exclusion is no "
+                "longer licensed by the constants and must become a priced comparison")
 
 
 def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
@@ -1788,7 +1985,7 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference(widths, s
     cell whether it is live and ORs the answers; the production pass packs the tile's
     tokens into the BITS of one ``int32`` per ``(level, digit)``, ANDs those words
     across levels by broadcast, and reads both counts off bit tests
-    (:mod:`rola.planner.census`) -- then counts candidacy in closed form from the tile
+    (:mod:`planner_calibration.census`) -- then counts candidacy in closed form from the tile
     bitmaps' popcounts and asserts ``sum_K_candidate == sum_K``. So this is the
     increment's exactness gate, not a self-consistency check -- and every field is an
     exact int64 ratio, which is why it is compared with ``==`` rather than a
@@ -2132,7 +2329,7 @@ def test_the_bit_word_statistics_are_invariant_to_the_chunk_budget(monkeypatch):
     for BC in _admissible_bcs(widths):
         whole = _tile_union_stats_multi(views, topology, BC, (16, 32))
         with monkeypatch.context() as patch:
-            patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", 1)
+            patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", 1)
             split = _tile_union_stats_multi(views, topology, BC, (16, 32))
         assert whole == split, f"BC={BC}: chunking moved the statistics"
 
@@ -2171,7 +2368,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
     leaf_plane = B * H * ((T + 15) // 16) * N          # the finest candidate's rows
     squeezed = _AllocationGuard(leaf_plane // 4)
     with monkeypatch.context() as patch:
-        patch.setattr("rola.planner.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
+        patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
         with squeezed:
             _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert not squeezed.violations, (
@@ -2188,7 +2385,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
 
 # ---------------------------------------------------------------------------
 # 14b. The bit-word census as its own unit (fix brief #2, 2026-08-01). These gate
-#      `rola.planner.census` DIRECTLY rather than through `select_plan`, because
+#      `planner_calibration.census` DIRECTLY rather than through `select_plan`, because
 #      §2.7's end-state ruling relocates it to the offline bench and its contract
 #      has to survive that move.
 # ---------------------------------------------------------------------------
@@ -2387,7 +2584,7 @@ def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(mo
     # whole owner axis is built in one call) must make the guard fire at this
     # fixture -- otherwise the assertion above would be vacuous.
     monkeypatch.setattr(
-        "rola.planner.schedule._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
+        "planner_calibration.cost_model._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
     mutant_guard = _AllocationGuard(bound)
     with mutant_guard:
         _tile_union_stats_multi_enumerated(views, topology, BC, (16, 32))
@@ -2428,3 +2625,519 @@ def test_the_production_default_mma_precision_is_bf16_on_every_plan_entry_point(
                                        topology, BC, normalization="global",
                                        decay=False, occupancy=_toy_occupancy())
     assert fused.mma_precision == "bf16"
+
+
+# ---------------------------------------------------------------------------
+# §6 P3: the closed-form selector (`rola/planner/select.py`).
+#
+# The self-gate is agreement with the EIGHT MEASURED ARGMINS -- measured argmins, not
+# model outputs, which is the only right anchor for a selector that no longer runs a
+# model -- plus the dense cells and a fake-BC row (I1).
+# ---------------------------------------------------------------------------
+
+
+def _summaries_with(k_hat, candidate_frac, BC, *, occupancy=None, D=2):
+    """A `RoutingSummaries` carrying a chosen mean quantum and candidate fraction.
+
+    The histogram is the two-point distribution on `floor(k_hat)` and `floor(k_hat)+1`
+    whose mean is exactly `k_hat`. That is deliberate rather than convenient: the
+    recorded rows give a MEAN (`mean_ksteps_candidate`), a histogram carries strictly
+    more, and inventing a shape that is not implied by the recording would be fitting
+    the gate to the implementation. Two adjacent bins is the unique minimal-support
+    distribution with the recorded mean.
+    """
+    QPO = BC // MMA_K_QUANTUM
+    hist = [0.0] * (QPO + 1)
+    lo = min(int(k_hat), QPO)
+    frac = k_hat - lo
+    hist[lo] = 1.0 - frac
+    if frac:
+        hist[lo + 1] = frac
+    if occupancy is None:
+        occupancy = [[0.5] * D, [0.5] * D]
+    return RoutingSummaries(
+        occupancy=torch.tensor(occupancy, dtype=torch.float32),
+        quanta_hist=torch.tensor(hist, dtype=torch.float32),
+        active_owner_frac=1.0, candidate_frac=candidate_frac,
+        written_leaf_bitmap=torch.zeros((1, 1), dtype=torch.int32))
+
+
+def _static_for(cell, *, decay, dense=False):
+    widths, d_v, BC, _n_cohorts, _ = _ARGMIN_STATS[cell]
+    D = len(widths)
+    _widths, _d_v, _BC, n_cohorts, _ = _ARGMIN_STATS[cell]
+    BH = n_cohorts // (prod(widths) // BC)
+    return StaticPlanInputs(
+        widths=widths, d_v=d_v, normalization="global", decay=decay,
+        mma_precision="bf16",
+        density=StaticDensity(read=(dense,) * D, write=(False,) * D),
+        feasible_BC=(BC,), BH=BH)
+
+
+def _hw_for(cell, decay):
+    _widths, _d_v, BC, _n, _ = _ARGMIN_STATS[cell]
+
+    def oracle(BT, bc, d_v, global_norm, dec, prec, packing, gram_cols, ring_slots):
+        return _ARGMIN_BPSM[(bc, BT, dec)]
+
+    return HardwareFacts(sm_count=DEFAULT_SM_COUNT, occupancy=oracle)
+
+
+@pytest.mark.parametrize("cell,decay", sorted(_CALIBRATION_ARGMIN), ids=lambda v: str(v))
+def test_the_closed_form_selector_reproduces_the_eight_measured_argmins(cell, decay):
+    """P3's self-gate, at the PRE-K4 derived breakeven.
+
+    `C_PACK_BREAKEVEN` ships EMPTY (§8's conservative default: packing off), so the
+    shipped selector cannot reproduce the four compacted rows -- that is measured and
+    quantified by the companion gate below. What this row proves is that the selector is
+    a REAL selector and not a constant `False`: given the breakeven its own rule table
+    implies, the closed form lands on all eight measured argmins, `BT` and packing
+    together, through the wave term and the candidate fraction.
+
+    Note what is NOT asserted: the derived breakeven is not shipped and must not be. §8
+    assigns `C_PACK_BREAKEVEN` to a POST-K4 re-measurement because fragment ordering
+    moves both sides of the tax/saving inequality, and promoting a pre-K4 number into a
+    post-K4 placeholder slot would launder a stale fit.
+    """
+    _widths, _d_v, BC, _n, per_bt = _ARGMIN_STATS[cell]
+    static = _static_for(cell, decay=decay)
+    hw = _hw_for(cell, decay)
+    by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC) for BT in (16, 32)}
+
+    choice = select_config_with_evidence(
+        static, hw, by_bt[16], summaries_by_bt=by_bt,
+        breakeven=derived_pack_breakeven)[0]
+    assert (choice.BT, choice.packing) == _CALIBRATION_ARGMIN[(cell, decay)], (
+        f"{cell}/decay={decay}: closed form chose (BT={choice.BT}, "
+        f"packing={choice.packing}), measured argmin is "
+        f"{_CALIBRATION_ARGMIN[(cell, decay)]}")
+    assert choice.BC == BC
+
+
+@pytest.mark.parametrize("cell,decay", sorted(_CALIBRATION_ARGMIN), ids=lambda v: str(v))
+def test_the_shipped_placeholder_agrees_on_BT_and_declines_packing_with_stated_regret(
+        cell, decay, capsys):
+    """What the SHIPPED §8 default actually does on the eight rows -- a RECORDING.
+
+    §8's rule is that a wrong placeholder degrades to today's behaviour and never to a
+    new one. `C_PACK_BREAKEVEN` empty satisfies that on the FREEZE ARM (read-dense, where
+    rung P excludes packing structurally anyway) and does NOT satisfy it on the sparse
+    at-scale cells, where four of eight measured argmins want a compacted arm.
+
+    This gate asserts the two halves separately so neither can drift silently:
+    `BT` must still be the measured one on all eight rows (the placeholder is inert for
+    the tile decision), and the packing bit must be `False` on all eight (the placeholder
+    is total for the packing decision). The REGRET -- how much the declined arm costs in
+    the rule table's own currency -- is printed, not asserted, because it is a property
+    of the calibration state and not of the code.
+    """
+    _widths, _d_v, BC, _n, per_bt = _ARGMIN_STATS[cell]
+    static = _static_for(cell, decay=decay)
+    hw = _hw_for(cell, decay)
+    by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC) for BT in (16, 32)}
+
+    shipped, evidence = select_config_with_evidence(static, hw, by_bt[16],
+                                                    summaries_by_bt=by_bt)
+    measured_BT, measured_packing = _CALIBRATION_ARGMIN[(cell, decay)]
+    assert shipped.packing is False
+    assert measured_BT == shipped.BT, (
+        "the empty C_PACK_BREAKEVEN moved the TILE decision as well as the packing one; "
+        "the placeholder is supposed to be inert for BT")
+
+    ideal = select_config_with_evidence(static, hw, by_bt[16], summaries_by_bt=by_bt,
+                                        breakeven=derived_pack_breakeven)[1]
+    regret = (evidence.effective_key - ideal.effective_key) / ideal.effective_key
+    with capsys.disabled():
+        print(f"\n  P3 placeholder regret  {cell:24s} decay={decay!s:5s} "
+              f"measured={measured_BT},{measured_packing}  shipped=BT{shipped.BT},pack=False  "
+              f"regret={regret:+.4f}")
+    assert regret >= -1e-12, "the declined arm priced CHEAPER than the derived optimum"
+
+
+@pytest.mark.parametrize("cell", sorted(_ARGMIN_STATS))
+@pytest.mark.parametrize("decay", [False, True])
+def test_a_dense_flagged_cell_declines_packing_at_every_breakeven(cell, decay):
+    """The dense cells of P3's self-gate: rung P dominates the threshold, by ORDER.
+
+    A permissive table must not be able to reach a dense-flagged side. The breakeven
+    injected here is `+inf` -- more permissive than any fit could ever be -- and packing
+    must still come back `False`, because rule 1 is structural and is evaluated first.
+    """
+    _widths, _d_v, BC, _n, per_bt = _ARGMIN_STATS[cell]
+    static = _static_for(cell, decay=decay, dense=True)
+    hw = _hw_for(cell, decay)
+    by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC) for BT in (16, 32)}
+    choice, evidence = select_config_with_evidence(
+        static, hw, by_bt[16], summaries_by_bt=by_bt,
+        breakeven=lambda bc, bt, d: float("inf"))
+    assert choice.packing is False
+    assert "rung-P" in evidence.provenance
+    assert choice.feeder_flags.side_dense("read")
+    assert not choice.feeder_flags.side_dense("write")
+
+
+def test_the_selector_is_BC_generic_on_a_fake_instantiation():
+    """I1's fake-BC row for the selector: `BC = 32` is not on the ladder and must work.
+
+    Every quanta-shaped quantity here -- the histogram's bin count, `ds`, the gather
+    tax, the atomic term's `N/BC` -- is an expression in `BC` and `MMA_K_QUANTUM`. A
+    literal keyed to 16 or 64 passes the instantiated rows and fails this one. The
+    oracle is INJECTED, which is the documented contract for planning a geometry off
+    the instantiation matrix.
+    """
+    widths = (8, 16)
+    static = StaticPlanInputs(
+        widths=widths, d_v=64, normalization="global", decay=False,
+        mma_precision="bf16",
+        density=StaticDensity(read=(False, False), write=(False, False)),
+        feasible_BC=(16, 32, 64), BH=4)
+    hw = HardwareFacts(sm_count=DEFAULT_SM_COUNT, occupancy=_toy_occupancy(3))
+    for BC in (16, 32, 64):
+        summaries = _summaries_with(0.5, 0.4, BC)
+        assert summaries.quanta_hist.numel() == BC // MMA_K_QUANTUM + 1
+        assert quanta_per_owner(BC) == BC // MMA_K_QUANTUM
+        # The derived breakeven must be finite and inside `[0, ds]` at every BC --
+        # a BC-derived literal typically sends it outside that interval.
+        for BT in (16, 32):
+            threshold = derived_pack_breakeven(BC, BT, False)
+            assert 0.0 <= threshold <= quanta_per_owner(BC), (BC, BT, threshold)
+    choice = select_config(static, hw, _summaries_with(0.5, 0.4, 64))
+    assert choice.BC in (16, 32, 64)
+
+
+def test_the_feasible_set_is_alignment_intersect_instantiated_and_the_default_is_largest():
+    """§6 P6's arithmetic, gated here because P3's argmin is the thing that consumes it."""
+    assert feasible_bc((256, 256)) == (16, 64)
+    assert largest_feasible_bc((256, 256)) == 64
+    # (4, 3, 16), N = 192: BC = 64 spans the two inner levels (48) and would need
+    # 64/48 digits of the outer one -- not an integer, so not an aligned rectangle.
+    # The feasible set is therefore a STRICT subset of the ladder, which is the case
+    # `widths[-1]` as a default cannot see.
+    assert feasible_bc((4, 3, 16)) == (16,)
+    assert largest_feasible_bc((4, 3, 16)) == 16
+    # The expert pin shrinks the set to itself, and is alignment-validated like any
+    # other member rather than trusted.
+    assert feasible_bc((256, 256), pinned=256) == (256,)
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((4, 3, 16), pinned=64)
+    # And a topology the ladder cannot serve at all: (6, 24) admits neither, because
+    # 16 is not a multiple of 24's aligned runs and 64 is not a multiple of 24.
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((6, 24))
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((3, 5), instantiated=(16, 64))
+
+
+def test_shadow_mode_records_the_decision_the_exact_decision_and_the_margin():
+    """§6 P3's shadow: the closed form DECIDES, the exact argmin is recorded beside it.
+
+    The injected `exact_argmin` stands in for the relocated census machinery (P4). Two
+    rows: one where the two agree (regret `None`) and one where they do not, so the
+    ledger's disagreement path is exercised rather than merely present.
+    """
+    cell, decay = "atscale-L2048", False
+    _widths, _d_v, BC, _n, per_bt = _ARGMIN_STATS[cell]
+    static = _static_for(cell, decay=decay)
+    hw = _hw_for(cell, decay)
+    by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC) for BT in (16, 32)}
+    shipped, evidence = select_config_with_evidence(static, hw, by_bt[16],
+                                                    summaries_by_bt=by_bt)
+
+    agreeing = shadow_step(
+        static, hw, by_bt[16], summaries_by_bt=by_bt, step=7,
+        exact_argmin=lambda s, h, m: (shipped, evidence.grid[(shipped.BC, shipped.BT)]))
+    assert agreeing.decision == shipped
+    assert agreeing.regret is None
+    assert agreeing.margin == pytest.approx(evidence.margin)
+    assert agreeing.step == 7
+
+    other_BT = 32 if shipped.BT == 16 else 16
+    rival = ConfigChoice(BC=shipped.BC, BT=other_BT, packing=True,
+                         feeder_flags=shipped.feeder_flags)
+    disagreeing = shadow_step(
+        static, hw, by_bt[16], summaries_by_bt=by_bt,
+        exact_argmin=lambda s, h, m: (rival, evidence.grid[(shipped.BC, other_BT)]))
+    assert disagreeing.decision == shipped, "the shadow arbitrated; it must only record"
+    assert disagreeing.exact == rival
+    assert disagreeing.regret is not None
+
+
+def test_select_p_routes_the_hardware_record_into_the_unchanged_6_4_policy(monkeypatch):
+    """§4.3: `select_p` is §6.4 UNCHANGED, only re-plumbed onto `HardwareFacts`.
+
+    What is gated is the PLUMBING -- that the driver residency and SM count reach the
+    policy from the one hardware record instead of being re-queried ambiently. The
+    policy's own three gates are untouched and are gated by
+    `tests/unit/test_sequence_parallel_policy.py`.
+    """
+    import rola.routing.sequence_parallel as sp
+
+    seen = {}
+
+    def fake(plan, schedule, *, policy, arena_page_bytes, blocks_per_sm, sms):
+        seen.update(blocks_per_sm=blocks_per_sm, sms=sms,
+                    arena_page_bytes=arena_page_bytes)
+        return "SP"
+
+    monkeypatch.setattr(sp, "select_sequence_parallelism", fake)
+    plan = _plan((8, 16), 16, 16, d_v=64)
+    hw = HardwareFacts(sm_count=77, occupancy=_toy_occupancy(5))
+    assert select_p(plan, object(), hw, arena_page_bytes=123) == "SP"
+    assert seen == {"blocks_per_sm": 5, "sms": 77, "arena_page_bytes": 123}
+
+
+# ---------------------------------------------------------------------------
+# §6 P4: THE AUDITOR, run on recorded fixtures. This is P4's own self-gate.
+# ---------------------------------------------------------------------------
+
+#: DOCUMENTED DISAGREEMENTS at the SHIPPED §8 placeholders. Each row is
+#: `(cell, closed-form (BT, packing), exact-argmin (BT, packing), modelled regret)`.
+#: The gate asserts this set EXACTLY, in both directions: a NEW disagreement fails, and
+#: a silently-FIXED one fails too -- because a disagreement that vanishes without a
+#: re-fit means a constant moved underneath the rule that was derived from it.
+#:
+#: All four rows are the SAME finding: `C_PACK_BREAKEVEN` ships EMPTY (§8's stated
+#: conservative default) and every sparse cell therefore declines an arm the exact
+#: argmin takes. They are expected to EMPTY when §9 step 2 fills the table.
+_SELECTOR_DISAGREEMENTS = (
+    ("atscale-L2048-BC16/decay=False", (16, False), (16, True), 0.1676),
+    ("atscale-L2048-BC16/decay=True", (16, False), (16, True), 0.3252),
+    ("atscale-L2048/decay=False", (16, False), (16, True), 0.5993),
+    ("atscale-L2048/decay=True", (16, False), (16, True), 1.0121),
+)
+
+
+def _audit_rows(breakeven):
+    from planner_calibration.auditor import audit_cell, recorded_stats
+
+    rows = []
+    for (cell, decay) in sorted(_CALIBRATION_ARGMIN):
+        widths, d_v, BC, n_cohorts, per_bt = _ARGMIN_STATS[cell]
+        static = _static_for(cell, decay=decay)
+        hw = _hw_for(cell, decay)
+        summaries_by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC)
+                           for BT in (16, 32)}
+        stats_by_bt = {BT: recorded_stats(BC, BT, per_bt[BT][0], per_bt[BT][1],
+                                          per_bt[BT][2], n_cohorts)
+                       for BT in (16, 32)}
+        blocks_by_bt = {(BT, compact): _ARGMIN_BPSM[(BC, BT, decay)]
+                        for BT in (16, 32) for compact in (True, False)}
+        rows.append(audit_cell(cell, static, hw, summaries_by_bt, stats_by_bt,
+                               blocks_by_bt, breakeven=breakeven))
+    return rows
+
+
+def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
+    """P4's self-gate: the auditor, run on the recorded fixtures.
+
+    Two arms, and the pair is the finding:
+
+    * at the SHIPPED §8 placeholders the ledger is exactly `_SELECTOR_DISAGREEMENTS` --
+      four sparse cells where the empty `C_PACK_BREAKEVEN` declines an arm the exact
+      argmin takes, with the regret each one costs in the retired currency;
+    * at the DERIVED pre-K4 breakeven the ledger is EMPTY, which is what says the
+      disagreement is the placeholder's and not the rule's.
+
+    Without the second arm the first would be indistinguishable from a broken selector.
+    """
+    from planner_calibration.auditor import ledger
+
+    shipped = ledger(_audit_rows(pack_breakeven))
+    assert shipped == _SELECTOR_DISAGREEMENTS, (
+        "the disagreement ledger moved:\n"
+        f"  got      {shipped}\n  expected {_SELECTOR_DISAGREEMENTS}")
+    assert ledger(_audit_rows(derived_pack_breakeven)) == (), (
+        "the closed form disagrees with the exact argmin even at the breakeven its own "
+        "rule table implies; the disagreement is in the RULE, not in the placeholder")
+
+
+def test_the_auditor_carries_a_margin_beside_every_verdict():
+    """§2's validity domain is stated per decision, so every row carries its margin."""
+    for row in _audit_rows(derived_pack_breakeven):
+        assert row.agreed
+        assert row.regret is None
+        assert row.margin > 0.0 and math.isfinite(row.margin), (row.cell, row.margin)
+
+
+def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
+    """§6 P4: the inductor dependency leaves the shipped package's import graph.
+
+    `import rola` must not reach `benchmarks/`. The relocated names survive as PROXIES
+    that resolve on CALL, so the five bench instruments and the two out-of-track test
+    suites that call them keep working while a shipped install pays nothing -- and
+    fails at the call site with a sentence, rather than at import with a traceback.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, rola;"
+        "from rola.planner.schedule import select_plan, plan_and_schedule, TileUnionStats;"
+        "leaked = [m for m in sys.modules if 'planner_calibration' in m];"
+        "print('LEAKED' if leaked else 'CLEAN')")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                         cwd=str(pathlib.Path(__file__).resolve().parents[2]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().endswith("CLEAN"), (
+        "importing `rola` pulled the bench calibration package in; the relocation's "
+        "whole point is that the shipped package no longer carries the census's "
+        f"torch.compile/inductor runtime dependency. stdout={out.stdout!r}")
+
+    # ...and the proxy really dispatches, rather than being a decorative stub.
+    from planner_calibration.cost_model import plan_waves as real
+
+    from rola.planner import schedule
+    assert schedule.plan_waves(100, 2, 10) == real(100, 2, 10)
+    with pytest.raises(AttributeError):
+        _ = schedule.this_name_never_existed
+
+
+# ---------------------------------------------------------------------------
+# §6b: DECODE BYPASSES SELECTION ARCHITECTURALLY (user ruling, 2026-08-02)
+# ---------------------------------------------------------------------------
+
+
+def test_the_decode_path_issues_zero_statistics_work():
+    """§6b: at `T == 1` the dispatch touches no statistic, no oracle and no policy.
+
+    The gate is a SPY on every door the decode arm must not go through: the closed-form
+    selector, the occupancy oracle (which is where a wave term would be computed for a
+    grid decode does not vary), and `select_p`. A `RoutingSummaries` is deliberately
+    passed anyway -- if the branch were on the ARGUMENT rather than on the shape, a
+    caller that happened to have summaries would silently take the prefill path.
+    """
+    import rola.planner.select as select_module
+
+    widths = (8, 16)
+    static = StaticPlanInputs(
+        widths=widths, d_v=64, normalization="global", decay=False,
+        mma_precision="bf16",
+        density=StaticDensity(read=(True, True), write=(False, False)),
+        feasible_BC=(16, 64), BH=4)
+    calls = []
+    hw = HardwareFacts(sm_count=DEFAULT_SM_COUNT,
+                       occupancy=lambda *a, **k: calls.append("oracle") or 3)
+    summaries = _summaries_with(0.5, 0.4, 64)
+
+    choice, evidence = select_config_for_step(static, hw, 1, summaries=summaries)
+    assert calls == [], "the decode arm queried the occupancy oracle"
+    assert evidence is None, "the decode arm produced selection evidence, so it selected"
+    assert choice.BT == 16, "the decode config must take the MINIMAL tile"
+    assert choice.packing is False
+    # Feeder flags come from the STATIC declarations only: a flag set from one token's
+    # support would be a claim about the sequence made from a single sample, and under
+    # the factored feeder a false dense flag is a correctness defect, not a mis-pricing.
+    assert choice.feeder_flags.read == (True, True)
+    assert choice.feeder_flags.write == (False, False)
+
+    # ...and the prefill arm at the same call site DOES select, so the branch is real.
+    calls.clear()
+    prefill, prefill_evidence = select_config_for_step(static, hw, 2048,
+                                                       summaries=summaries)
+    assert calls, "the prefill arm skipped the oracle"
+    assert prefill_evidence is not None
+
+    # The boundary carrier adopts the prefill's BC (the state is laid out for it and
+    # cannot be re-laid) and re-derives everything else.
+    frozen = freeze_for_decode(static, prefill=prefill)
+    assert frozen.choice.BC == prefill.BC
+    assert frozen.choice.BT == 16 and frozen.choice.packing is False
+    assert frozen.sequence_parallel is None, "decode must not carry a P plan"
+    assert frozen.frozen_from == prefill
+
+    # `is_decode_step` is STRUCTURAL: it is the no-tiling case, not a dimension
+    # comparison. No T above 1 takes the decode branch.
+    assert select_module.is_decode_step(1)
+    assert not any(select_module.is_decode_step(T) for T in (2, 15, 16, 17, 4096))
+
+    with pytest.raises(ValueError, match="only the T == 1 decode arm"):
+        select_config_for_step(static, hw, 2048, summaries=None)
+    with pytest.raises(ValueError, match="must not enable packing"):
+        FrozenConfig(choice=ConfigChoice(BC=64, BT=16, packing=True,
+                                         feeder_flags=choice.feeder_flags))
+
+
+# ---------------------------------------------------------------------------
+# §6 P6: the construction MATRIX. Every row is a topology whose `BC` question has a
+# different answer, and the wide-last-level row is the one `widths[-1]` got wrong.
+# ---------------------------------------------------------------------------
+
+#: `(widths, expected feasible set, what the row is FOR)`.
+_BC_CONSTRUCTION_MATRIX = [
+    ((256, 256), (16, 64), "the parity topology: both instantiated BC are aligned"),
+    ((8, 16), (16, 64), "the flagship: widths[-1] = 16 was the SMALLEST feasible"),
+    ((4, 256), (16, 64), "WIDE LAST LEVEL: widths[-1] = 256 is not instantiated at all"),
+    ((4, 3, 16), (16,), "a strict subset: BC = 64 spans 48 and 64/48 is not an integer"),
+    ((64, 64), (16, 64), "square, both aligned"),
+]
+
+
+@pytest.mark.parametrize("widths,expected,why", _BC_CONSTRUCTION_MATRIX,
+                         ids=[f"w{'x'.join(map(str, w))}" for w, _, _ in _BC_CONSTRUCTION_MATRIX])
+def test_the_bc_construction_matrix_including_a_wide_last_level(widths, expected, why):
+    """§6 P6: feasible = alignment INTERSECT instantiated, and the default is the largest.
+
+    The wide-last-level row is the whole reason the default moved. `widths[-1]` is
+    ALIGNED there -- the old defence is true -- but it is not INSTANTIATED, so the old
+    default produced a `BC` no kernel implements and the caller learned about it from
+    the occupancy oracle at plan time, on a value they never chose. Alignment is
+    necessary, not sufficient.
+    """
+    assert feasible_bc(widths) == expected, why
+    assert largest_feasible_bc(widths) == expected[-1]
+    # Every member is genuinely aligned -- the intersection is not a name list.
+    for BC in expected:
+        owner_geometry(widths, BC)
+    # ...and what the OLD default would have produced, RECORDED per row rather than
+    # asserted as a blanket claim. The row that matters most is `w256x256`: that is the
+    # PARITY topology, and `widths[-1] = 256` is not instantiated there either -- so the
+    # old default was wrong on the freeze arm itself and was only ever masked by the fact
+    # that every instrument in the tree passes `state_block` explicitly.
+    old = widths[-1]
+    verdict = ("largest-feasible by luck" if old == expected[-1]
+               else "smallest-feasible" if old in expected
+               else "NOT FEASIBLE")
+    assert verdict == {(256, 256): "NOT FEASIBLE",
+                       (8, 16): "smallest-feasible",
+                       (4, 256): "NOT FEASIBLE",
+                       (4, 3, 16): "largest-feasible by luck",
+                       (64, 64): "largest-feasible by luck"}[widths], (widths, old, verdict)
+
+
+def test_an_inadmissible_pin_and_an_unservable_topology_are_construction_time_errors():
+    """The point of P6: no plan-time surprises. Both diagnoses name the geometry."""
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((4, 3, 16), pinned=64)
+    with pytest.raises(ValueError, match="no feasible BC"):
+        feasible_bc((6, 24))
+    # An out-of-ladder pin is ADMITTED (the caller takes responsibility for supplying
+    # an oracle, which is the documented contract of the injection interface) but is
+    # still alignment-validated.
+    assert feasible_bc((256, 256), pinned=1024) == (1024,)
+    owner_geometry((256, 256), 1024)
+
+
+def test_the_layer_resolves_the_largest_feasible_bc_and_records_the_feasible_set():
+    """The construction-time half, on the layer that owns it.
+
+    `branches=[4, 256]` is the row that used to resolve `state_block` to 256 -- aligned,
+    uninstantiated, and discovered at plan time. An explicit pin must still win
+    unchanged, because nine external instruments pass one.
+    """
+    from rola.layers import RoLA
+
+    layer = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+                 states_per_level=[4, 256])
+    assert layer.topology.widths == (4, 256)
+    assert layer.state_block == 64, (
+        "the layer kept the widths[-1] default; 256 is aligned but not instantiated")
+    assert layer.feasible_BC == (16, 64)
+
+    pinned = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+                  states_per_level=[4, 256], state_block=16)
+    assert pinned.state_block == 16
+    assert pinned.feasible_BC == (16,), "an explicit pin must shrink the set to itself"
+
+    with pytest.raises(ValueError):
+        RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
+             states_per_level=[4, 256], state_block=24)

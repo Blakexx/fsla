@@ -278,6 +278,7 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict) -> None:
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     "csrc/rola/src/consumer.cu",
+    "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/page_plan.cu",
     "csrc/rola/src/paging/page_plan_host.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
