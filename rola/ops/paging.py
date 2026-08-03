@@ -573,6 +573,13 @@ class PageArena:
             raise ValueError(
                 "adopt_dense commits every atom and needs the dense limit; this arena "
                 f"caps at {self.max_physical_pages} of {self.logical_pages} atoms")
+        # JOIN THE SIDE STREAM FIRST -- the same missing-wait class the postmerge
+        # fix closed before the consumer launch (H4d). The copies below run on the
+        # CALLER's stream, and a previous `plan_exact` may still be zeroing this
+        # very `_value_base` (and writing `_page_table`) on the side stream; without
+        # this join the two write streams race on the same bytes. Stream-to-stream,
+        # so it costs the host nothing.
+        self.wait()
         self._allocator.reset()
         first = self._allocator.take(self.logical_pages)
         assert first == 0
