@@ -106,14 +106,14 @@ def test_the_two_feeder_flag_packings_are_the_same_word_bit_for_bit(widths):
 
         via_density = freeze_decode_config(
             topology, "raw", decay=False, BH=1, device="cpu",
-            static_density=density, n_split=1).feeder_flags
+            static_density=density, n_split=1, mma_precision="bf16").feeder_flags
 
         flags = FeederFlags(read=read, write=write)
         frozen = FrozenConfig(choice=ConfigChoice(BC=16, BT=16, packing=False,
                                                   feeder_flags=flags))
         via_canonical = freeze_decode_config(
             topology, "raw", decay=False, BH=1, device="cpu",
-            frozen=frozen, n_split=1).feeder_flags
+            frozen=frozen, n_split=1, mma_precision="bf16").feeder_flags
 
         assert via_density == via_canonical == flags.packed(), (
             f"the feeder-flag word disagrees at read={read} write={write}: "
@@ -134,4 +134,4 @@ def test_supplying_both_flag_sources_is_refused_rather_than_ordered():
     with pytest.raises(ValueError, match="never both"):
         freeze_decode_config(topology, "raw", decay=False, BH=1, device="cpu",
                              frozen=frozen, static_density=((False, False),) * 2,
-                             n_split=1)
+                             n_split=1, mma_precision="bf16")

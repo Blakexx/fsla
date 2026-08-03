@@ -166,7 +166,8 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
                                  write_activation=SoftmaxActivation())
     topology = Topology(levels=tuple(LevelConfig(w, routing) for w in widths), d_v=d_v)
-    config = freeze_decode_config(topology, "global", decay=False, BH=1, device=device)
+    config = freeze_decode_config(topology, "global", decay=False, BH=1, device=device,
+                                  mma_precision="bf16")
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)

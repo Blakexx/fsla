@@ -166,7 +166,7 @@ def freeze_decode_config(
     frozen=None,
     static_density: tuple[tuple[bool, bool], ...] | None = None,
     n_split: int | None = None,
-    mma_precision: str = "bf16",
+    mma_precision: str,
 ) -> FrozenDecodeConfig:
     """Build the carrier once, at the boundary.
 

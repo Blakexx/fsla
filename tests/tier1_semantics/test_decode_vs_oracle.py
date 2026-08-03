@@ -155,7 +155,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
 
     # ---- decode ---------------------------------------------------------------
     config = freeze_decode_config(topology, norm, decay=decay is not None, BH=B * H,
-                                  device=device, n_split=n_split)
+                                  device=device, n_split=n_split, mma_precision="tf32x3")
     state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
              if initial_state is None else initial_state.to(torch.float32).clone())
     workspace = None
@@ -284,7 +284,8 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device)
+    config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
+                                  mma_precision="tf32x3")
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
     y, state, workspace = decode_forward(v, zeros, zeros, None, g_write, config, state)
@@ -485,7 +486,8 @@ def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC, norm):
     generator = torch.Generator(device=device).manual_seed(4321)
     pre = _prefill(widths, 64, 2, 1, 2, norm, generator, device, BC)
 
-    config = freeze_decode_config(pre["topology"], norm, decay=False, BH=2 * 2, device=device)
+    config = freeze_decode_config(pre["topology"], norm, decay=False, BH=2 * 2, device=device,
+                                  mma_precision="tf32x3")
     state = torch.zeros(2, 2, config.N, config.cols, device=device, dtype=torch.float32)
     y, state, _ = decode_forward(
         pre["v"].float(), tuple(t.float() for t in pre["read_levels"]),
@@ -531,7 +533,8 @@ def test_g7_prefill_decode_seam(widths, BC, norm):
         None if head["g_read"] is None else head["g_read"].float(), head["g_write"].float(),
         full["plan"])
 
-    config = freeze_decode_config(full["topology"], norm, decay=False, BH=B * H, device=device)
+    config = freeze_decode_config(full["topology"], norm, decay=False, BH=B * H, device=device,
+                                  mma_precision="tf32x3")
     tail = {k: (tuple(t[:, L:L + 1] for t in v) if isinstance(v, tuple)
                 else (v[:, L:L + 1] if torch.is_tensor(v) and v.dim() >= 2 else v))
             for k, v in full.items() if k in ("read_levels", "write_levels", "g_read", "g_write", "v")}
