@@ -201,3 +201,43 @@ def test_a_paged_layer_keeps_the_tiled_path():
     after = layer.execution_backend_counts
     assert after['cuda'] == before['cuda'] + 1, "a paged layer must keep the tiled path"
     assert after['decode'] == before['decode']
+
+
+# ---------------------------------------------------------------------------
+# H9 (coverage-closure): the four CUDA rows of the table, swept over the
+# (norm, decay) axes the layer default never leaves. The dispatch predicate does
+# not read either axis, so a mis-routed cell here means the PREDICATE grew an
+# accidental coupling -- and the decode/tiled kernels both branch on norm and
+# decay internally, so 'the row runs' is asserted through the counter exactly as
+# the base table does. 4 rows x 3 non-default combos = 12 cells; the default
+# (global, none) combo is the base table's.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.cuda
+@_CUDA
+@pytest.mark.parametrize("norm,decay", [
+    ("global", "leaf_mass"), ("raw", "none"), ("raw", "leaf_mass")])
+@pytest.mark.parametrize("L,carried,expected", [
+    (1, True, 'decode'),
+    (1, False, 'cuda'),
+    (2, True, 'cuda'),
+    (16, True, 'cuda'),
+])
+def test_the_cuda_rows_dispatch_identically_across_norm_and_decay(
+        norm, decay, L, carried, expected):
+    device = "cuda"
+    layer = _layer(device, norm=norm, decay=decay)
+    layer.eval()
+    if carried:
+        cache = _prime(layer, device)
+    else:
+        cache = RoLAState()
+    before = layer.execution_backend_counts
+    _step(layer, cache, device, L=L, grad_enabled=False)
+    after = layer.execution_backend_counts
+    moved = {k for k in after if after[k] != before[k]}
+    assert moved == {expected}, (
+        f"(norm={norm}, decay={decay}): expected the {expected!r} backend, "
+        f"counters moved {moved} -- the dispatch predicate has grown a coupling "
+        f"to an axis it must not read")
