@@ -127,11 +127,19 @@ def _guarded_new_empty(self, *args, **kwargs):
     return _poison(_ORIGINAL_NEW_EMPTY(self, *args, **kwargs))
 
 
+#: The tiers whose tests exercise `rola`'s tensor math directly (op-level: the two
+#: semantics/geometry tiers; module-level: the layer tier). The unit tier is host-side
+#: planner/schedule logic and is deliberately outside the guard. NOTE (coverage-closure
+#: 2026-08-03): this previously gated on `tests/ops/` and `tests/modules/` — the FORK's
+#: layout, neither of which exists here — so the NaN-poison guard had never run.
+_POISON_TIERS = ('tests/tier1_semantics/', 'tests/tier2_geometry/', 'tests/layers/')
+
+
 @pytest.fixture(scope="function", autouse=True)
 def poison_torch_memory(request):
-    # Only apply the guard to ops and modules tests
+    # Only apply the guard to the tiers that reach rola's tensor math.
     path = str(request.node.fspath)
-    if 'tests/ops/' not in path and 'tests/modules/' not in path:
+    if not any(tier in path for tier in _POISON_TIERS):
         yield
         return
 
