@@ -779,3 +779,96 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
         layer.eval()
         layer(x)
     assert layer.execution_backend_counts["cuda"] == 1
+
+
+# ---------------------------------------------------------------------------
+# H7 (coverage-closure): `compact = True` THROUGH THE LAYER. The shipped
+# `C_PACK_BREAKEVEN` is empty (§8's conservative default), so no layer forward
+# had ever launched the compacted instantiations -- the op tier gates them, but
+# the layer's selection -> Plan -> schedule -> launch wiring for `compact` was
+# dead in every layer test. The breakeven is forced feasible IN THE TEST
+# (monkeypatch of the placeholder table, never a source change: promoting a
+# pre-K4 number into the shipped slot would launder a stale fit).
+# ---------------------------------------------------------------------------
+
+
+def _force_pack_feasible(monkeypatch):
+    import rola.planner.select as select_mod
+    forced = {(BC, BT, dec): float("inf")
+              for BC in (16, 64) for BT in (16, 32) for dec in (False, True)}
+    monkeypatch.setattr(select_mod, "C_PACK_BREAKEVEN", forced)
+
+
+@pytest.mark.parametrize("norm", ["raw", "global"])
+@pytest.mark.parametrize("decay", ["none", "leaf_mass"])
+@_CUDA
+def test_a_forced_feasible_breakeven_reaches_a_compact_launch(norm, decay, monkeypatch):
+    """The four (norm x decay) cells, sparse-routed so rung P cannot exclude the
+    arm, asserting (1) selection actually chose packing, (2) the launched plan
+    carries it, and (3) the compacted launch agrees with the fp64 oracle at the
+    consumer suite's own tolerance."""
+    _force_pack_feasible(monkeypatch)
+    torch.manual_seed(17)
+    layer = _layer(norm=norm, decay=decay, router="sparse", logit_gain=8.0)
+    x = torch.randn(1, 96, _HIDDEN, device="cuda")
+    assert _sparsity(layer, x) > 0.2, "the sparse fixture is vacuously dense"
+
+    x_grad = x.clone().requires_grad_(True)
+    oracle_out, _, _ = layer(x_grad)
+    assert layer.last_execution_backend == "oracle"
+    layer.eval()
+    with torch.no_grad():
+        cuda_out, _, _ = layer(x)
+    assert layer.last_execution_backend == "cuda"
+    plan = layer.last_selected_plan
+    assert plan.compact is True, (
+        "the forced-feasible breakeven did not reach the launch as compact=True; "
+        "the layer's packing wire is dead")
+
+    reference = oracle_out.detach()
+    deviation = float((cuda_out - reference).abs().max()) / float(reference.abs().max())
+    assert deviation < RTOL, (
+        f"the COMPACT launch disagrees with the oracle at {deviation:.3e} "
+        f"(RTOL={RTOL:.1e}); norm={norm} decay={decay}")
+
+
+@_CUDA
+def test_compact_and_paging_compose_bit_identically(monkeypatch):
+    """COMPACT x PAGING: both replumb the same inner loops' operand sourcing (the
+    gather stage / the page table), so their composition is where an interaction
+    bug would live. Paged and unpaged forwards of the same compact-forced sparse
+    layer must hand back bitwise-identical carried state."""
+    from rola.state import RoLAState
+
+    _force_pack_feasible(monkeypatch)
+    torch.manual_seed(19)
+    unpaged = _layer(norm="global", decay="none", router="sparse", logit_gain=8.0)
+    paged = RoLA(
+        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
+        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
+        decay="none", state_norm="global", mma_precision="tf32x3", paging=True,
+        level_routing_configs=LevelRoutingConfig(read='sparse', write='sparse',
+                                                 tied=False, alpha=1.5),
+        layer_idx=0).to("cuda", torch.float32)
+    paged.load_state_dict(unpaged.state_dict())
+    unpaged.eval()
+    paged.eval()
+    x = torch.randn(1, 96, _HIDDEN, device="cuda")
+
+    with torch.no_grad():
+        cache_u, cache_p = RoLAState(), RoLAState()
+        y_u, _, _ = unpaged(x, past_key_values=cache_u, use_cache=True)
+        y_control, _, _ = unpaged(x)
+        y_p, _, _ = paged(x, past_key_values=cache_p, use_cache=True)
+
+    assert unpaged.last_selected_plan.compact is True
+    assert paged.last_selected_plan.compact is True
+    assert torch.equal(cache_u[0].recurrent_state, cache_p[0].recurrent_state), (
+        "compact x paging moved the carried state: the compacted gather is not "
+        "addressing through the page table (or vice versa)")
+    scale = float(y_u.abs().max())
+    control = float((y_u - y_control).abs().max()) / scale
+    dev = float((y_u - y_p).abs().max()) / scale
+    assert dev <= max(control * 4, 1e-6), (
+        f"paged compact output moved {dev:.3e} vs the unpaged run (null control "
+        f"{control:.3e})")
