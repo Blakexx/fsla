@@ -102,6 +102,11 @@ def cuda_bin(tool: str) -> str:
 PROBE = Path(__file__).with_name("probe_launch_bounds.cu")
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
+#: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
+#: (repository headers first). This gate's whole premise is that it compiles the
+#: probe under the shipped kernel's flags; an include path the extension has and the
+#: probe does not is that premise failing silently.
+CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cutlass" / "include"
 
 #: The extension's own `-gencode` targets (`setup.py`'s `ROLA_CUDA_ARCHS`, default
 #: `80;86`), overridable per run with `--arch`. BOTH are probed by default, because
@@ -184,7 +189,7 @@ def _nvcc_command(arches) -> list[str]:
     import torch.utils.cpp_extension as ext
 
     cmd = [cuda_bin("nvcc"), "-c", str(PROBE), "-o", "/dev/null",
-           f"-I{SRC}"]
+           f"-I{SRC}", f"-I{CUTLASS_INC}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-isystem", inc]
     cmd += ["-isystem", sysconfig.get_paths()["include"]]

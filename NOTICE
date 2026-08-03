@@ -23,6 +23,13 @@ Songlin Yang, Yu Zhang, which is distributed under the MIT License. The MIT
 license text and the specific files it covers are recorded in
 docs/provenance.md.
 
-The CUDA kernels in csrc/, the routing producers, the planner, the ratification
+This package also VENDORS CUTLASS/CuTe (https://github.com/NVIDIA/cutlass),
+Copyright (c) 2017 - 2024 NVIDIA CORPORATION & AFFILIATES, distributed under the
+BSD-3-Clause License, at csrc/third_party/cutlass. The subtree is byte-identical to
+upstream tag v3.5.1 (commit f7b19de32c5d1f3cedfc735c2849f12b537522ee); the pin and
+the digest the build gates against are in csrc/third_party/cutlass/PIN.json and the
+license text is at csrc/third_party/cutlass/LICENSE.txt.
+
+The CUDA kernels in csrc/rola, the routing producers, the planner, the ratification
 tooling, and the evidence machinery are original work and are not derived from
-flash-linear-attention.
+flash-linear-attention or from CUTLASS.

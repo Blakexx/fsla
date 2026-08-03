@@ -17,7 +17,20 @@ R1     a build under an assembler the manifest was not ratified under       ``_g
 R2     ``code=compute_XX`` (PTX) anywhere in the fatbin                     ``gencodes`` + its assertion
 R3     an architecture in the fatbin with no ratified manifest              ``_gate_ratified``
 R4     a *launch* on a device whose arch was never measured                 ``csrc/rola/src/arch_table.cuh`` (C++)
+R5     a vendored codegen INPUT that does not match its recorded pin        ``_gate_vendored``
 ===== ==================================================================== ==========
+
+**R5 AND WHY A HEADER-ONLY LIBRARY IS A CODEGEN INPUT, NOT A PACKAGING DETAIL.**
+``csrc/third_party/cutlass`` vendors CUTLASS/CuTe headers. Header-only or not, every
+line of it that the kernel instantiates is code ``ptxas`` assembles, so a silent edit
+to a vendored header moves the register allocation the manifest ratified exactly as an
+edit to ``consumer_kernel.cuh`` would. ``_gate_vendored`` therefore hashes the whole
+vendored subtree and compares it against ``PIN.json``'s recorded digest BEFORE the
+compile, in the same pass as rules 1 and 3, and the pin (upstream, tag, commit, digest)
+is stamped into ``rola/_build_config.py`` so an installed wheel can answer "which
+CUTLASS is inside this ``.so``?" with no checkout. The vendored subtree is
+byte-identical to the upstream tag, which is what makes the digest checkable against
+something other than itself.
 
 R1 and R3 run BEFORE ``build_ext`` -- they are cheap, and failing after a multi-hour
 compile helps nobody. The manifest gate runs AFTER, because the pre-build check
@@ -64,6 +77,7 @@ from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CUDAExtension
 ROOT = Path(__file__).resolve().parent
 CSRC = ROOT / "csrc" / "rola"
 MANIFEST_DIR = ROOT / "tools" / "manifests"
+CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 
 #: THE RATIFIED SET. Overridable only downward in practice: adding an arch here
 #: without a manifest fails the build at ``_gate_ratified`` (rule 3), which is the
@@ -205,6 +219,54 @@ def _gate_ratified(archs: list[str]) -> dict:
     return {"toolchain": toolchain, "entries": entries}
 
 
+def vendored_tree_sha256(root: Path) -> tuple[str, int]:
+    """A digest of a DIRECTORY, defined so it cannot be argued with.
+
+    sha256 over the sorted relative POSIX paths, each followed by a NUL byte and by
+    the sha256 DIGEST of that file's bytes; ``PIN.json`` itself is excluded because it
+    carries the answer. Paths participate as well as contents, so a RENAME -- which
+    changes which header an ``#include`` resolves to, and therefore what is compiled --
+    moves the digest exactly as a content edit does.
+    """
+    digest = hashlib.sha256()
+    files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "PIN.json")
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest(), len(files)
+
+
+def _gate_vendored() -> dict:
+    """RULE 5: the vendored codegen inputs are the ones that were pinned.
+
+    Runs BEFORE the compile, with rules 1 and 3, for the same reason they do: it is
+    cheap, and a vendored header that drifted is not something to discover from a
+    manifest diff after a multi-hour build.
+    """
+    pin_path = CUTLASS_DIR / "PIN.json"
+    if not pin_path.exists():
+        raise RuntimeError(
+            f"CLOSED-WORLD RULE 5: {pin_path} is missing. A vendored library with no "
+            f"pin is an unmeasured codegen input; restore the pin or remove the "
+            f"vendored tree."
+        )
+    pin = json.loads(pin_path.read_text())
+    here, count = vendored_tree_sha256(CUTLASS_DIR)
+    if here != pin["tree_sha256"]:
+        raise RuntimeError(
+            "CLOSED-WORLD RULE 5: the vendored CUTLASS subtree does not match its "
+            f"pin.\n  PIN.json: {pin['tree_sha256']} ({pin['file_count']} files)\n"
+            f"  on disk : {here} ({count} files)\n"
+            "A vendored header is code `ptxas` assembles, so this is a codegen change "
+            "and not a packaging one. Re-vendor the pinned tag, or move the pin "
+            "DELIBERATELY and re-ratify (`python tools/ratify.py --write`)."
+        )
+    print(f"rule 5 OK  cutlass {pin['tag']} ({pin['commit'][:12]}): {count} files, "
+          f"sha256 {here[:16]}...")
+    return pin
+
+
 def _gate_toolchain(manifest: dict) -> str:
     pinned = manifest["toolchain"]["ptxas"]
     here = ptxas_version()
@@ -237,7 +299,7 @@ def default_max_jobs(nvcc_threads: int) -> int:
 # ---------------------------------------------------------------------------
 # _build_config.py -- the self-describing binary
 # ---------------------------------------------------------------------------
-def write_build_config(archs: list[str], ptxas: str, manifest: dict) -> None:
+def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) -> None:
     import torch
 
     blob = json.dumps({"toolchain": manifest["toolchain"],
@@ -253,6 +315,13 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict) -> None:
                                             if k.startswith(f"sm_{a}:"))
                              for a in archs},
         "ptx_jit_fallback": False,
+        #: THE VENDORED CODEGEN INPUTS, one entry per pinned library. Recorded next to
+        #: `ptxas` because it answers the same question about the same binary: what
+        #: assembled this, and from what sources.
+        "vendored": {
+            "cutlass": {"tag": pin["tag"], "commit": pin["commit"],
+                        "tree_sha256": pin["tree_sha256"]},
+        },
     }
     body = (
         '"""GENERATED by setup.py -- do not edit.\n\n'
@@ -309,7 +378,9 @@ def build_extension():
     return CUDAExtension(
         name=MODULE_NAME,
         sources=SOURCES,
-        include_dirs=[str(CSRC / "src")],
+        #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
+        #: wins a name collision and the vendored tree can never shadow ours.
+        include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include")],
         extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": nvcc_flags},
         extra_link_args=ldflags,
     )
@@ -321,9 +392,10 @@ class RoLABuildExtension(BuildExtension):
     def run(self):
         manifest = _gate_ratified(ROLA_CUDA_ARCHS)
         ptxas = _gate_toolchain(manifest)
+        pin = _gate_vendored()
         super().run()
         self._post_build_manifest_check()
-        write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest)
+        write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin)
 
     def _post_build_manifest_check(self):
         """The pre-build gates prove the INPUTS were ratified. This proves the

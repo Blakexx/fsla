@@ -120,7 +120,8 @@ def _masked_simplex(shape, mask, generator, device):
 def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0, seed,
               decay_dials=None, quantize_stored=False, mma_precision="tf32x3",
               read_levels=None, write_levels=None,
-              compact=True, return_outputs=False, g_write=None, plan=None):
+              compact=True, return_outputs=False, g_write=None, plan=None,
+              mass_scale=1.0, perturb_mass=0.0, return_reference=False):
     from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
@@ -147,6 +148,12 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
             # The mass column is a nonnegative accumulated write mass; a negative
             # incoming mass is not a state the recurrence can produce.
             initial_state[..., d_v] = initial_state[..., d_v].abs()
+            # `mass_scale` DECOUPLES the mass column's magnitude from the value
+            # columns' (I6 gate below). It is a fixture axis, never a kernel one:
+            # the recurrence is linear in the incoming state, so any positive scale
+            # is a state the recurrence can produce -- and a whole-tensor relative
+            # error hides a mass defect exactly when the two scales differ.
+            initial_state[..., d_v] = initial_state[..., d_v] * mass_scale
 
     decay = None if decay_dials is None else LeafMassDecay(dials=decay_dials)
     stored = None
@@ -178,6 +185,14 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
         # against a different problem.
         assert (plan.BC, plan.normalization, plan.decay) == (BC, norm, decay is not None)
         assert plan.topology == topology
+    # `perturb_mass` is the I6 gate's OWN discriminating-power instrument: a known
+    # relative error injected into the KERNEL's incoming mass column only, with the
+    # oracle left on the exact input. It is 0.0 everywhere else, so no ordinary test
+    # pays for it.
+    kernel_m0 = None if initial_state is None else initial_state.to(torch.float32)
+    if kernel_m0 is not None and perturb_mass != 0.0 and norm == "global":
+        kernel_m0 = kernel_m0.clone()
+        kernel_m0[..., d_v] = kernel_m0[..., d_v] * (1.0 + perturb_mass)
     y, state, _schedule = _consumer_forward(
         v.to(torch.float32),
         tuple(t.to(torch.float32) for t in read_levels),
@@ -185,10 +200,12 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
         None if g_read is None else g_read.to(torch.float32),
         g_write.to(torch.float32),
         plan,
-        initial_state=None if initial_state is None else initial_state.to(torch.float32),
+        initial_state=kernel_m0,
         decay=decay,
         write_levels_stored=None if stored is None else tuple(t.to(torch.float32) for t in stored))
 
+    if return_reference:
+        return y, state, y_ref, state_ref
     if return_outputs:
         return y, state
     tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
@@ -1262,3 +1279,130 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
                         f"BT=32 reported MORE CTAs/SM than BT=16 at BC={BC} d_v={d_v} "
                         f"decay={decay} compact={compact}; the query is not reading the "
                         "instantiation it names")
+
+
+# ---------------------------------------------------------------------------
+# I6 -- THE MASS COLUMN'S OWN TOLERANCE GATE (THUNDER_RUN_SPEC.md §5, rung K5)
+# ---------------------------------------------------------------------------
+# K5 moves the mass column out of a fp32 SCALAR side path and into the
+# `(d_v + 1)`-th n-column of the readout / intra / fold GEMMs. Its three
+# multiplicands move fp32 -> bf16 OPERAND on the production arm:
+#
+#   term 1 (readout)  `sum_k R[t,k] * S[k][d_v]`   `S[·][d_v]` fp32 -> bf16 B
+#   term 2 (intra)    `sum_u G[t,u] * sw[u]`       `sw[u]`     fp32 -> bf16 B
+#   the fold          `sum_t W[t,i] * sw[t]`       `sw[t]`     fp32 -> bf16 B
+#
+# §5 requires this gate to be WRITTEN FIRST, before the kernel change, so that
+# the tolerance is a prediction rather than a description of whatever landed.
+#
+# **WHY THE EXISTING GLOBAL TESTS ARE NOT THIS GATE.** They compare the whole
+# state under ONE relative error normalized by `state_ref.abs().max()`, i.e. by
+# the LARGER of the value block and the mass column. The mass column's scale is
+# independent of the value block's -- it is an accumulated write mass, not a
+# value -- so wherever the mass is the SMALLER of the two, a mass defect is
+# divided by a scale it never had and the claim goes quiet. `mass_scale` below
+# drives exactly that regime, and the mass claim is normalized by the mass
+# column's OWN scale. That is the whole content of "gate the ratio readout".
+#
+# **NO NEW TOLERANCE IS INTRODUCED.** The gate runs at the file's existing two
+# numbers -- `RTOL` on the exactness arm, `BF16_RTOL` on the production arm --
+# because the spec's expectation is that the mass moves into the SAME precision
+# class as the numerator it is divided into. A mass column that needed a wider
+# number than the value columns would be the spec's stated contingency ("the
+# finding is: mass needs a tf32 n-tile"), and it would show up here as a
+# failure rather than as an edited constant.
+
+
+def _mass_errors(**kw):
+    """`(mass, value, ratio)` relative errors against the fp64 oracle.
+
+    Each is normalized by its OWN reference scale, which is the point: the mass
+    column, the value block and the ratio are three different quantities and a
+    shared normalizer makes the smallest of them untestable.
+    """
+    d_v = kw["d_v"]
+    y, state, y_ref, state_ref = _run_case(return_reference=True, **kw)
+    mass, mass_ref = state[..., d_v].double(), state_ref[..., d_v]
+    val, val_ref = state[..., :d_v].double(), state_ref[..., :d_v]
+
+    def err(a, b):
+        return float((a - b).abs().max()) / max(1e-30, float(b.abs().max()))
+
+    return err(mass, mass_ref), err(val, val_ref), err(y.double(), y_ref)
+
+
+#: The mass column carries no cancellation -- it is a sum of strictly positive
+#: deposits -- so its condition number is 1 and it is gated at the SAME numbers
+#: the value block is. `mass_scale` is the discriminating axis: `1e3` puts the
+#: carried mass far above the value block (term 1's read of `S[·][d_v]` dominates
+#: the denominator), `1e-3` far below it (the regime a whole-tensor relative
+#: error cannot see at all).
+@pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 8), 64), ((4, 4, 4), 16)])
+@pytest.mark.parametrize("BT", [16, 32])
+@pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
+@pytest.mark.parametrize("mass_scale", [1e3, 1e-3])
+def test_mass_column_matches_canonical_oracle(widths, BC, BT, mma_precision, mass_scale):
+    tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
+    e_mass, e_val, e_ratio = _mass_errors(
+        widths=widths, BC=BC, BT=BT, d_v=64, B=2, T=37, H=3, norm="global",
+        p_read=0.4, p_write=0.3, nonzero_m0=True, seed=90210,
+        mma_precision=mma_precision, mass_scale=mass_scale)
+    assert e_mass < tol, f"the state's MASS column disagrees with the oracle: {e_mass:.3e}"
+    assert e_val < tol, f"the state's VALUE block disagrees with the oracle: {e_val:.3e}"
+    assert e_ratio < tol, f"the RATIO readout disagrees with the oracle: {e_ratio:.3e}"
+
+
+#: The decay arm separately, because the mass column takes the SAME exit scale
+#: the value columns do (`M_exit = s0 * (s0 * M_entry + deposit)`) and K5 moves
+#: that epilogue from a scalar read-modify-write into the fold's D-fragment one.
+@pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 8), 64), ((4, 4, 4), 16)])
+@pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
+def test_mass_column_under_decay_matches_canonical_oracle(widths, BC, mma_precision):
+    device = "cuda"
+    gen = torch.Generator(device=device).manual_seed(77)
+    tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
+    e_mass, e_val, e_ratio = _mass_errors(
+        widths=widths, BC=BC, BT=32, d_v=64, B=2, T=37, H=3, norm="global",
+        p_read=0.4, p_write=0.3, nonzero_m0=True, seed=555,
+        decay_dials=_decay_dials(widths, 3, gen, device), mma_precision=mma_precision,
+        mass_scale=1e-3)
+    assert e_mass < tol, f"the decayed MASS column disagrees with the oracle: {e_mass:.3e}"
+    assert e_val < tol, f"the decayed VALUE block disagrees with the oracle: {e_val:.3e}"
+    assert e_ratio < tol, f"the decayed RATIO readout disagrees with the oracle: {e_ratio:.3e}"
+
+
+#: **THE GATE'S OWN DISCRIMINATING POWER, MEASURED RATHER THAN ASSUMED.** A
+#: tolerance gate that cannot fail is not a gate, and the failure mode this one
+#: exists to catch is a mass column that is quietly WRONG BY A RELATIVE AMOUNT
+#: -- which is exactly what an operand narrowing produces. So the mass is
+#: perturbed by a known relative `p` on the KERNEL side only (the oracle keeps
+#: the exact input) and both directions are required:
+#:   * at `p = 100 x tol` every mass claim must FAIL -- and the RATIO claim must
+#:     fail too, which is what makes this a gate on the ratio readout and not
+#:     merely on a state column;
+#:   * the VALUE block must stay CLEAN at that same `p`, which localizes the
+#:     injected defect to the mass and proves the three claims are independent
+#:     rather than three views of one number.
+@pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
+def test_mass_column_gate_is_discriminating(mma_precision):
+    tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
+    kw = dict(widths=(8, 8), BC=64, BT=16, d_v=64, B=2, T=37, H=3, norm="global",
+              p_read=1.0, p_write=1.0, nonzero_m0=True, seed=31337,
+              mma_precision=mma_precision, mass_scale=1e3)
+    clean_mass, clean_val, clean_ratio = _mass_errors(**kw)
+    assert clean_mass < tol and clean_val < tol and clean_ratio < tol, (
+        "the unperturbed control must pass, or the perturbed run proves nothing "
+        f"(mass {clean_mass:.3e}, value {clean_val:.3e}, ratio {clean_ratio:.3e})")
+
+    p = 100.0 * tol
+    bad_mass, bad_val, bad_ratio = _mass_errors(perturb_mass=p, **kw)
+    assert bad_mass > tol, (
+        f"a mass perturbed by {p:.1e} relative moved the mass claim only to "
+        f"{bad_mass:.3e}: the gate is blind to the defect it exists for")
+    assert bad_ratio > tol, (
+        f"a mass perturbed by {p:.1e} relative moved the RATIO claim only to "
+        f"{bad_ratio:.3e}: the denominator's error is cancelling, so this is not "
+        "a gate on the ratio readout")
+    assert bad_val < tol, (
+        f"injecting into the mass column moved the VALUE block to {bad_val:.3e}: "
+        "the three claims are not independent and the localization is unsound")

@@ -267,7 +267,7 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 #define ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, COMPACTV)          \
   {                                                                                    \
     constexpr size_t smem =                                                            \
-        consumer::consumer_smem_bytes<BTV, BCVAL, DVV, DVAL, PRECV, DECAYV, GLOBALV,         \
+        consumer::consumer_smem_bytes<BTV, BCVAL, DVV, DVAL, PRECV, PRECV, DECAYV, GLOBALV,  \
                                 COMPACTV>();                                           \
     auto kernel = consumer::consumer_forward_kernel<BTV, BCVAL, DVV, DVAL, PRECV, PRECV,  \
                                                  DECAYV, GLOBALV, COMPACTV>;           \
@@ -351,7 +351,8 @@ int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT
 #define ROLA_CONSUMER_OCC(BTV, DVV, BCV, DECAYV, COMPACTV)                                 \
   {                                                                                   \
     constexpr size_t smem =                                                           \
-        consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault, DECAYV,    \
+        consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault,             \
+                                consumer::kFoldPrecDefault, DECAYV,                    \
                                 true, COMPACTV>();                                    \
     auto kernel = consumer::consumer_forward_kernel<BTV, BCV, DVV, 2,                    \
                                                  consumer::kFoldPrecDefault,             \
@@ -399,7 +400,8 @@ int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t B
                                  int64_t DV) {
 #define ROLA_CONSUMER_SMEM(BTV, DVV, BCV, DECAYV, COMPACTV)                                \
   return static_cast<int64_t>(                                                        \
-      consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault, DECAYV, true,\
+      consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault,             \
+                                    consumer::kFoldPrecDefault, DECAYV, true,           \
                               COMPACTV>());
 #define ROLA_CONSUMER_SMEM_BC(BTV, DVV, BCV)                                               \
   {                                                                                   \
