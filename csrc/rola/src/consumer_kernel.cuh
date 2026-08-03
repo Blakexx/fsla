@@ -69,6 +69,18 @@
 #include <cuda/std/type_traits>
 #include <cuda_bf16.h>
 
+//: THE VENDORED CuTe PIN (`csrc/third_party/cutlass`, v3.5.1, closed-world rule 5).
+//: It is a CODEGEN INPUT, not a packaging one -- every line instantiated here is
+//: code `ptxas` assembles -- which is why `setup.py::_gate_vendored` hashes the
+//: subtree BEFORE the compile and `tools/ratify.py` carries the same include path.
+//: Used for exactly two things, and both of them are LAYOUT: `Vw`'s swizzled SMEM
+//: layout and the `ldmatrix` copy atom that fetches its B fragment. The `mma.sync`
+//: calls stay hand-rolled PTX; the correspondence between the two is
+//: `static_assert`ed against `MMA_Traits::BLayout` rather than commented.
+#include <cute/atom/copy_traits_sm75.hpp>
+#include <cute/atom/mma_traits_sm80.hpp>
+#include <cute/tensor.hpp>
+
 #include "arch_table.cuh"
 #include "intra_panel.cuh"
 #include "consumer.cuh"
@@ -447,6 +459,108 @@ constexpr bool banks_distinct_u16(int stride_g, int stride_r) {
 }
 
 //: ---------------------------------------------------------------------------
+//: `Vw`'s SMEM LAYOUT, OWNED BY CuTe (K4 site (a)).
+//:
+//: Both predicates above are HAND-ROLLED PROOFS ABOUT A PADDED PITCH, and K2's own
+//: entry is the argument against leaving them that way: the 32-bit predicate proves
+//: the wrong proposition about a 16-bit buffer in BOTH directions, which is a class
+//: of error an enumeration cannot warn you about -- you have to already suspect it.
+//: On the narrow arm `Vw` is therefore stored under a SWIZZLED layout the library
+//: states, `composition(Swizzle<B,3,3>, (BT,DV):(DV,1))`, and the pad DISAPPEARS:
+//: the swizzle decorrelates the banks by permuting 16-byte blocks WITHIN the tile
+//: instead of by making the tile bigger, so the buffer is exactly `BT * DV`
+//: elements. That is a FOOTPRINT change (`16 * BT` bytes per ring slot) as much as
+//: an addressing one -- see `vw_union_bytes`.
+//:
+//: `B` is chosen so the swizzle's XOR field covers the whole 128-byte bank cycle:
+//: a row is `DV` halves = `DV / 8` blocks of 16 B, and `B = log2(DV / 8)` capped at
+//: 3 (a 128 B row already spans all 32 banks). `M = 3` keeps the 16-byte `ldmatrix`
+//: row intact; `S = 3` puts the XOR source at the row index's low bits.
+//:
+//: NOTHING HERE IS ASSERTED -- the three properties the layout has to have are
+//: `static_assert`ed by ENUMERATING THE LIBRARY'S OWN LAYOUT below, which is what
+//: makes this more verifiable than the pitch it replaces rather than merely
+//: shorter.
+template <int DV>
+constexpr int vw_swizzle_b() {
+  return DV >= 64 ? 3 : (DV >= 32 ? 2 : 1);
+}
+
+template <int BT, int DV>
+using VwLayout = decltype(cute::composition(
+    cute::Swizzle<vw_swizzle_b<DV>(), 3, 3>{},
+    cute::Layout<cute::Shape<cute::Int<BT>, cute::Int<DV>>,
+                 cute::Stride<cute::Int<DV>, cute::_1>>{}));
+
+//: PROOF 1 -- the layout is a BIJECTION onto `[0, BT * DV)`. This is what licenses
+//: the reservation `BT * DV * sizeof(bf16)`: a swizzle that overflowed its tile
+//: would alias the NEXT buffer, and one that under-covered would waste the bytes
+//: the pad was removed to save.
+template <int BT, int DV>
+constexpr bool vw_layout_is_bijection() {
+  bool seen[BT * DV] = {};
+  for (int t = 0; t < BT; ++t) {
+    for (int c = 0; c < DV; ++c) {
+      const int o = VwLayout<BT, DV>{}(t, c);
+      if (o < 0 || o >= BT * DV || seen[o]) return false;
+      seen[o] = true;
+    }
+  }
+  return true;
+}
+
+//: PROOF 2 -- the `ldmatrix.x2.trans` FETCH is conflict-free. The instruction is
+//: serviced 8 lanes at a time and each lane reads a 16-byte row (4 consecutive
+//: banks), so the phase is conflict-free exactly when its 8 rows cover all 32
+//: banks. This REPLACES `banks_distinct_u16(1, 2 * VWP)` for `Vw` -- it is the same
+//: question asked of the access the kernel actually issues, and it also checks the
+//: 16-byte ALIGNMENT `ldmatrix` requires, which no pitch predicate could see.
+template <int BT, int DV>
+constexpr bool vw_ldsm_banks_ok() {
+  for (int k0 = 0; k0 + 16 <= BT; k0 += 16) {
+    for (int n0 = 0; n0 + 8 <= DV; n0 += 8) {
+      for (int phase = 0; phase < 2; ++phase) {
+        unsigned banks = 0;
+        for (int l = 0; l < 8; ++l) {
+          const size_t byte =
+              static_cast<size_t>(VwLayout<BT, DV>{}(k0 + phase * 8 + l, n0)) * 2;
+          if (byte % 16 != 0) return false;
+          for (int w = 0; w < 4; ++w) {
+            const unsigned b = static_cast<unsigned>((byte / 4 + w) % 32);
+            if (banks & (1u << b)) return false;
+            banks |= 1u << b;
+          }
+        }
+        if (banks != 0xffffffffu) return false;
+      }
+    }
+  }
+  return true;
+}
+
+//: PROOF 3 -- the STAGING STORE stays conflict-free. 32 consecutive lanes write 32
+//: consecutive `(t, ch)` positions, 2 bytes each, so the same-word rule
+//: `banks_distinct_u16` established applies -- asked here of the swizzled addresses
+//: rather than of a stride.
+template <int BT, int DV>
+constexpr bool vw_store_banks_ok() {
+  for (int base = 0; base + 32 <= BT * DV; base += 32) {
+    int word[32] = {};
+    int bank[32] = {};
+    for (int l = 0; l < 32; ++l) {
+      const int idx = base + l;
+      const int e = VwLayout<BT, DV>{}(idx / DV, idx % DV);
+      word[l] = e >> 1;
+      bank[l] = (e >> 1) % 32;
+    }
+    for (int i = 0; i < 32; ++i)
+      for (int k = i + 1; k < 32; ++k)
+        if (bank[i] == bank[k] && word[i] != word[k]) return false;
+  }
+  return true;
+}
+
+//: ---------------------------------------------------------------------------
 //: THE STAGED-OPERAND STORAGE FORMAT (K2 / r1 rung 3).
 //:
 //: `WT` (the write coefficients) and `Vw` (the scale-folded value tile) are the two
@@ -483,6 +597,25 @@ constexpr bool stage_is_narrow() {
 template <int BT, MmaPrec READ_PREC, MmaPrec FOLD_PREC>
 constexpr int wt_pitch() {
   return stage_is_narrow<READ_PREC, FOLD_PREC>() ? BT + 8 : BT + 4;
+}
+
+//: `Vw`'s ELEMENT COUNT and its ADDRESS FUNCTION, which are one decision taken
+//: twice: the narrow arm stores it under `VwLayout` and pays NO pad, the `tf32x3`
+//: arm keeps the padded row-major `[BT][DV + 8]` it always had. The 16-bit
+//: `ldmatrix` atoms do not apply to an fp32 buffer at all, so this is the SAME
+//: `kNarrowStage` storage-format split K2 introduced and not a new axis.
+template <int BT, int DV, bool NARROW>
+constexpr int vw_elems() {
+  return NARROW ? BT * DV : BT * (DV + 8);
+}
+
+template <int BT, int DV, bool NARROW>
+__host__ __device__ __forceinline__ constexpr int vw_index(int t, int ch) {
+  if constexpr (NARROW) {
+    return VwLayout<BT, DV>{}(t, ch);
+  } else {
+    return t * (DV + 8) + ch;
+  }
 }
 
 constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
@@ -600,11 +733,17 @@ constexpr int ctl_words(int BC) { return kCtlFold0 + BC / kMmaKQuantum; }
 //: against `BT * (DV + 8) * 2`), so **narrowing `Vw` frees no shared memory at all
 //: there** and the decay arm's whole K2 saving is `WT`'s. `Vw` is still ADDRESSED at
 //: its own pitch `DV + 8`; only the RESERVATION is the max.
+//: K4 SITE (a) MOVED THE FIRST TERM, AND IT IS A FOOTPRINT RUNG BECAUSE OF IT: the
+//: swizzled `Vw` carries no pad, so the narrow tenant is `BT * DV` elements rather
+//: than `BT * (DV + 8)` -- `16 * BT` bytes per ring slot. On the DECAY arm this
+//: frees NOTHING, for the reason the paragraph above already gives: `clk` is the
+//: larger tenant there at every shipped shape, and a `max` does not move when its
+//: smaller argument shrinks.
 template <int BT, int BC, int DV, bool DECAY, MmaPrec READ_PREC, MmaPrec FOLD_PREC>
 constexpr size_t vw_union_bytes() {
-  const size_t vw =
-      static_cast<size_t>(BT) * (DV + 8) *
-      (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16) : sizeof(float));
+  constexpr bool kNarrow = stage_is_narrow<READ_PREC, FOLD_PREC>();
+  const size_t vw = static_cast<size_t>(vw_elems<BT, DV, kNarrow>()) *
+                    (kNarrow ? sizeof(__nv_bfloat16) : sizeof(float));
   const size_t clk =
       DECAY ? static_cast<size_t>(BT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
   return align4(vw > clk ? vw : clk);
@@ -862,6 +1001,108 @@ __device__ __forceinline__ void mma_tile(
   }
 }
 
+//: THE SAME `[16 x 8]` TILE WITH `Vw` AS B, FETCHED BY ONE `ldmatrix` (K4 site (a)).
+//:
+//: `Vw` is B for BOTH of the tile's `Vw` consumers -- GEMM 3 (the intra term,
+//: `y += G . Vw`) and GEMM 4 (the fold, `S += W^T . Vw`) -- and both want the same
+//: 16(k) x 8(n) block per k-step. The generic path above builds that block with
+//: FOUR scalar SMEM loads, four `mma_src` widenings, four clamps and two packs PER
+//: LANE PER K-STEP; `ldmatrix.x2.trans` is ONE instruction that delivers the same
+//: two registers, and the `.trans` is exactly right because `Vw` is stored `k`-major
+//: (`n` contiguous) while the fragment wants `k`-adjacent pairs at a fixed `n`.
+//:
+//: **BIT-IDENTITY, WHICH IS WHY THIS IS A LAYOUT CHANGE AND NOT A VALUE CHANGE.**
+//: `ldmatrix` delivers the STORED 16-bit patterns. The generic path delivers
+//: `pack_bf16x2(clamp_bf16_finite(__bfloat162float(x)))`, and those agree bit for
+//: bit iff `x` is a finite bf16 -- which K2 already guarantees AT THE STORE:
+//: `stage_put(__nv_bfloat16&, float)` applies §12 rule 3's clamp "where the fp32
+//: value last exists". A finite bf16 widens to fp32 exactly, passes the clamp
+//: unchanged and rounds back to itself, so the composition is the identity and no
+//: summation is reordered -- the k-loop, its extent and its order are the loop
+//: above, unrolled the same way.
+//:
+//: THE FRAGMENT CORRESPONDENCE IS CHECKED, NOT ASSERTED. `SM75_U16x4_LDSM_T`'s
+//: destination map and `SM80_16x8x16_F32BF16BF16F32_TN`'s B map are both CuTe
+//: objects; the `static_assert`s below enumerate all 128 `(thr, val)` slots of each
+//: and require both to equal this file's own `(k = 2r + v, n = g)` -- so a library
+//: bump that moved either map would fail the build rather than the oracle.
+//: `lane & 15` is the atom's own source map (`Copy_Traits::SrcLayout` gives the
+//: first 16 lanes an address each, at stride one row, and aliases lanes 16-31 onto
+//: them), which the third `static_assert` states.
+template <int BT, int DV>
+__device__ __forceinline__ void vw_frag_b(const __nv_bfloat16* __restrict__ Vw, int k0,
+                                          int n0, int lane, unsigned& b0, unsigned& b1) {
+  const __nv_bfloat16* src = Vw + vw_index<BT, DV, true>(k0 + (lane & 15), n0);
+  cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
+}
+
+//: `d += A . Vw` for a generic (indexed) A and `Vw` as B. NARROW ARM ONLY: the
+//: 16-bit `ldmatrix` atoms have no fp32 form, and `kNarrowStage` is precisely the
+//: arm on which `Vw` is 16-bit. `K` is `BT` at both call sites and the trip count
+//: stays compile-time, exactly as in `mma_tile`.
+template <typename TA, int BT, int DV>
+__device__ __forceinline__ void mma_tile_vwB(
+    const TA* __restrict__ A, int lda, const __nv_bfloat16* __restrict__ Vw,
+    int m0, int n0, int lane, float& d0, float& d1, float& d2, float& d3) {
+  const int g = lane >> 2;
+  const int r = lane & 3;
+  const int ra = m0 + g;
+  auto a_at = [&](int m, int k) { return mma_src(A[m * lda + k]); };
+  auto cl = clamp_bf16_finite;
+#pragma unroll
+  for (int k0 = 0; k0 < BT; k0 += 16) {
+    const int ca = k0 + r * 2;
+    const unsigned a0 = pack_bf16x2(cl(a_at(ra, ca)), cl(a_at(ra, ca + 1)));
+    const unsigned a1 = pack_bf16x2(cl(a_at(ra + 8, ca)), cl(a_at(ra + 8, ca + 1)));
+    const unsigned a2 = pack_bf16x2(cl(a_at(ra, ca + 8)), cl(a_at(ra, ca + 9)));
+    const unsigned a3 = pack_bf16x2(cl(a_at(ra + 8, ca + 8)), cl(a_at(ra + 8, ca + 9)));
+    unsigned b0, b1;
+    vw_frag_b<BT, DV>(Vw, k0, n0, lane, b0, b1);
+    mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
+  }
+}
+
+//: THE TWO LIBRARY MAPS THIS FILE DEPENDS ON, ENUMERATED AT COMPILE TIME.
+//: `MMA_Traits::BLayout` is `(thr, val) -> n + 8k` over the atom's `[8 n x 16 k]`
+//: B tile; `Copy_Traits<SM75_U16x4_LDSM_T>::DstLayout` is `(thr, val) -> BIT` over
+//: the same 16x8 half tile. Both must equal `k = 2r + (v & 1) + 8 * (v >> 1)`,
+//: `n = g` -- which is `mma_tile`'s `b0`/`b1`, letter for letter.
+constexpr bool mma_b_map_matches() {
+  using B = typename cute::MMA_Traits<cute::SM80_16x8x16_F32BF16BF16F32_TN>::BLayout;
+  for (int lane = 0; lane < 32; ++lane) {
+    for (int v = 0; v < 4; ++v) {
+      const int off = B{}(lane, v);
+      if (off % 8 != (lane >> 2)) return false;                        // n = g
+      if (off / 8 != 2 * (lane & 3) + (v & 1) + 8 * (v >> 1)) return false;
+    }
+  }
+  return true;
+}
+
+constexpr bool ldsm_t_dst_map_matches() {
+  using Dst = typename cute::Copy_Traits<cute::SM75_U16x4_LDSM_T>::DstLayout;
+  for (int lane = 0; lane < 32; ++lane) {
+    for (int v = 0; v < 4; ++v) {
+      const int e = Dst{}(lane, v * 16) / 16;                          // bit -> half
+      if (e % 8 != (lane >> 2)) return false;                          // n = g
+      if (e / 8 != 2 * (lane & 3) + (v & 1) + 8 * (v >> 1)) return false;
+    }
+  }
+  return true;
+}
+
+constexpr bool ldsm_t_src_map_matches() {
+  using Src = typename cute::Copy_Traits<cute::SM75_U16x4_LDSM_T>::SrcLayout;
+  for (int lane = 0; lane < 32; ++lane) {
+    if (Src{}(lane, 0) / 128 != (lane & 15)) return false;             // row = lane & 15
+  }
+  return true;
+}
+
+static_assert(mma_b_map_matches(), "CuTe's B fragment map is not mma_tile's");
+static_assert(ldsm_t_dst_map_matches(), "ldmatrix.x2.trans does not deliver b0/b1");
+static_assert(ldsm_t_src_map_matches(), "ldmatrix.x2.trans row addresses moved");
+
 //: The `[16 x 8]` D/C fragment's element map, shared by every writeback below.
 //:   `d0, d1 -> (row g,     col 2r, 2r+1)`
 //:   `d2, d3 -> (row g + 8, col 2r, 2r+1)`
@@ -1095,7 +1336,9 @@ void consumer_forward_kernel(ConsumerParams p) {
   //   S      [BC][SP]  fp32   16640 B   the STATE, resident for the owner's whole run
   //   WT     [BC][BTP] fp32    5120 B   write coefficients, LEAF-MAJOR (RULING 1:
   //                                     fp32, because the FOLD reads it at tf32x3)
-  //   Vw     [BT][VWP] fp32    4608 B   the scale-folded value tile (likewise)
+  //   Vw     [BT][VWP] fp32    4608 B   the scale-folded value tile (likewise; on
+  //                                     the narrow arm it is SWIZZLED and UNPADDED,
+  //                                     `BT * DV` bf16 = 2048 B -- K4 site (a))
   //   sr,sw  [BT]      fp32     128 B   the §3 step-3 row scales
   //   den    [BT]      fp32      64 B
   //   cand   2*kMaxWords u32   1024 B
@@ -1135,7 +1378,11 @@ void consumer_forward_kernel(ConsumerParams p) {
   constexpr bool kNarrowStage = stage_is_narrow<READ_PREC, FOLD_PREC>();
   using StageT = typename cuda::std::conditional<kNarrowStage, __nv_bfloat16, float>::type;
   constexpr int BTP = wt_pitch<BT, READ_PREC, FOLD_PREC>();  // WT, LEAF-MAJOR
-  constexpr int VWP = DV + 8;   // the value tile -- `Vw`'s OWN pitch, format-invariant
+  //: `Vw`'s ADDRESSING IS NO LONGER A PITCH ON THE NARROW ARM -- it is `VwLayout`,
+  //: a CuTe `Swizzle o Layout` with no pad at all (K4 site (a)). `VWP` survives as
+  //: the `tf32x3` arm's row-major pitch and is named here only where that arm uses
+  //: it; every access goes through `vw_index`, so the two arms differ in ONE place.
+  constexpr int VWP = DV + 8;   // the `tf32x3` arm's row pitch
   // The effective-score block's STORAGE TYPE FOLLOWS `READ_PREC`, and that is a
   // correctness requirement rather than a nicety: `Gm` is an INTERMEDIATE of the `y`
   // path (`G = R.W^T`, then `y += G.Vw`), so storing it bf16 on the tf32x3 arm
@@ -1181,6 +1428,16 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: byte arithmetic: `Vw`'s element size follows `StageT`.
   constexpr size_t kVwSlotBytes = vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
   constexpr int kVwSlot = static_cast<int>(kVwSlotBytes / sizeof(StageT));
+  //: `ldmatrix` TAKES A 16-BYTE-ALIGNED ROW ADDRESS, so every slot base must be
+  //: 16-byte aligned -- a requirement the `align4` carve does NOT imply and which
+  //: `vw_ldsm_banks_ok` can only check RELATIVE to the base. Both terms are stated
+  //: rather than trusted: the offset of slot 0 (CUDA aligns the dynamic shared
+  //: window itself to 16 B) and the slot stride.
+  constexpr size_t kVwOffsetBytes =
+      align4(static_cast<size_t>(BC) * SP * sizeof(float)) +
+      align4(static_cast<size_t>(wt_window_rows(BC, DECAY)) * BTP * sizeof(StageT));
+  static_assert(!kNarrowStage || (kVwOffsetBytes % 16 == 0 && kVwSlotBytes % 16 == 0),
+                "Vw must be 16-byte aligned at every ring slot for ldmatrix");
   StageT* Vw_r0 = reinterpret_cast<StageT*>(carve);
   //: `clk` ALIASES `Vw`'s bytes -- see `vw_union_bytes`. Declared at the carve rather
   //: than 80 lines below as `clk = Vw`, because with two element types that
@@ -1292,8 +1549,21 @@ void consumer_forward_kernel(ConsumerParams p) {
                 "Gm: GEMM3 A operand conflicts");
   static_assert(kNarrowStage ? banks_distinct_u16(BTP, 2) : banks_distinct(BTP, 1),
                 "WT: GEMM4 A operand conflicts");
-  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * VWP) : banks_distinct(1, VWP),
-                "Vw: GEMM4 B operand conflicts");
+  //: `Vw` ON THE NARROW ARM IS PROVED BY THE LAYOUT, NOT BY A PITCH (K4 site (a)),
+  //: and the three proofs are STRICTLY MORE than the one they replace: the pitch
+  //: predicate asked whether 32 lanes striding by `2 * VWP` decorrelate, while these
+  //: enumerate CuTe's own layout at the addresses the two accesses actually issue
+  //: -- the `ldmatrix` phase (which also has a 16-byte ALIGNMENT requirement no
+  //: pitch predicate can see) and the staging store -- and additionally require the
+  //: layout to be a bijection onto the bytes the footprint reserves for it.
+  static_assert(!kNarrowStage || vw_layout_is_bijection<BT, DV>(),
+                "Vw: the swizzled layout does not tile [0, BT*DV)");
+  static_assert(!kNarrowStage || vw_ldsm_banks_ok<BT, DV>(),
+                "Vw: the ldmatrix.x2.trans fetch conflicts or is misaligned");
+  static_assert(!kNarrowStage || vw_store_banks_ok<BT, DV>(),
+                "Vw: the staging store conflicts");
+  static_assert(kNarrowStage || banks_distinct(1, VWP),
+                "Vw: GEMM4 B operand conflicts (tf32x3 arm)");
   // THE ONE OPERAND THAT IS NOT CONFLICT-FREE, AND THE TRADE IS EXPLICIT: `Vw` is
   // read by the fold under the tf32 map (`k` steps by 1) and by the intra GEMM under
   // the bf16 map (`k` steps by 2), and NO single pitch satisfies both -- the two
@@ -1306,10 +1576,13 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: rather than a coincidence: once the operands are stored in the MMA's own format
   //: the FOLD reads `Vw` under the bf16 map too (`FOLD_PREC` is bf16 whenever
   //: `kNarrowStage`), so the fold and the intra term stop wanting different pitches
-  //: and ONE pitch is conflict-free for both. The `static_assert` states which world
-  //: it is in rather than asserting the conflict unconditionally.
-  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * VWP)
-                             : !banks_distinct(1, 2 * VWP),
+  //: and ONE pitch is conflict-free for both. **K4 site (a) then made the point
+  //: moot on that arm rather than merely favourable**: both consumers now issue the
+  //: SAME `ldmatrix.x2.trans` against the SAME swizzled layout, so there is one
+  //: access pattern where there were two, and `vw_ldsm_banks_ok` above proves it
+  //: for both. The `static_assert` below is the `tf32x3` arm's alone -- that is the
+  //: only arm where the documented 2-way conflict still exists.
+  static_assert(kNarrowStage || !banks_distinct(1, 2 * VWP),
                 "Vw/GEMM3: update this note if it changes");
 
   // ---- THE `WT` WINDOW, RESOLVED (K3a; §8 placeholder `C_WT_WINDOW`) ---------
@@ -2078,7 +2351,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int token = t0 + t;
         const float vv =
             (token < p.T) ? p.v[(static_cast<int64_t>(bh) * p.T + token) * DV + ch] : 0.0f;
-        stage_put(Vw[t * VWP + ch], sw[t] * vv);
+        stage_put(Vw[vw_index<BT, DV, kNarrowStage>(t, ch)], sw[t] * vv);
       }
     }
   };
@@ -2569,8 +2842,16 @@ void consumer_forward_kernel(ConsumerParams p) {
             const int nt = c - mr * NT_DV;
             float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
             // `WT`'s `m` is window-local; `S`'s row `r0` below is not.
-            mma_tile<StageT, false, StageT, false, FOLD_PREC>(
-                WT, BTP, Vw, VWP, BT, mr * 16, nt * 8, lane, d0, d1, d2, d3);
+            //: `Vw` IS FETCHED BY `ldmatrix` ON THE NARROW ARM (K4 site (a)); the
+            //: `tf32x3` arm keeps the generic indexed B, which is the same split
+            //: `StageT` itself is.
+            if constexpr (kNarrowStage) {
+              mma_tile_vwB<StageT, BT, DV>(WT, BTP, Vw, mr * 16, nt * 8, lane,
+                                           d0, d1, d2, d3);
+            } else {
+              mma_tile<StageT, false, StageT, false, FOLD_PREC>(
+                  WT, BTP, Vw, VWP, BT, mr * 16, nt * 8, lane, d0, d1, d2, d3);
+            }
             const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
             // ---- DECAY's EXIT SCALE, RIDING THE FOLD'S EXISTING READ-MODIFY-WRITE
             // `M_exit = s0 * (s0 * M_entry + Sum_j W~[j] v[j])`, and the inner `s0`
@@ -2705,11 +2986,19 @@ void consumer_forward_kernel(ConsumerParams p) {
     // what keeps the y-tile in registers rather than in shared memory. It runs
     // POST-LOOP because it needs the completed Gram, which is what keeps `y` live
     // across phase B (the register cost the `ptxas` probe gates).
+    //: `Vw` IS FETCHED BY `ldmatrix` ON THE NARROW ARM (K4 site (a)) here too --
+    //: the SAME atom against the SAME layout the fold uses, which is what collapses
+    //: the two access patterns the pitch had to choose between into one.
     if constexpr (NM == 1) {
       if (mixed && warp < NT_DV) {
-        mma_tile<GmT, false, StageT, false, READ_PREC>(
-            Gm, GMP, Vw, VWP, BT, 0, warp * 8, lane,
-            y[0][0], y[0][1], y[0][2], y[0][3]);
+        if constexpr (kNarrowStage) {
+          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, 0, warp * 8, lane,
+                                    y[0][0], y[0][1], y[0][2], y[0][3]);
+        } else {
+          mma_tile<GmT, false, StageT, false, READ_PREC>(
+              Gm, GMP, Vw, VWP, BT, 0, warp * 8, lane,
+              y[0][0], y[0][1], y[0][2], y[0][3]);
+        }
       }
     } else if (mixed) {
 #pragma unroll
@@ -2717,9 +3006,14 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int wt = warp + q * kWarps;
         if (wt >= NM * NT_DV) break;
         const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
-        mma_tile<GmT, false, StageT, false, READ_PREC>(
-            Gm, GMP, Vw, VWP, BT, mb * 16, nt * 8, lane,
-            y[q][0], y[q][1], y[q][2], y[q][3]);
+        if constexpr (kNarrowStage) {
+          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, mb * 16, nt * 8, lane,
+                                    y[q][0], y[q][1], y[q][2], y[q][3]);
+        } else {
+          mma_tile<GmT, false, StageT, false, READ_PREC>(
+              Gm, GMP, Vw, VWP, BT, mb * 16, nt * 8, lane,
+              y[q][0], y[q][1], y[q][2], y[q][3]);
+        }
       }
     }
 
