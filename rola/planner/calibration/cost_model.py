@@ -4,7 +4,7 @@ Everything here used to run inside ``rola.planner.schedule`` on every forward. U
 the end-state ruling it is CALIBRATION and AUDIT machinery, not a runtime decider, so
 it lives with the bench:
 
-* the exact per-``(owner, tile)`` census (:mod:`planner_calibration.census`)
+* the exact per-``(owner, tile)`` census (:mod:`rola.planner.calibration.census`)
   and the ``TileUnionStats`` it produces;
 * ``plan_cost_per_token`` and its six measured constants, which are the FIT whose
   compiled output ships as ``rola.planner.select``'s rule table;
@@ -43,7 +43,7 @@ from math import prod
 
 import torch
 
-from planner_calibration.census import resolve_census, tile_union_census
+from rola.planner.calibration.census import resolve_census, tile_union_census
 from rola.planner.feeder import FeederFlags, compact_is_structurally_inert
 from rola.planner.schedule import (
     _RING_DEPTHS,

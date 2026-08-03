@@ -25,8 +25,10 @@ from math import prod
 
 import pytest
 import torch
-from planner_calibration.census import resolve_census, summary_fractions, tile_union_census
-from planner_calibration.cost_model import (
+from torch.utils._python_dispatch import TorchDispatchMode
+
+from rola.planner.calibration.census import resolve_census, summary_fractions, tile_union_census
+from rola.planner.calibration.cost_model import (
     _STATS_OWNER_CHUNK_ELEMS,
     TileUnionStats,
     _tile_union_stats_multi,
@@ -38,8 +40,6 @@ from planner_calibration.cost_model import (
     select_plan_axes,
     tile_union_stats,
 )
-from torch.utils._python_dispatch import TorchDispatchMode
-
 from rola.planner.feeder import FeederFlags
 from rola.planner.schedule import (
     _SUPPORTED_BT,
@@ -999,7 +999,7 @@ def test_the_residual_intra_only_compact_saving_can_never_pay_at_any_instantiati
     far enough to make one reachable, this fails loudly instead of the exclusion
     silently becoming an approximation.
     """
-    from planner_calibration.cost_model import (
+    from rola.planner.calibration.cost_model import (
         GATHER_CANDIDATE_FIXED_WORK,
         GATHER_CANDIDATE_QUANTUM_WORK,
         INTRA_GRAM_KSTEP_WORK,
@@ -1985,7 +1985,7 @@ def test_the_support_counted_statistics_equal_the_enumerated_reference(widths, s
     cell whether it is live and ORs the answers; the production pass packs the tile's
     tokens into the BITS of one ``int32`` per ``(level, digit)``, ANDs those words
     across levels by broadcast, and reads both counts off bit tests
-    (:mod:`planner_calibration.census`) -- then counts candidacy in closed form from the tile
+    (:mod:`rola.planner.calibration.census`) -- then counts candidacy in closed form from the tile
     bitmaps' popcounts and asserts ``sum_K_candidate == sum_K``. So this is the
     increment's exactness gate, not a self-consistency check -- and every field is an
     exact int64 ratio, which is why it is compared with ``==`` rather than a
@@ -2329,7 +2329,7 @@ def test_the_bit_word_statistics_are_invariant_to_the_chunk_budget(monkeypatch):
     for BC in _admissible_bcs(widths):
         whole = _tile_union_stats_multi(views, topology, BC, (16, 32))
         with monkeypatch.context() as patch:
-            patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", 1)
+            patch.setattr("rola.planner.calibration.census._CENSUS_CELL_CHUNK", 1)
             split = _tile_union_stats_multi(views, topology, BC, (16, 32))
         assert whole == split, f"BC={BC}: chunking moved the statistics"
 
@@ -2368,7 +2368,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
     leaf_plane = B * H * ((T + 15) // 16) * N          # the finest candidate's rows
     squeezed = _AllocationGuard(leaf_plane // 4)
     with monkeypatch.context() as patch:
-        patch.setattr("planner_calibration.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
+        patch.setattr("rola.planner.calibration.census._CENSUS_CELL_CHUNK", leaf_plane // 8)
         with squeezed:
             _tile_union_stats_multi(views, topology, BC, (16, 32))
     assert not squeezed.violations, (
@@ -2385,7 +2385,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
 
 # ---------------------------------------------------------------------------
 # 14b. The bit-word census as its own unit (fix brief #2, 2026-08-01). These gate
-#      `planner_calibration.census` DIRECTLY rather than through `select_plan`, because
+#      `rola.planner.calibration.census` DIRECTLY rather than through `select_plan`, because
 #      §2.7's end-state ruling relocates it to the offline bench and its contract
 #      has to survive that move.
 # ---------------------------------------------------------------------------
@@ -2584,7 +2584,7 @@ def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(mo
     # whole owner axis is built in one call) must make the guard fire at this
     # fixture -- otherwise the assertion above would be vacuous.
     monkeypatch.setattr(
-        "planner_calibration.cost_model._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
+        "rola.planner.calibration.cost_model._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
     mutant_guard = _AllocationGuard(bound)
     with mutant_guard:
         _tile_union_stats_multi_enumerated(views, topology, BC, (16, 32))
@@ -2908,7 +2908,7 @@ _SELECTOR_DISAGREEMENTS = (
 
 
 def _audit_rows(breakeven):
-    from planner_calibration.auditor import audit_cell, recorded_stats
+    from rola.planner.calibration.auditor import audit_cell, recorded_stats
 
     rows = []
     for (cell, decay) in sorted(_CALIBRATION_ARGMIN):
@@ -2940,7 +2940,7 @@ def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
 
     Without the second arm the first would be indistinguishable from a broken selector.
     """
-    from planner_calibration.auditor import ledger
+    from rola.planner.calibration.auditor import ledger
 
     shipped = ledger(_audit_rows(pack_breakeven))
     assert shipped == _SELECTOR_DISAGREEMENTS, (
@@ -2973,7 +2973,7 @@ def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
     probe = (
         "import sys, rola;"
         "from rola.planner.schedule import select_plan, plan_and_schedule, TileUnionStats;"
-        "leaked = [m for m in sys.modules if 'planner_calibration' in m];"
+        "leaked = [m for m in sys.modules if 'calibration' in m];"
         "print('LEAKED' if leaked else 'CLEAN')")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                          cwd=str(pathlib.Path(__file__).resolve().parents[2]))
@@ -2984,12 +2984,79 @@ def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
         f"torch.compile/inductor runtime dependency. stdout={out.stdout!r}")
 
     # ...and the proxy really dispatches, rather than being a decorative stub.
-    from planner_calibration.cost_model import plan_waves as real
-
     from rola.planner import schedule
+    from rola.planner.calibration.cost_model import plan_waves as real
     assert schedule.plan_waves(100, 2, 10) == real(100, 2, 10)
     with pytest.raises(AttributeError):
         _ = schedule.this_name_never_existed
+
+
+def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
+    """The release blocker this gate exists to close, gated FOREVER.
+
+    **THE DEFECT.** `planner_calibration` lived under `benchmarks/`, and
+    `rola.planner.schedule` reached it by inserting `benchmarks/` onto `sys.path`
+    RELATIVE TO ITS OWN FILE. That resolves from a source checkout and from nowhere
+    else: `setup.py` packages `find_packages(include=["rola", "rola.*"])`, so an
+    installed wheel has no `benchmarks/` sibling. Measured in the merged tree, a CUDA
+    prefill loaded `planner_calibration`, `planner_calibration.census` and
+    `planner_calibration.cost_model` on the HOT PATH -- so every CUDA prefill from an
+    installed wheel raised `ModuleNotFoundError`. Two things fixed it and this gate
+    covers both: the layer cut-over removed the runtime edge (the prefill path is now
+    `produce_routing -> summarize_routing -> select_config -> Plan -> build_schedule`,
+    none of which touches calibration), and the package moved into `rola/`.
+
+    **WHY A SUBPROCESS OVER A SYNTHESIZED LAYOUT.** `tests/conftest.py` puts
+    `benchmarks/` on `sys.path` for the bench packages, so an in-process import proves
+    nothing about a wheel. This builds the INSTALLED layout -- a directory whose only
+    entry is the `rola` package -- runs a fresh interpreter with exactly that on the
+    path, and imports the prefill path there. A regression re-introducing a
+    `benchmarks/` reach fails here with the import error itself.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory() as tmp:
+        site = pathlib.Path(tmp)
+        # The wheel's shape: `rola/` and nothing beside it. A symlink rather than a
+        # copy so the built extension is the one under test and not a stale duplicate.
+        (site / "rola").symlink_to(root / "rola", target_is_directory=True)
+        assert not (site / "benchmarks").exists()
+
+        probe = (
+            "import sys, pathlib;"
+            # Everything the CUDA prefill path resolves, imported by name.
+            "import rola;"
+            "from rola.layers.rola import RoLA;"
+            "from rola.planner.select import select_config_with_evidence, HardwareFacts;"
+            "from rola.routing.summaries import summarize_routing;"
+            "from rola.planner.schedule import Plan, build_schedule, routing_views,"
+            " owner_geometry, consumer_occupancy;"
+            # ...and the relocated names, which must ALSO resolve here now: they are
+            # documented public API and used to raise ModuleNotFoundError off a wheel.
+            "from rola.planner.schedule import plan_and_schedule;"
+            "import rola.planner.calibration.cost_model as cm;"
+            "assert pathlib.Path(cm.__file__).is_relative_to(pathlib.Path(rola.__file__).parent);"
+            # Nothing may have come from a `benchmarks/` tree.
+            "bad = [m.__name__ for m in list(sys.modules.values())"
+            " if getattr(m, '__file__', None) and 'benchmarks' in str(m.__file__)];"
+            "print('BAD' + repr(bad) if bad else 'CLEAN')")
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(site)
+        # `-P` (3.11+) keeps the script's directory off `sys.path`, so the checkout
+        # cannot leak in through the cwd.
+        out = subprocess.run([sys.executable, "-P", "-c", probe],
+                             capture_output=True, text=True, cwd=tmp, env=env)
+
+    assert out.returncode == 0, (
+        "the prefill path does not import from the installed package layout -- this is "
+        f"the ModuleNotFoundError class this gate exists to close.\n{out.stderr}")
+    assert out.stdout.strip().endswith("CLEAN"), (
+        f"a module resolved out of `benchmarks/` under the installed layout: {out.stdout!r}")
 
 
 # ---------------------------------------------------------------------------

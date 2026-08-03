@@ -35,16 +35,16 @@ import json
 
 import torch
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `benchmarks/planner_calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from planner_calibration.cost_model import select_plan
-
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
 from rola.ops.consumer import _consumer_forward
+
+# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
+# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
+# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
+# proxies still resolve these names, but importing them from their real home is what
+# keeps `import rola` free of the calibration package's inductor edge.
+from rola.planner.calibration.cost_model import select_plan
 from rola.planner.schedule import Plan, build_clock_stream, build_schedule
 from rola.routing.producer import produce_routing
 
@@ -173,7 +173,7 @@ def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
     benchmark prints and the number the plan-time compact/`BT` selection prices
     from are one computation, not two that agree today.
     """
-    from planner_calibration.cost_model import tile_union_stats  # G16
+    from rola.planner.calibration.cost_model import tile_union_stats  # G16
 
     stats = tile_union_stats(read_levels, write_levels, plan.topology, plan.BC, plan.BT)
     return {

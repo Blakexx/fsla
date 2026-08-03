@@ -40,6 +40,8 @@ import torch
 import torch.utils.checkpoint as torch_checkpoint
 
 from rola.layers.rola import LevelRoutingConfig, RoLA
+from rola.planner.schedule import _SUPPORTED_BC
+from rola.planner.select import SUPPORTED_BT, largest_feasible_bc
 
 #: The consumer suite's own fp32-against-fp64 tolerance
 #: (`tests/ops/test_rola_v3_consumer.py:RTOL`), quoted at its value rather than
@@ -192,8 +194,16 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
 
     The plan the layer ran is recorded, so this also pins that the layer went
     through `select_plan` (the axes are a QUERY of the realized routing) rather
-    than through a hand-written plan constant: `last_plan_axes` carries the measured
-    `TileUnionStats` the decision was priced from.
+    than through a hand-written plan constant: `last_plan_axes` carries the
+    `ConfigEvidence` the decision was priced from.
+
+    **RE-POINTED WITH THE LAYER CUT-OVER (ledger item 2).** It used to assert
+    `plan.BC == layer.state_block == _BRANCHES[-1]` -- three things at once, and all
+    three moved. `state_block` is now the LARGEST feasible `BC` rather than the
+    innermost width (§6 P6), and `plan.BC` is chosen PER LAUNCH by `select_config`
+    from the feasible set, so it is not pinned to `state_block` at all any more. What
+    replaces the assertion is the property that actually has to hold: the chosen `BC`
+    is a member of the feasible set, and the evidence's grid is keyed on the choice.
     """
     torch.manual_seed(7)
     layer = _layer(norm=norm, decay=decay)
@@ -202,12 +212,18 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    plan, axes = layer.last_selected_plan, layer.last_plan_axes
-    assert plan is not None and axes is not None
-    assert plan.BC == layer.state_block == _BRANCHES[-1]
+    plan, evidence = layer.last_selected_plan, layer.last_plan_axes
+    assert plan is not None and evidence is not None
+    assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
     assert plan.normalization == norm
-    assert axes.stats.BT == plan.BT and axes.stats.BC == plan.BC
+    # The evidence is keyed on the decision it explains, over the whole grid the
+    # selection actually walked.
+    assert (plan.BC, plan.BT) in evidence.grid
+    assert set(evidence.grid) == {
+        (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
+    assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
+    assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
 
 
 @_CUDA
@@ -218,6 +234,13 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     no-grad forwards on the same shape) must move the measured statistics the plan
     was priced from. A per-shape cache would return the first step's stats for the
     second step's routing, which is precisely the staleness the ruling rejects.
+
+    **RE-POINTED WITH THE LAYER CUT-OVER (ledger item 2).** `last_plan_axes` is now
+    `ConfigEvidence`, so the re-measured statistic is `k_hat` -- the mean of
+    `ceil(K_hat / MMA_K_QUANTUM)` over candidate `(owner, tile)` pairs -- in place of
+    the calibration census's `stats.mean_K`. It is the SAME quantity the same
+    sharpening moves, read off the §4.2 summary pass rather than off the exact census,
+    which is exactly what the cut-over replaced.
     """
     torch.manual_seed(11)
     layer = _layer(norm="raw", decay="none", router="sparse")
@@ -225,14 +248,14 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     x = torch.randn(1, 128, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
-        dense_stats = layer.last_plan_axes.stats
+        dense = layer.last_plan_axes
         layer.route_W.mul_(16.0)
         layer(x)
-        sharp_stats = layer.last_plan_axes.stats
+        sharp = layer.last_plan_axes
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 2, "decode": 0}
-    assert sharp_stats.mean_K < dense_stats.mean_K, (
-        f"the per-step selection did not re-measure: K went {dense_stats.mean_K} -> "
-        f"{sharp_stats.mean_K} after a 16x router sharpening")
+    assert sharp.k_hat < dense.k_hat, (
+        f"the per-step selection did not re-measure: k_hat went {dense.k_hat} -> "
+        f"{sharp.k_hat} after a 16x router sharpening")
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +450,9 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     reviewer exercised by hand in wiring-review.md §9 -- to gate the claim that both
     entry points accept either dtype, independent of the layer's stricter policy.
     """
-    from planner_calibration.cost_model import select_plan  # G16
-
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
+    from rola.planner.calibration.cost_model import select_plan  # G16
     from rola.routing.producer import produce_routing
 
     torch.manual_seed(41)
@@ -638,14 +660,35 @@ def test_an_inadmissible_state_block_is_rejected_at_construction():
              states_per_level=_BRANCHES, state_block=12)
 
 
-def test_the_default_state_block_is_the_innermost_width_on_every_topology():
-    """The documented structural default, over several mixed radices: it is always
-    admissible because the owner rectangle is exactly one full innermost level."""
+def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
+    """§6 P6's default, over several mixed radices.
+
+    **THIS REPLACES THE `widths[-1]` CONTRACT** (`state_block` defaulted to the
+    innermost width, which was always admissible because the owner rectangle was
+    exactly one full innermost level). §6 P6 replaced it with `largest_feasible_bc`
+    over the INSTANTIATED ladder, because `widths[-1]` names a rectangle the kernel
+    may have no instantiation for -- a topology whose innermost level is 4 has no
+    `BC = 4` kernel, and the old default produced a construction that could only ever
+    run on the oracle.
+
+    `state_block` is now a CEILING and no longer pins the launch: `select_config`
+    chooses `BC` per launch from `feasible_BC`, and an explicit `state_block=` is the
+    EXPERT PIN that shrinks the feasible set to one value (§4.3). Both halves are
+    asserted here, because the default losing its pinning role is the whole content of
+    the change.
+    """
     for branches in ([8, 16], [4, 4, 8], [16], [2, 3, 16]):
         layer = RoLA(hidden_size=32, num_heads=2, head_v_dim=8,
                      levels_per_head=len(branches), states_per_level=branches)
-        assert layer.state_block == branches[-1]
+        assert layer.state_block == largest_feasible_bc(tuple(branches))
+        assert layer.state_block == layer.feasible_BC[-1]
+        assert set(layer.feasible_BC) <= set(_SUPPORTED_BC)
         assert layer.last_execution_backend is None
+
+    # The expert pin, which is the ONLY thing that fixes `BC` for a launch now.
+    pinned = RoLA(hidden_size=32, num_heads=2, head_v_dim=8, levels_per_head=2,
+                  states_per_level=[8, 16], state_block=16)
+    assert pinned.feasible_BC == (16,)
 
 
 def test_the_layer_selects_the_production_bf16_readout_by_default():

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from planner_calibration.cost_model import (
+from rola.planner.calibration.cost_model import (
     TileUnionStats,
     plan_cost_per_token,
     plan_waves,

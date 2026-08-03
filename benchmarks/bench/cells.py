@@ -30,12 +30,11 @@ from pathlib import Path
 import torch
 
 # G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `benchmarks/planner_calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
+# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
 # the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
 # proxies still resolve these names, but importing them from their real home is what
 # keeps `import rola` free of the calibration package's inductor edge.
-from planner_calibration.cost_model import tile_union_stats
-
+from rola.planner.calibration.cost_model import tile_union_stats
 from rola.planner.schedule import Plan, build_schedule, owner_geometry, unpack_bits
 from rola.routing.entmax.reference import entmax
 from rola.routing.types import EntmaxActivation, IndependentRouting, LevelConfig, SoftmaxActivation, Topology
@@ -352,7 +351,7 @@ class Cell:
         if self.is_producer and fx is not None:
             import dataclasses as _dc
 
-            from planner_calibration.cost_model import plan_and_schedule  # G16
+            from rola.planner.calibration.cost_model import plan_and_schedule  # G16
             #: NO ORACLE IS INJECTED, and that is item 6b's point: the planner's
             #: DEFAULT occupancy oracle is now the one kernel's own. This file used
             #: to inject `consumer_occupancy()` because the default queried the OLD

@@ -17,7 +17,7 @@ candidate pairs.
 ---- WHAT MOVED, AND THE ONE INTERPRETATION THIS FILE MAKES -------------------
 
 §6 P4 retires "census + ``plan_cost_per_token`` + constants" to
-``benchmarks/planner_calibration/``. What that leaves the runtime is read here as §9
+``rola/planner/calibration/``. What that leaves the runtime is read here as §9
 step 2 spells it -- "re-calibration on the isolating cells ...; **rule-table
 recompile**" -- i.e. the FITTING INSTRUMENT and the exact census leave, and their
 compiled output ships as a small RULE TABLE. So:
@@ -179,7 +179,7 @@ def derived_pack_breakeven(BC: int, BT: int, decay: bool) -> float:
 # `smsp__inst_executed.sum`, ONE profiled launch per arm, on an ISOLATING cell or cell
 # PAIR rather than fitted to the rows it must reproduce. Their full derivations,
 # falsifiers and known residuals live with the fitting instrument in
-# `benchmarks/planner_calibration/cost_model.py`; what is repeated here is the number,
+# `rola/planner/calibration/cost_model.py`; what is repeated here is the number,
 # its cell, and the one sentence that says what it prices. A reader who wants to
 # CHALLENGE a value goes to the instrument; a reader who wants to know what the planner
 # believes reads this.
@@ -219,7 +219,7 @@ RULE_TABLE_PROVENANCE = (
     "re-based 2026-08-01 onto the surviving consumer (the previous basis measured a "
     "kernel that no longer exists, and compaction lost at every one of its cells, so "
     "its gather constant could only ever be a lower bound). This table is the COMPILED "
-    "OUTPUT of `benchmarks/planner_calibration/cost_model.py`; it is recompiled by §9 "
+    "OUTPUT of `rola/planner/calibration/cost_model.py`; it is recompiled by §9 "
     "step 2 whenever a kernel or a constant moves, and WHAT BINDS IT is the auditor's "
     "agreement gate against the eight measured argmins of the §2.32 matrix -- measured "
     "argmins, not model outputs, which is exactly the right anchor for a selector that "
@@ -822,7 +822,7 @@ def shadow_step(static: StaticPlanInputs, hw: HardwareFacts, summaries, *,
                 exact_argmin, step: int = 0, **kwargs) -> ShadowRecord:
     """Run the closed form and the exact argmin side by side on one sampled step.
 
-    ``exact_argmin`` is INJECTED -- ``benchmarks.planner_calibration.auditor``'s
+    ``exact_argmin`` is INJECTED -- ``rola.planner.calibration.auditor``'s
     exact-census argmin in the bench, a recorded table in a unit gate. It is not
     imported here, and that is the design: the exact argmin is the object the end-state
     ruling RETIRES, so a runtime that imported it would keep alive exactly what the

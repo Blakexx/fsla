@@ -353,6 +353,24 @@ def _consumer_forward(
         owners_arg = sp_tensors.owners
         sp_args = sp_tensors.as_kernel_arguments()
 
+    if paging is not None:
+        # §4.5's ONE EVENT-WAIT, and it is a CORRECTNESS requirement rather than a
+        # tidiness one. `PageArena._admit_pages` publishes the page table and zeroes
+        # the admitted slots on the arena's SIDE STREAM; without this join the
+        # consumer launch below reads a page table that is still being written and a
+        # value pool that is still being zeroed. It is a stream-to-stream wait, not a
+        # host synchronization -- the host never learns when the zeroing finished,
+        # only that the consumer will not start before it did -- so the overlap the
+        # side stream buys is preserved.
+        #
+        # MEASURED, not hypothesized: with the layer cut-over choosing `BC` per launch
+        # the missing join fired as `index_copy_(): index out of bounds` inside
+        # `_admit_pages` itself and poisoned the CUDA context (56 failures in
+        # `tests/layers`, all of them green under `CUDA_LAUNCH_BLOCKING=1` -- the
+        # signature of a stream race, since blocking serializes the streams the join
+        # was supposed to order).
+        paging.wait()
+
     ext = extension()
     y_f, state_out, _num, _den = ext.rola_consumer_forward(
         [t.to(torch.float32).contiguous() for t in schedule.read_amps],

@@ -21,10 +21,13 @@ execution backends and the choice between them is STRUCTURAL, decided by
   when the operation's own inputs carry a gradient, and when the tensors are not
   on a CUDA device.
 * ``'cuda'`` -- the plan-selected V3 consumer (`ROLA_V3_SPEC.md` §3-§6):
-  ``plan_and_schedule`` measures the realized routing, returns a stamped
-  ``Plan`` and builds the §4 schedule from the same single pass over the routing
-  tensors, then ``_consumer_forward`` launches the template instantiation that
-  plan names. The consumer is **forward-only** -- there is no native backward for
+  ``summarize_routing`` measures the realized routing in ONE kernel launch,
+  ``select_config`` picks ``(BC, BT, packing)`` from it in closed form, the ``Plan``
+  is stamped with the residency that choice was reasoned at, ``build_schedule``
+  builds the §4 schedule from the same folded view, and ``_consumer_forward``
+  launches the template instantiation that plan names. ``BC`` is chosen PER LAUNCH
+  (§4.3), which is safe over live paged state only because a page is keyed on the
+  MMA atom and not on ``BC`` (§4.5). The consumer is **forward-only** -- there is no native backward for
   it yet -- so it requires eval mode AND no gradient reachability AND a CUDA device
   AND a launchable configuration; it is refused the moment any of those fails.
 * ``'decode'`` -- the T=1 sibling kernel (THUNDER_RUN_SPEC.md §6b). Selected inside
@@ -69,7 +72,7 @@ is meant to matter.
 **There is no silent degradation in the other direction either.** Once the CUDA
 backend is selected, a configuration the consumer cannot run -- an unimplemented
 intra lowering, an un-instantiated ``(d_v, BC, BT)``, an unrealized warp tile --
-raises loudly out of ``plan_and_schedule``/``_consumer_forward``/the kernel's own
+raises loudly out of ``select_config``/``_consumer_forward``/the kernel's own
 ``TORCH_CHECK``s. It never falls back to the oracle.
 
 **Deletion inventory applied here** (spec §1.2): `head_k_dim`, `qkv_proj`,
@@ -107,13 +110,22 @@ from rola.ops.decode import decode_forward, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.planner.schedule import (
     MMA_PRECISIONS,
+    Plan,
     StaticDensity,
+    build_schedule,
+    consumer_occupancy,
     owner_geometry,
-    plan_and_schedule,
+    routing_views,
 )
-from rola.planner.select import freeze_for_decode
+from rola.planner.select import (
+    SUPPORTED_BT,
+    HardwareFacts,
+    freeze_for_decode,
+    select_config_with_evidence,
+)
 from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
 from rola.routing.side_gain import GainConfig, init_side_gain_bias
+from rola.routing.summaries import summarize_routing
 from rola.routing.topology import resolve_b_spec
 from rola.routing.types import (
     EntmaxActivation,
@@ -136,6 +148,18 @@ class _DecodeConfigCache:
     a shape it was not built for.
     """
     key: tuple
+    value: object
+
+
+@dataclass(frozen=True)
+class _HardwareCache:
+    """§4.3 tier H plus the DEVICE it is a fact about.
+
+    Same shape and the same reason as :class:`_DecodeConfigCache`: the validity key is
+    the point. Tier H is measured once per (device, install) and carries no routing
+    statistic, so caching it does not touch the per-step selection ruling.
+    """
+    key: object
     value: object
 
 
@@ -412,7 +436,19 @@ class RoLA(nn.Module):
         self._execution_backend_counts = {'oracle': 0, 'cuda': 0, 'decode': 0}
         self.last_execution_backend: str | None = None
         self.last_selected_plan = None
+        #: `rola.planner.select.ConfigEvidence` for the most recent CUDA prefill:
+        #: `cost_per_token`, the full `(BC, BT)` grid, the residency and wave count
+        #: the choice was reasoned at, and the provenance string. Diagnostic state,
+        #: deliberately not a buffer.
         self.last_plan_axes = None
+        #: `(BC, BT)` the §4.2 summary pass was MEASURED at, which is not in general
+        #: the `(BC, BT)` the plan selected: the pass needs one owner geometry and one
+        #: tiling, and `select_config` reuses its statistics across the whole feasible
+        #: grid. Recorded so a plan states the granularity it was priced at.
+        self.last_summary_granularity = None
+        #: Tier-H record, cached on the device it is a fact about (see
+        #: `_hardware_facts`). Not a plan cache -- no routing statistic lives here.
+        self._hardware = None
         #: `PagingResult` for the most recent paged forward, or `None`. Committed-state
         #: accounting (spec §7.1): peak pages, realized owners, resident vs dense
         #: bytes. Same plain-attribute surface as the counters
@@ -742,6 +778,31 @@ class RoLA(nn.Module):
         self._page_arena = arena
         return arena
 
+    def _hardware_facts(self, device):
+        """§4.3 tier H: the machine facts, measured once per (device, install).
+
+        The occupancy oracle is the DRIVER's
+        ``cudaOccupancyMaxActiveBlocksPerMultiprocessor`` on the real templated kernel
+        at its real dynamic shared-memory size -- the SOLE AUTHORITY for physical facts
+        (standing ruling). It enters selection as an INPUT and is recorded next to the
+        decision it drove, which is what keeps ``select_config`` a pure function of its
+        recorded inputs rather than something that queries the machine ambiently.
+
+        Cached on the DEVICE because that is what it is a fact about. Neither member
+        can move within a process for a fixed device, so this is not a stale-plan
+        hazard of the kind per-step selection exists to avoid: no routing statistic
+        lives here.
+        """
+        device = torch.device(device)
+        cached = self._hardware
+        if cached is not None and cached.key == device:
+            return cached.value
+        facts = HardwareFacts(
+            sm_count=torch.cuda.get_device_properties(device).multi_processor_count,
+            occupancy=consumer_occupancy())
+        self._hardware = _HardwareCache(key=device, value=facts)
+        return facts
+
     def _static_plan_inputs(self, BH: int):
         """§4.3 tier 0: everything the selector needs that is fixed at construction.
 
@@ -914,37 +975,88 @@ class RoLA(nn.Module):
                 final_state = None
             # ===== END TRACK D MERGE MARKER =====
         elif backend == 'cuda':
-            # THE plan build, per step. Coordinator ruling 2026-07-30: selection is
-            # per-step, never cached per shape. The statistics it prices are exact
-            # over the realized schedule, so a plan is only as valid as the routing
-            # it was measured on, and a cached plan goes stale the moment training
-            # moves the routing distribution -- a stale plan prices a `K`
-            # distribution that no longer exists. What the selection itself costs is
-            # scalar comparisons dispatching among precompiled template
-            # instantiations, and it is reported as its own plane by
-            # `benchmarks/ops/benchmark_rola_v3_layer.py` rather than assumed small
-            # -- and that measurement is what motivated the fusion below.
+            # ===== §4.3's SELECTION PATH (ledger item 2, the layer cut-over) =====
             #
-            # `plan_and_schedule` is that selection FUSED with the §4 schedule
-            # build (planner increment, 2026-07-30). The two walk the same routing
-            # tensors and were each recomputing the same prefix: the
-            # `[B,T,H,w] -> [BH,T,w]` fold (a real copy), the exact-nonzero mask,
-            # and the per-(level, digit) §4 tile bitmaps. Fusing them deletes the
-            # duplicate work and NOTHING else -- the plan is the plan
-            # `select_plan` returns on the same inputs and the schedule is the
-            # schedule `build_schedule` builds from it, gated bit-identical by
-            # `test_the_shared_view_changes_nothing_it_only_stops_recomputing`.
-            # Selection stays PER-STEP: the shared view lives inside this one
-            # forward, so there is nothing that can go stale across steps.
-            plan, axes, schedule = plan_and_schedule(
-                routing_out.read_levels, routing_out.write_levels,
-                routing_out.g_read, routing_out.g_write, self.topology,
-                self.state_block, normalization=self.state_norm,
-                decay=decay_config is not None, mma_precision=self.mma_precision,
-                # The build-time density declaration (see `__init__`): every side
-                # it marks full-support skips the per-step live-leaf pass for the
-                # closed form it provably equals.
-                static_density=self.static_density,
+            # `produce_routing -> summarize_routing -> select_config -> Plan ->
+            # build_schedule`. This REPLACES `plan_and_schedule`, and the replacement
+            # is not a refactor:
+            #
+            #  * `plan_and_schedule` lives in the CALIBRATION package. It prices every
+            #    candidate by walking the routing tensors again per `(BT, compact)`
+            #    candidate -- the exact census -- and it carries a
+            #    `torch.compile`/inductor edge. §6 P4 retired it from the runtime; the
+            #    layer was the last caller keeping that edge live on the hot path.
+            #  * `select_config` is the CLOSED FORM the calibration fit compiles down
+            #    to. Its inputs are one summary pass (one CUDA launch, one D2H
+            #    transfer, zero host syncs) plus tier-0 and tier-H records, and it
+            #    chooses `BC` as well as `BT` -- which the old path could not, because
+            #    `BC` was a construction-time constant handed in as `self.state_block`.
+            #
+            # **`BC` IS NOW PER LAUNCH, and it is SAFE per launch only because the
+            # paired atom re-key landed first.** `select_config` may return a different
+            # `BC` than the previous step's, and under paging the arena holds live
+            # state across that change. That is a no-op exactly because §4.5 keys a
+            # page on the MMA ATOM: every stored object and every address the consumer
+            # forms is `BC`-invariant, so two launches at different `BC` address the
+            # same bytes of the same slots (`_resolve_page_arena` no longer carries
+            # `BC` in its rebuild key, for that reason). Landing this cut-over ahead of
+            # the re-key would have put a `BC`-choosing planner in front of a
+            # `BC`-keyed page table.
+            #
+            # G7 STANDS: selection is PER STEP, never cached per shape. The statistics
+            # it prices are exact over the realized routing, so a cached plan prices a
+            # `K` distribution that no longer exists the moment training moves the
+            # distribution. What is cached is `_hardware_facts`, which is a fact about
+            # the DEVICE and carries no routing statistic.
+            #
+            # The `RoutingViews` fold is still computed ONCE and shared: the summary
+            # pass consumes `read_folded`/`write_folded` and `build_schedule` takes the
+            # same object, so the `[B,T,H,w] -> [BH,T,w]` copy and the exact-nonzero
+            # masks are paid once per forward, as they were under the fused entry
+            # point. A view lives inside one forward and cannot go stale.
+            views = routing_views(routing_out.read_levels, routing_out.write_levels,
+                                  self.topology)
+            static = self._static_plan_inputs(B * H)
+            hw = self._hardware_facts(v.device)
+
+            # THE SUMMARY GRANULARITY, stated rather than hidden.
+            #
+            # `BT`: §4.2 fixes the pass at the FINEST instantiated tile. `candidate_frac`
+            # and `quanta_hist` are statistics OF A TILING and neither is `BT`-invariant
+            # (P measured cf(16)/cf(32) = 1.846), so reusing the finest-`BT` value at
+            # `BT = 32` under-prices the coarser tile. §4.2 freezes the struct at one
+            # granularity and `ConfigEvidence.provenance` records which arm was taken;
+            # supplying `summaries_by_bt` would cost a second launch and is the
+            # caller's option, not this layer's default.
+            #
+            # `BC`: the pass needs an OWNER GEOMETRY, so it is measured at ONE `BC`
+            # while `select_config` reuses `quanta_hist` across the whole feasible
+            # grid. §4.2 is SILENT on this axis. The choice here is the same one §4.2
+            # makes for `BT` -- the FINEST instantiated granularity, i.e. the smallest
+            # feasible `BC`, the finest owner rectangle -- taken by symmetry rather
+            # than improvised, and RECORDED on `last_summary_granularity` so a plan
+            # states the granularity it was priced at. Resolving the bias (a per-`BC`
+            # summary, or a `BC`-invariant statistic) is open work, not something this
+            # cut-over silently decides.
+            summary_BC = static.feasible_BC[0]
+            summary_BT = min(SUPPORTED_BT)
+            summaries = summarize_routing(
+                views.read_folded, views.write_folded,
+                owner_geometry(tuple(self.topology.widths), summary_BC), summary_BT,
+                # The build-time density declaration (see `__init__`): every side it
+                # marks full-support is asserted realized under the debug env flag.
+                density=self.static_density)
+            self.last_summary_granularity = (summary_BC, summary_BT)
+
+            choice, evidence = select_config_with_evidence(static, hw, summaries)
+            plan = Plan(
+                topology=self.topology, normalization=self.state_norm,
+                BT=choice.BT, BC=choice.BC,
+                # The realized warp tile the consumer implements, stated rather than
+                # defaulted so the driver's check has something to check.
+                warp_tile=(1, max(1, self.head_v_dim // 32)),
+                decay=decay_config is not None, compact=choice.packing,
+                mma_precision=self.mma_precision,
                 # The per-SM SMEM budget, device-queried once and RECORDED in the
                 # plan (§10's ruling), so the plan carries the machine it reasoned
                 # about rather than depending on the one it is replayed on.
@@ -954,10 +1066,19 @@ class RoLA(nn.Module):
                 # consumer's footprint and was measured INVERTING the bound it
                 # claimed, so the mirror was deleted rather than re-fitted. The field
                 # stays because a plan stating the machine it was built on is what
-                # makes a replayed plan auditable; it is flagged in `rewrite.md`
-                # §2.36 as the one plan field with no consuming rule.
-                sm_shared_bytes=sm_shared_bytes())
-            self.last_selected_plan, self.last_plan_axes = plan, axes
+                # makes a replayed plan auditable.
+                sm_shared_bytes=sm_shared_bytes(),
+                # The residency §4.3 reasoned at, recorded next to the decision it
+                # drove -- the same contract `sm_shared_bytes` has.
+                occupancy_blocks_per_sm=evidence.blocks_per_sm)
+            schedule = build_schedule(
+                routing_out.read_levels, routing_out.write_levels,
+                routing_out.g_read, routing_out.g_write, plan, views=views)
+            # `last_plan_axes` now carries `ConfigEvidence` -- `cost_per_token`, the
+            # full `(BC, BT)` grid, `blocks_per_sm`, `waves` and the provenance string
+            # -- in place of the calibration package's `PlanAxes`. Same role: WHY the
+            # plan is what it is, recorded beside the number it produced.
+            self.last_selected_plan, self.last_plan_axes = plan, evidence
             if self.paging:
                 arena = self._resolve_page_arena(plan, B * H, v.device)
                 continue_paging = recurrent_state is not None

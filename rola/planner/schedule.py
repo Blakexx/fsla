@@ -31,7 +31,6 @@ The transpose is the schedule's entire value; the raw side is not stored twice.
 
 from __future__ import annotations
 
-import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product as _iter_product
@@ -1561,23 +1560,35 @@ __all__ = [
 #
 # The exact census, `plan_cost_per_token` and its six measured constants,
 # `TileUnionStats` and the `(BT, compact)` ARGMIN moved to
-# `benchmarks/planner_calibration/`. They are documented public API
+# `rola/planner/calibration/`. They are documented public API
 # (`rola/__init__.py`: "STABLE construction, ADVISORY contents") and five bench
 # instruments plus two out-of-track test suites call them, so the names survive here
 # as LAZY CALL PROXIES for one release.
 #
-# **WHY PROXIES AND NOT RE-EXPORTS, and this is the whole point of the move.**
-# `census` makes `torch.compile`/inductor a RUNTIME dependency, on CPU as well as
-# CUDA, with no eager path kept beside it -- its own docstring says so. A module-level
-# re-export would pull that edge back into `import rola`. A proxy resolves on CALL, so:
+# **THE PACKAGE LIVES IN `rola/` AND NOT IN `benchmarks/`** (post-merge, 2026-08-02).
+# It was `benchmarks/planner_calibration/`, resolved through a `sys.path` insert
+# relative to THIS FILE, which worked from a source checkout and only from one:
+# `setup.py` packages `find_packages(include=["rola", "rola.*"])`, so an installed
+# wheel has no `benchmarks/` sibling and every relocated name raised
+# `ModuleNotFoundError`. That was a release blocker while the layer's CUDA prefill
+# still called `plan_and_schedule`; the cut-over below removed the RUNTIME edge, and
+# moving the package removes the PACKAGING one. `benchmarks/` remains the PRODUCER --
+# it is what re-measures the constants and regenerates the fit -- but the fitted
+# module ships.
 #
-#   * `import rola` never reaches the bench and never imports inductor;
+# **WHY PROXIES AND NOT RE-EXPORTS, and this is still the whole point.**
+# `census` makes `torch.compile`/inductor an import-time dependency, on CPU as well as
+# CUDA, with no eager path kept beside it -- its own docstring says so. A module-level
+# re-export would pull that edge into `import rola`. A proxy resolves on CALL, so:
+#
+#   * `import rola` never touches inductor;
 #   * a bench or a gate that calls `select_plan` gets the real function;
-#   * a SHIPPED INSTALL with no `benchmarks/` directory fails at the call site with the
-#     sentence below, rather than at import with a traceback about a missing module.
+#   * and the RUNTIME reaches none of it -- `rola.planner.select`'s closed form is
+#     what the layer calls, and `tests/unit/test_planner.py`'s subprocess probe
+#     asserts `sys.modules` stays free of the package after `import rola`.
 #
 # It is a deprecation shim with a stated horizon, not a fallback: there is exactly one
-# implementation and the proxy dispatches to it or raises. Nothing degrades.
+# implementation and the proxy dispatches to it. Nothing degrades.
 
 #: The names that moved. Anything not here is genuinely gone.
 _RELOCATED = (
@@ -1590,29 +1601,16 @@ _RELOCATED = (
 
 
 def _calibration_module():
-    """Import `planner_calibration.cost_model`, adding `benchmarks/` to the path.
+    """Import `rola.planner.calibration.cost_model`, ON CALL and never at import.
 
-    That path dance is the repository's OWN convention for its bench packages
-    (`benchmarks/bench_regression.py` inserts the same directory and imports
-    `bench.cells`), reused rather than reinvented so the new package is reachable the
-    same way every other bench package is.
+    A plain import inside the function body -- there is no path dance any more, and
+    that is the packaging fix: the package is a `rola.*` subpackage, so `find_packages`
+    ships it and an installed wheel resolves it exactly as a source checkout does.
+    Deferring it to CALL time is what keeps `import rola` free of the census's
+    `torch.compile`/inductor edge, which is a different property from being installed
+    and is the one the proxies exist for.
     """
-    import sys
-
-    bench_dir = pathlib.Path(__file__).resolve().parents[2] / "benchmarks"
-    if not (bench_dir / "planner_calibration" / "cost_model.py").is_file():
-        raise ModuleNotFoundError(
-            "the planner cost model, the exact census and the (BT, compact) argmin were "
-            "RETIRED from the runtime and relocated to `benchmarks/planner_calibration/` "
-            "(THUNDER_RUN_SPEC.md §6 P4). This install has no `benchmarks/` directory, so "
-            "they are not available -- which is intended: they are calibration and audit "
-            "machinery, they carry a `torch.compile`/inductor runtime dependency the "
-            "shipped package deliberately no longer has, and selection is now the "
-            "closed form in `rola.planner.select`. Use `select_config` instead, or run "
-            "from a source checkout if you are calibrating.")
-    if str(bench_dir) not in sys.path:
-        sys.path.insert(0, str(bench_dir))
-    from planner_calibration import cost_model
+    from rola.planner.calibration import cost_model
 
     return cost_model
 
@@ -1628,8 +1626,8 @@ def __getattr__(name: str):
     _proxy.__name__ = name
     _proxy.__qualname__ = name
     _proxy.__doc__ = (
-        f"RELOCATED to `benchmarks/planner_calibration/cost_model.{name}` "
+        f"RELOCATED to `rola.planner.calibration.cost_model.{name}` "
         "(THUNDER_RUN_SPEC.md §6 P4). This is a lazy call proxy kept for one release; "
-        "it resolves on call so that `import rola` does not pull the bench's inductor "
-        "dependency back into the shipped package.")
+        "it resolves on call so that `import rola` does not pull the calibration "
+        "package's inductor dependency into the shipped package's import graph.")
     return _proxy

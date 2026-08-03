@@ -379,6 +379,12 @@ class PageArena:
         footprint -- exactly the allocation §7.1 exists to avoid -- to redo work
         admission already does on the realized set only.
         """
+        # JOIN THE SIDE STREAM FIRST. The fills below run on the CALLER's stream, and
+        # the previous call published the page table and zeroed its slots on the side
+        # stream. Two plans back to back with no consumer launch between them -- which
+        # the arena gates do -- would otherwise have this reset race that publication.
+        # A stream-to-stream wait, so it costs the host nothing.
+        self.wait()
         self._page_table.fill_(_ABSENT_PAGE)
         self._allocator.reset()
         self.peak_pages = 0
@@ -441,6 +447,16 @@ class PageArena:
         with context:
             count = int(atom_ids.numel())
             if count:
+                if stream is not None:
+                    # ``atom_ids`` was allocated on the CALLER's stream and is read
+                    # here on the side stream. Without this the caching allocator may
+                    # hand its bytes to another tensor the moment the caller's stream
+                    # drops the reference -- while the `index_copy_` below is still
+                    # reading them -- and the indices become garbage. That is not a
+                    # theoretical hazard: it fired as `index_copy_(): index out of
+                    # bounds` from this exact line. `record_stream` is the documented
+                    # cross-stream lifetime contract and is the whole fix.
+                    atom_ids.record_stream(stream)
                 slots = torch.arange(first_slot, first_slot + count,
                                      dtype=torch.int32, device=self.device)
                 self._page_table.view(-1).index_copy_(0, atom_ids, slots)

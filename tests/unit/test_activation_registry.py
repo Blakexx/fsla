@@ -274,6 +274,13 @@ _ALLOWED_TO_NAME_ACTIVATIONS = {
     "routing/entmax/reference.py",
     # The layer translates the PUBLIC 'dense'/'sparse' vocabulary into activations.
     "layers/rola.py",
+    # The calibration AUDITOR constructs fixture topologies to price cells with. It is
+    # not a runtime rule -- nothing under `rola/` imports it at module scope and it is
+    # reached only by the bench and the planner gates -- and it names ONE activation
+    # for every level of every fixture because the pricing is invariant in the routing
+    # tag (its own docstring says so). It moved under `rola/` for PACKAGING (an
+    # installed wheel has no `benchmarks/` sibling), not because it became runtime.
+    "planner/calibration/auditor.py",
 }
 
 
