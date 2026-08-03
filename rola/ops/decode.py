@@ -78,7 +78,7 @@ from dataclasses import dataclass, field
 import torch
 
 from rola.ops._ext import extension
-from rola.planner.schedule import leaf_rate_dials
+from rola.planner.schedule import MMA_PRECISIONS, leaf_rate_dials
 from rola.routing.types import Topology
 
 __all__ = [
@@ -128,6 +128,16 @@ class FrozenDecodeConfig:
     #: and the kernel never branches on these — they size ``n_split`` on the host and
     #: nothing else.
     feeder_flags: int = 0
+    #: The layer's numeric-format pin, carried across the boundary so the carrier can
+    #: never silently disagree with the layer that froze it (coverage-closure H9: the
+    #: field was missing and the pin was dropped at ``L == 1``). At ``T = 1`` there is
+    #: no MMA — the decode GEMV is scalar fp32 for EVERY pin, which is exact for both
+    #: formats' contracts (fp32 accumulate is what the tiled consumer's tf32x3 and
+    #: bf16 arms share; only their OPERAND format differs, and a GEMV has no operand
+    #: tile to format). So the field selects nothing today; it exists so the pin is
+    #: carried, validated, and checkable, and so the future M-4 decode kernel (§6b)
+    #: inherits it instead of re-plumbing the boundary.
+    mma_precision: str = "bf16"
     #: §4.5; ``None`` on the unpaged path, which is the only path decode implements.
     page_states: int | None = None
     atoms_per_bh: int | None = None
@@ -156,6 +166,7 @@ def freeze_decode_config(
     frozen=None,
     static_density: tuple[tuple[bool, bool], ...] | None = None,
     n_split: int | None = None,
+    mma_precision: str = "bf16",
 ) -> FrozenDecodeConfig:
     """Build the carrier once, at the boundary.
 
@@ -173,6 +184,9 @@ def freeze_decode_config(
     no prefill behind it). Passing BOTH is refused: two sources for one word is two
     answers to one question, and ordering them silently is how a stale declaration wins.
     """
+    if mma_precision not in MMA_PRECISIONS:
+        raise ValueError(
+            f"mma_precision must be one of {MMA_PRECISIONS}, got {mma_precision!r}")
     widths = tuple(topology.widths)
     D = len(widths)
     N = math.prod(widths)
@@ -228,7 +242,8 @@ def freeze_decode_config(
         D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
         level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
         d_v=topology.d_v, is_global=(normalization == "global"), has_decay=decay,
-        eps=eps, n_split=int(n_split), feeder_flags=flags)
+        eps=eps, n_split=int(n_split), feeder_flags=flags,
+        mma_precision=mma_precision)
 
 
 @dataclass(slots=True)

@@ -849,7 +849,8 @@ class RoLA(nn.Module):
         value = freeze_decode_config(
             self.topology, self.state_norm, decay=self.decay_kind != 'none',
             BH=BH, device=device,
-            frozen=freeze_for_decode(self._static_plan_inputs(BH)))
+            frozen=freeze_for_decode(self._static_plan_inputs(BH)),
+            mma_precision=self.mma_precision)
         self._decode_config = _DecodeConfigCache(key=(BH, torch.device(device)), value=value)
         return value
 

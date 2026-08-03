@@ -241,3 +241,54 @@ def test_the_cuda_rows_dispatch_identically_across_norm_and_decay(
         f"(norm={norm}, decay={decay}): expected the {expected!r} backend, "
         f"counters moved {moved} -- the dispatch predicate has grown a coupling "
         f"to an axis it must not read")
+
+
+# ---------------------------------------------------------------------------
+# the precision pin crosses the boundary (coverage-closure H9 -> terminal cycle)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.cuda
+@_CUDA
+@pytest.mark.parametrize("precision", ["bf16", "tf32x3"])
+def test_the_frozen_decode_config_carries_the_layers_precision_pin(precision):
+    """The L == 1 fork must not drop ``mma_precision`` at the freeze boundary.
+
+    Before this gate the carrier had NO ``mma_precision`` field and the layer's pin
+    was silently dropped at ``L == 1`` (coverage-closure H9, report-only). The decode
+    GEMV is scalar fp32 for every pin — the field selects nothing today — but the
+    boundary must CARRY the pin so nothing downstream can disagree with the layer
+    (the feeder-flags lesson in ``_resolve_decode_config``'s docstring, same class).
+    Both pins are exercised so a re-hardcoded default cannot pass: the assertion is
+    against the parametrized value, not against ``"bf16"``.
+    """
+    device = "cuda"
+    layer = RoLA(
+        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
+        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
+        decay='none', state_norm='global', mma_precision=precision,
+        level_routing_configs=LevelRoutingConfig(read='dense', write='dense', tied=False),
+        layer_idx=0,
+    ).to(device, torch.float32)
+    layer.eval()
+    cache = _prime(layer, device)
+    before = layer.execution_backend_counts
+    _step(layer, cache, device, grad_enabled=False)
+    after = layer.execution_backend_counts
+    assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
+    frozen = layer._decode_config
+    assert frozen is not None, "the decode fork ran but froze no carrier"
+    assert frozen.value.mma_precision == precision, (
+        f"the layer pinned {precision!r} but the frozen carrier says "
+        f"{frozen.value.mma_precision!r} -- the pin was dropped at the boundary")
+
+
+def test_freeze_decode_config_refuses_an_unknown_precision():
+    """The carrier validates the pin at the freeze, not downstream of it."""
+    from rola.ops.decode import freeze_decode_config
+    from rola.routing.types import IndependentRouting, LevelConfig, SoftmaxActivation, Topology
+    routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
+                                 write_activation=SoftmaxActivation())
+    topology = Topology(levels=tuple(LevelConfig(w, routing) for w in _BRANCHES), d_v=_DV)
+    with pytest.raises(ValueError, match="mma_precision"):
+        freeze_decode_config(topology, "global", decay=False, BH=1, device="cpu",
+                             mma_precision="fp16")
