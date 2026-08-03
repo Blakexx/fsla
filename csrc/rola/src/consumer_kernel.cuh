@@ -309,11 +309,58 @@ constexpr int kMmaKQuantum = 16;
 //: and 96 is best-or-equal on ALL EIGHT `NM = 2` keys. `NM` is the same tile-count
 //: predicate the warp partition forks on, so the budget and the codegen state the
 //: same structural fact once.
-constexpr int consumer_reg_budget(int BT, int BC, bool decay) {
-  const int base = (BC >= 64) ? 80 : (decay ? 80 : 64);
+//:
+//: **SESSION-9 RE-DERIVATION (2026-08-03, the register-recovery rung R1).** The
+//: `NM = 2 -> 96` row above was measured PRE-K3/K4; K0-K4 shrank the working set
+//: and the constant did not move with it -- the 512-entry forcing census
+//: (`tools/ratify.py --census`, arms: shipped / `--force-ctas 4` / `--force-ctas
+//: 3`, sm_86, fresh tree at `adee55c`+R0) re-measured every key. The re-key
+//: below is the census read back, and the rule for lowering was strict: a key
+//: moves ONLY where the forced arm shows ZERO spill AND a bit-identical in-loop
+//: local-access count on EVERY one of its 16 instantiations. Exactly ONE
+//: structural class passes: `NM = 2`, `decay = false`, bf16 at both MMA sites,
+//: SINGLE y-quad per warp (`NM * NT_DV <= kWarps` -- the warp partition's own
+//: tile count; at `NM = 2` that is `d_v = 32`). Measured at the 64-register
+//: bound, both `BC` arms, all 32 instantiations: **0 spill st / 0 spill ld, hot
+//: counts unchanged entry-for-entry**; `BC = 16` gains a CTA on 9 of 16 (D1 raw
+//: 86 -> 52 registers, 2 -> 4 CTAs). The census also cleared the `BC = 64` half,
+//: but the DURATION gate then declined it -- see the `BC < 64` note at the
+//: predicate below -- so only the register-bound `BC = 16` half ships.
+//:
+//: EVERY OTHER `NM = 2` KEY IS HELD AT 96, ON MEASUREMENT, NOT CAUTION: the
+//: second-y-quad class (`d_v = 64`) ADDS in-loop local accesses at the 64-bound
+//: (max +7 per entry) AND at the 80-bound (max +3); every `decay` key adds them
+//: (bf16 max +15, tf32x3 max +35..+63); every tf32x3 key spills at both forced
+//: bounds (140-380 B st per key). An in-loop spill is a round-trip per tile-loop
+//: iteration -- disqualifying whatever the byte count, and the hot-loop ratchet
+//: in `tools/ratify.py` now enforces exactly that as a build failure. The
+//: `BT = 16` decay keys' candidate-64 was ALSO refused by the same test (+3
+//: in-loop max), which re-answers §2.23's duration question for them without
+//: re-running it: 80 stands. Full tables: `workflows/20260802-thunder/trackK.md`
+//: session 9.
+constexpr int consumer_reg_budget(int BT, int BC, bool decay, MmaPrec read_prec,
+                                  MmaPrec fold_prec, int DV) {
   //: `NM` -- the tile's `m16` ROW BLOCKS. Two of them is a second A-fragment block
   //: and (at `DV = 64`) a second y quad live across all three readout GEMMs.
-  return (BT / 16 >= 2) ? 96 : base;
+  const int nm = BT / 16;
+  const int warp_tiles = nm * (DV / 8);          // NM x NT_DV, what the warps split
+  const int warps = kConsumerThreads / 32;
+  //: `BC < 64` IS A DURATION VERDICT, NOT A CENSUS ONE (session 9, gate iii).
+  //: The BC = 64 half of this class is SMEM-capped at 3 CTAs, so a lower budget
+  //: can never buy residency there -- it can only re-declare the bound 2 -> 3,
+  //: which reschedules 80 -> 60 registers of ILP for zero occupancy gain.
+  //: Measured (`ncu --clock-control base`, topo-D1-w256-BC64 d_v=32 BT=32,
+  //: baseline vs forced): **+2.42 %** -- declined on measurement; 96 stands and
+  //: the declared-2-vs-realized-3 under-declaration stays recorded as the price.
+  //: The BC = 16 half is register-BOUND (SMEM admits 5-6) and the same gate read
+  //: **-6.97 %** (topo-D4-w8x8x8x16-BC16 d_v=32 BT=32: 66 -> 62 registers,
+  //: 3 -> 4 CTAs, warps-active 49 -> 64 %), so it lands.
+  if (nm >= 2 && BC < 64 && !decay && read_prec == MmaPrec::kBf16 &&
+      fold_prec == MmaPrec::kBf16 && warp_tiles <= warps) {
+    return 64;                                   // the session-9 clean class
+  }
+  const int base = (BC >= 64) ? 80 : (decay ? 80 : 64);
+  return (nm >= 2) ? 96 : base;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
@@ -1025,7 +1072,8 @@ constexpr int consumer_ring_depth() {
   if (DECAY) return 1;                                 // D2.3, correctness
   constexpr int req = (ROLA_C_RING_DEPTH >= 2) ? 2 : 1;
   if (req == 1) return 1;
-  constexpr int budget = consumer_reg_budget(BT, BC, DECAY);
+  constexpr int budget =
+      consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
   constexpr size_t one =
       consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
                              COMPACT, 1>();
@@ -1575,7 +1623,7 @@ __device__ __forceinline__ void await_count(const volatile int* counter, int tar
 #define ROLA_CONSUMER_CTAS_EXPR                                                     \
   ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC,       \
                                          DECAY, GLOBAL, COMPACT>(),                 \
-                     consumer_reg_budget(BT, BC, DECAY))
+                     consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV))
 #endif
 template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
           bool DECAY, bool GLOBAL, bool COMPACT>
