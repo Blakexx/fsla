@@ -39,17 +39,6 @@ _SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)
 _TRITON_FP32_MAX = tl.constexpr(3.4028234663852886e38)
 _TRITON_FP32_HALF_MAX = tl.constexpr(1.7014117331926443e38)
 _TRITON_ROUTE_TILE_SIZE = tl.constexpr(_ROUTE_TILE_SIZE_VALUE)
-# Elements (rows x padded width) of one union-solve sub-tile; see `_union_row_tile`.
-# 512 = the measured sm_86 knee (2 rows x 256 cols at the parity topology), from the
-# p3 sweep of 1/2/4/8/16/32 rows at L=2048, median of 30 launches:
-#   rows  32 -> 1120 us, 255 reg, 468 spilled, 32.8 KB smem   (the pre-p3 shape)
-#   rows   8 ->  394 us, 255 reg,   0 spilled,  8.2 KB smem
-#   rows   2 ->  348 us, 128 reg,   0 spilled,  4.1 KB smem   <- knee
-#   rows   1 ->  700 us,  80 reg,   0 spilled,  1.0 KB smem   (sort too thin to amortize)
-# Capping registers instead (`maxnreg` 64/96/128) reintroduces spills and is 1.4-3.4x
-# slower; num_warps 2 or 8 are both worse. Shrinking the sub-tile is the only lever
-# that moves register demand and sort scratch together.
-_UNION_SOLVE_TILE = 512
 
 
 def _production_alpha(alpha: float) -> float:
@@ -448,412 +437,6 @@ def _production_softmax_bwd_kernel(
         tl.store(dz_ptrs, dz, mask=mask)
 
 
-@triton.jit
-def _production_union_fwd_kernel(
-    read_logits_ptr,
-    write_logits_ptr,
-    midpoint_values_ptr,
-    support_words_ptr,
-    read_ptr,
-    write_ptr,
-    mask_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    read_logits_stream,
-    read_logits_token,
-    read_logits_col,
-    write_logits_stream,
-    write_logits_token,
-    write_logits_col,
-    midpoint_values_stream,
-    midpoint_values_token,
-    midpoint_values_col,
-    read_stream,
-    read_token,
-    read_col,
-    read_tile,
-    read_lane,
-    write_stream,
-    write_token,
-    write_col,
-    write_tile,
-    write_lane,
-    support_stream_stride,
-    support_word_stride,
-    support_col_stride,
-    mask_stream,
-    mask_token,
-    mask_col,
-    ALPHA: tl.constexpr,
-    HAS_MASK: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    ROW_TILE: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    cols = tl.arange(0, BLOCK_COLS)
-    cmask = cols < n_cols
-    # One CTA still owns exactly the BLOCK_ROWS=32 tokens of one support word (the
-    # `1 << (token % 32)` packing below depends on it), but the entmax solve runs on
-    # ROW_TILE rows at a time. The SM-resident cost of this kernel is
-    # ROW_TILE * BLOCK_COLS * (live fp32 tiles), so the sub-tile -- not the warp
-    # count -- is what sets registers/CTA and the `tl.sort` shared scratch together.
-    packed = tl.zeros((BLOCK_COLS,), tl.int64)
-    for sub in range(BLOCK_ROWS // ROW_TILE):
-        token = word * BLOCK_ROWS + sub * ROW_TILE + tl.arange(0, ROW_TILE)
-        rmask = (stream < n_streams) & (token < tokens)
-        valid = rmask[:, None] & cmask[None, :]
-        if HAS_MASK:
-            valid &= tl.load(
-                mask_ptr + stream * mask_stream + token[:, None] * mask_token
-                + cols[None, :] * mask_col,
-                mask=rmask[:, None] & cmask[None, :], other=0)
-        read_logits = tl.load(
-            read_logits_ptr + stream * read_logits_stream + token[:, None] * read_logits_token
-            + cols[None, :] * read_logits_col,
-            mask=valid,
-            other=0.0,
-        ).to(tl.float32)
-        write_logits = tl.load(
-            write_logits_ptr + stream * write_logits_stream + token[:, None] * write_logits_token
-            + cols[None, :] * write_logits_col,
-            mask=valid,
-            other=0.0,
-        ).to(tl.float32)
-        midpoint_logits = 0.5 * read_logits + 0.5 * write_logits
-        valid_count = tl.sum(valid.to(tl.int32), axis=1)[:, None]
-        has_valid = valid_count > 0
-        row_max = tl.max(
-            tl.where(valid, midpoint_logits, float("-inf")), axis=1)[:, None]
-        row_max = tl.where(has_valid, row_max, 0.0)
-        midpoint_logits = tl.where(valid, midpoint_logits - row_max, 0.0)
-
-        # M - hi is exact where saturation is possible; clamp lo before adding magnitudes.
-        # Hoisted ahead of the sort: `delta` is a pure elementwise fold of the two logit
-        # tiles, so computing it here retires BOTH of them before the sort's live range
-        # instead of carrying them across it (one live tile instead of two).
-        read_negative = read_logits < 0.0
-        write_negative = write_logits < 0.0
-        opposite_sign = read_negative != write_negative
-        read_magnitude = tl.abs(read_logits)
-        write_magnitude = tl.abs(write_logits)
-        hi_magnitude = tl.maximum(read_magnitude, write_magnitude)
-        lo_magnitude = tl.minimum(read_magnitude, write_magnitude)
-        magnitude_room = _TRITON_FP32_MAX - hi_magnitude
-        opposite_magnitude = hi_magnitude + tl.minimum(lo_magnitude, magnitude_room)
-        opposite_delta = tl.where(read_negative, -opposite_magnitude, opposite_magnitude)
-        same_read = tl.where(opposite_sign, 0.0, read_logits)
-        same_write = tl.where(opposite_sign, 0.0, write_logits)
-        delta = tl.where(opposite_sign, opposite_delta, same_read - same_write)
-
-        row_min = tl.min(
-            tl.where(valid, midpoint_logits, float("inf")), axis=1)[:, None]
-        sentinel = tl.where(has_valid, row_min - 1.0, -1.0)
-        sorted_logits = tl.sort(
-            tl.where(valid, midpoint_logits, sentinel), dim=1, descending=True)
-        sorted_valid = cols[None, :] < valid_count
-        prefix = tl.cumsum(sorted_logits, axis=1)
-        prefix_sq = tl.cumsum(sorted_logits * sorted_logits, axis=1)
-        k = (cols[None, :] + 1).to(tl.float32)
-        if ALPHA == 2.0:
-            tau_candidates = (prefix - 1.0) / k
-            candidate = sorted_valid & (sorted_logits > tau_candidates)
-        else:
-            discriminant = prefix * prefix - k * (prefix_sq - 4.0)
-            tau_candidates = (prefix - tl.sqrt(tl.maximum(discriminant, 0.0))) / k
-            candidate = sorted_valid & (discriminant >= 0.0) & (sorted_logits > tau_candidates)
-        chosen_col = tl.max(tl.where(candidate, cols[None, :], -1), axis=1)[:, None]
-        tau = tl.sum(
-            tl.where(cols[None, :] == chosen_col, tau_candidates, 0.0), axis=1)[:, None]
-        tau = tl.where(chosen_col >= 0, tau, 0.0)
-        semantic_support = valid & (midpoint_logits > tau)
-        base = (ALPHA - 1.0) * (midpoint_logits - tau)
-        base = tl.where(semantic_support, tl.maximum(base, 0.0), 0.0)
-        if ALPHA == 2.0:
-            midpoint_values = base
-        else:
-            midpoint_values = base * base
-
-        read_gate = tl.sigmoid(delta)
-        # log(sigmoid(-delta)) stays finite for large finite logits, unlike log(sigmoid()).
-        log_write_gate = tl.where(delta > 0.0, -delta, 0.0) - tl.log(
-            1.0 + tl.exp(-tl.abs(delta)))
-        safe_values = tl.where(semantic_support, midpoint_values, 1.0)
-        log_weight = tl.where(
-            semantic_support,
-            tl.log(safe_values) + log_write_gate,
-            float("-inf"),
-        )
-        max_log_weight = tl.max(log_weight, axis=1)[:, None]
-        has_mass = max_log_weight > float("-inf")
-        safe_max_log_weight = tl.where(has_mass, max_log_weight, 0.0)
-        scaled_weight = tl.where(
-            semantic_support & has_mass,
-            tl.exp(log_weight - safe_max_log_weight),
-            0.0,
-        )
-        denominator = tl.sum(scaled_weight, axis=1)[:, None]
-        has_weight = denominator > 0.0
-        safe_denominator = tl.where(has_weight, denominator, 1.0)
-        write = tl.where(
-            semantic_support & has_weight,
-            scaled_weight / safe_denominator,
-            0.0,
-        )
-        read = midpoint_values * read_gate
-
-        output_mask = rmask[:, None] & cmask[None, :]
-        tl.store(
-            midpoint_values_ptr + stream * midpoint_values_stream
-            + token[:, None] * midpoint_values_token + cols[None, :] * midpoint_values_col,
-            midpoint_values,
-            mask=output_mask,
-        )
-        read_offsets = tl.where(
-            TILE_MAJOR,
-            stream * read_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * read_tile
-            + cols[None, :] * read_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * read_lane,
-            stream * read_stream + token[:, None] * read_token + cols[None, :] * read_col,
-        )
-        write_offsets = tl.where(
-            TILE_MAJOR,
-            stream * write_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * write_tile
-            + cols[None, :] * write_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * write_lane,
-            stream * write_stream + token[:, None] * write_token + cols[None, :] * write_col,
-        )
-        tl.store(read_ptr + read_offsets, read, mask=output_mask)
-        tl.store(write_ptr + write_offsets, write, mask=output_mask)
-        bit_values = tl.where(
-            # Union has one scheduling stream for both roles. Pack the union of
-            # post-cast nonzeros so either side may create harmless false-live work
-            # but a numerically live stored factor is never skipped.
-            semantic_support & (
-                (read.to(tl.bfloat16).to(tl.float32) != 0.0)
-                | (write.to(tl.bfloat16).to(tl.float32) != 0.0)
-            ),
-            tl.full((ROW_TILE, BLOCK_COLS), 1, tl.int64) << (token[:, None] % 32),
-            tl.zeros((ROW_TILE, BLOCK_COLS), tl.int64),
-        )
-        # Sub-tiles own disjoint bit positions of the same word, so accumulating
-        # their partial packs is exact integer OR, bit-for-bit the whole-word sum.
-        packed += tl.sum(bit_values, axis=0)
-    tl.store(
-        support_words_ptr + stream * support_stream_stride
-        + word * support_word_stride + cols * support_col_stride,
-        packed.to(tl.uint32).to(tl.int32, bitcast=True),
-        mask=cmask,
-    )
-
-
-@triton.jit
-def _production_union_bwd_kernel(
-    read_logits_ptr,
-    write_logits_ptr,
-    midpoint_values_ptr,
-    support_words_ptr,
-    mask_ptr,
-    read_values_ptr,
-    write_values_ptr,
-    d_read_ptr,
-    d_write_ptr,
-    d_read_logits_ptr,
-    d_write_logits_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    read_logits_stream,
-    read_logits_token,
-    read_logits_col,
-    write_logits_stream,
-    write_logits_token,
-    write_logits_col,
-    midpoint_values_stream,
-    midpoint_values_token,
-    midpoint_values_col,
-    support_stream_stride,
-    support_word_stride,
-    support_col_stride,
-    mask_stream,
-    mask_token,
-    mask_col,
-    read_values_stream,
-    read_values_token,
-    read_values_col,
-    read_values_tile,
-    read_values_lane,
-    write_values_stream,
-    write_values_token,
-    write_values_col,
-    write_values_tile,
-    write_values_lane,
-    d_read_stream,
-    d_read_token,
-    d_read_col,
-    d_read_tile,
-    d_read_lane,
-    d_write_stream,
-    d_write_token,
-    d_write_col,
-    d_write_tile,
-    d_write_lane,
-    d_read_logits_stream,
-    d_read_logits_token,
-    d_read_logits_col,
-    d_write_logits_stream,
-    d_write_logits_token,
-    d_write_logits_col,
-    ALPHA: tl.constexpr,
-    HAS_MASK: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-    cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
-    cmask = cols < n_cols
-    valid = rmask[:, None] & cmask[None, :]
-    if HAS_MASK:
-        valid &= tl.load(
-            mask_ptr + stream * mask_stream + token[:, None] * mask_token + cols[None, :] * mask_col,
-            mask=rmask[:, None] & cmask[None, :], other=0)
-    midpoint_values = tl.load(
-        midpoint_values_ptr + stream * midpoint_values_stream
-        + token[:, None] * midpoint_values_token + cols[None, :] * midpoint_values_col,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    read_logits = tl.load(
-        read_logits_ptr + stream * read_logits_stream + token[:, None] * read_logits_token
-        + cols[None, :] * read_logits_col,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    write_logits = tl.load(
-        write_logits_ptr + stream * write_logits_stream + token[:, None] * write_logits_token
-        + cols[None, :] * write_logits_col,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    read_values_offsets = tl.where(
-        TILE_MAJOR,
-        stream * read_values_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * read_values_tile
-        + cols[None, :] * read_values_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * read_values_lane,
-        stream * read_values_stream + token[:, None] * read_values_token + cols[None, :] * read_values_col,
-    )
-    write_values_offsets = tl.where(
-        TILE_MAJOR,
-        stream * write_values_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * write_values_tile
-        + cols[None, :] * write_values_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * write_values_lane,
-        stream * write_values_stream + token[:, None] * write_values_token + cols[None, :] * write_values_col,
-    )
-    # Returned bf16 amplitudes are the route-probability authority for the VJP.
-    read_values = tl.load(
-        read_values_ptr + read_values_offsets, mask=valid, other=0.0).to(tl.float32)
-    write_values = tl.load(
-        write_values_ptr + write_values_offsets, mask=valid, other=0.0).to(tl.float32)
-    d_read_offsets = tl.where(
-        TILE_MAJOR,
-        stream * d_read_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * d_read_tile
-        + cols[None, :] * d_read_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * d_read_lane,
-        stream * d_read_stream + token[:, None] * d_read_token + cols[None, :] * d_read_col,
-    )
-    d_write_offsets = tl.where(
-        TILE_MAJOR,
-        stream * d_write_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * d_write_tile
-        + cols[None, :] * d_write_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * d_write_lane,
-        stream * d_write_stream + token[:, None] * d_write_token + cols[None, :] * d_write_col,
-    )
-    d_read = tl.load(d_read_ptr + d_read_offsets, mask=valid, other=0.0).to(tl.float32)
-    d_write = tl.load(d_write_ptr + d_write_offsets, mask=valid, other=0.0).to(tl.float32)
-
-    support_word = tl.load(
-        support_words_ptr + stream * support_stream_stride
-        + word * support_word_stride + cols * support_col_stride,
-        mask=cmask,
-        other=0,
-    ).to(tl.uint32, bitcast=True)
-    support = (
-        (support_word >> (token[:, None] % 32))
-        & tl.full((BLOCK_ROWS, BLOCK_COLS), 1, tl.uint32)
-    ) != 0
-    support = support & valid
-
-    # Mirror forward's overflow-free delta and retain the clamp's direct-adjoint mask.
-    read_negative = read_logits < 0.0
-    write_negative = write_logits < 0.0
-    opposite_sign = read_negative != write_negative
-    read_magnitude = tl.abs(read_logits)
-    write_magnitude = tl.abs(write_logits)
-    hi_magnitude = tl.maximum(read_magnitude, write_magnitude)
-    lo_magnitude = tl.minimum(read_magnitude, write_magnitude)
-    magnitude_room = _TRITON_FP32_MAX - hi_magnitude
-    opposite_magnitude = hi_magnitude + tl.minimum(lo_magnitude, magnitude_room)
-    opposite_delta = tl.where(read_negative, -opposite_magnitude, opposite_magnitude)
-    same_read = tl.where(opposite_sign, 0.0, read_logits)
-    same_write = tl.where(opposite_sign, 0.0, write_logits)
-    delta = tl.where(opposite_sign, opposite_delta, same_read - same_write)
-    saturated = (
-        opposite_sign
-        & (hi_magnitude > _TRITON_FP32_HALF_MAX)
-        & (lo_magnitude > magnitude_room)
-    )
-    read_gate = tl.sigmoid(delta)
-    write_gate = tl.sigmoid(-delta)
-
-    d_log_weight = write_values * (
-        d_write - tl.sum(d_write * write_values, axis=1)[:, None])
-    safe_gradient_values = tl.where(
-        support & (midpoint_values != 0.0),
-        midpoint_values,
-        1.0,
-    )
-    d_midpoint_values = d_read * read_gate + tl.where(
-        support,
-        d_log_weight / safe_gradient_values,
-        0.0,
-    )
-    if ALPHA == 2.0:
-        s = tl.where(support, 1.0, 0.0)
-    else:
-        s = tl.where(support, tl.sqrt(midpoint_values), 0.0)
-    numerator = tl.sum(s * d_midpoint_values, axis=1)[:, None]
-    denominator = tl.sum(s, axis=1)[:, None]
-    denominator = tl.where(denominator > 0.0, denominator, 1.0)
-    d_midpoint_logits = tl.where(
-        valid,
-        s * (d_midpoint_values - numerator / denominator),
-        0.0,
-    )
-    d_delta = (
-        d_read * read_values * write_gate
-        - d_log_weight * read_gate
-    ) * (~saturated).to(tl.float32)
-    d_read_logits = 0.5 * d_midpoint_logits + d_delta
-    d_write_logits = 0.5 * d_midpoint_logits - d_delta
-    tl.store(
-        d_read_logits_ptr + stream * d_read_logits_stream
-        + token[:, None] * d_read_logits_token + cols[None, :] * d_read_logits_col,
-        d_read_logits,
-        mask=rmask[:, None] & cmask[None, :],
-    )
-    tl.store(
-        d_write_logits_ptr + stream * d_write_logits_stream
-        + token[:, None] * d_write_logits_token + cols[None, :] * d_write_logits_col,
-        d_write_logits,
-        mask=rmask[:, None] & cmask[None, :],
-    )
-
-
 def _launch_fwd(z, mask, alpha, *, tokens, n_streams):
     rows, cols = z.shape
     block_rows = 32
@@ -1039,36 +622,6 @@ def _value_strides(values: torch.Tensor) -> tuple[int, int, int, int, int]:
     raise ValueError(f"route values must be rank 3 (dense) or rank 4 (tile-major), got {values.ndim}")
 
 
-def _union_row_tile(block_cols: int) -> int:
-    """Rows of one 32-token support word the union solve keeps in flight at once.
-
-    The union forward kernel's SM cost is ``ROW_TILE * block_cols`` elements times the
-    number of live fp32 tiles in the closed-form solve, in BOTH registers and the
-    ``tl.sort`` shared scratch. Holding that product at ``_UNION_SOLVE_TILE`` keeps the
-    solve's live set inside the register file (128 registers/thread, zero spilled bytes)
-    and the sort scratch at 4 KB/CTA for every routing width, instead of letting both
-    scale with the level's branch count -- which is what pinned the pre-p3 shape at
-    ptxas's 255-register cap with 468 spilled bytes and 32.8 KB of scratch. This is a
-    structural rule: the working set stays fixed as ``block_cols`` grows toward the
-    wide-``nc`` regime, so it is not a per-width threshold.
-    """
-    row_tile = min(32, max(1, _UNION_SOLVE_TILE // block_cols))
-    # HAZARD: `_launch_union_fwd`'s kernel loops `range(BLOCK_ROWS // ROW_TILE)` over
-    # exactly `BLOCK_ROWS = 32` tokens; that loop silently DROPS the last
-    # `BLOCK_ROWS % ROW_TILE` tokens of the word -- never solving them -- unless
-    # `ROW_TILE` divides `BLOCK_ROWS` evenly. Today the sole call site passes
-    # `triton.next_power_of_2(width)` capped at `MAX_BRANCH_WIDTH = 256`, both of
-    # which are themselves powers of two, so `row_tile` is always a power of two
-    # and this can never trip -- but nothing here enforces that contract, and a
-    # future caller passing a non-power-of-two `block_cols` would get a partial
-    # solve with no error (Gate 2, 2026-08-01, item 1's latent hazard).
-    assert 32 % row_tile == 0, (
-        f"_union_row_tile({block_cols}) = {row_tile} does not divide BLOCK_ROWS=32; "
-        "the union forward/backward kernels' `range(BLOCK_ROWS // ROW_TILE)` sub-tile "
-        "loop would silently skip 32 % row_tile tokens of every support word")
-    return row_tile
-
-
 def _launch_union_fwd(
     read_source: torch.Tensor,
     write_source: torch.Tensor,
@@ -1078,22 +631,18 @@ def _launch_union_fwd(
     write_output: torch.Tensor,
     alpha: float,
 ) -> None:
-    n_streams, tokens = read_source.shape[0], read_source.shape[1]
-    width = read_source.shape[-1]
-    _production_union_fwd_kernel[(n_streams * triton.cdiv(tokens, 32),)](
-        read_source, write_source, midpoint, support_words, read_output, write_output, read_source,
-        n_streams, tokens, triton.cdiv(tokens, 32), width,
-        read_source.stride(0), read_source.stride(1), read_source.stride(2),
-        write_source.stride(0), write_source.stride(1), write_source.stride(2),
-        midpoint.stride(0), midpoint.stride(1), midpoint.stride(2),
-        *_value_strides(read_output),
-        *_value_strides(write_output),
-        support_words.stride(0), support_words.stride(1), support_words.stride(2),
-        read_source.stride(0), read_source.stride(1), read_source.stride(2),
-        ALPHA=alpha, HAS_MASK=False, TILE_MAJOR=read_output.ndim == 4, BLOCK_ROWS=32,
-        ROW_TILE=_union_row_tile(triton.next_power_of_2(width)),
-        BLOCK_COLS=triton.next_power_of_2(width),
-    )
+    # ===== TRACK E DISPATCH EDIT (the ONLY routing-file change; Track K owns
+    # `rola/routing/**` generally and the merge coordinator reconciles) =====
+    # The union entmax solve is a hand-CUDA + CUB kernel in `csrc/rola/src/entmax.cu`,
+    # not Triton: the Triton lowering was measured at 255 registers with spills and an
+    # uncontrollable `tl.sort` scratch, and it is a JIT against the closed-world AOT
+    # policy. Design + gates: `rola-scratch/workflows/20260802-thunder/trackE.md`.
+    # NO FALLBACK, by policy -- `rola.ops._ext` raises loudly if the wheel is missing.
+    from rola.ops._ext import extension
+
+    extension().entmax_union_forward(
+        read_source, write_source, midpoint, support_words, read_output, write_output,
+        float(alpha))
 
 
 def _launch_union_bwd(
@@ -1109,27 +658,13 @@ def _launch_union_bwd(
     d_write_level: torch.Tensor,
     alpha: float,
 ) -> None:
-    n_streams, tokens = read_logits_level.shape[0], read_logits_level.shape[1]
-    width = read_logits_level.shape[-1]
-    _production_union_bwd_kernel[(n_streams * triton.cdiv(tokens, 32),)](
+    # ===== TRACK E DISPATCH EDIT (see `_launch_union_fwd`) =====
+    from rola.ops._ext import extension
+
+    extension().entmax_union_backward(
         read_logits_level, write_logits_level, midpoint, support_words,
-        read_logits_level, read_output, write_output,
-        d_read_output, d_write_output, d_read_level, d_write_level,
-        n_streams, tokens, triton.cdiv(tokens, 32), width,
-        read_logits_level.stride(0), read_logits_level.stride(1), read_logits_level.stride(2),
-        write_logits_level.stride(0), write_logits_level.stride(1), write_logits_level.stride(2),
-        midpoint.stride(0), midpoint.stride(1), midpoint.stride(2),
-        support_words.stride(0), support_words.stride(1), support_words.stride(2),
-        read_logits_level.stride(0), read_logits_level.stride(1), read_logits_level.stride(2),
-        *_value_strides(read_output),
-        *_value_strides(write_output),
-        *_value_strides(d_read_output),
-        *_value_strides(d_write_output),
-        d_read_level.stride(0), d_read_level.stride(1), d_read_level.stride(2),
-        d_write_level.stride(0), d_write_level.stride(1), d_write_level.stride(2),
-        ALPHA=alpha, HAS_MASK=False, TILE_MAJOR=read_output.ndim == 4, BLOCK_ROWS=32,
-        BLOCK_COLS=triton.next_power_of_2(width),
-    )
+        read_output, write_output, d_read_output, d_write_output,
+        d_read_level, d_write_level, float(alpha))
 
 
 def _launch_softmax_into(

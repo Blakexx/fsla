@@ -1,0 +1,650 @@
+// THE PRODUCER'S UNION ENTMAX SOLVE -- hand CUDA, CUB warp primitives.
+// Design of record: `rola-scratch/workflows/20260802-thunder/trackE.md` §3.
+// Gates: `tests/unit/test_entmax_cuda_gates.py` (fp64 oracle only; the Triton kernel is
+// a debugging diagnostic and is never asserted against -- trackE.md §4).
+//
+// ONE ROW PER LOGICAL WARP. Every collective in the solve runs along one token's row, so
+// all of them are warp-scope and shuffle-based. Consequences, all structural:
+//   * register demand is O(items-per-lane), NOT O(CTA tile) -- so the warp count became
+//     a free occupancy knob, which it provably was not under Triton (producer-p3.md §1);
+//   * the solve uses ZERO shared memory (`cub::WarpScan`/`WarpReduce` TempStorage
+//     measures 1 byte -- the pure-shfl specializations), so the 75%-bank-conflict
+//     `tl.sort` scratch is ELIMINATED, not tuned;
+//   * exactly ONE `__syncthreads` in the whole kernel (see the epilogue).
+
+#include <cub/warp/warp_merge_sort.cuh>
+#include <cub/warp/warp_reduce.cuh>
+#include <cub/warp/warp_scan.cuh>
+#include <cuda_bf16.h>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+#include "entmax.cuh"
+
+namespace rola {
+namespace entmax {
+namespace {
+
+//: FROZEN (§4.1, nine downstream consumers): one CTA owns exactly the 32 tokens of one
+//: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass.
+constexpr int WORD_TOKENS = 32;
+constexpr int BLOCK_WARPS = 4;
+constexpr int WARP_SIZE = 32;
+constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
+//: `__launch_bounds__(128, 8)` states the 64-register target to ptxas, so a regression
+//: becomes a compile-time allocation decision instead of a silent spill; the
+//: ratification manifest (`tools/ratify.py`) then fails the BUILD on spill growth.
+constexpr int MIN_BLOCKS_PER_SM = 8;
+
+//: `(stream, token, col, tile, lane)` -- ONE expression serves both route-value layouts
+//: because `_value_strides` already zeroes the members the layout does not use (rank-3
+//: dense: tile=lane=0; rank-4 tile-major: token=0). Triton needed a
+//: `tl.where(TILE_MAJOR, ...)` select and a codegen axis for this; here layout is data.
+struct Strides {
+  int64_t stream, token, col, tile, lane;
+};
+
+__device__ __forceinline__ int64_t addr(const Strides &s, int64_t stream, int64_t tok,
+                                        int64_t col) {
+  return stream * s.stream + tok * s.token + (tok >> 5) * s.tile + col * s.col +
+         (tok & 31) * s.lane;
+}
+
+template <typename T>
+__device__ __forceinline__ void store_value(T *p, int64_t off, float v);
+template <>
+__device__ __forceinline__ void store_value<float>(float *p, int64_t off, float v) {
+  p[off] = v;
+}
+template <>
+__device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16 *p, int64_t off,
+                                                           float v) {
+  p[off] = __float2bfloat16(v);
+}
+
+template <typename T>
+__device__ __forceinline__ float load_value(const T *p, int64_t off);
+template <>
+__device__ __forceinline__ float load_value<float>(const float *p, int64_t off) {
+  return p[off];
+}
+template <>
+__device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16 *p,
+                                                           int64_t off) {
+  return __bfloat162float(p[off]);
+}
+
+struct Descending {
+  __device__ __forceinline__ bool operator()(float a, float b) const { return a > b; }
+};
+
+struct Pair {
+  float p, q;
+};
+struct PairAdd {
+  __device__ __forceinline__ Pair operator()(const Pair &a, const Pair &b) const {
+    return {a.p + b.p, a.q + b.q};
+  }
+};
+
+//: The overflow-free read-write difference, verbatim from the shipped semantics: two
+//: opposite-sign finite extrema overflow a raw subtraction while their midpoint stays
+//: representable, so the MAGNITUDE is clamped instead. Gate A1 holds this bit-identical
+//: against plain fp32 torch -- it is pure elementwise, so no reassociation exists.
+__device__ __forceinline__ float overflow_free_delta(float r, float w, bool *saturated) {
+  const float kMax = 3.4028234663852886e38f;
+  const float kHalfMax = 1.7014117331926443e38f;
+  bool rneg = r < 0.0f;
+  bool opposite = rneg != (w < 0.0f);
+  float rmag = fabsf(r), wmag = fabsf(w);
+  float hi = fmaxf(rmag, wmag), lo = fminf(rmag, wmag);
+  float room = kMax - hi;
+  float mag = hi + fminf(lo, room);
+  float opp = rneg ? -mag : mag;
+  float same = (opposite ? 0.0f : r) - (opposite ? 0.0f : w);
+  if (saturated) *saturated = opposite && (hi > kHalfMax) && (lo > room);
+  return opposite ? opp : same;
+}
+
+//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. Computed as
+//: `-(max(d,0) + log1p(exp(-|d|)))`: `log1pf` rather than `logf(1+x)` because the gate
+//: is the fp64 oracle (which uses `logsigmoid`), not the previous lowering -- this is
+//: strictly closer to the baseline that now governs.
+__device__ __forceinline__ float log_write_gate(float delta) {
+  return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
+}
+
+__device__ __forceinline__ bool bf16_nonzero(float v) {
+  return __bfloat162float(__float2bfloat16(v)) != 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// FORWARD
+// ---------------------------------------------------------------------------
+template <int LW, int IPT, bool ALPHA15, typename OutT>
+__global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forward_kernel(
+    const float *__restrict__ read_logits, const float *__restrict__ write_logits,
+    float *__restrict__ midpoint_values, int32_t *__restrict__ support_words,
+    OutT *__restrict__ read_values, OutT *__restrict__ write_values, int tokens, int width,
+    int n_words, Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
+    Strides ssup) {
+  constexpr int W_PAD = LW * IPT;
+  constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
+  constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
+
+  using WarpSort = cub::WarpMergeSort<float, IPT, LW>;
+  using WarpScanP = cub::WarpScan<Pair, LW>;
+  using WarpRedF = cub::WarpReduce<float, LW>;
+  using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
+
+  //: The support-word staging ALIASES the sort scratch. Each physical warp writes only
+  //: into ITS OWN slot, and its own sorts are already retired warp-synchronously by
+  //: then, so there is no cross-warp hazard and no barrier is needed BEFORE the write --
+  //: which is what gets the whole kernel down to ONE `__syncthreads`.
+  constexpr int SORT_BYTES = (WARP_SIZE / LW) * (int)sizeof(typename WarpSort::TempStorage);
+  constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
+  constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
+  //: rounded up so warp w's slot is 16B-aligned; `WarpMergeSort::TempStorage` is
+  //: 4 + 4*W_PAD bytes, i.e. NOT a multiple of its own alignment.
+  constexpr int SLOT = (RAW_SLOT + 15) & ~15;
+  __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
+  //: These three TempStorages are declared per-thread, not __shared__, which is only
+  //: legal because CUB resolves all of them to the pure-shfl specializations here. That
+  //: is MEASURED, not assumed (`<scratchpad>/cub_sizeof.cu`: 1 byte for every
+  //: WarpScan/WarpReduce instantiation this kernel uses), and the static_asserts below
+  //: turn a future CUB that changes its mind into a compile error rather than a race.
+  static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
+  static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
+  static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
+  static_assert(SORT_BYTES >= STAGE_BYTES || STAGE_BYTES <= SLOT, "stage must fit its slot");
+
+  const int warp = threadIdx.x / WARP_SIZE;
+  const int lane = threadIdx.x % LW;
+  //: HAZARD, and it is NOT theoretical: a full 0xffffffff mask here DEADLOCKS. With
+  //: logical warps (LW < 32) and a ragged final support word, only SOME logical warps of
+  //: a physical warp have a live token -- the rest take the `continue` -- so a broadcast
+  //: naming all 32 lanes waits on threads that are somewhere else entirely. The member
+  //: mask must name exactly this logical warp. (CUB's own collectives compute this
+  //: internally; these hand broadcasts of their lane-0 results did not.)
+  const unsigned lmask =
+      (LW == WARP_SIZE) ? 0xffffffffu
+                        : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const int logical = threadIdx.x / LW;               // logical warp id within the block
+  const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
+  char *slot = smem + warp * SLOT;
+  auto &sort_store =
+      reinterpret_cast<typename WarpSort::TempStorage *>(slot)[logical_in_warp];
+  typename WarpScanP::TempStorage scan_store;
+  typename WarpRedF::TempStorage red_store;
+  typename WarpRedU::TempStorage redu_store;
+
+  const int64_t stream = blockIdx.y;
+  const int word = blockIdx.x;
+
+  uint32_t part[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) part[i] = 0u;
+
+  for (int it = 0; it < ITERS; ++it) {
+    const int local = it * LOGICAL_PER_BLOCK + logical;
+    const int token = word * WORD_TOKENS + local;
+    //: A row past the end contributes nothing: today it yields has_valid=0 -> tau=0 ->
+    //: support=false -> every store masked off, so skipping is exactly equivalent.
+    if (local >= WORD_TOKENS || token >= tokens) continue;
+
+    // ---- PHASE A: load striped (coalesced), fold, RETIRE both logit tiles ----
+    float midpoint[IPT], delta[IPT];
+    uint32_t support_mask = 0u, saturated_mask = 0u;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      const bool valid = col < width;
+      const float r = valid ? read_logits[addr(sr, stream, token, col)] : 0.0f;
+      const float w = valid ? write_logits[addr(sw, stream, token, col)] : 0.0f;
+      midpoint[i] = 0.5f * r + 0.5f * w;
+      bool sat = false;
+      delta[i] = overflow_free_delta(r, w, &sat);
+      if (sat) saturated_mask |= (1u << i);
+    }
+
+    // ---- PHASE B: row max/min, sentinel-pad, sort descending ----
+    float local_max = -INFINITY, local_min = INFINITY;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      if (lane + i * LW < width) {
+        local_max = fmaxf(local_max, midpoint[i]);
+        local_min = fminf(local_min, midpoint[i]);
+      }
+    }
+    float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
+    row_max = __shfl_sync(lmask, row_max, 0, LW);
+    float row_min = WarpRedF(red_store).Reduce(local_min, cub::Min());
+    row_min = __shfl_sync(lmask, row_min, 0, LW);
+
+    float keys[IPT];
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const bool valid = lane + i * LW < width;
+      midpoint[i] = valid ? midpoint[i] - row_max : 0.0f;
+      //: A finite row-relative sentinel keeps padded lanes strictly below every real
+      //: value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
+      keys[i] = valid ? midpoint[i] : (row_min - row_max) - 1.0f;
+    }
+    //: A sort is a PERMUTATION -- exact, no arithmetic -- so the sorted sequence is
+    //: identical whatever algorithm produces it. Feeding striped data is fine: the
+    //: output arrangement is what the scan reads, and CUB delivers it blocked (rank
+    //: order across lanes), which is exactly what the prefix walk needs.
+    WarpSort(sort_store).Sort(keys, Descending());
+
+    // ---- PHASE C: tau. prefix/prefix_sq/tau_candidates/candidate/chosen_col all
+    //      COLLAPSE TO SCALARS -- none is ever materialized full width. ----
+    Pair local_sum{0.0f, 0.0f};
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      local_sum.p += keys[i];
+      local_sum.q += keys[i] * keys[i];
+    }
+    Pair carry;
+    WarpScanP(scan_store).ExclusiveScan(local_sum, carry, Pair{0.0f, 0.0f}, PairAdd());
+
+    int best_col = -1;
+    float best_tau = 0.0f;
+    float run_p = carry.p, run_q = carry.q;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      run_p += keys[i];
+      run_q += keys[i] * keys[i];
+      const int rank = lane * IPT + i;
+      const float k = (float)(rank + 1);
+      float tau_c;
+      bool cand;
+      if (ALPHA15) {
+        const float disc = run_p * run_p - k * (run_q - 4.0f);
+        tau_c = (run_p - sqrtf(fmaxf(disc, 0.0f))) / k;
+        cand = (rank < width) && (disc >= 0.0f) && (keys[i] > tau_c);
+      } else {
+        tau_c = (run_p - 1.0f) / k;
+        cand = (rank < width) && (keys[i] > tau_c);
+      }
+      if (cand) {
+        best_col = rank;
+        best_tau = tau_c;
+      }
+    }
+    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the
+    //: high 32 bits makes integer Max pick it, and lane rank ranges are disjoint so a tie
+    //: is impossible. `best_col = -1` maps to key 0, so an all-empty row yields tau = 0.
+    unsigned long long packed_key =
+        ((unsigned long long)(uint32_t)(best_col + 1) << 32) |
+        (unsigned long long)__float_as_uint(best_tau);
+    packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
+    packed_key = __shfl_sync(lmask, packed_key, 0, LW);
+    const int chosen = (int)(uint32_t)(packed_key >> 32) - 1;
+    const float tau = chosen >= 0 ? __uint_as_float((uint32_t)(packed_key & 0xffffffffu)) : 0.0f;
+
+    // ---- PHASE D: values in place over `midpoint`; `read` emitted HERE, while `delta`
+    //      is still the logit difference and before phase E overwrites it. ----
+    float values[IPT];
+    uint32_t read_live_mask = 0u;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      const bool sup = (col < width) && (midpoint[i] > tau);
+      if (sup) support_mask |= (1u << i);
+      float base = (ALPHA15 ? 0.5f : 1.0f) * (midpoint[i] - tau);
+      base = sup ? fmaxf(base, 0.0f) : 0.0f;
+      values[i] = ALPHA15 ? base * base : base;
+      if (col < width) {
+        midpoint_values[addr(smid, stream, token, col)] = values[i];
+        const float read = values[i] * (1.0f / (1.0f + expf(-delta[i])));
+        store_value(read_values, addr(sread, stream, token, col), read);
+        if (bf16_nonzero(read)) read_live_mask |= (1u << i);
+      }
+    }
+
+    // ---- PHASE E: log-weights IN PLACE over `delta`, then the write normalization ----
+    float local_lw = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const bool sup = (support_mask >> i) & 1u;
+      delta[i] = sup ? logf(values[i]) + log_write_gate(delta[i]) : -INFINITY;
+      if (sup) local_lw = fmaxf(local_lw, delta[i]);
+    }
+    float max_lw = WarpRedF(red_store).Reduce(local_lw, cub::Max());
+    max_lw = __shfl_sync(lmask, max_lw, 0, LW);
+    const bool has_mass = max_lw > -INFINITY;
+    const float safe_max = has_mass ? max_lw : 0.0f;
+
+    float scaled[IPT];
+    float local_den = 0.0f;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const bool sup = (support_mask >> i) & 1u;
+      scaled[i] = (sup && has_mass) ? expf(delta[i] - safe_max) : 0.0f;
+      local_den += scaled[i];
+    }
+    float den = WarpRedF(red_store).Reduce(local_den, cub::Sum());
+    den = __shfl_sync(lmask, den, 0, LW);
+    const bool has_weight = den > 0.0f;
+    const float safe_den = has_weight ? den : 1.0f;
+
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      if (col >= width) continue;
+      const bool sup = (support_mask >> i) & 1u;
+      const float write = (sup && has_weight) ? scaled[i] / safe_den : 0.0f;
+      store_value(write_values, addr(swrite, stream, token, col), write);
+      //: Support is defined AT THE NATIVE bf16 STORAGE BOUNDARY, not by the
+      //: pre-quantization solve, so the scheduler and the route stream are one authority.
+      //: Union has one scheduling stream for both roles, so the union of post-cast
+      //: nonzeros is packed: either side may create harmless false-live work, but a
+      //: numerically live stored factor is never skipped.
+      if (sup && (((read_live_mask >> i) & 1u) || bf16_nonzero(write)))
+        part[i] |= (1u << (token & 31));
+    }
+  }
+
+  // ---- EPILOGUE: pack the 32-token support word. ONE barrier. ----
+  //: Lanes holding the same column in one physical warp differ only in bits at or above
+  //: LW, so a butterfly over exactly those bits ORs across the logical warps in place --
+  //: no shared atomics, no zero-init pass.
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    for (int d = LW; d < WARP_SIZE; d <<= 1)
+      part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
+  }
+  uint32_t *stage = reinterpret_cast<uint32_t *>(smem + warp * SLOT);
+  if (logical_in_warp == 0) {
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) stage[lane + i * LW] = part[i];
+  }
+  __syncthreads();
+  if (warp == 0) {
+    for (int col = lane; col < width; col += LW) {
+      uint32_t acc = 0u;
+#pragma unroll
+      for (int w = 0; w < BLOCK_WARPS; ++w)
+        acc |= reinterpret_cast<const uint32_t *>(smem + w * SLOT)[col];
+      support_words[stream * ssup.stream + (int64_t)word * ssup.token +
+                    (int64_t)col * ssup.col] = (int32_t)acc;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BACKWARD -- the alpha-entmax Jacobian action through the union split.
+//
+// No sort and no scan: this is a THREE-REDUCTION elementwise pass, which is why p3 could
+// defer it and why it still carried the pre-p3 one-big-tile shape and its spill wall.
+// It shares the forward's block/warp decomposition, width classes, striped access,
+// stride expression and launch bounds, and it RECOMPUTES `delta` rather than reloading
+// a saved tensor (cheaper than a third logit-sized read).
+//
+// SUPPORT IS AN INPUT here -- unpacked from the same frozen `support_words` the forward
+// emitted -- so the two directions cannot disagree about the support set by construction.
+//
+// DEAD DIRECTIONS ARE EXACTLY ZERO, BY MULTIPLICATION. Off support: `s = 0`,
+// `read_values = 0` and `write_values = 0` (bf16 of exact zeros), hence
+// `d_log_weight = write_values * (...) = 0`, `d_midpoint_logits = s * (...) = 0`, and
+// `d_delta = d_read*read_values*write_gate - d_log_weight*read_gate = 0`. So both
+// `0.5*d_ml + d_delta` and `0.5*d_ml - d_delta` are exact zeros. The gate asserts the
+// FORM (rtol=0), not a magnitude.
+// ON support this is `diag(s) - s s^T / (1.s)` -- the alpha-entmax Jacobian action, with
+// `s = 1` (alpha=2) or `s = sqrt(p) = p^(2-alpha)` (alpha=1.5) -- plus the write side's
+// second rank-1 (the softmax form inside `d_log_weight`) and the diagonal gate terms.
+// ---------------------------------------------------------------------------
+template <int LW, int IPT, bool ALPHA15, typename OutT>
+__global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
+    const float *__restrict__ read_logits, const float *__restrict__ write_logits,
+    const float *__restrict__ midpoint_values, const int32_t *__restrict__ support_words,
+    const OutT *__restrict__ read_values, const OutT *__restrict__ write_values,
+    const OutT *__restrict__ d_read, const OutT *__restrict__ d_write,
+    float *__restrict__ d_read_logits, float *__restrict__ d_write_logits, int tokens,
+    int width, Strides sr, Strides sw, Strides smid, Strides srv, Strides swv,
+    Strides sdr, Strides sdw, Strides sdrl, Strides sdwl, Strides ssup) {
+  constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
+  constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
+  using WarpRedF = cub::WarpReduce<float, LW>;
+  using WarpRedP = cub::WarpReduce<Pair, LW>;
+  static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
+  static_assert(sizeof(typename WarpRedP::TempStorage) <= 4, "WarpReduce must be shfl-only");
+  typename WarpRedF::TempStorage red_store;
+  typename WarpRedP::TempStorage redp_store;
+
+  const int lane = threadIdx.x % LW;
+  const int logical = threadIdx.x / LW;
+  //: see the forward kernel: a full-warp mask deadlocks on ragged words with LW < 32.
+  const unsigned lmask =
+      (LW == WARP_SIZE) ? 0xffffffffu
+                        : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const int64_t stream = blockIdx.y;
+  const int word = blockIdx.x;
+
+  for (int it = 0; it < ITERS; ++it) {
+    const int local = it * LOGICAL_PER_BLOCK + logical;
+    const int token = word * WORD_TOKENS + local;
+    if (local >= WORD_TOKENS || token >= tokens) continue;
+
+    uint32_t support_mask = 0u, saturated_mask = 0u;
+    // ---- the write-side rank-1: sum(d_write * write_values) ----
+    //: This pass carries NOTHING into the next one but two scalars (`local_dot` and the
+    //: support mask). Staging `write_values`/`d_write` in registers instead cost 2*IPT
+    //: live registers and MEASURABLY spilled at IPT=8 (32 B stack frame under
+    //: `__launch_bounds__(128,8)`); re-reading them below is the cheaper trade on a
+    //: kernel whose DRAM throughput was already only ~30%.
+    float local_dot = 0.0f;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      const bool valid = col < width;
+      const uint32_t wword =
+          valid ? (uint32_t)support_words[stream * ssup.stream + (int64_t)word * ssup.token +
+                                          (int64_t)col * ssup.col]
+                : 0u;
+      if (valid && ((wword >> (token & 31)) & 1u)) support_mask |= (1u << i);
+      const float wv = valid ? load_value(write_values, addr(swv, stream, token, col)) : 0.0f;
+      const float dw = valid ? load_value(d_write, addr(sdw, stream, token, col)) : 0.0f;
+      local_dot += dw * wv;
+    }
+    float dot = WarpRedF(red_store).Reduce(local_dot, cub::Sum());
+    dot = __shfl_sync(lmask, dot, 0, LW);
+
+    //: `s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final
+    //: pass. Holding it as a third live IPT-array cost 24 B of spill at IPT=8 under
+    //: `__launch_bounds__(128,8)`; one extra load per element buys it back to zero.
+    float d_delta[IPT], d_mid[IPT];
+    Pair partial{0.0f, 0.0f};
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      const bool valid = col < width;
+      const bool sup = (support_mask >> i) & 1u;
+      const float wv = valid ? load_value(write_values, addr(swv, stream, token, col)) : 0.0f;
+      const float dw = valid ? load_value(d_write, addr(sdw, stream, token, col)) : 0.0f;
+      const float dlw = wv * (dw - dot);
+      const float r = valid ? read_logits[addr(sr, stream, token, col)] : 0.0f;
+      const float w = valid ? write_logits[addr(sw, stream, token, col)] : 0.0f;
+      bool sat = false;
+      const float delta = overflow_free_delta(r, w, &sat);
+      if (sat) saturated_mask |= (1u << i);
+      const float read_gate = 1.0f / (1.0f + expf(-delta));
+      const float write_gate = 1.0f / (1.0f + expf(delta));
+      const float mid = valid ? midpoint_values[addr(smid, stream, token, col)] : 0.0f;
+      const float dr = valid ? load_value(d_read, addr(sdr, stream, token, col)) : 0.0f;
+      const float rv = valid ? load_value(read_values, addr(srv, stream, token, col)) : 0.0f;
+      //: the VJP divides by the amplitude; at a TIE the amplitude is exactly 0, so the
+      //: guard substitutes 1 and the support mask zeroes the term. See the Wolfram sheet.
+      const float safe = (sup && mid != 0.0f) ? mid : 1.0f;
+      d_mid[i] = dr * read_gate + (sup ? dlw / safe : 0.0f);
+      d_delta[i] = (dr * rv * write_gate - dlw * read_gate) * (sat ? 0.0f : 1.0f);
+      //: the entmax rank-1's two sums accumulate HERE, so `s` never becomes an array.
+      const float si = sup ? (ALPHA15 ? sqrtf(mid) : 1.0f) : 0.0f;
+      partial.p += si * d_mid[i];
+      partial.q += si;
+    }
+
+    // ---- the entmax rank-1: (numerator, denominator) in ONE fused reduction ----
+    Pair red = WarpRedP(redp_store).Reduce(partial, PairAdd());
+    float num = __shfl_sync(lmask, red.p, 0, LW);
+    float den = __shfl_sync(lmask, red.q, 0, LW);
+    den = den > 0.0f ? den : 1.0f;
+
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + i * LW;
+      if (col >= width) continue;
+      const bool sup = (support_mask >> i) & 1u;
+      const float mid = midpoint_values[addr(smid, stream, token, col)];
+      const float si = sup ? (ALPHA15 ? sqrtf(mid) : 1.0f) : 0.0f;
+      const float d_ml = si * (d_mid[i] - num / den);
+      d_read_logits[addr(sdrl, stream, token, col)] = 0.5f * d_ml + d_delta[i];
+      d_write_logits[addr(sdwl, stream, token, col)] = 0.5f * d_ml - d_delta[i];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on nothing
+// (I2). One launch per union level, exactly as today.
+// ---------------------------------------------------------------------------
+Strides five(const torch::Tensor &t) {
+  if (t.dim() == 4)
+    return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
+  return {t.stride(0), t.stride(1), t.stride(2), 0, 0};
+}
+
+template <typename OutT>
+void launch_forward(const torch::Tensor &rl, const torch::Tensor &wl, torch::Tensor &mid,
+                    torch::Tensor &sup, torch::Tensor &rv, torch::Tensor &wv,
+                    double alpha) {
+  const int n_streams = rl.size(0), tokens = rl.size(1), width = rl.size(2);
+  const int n_words = (tokens + WORD_TOKENS - 1) / WORD_TOKENS;
+  dim3 grid(n_words, n_streams);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  const bool a15 = alpha == 1.5;
+  int w_pad = 1;
+  while (w_pad < width) w_pad <<= 1;
+  if (w_pad < 2) w_pad = 2;
+
+#define ROLA_ENTMAX_FWD(LW_, IPT_)                                                     \
+  do {                                                                                 \
+    if (a15)                                                                           \
+      union_forward_kernel<LW_, IPT_, true, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(  \
+          rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),           \
+          sup.data_ptr<int32_t>(), (OutT *)rv.data_ptr(), (OutT *)wv.data_ptr(),        \
+          tokens, width, n_words, five(rl), five(wl), five(mid), five(rv), five(wv),   \
+          five(sup));                                                                  \
+    else                                                                               \
+      union_forward_kernel<LW_, IPT_, false, OutT><<<grid, BLOCK_THREADS, 0, stream>>>( \
+          rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),           \
+          sup.data_ptr<int32_t>(), (OutT *)rv.data_ptr(), (OutT *)wv.data_ptr(),        \
+          tokens, width, n_words, five(rl), five(wl), five(mid), five(rv), five(wv),   \
+          five(sup));                                                                  \
+  } while (0)
+
+  switch (w_pad) {
+    case 2: ROLA_ENTMAX_FWD(2, 1); break;
+    case 4: ROLA_ENTMAX_FWD(4, 1); break;
+    case 8: ROLA_ENTMAX_FWD(8, 1); break;
+    case 16: ROLA_ENTMAX_FWD(16, 1); break;
+    case 32: ROLA_ENTMAX_FWD(32, 1); break;
+    case 64: ROLA_ENTMAX_FWD(32, 2); break;
+    case 128: ROLA_ENTMAX_FWD(32, 4); break;
+    case 256: ROLA_ENTMAX_FWD(32, 8); break;
+    default: TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
+  }
+#undef ROLA_ENTMAX_FWD
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename OutT>
+void launch_backward(const torch::Tensor &rl, const torch::Tensor &wl,
+                     const torch::Tensor &mid, const torch::Tensor &sup,
+                     const torch::Tensor &rv, const torch::Tensor &wv,
+                     const torch::Tensor &dr, const torch::Tensor &dw,
+                     torch::Tensor &drl, torch::Tensor &dwl, double alpha) {
+  const int n_streams = rl.size(0), tokens = rl.size(1), width = rl.size(2);
+  const int n_words = (tokens + WORD_TOKENS - 1) / WORD_TOKENS;
+  dim3 grid(n_words, n_streams);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  const bool a15 = alpha == 1.5;
+  int w_pad = 1;
+  while (w_pad < width) w_pad <<= 1;
+  if (w_pad < 2) w_pad = 2;
+
+#define ROLA_ENTMAX_BWD(LW_, IPT_, A15_)                                               \
+  union_backward_kernel<LW_, IPT_, A15_, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(     \
+      rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),               \
+      sup.data_ptr<int32_t>(), (const OutT *)rv.data_ptr(), (const OutT *)wv.data_ptr(),\
+      (const OutT *)dr.data_ptr(), (const OutT *)dw.data_ptr(), drl.data_ptr<float>(),  \
+      dwl.data_ptr<float>(), tokens, width, five(rl), five(wl), five(mid), five(rv),   \
+      five(wv), five(dr), five(dw), five(drl), five(dwl), five(sup))
+#define ROLA_ENTMAX_BWD_A(LW_, IPT_)                                                   \
+  do {                                                                                 \
+    if (a15) ROLA_ENTMAX_BWD(LW_, IPT_, true);                                         \
+    else ROLA_ENTMAX_BWD(LW_, IPT_, false);                                            \
+  } while (0)
+
+  switch (w_pad) {
+    case 2: ROLA_ENTMAX_BWD_A(2, 1); break;
+    case 4: ROLA_ENTMAX_BWD_A(4, 1); break;
+    case 8: ROLA_ENTMAX_BWD_A(8, 1); break;
+    case 16: ROLA_ENTMAX_BWD_A(16, 1); break;
+    case 32: ROLA_ENTMAX_BWD_A(32, 1); break;
+    case 64: ROLA_ENTMAX_BWD_A(32, 2); break;
+    case 128: ROLA_ENTMAX_BWD_A(32, 4); break;
+    case 256: ROLA_ENTMAX_BWD_A(32, 8); break;
+    default: TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
+  }
+#undef ROLA_ENTMAX_BWD_A
+#undef ROLA_ENTMAX_BWD
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+}  // namespace
+
+void union_forward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
+                   torch::Tensor &midpoint_values, torch::Tensor &support_words,
+                   torch::Tensor &read_values, torch::Tensor &write_values, double alpha) {
+  TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
+              "union entmax requires fp32 CUDA logits");
+  TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
+  TORCH_CHECK(read_values.scalar_type() == write_values.scalar_type(),
+              "read/write route values must share a dtype");
+  const at::cuda::CUDAGuard guard(read_logits.device());
+  if (read_values.scalar_type() == torch::kFloat32)
+    launch_forward<float>(read_logits, write_logits, midpoint_values, support_words,
+                          read_values, write_values, alpha);
+  else if (read_values.scalar_type() == torch::kBFloat16)
+    launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values,
+                                  support_words, read_values, write_values, alpha);
+  else
+    TORCH_CHECK(false, "route values must be fp32 or bf16");
+}
+
+void union_backward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
+                    const torch::Tensor &midpoint_values,
+                    const torch::Tensor &support_words, const torch::Tensor &read_values,
+                    const torch::Tensor &write_values, const torch::Tensor &d_read,
+                    const torch::Tensor &d_write, torch::Tensor &d_read_logits,
+                    torch::Tensor &d_write_logits, double alpha) {
+  TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
+              "union entmax backward requires fp32 CUDA logits");
+  TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
+  const at::cuda::CUDAGuard guard(read_logits.device());
+  if (read_values.scalar_type() == torch::kFloat32)
+    launch_backward<float>(read_logits, write_logits, midpoint_values, support_words,
+                           read_values, write_values, d_read, d_write, d_read_logits,
+                           d_write_logits, alpha);
+  else if (read_values.scalar_type() == torch::kBFloat16)
+    launch_backward<__nv_bfloat16>(read_logits, write_logits, midpoint_values,
+                                   support_words, read_values, write_values, d_read,
+                                   d_write, d_read_logits, d_write_logits, alpha);
+  else
+    TORCH_CHECK(false, "route values must be fp32 or bf16");
+}
+
+}  // namespace entmax
+}  // namespace rola
