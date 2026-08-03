@@ -350,8 +350,10 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalizatio
     assert (y_dense - y_paged).abs().max() <= bound
 
 
+@pytest.mark.parametrize("decay_on", [False, True], ids=["decay-none", "leaf-mass"])
+@pytest.mark.parametrize("BT", [16, 32])
 @pytest.mark.parametrize("normalization", ["raw", "global"])
-def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization):
+def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization, BT, decay_on):
     """The structural claim of the §4.5 re-key, asserted rather than inferred.
 
     `BC = 64` gives `QPO = 4`. The re-key's whole content is that those four atoms
@@ -364,16 +366,23 @@ def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization):
     Without the split assertion this would silently degrade into
     `test_paging_is_bitwise_invisible`'s `BC64` cell whenever the fixture saturated,
     which is exactly the way the `BC = 16` grid managed to gate nothing.
+
+    H5 (coverage-closure): promoted from a single `(BT=32, no-decay)` cell to the
+    GRID ARM -- norm x BT x decay -- because the main grid's `BC = 64` cells
+    saturate (every owner fully resident), so split owners were exercised on
+    exactly one code-path combination while the kernel branches on all three axes.
     """
     widths, d_v, BC = (16, 8, 8), 32, 64
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization=normalization, decay=False)
+    plan = _plan(widths, d_v, BT=BT, BC=BC, normalization=normalization,
+                 decay=decay_on)
     fixture = _fixture(widths, d_v, p_nonzero=0.1, seed=23, T=8)
     B, T, H, _ = fixture[4].shape
+    decay = _decay(plan.topology, "cuda", H) if decay_on else None
 
-    y_dense, state_dense, _ = _run(plan, fixture)
-    y_control, _, _ = _run(plan, fixture)
+    y_dense, state_dense, _ = _run(plan, fixture, decay=decay)
+    y_control, _, _ = _run(plan, fixture, decay=decay)
     arena = _arena(plan, BH=B * H)
-    y_paged, returned, _ = _run(plan, fixture, arena=arena)
+    y_paged, returned, _ = _run(plan, fixture, arena=arena, decay=decay)
 
     QPO = BC // MMA_K_QUANTUM
     assert QPO == 4
@@ -547,3 +556,60 @@ def test_continue_paging_requires_an_arena():
     with pytest.raises(ValueError, match="continue_paging=True is meaningless"):
         _consumer_forward(v, read, write, g_read, g_write, plan,
                             continue_paging=True)
+
+
+def test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible():
+    """H5 (coverage-closure): bit-identity through an arena whose SLOT ORDER is
+    scrambled relative to logical atom order.
+
+    Every other cell plans FRESH, so slots are assigned in ascending logical atom
+    id and `slot == rank(atom)` -- a page table any owner-keyed indexing bug can
+    survive, because a wrong-but-monotone address maps to a plausibly-right slot.
+    Here the schedule's EVEN atoms are pre-admitted alone (slots `0..k`), then the
+    consumer's own `plan(fresh=False)` admits the odd remainder into LATER slots:
+    the table interleaves low and high slot ids atom by atom, which is exactly the
+    fragmentation a long-lived arena accumulates. The kernel must address through
+    the table -- asserted by bit-identity of the materialized state against the
+    unpaged dense run -- and the non-monotonicity is asserted so the cell cannot
+    silently degrade into the fresh layout.
+    """
+    from rola.ops.paging import atom_bitmap_from_schedule
+
+    widths, d_v, BC = (16, 8, 8), 32, 64
+    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    fixture = _fixture(widths, d_v, p_nonzero=0.35, seed=67, T=16)
+    read, write, g_read, g_write, v = fixture
+    B, T, H, _ = v.shape
+
+    schedule = build_schedule(read, write, g_read, g_write, plan)
+    arena = _arena(plan, BH=B * H)
+    bitmap = atom_bitmap_from_schedule(schedule, arena.keying)
+    assert int(bitmap.sum()) >= 8, "fixture too sparse to fragment anything"
+
+    # Pre-admit only the EVEN-indexed touched atoms (flat order), fresh.
+    flat = bitmap.reshape(-1)
+    touched = flat.nonzero(as_tuple=True)[0]
+    even = touched[::2]
+    partial = torch.zeros_like(flat)
+    partial[even] = True
+    arena.plan_exact(partial.view_as(bitmap), fresh=True)
+
+    # The consumer's own planning admits the odd remainder into LATER slots.
+    y_dense, state_dense, _ = _run(plan, fixture)
+    y_paged, returned, _ = _run(plan, fixture, arena=arena, continue_paging=True)
+    assert returned is arena
+
+    table = arena.page_table.reshape(-1)
+    slots = table[touched]
+    assert bool((slots >= 0).all()), "an admitted atom lost its slot"
+    diffs = slots[1:] - slots[:-1]
+    assert bool((diffs < 0).any()), (
+        "the slot order came out monotone in atom id; the cell is not exercising "
+        "a fragmented table and needs a different admission split")
+
+    cols = state_dense.shape[-1]
+    assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize()), (
+        "a non-monotone slot layout moved the state: the kernel (or materialize) "
+        "is addressing by atom RANK instead of through the page table")
+    bound = _reordering_bound(y_dense, plan)
+    assert (y_dense - y_paged).abs().max() <= bound
