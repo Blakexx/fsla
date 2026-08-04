@@ -129,7 +129,6 @@ def routing_factor_levels(
     reads, writes = [], []
 
     for index, level in enumerate(routing.levels):
-        width = routing.branches[index]
         span = routing.level_logit_slice(index)
         read_level = read_logits[..., span]
         write_level = write_logits[..., span]

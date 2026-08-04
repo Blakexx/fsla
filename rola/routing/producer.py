@@ -572,7 +572,6 @@ def _conditioned_pass(
                 # a neutral 0 (inert-flagged) instead of skipping the head entirely.
                 r_feature = r_bh if r_bh is not None else torch.zeros(B * H, dtype=dtype, device=device)
                 for level in range(D):
-                    width = widths[level]
                     usage_norm = running_usage[level] / max(tokens_seen, 1)          # [BH,width]
                     touched_f = running_touched[level].to(dtype)                     # [BH,width]
                     write_slack = running_slack.get((level, "write"), torch.zeros(B * H, dtype=dtype, device=device))

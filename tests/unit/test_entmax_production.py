@@ -130,7 +130,6 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
     d_read_logits = torch.zeros_like(read_logits)
     d_write_logits = torch.zeros_like(write_logits)
     for index, level in enumerate(routing.levels):
-        width = routing.branches[index]
         span = routing.level_logit_slice(index)
         read_values = _untile_level(descriptor.read_values, descriptor, index).float()
         write_values = _untile_level(descriptor.write_values, descriptor, index).float()
