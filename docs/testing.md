@@ -146,12 +146,24 @@ string.** It can never happen as a side effect of a kernel edit.
 ## Running it
 
 ```bash
-pytest tests/unit tests/tier1_semantics -m "not cuda"           # CPU: no device, no build
-flock /tmp/rola_gpu.lock pytest tests/unit -m cuda               # tests/unit's CUDA-marked rows
-pytest tests/tier1_semantics -m cuda                             # TIER 1
-pytest tests/tier2_geometry                                      # TIER 2 (incl. the meta-tests)
-pytest tests/layers                                               # layer <-> op, at every dispatch threshold
+pytest tests/unit tests/tier1_semantics -m "not cuda"                       # CPU: no device, no build
+flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
+flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # TIER 1
+flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
+flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
 ```
+
+**EVERY LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME QUESTION
+AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
+lets the first line avoid initializing a CUDA context at all. It is **not** a device
+partition: `tests/tier2_geometry` and `tests/layers` carry 83 rows that launch kernels
+without being `cuda`-marked (e.g.
+`test_layer_dispatch.py::test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance`),
+because in those tiers a device is the premise of the tier rather than a property of a
+row. So `-m "not cuda"` may NOT be used to decide whether a command needs the lock;
+the tiers it names do, unconditionally, and the recipe says so. This is the same rule
+`benchmarks/*.py` state in their usage lines ("GPU work belongs under
+`flock /tmp/rola_gpu.lock`"), applied to the test recipe.
 
 `tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
 `test_interface.py::test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm`,
