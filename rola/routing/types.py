@@ -353,10 +353,6 @@ class ResolvedRouting:
         return len(self.levels)
 
     @property
-    def real_width(self) -> int:
-        return max(self.branches)
-
-    @property
     def state_count(self) -> int:
         return prod(self.branches)
 
@@ -377,6 +373,81 @@ class ResolvedRouting:
         """Packed source slot for each level's read logits."""
         read_slots = {level: self.D + slot for slot, level in enumerate(self.untied_levels)}
         return tuple(read_slots.get(level, level) for level in range(self.D))
+
+    @property
+    def packed_slot_level(self) -> tuple[int, ...]:
+        """The routing level each packed slot projects, one entry per slot.
+
+        Slots ``0..D-1`` are the write slots, in level order; the remaining slots are
+        the untied levels' read slots, also in level order. That ordering is what makes
+        the write side's columns the leading contiguous block of ``route_W`` -- see
+        :attr:`packed_router_width`.
+        """
+        return tuple(range(self.D)) + self.untied_levels
+
+    @property
+    def packed_slot_widths(self) -> tuple[int, ...]:
+        """Consumed columns per packed slot: the width of the level that slot feeds."""
+        return tuple(self.branches[level] for level in self.packed_slot_level)
+
+    @property
+    def packed_slot_offsets(self) -> tuple[int, ...]:
+        """``packed_slot_count + 1`` cumulative column offsets into ``route_W``."""
+        offsets = [0]
+        for width in self.packed_slot_widths:
+            offsets.append(offsets[-1] + width)
+        return tuple(offsets)
+
+    @property
+    def packed_router_width(self) -> int:
+        """Columns in the stored ``route_W`` -- every one of them consumed.
+
+        THE definition of the router parameter's column layout. ``route_W`` is
+        ``[H, hidden_size, packed_router_width]``: each packed slot owns exactly the
+        ``branches[level]`` columns the level it feeds consumes, laid end to end on
+        :attr:`packed_slot_offsets`, with NO padding to ``max(branches)``.
+
+        The old layout stored ``[H, packed_slots, hidden_size, max(branches)]``, so every
+        slot whose level was narrower than the widest carried dead columns: dead
+        parameters, dead optimizer moments, dead gradient buffers, and a per-step
+        ``torch.cat`` gather whose only job was to strip them before the GEMM. At the
+        parity cell (H=8, hidden=512, branches (256, 64), untied -> 4 slots) that is
+        ``4 * 256 = 1024`` stored columns per head where ``256 + 64 + 256 + 64 = 640``
+        are consumed -- 37.5% dead. The waste GROWS with branch-width imbalance, so it
+        is a scaling defect, not a constant.
+
+        Because the write slots come first and in level order, the write side's columns
+        are ``[0, packed_logit_width)`` -- one contiguous SLICE, so the write-side
+        gather does not merely shrink, it disappears.
+        """
+        return self.packed_slot_offsets[-1]
+
+    def packed_slot_slice(self, slot: int) -> slice:
+        """The column span packed slot ``slot`` occupies in ``route_W``."""
+        if type(slot) is not int or not 0 <= slot < self.packed_slot_count:
+            raise ValueError(
+                f"slot must be an exact int in [0, {self.packed_slot_count}), got {slot!r}")
+        offsets = self.packed_slot_offsets
+        return slice(offsets[slot], offsets[slot + 1])
+
+    def packed_column_runs(self, slots: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
+        """``slots``' column spans, with abutting spans merged into single runs.
+
+        The projection gathers one side's slots into one weight. Merging is what turns
+        that gather into a VIEW whenever the slots happen to be adjacent in storage --
+        which, under this layout, is every structurally common case: the write side is
+        always ``range(D)``, a fully tied plan's read side is the same run, and a fully
+        untied plan's read side is the trailing run. Only a MIXED plan's read side
+        interleaves the two regions and still needs a copy.
+        """
+        runs: list[list[int]] = []
+        for slot in slots:
+            span = self.packed_slot_slice(slot)
+            if runs and runs[-1][1] == span.start:
+                runs[-1][1] = span.stop
+            else:
+                runs.append([span.start, span.stop])
+        return tuple((start, stop) for start, stop in runs)
 
     @property
     def shared_solve_levels(self) -> tuple[int, ...]:
@@ -416,16 +487,13 @@ class ResolvedRouting:
         """Columns in ONE side's router-logit tensor -- tightly packed, no per-level padding.
 
         The router logits are packed on the same offsets the route arena already uses
-        (``level_offsets``), NOT padded to ``real_width`` per level. Padding every level
-        to the widest one made ``packed_slot_count * real_width`` columns where only
-        ``2 * sum(branches)`` are ever read: at the parity cell (branches (256, 64),
-        untied) that was 1024 computed for 640 consumed -- 37.5% of the projection GEMM
-        and of the logit tensor it writes, thrown away. The waste GROWS with branch-width
-        imbalance, so it is a scaling defect, not a constant.
+        (``level_offsets``), NOT padded to ``max(branches)`` per level, and
+        :attr:`packed_router_width` now packs the STORED weight on those same offsets
+        too, so the parameter allocation and the compute layout are one layout rather
+        than two related by a per-step gather.
 
-        ``route_W`` keeps its ``[H, packed_slots, hidden, real_width]`` parameter layout:
-        the packing is done on the WEIGHT, per side, before the GEMM (see
-        ``routing/projection.py``), so no checkpoint and no parameter shape moves.
+        Equal to ``packed_slot_offsets[D]``: the write slots are ``0..D-1`` in level
+        order, so one side's logit offsets ARE the leading column offsets of ``route_W``.
         """
         return self.level_offsets[-1]
 
@@ -484,20 +552,20 @@ class ResolvedRouting:
         """Validate packed router tensors and return their derived head count."""
         if not isinstance(route_W, torch.Tensor):
             raise TypeError(f"route_W must be a torch.Tensor, got {type(route_W).__name__}")
-        if route_W.ndim != 4:
+        if route_W.ndim != 3:
             raise ValueError(
-                "route_W must have shape [H, packed_slots, hidden_size, real_width], "
+                "route_W must have shape [H, hidden_size, packed_router_width], "
                 f"got {tuple(route_W.shape)}")
-        heads, slots, _, width = route_W.shape
-        if heads < 1 or slots != self.packed_slot_count or width != self.real_width:
+        heads, _, width = route_W.shape
+        if heads < 1 or width != self.packed_router_width:
             raise ValueError(
                 "route_W must have shape "
-                f"[H>=1, {self.packed_slot_count}, hidden_size, {self.real_width}], "
+                f"[H>=1, hidden_size, {self.packed_router_width}], "
                 f"got {tuple(route_W.shape)}")
         if route_bias is not None:
             if not isinstance(route_bias, torch.Tensor):
                 raise TypeError(f"route_bias must be a torch.Tensor or None, got {type(route_bias).__name__}")
-            expected_bias_shape = (heads, self.packed_slot_count, self.real_width)
+            expected_bias_shape = (heads, self.packed_router_width)
             if route_bias.shape != expected_bias_shape:
                 raise ValueError(
                     f"route_bias must have shape {expected_bias_shape}, got {tuple(route_bias.shape)}")

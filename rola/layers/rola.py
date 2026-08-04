@@ -123,7 +123,12 @@ from rola.planner.select import (
     freeze_for_decode,
     select_config_with_evidence,
 )
-from rola.routing.producer import BudgetConditioning, init_temp_bias, produce_routing
+from rola.routing.producer import (
+    BudgetConditioning,
+    init_temp_bias,
+    produce_routing,
+    resolved_routing_from_topology,
+)
 from rola.routing.side_gain import GainConfig, init_side_gain_bias
 from rola.routing.summaries import summarize_routing
 from rola.routing.topology import resolve_b_spec
@@ -489,16 +494,14 @@ class RoLA(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        # Real width for the packed router weight, and D + untied-read-slot packed layout,
-        # both purely routing-plan facts -- unchanged in form from V1/V2 (`ResolvedRouting`
-        # already had no Q/K dependence; see `routing/producer_v3.py:resolved_routing_from_topology`).
-        real_width = max(self.topology.widths)
+        # The packed router layout is a pure routing-plan fact, so it is READ OFF the
+        # resolved plan rather than re-derived here: `ResolvedRouting` owns the column
+        # layout (`packed_router_width`, `packed_slot_offsets`) that `routing/projection.py`
+        # slices, and a second derivation in the layer is a second definition that can
+        # drift from the one the projection actually indexes.
+        resolved_routing = resolved_routing_from_topology(self.topology)
         D = self.topology.D
-        untied_levels = tuple(
-            index for index, level in enumerate(self.topology.levels)
-            if isinstance(level.routing, UnionRouting) or not level.routing.tied
-        )
-        packed_slot_count = D + len(untied_levels)
+        untied_levels = resolved_routing.untied_levels
 
         if use_short_conv:
             assert ShortConvolution is not None, (
@@ -513,10 +516,16 @@ class RoLA(nn.Module):
             if untied_levels:
                 self.read_route_conv1d = ShortConvolution(hidden_size, conv_size, bias=conv_bias, activation=None)
 
-        self.route_W = nn.Parameter(torch.empty(num_heads, packed_slot_count, hidden_size, real_width))
+        # CHECKPOINT-FORMAT NOTE: this parameter was `[H, packed_slots, hidden, max(width)]`
+        # until the pad-free cut. Every slot feeds exactly ONE level, so a slot narrower
+        # than the widest carried dead columns -- dead parameters, dead optimizer moments,
+        # dead gradient buffers, and a per-step `torch.cat` whose only job was to strip
+        # them. The stored parameter is now the packed layout itself.
+        packed_router_width = resolved_routing.packed_router_width
+        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, packed_router_width))
         self._init_factor_router(self.route_W)
         if router_bias:
-            self.route_bias_param = nn.Parameter(torch.zeros(num_heads, packed_slot_count, real_width))
+            self.route_bias_param = nn.Parameter(torch.zeros(num_heads, packed_router_width))
         else:
             self.register_parameter('route_bias_param', None)
 
@@ -579,14 +588,23 @@ class RoLA(nn.Module):
 
     @staticmethod
     def _init_factor_router(W: nn.Parameter):
-        """Init the per-head per-level factor weights [H, slots, hidden, b] like an
-        nn.Linear(hidden, b): the routing logit is h·W[head,slot] (== Linear with weight
-        W[head,slot]^T), so the init must be a transposed Linear weight with kaiming
-        fan_in == hidden. Unchanged from V1/V2 -- this has never depended on Q/K."""
-        H, slots, hidden, b = W.shape
-        wt = torch.empty(H * slots * b, hidden)
+        """Init the packed per-head router weight [H, hidden, packed_router_width] like an
+        nn.Linear(hidden, cols): the routing logit is h·W[head] (== Linear with weight
+        W[head]^T), so the init must be a transposed Linear weight with kaiming
+        fan_in == hidden.
+
+        THE DISTRIBUTION IS UNCHANGED BY THE PAD-FREE CUT, and that is checkable rather
+        than asserted: `kaiming_uniform_(a=sqrt(5))` on a `[out, hidden]` matrix draws
+        `U(-1/sqrt(hidden), +1/sqrt(hidden))` per element -- `fan_in` is `hidden` and the
+        bound does not depend on `out`. The padded layout drew `H * slots * max(width)`
+        such elements and threw the padding away; this draws `H * packed_router_width`
+        and keeps all of them. Every level therefore still gets exactly the per-level
+        fan-in semantics it had, which is what the projection GEMM's fan-in IS: one dot
+        product over the full hidden dim per column, regardless of which level owns it."""
+        H, hidden, cols = W.shape
+        wt = torch.empty(H * cols, hidden)
         nn.init.kaiming_uniform_(wt, a=5 ** 0.5)
-        W.data.copy_(wt.view(H, slots, b, hidden).transpose(-1, -2))
+        W.data.copy_(wt.view(H, cols, hidden).transpose(-1, -2))
 
     @staticmethod
     def _init_decay_thetas(

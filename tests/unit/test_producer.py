@@ -48,7 +48,7 @@ def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
     torch.manual_seed(seed)
     resolved = resolved_routing_from_topology(topology)
     x = torch.randn(B, L, dm, dtype=dtype, requires_grad=True)
-    route_W = torch.randn(H, resolved.packed_slot_count, dm, resolved.real_width, dtype=dtype, requires_grad=True)
+    route_W = torch.randn(H, dm, resolved.packed_router_width, dtype=dtype, requires_grad=True)
     gain_W = torch.randn(H, gain_sides, dm, dtype=dtype, requires_grad=True)
     gain_bias = torch.zeros(H, gain_sides, dtype=dtype, requires_grad=True)
     v = torch.randn(B, L, H, topology.d_v, dtype=dtype)
@@ -315,8 +315,8 @@ def test_project_logits_is_chunk_invariant(dtype):
     B, L, H, dm, chunk_size = 2, 17, 2, 6, 5
     torch.manual_seed(0)
     x = torch.randn(B, L, dm, dtype=dtype)
-    route_W = torch.randn(H, resolved.packed_slot_count, dm, resolved.real_width, dtype=dtype)
-    route_bias = torch.randn(H, resolved.packed_slot_count, resolved.real_width, dtype=dtype)
+    route_W = torch.randn(H, dm, resolved.packed_router_width, dtype=dtype)
+    route_bias = torch.randn(H, resolved.packed_router_width, dtype=dtype)
 
     read_full, write_full = _project_logits(x, route_W, resolved, route_bias=route_bias, h_w=None)
 

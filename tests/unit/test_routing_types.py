@@ -187,12 +187,60 @@ def test_packed_router_shape_validation_derives_heads():
         (IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()), UnionRouting()),
         (2, 3),
     )
-    route_W = torch.randn(2, 4, 5, 3)
-    route_bias = torch.randn(2, 4, 3)
+    # Both levels are untied (one `tied=False`, one union), so the packed slots are
+    # write-0, write-1, read-0, read-1 with widths 2, 3, 2, 3 -- 10 columns, not the
+    # 4 * max(2, 3) = 12 the padded layout stored.
+    assert plan.packed_router_width == 10
+    route_W = torch.randn(2, 5, 10)
+    route_bias = torch.randn(2, 10)
     assert plan.validate_packed_router(route_W, route_bias) == 2
-    with pytest.raises(ValueError, match="4"):
-        plan.validate_packed_router(torch.randn(2, 3, 5, 3))
-    with pytest.raises(ValueError, match="3"):
-        plan.validate_packed_router(torch.randn(2, 4, 5, 2))
+    with pytest.raises(ValueError, match="packed_router_width"):
+        plan.validate_packed_router(torch.randn(2, 4, 5, 3))
+    with pytest.raises(ValueError, match="10"):
+        plan.validate_packed_router(torch.randn(2, 5, 12))
     with pytest.raises(ValueError, match="route_bias"):
-        plan.validate_packed_router(route_W, torch.randn(2, 4, 2))
+        plan.validate_packed_router(route_W, torch.randn(2, 12))
+
+
+@pytest.mark.parametrize(
+    "tied,expected_slot_widths",
+    [
+        ((True, True, True), (4, 2, 3)),
+        ((False, False, False), (4, 2, 3, 4, 2, 3)),
+        ((True, False, True), (4, 2, 3, 2)),
+    ],
+)
+def test_packed_router_columns_are_exactly_the_columns_each_slot_consumes(tied, expected_slot_widths):
+    """The stored router weight carries NO column that is not read.
+
+    The padded layout gave every slot ``max(branches)`` columns, so a narrow level's
+    slot carried dead parameters, dead optimizer moments and dead gradients. The packed
+    layout gives each slot its own level's width, and the offsets are the running sum --
+    which is what makes the write side (slots ``0..D-1``, in level order) the LEADING
+    contiguous run, and therefore a slice rather than a gather.
+    """
+    plan = ResolvedRouting(
+        tuple(
+            IndependentRouting(flag, SoftmaxActivation(), SoftmaxActivation())
+            for flag in tied
+        ),
+        (4, 2, 3),
+    )
+    assert plan.packed_slot_widths == expected_slot_widths
+    assert plan.packed_slot_count == len(expected_slot_widths)
+    offsets = plan.packed_slot_offsets
+    assert offsets == tuple(
+        sum(expected_slot_widths[:index]) for index in range(len(expected_slot_widths) + 1))
+    assert plan.packed_router_width == sum(expected_slot_widths)
+    # The write side is always one run, and it is the packed LOGIT layout verbatim.
+    assert plan.packed_column_runs(tuple(range(plan.D))) == ((0, plan.packed_logit_width),)
+    for level in range(plan.D):
+        assert plan.packed_slot_slice(level) == plan.level_logit_slice(level)
+    # A fully tied plan's read side is that same single run; a fully untied plan's read
+    # side is the trailing run; only a mixed plan interleaves and needs a copy.
+    runs = plan.packed_column_runs(plan.packed_read_slot_lookup)
+    if not plan.untied_levels or len(plan.untied_levels) == plan.D:
+        assert len(runs) == 1
+    else:
+        assert len(runs) > 1
+    assert sum(stop - start for start, stop in runs) == plan.packed_logit_width

@@ -21,7 +21,10 @@ def _packed_router_logits(
     Returns ``(read_logits, write_logits)``, each ``[B*H, T, routing.packed_logit_width]``:
     one side's levels laid out end to end on ``routing.level_offsets``, so level ``l`` is
     ``logits[:, :, routing.level_logit_slice(l)]``. There is no per-level padding to
-    ``real_width`` -- see ``ResolvedRouting.packed_logit_width``.
+    ``max(branches)`` -- see ``ResolvedRouting.packed_logit_width``.
+
+    ``route_W`` is ``[H, hidden_size, routing.packed_router_width]``: the stored
+    parameter IS the packed layout, one slot's columns per level it feeds.
     """
     if not isinstance(routing, ResolvedRouting):
         raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
@@ -32,9 +35,9 @@ def _packed_router_logits(
             shape = getattr(hidden, "shape", None)
             raise ValueError(f"{name} must have rank 3 or 4, got {shape}")
         hidden_width = hidden.shape[-1]
-        if hidden_width != route_W.shape[2]:
+        if hidden_width != route_W.shape[1]:
             raise ValueError(
-                f"{name} hidden width must match route_W hidden width {route_W.shape[2]}, "
+                f"{name} hidden width must match route_W hidden width {route_W.shape[1]}, "
                 f"got {hidden_width}")
         if hidden.ndim == 4 and hidden.shape[2] != heads:
             raise ValueError(
@@ -47,31 +50,33 @@ def _packed_router_logits(
         if h_w.shape != h.shape or h_w.device != h.device:
             raise ValueError("h_w must match h shape and device")
 
-    # PACK THE WEIGHT, NOT THE OUTPUT. `route_W` stores every slot padded to
-    # `real_width`, but level `l` only ever has `branches[l]` real columns -- the rest
-    # are computed by the GEMM, written to the logit tensor, and never read (their
-    # gradients are identically zero, so they are dead parameters too). Gathering each
-    # side's real column blocks into one contiguous `[H, hidden, packed_logit_width]`
-    # weight makes the GEMM compute exactly the consumed columns. The gather is
-    # L-INVARIANT (measured 0.036 ms/step at the parity cell: 16.0 MiB read -> 10.0 MiB
-    # written) while the work it removes scales with L, so it is free at scale and the
-    # margin only widens.
+    # THE PARAMETER IS THE PACKED LAYOUT. `route_W` is stored `[H, hidden,
+    # packed_router_width]` with each slot owning exactly the `branches[level]` columns
+    # its level consumes (`ResolvedRouting.packed_slot_offsets`). There are no padded
+    # columns to strip, so gathering a side's slots is span arithmetic on ONE tensor,
+    # and `packed_column_runs` merges abutting spans: the write side is always
+    # `range(D)`, one run, so its weight is a SLICE and no copy happens at all. A fully
+    # tied plan's read side is that same run; a fully untied plan's read side is the
+    # trailing run. Only a mixed-tie plan interleaves the two regions and still copies.
     #
     # BIT-IDENTICAL, and that is the whole safety argument: a column of the output is a
     # dot product over the full hidden dim and is unaffected by which OTHER columns share
-    # the GEMM. Verified `torch.equal` on the consumed columns against the padded einsum
-    # at L=2048/16384 x seeds 0/5150/6161 (0 of 83,886,080 words differing). So
-    # `test_projection_tf32_support_gate.py` -- the gate that exists because effd23c
+    # the GEMM, or by whether the weight it reads is a view or a copy of the same values.
+    # So `test_projection_tf32_support_gate.py` -- the gate that exists because effd23c
     # moved this GEMM's arithmetic and flipped 14-95 entmax support entries -- sees
     # byte-for-byte the logits it sees today, as do the fp64 oracle gates.
     def pack_weight(slots: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """One side's per-level column blocks, tightly packed on `level_offsets`."""
-        weight = torch.cat(
-            [route_W[:, slot, :, :width] for slot, width in zip(slots, routing.branches)], dim=2)
+        """One side's slot columns, as a view when they are one run and a copy when not."""
+        runs = routing.packed_column_runs(slots)
+        if len(runs) == 1:
+            (start, stop), = runs
+            weight = route_W[:, :, start:stop]
+            bias = None if route_bias is None else route_bias[:, start:stop]
+            return weight, bias
+        weight = torch.cat([route_W[:, :, start:stop] for start, stop in runs], dim=2)
         if route_bias is None:
             return weight, None
-        bias = torch.cat(
-            [route_bias[:, slot, :width] for slot, width in zip(slots, routing.branches)], dim=1)
+        bias = torch.cat([route_bias[:, start:stop] for start, stop in runs], dim=1)
         return weight, bias
 
     def project(hidden: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
@@ -89,37 +94,31 @@ def _packed_router_logits(
     read_slots = routing.packed_read_slot_lookup
     fully_tied = read_slots == write_slots
 
-    write_weight, write_bias = pack_weight(write_slots)
     if fully_tied:
         # ONE solve serves both duties, and callers (the budget-conditioning path, the
         # arena's `fully_shared`) rely on getting the SAME TENSOR OBJECT back twice.
-        tied_logits = project(h if h_w is None else h_w, write_weight, write_bias)
+        tied_logits = project(h if h_w is None else h_w, *pack_weight(write_slots))
         return tied_logits, tied_logits
 
     if h_w is None:
-        # One stream, so both sides are columns of ONE GEMM -- the same single launch the
-        # padded path used, now 640 columns wide instead of 1024 at the parity cell.
-        read_weight, read_bias = pack_weight(read_slots)
-        both = project(
-            h,
-            torch.cat([write_weight, read_weight], dim=2),
-            None if route_bias is None else torch.cat([write_bias, read_bias], dim=1),
-        )
+        # One stream, so both sides are columns of ONE GEMM. Packed as ONE slot list
+        # rather than two packs concatenated: a fully untied plan's write and read runs
+        # abut, so the merged run is the whole of `route_W` and the GEMM reads the
+        # parameter itself with no gather anywhere on the step.
+        both_weight, both_bias = pack_weight(write_slots + read_slots)
+        both = project(h, both_weight, both_bias)
         width = routing.packed_logit_width
         return both[:, :, width:], both[:, :, :width]
 
     # Split read/write streams: the write side is projected from `h_w`, and a TIED level
     # takes its read logits from that write projection (the write stream is its source),
     # so only the untied levels are projected from `h`.
-    write_logits = project(h_w, write_weight, write_bias)
+    write_logits = project(h_w, *pack_weight(write_slots))
     untied = routing.untied_levels
     if len(untied) == routing.D:
         read_weight, read_bias = pack_weight(read_slots)
         return project(h, read_weight, read_bias), write_logits
-    untied_weight = torch.cat(
-        [route_W[:, read_slots[level], :, :routing.branches[level]] for level in untied], dim=2)
-    untied_bias = None if route_bias is None else torch.cat(
-        [route_bias[:, read_slots[level], :routing.branches[level]] for level in untied], dim=1)
+    untied_weight, untied_bias = pack_weight(tuple(read_slots[level] for level in untied))
     untied_logits = project(h, untied_weight, untied_bias)
     untied_offsets = {}
     cursor = 0

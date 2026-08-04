@@ -573,7 +573,7 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
 
     return {
         "x": _randn(B, L, dm),
-        "route_W": _randn(H, resolved.packed_slot_count, dm, resolved.real_width),
+        "route_W": _randn(H, dm, resolved.packed_router_width),
         "gain_W": _randn(H, sides, dm),
         "gain_bias": torch.zeros(H, sides, device=device, dtype=dtype),
         "v": _randn(B, L, H, topology.d_v),
