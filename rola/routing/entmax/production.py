@@ -546,10 +546,9 @@ def production_factor(z, activation="entmax", alpha=1.5, mask=None):
 
 
 def _arena_shape(logits: torch.Tensor) -> tuple[int, int]:
-    if logits.ndim not in (3, 4):
+    if logits.ndim != 3:
         raise ValueError(
-            "production routing tensors must be [BH, L, W] or [BH, L, D, W], got "
-            f"{tuple(logits.shape)}")
+            f"production routing logits must be [BH, L, W], got {tuple(logits.shape)}")
     return logits.shape[0], logits.shape[1]
 
 
@@ -727,7 +726,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             raise RuntimeError("production routing arenas are CUDA-only")
         if read_logits.device != write_logits.device:
             raise ValueError("read/write routing logits must share one CUDA device")
-        if read_logits.shape[-2:] != (routing.D, routing.real_width):
+        if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
             raise ValueError("routing logits do not match the resolved routing layout")
 
         fully_shared = all(
@@ -751,8 +750,9 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
 
         for index, level in enumerate(routing.levels):
             width = routing.branches[index]
-            read_source = read_logits[:, :, index, :width]
-            write_source = write_logits[:, :, index, :width]
+            span = routing.level_logit_slice(index)
+            read_source = read_logits[:, :, span]
+            write_source = write_logits[:, :, span]
             offset = routing.level_offsets[index]
             read_output = read_arena[:, :, offset:offset + width, :]
             write_output = write_arena[:, :, offset:offset + width, :]
@@ -831,8 +831,9 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             write_output = write_arena[:, :, offset:offset + width, :]
             d_read_output = d_read[:, :, offset:offset + width, :]
             d_write_output = d_write[:, :, offset:offset + width, :]
-            d_read_level = d_read_logits[:, :, index, :width]
-            d_write_level = d_write_logits[:, :, index, :width]
+            span = routing.level_logit_slice(index)
+            d_read_level = d_read_logits[:, :, span]
+            d_write_level = d_write_logits[:, :, span]
             support_offset = routing.support_offsets[index]
 
             if isinstance(level, UnionRouting):
@@ -841,7 +842,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 union_index += 1
                 words = support_words[:, :, support_offset:support_offset + width]
                 _launch_union_bwd(
-                    read_logits[:, :, index, :width], write_logits[:, :, index, :width],
+                    read_logits[:, :, span], write_logits[:, :, span],
                     midpoint, words, read_output, write_output,
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
@@ -911,8 +912,9 @@ class _ProductionLevelsFn(torch.autograd.Function):
 
         for index, level in enumerate(routing.levels):
             width = routing.branches[index]
-            read_source = read_logits[:, :, index, :width]
-            write_source = write_logits[:, :, index, :width]
+            span = routing.level_logit_slice(index)
+            read_source = read_logits[:, :, span]
+            write_source = write_logits[:, :, span]
             read_output = torch.zeros((n_streams, tokens, width), dtype=torch.float32, device=device)
             write_output = torch.zeros_like(read_output)
             read_levels.append(read_output)
@@ -994,8 +996,9 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 d_write_output = torch.zeros_like(write_output)
             d_read_output = d_read_output.contiguous()
             d_write_output = d_write_output.contiguous()
-            d_read_level = d_read_logits[:, :, index, :width]
-            d_write_level = d_write_logits[:, :, index, :width]
+            span = routing.level_logit_slice(index)
+            d_read_level = d_read_logits[:, :, span]
+            d_write_level = d_write_logits[:, :, span]
             support_offset = routing.support_offsets[index]
             words = None if support_offset < 0 else support_words[
                 :, :, support_offset:support_offset + width]
@@ -1005,7 +1008,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 midpoint = union_midpoints[union_index]
                 union_index += 1
                 _launch_union_bwd(
-                    read_logits[:, :, index, :width], write_logits[:, :, index, :width],
+                    read_logits[:, :, span], write_logits[:, :, span],
                     midpoint, words, read_output, write_output,
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
@@ -1158,8 +1161,9 @@ def _torch_routing_factor_levels(
     reads, writes = [], []
     for index, level in enumerate(routing.levels):
         width = routing.branches[index]
-        read_level = read_logits[..., index, :width]
-        write_level = write_logits[..., index, :width]
+        span = routing.level_logit_slice(index)
+        read_level = read_logits[..., span]
+        write_level = write_logits[..., span]
         if isinstance(level, UnionRouting):
             read_factor, write_factor = _torch_union_split(read_level, write_level, level.alpha)
         elif level.shares_solve:
@@ -1195,10 +1199,10 @@ def production_routing_factor_levels(
         raise ValueError(
             "read/write logits must have identical shapes, got "
             f"{read_logits.shape} and {write_logits.shape}")
-    if read_logits.ndim != 4 or read_logits.shape[-2:] != (routing.D, routing.real_width):
+    if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
         raise ValueError(
-            "routing logits must end in "
-            f"[D, real_width]=[{routing.D}, {routing.real_width}], got {tuple(read_logits.shape)}")
+            "routing logits must be [BH, T, packed_logit_width] with packed_logit_width="
+            f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
     if read_logits.device != write_logits.device or read_logits.dtype != write_logits.dtype:
         raise ValueError("read/write logits must share one device and dtype")
 
@@ -1225,10 +1229,10 @@ def production_routing_factors(
             f"{read_logits.shape} and {write_logits.shape}")
     if type(token_origin) is not int or token_origin < 0:
         raise ValueError("token_origin must be a nonnegative exact int")
-    if read_logits.ndim != 4 or read_logits.shape[-2:] != (routing.D, routing.real_width):
+    if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
         raise ValueError(
-            "routing logits must end in "
-            f"[D, real_width]=[{routing.D}, {routing.real_width}], got {tuple(read_logits.shape)}")
+            "routing logits must be [BH, T, packed_logit_width] with packed_logit_width="
+            f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
 
     outputs = _ProductionRoutingArenaFn.apply(read_logits, write_logits, routing)
     read_values, write_values, support_words = outputs

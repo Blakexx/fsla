@@ -25,7 +25,12 @@ def _reference(hidden, weight, bias, heads):
     logits = torch.einsum(equation, hidden.float(), weight.float())
     if bias is not None:
         logits = logits + bias.float()[None, :, None]
-    return logits.reshape(hidden.shape[0] * heads, hidden.shape[1], weight.shape[1], weight.shape[3])
+    # The production layout is PACKED (`ResolvedRouting.packed_logit_width`): one side's
+    # levels laid end to end on `level_offsets`, with no per-level padding to
+    # `real_width`. These fixtures use uniform widths, so the padded slot axis flattens
+    # exactly onto those offsets and the reference stays a plain reshape.
+    return logits.reshape(
+        hidden.shape[0] * heads, hidden.shape[1], weight.shape[1] * weight.shape[3])
 
 
 def _expected_read(hidden, write_hidden, route_W, route_bias, routing, expected_write, heads):
@@ -37,8 +42,13 @@ def _expected_read(hidden, write_hidden, route_W, route_bias, routing, expected_
     read_bias = None if route_bias is None else route_bias[:, routing.D:]
     untied = _reference(hidden, route_W[:, routing.D:], read_bias, heads)
     slots = {level: slot for slot, level in enumerate(routing.untied_levels)}
-    return torch.stack([
-        untied[:, :, slots[level]] if level in slots else expected_write[:, :, level]
+
+    def block(source, position):
+        width = routing.branches[0]
+        return source[:, :, position * width:(position + 1) * width]
+
+    return torch.cat([
+        block(untied, slots[level]) if level in slots else block(expected_write, level)
         for level in range(routing.D)
     ], dim=2)
 

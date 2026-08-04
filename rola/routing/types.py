@@ -29,6 +29,20 @@ READ_SUPPORT = 1
 WRITE_SUPPORT = 2
 
 
+def level_logit_slice(branches: tuple[int, ...], index: int) -> slice:
+    """The column span level ``index`` occupies in a packed per-side logit tensor.
+
+    THE definition of the packed router-logit layout: one side's levels laid end to
+    end, level ``l`` owning ``branches[l]`` columns, with no padding to
+    ``max(branches)``. Free-standing (rather than only a ``ResolvedRouting`` method)
+    because ``diagnostics/telemetry.py`` is handed the branch widths alone and must
+    read the same layout -- a second offset expression there would be a second
+    definition of the layout, and two definitions drift.
+    """
+    start = sum(branches[:index])
+    return slice(start, start + branches[index])
+
+
 def activation_properties(activation: Any, *, owner: str = "activation") -> ActivationProperties:
     """The registry row for any activation object, by its `tag`.
 
@@ -396,6 +410,33 @@ class ResolvedRouting:
         for width in self.branches:
             offsets.append(offsets[-1] + width)
         return tuple(offsets)
+
+    @property
+    def packed_logit_width(self) -> int:
+        """Columns in ONE side's router-logit tensor -- tightly packed, no per-level padding.
+
+        The router logits are packed on the same offsets the route arena already uses
+        (``level_offsets``), NOT padded to ``real_width`` per level. Padding every level
+        to the widest one made ``packed_slot_count * real_width`` columns where only
+        ``2 * sum(branches)`` are ever read: at the parity cell (branches (256, 64),
+        untied) that was 1024 computed for 640 consumed -- 37.5% of the projection GEMM
+        and of the logit tensor it writes, thrown away. The waste GROWS with branch-width
+        imbalance, so it is a scaling defect, not a constant.
+
+        ``route_W`` keeps its ``[H, packed_slots, hidden, real_width]`` parameter layout:
+        the packing is done on the WEIGHT, per side, before the GEMM (see
+        ``routing/projection.py``), so no checkpoint and no parameter shape moves.
+        """
+        return self.level_offsets[-1]
+
+    def level_logit_slice(self, index: int) -> slice:
+        """The column span level ``index`` occupies in a packed per-side logit tensor.
+
+        Delegates to the module-level :func:`level_logit_slice` so the production
+        solve, the fp64 reference, telemetry and the budget-conditioning actuators
+        all read ONE definition of the packed layout.
+        """
+        return level_logit_slice(self.branches, index)
 
     @property
     def radix_strides(self) -> tuple[int, ...]:

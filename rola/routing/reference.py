@@ -121,17 +121,18 @@ def routing_factor_levels(
         raise ValueError(
             "read/write logits must have identical shapes, got "
             f"{read_logits.shape} and {write_logits.shape}")
-    if read_logits.ndim != 4 or read_logits.shape[-2:] != (routing.D, routing.real_width):
+    if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
         raise ValueError(
-            "routing logits must end in "
-            f"[D, real_width]=[{routing.D}, {routing.real_width}], got {tuple(read_logits.shape)}")
+            "routing logits must be [BH, T, packed_logit_width] with packed_logit_width="
+            f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
 
     reads, writes = [], []
 
     for index, level in enumerate(routing.levels):
         width = routing.branches[index]
-        read_level = read_logits[..., index, :width]
-        write_level = write_logits[..., index, :width]
+        span = routing.level_logit_slice(index)
+        read_level = read_logits[..., span]
+        write_level = write_logits[..., span]
         if isinstance(level, UnionRouting):
             read_factor, write_factor, _ = _union_split_with_support(
                 read_level, write_level, alpha=level.alpha,

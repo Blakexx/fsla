@@ -536,7 +536,7 @@ def _conditioned_pass(
         T_chunk = end - start
         read_logits = read_logits_full[:, start:end]
         write_logits = write_logits_full[:, start:end]
-        # [BH, T_chunk, D, real_width]. All conditioning below uses the PREVIOUS chunk's
+        # [BH, T_chunk, packed_logit_width]. All conditioning below uses the PREVIOUS chunk's
         # slack/usage (one-chunk lag, module docstring) -- the running_* dicts have not yet
         # been updated with this chunk's own output at the point they are read here.
         #
@@ -563,7 +563,7 @@ def _conditioned_pass(
                         temp_logit = temp_logit + _broadcast_head_param(temp_b[:, idx:idx + 1]).squeeze(-1)
                     c = F.softplus(temp_logit) + _TEMPERATURE_FLOOR                   # [BH]
                     scale_buffer = write_scale if side == "write" else read_scale
-                    scale_buffer[:, :, level, :widths[level]] = c[:, None, None]
+                    scale_buffer[:, :, resolved.level_logit_slice(level)] = c[:, None, None]
 
             if budget.usage_bias_enabled:
                 # D3 fix: usage conditioning is a separate mechanism from Tier 1 with its
@@ -582,7 +582,8 @@ def _conditioned_pass(
                         w0 * usage_norm + w1 * touched_f
                         + w2 * r_feature[:, None] + w3 * write_slack[:, None] + bias
                     )                                                                # [BH,width]
-                    write_bias_t[:, :, level, :width] = write_bias_t[:, :, level, :width] + offset[:, None, :]
+                    span = resolved.level_logit_slice(level)
+                    write_bias_t[:, :, span] = write_bias_t[:, :, span] + offset[:, None, :]
 
             write_logits = write_logits * write_scale + write_bias_t
             read_logits = read_logits * read_scale

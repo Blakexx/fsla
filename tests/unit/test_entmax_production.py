@@ -131,6 +131,7 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
     d_write_logits = torch.zeros_like(write_logits)
     for index, level in enumerate(routing.levels):
         width = routing.branches[index]
+        span = routing.level_logit_slice(index)
         read_values = _untile_level(descriptor.read_values, descriptor, index).float()
         write_values = _untile_level(descriptor.write_values, descriptor, index).float()
         # Autograd casts cotangents back through the public ``.float()`` view
@@ -143,11 +144,11 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
         support = _descriptor_level_support(descriptor, index)
 
         if isinstance(level, UnionRouting):
-            midpoint_logits = 0.5 * read_logits[:, :, index, :width] + 0.5 * write_logits[:, :, index, :width]
+            midpoint_logits = 0.5 * read_logits[:, :, span] + 0.5 * write_logits[:, :, span]
             midpoint_values, _ = production_factor(
                 midpoint_logits.detach(), "entmax", alpha=level.alpha)
             delta, saturated = _overflow_safe_union_delta(
-                read_logits[:, :, index, :width], write_logits[:, :, index, :width])
+                read_logits[:, :, span], write_logits[:, :, span])
             read_gate = torch.sigmoid(delta)
             write_gate = torch.sigmoid(-delta)
             d_log_weight = write_values * (
@@ -161,33 +162,33 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
             d_delta = (
                 read_gradient * read_values * write_gate - d_log_weight * read_gate
             ) * (~saturated).float()
-            d_read_logits[:, :, index, :width] = 0.5 * d_midpoint_logits + d_delta
-            d_write_logits[:, :, index, :width] = 0.5 * d_midpoint_logits - d_delta
+            d_read_logits[:, :, span] = 0.5 * d_midpoint_logits + d_delta
+            d_write_logits[:, :, span] = 0.5 * d_midpoint_logits - d_delta
             continue
 
         assert isinstance(level, IndependentRouting)
         if level.shares_solve:
-            d_write_logits[:, :, index, :width] = _stored_activation_vjp(
+            d_write_logits[:, :, span] = _stored_activation_vjp(
                 level.write_activation, read_values,
                 read_gradient + write_gradient, support)
         elif level.tied:
-            d_write_logits[:, :, index, :width] = (
+            d_write_logits[:, :, span] = (
                 _stored_activation_vjp(
                     level.read_activation, read_values, read_gradient, support)
                 + _stored_activation_vjp(
                     level.write_activation, write_values, write_gradient, support)
             )
         else:
-            d_read_logits[:, :, index, :width] = _stored_activation_vjp(
+            d_read_logits[:, :, span] = _stored_activation_vjp(
                 level.read_activation, read_values, read_gradient, support)
-            d_write_logits[:, :, index, :width] = _stored_activation_vjp(
+            d_write_logits[:, :, span] = _stored_activation_vjp(
                 level.write_activation, write_values, write_gradient, support)
     return d_read_logits, d_write_logits
 
 
 def _logits(routing, tokens=33, seed=31):
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    shape = (2, tokens, routing.D, routing.real_width)
+    shape = (2, tokens, routing.packed_logit_width)
     return torch.randn(shape, device="cuda", dtype=torch.float32, generator=generator)
 
 
@@ -260,7 +261,8 @@ def test_production_factor_empty_rows_preserve_autograd_contract():
         (IndependentRouting(False, EntmaxActivation(1.5), SoftmaxActivation()),) * 2,
         (4, 4),
     )
-    read_logits = torch.empty(1, 0, 2, 4, device="cuda", dtype=torch.float32, requires_grad=True)
+    read_logits = torch.empty(
+        1, 0, routing.packed_logit_width, device="cuda", dtype=torch.float32, requires_grad=True)
     write_logits = torch.empty_like(read_logits, requires_grad=True)
     descriptor = production_routing_factors(read_logits, write_logits, routing)
     assert descriptor.read_values.shape == descriptor.write_values.shape == (1, 0, 8, 32)
@@ -273,7 +275,7 @@ def test_production_factor_empty_rows_preserve_autograd_contract():
     assert read_logits.grad is not None and write_logits.grad is not None
 
     union_routing = ResolvedRouting((UnionRouting(2.0),), (4,))
-    read_logits = torch.empty(1, 0, 1, 4, device="cuda", dtype=torch.float32, requires_grad=True)
+    read_logits = torch.empty(1, 0, 4, device="cuda", dtype=torch.float32, requires_grad=True)
     write_logits = torch.empty_like(read_logits, requires_grad=True)
     union = production_routing_factors(read_logits, write_logits, union_routing)
     assert union.read_values.shape == union.write_values.shape == (1, 0, 4, 32)
@@ -424,7 +426,7 @@ def test_production_union_forward_matches_reference_and_vjp_matches_stored_contr
     gen = torch.Generator(device="cuda").manual_seed(82)
     routing = ResolvedRouting((UnionRouting(alpha),), (4,))
     read_base = torch.randn(
-        2, 33, 1, 4, device="cuda", dtype=torch.float32, generator=gen)
+        2, 33, 4, device="cuda", dtype=torch.float32, generator=gen)
     write_base = torch.randn(
         read_base.shape, device="cuda", dtype=torch.float32, generator=gen)
     read_production = read_base.detach().clone().requires_grad_()
@@ -470,7 +472,7 @@ def test_production_union_handles_near_max_logits_and_vjp(alpha, relationship):
     # remains exactly representable. Equal logits use a less degenerate solve fixture.
     near_max = torch.finfo(torch.float32).max if relationship == "opposite" else 1.0e8
     read_base = torch.tensor(
-        [[[[near_max, -near_max, near_max, -near_max]]]],
+        [[[near_max, -near_max, near_max, -near_max]]],
         device="cuda", dtype=torch.float32)
     write_base = read_base.detach().clone()
     if relationship == "opposite":
@@ -527,7 +529,7 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
         (2, 3, 5, 4),
     )
     read_logits = torch.randn(
-        1, 33, routing.D, routing.real_width, device="cuda", dtype=torch.float32, generator=gen)
+        1, 33, routing.packed_logit_width, device="cuda", dtype=torch.float32, generator=gen)
     write_logits = torch.randn(
         read_logits.shape, device="cuda", dtype=torch.float32, generator=gen)
     descriptor = production_routing_factors(read_logits, write_logits, routing)
@@ -549,7 +551,7 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
         (2,),
     )
     narrow_logits = torch.tensor(
-        [[[[0.0, 1.99998]]]], device="cuda", dtype=torch.float32)
+        [[[0.0, 1.99998]]], device="cuda", dtype=torch.float32)
     narrow = production_routing_factors(narrow_logits, narrow_logits, narrow_routing)
     stored = _untile_level(narrow.read_values, narrow, 0)
     assert stored[0, 0, 0] != 0

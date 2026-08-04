@@ -134,9 +134,9 @@ def _routings(alpha: float) -> dict[str, ResolvedRouting]:
 
 
 def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) -> torch.Tensor:
-    """Stress fixtures for the threshold solve, in the packed ``[BH, T, D, real_width]`` layout."""
+    """Stress fixtures for the threshold solve, in the packed ``[BH, T, packed_logit_width]`` layout."""
     generator = torch.Generator(device=device).manual_seed(seed)
-    shape = (3, 40, routing.D, routing.real_width)
+    shape = (3, 40, routing.packed_logit_width)
     base = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
     if kind == "random":
         return base
@@ -158,9 +158,16 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
         # smallest support entmax can produce (a genuinely empty support is
         # unreachable -- the argmax is always in it).
         collapsed = torch.full(shape, -20.0, device=device, dtype=torch.float32)
-        index = torch.randint(
-            0, routing.real_width, shape[:-1], device=device, generator=generator)
-        return collapsed.scatter(-1, index.unsqueeze(-1), 20.0)
+        # ONE dominant digit per LEVEL per row. In the packed layout the dominant index
+        # must land inside the level's own span (`level_logit_slice`) -- a single index
+        # drawn over the whole packed width would leave every other level a constant row,
+        # whose entmax is uniform, i.e. the opposite of the collapsed support this
+        # fixture exists to produce.
+        for level, width in enumerate(routing.branches):
+            span = routing.level_logit_slice(level)
+            index = torch.randint(0, width, shape[:-1], device=device, generator=generator)
+            collapsed[..., span] = collapsed[..., span].scatter(-1, index.unsqueeze(-1), 20.0)
+        return collapsed
     if kind == "large_magnitude":
         # 5x the router's natural logit scale: the solve's support collapses hard, so
         # the row-max shift is what keeps it finite. The scale is deliberately not pushed
@@ -297,8 +304,8 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
     # semantics (explicitly excluded from the oracle gate, see module docstring), so it
     # must not go vacuous under a seed/width change without saying so loudly.
     ties = sum(
-        _count_exact_ties(read.detach()[..., index, :width], alpha)
-        + _count_exact_ties(write.detach()[..., index, :width], alpha)
+        _count_exact_ties(read.detach()[..., routing.level_logit_slice(index)], alpha)
+        + _count_exact_ties(write.detach()[..., routing.level_logit_slice(index)], alpha)
         for index, width in enumerate(routing.branches)
     )
     assert ties > 0, (

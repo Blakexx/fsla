@@ -41,6 +41,8 @@ import time
 import torch
 import torch.nn.functional as F
 
+from rola.routing.types import level_logit_slice
+
 __all__ = ['TELEMETRY', 'RolaTelemetry', 'record_route_descriptor']
 
 _ENV_PATH = 'ROLA_TELEMETRY'
@@ -259,8 +261,9 @@ class RolaTelemetry:
         out = {}
         for level in union_levels:
             width = int(branches[level])
-            zr = read_logits[..., level, :width].float()
-            zw = write_logits[..., level, :width].float()
+            span = level_logit_slice(tuple(branches), level)
+            zr = read_logits[..., span].float()
+            zw = write_logits[..., span].float()
             support = (read_levels[level] != 0) | (write_levels[level] != 0)
             sigma = torch.sigmoid(zr - zw)[support]
             mean, p10, p50, p90 = _quantiles(sigma)
