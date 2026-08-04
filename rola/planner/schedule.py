@@ -980,7 +980,8 @@ class Schedule:
     level, token-major and contiguous per tile (§5 "Staging"). A nonzero entry *is*
     a live token (§4), so no separate token mask is stored.
 
-    ``owners``/``owner_costs``: active owners sorted by estimated cost, descending.
+    ``owners``/``owner_costs``: active owners in HEAD-MAJOR order -- ``bh``
+    ascending, estimated cost descending within a ``bh`` (:func:`_sort_owners`).
     An owner with no candidate tile on either side is absent entirely.
 
     **Per-owner candidate bitmaps are deliberately NOT a field.** §4: the
@@ -1415,7 +1416,8 @@ def _sort_owners(
     n_tiles: int,
     slice_live: tuple[torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Enumerate active owners and sort them by estimated cost, descending.
+    """Enumerate active owners and sort them HEAD-MAJOR: ``bh`` ascending, and
+    estimated cost descending within each ``bh``.
 
     **No ``O(L*N)`` or ``O(N)`` object is ever formed.** Owners are enumerated over
     the *Cartesian product of per-level live digit sets* on the fixed levels, so
@@ -1521,8 +1523,29 @@ def _sort_owners(
         empty_i = torch.zeros((0, 2), dtype=torch.int32, device=device)
         return empty_i, torch.zeros(0, dtype=torch.float32, device=device)
     costs = costs_all.reshape(-1)[active_index]
-    order = torch.argsort(costs, descending=True, stable=True)
-    pairs = torch.stack((bh_all.reshape(-1)[active_index].to(torch.int32),
+    bh_sel = bh_all.reshape(-1)[active_index]
+    # HEAD-MAJOR (`bh` primary ascending, cost descending within a `bh`). The reason
+    # is L2 RESIDENCY, not load balance: the amplitude tensors a CTA gathers are
+    # indexed by `bh`, so the working set the device is actually holding is the
+    # union over the `bh` of the resident `blockIdx.x` window. Cost-descending alone
+    # is not head-monotone and interleaved every head across that window -- the
+    # window spanned 8.00 of 8 heads, and the amplitude stream was re-fetched
+    # 24.8-26.9x its 0.336 GB footprint. Keying on `bh` first collapses the span to
+    # 1.88 heads, which is the "at most 2 batch-heads" AMP_STAGING_DESIGN §4.3
+    # assumes and had never had. MEASURED at the parity flagship (N=L=16384): L2
+    # read hit rate 27.09 % -> 70.67 %, DRAM 20.27 -> 6.38 GB, step 51.41 -> 48.21 ms
+    # (-6.23 %), with the request side untouched (L2 read requests -0.06 %, global
+    # RED sectors bit-identical, occupancy identical) -- so the win is entirely
+    # hit/miss, not less work. `state` is byte-equal across the re-key.
+    #
+    # Cost-descending is retained WITHIN a `bh` (it is what the sequence-parallel
+    # apportionment and the tail-effect argument read), and BOTH sorts are `stable`,
+    # so a cost tie still resolves to the enumeration order above -- the
+    # byte-for-byte reproducibility the enumeration comment relies on is preserved:
+    # a stable sort of a stable order is that order restricted to each `bh` group.
+    by_cost = torch.argsort(costs, descending=True, stable=True)
+    order = by_cost[torch.argsort(bh_sel[by_cost], stable=True)]
+    pairs = torch.stack((bh_sel.to(torch.int32),
                          owner_all.reshape(-1)[active_index].to(torch.int32)), dim=1)
     return pairs[order].contiguous(), costs[order].contiguous()
 

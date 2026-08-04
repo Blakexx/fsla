@@ -622,7 +622,8 @@ def build_sequence_parallel_tensors(sp: SequenceParallelPlan,
     scheduler -- gated now by
     ``test_the_pass_three_work_list_order_is_not_load_bearing``.
 
-    Owner order is `schedule.owners`' cost-descending order, and segments are
+    Owner order is `schedule.owners`' head-major order (`bh` ascending, cost
+    descending within a `bh` -- `_sort_owners`), and segments are
     ascending within an owner, so at `P_o = 1` for every owner the pass-3 grid is
     `schedule.owners` itself, row for row.
     """

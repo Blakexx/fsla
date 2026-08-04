@@ -93,17 +93,30 @@ def test_P_is_apportioned_in_proportion_to_the_owner_live_tile_count():
 
     `schedule.owner_costs` IS that count -- §4's builder forms it as read-candidate
     tiles plus `write_cost_weight` times write-candidate tiles over the realized
-    schedule -- and it comes back sorted descending, so the apportionment must be
-    monotone non-increasing in owner order. Monotonicity is the checkable form of
-    "proportional" that does not depend on the exact rounding rule.
+    schedule -- so the apportionment must be monotone non-increasing IN COST.
+    Monotonicity is the checkable form of "proportional" that does not depend on
+    the exact rounding rule.
+
+    **The claim is stated against cost, not against row index, and that is the
+    point.** `schedule.owners` is head-major (`bh` ascending, cost descending
+    within a `bh`), so cost is NOT globally descending down the owner list any
+    more; a test that read monotonicity off the row order would have been reading
+    the launch's L2-locality key, which the apportionment has nothing to do with.
+    Re-sorting by cost here restores the property the spec actually asserts. The
+    head-major structure is a separate claim with its own gate,
+    `test_planner.py::test_the_owner_order_is_head_major` (which lives there
+    because it needs a fixture whose owners have DIFFERENT costs -- this file's
+    dense-softmax fixture gives every owner the same cost, so it could not tell
+    the two keys apart).
     """
     plan, schedule = _fixture(widths=(8, 8), T=512)
     sp = select_sequence_parallelism(
         plan, schedule, policy=SequenceParallelPolicy(workspace_cap=_WIDE_CAP),
         sms=80, blocks_per_sm=8)
     costs = schedule.owner_costs.tolist()
-    assert costs == sorted(costs, reverse=True), "the schedule's owner order is not by cost"
-    assert list(sp.P) == sorted(sp.P, reverse=True), (
+    by_cost = sorted(range(len(costs)), key=lambda o: -costs[o])
+    P_by_cost = [sp.P[o] for o in by_cost]
+    assert P_by_cost == sorted(P_by_cost, reverse=True), (
         f"P is not monotone in the live-tile count: costs={costs} P={sp.P}")
 
 

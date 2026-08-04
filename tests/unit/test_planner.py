@@ -307,7 +307,11 @@ def _oracle_owners(read_live, write_live, widths, BC, n_tiles, write_cost_weight
                     continue
                 cost = r_count + write_cost_weight * w_count
                 results.append((bh, this_owner, cost))
-    order = sorted(range(len(results)), key=lambda i: -results[i][2])  # stable
+    # HEAD-MAJOR: `bh` primary ascending, cost descending within a `bh`. Python's
+    # sort is stable, so a cost tie inside a `bh` still resolves to the emission
+    # order above -- the same reproducibility-on-ties property the builder's two
+    # stable `argsort`s give it.
+    order = sorted(range(len(results)), key=lambda i: (results[i][0], -results[i][2]))
     return [results[i] for i in order]
 
 
@@ -526,7 +530,8 @@ def test_slice_union_matches_oracle(combo):
 
 @pytest.mark.parametrize("combo", _MATRIX, ids=_MATRIX_IDS)
 def test_owners_match_oracle_set_and_order(combo):
-    """§3/§4: active owners, in descending-cost order (stable ties), == oracle."""
+    """§3/§4: active owners, head-major (`bh` ascending, cost descending within a
+    `bh`, stable ties), == oracle."""
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
     schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
@@ -542,6 +547,50 @@ def test_owners_match_oracle_set_and_order(combo):
 
     oracle_costs = torch.tensor([cost for _b, _o, cost in oracle], dtype=torch.float32)
     torch.testing.assert_close(schedule.owner_costs, oracle_costs, rtol=1e-5, atol=1e-6)
+
+
+def test_the_owner_order_is_head_major():
+    """§4's LAUNCH order is `bh` ascending, cost descending WITHIN a `bh`.
+
+    The key is head-major for L2 RESIDENCY: the amplitude tensors a consumer CTA
+    gathers are indexed by `bh`, so the working set the device actually holds is
+    the union over the `bh` of the resident `blockIdx.x` window. Cost-descending
+    alone interleaved every head across that window (span 8.00 of 8 heads at the
+    parity flagship; the amplitude stream was re-fetched 24.8-26.9x its footprint).
+    Measured on the re-key: L2 read hit rate 27.09 % -> 70.67 %, DRAM 20.27 ->
+    6.38 GB, step -6.23 %.
+
+    This is a *performance* property, so no correctness test can see it regress --
+    which is exactly why it needs a gate of its own. It is asserted over the
+    density matrix rather than one cell because the dense scenarios give every
+    owner the SAME cost, under which cost-only and head-major keys coincide and
+    the claim would be vacuous. NON-VACUITY IS ASSERTED, not assumed: the test
+    counts the combos on which a cost-only stable sort would NOT have been
+    `bh`-monotone and requires at least one.
+    """
+    discriminating = 0
+    for widths in _TOPOLOGIES:
+        for density in _DENSITIES:
+            c = _build_combo(widths, 32, "exact", density)
+            schedule = build_schedule(c["read_levels"], c["write_levels"],
+                                      c["g_read"], c["g_write"], c["plan"])
+            bh = schedule.owners[:, 0].tolist()
+            costs = schedule.owner_costs.tolist()
+            assert bh == sorted(bh), (
+                f"owner order is not `bh`-monotone at {widths}/{density}: {bh}")
+            for row in range(1, len(bh)):
+                if bh[row] == bh[row - 1]:
+                    assert costs[row] <= costs[row - 1], (
+                        f"cost is not descending within `bh` {bh[row]} at row {row} "
+                        f"({widths}/{density}): {costs}")
+            # Would the OLD key have satisfied the assertion above? If it would,
+            # this combo cannot tell the two orderings apart.
+            cost_only = sorted(range(len(costs)), key=lambda i: -costs[i])
+            if [bh[i] for i in cost_only] != sorted(bh):
+                discriminating += 1
+    assert discriminating > 0, (
+        "no combo in the matrix distinguishes head-major from cost-descending, so "
+        "this gate proves nothing -- the fixtures have degenerated to uniform cost")
 
 
 # ---------------------------------------------------------------------------

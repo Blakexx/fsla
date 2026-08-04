@@ -992,8 +992,8 @@ def test_the_three_pass_work_lists_have_the_shape_the_contract_names():
     assert offsets == tuple(sum(counts[:i]) for i in range(n))
     assert offsets[-1] + counts[-1] == sp.n_slots
     # Segments are ascending within an owner and owners keep `schedule.owners`'
-    # cost-descending order, so the pass-3 grid's first `n` rows are that owner list
-    # with segment 0.
+    # order (head-major: `bh` ascending, cost descending within a `bh`), so the
+    # pass-3 grid's first `n` rows are that owner list with segment 0.
     assert torch.equal(t.owners[t.work_seg == 0], fx.schedule.owners.to(t.owners.dtype))
     assert torch.equal(t.work_seg.reshape(n, 3),
                        torch.arange(3, device=t.work_seg.device, dtype=t.work_seg.dtype)
