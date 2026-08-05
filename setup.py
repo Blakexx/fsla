@@ -85,6 +85,7 @@ CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 sys.path.insert(0, str(ROOT / "tools"))
 import build_flags  # noqa: E402
 import gen_shards  # noqa: E402
+import ratify  # noqa: E402
 
 #: THE RATIFIED SET. Overridable only downward in practice: adding an arch here
 #: without a manifest fails the build at ``_gate_ratified`` (rule 3), which is the
@@ -180,6 +181,7 @@ def _gate_ratified(archs: list[str]) -> dict:
     against one arch's measurements, and its recorded digest says so.
     """
     toolchain = None
+    shards = None
     entries: dict = {}
     for a in archs:
         path = manifest_path(a)
@@ -199,17 +201,23 @@ def _gate_ratified(archs: list[str]) -> dict:
                 f"existence is the cheap form of the question, not a weaker one."
             )
         if toolchain is None:
-            toolchain = blob["toolchain"]
+            toolchain, shards = blob["toolchain"], blob["shards"]
         elif blob["toolchain"] != toolchain:
             raise RuntimeError(
                 f"CLOSED-WORLD RULE 1: {path.name} pins a different assembler than the "
                 f"other manifests. The per-arch split is a FILING decision; one fatbin "
                 f"may not be gated against two ratifications."
             )
+        elif blob["shards"] != shards:
+            raise RuntimeError(
+                f"CLOSED-WORLD RULE 3: {path.name} records a different instantiation "
+                f"membership than the other manifests. The per-arch split is a FILING "
+                f"decision; one fatbin may not be gated against two matrices."
+            )
         entries.update(blob["entries"])
         print(f"rule 3 OK  sm_{a}: {len(blob['entries'])} ratified instantiations "
               f"({path.name})")
-    return {"toolchain": toolchain, "entries": entries}
+    return {"toolchain": toolchain, "shards": shards, "entries": entries}
 
 
 def vendored_tree_sha256(root: Path) -> tuple[str, int]:
@@ -280,15 +288,17 @@ def _gate_toolchain(manifest: dict) -> str:
 def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) -> None:
     import torch
 
-    blob = json.dumps({"toolchain": manifest["toolchain"],
-                       "entries": manifest["entries"]}, sort_keys=True).encode()
     config = {
         "version": read_version(),
         "archs": [f"sm_{a}" for a in archs],
         "ptxas": ptxas,
         "torch": torch.__version__,
         "cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
-        "manifest_sha256": hashlib.sha256(blob).hexdigest(),
+        #: TAKEN FROM `tools/ratify.py`, NEVER RESTATED. This digest identifies the
+        #: ratification a binary was gated against, and the tier-2 census recomputes
+        #: it independently and requires a match -- so a third spelling of "what goes
+        #: into the hash" is a spelling that can disagree with both.
+        "manifest_sha256": ratify.manifest_digest(manifest),
         "manifest_entries": {f"sm_{a}": sum(1 for k in manifest["entries"]
                                             if k.startswith(f"sm_{a}:"))
                              for a in archs},
