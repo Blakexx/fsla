@@ -4,7 +4,8 @@ Every removal of code from this tree gets a row here: what went, the commit that
 removed it, and one line on why it was safe. Deletions land in **deletion-only
 commits** — never mixed with a move, a rename or a rewrite — so that this ledger
 and `git log` say the same thing, and so a reviewer can read a deletion without
-reading a refactor.
+reading a refactor. The SHA is stamped in the immediately following commit, since
+a commit cannot name itself.
 
 The ledger exists because a codebase that cannot delete accumulates plausible
 code nobody dares touch. Recording the deletion is what makes deleting cheap.
@@ -28,8 +29,8 @@ dead code. The [dormant register](#dormant) below is the answer to that mistake.
 
 | Date | Commit | What | Why it was safe |
 |---|---|---|---|
-| 2026-08-04 | `DELETION-1` | `rola::mma::mma_m16n8k8_tf32x2` (`csrc/rola/src/mma.cuh`) — the two-term tf32 split | No caller anywhere in the tree (`.cu`, `.cuh`, `.cpp`, `.py`). The engine's exactness arm is `tf32x3`, the three-term split, which is what `mma_precision = "tf32x3"` selects and what the fp64-oracle gate runs; the two-term variant is a rung that was measured and not taken. It is a `__device__ __forceinline__` function with no callers, so it emitted no code — the SASS gate is unmoved by its removal, which is the evidence that nothing depended on it. |
-| 2026-08-04 | `DELETION-1` | A commented-out profiler line at `benchmarks/bench.py:252` | A debug variant of the line immediately below it (`sort_by="self_cuda_time_total"`). Commented-out code is a claim that someone might want it back, made in a place where nothing checks it; the live line is one edit away from carrying the sort. |
+| 2026-08-04 | `bcd9a16` | `rola::mma::mma_m16n8k8_tf32x2` (`csrc/rola/src/mma.cuh`) — the two-term tf32 split | No caller anywhere in the tree (`.cu`, `.cuh`, `.cpp`, `.py`). The engine's exactness arm is `tf32x3`, the three-term split, which is what `mma_precision = "tf32x3"` selects and what the fp64-oracle gate runs; the two-term variant is a rung that was measured and not taken. It is a `__device__ __forceinline__` function with no callers, so it emitted no code — the SASS gate is unmoved by its removal, which is the evidence that nothing depended on it. |
+| 2026-08-04 | `bcd9a16` | A commented-out profiler line at `benchmarks/bench.py:252` | A debug variant of the line immediately below it (`sort_by="self_cuda_time_total"`). Commented-out code is a claim that someone might want it back, made in a place where nothing checks it; the live line is one edit away from carrying the sort. |
 
 Historical removals that predate this ledger are recorded where they happened —
 the retired intra-kernel tracer at
