@@ -1,0 +1,125 @@
+# `csrc/rola/src/decode_expand.cu` — the `T = 1` support expansion
+
+`supp(R)` and `supp(W)` as EXACT leaf bitmaps. One CTA per batch-head: it builds
+two `N`-bit maps by Kronecker broadcast and emits the coarse popcount index the
+GEMV partitions and skips with.
+
+Why the support is a Cartesian product at `T = 1`, and therefore why a bitmap is
+the natural object at all, is [`decode.md`
+§2](decode.md#kronecker-support). This doc covers what the expansion kernel does
+with that fact.
+
+Symbols: `N` leaves; `D` levels; `b_l` level `l`'s width;
+`S_l = prod(b_{l..D-1})` its span, so `S_0 = N` and `S_D = 1`;
+`n_words = ceil(N/32)`; `bh` the batch-head; `M` the touched-row count.
+
+---
+
+## <a id="why-a-bitmap"></a>1. Why a bitmap and not a candidate list
+
+An earlier revision of this design enumerated a mixed-radix odometer over the
+per-level UNION lists and skipped candidates outside `supp(R) UNION supp(W)`
+before the state load. That was correct and cost no bandwidth, but it BOUNDED an
+object it could have BUILT: the union is not a Cartesian product, which is why the
+odometer reached for the containing product `prod_l U_l` — whereas the exact set
+is an `N`-bit map that is 8 KiB at `N = 65,536` against a state stream of 130 MiB.
+
+**The bound was more expensive to reason about than the truth is to materialize.**
+
+What that deletes, and it is the bulk of the older design:
+
+- the per-row `in_R` / `in_W` running-AND chains;
+- the skip test;
+- the compacted list with digit ids and membership flags;
+- the enumeration-factor statistic, together with the bench observable that would
+  have had to report it.
+
+None of those objects exists here.
+
+## <a id="the-cost"></a>2. The cost, stated honestly because the design's first estimate was wrong
+
+The design doc priced a sparse at-scale expansion at ~544 B per `bh` by counting
+only the broadcast COPIES. That undercounts: a bitmap's DEAD ranges must be
+written as zeros too, so the irreducible cost of publishing an `N`-bit map is
+`ceil(N/32)` words per side REGARDLESS of sparsity — 8 KiB per side per `bh` at
+`N = 65,536`, 16 KiB for both.
+
+That is a FLOOR, not an inefficiency. What the SMEM arm ([§5](#smem-arm)) buys is
+that the `D - 1` INTERMEDIATE levels cost SMEM traffic rather than HBM traffic, so
+the HBM figure IS the floor. The global arm pays the intermediates to HBM and is
+`D` times the floor.
+
+Both are noise against the dense-read state stream (0.012 % at at-scale), and both
+are visible against a very sparse high-batch step; see the findings doc.
+
+## <a id="the-recursion"></a>3. `expand_side` — the recursion over levels, innermost first
+
+The expansion, for ONE side; `amp` is that side's per-level amplitude row set.
+
+Level `D-1` seeds one inner block of `b_{D-1}` bits from its own amplitudes. Each
+outer level `l` then broadcasts the `S_{l+1}`-bit block it has into every LIVE
+digit's leaf range, and leaves every DEAD digit's range zero. After level 0 the
+buffer holds `S_0 = N` bits, which is the exact support.
+
+**Membership is the exact-nonzero test**, and that is not a threshold: it is the
+DEFINING EXPRESSION of `schedule.py`'s support bitmap
+(`read_mask = tuple(level != 0 ...)`, and §2386's "exact nonzero-ness of the
+amplitude, never a threshold"). Evaluating it here rather than reading a
+materialized bitmap is the same predicate, one step earlier.
+
+The destination-word loop stops at `span_out`, so bits at or beyond the level's
+span stay zero — which is what lets the GEMV walk with no leaf bound test
+([`decode.md` §26](decode.md#aligned-subranges)).
+
+## <a id="destination-ownership"></a>4. Destination-word ownership, and the ping-pong
+
+**DESTINATION-WORD OWNERSHIP is what makes this race-free without atomics.** One
+thread owns one destination word and PULLS every bit it needs, rather than each
+source digit PUSHING into ranges that two threads could share at a boundary word.
+The pull needs at most `ceil(32 / S_{l+1}) + 1` source digits per destination
+word, so the integer division that finds the digit is paid once or twice per WORD
+and never once per BIT. The gather itself is
+[`decode.md` §14](decode.md#extract-bits)'s funnel shift.
+
+<a id="ping-pong"></a>**PING-PONG, not in place.** Destination word 0 is read by
+the thread writing destination word 100 — every digit broadcasts the SAME source
+block — so writing into the source would be a read-write race that no barrier
+placement can fix. The two buffers are the fix, and they are why the SMEM arm
+costs `2 * n_words` words.
+
+## <a id="smem-arm"></a>5. `IN_SMEM` is a structure-driven arm, not a threshold
+
+The ping-pong pair is `2 * n_words` words; `n_words` is a TOPOLOGY fact
+(`ceil(N/32)`) and the SMEM budget is a HARDWARE fact, and spec I2 admits both as
+branch inputs. The two arms compute the IDENTICAL function — only where the
+intermediate levels live moves — which is why the G3 gate runs both arms against
+the same expected bitmaps.
+
+`decode_expand_smem_bytes` is the ping-pong pair and nothing else: the
+coarse-index scan's storage is static `__shared__`, sized by the block rather than
+by the topology. It is host-visible so the launcher picks the arm from the
+device's real budget rather than from a literal.
+
+## <a id="coarse-index"></a>6. The coarse popcount index
+
+`pc_coarse[g]` is the number of set bits of `bits_r | bits_w` in groups strictly
+before `g`; `pc_coarse[n_groups]` is `M`, the exact touched-row count. The GEMV
+binary-searches it to resolve a ROW range into a WORD range
+([`decode.md` §19](decode.md#locate-row)), and consults it again DURING the walk
+to skip a wholly empty group without reading its 32 words
+([`decode.md` §24](decode.md#coarse-consult)).
+
+The count is taken from the PUBLISHED words rather than accumulated per side
+during publication, and the reason is arithmetic rather than tidiness: the two
+sides' popcounts SUM to something that is not `popcount(r | w)` — a leaf in both
+supports would be counted twice, and `M` has to be the row count the GEMV will
+actually visit.
+
+This is the ONE place the union is formed outside a register, and it is formed as
+a COUNT. No third bitmap is ever stored.
+
+The block-wide exclusive sum is `cub::BlockScan`, carried across the outer
+`base`-strided loop by a `__shared__ int running`. That is a commodity primitive
+on a scalar fold; the digit algebra above it is semantics and is written out —
+the same standing rule `summaries.cuh` states in full
+([`summaries.md` §2](summaries.md#hand-roll-rule)).

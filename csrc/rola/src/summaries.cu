@@ -1,5 +1,18 @@
-// The producer-epilogue routing summary pass. See `summaries.cuh` for the design,
-// the standing rule it follows, and what each output means.
+// THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS -- the kernel, its shared state, and the
+// pybind entry that validates and launches it. `summaries.cuh` carries the parameter
+// block, the declared bounds and what each output means.
+//
+// The kernel is FIVE STEPS over one `(bh, tile)` row, grid-strided: support words (with
+// occupancy for free), per-level and per-slice union popcounts, the owner loop
+// (`K_hat`, candidacy, histogram), §4.1's canonical per-leaf write bitmap with §4.2's
+// owner condensation riding the same `atomicOr`, and the remaining global folds.
+//
+// Two facts a reader must not miss: CANDIDACY IS THE UNION OF THE TWO SIDES' PRODUCT
+// SETS, never the candidacy of the union word; and `K_hat <= BC` STRUCTURALLY, which is
+// why `bins = QPO + 1` is exhaustive and no clamp exists anywhere in this pass.
+//
+// Step by step, with the ballot's warp-uniformity requirement and the shared-byte
+// aliasing between CUB's temp storage and the histogram: docs/internals/summaries.md
 
 #include <cub/cub.cuh>
 
@@ -17,24 +30,24 @@ constexpr int kThreads = 256;
 constexpr int kWarpSize = 32;
 constexpr int kWarps = kThreads / kWarpSize;
 
-//: Bounded grid. The kernel walks `(bh, tile)` rows with a GRID-STRIDE loop, so the
-//: per-CTA constant work is paid once per CTA instead of once per tile and the grid
-//: does not grow with `L`. A launch SHAPE, not a threshold on any data.
+//: Bounded grid: `(bh, tile)` rows are walked with a GRID-STRIDE loop, so per-CTA
+//: constant work is paid once per CTA and the grid does not grow with `L`. A launch
+//: SHAPE, not a threshold on any data. docs/internals/summaries.md#launch-shape
 constexpr int kMaxBlocks = 4096;
 
 //: Ceilings the static shared-memory budget is sized from. `n_slices <= b_j`, and a
 //: level wider than this has already failed `kMaxTotalDigits`.
 constexpr int kMaxSlices = 512;
-//: `QPO + 1` at `BC = 512`. This is the ARRAY BOUND only; every expression that uses
+//: `QPO + 1` at `BC = 512`, and it is the ARRAY BOUND ONLY: every expression that uses
 //: the bin count uses `p.bins = BC / kMmaKQuantum + 1` (invariant I1).
 constexpr int kMaxBins = 33;
 
 using BlockReduceU64 = cub::BlockReduce<unsigned long long, kThreads>;
 
 //: THE SHARED-MEMORY LAYOUT, as one struct so the budget is a `sizeof` and not a sum
-//: maintained by hand. `fold` (CUB's temp storage) and `hist` share the same bytes:
-//: they are used in DISJOINT phases separated by a barrier, and stating that as a
-//: union is stronger than leaving a reader to infer it from barrier placement.
+//: maintained by hand. `fold` (CUB's temp storage) and `hist` SHARE THE SAME BYTES --
+//: disjoint phases separated by a barrier, said as a union rather than left to be
+//: inferred from barrier placement: docs/internals/summaries.md#scratch-union
 struct SharedState {
   int read_words[kMaxTotalDigits];
   int write_words[kMaxTotalDigits];
@@ -67,12 +80,13 @@ __device__ __forceinline__ void fold_u64(SharedState& s, unsigned long long valu
   if (threadIdx.x == 0 && total != 0ull) {
     atomicAdd(out, total);
   }
-  __syncthreads();  // `TempStorage` is reused by the next fold and by `hist`.
+  //: HAZARD scratch-union -- docs/internals/summaries.md#scratch-union
+  __syncthreads();
 }
 
-//: Is this owner WRITE-CANDIDATE in the staged tile? A §4 product-set membership test
-//: on data the CTA already holds -- invariant I3's own criterion for an in-kernel
-//: decision -- and exact rather than conservative.
+//: Is this owner WRITE-CANDIDATE in the staged tile? A §4 product-set membership test on
+//: data the CTA already holds -- invariant I3's own criterion for an in-kernel decision
+//: -- and EXACT rather than conservative.
 __device__ __forceinline__ bool write_candidate(const SharedState& s, const SummaryParams& p,
                                                 int owner) {
   const int slice = owner % p.n_slices;
@@ -113,16 +127,11 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
 
     // ---- 1. THE SUPPORT WORDS, and occupancy for free --------------------
     // One `int32` per `(side, level, digit)`; bit `t` is "this digit is live at token
-    // `t0 + t`". Liveness is EXACT nonzero-ness of the amplitude (spec §1.2), never a
-    // threshold. Threads cover consecutive DIGITS with the token loop inside, so each
-    // read is coalesced across the warp. The padded token tail (`t0 + t >= T`)
-    // contributes no bit, which is the whole of what a ragged `L` needs.
-    //
-    // §4.2's `occupancy` counts live `(token, digit)` PAIRS, not the union, so it is
-    // exactly `__popc` of the word -- free here, and a second pass over the routing
-    // anywhere else. It is folded per level INSIDE this loop rather than accumulated
-    // in a per-thread array, because a `[kMaxLevels]` register array indexed by a loop
-    // variable spills to local memory.
+    // `t0 + t`". Threads cover consecutive DIGITS with the token loop inside, so each
+    // read is coalesced; the padded tail (`t0 + t >= T`) contributes no bit, which is
+    // the whole of what a ragged `L` needs. §4.2's `occupancy` counts live PAIRS, so it
+    // is exactly `__popc` of the word -- free here.
+    // docs/internals/summaries.md#support-words
     for (int l = 0; l < p.level_count; ++l) {
       const int width = s.width[l];
       const int base = s.row_offset[l];
@@ -151,9 +160,9 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
     }
 
     // ---- 2. PER-LEVEL AND PER-SLICE UNION POPCOUNTS ----------------------
-    // The u WORDS are `(read | write) != 0` -- a bitmap over DIGITS, which is the form
-    // the owner-slice restriction needs: a popcount cannot be restricted to a
-    // sub-range after the fact.
+    // The union WORDS are `(read | write) != 0` -- a bitmap over DIGITS, which is the
+    // form the owner-slice restriction needs: a popcount cannot be restricted to a
+    // sub-range after the fact. docs/internals/summaries.md#union-popcounts
     for (int l = threadIdx.x; l < p.level_count; l += kThreads) {
       int count = 0;
       const int base = s.row_offset[l];
@@ -208,18 +217,15 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
         fixed_w &= (ww != 0) ? 1 : 0;
       }
 
-      // §4 CANDIDACY is the union of the two SIDES' product sets, never the candidacy
-      // of the union word: ORing the sides first would admit an owner whose read digit
-      // and write digit are live at DIFFERENT levels, which no side ever visits.
+      // §4 CANDIDACY is the union of the two SIDES' product sets, never the candidacy of
+      // the union word: docs/internals/summaries.md#owner-loop
       const bool cand_r = fixed_r != 0 && s.slice_any_r[slice] != 0;
       const bool cand_w = fixed_w != 0 && s.slice_any_w[slice] != 0;
       if (!(cand_r || cand_w)) continue;
       ++candidates;
 
-      // `K_hat <= BC` structurally -- the boundary level contributes at most
-      // `slice_digits`, every level below it at most its full width, and their product
-      // IS `BC` by the owner rectangle -- so `bins = QPO + 1` is exhaustive and no
-      // clamp exists anywhere in this pass.
+      // `K_hat <= BC` STRUCTURALLY by the owner rectangle, so `bins = QPO + 1` is
+      // exhaustive and no clamp exists anywhere in this pass.
       const int k_hat = fixed_u * s.slice_pc[slice] * inner;
       atomicAdd(&s.scratch.hist[(k_hat + kMmaKQuantum - 1) / kMmaKQuantum], 1ull);
     }
@@ -233,19 +239,16 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
 
     // ---- 4. §4.1's CANONICAL PER-LEAF WRITE BITMAP -----------------------
     // A leaf is written iff at SOME token of this tile EVERY level's digit for it is
-    // live on the write side: an OR of ANDs, which is why this term is `O(N)` and
-    // cannot be condensed from anything computed above. The AND is over the token
-    // WORDS, so all `BT` tokens are tested at once.
-    //
-    // Threads take CONSECUTIVE leaves within a warp, so `__ballot_sync` of the
-    // per-leaf bit IS the packed 32-bit word: ONE `atomicOr` per 32 leaves. The whole
-    // warp takes the loop together (`chunk` is warp-uniform), which is what makes the
-    // ballot well-formed on the ragged tail as well.
+    // live on the write side: an OR of ANDs, which is why this term is `O(N)` and cannot
+    // be condensed from anything computed above. Threads take CONSECUTIVE leaves within
+    // a warp, so `__ballot_sync` of the per-leaf bit IS the packed word: ONE `atomicOr`
+    // per 32 leaves. docs/internals/summaries.md#leaf-bitmap
     int* leaf_bitmap = p.written_leaf_bitmap + static_cast<long long>(bh) * p.leaf_words;
     int* owner_bitmap = p.written_owner_bitmap + static_cast<long long>(bh) * p.owner_words;
     unsigned long long new_owners = 0ull;
     const int leaf_chunks = (p.leaf_count + kWarpSize - 1) / kWarpSize;
 
+    //: HAZARD ballot-warp-uniform -- docs/internals/summaries.md#ballot-warp-uniform
     for (int chunk = warp; chunk < leaf_chunks; chunk += kWarps) {
       const int leaf = chunk * kWarpSize + lane;
       bool written = false;
@@ -262,12 +265,9 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
         atomicOr(&leaf_bitmap[chunk], static_cast<int>(mask));
 
         // §4.1's DERIVED owner condensation, folded on the SAME data rather than
-        // recomputed: this 32-leaf chunk spans `owner_lo .. owner_hi` (one owner when
-        // `BC >= 32`, `32/BC` of them otherwise), and a nonzero sub-mask means that
-        // owner is written. The `atomicOr` RETURNS the old word, so `__popc` of the
-        // newly set bits is the exact increment for the active-owner counter -- which
-        // is what keeps the pass to ONE launch instead of needing a second sweep over
-        // a bitmap that is only complete after the grid drains.
+        // recomputed. The `atomicOr` RETURNS the old word, so `__popc` of the newly set
+        // bits is the exact increment for the active-owner counter -- which is what
+        // keeps the pass to ONE launch: docs/internals/summaries.md#owner-condensation
         const int owner_lo = (chunk * kWarpSize) / p.state_block;
         const int owner_hi = (chunk * kWarpSize + kWarpSize - 1) / p.state_block;
         for (int owner = owner_lo; owner <= owner_hi && owner < p.owners_total; ++owner) {
@@ -384,8 +384,8 @@ void rola_routing_summaries_cuda(
     int64_t stride = 1;
     for (int64_t k = l + 1; k < D; ++k) stride *= level_widths[k];
     params.level_leaf_stride[l] = static_cast<int>(stride);
-    // `prod(b_{l+1..j-1})` -- the mixed radix of the owner id's FIXED part, level 0
-    // most significant. 1 on the spanned levels, which never index an owner.
+    // `prod(b_{l+1..j-1})` -- the mixed radix of the owner id's FIXED part, level 0 most
+    // significant. 1 on the spanned levels, which never index an owner.
     int64_t radix = 1;
     for (int64_t k = l + 1; k < first_spanned_level; ++k) radix *= level_widths[k];
     params.level_fixed_radix[l] = static_cast<int>(radix);

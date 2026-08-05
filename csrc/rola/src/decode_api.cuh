@@ -3,13 +3,12 @@
 // THE DECODE PATH'S HOST-FACING DECLARATIONS, and the ONLY decode header
 // `csrc/rola/rola_api.cpp` includes.
 //
-// It is split from `decode.cuh` for a mechanical reason worth stating, because the
-// split looks gratuitous until you hit it: `rola_api.cpp` is HOST-ONLY and is compiled
-// by the host compiler, not by `nvcc`. `decode.cuh` carries `__device__` helpers (the
-// bitmap funnel shift, the set-bit boundary cuts) that the host compiler cannot parse,
-// so a binding TU that included it would fail to compile. Guarding those helpers with
-// `#ifdef __CUDACC__` would work and would be worse: the header would then mean two
-// different things to two compilers. One header per audience instead.
+// The split from `decode.cuh` is mechanical and looks gratuitous until you hit it:
+// `rola_api.cpp` is HOST-ONLY, and `decode.cuh` carries `__device__` helpers the host
+// compiler cannot parse. ONE HEADER PER AUDIENCE, rather than an `#ifdef __CUDACC__`
+// that would make one header mean two things to two compilers.
+//
+// The full argument, and what each bound symbol claims: docs/internals/decode_api.md
 
 #include <torch/extension.h>
 
@@ -19,10 +18,10 @@
 namespace rola {
 namespace decode {
 
-//: THE BOUND SURFACE. `rola_decode_capacity` exists so a Python test can assert the
-//: C++ level-width capacity against `rola.routing.topology.MAX_BRANCH_WIDTH`: a
-//: `static_assert` cannot read a Python constant, so the pair of them is what makes
-//: the producer/decode capacity relation checkable rather than merely written down.
+//: THE BOUND SURFACE. The two accessors exist so a Python test can assert the C++
+//: level-width capacity against `rola.routing.topology.MAX_BRANCH_WIDTH` -- a
+//: `static_assert` cannot read a Python constant:
+//: docs/internals/decode_api.md#bound-surface
 int64_t rola_decode_capacity();
 int64_t rola_decode_producer_width_mirror();
 
