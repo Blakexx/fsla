@@ -100,6 +100,54 @@ closed-world policy is a kernel change requiring re-ratification, and it is slow
 besides -- the parallelism axes multiply, so it collapses `MAX_JOBS` from 7 to 1.
 Evidence: `workflows/refactor/p02_split_compile_trial_results.md`.
 
+## <a id="fatbin-compression"></a>The fatbin is compressed explicitly
+
+`-Xfatbin -compress-all` is in the flag list (`tools/build_flags.py`, which both the
+build and the ratification import). `fatbinary` compresses by default, but that
+default covers PTX and debug images only, and for the cubins it applies a SIZE
+HEURISTIC: measured on this tree, every cubin it stored raw was <= 9,076,960 B and
+every one it compressed was >= 10,075,232 B. That makes the shipped artifact a
+function of the SHARD PARTITION rather than of the code — at 32 arms per shard
+twelve of the sixteen consumer cubins fall under the threshold. Measured, same 256
+arms, same sources:
+
+| build | `.so` |
+|---|---|
+| 8 shards x 32, packer default | 141,919,496 B |
+| 4 shards x 64, packer default | 73,743,608 B |
+| **8 shards x 32, `-compress-all`** | **61,322,504 B** |
+
+So the flag decouples size from the partition — and beats the coarser partition
+outright, because it compresses the four large cubins the heuristic already took AND
+the twelve it did not. The partition therefore stays a build-time question decided on
+its own terms (`tools/gen_shards.py`: the shard axes are PREC x GLOBAL x BT, which is
+what keeps a ratchet refusal a one-shard event).
+
+Compression is applied to the image AFTER `ptxas` has assembled it, so it cannot move
+codegen — proven rather than asserted, by comparing every entry point's SASS across
+the flag change: **716 entries, 0 differing, 0 absent either way**. Taking the
+ratification again under the new flag list reproduces every register and spill number,
+so the manifests come back byte-identical.
+
+THE COST IS PAID AT MODULE LOAD, AND IT IS MEASURED. Three runs each, fresh process,
+CUDA context already up so the number is the module and not the context:
+
+| | before | after |
+|---|---|---|
+| extension import | 2.01 / 2.04 / 2.13 s | 2.08 / 2.18 / 2.60 s |
+| FIRST driver touch of a kernel | 0.0050 s (x3) | 0.0086 / 0.0088 / 0.0088 s |
+| a warm query | 3-4 us | 4-6 us |
+
+**+3.7 ms once per process, at the first launch** — that is the decompression, and it
+is where it should be. Import is noise-dominated and shows no separable effect.
+
+ONE GAP, RECORDED RATHER THAN CLOSED: the ratification manifest pins the ASSEMBLER
+(`ptxas --version`) and the calibration `#define`s, but NOT the flag list, so a
+codegen-affecting flag change leaves no fingerprint in the manifest. What catches it
+here is that the flag list is single-sourced in `tools/build_flags.py` and both
+compilers import it. Pre-existing; recording the flag list in the manifest's
+`toolchain` block would close it.
+
 ## Verifying a built binary
 
 ```bash

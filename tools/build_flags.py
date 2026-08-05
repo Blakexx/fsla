@@ -82,7 +82,21 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
     """
     return ["-O3", "-std=c++17", "-lineinfo", f"--threads={nvcc_threads}",
             #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.
-            "--ptxas-options=-v"] + gencodes(archs)
+            "--ptxas-options=-v",
+            #: COMPRESS EVERY IMAGE IN THE FATBIN, not just the PTX and debug ones
+            #: `fatbinary --compress` covers by default. Without it the packer applies
+            #: a SIZE HEURISTIC and leaves small cubins stored raw, which makes the
+            #: shipped artifact a function of the SHARD PARTITION: at 32 arms per
+            #: shard twelve of sixteen consumer cubins fall under the threshold
+            #: (measured: every stored-raw cubin <= 9,076,960 B, every compressed one
+            #: >= 10,075,232 B) and the `.so` is 141,919,496 B, against 73,743,608 B
+            #: for the same 256 arms in four shards. With this flag it is
+            #: 61,322,504 B at either partition, so shipped size stops being a
+            #: function of the shard count. Codegen is untouched (716 SASS bodies,
+            #: 0 differing) and the cost is +3.7 ms of decompression at the first
+            #: launch of a process, measured.
+            #: docs/build.md#fatbin-compression
+            "-Xfatbin", "-compress-all"] + gencodes(archs)
 
 
 #: GIGABYTES OF RESIDENT SET PER ``cicc``, MEASURED -- the constant that turns free
