@@ -16,11 +16,11 @@
 // algorithm is documented. This file deliberately does NOT restate it: two
 // descriptions of one kernel is one that can go stale.
 //
-// ONE CONSUMER (item 6b, 2026-08-01): the previous register-resident consumer, its
-// `intra_lowering` axis, its analytic SMEM mirror and its intra-kernel tracer are
-// DELETED, so what the planner prices and what the driver launches are the same
-// thing by construction. The three-pass §6.4 split below is DORMANT BY PLAN, not
-// dead: implemented, oracle-gated, and not currently selected.
+// ONE CONSUMER: there is a single kernel family, so there is no second-kernel
+// routing argument, no `intra_lowering` argument and no second occupancy oracle --
+// what the planner prices and what the driver launches are the same object by
+// construction. The three-pass §6.4 split below is DORMANT BY PLAN, not dead:
+// implemented, oracle-gated, and not currently plan-selected.
 //
 // The dispatch matrix and its measured size, the residency query axes, the ordered
 // fold, the entry-state stash: docs/internals/consumer.md
@@ -84,8 +84,8 @@ __global__ void scan_kernel(ScanParams p) {
   }
   __syncthreads();
 
-  // ---- the ENTRY-STATE STASH (fix pass R1): what makes pass 3's reads disjoint
-  // from pass 3's writes. docs/internals/consumer.md#entry-stash ----------------
+  // ---- the ENTRY-STATE STASH: what makes pass 3's reads disjoint from pass 3's
+  // writes. docs/internals/consumer.md#entry-stash -----------------------------
   for (int e = threadIdx.x; e < n; e += blockDim.x) {
     p.ws_state[static_cast<int64_t>(slot0) * n + e] = E[e];
   }

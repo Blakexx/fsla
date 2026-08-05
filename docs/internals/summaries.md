@@ -20,10 +20,9 @@ whose bit `t` is "token `t0 + t`", so `BT <= 32`.
 
 ## <a id="why-a-kernel"></a>1. Why this is a kernel and not fused torch
 
-The first implementation WAS eager torch. It is retained, in
-`rola/routing/summaries.py`, as the ENUMERATED REFERENCE this kernel is gated
-against — a legitimate second-derivation role, not a fallback: there is no runtime
-path that reaches it, and it refuses to be called as one.
+An eager-torch derivation of this pass lives in `rola/routing/summaries.py` as the
+ENUMERATED REFERENCE this kernel is gated against — a second derivation, not a
+fallback: no runtime path reaches it, and it refuses to be called as one.
 
 Three reasons the runtime pass is hand-written:
 

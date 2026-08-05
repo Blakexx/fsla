@@ -24,16 +24,15 @@ flags, architecture)**. The same four inputs give the same SASS, every time. So
 the way to get a deterministic binary is not to constrain the allocator but to
 **close the input space**.
 
-The alternative that was tried first, and found insufficient, was to *read the
-numbers back* — compile, measure registers and spills, assert they are within
-bounds. The user's ruling on 2026-08-01 states the defect: "read them back is not
-structurally good enough when we are only testing in a limited architectural
-regime … the only way to be sure is deterministic code and rules." A read-back
-gate proves a property of the binary you happened to build, on the architecture
-you happened to have. It says nothing about the binary a different assembler
-would produce for an architecture nobody measured. Read-back survives, but its
-job is narrowed: it is **drift detection between ratifications**, not the
-sufficiency argument.
+*Reading the numbers back* — compile, measure registers and spills, assert they
+are within bounds — is **not** the sufficiency argument. The defect, in the
+project owner's ruling: "read them back is not structurally good enough when we
+are only testing in a limited architectural regime … the only way to be sure is
+deterministic code and rules" (user ruling, 2026-08-01). A read-back gate proves
+a property of the binary you happened to build, on the architecture you happened
+to have. It says nothing about the binary a different assembler would produce for
+an architecture nobody measured. Read-back has a narrower job in this design:
+**drift detection between ratifications**.
 
 ## 2. The four rules
 
@@ -57,20 +56,18 @@ executes.
 
 There is no environment variable that disables any of them.
 
-## 3. The JIT fork, and why we did not take it
+## 3. The JIT fork is rejected
 
-FlashAttention's active line **abandoned AOT compilation for runtime JIT** (FA4).
+FlashAttention's active line compiles by **runtime JIT rather than AOT** (FA4).
 That is a considered position by strong engineers, and the pressures behind it
 are real: an AOT matrix over `(tile shape × dtype × head dim × architecture …)`
 grows multiplicatively, compile times grow with it, and a JIT path compiles
 exactly the one kernel a user's call needs.
 
-**RoLA rejects following.** This is recorded as a decision, in
-`workflows/research/cuda-code-quality.md` (decision X5) and in the campaign
-journal, so that a future reader does not find our AOT-only build and assume it
-is an oversight or an un-revisited default. It is neither. It was surveyed,
-weighed against the shipping practice of the nearest comparable library, and
-declined.
+**RoLA does not follow it.** The AOT-only build is a decision taken against that
+alternative — not an oversight and not an un-revisited default — and it is
+recorded as such in `workflows/research/cuda-code-quality.md` (decision X5) and
+in the campaign journal.
 
 **The reason is reproducibility for future readers — not process overhead.**
 A JIT path means the binary that produced a published number does not exist
@@ -82,15 +79,14 @@ Under JIT those claims degrade into claims about a *family* of instruction
 streams that were never all measured, and the degradation is silent: the numbers
 still print.
 
-The concrete failure mode is documented in this project's own history rather than
-imagined. The engine accepted one instantiation with a **4-byte spill as the
-measured optimum**, because every alternative spilled worse. That acceptance was
-a judgement recorded in a document and enforced by nothing; a later codegen
-change could have grown it with no gate failing
-([`ratification.md`](../ratification.md#why-it-exists)). Under AOT that judgement
-became an asserted invariant over 512 entries per architecture. Under JIT it
-could not have been asserted at all, because the entries would not exist until
-run time, on a machine we do not control.
+The failure mode is concrete rather than imagined, and this engine contains the
+instance. One instantiation carries a **4-byte spill accepted as the measured
+optimum**, because every alternative spills worse. A judgement of that kind
+recorded only in a document is enforced by nothing: a codegen change can grow the
+spill with no gate failing ([`ratification.md`](../ratification.md#why-it-exists)).
+Under AOT it is instead an asserted invariant over 512 entries per architecture.
+Under JIT it could not be asserted at all, because the entries would not exist
+until run time, on a machine the project does not control.
 
 The cost of the decision is honest and it is paid: the instantiation matrix is a
 budget item that every design must price (a design that doubles compile time
@@ -111,11 +107,11 @@ central claims are numeric buys the second with the first.
   gate pass would be asserting a spill nobody measured, which is precisely the
   failure the manifest replaces.
 - **Re-ratifying to clear a refusal launders the refusal into a baseline.** When
-  the ratchet refuses a change, the change is what must move. This has been
-  applied under pressure: a landed-and-measured optimization was held back
-  because 12 instantiations gained spill, and the resolution was to re-scope the
-  change to the structural axes where it was clean — not to re-stamp the
-  manifest (journal, 2026-08-04: "phase 1 stopped by the ratchet").
+  the ratchet refuses a change, the change is what must move. The in-tree
+  precedent is a measured optimization held back because 12 instantiations gained
+  spill; the resolution is a re-scope of the change to the structural axes where
+  it is clean, not a re-stamped manifest (journal, 2026-08-04: "phase 1 stopped
+  by the ratchet").
 - **Anything that quietly reopens the input space is refused even when it is
   convenient.** The known instance: `TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES`
   escapes an sccache/depfile collision, but it deletes header dependency edges,

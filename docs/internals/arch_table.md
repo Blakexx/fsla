@@ -12,8 +12,6 @@ SM 8.6); a CTA is one thread block; "residency" is CTAs resident per SM.
 
 ## <a id="own-header"></a>1. Why this is its own header
 
-It was inline in `consumer_kernel.cuh`, a 1900-line kernel body.
-
 The closed-world codegen policy's **rule 4** (runtime refusal of unratified
 architectures) and **rule 3** (no arch in the fatbin without a ratified manifest)
 both key on exactly this table:
@@ -79,7 +77,7 @@ ctas * (smem_per_cta + 1024) <= smem_per_sm
 
 NOT `ctas * smem_per_cta <= smem_per_sm`.
 
-The measurement that fixed the value: a build at **32.94 KiB/CTA** satisfies the
-naive form for 3 CTAs (98.8 KiB < 100 KiB) and **the driver reported 2**. §10i.14's
-ledger and this batch's own first desk-check were both optimistic by exactly this
-term.
+The measurement the value rests on: a build at **32.94 KiB/CTA** satisfies the naive
+form for 3 CTAs (98.8 KiB < 100 KiB) and **the driver reports 2**. Any residency
+desk-check written in the naive form — §10i.14's ledger among them — over-promises by
+exactly this term.

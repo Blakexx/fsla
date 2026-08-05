@@ -25,8 +25,9 @@ The consumer and the §7.1 paging arena register into the SAME extension: the co
 reads the page table the plan publishes, so splitting them would put a **cross-module
 ABI between two halves of one contract.**
 
-The two JIT-era `*_pybind.cuh` fragment headers that used to do this registration are
-gone — their `m.def` bodies are here, and their declarations are in `src/host_api.cuh`.
+Registration happens HERE and nowhere else: every `m.def` body is in this file and
+every declaration it needs is in `src/host_api.cuh`. No fragment header registers
+anything, so there is one place to read to know what the module exports.
 
 The T=1 decode path registers here for the same reason: it is a SIBLING of the
 consumer, not a specialization of it — shared produce contract, own consumer, frozen
@@ -74,9 +75,13 @@ per-leaf write bitmap with its owner condensation.
 That contract is why the entry takes outputs by reference rather than returning them:
 allocating inside would force a synchronization the caller has designed out.
 
-## <a id="deleted-page-plan"></a>6. The V2 CUDA page-plan producer is deleted, with eight bindings
+## <a id="deleted-page-plan"></a>6. There is no CUDA page-plan producer
 
-Recorded here because the absence is the fact worth keeping. The deleted bindings:
+The page table the consumer reads is published by the torch PLANNED-EXACT-ASYNC arena
+in `rola/ops/paging.py`, and nothing under `rola/`, `tests/` or `benchmarks/` reaches
+a CUDA page planner. Recorded here because the absence is the fact worth keeping:
+these eight names are NOT bound, and a reader looking for them is looking for the
+arena.
 
 - `page_plan_abi_version`
 - `page_plan_status_codes`
@@ -85,11 +90,9 @@ Recorded here because the absence is the fact worth keeping. The deleted binding
 - `rola_page_admit_mask`
 - `rola_page_cache_reset`
 
-Track P replaced the producer entirely with the torch PLANNED-EXACT-ASYNC arena in
-`rola/ops/paging.py`. Nothing under `rola/`, `tests/` or `benchmarks/` referenced any of
-the eight, so they were unreachable from Python and dead by the no-dead-code standard.
-
-**The page table the consumer reads is now published by that arena.**
+Their removal was safe on the no-dead-code standard because no Python caller ever
+reached them; the register of that removal is
+[`DELETIONS.md`](DELETIONS.md).
 
 ## <a id="vmm-binding"></a>7. The VMM owner's binding shape
 

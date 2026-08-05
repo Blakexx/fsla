@@ -19,8 +19,8 @@ required form is the third thing: **a parametric cost model, evaluated fresh per
 step, with coefficients calibrated offline by measured sweeps, and selection by
 argmin.**
 
-One line, from the ruling that fixed it (2026-08-05): *the field dispatches on
-what the problem is; we dispatch on what the data does.*
+The distinction in one line: *the field dispatches on what the problem is; we
+dispatch on what the data does* (user ruling, journal 2026-08-05).
 
 ## 1. The branching rule
 
@@ -64,9 +64,9 @@ Its decision order is acyclic and documented as such (`select.py` module
 docstring): feeder flags depend on nothing; packing is a closed form in
 `(BC, BT, decay, hist, flags)` and depends on no residency; the `(BC, BT)` argmin
 then queries the occupancy oracle **with the arm's actual footprint** and
-minimizes `cost_per_token · waves + atomic`. There is no back edge — the
-circularity that a per-owner packing decision would create was dissolved by
-making masks per-tile and packing per-launch.
+minimizes `cost_per_token · waves + atomic`. There is no back edge. A per-owner
+packing decision would create one; masks are per-tile and packing is per-launch
+precisely so that it cannot.
 
 The measured overhead of planning is `+0.15` to `+0.30 ms` on a `3.3 ms` plan
 build inside a `73.2 ms` step — `+0.2%` to `+0.4%` (journal, 2026-08-04). The
@@ -80,15 +80,16 @@ Because the runtime must not measure, the measuring lives beside it:
 | Component | Role |
 |---|---|
 | `rola/planner/calibration/census.py` | the **exact** per-`(owner, tile)` tile-union census, as packed-bit-word arithmetic. The ground truth the closed form approximates. Deliberately free of any dependency on the planner. |
-| `rola/planner/calibration/cost_model.py` | the retired runtime cost model: `plan_cost_per_token`, its six measured constants, and the exact argmin. This is the **fit** whose compiled output ships as `select.py`'s rule table. |
+| `rola/planner/calibration/cost_model.py` | the offline cost model: `plan_cost_per_token`, its six measured constants, and the exact argmin. This is the **fit** whose compiled output ships as `select.py`'s rule table. It does not run at run time. |
 | `rola/planner/calibration/auditor.py` | runs **both** deciders — the shipped closed form and the exact argmin — on recorded cells and either asserts agreement or writes the disagreement down with its modelled regret **and its margin**. |
 | `benchmarks/calibration/` | where the sweeps that produce the coefficients belong. **Today it is a `.gitkeep`.** |
 
-Three things that relocation bought, and they are the reason it is not cosmetic:
-the `torch.compile`/inductor dependency left the shipped package; **selection
-stopped auditing itself** (a runtime shadow would keep alive exactly the object
-being retired, and would denominate its regret in the model being retired); and
-the constants became re-fittable without touching `rola/`.
+Keeping the measuring machinery outside `rola/planner/select.py` is structural,
+not cosmetic, and buys three things: the shipped package carries no
+`torch.compile`/inductor dependency; **selection does not audit itself** (a
+runtime shadow would keep alive exactly the object it is meant to replace, and
+would denominate its regret in that object); and the constants are re-fittable
+without touching `rola/`.
 
 The auditor's own limits are stated in its docstring and should be quoted at
 anyone who over-reads it: **it compares two models.** It cannot tell you a model
@@ -108,7 +109,10 @@ code, because the code is complete and the *numbers* are not.
   default is inert (packing is structurally excluded anyway), but on the sparse
   at-scale cells **four of eight measured argmin rows select a compacted arm**,
   and the empty table declines all four. That regret is real and is quantified by
-  a gate that runs both the empty table and a pre-K4 derived one.
+  a gate that runs the auditor twice — once at the shipped empty table, once at
+  the derived breakeven table — and shows the disagreement belongs to the
+  placeholder rather than to the rule
+  (`tests/unit/test_planner.py::test_the_auditor_reports_the_documented_disagreement_ledger_exactly`).
 - `C_SATURATION = 1.0` — exact-dense only. Deliberately the *only* defensible
   value until the occupancy sweep exists: any structural zero at all breaks the
   closed form the flag licenses, and a soft epsilon would re-introduce the
@@ -121,12 +125,12 @@ code, because the code is complete and the *numbers* are not.
 **The deliverable that closes this** is named and unambiguous: fill the breakeven
 tables with measured cost curves for the executor family — dense / atom-skip /
 full compact on the leaf axis — **as a function of occupancy**, so the planner
-selects per side per launch by the same argmin that picks `(BC, BT)`. That is the
-form the user ruled for after rejecting a point verdict: designing against a
+selects per side per launch by the same argmin that picks `(BC, BT)`. The family
+form is required and a point verdict is not admissible: designing against a
 single benchmarked configuration is designing against a hole, and a selector with
 measured curves absorbs wherever a trained model's routing lands, which a point
-verdict does not (journal, 2026-08-04, "no point-configuration verdicts —
-executor FAMILY").
+verdict does not (user ruling; journal, 2026-08-04, "no point-configuration
+verdicts — executor FAMILY").
 
 Until those rows exist, a claim of the form "configuration X is the right default"
 is not supported by this repository, and the honest statement is the one made

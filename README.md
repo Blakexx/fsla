@@ -40,6 +40,15 @@ cost constants cite the cell they came from, and a gate checks that the planner'
 chosen geometry is the argmin of the measured grid.
 → [`benchmarks/cells/`](benchmarks/cells/), [`docs/build.md`](docs/build.md)
 
+**A documentation tree the code is checked against.** The engine's design reasons
+live in `docs/internals/`, one document per source file, with one-line hazard
+stubs left in the code at the sites they explain; the decisions that outlive any
+particular kernel live in `docs/architecture/`. A test fails if a source file has
+no mirror document or a stub cites an anchor that no longer exists, so the two
+cannot drift apart.
+→ [`docs/architecture/`](docs/architecture/README.md),
+[`docs/internals/`](docs/internals/README.md)
+
 ---
 
 ## Installation
@@ -172,6 +181,12 @@ median of per-pair ratios, IQR reported alongside — is documented in
 
 ## Evidence
 
+- [`docs/architecture/`](docs/architecture/README.md) — the permanent decision
+  record: the self-masking theorem, the affine-recurrence rule, the factored
+  representation, fp32 accumulation, closed-world codegen, the planner
+  principle, and the guarantees/choices/preferences taxonomy.
+- [`docs/internals/`](docs/internals/README.md) — one document per source file,
+  carrying the reasons attached to a line, plus the deletion ledger.
 - [`docs/testing.md`](docs/testing.md) — the two tiers, the tolerance discipline, the
   geometry matrix and its three meta-tests.
 - [`docs/ratification.md`](docs/ratification.md) — what a manifest is, what the

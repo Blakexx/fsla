@@ -60,7 +60,8 @@ BROADCAST-COPY:
 candidate list, no over-enumeration and no per-row membership test anywhere on
 this path: `rola_decode_expand` builds `bits_r` and `bits_w` exactly, and
 `rola_decode_gemv` `__ffs`-walks them, touching only rows that ARE in the
-support. The corresponding deletions from the older design are recorded in
+support. What a bounded candidate enumeration would cost instead, and the objects
+this path therefore does not carry, are in
 [`decode_expand.md`](decode_expand.md#why-a-bitmap).
 
 ## <a id="bc-absent"></a>3. `BC` is absent, and that is the point (spec I1)
@@ -80,12 +81,11 @@ block across many tokens; with one token there is nothing to amortize. Nothing i
 
 ## <a id="unpaged-only"></a>4. Unpaged only, deliberately
 
-The paged address under §4.5's re-key is
-`((slot << 4 | (leaf & 15)) * cols + c)` and is likewise `BC`-free. But TODAY
-`page_states := BC` (`rola/ops/paging.py`, and `consumer.cuh`'s "one page IS one
-owner"), so a paged decode address would have to know `BC`. The re-key is a
-merge-phase paired change; until it lands, decode REFUSES a page table rather
-than computing a `BC`-keyed address. That refusal is a hard `TORCH_CHECK` in
+The paged address under §4.5's atom re-key is
+`((slot << 4 | (leaf & 15)) * cols + c)` and is likewise `BC`-free, so nothing in
+this path's `BC`-freedom depends on which granule the arena keys. It is simply
+not implemented here: decode REFUSES a page table rather than computing an
+address it does not own. That refusal is a hard `TORCH_CHECK` in
 `rola/ops/decode.py` and in the extension, never a silent fallback.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included

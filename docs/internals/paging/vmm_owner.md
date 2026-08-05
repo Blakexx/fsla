@@ -5,7 +5,7 @@ physical memory into it in chunks, so a long-lived page cache can grow without e
 moving a base pointer.
 
 Both source files are already at the mirror's target comment density; this doc is
-their reference, not a relocation of prose that used to be in them.
+their reference rather than a relocation of their prose.
 
 **Scope discipline — the one thing to preserve.** `VmmOwner` owns *only* the
 CUDA-driver backing. Logical page identity, allocation plans, and publication remain

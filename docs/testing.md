@@ -143,6 +143,32 @@ not a meta-test.*
 **A class change is a reviewed edit to `matrix.py`, in a diff, with a new `basis`
 string.** It can never happen as a side effect of a kernel edit.
 
+## The documentation gates
+
+Two of the units-layer tests are about documents rather than arithmetic, and they
+are here because a document nothing checks is a document that drifts.
+
+**`tests/unit/test_generated_docs.py`** pins the README's generated support
+tables to `tools/supported.py --check`. A hand-maintained support table is a
+claim; a generated one is a report, and this is what keeps the difference real.
+
+**`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
+engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
+one-line `//: HAZARD <slug>` stubs left at the sites they explain. Four rules,
+all grep-level so a contributor can read the check itself:
+
+1. every source file under `csrc/rola/` has a mirror doc at the same relative
+   path (minus the `src/` component), extension `.md`;
+2. every `docs/internals/….md#anchor` cited from a source resolves to an anchor
+   that doc defines;
+3. a hazard stub's slug IS its anchor id, so the two cannot drift apart;
+4. no doc defines the same anchor twice, which would make a citation ambiguous.
+
+It carries its own non-vacuity guard: a floor on the number of sources found, so
+that a broken glob cannot make the file pass by checking nothing.
+
+Both run in the CPU line. They read files; they never touch a device.
+
 ## Running it
 
 ```bash

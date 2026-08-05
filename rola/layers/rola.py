@@ -281,10 +281,10 @@ class RoLA(nn.Module):
             Default True.
         paging (bool): commit state pages on first write to an owner (spec §7.1).
             The resident state then scales with the owners the routing REALIZES
-            rather than with the topology's provisioned `N`. One page is one owner
-            (`page_states := BC`), pages are admitted by the write-side plan, and
-            an owner without a page reads as zeros -- so paging is BITWISE
-            INVISIBLE, not an approximation. CUDA backend only; the oracle path has
+            rather than with the topology's provisioned `N`. One page is one ATOM
+            (`page_states := MMA_K_QUANTUM`, spec §1b), pages are admitted by the
+            write-side plan, and an atom without a page reads as zeros -- so paging
+            is BITWISE INVISIBLE, not an approximation. CUDA backend only; the oracle path has
             no page table and raises rather than silently ignoring the flag.
             Default False.
         max_physical_pages (int | None): §7.1's allocator hard cap, in ATOMS.

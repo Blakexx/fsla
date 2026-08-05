@@ -17,32 +17,30 @@ Symbols: `N` leaves; `D` levels; `b_l` level `l`'s width;
 
 ## <a id="why-a-bitmap"></a>1. Why a bitmap and not a candidate list
 
-An earlier revision of this design enumerated a mixed-radix odometer over the
-per-level UNION lists and skipped candidates outside `supp(R) UNION supp(W)`
-before the state load. That was correct and cost no bandwidth, but it BOUNDED an
-object it could have BUILT: the union is not a Cartesian product, which is why the
-odometer reached for the containing product `prod_l U_l` — whereas the exact set
-is an `N`-bit map that is 8 KiB at `N = 65,536` against a state stream of 130 MiB.
+The alternative to building the support is BOUNDING it: a mixed-radix odometer
+over the per-level UNION lists, skipping candidates outside
+`supp(R) UNION supp(W)` ahead of the state load. That is correct and costs no
+bandwidth, but the union is not a Cartesian product, so the odometer has to
+enumerate the containing product `prod_l U_l` — whereas the exact set is an
+`N`-bit map that is 8 KiB at `N = 65,536` against a state stream of 130 MiB.
 
-**The bound was more expensive to reason about than the truth is to materialize.**
+**The bound is more expensive to reason about than the truth is to materialize.**
 
-What that deletes, and it is the bulk of the older design:
+So none of the machinery a bound needs exists on this path:
 
-- the per-row `in_R` / `in_W` running-AND chains;
-- the skip test;
-- the compacted list with digit ids and membership flags;
-- the enumeration-factor statistic, together with the bench observable that would
-  have had to report it.
+- per-row `in_R` / `in_W` running-AND chains;
+- a skip test;
+- a compacted list with digit ids and membership flags;
+- an enumeration-factor statistic, and the bench observable that would have to
+  report it.
 
-None of those objects exists here.
+## <a id="the-cost"></a>2. The cost, and what an estimate must not leave out
 
-## <a id="the-cost"></a>2. The cost, stated honestly because the design's first estimate was wrong
-
-The design doc priced a sparse at-scale expansion at ~544 B per `bh` by counting
-only the broadcast COPIES. That undercounts: a bitmap's DEAD ranges must be
-written as zeros too, so the irreducible cost of publishing an `N`-bit map is
-`ceil(N/32)` words per side REGARDLESS of sparsity — 8 KiB per side per `bh` at
-`N = 65,536`, 16 KiB for both.
+A bitmap's DEAD ranges are written as zeros too, so the irreducible cost of
+publishing an `N`-bit map is `ceil(N/32)` words per side REGARDLESS of sparsity —
+8 KiB per side per `bh` at `N = 65,536`, 16 KiB for both. Counting only the
+broadcast COPIES prices a sparse at-scale expansion at ~544 B per `bh` and
+undercounts by exactly that difference.
 
 That is a FLOOR, not an inefficiency. What the SMEM arm ([§5](#smem-arm)) buys is
 that the `D - 1` INTERMEDIATE levels cost SMEM traffic rather than HBM traffic, so

@@ -4,14 +4,12 @@ Instruction wrappers, nothing more: `m16n8k16` bf16, `m16n8k8` tf32 and its thre
 extended-precision form, and the `bf16x2` pack. **No RoLA semantics live
 here.**
 
-The file's own header names two callers, the V3 readout (`readout_mma.cuh`) and the
-`gram` intra lowering. Only the first survives: `gram` and its `intra_gram.cuh` went
-with the old consumer at item 6b (2026-08-01), so today the live callers are
-`readout_mma.cuh` and `consumer_kernel.cuh`.
+The callers are `readout_mma.cuh` and `consumer_kernel.cuh`, and there are no
+others.
 
 The source file carries a short header and one inline note and is already at the
-mirror's target comment density; this doc is its reference, not a relocation of prose
-that used to be in it.
+mirror's target comment density; this doc is its reference rather than a relocation
+of its prose.
 
 Symbols: `m`, `n`, `k` are the MMA tile extents in the PTX `mma.sync.aligned` naming;
 `A` is the `m x k` operand, `B` the `k x n` operand, `C` the accumulator input and `D`
@@ -20,15 +18,16 @@ the accumulator output; a *fragment* is the per-lane slice of one of those matri
 
 ---
 
-## <a id="provenance"></a>1. Provenance — why a V2 header survives in a V3 tree
+## <a id="provenance"></a>1. Provenance — a V2-lineage header in a V3 tree
 
-This file was `p0_shared_gram_mma.cuh`, **the only V2 header the V3 consumer
-`#include`s.** The `rola-v3` purge deleted the rest of the V2 kernel family; this one
-is load-bearing (`consumer.cu` fails to compile without it), so it was renamed into the
-V3 namespace rather than deleted or left carrying a `p0_` prefix that no longer names
-anything in the tree.
+These wrappers are the V2 shared-Gram MMA primitives, carried into the V3 tree
+verbatim: the arithmetic is V2's, and it is V2's because a `mma.sync.aligned` wrapper
+has no version — it has an instruction. They are **the only V2-lineage header the V3
+consumer `#include`s**, and they are load-bearing: `consumer.cu` does not compile
+without them.
 
-The rename was the whole change. Nothing in the arithmetic moved.
+They live in `namespace rola::mma`, under a name that describes the file's contents,
+so nothing in the tree carries a prefix naming a kernel family that is not here.
 
 ## <a id="no-semantics"></a>2. The layering rule this file exists to keep
 
@@ -89,11 +88,11 @@ recovers most of the lost mantissa by issuing more passes:
 resolution for operands of comparable magnitude. It is what the exactness gate against
 the fp64 oracle runs.
 
-A two-pass variant, `mma_m16n8k8_tf32x2`, splitting only A, existed here as the
-intermediate rung. It had no caller — the readout's plan-time precision axis exposes
-`kTf32x3` and `kBf16` only — and was deleted on 2026-08-04; see
-[`DELETIONS.md`](DELETIONS.md). If a future rung needs a cheaper correction, the
-construction is the one above with `b_hi := b` and the third pass dropped.
+There is no two-pass variant: the readout's plan-time precision axis exposes
+`kTf32x3` and `kBf16` only, so a wrapper splitting A alone would have no caller
+([`DELETIONS.md`](DELETIONS.md) records its removal). A cheaper correction, if a rung
+ever needs one, is the construction above with `b_hi := b` and the third pass
+dropped.
 
 **Ordering is load-bearing.** Each pass feeds `d0..d3` into the next pass's
 `c0..c3`, so the accumulation order is fixed by the call sequence. Reordering the

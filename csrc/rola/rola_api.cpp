@@ -13,8 +13,8 @@
 // file or under `src/` spells it, so the packaging layout can move without touching a
 // kernel symbol.
 //
-// The full entry inventory, the summary pass's no-allocation contract, and the ledger
-// of the deleted V2 page-plan bindings: docs/internals/rola_api.md
+// The full entry inventory and the summary pass's no-allocation contract:
+// docs/internals/rola_api.md
 
 #include <torch/extension.h>
 
@@ -75,9 +75,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: One launch, no allocation, no host synchronization: every output is a caller-owned
   //: tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer,
   //: which is why nothing here returns -- docs/internals/rola_api.md#summaries-contract
-  //:
-  //: The V2 CUDA page-plan producer that once registered alongside it is DELETED, with
-  //: its 8 bindings -- docs/internals/rola_api.md#deleted-page-plan
   m.def("rola_routing_summaries", &rola::summaries::rola_routing_summaries_cuda,
         "Producer-epilogue routing summaries: occupancy, the quantum histogram, the "
         "candidate count, and §4.1's canonical per-leaf write bitmap with its owner "

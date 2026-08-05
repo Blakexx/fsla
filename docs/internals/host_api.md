@@ -5,7 +5,7 @@ header the pybind translation unit (`csrc/rola/rola_api.cpp`) needs to see in or
 bind them.
 
 The source file is already at the mirror's target comment density; this doc is its
-reference, not a relocation of prose that used to be in it.
+reference rather than a relocation of its prose.
 
 **Nothing here is a public API.** `rola/ops/_ext.py` is the only Python importer and
 `rola/interface.py` is the only thing that should call through it.
@@ -14,13 +14,11 @@ reference, not a relocation of prose that used to be in it.
 
 ## <a id="why-header"></a>1. Why this header exists
 
-The JIT-era shape put `PYBIND11_MODULE` inside `consumer.cu` and registered the paging
-entries from two `*_pybind.cuh` fragment headers that the same `.cu` `#include`d.
-
-Under an ahead-of-time build that is a per-`-gencode` recompile of the binding code,
-which is host-only and has nothing to gain from it. `flash_api.cpp` is the convention
-this follows instead: the bindings live in ONE host TU, and this header is the
-interface between it and the device TUs.
+Binding code is host-only. Registered from inside a `.cu` — a `PYBIND11_MODULE` in the
+kernel TU, or fragment headers it `#include`s — it is recompiled once per `-gencode`
+target of an ahead-of-time build, for nothing. `flash_api.cpp` is the convention this
+follows: the bindings live in ONE host TU, and this header is the interface between it
+and the device TUs.
 
 The consequence to preserve: **this file must stay declaration-only.** Anything with a
 device body, a `__global__`, or a template that instantiates one belongs in the `.cu`
@@ -85,6 +83,5 @@ consumed as data.
 
 The file closes with `namespace rola::paging {}`. It declares nothing: the paging
 entries the binder needs come from `src/paging/vmm_owner.cuh`, which `rola_api.cpp`
-includes directly. See the finding note in
-[`rola_api.md`](rola_api.md#one-module) about the JIT-era fragment headers this
-replaced.
+includes directly. Why the consumer and the paging arena register into ONE module:
+[`rola_api.md`](rola_api.md#one-module).

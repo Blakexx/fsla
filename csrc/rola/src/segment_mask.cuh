@@ -7,8 +7,7 @@
 // `P > 1` it must agree BIT FOR BIT with the host-side segment partition the schedule
 // publishes, and that agreement is what the sequence-parallel gates pin.
 //
-// Its extraction from the deleted register-resident consumer, and why
-// `detail::state_pitch` did NOT come with it: docs/internals/segment_mask.md
+// The mask arithmetic and its agreement contract: docs/internals/segment_mask.md
 
 #include <cuda_runtime.h>
 #include <cstdint>

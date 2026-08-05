@@ -32,8 +32,7 @@ inside the k-loop would only multiply the same value in `ksteps` times.
 ## <a id="b-from-smem"></a>2. Why the B operand comes from SMEM
 
 `M` is owner-resident in REGISTERS with one thread per channel (`M[BC]` per thread),
-which is the layout the deposit and the `LeafMassDecay` token-sequential walk want:
-both index `M` by (leaf, own channel). An MMA B fragment wants (leaf,
+which is the layout the deposit wants: it indexes `M` by (leaf, own channel). An MMA B fragment wants (leaf,
 fragment-determined channel) instead, and those two maps differ by a **cross-thread
 transpose**.
 
@@ -83,13 +82,9 @@ Mid-tile clock normalization. That is a derived fact rather than an omission: ru
 guards the two SEPARATELY EXPONENTIATED survival panels, and this readout forms no
 panel.
 
-- Under `decay = None` there is no survival at all.
-- Under `LeafMassDecay` the intra term is the token-sequential walk, which carries
-  survival as a running PRODUCT.
-
-Rule 1 becomes live with the `panel` intra lowering, which is the first construct in
-this design that exponentiates `keep^{+P}` and `keep^{-P}` separately. See
-`consumer.md` §1 (the per-lowering audit) and §10 consequence 1, and
+Under `decay = None` there is no survival at all. Rule 1 becomes live with the
+`panel` intra lowering, the one construct in this design that exponentiates
+`keep^{+P}` and `keep^{-P}` separately — and nowhere earlier. See
 [`intra_panel.md`](intra_panel.md#rule-1).
 
 ## <a id="fragment-maps"></a>6. Fragment index maps
@@ -130,14 +125,14 @@ Accumulated over the COMPACTED contraction.
 `Kpad / 8` (tf32x3) or `Kpad / 16` (bf16), with `Kpad` the compacted count rounded up
 to the shape's `k`. **It is a runtime bound because `K` is a per-tile support size, and
 that is the ONLY runtime quantity here** — the fragment maps, the shape and the format
-stay compile-time. At the degeneracy `K == BC` this reduces to the previous
-fully-unrolled `BC/8` loop with `kidx[k] == k`, bit-identically.
+stay compile-time. At the degeneracy `K == BC` this is a fully-unrolled `BC/8` loop
+with `kidx[k] == k`, bit-identically.
 
 ## <a id="ksteps-early-exit"></a>8. Why the k-loop is a compile-time trip count with an early exit
 
 Not a runtime bound. A runtime loop bound around an MMA sequence is un-unrollable and
-costs more than the k-steps it skips — that is the cost the deleted `gram` lowering's
-runtime-bounded level loop was MEASURED to pay (findings §5.3 point 2). So the loop is
+costs more than the k-steps it skips — MEASURED on a runtime-bounded MMA level loop
+(provenance: findings §5.3 point 2). So the loop is
 `#pragma unroll` over `BC/8` (or `BC/16`) with `if (ks >= ksteps) break;` inside.
 
 ## <a id="compact"></a>9. `COMPACT` — the plan-time gather axis

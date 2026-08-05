@@ -6,11 +6,11 @@ path (`csrc/rola/src/consumer_kernel.cuh` → `docs/internals/consumer_kernel.md
 
 ## Why this directory exists
 
-The kernel was written with every measured constraint recorded at the line it
-constrained. That solved a real problem — a forgotten constraint is a rung
-failure — and it inverted the files: `consumer_kernel.cuh` reached 61% comment
-lines, a design journal with code interleaved. The 2026-08-04 mandate splits the
-two artifacts. **Code carries structure; this tree carries reasons.**
+Every measured constraint has to be recorded where a reader meets it before
+editing — a forgotten constraint is a rung failure — and a kernel body is not
+that place: reasons written at the line they constrain invert the file, and a
+kernel body carrying them runs to 61% comment lines. The two artifacts are
+therefore separate. **Code carries structure; this tree carries reasons.**
 
 What stays in the source:
 
@@ -37,6 +37,11 @@ source file has no mirror or a stub cites an anchor no doc defines.
 
 `DELETIONS.md` is the ledger of code removed from this tree — what, when, and
 why it was safe.
+
+**A bare commit hash cited anywhere in this tree resolves in the source
+repository named by [`docs/provenance.md`](../provenance.md)
+(`flash-linear-attention-rola`, branch `rola-v3`), not in this one, whose history
+begins at the extraction.**
 
 ## Where the other docs live
 

@@ -38,11 +38,11 @@ own check is defense in depth for a direct caller — and it *raises* rather tha
 silently redirecting to the oracle, because a silent redirect is the same class of
 failure (two implementations behind one call) that the guard exists to prevent.
 
-**UNPAGED ONLY, DELIBERATELY.** §4.5's atom re-key (``page_states :=
-MMA_K_QUANTUM``) makes the paged address BC-free; today ``page_states := BC``, so a
-paged decode address would have to know ``BC`` and the whole BC-blindness property
-would be lost. Paging is refused loudly here until the merge-phase paired re-key
-lands.
+**UNPAGED ONLY, DELIBERATELY.** §4.5's page granule is the ATOM
+(``page_states := MMA_K_QUANTUM``), which makes the paged address BC-free, but this
+path does not implement it: a page table is REFUSED loudly rather than approximated,
+so that decode's BC-blindness is a property of what it accepts and not of what a
+caller happens to pass.
 
 **THE CARRIER IS A CROSS-TRACK CONTRACT -- RECONCILED (merge phase, §8b items 4 and 6).**
 The two objects are NOT two names for one thing and neither absorbs the other:
@@ -337,11 +337,10 @@ def decode_forward(
     """
     if paging is not None:
         raise NotImplementedError(
-            "the decode path is unpaged only. §4.5's atom re-key (page_states := "
-            "MMA_K_QUANTUM) is what makes a paged decode address BC-free; today "
-            "page_states := BC, so a paged decode address would have to know BC and the "
-            "kernel's BC-blindness would be lost. This is refused rather than "
-            "approximated, and it lands with the merge-phase paired re-key.")
+            "the decode path is unpaged only. §4.5's page granule is the ATOM "
+            "(page_states := MMA_K_QUANTUM), which is what keeps a paged address "
+            "BC-free -- but this path does not implement paged addressing, so a page "
+            "table is refused rather than approximated.")
 
     _guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
                     *(write_levels_stored or ()),

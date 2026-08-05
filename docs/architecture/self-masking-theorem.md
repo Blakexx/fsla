@@ -3,10 +3,10 @@
 > **Dead routes are exact zeros, and zeros are inert — in every accumulator, in
 > the mass channel, and in the clock.**
 
-This is the most-used single fact in the engine. It has independently licensed
-three separate design conclusions, each of which was re-derived from scratch
-before it was named. It is written down here so that the next "do we have to
-check X?" is answered by citation.
+This is the most-used single fact in the engine: three separate design
+conclusions rest on it, each of which reduces to it independently (§5). It has a
+name and a document so that the next "do we have to check X?" is answered by
+citation rather than re-derived.
 
 ---
 
@@ -80,11 +80,10 @@ value_state[s]` and `mass_state[s] <- mass_state[s]` — multiplication by exact
 `1.0` and addition of exactly `0.0`, both bit-preserving. **Nothing in the leaf's
 row moves.**
 
-This is what "verified in the oracle" means here: the property is not asserted
-about the kernel and hoped for in the reference; it is a readable consequence of
-three lines of the reference, and the kernel is gated against that reference.
-Provenance of the verification: `workflows/research/api-contract-audit.md` §3.9,
-which re-derived it in tree and recommended naming it.
+The property is therefore not asserted about the kernel and hoped for in the
+reference: it is a readable consequence of three lines of the reference, and the
+kernel is gated against that reference. In-tree verification:
+`workflows/research/api-contract-audit.md` §3.9.
 
 ## 3. Proof by citation — the kernel
 
@@ -130,15 +129,15 @@ clock reads `write_levels_stored`, which *defaults* to `write_levels` but may be
 passed as a separately quantized tensor (`naive.py:181-188`). The theorem holds
 whenever the stored representation has the **same zero set** as the trained one.
 A quantization that turned an exact zero into a denormal — or a nonzero into a
-zero — would break the coupling in (a) above. Any future storage-precision
-boundary on the write levels must preserve exact zeros; that is a constraint on
-the design of that boundary, and it is the reason it is called out here rather
-than discovered later.
+zero — would break the coupling in (a) above. Any storage-precision boundary on
+the write levels must therefore preserve exact zeros; that is a constraint on the
+design of such a boundary, and it belongs with the theorem because it is not
+visible from the boundary's own side.
 
 ## 5. The three standing consequences
 
-This is why it earns a name rather than a paragraph. Each of the following was
-argued independently before the theorem was named, and each reduces to it.
+This is why it earns a name rather than a paragraph. Each of the following stands
+on its own argument, and each of those arguments reduces to the theorem.
 
 ### (1) OVER-FETCH is free of correctness risk
 
@@ -173,11 +172,11 @@ Two live uses:
   rather than approximately equal
   ([`consumer.md#page-table`](../internals/consumer.md#page-table)).
 - **Untouched rows do not walk.** A row whose writes are all zero is left
-  bit-identical, so repeated store/reload cannot drift it. This is the argument
-  that separated the *store* count from the *visit* count in the state-precision
-  analysis (journal, per-leaf visit probe: the packing-off store of an untouched
-  leaf is a bitwise identity, so the re-quantization count is the count of actual
-  writes, not of visits).
+  bit-identical, so repeated store/reload cannot drift it. This is what separates
+  the *store* count from the *visit* count in the state-precision analysis: the
+  packing-off store of an untouched leaf is a bitwise identity, so the
+  re-quantization count is the count of actual writes, not of visits (journal,
+  per-leaf visit probe).
 
 ### (3) TRUSTLESS CAPABILITY FLAGS
 
@@ -204,7 +203,7 @@ decided by the realized support bits and by nothing else.
 ## 6. When it would fail
 
 A theorem that cannot fail is a slogan. These are the changes that would break
-it; each has been proposed at least once, and each is refused *because* it
+it. Each is a live proposal in the design space, and each is refused *because* it
 breaks this.
 
 | Change | Why the theorem dies |

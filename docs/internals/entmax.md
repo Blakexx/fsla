@@ -22,11 +22,11 @@ LOGICAL warp width (a power of two ≤ 32); `IPT` is items per lane, so
 
 ## <a id="why-cuda"></a>1. Why this exists as CUDA at all
 
-The Triton lowering of this solve was measured at **255 registers WITH SPILLS at
-16.67% occupancy** until hand-restructured, and even after the restructure
-(**115 reg, 33.33%**) it retained an uncontrollable `tl.sort` scratch layout with
-**75% bank-conflict-excessive wavefronts** — and it is a JIT against a closed-world
-AOT policy that forbids exactly that.
+A Triton lowering of this solve measures **255 registers WITH SPILLS at 16.67%
+occupancy** as written, and **115 reg / 33.33%** hand-restructured — where it still
+carries an uncontrollable `tl.sort` scratch layout with **75%
+bank-conflict-excessive wavefronts**. It is also a JIT against a closed-world AOT
+policy that forbids exactly that.
 
 Provenance: `rola-scratch/workflows/20260801-forward/producer-p2b.md` and
 `producer-p3.md`.
@@ -34,17 +34,17 @@ Provenance: `rola-scratch/workflows/20260801-forward/producer-p2b.md` and
 ## <a id="one-row-per-warp"></a>2. The structural idea: one row per (logical) warp
 
 Every collective in the entmax solve — the sort, both prefix scans, every reduction
-— runs ALONG ONE TOKEN'S ROW. Triton had to express them as block-scope
+— runs ALONG ONE TOKEN'S ROW. Triton can only express them as block-scope
 collectives over a 2D `(ROW_TILE, BLOCK_COLS)` tile, which is what
 
-1. welded register demand to the CTA tile, so `num_warps` was not a lever, and
-2. produced the bank-conflicted shared scratch.
+1. welds register demand to the CTA tile, so `num_warps` is not a lever, and
+2. produces the bank-conflicted shared scratch.
 
 Assigning one row to one warp makes every collective warp-scope and shuffle-based.
 The consequences are all structural:
 
 - **register demand becomes `O(items-per-lane)` and decouples from the warp count**
-  — so the warp count became a free occupancy knob, which it provably was not under
+  — so the warp count is a free occupancy knob, which it provably is not under
   Triton (`producer-p3.md` §1);
 - **the solve needs ZERO shared memory and ZERO block barriers.** `cub::WarpScan` /
   `cub::WarpReduce` `TempStorage` measures **1 byte** here — the pure-shfl
@@ -95,10 +95,10 @@ this.
 
 ## <a id="launch-shape"></a>5. Launch shape and the width class
 
-One launch = one union routing LEVEL = one width class = one alpha, exactly as
-before the migration (`_launch_union_fwd` is called inside the per-level loop, and
-Triton already specialized a separate binary per `next_power_of_2(width)`). **Launch
-count is unchanged by this migration.**
+One launch = one union routing LEVEL = one width class = one alpha:
+`_launch_union_fwd` is called inside the per-level loop, and the Triton diagnostic
+specializes a separate binary per `next_power_of_2(width)` the same way, so **the two
+lowerings issue the same launch count.**
 
 The width CLASS is chosen on the HOST, so the kernel branches on nothing (I2). The
 grid is `(n_words, n_streams)` with `n_words = ceil(tokens / 32)`. The dispatch is
@@ -124,9 +124,8 @@ differentiable function of the two logits.
 
 `log_write_gate` is the companion: `log(sigmoid(-delta)) == -softplus(delta)`,
 finite for every finite input, computed as `-(max(d,0) + log1p(exp(-|d|)))`.
-**`log1pf` rather than `logf(1+x)`** because the gate is the fp64 oracle (which uses
-`logsigmoid`), not the previous lowering — this is strictly closer to the baseline
-that now governs.
+**`log1pf` rather than `logf(1+x)`** because the governing baseline is the fp64
+oracle, which uses `logsigmoid`, and `log1pf` is the closer composition to it.
 
 ## <a id="smem-slot-alias"></a>7. HAZARD — the support-word staging aliases the sort scratch
 
@@ -233,9 +232,8 @@ physical warp then stages its words, one `__syncthreads` follows, and warp 0 ORs
 
 ## <a id="backward"></a>12. The backward — the α-entmax Jacobian action through the union split
 
-**No sort and no scan: this is a THREE-REDUCTION elementwise pass**, which is why p3
-could defer it and why it still carried the pre-p3 one-big-tile shape and its spill
-wall. It shares the forward's block/warp decomposition, width classes, striped
+**No sort and no scan: this is a THREE-REDUCTION elementwise pass.** It shares the
+forward's block/warp decomposition, width classes, striped
 access, stride expression and launch bounds, and it **RECOMPUTES `delta`** rather
 than reloading a saved tensor (cheaper than a third logit-sized read).
 
@@ -268,16 +266,15 @@ substitutes 1 and the support mask zeroes the term. See the Wolfram sheet.
 
 ### Two measured re-read decisions
 
-Both are register-pressure trades, and both were measured under
-`__launch_bounds__(128, 8)` at `IPT = 8`:
+Both are register-pressure trades. MEASURED under `__launch_bounds__(128, 8)` at
+`IPT = 8`:
 
 | staged instead of re-read | measured cost |
 |---|---|
 | `write_values` / `d_write` across the two passes | 2·`IPT` live registers, **32 B stack frame** (spill) |
 | `s` as a third live `IPT`-array | **24 B of spill** |
 
-Re-reading is the cheaper trade on a kernel whose DRAM throughput was already only
-~30%. The first pass therefore carries NOTHING into the next but two scalars
+Re-reading is the cheaper trade on a kernel whose DRAM throughput is only ~30%. The first pass therefore carries NOTHING into the next but two scalars
 (`local_dot` and the support mask), and `s` is recomputed from a re-read
 `midpoint_values` in the final pass; one extra load per element buys the spill back
 to zero.

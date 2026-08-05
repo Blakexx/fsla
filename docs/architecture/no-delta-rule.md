@@ -13,7 +13,7 @@ d[t,s]   = keep[t,s] * d[t-1,s]   + W[t,s]
 where `keep`, `W` and `v` are functions of the **inputs** (routing amplitudes,
 decay dials, values) and of nothing else. A delta-rule-style update — one whose
 write depends on what is already stored, e.g. erase-then-write against a read of
-`M` — is a standing user veto, restated twice (2026-07-31, 2026-08-01). It is not
+`M` — is a standing user veto. It is not
 a performance preference and it is not open for a benchmark: it changes what the
 engine is.
 
@@ -72,8 +72,8 @@ that follows:
   only because order is not load-bearing, and order is not load-bearing only
   because the recurrence is affine.
 
-**The precision that matters** (journal amendment, same entry): "routing exists
-before launch" means the schedule's **factors** — per-level digit bitmaps and
+**The precision that matters**: "routing exists before launch" means the
+schedule's **factors** — per-level digit bitmaps and
 slice unions, sized by the *sum* of the widths — are complete and immutable at
 launch. The per-owner schedule is **never stored**; the kernel evaluates it from
 those factors with a warp-local AND chain, measured at ~0.2% of the instruction
@@ -120,7 +120,7 @@ standing directive that all kernel and benchmark design targets `N ≳ 65K`.
 
 - User veto and its four-pillar argument: memory `no-delta-rule-affine-recurrence`
   (2026-07-31, restated 2026-08-01); theory notes §10i.25/§10i.25a.
-- The schedulability argument, and its precision amendment: campaign journal,
+- The schedulability argument and its precision clause: campaign journal,
   2026-08-05, "affine-schedulability observation (paper material)".
 - The reordering win it licenses: campaign journal, 2026-08-04, head-major owner
   order; `tests/unit/test_planner.py::test_the_owner_order_is_head_major`; commit

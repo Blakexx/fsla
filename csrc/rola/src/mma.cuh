@@ -2,14 +2,11 @@
 
 // Bare tensor-core PTX primitives (m16n8k16 bf16, m16n8k8 tf32x3, and the bf16x2
 // pack). No RoLA semantics -- these are the instruction wrappers `readout_mma.cuh`
-// and `consumer_kernel.cuh` issue. (The `gram` intra lowering, the third historical
-// caller, was deleted with the old consumer at item 6b.)
+// and `consumer_kernel.cuh` issue.
 //
-// PROVENANCE: this file was `p0_shared_gram_mma.cuh`, the only V2 header the V3
-// consumer `#include`s. The `rola-v3` purge deleted the rest of the V2 kernel
-// family; this one is load-bearing (consumer.cu fails to compile without it),
-// so it was renamed into the V3 namespace rather than deleted or left carrying a
-// `p0_` prefix that no longer names anything in the tree.
+// Pass ORDERING is load-bearing in the extended-precision wrappers: each pass feeds
+// its accumulator into the next, so reordering them changes the numbers with no
+// diagnostic. The splitting arithmetic: docs/internals/mma.md#tf32-splitting
 
 #include <cuda_bf16.h>
 

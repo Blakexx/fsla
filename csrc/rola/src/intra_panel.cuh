@@ -1,10 +1,9 @@
 #pragma once
 
-// RoLA V3 consumer -- the `panel` intra lowering: the DENSE-LIMIT lowering under
-// `LeafMassDecay` (spec §7.4.1). Since item 6b (2026-08-01) the consumer includes
-// this header unconditionally; the `intra_lowering` axis and its `realized_leaf`
-// token-sequential alternative went with the old consumer, as did the
-// `decay = None` sibling `intra_gram.cuh`.
+// RoLA V3 consumer -- the `panel` intra lowering under `LeafMassDecay`
+// (spec §7.4.1). THIS IS THE DECAY ARM'S LOWERING: there is no `intra_lowering`
+// template axis and no alternative path, so the factors below are applied on every
+// decay tile the kernel executes.
 //
 // A mixed tile under `LeafMassDecay` cannot use the "fixed entry state plus causal
 // Gram" split, because the state evolves inside the tile. This file pre-scales the
@@ -15,13 +14,12 @@
 // `mma_precision` or §6.4's `P`.
 //
 // The two exponentials are where `GLA_MASS_DECAY_SPEC.md` §12 rules 1-3 go live.
-// The lowering has a PLAN-TIME ADMISSION BOUND (`PANEL_MAX_EXPONENT = 40`) because
-// its clamp is a finiteness guarantee, not an accuracy one, and it is IMPLEMENTED
-// BUT NOT PLAN-SELECTED: measured slower than the token-sequential walk at 16 of
-// 16 cells.
+// Because their clamp is a FINITENESS guarantee and not an accuracy one, the decay
+// arm carries a PLAN-TIME ADMISSION BOUND (`PANEL_MAX_EXPONENT = 40`): routing that
+// would exceed it is REFUSED at plan time rather than clamped into silence.
 //
-// The factorization, the three rules, the measured cliff at the clamp, the
-// admission bound and the A/B against the walk: docs/internals/intra_panel.md
+// The factorization, the three rules, the measured cliff at the clamp and the
+// admission bound: docs/internals/intra_panel.md
 
 #include "consumer.cuh"
 

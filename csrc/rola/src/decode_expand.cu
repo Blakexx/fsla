@@ -13,8 +13,8 @@
 //      inefficiency, and the design's first estimate (~544 B per bh) undercounted it.
 //   3. Membership is the EXACT-NONZERO test on the amplitude, never a threshold.
 //
-// The deleted design, the honest cost ledger, destination-word ownership, the
-// ping-pong, and the SMEM arm: docs/internals/decode_expand.md
+// The cost ledger, destination-word ownership, the ping-pong, and the SMEM arm:
+// docs/internals/decode_expand.md
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>

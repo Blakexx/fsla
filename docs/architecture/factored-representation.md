@@ -9,12 +9,11 @@ down is the `Σ_l b_l` factors, and the `Π_l b_l` expansion exists only inside 
 consumer that needs it, in registers or shared memory, for as long as one tile
 takes.
 
-This was recorded as a **unification** — one principle that turns out to be the
-memory rule, the schedule rule and the schedulability rule at once (campaign
-journal, 2026-08-05, the affine-schedulability entry's closing amendment):
-*"routing matrix AND its support are both Kronecker-factored objects — store the
-factors, expand transiently where consumed (panel in registers, candidacy in
-SMEM), never in HBM."*
+It is a **unification**: the memory rule, the schedule rule and the
+schedulability rule are one principle, not three. *The routing matrix and its
+support are both Kronecker-factored objects — store the factors, expand
+transiently where consumed (panel in registers, candidacy in SMEM), never in
+HBM.*
 
 ## Why it is one principle and not four coincidences
 
@@ -52,7 +51,7 @@ Kronecker broadcast rather than storing one).
 | **The schedule** | the same per-level bitmaps | the per-owner work set, re-evaluated in kernel. Storing it would be the `O(L·N)` wall. |
 | **The token-gather ballots** | the same factor words | live-token masks computed from the support words already loaded. |
 
-The negative cases are as instructive, and both were priced and refused:
+The negative cases are as instructive; both are priced and refused:
 
 - **Precomputing the `W` panel to VRAM** — `O(candidates × BT × BC)` ≈ **8.6 GB**
   at the parity cell. Refused (journal, 2026-08-04 user Q&A, item 2). The
@@ -75,12 +74,12 @@ waste or worse:
    expand *where consumed*. If the same expansion is needed by many consumers
    spread over time, re-expansion is recomputation, and the trade becomes a real
    measurement rather than an obvious win. The engine's own case where the
-   staging transform *lost*: an amplitude staging buffer was designed to reshape
-   the per-element gather, and refuted by a theorem plus a probe — each element is
-   loaded **exactly once per visit**, so the buffer has no reuse to exploit; the
-   measured load-reduction factor was `1.0030` work-weighted and exactly `1.0000`
-   at the flagship (journal, 2026-08-04, `AMP_STAGING_DESIGN.md` declined). *There
-   was nothing to amortize.*
+   staging transform *loses*: an amplitude staging buffer that reshapes the
+   per-element gather has no reuse to exploit, because each element is loaded
+   **exactly once per visit** — a theorem, confirmed by probe at a measured
+   load-reduction factor of `1.0030` work-weighted and exactly `1.0000` at the
+   flagship (journal, 2026-08-04, `AMP_STAGING_DESIGN.md` declined). *There is
+   nothing to amortize.*
 2. **When the factored form is smaller than the hardware's quantum.** Below a
    32-byte sector or a 16-row MMA quantum, a finer representation cannot save a
    byte or an instruction. Measured: with fp32 amplitudes, 8 digits are one 32 B
@@ -101,7 +100,7 @@ waste or worse:
 ## Provenance
 
 - Unification statement: campaign journal, 2026-08-05, affine-schedulability
-  entry, precision amendment.
+  entry.
 - Leaf-digit purity: `csrc/rola/src/consumer.cuh:131-133`; bitmap Kronecker
   structure: [`docs/internals/decode.md`](../internals/decode.md),
   [`decode_expand.md`](../internals/decode_expand.md); reference semantics:

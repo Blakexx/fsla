@@ -23,7 +23,8 @@ same week.
   trimming, re-run under falsification whenever touched, and — critically —
   **independent by gate**: its own code path, no helpers shared with the kernel it
   judges. An optimized kernel validated against a *fresh* reference proves only
-  self-consistency; that is exactly how a shared-router bug once passed.
+  self-consistency — the mechanism by which a shared-router bug passes a full
+  suite, which is not hypothetical here.
 - **The recurrence is affine in the input.** No state-dependent state update, ever.
   → [no-delta-rule.md](no-delta-rule.md).
 - **Dead routes are exact zeros and zeros are inert.**
@@ -80,12 +81,12 @@ beat.
 | Choice | The measurement | Where it could move |
 |---|---|---|
 | **Owner order is head-major** (`bh` primary, cost descending within head) | step `71.98 → 67.60 ms` (−6.1%); L2 read hit `27% → 71%`; DRAM `20.27 → 6.38 GB`; request side provably untouched | Remaining locality is in the token band and the emission, not in within-head order — a hierarchy-order key was tested and **refuted** (+0.14% at parity, and it *lowers* the L2 hit rate). |
-| **Ring depth 1** (no run-ahead buffer) | A/B: wash at parity (−0.16%), **+3.8% regression** at the sparse cell; stalls converted rather than removed | Re-opens now that the phase-C gate has landed; the recorded verdict is explicitly conditional on the tree it was taken in. |
+| **Ring depth 1** (no run-ahead buffer) | A/B: wash at parity (−0.16%), **+3.8% regression** at the sparse cell; stalls converted rather than removed | The verdict is explicitly conditional on the tree it was measured in, and the phase-C gate changes that tree; the axis is therefore open. |
 | **Phase-C gate skip/narrow, scoped to the bf16 arms** | −3.43% build-side, independently re-measured **−3.59%**; the scope is a proof, not a convenience — every ratchet offender mangles as `tf32x3`, so the bf16 intersection is empty | A formulation that is clean on the `tf32x3`/`!GLOBAL`/`BT=32` arms too. |
 | **COMPACT (packing) is kept but never selected** | pack tax +5–9%, saving ≈0 at all local shapes | One packing A/B cell in the rental calibration, at 65K class with realistic sparsity. If that says no, the axis is **deleted everywhere in one commit** and the instantiation space halves. Note it must be re-specified against "dense + atom skipping" or it over-credits packing ~1.4×. |
 | **`frag_a_slot` hoist (rung 4) declined** | regressions +0.5…+1.9% persisting at 8× `T` **and** at `N = 65,536`; the foregone −0.99% win reproduced three times and is smaller than the losses it buys | Parked, not closed: a formulation started from the SASS. Revival trigger named — if the kernel becomes issue-bound again. |
-| **Warp specialization demoted** | its two predicted mechanisms failed measurement: the register recovery did not appear, and `setmaxnreg` is `sm_90+` while we build `sm_86`. Its real target turned out to be the rendezvous spin — which is 33% of *instructions* but only ~3–5% of *wall clock* | A cell where issue pressure binds. |
-| **The headline metric is CPM, not slots/MMA** | schedulers are **starved, not oversubscribed**: 0.85 eligible warps of 5.81 active; no eligible warp on 52.5% of cycles; issue capacity in 3.2× surplus | "What you gate is what you get" — we gated a resource we have in surplus. Any replacement metric needs a bandwidth companion or it repeats the failure in a new coordinate. |
+| **Warp specialization demoted** | both mechanisms it is predicted to buy fail measurement: the register recovery does not appear, and `setmaxnreg` is `sm_90+` against an `sm_86` build. Its only remaining target is the rendezvous spin — 33% of *instructions* but ~3–5% of *wall clock* | A cell where issue pressure binds. |
+| **The headline metric is CPM, not slots/MMA** | schedulers are **starved, not oversubscribed**: 0.85 eligible warps of 5.81 active; no eligible warp on 52.5% of cycles; issue capacity in 3.2× surplus | "What you gate is what you get": a slots/MMA metric gates a resource held in 3.2× surplus. Any replacement metric needs a bandwidth companion or it repeats the failure in a new coordinate. |
 | **bf16 read-only storage family** (amplitudes, values, projections, `y` cast) | not yet landed; priced at 0–4%, best ~1.5–2%, low end genuinely zero | Its own precision gate first, then the oracle A/B, then perf. Distinct from bf16 *state*, which is a guarantee (§1). |
 
 **A choice is only as good as the regime it was measured in**, and this record
@@ -101,10 +102,9 @@ uncertainty in the performance record.
 
 - **Code carries structure; `docs/internals/` carries reasons.** At most a file
   header, a block before an important declaration, and a one-line hazard stub at a
-  measured hazard. The motivating measurement: the state-of-the-art hot-file
-  comment band is 10–27% and *falls* as code hardens; this tree's main kernel
-  header reached 62%, and its worst failure was **rot**, not volume — three false
-  statements in one comment block.
+  measured hazard. The measured basis: the state-of-the-art hot-file comment band
+  is 10–27% and *falls* as code hardens; a 62% kernel header in this tree failed
+  by **rot**, not by volume — three false statements in one comment block.
 - **The oracle's style is auditability, at zero regard for efficiency.** Literal
   rendering of the math, explicit loops where clearest, fp64 throughout, trusted
   third-party primitives (`einsum`, `matmul`) over anything hand-fused.
@@ -133,7 +133,7 @@ and a paging invariant. Expect the answer to be no.
 number cleared.
 
 - **At-scale means both axes.** `T` *and* `N`. A `T`-only sweep does not satisfy
-  the rule; that gap was caught once and cost a re-measurement.
+  the rule, and a measurement that omits `N` is re-taken rather than accepted.
 - **On real routing where the claim is about routing.** Synthetic fixtures draw
   read and write supports independently, which does not merely miss coincidence —
   it **manufactures anti-coincidence**. Measured: three producer cells give
@@ -148,9 +148,9 @@ number cleared.
   regression in a 1,216-entry space.
 - **With a gate that can fail.** Every new gate ships its must-fail
   demonstration. The three sanctioned mechanisms, all with in-tree precedent:
-  in-test non-vacuity assertions (which caught a fixture with 0.64% read-only
-  visits, and a head-major gate whose fixture made every cost tie so the old and
-  new keys coincided); recorded, re-runnable **mutation falsification**; and a
+  in-test non-vacuity assertions (which catch vacuous fixtures — a fixture with
+  0.64% read-only visits; a head-major fixture in which every cost ties, so the
+  old and new keys coincide); recorded, re-runnable **mutation falsification**; and a
   coverage-vs-dispatch census join. No AST hashing, no source-string machinery.
 - **Then three adversarial gates** — rules, invariants, re-validation — after the
   commit and before the merge. Never merge on a self-report.

@@ -67,10 +67,10 @@ from `ROLA_C_RING_DEPTH` (shipped at 1; depth 2 DECLINED on measurement,
 session-9 R2(b)), and the ratification manifest records the macro
 (`tools/ratify.py`'s `RATIFIED_DEFINES`).
 
-`ConsumerParams` once carried a runtime `ring_slots`. No kernel line read it and
-it was removed (coverage-closure H3). The agreement gate
+There is no runtime depth field in `ConsumerParams`: a depth the kernel could
+read would be a second accounting of a compile-time fact. The agreement gate
 `tests/unit/test_ring_depth_agreement.py` pins planner depth == compiled depth,
-which is the invariant the removed field was pretending to carry.
+and that pin is the whole of the invariant (coverage-closure H3).
 
 ## <a id="clock-stream"></a>A4. The `LeafMassDecay` clock stream
 
@@ -92,12 +92,11 @@ but TILE-MAJOR, so one visit reads one contiguous slab.
 
 **This is the sole support authority.** §3 step 2's gather, step 1's FIXED-level
 token validity, and the staging predicate all read it, and no MEMBERSHIP decision
-is derived from an amplitude magnitude any more (harvest.md §23.2 ruling 1;
+is derived from an amplitude magnitude (harvest.md §23.2 ruling 1;
 conformance audit item 3 / S1 — the §3 step 2–3 inversion).
 
-Precisely, because an earlier wording overclaimed (Gate D): amplitude comparisons
-still exist in the kernel, at its `if (out != 0.0f)` split-K emission sites.
-Those are PERFORMANCE SKIPS ON A VALUE — adding `0.0f` is the identity, so
+Precisely (Gate D): amplitude comparisons do exist in the kernel, at its
+`if (out != 0.0f)` split-K emission sites. Those are PERFORMANCE SKIPS ON A VALUE — adding `0.0f` is the identity, so
 including the term is a no-op and the test is over-inclusion-safe in the
 direction that matters. None of them decides membership, which is what this word
 is the authority for. This is the
@@ -124,9 +123,9 @@ batch-head `bh` starts at row `bh * N + o * BC + q * MMA_K_QUANTUM`.
 Paged (spec §4.5): `[physical_slots, MMA_K_QUANTUM, cols]`; that same atom starts
 at row `page_table[bh * atoms_per_bh + o * QPO + q] * MMA_K_QUANTUM`.
 
-**A page is one `MMA_K_QUANTUM`-leaf ATOM and not one owner.** `page_states := BC`
-is dead: §1b makes `BC` a re-derivable COMPUTE tile and the page a
-MEMORY-RESIDENCY granule, so that a per-launch `BC` never rebuilds the arena. An
+**A page is one `MMA_K_QUANTUM`-leaf ATOM and not one owner.** §1b makes `BC` a
+re-derivable COMPUTE tile and the page a MEMORY-RESIDENCY granule, so that a
+per-launch `BC` never rebuilds the arena — a `BC`-keyed page would. An
 owner is therefore `QPO = BC / MMA_K_QUANTUM` independently paged runs, and
 `atom_row_base` in `consumer_kernel.cuh` is the one place that arithmetic lives.
 
@@ -135,8 +134,8 @@ owner is therefore `QPO = BC / MMA_K_QUANTUM` independently paged runs, and
 `[BH, atoms_per_bh]` int32, or `nullptr` for the unpaged path. `kAbsentPage`
 (`-1`) means the atom has no committed slot, which can only happen for an atom
 with no write candidate at all — its unpaged state is identically zero.
-Admission is TOTAL (the capped mode and its admit mask are deleted), so there is
-no second reason for an absent entry.
+Admission is TOTAL — there is no capped mode and no admit mask — so there is no
+second reason for an absent entry.
 
 An absent atom reads as zeros and is never stored back. That is what makes paging
 BITWISE INVISIBLE rather than approximately equivalent, and it is the
@@ -152,7 +151,7 @@ the segment coordinates, one entry per work item, in the same order.
 Segment `s` of an owner split `nseg` ways owns the contiguous TILE range
 `[s*n_tiles/nseg, (s+1)*n_tiles/nseg)`. A `nullptr` here is `P = 1` everywhere:
 `seg = 0`, `nseg = 1`, the range is the whole token axis, and every expression
-collapses to the pre-`P` kernel WITHOUT reading memory — which is what keeps
+collapses to the unsplit kernel WITHOUT reading memory — which is what keeps
 `P = 1` bit-identical, and `P = 1` is the primary benchmarked configuration
 (spec §6.4).
 
@@ -174,11 +173,12 @@ slot[owner]         : the ENTRY-STATE STASH M_0, dense, written by pass 2 and
 slot[owner] + 1 + s : segment s's boundary, s in [0, nseg-1).
 ```
 
-**The stash is a correctness structure, not an optimization** (fix pass R1).
-Without it, pass 3's segment 0 read `p.state`, whose rows the SAME launch's last
-segment writes from another CTA — an unsynchronized intra-launch dependence that
-only the work list's incidental ordering hid. A permitted permutation of that
-list produced `y` with relative error 1.0. With it, every pass-3 read is either a
+**The stash is a correctness structure, not an optimization.** Without it, pass
+3's segment 0 reads `p.state`, whose rows the SAME launch's last segment writes
+from another CTA — an unsynchronized intra-launch dependence that only the work
+list's incidental ordering hides. That failure is real and not hypothetical: a
+permitted permutation of the work list yields `y` with relative error 1.0
+(measured). With it, every pass-3 read is either a
 workspace slot written by an EARLIER LAUNCH or a `p.state` row of an UNSPLIT
 owner, which no other CTA touches — disjoint from all same-launch writes by
 construction.
@@ -223,18 +223,13 @@ in the enum. `ScanParams` composes the per-segment summaries into the accumulate
 boundary states, in order: one CTA per SPLIT owner, and the fold is sequential
 over segments inside it, so there is no inversion anywhere (P5.21's obligation).
 
-## <a id="tracer-retired"></a>A13. The intra-kernel tracer is retired
+## <a id="tracer-retired"></a>A13. There is no intra-kernel tracer
 
-Item 6b, 2026-08-01. `v3_trace.cuh`, `v3_trace_host.{cu,cuh}` and
-`development/measurement/rola_trace{,_capture}.py` were an instrument with 27
-`V3T*` emission sites, ALL of them in the REGISTER-RESIDENT consumer — whose
-header was also named `consumer_kernel.cuh` (readable at `c3c2f845`, and a
-different kernel from today's file of that name).
-
-It is deleted; the surviving consumer carries zero emission sites. An instrument
-pointed at no kernel is dead code by the standing rule, so it was retired WITH the
-kernel rather than left to look live. Re-instrumenting the surviving consumer is a
-new item with its own emission sites, not a revival. See
+The consumer carries ZERO trace-emission sites, and no tracing header, host
+capture translation unit or capture script exists in the tree. An instrument
+pointed at no kernel is dead code by the standing rule, so instrumenting the
+consumer means adding emission sites to it — a piece of work with its own
+sites, not the revival of a switch that is already there. See
 [`DELETIONS.md`](DELETIONS.md).
 
 ---
@@ -261,25 +256,20 @@ descriptions of one kernel is one that can go stale.
 returns `(y, final_state, num, den)`. Every argument is checked loudly; there is
 no silent shape coercion and no CPU fallback.
 
-## <a id="one-consumer"></a>B1. ONE consumer (item 6b, 2026-08-01)
+## <a id="one-consumer"></a>B1. ONE consumer
 
-The previous REGISTER-RESIDENT consumer is deleted: its kernel header (also named
-`consumer_kernel.cuh`, and a DIFFERENT kernel from the one this file now
-includes), plus `intra_gram.cuh`, `consumer_matrix.def` and its eight shard
-translation units, its `intra_lowering` template axis, its analytic SMEM mirror,
-and its intra-kernel tracer.
+There is exactly one consumer kernel family. `launch_consumer` resolves the plan
+to one instantiation of it, and the file includes one kernel header
+(`consumer_kernel.cuh`) and one intra lowering header (`intra_panel.cuh`).
 
-There is one kernel family, so there is no second-kernel routing argument, no
-`intra_lowering` argument, and no second occupancy oracle: **what the planner
-prices and what the driver launches are the same thing by construction**, rather
-than by a gate that pins two accountings together.
+The consequences are the shape of the whole dispatch surface: there is no
+second-kernel routing argument, no `intra_lowering` argument, no analytic SMEM
+mirror beside the compiled one, and no second occupancy oracle. **What the
+planner prices and what the driver launches are the same object by
+construction** — not two accountings held together by a gate.
 
-The deleted consumer is readable in the source repository named by
-[`docs/provenance.md`](../provenance.md) — `flash-linear-attention-rola`, branch
-`rola-v3`, at commit `c3c2f845` (2026-08-01). That hash resolves in that
-repository and **not** in this one, whose history begins at the extraction. Any
-bare hash in this tree that is not annotated this way is a citation a reader
-cannot follow.
+Pre-extraction removals, with the repository and commit they are readable at, are
+in [`DELETIONS.md`](DELETIONS.md).
 
 ## <a id="three-pass"></a>B2. The three-pass split is DORMANT BY PLAN, not dead
 
@@ -367,13 +357,13 @@ strictly precedes pass 3. Pass 3's segment 0 reads it instead of reading
 last segment of the same owner stores those exact `p.state` rows from another CTA
 of that launch, with no ordering between them.
 
-The read this replaces was not free before — segment 0 read the same numbers out
-of `p.state` — so the added TRAFFIC is one dense store per split owner, and the
-added SPACE is the one slot that takes §6.4's bound from `(P-1)` to `P` per split
-owner. A non-resident owner stashes zeros, which is exactly what its segment 0
-read before, and is the
+The read it stands in for is not free either — an unstashed segment 0 reads the
+same numbers out of `p.state` — so the added TRAFFIC is one dense store per split
+owner, and the added SPACE is the one slot that takes §6.4's bound from `(P-1)`
+to `P` per split owner. A non-resident owner stashes zeros, which is exactly what
+an unstashed segment-0 read returns, and is the
 [self-masking theorem](../architecture/self-masking-theorem.md)'s identity-store
-consequence again. See A10 for the failure this fixed.
+consequence again. See A10 for the failure this prevents.
 
 ## <a id="arch-table"></a>B7. The arch table is validated against the driver
 
@@ -441,28 +431,32 @@ moves. `python tools/ratify.py` recompiles the closure and compares; see
 
 ### Compile cost is watched, not assumed
 
-The figure that belongs in the record is one measured on this tree. Whole-extension
-`python setup.py build_ext --inplace`, `MAX_JOBS=2`, on the development machine
-(`workflows/refactor/p03_format.md`): **23m14s** cold, **19m53s** on the second
-build, both including the post-build ratification gate.
+MEASURED, whole-extension `python setup.py build_ext --inplace`, `MAX_JOBS=2`, on
+the development machine, both figures including the post-build ratification gate:
+**23m14s** cold and **19m53s** warm (provenance:
+`workflows/refactor/p03_format.md`).
 
 A per-translation-unit figure for `consumer.cu` alone is **not currently
-measured**; the honest statement is the whole-build one. If a later axis makes
-the build cost unacceptable, a `.def`-plus-shard-TU split — the mechanism the
-deleted consumer's matrix used (B1) — remains the answer, and the measurement
-that would justify it is a per-TU `nvcc` wall-clock under the same `MAX_JOBS`.
+measured**, so the whole-build figure is the one on the record. If a later axis
+makes the build cost unacceptable, the answer is a `.def`-plus-shard-TU dispatch
+split: one `.def` file listing the instantiation tuples, expanded into a fixed set
+of shard translation units that compile in parallel, with the dispatch chain
+generated from the same list. It is not in this tree
+([`DELETIONS.md`](DELETIONS.md#dormant) registers it), and the measurement that
+would select it is a per-TU `nvcc` wall-clock under the same `MAX_JOBS`.
 
 ## <a id="dispatch-braces"></a>B9. HAZARD — the macro braces are load-bearing
 
 Every `ROLA_CONSUMER_ONE` is a braced block ending in `return`, so the enclosing
 dispatch is a chain of `if (cond) BLOCK`. `ROLA_CONSUMER_CMP` expands to TWO such
 blocks, and **without the outer braces the second one escapes its guard and
-launches unconditionally.** That is exactly what an earlier revision did: every
-call ran the `decay` instantiation, which dereferenced a null `p.dials`.
+launches unconditionally**: every call runs the `decay` instantiation and
+dereferences a null `p.dials`.
 
-It was caught by the compact gate's own dense arm — by the instrument the axis was
-added with — and not by anything that reads like a check. This is a syntax-level
-hazard with a semantic blast radius, which is why it carries a stub.
+That failure is real rather than hypothetical, and what detects it is the compact
+gate's own dense arm — the instrument the axis is exercised with — not anything
+that reads like a check. This is a syntax-level hazard with a semantic blast
+radius, which is why it carries a stub.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
@@ -503,9 +497,10 @@ a plan can select is refused, and no shape it cannot select is compiled.**
 the production point, `"tf32x3"` the exactness-gate point against the fp64
 oracle. Both are instantiated. It is a numeric FORMAT axis stamped by the plan
 (findings D4.3) and resolved once — not a tolerance knob and not a density
-branch. Both decay arms honour it: a read-only tile under `LeafMassDecay` takes
-the §5 readout, and its MIXED tiles take the token-sequential walk, which is fp32
-and has no operand format to choose, so no stamped field is ignored.
+branch. Both decay arms honour it: under `LeafMassDecay` a tile reduces to the
+`decay = None` tile through the panel factorization
+([`intra_panel.md`](intra_panel.md)), so the same two GEMM sites take the same
+stamped format and no stamped field is ignored on either arm.
 
 ## <a id="state-derivation"></a>B12. Under paging, `N` is derived rather than read
 

@@ -1,10 +1,11 @@
 # `csrc/rola/src/intra_panel.cuh` — the `panel` intra lowering
 
-The DENSE-LIMIT intra lowering under `LeafMassDecay` (`ROLA_V3_SPEC.md` §7.4.1),
-and since item 6b (2026-08-01) the decay arm's only alternative lowering: the
-`intra_lowering` axis and its `realized_leaf` token-sequential sibling went with
-the old consumer, so the consumer includes this header unconditionally. The
-`decay = None` sibling `intra_gram.cuh` went with it too.
+The intra lowering under `LeafMassDecay` (`ROLA_V3_SPEC.md` §7.4.1), and the
+decay arm's ONLY lowering. There is no `intra_lowering` template axis and no
+alternative path: `panel_read_factor` and `panel_write_factor` are applied on
+every decay tile the consumer executes, and `rola/ops/consumer.py` therefore
+enforces the admission bound (§6) on every decay launch rather than on a
+selected one.
 
 Symbols used throughout: `i` is the owner's leaf; `t` and `j` are tokens of one
 tile; `BT` is the token tile, `BC` the leaf tile, `DV` the value width; `R` is
@@ -18,7 +19,7 @@ the read amplitude panel, `W` the write amplitude panel, `M` the state,
 Under `LeafMassDecay` a MIXED tile (one that both reads and writes) cannot use
 the "carry against a fixed tile-entry state plus a causal Gram" split, because
 the state evolves inside the tile. The kernel's standing answer is the
-TOKEN-SEQUENTIAL WALK (`realized_leaf` on this arm): walk the tile's tokens in
+TOKEN-SEQUENTIAL WALK: walk the tile's tokens in
 order, `M *= keep; M += W*v; y = R*M`. That is exact and `O(BT * BC)` per tile —
 but every one of those `BT * BC` FMAs is in the thread→channel map, the walk
 carries a loop-carried dependence over `t`, and nothing in it reaches the tensor
@@ -166,71 +167,50 @@ dead route — which it would NOT do if a `-inf` had been clamped to `-88` and
 exponentiated to `6e-39`. See also
 [the self-masking theorem](../architecture/self-masking-theorem.md).
 
-## <a id="measured-status"></a>8. Measured status — read before selecting this lowering
+## <a id="measured-status"></a>8. What the lowering costs, and the standing follow-up
 
-2026-07-30, the increment that landed it. **`panel` is SLOWER than the
-token-sequential walk at every cell benchmarked — 16 of 16, by +12% to +106%.**
-It is implemented, oracle-gated and explicitly reachable, and it is NOT
-plan-selected; `select_intra_lowering`'s structural rule keeps `realized_leaf` on
-this arm. That is the same position `gram` held while it measured slower, and it
-comes off the same way: a measured cell where the lowering wins.
+The decay arm's per-tile cost has two components that are strictly ADDED relative
+to the `decay = None` tile it reduces to, and one epilogue defect that dominates
+both:
 
-RTX 3080 Ti, `B=1 H=8 L=2048 d_v=64 branches=[8,16]`, real V3 producer routing,
-30 reps, median, `compact=false` (the plan-selected instantiation everywhere).
-Consumer ms, `realized_leaf` (the walk) against `panel`:
+1. **A mixed tile emits TWO atomics per (token, channel).** The lowering takes
+   the `decay = None` path, whose readout and intra term land as separate split-K
+   atomics ([`consumer.md#split-k-emission`](consumer.md#split-k-emission)).
+   Under `LeafMassDecay` with any write density most tiles are MIXED, so this
+   doubles the epilogue traffic on almost every tile. **Fusing the intra term
+   into the readout epilogue is the standing follow-up**, and it is the largest
+   single item on the decay arm.
+2. TWO `expf` panels (`2 * BT * BC`) rather than one, plus the clock PREFIX on
+   top of the clock product. MUFU-bound work.
+3. Against those, the carry moves to the tensor cores, the intra drops from
+   `BT * BC` per THREAD to `BT(BT+1)/2 * KI / DV`, and the serial `t` dependence
+   goes.
 
-| router | `BC` | `BT` | norm | walk | panel | delta |
-|---|---|---|---|---|---|---|
-| softmax | 16 | 16 | raw | 2.3122 | 4.1585 | +79.9% |
-| softmax | 16 | 32 | raw | 2.2280 | 4.5946 | +106.2% |
-| softmax | 16 | 16 | global | 2.9266 | 4.2486 | +45.2% |
-| softmax | 16 | 32 | global | 2.9338 | 4.5240 | +54.2% |
-| softmax | 64 | 16 | raw | 5.9668 | 7.2294 | +21.2% |
-| softmax | 64 | 32 | raw | 5.9523 | 7.6420 | +28.4% |
-| softmax | 64 | 16 | global | 6.5085 | 7.3073 | +12.3% |
-| softmax | 64 | 32 | global | 6.4184 | 7.8223 | +21.9% |
-| entmax g8 | — | — | — | (8 further cells, same direction) | | +14.5% to +82.6% |
+The measurement that sizes item 1 was taken against a token-sequential
+alternative that fused carry and intra into one accumulator before a single
+`atomicAdd`. At `B=1 H=8 L=2048 d_v=64 branches=[8,16]`, real producer routing,
+30 reps, median, `compact=false`, RTX 3080 Ti, the fused form ran 12% to 106%
+faster across 16 cells (two routers, two norms, two `BT`, two `BC`); the
+`BC = 16` cells carried the largest deltas and are the least trustworthy in
+magnitude, since a byte-identical kernel was measured moving 12–23% between
+builds there. **That is the size of the prize for fusing the epilogue**, and it
+is the number the fusion has to be measured against. (Provenance:
+`workflows/20260730-wiring/panel.md` §4.)
 
-THE CAUSE IS NAMED, not left as "it is slower", because it is a property of what
-is still MISSING rather than of the lowering:
+## <a id="cost-model"></a>9. Per-tile cost, in counts
 
-1. **A mixed tile emits TWO atomics per (token, channel) on this path and the
-   walk emits one.** The walk fuses carry+intra into one accumulator per token
-   before its single `atomicAdd`; `panel` takes the `decay = None` path, whose
-   readout and intra term land as separate split-K atomics. Under
-   `LeafMassDecay` with any write density most tiles are MIXED, so this doubles
-   the epilogue traffic on almost every tile. Fusing the intra term into the
-   readout epilogue is the standing follow-up for BOTH lowerings, and it is what
-   has to land before `panel` is re-measured.
-2. `panel` pays TWO `expf` panels (`2 * BT * BC`) where the walk pays one, plus
-   the clock PREFIX on top of the clock product the walk also computes.
-   MUFU-bound work, strictly added.
-3. What it saves is real but smaller at these shapes: the carry moves to the
-   tensor cores, the intra drops from `BT * BC` per THREAD to
-   `BT(BT+1)/2 * KI / DV`, and the serial `t` dependence goes.
-
-The `BC = 16` rows are the largest deltas and the least trustworthy in magnitude
-(a byte-identical kernel was measured moving 12–23% between builds at `BC = 16`);
-the DIRECTION is what carries, and it is unanimous across 16 cells, two routers,
-two norms and two `BT`.
-
-## <a id="cost-model"></a>9. Cost, per mixed tile, against the walk it replaces
-
-Counts, not a measurement — the measured A/B is §8 and `panel.md` §4.
+Counts, not a measurement; the measured figures are §8.
 
 ```
-walk  : BT*BC decay FMAs + BT*BC deposit FMAs + BT*BC read FMAs, ALL per thread
-        (the thread owns a channel and must touch every leaf), plus BT*BC expf
-        for the survival panel, plus a serial dependence on t.
-panel : BT*BC deposit FMAs per thread (unchanged), the carry on the tensor cores,
-        the intra as BT(BT+1)/2 * KI Gram entries spread over DV threads, and
-        2*BT*BC expf for the two panels.
+BT*BC deposit FMAs per thread, the carry on the tensor cores, the intra as
+BT(BT+1)/2 * KI Gram entries spread over DV threads, and 2*BT*BC expf for the
+two panels.
 ```
 
-The survival exponential is paid either way, once per (token, leaf); `panel` pays
-it twice because it forms two panels. So the trade is: one extra `expf` panel and
-a `BT(BT+1)/2 * KI / DV` Gram, for the removal of `2 * BT * BC` per-thread FMAs
-and of the serial `t` chain.
+The survival exponential is `BT*BC` per panel and the lowering forms two, so it
+is paid twice. Against that, `2 * BT * BC` per-thread FMAs and the serial `t`
+dependence do not exist on this path at all: the carry is a tensor-core GEMM and
+the intra is a Gram.
 
 ## <a id="fp32-prefix"></a>10. HAZARD — the clock prefix accumulates in fp32
 
@@ -247,10 +227,9 @@ compile-time check catches.
 tokens, because the prefix IS a serial dependence in `t` and `BT <= 32`;
 parallelizing it would cost more barriers than it saves steps.
 
-The clock product runs over ALL levels, unlike the read/write panels: a fixed
-level's factor cannot hoist into the §3 step 3 row scale, because the clock is an
-EXPONENT. The deleted `gram` lowering's level loop started at
-`first_spanned_level` for that same reason; this one does not.
+The clock product runs over ALL levels, unlike the read/write panels, whose loops
+start at `first_spanned_level`: a fixed level's factor cannot hoist into the §3
+step 3 row scale, because the clock is an EXPONENT.
 
 **Scatter-fill identity**, exactly as the walk's survival panel: an inert leaf
 (dropped by §3 step 2's gather) contributes `0` to the prefix, and that is not a
