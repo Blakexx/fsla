@@ -4,8 +4,7 @@ Instruction wrappers, nothing more: `m16n8k16` bf16, `m16n8k8` tf32 and its thre
 extended-precision form, and the `bf16x2` pack. **No RoLA semantics live
 here.**
 
-The callers are `readout_mma.cuh` and `consumer_kernel.cuh`, and there are no
-others.
+The callers are `readout_mma.cuh` and `mma_tile.cuh`, and there are no others.
 
 The source file carries a short header and one inline note and is already at the
 mirror's target comment density; this doc is its reference rather than a relocation

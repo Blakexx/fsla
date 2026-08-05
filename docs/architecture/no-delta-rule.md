@@ -53,8 +53,8 @@ schedule, with a global barrier between them, inside the kernel.
 Because the recurrence is input-affine, **the plan is complete before launch.**
 The work list is therefore a *free permutation*: the kernel touches the owner
 list only through a flat `blockIdx`
-(`csrc/rola/src/consumer_kernel.cuh:1937-1938`, the only two `p.owners` reads in
-the kernel, both indexed by `blockIdx`), so any
+(the only two `p.owners` reads in the kernel, at CTA entry and both indexed by
+`blockIdx`), so any
 reordering of that list is a legal execution. Everything the engine gets from
 that follows:
 

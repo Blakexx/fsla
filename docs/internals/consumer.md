@@ -62,7 +62,7 @@ outside the kernel translation unit.
 
 ## <a id="ring-depth"></a>A3. The staging-ring depth is compile-time
 
-`consumer_ring_depth()` in `consumer_kernel.cuh` resolves it per instantiation
+`consumer_ring_depth()` in `smem_layout.cuh` resolves it per instantiation
 from `ROLA_C_RING_DEPTH` (shipped at 1; depth 2 DECLINED on measurement,
 session-9 R2(b)), and the ratification manifest records the macro
 (`tools/ratify.py`'s `RATIFIED_DEFINES`).

@@ -40,8 +40,12 @@ from __future__ import annotations
 import pathlib
 import re
 
-KERNEL = (pathlib.Path(__file__).resolve().parents[2]
-          / "csrc" / "rola" / "src" / "consumer_kernel.cuh")
+_SRC = pathlib.Path(__file__).resolve().parents[2] / "csrc" / "rola" / "src"
+KERNEL = _SRC / "consumer_kernel.cuh"
+#: The CTA width lives one layer down, in the shared-memory layout header, because
+#: the residency arithmetic there is derived from it.  This gate reads it from where
+#: it is DEFINED rather than assuming 8 warps.
+SMEM_LAYOUT = _SRC / "smem_layout.cuh"
 
 #: The instantiation matrix's structural axes, for the numeric discharge of the
 #: symbolic warp-set bounds.  ``kWarps = kConsumerThreads / 32`` and
@@ -578,8 +582,8 @@ def test_the_parser_actually_found_the_sites():
             f"UNBOUNDED warp set; CONDITION 1 cannot fail against it")
         assert mixed, f"the gm_put store at line {_line_of(KERNEL.read_text(), off)} is not "\
                       f"`mixed`-guarded; the skip in §3.3 assumes it is"
-    src = KERNEL.read_text()
-    assert re.search(r"constexpr int kConsumerThreads\s*=\s*256", _strip_comments(src)), \
+    assert re.search(r"constexpr int kConsumerThreads\s*=\s*256",
+                     _strip_comments(SMEM_LAYOUT.read_text())), \
         "kConsumerThreads is no longer 256; kWarps == 8 is assumed by this gate"
 
 

@@ -349,12 +349,12 @@ RATIFIED_DEFINES = ("ROLA_C_RING_DEPTH", "ROLA_C_WT_WINDOW")
 
 def shipped_defines() -> dict[str, int]:
     """The `#define` defaults of :data:`RATIFIED_DEFINES` in the digested source."""
-    src = (SRC / "consumer_kernel.cuh").read_text()
+    src = (SRC / "smem_layout.cuh").read_text()
     out = {}
     for name in RATIFIED_DEFINES:
         m = re.search(rf"^#define {name} (\d+)$", src, re.MULTILINE)
         if m is None:
-            raise SystemExit(f"consumer_kernel.cuh no longer defines a default for "
+            raise SystemExit(f"smem_layout.cuh no longer defines a default for "
                              f"{name}; the provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out

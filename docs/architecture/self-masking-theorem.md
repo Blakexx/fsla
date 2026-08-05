@@ -91,7 +91,8 @@ The oracle establishes the *semantics*; the kernel has to reproduce the exact
 zero in floating point, which is a separate claim with two load-bearing parts.
 
 **(a) The amplitude is never logged.** The coefficient is built as a direct
-product of staged per-level factors (`csrc/rola/src/consumer_kernel.cuh:2563-2567`),
+product of staged per-level factors (`build_wt_rows` in
+`csrc/rola/src/consumer_kernel.cuh`),
 so a structurally dead route is an exact `0.0f`. The alternative log-space
 lowering — log the factors, select with a binary MMA, exponentiate in the
 epilogue — would turn that zero into `-inf`, and a clamped `-inf` exponentiates
@@ -102,10 +103,10 @@ form is recorded, with its arithmetic, at
 
 **(b) The other factor is finite by construction.** `0 * finite == 0` exactly;
 `0 * inf == NaN`. The spec's rule-3 read-side format guard
-(`clamp_bf16_finite`, `csrc/rola/src/readout_mma.cuh:42-47`, documented at
+(`clamp_bf16_finite`, `csrc/rola/src/readout_mma.cuh`, documented at
 [`readout_mma.md#rule-3-bf16`](../internals/readout_mma.md#rule-3-bf16)) is what
 keeps the multiplicand finite on the narrowing arm. The comment at
-`consumer_kernel.cuh:2569-2578` states the composition explicitly: rule 4's
+`build_wt_rows` states the composition explicitly: rule 4's
 zero-route annihilation is satisfied *branchlessly and structurally* because the
 coefficient is a product of amplitudes, the factor it multiplies is finite by
 rule 3, and `0 * finite == 0`. **There is no test on the amplitude anywhere on
@@ -151,7 +152,7 @@ the engine's granularity coarsening legal:
 - **tile unions** over `BT` tokens are an OR, deliberately coarser than the
   per-token AND;
 - the read/write **support union** is gathered where either side is live
-  (`consumer_kernel.cuh:2345`, `const bool active = (rw | ww) != 0u`), so a
+  (the `COMPACT` gather's `const bool active = (rw | ww) != 0u`), so a
   read-only leaf is fetched on a write visit and contributes zero to the fold.
 
 The design rule that follows: **granularity is a performance axis, not a
