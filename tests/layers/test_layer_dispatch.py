@@ -762,6 +762,11 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     contract -- never a device-side assert, which would poison the context for
     every subsequent test in the process (the fleet-freeze failure mode). The
     context-health probe after the raise is the second half of the claim.
+
+    The refusal comes from the DISPATCH TABLE's own lookup: a choice no row carries
+    resolves to nothing, and the message names the offending coordinates together
+    with every axis the matrix does carry. What is pinned here is that behaviour --
+    host-side, specific, and context-preserving -- not one axis's wording.
     """
     layer = _layer(norm="global", decay="none")
     layer_32 = RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
@@ -771,7 +776,8 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
                     layer_idx=0).to("cuda", torch.float32).eval()
     assert layer_32.feasible_BC == (32,)
     x = torch.randn(1, 32, _HIDDEN, device="cuda")
-    with pytest.raises(RuntimeError, match="BC must be 16 or 64"), torch.no_grad():
+    with pytest.raises(RuntimeError,
+                       match=r"no consumer instantiation to query at .*BC=32"), torch.no_grad():
         layer_32(x)
     # The refusal must be host-side: the CUDA context is still usable.
     assert float(torch.ones(4, device="cuda").sum()) == 4.0
