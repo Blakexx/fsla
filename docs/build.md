@@ -86,6 +86,12 @@ cache would turn into hits.
 The two clean rebuilds are byte-identical in every entry point's SASS
 (`tools/sass_bodies.py`), so those numbers are the same binary twice.
 
+**A WRITTEN HASH MAP CARRIES THE HASHER'S VERSION AND IS ONLY COMPARABLE WITH ITS
+OWN.** What goes into a digest is a property of `tools/sass_bodies.py`, not of the
+binary, so widening the capture moves every digest in an unchanged binary. Maps are
+stamped with `HASH_VERSION` and `--compare` refuses a mismatched or unstamped pair
+rather than reporting the whole matrix as differing.
+
 **A SASS COMPARISON REQUIRES BOTH BUILDS AT THE SAME PATH.** `decode.cu` and
 `entmax.cu` put their kernels in an anonymous namespace, so 96 of the ratified names
 per architecture embed a discriminator derived from the SOURCE DIRECTORY. Two correct
