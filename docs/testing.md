@@ -207,7 +207,7 @@ claim; a generated one is a report, and this is what keeps the difference real.
 
 **`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
 engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
-one-line `//: HAZARD <slug>` stubs left at the sites they explain. Four rules,
+one-line `//: HAZARD <slug>` stubs left at the sites they explain. Five rules,
 all grep-level so a contributor can read the check itself:
 
 1. every source file under `csrc/rola/` has a mirror doc at the same relative
