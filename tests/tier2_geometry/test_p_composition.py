@@ -267,6 +267,30 @@ def test_a_ragged_token_tail_holds_at_every_P(P):
     assert _relative(state, state_ref) < RTOL
 
 
+@pytest.mark.parametrize("P", [1, 2, 3, 4])
+@pytest.mark.parametrize("decay_on", [False, True])
+def test_P_composes_with_a_carried_entry_state_on_both_decay_arms(P, decay_on):
+    """`P` is an axis of the WORK LIST, and pass 1 is where it meets the kernel's own
+    structures: pass 1 ALIASES its summary state onto the read-coefficient buffer and
+    forces ``is_read = false``, which is the predicate every staged buffer's lifetime
+    is argued from. That the split composes with a CARRIED entry state -- sparse
+    routing, ``M_0 != 0`` -- is a claim to verify rather than assume, and it is the
+    only place ``P = 3`` meets it.
+
+    The decay arm is the harder composition and is why it is a row here: its summary
+    ``A`` is not accumulated per TOKEN. It is multiplied once per tile by ``S0*S0``,
+    deliberately in the same factors and the same order the state itself takes, so
+    pass 2's fold sees a summary that cannot have drifted from its own ``B``. A fold
+    that agreed with a token-serial walk but not with the panel would show up here and
+    nowhere else."""
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw", p_read=0.5, p_write=0.5,
+                  seed=9000 + P, decay_on=decay_on, nonzero_m0=True)
+    y_ref, state_ref = fx.oracle()
+    y, state, _ = fx.run(P)
+    assert _relative(y, y_ref) < RTOL
+    assert _relative(state, state_ref) < RTOL
+
+
 @pytest.mark.parametrize("P", [1, 3])
 def test_P_composes_with_the_bf16_numeric_format_arm(P):
     """The performance MMA format, at its own format tolerance -- which is

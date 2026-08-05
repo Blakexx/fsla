@@ -39,7 +39,7 @@ MIRROR = ROOT / "docs" / "internals"
 SOURCE_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
 
 #: A doc reference as it appears in a source comment, e.g.
-#: ``docs/internals/intra_panel.md#fp32-prefix``. The anchor is optional: a
+#: ``docs/internals/consumer_kernel.md#clock-prefix-fp32``. The anchor is optional: a
 #: file-header block may point at a whole doc.
 REF = re.compile(r"docs/internals/([A-Za-z0-9_/]+\.md)(?:#([A-Za-z0-9_-]+))?")
 

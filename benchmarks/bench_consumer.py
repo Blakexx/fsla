@@ -111,7 +111,7 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
     tokens saturates far faster than one token's support, so the two numbers are
     not close and are not even correlated in the regime that matters: at
     `BC = 16, BT = 32` this function reports 0.586/16 at entmax gain 8 while the
-    measured `K` is 15.91/16. `union_rows_per_tile` below reports `K` -- the
+    measured `K` is 15.91/16. `compacted_rows_per_tile` below reports `K` -- the
     number that actually decides whether an MMA flush is mostly zeros -- computed
     from the same digit lowering `v3_consumer.py`'s `level_descriptors` hands the
     kernel, so it cannot drift from the owner rectangle it describes.
@@ -127,7 +127,7 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
        and this number OVER-STATES emptiness. For contrast, the per-token
        conditioning -- mean fill over the owners a given token actually touches --
        measured 2.5-4x denser at the sharpened cells.
-       `union_rows_per_tile` has no such caveat: it is computed per
+       `compacted_rows_per_tile` has no such caveat: it is computed per
        `(owner, tile)` exactly.
     2. The per-level product below is the mean active leaf count only to within a
        measured 0.02-0.19%; see `active_per_token`.
@@ -150,7 +150,7 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
     }
 
 
-def _union_rows(read_levels, write_levels, plan) -> dict[str, float]:
+def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
     """Mean per-`(owner, tile)` support count `K` -- §3 step 2's union, exactly.
 
     `K = |{ i in [0,BC) : exists t in the tile, R[t, leaf(i)] != 0 or W[t, leaf(i)] != 0 }|`,
@@ -177,8 +177,8 @@ def _union_rows(read_levels, write_levels, plan) -> dict[str, float]:
 
     stats = tile_union_stats(read_levels, write_levels, plan.topology, plan.BC, plan.BT)
     return {
-        "union_rows_per_tile": round(stats.mean_K, 3),
-        "union_rows_saturated_frac": round(stats.saturated_frac, 4),
+        "compacted_rows_per_tile": round(stats.mean_K, 3),
+        "compacted_rows_saturated_frac": round(stats.saturated_frac, 4),
     }
 
 
@@ -288,7 +288,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 "schedule_kib": round(sched.schedule_bytes() / 1024, 1),
                 "stream_mib": round(sched.stream_bytes() / 2 ** 20, 2),
                 **_fill(read_levels, write_levels, topology.N, BC),
-                **_union_rows(read_levels, write_levels, plan),
+                **_compacted_rows(read_levels, write_levels, plan),
             }
             rows.append(row)
             print(json.dumps(row), flush=True)
@@ -333,8 +333,8 @@ def main() -> None:
               f"schedule={r['schedule_ms']:8.3f} clock={r['clock_ms']:6.3f} "
               f"producer={r['producer_ms']:7.3f} | A_r={r['A_r']} A_w={r['A_w']} "
               f"N={r['N']} active_rows/token={r['active_rows_per_token']}/{args.BC} "
-              f"K/tile={r['union_rows_per_tile']}/{args.BC} "
-              f"(sat {r['union_rows_saturated_frac']}) "
+              f"K/tile={r['compacted_rows_per_tile']}/{args.BC} "
+              f"(sat {r['compacted_rows_saturated_frac']}) "
               f"owners={r['active_owners']}/{r['owners_total']}")
     print("\nREAD THESE TWO NUMBERS AS DIFFERENT QUANTITIES. `active_rows/token` is the\n"
           "PER-TOKEN active fraction of an owner's BC leafs. `K/tile` is what the kernel\n"

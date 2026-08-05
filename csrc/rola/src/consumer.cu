@@ -290,7 +290,7 @@ const ShardRow& query_row(bool decay, int64_t BC, int64_t BT, int64_t DV) {
 
 }  // namespace
 
-//: The consumer's residency answer, from the DRIVER. It takes five axes because
+//: The consumer's residency answer, from the DRIVER. It takes four axes because
 //: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
 //: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
 int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV) {

@@ -163,7 +163,8 @@ RULE_TABLE_PROVENANCE = (
     "KNOWN LIMITATION, PROVED RATHER THAN SUSPECTED: on a SATURATED-DENSE cell with "
     "decay the per-slice BT preference INVERTS against any work model, because the "
     "machine is stall-dominated there (BT=32 retires 14 % FEWER instructions in "
-    "5.7-27.2 % MORE time) and a work model does not model stalls.")
+    "5.7-27.2 % MORE time) and a work model does not model stalls."
+    "WHAT BOUNDS THIS CLAIM, now that the arm it used to be stated against is gone: the saturated-dense cells of the measured-argmin table are `topo-D2-w64x64-BC64` and `topo-D2-w64x16-BC16` (candidate_frac 1.0, K = ds), and the shipped closed form reproduces the MEASURED argmin BT=32 on all four of their rows, decay off and on -- the two decay rows being exactly the cells the inversion was measured on. The inversion is therefore a residual that does not move the decision at any cell it was measured at; that is a measurement, asserted by `tests/unit/test_planner.py`'s calibration gates, and not a structural exclusion.")
 
 
 def quanta_per_owner(BC: int) -> int:

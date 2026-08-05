@@ -5,8 +5,8 @@ three-term residency formula and ACCEPTED a measured spill profile as the optimu
 the alternatives spill worse (the unbounded status quo and the thread-slot cap both
 measured strictly larger). That acceptance was a judgment recorded in a document, and
 it lived nowhere else: **nothing failed if a later codegen change grew it.** This file
-makes it an ASSERTED INVARIANT, the same doctrine as the dense-degeneracy bit-identity
-gate -- a property the batch believes is a property the batch checks. (The profile is
+makes it an ASSERTED INVARIANT, on the same doctrine every other gate in this tree
+runs on -- a property the batch believes is a property the batch checks. (The profile is
 a RATCHET per instantiation, not a spill ban: on the current 256-entry consumer
 matrix roughly a fifth of the instantiations spill by design under their derived
 register budgets -- the decay arms' structural local-array traffic -- and the gate

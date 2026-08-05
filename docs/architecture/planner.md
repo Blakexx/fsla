@@ -120,9 +120,14 @@ and a selector with measured curves absorbs wherever a trained model's routing
 lands, which a point verdict does not (user ruling; journal, 2026-08-04, "no
 point-configuration verdicts").
 
-Selection itself is a SWAPPABLE INTERFACE, and the honesty above is why: the cost
-model is one implementation of it, labelled interim, and replacing it is a swap
-rather than surgery.
+Today the cost model above is the ONLY selector: `select_config` is the interface.
+Making selection a swappable one — a typed, versioned statistics bundle, a `Selector`
+with today's cost model as one implementation labelled interim and a fixed-choice
+implementation beside it for debugging and A/B, and a choice the dispatch table
+consumes rather than computes — is the standing requirement on `P06` in the queue,
+and it is the reason the honesty above is recorded rather than repaired in place:
+the constants are known-interim, so replacing them must be a swap rather than
+surgery.
 
 Until those rows exist, a claim of the form "configuration X is the right default"
 is not supported by this repository, and the honest statement is the one made
