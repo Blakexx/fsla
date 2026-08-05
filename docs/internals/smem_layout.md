@@ -39,7 +39,7 @@ coefficient folds on top of the same GEMM), and every number is READ OFF
 `-Xptxas -v`, never chosen:
 
 ```
-BC = 64             : 66 registers (decay = None), 80 (decay + compact)
+BC = 64             : 66 registers (decay = None), 80 (decay)
 BC = 16, decay=false: 60-64 registers, ZERO spills on all 32 entries
 BC = 16, decay=true : 80 registers, and at a 64-register budget it SPILLS
                       (worst 66 st / 212 ld, §2.22)
@@ -136,7 +136,7 @@ structural fact once.
 
 ### <a id="reg-budget-session9"></a>The one class that clears 64, and why every other `NM = 2` key stays at 96
 
-The keying is a 512-entry forcing census read back (`tools/ratify.py --census`, arms:
+The keying is a forcing census read back (`tools/ratify.py --census`, arms:
 shipped / `--force-ctas 4` / `--force-ctas 3`, sm_86; provenance:
 `workflows/20260802-thunder/trackK.md` session 9). The rule for lowering a key is
 strict: **a key moves ONLY where the forced arm shows ZERO spill AND a bit-identical
@@ -180,7 +180,7 @@ the `decay = None` arm does not, so a single constant would either over-promise 
 one arm or under-use the other.
 
 **The THREAD term is what keeps the bound from being discarded outright, and its
-absence is silent on every `BC = 16` instantiation — half the matrix (64 of 128).**
+absence is silent on every `BC = 16` instantiation — half the matrix (128 of 256).**
 At `BC = 16` the footprint is ~13 KiB, so the shared-memory term ALONE returns 7, and
 `7 x 256 = 1792 > 1536` thread slots. `ptxas` does not CLAMP an out-of-range bound,
 it DISCARDS it (`Value of threads per SM ... is out of range. .minnctapersm will be
@@ -271,18 +271,16 @@ coordinator-level one, so the pin is asserted in the kernel as a correctness
 [`C_WT_WINDOW`](#wt-window) tables `2` on the principle that a wrong placeholder
 degrades to today's behaviour.
 At depth 2 it does not: `rola_consumer_occupancy` — the DRIVER, which is spec §6.5's
-sole residency authority — drops FOUR of the 32 `(decay, compact, BC, BT, DV)` shapes,
-two by shared memory and two by registers:
+sole residency authority — drops shapes the derivation does not, some by shared memory
+and some by registers:
 
 ```
-!decay !compact BC16 BT32 DV32   4 -> 3   (registers)
-!decay !compact BC64 BT16 DV32   4 -> 3   (registers)
-!decay  compact BC16 BT32 DV64   3 -> 2   (shared memory)
-!decay  compact BC64 BT32 DV32   3 -> 2   (shared memory)
+!decay BC16 BT32 DV32   4 -> 3   (registers)
+!decay BC64 BT16 DV32   4 -> 3   (registers)
 ```
 
-The SMEM pair is caught by the derivation above. **The register pair CANNOT BE CAUGHT
-AT COMPILE TIME**, and that is the load-bearing fact rather than a workaround: the
+The shared-memory drops are caught by the derivation above. **The register drops CANNOT
+BE CAUGHT AT COMPILE TIME**, and that is the load-bearing fact rather than a workaround: the
 driver reports a residency HIGHER than `ctas_for_residency` states,
 because `ptxas` spends fewer registers than `consumer_reg_budget` budgets, and the
 ring's own addressing (+3 to +7 registers at the flagship, measured) eats that
@@ -329,8 +327,7 @@ own `BT * (BC + 4) * 4` = 4,352 B, and the headroom is not there.
 
 **The decay arm's headroom is 2,941 B**, and it is arithmetic off
 `consumer_smem_bytes` rather than a measurement: at the flagship cell
-(`BT = 16, BC = 64, DV = 64, D = 2`, `DECAY`, `GLOBAL`, bf16 staging, no `COMPACT`,
-`kRing = 1`) that function returns 30,168 B, and 3 CTAs/SM admit
+(`BT = 16, BC = 64, DV = 64, D = 2`, `DECAY`, `GLOBAL`, bf16 staging, `kRing = 1`) that function returns 30,168 B, and 3 CTAs/SM admit
 `102400 / 3 - kDriverSmemReservePerCta` = 33,109 B — a difference of 2,941 B, against
 `clk`'s 4,352. Every term of both sides is compile-time, so the figure moves only when
 the carve does.
@@ -340,7 +337,7 @@ the carve does.
 ## <a id="smem-ledger"></a>10. The ledger (the §10i.14 carve, term by term)
 
 Every term of `consumer_smem_bytes_at`, at the FLAGSHIP CELL — `BT = 16, BC = 64,
-DV = 64, D = 2`, `GLOBAL`, no `DECAY`, no `COMPACT`, `kRing = 1` — on both precision
+DV = 64, D = 2`, `GLOBAL`, no `DECAY`, `kRing = 1` — on both precision
 arms. The staging format is the only axis that moves a byte figure without moving a
 template parameter, so both arms are given: `stage_is_narrow` selects it and
 `wt_pitch` / `vw_elems` size it, and quoting one arm alone under-states one build
@@ -362,30 +359,22 @@ while over-stating the other.
 
 **This table is CHECKED, not transcribed.** `rola_consumer_smem_bytes` reports the
 compiled `consumer_smem_bytes` of a shipped instantiation, and the row arithmetic above
-reproduces it EXACTLY on all 32 driver-queryable cells (`decay` x `compact` x `BC` x
-`BT` x `DV`, at `D = 2`, bf16, `GLOBAL` — the axes `query_row` pins). The flagship's
-27,096 B is one of those 32.
+reproduces it EXACTLY on all 16 driver-queryable cells (`decay` x `BC` x `BT` x `DV`,
+at `D = 2`, bf16, `GLOBAL` — the axes `query_row` pins). The flagship's 27,096 B is one
+of those 16.
 
-### The four arms of the flagship cell, and what the driver says
+### The two arms of the flagship cell, and what the driver says
 
 | arm | bytes | CTAs/SM (driver) |
 |---|---|---|
-| raw of both | 27,096 | 3 |
-| `COMPACT` | 27,616 | 3 |
+| no `DECAY` | 27,096 | 3 |
 | `DECAY` | 30,168 | 3 |
-| `DECAY` + `COMPACT` | 30,688 | 3 |
 
 `DECAY` adds 3,072 B here and not 768: the three `[BC]` vectors are 768, and the other
-2,304 is `clk` RAISING the `Vw` union from 2,048 to 4,352 ([below](#vw-clk-union)). `COMPACT` adds 520 B
-flat. CTAs/SM is `rola_consumer_occupancy` — the driver, on the built binary — not the
+2,304 is `clk` RAISING the `Vw` union from 2,048 to 4,352 ([below](#vw-clk-union)).
+CTAs/SM is `rola_consumer_occupancy` — the driver, on the built binary — not the
 launch bound's own arithmetic, which is a floor rather than an answer
 ([above](#residency)).
-
-**The tightest shared-memory margin in the shipped matrix is 544 B**, at
-`DECAY + COMPACT, BC = 64, BT = 32, DV = 32`: 32,928 B/CTA, so
-`3 * (32928 + 1024) = 101,856` against the SM's `102,400`. The driver returns 3 CTAs
-there. Every other arm has more room; the largest footprint in the matrix is
-`DECAY + COMPACT, BC = 64, BT = 32, DV = 64` at 41,120 B, which the driver runs at 2.
 
 Storing the `tf32x3` arm's `WT` and `Vw` as bf16 would save 4,608 B at the flagship and
 change no residency; it is refused because that is the arm whose fold precision must be
@@ -410,25 +399,11 @@ restated next to it — two numbers that must agree are one number too many.
   raise of that union is charged ([below](#vw-clk-union)) — 3,072 B in total at the
 flagship against
   5,120 B un-aliased. **Decay ships at 3 CTAs/SM on the flagship cell, full
-  residency** (30,168 B, driver-confirmed). Un-aliasing costs a CTA on the deepest arm
-  in the matrix — `D = 4, BT = 16, BC = 64, DV = 64`, `DECAY + COMPACT`: 33,248 B
-  against 31,200, i.e. `3 * (33248 + 1024) = 102,816 > 102,400`. That figure is
-  arithmetic off `consumer_smem_bytes_at`, not a measurement: no un-aliased arm exists
-  to ask the driver about.
-- **`COMPACT`** adds `c_idx` + `c_slot` + `c_count` AND NOTHING ELSE — 520 B at
-  `BC = 64` (136 B at `BC = 16`), which is what leaves `decay + compact` inside 3 CTAs/SM
-  at every `DV = 32` and flagship shape. READ OFF THE DRIVER on every build, never
-  assumed: this is where the tightest residency margin in the kernel sits. It
-  is RINGED — the gathered list is a staging OUTPUT (the panel builds and the fold's
-  scatter all read it), so a run-ahead gather must not overwrite the live one.
-
-  The DESIGN (§2.18(e)) budgeted a FOURTH buffer, `supp_leaf_r/w` (`2 * BC` u32),
-  aliased onto `WT` by a lifetime argument. It does not exist here, and the reason is
-  that the support words are consumed by ONE WARP in the same instruction stream that
-  produces them ([`consumer_kernel.md#candidate-walk`](consumer_kernel.md#candidate-walk)),
-  so they live in REGISTERS — which also removes the barrier that
-  would have published them and the aliasing argument that would have licensed the
-  storage. Same 520 B, one fewer barrier, no alias to keep sound.
+  residency** (30,168 B, driver-confirmed). Un-aliasing costs a CTA on the deepest
+  `DECAY` arm in the matrix — `D = 4, BT = 16, BC = 64, DV = 64`: it would push the
+  footprint past `102,400 / 3 - 1024` per CTA. That is arithmetic off
+  `consumer_smem_bytes_at`, not a measurement: no un-aliased arm exists to ask the
+  driver about.
 - **`GLOBAL`** adds `den[BT]`. The `raw` arm has no denominator stream at all, so
   allocating its row would be dead storage rather than a rounding. `sr`/`sw` are
   STAGING outputs and carry the ring; `den` is not and does not.
@@ -437,27 +412,23 @@ flagship against
   phase ordering and of the fold's fluid item pool (the item table itself is DERIVED,
   never stored). It is named in the footprint function rather than folded into a
   neighbour because the launch bound is derived from that function and a footprint that
-  is not written down is not checkable. READ OFF THE DRIVER, not asserted: the tightest
-  3-CTA arm in the matrix is `decay + compact, BC = 64, BT = 32, DV = 32` at
-  `3 * (32928 + 1024) = 101856` against the SM's `102400`, i.e. **544 B of total
-  slack** — both numbers confirmed against the built binary ([the ledger](#smem-ledger)). Every other 3-CTA
-  arm has more. `rola_consumer_occupancy` returns the identical CTA count on all 32
-  `(decay, compact, BC, BT, DV)` shapes as the pre-K3b kernel, which is the check that
+  is not written down is not checkable. READ OFF THE DRIVER, not asserted:
+  `rola_consumer_occupancy` returns the identical CTA count on all 16
+  `(decay, BC, BT, DV)` shapes as the pre-K3b kernel, which is the check that
   matters — the byte count is only the reason to expect it.
 
   The counters are PACKED rather than bank-separated. Separation would cost `32 * 4`
-  bytes PER COUNTER, and the `decay + compact` `BC = 64` arm carries the tightest
-  per-CTA residency margin in the kernel — so padding the counters apart would cost a
-  CTA to decorrelate a handful of `atomicAdd`s per tile. The traffic they carry is one
+  bytes PER COUNTER, on a `decay` `BC = 64` arm whose per-CTA residency margin is the
+  tightest in the kernel — so padding the counters apart would risk a CTA to
+  decorrelate a handful of `atomicAdd`s per tile. The traffic they carry is one
   atomic per warp per phase edge plus one per claimed fold item, which is not a
   bank-conflict-shaped problem.
 
 ### <a id="staging-set"></a>The STAGING SET, and why it is exactly these objects
 
 The ring's members are the SMEM objects the tile's STAGING phase PRODUCES and the
-tile's COMPUTE phase CONSUMES — `Rf`, `Vw`, the two row scales, and under `COMPACT`
-the gathered list. Two per-tile objects are deliberately NOT in it, and both exclusions
-are structural rather than budgetary:
+tile's COMPUTE phase CONSUMES — `Rf`, `Vw` and the two row scales. Two per-tile objects
+are deliberately NOT in it, and both exclusions are structural rather than budgetary:
 
 - **`Gm`** is GEMM 2's OUTPUT, produced in phase B and consumed in phase C of the SAME
   tile. Nothing a feeder does one tile ahead can write it, so a second `Gm` slot would
@@ -566,7 +537,7 @@ verifiable than a hand-proved pitch rather than merely shorter.
 `StageLayout{}(row, col)` is the definition, but calling it at every access point is NOT
 free, and the cost is a MEASUREMENT rather than a worry: with `WT` addressed through it,
 `ptxas` spent **+15 to +18 registers** on the `BT = 32` instantiations and
-`rola_consumer_occupancy` lost a CTA on 7 of the 32 shapes. The 8-second probe bisected it
+`rola_consumer_occupancy` lost a CTA on shapes that had one to spare. The 8-second probe bisected it
 exactly — a variant with the swizzled layout and NO `ldmatrix` at all carried the WHOLE
 regression, and adding the copy atoms back cost 0-1 registers on top. So the atoms are free
 and the generic layout call is not: it blocks the strength reduction the linear map
@@ -660,10 +631,10 @@ six, and two
 of them are SCALAR WALKS ALONG A ROW (the panel build's `t` loop and the mass fold's `t`
 reduction). A swizzle makes those walks non-affine, which costs the strength reduction the
 linear map admits: measured **+15 to +18 registers** on the `BT = 32` instantiations and a
-CTA lost on 7 of the 32 `rola_consumer_occupancy` shapes. The closed-form address recovers
-most of it and still leaves TWO shapes crossing the 64-register boundary (`!decay !compact
-BC16 BT32 DV32` and `!decay compact BC64 BT16 DV32`, both 4 CTAs -> 3), against a footprint
-saving of `16 * BC` bytes that the same instrument shows moves NO shape's residency at all.
+CTA lost on `rola_consumer_occupancy` shapes that had one to spare. The closed-form address
+recovers most of it and still leaves shapes crossing the 64-register boundary (4 CTAs -> 3),
+against a footprint saving of `16 * BC` bytes that the same instrument shows moves NO
+shape's residency at all.
 A rung that trades a real CTA for bytes nothing needs is a decline by the campaign's own
 rule.
 
@@ -723,7 +694,7 @@ The `m` map is identical; only the `k` step and the element count differ. `frag_
 the FORWARD map (slot -> `(m, k)`), and `frag_a_words(K)` is the 32-bit word count of a
 fragment-ordered A operand contracting over `K`, FOR ONE `m16` ROW BLOCK. A `BT`-token tile
 holds `NM = BT / 16` of them, laid out block-major at a FIXED stride of `frag_a_words(BC)` —
-fixed rather than packed to the compacted `Kpad`, so a block's base address is a compile-time
+fixed rather than packed to a realized extent, so a block's base address is a compile-time
 multiple and the MMA's `ks` offset is independent of the block count.
 
 Because the coefficients are fragment-ordered they carry NO ROW PITCH at all — the layout is

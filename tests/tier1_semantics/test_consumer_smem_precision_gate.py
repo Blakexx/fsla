@@ -96,7 +96,7 @@ def _simplex(shape, p_nonzero, generator, device):
 
 
 def _case(widths, BC, BT, d_v, norm, p_read, p_write, *, seed, decay, prec,
-          compact, B=2, T=37, H=3):
+          B=2, T=37, H=3):
     """Run the fixture through BOTH the fp64 oracle and the CUDA consumer.
 
     The two are handed the SAME routing tensors, which is the tier-1 discipline
@@ -128,7 +128,7 @@ def _case(widths, BC, BT, d_v, norm, p_read, p_write, *, seed, decay, prec,
 
     plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                 warp_tile=(1, max(1, d_v // 32)), decay=dec is not None,
-                mma_precision=prec, compact=compact)
+                mma_precision=prec)
     y, state, _ = _consumer_forward(
         v.to(torch.float32),
         tuple(t.to(torch.float32) for t in read_levels),
@@ -165,7 +165,7 @@ def test_global_mass_column_stays_inside_its_format_bound(widths, BC, BT, decay,
     """
     y, state, y_ref, state_ref = _case(
         widths, BC, BT, 64, "global", p_read, p_write,
-        seed=4242 + BC + BT, decay=decay, prec="bf16", compact=False)
+        seed=4242 + BC + BT, decay=decay, prec="bf16")
     err_y = _rel(y, y_ref)
     err_mass = _rel(state[..., 64], state_ref[..., 64])
     assert err_y < MASS_RTOL, (
@@ -199,7 +199,7 @@ def test_raw_value_path_is_unmoved_by_the_smem_format(widths, BC, BT, prec, deca
     tol = VALUE_RTOL if prec == "bf16" else 2e-5
     y, state, y_ref, state_ref = _case(
         widths, BC, BT, 64, "raw", 1.0, 0.3,
-        seed=515 + BC + BT, decay=decay, prec=prec, compact=False)
+        seed=515 + BC + BT, decay=decay, prec=prec)
     assert _rel(y, y_ref) < tol, f"`raw` output moved: relative {_rel(y, y_ref):.3e}"
     assert _rel(state, state_ref) < tol, (
         f"`raw` final state moved: relative {_rel(state, state_ref):.3e}")

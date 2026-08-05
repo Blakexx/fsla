@@ -28,7 +28,6 @@ Every cell of this cross-product is gated against the oracle:
 | normalization | `raw`, `global` |
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
 | MMA precision | `tf32x3`, `bf16` — **two arms, two tolerances, never one widened number** |
-| `compact` | on, off |
 | `P` (sequence-parallel split) | 1, > 1 |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
 | `(widths, BC, BT, d_v)` | the planner's supported rectangles |
@@ -82,11 +81,12 @@ The two geometries are *designed* to produce byte-identical output. Tested with
 structural and the structure is stated in the row's `basis`.
 
 **Every such row declares a VALIDITY PRECONDITION and the test asserts it.** The
-compact rows, for example, are only meaningful on a single-owner rectangle: with
-more than one owner the split-K `atomicAdd` across concurrent owner CTAs makes the
-output nondeterministic *by construction*, so a bit comparison there would be
-testing the scheduler. A bit-identity assertion whose precondition is unstated is a
-future flake.
+`BC` row, for example, is only meaningful with no initial state carried and with
+both `BC` values tiling the same state columns — and it compares STATE, never `y`,
+because the split-K `atomicAdd` across concurrent owner CTAs makes `y`
+nondeterministic *by construction*, so a bit comparison there would be testing the
+scheduler. A bit-identity assertion whose precondition is unstated is a future
+flake.
 
 ### Class (b) — REASSOCIATION-EQUIVALENT
 
@@ -207,7 +207,7 @@ claim; a generated one is a report, and this is what keeps the difference real.
 
 **`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
 engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
-one-line `//: HAZARD <slug>` stubs left at the sites they explain. Four rules,
+one-line `//: HAZARD <slug>` stubs left at the sites they explain. Five rules,
 all grep-level so a contributor can read the check itself:
 
 1. every source file under `csrc/rola/` has a mirror doc at the same relative
@@ -241,7 +241,7 @@ flock /tmp/rola_gpu.lock pytest tests/layers                                 # l
 **EVERY LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME QUESTION
 AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
 lets the first line avoid initializing a CUDA context at all. It is **not** a device
-partition: `tests/tier2_geometry` and `tests/layers` carry 83 rows that launch kernels
+partition: `tests/tier2_geometry` and `tests/layers` carry 78 rows that launch kernels
 without being `cuda`-marked (e.g.
 `test_layer_dispatch.py::test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance`),
 because in those tiers a device is the premise of the tier rather than a property of a

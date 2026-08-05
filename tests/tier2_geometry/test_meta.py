@@ -262,12 +262,12 @@ def test_M3_fails_when_a_split_silently_degrades_to_P_equals_one():
 def test_M3_fails_when_an_engineered_identity_is_mislabelled_as_a_reassociation():
     """The other direction of class drift: a class-(a) pair declared class (b).
 
-    Pointed at a row that IS byte-equal by construction (the compact gather at
-    saturation). If M3 passed here, it would be passing on a pair that never
+    Pointed at a row that IS byte-equal by construction (the two `BC` tilings of
+    one state). If M3 passed here, it would be passing on a pair that never
     re-associates -- which is the same blindness in reverse.
     """
     R = _rows()
-    row = next(r for r in _CLASS_A if r.axis == "COMPACT" and r.output == "state")
+    row = next(r for r in _CLASS_A if r.axis == "BC" and r.output == "state")
     _, _, out_a, out_b = R.both_sides(row)
     with pytest.raises(AssertionError, match="BYTE-IDENTICAL"):
         class_drift_check(row, out_a, out_b)

@@ -466,7 +466,7 @@ def _prefill(widths, d_v, B, T, H, norm, generator, device, BC, *, decay=None):
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
     plan = Plan(topology=topology, normalization=norm, BT=16, BC=BC,
                 warp_tile=(1, max(1, d_v // 32)), decay=decay is not None,
-                mma_precision="tf32x3", compact=True)
+                mma_precision="tf32x3")
     y, state, _ = _consumer_forward(
         v.float(), tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
         None if g_read is None else g_read.float(), g_write.float(), plan, decay=decay)

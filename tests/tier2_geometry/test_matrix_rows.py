@@ -50,12 +50,6 @@ _EPS = torch.finfo(torch.float32).eps
 # byte-identical inputs. That is the precondition of the whole tier: a difference
 # in the inputs would be indistinguishable from a difference in the geometry.
 
-def _saturated_single_owner(**over):
-    """Dense, ONE owner. `prod(widths)//BC == 1` and `K == BC` at every tile."""
-    return _Fixture((16,), 16, 64, B=2, T=37, H=3, norm="raw", p_read=1.0, p_write=1.0,
-                    seed=3141, nonzero_m0=True, **over)
-
-
 def _multi_owner_dense(**over):
     """widths `(8,8)` — 64 columns, so `BC = 16` gives 4 owners and `BC = 64` gives 1."""
     over.setdefault("BC", 16)
@@ -99,7 +93,6 @@ def _paged_dense(**over):
 
 
 FIXTURES = {
-    "saturated_single_owner": _saturated_single_owner,
     "multi_owner_dense": _multi_owner_dense,
     "split_zero_init": _split_zero_init,
     "split_written": _split_written,
@@ -169,15 +162,13 @@ BOUNDS = {
 # The runner
 # ---------------------------------------------------------------------------
 
-_PLAN_AXES = {"BT": "BT", "BC": "BC", "COMPACT": "compact"}
+_PLAN_AXES = {"BT": "BT", "BC": "BC"}
 
 
 def build(row: GeometryPair, geometry: dict):
     """Materialize one side of a row: the fixture, plus the row's own axis applied."""
-    over = {}
-    for axis, value in geometry.items():
-        if axis in _PLAN_AXES:
-            over[_PLAN_AXES[axis]] = bool(value) if axis == "COMPACT" else value
+    over = {_PLAN_AXES[axis]: value for axis, value in geometry.items()
+            if axis in _PLAN_AXES}
     return FIXTURES[row.fixture](**over)
 
 
@@ -236,14 +227,7 @@ def assert_precondition(row: GeometryPair, fx_a, fx_b):
     comment. The mapping from a row to its check is by AXIS and CONTRACT, so a new
     row cannot arrive without one.
     """
-    from math import prod
-
-    if row.axis == "COMPACT":
-        assert prod(fx_a.topology.widths) // fx_a.plan.BC == 1, (
-            f"{row.id}: not a single-owner rectangle; with more than one owner the "
-            "split-K atomicAdd makes the comparison a test of the scheduler")
-        assert fx_a.plan.geometry.owners_total == 1
-    elif row.axis == "BC":
+    if row.axis == "BC":
         assert fx_a.topology.widths == fx_b.topology.widths, (
             f"{row.id}: the two BC values must tile the SAME state columns")
         if row.contract is ENGINEERED_IDENTITY:

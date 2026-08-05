@@ -6,9 +6,9 @@ it lives with the bench:
 
 * the exact per-``(owner, tile)`` census (:mod:`rola.planner.calibration.census`)
   and the ``TileUnionStats`` it produces;
-* ``plan_cost_per_token`` and its six measured constants, which are the FIT whose
+* ``plan_cost_per_token`` and its four measured constants, which are the FIT whose
   compiled output ships as ``rola.planner.select``'s rule table;
-* the ``(BT, compact)`` ARGMIN itself -- ``select_plan_axes``, ``select_plan``,
+* the ``BT`` ARGMIN itself -- ``select_plan_axes``, ``select_plan``,
   ``plan_and_schedule`` -- which is what the auditor runs against the closed form.
 
 **THREE THINGS THIS MOVE BUYS, and they are the reason it is not cosmetic.**
@@ -44,7 +44,6 @@ from math import prod
 import torch
 
 from rola.planner.calibration.census import resolve_census, tile_union_census
-from rola.planner.feeder import FeederFlags, compact_is_structurally_inert
 from rola.planner.schedule import (
     _SUPPORTED_BT,
     COMPILED_RING_DEPTH,
@@ -67,8 +66,6 @@ from rola.routing.types import Topology
 __all__ = [
     "COST_MODEL_PROVENANCE",
     "DECAY_KSTEP_WORK",
-    "GATHER_CANDIDATE_FIXED_WORK",
-    "GATHER_CANDIDATE_QUANTUM_WORK",
     "INTRA_GRAM_KSTEP_WORK",
     "READOUT_FOLD_KSTEP_WORK",
     "TILE_FIXED_WORK",
@@ -106,9 +103,9 @@ class TileUnionStats:
     the same k-step as one with ``K = 16``, and a candidate tile with ``K = 0``
     costs NONE. ``mean_K_candidate`` cannot express either end. Measured at
     ``atscale-L2048``: ``mean_K_candidate / BC = 0.9724`` against
-    ``mean_ksteps_candidate / (BC/16) = 0.606`` -- the whole compact saving lives in
-    that gap, and 39 % of that cell's candidate pairs gather ``K = 0`` and skip
-    every GEMM. Both are means over the CANDIDATE population, like the two means
+    ``mean_ksteps_candidate / (BC/16) = 0.606`` -- 39 % of that cell's candidate
+    pairs realize ``K = 0``, which ``mean_K_candidate`` cannot express at either
+    end. Both are means over the CANDIDATE population, like the two means
     above them, so a term may mix them freely.
 
     ``n_cohorts`` is ``owners_total * BH`` -- the CTA grid the launch requests, one
@@ -632,18 +629,17 @@ def _tile_union_stats_multi_enumerated(views: RoutingViews, topology: Topology, 
             n_cohorts=owners_total * BH)
     return out
 # ---------------------------------------------------------------------------
-# §6 cost model -- ONE formula prices the intra lowering, the compact axis and BT
+# §6 cost model -- ONE formula prices the intra lowering and BT
 # ---------------------------------------------------------------------------
 
 # `MMA_ISSUE_WORK` IS DELETED (2026-07-30, adversarial review §4.2), and the
 # readout term it scaled with it. It priced the readout's MMA issues per active
 # leaf column -- `d_v * w / (128 * k_unit)`, i.e. 0.375 work-units at `w = 6`,
 # `d_v = 64`, `k_unit = 8` -- against an in-tile term of 136-264 work-units per
-# token and a gather term of 13000 per tile. NO DECISION ANYWHERE IN THIS MODEL
-# DEPENDS ON IT: it is absent from the intra crossover entirely, and it enters the
-# compact comparison only as `(K - BC) * d_v * w / (128 * k_unit)`, which at the
-# deepest measured deficit (`K = 7.2/16`) would need `w > 2.4e4` -- 4000x its own
-# derivation -- to outweigh `gather_tile_work`. A constant that cannot influence a
+# token. NO DECISION ANYWHERE IN THIS MODEL DEPENDS ON IT: it is absent from the
+# intra crossover entirely, and at the deepest measured deficit it would need
+# `w > 2.4e4` -- 4000x its own derivation -- to outweigh a per-tile term. A
+# constant that cannot influence a
 # decision at any value within three orders of magnitude of its derivation is not
 # a plan parameter; carrying it as one asserted a tunability the calibration gate
 # could not gate (the review mutated it 60x and nothing moved). The work it named
@@ -695,18 +691,16 @@ def _tile_union_stats_multi_enumerated(views: RoutingViews, topology: Topology, 
 #: whole measured range `[3507.0, 3513.7]`.
 #:
 #: **ARM-INVARIANT, MEASURED.** On `iso-tile-w16x4x64-BC64-T{128,256}` the per-tile
-#: solve is 8771.0 dense / 11125.9 compact / 13345.0 decay; the two deltas are
-#: 2355.0 (against `GATHER_CANDIDATE_*`'s prediction of 2278.25, +3.4 %) and 4574.0
-#: (against `DECAY_KSTEP_WORK * 4 = 4132.6`, +10.7 %), so this constant is the part
-#: those two arms ADD TO, and both of them re-derive on a geometry they were not
-#: measured on.
+#: solve is 8771.0 without decay against 13345.0 with it, a delta of 4574.0 against
+#: `DECAY_KSTEP_WORK * 4 = 4132.6` (+10.7 %) -- so this constant is the part the
+#: decay arm ADDS TO, and that arm re-derives on a geometry it was not measured on.
 #:
 #: **THE PER-COHORT REMAINDER `F` IS MEASURED AND DELIBERATELY NOT MODELLED**, which
 #: is the `MMA_ISSUE_WORK` rule applied to a term that is real: `F` = 7999 (D=1),
 #: 8434 (D=2), 9041 (D=3) at `BC = 64` and 4036 / 4535 at `BC = 16`, essentially
-#: arm-invariant (dense 9041, compact 8990, decay 9506). It is a per-COHORT cost, so
+#: arm-invariant (9041 without decay, 9506 with). It is a per-COHORT cost, so
 #: per token it is `F / T` -- exactly `BT`-INVARIANT and arm-invariant, hence unable
-#: to move the joint `(BT, compact)` argmin at any value -- and it is 12 % of the
+#: to move the `BT` argmin at any value -- and it is 12 % of the
 #: T=128 gate cells but 0.9 % at `atscale-L2048` and below 0.1 % at the parity cell,
 #: i.e. it vanishes in exactly the regime the planner is for. Carrying it would add
 #: a constant no gate can bind and an `n_pairs / n_cohorts` input the currency does
@@ -717,60 +711,17 @@ def _tile_union_stats_multi_enumerated(views: RoutingViews, topology: Topology, 
 #: consistently from two disjoint pairs.
 TILE_FIXED_WORK = (3507.0 + 3513.7) / 2.0
 
-#: Per-candidate-tile cost of §3 step 2's gather when it is COMPILED IN: the
-#: per-(level,digit) probe over the staged rows, the per-leaf AND chain, the
-#: ballot/popc compaction, two extra block barriers, and the index loads the
-#: gathered operands pay. Same units. This is what the compact axis buys or pays.
-#:
-#: **MEASURED, and it REPLACES `GATHER_TILE_WORK = 13000` rather than rescaling it**
-#: (§2.20, 2026-08-01). That constant priced the OLD consumer's gather, whose
-#: dominant components -- the staging-ring magnitude probe, the dense-panel-to-
-#: compacted COPY, the third block barrier -- do not exist in this kernel, and whose
-#: own calibration could only bound it from BELOW because the 48-cell A/B never
-#: observed break-even. Here break-even is not merely observable, it is crossed by
-#: 1.75x in instructions at the flagship.
-#:
-#: **AND IT IS NOT ONE NUMBER: it scales with the DENSE extent, measured by an
-#: isolating cell PAIR rather than assumed.** The ballot compaction probes every one
-#: of the owner's `BC` leaf slots whatever the union realizes, so its cost tracks
-#: `ceil(BC / 16)` -- one ballot round at `BC = 16`, two at `BC = 64` -- and pricing
-#: it as a constant was wrong in the direction that matters: it made compaction
-#: unreachable at `BC = 16`, where the dense extent it has to beat is a single
-#: k-step.
-#:
-#: Instrument: `ncu --clock-control base`, `smsp__inst_executed.sum`, ONE profiled
-#: launch per arm (2026-08-01), on `topo-D2-w64x64-BC64` and `topo-D2-w64x16-BC16`
-#: -- the same topology, the same support, and unions that SATURATE on both
-#: (`K = KI = BC` on every candidate pair, `--mode gatherstats`), so compaction
-#: changes no extent at either and the whole delta IS the gather. Over 1024
-#: candidate pairs each:
-#:
-#:   `BC = 64`: 11.743 M against  9.410 M  ->  2278.25 per candidate tile (2 quanta)
-#:   `BC = 16`:  6.017 M against  5.298 M  ->   702.88 per candidate tile (1 quantum)
-#:
-#: A two-point solve over `ceil(BC/16)` gives a per-quantum slope of **525.1** and a
-#: per-tile intercept of **177.8** -- both positive, unlike every affine fit the
-#: decay constant admitted, and the intercept is a real fixed cost (the two extra
-#: block barriers and the epoch bookkeeping the gather adds regardless of extent).
-GATHER_CANDIDATE_FIXED_WORK = 177.75
-
-#: The per-`ceil(BC/16)`-quantum half of the gather, from the same isolating pair.
-GATHER_CANDIDATE_QUANTUM_WORK = 525.125
-
 #: Per-K-STEP cost of the readout, the fold and the panel builds -- the three
-#: extents compaction actually shortens. Same units, per candidate tile, at the
+#: extents that ride the k-quantum. Same units, per candidate tile, at the
 #: `BT = 16` the constants were measured at.
 #:
-#: Instrument: the same counters at `atscale-L2048`, where compaction DOES shorten
-#: the extents: 1035.0 M against 1812.1 M over 208836 candidate pairs, a saving of
-#: 3721 per tile across the 3.39 k-steps compaction removes there
-#: (`4 - mean_ksteps_candidate`) = **1755** per k-step.
+#: Instrument: the same counters at `atscale-L2048`, over a 3.39 k-step difference
+#: in extent: 1035.0 M against 1812.1 M over 208836 candidate pairs, a delta of
+#: 3721 per tile = **1755** per k-step.
 #:
 #: **IT IS PRICED PER QUANTUM, NEVER PER LEAF.** `ceil(K/16)` is what the kernel
 #: issues: a tile with `K = 1` pays a whole k-step and a tile with `K = 0` pays
-#: none. At `atscale-L2048` 39 % of candidate pairs gather nothing, which is why
-#: `mean_K_candidate/BC = 0.9724` and `mean_ksteps_candidate/(BC/16) = 0.6087` are
-#: different numbers and only the second one prices the kernel.
+#: none.
 READOUT_FOLD_KSTEP_WORK = 1755.0
 
 #: Per-K-STEP cost of the intra Gram's own contraction, same units and same `BT`.
@@ -795,8 +746,8 @@ INTRA_GRAM_KSTEP_WORK = 144.0
 #: `smsp__inst_executed.sum`, one profiled launch per arm, 2026-08-01, over 1024
 #: candidate pairs each):
 #:
-#:   dense arm:    4372.9 and 1054.1 per tile ->  slope **1106.3**, intercept  -52.3
-#:   compact arm:  3948.8 and 1069.8 per tile ->  slope   **959.7**, intercept +110.1
+#:   4372.9 and 1054.1 per tile ->  slope **1106.3**, intercept  -52.3
+#:   3948.8 and 1069.8 per tile ->  slope   **959.7**, intercept +110.1
 #:
 #: Both intercepts are within 10 % of the smaller delta of ZERO, so decay carries no
 #: per-candidate-tile fixed cost: it rides the `ceil(K/16)` quantum exactly like the
@@ -806,22 +757,10 @@ INTRA_GRAM_KSTEP_WORK = 144.0
 #: property rather than a rounding choice.
 #:
 #: **THE `BT * BC` ALTERNATIVE STRUCTURE IS REFUTED BY 15.8x**, and by a comparison
-#: with no free parameter: `atscale-L2048`'s two compact arms have IDENTICAL `BT`
-#: and `BC`, so a `BT * BC`-scaled decay term predicts the same delta on both.
-#: Measured 4345.5 per tile dense against 275.8 compact. Only an extent-scaled term
-#: can move there at all.
-#:
-#: **THE ONE REGIME IT OVERPRICES, RECORDED RATHER THAN FITTED.** At
-#: `atscale-L2048` COMPACT the measured decay is 275.8 per tile over 0.6087
-#: k-steps = 453 per k-step, 2.3x BELOW this constant, and no non-negative affine
-#: function of `ceil(K/16)` fits that point and the four saturated-extent points
-#: together (it would need a negative per-tile term). Fitting a second, compact-only
-#: decay constant is FORBIDDEN by the standing rule -- its value could only be set
-#: by the one cell it would then be validated on, which is exactly the reasoning
-#: §2.32 rejected for a spill-byte term. The error's DIRECTION is stated instead and
-#: is conservative for the decision it feeds: the model charges the compact decay
-#: arm ~350 work-units per tile MORE than it costs, so wherever the joint argmin
-#: still selects compaction under decay it does so against a handicap.
+#: with no free parameter: two `atscale-L2048` arms with IDENTICAL `BT` and `BC`
+#: differing only in realized extent measure 4345.5 against 275.8 per tile, so a
+#: `BT * BC`-scaled decay term -- which predicts the same delta on both -- cannot
+#: move there at all. Only an extent-scaled term can.
 #:
 #: FALSIFIABLE: a saturated-extent cell whose per-k-step decay delta falls outside
 #: `[959.7, 1106.3]`, or any cell whose delta needs a per-tile constant term.
@@ -895,24 +834,18 @@ DECAY_KSTEP_WORK = (1106.3 + 959.7) / 2.0
 #:
 #: **RE-BASED 2026-08-01 ONTO THE NEW CONSUMER, and the old basis is retired rather
 #: than amended.** The 48-cell `compaction2.md` §B2 grid measured the OLD consumer,
-#: whose gather is a different algorithm (a scalar walk's trip count, a dense-panel
-#: copy, a staging-ring probe); compaction LOST at every one of its cells, which is
-#: why `GATHER_TILE_WORK` could only ever be a lower bound. Re-using it to bind
-#: constants measured on this kernel would have been the two-kernel conflict §2.28
-#: stopped on.
+#: a different algorithm. Re-using its constants to bind constants measured on this
+#: kernel would have been the two-kernel conflict §2.28 stopped on.
 COST_MODEL_PROVENANCE = (
     "Re-based 2026-08-01 on the NEW consumer. RTX 3080 Ti, `ncu --clock-control "
     "base`, `smsp__inst_executed.sum`, ONE profiled launch per arm "
     "(`--launch-skip 1 --launch-count 1`), every run `flock`-serialized. Cells are "
     "the frozen registry in `benchmarks/ops/benchmark_rola_v3_new_consumer.py`, and "
     "each constant has an ISOLATING cell or cell pair rather than a fit: "
-    "the GATHER_CANDIDATE_* pair from `topo-D2-w64x64-BC64` against "
-    "`topo-D2-w64x16-BC16`, whose unions saturate so compaction changes no extent "
-    "at either and only the dense quantum differs; "
-    "READOUT_FOLD_KSTEP_WORK from `atscale-L2048`, "
-    "where they do; INTRA_GRAM_KSTEP_WORK from `wk1-D2-w64x64-BC64` against "
+    "READOUT_FOLD_KSTEP_WORK from `atscale-L2048`; "
+    "INTRA_GRAM_KSTEP_WORK from `wk1-D2-w64x64-BC64` against "
     "`topo-D2-w64x64-BC64`, which differ only in KI; DECAY_KSTEP_WORK from the "
-    "`BC=64`/`BC=16` pair of one topology at both compact arms, which differ only "
+    "`BC=64`/`BC=16` pair of one topology, which differ only "
     "in the k-step count; and TILE_FIXED_WORK (M-1, 2026-08-01) from TWO "
     "independent isolating solves over the `iso-tile-*` cells, each separating a "
     "per-COHORT cost from a per-TILE one with a three-point `T` sweep before "
@@ -932,35 +865,21 @@ COST_MODEL_PROVENANCE = (
     "against the rows it must reproduce. ONE machine, ONE toolchain: the constants are plan "
     "parameters, not machine truths, and spec §8's measurement basis replaces them "
     "without a code change. WHAT BINDS THEM is "
-    "`test_the_cost_model_reproduces_its_calibration`, which asserts the JOINT "
-    "`(BT, compact)` ARGMIN -- the decision `select_plan_axes` actually makes -- "
-    "against the 8 measured argmins of the §2.32 matrix, plus the 4 measured "
-    "compact dispositions and the dense-toll signs. "
+    "`test_the_cost_model_reproduces_its_calibration`, which asserts the `BT` "
+    "ARGMIN -- the decision `select_plan_axes` actually makes -- "
+    "against the measured argmins of the §2.32 matrix and the dense-toll signs. "
     "KNOWN LIMITATION, PROVED RATHER THAN SUSPECTED: on a SATURATED-DENSE cell "
-    "(`K == BC` on every candidate pair) the per-slice `BT` preference at "
-    "`decay + compact` INVERTS against this model, and no value of any constant can "
-    "reach it. On such a cell compaction changes no extent, so adding it is exactly "
-    "one positive constant G on both `BT` arms; the modelled ratio "
-    "r(G) = (W32 + G) / (2 (W16 + G)) has dr/dG = (W16 - W32) / (2 (W16 + G)^2) < 0 "
-    "whenever W32 > W16, i.e. whenever the model prefers BT=32 at all -- so "
-    "compaction must DEEPEN a BT=32 preference, never invert it. The measurement "
-    "inverts it, with BT=32 retiring 14 % FEWER instructions in 5.7-27.2 % MORE "
-    "time: that is a STALL, and a work model does not model stalls. The row is "
-    "never a decision (the joint argmin never selects a compacted arm on a "
-    "saturated-dense cell) and "
-    "`test_a_saturated_dense_cell_never_argmins_onto_a_compacted_arm` GUARDS that "
-    "unreachability, so if a future axis ever makes the row reachable the guard "
-    "fails loudly instead of the blind spot silently becoming load-bearing. A "
-    "spill-byte term is FORBIDDEN as the fix: its constant could only be set by the "
-    "two cells it would then have to reproduce."
+    "(`K == BC` on every candidate pair) with decay the per-slice `BT` preference "
+    "INVERTS against this model, with BT=32 retiring 14 % FEWER instructions in "
+    "5.7-27.2 % MORE time: that is a STALL, and a work model does not model stalls. "
+    "A spill-byte term is FORBIDDEN as the fix: its constant could only be set by "
+    "the two cells it would then have to reproduce."
 )
 
 
 def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
-                        compact: bool, decay: bool = False,
+                        decay: bool = False,
                         tile_fixed_work: float = TILE_FIXED_WORK,
-                        gather_candidate_fixed_work: float = GATHER_CANDIDATE_FIXED_WORK,
-                        gather_candidate_quantum_work: float = GATHER_CANDIDATE_QUANTUM_WORK,
                         readout_fold_kstep_work: float = READOUT_FOLD_KSTEP_WORK,
                         intra_gram_kstep_work: float = INTRA_GRAM_KSTEP_WORK,
                         decay_kstep_work: float = DECAY_KSTEP_WORK) -> float:
@@ -971,8 +890,6 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     across ``BT``::
 
         W_tile = tile_fixed_work
-               + gather_candidate_fixed_work                      (if compact)
-               + gather_candidate_quantum_work * ceil(BC / 16)     (if compact)
                + readout_fold_kstep_work * ksteps  * (BT / 16)
                + intra_gram_kstep_work   * kisteps * (BT * (BT + 1) / 272)
                + decay_kstep_work        * ksteps  * (BT / 16)    (if decay)
@@ -984,28 +901,21 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     the DEFINITION of "per token" rather than an added term, carries no constant,
     and is identically ``1.0`` on every saturated-dense cell.
 
-    with, on the COMPACT arm, ``ksteps = stats.mean_ksteps_candidate`` and
-    ``kisteps`` the intra extent's own quantum; on the DENSE arm both degenerate to
-    the compiled-out extent ``ceil(BC / 16)``, because the compiled-out kernel walks
-    the full ``BC`` whatever the union realizes.
+    where ``ksteps`` and ``kisteps`` are both the compiled-in extent
+    ``ceil(BC / 16)``: the consumer walks the full ``BC`` whatever the union
+    realizes, so the extents are the template's and not the routing's.
 
     **WHY QUANTA AND NOT ``mean_K``.** The kernel issues ``ceil(K / 16)`` MMA
     k-steps, so a tile with ``K = 1`` costs a whole one and a tile with ``K = 0``
-    costs none. At ``atscale-L2048`` the two readings are ``0.9724`` of ``BC``
-    against ``0.6087`` of ``BC/16``: 39 % of candidate pairs gather nothing and skip
-    every GEMM, a saving ``mean_K`` structurally cannot express and the reason
-    ``TileUnionStats`` accumulates the ceilings per pair.
+    costs none -- a distinction ``mean_K`` structurally cannot express, and the
+    reason ``TileUnionStats`` accumulates the ceilings per pair.
 
     **WHAT REPLACED WHAT, AND WHY IT IS A REPLACEMENT.** The pre-2026-08-01 form
     priced a ``K_eff * (D - j)`` panel assembly and a ``BT * I_eff`` in-tile term
-    against ``TILE_FIXED_WORK`` and ``GATHER_TILE_WORK = 13000``. Those two
-    constants were an OLD-CONSUMER calibration in which compaction lost at every
-    measured cell, so ``13000`` was documented as a lower bound and made compaction
-    unreachable at any density the routing can produce -- a measured ~25 % of
-    wall-clock left on the floor at the flagship, worsening with ``N``. The three
-    replacement constants are each measured on THIS kernel at an isolating cell
-    (see their own docstrings), and the panel assembly is inside
-    ``readout_fold_kstep_work`` because that is what the isolating delta contains.
+    against an OLD-CONSUMER calibration. The replacement constants are each measured
+    on THIS kernel at an isolating cell (see their own docstrings), and the panel
+    assembly is inside ``readout_fold_kstep_work`` because that is what the
+    isolating delta contains.
 
     **THE TWO ``BT`` SCALINGS ARE STRUCTURAL, and they are now GATED rather than
     posited.** The readout, the fold and the panel builds are ``[BT x K] x [K x DV]``
@@ -1013,14 +923,13 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     normalized to the ``BT = 16`` cell the constants were measured at
     (``16 * 17 = 272``). §2.28 could only posit them; the §2.32 matrix measured the
     ``BT`` axis at both values on both ``BC`` and the calibration gate now binds the
-    joint ``(BT, compact)`` argmin against it.
+    ``BT`` argmin against it.
 
     **THE DECAY TERM RIDES THE SAME QUANTUM**, which is measured rather than assumed:
     two isolating cell pairs differing only in k-step count give slopes 1106.3 and
     959.7 with intercepts within 10 % of zero, and the ``BT * BC`` alternative is
-    refuted by 15.8x at ``atscale-L2048`` (identical ``BT`` and ``BC`` on both
-    compact arms, 15.8x different deltas). Its one overpricing regime is recorded on
-    ``DECAY_KSTEP_WORK`` itself.
+    refuted by 15.8x at ``atscale-L2048`` (identical ``BT`` and ``BC``, 15.8x
+    different deltas).
 
     **WHAT IS STILL NOT MODELLED, EXPLICITLY.** Residency and the WAVE REGIME are
     not here at all -- they are physical facts and ``select_plan_axes`` reads them
@@ -1029,9 +938,7 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     **THE `intra_lowering` AXIS IS GONE** (item 6b, 2026-08-01), and with it the
     branch that priced ``gram``/``panel`` on the spanned moduli instead of the leaf
     list. The surviving consumer includes ``intra_panel.cuh`` unconditionally and
-    does ONE intra lowering, so there is no second extent to price: ``kisteps`` is
-    the realized intra quantum on the compact arm and the compiled-out ``ceil(BC/16)``
-    on the dense one, exactly as ``ksteps`` is.
+    does ONE intra lowering, so there is no second extent to price.
     """
     if stats.BC != BC:
         raise ValueError(f"stats were computed at BC={stats.BC}, priced at BC={BC}")
@@ -1046,21 +953,11 @@ def plan_cost_per_token(topology: Topology, BC: int, stats: TileUnionStats, *,
     BT = stats.BT
     quantize = lambda n: float(-(-int(n) // MMA_K_QUANTUM))  # noqa: E731
 
-    # The COMPILED-OUT kernel walks the full `BC` whatever the union realizes, so
-    # the dense arm's extents are the template's, not the routing's. That is the
-    # same "same formula at two values of the extent" that keeps the compact
-    # decision consistent with the `BT` one instead of needing a second model.
-    dense_steps = quantize(BC)
-    ksteps = stats.mean_ksteps_candidate if compact else dense_steps
-    kisteps = stats.mean_kisteps_candidate if compact else dense_steps
+    # The kernel walks the full `BC` whatever the union realizes, so the extents are
+    # the template's, not the routing's.
+    ksteps = kisteps = quantize(BC)
 
     w_tile = tile_fixed_work
-    if compact:
-        # The ballot probes all `BC` leaf slots whatever the union realizes, so the
-        # gather is priced on the DENSE quantum -- never on `ksteps`, which is the
-        # extent it PRODUCES rather than the one it scans.
-        w_tile += gather_candidate_fixed_work
-        w_tile += gather_candidate_quantum_work * dense_steps
     w_tile += readout_fold_kstep_work * ksteps * (BT / MMA_K_QUANTUM)
     w_tile += intra_gram_kstep_work * kisteps * (
         BT * (BT + 1) / float(MMA_K_QUANTUM * (MMA_K_QUANTUM + 1)))
@@ -1127,7 +1024,7 @@ def plan_waves(n_cohorts: int, blocks_per_sm: int, sm_count: int) -> float:
     **THIS IS THE STRUCTURE THE MEASUREMENT FOUND, and it is why
     ``_CALIBRATION_BT``'s KEY was wrong.** The §2.32 matrix's eight joint argmins
     partition perfectly on the wave regime -- every many-wave cell wants
-    ``(BT = 16, compact)``, every one-wave cell wants ``(BT = 32, dense)`` -- and
+    ``BT = 16``, every one-wave cell wants ``BT = 32`` -- and
     NEITHER ``BC`` NOR ``decay``, the two axes that table was keyed on, appears in
     the partition at all: both ``BC`` agree on every row and both decay arms agree
     on every row. ``waves_per_multiprocessor`` was 34-51 on the many-wave cells and
@@ -1151,10 +1048,9 @@ def plan_waves(n_cohorts: int, blocks_per_sm: int, sm_count: int) -> float:
 
 @dataclass(frozen=True, slots=True)
 class PlanAxes:
-    """The three axes §6 selects jointly from one cost model, plus the evidence."""
+    """The axes §6 selects from one cost model, plus the evidence."""
 
     BT: int
-    compact: bool
     stats: TileUnionStats
     cost_per_token: float
     #: The residency the OCCUPANCY ORACLE reports for the selected instantiation
@@ -1193,12 +1089,12 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
                      mma_precision: str = "bf16",
                      occupancy: OccupancyOracle | None = None,
                      **cost_kwargs) -> PlanAxes:
-    """Choose ``BT``, ``compact`` and the ring depth JOINTLY (spec §6, rev .5).
+    """Choose ``BT`` and the ring depth (spec §6, rev .5).
 
     The realized routing tensors are measured ONCE at the finest candidate ``BT``
     and folded exactly to the coarser candidates
     (:func:`_tile_union_stats_multi` -- exact, over the realized schedule, not a
-    distributional guess), every ``(BT, compact)`` combination is priced by
+    distributional guess), every candidate ``BT`` is priced by
     :func:`plan_cost_per_token`, weighted by :func:`plan_waves`, and the cheapest is
     returned.
 
@@ -1213,11 +1109,6 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     result is compile-time template parameters stamped into ``Plan`` before the
     launch. Device code never sees ``K``, a saturation, or a fill; the kernel it
     runs is chosen, not steered.
-
-    The ``compact=False`` instantiation is BIT-IDENTICAL to the compacted one
-    wherever the unions genuinely saturate (`c_idx[k] == k` at ``K == BC``, so the
-    compiled-out path issues the same loads in the same order), which is what makes
-    selecting it a performance decision with no numeric consequence.
     """
     for BT in bt_candidates:
         if BT not in _SUPPORTED_BT:
@@ -1247,98 +1138,71 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     # proxy the Gates proved lies.
     occupancy = resolve_occupancy(occupancy, BC=BC, d_v=topology.d_v)
 
-    # ---- RUNG P: COMPACT IS EXCLUDED STRUCTURALLY ON A DENSE-FLAGGED SIDE ----
-    # `THUNDER_RUN_SPEC.md` §6 P1. When either side is full-support the gather's
-    # membership test `(read_word | write_word) != 0` is satisfied by every leaf of
-    # every owner at every token, so `K == BC` identically and compaction's readout
-    # and fold cuts are ZERO -- while the axis still costs a MEASURED +21 %
-    # (`CONSUMER_ACT3_PRICING.md` §2.4c). The derivation, the one residual (intra-only)
-    # saving, and the arithmetic showing it can never pay at any instantiated
-    # `(BC, BT)` are in `compact_is_structurally_inert`.
-    #
-    # WHY THIS IS A STRUCTURAL EXCLUSION AND NOT A CHEAPER COST MODEL: the predicate
-    # is a CONFIG FACT (§1 I2 -- density declarations may branch), it holds for every
-    # realization the configuration admits rather than for the one that was measured,
-    # and it survives the retirement of `plan_cost_per_token` unchanged. The excluded
-    # arm is exactly the one the retiring model's argmin already declines on every
-    # instantiated cell, so this changes no selected plan -- it changes what has to be
-    # priced to reach it, and it makes the answer independent of six measured
-    # constants.
-    #
-    # `static_density` is the only trigger available here; the saturation trigger
-    # (§4.4's second one) enters through the same `FeederFlags` object once the
-    # summary pass feeds it -- which is why the predicate is asked of FeederFlags and
-    # not of StaticDensity.
-    flags = (FeederFlags.none(topology.D) if static_density is None
-             else FeederFlags(read=static_density.read, write=static_density.write))
-    compact_candidates = (False,) if compact_is_structurally_inert(flags) else (True, False)
-
     candidates: list[PlanAxes] = []
     for BT in bt_candidates:
         stats = stats_by_bt[BT]
-        for compact in compact_candidates:
-            # ---- THE RING DEPTH IS STATED, NOT ARBITRATED (M-1, 2026-08-01) --
-            # It used to be arbitrated in the cost currency, because the ring's
-            # BENEFIT was a term in `plan_cost_per_token` (`STAGE_COLUMN_WORK`,
-            # divided by the depth) and its COST was the residency the deeper ring
-            # might give up, read from the driver's occupancy oracle. RULING A
-            # deleted the term on a measurement -- the per-staged-column price is
-            # EXACTLY zero, see the deletion note beside `TILE_FIXED_WORK` -- and the
-            # oracle is ring-INVARIANT because the consumer's shared memory is
-            # entirely compile-time. Both sides of that arbitration are therefore
-            # identically equal at every depth, and a `min` over equal keys is not a
-            # decision: it is a tie-break pretending to be one.
-            #
-            # So the depth is STATED as `COMPILED_RING_DEPTH` -- the depth the
-            # binary actually compiles (`ROLA_C_RING_DEPTH`, shipped 1; the H3
-            # agreement gate pins it to the ratification manifest). The earlier
-            # "deepest built" statement (2) described a runtime carriage the kernel
-            # read at zero sites; that plumbing is deleted, and the compile-time
-            # `consumer_ring_depth()` is the sole authority on the depth run.
-            # The FEASIBILITY check survives unchanged,
-            # because it never was about the ring: a candidate the oracle prices at
-            # 0 CTAs/SM does not fit the machine and must be refused rather than
-            # divided by.
-            #
-            # REOPENS ON A MEASUREMENT: if §2.3's item buffers build a real ring,
-            # its price is measured on the kernel that has one and this becomes an
-            # arbitration again -- with a constant isolated on that kernel, never
-            # this one's revived.
-            #
-            # THE ORACLE IS THE SOLE AUTHORITY FOR PHYSICAL FACTS (user ruling
-            # extension, 2026-07-31): the cost model owns WORK -- the routing
-            # statistics and the measured per-tile quanta -- and the driver owns
-            # every PHYSICAL constant. There is no analytic mirror any more: it
-            # modelled the deleted consumer, and the exhaustive probe measured it
-            # inverting the bound it claimed.
-            ring_slots = COMPILED_RING_DEPTH
-            blocks = occupancy(BT, BC, topology.d_v, normalization == "global",
-                               decay, mma_precision, compact, gram_cols, ring_slots)
-            if blocks == 0:
-                raise ValueError(
-                    f"the candidate BT={BT}, BC={BC}, compact={compact} does not "
-                    f"fit an SM: the occupancy oracle reports 0 CTAs/SM, so its "
-                    "footprint exceeds the shared memory and the launch would fail")
-            cost = plan_cost_per_token(topology, BC, stats, compact=compact,
-                                       decay=decay, **cost_kwargs)
-            # ---- THE WAVE REGIME, THE ONLY PHYSICAL TERM IN THE ARGMIN --------
-            # `plan_cost_per_token` is per-CTA work. What a launch takes is that
-            # work times the number of WAVES the grid is serialized into, and the
-            # wave count is `n_cohorts / (sm_count * blocks_per_sm)` floored at 1 --
-            # every input a recorded fact, no constant. Below one wave the term is
-            # identically 1 and the argmin is the pure work model (which prefers the
-            # LARGER tile, because the per-tile fixed cost amortizes); above it, a
-            # candidate that fits fewer CTAs per SM pays proportionally (which
-            # prefers the SMALLER tile, because `BT = 32` costs a CTA at both `BC`).
-            # That is the partition the §2.32 argmins exhibit, and it is why
-            # `_CALIBRATION_BT`'s `(BC, decay)` key could not express the answer.
-            #
-            waves = plan_waves(stats.n_cohorts, blocks, sm_count)
-            candidates.append(PlanAxes(
-                BT=BT, compact=compact, stats=stats,
-                cost_per_token=cost, blocks_per_sm=blocks, ring_slots=ring_slots,
-                waves=waves, sm_count=sm_count,
-                effective_cost_per_token=cost * waves))
+        # ---- THE RING DEPTH IS STATED, NOT ARBITRATED (M-1, 2026-08-01) --
+        # It used to be arbitrated in the cost currency, because the ring's
+        # BENEFIT was a term in `plan_cost_per_token` (`STAGE_COLUMN_WORK`,
+        # divided by the depth) and its COST was the residency the deeper ring
+        # might give up, read from the driver's occupancy oracle. RULING A
+        # deleted the term on a measurement -- the per-staged-column price is
+        # EXACTLY zero, see the deletion note beside `TILE_FIXED_WORK` -- and the
+        # oracle is ring-INVARIANT because the consumer's shared memory is
+        # entirely compile-time. Both sides of that arbitration are therefore
+        # identically equal at every depth, and a `min` over equal keys is not a
+        # decision: it is a tie-break pretending to be one.
+        #
+        # So the depth is STATED as `COMPILED_RING_DEPTH` -- the depth the
+        # binary actually compiles (`ROLA_C_RING_DEPTH`, shipped 1; the H3
+        # agreement gate pins it to the ratification manifest). The earlier
+        # "deepest built" statement (2) described a runtime carriage the kernel
+        # read at zero sites; that plumbing is deleted, and the compile-time
+        # `consumer_ring_depth()` is the sole authority on the depth run.
+        # The FEASIBILITY check survives unchanged,
+        # because it never was about the ring: a candidate the oracle prices at
+        # 0 CTAs/SM does not fit the machine and must be refused rather than
+        # divided by.
+        #
+        # REOPENS ON A MEASUREMENT: if §2.3's item buffers build a real ring,
+        # its price is measured on the kernel that has one and this becomes an
+        # arbitration again -- with a constant isolated on that kernel, never
+        # this one's revived.
+        #
+        # THE ORACLE IS THE SOLE AUTHORITY FOR PHYSICAL FACTS (user ruling
+        # extension, 2026-07-31): the cost model owns WORK -- the routing
+        # statistics and the measured per-tile quanta -- and the driver owns
+        # every PHYSICAL constant. There is no analytic mirror any more: it
+        # modelled the deleted consumer, and the exhaustive probe measured it
+        # inverting the bound it claimed.
+        ring_slots = COMPILED_RING_DEPTH
+        blocks = occupancy(BT, BC, topology.d_v, normalization == "global",
+                           decay, mma_precision, gram_cols, ring_slots)
+        if blocks == 0:
+            raise ValueError(
+                f"the candidate BT={BT}, BC={BC} does not "
+                f"fit an SM: the occupancy oracle reports 0 CTAs/SM, so its "
+                "footprint exceeds the shared memory and the launch would fail")
+        cost = plan_cost_per_token(topology, BC, stats,
+                                   decay=decay, **cost_kwargs)
+        # ---- THE WAVE REGIME, THE ONLY PHYSICAL TERM IN THE ARGMIN --------
+        # `plan_cost_per_token` is per-CTA work. What a launch takes is that
+        # work times the number of WAVES the grid is serialized into, and the
+        # wave count is `n_cohorts / (sm_count * blocks_per_sm)` floored at 1 --
+        # every input a recorded fact, no constant. Below one wave the term is
+        # identically 1 and the argmin is the pure work model (which prefers the
+        # LARGER tile, because the per-tile fixed cost amortizes); above it, a
+        # candidate that fits fewer CTAs per SM pays proportionally (which
+        # prefers the SMALLER tile, because `BT = 32` costs a CTA at both `BC`).
+        # That is the partition the §2.32 argmins exhibit, and it is why
+        # `_CALIBRATION_BT`'s `(BC, decay)` key could not express the answer.
+        #
+        waves = plan_waves(stats.n_cohorts, blocks, sm_count)
+        candidates.append(PlanAxes(
+            BT=BT, stats=stats,
+            cost_per_token=cost, blocks_per_sm=blocks, ring_slots=ring_slots,
+            waves=waves, sm_count=sm_count,
+            effective_cost_per_token=cost * waves))
 
     assert candidates  # bt_candidates is non-empty by construction
     # ---- §6's RESIDENCY RULE IS DELETED (item 6b, 2026-08-01) ---------------
@@ -1346,7 +1210,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
     # no latency hiding at all. That cliff was a fact about the DELETED
     # register-resident consumer, not this one (72448 B at `BT = 32, BC = 64, d_v = 64`). An EXHAUSTIVE query of this
     # consumer's occupancy oracle over the entire launchable surface --
-    # `BT(2) x BC(2) x d_v(2) x decay(2) x compact(2)` = 32 keys -- measures
+    # `BT(2) x BC(2) x d_v(2) x decay(2)` = 16 keys -- measures
     # `BT = 16: 3 or 4` and `BT = 32: 2`, MINIMUM OVER ALL 32 = 2. The guard can
     # never be true, so the rule was dead code and `PlanAxes.residency_override` was
     # permanently `None`. Re-pointing its fixtures could not fix that: no cell
@@ -1404,7 +1268,6 @@ def select_plan(read_levels: tuple[torch.Tensor, ...],
                             **cost_kwargs)
     plan = Plan(topology=topology, normalization=normalization, BT=axes.BT, BC=BC,
                   warp_tile=(1, max(1, topology.d_v // 32)), decay=decay,
-                  compact=axes.compact,
                   mma_precision=mma_precision, amp_dtype=amp_dtype,
                   sm_shared_bytes=sm_shared_bytes, ring_slots=axes.ring_slots,
                   occupancy_blocks_per_sm=axes.blocks_per_sm)

@@ -251,8 +251,7 @@ def _census_chunk(read_words: tuple[torch.Tensor, ...] | None,
         sum_sat = (k_count == BC).sum()
         # The QUANTUM, summed BEFORE any mean: the kernel moves
         # `ceil(K / MMA_K_QUANTUM)` k-steps, which is 0 at K = 0 and 1 for every K in
-        # [1, 16], and `ceil(mean) != mean(ceil)` -- the difference IS the compact
-        # saving (`TileUnionStats`' note).
+        # [1, 16], and `ceil(mean) != mean(ceil)` (`TileUnionStats`' note).
         sum_ks = ((k_count + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM).sum()
         # SUMMARY (b) of `CensusResult`: the per-owner ACTIVE fraction's numerator.
         # Computed unconditionally because it is one comparison-reduction over an

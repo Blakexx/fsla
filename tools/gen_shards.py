@@ -1,7 +1,7 @@
 """THE ONE ENUMERATION of the consumer's instantiation matrix.
 
-**WHAT THIS OWNS.** Before this file the 512-tuple matrix
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL, COMPACT>` was
+**WHAT THIS OWNS.** Before this file the matrix
+`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` was
 written out THREE times -- the dispatch ladder in `consumer.cu`, the occupancy and
 footprint ladders beside it, and a probe translation unit under `tools/`. Three
 independent enumerations of one set is the drift shape this project has already been
@@ -32,11 +32,10 @@ the matrix to 1,024) is a change to `SHARD_AXIS_PRIORITY` or
 asserts every member of every generated file maps back to that file.
 
 **WHY THESE THREE AXES.** PREC, GLOBAL and BT, in that priority. Every recorded
-ratchet co-movement episode clustered perfectly on ONE of PREC, GLOBAL, COMPACT or BT
-and never on BC/DV/D, so a shard-per-axis-value makes a ratchet refusal a
-one-shard-slice event; between COMPACT and BT the evidence is a tie, and the fourth
-axis is RESERVED rather than spent, because the next queued template axis (P17's
-dense read path) doubles the matrix and will need it. The evidence:
+ratchet co-movement episode clustered perfectly on ONE of PREC, GLOBAL or BT and never
+on BC/DV/D, so a shard-per-axis-value makes a ratchet refusal a one-shard-slice event;
+the fourth axis is RESERVED rather than spent, because the next queued template axis
+(P17's dense read path) doubles the matrix and will need it. The evidence:
 `rola-scratch/workflows/refactor/p02_build_measure.md`; the adjudication:
 `p02_shard_review.md` answer 1.
 
@@ -88,7 +87,7 @@ def _b(v):
 #: duplicated precision parameter. The kernel takes FOLD and READ separately; the
 #: dispatch has always passed them EQUAL (one `mma_precision` plan field selects both
 #: GEMM sites together), so the matrix carries one PREC axis and the generator writes
-#: it twice. That funnel is the reason the space is 512 and not 1,024, and it is
+#: it twice. That funnel is the reason the space is 256 and not 512, and it is
 #: recorded here rather than rediscovered from a macro.
 AXES = (
     Axis("BT", (16, 32), str, lambda v: f"bt{v}", str),
@@ -100,15 +99,14 @@ AXES = (
          lambda v: v, None),
     Axis("DECAY", (False, True), _b, lambda v: "decay" if v else "nodecay", None),
     Axis("GLOBAL", (False, True), _b, lambda v: "global" if v else "raw", None),
-    Axis("COMPACT", (False, True), _b, lambda v: "compact" if v else "dense", None),
 )
 AXIS = {a.name: a for a in AXES}
 
 #: THE PARTITION, as two constants and nothing else. The prefix of this list that is
 #: long enough to reach `TARGET_MEMBERS_PER_SHARD` is the set of sharded axes; the
 #: rest of the matrix lives inside a shard.
-SHARD_AXIS_PRIORITY = ("PREC", "GLOBAL", "BT", "COMPACT", "BC", "DV", "DECAY", "D")
-TARGET_MEMBERS_PER_SHARD = 64
+SHARD_AXIS_PRIORITY = ("PREC", "GLOBAL", "BT", "BC", "DV", "DECAY", "D")
+TARGET_MEMBERS_PER_SHARD = 32
 
 
 def matrix() -> list[dict]:
@@ -184,8 +182,7 @@ def targs(row: dict, prec_twice: bool = False) -> str:
             AXIS["DV"].cxx(row["DV"]), AXIS["D"].cxx(row["D"]), prec]
     if prec_twice:
         args.append(prec)
-    args += [AXIS["DECAY"].cxx(row["DECAY"]), AXIS["GLOBAL"].cxx(row["GLOBAL"]),
-             AXIS["COMPACT"].cxx(row["COMPACT"])]
+    args += [AXIS["DECAY"].cxx(row["DECAY"]), AXIS["GLOBAL"].cxx(row["GLOBAL"])]
     return ", ".join(args)
 
 
@@ -239,7 +236,7 @@ def shard_source(name: str, rows: list[dict]) -> str:
         body.append(
             f"    {{{row['BT']}, {row['BC']}, {row['DV']}, {row['D']}, "
             f"{AXIS['PREC'].cxx(row['PREC'])}, {_b(row['DECAY'])}, "
-            f"{_b(row['GLOBAL'])}, {_b(row['COMPACT'])}, "
+            f"{_b(row['GLOBAL'])}, "
             f"&launch_consumer_arm<{targs(row)}>, "
             f"&query_consumer_occupancy_arm<{targs(row)}>, "
             f"consumer::consumer_smem_bytes<{targs(row, prec_twice=True)}>()}},\n")
@@ -253,7 +250,7 @@ def _ladder(rows: list[dict], axes: tuple[str, ...], leaf, indent: int = 0,
             fixed: dict | None = None) -> list[str]:
     """A nested selection over `axes`, emitted from the matrix itself.
 
-    Recursive rather than a flat 512-arm chain so the generated dispatch keeps the
+    Recursive rather than a flat 256-arm chain so the generated dispatch keeps the
     same O(log n) shape the hand-written macro ladder had -- the point of generating
     it is single-sourcing the enumeration, not changing what it costs.
     """
@@ -274,8 +271,7 @@ def _ladder(rows: list[dict], axes: tuple[str, ...], leaf, indent: int = 0,
         out.append(f"{pad}}}\n")
         return out
     #: The boolean and enum axes are host FLAGS, not integers: one `if`/`else` each.
-    pred = {"PREC": "exact", "DECAY": "decay", "GLOBAL": "global_norm",
-            "COMPACT": "compact"}[name]
+    pred = {"PREC": "exact", "DECAY": "decay", "GLOBAL": "global_norm"}[name]
     true_value = "tf32x3" if name == "PREC" else True
     out.append(f"{pad}if ({pred}) {{\n")
     out += _ladder(rows, rest, leaf, indent + 1, dict(fixed, **{name: true_value}))
@@ -290,7 +286,7 @@ def dispatch_launch_inc() -> str:
     """The launch ladder: resolve the plan's axes to ONE shard-defined launcher.
 
     It assigns a function POINTER rather than calling and returning, so the launch
-    error check lives in exactly one place in `consumer.cu` instead of 512 places
+    error check lives in exactly one place in `consumer.cu` instead of 256 places
     here. Taking the address of a specialization whose definition the dispatch
     translation unit cannot see is also what makes the split real: that unit cannot
     satisfy an arm locally. It does not make a missing arm a link error -- a Python
@@ -301,8 +297,8 @@ def dispatch_launch_inc() -> str:
     lines = [BANNER,
              "// The consumer launch ladder, over the full instantiation matrix.\n",
              "// Included by `launch_consumer` (csrc/rola/src/consumer.cu), which "
-             "declares\n// `fn`, `exact`, `decay`, `global_norm`, `compact`, `BT`, "
-             "`BC`, `DV` and `p_D`.\n"]
+             "declares\n// `fn`, `exact`, `decay`, `global_norm`, `BT`, `BC`, `DV` "
+             "and `p_D`.\n"]
     lines += _ladder(matrix(), tuple(a.name for a in AXES),
                      lambda r: f"fn = &launch_consumer_arm<{targs(r)}>;")
     return "".join(lines)
@@ -345,7 +341,7 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL, COMPACT>` has
+`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` has
 {total} reachable instantiations — the exact set `launch_consumer` can select, no
 more and no fewer. Compiling them in ONE translation unit put {total} template
 expansions through one `cicc`; they are split across **{nshards} shards of

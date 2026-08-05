@@ -18,7 +18,7 @@ import statistics
 import torch
 
 from bench.cells import BF16_FOLD_STATE_RTOL, BF16_RTOL, CELLS, GROUPS, RTOL, Cell, skip_share
-from bench.instruments import _decay_preamble_ms, gather_stats
+from bench.instruments import _decay_preamble_ms
 from bench.pairing import _iqr, _paired_one_kernel, _timed
 from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
@@ -30,7 +30,7 @@ from rola.routing.types import LeafMassDecay
 # ---------------------------------------------------------------------------
 
 def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
-             fx=None, compact=False):
+             fx=None):
     """Run one arm of one cell and return `(y, state, y_ref, state_ref)`."""
     fx = cell.build() if fx is None else fx
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
@@ -50,8 +50,7 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
     #: range in which its two panels are an exact rewrite of the recurrence, with
     #: the admission check silently skipped. Off the decay arm the axis is
     #: unreachable by this kernel and the planner's own choice stands.
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec,
-                            fx=fx, compact=compact)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec, fx=fx)
     y, state, _ = _consumer_forward(
         fx["v_f32"], fx["read_f32"], fx["write_f32"],
         None if g_read is None else fx["g_read_f32"], fx["g_write_f32"],
@@ -61,13 +60,11 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
 
 
 
-def gate_cell(cell: Cell, *, norm, decay_temp, prec, verbose=True, compact=False):
+def gate_cell(cell: Cell, *, norm, decay_temp, prec, verbose=True):
     arm = f"{norm} {prec}" + (f" decay:{decay_temp}" if decay_temp else "")
-    if compact:
-        arm += " COMPACT"
     try:
         y, state, y_ref, state_ref = run_cell(
-            cell, norm=norm, decay_temp=decay_temp, prec=prec, compact=compact)
+            cell, norm=norm, decay_temp=decay_temp, prec=prec)
     except ValueError as exc:
         #: A REFUSAL IS A PASS, and it is the only outcome that can be, because the
         #: alternative is a wrong answer rather than an inaccurate one. `panel`'s
@@ -100,7 +97,7 @@ def gate_cell(cell: Cell, *, norm, decay_temp, prec, verbose=True, compact=False
 
 
 
-def run_oracle(*, decay=True, hot=False, compact=False):
+def run_oracle(*, decay=True, hot=False):
     """The gate, by named group. Every cell states its arm; nothing is implicit."""
     temps = [None] + ([("hot" if hot else "warm")] if decay else [])
     total = passed = 0
@@ -125,9 +122,8 @@ def run_oracle(*, decay=True, hot=False, compact=False):
         print(f"-- group {group} ({len(arms)} arms)")
         for name, norm, temp, prec in arms:
             total += 1
-            passed += int(gate_cell(CELLS[name], norm=norm, decay_temp=temp, prec=prec,
-                                    compact=compact))
-    print(f"\n{passed}/{total} oracle arms PASS" + (" [COMPACT]" if compact else ""))
+            passed += int(gate_cell(CELLS[name], norm=norm, decay_temp=temp, prec=prec))
+    print(f"\n{passed}/{total} oracle arms PASS")
     return passed == total
 
 
@@ -171,7 +167,7 @@ def _forced_split(plan, schedule, P):
 
 
 def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
-              fx=None, verbose=True, compact=False):
+              fx=None, verbose=True):
     """`P`-way split against the canonical fp64 oracle, plus the `P = 1` control.
 
     **TWO DIFFERENT GATES, BECAUSE THE TWO QUANTITIES HAVE DIFFERENT STATUS.**
@@ -190,9 +186,7 @@ def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
     fx = cell.build() if fx is None else fx
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec,
-                            fx=fx,
-                            compact=compact)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec, fx=fx)
     if sched is None:
         sched = build_schedule(fx["read_f32"], fx["write_f32"],
                                   None if g_read is None else fx["g_read_f32"],
@@ -224,8 +218,7 @@ def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
     #: rather than the kernel.
     ctl = float((y1.double() - y_ref).abs().max()) / max(1e-30, float(y_ref.abs().max()))
     if verbose:
-        arm = (f"P={P} {norm} {prec}" + (f" decay:{decay_temp}" if decay_temp else "")
-               + (" COMPACT" if compact else ""))
+        arm = f"P={P} {norm} {prec}" + (f" decay:{decay_temp}" if decay_temp else "")
         print(f"  {'PASS' if ok else 'FAIL':4s}  {cell.name:26s} {arm:24s} "
               f"y {err_y:.3e}  state {err_s:.3e}  (P=1 control y {ctl:.3e})")
     return ok
@@ -233,7 +226,7 @@ def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
 
 
 
-def run_split_gate(*, decay=True, compact=False):
+def run_split_gate(*, decay=True):
     """`P` crossed with decay and normalization -- the two axes §2.13 names.
 
     `A` is decay's object (it is identically `1` on the `decay = None` arm and the
@@ -250,9 +243,8 @@ def run_split_gate(*, decay=True, compact=False):
                 for temp in temps:
                     total += 1
                     passed += int(run_split(CELLS[name], P=P, norm=norm,
-                                            decay_temp=temp, prec="tf32x3",
-                                            compact=compact))
-    print(f"\n{passed}/{total} P>1 arms PASS" + (" [COMPACT]" if compact else ""))
+                                            decay_temp=temp, prec="tf32x3"))
+    print(f"\n{passed}/{total} P>1 arms PASS")
     return passed == total
 
 
@@ -339,59 +331,7 @@ def run_p1_identity():
 
 
 
-def run_compact_identity():
-    """`COMPACT = true` vs `COMPACT = false` at the DENSE DEGENERACY -- **ON STATE**.
-
-    **This is the strongest available check on the compaction, and it is free.** The
-    ballot emits the gathered leaf list ASCENDING, so on a tile where every leaf is
-    active AND causal the list is `c_idx[k] == k`, `K == BC`, `KI == BC`, and every
-    compacted extent equals its dense one. The compacted kernel is then not merely
-    EQUAL to the dense one, it is BIT-IDENTICAL: same k-steps, same m-tiles, same
-    accumulation order. Any indexing defect -- a wrong gather, a mis-ordered list, a
-    dropped pad, a scatter aimed at the wrong leaf -- breaks that exactly.
-
-    **WHICH CELLS IT IS REACHABLE ON, MEASURED RATHER THAN ASSUMED.** The degeneracy
-    needs every leaf both READ and WRITTEN in the tile: a leaf with no in-tile write
-    is not causal (`W_s == 0` gives an empty causal mask), so the two-pass ballot
-    puts it AFTER the causal leaves and the list is a permutation rather than the
-    identity. The committed manifest says `mean_K_candidate == BC` exactly on all
-    eight `topo-*` cells (dense read AND dense write), so the degeneracy is realized
-    there; on the `wk1-*` cells the write is `k = 1` per token, so `KI < K` and the
-    order legitimately permutes -- those cells are gated against the ORACLE instead,
-    which is where they belong.
-
-    `y` IS NOT ASSERTED, for the reason the `P = 1` identity gate records: the §5
-    readout lands through `atomicAdd` from concurrently scheduled owners, so two
-    BYTE-IDENTICAL launches already disagree in the last bits. The null control below
-    is run so that is a measurement rather than a claim.
-    """
-    ok = True
-    for name in GROUPS["topo"]:
-        for temp in (None, "warm"):
-            cell = CELLS[name]
-            fx = cell.build()
-            def go(compact):
-                return run_cell(cell, norm="global", decay_temp=temp, prec="bf16",
-                                fx=fx, compact=compact)
-            ya, sa, _, _ = go(False)
-            yb, sb, _, _ = go(True)
-            yc, sc, _, _ = go(False)   # THE NULL CONTROL: two identical dense launches
-            state_bit = bool(torch.equal(sa, sb))
-            null_state_bit = bool(torch.equal(sa, sc))
-            y_bit = bool(torch.equal(ya, yb))
-            y_null = bool(torch.equal(ya, yc))
-            bit = state_bit and null_state_bit
-            ok = ok and bit
-            print(f"  {'PASS' if bit else 'FAIL':4s}  {name:26s} "
-                  f"{'decay' if temp else 'none ':5s}  STATE bitwise: compact {state_bit} "
-                  f"null-control {null_state_bit}   "
-                  f"(y bitwise: compact {y_bit}, NULL CONTROL {y_null})")
-    return ok
-
-
-
-
-def run_btab(name, *, reps=21, norm="global", decay_temp=None, compact=False):
+def run_btab(name, *, reps=21, norm="global", decay_temp=None):
     """`BT = 16` against `BT = 32` ON THE NEW CONSUMER, interleaved rep by rep.
 
     **This is the calibration instrument for the planner's `BT` axis** (§2.31,
@@ -415,7 +355,7 @@ def run_btab(name, *, reps=21, norm="global", decay_temp=None, compact=False):
         #: admission bound is checked -- the same divergence `run_atscale` makes,
         #: and it is applied to BOTH arms here, so it cannot bias the ratio.
         pl, sch = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
-                            fx=fx, compact=compact, bt=bt)
+                            fx=fx, bt=bt)
         _, sch = _timed(cell, fx, pl, decay, gr, sch)
         return pl, sch
 
@@ -431,8 +371,7 @@ def run_btab(name, *, reps=21, norm="global", decay_temp=None, compact=False):
         t32.append(y)
         pair.append(y / x)
     m16, m32, mr = statistics.median(t16), statistics.median(t32), statistics.median(pair)
-    print(f"{name} norm={norm} decay={decay_temp} compact={compact} "
-          f"BC={cell.BC}")
+    print(f"{name} norm={norm} decay={decay_temp} BC={cell.BC}")
     print(f"  BT=16 {m16:.3f} ms (IQR {_iqr(t16):.3f})   "
           f"BT=32 {m32:.3f} ms (IQR {_iqr(t32):.3f})")
     print(f"  PAIRED 32/16 {mr:.4f} (IQR {_iqr(pair):.4f})   = {100 * (mr - 1):+.1f} %")
@@ -474,59 +413,6 @@ def decay_price(name, *, reps=11, decay_temp="warm"):
     print(f"  (one-time preamble, now memoized OUT of the timed region: {pre:.3f} ms)")
     r.update(preamble_ms=pre)
     return r
-
-
-
-
-def compact_price(name, *, reps=11, norm="global", decay_temp=None, stats=True):
-    """RULING 2's MEASUREMENT: compaction's own price, the new kernel against itself.
-
-    Both arms are the NEW consumer on ONE fixture in ONE process, interleaved rep by
-    rep; the only difference is the `COMPACT` template axis. That is what isolates
-    the AXIS -- a production A/B could not, because production's compaction is a
-    different mechanism (a dense-panel-to-compacted COPY, a staging-ring probe and a
-    third barrier, none of which exists here) priced by a cost model calibrated on
-    that mechanism.
-
-    Residency is 3 CTAs/SM on BOTH arms (read off the driver), so it is not a
-    confound: what the ratio measures is the gather's cost against the three MMA
-    extents it shrinks, and nothing else.
-    """
-    cell = CELLS[name]
-    fx = cell.build()
-
-    def mk(compact):
-        d = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
-        gr = None if norm == "global" else fx["g_read"]
-        pl, sch = cell.plan(norm=norm, decay_on=d is not None, prec="bf16",
-                            fx=fx,
-                            compact=compact)
-        _, sch = _timed(cell, fx, pl, d, gr, sch)
-        return pl, d, gr, sch
-
-    pa, da, ga, sa = mk(False)
-    pb, db, gb, sb = mk(True)
-    ta, tb, pair = [], [], []
-    for _ in range(reps):
-        x, _ = _timed(cell, fx, pa, da, ga, sa)
-        y, _ = _timed(cell, fx, pb, db, gb, sb)
-        ta.append(x)
-        tb.append(y)
-        pair.append(y / x)
-    ma, mb, mr = statistics.median(ta), statistics.median(tb), statistics.median(pair)
-    extra = ""
-    if stats:
-        st = gather_stats(cell, fx)
-        extra = (f"  [mean K {st['mean_K']:.2f}/{cell.BC}, mean KI {st['mean_KI']:.2f}, "
-                 f"k-steps {st['mean_ksteps']:.2f}/{cell.BC // 16}, "
-                 f"fold m-tiles {st['mean_mtiles']:.2f}/{cell.BC // 16}, "
-                 f"{st['owners_sampled']} owners sampled]")
-    print(f"{cell.name} COMPACT PRICE norm={norm} decay={decay_temp}{extra}")
-    print(f"  dense  {ma:.3f} ms (IQR {_iqr(ta):.3f})   "
-          f"COMPACT {mb:.3f} ms (IQR {_iqr(tb):.3f})")
-    print(f"  PAIRED compact/dense {mr:.4f} (IQR {_iqr(pair):.4f})   "
-          f"= {100 * (mr - 1):+.1f} %")
-    return dict(paired=mr, paired_iqr=_iqr(pair), dense_ms=ma, compact_ms=mb)
 
 
 

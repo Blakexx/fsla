@@ -54,10 +54,9 @@ __device__ __forceinline__ void frag_a_slot(int s, int& m, int& k) {
 }
 
 //: One `[16 x 8]` tile against a fragment-ordered A. `d += Af * B`.
-template <int KMAX, typename TB, bool B_T, bool B_GATHER, MmaPrec PREC>
+template <int KMAX, typename TB, bool B_T, MmaPrec PREC>
 __device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
-                                               const TB* __restrict__ B, int ldb,
-                                               const int* __restrict__ b_row, int K, int n0,
+                                               const TB* __restrict__ B, int ldb, int K, int n0,
                                                int lane, float& d0, float& d1, float& d2,
                                                float& d3);
 
@@ -277,22 +276,18 @@ static_assert(ldsm_n_src_map_matches(), "ldmatrix.x4 row addresses moved");
 //:   `d2, d3 -> (row g + 8, col 2r, 2r+1)`
 //: `d += Af . B` with A FRAGMENT-ORDERED (one `uint4` per k-step, zero address
 //: arithmetic); B keeps the generic indexed path because each warp wants a different
-//: `n`-slice. `B_GATHER` is COMPACTION's readout indirection -- a TEMPLATE flag rather
-//: than a `b_row != nullptr` test, so the non-compacted arm carries no load.
+//: `n`-slice.
 //: **THE K-LOOP KEEPS A COMPILE-TIME TRIP COUNT AND AN EARLY EXIT, never a runtime
 //: bound**: docs/internals/mma_tile.md#mma-tile-fraga
-template <int KMAX, typename TB, bool B_T, bool B_GATHER, MmaPrec PREC>
+template <int KMAX, typename TB, bool B_T, MmaPrec PREC>
 __device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
-                                               const TB* __restrict__ B, int ldb,
-                                               const int* __restrict__ b_row, int K, int n0,
+                                               const TB* __restrict__ B, int ldb, int K, int n0,
                                                int lane, float& d0, float& d1, float& d2,
                                                float& d3) {
   const int g = lane >> 2;
   const int r = lane & 3;
   const int nb = n0 + g;
-  auto b_at = [&](int k, int n) {
-    return mma_src(B_GATHER ? B[b_row[k] * ldb + n] : (B_T ? B[n * ldb + k] : B[k * ldb + n]));
-  };
+  auto b_at = [&](int k, int n) { return mma_src(B_T ? B[n * ldb + k] : B[k * ldb + n]); };
   constexpr int kStep = (PREC == MmaPrec::kBf16) ? 16 : 8;
 #pragma unroll
   for (int ks = 0; ks < KMAX / kStep; ++ks) {
@@ -314,7 +309,7 @@ __device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
 }
 
 //: GEMM 2 WITH A FRAGMENT-ORDERED A AND `WT` FETCHED BY `ldmatrix`.
-//: `KMAX` is `WT`'s WINDOW row count and `K` the realized (causal, compacted) prefix,
+//: `KMAX` is `WT`'s WINDOW row count and `K` the realized causal prefix,
 //: so the early exit, its compile-time trip count and the k-order are the generic
 //: path's, unchanged. NARROW ARM ONLY, for `vw_frag_b`'s reason. `KMAX % 16 == 0` is
 //: what makes the fetch legal -- `ldmatrix` reads a WHOLE 16-row block.

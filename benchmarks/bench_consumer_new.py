@@ -20,7 +20,7 @@ Modes:
 
   --mode atscale  DELETED by item 6b (2026-08-01): it was the OLD-consumer-vs-NEW
                   interleaved paired-ratio A/B, and there is one consumer now. Its
-                  landed number (-24.7 % paired at `atscale-L2048` COMPACT, IQR
+                  landed number (-24.7 % paired at `atscale-L2048`, IQR
                   0.094) is recorded in `rewrite.md` §2.20. What it used to say
                   about the two arms
                   ALTERNATE REP BY REP -- never arm-A-block then arm-B-block, which
@@ -69,11 +69,9 @@ from bench.cells import (  # noqa: E402  -- after the sys.path line, deliberatel
     skip_share,
 )
 from bench.drivers import (  # noqa: E402
-    compact_price,
     decay_price,
     norm_price,
     run_btab,
-    run_compact_identity,
     run_oracle,
     run_p1_identity,
     run_split_gate,
@@ -88,8 +86,7 @@ def main():
     ap.add_argument("--mode", default="oracle",
                     choices=["oracle", "skipshare", "manifest",
                              "decayprice", "normprice", "split", "p1identity",
-                             "compactgate", "compactprice", "gatherstats",
-                             "armtime", "btab"])
+                             "gatherstats", "armtime", "btab"])
     ap.add_argument("--cell", default="atscale-L2048")
     ap.add_argument("--norm", default="global", choices=["global", "raw"])
     ap.add_argument("--decay", default=None, choices=[None, "warm", "hot"])
@@ -98,8 +95,6 @@ def main():
     ap.add_argument("--hot", action="store_true")
     ap.add_argument("--reps", type=int, default=11)
     ap.add_argument("--write", action="store_true", help="manifest mode: write it")
-    ap.add_argument("--compact", action="store_true",
-                    help="oracle/split modes: drive the COMPACT template axis true")
     ap.add_argument("--bt", type=int, default=None, choices=[16, 32],
                     help="armtime mode: RESTRICT the planner's BT candidates to this "
                          "one value, so the arm is a plan the planner could have "
@@ -107,29 +102,15 @@ def main():
     a = ap.parse_args()
 
     if a.mode == "oracle":
-        raise SystemExit(0 if run_oracle(decay=not a.no_decay_axis, hot=a.hot,
-                                         compact=a.compact) else 1)
+        raise SystemExit(0 if run_oracle(decay=not a.no_decay_axis, hot=a.hot) else 1)
     if a.mode == "btab":
-        run_btab(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay,
-                 compact=a.compact)
+        run_btab(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay)
         return
     if a.mode == "armtime":
-        arm_time(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay,
-                 compact=a.compact, bt=a.bt)
+        arm_time(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay, bt=a.bt)
         return
     if a.mode == "split":
-        raise SystemExit(0 if run_split_gate(compact=a.compact) else 1)
-    if a.mode == "compactgate":
-        raise SystemExit(0 if run_compact_identity() else 1)
-    if a.mode == "compactprice":
-        #: RULING 2's cells: the TRAINED-SPARSE at-scale cells (where the density is
-        #: `mean_K_candidate ~ 1` of 64) AND the DENSE cells (where compaction can
-        #: only cost), at both legal `BC`. The disposition is whatever these say.
-        for name in ("atscale-L512", "atscale-L2048", "atscale-syn4-L2048",
-                     "topo-D2-w64x64-BC64", "topo-D2-w64x16-BC16",
-                     "wk1-D2-w64x64-BC64"):
-            compact_price(name, reps=a.reps, norm=a.norm, decay_temp=a.decay)
-        return
+        raise SystemExit(0 if run_split_gate() else 1)
     if a.mode == "gatherstats":
         for name in (GROUPS["topo"] + GROUPS["wk1"] + GROUPS["atscale"]):
             st = gather_stats(CELLS[name])

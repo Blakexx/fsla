@@ -403,7 +403,6 @@ def _consumer_forward(
         plan.BC,
         global_norm,
         plan.mma_precision,
-        plan.compact,
         float(eps),
         *sp_args,
     )

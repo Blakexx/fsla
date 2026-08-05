@@ -151,9 +151,10 @@ the engine's granularity coarsening legal:
   ([`consumer.md#state-layout`](../internals/consumer.md#state-layout));
 - **tile unions** over `BT` tokens are an OR, deliberately coarser than the
   per-token AND;
-- the read/write **support union** is gathered where either side is live
-  (the `COMPACT` gather's `const bool active = (rw | ww) != 0u`), so a
-  read-only leaf is fetched on a write visit and contributes zero to the fold.
+- the **owner rectangle** is the granularity of a visit: every leaf of the block
+  is resident for the whole visit whether or not the tile's support names it, so a
+  leaf outside the support is read, multiplied by an exactly-zero coefficient, and
+  contributes nothing to either the readout or the fold.
 
 The design rule that follows: **granularity is a performance axis, not a
 correctness axis.** Coarsen it with a cost argument alone.
@@ -175,9 +176,8 @@ Two live uses:
 - **Untouched rows do not walk.** A row whose writes are all zero is left
   bit-identical, so repeated store/reload cannot drift it. This is what separates
   the *store* count from the *visit* count in the state-precision analysis: the
-  packing-off store of an untouched leaf is a bitwise identity, so the
-  re-quantization count is the count of actual writes, not of visits (journal,
-  per-leaf visit probe).
+  store of an untouched leaf is a bitwise identity, so the re-quantization count is
+  the count of actual writes, not of visits (journal, per-leaf visit probe).
 
 ### (3) TRUSTLESS CAPABILITY FLAGS
 

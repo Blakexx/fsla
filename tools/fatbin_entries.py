@@ -4,7 +4,7 @@
 failure modes that leave every other gate green:
 
 1. the per-arm launcher's DEFINITION becomes visible to the dispatch translation
-   unit, which then implicitly instantiates all 512 kernels right back into itself;
+   unit, which then implicitly instantiates all 256 kernels right back into itself;
 2. a query ladder (residency, footprint) keeps taking kernel ADDRESSES in the
    dispatch translation unit, duplicating the arms it queries.
 
@@ -12,18 +12,18 @@ In both cases the build links, the ratification manifest is byte-identical, the
 geometry census still reports the whole matrix -- and the compile time simply does
 not fall, for a reason no gate in the design can see. `nm` cannot see it either: a
 `__global__` template's host-side stub symbol is WEAK, so the linker keeps exactly
-one however many objects emitted it, and `nm` reports 512 either way.
+one however many objects emitted it, and `nm` reports 256 either way.
 
 **THE FATBIN CAN SEE IT.** Device code is not linked that way: each object registers
 its OWN cubin, and `cuobjdump -symbols` lists them one fatbin section at a time, each
 tagged with the architecture and with the source file it was compiled from. So the
 question "is this actually sharded?" has an exact answer in the shipped `.so`:
 
-* exactly one `STO_ENTRY` per instantiation per architecture -- 512 consumer entries
+* exactly one `STO_ENTRY` per instantiation per architecture -- 256 consumer entries
   for each of sm_80 and sm_86, no more (duplication) and no fewer (a dropped arm);
 * every entry in the object built from the shard `tools/gen_shards.py` assigns it,
   which is a stronger statement than any count: a SWAP (one arm added, one dropped)
-  keeps the count at 512 and is caught here;
+  keeps the count at 256 and is caught here;
 * every mangled name the ratification manifest records is present in the binary,
   which is what makes the manifest a description of the shipped codegen rather than
   of a probe nobody ships.
@@ -138,7 +138,7 @@ def shape_key(mangled: str) -> str | None:
         return None
     return gen_shards.canonical(dict(BT=shape["BT"], BC=shape["BC"], DV=shape["DV"],
                                      D=shape["D"], PREC=shape["read"], DECAY=shape["decay"],
-                                     GLOBAL=shape["glob"], COMPACT=shape["compact"]))
+                                     GLOBAL=shape["glob"]))
 
 
 def check(so: Path, arches=None) -> bool:

@@ -12,8 +12,8 @@ the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do 
            (spec §6.4's primary number: no sequence-parallel split is requested,
            so the consumer runs one block per owner). **THE READ SIDE IS DENSE AND
            THE WRITE SIDE IS ENTMAX-SPARSE by default** (ruling 2026-08-01):
-           `candidate_frac ~ 0.2` sparse-both (item 0's cell) is the case that already
-           wins on compaction and is not what the freeze criterion is stated at; a
+           `candidate_frac ~ 0.2` sparse-both (item 0's cell) is the easy case and
+           is not what the freeze criterion is stated at; a
            dense read is the arm the freeze is defined at, because winning on the
            sparse-both case is the trivial one. `--read-router`/`--write-router`
            override the two sides independently (`'softmax'` = dense, `'entmax'` =
@@ -21,7 +21,7 @@ the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do 
 * `v3_sparse_both` -- the SAME arm with both sides forced `entmax`, i.e. exactly item
            0's original cell. Kept as a DIAGNOSTIC row, labelled `cell_role` in the
            output, never conflated with the `v3` parity row: it is the regime where
-           compaction already deletes ~80% of `(owner, tile)` pairs, which is a
+           the routing leaves ~20% of `(owner, tile)` pairs candidate, which is a
            different (easier) case than the freeze arm.
 * `fa`   -- a matched attention layer: `q/k/v` projections, causal
            `scaled_dot_product_attention`, output projection. Same
@@ -316,16 +316,15 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         # `Plan.intra_lowering` and the whole crossover it drove (`INTRA_LOWERINGS`,
         # `select_intra_lowering`) were retired at item 6b (`schedule.py` §6 docstring,
         # 2026-08-01): there is one topology-agnostic kernel family now, so there is
-        # nothing left on this axis to record. `selected_compact` is the surviving
-        # compile-time axis this row still needs.
-        row.update({"selected_BT": plan.BT, "selected_compact": plan.compact})
+        # nothing left on this axis to record.
+        row.update({"selected_BT": plan.BT})
         if layer.last_plan_axes is not None:
             # G16 RE-POINT (terminal cycle): `last_plan_axes` carries
             # `rola.planner.select.ConfigEvidence` since the closed-form cut-over --
             # the pre-cut-over `PlanAxes.stats` object (mean_K / mean_K_candidate /
             # saturated_frac) was retired with the runtime argmin. `k_hat` is the
             # SELECTOR'S OWN collapse statistic (the quanta-histogram upper bound
-            # that prices packing, spec §4.2) and `candidate_frac` survives by name;
+            # over the realized k-extent, spec §4.2) and `candidate_frac` survives by name;
             # both are recorded from the evidence the decision actually used, which
             # is stronger provenance than a re-derived statistic.
             evidence = layer.last_plan_axes
@@ -532,7 +531,7 @@ def main() -> None:
                                   state_block=args.state_block,
                                   arm="v3_sparse_both",
                                   cell_role="DIAGNOSTIC: sparse-both (item 0's original "
-                                  "cell; compaction already wins here, not the freeze arm)")
+                                  "cell; the easy regime, not the freeze arm)")
             elif arm.startswith("fa_"):
                 backend = arm[3:]
                 dtype = torch.bfloat16 if backend == "flash" else torch.float32

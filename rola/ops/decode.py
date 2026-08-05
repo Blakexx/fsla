@@ -4,9 +4,9 @@
 """The T=1 decode op — the frozen-config carrier, the workspace, and the guard.
 
 THUNDER_RUN_SPEC.md §6b: **T = 1 has no stage 2.** Every stage-2 decision is
-degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split; packing:
-``K`` is one token's support and the masks subsume it; statistics: a population of
-one), so the decode path bypasses selection *architecturally* — the config freezes at
+degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split;
+statistics: a population of one), so the decode path bypasses selection
+*architecturally* — the config freezes at
 the prefill→decode boundary and per-step work is data plane only. Nothing here builds
 a ``Plan``, a ``Schedule`` or a set of tile bitmaps, and that is the point rather than
 an omission.
@@ -49,7 +49,7 @@ The two objects are NOT two names for one thing and neither absorbs the other:
 
 * :class:`rola.planner.select.FrozenConfig` is the **SELECTION** carrier and is
   **CANONICAL**. It answers "what did the prefill -> decode boundary freeze?" and its
-  content is §4.3's ``ConfigChoice = (BC, BT, packing, feeder_flags)``.
+  content is §4.3's ``ConfigChoice = (BC, BT, feeder_flags)``.
 * :class:`FrozenDecodeConfig` below is the **KERNEL-LAYOUT** carrier. It answers "what
   shape is the launch?" -- widths, mixed-radix strides, spans, row offsets, word and
   group counts, ``d_v``, the normalization and decay arms, ``eps``, ``n_split``. None of
@@ -65,9 +65,9 @@ matrix, so a future edit to either layout is a test failure and not a silent dri
 So **D consumes P's object**: pass ``frozen=`` and the flags come from the canonical
 carrier. ``static_density=`` remains for a caller that has no ``FrozenConfig`` (a cold
 decode with no prefill). Supplying both is refused rather than silently ordered.
-``BC``, ``BT`` and ``packing`` are deliberately NOT read: ``BC`` is not a field of the
-kernel-layout carrier at all (BC-blindness, gated), and at ``T = 1`` ``BT`` and
-``packing`` are structurally inert.
+``BC`` and ``BT`` are deliberately NOT read: ``BC`` is not a field of the
+kernel-layout carrier at all (BC-blindness, gated), and at ``T = 1`` ``BT`` is
+structurally inert.
 """
 
 from __future__ import annotations

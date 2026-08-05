@@ -65,7 +65,7 @@ M_end[i] = S0[i] * ( S0[i]*M0[i] + sum_j W~[j,i]*gw[j]*v[j] )
 a third tile algorithm: it is the `decay = None` tile algorithm, reached under
 `LeafMassDecay` by pre-scaling the entry state into a per-leaf reference frame,
 folding the two exponentials into the two panels, and post-scaling out. That is
-why it composes with `GLOBAL`, `COMPACT`, `BT`, `BC`, `mma_precision` and §6.4's
+why it composes with `GLOBAL`, `BT`, `BC`, `mma_precision` and §6.4's
 `P` with no new interaction: every one of those axes is already exercised by the
 path it joins. The one genuinely new object is the pair of exponentials, and
 they are where `GLA_MASS_DECAY_SPEC.md` §12 rules 1 and 3 go live — `readout_mma`
@@ -189,7 +189,7 @@ both:
 The measurement that sizes item 1 was taken against a token-sequential
 alternative that fused carry and intra into one accumulator before a single
 `atomicAdd`. At `B=1 H=8 L=2048 d_v=64 branches=[8,16]`, real producer routing,
-30 reps, median, `compact=false`, RTX 3080 Ti, the fused form ran 12% to 106%
+30 reps, median, RTX 3080 Ti, the fused form ran 12% to 106%
 faster across 16 cells (two routers, two norms, two `BT`, two `BC`); the
 `BC = 16` cells carried the largest deltas and are the least trustworthy in
 magnitude, since a byte-identical kernel was measured moving 12–23% between
@@ -212,33 +212,20 @@ is paid twice. Against that, `2 * BT * BC` per-thread FMAs and the serial `t`
 dependence do not exist on this path at all: the carry is a tensor-core GEMM and
 the intra is a Gram.
 
-## <a id="fp32-prefix"></a>10. HAZARD — the clock prefix accumulates in fp32
+## <a id="clock-inputs"></a>10. Where `P`, `P_ref` and `S0` come from
 
-`panel_clock_prefix`'s `acc` is fp32 and must stay fp32. This is a requirement,
-not a default (spec §7.4's V3-specific rule): the prefix multiplies `log_keep`
-and is then exponentiated, so a lost low bit here is an **exponent** error, not a
-mantissa one. Narrowing this accumulator is a silent accuracy regression that no
-compile-time check catches.
+This file owns the two factors and nothing else. The clock prefix `P[t,i]` they
+take as input, the reference exponent `P_ref[i] = P[BT-1,i]/2` and the entry/exit
+scale `S0[i]` are formed by the consumer kernel's own tile staging, alongside the
+row scales that share their loop —
+[`consumer_kernel.md#decay-clock`](consumer_kernel.md#decay-clock), whose
+`clock-prefix-fp32` hazard is the one measured constraint on how they are computed.
 
-## <a id="clock-prefix"></a>11. `panel_clock_prefix` — the serial prefix and the scatter-fill identity
-
-`clk[t*BC + i] = P[t,i]`, `p_ref[i] = P[BT-1,i]/2`,
-`s0[i] = exp(p_ref * log_keep)`. One thread per leaf, serial over the tile's `BT`
-tokens, because the prefix IS a serial dependence in `t` and `BT <= 32`;
-parallelizing it would cost more barriers than it saves steps.
-
-The clock product runs over ALL levels, unlike the read/write panels, whose loops
-start at `first_spanned_level`: a fixed level's factor cannot hoist into the §3
-step 3 row scale, because the clock is an EXPONENT.
-
-**Scatter-fill identity**, exactly as the walk's survival panel: an inert leaf
-(dropped by §3 step 2's gather) contributes `0` to the prefix, and that is not a
-convention — `build_clock_stream` enforces `stored != 0 => live != 0` per
-(level, digit), so a leaf the gather dropped has `c == 0` at every token of this
-tile and its true prefix IS zero. `keep^0 == 1` then makes every factor this file
-computes exactly `1`, which is §2's write-conditioned quiescence.
-
-`s0[i] = expf(pr * log_keep[i])` needs no clamp: `pr >= 0` and `log_keep <= 0`,
-so `s0 <= 1`. Underflow to zero is the correct limit (a leaf whose tile-total
-survival is below fp32 has genuinely lost its entry state) and is rule 2's
-sanctioned underflow, not a floor.
+Two properties of that prefix are what make the factors here well defined. The
+clock product runs over ALL levels, unlike the read/write panels, whose loops start
+at `first_spanned_level`: a fixed level's factor cannot hoist into the §3 step 3 row
+scale, because the clock is an EXPONENT. And an inert leaf's prefix is exactly zero
+— `build_clock_stream` enforces `stored != 0 => live != 0` per (level, digit), so a
+leaf with no live support has `c == 0` at every token of the tile — which makes
+`keep^0 == 1` and every factor this file computes for it exactly `1`. That is §2's
+write-conditioned quiescence, realized per leaf rather than declared.

@@ -105,13 +105,13 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
     **`active_rows_per_token` is NOT the MMA row fill, and calling it
     `useful_rows_per_flush` -- which this function did until 2026-07-29 -- was
     wrong in a way that misdirected two increments' worth of reasoning.** The
-    readout's `k` extent is the owner's per-TILE compacted count `K`: the union of
+    readout's `k` extent is the owner's per-TILE support count `K`: the union of
     the read and write supports over the tile's `BT` tokens, which is what §3 step
-    2's gather returns and what the kernel contracts over. A union over 16-32
+    2 tests membership against. A union over 16-32
     tokens saturates far faster than one token's support, so the two numbers are
     not close and are not even correlated in the regime that matters: at
     `BC = 16, BT = 32` this function reports 0.586/16 at entmax gain 8 while the
-    measured `K` is 15.91/16. `compacted_rows_per_tile` below reports `K` -- the
+    measured `K` is 15.91/16. `union_rows_per_tile` below reports `K` -- the
     number that actually decides whether an MMA flush is mostly zeros -- computed
     from the same digit lowering `v3_consumer.py`'s `level_descriptors` hands the
     kernel, so it cannot drift from the owner rectangle it describes.
@@ -127,7 +127,7 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
        and this number OVER-STATES emptiness. For contrast, the per-token
        conditioning -- mean fill over the owners a given token actually touches --
        measured 2.5-4x denser at the sharpened cells.
-       `compacted_rows_per_tile` has no such caveat: it is computed per
+       `union_rows_per_tile` has no such caveat: it is computed per
        `(owner, tile)` exactly.
     2. The per-level product below is the mean active leaf count only to within a
        measured 0.02-0.19%; see `active_per_token`.
@@ -150,42 +150,42 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
     }
 
 
-def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
-    """Mean per-`(owner, tile)` compacted count `K` -- §3 step 2's gather, exactly.
+def _union_rows(read_levels, write_levels, plan) -> dict[str, float]:
+    """Mean per-`(owner, tile)` support count `K` -- §3 step 2's union, exactly.
 
     `K = |{ i in [0,BC) : exists t in the tile, R[t, leaf(i)] != 0 or W[t, leaf(i)] != 0 }|`,
     over ALL `D` levels -- the FIXED levels as a per-TOKEN factor (they cannot
     distinguish two leafs of one owner, but a zero there kills the whole token's
     row scale, so ANDing them into token validity is exact and is what the kernel
     does), the SPANNED levels per leaf -- and over the UNION of the two supports
-    (`GRADIENT_PROOFS_WOLFRAM.md` P5.21 item 1). Same definition as
-    `v3_consumer.cu`'s compaction site, derived from the same `level_descriptors`
-    lowering so the two cannot drift.
+    (`GRADIENT_PROOFS_WOLFRAM.md` P5.21 item 1). Same definition as the kernel's own
+    membership test, derived from the same `level_descriptors` lowering so the two
+    cannot drift.
 
     **Restricting this to the SPANNED levels -- which is what both this function
     and the kernel did before 2026-07-30 -- is not a milder approximation, it is a
-    strictly weaker gather.** At `branches=[8,16], BC=16` the boundary is `j = 1`,
+    strictly weaker membership test.** At `branches=[8,16], BC=16` the boundary is `j = 1`,
     so the whole width-8 level was invisible to it, and the flagship entmax-gain-8
-    cell read `K = 15.91/16, sat 0.908` ("nothing to compact") against the exact
+    cell read `K = 15.91/16, sat 0.908` ("fully saturated") against the exact
     `11.13/16, sat 0.017`.
 
     This function delegates to the PLANNER's `tile_union_stats`, so the number the
-    benchmark prints and the number the plan-time compact/`BT` selection prices
-    from are one computation, not two that agree today.
+    benchmark prints and the number the plan-time `BT` selection prices from are one
+    computation, not two that agree today.
     """
     from rola.planner.calibration.cost_model import tile_union_stats  # G16
 
     stats = tile_union_stats(read_levels, write_levels, plan.topology, plan.BC, plan.BT)
     return {
-        "compacted_rows_per_tile": round(stats.mean_K, 3),
-        "compacted_rows_saturated_frac": round(stats.saturated_frac, 4),
+        "union_rows_per_tile": round(stats.mean_K, 3),
+        "union_rows_saturated_frac": round(stats.saturated_frac, 4),
     }
 
 
 def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
         logit_gain: float = 1.0,
         BC: int = 16, decays: tuple[bool, ...] = (False, True),
-        BT: int = 32, compact: bool = True) -> list[dict]:
+        BT: int = 32) -> list[dict]:
     """Sweep the four (decay, norm) cells.
 
     **THE `intra_lowering` AXIS IS GONE** (item 6b, 2026-08-01, `schedule.py` §6
@@ -260,7 +260,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
             selected, axes = select_plan(read_levels, write_levels, topology, BC,
                                             normalization=norm, decay=decay_on)
             plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
-                          warp_tile=(1, d_v // 32), decay=decay_on, compact=compact)
+                          warp_tile=(1, d_v // 32), decay=decay_on)
             sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
             def consume(plan=plan, sched=sched):
@@ -271,12 +271,9 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
             row = {
                 "router": router, "logit_gain": logit_gain,
                 "decay": "LeafMassDecay" if decay_on else "None", "norm": norm,
-                "compact": compact,
                 "BT": BT,
-                "plan_selected": bool(
-                    (BT, compact) == (selected.BT, selected.compact)),
+                "plan_selected": bool(BT == selected.BT),
                 "selected_BT": selected.BT,
-                "selected_compact": selected.compact,
                 "selected_cost_per_token": round(axes.cost_per_token, 3),
                 "consumer_ms": round(_median_ms(consume, reps, warmup), 4),
                 "schedule_ms": round(_median_ms(
@@ -291,7 +288,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 "schedule_kib": round(sched.schedule_bytes() / 1024, 1),
                 "stream_mib": round(sched.stream_bytes() / 2 ** 20, 2),
                 **_fill(read_levels, write_levels, topology.N, BC),
-                **_compacted_rows(read_levels, write_levels, plan),
+                **_union_rows(read_levels, write_levels, plan),
             }
             rows.append(row)
             print(json.dumps(row), flush=True)
@@ -316,14 +313,8 @@ def main() -> None:
                     help="owner leaf-block size; decides HOW MANY LEVELS the owner spans, "
                          "which is what the gram/realized_leaf crossover actually turns on")
     ap.add_argument("--BT", type=int, default=32,
-                    help="token tile; spec §6 fixes it to {16, 32}. It is the OTHER half of "
-                         "the plan-time compact/BT decision: the tile union is taken over BT "
-                         "tokens, so BT is what sets the saturation the gather is priced on")
-    ap.add_argument("--compact", type=int, default=1,
-                    help="spec §6's plan-time gather axis (rev 2026-07-29.5 Q1): 1 compiles "
-                         "§3 step 2's support gather in, 0 compiles it out at its K == BC "
-                         "degeneracy. Both are exact; the pair is the A/B the plan-time "
-                         "selection is priced from")
+                    help="token tile; spec §6 fixes it to {16, 32}. The tile union is taken "
+                         "over BT tokens, so BT is what sets the saturation reported here")
     ap.add_argument("--decays", default="0,1", help="comma-separated 0/1 decay arms to run")
     args = ap.parse_args()
     if not torch.cuda.is_available():
@@ -331,7 +322,7 @@ def main() -> None:
     torch.manual_seed(0)
     rows = run(reps=args.reps, warmup=args.warmup, L=args.seq_len, router=args.router,
                logit_gain=args.logit_gain,
-               BC=args.BC, BT=args.BT, compact=bool(args.compact),
+               BC=args.BC, BT=args.BT,
                decays=tuple(bool(int(s)) for s in args.decays.split(",")))
 
     print(f"\n=== V3 consumer, per plane (ms, median) — router={args.router} "
@@ -342,8 +333,8 @@ def main() -> None:
               f"schedule={r['schedule_ms']:8.3f} clock={r['clock_ms']:6.3f} "
               f"producer={r['producer_ms']:7.3f} | A_r={r['A_r']} A_w={r['A_w']} "
               f"N={r['N']} active_rows/token={r['active_rows_per_token']}/{args.BC} "
-              f"K/tile={r['compacted_rows_per_tile']}/{args.BC} "
-              f"(sat {r['compacted_rows_saturated_frac']}) "
+              f"K/tile={r['union_rows_per_tile']}/{args.BC} "
+              f"(sat {r['union_rows_saturated_frac']}) "
               f"owners={r['active_owners']}/{r['owners_total']}")
     print("\nREAD THESE TWO NUMBERS AS DIFFERENT QUANTITIES. `active_rows/token` is the\n"
           "PER-TOKEN active fraction of an owner's BC leafs. `K/tile` is what the kernel\n"

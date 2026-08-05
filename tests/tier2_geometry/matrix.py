@@ -139,14 +139,14 @@ class AxisDeclaration:
 #: (`csrc/rola/src/consumer_kernel.cuh`):
 #:
 #:     template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
-#:               bool DECAY, bool GLOBAL, bool COMPACT>
+#:               bool DECAY, bool GLOBAL>
 #:
 #: M1 decodes exactly these from every mangled name in the ratification manifest
 #: and requires the decoded axis NAMES and VALUE SETS to match the declarations
 #: below in both directions. Adding a template parameter, or a value on one,
 #: without declaring what kind of axis it is fails at collection.
 TEMPLATE_PARAMETER_ORDER: tuple[str, ...] = (
-    "BT", "BC", "DV", "D", "FOLD_PREC", "READ_PREC", "DECAY", "GLOBAL", "COMPACT")
+    "BT", "BC", "DV", "D", "FOLD_PREC", "READ_PREC", "DECAY", "GLOBAL")
 
 AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
     AxisDeclaration(
@@ -160,10 +160,6 @@ AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
               "columns however they are cut, so this is a tiling of one problem "
               "and not two problems — see the `((8,8),16)` and `((8,8),64)` rows "
               "of the tier-1 rectangle grid, which are the same topology."),
-    AxisDeclaration(
-        "COMPACT", AxisKind.GEOMETRY, (0, 1), "template", census=Census.ADJACENT,
-        basis="the compacted gather. A pure plan-time performance choice over an "
-              "identical contraction; `compact` exists to be free."),
     AxisDeclaration(
         "DV", AxisKind.PROBLEM_SHAPE, (32, 64), "template",
         basis="the value width. `d_v = 32` and `d_v = 64` produce differently "
@@ -316,24 +312,6 @@ def _p_rows() -> tuple[GeometryPair, ...]:
 
 
 GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
-    # -- compact ------------------------------------------------------------
-    GeometryPair(
-        "COMPACT", {"COMPACT": 0}, {"COMPACT": 1}, "y", ENGINEERED_IDENTITY,
-        fixture="saturated_single_owner",
-        precondition="prod(widths) // BC == 1 and the fixture is dense, so K == BC",
-        basis="ascending compaction: at saturation `c_idx[k] == k`, so the compacted "
-              "path issues the same loads in the same order with the same FMA order, "
-              "and the scatter-fill identity (`0.0f` for an amplitude, `1.0f` for a "
-              "survival factor) does no work. The single-owner precondition is "
-              "load-bearing: with more than one owner the split-K atomicAdd makes `y` "
-              "nondeterministic by construction, so a bit comparison would be testing "
-              "the scheduler."),
-    GeometryPair(
-        "COMPACT", {"COMPACT": 0}, {"COMPACT": 1}, "state", ENGINEERED_IDENTITY,
-        fixture="saturated_single_owner",
-        precondition="prod(widths) // BC == 1 and the fixture is dense, so K == BC",
-        basis="same gather identity as the `y` row, on the store side."),
-
     # -- BC -----------------------------------------------------------------
     GeometryPair(
         "BC", {"BC": 16}, {"BC": 64}, "state", ENGINEERED_IDENTITY,
@@ -401,7 +379,7 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
 # The census's right-hand side: what the shipped binary actually carries
 # ---------------------------------------------------------------------------
 
-#: `_ZN4rola8consumer23consumer_forward_kernelILi16ELi16ELi32ELi1EL{prec}0EL{prec}0ELb0ELb0ELb0EE...`
+#: `_ZN4rola8consumer23consumer_forward_kernelILi16ELi16ELi32ELi1EL{prec}0EL{prec}0ELb0ELb0EE...`
 #: Itanium mangling writes the first `MmaPrec` literal as `NS_7MmaPrecE` and every
 #: later one as a back-reference (`S2_`), hence the alternation.
 _PREC = r"(?:NS_7MmaPrecE|S[0-9A-Z_]+?)"
@@ -409,7 +387,7 @@ _MANGLED = re.compile(
     r"consumer_forward_kernelI"
     r"Li(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
     rf"L{_PREC}(\d)EL{_PREC}(\d)E"
-    r"Lb(\d)ELb(\d)ELb(\d)E")
+    r"Lb(\d)ELb(\d)E")
 
 #: The NON-consumer ratified families (coverage-closure item 12): the decode GEMV
 #: and the union-entmax forward/backward pair. An EXPLICIT allowlist, so that a

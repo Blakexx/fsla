@@ -21,7 +21,7 @@ What stays in the source:
 A hazard stub is one line, no prose, no numbers beyond its anchor id:
 
 ```cpp
-//: HAZARD fp32-prefix -- docs/internals/intra_panel.md#fp32-prefix
+//: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
 ```
 
 Stubs are for **measured** hazards only — a place where moving, reordering or

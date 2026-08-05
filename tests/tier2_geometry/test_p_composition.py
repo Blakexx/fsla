@@ -112,7 +112,7 @@ class _Fixture:
     """One routing realization plus the plan and schedule built from it."""
 
     def __init__(self, widths, BC, d_v, B, T, H, norm, p_read, p_write, seed, *,
-                 decay_on=False, nonzero_m0=False, BT=16, compact=False,
+                 decay_on=False, nonzero_m0=False, BT=16,
                  mma_precision="tf32x3",
                  read_levels=None, write_levels=None, routing=_ROUTING):
         device = "cuda"
@@ -143,7 +143,7 @@ class _Fixture:
             self.initial_state = m0
         self.plan = Plan(topology=self.topology, normalization=norm, BT=BT, BC=BC,
                            warp_tile=(1, max(1, d_v // 32)), decay=decay_on,
-                           mma_precision=mma_precision, compact=compact)
+                           mma_precision=mma_precision)
         self._f32 = dict(
             v=self.v.to(torch.float32),
             read_levels=tuple(t.to(torch.float32) for t in self.read_levels),
@@ -261,41 +261,6 @@ def test_a_ragged_token_tail_holds_at_every_P(P):
     off-by-one surface the tile-range mask owns."""
     fx = _Fixture((8, 8), 16, 64, B=1, T=83, H=2, norm="global",
                   p_read=0.6, p_write=0.6, seed=3000 + P)
-    y_ref, state_ref = fx.oracle()
-    y, state, _ = fx.run(P)
-    assert _relative(y, y_ref) < RTOL
-    assert _relative(state, state_ref) < RTOL
-
-
-@pytest.mark.parametrize("P", [1, 2, 3, 4])
-@pytest.mark.parametrize("compact,decay_on", [
-    (True, False),    # the gather compiled IN
-    (True, True),     # ... on the decay arm, whose panels are leaf-indexed
-    (False, False),   # the gather compiled OUT
-    (False, True),    # ... on the decay arm
-])
-def test_P_composes_with_the_compact_template_axis(P, compact, decay_on):
-    """`P` is an axis of the WORK LIST; `compact` is an axis of the kernel TEMPLATE.
-    That they compose is a claim to verify, not to assume -- and it is not free:
-    pass 1 aliases its own state onto the read panel, whose layout `compact`
-    changes, and it forces ``is_read = false``, which is the predicate every
-    `compact` buffer's lifetime is argued from.
-
-    **THE `intra_lowering` HALF OF THIS PARAMETRIZATION IS GONE** (item 6b): the
-    consumer includes ``intra_panel.cuh`` unconditionally and does ONE intra
-    lowering, so the six `(compact, lowering, decay)` rows collapse to four
-    `(compact, decay)` rows with nothing dropped -- the decay rows here ARE the
-    panel rows, because the panel lowering is what the decay arm now runs.
-
-    The decay arm is the harder composition and is why both of its rows are kept:
-    its summary ``A`` is not accumulated per TOKEN. It is multiplied once per tile
-    by ``S0*S0``, deliberately in the same factors and the same order the state
-    itself takes, so pass 2's fold sees a summary that cannot have drifted from its
-    own ``B``. A fold that agreed with a token-serial walk but not with the panel
-    would show up here and nowhere else."""
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw", p_read=0.5, p_write=0.5,
-                  seed=9000 + P, decay_on=decay_on, compact=compact,
-                  nonzero_m0=True)
     y_ref, state_ref = fx.oracle()
     y, state, _ = fx.run(P)
     assert _relative(y, y_ref) < RTOL

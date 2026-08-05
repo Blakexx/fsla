@@ -352,7 +352,7 @@ constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
 
 //: 32-bit words in a fragment-ordered A operand contracting over `K`, FOR ONE `m16`
 //: ROW BLOCK. A `BT`-token tile holds `NM = BT / 16` of them, block-major at a FIXED
-//: stride of `frag_a_words(BC)` -- fixed rather than packed to the compacted `Kpad`, so
+//: stride of `frag_a_words(BC)` -- fixed rather than packed to a realized extent, so
 //: a block's base is a compile-time multiple and the MMA's `ks` offset is unchanged.
 template <MmaPrec PREC>
 constexpr int frag_a_words(int K) {
@@ -393,12 +393,10 @@ constexpr size_t vw_union_bytes() {
 
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
 //: from it rather than restated next to it. Every term, its measured residency
-//: consequence and the three per-arm carves (`DECAY`'s three buffers rather than four,
-//: `COMPACT`'s 520 B and the fourth buffer the design budgeted that this kernel does
-//: not need, `ctl`'s 544 B of total slack on the tightest arm):
+//: consequence and `DECAY`'s carve of three buffers rather than four:
 //: docs/internals/smem_layout.md#smem-ledger
 template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
-          bool GLOBAL, bool COMPACT, int RING>
+          bool GLOBAL, int RING>
 constexpr size_t consumer_smem_bytes_at() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);    // S
   b += RING * 2 * static_cast<size_t>(BT) * sizeof(float);          // sr, sw
@@ -415,10 +413,7 @@ constexpr size_t consumer_smem_bytes_at() {
   b += (READ_PREC == MmaPrec::kBf16) ? static_cast<size_t>(BT) * (BT + 8) * sizeof(__nv_bfloat16)
                                      : static_cast<size_t>(BT) * (BT + 4) * sizeof(float);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
-  //: RINGED: the gathered list is a staging OUTPUT, so a run-ahead gather must not
-  //: overwrite the live one.
-  if (COMPACT) b += RING * (2 * static_cast<size_t>(BC) + 2) * sizeof(int);
-  b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);  // ctl
+  b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
   return b;
 }
 
@@ -430,16 +425,16 @@ constexpr size_t consumer_smem_bytes_at() {
 //: checked SEPARATELY because a `by_regs` floor can mask an SMEM drop the driver then
 //: sees: docs/internals/smem_layout.md#ring-depth
 template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
-          bool GLOBAL, bool COMPACT>
+          bool GLOBAL>
 constexpr int consumer_ring_depth() {
   if (DECAY) return 1;  // D2.3, correctness
   constexpr int req = (ROLA_C_RING_DEPTH >= 2) ? 2 : 1;
   if (req == 1) return 1;
   constexpr int budget = consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
   constexpr size_t one =
-      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT, 1>();
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, 1>();
   constexpr size_t two =
-      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT, 2>();
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, 2>();
   if (ctas_for_residency(two, budget) != ctas_for_residency(one, budget)) return 1;
   //: AND THE SHARED-MEMORY TERM ON ITS OWN, which the line above does NOT imply.
   constexpr int threads = kSm.max_threads_per_sm / kConsumerThreads;
@@ -451,11 +446,11 @@ constexpr int consumer_ring_depth() {
 }
 
 template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
-          bool GLOBAL, bool COMPACT>
+          bool GLOBAL>
 constexpr size_t consumer_smem_bytes() {
   return consumer_smem_bytes_at<
-      BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT,
-      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT>()>();
+      BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
+      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>()>();
 }
 
 }  // namespace consumer

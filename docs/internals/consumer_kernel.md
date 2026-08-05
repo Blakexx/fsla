@@ -2,7 +2,7 @@
 
 The ONLY consumer. This doc owns the kernel BODY: the §3/§5 algorithm, the pointer
 carve as the body spells it, the staging ring's candidate walk, the four GEMMs in
-their phase order, the split-K epilogue, and the `COMPACT` / `DECAY` / `GLOBAL` arms.
+their phase order, the split-K epilogue, and the `DECAY` / `GLOBAL` arms.
 
 **The body composes three layers and each has its own document:**
 
@@ -57,7 +57,7 @@ ONCE at entry and written ONCE at exit.
 
 **Per candidate tile** (the walk skips tiles with no read and no write bit):
 
-7. **STAGE** — the `COMPACT` gather (§3 step 2), the `DECAY` clock prefix and
+7. **STAGE** — the `DECAY` clock prefix and
    entry scale, the §3 step-3 row scales `sr`/`sw`, the fragment-ordered read
    panel `Rf`, the write panel `WT`, and the scale-folded value tile `Vw`;
 8. **GEMM 1, the readout** — `y_tile = R . S`, `[BT x BC] x [BC x DV]`,
@@ -87,7 +87,7 @@ Three facts a reader must not miss:
   write of the state block.
 - **Every structural axis is a template parameter and there is no runtime
   fallback on any of them.** `BT`, `BC`, `DV`, `D`, `READ_PREC`, `FOLD_PREC`,
-  `DECAY`, `GLOBAL`, `COMPACT` — see [`consumer.md`](consumer.md#instantiation-matrix).
+  `DECAY`, `GLOBAL` — see [`consumer.md`](consumer.md#instantiation-matrix).
 
 ## <a id="origin"></a>2. The three structural moves, and the measurements that hold them
 
@@ -173,9 +173,6 @@ waste 7/8 of an `n8` fragment ([`mma_tile.md#frag-a-get`](mma_tile.md#frag-a-get
 | `den` | the `GLOBAL` denominator accumulator, `[BT]` |
 | `dig` | the hoisted leaf digits, `[D][BC]` |
 | `ctl` | the K3b control block, `2 + QPO` ints ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
-| `c_idx`, `c_slot`, `c_count` | `COMPACT`'s gathered leaf list, its inverse, and `{K, KI}` |
-| `K` / `KI` | the gathered list length / its §5 causal PREFIX length |
-| `Kpad`, `KIpad`, `KpadM` | the readout k-extent, the Gram k-extent and the fold m-extent, each rounded up to its quantum |
 | `kUnit` | the MMA's own k-step: `16` on bf16 (`m16n8k16`), `8` on tf32x3 (`m16n8k8`) |
 | `kMaxWords` | candidate-tile words held in SMEM per CTA (`consumer.cuh`) |
 | `A`, `B` | §6.4's per-segment summary: the per-leaf survival product and the accumulated deposit |
@@ -223,7 +220,7 @@ measurement above is its confirmation rather than its source.
 ## <a id="force-ctas"></a>9. `ROLA_FORCE_CTAS` — the forcing-census instrument
 
 When defined, it replaces the DERIVED launch bound with a fixed CTA count on every
-instantiation, so a candidate register budget can be censused over the whole 512-entry
+instantiation, so a candidate register budget can be censused over the whole 256-entry
 dispatch matrix in one probe compile (`tools/ratify.py --census --force-ctas N`) with
 no build and no overlay. It exists because `consumer_reg_budget` is a MEASURED constant
 whose premise expires whenever the kernel's working set moves (D8-Q1), and the only way
@@ -350,8 +347,8 @@ on bf16 and `BT + 4` on tf32x3; both are proven by `banks_distinct` ([below](#pi
 ```
 a_state[i]   the per-leaf survival product `A` over the segment. Identically 1 under
              decay = None; under decay it accumulates s0^2 per write tile ([below](#phase-c)).
-sum_slot[i]  the written-leaf FLAG, rewritten in place by the compaction to the leaf's
-             POSITION in the emitted list (-1 if not in it).
+sum_slot[i]  the written-leaf FLAG, rewritten in place by the summary's publication to
+             the leaf's POSITION in the emitted list (-1 if not in it).
 sum_count    the list length.
 ```
 
@@ -534,7 +531,7 @@ rebuilding the array inside instead costs the `BC = 16` decay arm 12/28 -> 40/80
 
 ### `stage_tile(tile, slot, is_read, is_write)`
 
-Everything the tile's COMPUTE consumes but does not produce: the gather, the clock prefix, the
+Everything the tile's COMPUTE consumes but does not produce: the clock prefix, the
 row scales, the read panel, the write panel at the plane, and the value tile. At `kRing == 1`
 it is called at the top of the tile body and `slot` is identically 0, so the emitted code is
 the un-ringed one with the braces moved. At `kRing == 2` it is called ONE VISIT EARLY, from
@@ -561,66 +558,6 @@ therefore statically indexed and live in registers. This is also what `D` being 
 buys beyond the dispatch: it is a topology fact with four legal values (spec §1), not a
 threshold, so branching on it is the standing "branch on structure, not thresholds" rule rather
 than an exception to it.
-
-## <a id="compact-gather"></a>29. `COMPACT` — §3 step 2's support-driven gather
-
-`COMPACT` is spec §6's sparsity quantum (iii), and in THIS kernel's shape it is a COMPUTE CUT
-rather than a trip-count cut: the gathered leaf list shrinks the READOUT's k-extent, the intra
-Gram's k-extent (through §5's causal sub-list) and the FOLD's m-extent. A cost model built for
-a scalar-walk consumer prices compaction against terms this kernel does not have (a scalar
-walk's trip count, a dense-panel-to-compacted COPY, a staging-ring probe, a third barrier), so
-the axis is derived from THIS shape's arithmetic and not inherited.
-
-Three steps, none of them a branch on a density:
-
-- **(a')** the FIXED levels' AND, folded into TOKEN VALIDITY. A fixed level cannot distinguish
-  two leafs of this owner — but a zero there kills the whole token's row scale, so ANDing it
-  into `valid_tokens` shrinks every leaf's support word identically and is EXACT. Without it a
-  `branches=[8,16], BC=16` owner's whole width-8 level is invisible to the compaction.
-- **(b)** the per-leaf AND over the SPANNED levels -> `R_s`, `W_s`.
-- **(c)** the two-pass ballot -> the ASCENDING list `c_idx[0..K)`, with §5's causal sub-list as
-  its PREFIX `[0, KI)`.
-
-**The support words never reach shared memory.** Warp 0 computes them into REGISTERS
-(`kRounds = ceil(BC/32)` per lane, a compile-time count, so they are statically indexed — the
-same requirement §2.4's rejected base-pointer hoist violates) and consumes them in the ballot
-two instructions later. The design (§2.18(e)) budgeted them as a STAGED `supp_leaf_r/w` pair
-aliased onto `WT` by a lifetime argument, for a CTA that computes them across the whole block.
-ONE WARP computes them here, so neither that storage nor the barrier that would publish it
-exists. Same 520 B of SMEM, one fewer barrier per candidate tile.
-
-Cost is `(D - j) * BC` support-word loads on ONE warp per tile, against the panel builds'
-`BT * BC * (D - j)` amplitude loads on all eight — ~1/16 of the build's traffic even before
-compaction shrinks the build itself.
-
-### Membership is the UNION, and the intra test is exact in ONE direction
-
-Membership is `(R_s | W_s) != 0`, **never `W_s` alone**. The backward iterates
-`support(W) UNION support(R)` per chunk, because an untouched-but-READ leaf has a zero forward
-summary and a NONZERO backward covector — a write-only compaction would break the backward
-while passing every forward gate on a zero initial state.
-
-§5 (NORMATIVE): a leaf enters the intra gather only if it is read AT OR AFTER its first in-tile
-write. `ww & -ww` is the first write token; negating it sets every bit at or above it. The test
-is exact in ONE DIRECTION: over-inclusion is a pure performance loss (a leaf with no in-tile
-write has a zero write panel; one written only after `t` is masked out by the Gram's `u <= t`),
-while UNDER-inclusion drops state. That asymmetry is also what licenses the intra GEMM to run
-over `ceil(KI/kUnit) * kUnit >= KI` k-steps: the over-run reaches leaves in `[KI, K)`, every one
-of which contributes exactly zero.
-
-The pad `c_idx[q >= K] = 0` keeps the gathered B-operand load ADDRESSABLE. The A operand's
-columns `[K, Kpad)` are ZEROED at the panel build, and that — not the pad row — is what makes
-the padded product zero.
-
-`c_slot[i]` is the inverse, `-1` when leaf `i` is inert for the whole tile. It is read ONLY by
-the decay clock prefix, which is where the scatter-fill identity is realized
-([below](#decay-clock)).
-
-With `COMPACT` compiled out, the gather's answer is its `K == BC` degeneracy, known at compile
-time: every leaf is active, §5's causal sub-list is the whole ascending list, and
-`c_idx[k] == k`. Every site resolves to the identity WITHOUT reading SMEM, which is what makes
-`COMPACT = true` BIT-IDENTICAL to `COMPACT = false` on a tile whose gather IS dense, rather
-than merely equal to it.
 
 ## <a id="decay-clock"></a>30. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
@@ -695,28 +632,12 @@ conflict-free.
 
 ### <a id="scatter-fill"></a>The scatter-fill identity — a THEOREM rather than a convention
 
-`COMPACT` walks the GATHERED LIST, so a dropped leaf's clock is never formed and its `clk` /
-`p_ref` / `s0` are never written. Nothing reads them, because every consumer of those three is
-itself compacted (both panels, the entry sweep, the fold's epilogue, the summary's test and
-`a_state`).
-
-A leaf the gather dropped has `c == 0` at every token of this tile, because
-`build_clock_stream` enforces `stored != 0 => live != 0` per (level, digit) — so a leaf with no
-live support on EITHER side has a zero clock product at every token, its true prefix IS zero,
-and `keep^0 == 1` makes every factor this block would have computed exactly `1`. **That is what
-makes the compacted entry/exit scaling exact: the leaves the fold never touches are exactly the
-leaves whose `s0` is exactly 1.**
-
-### <a id="compact-clock-list"></a>HAZARD `compact-clock-list` — it is a LIST RESTRICTION and NOT a predicate
-
-Keeping the `[0, BC)` walk and PREDICATING the clock product on `c_slot[i] >= 0` is the same
-arithmetic but NOT the same EXPRESSION: putting the product inside a branch blocks the
-`acc += a0 * a1` FMA contraction the unpredicated form gets, so the compacted arm computes a
-different (equally valid) `P[t,i]`. That divergence is REAL rather than hypothetical — the
-dense-degeneracy gate measures it as a ~7e-09 state difference on the `D >= 2` decay cells and
-NOT on `D = 1`, which is the signature, since at `D = 1` there is no product to contract.
-Written as a LIST RESTRICTION the inner expression is textually identical on both arms and the
-degeneracy is bit-identical.
+A leaf with no live support on EITHER side has `c == 0` at every token of this tile, because
+`build_clock_stream` enforces `stored != 0 => live != 0` per (level, digit) — so its clock
+product is zero at every token, its prefix IS zero, and `keep^0 == 1` makes every factor this
+block computes for it exactly `1`. **That is what makes the entry/exit scaling exact leaf by
+leaf: the leaves the fold never touches are exactly the leaves whose `s0` is exactly 1**, so
+the walk needs no membership test to leave them alone.
 
 ### Step (c) — the entry state enters the reference frame
 
@@ -729,28 +650,21 @@ power of two, so the flat form would pay an integer division per element — ~17
 thread per tile, on hardware with no integer divide (§2.4 measures the sequence at 20
 instructions a time).
 
-Under `COMPACT` the sweep runs over the GATHERED rows only, and that is EXACT rather than
-approximate: a dropped leaf has `s0 == 1` exactly (the scatter-fill theorem), so the rows it
-skips are the rows whose scale is the identity. It is also what keeps the entry and EXIT
-scalings on the same row set — the exit scale rides the fold, which is compacted.
-
 ## <a id="row-scales"></a>31. §3 step 3's row scales, computed above the panel builds
 
 `sr[t]` and `sw[t]` are the tile's per-token row scales: the read/write gain times the FIXED
 levels' amplitudes at the owner's own digit. They are constant along the leaf axis, which is why
 they are held out of the coefficient blocks at all (`readout_mma.cuh`'s argument), and they
-depend on NOTHING the tile computes: not the gather, not the clock prefix, not either panel.
-Only on `(tile, token)` and the owner's `base[]`.
+depend on NOTHING the tile computes: not the clock prefix, not either panel. Only on
+`(tile, token)` and the owner's `base[]`.
 
-**What their placement buys, stated as the PHASE count rather than as a barrier count**, because
-the two differ per arm. Computing them WITH the panels makes the pre-GEMM section THREE phases —
-`[gather] [panels + row scales] [Vw]` — with a middle barrier that exists for one reason: to
-publish `sw[t]` to the `Vw` writers, which are different threads (`sw`'s loop is `t = tid`,
-`Vw`'s is `t = tid / DV`). Computing and publishing the row scales FIRST takes `Vw` off the
-panels and the section is TWO phases — `[gather + row scales] [panels + Vw]`. On the `COMPACT`
-arms that is one barrier fewer outright; on the plain arm it is barrier-neutral and buys the
-`Vw` staging's global loads an overlap with the panel builds' amplitude loads instead of a
-rendezvous between them.
+**What their placement buys is an OVERLAP; the rendezvous count is the same either way.**
+Computing them WITH the panels makes the pre-GEMM section `[panels + row scales] [Vw]`, whose
+one barrier exists for one reason: to publish `sw[t]` to the `Vw` writers, which are different
+threads (`sw`'s loop is `t = tid`, `Vw`'s is `t = tid / DV`). Computing and publishing the row
+scales FIRST takes `Vw` off the panels and the section becomes `[row scales] [panels + Vw]` —
+the same single rendezvous, but now the `Vw` staging's `BT * DV` GLOBAL loads issue ALONGSIDE
+the panel builds' amplitude loads instead of behind them.
 
 **The one arm that keeps the middle barrier is `DECAY`**, and it is a LIFETIME constraint rather
 than a publication one: `clk` ALIASES `Vw`'s bytes, both panel builds READ `clk`, and the `Vw`
@@ -778,17 +692,6 @@ word and the loop runs half as many iterations.
 The `m16` row blocks are an OUTER, COMPILE-TIME loop, so at `NM == 1` this is the single-block
 loop verbatim — no division by a runtime word count, and no per-slot block arithmetic on the
 cell the baseline was measured at.
-
-**COMPACT: the panel's column `k` is a POSITION in the gathered list**, so the leaf it holds is
-`c_idx[k]` — and columns `[K, Kpad)` are the RAGGED-K pad, ZEROED here. The A-side zero is what
-makes the padded product zero; the B side only has to be addressable, which `c_idx[q >= K] = 0`
-gives it. **This is the §2.6 dividend: we SYNTHESISE the coefficients, so we build them
-compacted in the first place.** A consumer that RECEIVES its panel dense has to build a
-`[BT x BC]` panel and COPY it into a compacted view — 8 KiB and an extra barrier, neither of
-which exists here. `COMPACT` builds `frag_a_words(Kpad)` slots instead of `frag_a_words(BC)` — the
-k-extent cut, realized at the BUILD as well as at the MMA. That bound is a runtime value, which
-is fine HERE (it is a plain loop, not an MMA sequence); the MMA's own trip count stays
-compile-time with an early exit.
 
 **DECAY step (d):** `fr[t,i] = keep_i^{+(P[t,i] - P_ref[i])}`, folded into the READ coefficient.
 §12 RULE 4 (zero-route annihilation) is satisfied BRANCHLESSLY and structurally by this
@@ -826,12 +729,6 @@ Both sites are required and both are live: the exponent clamp bounds the value
 at `e^88 = 1.65e38` (finite in fp32 AND in bf16, which shares fp32's 8-bit exponent), and the
 format guard at the MMA catches anything the accumulated product does downstream.
 
-`COMPACT` builds only `KpadM` rows — `K` real ones plus the fold m-tile's ragged pad, ZEROED.
-`WT` needs NO indirection at either consumer once it is built this way: GEMM 2 reads it as
-`[k][n]` with `k` the compacted position, GEMM 4 as `[m][k]` with `m` the compacted position.
-That is the second half of the §2.6 dividend: a separate compacted COPY is needed only by a
-consumer that receives its panel dense.
-
 ### <a id="wt-row-t-fastest"></a>HAZARD `wt-row-t-fastest` — the loop's fastest axis is `t`, not `i`
 
 Because `WT` is leaf-major: with `i` fastest the consecutive lanes would store at stride `BTP`,
@@ -859,10 +756,9 @@ the index map, not a density or a threshold, and
 `static_assert(BT == 16 || BT == 32)` is what makes a future `BT` fail the build rather than
 silently mis-reduce.
 
-`__any_sync` names ONLY this row's lane group: a `COMPACT` pad row `continue`s above, and `q` is
-group-uniform, so the whole group leaves together and the group that stayed is converged. One
-lane per row publishes, so `sum_slot` takes no intra-tile race (`c_idx` is injective, and
-without `COMPACT` `i == q`).
+`__any_sync` names ONLY this row's lane group, which is converged: the group's `BT` lanes
+share one row `q` and take the loop's every iteration together. One lane per row publishes, so
+`sum_slot` takes no intra-tile race — a row is one leaf and no two rows are the same leaf.
 
 ### <a id="wt-build-site"></a>HAZARD `wt-build-site` — where the plane's build may stand
 
@@ -875,8 +771,7 @@ item. A run-ahead build there would overwrite rows that warp is reading.
 At depth 2 the build therefore sits in the tile's OWN body, above the publication rendezvous,
 which costs NO barrier at all: the PREVIOUS tile's end-of-tile barrier stands between the last
 fold read of `WT` and this write, and the publication rendezvous immediately below stands
-between this write and the Gram's read. The operands it needs from the staging (`c_idx`, `K`)
-were published by that same previous barrier.
+between this write and the Gram's read.
 
 At depth 1 it must be inside the staging: `DECAY` pins the plane and its build reads `clk`,
 which the lifetime barrier below kills. Hoisting it out of the window loop when the window IS
@@ -934,10 +829,6 @@ of the schedule:
 
 `nxt` is CTA-uniform (`next_cand` reads only SMEM candidate words), so the guard cannot diverge
 across the barrier inside.
-
-The gathered list is READ before the publication rendezvous at BOTH depths, and for the same
-reason each time: at depth 1 the gather's own `COMPACT` barrier stands behind it, and at depth 2
-the PREVIOUS tile's end-of-tile barrier does (this slot was gathered one visit ago).
 
 ---
 
@@ -1001,7 +892,7 @@ regardless of the branch taken, so the skip path leaves nothing inconsistent: it
 
 ### <a id="gram-gate-guard"></a>HAZARD `gram-gate-guard` — the retirement predicate mirrors the STORE guard, never the GEMM guard
 
-The GEMM carries an extra `kw > 0` — the causal-prefix early exit — that the stores do NOT: a
+The GEMM carries an extra `kw > 0` — the k-extent guard — that the stores do NOT: a
 warp with `kw <= 0` skips the multiply but still STORES ZEROS, so a retirement taken from the
 GEMM guard would leave that warp unretired and **the wait would HANG**. Lowering the target
 without restricting the retirement is the mirror-image bug and is a CORRECTNESS defect, not an
@@ -1075,9 +966,8 @@ ONE operand whose source dtype differs from its fragment dtype and hiding that i
 would bury it. **STATE AND ACCUMULATION STAY fp32** (the authorized bf16 contract); only the
 MMA's own operand narrows, exactly as `readout_mma.cuh`'s bf16 arm does.
 
-`COMPACT` cuts the K EXTENT on both `NM` arms — `ceil(K/kUnit)` k-steps instead of `BC/kUnit` —
-and gathers the B operand's rows through `c_idx`, because the state is LEAF-indexed and persists
-across tiles while the panel's `k` is a per-tile list position.
+The k-extent is `BC` on both `NM` arms — the panel's column `k` and the state's row `k` are the
+SAME leaf index, so the B operand is read straight, with no index map between them.
 
 ## <a id="mass-term1"></a>41. The mass column, TERM 1 — and its placement is FORCED
 
@@ -1094,12 +984,11 @@ same argument `frag_a_get` records,
 **The two terms STRADDLE the fold, and the windowed phase B is what forces it.** The fold's own
 mass recurrence WRITES `S[i][DV]`; the fold shares a phase with the Gram, so term 1 — which
 READS `S[·][DV]` — must already have run. Its operands
-(`Rf`, `S`, `c_idx`) are exactly the readout's, so it merges with a walk that exists rather than
+(`Rf`, `S`) are exactly the readout's, so it merges with a walk that exists rather than
 adding one, and it needs no extra shared memory.
 
-`COMPACT`: `K` terms instead of `BC`, gathering the mass column through `c_idx` exactly as the
-readout's B operand does. `Rf`'s block for token `t` is selected by `t >> 4`; at `NM == 1` the
-arithmetic folds away entirely.
+`Rf`'s block for token `t` is selected by `t >> 4`; at `NM == 1` the arithmetic folds away
+entirely.
 
 ### <a id="mass-split"></a>HAZARD `mass-split` — bit-identity of the split rests on same-thread program order
 
@@ -1171,13 +1060,6 @@ is what makes the tile's read-after-write inclusive.
 `WT[leaf * BTP + token]`, i.e. already `[k][n]`. **The transpose that `W^T` names is now in the
 STORAGE**, so the fragment does not perform one — which is the point of building `WT` leaf-major.
 
-`COMPACT` cuts this k-extent to §5's CAUSAL PREFIX, `ceil(KI/kUnit)` k-steps. No gather: `WT`'s
-rows are already the compacted positions. The pad rows `[KI, KIpad)` are leaves in `[KI, K)`
-(real, but non-causal, so exactly zero under the `u <= t` mask) or the zeroed rows
-`[K, KpadM)` — over-inclusion, which is the direction §5's test is exact in. Windowed, that same
-prefix simply STOPS the Gram some windows before the fold stops: `kw <= 0` on the tail windows
-and `mma_tile_fragA`'s own early exit does the rest.
-
 `G` is `[BT x BT]`: `NM` m-blocks x `BT/8` n-blocks of warp tiles, strided over the warps exactly
 as the readout and the fold are. At `BT = 16` the grid is `1 x 2` and warps 0-1 take one tile
 each, i.e. `warp < BT / 8`. Forked on `NM` for the same measured reason ([above](#warp-partition)).
@@ -1216,11 +1098,6 @@ Bit-identity is unaffected because the items write DISJOINT `S` elements: item `
 rows `[16 mt, 16 mt + 16)` and columns `[8 nt, 8 nt + 8)` exactly once, so which warp runs it
 cannot change a value, only a schedule.
 
-`COMPACT` cuts the M EXTENT to `ceil(K/16)` warp m-tiles instead of `BC/16`, the third of the
-three extents compaction shrinks, and on the flagship cell's density
-(`mean_K_candidate = 0.9665` of `BC = 64`) it is a **4 -> 1 cut on the kernel's most expensive
-GEMM**.
-
 ### <a id="fold-claim-uniform"></a>HAZARD `fold-claim-uniform` — the claim is WARP-UNIFORM and must never become per-lane
 
 Lane 0 takes the index with a single `atomicAdd` and broadcasts it with `__shfl_sync`, so all 32
@@ -1247,14 +1124,6 @@ read-modify-write costs none of that.
 The warp tiles cover `BC x DV` exactly once, so every element is scaled exactly once and none is
 missed — and the WINDOWS PARTITION those tiles, so that stays true window by window.
 
-### <a id="ragged-m-guard"></a>HAZARD `ragged-m-guard` — `COMPACT`'s output scatter needs the STORE predicated
-
-The fold's `m` is a compacted position while the state is leaf-indexed and persists across tiles,
-so the store scatters through `c_idx`. **The guard is NOT redundant with the zeroed pad rows:** a
-pad row's DELTA is zero, but `c_idx[q >= K] = 0` aims it at LEAF 0, and under decay the
-epilogue's `s0` multiply would then be applied to leaf 0 a SECOND time. Predicating the STORE is
-what keeps the pad inert; zeroing the A operand alone is not enough.
-
 ### The mass state's own recurrence
 
 `mass[i] += sum_t W[t, i] * scale_write[t]` — the `v := 1` column of the same fold. It exists only
@@ -1262,9 +1131,8 @@ under `global`, and it runs over the SAME leaf-position axis as the fold's `m`, 
 together still cover `BC x (DV + 1)` exactly once. It is THREAD-strided rather than claimed: it is
 a scalar reduction with no fragment and no accumulator to strand, so the 256-thread stride already
 balances it and a claim would only add an atomic per row. `WT`'s row is WINDOW-LOCAL, the state's
-row `i` is not. `COMPACT`: the reduction runs over the gathered rows and the row it writes is
-scattered through `c_idx` — the mass column IS the fold's `v := 1` column, so it takes the same
-compaction and the same scatter, and the same exit scale in the same read-modify-write.
+row `i` is not. The mass column IS the fold's `v := 1` column, so it takes the same exit scale
+in the same read-modify-write.
 
 ### <a id="slot-ready-free"></a>SLOT-READY and SLOT-FREE
 
@@ -1376,10 +1244,10 @@ summary's inclusion test should not be the thing that depends on the admission c
 is the DIRECT statement that this leaf's clock moved in this tile, which is exactly the condition
 under which `A` leaves `1`.
 
-`COMPACT`: a leaf OUTSIDE the gathered list cannot enter the summary, and that is exact on BOTH
-terms — it has no live write in this tile (so its write coefficients are zero, which the build's
-own test sees) and its `s0` is exactly `1` (the [scatter-fill theorem](#scatter-fill)), so it cannot leave
-`(A, B) = (1, 0)`.
+A leaf with no live support in this tile passes NEITHER term — its write coefficients are zero,
+which the build's own test sees, and its `s0` is exactly `1` (the
+[scatter-fill theorem](#scatter-fill)) — so the walk over all `BC` leaves admits exactly the
+leaves that can leave `(A, B) = (1, 0)`.
 
 ### `A`, the segment's per-leaf survival product (§2.13)
 
@@ -1390,9 +1258,8 @@ expressible as `s0` SQUARED rather than as a second exponential to form and stor
 the tile. `A` therefore needs no separate reduction and no separate buffer.
 
 It is a `[BC]` loop, not a `[BC x cols]` one — `A` is a per-leaf SCALAR, which is the whole reason
-a segment summary is cheap. `COMPACT`: the gathered rows only. A dropped leaf's `s0` is exactly
-`1`, so the factor it would contribute is the identity — and under `COMPACT` its `s0` is not even
-written, which is why this loop MUST be restricted rather than merely being free to be.
+a segment summary is cheap. It runs over all `BC` leaves unconditionally: an inert leaf's `s0`
+is exactly `1`, so the factor it contributes is the identity.
 
 ## <a id="pass1-publication"></a>48. §6.4 pass 1's publication — the SPARSE written-leaf summary
 
@@ -1403,9 +1270,9 @@ Slot `owner_slot0` is the scan's entry-state stash, so segment `seg`'s summary l
 Pass 3's segment `q` then reads `owner_slot0 + q` UNIFORMLY: the stash at `q = 0`, and the
 boundary the scan accumulated over this summary at `q = seg + 1`.
 
-Warp 0 compacts the flags to an ASCENDING leaf list — the same ballot compaction §3 step 2's
-gather uses, for the same reason (an ascending list is what makes the dense degeneracy the
-identity). `sum_slot[i]` is rewritten IN PLACE from "is written" to "position in the list"; only
+Warp 0 compacts the flags to an ASCENDING leaf list by ballot; ascending order is what makes
+the emitted list a function of the flag SET and not of the ballot's scheduling.
+`sum_slot[i]` is rewritten IN PLACE from "is written" to "position in the list"; only
 lane `i` ever touches entry `i`, and it reads before it writes, so the rewrite is race-free.
 
 `A` is identically `1` under `decay = None` (nothing multiplies `a_state` there), so the scan's
@@ -1442,7 +1309,6 @@ whichever layer happens to hold the line.
 | [`loop-induction`](#loop-induction) | the candidate walk | folding the scan into the loop increment: measured spills on arms at depth 1 |
 | [`no-captured-arrays`](#no-captured-arrays) | `build_wt_rows` / the amplitude accessor | a captured pointer array lands in LOCAL memory |
 | [`clock-prefix-fp32`](#clock-prefix-fp32) | the clock prefix `acc` | narrowing it is an EXPONENT error, not a mantissa one |
-| [`compact-clock-list`](#compact-clock-list) | the compacted clock walk | a predicate instead of a list restriction blocks the FMA contraction (~7e-09) |
 | [`wt-row-t-fastest`](#wt-row-t-fastest) | `build_wt_rows`' index map | `i`-fastest is a 4-way STORE conflict |
 | [`summary-prequant`](#summary-prequant) | the `a != 0.0f` ballot | a post-quantization test UNDER-includes and drops state |
 | [`ballot-lane-run`](#ballot-lane-run) | `kRowLanes` | the `t`-group must be a contiguous lane run inside one warp |
@@ -1455,6 +1321,5 @@ whichever layer happens to hold the line.
 | [`mass-split`](#mass-split) | mass terms 1 and 2 | the split is bit-identical only under the same thread map |
 | [`gram-pinned`](#gram-pinned) | `gd` | a fluid Gram loses ascending-quantum accumulation order |
 | [`fold-claim-uniform`](#fold-claim-uniform) | the fold's `atomicAdd` claim | a per-lane claim issues 32 different items per warp |
-| [`ragged-m-guard`](#ragged-m-guard) | the fold's scatter store | an unpredicated pad row applies `s0` to leaf 0 twice |
 | [`emission-interval`](#emission-interval) | the removed barrier | the interval must stay free of cross-thread SMEM |
 | [`emit-no-pointer-array`](#emit-no-pointer-array) | the `emit` lambdas | taking an accumulator's address spills it to local memory |

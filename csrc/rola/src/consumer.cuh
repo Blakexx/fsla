@@ -180,10 +180,10 @@ struct ScanParams {
 // docs/internals/consumer.md#instantiation-matrix
 // ---------------------------------------------------------------------------
 
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream);
 
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
 int query_consumer_occupancy_arm();
 
 using LaunchFn = void (*)(const ConsumerParams&, cudaStream_t);
@@ -203,7 +203,6 @@ struct ShardRow {
   MmaPrec prec;
   bool decay;
   bool global_norm;
-  bool compact;
   LaunchFn launch;
   OccFn occupancy;
   size_t smem_bytes;

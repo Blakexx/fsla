@@ -6,8 +6,8 @@ Three modules, one job each:
     The EXACT per-``(owner, tile)`` bit-word census. Relocated verbatim -- it was
     written dependency-free of the planner precisely so it could move.
 ``cost_model``
-    ``plan_cost_per_token``, the six measured constants, ``TileUnionStats`` and the
-    ``(BT, compact)`` argmin. The FIT whose compiled output is
+    ``plan_cost_per_token``, the four measured constants, ``TileUnionStats`` and the
+    ``BT`` argmin. The FIT whose compiled output is
     ``rola.planner.select``'s rule table.
 ``auditor``
     Runs BOTH deciders on recorded cells and asserts agreement, or writes the

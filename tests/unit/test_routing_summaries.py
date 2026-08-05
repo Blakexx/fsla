@@ -275,13 +275,13 @@ def test_the_atom_condensation_is_derived_from_the_canonical_bitmap():
 @pytest.mark.parametrize("kind", _KINDS)
 def test_the_factorized_summaries_bound_the_exact_census_and_match_it_elsewhere(
         widths, BC, kind):
-    """The one-sided property the compact rule spends, plus the four exact agreements.
+    """The one-sided property, plus the four exact agreements.
 
     ``K_hat = prod_l û_l >= K`` pairwise (union of products SUBSET product of unions),
     so ``ceil(K_hat/16) >= ceil(K/16)`` pairwise and the BOUND histogram's mean sits at
     or above the exact one. That inequality is the whole licence for replacing the
-    census with the factorized pass, and its direction is what makes the error refuse
-    packing's tax rather than pay it wrongly.
+    census with the factorized pass, and its direction is the safe one: a reader can
+    only under-state how sparse a launch is.
 
     Candidacy, occupancy, the active-owner fraction and the per-leaf bitmap are NOT
     bounds -- they are the same quantity by two derivations, so they must agree
@@ -304,7 +304,7 @@ def test_the_factorized_summaries_bound_the_exact_census_and_match_it_elsewhere(
     bins = torch.arange(BC // MMA_K_QUANTUM + 1, dtype=torch.float32)
     assert float((bins * bound.quanta_hist).sum()) >= float((bins * exact.quanta_hist).sum()) - 1e-6, (
         "the factorized histogram fell BELOW the exact one; K_hat is documented as an "
-        "upper bound on K and the compact rule spends it in that direction only")
+        "upper bound on K and every reader relies on that direction")
     assert float(bound.quanta_hist.sum()) == pytest.approx(
         float(exact.quanta_hist.sum()), abs=1e-6)
 

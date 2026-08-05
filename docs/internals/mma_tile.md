@@ -77,17 +77,11 @@ bf16 narrows the EXPONENT range, so the gap between bf16's max finite and fp32's
 address arithmetic; B keeps the generic indexed path, because B is `n`-indexed per warp and
 each warp wants a different slice of it.
 
-`B_GATHER` is COMPACTION's readout indirection: the A operand's `k` is a position in the
-compacted leaf list while `B` (the state) stays LEAF-indexed and persists across tiles, so row
-`k` of B is `b_row[k]`. It is a TEMPLATE FLAG rather than a `b_row != nullptr` test because
-the non-compacted arm must not carry the load.
-
 **The k-loop keeps a compile-time trip count AND an early exit, never a runtime bound.**
 `KMAX` is the operand's allocated extent (`BC`, or `BT` for the intra term) and `K` is the
 realized one; a runtime loop bound around an MMA sequence is un-unrollable and costs more than
-the k-steps it skips (measured on a ragged-`K` loop; provenance: journal). With
-`COMPACT = false` the caller passes `K = KMAX`, the compare folds away and the emitted code is
-the uncompacted loop exactly.
+the k-steps it skips (measured on a ragged-`K` loop; provenance: journal). Where the caller
+passes `K = KMAX` the compare folds away and the emitted code is the plain unrolled loop.
 
 The `[16 x 8]` D/C fragment's element map, shared by every writeback in the kernel, is
 `d0, d1 -> (row g, col 2r, 2r+1)` and `d2, d3 -> (row g + 8, col 2r, 2r+1)`.
@@ -140,7 +134,7 @@ slots.
   ONLY: the 16-bit atoms have no fp32 form, and `kNarrowStage` is precisely the arm on which
   `Vw` is 16-bit. `K` is `BT` at both call sites and the trip count stays compile-time.
 - `mma_tile_fragA_wtB` is GEMM 2 with a fragment-ordered A and `WT` fetched by `ldmatrix`.
-  `KMAX` is `WT`'s WINDOW row count and `K` the realized (causal, compacted) prefix, so the
+  `KMAX` is `WT`'s WINDOW row count and `K` the realized causal prefix, so the
   early exit, its compile-time trip count and the k-order are the generic path's, unchanged —
   the ONLY thing that moves is how the four B halves reach the registers.
 

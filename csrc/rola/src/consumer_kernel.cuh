@@ -101,12 +101,12 @@ __device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh
 #define ROLA_CONSUMER_CTAS_EXPR (ROLA_FORCE_CTAS)
 #else
 #define ROLA_CONSUMER_CTAS_EXPR                                                     \
-  ctas_for_residency(consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC,       \
-                                         DECAY, GLOBAL, COMPACT>(),                 \
-                     consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV))
+  ctas_for_residency(                                                               \
+      consumer_smem_bytes<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>(),    \
+      consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV))
 #endif
 template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC, bool DECAY,
-          bool GLOBAL, bool COMPACT>
+          bool GLOBAL>
 __global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR) void
 consumer_forward_kernel(ConsumerParams p) {
   //: `SP = DV + 4` IS DERIVED FROM THE bf16 MMA B MAP. The tf32 map (`k = k0 + r`)
@@ -146,8 +146,7 @@ consumer_forward_kernel(ConsumerParams p) {
   using GmT =
       typename cuda::std::conditional<READ_PREC == MmaPrec::kBf16, __nv_bfloat16, float>::type;
   constexpr int GMP = (READ_PREC == MmaPrec::kBf16) ? BT + 8 : BT + 4;
-  constexpr int kRing =
-      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT>();
+  constexpr int kRing = consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>();
   //: D2.3, AS A CORRECTNESS ASSERT AND NOT AS A FOOTPRINT ONE: `clk` aliases `Vw`'s
   //: bytes, so a ringed `Vw` under `DECAY` would put slot `s + 1`'s clock prefix on top
   //: of slot `s`'s value tile while the fold is still reading it. The derivation
@@ -195,9 +194,7 @@ consumer_forward_kernel(ConsumerParams p) {
   float* p_ref = log_keep + (DECAY ? BC : 0);
   float* s0 = p_ref + (DECAY ? BC : 0);
   constexpr int CKP = BC + 4;  // clk's row pitch, token-major
-  constexpr int kCSlot = COMPACT ? (2 * BC + 2) : 0;
-  int* c_idx_r0 = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
-  int* ctl = c_idx_r0 + kRing * kCSlot;
+  int* ctl = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
   static_assert(!DECAY
                     || static_cast<size_t>(BT) * CKP * sizeof(float)
                            <= vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
@@ -350,7 +347,7 @@ consumer_forward_kernel(ConsumerParams p) {
   if (summary) {
     for (int i = tid; i < BC; i += kConsumerThreads) {
       a_state[i] = 1.0f;  // `A`'s identity; `decay = None` never multiplies it
-      sum_slot[i] = 0;    // the written-leaf FLAG until the compaction rewrites it
+      sum_slot[i] = 0;    // the written-leaf FLAG until the publication rewrites it
     }
   }
   __syncthreads();
@@ -368,7 +365,7 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- range folds away and the emitted loop is the plane pass verbatim, which is what
   // ---- makes "the plane" a VALUE OF THE DIAL rather than a second code path (I4).
   //: HAZARD no-captured-arrays -- docs/internals/consumer_kernel.md#no-captured-arrays
-  auto build_wt_rows = [&](int q_lo, int q_hi, auto&& amp_w_at, const int* cx, int Kv) {
+  auto build_wt_rows = [&](int q_lo, int q_hi, auto&& amp_w_at) {
     //: HAZARD wt-row-t-fastest -- docs/internals/consumer_kernel.md#wt-row-t-fastest
     //: HAZARD ballot-lane-run -- docs/internals/consumer_kernel.md#ballot-lane-run
     constexpr unsigned kRowLanes = (BT >= 32) ? 0xffffffffu : ((1u << BT) - 1u);
@@ -377,13 +374,8 @@ consumer_forward_kernel(ConsumerParams p) {
                   "are a contiguous lane run inside one warp");
     for (int idx = tid; idx < BT * (q_hi - q_lo); idx += kConsumerThreads) {
       const int qr = idx / BT;
-      const int q = q_lo + qr;
+      const int i = q_lo + qr;
       const int t = idx - qr * BT;
-      if (COMPACT && q >= Kv) {
-        stage_put(WT[wt_index<BT, kNarrowStage>(qr, t)], 0.0f);
-        continue;
-      }
-      const int i = COMPACT ? cx[q] : q;
       float a = 1.0f;
 #pragma unroll
       for (int l = 0; l < D; ++l) {
@@ -411,9 +403,6 @@ consumer_forward_kernel(ConsumerParams p) {
     float* sw = sr + BT;
     unsigned* Rf = Rf_r0 + slot * kRfWords;
     StageT* Vw = Vw_r0 + slot * kVwSlot;
-    int* c_idx = c_idx_r0 + slot * kCSlot;
-    int* c_slot = c_idx + (COMPACT ? BC : 0);
-    int* c_count = c_slot + (COMPACT ? BC : 0);
 
     const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
     const float* amp_r[D];
@@ -423,80 +412,6 @@ consumer_forward_kernel(ConsumerParams p) {
       amp_r[l] = p.amp_read[l] + tile_row * p.level_pitch_read[l];
       amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
     }
-    // ---- COMPACT: §3 step 2's SUPPORT-DRIVEN GATHER, three steps and none of them a
-    // ---- branch on a density. THE SUPPORT WORDS NEVER REACH SHARED MEMORY -- warp 0
-    // ---- computes them into REGISTERS and consumes them two instructions later, one
-    // ---- fewer barrier than a staged support pair would need:
-    // ---- docs/internals/consumer_kernel.md#compact-gather
-    if (COMPACT && warp == 0) {
-      const int64_t slab = (static_cast<int64_t>(bh) * p.n_tiles + tile) * p.total_rows;
-      const int tile_tokens = p.T - t0;
-      const uint32_t valid_tokens = (tile_tokens >= BT)
-                                        ? ((BT == 32) ? 0xffffffffu : ((1u << BT) - 1u))
-                                        : (tile_tokens <= 0 ? 0u : ((1u << tile_tokens) - 1u));
-      uint32_t fr = is_read ? valid_tokens : 0u;
-      uint32_t fw = is_write ? valid_tokens : 0u;
-#pragma unroll
-      for (int l = 0; l < D; ++l) {
-        if (l >= j) break;
-        const int64_t row = slab + p.level_row_offset[l] + base[l];
-        if (is_read) fr &= p.read_tok_bits[row];
-        if (is_write) fw &= p.write_tok_bits[row];
-      }
-      constexpr int kRounds = (BC + 31) / 32;
-      uint32_t rwv[kRounds], wwv[kRounds];
-#pragma unroll
-      for (int b = 0; b < kRounds; ++b) {
-        const int i = b * 32 + lane;
-        uint32_t rw = (i < BC && is_read) ? fr : 0u;
-        uint32_t ww = (i < BC && is_write) ? fw : 0u;
-        if (i < BC) {
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l < j) continue;  // the fixed levels are already in `fr`/`fw`
-            const int64_t row = slab + p.level_row_offset[l] + dig[l * BC + i];
-            if (is_read) rw &= p.read_tok_bits[row];
-            if (is_write) ww &= p.write_tok_bits[row];
-          }
-        }
-        rwv[b] = rw;
-        wwv[b] = ww;
-      }
-      int k = 0;
-#pragma unroll
-      for (int pass = 0; pass < 2; ++pass) {
-#pragma unroll
-        for (int b = 0; b < kRounds; ++b) {
-          const int i = b * 32 + lane;
-          const bool in_range = i < BC;
-          const uint32_t rw = rwv[b];
-          const uint32_t ww = wwv[b];
-          const bool active = (rw | ww) != 0u;
-          const uint32_t first_write = ww & (0u - ww);
-          const bool in_intra = (rw & (0u - first_write)) != 0u;
-          const bool take = in_range && ((pass == 0) ? in_intra : (active && !in_intra));
-          const unsigned mask = __ballot_sync(0xffffffffu, take);
-          const int slot = k + __popc(mask & ((1u << lane) - 1u));
-          if (take) {
-            c_idx[slot] = i;
-            c_slot[i] = slot;
-          } else if (pass == 0 && in_range && !active) {
-            c_slot[i] = -1;
-          }
-          k += __popc(mask);
-        }
-        if (pass == 0 && lane == 0) c_count[1] = k;  // KI
-      }
-      for (int q = k + lane; q < BC; q += 32) c_idx[q] = 0;
-      if (lane == 0) c_count[0] = k;
-    }
-    if (COMPACT) __syncthreads();
-
-    const int K = COMPACT ? c_count[0] : BC;
-    constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
-    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;  // readout k-extent
-    const int KpadM = ((K + 15) / 16) * 16;              // fold m-extent
-    const int wt_rows = COMPACT ? KpadM : BC;
 
     // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0` -- INTO `Vw`'s bytes, guarded
     // ---- by `is_write` STRUCTURALLY. The clock product runs over ALL `D` levels where
@@ -507,9 +422,7 @@ consumer_forward_kernel(ConsumerParams p) {
       for (int l = 0; l < D; ++l) {
         amp_c[l] = p.amp_clock[l] + tile_row * p.level_pitch_clock[l];
       }
-      //: HAZARD compact-clock-list -- docs/internals/consumer_kernel.md#compact-clock-list
-      for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
-        const int i = COMPACT ? c_idx[q] : q;
+      for (int i = tid; i < BC; i += kConsumerThreads) {
         float acc = 0.0f;
         for (int t = 0; t < BT; ++t) {
           float cl = 1.0f;
@@ -531,8 +444,7 @@ consumer_forward_kernel(ConsumerParams p) {
       // ---- sweep because it is the same recurrence with `v := 1`. Row-per-warp rather
       // ---- than a flat `idx / cols` walk, because under `global` `cols = 65` is not a
       // ---- power of two: docs/internals/consumer_kernel.md#decay-clock
-      for (int q = warp; q < (COMPACT ? K : BC); q += kWarps) {
-        const int i = COMPACT ? c_idx[q] : q;
+      for (int i = warp; i < BC; i += kWarps) {
         const float s = s0[i];
         for (int c = lane; c < cols; c += 32) S[i * SP + c] *= s;
       }
@@ -570,14 +482,10 @@ consumer_forward_kernel(ConsumerParams p) {
     }
     if (!DECAY && is_write) __syncthreads();
     // ---- THE READ PANEL (§3 steps 2-3). The loop walks FRAGMENT SLOTS, not
-    // ---- `(token, leaf)` pairs, so the store is contiguous in `tid`; `COMPACT` builds
-    // ---- it COMPACTED IN THE FIRST PLACE -- the §2.6 dividend a consumer that
-    // ---- receives its panel dense pays a copy for:
+    // ---- `(token, leaf)` pairs, so the store is contiguous in `tid`:
     // ---- docs/internals/consumer_kernel.md#read-panel
     if (is_read) {
-      auto amp_read_at = [&](int t, int k) {
-        if (COMPACT && k >= K) return 0.0f;
-        const int i = COMPACT ? c_idx[k] : k;
+      auto amp_read_at = [&](int t, int i) {
         float a = 1.0f;
 #pragma unroll
         for (int l = 0; l < D; ++l) {
@@ -589,11 +497,10 @@ consumer_forward_kernel(ConsumerParams p) {
         }
         return a;
       };
-      const int rf_words = COMPACT ? frag_a_words<READ_PREC>(Kpad) : kRfBlock;
 #pragma unroll
       for (int mb = 0; mb < NM; ++mb) {
         unsigned* Rb = Rf + mb * kRfBlock;
-        for (int sl = tid; sl < rf_words; sl += kConsumerThreads) {
+        for (int sl = tid; sl < kRfBlock; sl += kConsumerThreads) {
           int tl, k;
           frag_a_slot<READ_PREC>(sl, tl, k);
           const int t = mb * 16 + tl;
@@ -612,12 +519,9 @@ consumer_forward_kernel(ConsumerParams p) {
     //: HAZARD wt-build-site -- docs/internals/consumer_kernel.md#wt-build-site
     if constexpr (kWtPlane && kRing == 1) {
       if (is_write) {
-        build_wt_rows(
-            0, wt_rows,
-            [&](int l, int t, int i) {
-              return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
-            },
-            c_idx, K);
+        build_wt_rows(0, BC, [&](int l, int t, int i) {
+          return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+        });
       }
     }
     //: HAZARD clk-dead -- docs/internals/consumer_kernel.md#clk-dead
@@ -659,8 +563,6 @@ consumer_forward_kernel(ConsumerParams p) {
     float* sw = sr + BT;
     unsigned* Rf = Rf_r0 + slot * kRfWords;
     StageT* Vw = Vw_r0 + slot * kVwSlot;
-    int* c_idx = c_idx_r0 + slot * kCSlot;
-    int* c_count = c_idx + (COMPACT ? 2 * BC : 0);
 
     // ---- THE TILE'S CONTROL BLOCK, RESET. It needs no barrier of its own on
     // ---- EITHER side: behind it stands the previous tile's end-of-tile
@@ -671,13 +573,7 @@ consumer_forward_kernel(ConsumerParams p) {
     if (tid < ctl_words(BC)) ctl[tid] = 0;
     if constexpr (kRing == 1) stage_tile(tile, 0, is_read, is_write);
 
-    const int K = COMPACT ? c_count[0] : BC;
-    const int KI = COMPACT ? c_count[1] : BC;
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
-    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;    // readout k-extent
-    const int KIpad = ((KI + kUnit - 1) / kUnit) * kUnit;  // intra Gram k-extent
-    const int KpadM = ((K + 15) / 16) * 16;                // fold m-extent
-    const int wt_rows = COMPACT ? KpadM : BC;
     const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
     // ---- THE WRITE PANEL AT DEPTH 2, AND IT COSTS NO BARRIER: the previous tile's
     // ---- end-of-tile barrier stands between the last fold read of `WT` and this
@@ -690,12 +586,9 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int l = 0; l < D; ++l) {
           amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
         }
-        build_wt_rows(
-            0, wt_rows,
-            [&](int l, int t, int i) {
-              return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
-            },
-            c_idx, K);
+        build_wt_rows(0, BC, [&](int l, int t, int i) {
+          return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+        });
       }
     }
 
@@ -716,8 +609,8 @@ consumer_forward_kernel(ConsumerParams p) {
     //: HAZARD nm-fork -- docs/internals/consumer_kernel.md#nm-fork
     if constexpr (NM == 1) {
       if (is_read && warp < NT_DV) {
-        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(Rf, S, SP, c_idx, Kpad, warp * 8, lane,
-                                                             y[0][0], y[0][1], y[0][2], y[0][3]);
+        mma_tile_fragA<BC, float, false, READ_PREC>(Rf, S, SP, BC, warp * 8, lane, y[0][0], y[0][1],
+                                                    y[0][2], y[0][3]);
       }
     } else if (is_read) {
 #pragma unroll
@@ -725,9 +618,8 @@ consumer_forward_kernel(ConsumerParams p) {
         const int wt = warp + q * kWarps;
         if (wt >= NM * NT_DV) break;
         const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
-        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(Rf + mb * kRfBlock, S, SP, c_idx, Kpad,
-                                                             nt * 8, lane, y[q][0], y[q][1],
-                                                             y[q][2], y[q][3]);
+        mma_tile_fragA<BC, float, false, READ_PREC>(Rf + mb * kRfBlock, S, SP, BC, nt * 8, lane,
+                                                    y[q][0], y[q][1], y[q][2], y[q][3]);
       }
     }
 
@@ -742,8 +634,8 @@ consumer_forward_kernel(ConsumerParams p) {
         float acc = 0.0f;
         const unsigned* Rb = Rf + (NM == 1 ? 0 : (t >> 4) * kRfBlock);
         const int tl = (NM == 1) ? t : (t & 15);
-        for (int k = 0; k < K; ++k) {
-          acc += frag_a_get<READ_PREC>(Rb, tl, k) * S[(COMPACT ? c_idx[k] : k) * SP + DV];
+        for (int k = 0; k < BC; ++k) {
+          acc += frag_a_get<READ_PREC>(Rb, tl, k) * S[k * SP + DV];
         }
         den[t] = acc;
       }
@@ -776,43 +668,38 @@ consumer_forward_kernel(ConsumerParams p) {
       gd[q][2] = 0.0f;
       gd[q][3] = 0.0f;
     }
-    const int n_mt = COMPACT ? KpadM / 16 : BC / 16;
-    const int qmax = COMPACT ? K : BC;
+    constexpr int n_mt = BC / 16;
     for (int w = 0; w < kNWin; ++w) {
       if constexpr (!kWtPlane) {
         const int b_lo = w * kWinRows;
-        const int b_hi = min(wt_rows, b_lo + kWinRows);
+        const int b_hi = min(BC, b_lo + kWinRows);
         if (is_write && b_lo < b_hi) {
           const float* amp_w[D];
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
           }
-          build_wt_rows(
-              b_lo, b_hi,
-              [&](int l, int t, int i) {
-                return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
-              },
-              c_idx, K);
+          build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
+            return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+          });
         }
         __syncthreads();
       }
       // ---- GEMM 2: the causal effective-score block, `G += R_q . W_q^T`, then §5's
       // ---- INCLUSIVE causal mask applied AFTER the loop, on the completed Gram.
       // ---- `B_T = false` because the transpose `W^T` names is in the STORAGE -- which
-      // ---- is the whole point of building `WT` leaf-major. `COMPACT` cuts this
-      // ---- k-extent to §5's CAUSAL PREFIX with no gather at all:
+      // ---- is the whole point of building `WT` leaf-major:
       // ---- docs/internals/consumer_kernel.md#gemm-gram
-      const int kw = min(kWinRows, KIpad - w * kWinRows);
+      const int kw = min(kWinRows, BC - w * kWinRows);
       if constexpr (NM == 1) {
         if (mixed && warp < BT / 8 && kw > 0) {
           if constexpr (kNarrowStage) {
             mma_tile_fragA_wtB<kWinRows, BT>(Rf + w * (kWinRows / kUnit) * 128, WT, kw, warp * 8,
                                              lane, gd[0][0], gd[0][1], gd[0][2], gd[0][3]);
           } else {
-            mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
-                Rf + w * (kWinRows / kUnit) * 128, WT, BTP, nullptr, kw, warp * 8, lane, gd[0][0],
-                gd[0][1], gd[0][2], gd[0][3]);
+            mma_tile_fragA<kWinRows, StageT, false, READ_PREC>(
+                Rf + w * (kWinRows / kUnit) * 128, WT, BTP, kw, warp * 8, lane, gd[0][0], gd[0][1],
+                gd[0][2], gd[0][3]);
           }
         }
       } else if (mixed && kw > 0) {
@@ -826,9 +713,9 @@ consumer_forward_kernel(ConsumerParams p) {
                                              kw, gnt * 8, lane, gd[q][0], gd[q][1], gd[q][2],
                                              gd[q][3]);
           } else {
-            mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
-                Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128, WT, BTP, nullptr, kw, gnt * 8,
-                lane, gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
+            mma_tile_fragA<kWinRows, StageT, false, READ_PREC>(
+                Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128, WT, BTP, kw, gnt * 8, lane,
+                gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
           }
         }
       }
@@ -908,29 +795,22 @@ consumer_forward_kernel(ConsumerParams p) {
             // ---- register, replacing a separate `[BC x cols]` sweep that accounted for
             // ---- the bulk of decay's +219.6 % shared-store traffic:
             // ---- docs/internals/consumer_kernel.md#fold-epilogue
-            //: HAZARD ragged-m-guard -- docs/internals/consumer_kernel.md#ragged-m-guard
-            const int i0 = COMPACT ? c_idx[r0] : r0;
-            const int i1 = COMPACT ? c_idx[r0 + 8] : r0 + 8;
+            const int i0 = r0, i1 = r0 + 8;
             const float e0 = DECAY ? s0[i0] : 1.0f;
             const float e1 = DECAY ? s0[i1] : 1.0f;
-            if (!COMPACT || r0 < K) {
-              S[i0 * SP + n0] = e0 * (S[i0 * SP + n0] + d0);
-              S[i0 * SP + n0 + 1] = e0 * (S[i0 * SP + n0 + 1] + d1);
-            }
-            if (!COMPACT || r0 + 8 < K) {
-              S[i1 * SP + n0] = e1 * (S[i1 * SP + n0] + d2);
-              S[i1 * SP + n0 + 1] = e1 * (S[i1 * SP + n0 + 1] + d3);
-            }
+            S[i0 * SP + n0] = e0 * (S[i0 * SP + n0] + d0);
+            S[i0 * SP + n0 + 1] = e0 * (S[i0 * SP + n0 + 1] + d1);
+            S[i1 * SP + n0] = e1 * (S[i1 * SP + n0] + d2);
+            S[i1 * SP + n0 + 1] = e1 * (S[i1 * SP + n0 + 1] + d3);
           }
           if (GLOBAL) {
             const int q_lo = w * kWinRows;
-            const int q_hi = min(qmax, q_lo + kWinRows);
+            const int q_hi = min(BC, q_lo + kWinRows);
             for (int q = q_lo + tid; q < q_hi; q += kConsumerThreads) {
-              const int i = COMPACT ? c_idx[q] : q;
               float acc = 0.0f;
               for (int t = 0; t < BT; ++t)
                 acc += mma_src(WT[wt_index<BT, kNarrowStage>(q - q_lo, t)]) * sw[t];
-              S[i * SP + DV] = (DECAY ? s0[i] : 1.0f) * (S[i * SP + DV] + acc);
+              S[q * SP + DV] = (DECAY ? s0[q] : 1.0f) * (S[q * SP + DV] + acc);
             }
           }
         }  // the window's item pool
@@ -1062,14 +942,12 @@ consumer_forward_kernel(ConsumerParams p) {
     if (is_write) {
       if (summary) {
         if (DECAY) {
-          for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
-            const int i = COMPACT ? c_idx[q] : q;
+          for (int i = tid; i < BC; i += kConsumerThreads) {
             if (s0[i] != 1.0f) sum_slot[i] = 1;
           }
         }
         if (DECAY) {
-          for (int q = tid; q < (COMPACT ? K : BC); q += kConsumerThreads) {
-            const int i = COMPACT ? c_idx[q] : q;
+          for (int i = tid; i < BC; i += kConsumerThreads) {
             a_state[i] *= s0[i] * s0[i];
           }
         }

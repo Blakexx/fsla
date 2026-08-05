@@ -1,6 +1,6 @@
 """THE runtime planner (``THUNDER_RUN_SPEC.md`` §4.3): a pure function of recorded inputs.
 
-``select_config`` chooses ``(BC, BT, packing, feeder_flags)`` from three arguments and
+``select_config`` chooses ``(BC, BT, feeder_flags)`` from three arguments and
 nothing else -- a static configuration record, a hardware-facts record, and one
 :class:`~rola.routing.summaries.RoutingSummaries` from the producer epilogue. It reads
 no tensor, issues no reduction, allocates nothing, and does not touch the routing. That
@@ -25,7 +25,7 @@ compiled output ships as a small RULE TABLE. So:
 * DELETED from the hot path: the exact per-``(owner, tile)`` census, ``TileUnionStats``,
   ``_tile_union_stats_multi``, and the argmin over measured statistics. With them goes
   the ``torch.compile``/inductor RUNTIME dependency.
-* KEPT, as :data:`RULE_TABLE_PROVENANCE`'s six coefficients: the per-token polynomial's
+* KEPT, as :data:`RULE_TABLE_PROVENANCE`'s four coefficients: the per-token polynomial's
   constants. §4.3 asks for an "arithmetic argmin", and `PLANNER_ENDSTATE_DESIGN.md`
   §1.3's own instruction is **"ship the inequality, not the constant"** -- its margin at
   ``BC = 16`` / no-decay is 5 %, thin enough that a baked-in answer would be a guess.
@@ -38,24 +38,20 @@ number with a named isolating cell, refitted offline and recompiled into this ta
 
 1. ``feeder_flags`` = static density OR detected saturation (§4.4's two triggers).
    Depends on nothing else.
-2. ``packing``, per candidate ``(BC, BT)``: structurally OFF when a side is
-   dense-flagged (rung P), else the ``quanta_hist`` threshold. A closed form in
-   ``(BC, BT, decay, hist, flags)``; depends on no residency.
-3. ``(BC, BT)`` argmin: for each feasible pair, evaluate (2), query the occupancy
-   oracle **with that arm's actual footprint** (§4.3), form
-   ``cost_per_token * waves + atomic``, take the minimum.
+2. ``(BC, BT)`` argmin: for each feasible pair, query the occupancy oracle for the
+   footprint that pair launches (§4.3), form ``cost_per_token * waves + atomic``,
+   take the minimum.
 
-There is no back-edge. The circularity `PLANNER_ENDSTATE_DESIGN.md` §5.C had to cut
-was created by PER-OWNER compact, which §7 dissolves ("masks are per-tile, packing is
-per-launch") -- so the oracle can be asked about the arm that will actually launch
-instead of being pinned to the fattest one.
+There is no back-edge: the consumer instantiates one executor, so the footprint the
+oracle is asked about is the footprint that launches, and nothing downstream of the
+argmin feeds back into it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import prod
 
-from rola.planner.feeder import FeederFlags, compact_is_structurally_inert
+from rola.planner.feeder import FeederFlags
 
 #: §6's MMA k-extent. A SHAPE of the instruction the kernel issues, never a threshold.
 MMA_K_QUANTUM = 16
@@ -77,26 +73,6 @@ SUPPORTED_BC = (16, 64)
 # choosing those defaults is that a WRONG placeholder degrades to today's behaviour and
 # never to a new one.
 
-#: **§8 PLACEHOLDER.** The ``k_hat`` at or below which packing pays, per
-#: ``(BC, BT, decay)``. FILLED BY: the tax/saving decomposition re-measured after K4
-#: (fragment ordering moves both sides of it), plus the compact-win decomposition
-#: analysis.
-#:
-#: DEFAULT: an EMPTY table. §8 states the default as "``+inf``, packing OFF"; the
-#: threshold is an upper bound on ``k_hat`` rather than a lower one, so the value that
-#: declines every cell is ``-inf``, and :func:`pack_breakeven` reads a missing row as
-#: exactly that. The BEHAVIOUR is §8's verbatim -- packing off -- and the sign is
-#: written to match the inequality the rule actually evaluates rather than the prose.
-#:
-#: **THE DEFAULT IS NOT INERT ON EVERY CELL, AND THAT IS STATED RATHER THAN
-#: DISCOVERED.** §8 says a wrong placeholder must degrade to today's behaviour. It does
-#: on the FREEZE ARM -- read-dense, where rung P excludes packing structurally anyway,
-#: so nothing moves. It does NOT on the sparse at-scale cells: four of the eight
-#: measured argmin rows (`_CALIBRATION_ARGMIN`) select a COMPACTED arm, and with no
-#: table this selector declines them. The regret is real and is quantified by the P3
-#: gate, which runs BOTH the empty table and the pre-K4 derived one.
-C_PACK_BREAKEVEN: dict[tuple[int, int, bool], float] = {}
-
 #: **§8 PLACEHOLDER.** The occupancy fraction at or above which a ``(side, level)`` cell
 #: is treated as dense (§4.4's detection trigger). FILLED BY: an occupancy sweep on the
 #: recorded cells. DEFAULT ``1.0`` -- EXACT-dense only.
@@ -114,7 +90,7 @@ C_SATURATION: float = 1.0
 #: **IT IS APPLIED IN THE SUMMARY PASS, NOT HERE, and that placement is load-bearing.**
 #: §1.4 of `PLANNER_ENDSTATE_DESIGN.md` requires it per ``(owner, tile)`` BEFORE
 #: quantization, "never to the mean -- because ``ceil`` is nonlinear and the ``K = 0``
-#: mass is where the whole packing saving lives". A histogram of already-quantized
+#: mass is a distribution fact the mean cannot carry". A histogram of already-quantized
 #: values cannot express that, so scaling ``k_hat`` here would be a different and
 #: LESS conservative correction. The layer therefore hands this constant to
 #: :func:`rola.routing.summaries.summarize_routing`, which applies it before its
@@ -130,45 +106,6 @@ C_COLLISION_GAMMA: float = 1.0
 #: parity cell). At ``0.0`` the ``BC`` argmin reduces to per-leaf amortization plus
 #: grid fill, which is today's behaviour -- ``BC`` was not selected at all before.
 C_ATOMIC_COEFF: float = 0.0
-
-
-def pack_breakeven(BC: int, BT: int, decay: bool) -> float:
-    """``C_PACK_BREAKEVEN[BC, BT, decay]``, or ``-inf`` when the table has no row.
-
-    ``-inf`` and not ``+inf``: the threshold is an UPPER bound on ``k_hat`` (packing
-    pays when the realized quantum count is far enough below the dense one), so the
-    value that declines every cell is the smallest one, not the largest.
-    """
-    return C_PACK_BREAKEVEN.get((BC, BT, bool(decay)), float("-inf"))
-
-
-def derived_pack_breakeven(BC: int, BT: int, decay: bool) -> float:
-    """The PRE-K4 breakeven, DERIVED from the rule table -- for gates, not for shipping.
-
-    Packing pays iff its saving beats its tax::
-
-        TAX(BC)   = GATHER_FIXED + GATHER_QUANTUM * ds       (priced on the DENSE
-                                                              quantum: the ballot probes
-                                                              every leaf slot whatever
-                                                              the union realizes)
-        SAVE(BT)  = (ds - k_hat) * (READOUT + [decay]DECAY) * (BT/16)
-                  + (ds - k_hat) * INTRA * BT(BT+1)/272
-
-    so the threshold is closed-form in ``k_hat``. This is ARITHMETIC over constants that
-    are already in the tree, not a new measurement -- which is exactly why it must NOT
-    be the shipped default: §8 assigns ``C_PACK_BREAKEVEN`` to a post-K4 re-measurement
-    because fragment ordering moves BOTH sides of the inequality, and shipping a
-    pre-K4 number under a post-K4 name would launder a stale fit into a placeholder
-    slot. It exists so the P3 gate can prove the selector is a real selector rather than
-    a constant ``False``, and so the regret of shipping the empty table is quantifiable.
-    """
-    ds = quanta_per_owner(BC)
-    tax = RULE_GATHER_FIXED_WORK + RULE_GATHER_QUANTUM_WORK * ds
-    per_quantum = ((RULE_READOUT_FOLD_KSTEP_WORK + (RULE_DECAY_KSTEP_WORK if decay else 0.0))
-                   * (BT / MMA_K_QUANTUM)
-                   + RULE_INTRA_GRAM_KSTEP_WORK
-                   * (BT * (BT + 1) / float(MMA_K_QUANTUM * (MMA_K_QUANTUM + 1))))
-    return ds - tax / per_quantum
 
 
 # ---------------------------------------------------------------------------
@@ -190,17 +127,8 @@ def derived_pack_breakeven(BC: int, BT: int, decay: bool) -> float:
 #: Cell: two independent isolating solves over `iso-tile-*`, intercepts 3507.0 / 3513.7.
 RULE_TILE_FIXED_WORK = (3507.0 + 3513.7) / 2.0
 
-#: The gather's per-candidate-tile intercept when packing is compiled IN (two extra
-#: block barriers plus epoch bookkeeping, independent of extent).
-#: Cell pair: `topo-D2-w64x64-BC64` against `topo-D2-w64x16-BC16`.
-RULE_GATHER_FIXED_WORK = 177.75
-
-#: The gather's per-DENSE-quantum slope, from the same pair. The ballot probes all `BC`
-#: leaf slots whatever the union realizes, so the tax rides `ds`, never `k_hat`.
-RULE_GATHER_QUANTUM_WORK = 525.125
-
-#: Per-k-step cost of the readout, the fold and the panel builds -- the extents packing
-#: actually shortens. Cell: `atscale-L2048`, where it does shorten them.
+#: Per-k-step cost of the readout, the fold and the panel builds -- the terms that ride
+#: the k-quantum count. Cell: `atscale-L2048`.
 RULE_READOUT_FOLD_KSTEP_WORK = 1755.0
 
 #: Per-k-step cost of the intra Gram's own contraction. Cell: `wk1-D2-w64x64-BC64`
@@ -217,8 +145,7 @@ RULE_TABLE_PROVENANCE = (
     "RTX 3080 Ti, `ncu --clock-control base`, `smsp__inst_executed.sum`, ONE profiled "
     "launch per arm (`--launch-skip 1 --launch-count 1`), every run flock-serialized; "
     "re-based 2026-08-01 onto the surviving consumer (the previous basis measured a "
-    "kernel that no longer exists, and compaction lost at every one of its cells, so "
-    "its gather constant could only ever be a lower bound). This table is the COMPILED "
+    "kernel that no longer exists). This table is the COMPILED "
     "OUTPUT of `rola/planner/calibration/cost_model.py`; it is recompiled by §9 "
     "step 2 whenever a kernel or a constant moves, and WHAT BINDS IT is the auditor's "
     "agreement gate against the eight measured argmins of the §2.32 matrix -- measured "
@@ -233,12 +160,10 @@ RULE_TABLE_PROVENANCE = (
     "gram_cols); (3) the dense k-quantum is OVER-priced at 1899 (readout+intra) against "
     "1033/1155/1316 measured at D=1/2/3, the leading absolute-total residual, growing "
     "~141 per level per quantum. "
-    "KNOWN LIMITATION, PROVED RATHER THAN SUSPECTED: on a SATURATED-DENSE cell the "
-    "per-slice BT preference at decay+packing INVERTS against any work model, because "
-    "the machine is stall-dominated there (BT=32 retires 14 % FEWER instructions in "
-    "5.7-27.2 % MORE time) and a work model does not model stalls. Rung P makes that "
-    "row unreachable by construction: a saturated-dense cell is dense-FLAGGED, and a "
-    "dense-flagged side excludes packing structurally.")
+    "KNOWN LIMITATION, PROVED RATHER THAN SUSPECTED: on a SATURATED-DENSE cell with "
+    "decay the per-slice BT preference INVERTS against any work model, because the "
+    "machine is stall-dominated there (BT=32 retires 14 % FEWER instructions in "
+    "5.7-27.2 % MORE time) and a work model does not model stalls.")
 
 
 def quanta_per_owner(BC: int) -> int:
@@ -316,18 +241,17 @@ class HardwareFacts:
 
 @dataclass(frozen=True, slots=True)
 class ConfigChoice:
-    """§4.3's frozen four-tuple. Nothing else lives here.
+    """§4.3's frozen tuple. Nothing else lives here.
 
     Evidence -- the residency the decision was reasoned at, the wave count, the key it
-    minimized, which rule fired -- is deliberately NOT a field: §4.3 defines
-    ``ConfigChoice = (BC, BT, packing, feeder_flags)`` and neither track may edit it.
+    minimized -- is deliberately NOT a field: §4.3 defines
+    ``ConfigChoice = (BC, BT, feeder_flags)`` and neither track may edit it.
     :func:`select_config_with_evidence` returns the evidence beside the choice for the
     auditor and the shadow ledger.
     """
 
     BC: int
     BT: int
-    packing: bool
     feeder_flags: FeederFlags
 
 
@@ -440,73 +364,33 @@ def mean_quantum(quanta_hist) -> float:
     return float(sum(q * float(quanta_hist[q]) for q in range(len(quanta_hist))))
 
 
-def select_packing(BC: int, BT: int, decay: bool, k_hat: float,
-                   flags: FeederFlags, *,
-                   breakeven=pack_breakeven) -> tuple[bool, str]:
-    """The packing bit and the rule that set it. A closed form; no residency involved.
-
-    Two rules in strict order:
-
-    1. **RUNG P (structural).** A dense-flagged side makes ``K == BC`` identically, so
-       packing's readout and fold cuts are zero while its tax is a MEASURED +21 %. The
-       arm is not priced, it is excluded -- see
-       :func:`rola.planner.feeder.compact_is_structurally_inert`.
-    2. **The threshold.** ``k_hat <= C_PACK_BREAKEVEN[BC, BT, decay]``. With no row in
-       the table the breakeven is ``-inf`` and packing is off, which is §8's stated
-       conservative default.
-
-    The order is not cosmetic: rule 1 holds for every realization the configuration
-    admits, so it must not be reachable by a table row that happens to be permissive.
-    """
-    if compact_is_structurally_inert(flags):
-        return False, "rung-P: dense-flagged side, packing's saving is identically zero"
-    threshold = breakeven(BC, BT, bool(decay))
-    if k_hat <= threshold:
-        return True, f"k_hat={k_hat:.4f} <= C_PACK_BREAKEVEN={threshold:.4f}"
-    return False, f"k_hat={k_hat:.4f} > C_PACK_BREAKEVEN={threshold:.4f}"
-
-
-def cost_per_token(BC: int, BT: int, *, decay: bool, packing: bool,
-                   candidate_frac: float, k_hat: float) -> float:
+def cost_per_token(BC: int, BT: int, *, decay: bool,
+                   candidate_frac: float) -> float:
     """The rule table's per-token polynomial, in relative work-units.
 
     Per CANDIDATE tile, then divided by ``BT`` so the result is comparable across
     ``BT``, then scaled by the candidate fraction::
 
         W = TILE_FIXED
-          + [packing] (GATHER_FIXED + GATHER_QUANTUM * ds)
-          + (READOUT + [decay] DECAY) * k * (BT / 16)
-          + INTRA                     * k * (BT (BT+1) / 272)
+          + (READOUT + [decay] DECAY) * ds * (BT / 16)
+          + INTRA                     * ds * (BT (BT+1) / 272)
 
         cost_per_token = candidate_frac * W / BT
 
-    with ``k = k_hat`` on the packed arm and ``k = ds`` on the dense one -- the
-    compiled-out kernel walks the full ``BC`` whatever the routing realizes, so the
-    dense arm's extents are the template's and not the routing's. ``owners_total`` is
-    ``BT``-invariant and cancels from every comparison at fixed ``BC``; the ``BC``
-    comparison restores it through the wave term and the atomic term, which is where it
-    genuinely differs.
+    The k-extent is the DENSE quantum count ``ds`` and never a realized one: the
+    consumer walks the full ``BC`` whatever the routing realizes, so the extents are
+    the template's and not the routing's. ``owners_total`` is ``BT``-invariant and
+    cancels from every comparison at fixed ``BC``; the ``BC`` comparison restores it
+    through the wave term and the atomic term, which is where it genuinely differs.
 
     **``candidate_frac`` is a DEFINITION, not a correction.** A ``(owner, tile)`` pair
     outside the §4 bitmap is never enumerated by any CTA and costs nothing at all, and
     there are ``candidate_frac * owners_total / BT`` visited tiles per token. Omitting
     it asserts ``candidate_frac == 1``, which is true on a saturated cell and MEASURED
     wrong by 1.8x on a routed one.
-
-    **THE INTRA EXTENT USES ``k_hat`` AND NOT ITS OWN, WHICH IS A SUBSTITUTION.**
-    §4.2 emits one quantum histogram, of the read-union-write extent; the causal-intra
-    extent ``k_hat_i`` is not a field. ``KI SUBSET K`` per pair, so
-    ``k_hat >= k_hat_i`` and the substitution OVER-prices the packed arm -- conservative
-    in the same direction as ``K_hat >= K`` itself. The magnitude is bounded: at
-    ``BT = 16`` the intra term is 0.51 % of the readout term, at ``BT = 32`` it is
-    3.2 %. On all four cells of the recorded argmin matrix the two extents are EQUAL to
-    every recorded digit, so the substitution is exact where it is gated.
     """
-    ds = quanta_per_owner(BC)
-    k = float(k_hat) if packing else float(ds)
+    k = float(quanta_per_owner(BC))
     w_tile = RULE_TILE_FIXED_WORK
-    if packing:
-        w_tile += RULE_GATHER_FIXED_WORK + RULE_GATHER_QUANTUM_WORK * ds
     w_tile += ((RULE_READOUT_FOLD_KSTEP_WORK + (RULE_DECAY_KSTEP_WORK if decay else 0.0))
                * k * (BT / MMA_K_QUANTUM))
     w_tile += (RULE_INTRA_GRAM_KSTEP_WORK * k
@@ -562,7 +446,6 @@ def select_config(static: StaticPlanInputs, hw: HardwareFacts,
 def select_config_with_evidence(static: StaticPlanInputs, hw: HardwareFacts,
                                 summaries, *,
                                 summaries_by_bt=None,
-                                breakeven=pack_breakeven,
                                 ) -> tuple[ConfigChoice, ConfigEvidence]:
     """The joint ``(BC, BT)`` argmin, with the evidence the auditor and shadow need.
 
@@ -571,9 +454,8 @@ def select_config_with_evidence(static: StaticPlanInputs, hw: HardwareFacts,
     finest BT", but both are statistics OF A TILING and neither is ``BT``-invariant:
     ``cf(16) = 0.1936`` against ``cf(32) = 0.3574`` is MEASURED at
     ``atscale-L2048-BC16``, a ratio of 1.846. Reusing the finest-``BT`` value at
-    ``BT = 32`` under-prices the coarser tile (``cf`` too small) AND over-states its
-    packing saving (``k_hat`` too small), both in the direction §4.2's own safety
-    argument runs against.
+    ``BT = 32`` under-prices the coarser tile (``cf`` too small), in the direction
+    §4.2's own safety argument runs against.
 
     This argument is how a caller supplies the per-``BT`` statistic WITHOUT any change
     to §4.2's struct or to :func:`select_config`'s frozen signature: it calls the
@@ -599,36 +481,30 @@ def select_config_with_evidence(static: StaticPlanInputs, hw: HardwareFacts,
             per_bt = summaries if summaries_by_bt is None else summaries_by_bt[BT]
             k_hat = mean_quantum(per_bt.quanta_hist)
             cf = per_bt.candidate_frac
-            packing, why = select_packing(BC, BT, static.decay, k_hat, flags,
-                                          breakeven=breakeven)
-            # §4.3: the oracle is queried with the ACTUAL footprint of the arm. There
-            # is no circularity to cut -- packing is a closed form in (BC, BT) and §7
-            # dissolved the per-owner variant that created one.
             blocks = hw.occupancy(BT, BC, static.d_v, static.normalization == "global",
-                                  static.decay, static.mma_precision, packing,
+                                  static.decay, static.mma_precision,
                                   _gram_cols(static.widths, BC), 0)
             if blocks == 0:
                 raise ValueError(
-                    f"the candidate BC={BC}, BT={BT}, packing={packing} does not fit an "
+                    f"the candidate BC={BC}, BT={BT} does not fit an "
                     "SM: the occupancy oracle reports 0 CTAs/SM, so its footprint "
                     "exceeds the shared memory and the launch would fail")
-            cost = cost_per_token(BC, BT, decay=static.decay, packing=packing,
-                                  candidate_frac=cf, k_hat=k_hat)
+            cost = cost_per_token(BC, BT, decay=static.decay, candidate_frac=cf)
             w = waves(static.n_cohorts(BC), blocks, hw.sm_count)
             key = cost * w + atomic_work_per_token(static, BC, coeff)
             grid[(BC, BT)] = key
             if best is None or key < best[0]:
-                best = (key, BC, BT, packing, blocks, w, cost, k_hat, cf, why)
+                best = (key, BC, BT, blocks, w, cost, k_hat, cf)
 
-    _, BC, BT, packing, blocks, w, cost, k_hat, cf, why = best
+    _, BC, BT, blocks, w, cost, k_hat, cf = best
     granularity = ("per-BT summaries supplied"
                    if summaries_by_bt is not None
                    else "SINGLE-granularity summaries reused at every BT (§4.2 frozen "
                         "shape; cf and k_hat are not BT-invariant -- see the findings)")
-    return ConfigChoice(BC=BC, BT=BT, packing=packing, feeder_flags=flags), ConfigEvidence(
+    return ConfigChoice(BC=BC, BT=BT, feeder_flags=flags), ConfigEvidence(
         blocks_per_sm=blocks, waves=w, cost_per_token=cost, effective_key=grid[(BC, BT)],
         k_hat=k_hat, candidate_frac=cf, grid=grid,
-        provenance=f"packing: {why}; waves={w:.4f} at {blocks} CTAs/SM; {granularity}")
+        provenance=f"waves={w:.4f} at {blocks} CTAs/SM; {granularity}")
 
 
 def _gram_cols(widths: tuple[int, ...], BC: int) -> int:
@@ -666,7 +542,7 @@ def select_p(plan, schedule, hw: HardwareFacts, *, policy=None,
 
     blocks = hw.occupancy(plan.BT, plan.BC, plan.topology.d_v,
                           plan.normalization == "global", plan.decay,
-                          plan.mma_precision, plan.compact, 0, plan.ring_slots)
+                          plan.mma_precision, 0, plan.ring_slots)
     return select_sequence_parallelism(
         plan, schedule, policy=policy, arena_page_bytes=arena_page_bytes,
         blocks_per_sm=blocks, sms=hw.sm_count)
@@ -701,9 +577,6 @@ class FrozenConfig:
     and the smallest instantiated tile is the cheapest. Structural: it is the no-tiling
     case, not a comparison against a dimension.
 
-    ``packing`` -- OFF. Packing's saving is a distribution over many tiles; at one tile
-    there is nothing to amortize its ballot over, and §8's default is off anyway.
-
     ``feeder_flags`` -- from the STATIC declarations only. The detection trigger reads a
     measured occupancy, and the decode path does not measure one; a flag set from a
     single token's support would be a claim about the sequence made from one sample,
@@ -718,12 +591,6 @@ class FrozenConfig:
     choice: ConfigChoice
     #: The prefill config this was frozen from, or ``None`` when decode began cold.
     frozen_from: ConfigChoice | None = None
-
-    def __post_init__(self) -> None:
-        if self.choice.packing:
-            raise ValueError(
-                "a frozen decode config must not enable packing: its saving is a "
-                "distribution over many tiles and decode has one")
 
     @property
     def sequence_parallel(self) -> None:
@@ -749,8 +616,7 @@ def freeze_for_decode(static: StaticPlanInputs, *,
     ``prefill`` is the config the prefill launch ran, when there was one. Its ``BC`` is
     ADOPTED (the state it wrote is laid out for it and cannot be re-laid), and
     everything else is re-derived from the rules above rather than inherited -- a
-    prefill that chose ``BT = 32`` and packing chose them for a statistic decode does
-    not have.
+    prefill that chose ``BT = 32`` chose it for a statistic decode does not have.
     """
     if prefill is not None:
         BC = prefill.BC
@@ -760,8 +626,7 @@ def freeze_for_decode(static: StaticPlanInputs, *,
         BC = largest_feasible_bc(static.widths)
     flags = FeederFlags.derive(static.density, None, saturation=C_SATURATION)
     return FrozenConfig(
-        choice=ConfigChoice(BC=BC, BT=SUPPORTED_BT[0], packing=False,
-                            feeder_flags=flags),
+        choice=ConfigChoice(BC=BC, BT=SUPPORTED_BT[0], feeder_flags=flags),
         frozen_from=prefill)
 
 
@@ -838,8 +703,7 @@ def shadow_step(static: StaticPlanInputs, hw: HardwareFacts, summaries, *,
         return ShadowRecord(decision=choice, exact=None, margin=evidence.margin,
                             regret=None, step=step)
     exact_choice, exact_key = exact
-    agreed = (exact_choice.BC, exact_choice.BT, exact_choice.packing) == (
-        choice.BC, choice.BT, choice.packing)
+    agreed = (exact_choice.BC, exact_choice.BT) == (choice.BC, choice.BT)
     regret = None if agreed else (evidence.grid[(choice.BC, choice.BT)] - exact_key) / exact_key
     return ShadowRecord(decision=choice, exact=exact_choice, margin=evidence.margin,
                         regret=regret, step=step)
@@ -848,7 +712,6 @@ def shadow_step(static: StaticPlanInputs, hw: HardwareFacts, summaries, *,
 __all__ = [
     "C_ATOMIC_COEFF",
     "C_COLLISION_GAMMA",
-    "C_PACK_BREAKEVEN",
     "C_SATURATION",
     "MMA_K_QUANTUM",
     "RULE_TABLE_PROVENANCE",
@@ -863,18 +726,15 @@ __all__ = [
     "atomic_work_per_token",
     "config_for_step",
     "cost_per_token",
-    "derived_pack_breakeven",
     "feasible_bc",
     "freeze_for_decode",
     "is_decode_step",
     "largest_feasible_bc",
     "mean_quantum",
-    "pack_breakeven",
     "quanta_per_owner",
     "select_config",
     "select_config_with_evidence",
     "select_p",
-    "select_packing",
     "shadow_step",
     "waves",
 ]

@@ -7,7 +7,7 @@ measured strictly larger). That acceptance was a judgment recorded in a document
 it lived nowhere else: **nothing failed if a later codegen change grew it.** This file
 makes it an ASSERTED INVARIANT, the same doctrine as the dense-degeneracy bit-identity
 gate -- a property the batch believes is a property the batch checks. (The profile is
-a RATCHET per instantiation, not a spill ban: on the current 512-entry consumer
+a RATCHET per instantiation, not a spill ban: on the current 256-entry consumer
 matrix roughly a fifth of the instantiations spill by design under their derived
 register budgets -- the decay arms' structural local-array traffic -- and the gate
 holds each one AT its ratified bytes. The original "one 4-byte spill on one of 128"
@@ -53,7 +53,7 @@ SIX OUTCOMES, and the difference between them is deliberate:
   moves when the kernel changes; what must not move is the spilling.
 
 THE FORCING CENSUS (`--census [--force-ctas N] [--json PATH]`) is the measurement
-mode the register rung is derived from: a compile of the whole 512-entry dispatch
+mode the register rung is derived from: a compile of the whole 256-entry dispatch
 matrix at a candidate launch bound, reported per structural key and per SHARD. It
 never touches a manifest, and `--force-ctas` outside `--census` is refused -- a
 forced bound must never be ratified.
@@ -150,7 +150,7 @@ SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 #: THE TRANSLATION UNITS THIS GATE COMPILES -- THE SHIPPED ONES.
 #:
 #: It used to compile a probe: one file under `tools/` that re-enumerated the
-#: consumer's 512-instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to
+#: consumer's instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to
 #: reach their dispatch closures. That probe was a SECOND enumeration of a set the
 #: dispatch already defined (the drift shape this project has been bitten by), it
 #: re-compiled the whole matrix on every build cycle on top of the build's own
@@ -161,7 +161,7 @@ SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 #:
 #: Now the gate compiles the shipped sources themselves: the eight generated
 #: instantiation shards, plus `decode.cu` and `entmax.cu` as the translation units
-#: they are in the build. The 512 consumer keys are unchanged by construction --
+#: they are in the build. The consumer keys are unchanged by construction --
 #: `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
 #: depend on which translation unit expands it -- and the 96 decode/entmax keys now
 #: name the symbols that are actually in the `.so`, which `tools/fatbin_entries.py`
@@ -289,12 +289,12 @@ OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of ra
 
 #: The consumer kernel's mangled template arguments, in declaration order:
 #: `<int BT, int BC, int DV, int D, MmaPrec FOLD, MmaPrec READ, bool DECAY,
-#:  bool GLOBAL, bool COMPACT>`. The mangled name is the manifest key, so this is
+#:  bool GLOBAL>`. The mangled name is the manifest key, so this is
 #: the ONE place a key is turned back into a shape; the census's per-key grouping
 #: and the hot-loop gate's reporting both go through it.
 CONSUMER_TPL = re.compile(
     r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
-    r"LNS_7MmaPrecE(\d)ELS\d?_(\d)ELb(\d)ELb(\d)ELb(\d)E")
+    r"LNS_7MmaPrecE(\d)ELS\d?_(\d)ELb(\d)ELb(\d)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -306,8 +306,7 @@ def parse_shape(mangled: str) -> dict | None:
     prec = {"0": "tf32x3", "1": "bf16"}
     return dict(BT=int(m.group(1)), BC=int(m.group(2)), DV=int(m.group(3)),
                 D=int(m.group(4)), fold=prec[m.group(5)], read=prec[m.group(6)],
-                decay=m.group(7) == "1", glob=m.group(8) == "1",
-                compact=m.group(9) == "1")
+                decay=m.group(7) == "1", glob=m.group(8) == "1")
 
 
 def shard_of_key(mangled: str) -> str:
@@ -327,8 +326,7 @@ def shard_of_key(mangled: str) -> str:
         return "?"
     return gen_shards.shard_of(dict(BT=shape["BT"], BC=shape["BC"], DV=shape["DV"],
                                     D=shape["D"], PREC=shape["read"],
-                                    DECAY=shape["decay"], GLOBAL=shape["glob"],
-                                    COMPACT=shape["compact"]))
+                                    DECAY=shape["decay"], GLOBAL=shape["glob"]))
 
 
 def shard_field(entries: dict) -> dict[str, str]:
@@ -782,7 +780,7 @@ def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
 
 #: --------------------------------------------------------------------------
 #: THE FORCING CENSUS (session 9, R0) -- the permanent instrument the register
-#: rung is derived from. `--census` compiles the whole 512-entry matrix at a
+#: rung is derived from. `--census` compiles the whole 256-entry matrix at a
 #: candidate bound (`--force-ctas N` -> `-DROLA_FORCE_CTAS=N`; omitted -> the
 #: shipped derived bound) and prints the per-key register/spill table. It never
 #: touches a manifest: a census is a measurement of a CANDIDATE, ratification is

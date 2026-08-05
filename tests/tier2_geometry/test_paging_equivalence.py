@@ -130,7 +130,7 @@ def _fixture(widths, d_v, *, B=2, T=48, H=2, p_nonzero=0.4, seed=0, device="cuda
 def _plan(widths, d_v, *, BT, BC, normalization, decay, sparse_write=True, device="cuda"):
     topology = _topology(widths, d_v, sparse_write=sparse_write)
     return Plan(topology=topology, normalization=normalization, BT=BT, BC=BC,
-                  warp_tile=(1, max(1, d_v // 32)), decay=decay, compact=False,
+                  warp_tile=(1, max(1, d_v // 32)), decay=decay,
                   mma_precision="tf32x3")
 
 

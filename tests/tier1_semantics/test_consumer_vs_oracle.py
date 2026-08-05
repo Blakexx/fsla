@@ -170,7 +170,7 @@ def _masked_simplex(shape, mask, generator, device):
 def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0, seed,
               decay_dials=None, quantize_stored=False, mma_precision="tf32x3",
               read_levels=None, write_levels=None,
-              compact=True, return_outputs=False, g_write=None, plan=None,
+              return_outputs=False, g_write=None, plan=None,
               mass_scale=1.0, perturb_mass=0.0, return_reference=False):
     from rola.ops.consumer import _consumer_forward
 
@@ -228,7 +228,7 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
     if plan is None:
         plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                       warp_tile=(1, max(1, d_v // 32)), decay=decay is not None,
-                      mma_precision=mma_precision, compact=compact)
+                      mma_precision=mma_precision)
     else:
         # A caller-built plan (the PLAN-SELECTED path). The axes are the plan's, but
         # the contract axes must still describe this fixture, or the comparison is
@@ -382,9 +382,9 @@ def test_bf16_mma_arm_channel_widths(d_v):
 # --- the `gram` intra lowering (findings §1a; the decay=None dense limit) ----
 
 
-# --- §3 step 2 support compaction, and the §5 causal inclusion test ---------
-# The compacted paths are gated by the SAME oracle at the SAME `RTOL` as the dense
-# ones -- compaction is an exactness claim, not a tolerance trade -- so most of its
+# --- §3 step 2 support membership, and the §5 causal inclusion test --------
+# Sparse supports are gated by the SAME oracle at the SAME `RTOL` as dense ones --
+# a routing zero is an exactness claim, not a tolerance trade -- so most of the
 # coverage is already the sparse rows of the fixture matrix above (`p_read`/
 # `p_write` < 1 give exact routing zeros, asserted non-vacuous by `_simplex`). The
 # tests below add the STRUCTURED supports a Bernoulli mask cannot reach.
@@ -401,9 +401,9 @@ def test_bf16_readout_under_decay_matches_canonical_oracle(widths, BC, BT, norm)
     deposit and no intra term -- so it takes the §5 tensor-core readout, and the
     format that readout narrows to is a real choice there. This test replaces the
     former `test_bf16_precision_is_rejected_under_decay_rather_than_ignored`,
-    whose premise ("LeafMassDecay has no MMA readout") stopped being true with the
-    compaction increment; a rejection kept past its own reason would be the
-    review-F3 failure mode with the sign flipped.
+    whose premise ("LeafMassDecay has no MMA readout") stopped being true; a
+    rejection kept past its own reason would be the review-F3 failure mode with
+    the sign flipped.
 
     Run from a nonzero `M_0` so the carry -- the only term the format changes --
     is nonzero on the read-only tiles this arm exercises."""
@@ -415,16 +415,16 @@ def test_bf16_readout_under_decay_matches_canonical_oracle(widths, BC, BT, norm)
 
 @pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", [False, True])
-def test_union_compaction_keeps_read_only_and_write_only_leaves(norm, decay):
-    """`GRADIENT_PROOFS_WOLFRAM.md` P5.21 item 1: the gather iterates
+def test_the_support_union_keeps_read_only_and_write_only_leaves(norm, decay):
+    """`GRADIENT_PROOFS_WOLFRAM.md` P5.21 item 1: the visit iterates
     ``support(W) UNION support(R)``, never ``support(W)`` alone.
 
     The fixture makes the two supports DISJOINT at level 0 -- the low digits are
     read and never written, the high digits are written and never read -- so every
-    leaf of the owner is on exactly one side. A write-only compaction (the
+    leaf of the owner is on exactly one side. A write-only membership test (the
     optimization P5.21 warns is invisible to a forward gate on a zero `M_0`) drops
     every read-only leaf's carry against `M_0`, which is the entire output here; a
-    read-only compaction drops every deposit and so the final state. Both are
+    read-only one drops every deposit and so the final state. Both are
     O(1) failures against the oracle rather than tolerance drift.
 
     ``consumer2.md`` §0 records the union as a standing invariant for anyone
@@ -492,10 +492,10 @@ def test_causal_inclusion_leaf_read_before_its_first_write(norm):
 @pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", [False, True])
 def test_extreme_sparsity_matches_canonical_oracle(widths, BC, norm, decay):
-    """`K << BC`: the regime compaction exists for, and the one where a wrong
-    compacted index is most likely to go unnoticed (most columns are inert, so a
-    misdirected gather often lands on another inert leaf). Same oracle, same
-    `RTOL`; from a nonzero `M_0` so an inert leaf's carry is not trivially zero."""
+    """`K << BC`: the regime where a wrong index is most likely to go unnoticed
+    (most columns are inert, so a misdirected read often lands on another inert
+    leaf). Same oracle, same `RTOL`; from a nonzero `M_0` so an inert leaf's carry
+    is not trivially zero."""
     dials = None
     if decay:
         dials = _decay_dials(widths, 3, torch.Generator(device="cuda").manual_seed(64), "cuda")
@@ -762,60 +762,14 @@ def test_panel_intra_lowering_token_tile_boundaries(T):
               decay_dials=_panel_dials((8, 4), 2))
 
 
-@pytest.mark.parametrize("compact", [True, False])
 @pytest.mark.parametrize("norm", ["raw", "global"])
-def test_panel_intra_lowering_on_both_compact_arms(compact, norm):
-    """The §6 `compact` axis, crossed with `panel`.
-
-    `panel` is the first decay-arm lowering that uses the COMPACTED read panel and
-    the compacted write-panel view (the walk uses neither -- it indexes ``M[i]``
-    directly), so the gather's scatter-fill identities have to hold for the two
-    survival-folded panels as well as for the raw ones."""
+def test_panel_intra_lowering_at_the_wide_owner(norm):
+    """`panel` is the decay-arm lowering that builds the read panel and the
+    write-panel view (the walk uses neither -- it indexes ``M[i]`` directly), so
+    the panel identities have to hold for the two survival-folded panels as well
+    as for the raw ones."""
     _run_case((8, 8), 64, 32, 64, 2, 37, 3, norm, 0.4, 0.3, nonzero_m0=True, seed=808,
-              compact=compact,
               decay_dials=_panel_dials((8, 8), 3))
-
-
-@pytest.mark.parametrize("widths,BC", [((8, 4), 16), ((8, 8), 64)])
-@pytest.mark.parametrize("d_v", [32, 64])
-@pytest.mark.parametrize("decay_on", [False, True])
-@pytest.mark.parametrize("seed", [101, 202, 303])
-def test_compacted_write_panel_view_is_race_free_under_non_identity_compaction(
-        widths, BC, d_v, decay_on, seed):
-    """Regression probe for the `kWritePanelC` latent barrier race
-    (`panel-review.md` R3, fixed by the `__syncthreads()` added at the compacted
-    write-panel copy in ``v3_consumer.cu``).
-
-    The bug: the compacted copy reads ``panel_write[t*BC + c_idx[q]]`` from
-    thread ``(t*BC + q) % DV``, while thread ``(t*BC + c_idx[q]) % DV`` is the one
-    that WROTE that slot in the build immediately above. Those threads differ
-    whenever the compaction is not the identity (``c_idx[q] != q (mod DV)``),
-    which needs sparse, non-aligned routing to force -- a dense or structured
-    fixture keeps the compaction close enough to the identity that most pairs
-    land same-warp and the race stays invisible even without the barrier
-    (`panel-review.md` §6 measured this: the fix passes 141/141 targeted tests
-    AND a 72-cell non-identity probe even with the barrier deleted, on this box).
-    This fixture is deliberately UNSTRUCTURED and asymmetric (``p_read=0.35``,
-    ``p_write=0.25``, no shared support) specifically to make ``c_idx`` a
-    non-trivial permutation rather than a near-identity one, and sweeps ``d_v``
-    (warp count), ``BC`` (owner width) and the two lowerings that reach
-    ``kWritePanelC`` (``realized_leaf`` at ``decay=None``, ``panel`` at
-    ``decay=LeafMassDecay``) against the canonical oracle at the standing
-    ``RTOL``.
-
-    This test runs against the FIXED kernel and is therefore a coverage
-    expansion for this code path, not a proof the race cannot recur: because the
-    race is scheduling-dependent, a regression that removed the barrier again
-    could still pass this test on this box/driver/compiler combination. It is
-    committed anyway because the un-compaction shape it exercises (asymmetric
-    sparse read/write support driving `c_idx` away from the identity) was not
-    covered by the existing compact-arm gates, which use dense or lightly-sparse
-    shared-support fixtures."""
-    H = 2
-    decay_dials = _panel_dials(widths, H, seed=seed) if decay_on else None
-    _run_case(widths, BC, 32, d_v, 2, 257, H, "raw", 0.35, 0.25,
-              nonzero_m0=True, seed=seed, compact=True,
-              decay_dials=decay_dials)
 
 
 @pytest.mark.parametrize("norm", ["raw", "global"])
@@ -859,7 +813,7 @@ def test_panel_exact_zero_factors_stay_exactly_zero_and_never_nan(norm):
 
     The zeros are STRUCTURED, not Bernoulli: the write support is a fixed subset
     of each level's digits, so entire leaves of every owner are dead on the write
-    side while still being read -- the union-compaction case -- and they are dead
+    side while still being read -- the support-union case -- and they are dead
     on the SPANNED levels, which is where the panel build multiplies."""
     widths, BC, BT, d_v, B, T, H = (8, 4), 16, 32, 64, 2, 37, 2
     device = "cuda"
@@ -1049,14 +1003,9 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan(norm):
 
 
 # ---------------------------------------------------------------------------
-# The `compact` compile axis (spec §6, ratified rev `2026-07-29.5` Q1)
-#
-# `Plan.compact` selects between two INSTANTIATIONS of the one kernel: the
-# gather compiled in, and the gather compiled out at its `K == BC` degeneracy.
-# It is a plan-time structure choice from measured supports (§7.4.1's sanctioned
-# pattern), so both instantiations must be exact at every density -- the planner's
-# job is to pick the faster one, never to pick the correct one. These gates are
-# what make that true rather than assumed.
+# The consumer contracts over all `BC` columns of the owner block, so its
+# exactness must not depend on the routing being dense. These gates run the same
+# kernel across the density range and hold it to the one oracle bound.
 # ---------------------------------------------------------------------------
 
 
@@ -1074,40 +1023,36 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan(norm):
     (0.4, 0.3, "sparse"),
     (1.0, 0.2, "dense-read-sparse-write"),
 ])
-def test_the_compiled_out_gather_matches_the_canonical_oracle(
+def test_the_consumer_matches_the_canonical_oracle_at_every_density(
         widths, BC, BT, norm, p_read, p_write, label):
-    """`compact=False` is exact at EVERY density, not only where it is selected.
+    """The consumer is exact at EVERY density, dense or sparse.
 
-    The planner picks this instantiation from measured tile unions, and a measured
-    statistic is a mean: individual tiles below it are still sparse. Compiled out,
-    the kernel simply contracts over all `BC` columns, and the inert ones carry the
-    zero amplitude the dense build computes for them -- so exactness does not depend
-    on the planner having been right. Gated at the SPARSE fixtures deliberately, for
-    exactly that reason."""
+    It contracts over all `BC` columns of the owner block, and the inert ones carry
+    the zero amplitude the dense build computes for them -- so exactness does not
+    depend on any statistic of the routing. Gated at the SPARSE fixtures
+    deliberately, for exactly that reason."""
     _run_case(widths, BC, BT, 64, 2, 37, 3, norm, p_read, p_write,
-              nonzero_m0=True, seed=4407, compact=False)
+              nonzero_m0=True, seed=4407)
 
 
 @pytest.mark.parametrize("widths,BC", [((8, 4), 16), ((4, 4, 4), 16)])
 @pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
-def test_the_compiled_out_gather_is_exact_under_decay(widths, BC, norm, mma_precision):
-    """Both decay arms and both MMA formats reach the compiled-out instantiation.
+def test_the_consumer_is_exact_under_decay(widths, BC, norm, mma_precision):
+    """Both decay arms and both MMA formats.
 
-    Under LeafMassDecay the compiled-out path also drops the `c_slot` predicate on
-    the SURVIVAL panel, so every leaf's `keep` is evaluated rather than identity-
-    filled. That is the same value by construction (an inert leaf has `c == 0`, so
+    Under LeafMassDecay every leaf's `keep` is evaluated on the SURVIVAL panel
+    rather than identity-filled. That is the same value by construction (an inert leaf has `c == 0`, so
     `expf(0 * log_keep) == 1`), and this is where that "by construction" is
     checked against the fp64 oracle instead of argued."""
     _run_case(widths, BC, 32, 64, 2, 37, 3, norm, 0.4, 0.3,
-              nonzero_m0=True, seed=911, compact=False,
+              nonzero_m0=True, seed=911,
               decay_dials=_decay_dials(widths, 3, torch.Generator(device="cuda").manual_seed(911),
                                        "cuda"),
               mma_precision=mma_precision)
 
 
-@pytest.mark.parametrize("compact", [True, False])
-def test_a_vanishing_write_gain_with_a_live_write_allocation(compact):
+def test_a_vanishing_write_gain_with_a_live_write_allocation():
     """The bottom of spec §4.2's admitted `g_write` range, which nothing reached.
 
     `_run_case` draws `g_write = rand + 0.5`, so until 2026-07-30 no fixture in the
@@ -1121,7 +1066,7 @@ def test_a_vanishing_write_gain_with_a_live_write_allocation(compact):
     Why it is the right guard for that argument. The clock carries no side gain
     (`build_clock_stream`), so at those tokens the state still DECAYS while the
     deposit is ~0: measured true survival there runs down to `keep = 0.809`, i.e. an
-    O(1) effect. Both compact arms must therefore agree with the oracle at the
+    O(1) effect. The kernel must therefore agree with the oracle at the
     unmodified tolerances -- which is what says the validity word (which excludes
     `g_write`, deliberately) has not started dropping leaves whose survival is not
     1. The exclusion is over-inclusive and hence safe; this fixture is where "hence
@@ -1155,7 +1100,6 @@ def test_a_vanishing_write_gain_with_a_live_write_allocation(compact):
     assert bool((g_write > 0).all()), "spec §4.2 admits only strictly positive g_write"
     _run_case(widths, BC, BT, d_v, B, T, H, "raw", 1.0, 1.0, nonzero_m0=True, seed=730,
               read_levels=read_levels, write_levels=write_levels, g_write=g_write,
-              compact=compact,
               decay_dials=_decay_dials(widths, H, generator, device))
 
 
@@ -1171,17 +1115,9 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, no
     "plan-selected" number in a findings doc described a function no build invoked.
     This gate runs the selector's own output end to end.
 
-    Two properties, and they are the two the increment claims:
-
-    1. **The selected plan is RUNNABLE and oracle-exact** -- on BOTH decay arms.
-       That is not free: the decay arm's dense limit (`panel`) is unimplemented, and
-       selection ranges over the arm's implemented lowerings so the plan the driver
-       receives can actually launch.
-    2. **The selected compact axis is a performance decision with no numeric
-       consequence** at saturation: this fixture is fully dense (`K == BC`), so the
-       selected instantiation and its opposite must agree BIT for BIT. Single-owner
-       rectangles only, for the split-K reason `test_the_two_compact_arms_are_bit_
-       identical_at_saturation` states.
+    The property it claims: **the selected plan is RUNNABLE and oracle-exact** --
+    on BOTH decay arms. That is not free: selection ranges over the arm's
+    implemented lowerings, so the plan the driver receives can actually launch.
     """
     from math import prod
 
@@ -1201,27 +1137,13 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, no
     plan, axes = select_plan(
         tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
         topology, BC, normalization=norm, decay=decay, mma_precision="tf32x3")
-    # The fixture is dense, so the selector must see saturation and price the
-    # gather out: at K == BC it is the identity and can only cost.
+    # The fixture is dense, so the selector must see saturation.
     assert axes.stats.mean_K_candidate == BC
-    assert plan.compact is False
 
     dials = _decay_dials(widths, H, generator, device) if decay else None
     kwargs = dict(nonzero_m0=True, seed=7301, decay_dials=dials,
                   read_levels=read_levels, write_levels=write_levels)
-    # 1. oracle-exact on the selected plan.
     _run_case(widths, BC, plan.BT, d_v, B, T, H, norm, 1.0, 1.0, plan=plan, **kwargs)
-    # 2. bit-identical against the opposite compact instantiation.
-    from dataclasses import replace as _replace
-    y_sel, state_sel = _run_case(widths, BC, plan.BT, d_v, B, T, H, norm, 1.0, 1.0,
-                                 plan=plan, return_outputs=True, **kwargs)
-    other = _replace(plan, compact=not plan.compact)
-    y_oth, state_oth = _run_case(widths, BC, plan.BT, d_v, B, T, H, norm, 1.0, 1.0,
-                                 plan=other, return_outputs=True, **kwargs)
-    for name, a, b in (("y", y_sel, y_oth), ("final state", state_sel, state_oth)):
-        assert torch.equal(a.view(torch.int32), b.view(torch.int32)), (
-            f"{name} differs between the SELECTED plan (compact={plan.compact}) and its "
-            f"opposite at a saturated fixture: max |delta| = {float((a - b).abs().max()):.3e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1240,10 +1162,10 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     dead code with a permanently-`None` `residency_override`.
 
     "Never" is a claim about the whole launchable surface, so this asks the driver
-    about the whole launchable surface: `BT(2) x BC(2) x d_v(2) x decay(2) x
-    compact(2)` = 32 keys, which is EXHAUSTIVE -- those five are the only axes the
-    occupancy query has, because the kernel's shared memory is entirely
-    compile-time and `gram_cols`/`ring_slots`/`mma_precision` do not enter it.
+    about the whole launchable surface: `BT(2) x BC(2) x d_v(2) x decay(2)` = 16
+    keys, which is EXHAUSTIVE -- those four are the only axes the occupancy query
+    has, because the kernel's shared memory is entirely compile-time and
+    `gram_cols`/`ring_slots`/`mma_precision` do not enter it.
 
     **THIS IS THE FALSIFICATION SITE.** If a future axis, budget or arch makes some
     instantiation land at 1 CTA/SM, this fails and the rule's deletion is what has
@@ -1264,15 +1186,14 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
         for BC in (16, 64):
             for d_v in (32, 64):
                 for decay in (False, True):
-                    for compact in (False, True):
-                        blocks = int(ext.rola_consumer_occupancy(decay, compact, BC, BT, d_v))
-                        seen[(BT, BC, d_v, decay, compact)] = blocks
-                        assert blocks >= 2, (
-                            f"BT={BT} BC={BC} d_v={d_v} decay={decay} compact={compact} "
-                            f"is resident {blocks} time(s) per SM. The 1-CTA cliff is "
-                            "reachable again, and §6's residency rule was deleted on the "
-                            "measurement that it is not -- see `select_plan_axes`.")
-    assert len(seen) == 32, f"the surface is 32 keys, queried {len(seen)}"
+                    blocks = int(ext.rola_consumer_occupancy(decay, BC, BT, d_v))
+                    seen[(BT, BC, d_v, decay)] = blocks
+                    assert blocks >= 2, (
+                        f"BT={BT} BC={BC} d_v={d_v} decay={decay} "
+                        f"is resident {blocks} time(s) per SM. The 1-CTA cliff is "
+                        "reachable again, and §6's residency rule was deleted on the "
+                        "measurement that it is not -- see `select_plan_axes`.")
+    assert len(seen) == 16, f"the surface is 16 keys, queried {len(seen)}"
     # Recorded rather than asserted: the exact integers are an architecture fact.
     # What IS asserted is the ORDERING a constant-returning stub would fail --
     # `BT = 32` doubles the y-fragment count and the token panels, so it can never
@@ -1280,12 +1201,10 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     for BC in (16, 64):
         for d_v in (32, 64):
             for decay in (False, True):
-                for compact in (False, True):
-                    assert seen[(32, BC, d_v, decay, compact)] <= seen[(16, BC, d_v, decay,
-                                                                        compact)], (
-                        f"BT=32 reported MORE CTAs/SM than BT=16 at BC={BC} d_v={d_v} "
-                        f"decay={decay} compact={compact}; the query is not reading the "
-                        "instantiation it names")
+                assert seen[(32, BC, d_v, decay)] <= seen[(16, BC, d_v, decay)], (
+                    f"BT=32 reported MORE CTAs/SM than BT=16 at BC={BC} d_v={d_v} "
+                    f"decay={decay}; the query is not reading the "
+                    "instantiation it names")
 
 
 # ---------------------------------------------------------------------------

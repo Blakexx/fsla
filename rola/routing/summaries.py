@@ -36,9 +36,9 @@ no decision consumes one.
 the product of the per-level unions; the true ``K`` is the size of the union of the
 per-token products. ``union of products SUBSET product of unions``, so
 ``K_hat >= K`` pairwise, hence ``ceil(K_hat/16) >= ceil(K/16)`` pairwise, hence the
-histogram's mass sits at or above the true quantum count. The compact rule spends that
-bound by DECLINING packing, so the bias refuses packing's tax and never pays it
-wrongly. ``K_hat <= BC`` always, because the boundary level contributes at most
+histogram's mass sits at or above the true quantum count, which is the safe
+direction: a rule reading it can only under-state how sparse a launch is, never
+over-state it. ``K_hat <= BC`` always, because the boundary level contributes at most
 ``slice_digits`` and every level below it at most its full width, whose product is
 ``BC`` by the owner rectangle -- so the histogram's ``QPO + 1`` bins are exhaustive
 and no clamp is needed.
@@ -145,8 +145,8 @@ class RoutingSummaries:
         ``[QPO + 1]`` float, summing to 1 over CANDIDATE ``(owner, tile)`` pairs (or to
         0 when there are none). Bin ``q`` is the fraction of candidate pairs with
         ``ceil(K_hat / MMA_K_QUANTUM) == q``. A HISTOGRAM and not a mean, because
-        ``ceil`` is nonlinear and the ``q = 0`` mass -- the pairs that gather nothing
-        and skip every GEMM -- is where the whole packing saving lives.
+        ``ceil`` is nonlinear and the ``q = 0`` mass -- the pairs whose union is
+        empty -- is a distribution fact the mean cannot carry.
 
     ``active_owner_frac``
         Mean over ``bh`` of the fraction of owners with ANY write in the sequence,
@@ -325,9 +325,9 @@ def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
     ``gamma`` is ``C_COLLISION_GAMMA`` (§8), also passed rather than imported, for the
     same one-owner reason. **It is applied HERE, per ``(owner, tile)``, BEFORE the
     quantization, and that placement is the whole content of the constant.**
-    ``ceil`` is nonlinear and the ``q = 0`` mass is where the entire packing saving
-    lives, so scaling the MEAN afterwards is a different and strictly less conservative
-    correction. At the shipped default ``1.0`` this is bit-identically inert -- the
+    ``ceil`` is nonlinear and the ``q = 0`` mass is a distribution fact the mean
+    cannot carry, so scaling the MEAN afterwards is a different and strictly less
+    conservative correction. At the shipped default ``1.0`` this is bit-identically inert -- the
     multiply is skipped, not merely a no-op -- so a run with no fit behaves exactly as
     if the hook did not exist.
     """
@@ -424,8 +424,8 @@ def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
             k_hat = (k_hat.to(torch.float64) * gamma).floor().to(torch.int64)
         q = (k_hat + (MMA_K_QUANTUM - 1)) // MMA_K_QUANTUM         # in [0, QPO]
         # Non-candidates are parked in the sentinel bin `QPO + 1` so they cannot
-        # collide with the genuinely-empty candidates in bin 0 -- which is the bin the
-        # whole packing saving lives in. `minlength` keeps the shape static, so this
+        # collide with the genuinely-empty candidates in bin 0. `minlength` keeps the
+        # shape static, so this
         # is sync-free.
         binned = torch.where(cand, q, torch.full_like(q, QPO + 1))
         # `torch.bincount` is NOT usable here: its CUDA path reads the input's max to

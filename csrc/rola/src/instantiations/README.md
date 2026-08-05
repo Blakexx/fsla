@@ -10,14 +10,14 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL, COMPACT>` has
-512 reachable instantiations — the exact set `launch_consumer` can select, no
-more and no fewer. Compiling them in ONE translation unit put 512 template
+`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` has
+256 reachable instantiations — the exact set `launch_consumer` can select, no
+more and no fewer. Compiling them in ONE translation unit put 256 template
 expansions through one `cicc`; they are split across **8 shards of
-64 instantiations** on **PREC x GLOBAL x BT**, whole-program (no `-rdc`), so the compile
+32 instantiations** on **PREC x GLOBAL x BT**, whole-program (no `-rdc`), so the compile
 parallelizes and a ratchet refusal scopes to one shard's slice of the manifest.
 
-Each shard carries, for its 64 tuples: an explicit instantiation of the host
+Each shard carries, for its 32 tuples: an explicit instantiation of the host
 launcher `launch_consumer_arm` (which is what pulls in the device kernel, exactly
 once in the whole fatbin), one of `query_consumer_occupancy_arm`, and a `ShardRow`
 record holding both plus the arm's `constexpr` shared-memory footprint. The
@@ -58,11 +58,11 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `consumer_bf16_global_bt16.cu` | 64 |
-| `consumer_bf16_global_bt32.cu` | 64 |
-| `consumer_bf16_raw_bt16.cu` | 64 |
-| `consumer_bf16_raw_bt32.cu` | 64 |
-| `consumer_tf32x3_global_bt16.cu` | 64 |
-| `consumer_tf32x3_global_bt32.cu` | 64 |
-| `consumer_tf32x3_raw_bt16.cu` | 64 |
-| `consumer_tf32x3_raw_bt32.cu` | 64 |
+| `consumer_bf16_global_bt16.cu` | 32 |
+| `consumer_bf16_global_bt32.cu` | 32 |
+| `consumer_bf16_raw_bt16.cu` | 32 |
+| `consumer_bf16_raw_bt32.cu` | 32 |
+| `consumer_tf32x3_global_bt16.cu` | 32 |
+| `consumer_tf32x3_global_bt32.cu` | 32 |
+| `consumer_tf32x3_raw_bt16.cu` | 32 |
+| `consumer_tf32x3_raw_bt32.cu` | 32 |

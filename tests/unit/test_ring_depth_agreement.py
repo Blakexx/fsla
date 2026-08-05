@@ -73,7 +73,7 @@ def test_planner_oracle_query_and_compiled_kernel_agree_on_the_ring_depth(monkey
     # Leg 3 -- the value selection hands the occupancy oracle is the same one.
     seen = {}
 
-    def oracle(BT, BC, d_v, global_norm, decay, mma_precision, compact,
+    def oracle(BT, BC, d_v, global_norm, decay, mma_precision,
                gram_cols, ring_slots):
         seen["ring_slots"] = ring_slots
         return 2

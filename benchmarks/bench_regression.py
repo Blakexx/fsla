@@ -26,43 +26,41 @@ from bench.instruments import settle_clocks  # noqa: E402
 from bench.pairing import _timed  # noqa: E402
 from bench.regression import BASELINE, load_baseline, summarize, threshold_ms, write_baseline  # noqa: E402
 
-#: `(cell, norm, decay_temp, compact)`. One small topology cell per structural axis
-#: the gate is meant to protect: both normalizations, the decay arm, the compact
-#: template axis. Each is a plan the planner could actually choose.
+#: `(cell, norm, decay_temp)`. One small topology cell per structural axis the gate
+#: is meant to protect: both normalizations, the decay arm, and a deeper topology at
+#: the other `BC`. Each is a plan the planner could actually choose.
 ARMS = (
-    ("topo-D2-w64x64-BC64", "global", None, False),
-    ("topo-D2-w64x64-BC64", "raw", None, False),
-    ("topo-D2-w64x64-BC64", "global", "warm", False),
-    ("topo-D4-w8x8x8x16-BC16", "global", None, False),
-    ("topo-D4-w8x8x8x16-BC16", "global", None, True),
+    ("topo-D2-w64x64-BC64", "global", None),
+    ("topo-D2-w64x64-BC64", "raw", None),
+    ("topo-D2-w64x64-BC64", "global", "warm"),
+    ("topo-D4-w8x8x8x16-BC16", "global", None),
 )
 
 
-def arm_id(name, norm, decay_temp, compact) -> str:
-    return f"{name}|{norm}|{decay_temp or 'none'}|{'compact' if compact else 'dense'}"
+def arm_id(name, norm, decay_temp) -> str:
+    return f"{name}|{norm}|{decay_temp or 'none'}"
 
 
-def _prepare(name, norm, decay_temp, compact):
+def _prepare(name, norm, decay_temp):
     from rola.routing.types import LeafMassDecay
 
     cell = CELLS[name]
     fx = cell.build()
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
-                            fx=fx, compact=compact)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16", fx=fx)
     for _ in range(5):
         _, sched = _timed(cell, fx, plan, decay, g_read, sched)
     return cell, fx, plan, decay, g_read, sched
 
 
-def measure(name, norm, decay_temp, compact, reps=11):
+def measure(name, norm, decay_temp, reps=11):
     """ONE arm's per-launch latencies, warmed, through the harness's own timer.
 
     `_timed` rather than a fresh timing loop: a baseline measured by a different
     stopwatch than the one the drivers use is a baseline for a different quantity.
     """
-    state = _prepare(name, norm, decay_temp, compact)
+    state = _prepare(name, norm, decay_temp)
     return [_timed(*state)[0] for _ in range(reps)]
 
 

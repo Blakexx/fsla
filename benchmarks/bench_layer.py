@@ -309,8 +309,8 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
                 # `Plan.intra_lowering` (and `INTRA_LOWERINGS`/`select_intra_lowering`)
                 # was retired at item 6b (2026-08-01, `schedule.py` §6 docstring): one
                 # topology-agnostic kernel family now, nothing left on that axis to
-                # record. `selected_compact` is the surviving compile-time axis.
-                "selected_BT": plan.BT, "selected_compact": plan.compact,
+                # record.
+                "selected_BT": plan.BT,
                 "selected_cost_per_token": round(axes.cost_per_token, 3),
                 "mean_K_per_tile": round(axes.stats.mean_K, 3),
                 "total_ms": round(total_ms, 4),
@@ -373,7 +373,7 @@ def main() -> None:
               f"consumer={r['consumer_ms']:6.3f} "
               f"(event {r['planes']['consumer']['event_ms']:5.3f}) "
               f"glue={r['glue_ms']:7.3f} | peak={r['peak_alloc_gb']:.3f} GB | "
-              f"plan BT={r['selected_BT']} compact={r['selected_compact']} "
+              f"plan BT={r['selected_BT']} "
               f"| A_r={r['A_r']}/{r['N']}")
     print("\nTIMES ABOVE ARE SYNCHRONIZED WALL-CLOCK. The `cuda.Event` median is carried per\n"
           "plane in the JSON (`planes.<name>.event_ms`) and is quoted inline for the consumer,\n"

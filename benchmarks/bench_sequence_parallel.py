@@ -197,9 +197,7 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
     topology, decay = fx["topology"], fx["decay"]
 
     # BT comes from the PLANNER's selection, not from a flag: the cell under test is
-    # the cell the plan build would produce. `compact` is pinned by this benchmark's
-    # spec, and the planner's own choice is reported next to it so an off-plan pin is
-    # visible rather than implied. `intra_lowering` was retired at item 6b
+    # the cell the plan build would produce. `intra_lowering` was retired at item 6b
     # (2026-08-01, `schedule.py` §6 docstring) -- one topology-agnostic kernel family
     # now, nothing left on that axis to pin.
     selected, axes, _sched0 = plan_and_schedule(
@@ -207,7 +205,7 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
         normalization=norm, decay=decay_on, mma_precision="bf16")
     plan = Plan(topology=topology, normalization=norm, BT=selected.BT, BC=BC,
                   warp_tile=(1, topology.d_v // 32), decay=decay_on,
-                  mma_precision="bf16", compact=False)
+                  mma_precision="bf16")
     sched = build_schedule(fx["read_levels"], fx["write_levels"], fx["g_read"],
                               fx["g_write"], plan)
     n_owners = int(sched.owners.shape[0])
@@ -278,8 +276,6 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
     cell = {
         "cell": name, "norm": norm, "decay": "LeafMassDecay" if decay_on else "None",
         "L": L, "BC": BC, "BT": plan.BT, "planner_selected_BT": selected.BT,
-        "planner_selected_compact": selected.compact,
-        "pinned_compact": plan.compact,
         "n_owners": n_owners, "n_tiles": sched.n_tiles,
         "sms": policy_plan.sms, "blocks_per_sm": blocks_per_sm, "capacity_ctas": capacity,
         "policy_P": list(policy_plan.P), "policy_P_max": max(policy_plan.P),
@@ -303,7 +299,7 @@ def run_cell(name: str, norm: str, decay_on: bool, *, L: int, BC: int, reps: int
 def _print_tables(cells: list[dict]) -> None:
     for c in cells:
         print(f"\n=== {c['cell']}: norm={c['norm']} decay={c['decay']} BT={c['BT']} "
-              f"BC={c['BC']} L={c['L']} compact={c['pinned_compact']} ===")
+              f"BC={c['BC']} L={c['L']} ===")
         print(f"    owners={c['n_owners']} tiles={c['n_tiles']} sms={c['sms']} "
               f"blocks/sm={c['blocks_per_sm']} capacity={c['capacity_ctas']} CTAs  "
               f"waves_before={c['waves_before']:.3f}")

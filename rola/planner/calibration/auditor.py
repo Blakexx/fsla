@@ -36,7 +36,6 @@ from rola.planner.select import (
     ConfigChoice,
     HardwareFacts,
     StaticPlanInputs,
-    pack_breakeven,
     select_config_with_evidence,
 )
 from rola.routing.types import IndependentRouting, LevelConfig, SoftmaxActivation, Topology
@@ -66,15 +65,14 @@ class AuditRow:
     decay: bool
     closed: ConfigChoice
     exact_BT: int
-    exact_packing: bool
     margin: float
     regret: float | None
 
     @property
     def agreed(self) -> bool:
-        return (self.closed.BT, self.closed.packing) == (self.exact_BT, self.exact_packing)
+        return self.exact_BT == self.closed.BT
 
-    def as_ledger_entry(self) -> tuple[str, tuple[int, bool], tuple[int, bool], float]:
+    def as_ledger_entry(self) -> tuple[str, int, int, float]:
         """The row shape the gate's ``_SELECTOR_DISAGREEMENTS`` table asserts.
 
         The regret is rounded to 4 decimals so the LEDGER is a stable artefact: it is a
@@ -84,34 +82,31 @@ class AuditRow:
         (the smallest live row is 0.17) and far coarser than any reassociation.
         """
         return (f"{self.cell}/decay={self.decay}",
-                (self.closed.BT, self.closed.packing),
-                (self.exact_BT, self.exact_packing),
+                self.closed.BT,
+                self.exact_BT,
                 round(self.regret, 4) if self.regret is not None else 0.0)
 
 
 def exact_argmin(widths, d_v, BC, decay, stats_by_bt, blocks_by_bt, sm_count):
-    """The RETIRED decider, run verbatim: argmin over ``(BT, compact)`` of cost x waves.
+    """The RETIRED decider, run verbatim: argmin over ``BT`` of cost x waves.
 
     ``stats_by_bt`` maps ``BT`` to a :class:`TileUnionStats` -- recorded, or measured by
-    the exact census on a live routing. ``blocks_by_bt`` maps ``(BT, compact)`` to the
-    driver's CTAs/SM. Nothing here is re-derived from the closed form: this is the
-    function the closed form is being audited against, so sharing an expression with it
-    would make the agreement gate prove only self-consistency.
+    the exact census on a live routing. ``blocks_by_bt`` maps ``BT`` to the driver's
+    CTAs/SM. Nothing here is re-derived from the closed form: this is the function the
+    closed form is being audited against, so sharing an expression with it would make
+    the agreement gate prove only self-consistency.
     """
     topology = _topology(widths, d_v)
-    keys: dict[tuple[int, bool], float] = {}
+    keys: dict[int, float] = {}
     for BT, stats in stats_by_bt.items():
-        for compact in (True, False):
-            cost = plan_cost_per_token(topology, BC, stats, compact=compact, decay=decay)
-            keys[(BT, compact)] = cost * plan_waves(
-                stats.n_cohorts, blocks_by_bt[(BT, compact)], sm_count)
+        cost = plan_cost_per_token(topology, BC, stats, decay=decay)
+        keys[BT] = cost * plan_waves(stats.n_cohorts, blocks_by_bt[BT], sm_count)
     best = min(keys, key=keys.get)
     return best, keys
 
 
 def audit_cell(cell: str, static: StaticPlanInputs, hw: HardwareFacts,
-               summaries_by_bt, stats_by_bt, blocks_by_bt, *,
-               breakeven=pack_breakeven) -> AuditRow:
+               summaries_by_bt, stats_by_bt, blocks_by_bt) -> AuditRow:
     """Run both deciders on one cell and return the verdict.
 
     The closed form is given the SAME per-``BT`` statistics the exact argmin sees, so a
@@ -122,21 +117,18 @@ def audit_cell(cell: str, static: StaticPlanInputs, hw: HardwareFacts,
     """
     choice, evidence = select_config_with_evidence(
         static, hw, summaries_by_bt[min(summaries_by_bt)],
-        summaries_by_bt=summaries_by_bt, breakeven=breakeven)
-    (exact_BT, exact_compact), keys = exact_argmin(
+        summaries_by_bt=summaries_by_bt)
+    exact_BT, keys = exact_argmin(
         static.widths, static.d_v, choice.BC, static.decay, stats_by_bt,
         blocks_by_bt, hw.sm_count)
-    agreed = (choice.BT, choice.packing) == (exact_BT, exact_compact)
     regret = None
-    if not agreed:
-        chosen = keys[(choice.BT, choice.packing)]
-        best = keys[(exact_BT, exact_compact)]
-        regret = (chosen - best) / best
+    if exact_BT != choice.BT:
+        regret = (keys[choice.BT] - keys[exact_BT]) / keys[exact_BT]
     return AuditRow(cell=cell, decay=static.decay, closed=choice, exact_BT=exact_BT,
-                    exact_packing=exact_compact, margin=evidence.margin, regret=regret)
+                    margin=evidence.margin, regret=regret)
 
 
-def ledger(rows) -> tuple[tuple[str, tuple[int, bool], tuple[int, bool], float], ...]:
+def ledger(rows) -> tuple[tuple[str, int, int, float], ...]:
     """The DISAGREEMENT ledger: every row where the two deciders differ, sorted.
 
     An EXACT set is what the gate asserts, in both directions. A new disagreement fails,

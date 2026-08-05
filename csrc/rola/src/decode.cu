@@ -387,7 +387,7 @@ size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay) {
 
 void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool decay) {
   //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) x GLOBAL(2) = 32`. What is
-  //: NOT an axis -- `BT`, `BC`, `COMPACT`, `MmaPrec` -- is the interesting part:
+  //: NOT an axis -- `BT`, `BC`, `MmaPrec` -- is the interesting part:
   //: docs/internals/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + (global_norm ? 1 : 0);

@@ -67,7 +67,7 @@ with the host partition that filled `work_seg` / `work_nseg`.
 
 ## <a id="scalar-plan-args"></a>4. The scalar plan arguments are the compile-time axes, passed by value
 
-`BT`, `BC`, `global_norm`, `mma_precision` and `compact` arrive as ordinary arguments
+`BT`, `BC`, `global_norm` and `mma_precision` arrive as ordinary arguments
 and are dispatched inside `consumer.cu` to a template instantiation. They are
 PLAN-TIME axes, not runtime branches: the plan chooses one instantiation and the kernel
 body branches on none of them. `mma_precision` is a `std::string` at this boundary and

@@ -3,10 +3,10 @@
 The definition of the two host entry points every consumer instantiation is reached
 through: `launch_consumer_arm` (launch this arm) and `query_consumer_occupancy_arm`
 (ask the driver about its residency). Both are function templates over the same
-tuple the kernel is: `<BT, BC, DV, D, PREC, DECAY, GLOBAL, COMPACT>`.
+tuple the kernel is: `<BT, BC, DV, D, PREC, DECAY, GLOBAL>`.
 
 Symbols: an *arm* is one instantiation of `consumer_forward_kernel`; a *shard* is one
-generated translation unit carrying 64 of them
+generated translation unit carrying 32 of them
 (`csrc/rola/src/instantiations/README.md`); *whole-program* compilation means each
 translation unit's device code is assembled independently, with no device linker
 (`-rdc` is off).
@@ -29,7 +29,7 @@ file's own uses by IMPLICITLY INSTANTIATING every dispatched arm locally. The bu
 would link. The ratification manifest would be byte-identical — `consumer_forward_kernel`
 lives in a named namespace, so its mangled name does not depend on which translation
 unit expands it. The geometry census would still report the whole matrix. `nm` would
-still report 512 symbols, because a `__global__` template's host stub is weak and the
+still report 256 symbols, because a `__global__` template's host stub is weak and the
 linker keeps exactly one. Nothing would be sharded, every kernel would be compiled
 twice, and no gate in that list could tell.
 
@@ -75,7 +75,7 @@ There is no `C10_CUDA_CHECK` here and no return code. A refused shared-memory op
 returns early; a failed launch sets the error asynchronously; either way the failure
 is recorded in the per-thread error state, and `launch_consumer` (`consumer.cu`)
 reads it through `C10_CUDA_KERNEL_LAUNCH_CHECK()` the instant the call returns. That
-is ONE error site for 512 arms instead of 512, and it is what lets the launcher's
+is ONE error site for 256 arms instead of 256, and it is what lets the launcher's
 signature be the plain `void(const ConsumerParams&, cudaStream_t)` that
 `ShardRow::launch` stores.
 
@@ -95,7 +95,7 @@ Three steps, in this order, unchanged from the pre-shard dispatch:
 
 ## <a id="residency"></a>5. The residency query, instantiated for every arm
 
-`rola_consumer_occupancy` asks about 32 of the 512 arms (`D = 2`, `global`, the
+`rola_consumer_occupancy` asks about 16 of the 256 arms (`D = 2`, `global`, the
 production precision — the axes that move the answer). The wrapper is nevertheless
 instantiated for ALL of them.
 

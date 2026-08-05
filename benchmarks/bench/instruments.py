@@ -179,14 +179,13 @@ def gather_stats(cell: Cell, fx=None, max_owners=48):
 
     Re-derives §3 step 2's per-leaf support words and the two-pass ballot's counts in
     Python from the schedule's TOKEN bitmaps -- the same object the kernel reads --
-    and reports what compaction actually buys per candidate `(owner, tile)`: `K`
-    (the readout's k-extent and the fold's m-extent), `KI` (the intra Gram's), and
-    the two in the QUANTA the kernel actually moves in, MMA k-steps and warp m-tiles.
+    and reports the realized support per candidate `(owner, tile)`: `K` (the union
+    of read and write supports), `KI` (its causal-intra subset), and the two in the
+    QUANTA the kernel moves in, MMA k-steps and warp m-tiles.
 
     **The quanta are the point.** A cell can have `mean_K = 0.97` of `BC = 64` and
     still cost a full k-step, because `ceil(K/16)` cannot go below 1 on a candidate
-    tile. `mean_K` alone overstates the saving; `mean_ksteps` is what the kernel
-    pays.
+    tile, so `mean_K` alone does not describe what the kernel pays.
 
     Owners are SAMPLED (evenly spaced, up to `max_owners`) because the at-scale cell
     has 8180 of them; the sample size is reported with the number rather than

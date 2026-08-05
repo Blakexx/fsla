@@ -61,7 +61,7 @@ def _fixture(widths=(8, 8), BC=16, d_v=64, B=1, T=128, H=2, BT=16, norm="raw",
               else torch.rand(B, T, H, generator=gen, device=device) + 0.5)
     plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
                   warp_tile=(1, max(1, d_v // 32)), decay=False,
-                  mma_precision="tf32x3", compact=False)
+                  mma_precision="tf32x3")
     schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
     return plan, schedule
 
@@ -479,11 +479,9 @@ def test_the_occupancy_gate_reads_the_driver_for_the_instantiation_it_will_launc
         "a 2x larger token tile did not lower CTAs/SM, so the query is insensitive to "
         "the other axis that sizes the kernel's SMEM")
     assert consumer_blocks_per_sm(bigger_BC) >= 1
-    # The DECAY and COMPACT arms are the query's other two axes, and what a
-    # constant-returning stub fails is that neither can report MORE CTAs than the
-    # arm carrying strictly less shared memory: the decay arm carries extra `[BC]`
-    # vectors and the compact arm carries `c_idx`/`c_slot`/`c_count`.
-    for arm in (replace(plan, decay=True), replace(plan, compact=True)):
-        assert consumer_blocks_per_sm(arm) <= base, (
-            "an arm that carries strictly more shared memory reported MORE CTAs/SM; "
-            "the query is not reading the instantiation the plan will launch")
+    # The DECAY arm is the query's other axis, and what a constant-returning stub
+    # fails is that it cannot report MORE CTAs than the arm carrying strictly less
+    # shared memory: the decay arm carries extra `[BC]` vectors.
+    assert consumer_blocks_per_sm(replace(plan, decay=True)) <= base, (
+        "an arm that carries strictly more shared memory reported MORE CTAs/SM; "
+        "the query is not reading the instantiation the plan will launch")

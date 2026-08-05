@@ -9,15 +9,15 @@ tools/manifests/sm_86.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...} },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
-                                              "count": 64 }, ... },
+                                              "count": 32 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
                                             "hot_locals": 0 }, ... } }
 ```
 
-608 entries per architecture, measured on the current tree: 512 for the consumer,
+352 entries per architecture, measured on the current tree: 256 for the consumer,
 one per point of the
-`(BT, BC, DV, D, FOLD_PREC, READ_PREC, DECAY, GLOBAL, COMPACT)` product, plus 32
+`(BT, BC, DV, D, FOLD_PREC, READ_PREC, DECAY, GLOBAL)` product, plus 32
 `decode_gemv_kernel` and 32 each of `union_forward_kernel` and
 `union_backward_kernel`. The manifest is the authority on that count and no
 comment restates it. The mangled name is the key because it is exact, stable, and
@@ -50,13 +50,13 @@ neither held before:
   rather than asserting it.
 - **there is one enumeration of the matrix.** The shards, the dispatch ladder and
   this gate's source list all come out of `tools/gen_shards.py`; there is no second
-  file that could enumerate a different 512.
+  file that could enumerate a different 256.
 
-The consumer's 512 keys are unaffected by the split by construction:
+The consumer's 256 keys are unaffected by the split by construction:
 `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
 depend on which translation unit expands it.
 
-`--shard NAME` scopes the compile to one shard's 64-entry slice for triage. It is a
+`--shard NAME` scopes the compile to one shard's 32-entry slice for triage. It is a
 measurement scope only: `--write` refuses it, because a manifest written from a
 subset would silently drop every instantiation it did not compile.
 
@@ -148,7 +148,7 @@ checkout:
 ```python
 >>> from rola import _build_config; _build_config.show()
 {'version': ..., 'archs': ['sm_80', 'sm_86'], 'ptxas': ...,
- 'manifest_sha256': '...', 'manifest_entries': {'sm_80': 608, 'sm_86': 608},
+ 'manifest_sha256': '...', 'manifest_entries': {'sm_80': 352, 'sm_86': 352},
  'ptx_jit_fallback': False, 'vendored': {'cutlass': {...}}}
 ```
 

@@ -116,8 +116,7 @@ def _paired_one_kernel(cell, fx, arm_a, arm_b, reps, label, extra=""):
 
 
 
-def arm_time(name, *, reps=31, norm="global", decay_temp=None, compact=False,
-             bt=None):
+def arm_time(name, *, reps=31, norm="global", decay_temp=None, bt=None):
     """ONE arm of the new consumer, absolute times -- the CROSS-BUILD instrument.
 
     **Every other timing mode in this file is a same-process paired A/B, and that is
@@ -139,16 +138,14 @@ def arm_time(name, *, reps=31, norm="global", decay_temp=None, compact=False,
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     gr = None if norm == "global" else fx["g_read"]
     plan, sch = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
-                          fx=fx,
-                          compact=compact, bt=bt)
+                          fx=fx, bt=bt)
     _, sch = _timed(cell, fx, plan, decay, gr, sch)      # warm + schedule
     ts = []
     for _ in range(reps):
         t, _ = _timed(cell, fx, plan, decay, gr, sch)
         ts.append(t)
     med = statistics.median(ts)
-    print(f"ARMTIME {cell.name} norm={norm} decay={decay_temp} compact={compact} "
-          f"reps={reps}")
+    print(f"ARMTIME {cell.name} norm={norm} decay={decay_temp} reps={reps}")
     print(f"  median {med:.4f} ms   IQR {_iqr(ts):.4f}   min {min(ts):.4f}")
     return dict(median_ms=med, iqr=_iqr(ts), min_ms=min(ts), times=ts)
 

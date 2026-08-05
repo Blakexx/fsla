@@ -3,7 +3,7 @@
 ``ROLA_V3_SPEC.md`` §6.4 (contract NORMATIVE, policy NORMATIVE, amended 2026-07-30).
 Everything here is PLAN-TIME. Device code never sees a `P`, a wave count or a
 byte budget; it sees a flat ``(owner, segment)`` work list and a workspace pointer,
-exactly as it sees ``BT`` and ``compact`` as stamped template arguments rather
+exactly as it sees ``BT`` as a stamped template argument rather
 than as things to decide (§7.4.1's sanctioned pattern).
 
 **`P = 1` is the default and the primary benchmarked configuration.** When the
@@ -193,7 +193,7 @@ class PlannerLedger:
 
 @dataclass(frozen=True, slots=True)
 class SequenceParallelPlan:
-    """The `P` half of one plan object (§6.4), alongside `BT`/`compact`/lowering.
+    """The `P` half of one plan object (§6.4), alongside `BT` and the lowering.
 
     ``P[o]`` is the split of the owner at row ``o`` of ``schedule.owners``, so this
     composes with the existing plan axes by construction: it is keyed on the SAME
@@ -369,11 +369,11 @@ def consumer_blocks_per_sm(plan) -> int:
 
     # The consumer's shared memory is entirely COMPILE-TIME
     # (`consumer::consumer_smem_bytes<...>`), so `gram_cols` is not a query axis: the
-    # instantiation identity is `(decay, compact, BC, BT, d_v)` and nothing else
+    # instantiation identity is `(decay, BC, BT, d_v)` and nothing else
     # moves the footprint. `_spanned_moduli`, which existed only to build the old
     # consumer's runtime `gram_cols` argument, went with it (item 6b).
     return int(extension().rola_consumer_occupancy(
-        plan.decay, plan.compact, plan.BC, plan.BT, plan.topology.d_v))
+        plan.decay, plan.BC, plan.BT, plan.topology.d_v))
 
 
 def select_sequence_parallelism(

@@ -103,7 +103,7 @@ _CHILD = textwrap.dedent(
         return x / x.sum(-1, keepdim=True)
 
     widths, BC, BT, d_v = {widths!r}, {BC!r}, {BT!r}, {d_v!r}
-    norm, decay, compact, prec = {norm!r}, {decay!r}, {compact!r}, {prec!r}
+    norm, decay, prec = {norm!r}, {decay!r}, {prec!r}
     p_read, p_write, T, P = {p_read!r}, {p_write!r}, {T!r}, {P!r}
     B, H, device = 2, 3, "cuda"
 
@@ -126,7 +126,7 @@ _CHILD = textwrap.dedent(
 
     plan = Plan(topology=topo, normalization=norm, BT=BT, BC=BC,
                 warp_tile=(1, max(1, d_v // 32)), decay=dec is not None,
-                mma_precision=prec, compact=compact)
+                mma_precision=prec)
     args = (v.to(torch.float32),
             tuple(t.to(torch.float32) for t in rl),
             tuple(t.to(torch.float32) for t in wl),
@@ -204,13 +204,12 @@ def _run_cell(**kw):
      (1.0, 0.15),    # the read-dense freeze-arm pattern: most tiles read-only
      (1.0, 1.0)],    # every tile mixed -- no phase-subset variation at all
 )
-@pytest.mark.parametrize("decay,compact", [(False, False), (True, False), (False, True),
-                                           (True, True)])
+@pytest.mark.parametrize("decay", [False, True])
 def test_item_stream_is_live_and_exact_under_role_imbalance(
-        widths, BC, d_v, BT, p_read, p_write, decay, compact):
+        widths, BC, d_v, BT, p_read, p_write, decay):
     _run_cell(widths=widths, BC=BC, BT=BT, d_v=d_v, norm="global", decay=decay,
-              compact=compact, prec="bf16", p_read=p_read, p_write=p_write,
-              T=521, P=1, seed=8100 + BC + BT + d_v + int(decay) + 2 * int(compact))
+              prec="bf16", p_read=p_read, p_write=p_write,
+              T=521, P=1, seed=8100 + BC + BT + d_v + int(decay))
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +220,10 @@ def test_item_stream_is_live_and_exact_under_role_imbalance(
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("P", [2, 3])
 @pytest.mark.parametrize("norm", ["raw", "global"])
-@pytest.mark.parametrize("decay,compact", [(False, False), (True, True)])
-def test_item_stream_is_live_on_the_segmented_path(P, norm, decay, compact):
+@pytest.mark.parametrize("decay", [False, True])
+def test_item_stream_is_live_on_the_segmented_path(P, norm, decay):
     _run_cell(widths=(8, 8), BC=64, BT=16, d_v=64, norm=norm, decay=decay,
-              compact=compact, prec="bf16", p_read=1.0, p_write=0.3,
+              prec="bf16", p_read=1.0, p_write=0.3,
               T=521, P=P, seed=8700 + P + int(decay))
 
 
@@ -237,5 +236,5 @@ def test_item_stream_is_live_on_the_segmented_path(P, norm, decay, compact):
 @pytest.mark.parametrize("BC,d_v", [(16, 32), (64, 64)])
 def test_item_stream_is_live_on_the_tf32x3_arm(BC, d_v):
     _run_cell(widths=((16,) if BC == 16 else (8, 8)), BC=BC, BT=16, d_v=d_v,
-              norm="global", decay=True, compact=False, prec="tf32x3",
+              norm="global", decay=True, prec="tf32x3",
               p_read=0.4, p_write=0.4, T=257, P=1, seed=8900 + BC + d_v)

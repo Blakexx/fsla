@@ -22,7 +22,7 @@ execution backends and the choice between them is STRUCTURAL, decided by
   on a CUDA device.
 * ``'cuda'`` -- the plan-selected V3 consumer (`ROLA_V3_SPEC.md` §3-§6):
   ``summarize_routing`` measures the realized routing in ONE kernel launch,
-  ``select_config`` picks ``(BC, BT, packing)`` from it in closed form, the ``Plan``
+  ``select_config`` picks ``(BC, BT)`` from it in closed form, the ``Plan``
   is stamped with the residency that choice was reasoned at, ``build_schedule``
   builds the §4 schedule from the same folded view, and ``_consumer_forward``
   launches the template instantiation that plan names. ``BC`` is chosen PER LAUNCH
@@ -957,8 +957,8 @@ class RoLA(nn.Module):
             # dispatch work.
             #
             # STRUCTURAL, NOT A THRESHOLD. `L == 1` is the NO-TILING case: there is no
-            # `BT` to choose, no `P` to split, no packing (the token's support IS the
-            # schedule) and a statistics population of one, so every stage-2 decision is
+            # `BT` to choose, no `P` to split (the token's support IS the schedule)
+            # and a statistics population of one, so every stage-2 decision is
             # degenerate. §6b requires this to bypass selection ARCHITECTURALLY rather
             # than by running `select_config` with degenerate inputs, which is why the
             # branch is here and not inside the planner. `recurrent_state is not None`
@@ -1013,7 +1013,7 @@ class RoLA(nn.Module):
             # is not a refactor:
             #
             #  * `plan_and_schedule` lives in the CALIBRATION package. It prices every
-            #    candidate by walking the routing tensors again per `(BT, compact)`
+            #    candidate by walking the routing tensors again per `BT`
             #    candidate -- the exact census -- and it carries a
             #    `torch.compile`/inductor edge. §6 P4 retired it from the runtime; the
             #    layer was the last caller keeping that edge live on the hot path.
@@ -1086,7 +1086,7 @@ class RoLA(nn.Module):
                 # The realized warp tile the consumer implements, stated rather than
                 # defaulted so the driver's check has something to check.
                 warp_tile=(1, max(1, self.head_v_dim // 32)),
-                decay=decay_config is not None, compact=choice.packing,
+                decay=decay_config is not None,
                 mma_precision=self.mma_precision,
                 # The per-SM SMEM budget, device-queried once and RECORDED in the
                 # plan (§10's ruling), so the plan carries the machine it reasoned

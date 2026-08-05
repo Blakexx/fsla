@@ -50,12 +50,10 @@ namespace rola {
 //: shared-memory opt-in, exactly as the pre-shard dispatch did -- the opt-in is a
 //: property of the kernel, not of the grid.
 //: docs/internals/consumer_launch.md#launch
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
-  constexpr size_t smem =
-      consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>();
-  auto kernel =
-      consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>();
+  auto kernel = consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>;
   if (smem > 48 * 1024) {
     //: A REFUSAL HERE IS NOT SWALLOWED. `cudaFuncSetAttribute`'s failure is recorded
     //: in the same per-thread error state `cudaGetLastError` reads, and
@@ -78,12 +76,10 @@ void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
 //: over a kernel address that already exists in the shard, and a partition that
 //: carried a different member set for the launcher and the query would be a special
 //: case with nothing behind it. docs/internals/consumer_launch.md#residency
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
 int query_consumer_occupancy_arm() {
-  constexpr size_t smem =
-      consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>();
-  auto kernel =
-      consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL, COMPACT>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>();
+  auto kernel = consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>;
   if (smem > 48 * 1024) {
     if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                              static_cast<int>(smem))

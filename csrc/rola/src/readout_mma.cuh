@@ -19,8 +19,8 @@
 // runs, bf16 is the performance arm. And `GLA_MASS_DECAY_SPEC.md` §12 rule 3 goes
 // live here on the BF16 ARM ONLY, while rule 1 does not go live here at all.
 //
-// The full derivation of each, the PTX fragment index maps, and the `COMPACT` and
-// `ksteps` degeneracy arguments: docs/internals/readout_mma.md
+// The full derivation of each and the PTX fragment index maps:
+// docs/internals/readout_mma.md
 
 #include <cuda_bf16.h>
 
@@ -44,65 +44,6 @@ constexpr float kBf16MaxFinite = 3.38953139e38f;
 //: rule 4's write-side annihilation. Belongs on the bf16 arm and on no other.
 __device__ __forceinline__ float clamp_bf16_finite(float x) {
   return fmaxf(-kBf16MaxFinite, fminf(kBf16MaxFinite, x));
-}
-
-//: One `[16 x 8]` output tile of the readout, accumulated over the COMPACTED
-//: contraction. `A` is `panel_read` (row stride `BC`), `B` the published state
-//: `[BC][SP]` row-major in the LEAF index, `mt` the 16-token row block, `ntg` the
-//: 8-channel column block, and `ksteps` the §3 step-4 k-step count -- the ONLY
-//: runtime quantity here. `COMPACT` is the plan-time gather axis; under `!COMPACT`
-//: `kidx` is `nullptr` and is never dereferenced.
-//: The PTX fragment index maps, the `K == BC` bit-identity and the reason the k-loop
-//: keeps a compile-time trip count: docs/internals/readout_mma.md#readout-fragment
-template <int BT, int BC, int SP, MmaPrec PREC, bool COMPACT>
-__device__ __forceinline__ void readout_fragment(const float* __restrict__ A,
-                                                 const float* __restrict__ B,
-                                                 const int* __restrict__ kidx, int ksteps, int mt,
-                                                 int ntg, int lane, float& d0, float& d1, float& d2,
-                                                 float& d3) {
-  const int g = lane >> 2;
-  const int r = lane & 3;
-  d0 = d1 = d2 = d3 = 0.0f;
-  //: B's row for compacted column `k`. Compile-time-resolved on both arms.
-  auto brow = [kidx](int k) { return COMPACT ? kidx[k] : k; };
-
-  if (PREC == MmaPrec::kTf32x3) {
-    // m16n8k8, tf32 -- fragment maps: docs/internals/readout_mma.md#fragment-maps
-#pragma unroll
-    for (int ks = 0; ks < BC / 8; ++ks) {
-      if (ks >= ksteps) break;
-      const int ka = ks * 8;
-      const int ra = mt * 16 + g;
-      mma_m16n8k8_tf32x3(d0, d1, d2, d3, A[ra * BC + ka + r], A[(ra + 8) * BC + ka + r],
-                         A[ra * BC + ka + r + 4], A[(ra + 8) * BC + ka + r + 4],
-                         B[brow(ka + r) * SP + ntg * 8 + g], B[brow(ka + r + 4) * SP + ntg * 8 + g],
-                         d0, d1, d2, d3);
-    }
-  } else {
-    // m16n8k16, bf16 -- fragment maps: docs/internals/readout_mma.md#fragment-maps
-    // §12 rule 3: every operand is clamped to bf16's finite range before packing.
-#pragma unroll
-    for (int ks = 0; ks < BC / 16; ++ks) {
-      if (ks >= ksteps) break;
-      const int ka = ks * 16;
-      const int ra = mt * 16 + g;
-      const int ca = ka + r * 2;
-      const unsigned a0 =
-          pack_bf16x2(clamp_bf16_finite(A[ra * BC + ca]), clamp_bf16_finite(A[ra * BC + ca + 1]));
-      const unsigned a1 = pack_bf16x2(clamp_bf16_finite(A[(ra + 8) * BC + ca]),
-                                      clamp_bf16_finite(A[(ra + 8) * BC + ca + 1]));
-      const unsigned a2 = pack_bf16x2(clamp_bf16_finite(A[ra * BC + ca + 8]),
-                                      clamp_bf16_finite(A[ra * BC + ca + 9]));
-      const unsigned a3 = pack_bf16x2(clamp_bf16_finite(A[(ra + 8) * BC + ca + 8]),
-                                      clamp_bf16_finite(A[(ra + 8) * BC + ca + 9]));
-      const int nb = ntg * 8 + g;
-      const unsigned b0 = pack_bf16x2(clamp_bf16_finite(B[brow(ca) * SP + nb]),
-                                      clamp_bf16_finite(B[brow(ca + 1) * SP + nb]));
-      const unsigned b1 = pack_bf16x2(clamp_bf16_finite(B[brow(ca + 8) * SP + nb]),
-                                      clamp_bf16_finite(B[brow(ca + 9) * SP + nb]));
-      mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
-    }
-  }
 }
 
 }  // namespace rola

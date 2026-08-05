@@ -326,14 +326,14 @@ class Cell:
                               g_read=g_read, g_write=g_write, v=v, dials=dials,
                               topology=self.topology()))
 
-    def plan(self, *, norm, decay_on, prec, fx=None, compact=False, bt=None):
+    def plan(self, *, norm, decay_on, prec, fx=None, bt=None):
         """A producer cell's plan is PLANNER-SELECTED; a synthetic cell's is stated.
 
         The distinction matters for what a measurement on the cell can claim: only
         the planner-selected form supports a sentence beginning "the plan selects".
         The selected axes are then overridden ONLY on the one arm this bench
         crosses -- the precision point -- so that everything else (`BT`, `BC`,
-        `compact`, `ring_slots`) remains the planner's answer.
+        `ring_slots`) remains the planner's answer.
 
         **THE `lowering` PARAMETER IS GONE** (item 6b, 2026-08-01). The consumer
         includes `intra_panel.cuh` unconditionally and does ONE intra lowering, so
@@ -366,21 +366,11 @@ class Cell:
             plan, _axes, sched = plan_and_schedule(
                 fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"],
                 fx["topology"], self.BC, normalization=norm, decay=decay_on, **kw)
-            #: `compact` is OVERRIDDEN rather than left to the planner, and that is
-            #: RULING 2's whole point: the planner's cost model prices compaction
-            #: against the OLD kernel's economics (a scalar walk's trip count, a
-            #: dense-panel-to-compacted copy, a staging-ring probe) and selects
-            #: `False` at every gating cell. Re-deriving the axis for the new shape
-            #: requires driving it DIRECTLY; the planner's own choice is what the
-            #: measurement is supposed to inform, so inheriting it here would beg the
-            #: question. `compact=False` (the default) leaves the planner's answer.
-            if compact:
-                plan = _dc.replace(plan, compact=True)
             return _dc.replace(plan, mma_precision=prec), sched
         return Plan(topology=fx["topology"] if fx else self.topology(),
                       normalization=norm, BT=self.BT if bt is None else bt, BC=self.BC,
                       warp_tile=(1, max(1, self.d_v // 32)), decay=decay_on,
-                      mma_precision=prec, compact=compact), None
+                      mma_precision=prec), None
 
 
 

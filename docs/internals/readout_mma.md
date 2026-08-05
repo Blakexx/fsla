@@ -6,8 +6,7 @@ row-scale; emit the partial"), lowered onto the `mma.sync.aligned` shapes wrappe
 
 Symbols: `t` is a token of the tile, `i` the owner's resident LEAF index, `ch` a value
 channel; `BT` is the token tile, `BC` the leaf tile, `DV` the value width, `SP` the
-padded SMEM row stride of the published state; `M` is the state; `K` is a tile's
-support size and `Kpad` that size rounded up to the MMA shape's `k`; `lane` is the
+padded SMEM row stride of the published state; `M` is the state; `lane` is the
 lane id within the warp, `g = lane >> 2` the PTX `groupID` and `r = lane & 3` its
 `threadID_in_group`.
 
@@ -111,38 +110,9 @@ A: a0..a3 pack (g, 2r|2r+1), (g+8, 2r|2r+1), (g, 2r+8|2r+9), (g+8, 2r+8|2r+9)
 B: b0,b1  pack (row 2r|2r+1, col g), (row 2r+8|2r+9, col g)
 ```
 
-## <a id="readout-fragment"></a>7. `readout_fragment` — one `[16 x 8]` output tile
+## <a id="where-it-runs"></a>7. Where this contraction is actually issued
 
-Accumulated over the COMPACTED contraction.
-
-- `A` is `panel_read`, row stride `BC`, whose column `k` holds the amplitude of leaf
-  `kidx[k]` (spec §3 step 2's gathered leaf list);
-- `B` is the published state `[BC][SP]` row-major in the LEAF index, `SP` its padded
-  row stride, so the B operand is gathered through `kidx`;
-- `mt` selects the 16-token row block, `ntg` the 8-channel column block.
-
-`ksteps` is §3 step 4's "MMA over `ceil(K/8)` k-steps" made literal: the caller passes
-`Kpad / 8` (tf32x3) or `Kpad / 16` (bf16), with `Kpad` the compacted count rounded up
-to the shape's `k`. **It is a runtime bound because `K` is a per-tile support size, and
-that is the ONLY runtime quantity here** — the fragment maps, the shape and the format
-stay compile-time. At the degeneracy `K == BC` this is a fully-unrolled `BC/8` loop
-with `kidx[k] == k`, bit-identically.
-
-## <a id="ksteps-early-exit"></a>8. Why the k-loop is a compile-time trip count with an early exit
-
-Not a runtime bound. A runtime loop bound around an MMA sequence is un-unrollable and
-costs more than the k-steps it skips — MEASURED on a runtime-bounded MMA level loop
-(provenance: findings §5.3 point 2). So the loop is
-`#pragma unroll` over `BC/8` (or `BC/16`) with `if (ks >= ksteps) break;` inside.
-
-## <a id="compact"></a>9. `COMPACT` — the plan-time gather axis
-
-Spec §6, ratified rev `2026-07-29.5` Q1. When the planner's measured tile unions
-saturate, the gather is compiled OUT and the B row index is the loop index itself
-(`brow` resolves at compile time on both arms).
-
-That is **not an approximation** of the gathered path, it is its `K == BC` degeneracy
-written without the indirection: `kidx[k] == k` there by the ascending-order property
-of the compaction, so the two paths issue identical loads in identical order.
-
-`kidx` is `nullptr` under `!COMPACT` and is never dereferenced.
+`mma_tile_fragA`, with the read panel as a FRAGMENT-ORDERED A operand and the published
+state as B. This file owns the shapes, the formats and the maps the tile is built from;
+the tile itself, its k-loop and its operand orientations are
+[`mma_tile.md`](mma_tile.md#mma-tile-fraga).

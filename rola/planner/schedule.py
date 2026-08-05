@@ -81,7 +81,7 @@ _RING_DEPTHS = (2, 1)
 COMPILED_RING_DEPTH = 1
 
 
-#: An OCCUPANCY ORACLE: `(BT, BC, d_v, global_norm, decay, mma_precision, compact,
+#: An OCCUPANCY ORACLE: `(BT, BC, d_v, global_norm, decay, mma_precision,
 #: gram_cols, ring_slots) -> CTAs/SM`.
 #:
 #: **`mma_precision` IS PART OF THE INSTANTIATION IDENTITY and is passed per query,
@@ -133,7 +133,7 @@ def consumer_occupancy() -> OccupancyOracle:
     caution. Making it a real query axis is a C++ dispatch change, not a docstring.
 
     The kernel's shared memory is entirely COMPILE-TIME
-    (`consumer::consumer_smem_bytes<BT, BC, DV, D=2, prec, decay, global, compact>`), so
+    (`consumer::consumer_smem_bytes<BT, BC, DV, D=2, prec, decay, global>`), so
     `gram_cols`, `ring_slots` and `mma_precision` are not query axes for it: they are
     accepted to satisfy the :data:`OccupancyOracle` contract -- one signature, so a
     caller cannot silently hand the wrong oracle the wrong arity -- and ignored with
@@ -143,8 +143,7 @@ def consumer_occupancy() -> OccupancyOracle:
     ext = extension()
 
     def query(BT: int, BC: int, d_v: int, global_norm: bool, decay: bool,
-              mma_precision: str, compact: bool,
-              gram_cols: int, ring_slots: int) -> int:
+              mma_precision: str, gram_cols: int, ring_slots: int) -> int:
         # `global_norm` IS a template axis of the kernel but is PINNED TO `global`
         # inside `rola_consumer_occupancy`, and that is CONSERVATIVE rather than
         # sloppy: `global` costs strictly more shared memory than `raw` (one extra
@@ -155,7 +154,7 @@ def consumer_occupancy() -> OccupancyOracle:
         # mis-ranked only in the direction of caution. Recorded in `rewrite.md`
         # §2.36 as the one axis the oracle does not resolve.
         del global_norm, mma_precision, gram_cols, ring_slots
-        return int(ext.rola_consumer_occupancy(decay, compact, BC, BT, d_v))
+        return int(ext.rola_consumer_occupancy(decay, BC, BT, d_v))
 
     return query
 
@@ -376,16 +375,6 @@ class Plan:
     BC: int
     warp_tile: tuple[int, int]
     decay: bool = False
-    #: §3 step 2's support gather, as a COMPILE-TIME axis (spec §6, ratified rev
-    #: `2026-07-29.5` Q1). `True` compiles the gather in; `False` compiles it out
-    #: and the kernel takes the `K == BC` degeneracy directly -- the same code with
-    #: `c_idx[k] == k` folded at compile time, so the two are BIT-IDENTICAL wherever
-    #: the tile unions really do saturate, and the second is strictly cheaper (no
-    #: probe, no ballot, two fewer barriers, and the gather's SMEM unallocated).
-    #: `select_compact_and_BT` chooses it from the realized `TileUnionStats`; the
-    #: default is `True` because it is the general path, and a hand-built plan that
-    #: does not price its supports must not silently assume saturation.
-    compact: bool = True
     mma_precision: str = "bf16"
     amp_dtype: torch.dtype = torch.float32
     write_cost_weight: float = DEFAULT_WRITE_COST_WEIGHT
@@ -1590,7 +1579,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 #
 # The exact census, `plan_cost_per_token` and its six measured constants,
-# `TileUnionStats` and the `(BT, compact)` ARGMIN moved to
+# `TileUnionStats` and the `BT` ARGMIN moved to
 # `rola/planner/calibration/`. They are documented public API
 # (`rola/__init__.py`: "STABLE construction, ADVISORY contents") and five bench
 # instruments plus two out-of-track test suites call them, so the names survive here

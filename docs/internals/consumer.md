@@ -397,7 +397,7 @@ fallback and is deliberately a plan field, not a hidden default.
 ## <a id="instantiation-matrix"></a>B8. The instantiation matrix, and why every axis is a template
 
 ```
-BT(2) x BC(2) x DV(2) x D(4) x PREC(2) x DECAY(2) x GLOBAL(2) x COMPACT(2)
+BT(2) x BC(2) x DV(2) x D(4) x PREC(2) x DECAY(2) x GLOBAL(2)
 ```
 
 Each is a STRUCTURAL plan fact, fixed before launch, with few legal values — the
@@ -420,21 +420,21 @@ instantiation keyed by mangled name. Measured on the current tree
 
 | kernel family | entries |
 |---|---|
-| `consumer_forward_kernel` | 512 |
+| `consumer_forward_kernel` | 256 |
 | `decode_gemv_kernel` | 32 |
 | `union_forward_kernel` | 32 |
 | `union_backward_kernel` | 32 |
-| **total per architecture** | **608** |
+| **total per architecture** | **352** |
 
 A prose count in a source comment is a number that rots the first time an axis
 moves. `python tools/ratify.py` recompiles the closure and compares; see
 [`docs/ratification.md`](../ratification.md).
 
-### The 512 arms are compiled in eight shards, not one translation unit
+### The 256 arms are compiled in eight shards, not one translation unit
 
 The instantiations do not live in this file. They live in eight generated
 translation units under `csrc/rola/src/instantiations/`, partitioned on
-`PREC x GLOBAL x BT` at 64 arms each, and `consumer.cu` reaches them through host
+`PREC x GLOBAL x BT` at 32 arms each, and `consumer.cu` reaches them through host
 wrappers it can DECLARE but not define
 ([`consumer_launch.md`](consumer_launch.md#shard-only)).
 
@@ -457,19 +457,18 @@ split rather than adding to it. The full-cycle numbers are in
 nothing would be sharded and the compile time would simply stop falling; that is
 what `tools/fatbin_entries.py` refuses.
 
-## <a id="shard-rows"></a>B9. One table, three enumerations retired
+## <a id="shard-rows"></a>B9. One table, and why the matrix is enumerated once
 
-The dispatch used to be a macro ladder, the residency query a second one, the
-shared-memory footprint a third, and a probe translation unit under `tools/` a
-fourth — four hand-maintained spellings of one 512-element set, each able to drift
-from the others without anything failing.
+Four hand-maintained spellings of one 256-element set — a dispatch ladder, a
+residency ladder, a footprint ladder and a probe translation unit — is a shape that
+drifts without anything failing. It is REFUSED here.
 
-There is now ONE definition, `tools/gen_shards.py`'s matrix, and everything else is
+There is ONE definition, `tools/gen_shards.py`'s matrix, and everything else is
 generated from it:
 
 | consumer | what it gets |
 |---|---|
-| the eight shard translation units | 64 explicit instantiations each |
+| the eight shard translation units | 32 explicit instantiations each |
 | `instantiations/dispatch_launch.inc` | the launch ladder `launch_consumer` includes |
 | `instantiations/dispatch_rows.inc` | the concatenated `ShardRow` tables |
 | `tools/ratify.py` | the translation units to compile, and the manifest's `shards` block |
@@ -501,7 +500,7 @@ symbol, and the post-link gate names its tuple three ways.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
-`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `compact`, `BC`,
+`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC`,
 `BT` and `DV` because a single reported number would over-promise on one arm and
 under-report another. The whole point of deriving `__launch_bounds__` from
 `consumer_smem_bytes` is that a decay instantiation which regressed the budget
@@ -513,7 +512,6 @@ Why each axis is on the query:
 | axis | what it moves |
 |---|---|
 | `DECAY` | three extra `[BC]` vectors |
-| `COMPACT` | `c_idx`/`c_slot`/`c_count`; `compact + decay` is the tightest residency cell in the kernel (~140 B of margin at 3 CTAs/SM) |
 | `BC` | which term BINDS: at `BC = 64` shared memory binds (3 CTAs), at `BC = 16` the REGISTER FILE does (4) |
 | `BT` | `BT = 32` doubles the y-fragment count (register term) and grows `WT`/`Gm` (SMEM term) |
 | `DV` | `d_v = 32` halves the state block |
@@ -530,7 +528,7 @@ prices: `global`, and the production precision.
 Both queries resolve a `ShardRow` (B9) and read one field of it —
 `occupancy()` calls the driver through the shard's wrapper, because post-shard the
 kernel ADDRESS lives in the shard; `smem_bytes` is a `constexpr` the shard computed
-at compile time. The wrapper is instantiated for all 512 arms rather than the 32
+at compile time. The wrapper is instantiated for all 256 arms rather than the 16
 queried, which is why adding a query axis needs no matching change in the shards
 ([`consumer_launch.md`](consumer_launch.md#residency)).
 

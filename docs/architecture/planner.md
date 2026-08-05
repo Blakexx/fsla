@@ -52,21 +52,20 @@ admissible at all.
 
 ## 2. What the runtime planner is
 
-`rola/planner/select.py` — `select_config` chooses `(BC, BT, packing,
-feeder_flags)` from exactly three arguments: a static configuration record, a
-hardware-facts record, and one `RoutingSummaries` from the producer epilogue. It
-reads no tensor, issues no reduction, allocates nothing, and does not touch the
-routing. **Nothing in it measures.** Every coefficient is a recorded number with
-a named isolating cell, refitted offline and recompiled into a small rule table
+`rola/planner/select.py` — `select_config` chooses `(BC, BT, feeder_flags)` from
+exactly three arguments: a static configuration record, a hardware-facts record,
+and one `RoutingSummaries` from the producer epilogue. It reads no tensor, issues
+no reduction, allocates nothing, and does not touch the routing. **Nothing in it
+measures.** Every coefficient is a recorded number with a named isolating cell,
+refitted offline and recompiled into a small rule table
 (`RULE_TABLE_PROVENANCE`).
 
 Its decision order is acyclic and documented as such (`select.py` module
-docstring): feeder flags depend on nothing; packing is a closed form in
-`(BC, BT, decay, hist, flags)` and depends on no residency; the `(BC, BT)` argmin
-then queries the occupancy oracle **with the arm's actual footprint** and
-minimizes `cost_per_token · waves + atomic`. There is no back edge. A per-owner
-packing decision would create one; masks are per-tile and packing is per-launch
-precisely so that it cannot.
+docstring): feeder flags depend on nothing; the `(BC, BT)` argmin then queries the
+occupancy oracle **with the footprint that pair launches** and minimizes
+`cost_per_token · waves + atomic`. There is no back edge — the consumer
+instantiates one executor, so the arm the oracle is asked about is the arm that
+runs, and nothing downstream of the argmin feeds into it.
 
 The measured overhead of planning is `+0.15` to `+0.30 ms` on a `3.3 ms` plan
 build inside a `73.2 ms` step — `+0.2%` to `+0.4%` (journal, 2026-08-04). The
@@ -103,16 +102,6 @@ from, or a placeholder doing more than it was supposed to.
 This is the part a future reader most needs and is least likely to infer from the
 code, because the code is complete and the *numbers* are not.
 
-- `C_PACK_BREAKEVEN` (`select.py:98`) is **an empty dict**. With no row, the
-  packing predicate declines, so the COMPACT arm is never plan-selected today.
-  The docstring states rather than hides the consequence: on read-dense cells the
-  default is inert (packing is structurally excluded anyway), but on the sparse
-  at-scale cells **four of eight measured argmin rows select a compacted arm**,
-  and the empty table declines all four. That regret is real and is quantified by
-  a gate that runs the auditor twice — once at the shipped empty table, once at
-  the derived breakeven table — and shows the disagreement belongs to the
-  placeholder rather than to the rule
-  (`tests/unit/test_planner.py::test_the_auditor_reports_the_documented_disagreement_ledger_exactly`).
 - `C_SATURATION = 1.0` — exact-dense only. Deliberately the *only* defensible
   value until the occupancy sweep exists: any structural zero at all breaks the
   closed form the flag licenses, and a soft epsilon would re-introduce the
@@ -120,17 +109,20 @@ code, because the code is complete and the *numbers* are not.
 - The cross-level collision correction `gamma = 1.0` — the bound uncorrected,
   pending a census fit. Its *placement* is load-bearing and already correct: it is
   applied per `(owner, tile)` before quantization, never to the mean, because
-  `ceil` is nonlinear and the `K = 0` mass is where the packing saving lives.
+  `ceil` is nonlinear and the `K = 0` mass — the candidate pairs that gather
+  nothing and skip every GEMM — is where the distribution's whole tail sits.
 
-**The deliverable that closes this** is named and unambiguous: fill the breakeven
-tables with measured cost curves for the executor family — dense / atom-skip /
-full compact on the leaf axis — **as a function of occupancy**, so the planner
-selects per side per launch by the same argmin that picks `(BC, BT)`. The family
-form is required and a point verdict is not admissible: designing against a
-single benchmarked configuration is designing against a hole, and a selector with
-measured curves absorbs wherever a trained model's routing lands, which a point
-verdict does not (user ruling; journal, 2026-08-04, "no point-configuration
-verdicts — executor FAMILY").
+**What closes this** is named and unambiguous: the `N/BC` atomic sweep that fills
+`C_ATOMIC_COEFF`, and the occupancy sweep that fills `C_SATURATION`. Both are
+sweeps, not point measurements, and that form is required rather than preferred:
+designing against a single benchmarked configuration is designing against a hole,
+and a selector with measured curves absorbs wherever a trained model's routing
+lands, which a point verdict does not (user ruling; journal, 2026-08-04, "no
+point-configuration verdicts").
+
+Selection itself is a SWAPPABLE INTERFACE, and the honesty above is why: the cost
+model is one implementation of it, labelled interim, and replacing it is a swap
+rather than surgery.
 
 Until those rows exist, a claim of the form "configuration X is the right default"
 is not supported by this repository, and the honest statement is the one made

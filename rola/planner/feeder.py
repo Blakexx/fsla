@@ -102,19 +102,14 @@ class FeederFlags:
         A leaf is live at a token iff EVERY level's digit is live there, so one dense
         level among sparse ones does NOT make the side's support the full rectangle.
         This is the same conjunction :meth:`StaticDensity.side_dense` takes, restated
-        here over the OR of both triggers because the planner's structural rules
-        (rung P) must fire on the detected arm as well as the declared one.
+        here over the OR of both triggers so a caller can ask the question of the
+        DETECTED arm and not only the declared one.
         """
         if duty == "read":
             return all(self.read) and bool(self.read)
         if duty == "write":
             return all(self.write) and bool(self.write)
         raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
-
-    @property
-    def any_side_dense(self) -> bool:
-        """RUNG P's structural predicate -- see :func:`compact_is_structurally_inert`."""
-        return self.side_dense("read") or self.side_dense("write")
 
     def packed(self) -> int:
         """§4.4's ``uint32 feeder_flags``: bit ``2l`` = read, bit ``2l+1`` = write."""
@@ -134,56 +129,8 @@ class FeederFlags:
             write=tuple(bool((word >> (BITS_PER_LEVEL * level + 1)) & 1) for level in range(D)))
 
 
-def compact_is_structurally_inert(flags: FeederFlags) -> bool:
-    """RUNG P (``THUNDER_RUN_SPEC.md`` §6 P1): is compaction's saving identically zero?
-
-    **The derivation, and it is an identity rather than an estimate.** Compaction cuts
-    the extent of §3 step 2's gather, whose membership test is the UNION
-    ``(read_word | write_word) != 0`` -- and it must be the union, because the backward
-    iterates ``support(W) UNION support(R)``
-    (``GRADIENT_PROOFS_WOLFRAM.md`` P5.21 item 1). If EITHER side is full-support then
-    every leaf of every owner is in that union at every token, so ``K == BC`` on every
-    ``(owner, tile)`` pair, so the readout's k-extent cut and the fold's m-extent cut
-    are **identically zero** -- not small, zero -- for every realization the
-    configuration admits.
-
-    **The price of carrying the axis anyway is MEASURED: +2,355 warp-instructions per
-    candidate tile, +21 %** (``CONSUMER_ACT3_PRICING.md`` §2.4c, from
-    ``m1-stage-column-work.md`` §3d: 11,125.9 against 8,771.0 on
-    ``iso-tile-w16x4x64-BC64``). That is what rung P declines.
-
-    **THE ONE RESIDUAL SAVING, REFUSED DELIBERATELY AND WITH THE ARITHMETIC SHOWN.**
-    §2.4c states it: "only the Gram's causal prefix ``KI`` still cuts -- the smallest
-    of the four GEMMs". Compaction can therefore still shorten the INTRA extent even
-    at ``K == BC``. It is refused because it can never pay, which is arithmetic over
-    the landed constants rather than a policy preference. The intra saving is bounded
-    by ``INTRA_GRAM_KSTEP_WORK * ds * BT(BT+1)/272`` (its value at ``kisteps = 0``),
-    and the tax is ``GATHER_CANDIDATE_FIXED_WORK + GATHER_CANDIDATE_QUANTUM_WORK * ds``:
-
-    ==========  ====  =====================  ==============  =========
-    ``BC``      ds    max intra saving       tax             verdict
-    ==========  ====  =====================  ==============  =========
-    64          4     576.0  (BT=16)         2278.25         refused
-    64          4     2235.5 (BT=32)         2278.25         refused
-    16          1     144.0  (BT=16)         702.88          refused
-    16          1     558.9  (BT=32)         702.88          refused
-    ==========  ====  =====================  ==============  =========
-
-    So the structural exclusion agrees with the retiring cost model's argmin on every
-    instantiated cell, and the exclusion is what SHIPS because the agreement is not
-    something a closed-form selector should have to re-derive per launch. FALSIFIABLE
-    in one line: an instantiated ``(BC, BT)`` whose max intra saving exceeds its tax --
-    at ``BC = 64`` that needs ``BT >= 33``, which ``_SUPPORTED_BT`` does not have.
-
-    NOTE the ASYMMETRY with the feeder flags themselves: those are per level, this is
-    per SIDE (``side_dense``'s conjunction), because ``K`` is an AND over levels.
-    """
-    return flags.any_side_dense
-
-
 __all__ = [
     "BITS_PER_LEVEL",
     "MAX_FEEDER_LEVELS",
     "FeederFlags",
-    "compact_is_structurally_inert",
 ]

@@ -443,8 +443,8 @@ two decode steps and the counter is safe to capture in a CUDA graph.
 ## <a id="instantiation-matrix"></a>31. The instantiation matrix
 
 `DV(2) x D(4) x DECAY(2) x GLOBAL(2) = 32`. Note what is **not** an axis: no `BT`
-(one token), no `BC` (no owner blocking), no `COMPACT` (the bitmap IS the
-compaction), no `MmaPrec` (there is no MMA). Every axis is a structural plan fact
+(one token), no `BC` (no owner blocking), no `MmaPrec` (there is no MMA). Every
+axis is a structural plan fact
 with few legal values, which is the standing *"branch on structure, not
 thresholds"* rule. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D`
 outside `[1, 4]` is refused in the dispatch's `default`.

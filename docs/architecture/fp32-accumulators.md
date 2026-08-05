@@ -77,7 +77,7 @@ is worth citing because it is not about the state: the decay **dials** are
 accumulated in fp32 and never bf16, because `rate` near 1 makes `1 - rate`
 catastrophically cancelling and `log1pf` cannot repair a cancellation that has
 already happened inside the product
-([`consumer.md#dials`](../internals/consumer.md#dials)).
+([`consumer.md#dials`](../internals/consumer.md#dials-fp32)).
 
 ## What stays open
 
@@ -118,4 +118,4 @@ Two conditions govern any of these landing:
 - Composition law, `V_max` derivations and the gate defect: `vmax_budget.md`
   (150 paired runs), journal 2026-08-04.
 - Final kill and the standing conclusion: campaign journal, 2026-08-05 late.
-- The dials instance: [`docs/internals/consumer.md#dials`](../internals/consumer.md#dials).
+- The dials instance: [`docs/internals/consumer.md#dials`](../internals/consumer.md#dials-fp32).

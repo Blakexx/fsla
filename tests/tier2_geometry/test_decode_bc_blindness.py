@@ -86,7 +86,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths, norm):
         # the point of the gate is that there is no channel through which it could be.
         plan = Plan(topology=topology, normalization=norm, BT=16, BC=BC,
                     warp_tile=(1, max(1, d_v // 32)), decay=False,
-                    mma_precision="tf32x3", compact=True)
+                    mma_precision="tf32x3")
         assert plan.BC == BC
         config = freeze_decode_config(topology, norm, decay=False, BH=B * H, device=device,
                                       mma_precision="tf32x3")
