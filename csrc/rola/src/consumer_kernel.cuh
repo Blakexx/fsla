@@ -65,15 +65,6 @@ using rola::detail::segment_word_mask;
 //: kernel, the §6.4 scan and the summary pass. The planner mirrors the same value at
 //: `rola.planner.schedule.MMA_K_QUANTUM`. docs/internals/arch_table.md#mma-quantum
 
-//: MMA PRECISION IS ONE AXIS WITH TWO NAMED POINTS:
-//: PRODUCTION = bf16 at BOTH sites, EXACTNESS = tf32x3 at BOTH sites. The split is
-//: about what each arm is FOR -- the exactness arm exists so an oracle gate can see a
-//: structural bug through the numerics, the production arm exists to ship. Why the
-//: fold is bf16 in production, and the derived (not observed) state-deviation bound
-//: it carries: docs/internals/consumer_kernel.md#mma-precision
-constexpr MmaPrec kFoldPrecDefault = MmaPrec::kBf16;
-constexpr MmaPrec kReadPrecDefault = MmaPrec::kBf16;
-
 //: §4.5's PAGED ADDRESS, RE-KEYED TO THE ATOM. A page is ONE `MMA_K_QUANTUM`-leaf
 //: ATOM, not one owner, so an owner spans `QPO` INDEPENDENTLY PAGED atoms whose slots
 //: are not contiguous in general and a CTA resolves `QPO` bases at startup. Returns

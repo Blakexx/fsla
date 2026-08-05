@@ -391,19 +391,6 @@ constexpr size_t vw_union_bytes() {
   return align4(vw > clk ? vw : clk);
 }
 
-//: THE STAGING SET: the SMEM objects the tile's STAGING phase PRODUCES and its COMPUTE
-//: phase CONSUMES -- `Rf`, `Vw`, the two row scales, and under `COMPACT` the gathered
-//: list. `Gm`, `WT` and `den` are deliberately NOT in it, and both exclusions are
-//: structural rather than budgetary: docs/internals/smem_layout.md#staging-set
-template <int BT, int BC, int DV, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY, bool COMPACT>
-constexpr size_t staging_slot_bytes() {
-  size_t b = 2 * static_cast<size_t>(BT) * sizeof(float);          // sr, sw
-  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();  // Vw (+ clk)
-  b += static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) * sizeof(unsigned);
-  if (COMPACT) b += (2 * static_cast<size_t>(BC) + 2) * sizeof(int);
-  return b;
-}
-
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
 //: from it rather than restated next to it. Every term, its measured residency
 //: consequence and the three per-arm carves (`DECAY`'s three buffers rather than four,
