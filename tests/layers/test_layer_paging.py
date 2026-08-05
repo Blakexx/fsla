@@ -236,15 +236,25 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
     x = torch.randn(2, 48, 64, device="cuda")
     script = [16, 64]
     calls = {"i": 0}
-    orig_select = layer_mod.select_config_with_evidence
 
-    def forcing(static, hw, summaries, **kw):
-        choice, evidence = orig_select(static, hw, summaries, **kw)
-        forced = script[min(calls["i"], len(script) - 1)]
-        calls["i"] += 1
-        return dataclasses.replace(choice, BC=forced), evidence
+    #: THE FORCING GOES THROUGH THE SELECTOR SEAM, not around it: a `Selector` is
+    #: exactly the object whose job is to decide, so a test that wants a scripted
+    #: decision installs one. It wraps the shipped selector rather than replacing it,
+    #: because what this row is about is the `BC` flip and everything else about the
+    #: plan should stay the plan the model would have produced.
+    class ScriptedBC:
+        name, status = "scripted-BC", "DEBUG"
 
-    monkeypatch.setattr(layer_mod, "select_config_with_evidence", forcing)
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __call__(self, bundle):
+            choice, evidence = self._inner(bundle)
+            forced = script[min(calls["i"], len(script) - 1)]
+            calls["i"] += 1
+            return dataclasses.replace(choice, BC=forced), evidence
+
+    monkeypatch.setattr(layer_mod, "DEFAULT_SELECTOR", ScriptedBC(layer_mod.DEFAULT_SELECTOR))
 
     unpaged = _layer(paging=False, seed=82)
     paged = _layer(paging=True, seed=82)

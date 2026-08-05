@@ -205,6 +205,16 @@ are here because a document nothing checks is a document that drifts.
 tables to `tools/supported.py --check`. A hand-maintained support table is a
 claim; a generated one is a report, and this is what keeps the difference real.
 
+**`tests/unit/test_selector_interface.py`** holds THE SEAM the card marks binding:
+the typed and versioned `StatisticsBundle` (its version refusal, and `expose()`'s exact
+key set), the `Selector` protocol's `name`/`status`, `CostModelSelector` declaring
+itself `INTERIM`, `FixedChoiceSelector` reading nothing, `select_with`, and the frozen
+§4.3 entry points' keyword-only `selector=` — including that a passed selector's choice
+is the one that comes back, that cost-model kwargs beside a selector are refused rather
+than dropped, that the §6b decode bypass still precedes any selector, and that a plan
+records who decided. CPU-only with an injected oracle: selection is a pure function of
+its recorded inputs, so a row that needed a device would be testing the driver.
+
 **`tests/unit/test_dispatch_table.py`** is the CENSUS: it reads the dispatch table out
 of the built extension and joins it against the fatbin's device entry points, decoded
 from their mangled names, asserting set equality in both directions per architecture —
@@ -246,6 +256,13 @@ flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # T
 flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
 flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
 ```
+
+**THE LOCK IS `/tmp/rola_gpu.lock` — that exact path, with an underscore.** `flock`
+is advisory and keyed on a NAME, so a second spelling excludes nothing and silently
+buys nothing: two commands holding two different paths run on the device at the same
+time and neither can tell. Every command in this repository, every benchmark's usage
+line and every agent brief uses this one path. If you find another spelling anywhere,
+it is a defect — fix it rather than adding a second lock beside it.
 
 **EVERY LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME QUESTION
 AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what

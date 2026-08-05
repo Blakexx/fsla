@@ -532,10 +532,14 @@ class StatisticsBundle:
 class Selector(Protocol):
     """WHO DECIDES. One call, one choice, and evidence when it has any.
 
-    `name` and `status` are part of the contract rather than decoration: a plan records
-    which selector produced it and whether that selector is interim, so a result taken
-    under a knowingly-unaudited model is never mistaken for one taken under a measured
-    one.
+    `name` and `status` are part of the contract rather than decoration: they are what a
+    caller RECORDS beside a decision, so a result taken under a knowingly-unaudited model
+    is not mistaken for one taken under a measured one. `Plan.selector_name` and
+    `Plan.selector_status` are those fields, ADVISORY on the same contract
+    `occupancy_blocks_per_sm` has -- recorded next to the decision, read by no rule --
+    and `rola/layers/rola.py` stamps them on every plan it selects. Nothing downstream
+    branches on them, and nothing should: they answer "who decided, and was it audited",
+    which is a question about provenance and not about the plan's shape.
     """
 
     name: str

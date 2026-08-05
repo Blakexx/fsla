@@ -10,8 +10,9 @@ definition). Here the matrix is DEFINED ONCE, and everything that enumerates it 
 GENERATED from that definition:
 
 * `csrc/rola/src/instantiations/consumer_*.cu` -- the eight shard translation units,
-  each carrying 64 explicit instantiations of the host launcher (and with it, exactly
-  once in the whole fatbin, the 64 device kernels), plus its 64 `ShardRow` records;
+  each carrying `TARGET_MEMBERS_PER_SHARD` explicit instantiations of the host launcher
+  (and with them, exactly once in the whole fatbin, that many device kernels), plus one
+  `ShardRow` record each;
 * `csrc/rola/src/instantiations/dispatch_table.inc` -- the shard row blocks, the
   mixed-radix key over the matrix axes, and the index that turns a key into a row;
   the launch and both device-backed queries all resolve through it;
@@ -286,10 +287,11 @@ def dispatch_table_inc() -> str:
     THE LAUNCH RESOLVES A ROW, exactly as the residency and footprint queries already
     do, so there is ONE lookup in the translation unit and no arm-shaped code anywhere
     in it. The row index is a mixed-radix array over the axes' value positions:
-    `kRowByKey[dispatch_key(choice)]`, a load, against the 2,462-line nested switch it
-    replaces. Both the key function and the index are emitted from the matrix here, so
-    they cannot disagree about the axis order -- which is the failure a hand-written
-    index formula would reintroduce.
+    `kRowByKey[dispatch_key(choice)]`, a load, against the 1,054-line nested switch it
+    replaces (2,462 lines before the COMPACT axis left and the matrix halved). Both
+    the key function and the index are emitted from the matrix here, so they cannot
+    disagree about the axis order -- which is the failure a hand-written index formula
+    would reintroduce.
 
     ABSENT KEYS ARE `nullptr`, not a neighbouring row. The matrix is a full cross
     product today, so every key is populated; the null arm is what makes a

@@ -118,10 +118,12 @@ from rola.planner.schedule import (
     routing_views,
 )
 from rola.planner.select import (
+    DEFAULT_SELECTOR,
     SUPPORTED_BT,
     HardwareFacts,
+    StatisticsBundle,
     freeze_for_decode,
-    select_config_with_evidence,
+    select_with,
 )
 from rola.routing.producer import (
     BudgetConditioning,
@@ -1079,7 +1081,14 @@ class RoLA(nn.Module):
                 density=self.static_density)
             self.last_summary_granularity = (summary_BC, summary_BT)
 
-            choice, evidence = select_config_with_evidence(static, hw, summaries)
+            #: THE SELECTOR IS NAMED HERE, and it is the one the plan will record.
+            #: `DEFAULT_SELECTOR` rather than a bare `select_config_with_evidence`
+            #: call, so that the layer goes through the same seam a caller swapping
+            #: the model would go through -- if the default were reached by a
+            #: different path, swapping it would miss this one.
+            selector = DEFAULT_SELECTOR
+            choice, evidence = select_with(
+                selector, StatisticsBundle(static=static, hw=hw, summaries=summaries))
             plan = Plan(
                 topology=self.topology, normalization=self.state_norm,
                 BT=choice.BT, BC=choice.BC,
@@ -1101,7 +1110,15 @@ class RoLA(nn.Module):
                 sm_shared_bytes=sm_shared_bytes(),
                 # The residency §4.3 reasoned at, recorded next to the decision it
                 # drove -- the same contract `sm_shared_bytes` has.
-                occupancy_blocks_per_sm=evidence.blocks_per_sm)
+                occupancy_blocks_per_sm=evidence.blocks_per_sm,
+                # WHO DECIDED, and whether that decider is audited. Advisory, on the
+                # same contract as the two fields above: recorded beside the decision,
+                # read by no rule. `CostModelSelector` reports `INTERIM` because the
+                # calibration inventory records its constants as not yet personally
+                # audited, and a plan that did not say so would let a number taken
+                # under that model read as one taken under a measured one.
+                selector_name=selector.name,
+                selector_status=selector.status)
             schedule = build_schedule(
                 routing_out.read_levels, routing_out.write_levels,
                 routing_out.g_read, routing_out.g_write, plan, views=views)

@@ -414,6 +414,22 @@ class Plan:
     #: an INPUT and is readable off the plan afterwards, so a plan states the
     #: residency it was reasoned for. `0` = hand-stamped, no occupancy consulted.
     occupancy_blocks_per_sm: int = 0
+    #: WHICH SELECTOR PRODUCED THIS PLAN, and whether it is one whose constants have
+    #: been audited. ADVISORY, on exactly the contract `sm_shared_bytes` and
+    #: `occupancy_blocks_per_sm` have: recorded next to the decision, read by no rule.
+    #:
+    #: The fields exist because "interim" is a property of the DECIDER, not of the
+    #: decision, and it cannot be recovered from the choice afterwards: a `(BC, BT)`
+    #: chosen by a knowingly-unaudited cost model and the same `(BC, BT)` chosen by a
+    #: measured one are the same four axes. A plan that does not say which produced it
+    #: cannot tell a reader that its numbers came from a model the calibration
+    #: inventory records as not yet personally audited. Empty means hand-stamped -- a
+    #: plan built without going through a selector at all.
+    #:
+    #: `ConfigChoice` deliberately does NOT carry them: its `(BC, BT, feeder_flags)`
+    #: shape is frozen by `THUNDER_RUN_SPEC.md` §4.3, and provenance is not a choice.
+    selector_name: str = ""
+    selector_status: str = ""
 
     def __post_init__(self) -> None:
         validate_normalization(self.normalization)

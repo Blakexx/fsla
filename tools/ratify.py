@@ -398,6 +398,17 @@ def check_flags(manifest: dict) -> bool:
         return True
     missing = [f for f in want if f not in (got or [])]
     extra = [f for f in (got or []) if f not in want]
+    if got is not None and not missing and not extra:
+        #: SAME FLAGS, DIFFERENT ORDER. Order is compared deliberately -- `nvcc` reads
+        #: its flag list left to right and a later flag can override an earlier one, so
+        #: a reordering is not provably a no-op -- but a refusal whose two difference
+        #: lists are both empty says nothing, and a reader would take it for a bug in
+        #: the gate rather than a difference in the manifest.
+        print(f"\nFAIL  FLAG DRIFT (ORDER). The manifest records the same {len(want)} "
+              f"flags in a different order.\n  tree:     {want}\n  manifest: {got}\n"
+              f"Order is compared because `nvcc` reads the list left to right and a "
+              f"later flag can override an earlier one; re-ratify with --write.")
+        return False
     print(f"\nFAIL  FLAG DRIFT. The manifest was measured under a different flag list "
           f"than the tree compiles with.\n  in the tree, not the manifest: {missing}\n"
           f"  in the manifest, not the tree: {extra}\n"

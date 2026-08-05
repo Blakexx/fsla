@@ -49,7 +49,7 @@ neither held before:
   decode/entmax keys named symbols that existed in no shipped `.so`. They now name
   the entry points the binary carries, and `tools/fatbin_entries.py` checks that
   rather than asserting it.
-- **there is one enumeration of the matrix.** The shards, the dispatch ladder and
+- **there is one enumeration of the matrix.** The shards, the dispatch table and
   this gate's source list all come out of `tools/gen_shards.py`; there is no second
   file that could enumerate a different 256.
 
