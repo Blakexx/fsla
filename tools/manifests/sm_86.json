@@ -7,8 +7,8 @@
   }
  },
  "source": {
-  "csrc_sha256": "bfb891fbe224026f70bd20dac2b05e8bcf9fe66ef0ea86633ce2d4ec8e233f02",
-  "date": "2026-08-03"
+  "csrc_sha256": "b7d3777a65fb05fdb367eb62ebabaae9b3c06e7665f34e850934e4b8071e0031",
+  "date": "2026-08-04"
  },
  "entries": {
   "sm_86:_ZN4rola6decode55_GLOBAL__N__4f3d04c9_22_probe_launch_bounds_cu_4cfeecbc18decode_gemv_kernelILi32ELi1ELb0ELb0EEEvNS0_12DecodeParamsE": {
@@ -732,7 +732,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi16ELi32ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 59,
+   "regs": 62,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
@@ -1116,7 +1116,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi16ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 59,
+   "regs": 62,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
@@ -1500,7 +1500,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi32ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 56,
+   "regs": 60,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
@@ -2268,13 +2268,13 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi16ELi32ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 60,
+   "regs": 62,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi16ELi32ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 64,
+   "regs": 62,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
@@ -2460,7 +2460,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi16ELi32ELi4ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 54,
+   "regs": 56,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 8
@@ -2556,7 +2556,7 @@
    "hot_locals": 0
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi16ELi64ELi1ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 84,
+   "regs": 85,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0
@@ -2844,7 +2844,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi16ELi64ELi4ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 79,
+   "regs": 80,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 8
@@ -2940,7 +2940,7 @@
    "hot_locals": 0
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi32ELi1ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 79,
+   "regs": 80,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0
@@ -3036,7 +3036,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi32ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 56,
+   "regs": 59,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9
@@ -3228,7 +3228,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi32ELi4ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 59,
+   "regs": 58,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 8
@@ -3420,7 +3420,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 63,
+   "regs": 64,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 10
@@ -3534,7 +3534,7 @@
    "hot_locals": 10
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi3ELNS_7MmaPrecE1ELS2_1ELb0ELb1ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 89,
+   "regs": 86,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 17
@@ -3612,7 +3612,7 @@
    "hot_locals": 9
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi4ELNS_7MmaPrecE1ELS2_1ELb0ELb0ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 79,
+   "regs": 80,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 8

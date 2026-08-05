@@ -2760,9 +2760,23 @@ void consumer_forward_kernel(ConsumerParams p) {
     //     A -> F                     `kCtlReadDone` reaching `kWarps` (readout
     //                                READS `S`, the fold WRITES it). Taken ONCE,
     //                                in window 0.
-    //     G -> C                     `kCtlGramDone` reaching `kWarps` (`G` writes
-    //                                `Gm`, `C` reads it). `G`'s publication rides
-    //                                the LAST window.
+    //     G -> C                     `kCtlGramDone` (`G` writes `Gm`, `C` reads
+    //                                it). `G`'s publication rides the LAST window.
+    //                                THE MECHANISM FORKS ON `kNarrowGate`, and both
+    //                                forms carry the SAME edge:
+    //                                  narrow (`bf16`): target `kGramWarps`, and the
+    //                                    edge is taken only on `mixed` tiles -- on a
+    //                                    `!mixed` tile `G` writes no `Gm` and `C`
+    //                                    reads none (stores, GEMM 3 and the mass term
+    //                                    are all `mixed`-guarded), so it is VACUOUS
+    //                                    and both endpoints skip the counter;
+    //                                  wide (`tf32x3`): target `kWarps`, retired by
+    //                                    every warp, unconditionally -- what it
+    //                                    always was.
+    //                                The narrow target is `kGramWarps` because the
+    //                                writing set IS `warp < kGramWarps`; see its
+    //                                definition. Why the fork exists at all is a
+    //                                MEASUREMENT, recorded at `kNarrowGate`.
     //     F -> B7, C -> B7           program order into the end-of-tile barrier
     // The relation is a total order on {STAGE, {A, G_0}, F_0, G_1, F_1, ..., C, B7}
     // and therefore ACYCLIC. (`A` is unordered with respect to every `G_w` -- the
@@ -2770,13 +2784,33 @@ void consumer_forward_kernel(ConsumerParams p) {
     // are `F` and `C`: `F` writes `S`, `C` reads `Gm`, `Vw`, `sr`, `den`, and the
     // sets are disjoint. That is the overlap this rung exists to expose.)
     // ALWAYS-RUNNABLE, and it is two facts:
-    //   (i) every warp executes `retire_item` on BOTH phase counters
-    //       unconditionally, and in program order both retirements precede both
-    //       waits. So a warp blocked in `await_count` is never waiting on an
-    //       increment a blocked warp still owes -- the increments are all issued
-    //       before any warp can reach a wait. Both counters are monotone with
-    //       target `kWarps`, so every wait terminates after at most `kWarps`
-    //       retirements.
+    //   (i) every increment a waiter needs is issued, in program order, before any
+    //       warp can reach the wait that needs it. For `kCtlReadDone` that is the
+    //       unconditional retirement every warp executes above the loop, target
+    //       `kWarps`. For `kCtlGramDone` it holds on BOTH ARMS of the `kNarrowGate`
+    //       fork, because on each the retiring set and the target are derived from
+    //       ONE expression rather than chosen separately -- wide: every warp
+    //       retires, target `kWarps`; narrow: `mixed && warp < kGramWarps` retires,
+    //       target `kGramWarps`. Taking the narrow arm, which is the one with a
+    //       guard to discharge:
+    //         - both guards are CTA-UNIFORM in `mixed` (it is `is_read &&
+    //           is_write`, the tile's schedule bits) and compile-time-comparable in
+    //           `warp`, so either the whole CTA takes the counter or none of it
+    //           does. A tile cannot have waiters without retirers;
+    //         - on a `mixed` tile warps `0..kGramWarps-1` execute the retirement
+    //           inside `if (w + 1 == kNWin)`, which every warp reaches because
+    //           `kNWin` is CTA-uniform, and that is strictly before the wait in
+    //           program order. The counter is monotone with target `kGramWarps`, so
+    //           the wait terminates after exactly `kGramWarps` retirements;
+    //         - on a `!mixed` tile nobody retires, nobody waits, and the word stays
+    //           at the reset value below -- which is re-established next tile by the
+    //           same unconditional store, on a path every warp reaches whichever
+    //           branch it took.
+    //       LOWERING THE TARGET WITHOUT RESTRICTING THE RETIREMENT WOULD BE A
+    //       CORRECTNESS BUG, not an optimisation: a waiter could reach
+    //       `kGramWarps` on retirements from warps `kGramWarps..kWarps-1`, which
+    //       store no `Gm`, and read the Gram before its producer published.
+    //       `tests/unit/test_phase_c_gate_structure.py` is the gate on that.
     //  (ii) NO `__syncthreads` IS EVER REACHED WHILE ANOTHER WARP SPINS. Every warp
     //       executes the same `kNWin` iterations and the same barriers within them
     //       (`is_write`, `w` and `kNWin` are all CTA-uniform), and the only wait
@@ -2988,6 +3022,41 @@ void consumer_forward_kernel(ConsumerParams p) {
     // long as one warp owns one Gram tile for the whole tile. Any later fluid-role
     // rung must treat the Gram items as PINNED.
     constexpr int kGTiles = (NM * (BT / 8) + kWarps - 1) / kWarps;
+    //: THE GRAM WRITER COUNT, and it is the phase-C counter's target.
+    //: `NM * (BT / 8)` is the number of `[16 x 8]` Gram warp tiles; a warp holds
+    //: one iff its index is below that, in BOTH forks -- the `NM == 1` fork guards
+    //: on `warp < BT / 8` at `:3167` (and `NM == 1` there), and the `NM >= 2` fork
+    //: breaks at `gt = warp + q * kWarps >= NM * (BT / 8)`, whose smallest `gt` for
+    //: warp `w` is `w` itself. So the storing set is EXACTLY `warp < kGramWarps`,
+    //: not merely contained in it. At the flagship (`BT = 16`) it is **2 of 8**.
+    //: A ternary rather than `min()`: this must be a core-language constant
+    //: expression with no library dependence, and `<algorithm>`'s `min` is not
+    //: `constexpr`-usable in device code without pulling in `cuda/std`.
+    constexpr int kGramWarps = (NM * (BT / 8) < kWarps) ? NM * (BT / 8) : kWarps;
+    //: WHETHER THE PHASE-C GATE IS NARROWED AT ALL, and this is a MEASURED scope,
+    //: not a preference. The narrowing is bit-identical on every arm and free on
+    //: the `bf16` ones, but on the `tf32x3` arms it is not free: adding either
+    //: guard at the two phase-C sites re-schedules `ptxas` on instantiations that
+    //: are ALREADY register-starved (128 and 255 registers, `Lb0` raw norm at
+    //: `BT = 32`), and the 1,216-entry ratchet measured 12 of them acquiring
+    //: in-loop `LDL`/`STL` -- `<32,64,32,1, tf32x3, raw>` going from ZERO spill to
+    //: 32 st / 68 ld with 12 of the accesses inside the tile loop. Attribution:
+    //: `kGramWarps` alone is byte-identical SASS, 1a alone and 1b alone each cause
+    //: it independently and non-additively, so it is an ALLOCATOR outcome and there
+    //: is no safe half. Spill inside the tile loop is a memory round-trip per
+    //: iteration; the ratchet refuses it and re-ratifying would launder a refusal
+    //: into a baseline.
+    //:
+    //: SO THE SCOPE IS THE PRECISION AXIS, which is a FORMAT axis the dispatch
+    //: already forks on (`consumer.cu:261-263` sets both GEMM sites together, and
+    //: `stage_is_narrow` / `StageT` / `GmT` / `GMP` above all fork on it). It is
+    //: NOT a size test and NOT a threshold: no `BT`, `BC`, `DV` or occupancy
+    //: number appears in it. The `tf32x3` arm keeps the 8-wide gate it always had,
+    //: which costs it nothing it had -- that arm is the EXACTNESS REFERENCE
+    //: (`RTOL = 2e-5`), gated on correctness rather than shipped for throughput,
+    //: and the shipped default is `bf16` (`schedule.py:389`), so every shipping
+    //: arm -- the parity flagship included -- is inside the narrowed set.
+    constexpr bool kNarrowGate = stage_is_narrow<READ_PREC, FOLD_PREC>();
     float gd[kGTiles][4];
 #pragma unroll
     for (int q = 0; q < kGTiles; ++q) { gd[q][0] = 0.0f; gd[q][1] = 0.0f;
@@ -3125,12 +3194,54 @@ void consumer_forward_kernel(ConsumerParams p) {
           }
         }
         // ---- B5, AS A COUNTER: `Gm` is published to phase C ------------------
-        // Retired UNCONDITIONALLY by every warp, exactly as `kCtlReadDone` is, and
-        // for the same reason: the phase fact this counter states is "no warp is
-        // still writing `Gm`", and a subset count would make the deadlock argument
-        // a case analysis over `mixed` and `NM`. The warps that hold no Gram tile
-        // retire an empty phase, which is one atomic.
-        retire_item(&ctl[kCtlGramDone], lane);
+        // ON THE NARROW ARM: retired by the WRITERS ONLY, and the wait's target is
+        // the same `kGramWarps`. The phase fact the counter states is "no warp is
+        // still writing `Gm`", and the writing set is EXACTLY `mixed && warp <
+        // kGramWarps` -- equality, not containment, in both `NM` forks (derived at
+        // `kGramWarps`' definition). Counting `kGramWarps` retirements therefore
+        // counts every writer and nothing else, and the deadlock argument stays two
+        // lines rather than becoming a case analysis: both guards are CTA-uniform in
+        // `mixed` and compile-time-comparable in `warp`, warps `0..kGramWarps-1`
+        // execute this retirement inside `w + 1 == kNWin` (which every warp reaches,
+        // `kNWin` being CTA-uniform) strictly before the wait in program order, and
+        // no `__syncthreads` sits between the two at `kRing == 1`.
+        // ON THE WIDE ARM: every warp retires, target `kWarps`. The warps that hold
+        // no Gram tile retire an empty phase, which is one atomic. Both forms
+        // satisfy the same release invariant -- the retiring set covers the storing
+        // set and the target equals the retiring count -- and
+        // `tests/unit/test_phase_c_gate_structure.py` checks BOTH ARMS of the fork
+        // separately rather than whichever one the tree happens to compile.
+        //
+        //: THE PREDICATE MIRRORS THE `gm_put` STORE GUARD AT `:3167`, NEVER THE GEMM
+        //: GUARD AT `:3124`. The GEMM carries an extra `kw > 0` -- the causal-prefix
+        //: early exit -- that the stores do NOT: a warp with `kw <= 0` skips the
+        //: multiply but still STORES ZEROS, so a retirement taken from the GEMM guard
+        //: would leave that warp unretired and the wait would HANG. This is what
+        //: `tests/unit/test_phase_c_gate_structure.py` reads off the source.
+        //
+        // ON THE NARROW ARM `!mixed` SKIPS THE COUNTER ENTIRELY, here and at the
+        // wait; the wide arm keeps the unconditional rendezvous. On a `!mixed`
+        // visit nobody writes `Gm` (the stores are `mixed`-guarded) and nobody reads
+        // it (GEMM 3 at `:3477`/`:3487` and the mass column's term 2 at `:3505` are
+        // too), so the one edge this counter carries -- `G -> C` of the edge DAG at
+        // `:2763` -- is VACUOUS there. `Gm` is born and dies inside one tile (it has
+        // no ring slot, `:958`) and the next tile's stores are ordered behind the
+        // end-of-tile `__syncthreads()`, so nothing outside the tile observes it
+        // either. The counter word is re-zeroed unconditionally at `:2821` by every
+        // warp regardless of the branch taken, so the skip path leaves nothing
+        // inconsistent: it bypasses `retire_item`, `eligible`, `await_count` and the
+        // word itself.
+        //: `if constexpr`, so the wide arm's emitted code is the ORIGINAL statement
+        //: TEXTUALLY rather than a folded predicate. A single site written
+        //: `if ((!kNarrowGate || mixed) && warp < kGateWarps)` would leave a
+        //: `warp < kWarps` comparison whose truth `ptxas` cannot see (`warp` is
+        //: `tid >> 5`, a runtime value), and the byte-identity this scope exists to
+        //: restore would be lost on the very arms it is protecting.
+        if constexpr (kNarrowGate) {
+          if (mixed && warp < kGramWarps) retire_item(&ctl[kCtlGramDone], lane);
+        } else {
+          retire_item(&ctl[kCtlGramDone], lane);
+        }
       }
 
       // ---- PHASE B-2: THE WINDOW'S FOLD, AND IT IS THE TILE'S FLUID ITEM POOL --
@@ -3337,7 +3448,20 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
 
-    await_count(&ctl[kCtlGramDone], kWarps);
+    //: THE PHASE-C GATE, SKIPPED ON `!mixed` AND NARROWED TO THE WRITERS.
+    //: `mixed` is CTA-uniform (`is_read`/`is_write` are the tile's schedule bits),
+    //: so this branch never diverges and the guard matches the retirement's at
+    //: `:3241` exactly -- weakening one without the other is the defect
+    //: `LATENCY_COVERAGE_DESIGN.md:129-132` names and
+    //: `tests/unit/test_phase_c_gate_structure.py` rejects.
+    //: `kCtlReadDone` at `:3280` is NOT narrowable and is untouched: its dependence
+    //: is the readout reading `S` before the fold writes it, and at `DV = 64` all
+    //: eight warps run a readout tile.
+    if constexpr (kNarrowGate) {
+      if (mixed) await_count(&ctl[kCtlGramDone], kGramWarps);
+    } else {
+      await_count(&ctl[kCtlGramDone], kWarps);
+    }
 
     // ---- PHASE C ------------------------------------------------------------
     // ---- GEMM 3: the intra term, y_tile += G . Vw ---------------------------

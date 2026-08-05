@@ -126,6 +126,15 @@ def _if_regions(clean: str) -> list[tuple[str, int, int]]:
     Both the braced and the single-statement forms are handled; ``if constexpr``
     is included (its condition is a compile-time fork and it guards code exactly
     the same way).
+
+    ``else`` BODIES ARE REGISTERED TOO, under the condition ``!(cond)``.  That is
+    not decoration: the phase-C release is now a compile-time fork
+    (``if constexpr (kNarrowGate) { narrow } else { wide }``), and a checker blind
+    to ``else`` would see two retirements and two waits with no way to say which
+    belongs with which — it would have to guess a pairing, and a gate that guesses
+    is not a gate.  With the ``else`` arms named, each side of the fork carries its
+    own ``kNarrowGate`` / ``!(kNarrowGate)`` tag and the invariant is discharged
+    once per arm.
     """
     regions = []
     for m in re.finditer(r"\bif\s*(?:constexpr\s*)?\(", clean):
@@ -135,11 +144,34 @@ def _if_regions(clean: str) -> list[tuple[str, int, int]]:
         j = rp
         while j < len(clean) and clean[j] in " \t\n":
             j += 1
+        # the ELSE arm, if any, guarded by the negation
+        def _register_else(body_end: int, cond: str = cond) -> None:
+            k = body_end
+            while k < len(clean) and clean[k] in " \t\n":
+                k += 1
+            if not clean.startswith("else", k):
+                return
+            k += 4
+            while k < len(clean) and clean[k] in " \t\n":
+                k += 1
+            if k >= len(clean):
+                return
+            if clean[k] == "{":
+                e = _match_brace(clean, k)
+            elif clean.startswith("if", k):
+                return          # `else if` — the chained `if` is found on its own
+            else:
+                e = clean.find(";", k)
+                e = len(clean) if e < 0 else e + 1
+            regions.append((f"!({' '.join(cond.split())})", k, e))
+
         if j < len(clean) and clean[j] == "{":
             end = _match_brace(clean, j)
+            _register_else(end)
         else:
             end = clean.find(";", j)
             end = len(clean) if end < 0 else end + 1
+            _register_else(end)
         regions.append((" ".join(cond.split()), rp, end))
     return regions
 
@@ -269,14 +301,35 @@ def _sites(source: str) -> dict:
 # THE CHECK.  Returns a list of violation strings; empty == safe.
 # --------------------------------------------------------------------------
 
+#: A site's ARM is the set of enclosing COMPILE-TIME fork conditions naming
+#: ``kNarrowGate``.  The phase-C release is scoped to the ``bf16`` precision arms
+#: (the ``tf32x3`` arms keep the 8-wide rendezvous, because narrowing them moves
+#: register pressure into loop-resident spill on already-starved instantiations),
+#: so the tree carries TWO retirements and TWO waits.  Pairing them by position
+#: would be a guess; pairing them by arm tag is a fact off the source.
+_ARM_RE = re.compile(r"kNarrowGate")
+
+
+def _arm(guards: list[str]) -> frozenset:
+    return frozenset(g for g in guards if _ARM_RE.search(g))
+
+
+def _arm_name(arm: frozenset) -> str:
+    return " & ".join(sorted(arm)) if arm else "<unforked>"
+
+
 def check_phase_c_release(source: str) -> list[str]:
+    """Discharge the release invariant ONCE PER ARM of the ``kNarrowGate`` fork.
+
+    Returns a list of violation strings; empty == safe.
+    """
     s = _sites(source)
     bad: list[str] = []
 
-    if len(s["retire"]) != 1:
-        return [f"expected exactly 1 retire into kCtlGramDone, found {len(s['retire'])}"]
-    if len(s["await_"]) != 1:
-        return [f"expected exactly 1 await on kCtlGramDone, found {len(s['await_'])}"]
+    if not s["retire"]:
+        return ["found no retire into kCtlGramDone"]
+    if not s["await_"]:
+        return ["found no await on kCtlGramDone"]
     if not s["gm_put"]:
         return ["found no gm_put store site -- the parser has lost the Gram stores"]
 
@@ -286,72 +339,93 @@ def check_phase_c_release(source: str) -> list[str]:
                    "below is derived from that definition and must be re-derived")
     KW = 8  # kConsumerThreads == 256, asserted separately below
 
-    r_off, r_guards = s["retire"][0]
-    r_bound, r_mixed, r_other = _warp_set(r_guards)
-    a_off, a_target, a_guards = s["await_"][0]
-    a_bound, a_mixed, _ = _warp_set(a_guards)
+    retires = {}
+    for off, guards in s["retire"]:
+        retires.setdefault(_arm(guards), []).append((off, guards))
+    awaits = {}
+    for off, target, guards in s["await_"]:
+        awaits.setdefault(_arm(guards), []).append((off, target, guards))
 
-    # --- HAZARD (design §3.4): the retire predicate must mirror the gm_put STORE
-    # guard, never the GEMM guard.  The GEMM at the `NM == 1` fork carries an extra
-    # `kw > 0` (the causal-prefix early exit) that the stores do NOT -- a warp with
-    # `kw <= 0` still stores zeros.  A retirement derived from the GEMM guard would
-    # skip that warp and the wait would HANG.
-    if any("kw" in g for g in r_guards):
-        bad.append(f"the retirement at line {_line_of(source, r_off)} is guarded by a "
-                   f"condition mentioning `kw` ({r_guards}); it must mirror the gm_put "
-                   f"store guard, not the GEMM guard -- a `kw <= 0` warp still stores "
-                   f"zeros and would never retire, hanging the wait")
-    if r_other:
-        bad.append(f"the retirement's guard constrains `warp` in a form this gate "
-                   f"cannot reduce: {r_other}")
+    if set(retires) != set(awaits):
+        return [f"the retirement arms {sorted(map(_arm_name, retires))} and the wait "
+                f"arms {sorted(map(_arm_name, awaits))} do not correspond; one side of "
+                f"the compile-time fork retires or waits without the other"]
+    for arm in retires:
+        if len(retires[arm]) != 1 or len(awaits[arm]) != 1:
+            return [f"arm {_arm_name(arm)} has {len(retires[arm])} retirement(s) and "
+                    f"{len(awaits[arm])} wait(s); want exactly one of each"]
 
-    # --- CONDITION 2: T >= |R|.  With R = {mixed? && warp < r_bound}, |R| = r_bound.
-    for BT in _BT_VALUES:
-        try:
-            n_r = _eval_bound(r_bound, BT, KW)
-            n_t = _eval_bound(a_target, BT, KW)
-        except Exception as exc:  # noqa: BLE001
-            bad.append(f"cannot evaluate warp bound {r_bound!r}/{a_target!r} at BT={BT}: {exc}")
-            break
-        if n_t < n_r:
-            bad.append(
-                f"UNSAFE RELEASE at BT={BT}: await_count target `{a_target}` = {n_t} is "
-                f"BELOW the retiring-warp count `{r_bound}` = {n_r} (retire at line "
-                f"{_line_of(source, r_off)}, await at line {_line_of(source, a_off)}). "
-                f"The wait can be satisfied by {n_t} retirements from warps that store "
-                f"no `Gm`, releasing a `Gm` consumer before the producer has published "
-                f"-- LATENCY_COVERAGE_DESIGN.md:129-132's named defect.")
+    for arm in sorted(retires, key=_arm_name):
+        tag = f"[arm {_arm_name(arm)}] "
+        (r_off, r_guards), = retires[arm]
+        (a_off, a_target, a_guards), = awaits[arm]
+        r_bound, r_mixed, r_other = _warp_set(r_guards)
+        _a_bound, a_mixed, _ = _warp_set(a_guards)
 
-    # --- CONDITION 1: R superset of S, over the gm_put store sites.
-    for off, guards, brk in s["gm_put"]:
-        g_bound, g_mixed, _ = _warp_set(guards)
-        if brk is not None and g_bound == "kWarps":
-            g_bound = brk       # the NM >= 2 fork bounds by loop break, not by `if`
+        # --- HAZARD (design §3.4): the retire predicate must mirror the gm_put STORE
+        # guard, never the GEMM guard.  The GEMM at the `NM == 1` fork carries an
+        # extra `kw > 0` (the causal-prefix early exit) that the stores do NOT -- a
+        # warp with `kw <= 0` still stores zeros.  A retirement derived from the GEMM
+        # guard would skip that warp and the wait would HANG.
+        if any("kw" in g for g in r_guards):
+            bad.append(f"{tag}the retirement at line {_line_of(source, r_off)} is guarded "
+                       f"by a condition mentioning `kw` ({r_guards}); it must mirror the "
+                       f"gm_put store guard, not the GEMM guard -- a `kw <= 0` warp still "
+                       f"stores zeros and would never retire, hanging the wait")
+        if r_other:
+            bad.append(f"{tag}the retirement's guard constrains `warp` in a form this "
+                       f"gate cannot reduce: {r_other}")
+
+        # --- CONDITION 2: T >= |R|.  With R = {mixed? && warp < r_bound}, |R| = r_bound.
         for BT in _BT_VALUES:
             try:
-                n_g, n_r = _eval_bound(g_bound, BT, KW), _eval_bound(r_bound, BT, KW)
-            except Exception:  # noqa: BLE001, S110
-                continue
-            if n_g > n_r:
+                n_r = _eval_bound(r_bound, BT, KW)
+                n_t = _eval_bound(a_target, BT, KW)
+            except Exception as exc:  # noqa: BLE001
+                bad.append(f"{tag}cannot evaluate warp bound {r_bound!r}/{a_target!r} "
+                           f"at BT={BT}: {exc}")
+                break
+            if n_t < n_r:
                 bad.append(
-                    f"INCOMPLETE RELEASE at BT={BT}: the gm_put store at line "
-                    f"{_line_of(source, off)} runs on warps < {g_bound} = {n_g} but only "
-                    f"warps < {r_bound} = {n_r} retire; a storing warp never announces "
-                    f"its store")
-        if r_mixed and not g_mixed:
-            bad.append(f"the retirement requires `mixed` but the gm_put store at line "
-                       f"{_line_of(source, off)} does not -- a store outside the "
-                       f"retiring set")
+                    f"{tag}UNSAFE RELEASE at BT={BT}: await_count target `{a_target}` = "
+                    f"{n_t} is BELOW the retiring-warp count `{r_bound}` = {n_r} (retire "
+                    f"at line {_line_of(source, r_off)}, await at line "
+                    f"{_line_of(source, a_off)}). The wait can be satisfied by {n_t} "
+                    f"retirements from warps that store no `Gm`, releasing a `Gm` "
+                    f"consumer before the producer has published -- "
+                    f"LATENCY_COVERAGE_DESIGN.md:129-132's named defect.")
 
-    # --- The wait's own guard may only ever be WEAKER than the retirement's, or the
-    # CTA deadlocks: a warp that waits while the retiring warps skipped the retire.
-    if a_mixed and not r_mixed:
-        bad.append("the await is `mixed`-guarded but the retirement is not")
-    if r_mixed and not a_mixed:
-        bad.append(f"DEADLOCK: the retirement at line {_line_of(source, r_off)} is "
-                   f"`mixed`-guarded but the await at line {_line_of(source, a_off)} is "
-                   f"not -- on a `!mixed` tile nobody retires and every warp waits "
-                   f"forever")
+        # --- CONDITION 1: R superset of S, over the gm_put store sites.  The stores
+        # sit OUTSIDE the fork, so every store site applies to every arm.
+        for off, guards, brk in s["gm_put"]:
+            g_bound, g_mixed, _ = _warp_set(guards)
+            if brk is not None and g_bound == "kWarps":
+                g_bound = brk   # the NM >= 2 fork bounds by loop break, not by `if`
+            for BT in _BT_VALUES:
+                try:
+                    n_g, n_r = _eval_bound(g_bound, BT, KW), _eval_bound(r_bound, BT, KW)
+                except Exception:  # noqa: BLE001, S110
+                    continue
+                if n_g > n_r:
+                    bad.append(
+                        f"{tag}INCOMPLETE RELEASE at BT={BT}: the gm_put store at line "
+                        f"{_line_of(source, off)} runs on warps < {g_bound} = {n_g} but "
+                        f"only warps < {r_bound} = {n_r} retire; a storing warp never "
+                        f"announces its store")
+            if r_mixed and not g_mixed:
+                bad.append(f"{tag}the retirement requires `mixed` but the gm_put store at "
+                           f"line {_line_of(source, off)} does not -- a store outside the "
+                           f"retiring set")
+
+        # --- The wait's own guard may only ever be WEAKER than the retirement's, or
+        # the CTA deadlocks: a warp that waits while the retirers skipped the retire.
+        if a_mixed and not r_mixed:
+            bad.append(f"{tag}the await is `mixed`-guarded but the retirement is not")
+        if r_mixed and not a_mixed:
+            bad.append(f"{tag}DEADLOCK: the retirement at line {_line_of(source, r_off)} "
+                       f"is `mixed`-guarded but the await at line "
+                       f"{_line_of(source, a_off)} is not -- on a `!mixed` tile nobody "
+                       f"retires and every warp waits forever")
 
     return bad
 
@@ -378,20 +452,49 @@ _AWAIT_STMT = re.compile(
     r"(?:if\s*\([^)]*\)\s*)?await_count\(&ctl\[kCtlGramDone\],\s*\w+\);")
 
 
+def _narrow_index(sites: list, key) -> int:
+    """Index of the site on the NARROWED arm of the ``kNarrowGate`` fork.
+
+    The mutants are defects OF THE NARROWING, so they must be applied to the arm
+    that narrows.  Mutating the wide arm would produce a source the checker rightly
+    accepts, and the must-fail arm would silently stop failing -- the exact failure
+    mode that already bit this file once.  With no fork present there is one site
+    and it is the one.
+    """
+    if len(sites) == 1:
+        return 0
+    narrow = [i for i, site in enumerate(sites)
+              if any(_ARM_RE.search(g) and not g.startswith("!") for g in key(site))]
+    assert len(narrow) == 1, (
+        f"cannot identify the narrowed arm among {len(sites)} sites: {narrow}")
+    return narrow[0]
+
+
+def _splice(src: str, rx, idx: int, stmt: str) -> str:
+    """Replace the ``idx``-th match of ``rx`` in ``src`` with ``stmt``.
+
+    Matching runs over the COMMENT-STRIPPED text (whose offsets are preserved by
+    construction) so a statement quoted in a comment cannot be mutated by mistake,
+    and the splice is applied to the original bytes at those offsets.
+    """
+    hits = list(rx.finditer(_strip_comments(src)))
+    assert 1 <= len(hits) <= 2, f"surgery matched {len(hits)} sites, want 1 or 2"
+    m = hits[idx]
+    return src[:m.start()] + stmt + src[m.end():]
+
+
 def _set_retire(src: str, stmt: str) -> str:
-    """Force the phase-C retirement to be exactly ``stmt``.  Setting it to what it
-    already says is legitimate when COMPOSING a mutant, so only the site count is
-    asserted here; each mutant separately asserts that the composed source differs
-    from the tree."""
-    out, n = _RETIRE_STMT.subn(stmt, src)
-    assert n == 1, f"retire surgery matched {n} sites, want exactly 1"
-    return out
+    """Force the NARROW arm's phase-C retirement to be exactly ``stmt``.  Setting it
+    to what it already says is legitimate when COMPOSING a mutant, so only the site
+    count is asserted here; each mutant separately asserts that the composed source
+    differs from the tree."""
+    sites = _sites(src)["retire"]
+    return _splice(src, _RETIRE_STMT, _narrow_index(sites, lambda x: x[1]), stmt)
 
 
 def _set_await(src: str, stmt: str) -> str:
-    out, n = _AWAIT_STMT.subn(stmt, src)
-    assert n == 1, f"await surgery matched {n} sites, want exactly 1"
-    return out
+    sites = _sites(src)["await_"]
+    return _splice(src, _AWAIT_STMT, _narrow_index(sites, lambda x: x[2]), stmt)
 
 
 def _mutated(src: str, mutant: str, name: str) -> str:
@@ -401,7 +504,7 @@ def _mutated(src: str, mutant: str, name: str) -> str:
 
 
 def test_the_gate_is_not_vacuous_it_rejects_the_named_defect():
-    """MUST-FAIL ARM.  Four synthetic mutants, each built by surgery on the real
+    """MUST-FAIL ARM.  Five synthetic mutants, each built by surgery on the real
     header, each of which the checker has to reject.  This is what distinguishes a
     gate from a comment (`head_major_landing.md:138-159`)."""
     src = KERNEL.read_text()
@@ -444,13 +547,23 @@ def test_the_gate_is_not_vacuous_it_rejects_the_named_defect():
     bad = check_phase_c_release(_mutated(src, m_d, 'M-D'))
     assert bad, "M-D (wait `mixed`-guarded, retirement not) was ACCEPTED"
 
+    # M-E -- the WIDE arm narrowed too, i.e. the scope erased.  This is the mutant
+    # the per-arm discharge exists for: it leaves the narrow arm perfectly correct,
+    # so a checker that examined only "the" retirement and "the" wait -- or that
+    # paired them by position -- would pass it.  It is also the shape a future
+    # editor produces by "simplifying away" the fork.
+    m_e = src.replace("      await_count(&ctl[kCtlGramDone], kWarps);",
+                      "      await_count(&ctl[kCtlGramDone], kGramWarps);")
+    bad = check_phase_c_release(_mutated(src, m_e, 'M-E'))
+    assert any("UNSAFE RELEASE" in b and "!(kNarrowGate)" in b for b in bad), \
+        f"M-E (the wide arm narrowed, scope erased) was ACCEPTED: {bad}"
+
 
 def test_the_parser_actually_found_the_sites():
     """Anti-vacuity for the PARSER: a checker that located nothing would return no
     violations and read as a pass."""
     s = _sites(KERNEL.read_text())
-    assert len(s["retire"]) == 1, s["retire"]
-    assert len(s["await_"]) == 1, s["await_"]
+    assert len(s["retire"]) == len(s["await_"]) >= 1, (s["retire"], s["await_"])
     assert len(s["gm_put"]) == 8, f"{len(s['gm_put'])} gm_put(Gm[..]) stores located, want 8"
     assert len(s["read_await"]) == 1, s["read_await"]
     #: The two forks must be seen as BOUNDED, each by its own mechanism -- an `if`
@@ -468,6 +581,60 @@ def test_the_parser_actually_found_the_sites():
     src = KERNEL.read_text()
     assert re.search(r"constexpr int kConsumerThreads\s*=\s*256", _strip_comments(src)), \
         "kConsumerThreads is no longer 256; kWarps == 8 is assumed by this gate"
+
+
+def test_the_narrow_gate_scope_is_a_precision_axis_and_both_arms_exist():
+    """The scope is a FORMAT axis the dispatch already forks on, and BOTH arms are
+    really compiled — not one arm plus a comment.
+
+    Item 1 is bit-identical everywhere but it is not free everywhere: on the
+    `tf32x3` arms the extra guards re-schedule `ptxas` on already-starved
+    instantiations and the 1,216-entry ratchet measured in-loop `LDL`/`STL` growth
+    on 12 of them.  So the narrowing is scoped to the `bf16` arms.  This pins the
+    scope to `stage_is_narrow<READ_PREC, FOLD_PREC>()` — a compile-time precision
+    axis — and refuses a size- or occupancy-shaped one, which would be
+    branch-on-threshold.
+    """
+    src = KERNEL.read_text()
+    clean = _strip_comments(src)
+    assert re.search(
+        r"constexpr bool kNarrowGate\s*=\s*stage_is_narrow<\s*READ_PREC\s*,\s*"
+        r"FOLD_PREC\s*>\(\)\s*;", clean), (
+        "kNarrowGate is not defined as `stage_is_narrow<READ_PREC, FOLD_PREC>()`; the "
+        "phase-C scope must be the existing compile-time PRECISION axis (the one "
+        "`StageT`, `GmT` and `GMP` already fork on), never a size or occupancy test")
+    for forbidden in ("BT ==", "BT >", "BT <", "BC ==", "DV ==", "n_owners", "occupancy"):
+        assert forbidden not in _scope_expr(clean), (
+            f"the phase-C scope mentions {forbidden!r} -- that is a size/threshold "
+            f"branch, not a structural axis")
+
+    s = _sites(src)
+    arms_r = {_arm_name(_arm(g)) for _o, g in s["retire"]}
+    arms_a = {_arm_name(_arm(g)) for _o, _t, g in s["await_"]}
+    assert arms_r == arms_a == {"kNarrowGate", "!(kNarrowGate)"}, (
+        f"expected both arms of the compile-time fork to carry a retirement and a "
+        f"wait; retirements on {sorted(arms_r)}, waits on {sorted(arms_a)}")
+
+    # The WIDE arm must be the untouched 8-wide reference: unconditional retirement,
+    # target `kWarps`.  If it ever drifts, the "tf32x3 keeps what it had" claim that
+    # justifies the scope stops being true and the byte-identity proof goes stale.
+    (_off, target, _g), = [a for a in s["await_"]
+                           if _arm_name(_arm(a[2])) == "!(kNarrowGate)"]
+    assert target == "kWarps", (
+        f"the WIDE (tf32x3) arm waits on `{target}`, not `kWarps` -- that arm is the "
+        f"correctness reference and is supposed to be byte-identical to the shipped "
+        f"kernel")
+    (_off, guards), = [r for r in s["retire"]
+                       if _arm_name(_arm(r[1])) == "!(kNarrowGate)"]
+    bound, mixed, _ = _warp_set(guards)
+    assert bound == "kWarps" and not mixed, (
+        f"the WIDE arm's retirement is guarded (`{bound}`, mixed={mixed}); it must be "
+        f"unconditional, exactly as the shipped kernel has it")
+
+
+def _scope_expr(clean: str) -> str:
+    m = re.search(r"constexpr bool kNarrowGate\s*=([^;]*);", clean)
+    return m.group(1) if m else ""
 
 
 def test_the_read_done_counter_is_untouched_and_still_cta_wide():
