@@ -61,7 +61,10 @@ MMA_K_QUANTUM = 16
 #: granularity §4.2 specifies the layer's summary call at.
 SUPPORTED_BT = (16, 32)
 
-#: The ``BC`` the consumer instantiates (``v3_consumer.cu``'s ``V3_SMEM_BC`` ladder).
+#: The ``BC`` the consumer instantiates. Declared here so CPU-only planning works with
+#: no extension present, which makes it a MIRROR of the dispatch table -- and a mirror
+#: needs a gate: ``tests/unit/test_dispatch_table.py`` pins this tuple to the table's
+#: own axis values, read off the built binary.
 SUPPORTED_BC = (16, 64)
 
 

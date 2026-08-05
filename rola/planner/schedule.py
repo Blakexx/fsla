@@ -50,10 +50,14 @@ CP_ASYNC_ROW_BYTES = 512
 
 _SUPPORTED_BT = (16, 32)
 
-#: The `BC` and `d_v` the consumer extension INSTANTIATES (`v3_consumer.cu`'s
-#: `V3_SMEM_BC` / `V3_SMEM_DV` ladders, which `TORCH_CHECK` outside these). Selection
-#: validates against them up front so the occupancy oracle is only ever asked about
-#: launchable instantiations.
+#: The `BC` and `d_v` the consumer extension INSTANTIATES; the dispatch refuses
+#: anything outside them. Selection validates against these up front so the occupancy
+#: oracle is only ever asked about launchable instantiations.
+#:
+#: Declared here so CPU-only planning works with no extension present, which makes
+#: them a MIRROR of the dispatch table -- and a mirror needs a gate:
+#: `tests/unit/test_dispatch_table.py` pins all three tuples to the table's own axis
+#: values, read off the built binary.
 _SUPPORTED_BC = (16, 64)
 _SUPPORTED_DV = (32, 64)
 
