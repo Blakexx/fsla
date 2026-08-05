@@ -249,7 +249,6 @@ def pytorch_profiler(
         if backward:
             out.backward(g, retain_graph=True)
     if verbose:
-        # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=50))
         print(prof.key_averages().table(row_limit=50))
     if trace_filename is not None:
         prof.export_chrome_trace(trace_filename)

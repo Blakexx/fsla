@@ -55,19 +55,6 @@ __device__ __forceinline__ void mma_m16n8k8_tf32(float& d0, float& d1, float& d2
         "r"(f2tf32(b1)), "f"(c0), "f"(c1), "f"(c2), "f"(c3));
 }
 
-__device__ __forceinline__ void mma_m16n8k8_tf32x2(float& d0, float& d1, float& d2, float& d3,
-                                                   float a0, float a1, float a2, float a3, float b0,
-                                                   float b1, float c0, float c1, float c2,
-                                                   float c3) {
-  const float a0_hi = tf32_round(a0);
-  const float a1_hi = tf32_round(a1);
-  const float a2_hi = tf32_round(a2);
-  const float a3_hi = tf32_round(a3);
-  mma_m16n8k8_tf32(d0, d1, d2, d3, a0_hi, a1_hi, a2_hi, a3_hi, b0, b1, c0, c1, c2, c3);
-  mma_m16n8k8_tf32(d0, d1, d2, d3, a0 - a0_hi, a1 - a1_hi, a2 - a2_hi, a3 - a3_hi, b0, b1, d0, d1,
-                   d2, d3);
-}
-
 __device__ __forceinline__ void mma_m16n8k8_tf32x3(float& d0, float& d1, float& d2, float& d3,
                                                    float a0, float a1, float a2, float a3, float b0,
                                                    float b1, float c0, float c1, float c2,

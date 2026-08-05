@@ -1,7 +1,7 @@
 # `csrc/rola/src/mma.cuh` — bare tensor-core PTX primitives
 
-Instruction wrappers, nothing more: `m16n8k16` bf16, `m16n8k8` tf32 and its two- and
-three-pass extended-precision forms, and the `bf16x2` pack. **No RoLA semantics live
+Instruction wrappers, nothing more: `m16n8k16` bf16, `m16n8k8` tf32 and its three-pass
+extended-precision form, and the `bf16x2` pack. **No RoLA semantics live
 here.**
 
 The file's own header names two callers, the V3 readout (`readout_mma.cuh`) and the
@@ -68,7 +68,7 @@ requires. `f2tf32` is the same idea for tf32: `cvt.rna.tf32.f32` produces the ro
 value already in a 32-bit register, and `tf32_round` reinterprets it back to `float` so
 the residual can be computed in fp32.
 
-## <a id="tf32-splitting"></a>4. `tf32x2` and `tf32x3` — error-compensated tf32
+## <a id="tf32-splitting"></a>4. `tf32x3` — error-compensated tf32
 
 tf32 keeps fp32's 8-bit exponent but only a 10-bit mantissa. Splitting each operand
 into a rounded high part and its exact fp32 residual,
@@ -82,7 +82,6 @@ recovers most of the lost mantissa by issuing more passes:
 
 | wrapper | passes | terms accumulated | dropped |
 |---|---|---|---|
-| `mma_m16n8k8_tf32x2` | 2 | `a_hi*b`, `a_lo*b` | — (B is not split) |
 | `mma_m16n8k8_tf32x3` | 3 | `a_hi*b_hi`, `a_hi*b_lo`, `a_lo*b_hi` | `a_lo*b_lo` |
 
 `tf32x3` is the Karatsuba-style split the readout calls "near-fp32": the dropped
@@ -90,14 +89,13 @@ recovers most of the lost mantissa by issuing more passes:
 resolution for operands of comparable magnitude. It is what the exactness gate against
 the fp64 oracle runs.
 
-Note that `tf32x2` splits only A. It is a strictly weaker correction and exists as the
-intermediate rung; the readout's plan-time precision axis exposes `kTf32x3` and
-`kBf16` only, and as of 2026-08-04 **nothing in the tree calls
-`mma_m16n8k8_tf32x2`** — it is retained here as a documented, uncalled rung, and a
-future reader deciding its fate should treat that as the open question rather than
-assume a caller exists somewhere.
+A two-pass variant, `mma_m16n8k8_tf32x2`, splitting only A, existed here as the
+intermediate rung. It had no caller — the readout's plan-time precision axis exposes
+`kTf32x3` and `kBf16` only — and was deleted on 2026-08-04; see
+[`DELETIONS.md`](DELETIONS.md). If a future rung needs a cheaper correction, the
+construction is the one above with `b_hi := b` and the third pass dropped.
 
-**Ordering is load-bearing in both.** Each pass feeds `d0..d3` into the next pass's
+**Ordering is load-bearing.** Each pass feeds `d0..d3` into the next pass's
 `c0..c3`, so the accumulation order is fixed by the call sequence. Reordering the
 passes, or hoisting one out, changes the rounding and therefore the numbers — with no
 diagnostic.
