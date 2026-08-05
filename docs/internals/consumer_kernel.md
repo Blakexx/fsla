@@ -213,10 +213,10 @@ knob, it is the two measurements written down.
 shared memory binds there at 3 CTAs/SM on every arm, so the register term is slack
 and both 66 and 80 produce the same bound.
 
-Reproduce the register/spill side with `tools/probe_launch_bounds.cu`
-(`tools/ratify.py` compiles it over all 256 entries) and the residency side with
-`rola_consumer_occupancy`; if the kernel's inner loop changes, re-run both and
-update these numbers rather than the formula.
+Reproduce the register/spill side with `python tools/ratify.py --census`, which
+compiles the shipped instantiation shards and reports per structural key, and the
+residency side with `rola_consumer_occupancy`; if the kernel's inner loop changes,
+re-run both and update these numbers rather than the formula.
 
 ### <a id="reg-budget-nm"></a>The row-block term — measured over five candidate budgets, keyed on `NM` alone
 
@@ -225,8 +225,8 @@ carry a second live y-fragment quad per warp wherever `DV = 64`, and a second
 A-fragment block everywhere. `d_v` is NOT a key: the measurement shows no `d_v`
 dependence, and a key nobody can point at a number for is an extrapolation.
 
-The instrument is `probe_launch_bounds.cu` over all 1024 instantiations, once per
-candidate budget, with the ratified `BT = 16, DV = 64` matrix held at its landed
+The instrument is `python tools/ratify.py --census --force-ctas N` over all 1024
+instantiations, once per candidate budget, with the ratified `BT = 16, DV = 64` matrix held at its landed
 value as an IN-RUN CONTROL (byte-identical at all five sweep points, so the numbers
 below are the new cells' own and nothing else's). Spill bytes summed over the 64
 instantiations of each key:

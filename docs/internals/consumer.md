@@ -429,34 +429,60 @@ A prose count in a source comment is a number that rots the first time an axis
 moves. `python tools/ratify.py` recompiles the closure and compares; see
 [`docs/ratification.md`](../ratification.md).
 
-### Compile cost is watched, not assumed
+### The 512 arms are compiled in eight shards, not one translation unit
 
-MEASURED, whole-extension `python setup.py build_ext --inplace`, `MAX_JOBS=2`, on
-the development machine, both figures including the post-build ratification gate:
-**23m14s** cold and **19m53s** warm (provenance:
-`workflows/refactor/p03_format.md`).
+The instantiations do not live in this file. They live in eight generated
+translation units under `csrc/rola/src/instantiations/`, partitioned on
+`PREC x GLOBAL x BT` at 64 arms each, and `consumer.cu` reaches them through host
+wrappers it can DECLARE but not define
+([`consumer_launch.md`](consumer_launch.md#shard-only)).
 
-A per-translation-unit figure for `consumer.cu` alone is **not currently
-measured**, so the whole-build figure is the one on the record. If a later axis
-makes the build cost unacceptable, the answer is a `.def`-plus-shard-TU dispatch
-split: one `.def` file listing the instantiation tuples, expanded into a fixed set
-of shard translation units that compile in parallel, with the dispatch chain
-generated from the same list. It is not in this tree
-([`DELETIONS.md`](DELETIONS.md#dormant) registers it), and the measurement that
-would select it is a per-TU `nvcc` wall-clock under the same `MAX_JOBS`.
+MEASURED, this development host (16 cores, 23 GB), both figures including the
+post-build ratification gate:
 
-## <a id="dispatch-braces"></a>B9. HAZARD — the macro braces are load-bearing
+| | one translation unit | eight shards |
+|---|---|---|
+| `nvcc` wall for the consumer's arms | 411 s (one process, `--threads=2`) | 8 x ~43 s across `MAX_JOBS` processes |
+| peak resident set per `cicc` | 4.4 GB | 0.61 GB |
+| `consumer.cu` itself | — | 37 s, zero device entries |
 
-Every `ROLA_CONSUMER_ONE` is a braced block ending in `return`, so the enclosing
-dispatch is a chain of `if (cond) BLOCK`. `ROLA_CONSUMER_CMP` expands to TWO such
-blocks, and **without the outer braces the second one escapes its guard and
-launches unconditionally**: every call runs the `decay` instantiation and
-dereferences a null `p.dials`.
+The peak-RSS collapse is what raises `MAX_JOBS` from 2 to 7 on this host
+(`tools/build_flags.py` derives it from free RAM), and that multiplies with the
+split rather than adding to it. The full-cycle numbers are in
+[`docs/build.md`](../build.md).
 
-That failure is real rather than hypothetical, and what detects it is the compact
-gate's own dense arm — the instrument the axis is exercised with — not anything
-that reads like a check. This is a syntax-level hazard with a semantic blast
-radius, which is why it carries a stub.
+`consumer.cu` emits exactly two device entry points of its own — `scan_kernel` and
+`divide_kernel`, neither a template. If it ever emitted a `consumer_forward_kernel`,
+nothing would be sharded and the compile time would simply stop falling; that is
+what `tools/fatbin_entries.py` refuses.
+
+## <a id="shard-rows"></a>B9. One table, three enumerations retired
+
+The dispatch used to be a macro ladder, the residency query a second one, the
+shared-memory footprint a third, and a probe translation unit under `tools/` a
+fourth — four hand-maintained spellings of one 512-element set, each able to drift
+from the others without anything failing.
+
+There is now ONE definition, `tools/gen_shards.py`'s matrix, and everything else is
+generated from it:
+
+| consumer | what it gets |
+|---|---|
+| the eight shard translation units | 64 explicit instantiations each |
+| `instantiations/dispatch_launch.inc` | the launch ladder `launch_consumer` includes |
+| `instantiations/dispatch_rows.inc` | the concatenated `ShardRow` tables |
+| `tools/ratify.py` | the translation units to compile, and the manifest's `shards` block |
+
+A `ShardRow` carries an arm's structural coordinates and the three things only its
+own shard can answer: `launch`, `occupancy`, and the `constexpr` `smem_bytes`. Both
+device-backed queries below resolve a row rather than re-enumerating the matrix,
+which is why this file does not include the kernel header at all.
+
+The launch ladder assigns a `LaunchFn` and returns nothing; `launch_consumer` calls
+it and checks the CUDA error state once. Taking the address of a specialization this
+translation unit cannot define is also the mechanism that makes a dispatch arm with
+no shard member an undefined-reference LINK ERROR rather than a silent
+re-instantiation.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
@@ -483,7 +509,15 @@ d_v = 64` would be a claim about an eighth of the matrix.
 `D` is NOT a query axis: it changes only the `[D][BC]` digit table (256 B per
 level), and the query is fixed at `D = 2`, the at-scale cell's topology depth, so
 the number is reported for the shape actually measured rather than for a nominal
-worst case.
+worst case. `GLOBAL` and `PREC` are likewise pinned to the plan point the planner
+prices: `global`, and the production precision.
+
+Both queries resolve a `ShardRow` (B9) and read one field of it —
+`occupancy()` calls the driver through the shard's wrapper, because post-shard the
+kernel ADDRESS lives in the shard; `smem_bytes` is a `constexpr` the shard computed
+at compile time. The wrapper is instantiated for all 512 arms rather than the 32
+queried, which is why adding a query axis needs no matching change in the shards
+([`consumer_launch.md`](consumer_launch.md#residency)).
 
 ## <a id="plan-surface"></a>B11. The supported shape surface
 

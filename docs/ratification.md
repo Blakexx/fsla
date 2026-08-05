@@ -6,9 +6,13 @@ exact `ptxas`:
 
 ```
 tools/manifests/sm_86.json
-  { "toolchain": { "ptxas": "<the whole --version string>" },
-    "entries": { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
-                                           "spill_loads": 24 }, ... } }
+  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...} },
+    "source":   { "csrc_sha256": "...", "date": "..." },
+    "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
+                                              "count": 64 }, ... },
+    "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
+                                            "spill_loads": 24,
+                                            "hot_locals": 0 }, ... } }
 ```
 
 608 entries per architecture, measured on the current tree: 512 for the consumer,
@@ -30,10 +34,35 @@ lived nowhere else: **nothing failed if a later codegen change grew it.** The
 manifest makes it an asserted invariant. A property the project believes is a
 property the project checks.
 
+## What it compiles, and why that is the shipped source
+
+`python tools/ratify.py` compiles **the translation units the build compiles** —
+the eight generated instantiation shards under `csrc/rola/src/instantiations/`,
+plus `decode.cu` and `entmax.cu` — under the flag list `setup.py` uses, imported
+from `tools/build_flags.py` rather than restated. Two properties follow, and
+neither held before:
+
+- **the numbers describe the shipped binary.** `nvcc` derives an
+  anonymous-namespace kernel's mangled discriminator from the file that
+  instantiates it, so while the gate compiled a probe under `tools/`, its 96
+  decode/entmax keys named symbols that existed in no shipped `.so`. They now name
+  the entry points the binary carries, and `tools/fatbin_entries.py` checks that
+  rather than asserting it.
+- **there is one enumeration of the matrix.** The shards, the dispatch ladder and
+  this gate's source list all come out of `tools/gen_shards.py`; there is no second
+  file that could enumerate a different 512.
+
+The consumer's 512 keys are unaffected by the split by construction:
+`consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
+depend on which translation unit expands it.
+
+`--shard NAME` scopes the compile to one shard's 64-entry slice for triage. It is a
+measurement scope only: `--write` refuses it, because a manifest written from a
+subset would silently drop every instantiation it did not compile.
+
 ## What the gate refuses
 
-`python tools/ratify.py` compiles the whole dispatch closure and reads `ptxas -v`.
-Four outcomes, and the difference between them is deliberate:
+The gate reads `ptxas -v`. Four outcomes, and the difference between them is deliberate:
 
 | Outcome | Meaning |
 |---|---|
@@ -63,13 +92,28 @@ they moved.
 
 ## One file per architecture
 
-`--arch` selects what is probed, checked, and written, so bringing up `sm_89`
+`--arch` selects what is measured, checked, and written, so bringing up `sm_89`
 writes one reviewable file and cannot restate a measurement it did not take. The
 split is **filing only**, and that is checked rather than claimed: the digest
-`_build_config.py` records is taken over the merged canonical `{toolchain, entries}`
-record with sorted keys, so N files hash to exactly what one file hashed to. Two
-manifests pinning different assemblers is a hard failure in every reader — a split
-filing may not become a split toolchain.
+`_build_config.py` records is taken over the merged canonical
+`{toolchain, entries, shards}` record with sorted keys, so N files hash to exactly
+what one file hashed to. Two manifests pinning different assemblers is a hard
+failure in every reader, and so is two manifests disagreeing about shard
+membership — a split filing may not become a split toolchain or a split matrix.
+
+## The `shards` block, and what it makes provable
+
+`shards` records WHICH instantiations this ratification covers, as one membership
+hash per shard: the sha256 of the shard's sorted list of template tuples, not of
+its file's bytes. A comment edit does not move it; adding, dropping or moving one
+instantiation does.
+
+It enters the digest, and that is the point. "Only `consumer_bf16_raw_bt32` was
+re-measured" is otherwise an unprovable sentence; with membership in the ratified
+record it is a diff. Because the block carries membership and nothing else — no
+paths, no ordering — re-filing the same measurements cannot move the digest, which
+`--self-test` checks in both directions (a re-filing must not move it, a membership
+change must).
 
 ## The gate self-tests
 
@@ -77,12 +121,19 @@ filing may not become a split toolchain.
 python tools/ratify.py --self-test
 ```
 
-requires the gate to **fail** on four things it must reject:
+requires the gate to **fail** on the things it must reject:
 
 1. a manifest tightened at one entry,
 2. a perturbed `ptxas` version string,
 3. an architecture with no committed manifest (so rule 3 has a *no* answer),
-4. a per-arch split that does not rejoin to one digest.
+4. a per-arch split that does not rejoin to one digest,
+5. per-arch files that disagree about shard membership,
+6. a shard block that is decorative (a membership change that moves nothing) or one
+   that is a property of the filing (a re-filing that moves the digest),
+7. a perturbed source digest,
+8. in-loop local-access growth past a ratified count — plus the hot-loop parser
+   proving, on synthetic SASS, that it counts an in-loop `LDL` and clears a cold
+   one.
 
 A gate whose green run is unfalsifiable says nothing. This project has already
 shipped two gates that turned out to be vacuous before they were fixed, which is
@@ -97,8 +148,8 @@ checkout:
 ```python
 >>> from rola import _build_config; _build_config.show()
 {'version': ..., 'archs': ['sm_80', 'sm_86'], 'ptxas': ...,
- 'manifest_sha256': 'c2077aa3...', 'manifest_entries': {'sm_80': 512, 'sm_86': 512},
- 'ptx_jit_fallback': False}
+ 'manifest_sha256': '...', 'manifest_entries': {'sm_80': 608, 'sm_86': 608},
+ 'ptx_jit_fallback': False, 'vendored': {'cutlass': {...}}}
 ```
 
 The tier-2 census independently recomputes `manifest_sha256` from the committed

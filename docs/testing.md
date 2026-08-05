@@ -162,6 +162,30 @@ not a meta-test.*
 **A class change is a reviewed edit to `matrix.py`, in a diff, with a new `basis`
 string.** It can never happen as a side effect of a kernel edit.
 
+## The build-shape gates
+
+Three checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
+they are here because each one guards a property whose failure leaves every other
+gate green.
+
+**`python tools/gen_shards.py --check`** regenerates the eight instantiation shards
+into memory and diffs them against the committed files. Generated sources are
+checked in so that what is reviewed is what compiles; this is what keeps that a
+fact. `setup.py` runs it before compiling and CI runs it in the CPU lane.
+
+**`tests/unit/test_shard_partition.py`** checks the partition as a STRUCTURE: every
+committed instantiation maps back to its own file under `shard_of`, the sharded
+axes are the derived prefix of the priority list rather than a hand-written answer,
+each membership hash is the digest of its file's tuple list, and `consumer.cu` does
+not include the header that would let it instantiate the kernels locally. CPU only.
+
+**`python tools/fatbin_entries.py --check <so>`** is the one that needs a built
+binary, and the only one that can see a FAILED split. It reads device entry points
+out of the fatbin — per architecture, per originating object — and requires exactly
+one per instantiation, in the shard the matrix assigns it, with every ratified name
+present. `nm` cannot answer this: a `__global__` template's host stub is weak, so
+the linker keeps one however many objects emitted the device code.
+
 ## The documentation gates
 
 Two of the units-layer tests are about documents rather than arithmetic, and they
@@ -181,7 +205,13 @@ all grep-level so a contributor can read the check itself:
 2. every `docs/internals/….md#anchor` cited from a source resolves to an anchor
    that doc defines;
 3. a hazard stub's slug IS its anchor id, so the two cannot drift apart;
-4. no doc defines the same anchor twice, which would make a citation ambiguous.
+4. no doc defines the same anchor twice, which would make a citation ambiguous;
+5. a directory of GENERATED sources is exempt from rule 1 and documented by one
+   README instead — and the exemption is checked rather than granted: the README
+   must exist, and the directory may contain nothing its generator does not
+   produce. `csrc/rola/src/instantiations/` is the only such directory; eight
+   mirror docs restating one sentence would be the ceremony this mandate removes,
+   and the next re-partition would orphan them.
 
 It carries its own non-vacuity guard: a floor on the number of sources found, so
 that a broken glob cannot make the file pass by checking nothing.

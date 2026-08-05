@@ -81,6 +81,15 @@ The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, nev
 `.so` is asserted to contain zero PTX images. Setting `ROLA_CUDA_ARCHS` to an
 architecture with no ratified manifest fails the build before it compiles anything.
 
+The consumer's 512 kernel instantiations are compiled as **eight generated
+translation units** ([`csrc/rola/src/instantiations/`](csrc/rola/src/instantiations/)),
+partitioned on precision x normalization x tile width, so the matrix parallelizes
+across `MAX_JOBS` instead of serializing inside one compiler process. They are
+checked in — what is reviewed is what compiles — and `python tools/gen_shards.py
+--check` is the gate that keeps them the files their generator produces. `MAX_JOBS`
+defaults to a value derived from **available RAM**, which is the resource that
+actually binds ([`docs/build.md`](docs/build.md)).
+
 ## Supported configurations
 
 This table is **generated** by `tools/supported.py` from the kernel's arch table and
