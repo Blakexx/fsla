@@ -104,7 +104,7 @@ is the authority for. This is the
 [self-masking theorem](../architecture/self-masking-theorem.md) in its
 "trustless flag" form.
 
-## <a id="dials"></a>A6. `dials` — fp32, never bf16
+## <a id="dials-fp32"></a>A6. `dials` — fp32, never bf16
 
 Flattened `LeafMassDecay` dials, `[H, total_rows]`, level `l` at `row_offset[l]`.
 `rate[s] = prod_l delta_l[d_l(s)]` — a plain product of DIALS (spec §2), not V2's
@@ -452,7 +452,7 @@ the build cost unacceptable, a `.def`-plus-shard-TU split — the mechanism the
 deleted consumer's matrix used (B1) — remains the answer, and the measurement
 that would justify it is a per-TU `nvcc` wall-clock under the same `MAX_JOBS`.
 
-## <a id="braces"></a>B9. HAZARD — the macro braces are load-bearing
+## <a id="dispatch-braces"></a>B9. HAZARD — the macro braces are load-bearing
 
 Every `ROLA_CONSUMER_ONE` is a braced block ending in `return`, so the enclosing
 dispatch is a chain of `if (cond) BLOCK`. `ROLA_CONSUMER_CMP` expands to TWO such

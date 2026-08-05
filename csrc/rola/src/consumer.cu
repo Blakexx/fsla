@@ -229,7 +229,7 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
     C10_CUDA_KERNEL_LAUNCH_CHECK();                                                    \
     return;                                                                            \
   }
-  //: HAZARD dispatch-braces -- docs/internals/consumer.md#braces
+  //: HAZARD dispatch-braces -- docs/internals/consumer.md#dispatch-braces
 #define ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV)                    \
   {                                                                                    \
     if (compact) ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, true)      \

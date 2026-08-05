@@ -67,7 +67,7 @@ struct ConsumerParams {
 
   //: Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   //: `rate[s] = prod_l delta_l[d_l(s)]`, a plain product of DIALS (spec §2).
-  //: HAZARD dials-fp32 -- docs/internals/consumer.md#dials
+  //: HAZARD dials-fp32 -- docs/internals/consumer.md#dials-fp32
   const float* dials;  // [H, total_rows] or nullptr
 
   const float* g_read;   // [BH, T] or nullptr (global fixes g_read := 1)
