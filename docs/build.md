@@ -94,6 +94,18 @@ same code. Check one tree out over the other; do not compare side by side. The s
 property makes the ratification manifest a certificate about a path as well as about a
 tree.
 
+**Which means `setup.py build_ext` DOES NOT COMPLETE IN A WORKTREE.** This is not a
+SASS-comparison caveat, it is the build: the post-build gate reads the ratified names
+out of the fatbin, 192 of them are the path-dependent ones, and none of those exists
+in a binary built anywhere else — *"192 ratified instantiation(s) name no entry point
+… the manifest certifies a binary that is not this one"*. There is no environment
+variable for it and there should not be, since a binary the manifest does not
+describe is exactly what the closed-world policy refuses to ship. To measure from a
+worktree: `python tools/ratify.py --write` there, build, then restore the committed
+manifests with `git checkout -- tools/manifests`. Nothing measured under such a build
+may be committed as a baseline — its `manifest_sha256` names a ratification that
+exists in no checkout.
+
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
 changes the assembled code of 1,073 of the 1,228 entries then present, which under the
 closed-world policy is a kernel change requiring re-ratification, and it is slower

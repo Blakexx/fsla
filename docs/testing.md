@@ -261,3 +261,42 @@ selects against is a test nothing runs.
 deselects at *collection* time, before torch initializes a CUDA context. The
 `bench` marker is opt-in for the same reason in reverse: a latency measurement is
 not a correctness gate and must never be able to fail a merge.
+
+## Measurement, and the tests that guard it
+
+Performance work has its own document — **`docs/measurement.md`** — because the
+instruments are as much a subject of review as the kernel is: one stopwatch
+(`cuda_events`), one harness that acquires its own discipline, and one append-only
+record at `perf/ledger.jsonl`.
+
+Three test files hold that machinery to the same non-vacuity standard as everything
+else here. Each plants the violation its instrument exists to catch and requires the
+refusal; none launches a kernel.
+
+| file | what it plants |
+|---|---|
+| `tests/unit/test_probe_harness.py` | a lock held by another process (the harness must block), a clock that never settles (the run must abort), a corrupt ncu section file, a subcommand offering to skip the lock |
+| `tests/unit/test_perf_ledger.py` | a row missing its provenance, a row from an unknown schema, a shift smaller than its own scatter, a single unlucky run, an effect with no significance behind it |
+| `benchmarks/test_latency_regression.py` | a baseline taken with a different stopwatch, and one that does not say which stopwatch took it |
+
+`python tools/ratify.py --self-test` is the same discipline on the codegen side and
+is listed arm by arm in `docs/ratification.md`.
+
+### Triaging a suspected stream-ordering bug
+
+There is no runtime detector anywhere for a forgotten cross-stream dependency on
+already-allocated memory, and `compute-sanitizer --tool racecheck` does not fill the
+gap — it detects on-chip **shared memory** hazards only, and both bugs that escaped
+here were host-side Python. Two environment variables classify one before a debugger
+is opened, because each removes a different precondition:
+
+```bash
+CUDA_LAUNCH_BLOCKING=1            # serializes launches: collapses the window a missing join needs
+PYTORCH_NO_CUDA_MEMORY_CACHING=1  # every free becomes a device-synchronizing cudaFree
+```
+
+A bug that disappears under either is an allocator-lifetime or stream-ordering bug —
+a missing `record_stream` or a missing join — not a device memory hazard. The
+`CUDA_LAUNCH_BLOCKING` half is already mechanized:
+`tests/tier2_geometry/test_paging_stream_races.py` runs its allocator-pressure cell in
+a blocking child process and requires bit-identity with the async run.
