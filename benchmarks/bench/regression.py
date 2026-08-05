@@ -26,6 +26,11 @@ which is the honest outcome, and the same rule §6.9 states for reporting.
 assembler, and the ratification digest the binary was gated against. **No hostname,
 no username, no path, no account identifier** -- these files are published, and a
 fleet hostname is not a fact about the kernel.
+
+**AND IT NAMES THE STOPWATCH.** Every arm records the instrument it was measured
+with (:data:`bench.pairing.CANONICAL_INSTRUMENT`), and :func:`check_instrument`
+refuses a comparison across two of them. A threshold derived from one instrument's
+spread says nothing about another instrument's median.
 """
 from __future__ import annotations
 
@@ -76,10 +81,89 @@ def iqr(xs) -> float:
     return xs[int(0.75 * n)] - xs[int(0.25 * n)]
 
 
-def summarize(times_ms) -> dict:
+def summarize(times_ms, *, source: str | None = None) -> dict:
+    """The three numbers a baseline entry carries, plus the stopwatch that took them.
+
+    `source` defaults to the committed instrument rather than being optional-in-name-
+    only: an entry with no stopwatch is an entry that cannot be checked against one.
+    """
+    from bench.pairing import CANONICAL_INSTRUMENT
+
     return {"median_ms": round(statistics.median(times_ms), 6),
             "iqr_ms": round(iqr(times_ms), 6),
-            "reps": len(times_ms)}
+            "reps": len(times_ms),
+            "source": source or CANONICAL_INSTRUMENT}
+
+
+def check_instrument(baseline_arm: dict, got_source: str, key: str) -> None:
+    """Refuse a gate comparison whose two sides were taken with different timers.
+
+    A baseline entry written before the instrument was recorded has no `source`, and
+    that is ALSO a refusal: the quantity it holds is unknown, which is exactly the
+    state this check exists to end. Re-record it -- a baseline is a measurement.
+    """
+    from bench.pairing import same_instrument
+
+    was = baseline_arm.get("source")
+    if was is None:
+        raise ValueError(
+            f"{key}'s committed baseline does not say which stopwatch took it, so "
+            f"nothing can be compared against it. Re-record the baseline: "
+            f"flock /tmp/rola_gpu.lock python benchmarks/bench_regression.py --write")
+    same_instrument(was, got_source, f"latency gate for {key}")
+
+
+def classify(history, candidate, *, paired_diffs=None) -> dict:
+    """THE FLAGGING RULE: three gates, and a regression needs all three.
+
+    `history` is the rolling window of clean ledger rows on this fingerprint,
+    oldest first; `candidate` is the row being judged. `paired_diffs` are the
+    per-round differences when the candidate came from an interleaved A/B -- the
+    significance gate is `insufficient_data` without them rather than silently
+    unpaired, because an unpaired test on paired data throws away the design.
+
+    1. EFFECT SIZE -- the candidate's median above :func:`threshold_ms`, derived
+       from the window's own spread. Never a flat percentage.
+    2. SIGNIFICANCE -- :func:`bench.stats.paired_verdict` at its stated alpha.
+    3. DEBOUNCE -- :func:`bench.stats.classify_flags` over the window's own
+       violations plus this one: a single unlucky run is not a regression on a box
+       with logged power capping.
+
+    The verdict is `regression` only when the effect-size gate fires AND the
+    significance gate says the arms differ AND the debounce says it persisted.
+    Anything else is reported as what it is, never as a pass.
+    """
+    from bench.stats import classify_flags, paired_verdict
+
+    window = list(history)
+    if len(window) < 3:
+        return {"verdict": "insufficient_data", "n_history": len(window),
+                "reason": "fewer than 3 clean rows on this fingerprint"}
+
+    medians = [statistics.median(r["values"]) for r in window]
+    base_median, base_iqr = statistics.median(medians), iqr(medians)
+    limit = threshold_ms(base_median, base_iqr)
+    got = statistics.median(candidate["values"])
+
+    violations = [m > limit for m in medians] + [got > limit]
+    debounce = classify_flags(violations)
+    significance = (paired_verdict(paired_diffs) if paired_diffs is not None
+                    else {"verdict": "insufficient_data", "p": None,
+                          "reason": "no paired rounds recorded for this candidate"})
+
+    verdict = "no_regression"
+    if got > limit:
+        if significance["verdict"] == "b_slower" and debounce == "regression":
+            verdict = "regression"
+        else:
+            verdict = "flagged_not_confirmed"
+    elif debounce == "suspicious":
+        verdict = "suspicious"
+
+    return {"verdict": verdict, "median_ms": got, "limit_ms": limit,
+            "baseline_median_ms": base_median, "baseline_iqr_ms": base_iqr,
+            "n_history": len(window), "debounce": debounce,
+            "significance": significance}
 
 
 def load_baseline() -> dict:

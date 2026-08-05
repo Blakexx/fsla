@@ -79,9 +79,9 @@ import time
 
 import torch
 import torch.nn as nn
-from bench.instruments import settle_clocks
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from bench.instruments import settle_clocks
 from rola.layers import RoLA
 from rola.layers.rola import LevelRoutingConfig
 from rola.ops.consumer import _consumer_forward

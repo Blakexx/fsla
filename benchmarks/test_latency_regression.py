@@ -26,9 +26,11 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bench.instruments import settle_clocks  # noqa: E402
-from bench.regression import load_baseline, summarize, threshold_ms  # noqa: E402
 from bench_regression import ARMS, arm_id, measure  # noqa: E402
+
+from bench.instruments import settle_clocks  # noqa: E402
+from bench.pairing import CANONICAL_INSTRUMENT  # noqa: E402
+from bench.regression import check_instrument, load_baseline, summarize, threshold_ms  # noqa: E402
 
 pytestmark = [
     pytest.mark.bench,
@@ -81,6 +83,10 @@ def test_an_arm_has_not_regressed_past_its_own_measured_spread(benchmark, spec):
     #: library's is for its cross-commit history, ours is for the pass/fail line.
     times = benchmark(measure, *spec, reps=11)
     got = summarize(times)
+    #: The two sides must be the same quantity before they can be the same
+    #: comparison. `measure` times with the committed instrument; the baseline says
+    #: which one took it, and a disagreement is an error, never a widened band.
+    check_instrument(exp, got["source"], key)
 
     limit = threshold_ms(exp["median_ms"], exp["iqr_ms"])
     assert got["median_ms"] <= limit, (
@@ -111,6 +117,41 @@ def test_the_derived_limit_can_actually_be_exceeded():
     #: The comparison the gate makes, on both sides of its own line.
     assert not (limit * 0.99 > limit)
     assert limit * 1.01 > limit
+
+
+def test_a_baseline_from_a_different_stopwatch_is_refused():
+    """NON-VACUITY of the one-stopwatch rule (I-2). Plant the violation the rule
+    exists to catch -- a baseline recorded with the host timer, gated against a
+    run taken with device events -- and require the refusal.
+
+    The planted arm carries the SAME median and IQR as a passing one, so nothing but
+    the instrument name distinguishes it: if the check were decorative the assertion
+    below would fail by the comparison quietly succeeding.
+    """
+    passing = {"median_ms": 1.0, "iqr_ms": 0.1, "reps": 11,
+               "source": CANONICAL_INSTRUMENT}
+    check_instrument(passing, CANONICAL_INSTRUMENT, "arm")     # the honest case
+
+    planted = dict(passing, source="perf_counter")
+    with pytest.raises(ValueError, match="different quantities"):
+        check_instrument(planted, CANONICAL_INSTRUMENT, "arm")
+
+    #: An ncu duration is a third instrument and is refused by the same rule -- the
+    #: measured gap against event timing on this box is 19 %.
+    with pytest.raises(ValueError, match="different quantities"):
+        check_instrument(dict(passing, source="ncu"), CANONICAL_INSTRUMENT, "arm")
+
+    #: A baseline that never said which stopwatch took it is unknown, not compatible.
+    with pytest.raises(ValueError, match="does not say which stopwatch"):
+        check_instrument({"median_ms": 1.0, "iqr_ms": 0.1}, CANONICAL_INSTRUMENT,
+                         "arm")
+
+
+def test_every_committed_baseline_arm_names_its_stopwatch():
+    """The committed file, not a synthetic dict: a rule the tree does not satisfy
+    is a rule nothing enforces."""
+    for key, arm in load_baseline()["arms"].items():
+        check_instrument(arm, arm["source"], key)
 
 
 def test_a_zero_spread_arm_still_has_a_usable_limit():

@@ -65,7 +65,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party        = ["rola"]
+#: `bench` and `probe` are this repository's benchmark packages under `benchmarks/`,
+#: reached by the sys.path insert their drivers and `tests/conftest.py` perform. They
+#: are first-party by ownership; without saying so, isort files them as third-party
+#: and every module that imports both `rola` and `bench` is unsortable.
+known-first-party        = ["rola", "bench", "probe"]
 force-sort-within-sections = false
 
 [tool.ruff.lint.per-file-ignores]

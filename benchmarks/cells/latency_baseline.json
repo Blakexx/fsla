@@ -4,22 +4,26 @@
   "topo-D2-w64x64-BC64|global|none": {
    "iqr_ms": 0.0603,
    "median_ms": 0.2481,
-   "reps": 35
+   "reps": 35,
+   "source": "perf_counter"
   },
   "topo-D2-w64x64-BC64|global|warm": {
    "iqr_ms": 0.0433,
    "median_ms": 0.2728,
-   "reps": 35
+   "reps": 35,
+   "source": "perf_counter"
   },
   "topo-D2-w64x64-BC64|raw|none": {
    "iqr_ms": 0.0324,
    "median_ms": 0.222,
-   "reps": 35
+   "reps": 35,
+   "source": "perf_counter"
   },
   "topo-D4-w8x8x8x16-BC16|global|none": {
    "iqr_ms": 0.024,
    "median_ms": 0.4211,
-   "reps": 35
+   "reps": 35,
+   "source": "perf_counter"
   }
  },
  "provenance": {

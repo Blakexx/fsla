@@ -23,8 +23,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bench.cells import CELLS  # noqa: E402
 from bench.instruments import settle_clocks  # noqa: E402
-from bench.pairing import _timed  # noqa: E402
-from bench.regression import BASELINE, load_baseline, summarize, threshold_ms, write_baseline  # noqa: E402
+from bench.pairing import CANONICAL_INSTRUMENT, WARMUP_LAUNCHES, _timed  # noqa: E402
+from bench.regression import (  # noqa: E402
+    BASELINE,
+    check_instrument,
+    load_baseline,
+    summarize,
+    threshold_ms,
+    write_baseline,
+)
 
 #: `(cell, norm, decay_temp)`. One small topology cell per structural axis the gate
 #: is meant to protect: both normalizations, the decay arm, and a deeper topology at
@@ -49,7 +56,7 @@ def _prepare(name, norm, decay_temp):
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
     plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16", fx=fx)
-    for _ in range(5):
+    for _ in range(WARMUP_LAUNCHES):
         _, sched = _timed(cell, fx, plan, decay, g_read, sched)
     return cell, fx, plan, decay, g_read, sched
 
@@ -59,6 +66,8 @@ def measure(name, norm, decay_temp, reps=11):
 
     `_timed` rather than a fresh timing loop: a baseline measured by a different
     stopwatch than the one the drivers use is a baseline for a different quantity.
+    It runs on :data:`bench.pairing.CANONICAL_INSTRUMENT` and nothing here may
+    override that -- the recorder and the gate must not be able to disagree.
     """
     state = _prepare(name, norm, decay_temp)
     return [_timed(*state)[0] for _ in range(reps)]
@@ -177,7 +186,7 @@ def main() -> int:
               file=sys.stderr)
     arms = {}
     for key, medians in pool.items():
-        s = summarize(medians)
+        s = summarize(medians, source=CANONICAL_INSTRUMENT)
         s["clock_settled"] = settled
         arms[key] = s
         print(f"{key:48s} median {s['median_ms']:.4f} ms  block IQR {s['iqr_ms']:.4f}  "
@@ -195,6 +204,7 @@ def main() -> int:
         if exp is None:
             print(f"  NEW ARM (no baseline) {key}")
             continue
+        check_instrument(exp, got["source"], key)
         limit = threshold_ms(exp["median_ms"], exp["iqr_ms"])
         flag = "REGRESSED" if got["median_ms"] > limit else "ok"
         bad += got["median_ms"] > limit
