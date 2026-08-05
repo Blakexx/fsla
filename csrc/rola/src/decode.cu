@@ -26,6 +26,7 @@
 
 #include "decode.cuh"
 #include "decode_api.cuh"
+#include "dispatch_switch.cuh"
 
 namespace rola {
 namespace decode {
@@ -376,27 +377,6 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   if (tid == 0) p.ctr[bh] = 0;
 }
 
-#define ROLA_DECODE_LAUNCH(DV_, D_, DECAY_, GLOBAL_)                                  \
-  decode_gemv_kernel<DV_, D_, DECAY_, GLOBAL_>                                        \
-      <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p)
-
-#define ROLA_DECODE_DISPATCH_D(DV_, DECAY_, GLOBAL_)                                  \
-  switch (p.D) {                                                                      \
-    case 1: ROLA_DECODE_LAUNCH(DV_, 1, DECAY_, GLOBAL_); break;                        \
-    case 2: ROLA_DECODE_LAUNCH(DV_, 2, DECAY_, GLOBAL_); break;                        \
-    case 3: ROLA_DECODE_LAUNCH(DV_, 3, DECAY_, GLOBAL_); break;                        \
-    case 4: ROLA_DECODE_LAUNCH(DV_, 4, DECAY_, GLOBAL_); break;                        \
-    default: TORCH_CHECK(false, "D must be in [1, 4] (spec §1), got ", p.D);           \
-  }
-
-#define ROLA_DECODE_DISPATCH_DECAY(DV_, GLOBAL_)                                      \
-  if (decay) { ROLA_DECODE_DISPATCH_D(DV_, true, GLOBAL_) }                            \
-  else { ROLA_DECODE_DISPATCH_D(DV_, false, GLOBAL_) }
-
-#define ROLA_DECODE_DISPATCH_GLOBAL(DV_)                                              \
-  if (global_norm) { ROLA_DECODE_DISPATCH_DECAY(DV_, true) }                           \
-  else { ROLA_DECODE_DISPATCH_DECAY(DV_, false) }
-
 }  // namespace
 
 size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay) {
@@ -413,18 +393,23 @@ void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool d
   const int cols = d_v + (global_norm ? 1 : 0);
   const size_t smem = decode_gemv_smem_bytes(p.total_rows, d_v, cols, decay);
   auto stream = at::cuda::getCurrentCUDAStream();
-  if (d_v == 64) {
-    ROLA_DECODE_DISPATCH_GLOBAL(64)
-  } else {
-    ROLA_DECODE_DISPATCH_GLOBAL(32)
-  }
+  //: THE LAUNCH IS WRITTEN ONCE. Each axis walker hands its value back as an
+  //: `integral_constant`, so the four `::value`s below are template arguments and the
+  //: `<<<...>>>` configuration cannot drift between arms:
+  //: docs/internals/dispatch_switch.md#one-launch
+  int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
+    bool_switch(global_norm, [&](auto GLOBAL) {
+      bool_switch(decay, [&](auto DECAY) {
+        int_switch<1, 2, 3, 4>(p.D, "D (spec §1)", [&](auto LEVELS) {
+          decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value, decltype(DECAY)::value,
+                             decltype(GLOBAL)::value>
+              <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
+        });
+      });
+    });
+  });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
-
-#undef ROLA_DECODE_LAUNCH
-#undef ROLA_DECODE_DISPATCH_D
-#undef ROLA_DECODE_DISPATCH_DECAY
-#undef ROLA_DECODE_DISPATCH_GLOBAL
 
 // ---------------------------------------------------------------------------
 // Host entry

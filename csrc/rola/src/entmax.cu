@@ -21,6 +21,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "dispatch_switch.cuh"
 #include "entmax.cuh"
 
 namespace rola {
@@ -500,51 +501,23 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
   while (w_pad < width) w_pad <<= 1;
   if (w_pad < 2) w_pad = 2;
 
-#define ROLA_ENTMAX_FWD(LW_, IPT_)                                                     \
-  do {                                                                                 \
-    if (a15)                                                                           \
-      union_forward_kernel<LW_, IPT_, true, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(  \
-          rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),           \
-          sup.data_ptr<int32_t>(), (OutT *)rv.data_ptr(), (OutT *)wv.data_ptr(),        \
-          tokens, width, n_words, five(rl), five(wl), five(mid), five(rv), five(wv),   \
-          five(sup));                                                                  \
-    else                                                                               \
-      union_forward_kernel<LW_, IPT_, false, OutT><<<grid, BLOCK_THREADS, 0, stream>>>( \
-          rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),           \
-          sup.data_ptr<int32_t>(), (OutT *)rv.data_ptr(), (OutT *)wv.data_ptr(),        \
-          tokens, width, n_words, five(rl), five(wl), five(mid), five(rv), five(wv),   \
-          five(sup));                                                                  \
-  } while (0)
-
-  switch (w_pad) {
-    case 2:
-      ROLA_ENTMAX_FWD(2, 1);
-      break;
-    case 4:
-      ROLA_ENTMAX_FWD(4, 1);
-      break;
-    case 8:
-      ROLA_ENTMAX_FWD(8, 1);
-      break;
-    case 16:
-      ROLA_ENTMAX_FWD(16, 1);
-      break;
-    case 32:
-      ROLA_ENTMAX_FWD(32, 1);
-      break;
-    case 64:
-      ROLA_ENTMAX_FWD(32, 2);
-      break;
-    case 128:
-      ROLA_ENTMAX_FWD(32, 4);
-      break;
-    case 256:
-      ROLA_ENTMAX_FWD(32, 8);
-      break;
-    default:
-      TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
-  }
-#undef ROLA_ENTMAX_FWD
+  //: THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is
+  //: DERIVED from the padded width rather than tabulated per case -- which is what makes
+  //: it impossible for one arm's argument list to drift from another's:
+  //: docs/internals/dispatch_switch.md#one-launch
+  int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
+      w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
+        constexpr int kWPad = decltype(WPAD)::value;
+        constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
+        constexpr int kItemsPerThread = kWPad / kLaneWidth;
+        bool_switch(a15, [&](auto A15) {
+          union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+              <<<grid, BLOCK_THREADS, 0, stream>>>(
+                  rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
+                  sup.data_ptr<int32_t>(), (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens,
+                  width, n_words, five(rl), five(wl), five(mid), five(rv), five(wv), five(sup));
+        });
+      });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -562,49 +535,21 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
   while (w_pad < width) w_pad <<= 1;
   if (w_pad < 2) w_pad = 2;
 
-#define ROLA_ENTMAX_BWD(LW_, IPT_, A15_)                                               \
-  union_backward_kernel<LW_, IPT_, A15_, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(     \
-      rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),               \
-      sup.data_ptr<int32_t>(), (const OutT *)rv.data_ptr(), (const OutT *)wv.data_ptr(),\
-      (const OutT *)dr.data_ptr(), (const OutT *)dw.data_ptr(), drl.data_ptr<float>(),  \
-      dwl.data_ptr<float>(), tokens, width, five(rl), five(wl), five(mid), five(rv),   \
-      five(wv), five(dr), five(dw), five(drl), five(dwl), five(sup))
-#define ROLA_ENTMAX_BWD_A(LW_, IPT_)                                                   \
-  do {                                                                                 \
-    if (a15) ROLA_ENTMAX_BWD(LW_, IPT_, true);                                         \
-    else ROLA_ENTMAX_BWD(LW_, IPT_, false);                                            \
-  } while (0)
-
-  switch (w_pad) {
-    case 2:
-      ROLA_ENTMAX_BWD_A(2, 1);
-      break;
-    case 4:
-      ROLA_ENTMAX_BWD_A(4, 1);
-      break;
-    case 8:
-      ROLA_ENTMAX_BWD_A(8, 1);
-      break;
-    case 16:
-      ROLA_ENTMAX_BWD_A(16, 1);
-      break;
-    case 32:
-      ROLA_ENTMAX_BWD_A(32, 1);
-      break;
-    case 64:
-      ROLA_ENTMAX_BWD_A(32, 2);
-      break;
-    case 128:
-      ROLA_ENTMAX_BWD_A(32, 4);
-      break;
-    case 256:
-      ROLA_ENTMAX_BWD_A(32, 8);
-      break;
-    default:
-      TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
-  }
-#undef ROLA_ENTMAX_BWD_A
-#undef ROLA_ENTMAX_BWD
+  int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
+      w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
+        constexpr int kWPad = decltype(WPAD)::value;
+        constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
+        constexpr int kItemsPerThread = kWPad / kLaneWidth;
+        bool_switch(a15, [&](auto A15) {
+          union_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+              <<<grid, BLOCK_THREADS, 0, stream>>>(
+                  rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
+                  sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
+                  (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), drl.data_ptr<float>(),
+                  dwl.data_ptr<float>(), tokens, width, five(rl), five(wl), five(mid), five(rv),
+                  five(wv), five(dr), five(dw), five(drl), five(dwl), five(sup));
+        });
+      });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
