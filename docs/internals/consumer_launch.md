@@ -40,6 +40,18 @@ So the arrangement is checked from both ends:
   architecture and per originating object, which is where cross-translation-unit
   duplication is visible at all.
 
+**What the arrangement does not buy is a link error on a missing member.** This is a
+Python extension module: `ld -shared` leaves undefined symbols for the loader, by
+design and correctly — every CPython and torch symbol in it is resolved that way,
+which is also why `--no-undefined` is unavailable. Measured by removing one arm from
+its shard: the reference is unresolved and names its tuple exactly
+(`nm --undefined-only` reports one `launch_consumer_arm` symbol), the link succeeds,
+and the failure would reach a shipped artifact as an `ImportError`. The occupancy
+wrapper has no device code at all, so an entry count would not see its absence
+either. Hence the closure is CHECKED: `tools/gen_shards.py --check` before the
+compile, and `tools/fatbin_entries.py --check`'s unresolved-symbol arm after the
+link.
+
 The declarations, and the `ShardRow` table the queries resolve through, are in
 `consumer.cuh`.
 

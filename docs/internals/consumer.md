@@ -480,9 +480,23 @@ which is why this file does not include the kernel header at all.
 
 The launch ladder assigns a `LaunchFn` and returns nothing; `launch_consumer` calls
 it and checks the CUDA error state once. Taking the address of a specialization this
-translation unit cannot define is also the mechanism that makes a dispatch arm with
-no shard member an undefined-reference LINK ERROR rather than a silent
-re-instantiation.
+translation unit cannot define is also what makes the split real: a dispatch arm with
+no shard member CANNOT be satisfied by a silent re-instantiation here.
+
+**It is not a link error, and the difference is the reason two gates exist.** This is
+a Python extension module, so `ld -shared` leaves the reference undefined for the
+loader — correctly; every CPython and torch symbol in the module is resolved that way,
+which is also why `--no-undefined` is unavailable. A dropped arm therefore leaves one
+unresolved `launch_consumer_arm` symbol and would reach a shipped artifact as an
+`ImportError`. The closure is checked instead, at both ends of the compile:
+
+| gate | when | what it refuses |
+|---|---|---|
+| `tools/gen_shards.py --check` | before the compile (`setup.py`, CI, `tests/unit/test_shard_partition.py`) | a committed shard that disagrees with the matrix definition |
+| `tools/fatbin_entries.py --check` | after the link (`setup.py`) | a binary with an unresolved per-arm wrapper, a duplicated or missing device entry, or a ratified name it does not carry |
+
+Measured by removal: dropping one arm from its shard leaves exactly one undefined
+symbol, and the post-link gate names its tuple three ways.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 

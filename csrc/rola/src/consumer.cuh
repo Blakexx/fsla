@@ -170,10 +170,14 @@ struct ScanParams {
 //
 // One instantiation of each of these per template tuple lives in exactly one
 // generated shard (`csrc/rola/src/instantiations/`), and their DEFINITIONS live in
-// `consumer_launch.cuh`, which the dispatch translation unit must not include. A
-// dispatch arm with no shard member is therefore an undefined-reference LINK ERROR
-// rather than a silent re-instantiation that would leave the build unsharded and
-// every gate green: docs/internals/consumer.md#instantiation-matrix
+// `consumer_launch.cuh`, which the dispatch translation unit must not include. That
+// asymmetry is what makes the split REAL: with the definition out of scope, the
+// compiler cannot satisfy a dispatch arm by re-instantiating it here. It does NOT
+// make a missing member a link error -- this is a Python extension module, so the
+// linker leaves the reference undefined for the loader and the failure would reach a
+// SHIPPED artifact as an ImportError. The closure is therefore CHECKED, before the
+// compile by the shard gate and after the link by `tools/fatbin_entries.py`:
+// docs/internals/consumer.md#instantiation-matrix
 // ---------------------------------------------------------------------------
 
 template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>

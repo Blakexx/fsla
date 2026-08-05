@@ -23,17 +23,31 @@ from __future__ import annotations
 
 import os
 
-#: Torch's `COMMON_NVCC_FLAGS` plus the ABI define, restated ONCE. `CUDAExtension`
-#: adds exactly this set to the build; a standalone compile of the same file must
-#: therefore pass it too, or it is compiling a different program.
-TORCH_DEFINES = (
-    "-D_GLIBCXX_USE_CXX11_ABI=0",
+#: Torch's `COMMON_NVCC_FLAGS`, restated ONCE. `CUDAExtension` adds exactly this set
+#: to the build, so a standalone compile of the same file must pass it too or it is
+#: compiling a different program.
+_COMMON_NVCC_FLAGS = (
     "-D__CUDA_NO_HALF_OPERATORS__",
     "-D__CUDA_NO_HALF_CONVERSIONS__",
     "-D__CUDA_NO_BFLOAT16_CONVERSIONS__",
     "-D__CUDA_NO_HALF2_OPERATORS__",
     "--expt-relaxed-constexpr",
 )
+
+
+def torch_defines() -> list[str]:
+    """The preprocessor defines torch's `CUDAExtension` adds, ABI included.
+
+    The ABI define is READ FROM TORCH rather than written down. It is the one define
+    in the set whose value is a property of the INSTALLED torch and not of this
+    project: a hardcoded `=0` compiled against a `=1` build would produce a
+    ratification measured on a program the extension does not link, and it would do
+    it silently, because the two agree about every other flag.
+    """
+    import torch
+
+    abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
+    return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *_COMMON_NVCC_FLAGS]
 
 #: THE `-MP` INSURANCE. It adds a phony make target per header to the dependency
 #: file, so a depfile consumer that meets a header which no longer exists treats the

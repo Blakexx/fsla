@@ -291,8 +291,12 @@ def dispatch_launch_inc() -> str:
 
     It assigns a function POINTER rather than calling and returning, so the launch
     error check lives in exactly one place in `consumer.cu` instead of 512 places
-    here. Taking the address of a specialization whose definition this translation
-    unit cannot see is also what makes a missing shard member a LINK ERROR.
+    here. Taking the address of a specialization whose definition the dispatch
+    translation unit cannot see is also what makes the split real: that unit cannot
+    satisfy an arm locally. It does not make a missing arm a link error -- a Python
+    extension leaves the reference undefined for the loader -- so the closure is
+    checked, before the compile by `--check` and after the link by
+    `tools/fatbin_entries.py`.
     """
     lines = [BANNER,
              "// The consumer launch ladder, over the full instantiation matrix.\n",
@@ -353,8 +357,16 @@ launcher `launch_consumer_arm` (which is what pulls in the device kernel, exactl
 once in the whole fatbin), one of `query_consumer_occupancy_arm`, and a `ShardRow`
 record holding both plus the arm's `constexpr` shared-memory footprint. The
 launcher's DEFINITION lives in `../consumer_launch.cuh`, which `consumer.cu` must
-not include — that is what makes a missing member an undefined-reference LINK ERROR
-instead of a silent re-instantiation back into the dispatch translation unit.
+not include — that is what stops the dispatch translation unit from satisfying an
+arm by re-instantiating it locally, which would leave the build green and nothing
+sharded.
+
+It does NOT make a missing member a link error. This is a Python extension module,
+so `ld -shared` leaves the reference undefined for the loader and a dropped arm
+would reach a shipped artifact as an `ImportError`. Two gates close it instead:
+`python tools/gen_shards.py --check` refuses a shard that disagrees with the matrix
+before anything compiles, and `python tools/fatbin_entries.py --check` refuses a
+built binary carrying an unresolved `launch_consumer_arm` after the link.
 
 `dispatch_launch.inc` is the launch selection ladder and `dispatch_rows.inc` the
 concatenation of the shard row tables that the residency and footprint queries

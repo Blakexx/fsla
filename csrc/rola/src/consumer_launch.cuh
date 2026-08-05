@@ -12,10 +12,20 @@
 // the dispatch translation unit, the compiler would implicitly instantiate every
 // dispatched arm right back into it -- the build would still link, every gate would
 // still pass, the census would still report the full matrix, and NOTHING WOULD BE
-// SHARDED. With the definition here and only here, a missing shard member is an
-// undefined-reference LINK ERROR. (This is flash-attention's arrangement:
-// `flash.h` declares, `flash_fwd_launch_template.h` defines, the generated
-// instantiation TUs include the second and the API TU includes only the first.)
+// SHARDED. With the definition here and only here, that is impossible. (This is
+// flash-attention's arrangement: `flash.h` declares,
+// `flash_fwd_launch_template.h` defines, the generated instantiation TUs include the
+// second and the API TU includes only the first.)
+//
+// What the arrangement does NOT buy is a link error on a missing member, and that
+// distinction is why the gates below exist. This is a Python extension module:
+// `ld -shared` leaves undefined symbols for the loader, by design and correctly, so
+// a dropped arm leaves ONE unresolved `launch_consumer_arm` symbol and reaches a
+// SHIPPED artifact as an ImportError instead of failing the build. `--no-undefined`
+// is unavailable for exactly the reason those loader-resolved symbols exist. The
+// closure is CHECKED instead -- the shard gate refuses a missing member before the
+// compile, `tools/fatbin_entries.py` refuses it after the link.
+// docs/internals/consumer_launch.md#shard-only
 //
 // **NO TORCH.** The signature takes a `cudaStream_t` instead of asking
 // `at::cuda::getCurrentCUDAStream()` for it, and reports failure through the CUDA

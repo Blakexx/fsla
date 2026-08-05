@@ -15,9 +15,15 @@ stop being true:
 3. **The dispatch translation unit cannot see the launcher's definition.** If it
    could, it would implicitly instantiate all 512 kernels back into itself: the build
    would link, every other gate would stay green, and nothing would be sharded. The
-   ``#include`` that would do it is what this test forbids; the OUTCOME is proved
-   from the built binary by ``tools/fatbin_entries.py``, which is a different
-   question and deliberately a second gate.
+   ``#include`` that would do it is what this test forbids.
+
+That is the whole of what a source-level test can say. It is NOT a claim that a
+missing shard member fails the build -- it does not, because a Python extension links
+with undefined symbols left for the loader, and the failure would otherwise reach a
+shipped artifact as an ImportError. The binary-level half is
+``tools/fatbin_entries.py``: one device entry per instantiation in its assigned
+shard, no unresolved per-arm wrapper, and every ratified name present. Two gates, two
+questions, deliberately.
 
 No GPU, no CUDA toolchain, no build -- this is a CPU-lane test.
 """
@@ -107,13 +113,19 @@ def test_checked_in_shards_match_the_generator():
 
 
 @pytest.mark.parametrize("header", ["consumer_launch.cuh", "consumer_kernel.cuh"])
-def test_the_dispatch_tu_cannot_instantiate_the_kernel(header):
-    """A missing shard member must be a LINK ERROR, never a re-instantiation.
+def test_the_dispatch_tu_cannot_satisfy_an_arm_locally(header):
+    """A missing shard member must be UNSATISFIABLE here, never a re-instantiation.
 
     ``consumer.cu`` reaches every arm through a declared-not-defined host wrapper.
     Including either of these headers would put the kernel template's definition in
     scope and let the compiler satisfy the dispatch locally -- the exact silent
     non-shard this partition exists to prevent.
+
+    What this does NOT establish is that a missing member fails the BUILD. It does
+    not: a Python extension links with undefined symbols left for the loader, so a
+    dropped arm would reach a shipped artifact as an ImportError. That is
+    ``tools/fatbin_entries.py``'s job, post-link, and this test's job is only the
+    half that can be read off the source.
     """
     text = (REPO / "csrc" / "rola" / "src" / "consumer.cu").read_text()
     assert f'#include "{header}"' not in text

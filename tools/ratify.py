@@ -418,7 +418,7 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-isystem", inc]
     cmd += ["-isystem", sysconfig.get_paths()["include"]]
-    cmd += list(build_flags.TORCH_DEFINES)
+    cmd += build_flags.torch_defines()
     cmd += build_flags.nvcc_flags(arches)
     return cmd + ["-o", obj_path]
 
