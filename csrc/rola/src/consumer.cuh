@@ -66,17 +66,17 @@ struct ConsumerParams;
 __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i);
 
 struct ConsumerParams {
-  const float* amp_read[kMaxLevels];    // [BH, n_tiles, BT, pitch_read]
-  const float* amp_write[kMaxLevels];   // [BH, n_tiles, BT, pitch_write]
+  const float* amp_read[kMaxLevels];   // [BH, n_tiles, BT, pitch_read]
+  const float* amp_write[kMaxLevels];  // [BH, n_tiles, BT, pitch_write]
   // LeafMassDecay clock stream, `c[t,s] = prod_l p_write_stored[t, d_l(s)]`
   // (spec §2). Staged by `build_clock_stream`, which is a separate builder from
   // the schedule so the STORED tensor can never key a tile bitmap (P5.20.5
   // finding 2). nullptr under `decay=None`. NOTE the product runs over ALL levels
   // including `l < j`: the clock is an exponent, so a fixed level's factor does
   // not hoist into the row scale the way the read/write factors do.
-  const float* amp_clock[kMaxLevels];   // [BH, n_tiles, BT, pitch_clock] or nullptr
+  const float* amp_clock[kMaxLevels];  // [BH, n_tiles, BT, pitch_clock] or nullptr
   int level_pitch_clock[kMaxLevels];
-  int level_stride[kMaxLevels];         // per-level (i / stride) % modulus
+  int level_stride[kMaxLevels];  // per-level (i / stride) % modulus
   int level_modulus[kMaxLevels];
   int level_row_offset[kMaxLevels];
   int level_width[kMaxLevels];
@@ -84,9 +84,9 @@ struct ConsumerParams {
   int level_pitch_write[kMaxLevels];
   // prod(widths[l+1:j]) for the fixed levels l < j; the owner-id mixed radix.
   int owner_stride[kMaxLevels];
-  const int32_t* owners;        // [n_owners, 2]  (bh, owner)
-  const uint32_t* read_bits;    // [BH, total_rows, n_words]
-  const uint32_t* write_bits;   // [BH, total_rows, n_words]
+  const int32_t* owners;       // [n_owners, 2]  (bh, owner)
+  const uint32_t* read_bits;   // [BH, total_rows, n_words]
+  const uint32_t* write_bits;  // [BH, total_rows, n_words]
   //: §4's SUPPORT WORD, materialized: `[BH, n_tiles, total_rows]`, bit `t` = token
   //: `tile * BT + t` (`BT <= 32`, spec §6). Same level-digit rows as `read_bits`, one
   //: granularity finer -- `read_bits` is literally its tile reduction, built from it
@@ -104,8 +104,8 @@ struct ConsumerParams {
   //: membership, which is what this word is the authority for.
   const uint32_t* read_tok_bits;   // [BH, n_tiles, total_rows]
   const uint32_t* write_tok_bits;  // [BH, n_tiles, total_rows]
-  const uint32_t* read_union;   // [BH, n_slices,  n_words]
-  const uint32_t* write_union;  // [BH, n_slices,  n_words]
+  const uint32_t* read_union;      // [BH, n_slices,  n_words]
+  const uint32_t* write_union;     // [BH, n_slices,  n_words]
 
   // Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   // `rate[s] = prod_l delta_l[d_l(s)]` -- a plain product of DIALS (spec §2), not
@@ -113,14 +113,14 @@ struct ConsumerParams {
   // has no V3 counterpart. Accumulated in fp32 and never bf16: `rate` near 1
   // makes `1 - rate` catastrophically cancelling, and `log1pf` cannot repair a
   // cancellation that already happened inside the product.
-  const float* dials;           // [H, total_rows] or nullptr
+  const float* dials;  // [H, total_rows] or nullptr
 
-  const float* g_read;          // [BH, T] or nullptr (global fixes g_read := 1)
-  const float* g_write;         // [BH, T]
-  const float* v;               // [BH, T, DV]
+  const float* g_read;   // [BH, T] or nullptr (global fixes g_read := 1)
+  const float* g_write;  // [BH, T]
+  const float* v;        // [BH, T, DV]
 
-  float* num;                   // [BH, T, DV]   fp32, atomically accumulated
-  float* den;                   // [BH, T]       fp32, or nullptr under `raw`
+  float* num;  // [BH, T, DV]   fp32, atomically accumulated
+  float* den;  // [BH, T]       fp32, or nullptr under `raw`
   //: Unpaged: `[BH, N, DV (+1 mass column under `global`)]`; ATOM `q` of owner `o`
   //: of batch-head `bh` starts at row `bh * N + o * BC + q * MMA_K_QUANTUM`.
   //: Paged (spec §4.5): `[physical_slots, MMA_K_QUANTUM, cols]`; that same atom
@@ -148,10 +148,10 @@ struct ConsumerParams {
   int total_rows;
   int n_slices;
   int D;
-  int first_spanned_level;      // j
-  int slice_digits;             // c
+  int first_spanned_level;  // j
+  int slice_digits;         // c
   int n_owners;
-  int H;                        // heads; the dial row is `bh % H` (fold is b*H+h)
+  int H;  // heads; the dial row is `bh % H` (fold is b*H+h)
 
   // ---- §6.4 sequence parallelism (`P` per owner) --------------------------
   // The grid is a FLAT (owner, segment) work list: `owners` carries the
@@ -164,9 +164,9 @@ struct ConsumerParams {
   // every expression below collapses to the pre-`P` kernel WITHOUT reading
   // memory -- which is what keeps `P = 1` bit-identical, and `P = 1` is the
   // primary benchmarked configuration (spec §6.4).
-  const int32_t* work_seg;      // [n_owners] or nullptr
-  const int32_t* work_nseg;     // [n_owners] or nullptr
-  const int32_t* work_slot;     // [n_owners] first workspace slot OF THE OWNER
+  const int32_t* work_seg;   // [n_owners] or nullptr
+  const int32_t* work_nseg;  // [n_owners] or nullptr
+  const int32_t* work_slot;  // [n_owners] first workspace slot OF THE OWNER
 
   // §6.4's partial-state workspace. LAUNCH-SCOPED and NOT the §7.1 arena: the
   // arena's contract is persistent cross-chunk state pages only, and mixing a
@@ -205,10 +205,10 @@ struct ConsumerParams {
   // realized writes), and the accumulated boundary pass 3 reads is dense. The stash
   // slot uses only `ws_state`; its `ws_scale`/`ws_leaf`/`ws_count` entries are
   // neither written nor read (the scan's fold indexes `slot[owner] + 1 + s`).
-  float* ws_state;              // [n_slots, BC, cols]
-  float* ws_scale;              // [n_slots, BC]
-  int32_t* ws_leaf;             // [n_slots, BC]
-  int32_t* ws_count;            // [n_slots]
+  float* ws_state;    // [n_slots, BC, cols]
+  float* ws_scale;    // [n_slots, BC]
+  int32_t* ws_leaf;   // [n_slots, BC]
+  int32_t* ws_count;  // [n_slots]
 
   // Which of §6.4's three passes this launch is. LAUNCH-UNIFORM (every CTA in a
   // launch has the same value), so the branches it drives are uniform and are
@@ -235,9 +235,9 @@ enum PassMode : int {
 //: in order. One CTA per SPLIT owner; the fold is sequential over segments inside
 //: it, so there is no inversion anywhere (P5.21's obligation).
 struct ScanParams {
-  const int32_t* owners;        // [n_split, 2]  (bh, owner)
-  const int32_t* nseg;          // [n_split]
-  const int32_t* slot;          // [n_split]
+  const int32_t* owners;  // [n_split, 2]  (bh, owner)
+  const int32_t* nseg;    // [n_split]
+  const int32_t* slot;    // [n_split]
   float* ws_state;
   const float* ws_scale;
   const int32_t* ws_leaf;

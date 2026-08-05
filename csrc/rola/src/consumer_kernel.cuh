@@ -104,7 +104,7 @@ using rola::panel_write_factor;
 //: exactly this arithmetic.
 using rola::detail::segment_word_mask;
 
-constexpr int kConsumerThreads = 256;   // 8 warps -- the §10i.13 CTA-width unlock
+constexpr int kConsumerThreads = 256;  // 8 warps -- the §10i.13 CTA-width unlock
 
 //: `MMA_K_QUANTUM` -- the hardware `mma.sync` k-extent on the sm80-class bf16 path,
 //: and THE named constant every quanta-shaped quantity in this kernel is an
@@ -205,7 +205,6 @@ constexpr int kMmaKQuantum = 16;
 #ifndef ROLA_C_RING_DEPTH
 #define ROLA_C_RING_DEPTH 1
 #endif
-
 
 //: **A MEASURED KERNEL FACT, NOT AN ARCHITECTURE FACT AND NOT A THRESHOLD.**
 //:
@@ -338,12 +337,12 @@ constexpr int kMmaKQuantum = 16;
 //: in-loop max), which re-answers §2.23's duration question for them without
 //: re-running it: 80 stands. Full tables: `workflows/20260802-thunder/trackK.md`
 //: session 9.
-constexpr int consumer_reg_budget(int BT, int BC, bool decay, MmaPrec read_prec,
-                                  MmaPrec fold_prec, int DV) {
+constexpr int consumer_reg_budget(int BT, int BC, bool decay, MmaPrec read_prec, MmaPrec fold_prec,
+                                  int DV) {
   //: `NM` -- the tile's `m16` ROW BLOCKS. Two of them is a second A-fragment block
   //: and (at `DV = 64`) a second y quad live across all three readout GEMMs.
   const int nm = BT / 16;
-  const int warp_tiles = nm * (DV / 8);          // NM x NT_DV, what the warps split
+  const int warp_tiles = nm * (DV / 8);  // NM x NT_DV, what the warps split
   const int warps = kConsumerThreads / 32;
   //: `BC < 64` IS A DURATION VERDICT, NOT A CENSUS ONE (session 9, gate iii).
   //: The BC = 64 half of this class is SMEM-capped at 3 CTAs, so a lower budget
@@ -355,9 +354,9 @@ constexpr int consumer_reg_budget(int BT, int BC, bool decay, MmaPrec read_prec,
   //: The BC = 16 half is register-BOUND (SMEM admits 5-6) and the same gate read
   //: **-6.97 %** (topo-D4-w8x8x8x16-BC16 d_v=32 BT=32: 66 -> 62 registers,
   //: 3 -> 4 CTAs, warps-active 49 -> 64 %), so it lands.
-  if (nm >= 2 && BC < 64 && !decay && read_prec == MmaPrec::kBf16 &&
-      fold_prec == MmaPrec::kBf16 && warp_tiles <= warps) {
-    return 64;                                   // the session-9 clean class
+  if (nm >= 2 && BC < 64 && !decay && read_prec == MmaPrec::kBf16 && fold_prec == MmaPrec::kBf16
+      && warp_tiles <= warps) {
+    return 64;  // the session-9 clean class
   }
   const int base = (BC >= 64) ? 80 : (decay ? 80 : 64);
   return (nm >= 2) ? 96 : base;
@@ -401,8 +400,7 @@ constexpr int consumer_reg_budget(int BT, int BC, bool decay, MmaPrec read_prec,
 //: CTA, it buys 66 st / 212 ld of SPILL; 3 CTAs at 80 registers is 6.5 % FASTER than
 //: 4 CTAs at 64 with the spill. The table above is the `decay = false` arm's.
 constexpr int ctas_for_residency(size_t smem, int reg_budget) {
-  const int by_smem =
-      static_cast<int>(kSm.smem_per_sm / (smem + kDriverSmemReservePerCta));
+  const int by_smem = static_cast<int>(kSm.smem_per_sm / (smem + kDriverSmemReservePerCta));
   const int by_threads = kSm.max_threads_per_sm / kConsumerThreads;
   const int by_regs = kSm.regs_per_sm / (kConsumerThreads * reg_budget);
   const int m = by_smem < by_threads ? by_smem : by_threads;
@@ -544,10 +542,10 @@ constexpr int stage_swizzle_b() {
 }
 
 template <int ROWS, int COLS>
-using StageLayout = decltype(cute::composition(
-    cute::Swizzle<stage_swizzle_b<COLS>(), 3, 3>{},
-    cute::Layout<cute::Shape<cute::Int<ROWS>, cute::Int<COLS>>,
-                 cute::Stride<cute::Int<COLS>, cute::_1>>{}));
+using StageLayout =
+    decltype(cute::composition(cute::Swizzle<stage_swizzle_b<COLS>(), 3, 3>{},
+                               cute::Layout<cute::Shape<cute::Int<ROWS>, cute::Int<COLS>>,
+                                            cute::Stride<cute::Int<COLS>, cute::_1>>{}));
 
 //: THE ADDRESS FUNCTION IS A CLOSED FORM, AND CuTe IS ITS SPECIFICATION.
 //:
@@ -576,8 +574,8 @@ using StageLayout = decltype(cute::composition(
 //: fails the build.
 template <int COLS>
 __host__ __device__ constexpr int stage_xor_mask(int row) {
-  return static_cast<int>((static_cast<unsigned>(row * COLS) >> 6) &
-                          ((1u << stage_swizzle_b<COLS>()) - 1u))
+  return static_cast<int>((static_cast<unsigned>(row * COLS) >> 6)
+                          & ((1u << stage_swizzle_b<COLS>()) - 1u))
          << 3;
 }
 
@@ -894,22 +892,21 @@ constexpr int ctl_words(int BC) { return kCtlFold0 + BC / kMmaKQuantum; }
 //: unpaged paths are the same addressing strategy at different slot maps rather than
 //: two strategies to keep in sync.
 template <int BC>
-__device__ __forceinline__ int64_t atom_row_base(
-    const ConsumerParams& p, int bh, int owner, int q) {
+__device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh, int owner,
+                                                 int q) {
   constexpr int kAtomsPerOwner = BC / kMmaKQuantum;
   if (p.page_table != nullptr) {
     //: `atoms_per_bh = N / MMA_K_QUANTUM`, DERIVED rather than carried: the host
     //: sets `p.N = owners_total * BC` under paging, so no ABI field is needed for
     //: it and there is no second place for the table's stride to be wrong.
     const int atoms_per_bh = static_cast<int>(p.N / kMmaKQuantum);
-    const int64_t entry = static_cast<int64_t>(bh) * atoms_per_bh
-                        + static_cast<int64_t>(owner) * kAtomsPerOwner + q;
+    const int64_t entry =
+        static_cast<int64_t>(bh) * atoms_per_bh + static_cast<int64_t>(owner) * kAtomsPerOwner + q;
     const int physical = p.page_table[entry];
-    return physical >= 0 ? static_cast<int64_t>(physical) * kMmaKQuantum
-                         : static_cast<int64_t>(-1);
+    return physical >= 0 ? static_cast<int64_t>(physical) * kMmaKQuantum : static_cast<int64_t>(-1);
   }
   return static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC
-       + static_cast<int64_t>(q) * kMmaKQuantum;
+         + static_cast<int64_t>(q) * kMmaKQuantum;
 }
 
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound below can be
@@ -939,8 +936,8 @@ __device__ __forceinline__ int64_t atom_row_base(
 template <int BT, int BC, int DV, bool DECAY, MmaPrec READ_PREC, MmaPrec FOLD_PREC>
 constexpr size_t vw_union_bytes() {
   constexpr bool kNarrow = stage_is_narrow<READ_PREC, FOLD_PREC>();
-  const size_t vw = static_cast<size_t>(vw_elems<BT, DV, kNarrow>()) *
-                    (kNarrow ? sizeof(__nv_bfloat16) : sizeof(float));
+  const size_t vw = static_cast<size_t>(vw_elems<BT, DV, kNarrow>())
+                    * (kNarrow ? sizeof(__nv_bfloat16) : sizeof(float));
   const size_t clk =
       DECAY ? static_cast<size_t>(BT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
   return align4(vw > clk ? vw : clk);
@@ -964,27 +961,26 @@ constexpr size_t vw_union_bytes() {
 //:     SCHEDULE at depth 1, which is strictly cheaper than ringing it in storage.
 //:
 //: `den` is written and read inside one tile's compute and is likewise excluded.
-template <int BT, int BC, int DV, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
-          bool COMPACT>
+template <int BT, int BC, int DV, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY, bool COMPACT>
 constexpr size_t staging_slot_bytes() {
-  size_t b = 2 * static_cast<size_t>(BT) * sizeof(float);                 // sr, sw
-  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();         // Vw (+ clk)
+  size_t b = 2 * static_cast<size_t>(BT) * sizeof(float);          // sr, sw
+  b += vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();  // Vw (+ clk)
   b += static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) * sizeof(unsigned);
   if (COMPACT) b += (2 * static_cast<size_t>(BC) + 2) * sizeof(int);
   return b;
 }
 
-template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
-          bool DECAY, bool GLOBAL, bool COMPACT, int RING>
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
+          bool GLOBAL, bool COMPACT, int RING>
 constexpr size_t consumer_smem_bytes_at() {
-  size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);          // S
+  size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);  // S
   //: `den` exists only under `global`; the `raw` arm has no denominator stream at
   //: all, so allocating its row would be dead storage rather than a rounding.
   //: `sr`/`sw` are STAGING outputs and carry the ring; `den` is not and does not.
-  b += RING * 2 * static_cast<size_t>(BT) * sizeof(float);                // sr, sw
-  b += (GLOBAL ? 1 : 0) * static_cast<size_t>(BT) * sizeof(float);        // den
-  b += 2 * static_cast<size_t>(kMaxWords) * sizeof(uint32_t);             // candidates
-  b += static_cast<size_t>(D) * BC * sizeof(int);                         // dig
+  b += RING * 2 * static_cast<size_t>(BT) * sizeof(float);          // sr, sw
+  b += (GLOBAL ? 1 : 0) * static_cast<size_t>(BT) * sizeof(float);  // den
+  b += 2 * static_cast<size_t>(kMaxWords) * sizeof(uint32_t);       // candidates
+  b += static_cast<size_t>(D) * BC * sizeof(int);                   // dig
   // Row pitches carry the bank-conflict padding; see the kernel's ledger.
   //: `WT`, leaf-major, in the staged format -- see `wt_pitch` for why the narrow
   //: pitch is `BT + 8` and not `Gm`'s value borrowed.
@@ -993,21 +989,18 @@ constexpr size_t consumer_smem_bytes_at() {
   //: the footprint is unchanged; at `C_WT_WINDOW < QPO` the buffer is `kNWin` times
   //: smaller, which is the whole point of the dial and the reason the phase
   //: restructure (K3a) had to land first.
-  b += align4(static_cast<size_t>(wt_window_rows(BC, DECAY)) *
-              wt_pitch<BT, READ_PREC, FOLD_PREC>() *
-              (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16)
-                                                       : sizeof(float)));
+  b += align4(static_cast<size_t>(wt_window_rows(BC, DECAY)) * wt_pitch<BT, READ_PREC, FOLD_PREC>()
+              * (stage_is_narrow<READ_PREC, FOLD_PREC>() ? sizeof(__nv_bfloat16) : sizeof(float)));
   //: `Vw` and its `clk` tenant -- see `vw_union_bytes`. RINGED (`DECAY` pins
   //: `RING == 1`, so the `clk` tenant is never multiplied).
   b += RING * vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>();
   //: `Rf` carries ONE fragment-ordered A operand PER `m16` ROW BLOCK, `BT / 16` of
   //: them. At `BT = 16` this is the single block it always was.
-  b += RING * static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC) *
-       sizeof(unsigned);                                                   // Rf, RINGED
+  b += RING * static_cast<size_t>(BT / 16) * frag_a_words<READ_PREC>(BC)
+       * sizeof(unsigned);  // Rf, RINGED
   // `Gm` follows `READ_PREC` in both type and pitch (see the kernel).
-  b += (READ_PREC == MmaPrec::kBf16)
-           ? static_cast<size_t>(BT) * (BT + 8) * sizeof(__nv_bfloat16)
-           : static_cast<size_t>(BT) * (BT + 4) * sizeof(float);          // Gm
+  b += (READ_PREC == MmaPrec::kBf16) ? static_cast<size_t>(BT) * (BT + 8) * sizeof(__nv_bfloat16)
+                                     : static_cast<size_t>(BT) * (BT + 4) * sizeof(float);  // Gm
   //: DECAY's OWN CARVE, AND IT IS THREE BUFFERS RATHER THAN FOUR.
   //:
   //: The naive ledger is `log_keep[BC]` + `P_ref[BC]` + `s0[BC]` + `clk[BT][BC]`,
@@ -1022,7 +1015,7 @@ constexpr size_t consumer_smem_bytes_at() {
   //: vectors are new -- 768 B, leaving `3 * (32448 + 1024) = 100416 <= 102400`.
   //: **Decay ships at 3 CTAs/SM, full residency.** The production consumer makes
   //: the identical argument for `clk_panel` aliasing `gram`.
-  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);            // log_keep, p_ref, s0
+  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
   //: COMPACT's CARVE IS `c_idx` + `c_slot` + `c_count` AND NOTHING ELSE -- 520 B at
   //: `BC = 64`, which is what leaves the decay+compact arm inside 3 CTAs/SM with
   //: ~140 B to spare (`3 * (32968 + 1024) = 101976 <= 102400`). READ OFF THE DRIVER
@@ -1051,7 +1044,7 @@ constexpr size_t consumer_smem_bytes_at() {
   //: more. `rola_consumer_occupancy` returns the identical CTA count on all 32
   //: `(decay, compact, BC, BT, DV)` shapes as the pre-K3b kernel, which is the check
   //: that matters -- the byte count is only the reason to expect it.
-  b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);                  // ctl
+  b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);  // ctl
   return b;
 }
 
@@ -1066,20 +1059,17 @@ constexpr size_t consumer_smem_bytes_at() {
 //: builds read `clk`, so no member of the staging set can be produced a tile ahead
 //: there whatever the headroom says. A future un-aliasing of `clk` is the only thing
 //: that changes this line.
-template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
-          bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
+          bool GLOBAL, bool COMPACT>
 constexpr int consumer_ring_depth() {
-  if (DECAY) return 1;                                 // D2.3, correctness
+  if (DECAY) return 1;  // D2.3, correctness
   constexpr int req = (ROLA_C_RING_DEPTH >= 2) ? 2 : 1;
   if (req == 1) return 1;
-  constexpr int budget =
-      consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
+  constexpr int budget = consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
   constexpr size_t one =
-      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
-                             COMPACT, 1>();
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT, 1>();
   constexpr size_t two =
-      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
-                             COMPACT, 2>();
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT, 2>();
   if (ctas_for_residency(two, budget) != ctas_for_residency(one, budget)) return 1;
   //: AND THE SHARED-MEMORY TERM ON ITS OWN, which is NOT implied by the line above.
   //: `ctas_for_residency` takes a MIN over three terms, so a `by_regs` floor can
@@ -1095,13 +1085,12 @@ constexpr int consumer_ring_depth() {
   return cap_two == cap_one ? 2 : 1;
 }
 
-template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC,
-          bool DECAY, bool GLOBAL, bool COMPACT>
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
+          bool GLOBAL, bool COMPACT>
 constexpr size_t consumer_smem_bytes() {
   return consumer_smem_bytes_at<
       BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT,
-      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
-                          COMPACT>()>();
+      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT>()>();
 }
 
 //: `clk`'s row pitch is `BC + 4`, token-major (`clk[t * CKP + i]`), on the same
@@ -1110,22 +1099,20 @@ constexpr size_t consumer_smem_bytes() {
 //: BYTES; the kernel `static_assert`s that sizing against the use rather than
 //: assuming the two agree.
 
-
 //: One `[16 x 8]` tile against a fragment-ordered A. `d += Af * B`.
 template <int KMAX, typename TB, bool B_T, bool B_GATHER, MmaPrec PREC>
-__device__ __forceinline__ void mma_tile_fragA(
-    const unsigned* __restrict__ Af, const TB* __restrict__ B, int ldb,
-    const int* __restrict__ b_row, int K, int n0, int lane,
-    float& d0, float& d1, float& d2, float& d3);
+__device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
+                                               const TB* __restrict__ B, int ldb,
+                                               const int* __restrict__ b_row, int K, int n0,
+                                               int lane, float& d0, float& d1, float& d2,
+                                               float& d3);
 
 __device__ __forceinline__ float mma_src(float x) { return x; }
 //: Store a computed fp32 value into a buffer whose element type follows a precision
 //: axis. Overloaded rather than `static_cast`, because the torch build defines
 //: `__CUDA_NO_BFLOAT16_CONVERSIONS__` -- the narrowing must be the explicit intrinsic.
 __device__ __forceinline__ void gm_put(float& d, float x) { d = x; }
-__device__ __forceinline__ void gm_put(__nv_bfloat16& d, float x) {
-  d = __float2bfloat16(x);
-}
+__device__ __forceinline__ void gm_put(__nv_bfloat16& d, float x) { d = __float2bfloat16(x); }
 __device__ __forceinline__ float mma_src(__nv_bfloat16 x) { return __bfloat162float(x); }
 //: Store a STAGED OPERAND. On the fp32 arm this is the assignment it always was; on
 //: the narrow arm it is where §12 rule 3's format guard now lives, because it is
@@ -1160,10 +1147,9 @@ __device__ __forceinline__ void stage_put(__nv_bfloat16& d, float x) {
 //: bf16's max finite and fp32's rounds to `inf`; tf32 carries fp32's 8-bit exponent
 //: and a clamp there would be dead code.
 template <typename TA, bool A_T, typename TB, bool B_T, MmaPrec PREC>
-__device__ __forceinline__ void mma_tile(
-    const TA* __restrict__ A, int lda, const TB* __restrict__ B, int ldb,
-    int K, int m0, int n0, int lane,
-    float& d0, float& d1, float& d2, float& d3) {
+__device__ __forceinline__ void mma_tile(const TA* __restrict__ A, int lda,
+                                         const TB* __restrict__ B, int ldb, int K, int m0, int n0,
+                                         int lane, float& d0, float& d1, float& d2, float& d3) {
   const int g = lane >> 2;
   const int r = lane & 3;
   auto a_at = [&](int m, int k) { return mma_src(A_T ? A[k * lda + m] : A[m * lda + k]); };
@@ -1174,12 +1160,9 @@ __device__ __forceinline__ void mma_tile(
     // m16n8k8. A: a0..a3 -> (g, r), (g+8, r), (g, r+4), (g+8, r+4).
     //          B: b0, b1 -> (row r, col g), (row r+4, col g).
     for (int k0 = 0; k0 < K; k0 += 8) {
-      mma::mma_m16n8k8_tf32x3(
-          d0, d1, d2, d3,
-          a_at(ra, k0 + r), a_at(ra + 8, k0 + r),
-          a_at(ra, k0 + r + 4), a_at(ra + 8, k0 + r + 4),
-          b_at(k0 + r, nb), b_at(k0 + r + 4, nb),
-          d0, d1, d2, d3);
+      mma::mma_m16n8k8_tf32x3(d0, d1, d2, d3, a_at(ra, k0 + r), a_at(ra + 8, k0 + r),
+                              a_at(ra, k0 + r + 4), a_at(ra + 8, k0 + r + 4), b_at(k0 + r, nb),
+                              b_at(k0 + r + 4, nb), d0, d1, d2, d3);
     }
   } else {
     // m16n8k16. A: a0..a3 pack (g, 2r|2r+1), (g+8, 2r|2r+1),
@@ -1228,8 +1211,8 @@ __device__ __forceinline__ void mma_tile(
 //: first 16 lanes an address each, at stride one row, and aliases lanes 16-31 onto
 //: them), which the third `static_assert` states.
 template <int BT, int DV>
-__device__ __forceinline__ void vw_frag_b(const __nv_bfloat16* __restrict__ Vw, int k0,
-                                          int n0, int lane, unsigned& b0, unsigned& b1) {
+__device__ __forceinline__ void vw_frag_b(const __nv_bfloat16* __restrict__ Vw, int k0, int n0,
+                                          int lane, unsigned& b0, unsigned& b1) {
   const __nv_bfloat16* src = Vw + vw_index<BT, DV, true>(k0 + (lane & 15), n0);
   cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
 }
@@ -1239,8 +1222,8 @@ __device__ __forceinline__ void vw_frag_b(const __nv_bfloat16* __restrict__ Vw, 
 //: `k`-adjacent pairs at a fixed `n`, which is `.trans` again. The only difference
 //: from `Vw` is which axis is called what.
 template <int ROWS, int BT>
-__device__ __forceinline__ void wt_frag_b(const __nv_bfloat16* __restrict__ WT, int k0,
-                                          int n0, int lane, unsigned& b0, unsigned& b1) {
+__device__ __forceinline__ void wt_frag_b(const __nv_bfloat16* __restrict__ WT, int k0, int n0,
+                                          int lane, unsigned& b0, unsigned& b1) {
   const __nv_bfloat16* src = WT + wt_index<BT, true>(k0 + (lane & 15), n0);
   cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
 }
@@ -1259,23 +1242,22 @@ __device__ __forceinline__ void wt_frag_b(const __nv_bfloat16* __restrict__ WT, 
 //: `a0..a3` in `mma_tile`'s order, and `ldsm_n_dst_map_matches` checks it over all
 //: 256 slots.
 template <int ROWS, int BT>
-__device__ __forceinline__ void wt_frag_a(const __nv_bfloat16* __restrict__ WT, int m0,
-                                          int k0, int lane, unsigned& a0, unsigned& a1,
-                                          unsigned& a2, unsigned& a3) {
+__device__ __forceinline__ void wt_frag_a(const __nv_bfloat16* __restrict__ WT, int m0, int k0,
+                                          int lane, unsigned& a0, unsigned& a1, unsigned& a2,
+                                          unsigned& a3) {
   const int row = m0 + 8 * ((lane >> 3) & 1) + (lane & 7);
   const int col = k0 + 8 * (lane >> 4);
   const __nv_bfloat16* src = WT + wt_index<BT, true>(row, col);
-  cute::SM75_U32x4_LDSM_N::copy(*reinterpret_cast<const cute::uint128_t*>(src), a0, a1,
-                                a2, a3);
+  cute::SM75_U32x4_LDSM_N::copy(*reinterpret_cast<const cute::uint128_t*>(src), a0, a1, a2, a3);
 }
 
 //: GEMM 4, THE FOLD, WITH BOTH OPERANDS FETCHED BY `ldmatrix` (sites (a) + (b)):
 //: `S += WT^T . Vw`, A = `WT` (`.N`), B = `Vw` (`.trans`). NARROW ARM ONLY.
 template <int ROWS, int BT, int DV>
 __device__ __forceinline__ void mma_fold_tile(const __nv_bfloat16* __restrict__ WT,
-                                              const __nv_bfloat16* __restrict__ Vw,
-                                              int m0, int n0, int lane, float& d0,
-                                              float& d1, float& d2, float& d3) {
+                                              const __nv_bfloat16* __restrict__ Vw, int m0, int n0,
+                                              int lane, float& d0, float& d1, float& d2,
+                                              float& d3) {
 #pragma unroll
   for (int k0 = 0; k0 < BT; k0 += 16) {
     unsigned a0, a1, a2, a3, b0, b1;
@@ -1290,9 +1272,9 @@ __device__ __forceinline__ void mma_fold_tile(const __nv_bfloat16* __restrict__ 
 //: arm on which `Vw` is 16-bit. `K` is `BT` at both call sites and the trip count
 //: stays compile-time, exactly as in `mma_tile`.
 template <typename TA, int BT, int DV>
-__device__ __forceinline__ void mma_tile_vwB(
-    const TA* __restrict__ A, int lda, const __nv_bfloat16* __restrict__ Vw,
-    int m0, int n0, int lane, float& d0, float& d1, float& d2, float& d3) {
+__device__ __forceinline__ void mma_tile_vwB(const TA* __restrict__ A, int lda,
+                                             const __nv_bfloat16* __restrict__ Vw, int m0, int n0,
+                                             int lane, float& d0, float& d1, float& d2, float& d3) {
   const int g = lane >> 2;
   const int r = lane & 3;
   const int ra = m0 + g;
@@ -1321,7 +1303,7 @@ constexpr bool mma_b_map_matches() {
   for (int lane = 0; lane < 32; ++lane) {
     for (int v = 0; v < 4; ++v) {
       const int off = B{}(lane, v);
-      if (off % 8 != (lane >> 2)) return false;                        // n = g
+      if (off % 8 != (lane >> 2)) return false;  // n = g
       if (off / 8 != 2 * (lane & 3) + (v & 1) + 8 * (v >> 1)) return false;
     }
   }
@@ -1332,8 +1314,8 @@ constexpr bool ldsm_t_dst_map_matches() {
   using Dst = typename cute::Copy_Traits<cute::SM75_U16x4_LDSM_T>::DstLayout;
   for (int lane = 0; lane < 32; ++lane) {
     for (int v = 0; v < 4; ++v) {
-      const int e = Dst{}(lane, v * 16) / 16;                          // bit -> half
-      if (e % 8 != (lane >> 2)) return false;                          // n = g
+      const int e = Dst{}(lane, v * 16) / 16;  // bit -> half
+      if (e % 8 != (lane >> 2)) return false;  // n = g
       if (e / 8 != 2 * (lane & 3) + (v & 1) + 8 * (v >> 1)) return false;
     }
   }
@@ -1343,7 +1325,7 @@ constexpr bool ldsm_t_dst_map_matches() {
 constexpr bool ldsm_t_src_map_matches() {
   using Src = typename cute::Copy_Traits<cute::SM75_U16x4_LDSM_T>::SrcLayout;
   for (int lane = 0; lane < 32; ++lane) {
-    if (Src{}(lane, 0) / 128 != (lane & 15)) return false;             // row = lane & 15
+    if (Src{}(lane, 0) / 128 != (lane & 15)) return false;  // row = lane & 15
   }
   return true;
 }
@@ -1357,7 +1339,7 @@ constexpr bool ldsm_t_src_map_matches() {
 constexpr bool ldsm_n_dst_map_matches() {
   using Dst = typename cute::Copy_Traits<cute::SM75_U32x4_LDSM_N>::DstLayout;
   for (int lane = 0; lane < 32; ++lane) {
-    for (int v = 0; v < 8; ++v) {                                      // 8 halves
+    for (int v = 0; v < 8; ++v) {  // 8 halves
       const int e = Dst{}(lane, v * 16) / 16;
       const int srow = e / 8, scol = e % 8, i = srow / 8;
       const int m_cute = 8 * (i & 1) + srow % 8, k_cute = 8 * (i >> 1) + scol;
@@ -1371,7 +1353,7 @@ constexpr bool ldsm_n_dst_map_matches() {
 constexpr bool ldsm_n_src_map_matches() {
   using Src = typename cute::Copy_Traits<cute::SM75_U32x4_LDSM_N>::SrcLayout;
   for (int lane = 0; lane < 32; ++lane) {
-    if (Src{}(lane, 0) / 128 != lane) return false;                    // row = lane
+    if (Src{}(lane, 0) / 128 != lane) return false;  // row = lane
   }
   return true;
 }
@@ -1402,16 +1384,16 @@ static_assert(ldsm_n_src_map_matches(), "ldmatrix.x4 row addresses moved");
 //: the caller passes `K = KMAX`, the compare folds away and the emitted code is the
 //: pre-compaction loop exactly.
 template <int KMAX, typename TB, bool B_T, bool B_GATHER, MmaPrec PREC>
-__device__ __forceinline__ void mma_tile_fragA(
-    const unsigned* __restrict__ Af, const TB* __restrict__ B, int ldb,
-    const int* __restrict__ b_row, int K, int n0, int lane,
-    float& d0, float& d1, float& d2, float& d3) {
+__device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
+                                               const TB* __restrict__ B, int ldb,
+                                               const int* __restrict__ b_row, int K, int n0,
+                                               int lane, float& d0, float& d1, float& d2,
+                                               float& d3) {
   const int g = lane >> 2;
   const int r = lane & 3;
   const int nb = n0 + g;
   auto b_at = [&](int k, int n) {
-    return mma_src(B_GATHER ? B[b_row[k] * ldb + n]
-                            : (B_T ? B[n * ldb + k] : B[k * ldb + n]));
+    return mma_src(B_GATHER ? B[b_row[k] * ldb + n] : (B_T ? B[n * ldb + k] : B[k * ldb + n]));
   };
   constexpr int kStep = (PREC == MmaPrec::kBf16) ? 16 : 8;
 #pragma unroll
@@ -1419,17 +1401,15 @@ __device__ __forceinline__ void mma_tile_fragA(
     if (ks * kStep >= K) break;
     const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
     if (PREC == MmaPrec::kTf32x3) {
-      mma::mma_m16n8k8_tf32x3(
-          d0, d1, d2, d3,
-          __uint_as_float(a.x), __uint_as_float(a.y),
-          __uint_as_float(a.z), __uint_as_float(a.w),
-          b_at(ks * 8 + r, nb), b_at(ks * 8 + r + 4, nb), d0, d1, d2, d3);
+      mma::mma_m16n8k8_tf32x3(d0, d1, d2, d3, __uint_as_float(a.x), __uint_as_float(a.y),
+                              __uint_as_float(a.z), __uint_as_float(a.w), b_at(ks * 8 + r, nb),
+                              b_at(ks * 8 + r + 4, nb), d0, d1, d2, d3);
     } else {
       const int ca = ks * 16 + r * 2;
-      const unsigned b0 = pack_bf16x2(clamp_bf16_finite(b_at(ca, nb)),
-                                      clamp_bf16_finite(b_at(ca + 1, nb)));
-      const unsigned b1 = pack_bf16x2(clamp_bf16_finite(b_at(ca + 8, nb)),
-                                      clamp_bf16_finite(b_at(ca + 9, nb)));
+      const unsigned b0 =
+          pack_bf16x2(clamp_bf16_finite(b_at(ca, nb)), clamp_bf16_finite(b_at(ca + 1, nb)));
+      const unsigned b1 =
+          pack_bf16x2(clamp_bf16_finite(b_at(ca + 8, nb)), clamp_bf16_finite(b_at(ca + 9, nb)));
       mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, b0, b1, d0, d1, d2, d3);
     }
   }
@@ -1446,9 +1426,10 @@ __device__ __forceinline__ void mma_tile_fragA(
 //: buffer on its last step. Every shipped window row count is a multiple of
 //: `MMA_K_QUANTUM` and the `static_assert` holds a future one to it.
 template <int KMAX, int BT>
-__device__ __forceinline__ void mma_tile_fragA_wtB(
-    const unsigned* __restrict__ Af, const __nv_bfloat16* __restrict__ WT, int K,
-    int n0, int lane, float& d0, float& d1, float& d2, float& d3) {
+__device__ __forceinline__ void mma_tile_fragA_wtB(const unsigned* __restrict__ Af,
+                                                   const __nv_bfloat16* __restrict__ WT, int K,
+                                                   int n0, int lane, float& d0, float& d1,
+                                                   float& d2, float& d3) {
   static_assert(KMAX % 16 == 0, "ldmatrix reads whole 16-row blocks of WT");
 #pragma unroll
   for (int ks = 0; ks < KMAX / 16; ++ks) {
@@ -1625,10 +1606,10 @@ __device__ __forceinline__ void await_count(const volatile int* counter, int tar
                                          DECAY, GLOBAL, COMPACT>(),                 \
                      consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV))
 #endif
-template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
-          bool DECAY, bool GLOBAL, bool COMPACT>
-__global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR)
-void consumer_forward_kernel(ConsumerParams p) {
+template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC, bool DECAY,
+          bool GLOBAL, bool COMPACT>
+__global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR) void
+consumer_forward_kernel(ConsumerParams p) {
   // ---- THE STATE'S ROW PITCH, AND WHY IT IS `DV + 4` ------------------------
   // **THE CONDITIONAL `state_pitch` MANDATE DISCHARGES HERE** (item 6b, 2026-08-01):
   // it required the divergence from the old consumer's `state_pitch<DV>() = DV + 1`
@@ -1646,14 +1627,14 @@ void consumer_forward_kernel(ConsumerParams p) {
   // `DV + 4 = 68` makes the bf16 map conflict-free: `2r * 68 = 136r`, so the bank is
   // `(8r + g) % 32`, and `r in [0,4)`, `g in [0,8)` covers all 32 banks exactly once.
   constexpr int SP = DV + 4;
-  constexpr int NT_DV = DV / 8;                  // n8 column tiles of a DV-wide output
+  constexpr int NT_DV = DV / 8;  // n8 column tiles of a DV-wide output
   //: THE TILE'S OUTPUT IS `NM x NT_DV` WARP TILES, AND THAT PRODUCT -- not `DV` alone
   //: -- IS WHAT THE 8 WARPS PARTITION. `BT = 16, DV = 64` gives `1 x 8`, one tile per
   //: warp, which is the shape every earlier revision hard-coded as `warp < NT_DV`.
   //: The three other cells are `2 x 8`, `1 x 4` and `2 x 4`; the partition below is
   //: the same strided warp loop the FOLD has always used, so no cell is a special
   //: case and none is a fallback.
-  constexpr int NM = BT / 16;                    // m16 row blocks of a BT-token tile
+  constexpr int NM = BT / 16;  // m16 row blocks of a BT-token tile
   extern __shared__ char smem_raw[];
 
   // ---- SMEM ledger (the §10i.14 carve, at the at-scale cell's real sizes) ----
@@ -1712,15 +1693,15 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: a CuTe `Swizzle o Layout` with no pad at all (K4 site (a)). `VWP` survives as
   //: the `tf32x3` arm's row-major pitch and is named here only where that arm uses
   //: it; every access goes through `vw_index`, so the two arms differ in ONE place.
-  constexpr int VWP = DV + 8;   // the `tf32x3` arm's row pitch
+  constexpr int VWP = DV + 8;  // the `tf32x3` arm's row pitch
   // The effective-score block's STORAGE TYPE FOLLOWS `READ_PREC`, and that is a
   // correctness requirement rather than a nicety: `Gm` is an INTERMEDIATE of the `y`
   // path (`G = R.W^T`, then `y += G.Vw`), so storing it bf16 on the tf32x3 arm
   // quantizes a value the exactness arm exists to keep exact. The oracle gate caught
   // exactly that -- state 1.8e-07 (exact) alongside `y` 1.0e-03 (not) -- which
   // localizes the defect to the one object on the `y` path that was still narrow.
-  using GmT = typename cuda::std::conditional<READ_PREC == MmaPrec::kBf16,
-                                              __nv_bfloat16, float>::type;
+  using GmT =
+      typename cuda::std::conditional<READ_PREC == MmaPrec::kBf16, __nv_bfloat16, float>::type;
   // The pitch differs with the type because the FRAGMENT MAP does: the bf16 map reads
   // 32-bit pairs (`stride_g = GMP/2`), the tf32 map single floats (`stride_g = GMP`).
   // Both are proven by `banks_distinct` below.
@@ -1734,8 +1715,8 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: `kRing` slots of the STAGING SET (`Rf`, `Vw`, `sr`/`sw`, and under `COMPACT`
   //: the gathered list). `1` is today's structure: the `_r0` bases below ARE the
   //: buffers, every slot expression folds to slot 0, and not one byte moves.
-  constexpr int kRing = consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC,
-                                            DECAY, GLOBAL, COMPACT>();
+  constexpr int kRing =
+      consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, COMPACT>();
   //: D2.3, AS A CORRECTNESS ASSERT AND NOT AS A FOOTPRINT ONE. `clk` aliases `Vw`'s
   //: bytes, so a ringed `Vw` under `DECAY` would put slot `s + 1`'s clock prefix on
   //: top of slot `s`'s value tile while the fold is still reading it. The derivation
@@ -1789,7 +1770,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   // NONE of the tile, the token or the side: only on (level, owner, leaf). Computed
   // once per CTA it costs `D * BC` evaluations for the owner's whole run instead of
   // `n_tiles * BT * BC * (D - j) * 2`.
-  int* dig = reinterpret_cast<int*>(cand_write + kMaxWords);   // [D][BC]
+  int* dig = reinterpret_cast<int*>(cand_write + kMaxWords);  // [D][BC]
   // The read coefficients are FRAGMENT-ORDERED (see `frag_a_slot`), so they carry no
   // row pitch at all -- the layout is conflict-free by construction rather than by
   // padding, and `RPP` is gone with it.
@@ -1810,12 +1791,11 @@ void consumer_forward_kernel(ConsumerParams p) {
   // lifetimes is marked `<- clk is now DEAD` at the site; this `static_assert` is
   // the other half of the argument, because a lifetime claim about a buffer that
   // does not FIT is not a lifetime claim.
-  float* log_keep = reinterpret_cast<float*>(Gm + (READ_PREC == MmaPrec::kBf16
-                                                       ? BT * (BT + 8)
-                                                       : BT * (BT + 4)));
+  float* log_keep =
+      reinterpret_cast<float*>(Gm + (READ_PREC == MmaPrec::kBf16 ? BT * (BT + 8) : BT * (BT + 4)));
   float* p_ref = log_keep + (DECAY ? BC : 0);
   float* s0 = p_ref + (DECAY ? BC : 0);
-  constexpr int CKP = BC + 4;              // clk's row pitch, token-major
+  constexpr int CKP = BC + 4;  // clk's row pitch, token-major
   // ---- COMPACT's gather state (§3 step 2) ----------------------------------
   //   `c_idx[0..K)`  the gathered leaf list, ASCENDING. `c_idx[q] = 0` for `q >= K`
   //                  keeps the readout's pad rows ADDRESSABLE (their A-operand
@@ -1836,8 +1816,9 @@ void consumer_forward_kernel(ConsumerParams p) {
   // traffic they carry is one atomic per warp per phase edge plus one per claimed
   // fold item, which is not a bank-conflict-shaped problem.
   int* ctl = c_idx_r0 + kRing * kCSlot;
-  static_assert(!DECAY || static_cast<size_t>(BT) * CKP * sizeof(float) <=
-                              vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
+  static_assert(!DECAY
+                    || static_cast<size_t>(BT) * CKP * sizeof(float)
+                           <= vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
                 "clk aliases the Vw region and must fit IN BYTES");
   // ---- §6.4 PASS 1's OWN STATE, ALIASED ONTO `Rf` --------------------------
   //   `a_state[i]`  the per-leaf survival product `A` over the segment. Identically
@@ -1856,9 +1837,9 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: SLOT 0 of the ring, and that is sound at any depth: pass 1 forces
   //: `is_read = false` on every tile, so no slot's read coefficients are ever built
   //: in the pass that owns this alias -- including the RUN-AHEAD's.
-  float* a_state = reinterpret_cast<float*>(Rf_r0);            // [BC]
-  int* sum_slot = reinterpret_cast<int*>(Rf_r0) + BC;          // [BC]
-  int* sum_count = reinterpret_cast<int*>(Rf_r0) + 2 * BC;     // [1]
+  float* a_state = reinterpret_cast<float*>(Rf_r0);         // [BC]
+  int* sum_slot = reinterpret_cast<int*>(Rf_r0) + BC;       // [BC]
+  int* sum_count = reinterpret_cast<int*>(Rf_r0) + 2 * BC;  // [1]
   static_assert(frag_a_words<READ_PREC>(BC) >= 2 * BC + 1,
                 "pass 1's summary state must fit inside the read-coefficient buffer");
 
@@ -1878,8 +1859,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: **`WT`'s TWO PITCH PREDICATES STAND** -- K2's `BT + 8` was not superseded by a
   //: swizzle, it was CONFIRMED against one; see `wt_pitch` for the measurement that
   //: declined the swizzle and for what site (b) landed instead.
-  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * BTP)
-                             : banks_distinct(1, 2 * BTP),
+  static_assert(kNarrowStage ? banks_distinct_u16(1, 2 * BTP) : banks_distinct(1, 2 * BTP),
                 "WT: GEMM2 B operand conflicts");
   static_assert(banks_distinct(READ_PREC == MmaPrec::kBf16 ? GMP / 2 : GMP, 1),
                 "Gm: GEMM3 A operand conflicts");
@@ -1905,8 +1885,7 @@ void consumer_forward_kernel(ConsumerParams p) {
                 "Vw: the swizzled layout does not tile [0, BT*DV)");
   static_assert(!kNarrowStage || stage_ldsm_banks_ok<BT, DV>(),
                 "Vw: the ldmatrix.x2.trans fetch conflicts or is misaligned");
-  static_assert(!kNarrowStage || stage_store_banks_ok<BT, DV>(),
-                "Vw: the staging store conflicts");
+  static_assert(!kNarrowStage || stage_store_banks_ok<BT, DV>(), "Vw: the staging store conflicts");
   static_assert(kNarrowStage || banks_distinct(1, VWP),
                 "Vw: GEMM4 B operand conflicts (tf32x3 arm)");
   // THE ONE OPERAND THAT IS NOT CONFLICT-FREE, AND THE TRADE IS EXPLICIT: `Vw` is
@@ -1996,8 +1975,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     uint32_t r = p.read_union[union_row * p.n_words + w];
     uint32_t wr = p.write_union[union_row * p.n_words + w];
     for (int l = 0; l < j; ++l) {
-      const int64_t row =
-          static_cast<int64_t>(bh) * p.total_rows + p.level_row_offset[l] + base[l];
+      const int64_t row = static_cast<int64_t>(bh) * p.total_rows + p.level_row_offset[l] + base[l];
       r &= p.read_bits[row * p.n_words + w];
       wr &= p.write_bits[row * p.n_words + w];
     }
@@ -2091,8 +2069,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   // extra slot per split owner (`P`, not `P - 1`).
   const bool from_ws = (!summary) && (nseg > 1);
   const float* ws_entry =
-      from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols)
-              : nullptr;
+      from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols) : nullptr;
   if (summary || from_ws) {
     for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
       const int i = idx / cols;
@@ -2111,15 +2088,14 @@ void consumer_forward_kernel(ConsumerParams p) {
       for (int idx = tid; idx < kMmaKQuantum * cols; idx += kConsumerThreads) {
         const int r = idx / cols;
         const int c = idx - r * cols;
-        S[(q * kMmaKQuantum + r) * SP + c] =
-            (row0 >= 0) ? p.state[(row0 + r) * cols + c] : 0.0f;
+        S[(q * kMmaKQuantum + r) * SP + c] = (row0 >= 0) ? p.state[(row0 + r) * cols + c] : 0.0f;
       }
     }
   }
   if (summary) {
     for (int i = tid; i < BC; i += kConsumerThreads) {
-      a_state[i] = 1.0f;   // `A`'s identity; `decay = None` never multiplies it
-      sum_slot[i] = 0;     // the written-leaf FLAG until the compaction rewrites it
+      a_state[i] = 1.0f;  // `A`'s identity; `decay = None` never multiplies it
+      sum_slot[i] = 0;    // the written-leaf FLAG until the compaction rewrites it
     }
   }
   __syncthreads();
@@ -2157,12 +2133,12 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: `kRing == 1` and were supposed to be untouched. Parameters keep the array a
   //: plain local with statically-indexed, fully unrolled accesses.
 
-    // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS (K3a) ---------
-    // `build_wt_rows(q_lo, q_hi)` fills the write panel's rows `[q_lo, q_hi)`. At
-    // `C_WT_WINDOW = QPO` it has ONE call site with `q_lo = 0`, so the range folds
-    // away and the emitted loop is the plane pass verbatim; windowed, the same
-    // function is the per-atom fill. Extracting it is what makes "the plane" a
-    // VALUE OF THE DIAL rather than a second code path (I4).
+  // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS (K3a) ---------
+  // `build_wt_rows(q_lo, q_hi)` fills the write panel's rows `[q_lo, q_hi)`. At
+  // `C_WT_WINDOW = QPO` it has ONE call site with `q_lo = 0`, so the range folds
+  // away and the emitted loop is the plane pass verbatim; windowed, the same
+  // function is the per-atom fill. Extracting it is what makes "the plane" a
+  // VALUE OF THE DIAL rather than a second code path (I4).
   //: THE AMPLITUDE BASES ARRIVE AS A CALLABLE, NOT AS AN ARRAY, and that is the
   //: same measured constraint stated once more. `const float* [D]` cannot cross a
   //: lambda boundary -- by reference it must be addressable, by value it is a copy
@@ -2172,8 +2148,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   //: so it stays a register there and nothing about this function's shape can move
   //: it. Measured: rebuilding the array inside instead cost the `BC = 16` decay arm
   //: 12/28 -> 40/80 spill bytes.
-  auto build_wt_rows = [&](int q_lo, int q_hi, auto&& amp_w_at, const int* cx,
-                           int Kv) {
+  auto build_wt_rows = [&](int q_lo, int q_hi, auto&& amp_w_at, const int* cx, int Kv) {
     // The loop's fastest axis is `t`, NOT `i`, because `WT` is leaf-major: with
     // `i` fastest the consecutive lanes would store at stride `BTP`, which is a
     // 4-way STORE conflict (`gcd(BTP, 32) = 4`). Walking `t` fastest makes the
@@ -2242,8 +2217,8 @@ void consumer_forward_kernel(ConsumerParams p) {
       // group leaves together and the group that stayed is converged. One lane per
       // row publishes, so `sum_slot` takes no intra-tile race (`c_idx` is
       // injective, and without COMPACT `i == q`).
-      if (summary && __any_sync(kRowLanes << (lane & ~(BT - 1)), a != 0.0f) &&
-          (lane & (BT - 1)) == 0) {
+      if (summary && __any_sync(kRowLanes << (lane & ~(BT - 1)), a != 0.0f)
+          && (lane & (BT - 1)) == 0) {
         sum_slot[i] = 1;
       }
       stage_put(WT[wt_index<BT, kNarrowStage>(qr, t)], a);
@@ -2318,12 +2293,11 @@ void consumer_forward_kernel(ConsumerParams p) {
     // panel builds' `BT * BC * (D - j)` amplitude loads on all eight -- ~1/16 of the
     // build's traffic even before compaction shrinks the build itself.
     if (COMPACT && warp == 0) {
-      const int64_t slab =
-          (static_cast<int64_t>(bh) * p.n_tiles + tile) * p.total_rows;
+      const int64_t slab = (static_cast<int64_t>(bh) * p.n_tiles + tile) * p.total_rows;
       const int tile_tokens = p.T - t0;
-      const uint32_t valid_tokens =
-          (tile_tokens >= BT) ? ((BT == 32) ? 0xffffffffu : ((1u << BT) - 1u))
-                              : (tile_tokens <= 0 ? 0u : ((1u << tile_tokens) - 1u));
+      const uint32_t valid_tokens = (tile_tokens >= BT)
+                                        ? ((BT == 32) ? 0xffffffffu : ((1u << BT) - 1u))
+                                        : (tile_tokens <= 0 ? 0u : ((1u << tile_tokens) - 1u));
       uint32_t fr = is_read ? valid_tokens : 0u;
       uint32_t fw = is_write ? valid_tokens : 0u;
 #pragma unroll
@@ -2345,7 +2319,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         if (i < BC) {
 #pragma unroll
           for (int l = 0; l < D; ++l) {
-            if (l < j) continue;   // the fixed levels are already in `fr`/`fw`
+            if (l < j) continue;  // the fixed levels are already in `fr`/`fw`
             const int64_t row = slab + p.level_row_offset[l] + dig[l * BC + i];
             if (is_read) rw &= p.read_tok_bits[row];
             if (is_write) ww &= p.write_tok_bits[row];
@@ -2391,7 +2365,7 @@ void consumer_forward_kernel(ConsumerParams p) {
           }
           k += __popc(mask);
         }
-        if (pass == 0 && lane == 0) c_count[1] = k;   // KI
+        if (pass == 0 && lane == 0) c_count[1] = k;  // KI
       }
       // The pad: `c_idx[q >= K] = 0` keeps the gathered B-operand load ADDRESSABLE.
       // The A operand's columns `[K, Kpad)` are ZEROED at the panel build, and that
@@ -2403,8 +2377,8 @@ void consumer_forward_kernel(ConsumerParams p) {
 
     const int K = COMPACT ? c_count[0] : BC;
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
-    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;      // readout k-extent
-    const int KpadM = ((K + 15) / 16) * 16;                  // fold m-extent
+    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;  // readout k-extent
+    const int KpadM = ((K + 15) / 16) * 16;              // fold m-extent
     const int wt_rows = COMPACT ? KpadM : BC;
 
     // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0` -- INTO `Vw` --------
@@ -2535,11 +2509,10 @@ void consumer_forward_kernel(ConsumerParams p) {
     if (is_read) {
       for (int t = tid; t < BT; t += kConsumerThreads) {
         const int token = t0 + t;
-        float s = (token < p.T)
-                      ? (p.g_read != nullptr
-                             ? p.g_read[static_cast<int64_t>(bh) * p.T + token]
-                             : 1.0f)
-                      : 0.0f;
+        float s =
+            (token < p.T)
+                ? (p.g_read != nullptr ? p.g_read[static_cast<int64_t>(bh) * p.T + token] : 1.0f)
+                : 0.0f;
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l >= j) break;
@@ -2590,7 +2563,7 @@ void consumer_forward_kernel(ConsumerParams p) {
         float a = 1.0f;
 #pragma unroll
         for (int l = 0; l < D; ++l) {
-          if (l < j) continue;   // fixed levels hoist into the row scale (§3 step 3)
+          if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
           a *= amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]];
         }
         // DECAY, step (d): `fr[t,i] = keep_i^{+(P[t,i] - P_ref[i])}`, folded into
@@ -2684,7 +2657,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     //
     // `is_write` is CTA-uniform (the same per-tile schedule bit the blocks above are
     // guarded on), and a read-only tile writes neither `clk` nor `Vw`.
-    if (DECAY && is_write) __syncthreads();   // <- clk is now DEAD
+    if (DECAY && is_write) __syncthreads();  // <- clk is now DEAD
     if (is_write) {
       for (int idx = tid; idx < BT * DV; idx += kConsumerThreads) {
         const int t = idx / DV;
@@ -2696,7 +2669,6 @@ void consumer_forward_kernel(ConsumerParams p) {
       }
     }
   };
-
 
   //: ---- THE CANDIDATE WALK, SOFTWARE-PIPELINED AT `kRing == 2` ---------------
   //: The PROLOGUE stages the first candidate; thereafter each visit stages the NEXT
@@ -2716,8 +2688,7 @@ void consumer_forward_kernel(ConsumerParams p) {
   if constexpr (kRing == 2) {
     const int first = next_cand(tile_lo);
     if (first < tile_hi) {
-      stage_tile(first, 0,
-                 ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
+      stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
                  ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u);
     }
   }
@@ -2839,9 +2810,9 @@ void consumer_forward_kernel(ConsumerParams p) {
     // `k` per MMA issue is the SHAPE's, compile-time from the format axis --
     // `m16n8k8` on tf32x3, `m16n8k16` on bf16. Never a size, never a density.
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
-    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;      // readout k-extent
-    const int KIpad = ((KI + kUnit - 1) / kUnit) * kUnit;    // intra Gram k-extent
-    const int KpadM = ((K + 15) / 16) * 16;                  // fold m-extent
+    const int Kpad = ((K + kUnit - 1) / kUnit) * kUnit;    // readout k-extent
+    const int KIpad = ((KI + kUnit - 1) / kUnit) * kUnit;  // intra Gram k-extent
+    const int KpadM = ((K + 15) / 16) * 16;                // fold m-extent
     // `KIpad <= Kpad <= KpadM <= BC`, so zeroing `WT`'s rows `[K, KpadM)` covers
     // every pad row any of the three extents can reach.
     const int wt_rows = COMPACT ? KpadM : BC;
@@ -2899,8 +2870,12 @@ void consumer_forward_kernel(ConsumerParams p) {
     constexpr int kYTiles = (NM * NT_DV + kWarps - 1) / kWarps;
     float y[kYTiles][4];
 #pragma unroll
-    for (int q = 0; q < kYTiles; ++q) { y[q][0] = 0.0f; y[q][1] = 0.0f;
-                                        y[q][2] = 0.0f; y[q][3] = 0.0f; }
+    for (int q = 0; q < kYTiles; ++q) {
+      y[q][0] = 0.0f;
+      y[q][1] = 0.0f;
+      y[q][2] = 0.0f;
+      y[q][3] = 0.0f;
+    }
     // ---- THE WARP PARTITION FORKS ON THE ROW-BLOCK COUNT `NM` --------------
     // `NM == 1` -- the tile is ONE `m16` row block -- means warp `w` owns column
     // tile `w` outright and every m-offset is identically zero. The general strided
@@ -2918,9 +2893,8 @@ void consumer_forward_kernel(ConsumerParams p) {
     // per-tile list position.
     if constexpr (NM == 1) {
       if (is_read && warp < NT_DV) {
-        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(
-            Rf, S, SP, c_idx, Kpad, warp * 8, lane,
-            y[0][0], y[0][1], y[0][2], y[0][3]);
+        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(Rf, S, SP, c_idx, Kpad, warp * 8, lane,
+                                                             y[0][0], y[0][1], y[0][2], y[0][3]);
       }
     } else if (is_read) {
 #pragma unroll
@@ -2928,9 +2902,9 @@ void consumer_forward_kernel(ConsumerParams p) {
         const int wt = warp + q * kWarps;
         if (wt >= NM * NT_DV) break;
         const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
-        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(
-            Rf + mb * kRfBlock, S, SP, c_idx, Kpad, nt * 8, lane,
-            y[q][0], y[q][1], y[q][2], y[q][3]);
+        mma_tile_fragA<BC, float, false, COMPACT, READ_PREC>(Rf + mb * kRfBlock, S, SP, c_idx, Kpad,
+                                                             nt * 8, lane, y[q][0], y[q][1],
+                                                             y[q][2], y[q][3]);
       }
     }
 
@@ -3059,8 +3033,12 @@ void consumer_forward_kernel(ConsumerParams p) {
     constexpr bool kNarrowGate = stage_is_narrow<READ_PREC, FOLD_PREC>();
     float gd[kGTiles][4];
 #pragma unroll
-    for (int q = 0; q < kGTiles; ++q) { gd[q][0] = 0.0f; gd[q][1] = 0.0f;
-                                        gd[q][2] = 0.0f; gd[q][3] = 0.0f; }
+    for (int q = 0; q < kGTiles; ++q) {
+      gd[q][0] = 0.0f;
+      gd[q][1] = 0.0f;
+      gd[q][2] = 0.0f;
+      gd[q][3] = 0.0f;
+    }
     // The fold's realized m-tile count -- COMPACT cuts the M EXTENT to `ceil(K/16)`
     // warp m-tiles instead of `BC/16`, the third of the three extents compaction
     // shrinks, and on the flagship cell's density (`mean_K_candidate = 0.9665` of
@@ -3126,13 +3104,12 @@ void consumer_forward_kernel(ConsumerParams p) {
           //: (b)); the `tf32x3` arm keeps the generic indexed B. Same early exit,
           //: same trip count, same k-order.
           if constexpr (kNarrowStage) {
-            mma_tile_fragA_wtB<kWinRows, BT>(
-                Rf + w * (kWinRows / kUnit) * 128, WT, kw, warp * 8, lane,
-                gd[0][0], gd[0][1], gd[0][2], gd[0][3]);
+            mma_tile_fragA_wtB<kWinRows, BT>(Rf + w * (kWinRows / kUnit) * 128, WT, kw, warp * 8,
+                                             lane, gd[0][0], gd[0][1], gd[0][2], gd[0][3]);
           } else {
             mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
-                Rf + w * (kWinRows / kUnit) * 128, WT, BTP,
-                nullptr, kw, warp * 8, lane, gd[0][0], gd[0][1], gd[0][2], gd[0][3]);
+                Rf + w * (kWinRows / kUnit) * 128, WT, BTP, nullptr, kw, warp * 8, lane, gd[0][0],
+                gd[0][1], gd[0][2], gd[0][3]);
           }
         }
       } else if (mixed && kw > 0) {
@@ -3142,14 +3119,13 @@ void consumer_forward_kernel(ConsumerParams p) {
           if (gt >= NM * (BT / 8)) break;
           const int gmb = gt / (BT / 8), gnt = gt - gmb * (BT / 8);
           if constexpr (kNarrowStage) {
-            mma_tile_fragA_wtB<kWinRows, BT>(
-                Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128, WT, kw,
-                gnt * 8, lane, gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
+            mma_tile_fragA_wtB<kWinRows, BT>(Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128, WT,
+                                             kw, gnt * 8, lane, gd[q][0], gd[q][1], gd[q][2],
+                                             gd[q][3]);
           } else {
             mma_tile_fragA<kWinRows, StageT, false, false, READ_PREC>(
-                Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128,
-                WT, BTP, nullptr, kw, gnt * 8, lane,
-                gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
+                Rf + gmb * kRfBlock + w * (kWinRows / kUnit) * 128, WT, BTP, nullptr, kw, gnt * 8,
+                lane, gd[q][0], gd[q][1], gd[q][2], gd[q][3]);
           }
         }
       }
@@ -3304,8 +3280,8 @@ void consumer_forward_kernel(ConsumerParams p) {
             c = __shfl_sync(0xffffffffu, c, 0);
             if (c >= n_fold_items) break;
             CONSUMER_D_ROWS(lane);
-            const int mr = c / NT_DV;              // the WINDOW-LOCAL m-tile
-            const int mt = mt_lo + mr;             // the tile-global one, for `S`
+            const int mr = c / NT_DV;   // the WINDOW-LOCAL m-tile
+            const int mt = mt_lo + mr;  // the tile-global one, for `S`
             const int nt = c - mr * NT_DV;
             float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
             // `WT`'s `m` is window-local; `S`'s row `r0` below is not.
@@ -3316,11 +3292,10 @@ void consumer_forward_kernel(ConsumerParams p) {
               //: BOTH operands by `ldmatrix` (sites (a) + (b)): `WT` is `k`-adjacent
               //: as A, so it takes the `.N` atom; `Vw` is `k`-major as B, so it
               //: takes `.trans`.
-              mma_fold_tile<kWtRows, BT, DV>(WT, Vw, mr * 16, nt * 8, lane,
-                                             d0, d1, d2, d3);
+              mma_fold_tile<kWtRows, BT, DV>(WT, Vw, mr * 16, nt * 8, lane, d0, d1, d2, d3);
             } else {
-              mma_tile<StageT, false, StageT, false, FOLD_PREC>(
-                  WT, BTP, Vw, VWP, BT, mr * 16, nt * 8, lane, d0, d1, d2, d3);
+              mma_tile<StageT, false, StageT, false, FOLD_PREC>(WT, BTP, Vw, VWP, BT, mr * 16,
+                                                                nt * 8, lane, d0, d1, d2, d3);
             }
             const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
             // ---- DECAY's EXIT SCALE, RIDING THE FOLD'S EXISTING READ-MODIFY-WRITE
@@ -3384,8 +3359,8 @@ void consumer_forward_kernel(ConsumerParams p) {
               S[i * SP + DV] = (DECAY ? s0[i] : 1.0f) * (S[i * SP + DV] + acc);
             }
           }
-        }   // the window's item pool
-      }     // if (is_write)
+        }  // the window's item pool
+      }  // if (is_write)
       // ---- SLOT-FREE: window `w`'s `WT` rows are dead ------------------------
       // The other half of the handshake the SLOT-READY barrier at the head of this
       // loop opens, and it exists BECAUSE the buffer narrowed: window `w + 1`'s
@@ -3442,8 +3417,7 @@ void consumer_forward_kernel(ConsumerParams p) {
     if constexpr (kRing == 2) {
       const int nxt = next_cand(tile + 1);
       if (nxt < tile_hi) {
-        stage_tile(nxt, slot ^ 1,
-                   ((cand_read[nxt >> 5] >> (nxt & 31)) & 1u) != 0u,
+        stage_tile(nxt, slot ^ 1, ((cand_read[nxt >> 5] >> (nxt & 31)) & 1u) != 0u,
                    ((cand_write[nxt >> 5] >> (nxt & 31)) & 1u) != 0u);
       }
     }
@@ -3476,12 +3450,11 @@ void consumer_forward_kernel(ConsumerParams p) {
     if constexpr (NM == 1) {
       if (mixed && warp < NT_DV) {
         if constexpr (kNarrowStage) {
-          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, 0, warp * 8, lane,
-                                    y[0][0], y[0][1], y[0][2], y[0][3]);
+          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, 0, warp * 8, lane, y[0][0], y[0][1], y[0][2],
+                                    y[0][3]);
         } else {
-          mma_tile<GmT, false, StageT, false, READ_PREC>(
-              Gm, GMP, Vw, VWP, BT, 0, warp * 8, lane,
-              y[0][0], y[0][1], y[0][2], y[0][3]);
+          mma_tile<GmT, false, StageT, false, READ_PREC>(Gm, GMP, Vw, VWP, BT, 0, warp * 8, lane,
+                                                         y[0][0], y[0][1], y[0][2], y[0][3]);
         }
       }
     } else if (mixed) {
@@ -3491,12 +3464,11 @@ void consumer_forward_kernel(ConsumerParams p) {
         if (wt >= NM * NT_DV) break;
         const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
         if constexpr (kNarrowStage) {
-          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, mb * 16, nt * 8, lane,
-                                    y[q][0], y[q][1], y[q][2], y[q][3]);
+          mma_tile_vwB<GmT, BT, DV>(Gm, GMP, Vw, mb * 16, nt * 8, lane, y[q][0], y[q][1], y[q][2],
+                                    y[q][3]);
         } else {
-          mma_tile<GmT, false, StageT, false, READ_PREC>(
-              Gm, GMP, Vw, VWP, BT, mb * 16, nt * 8, lane,
-              y[q][0], y[q][1], y[q][2], y[q][3]);
+          mma_tile<GmT, false, StageT, false, READ_PREC>(Gm, GMP, Vw, VWP, BT, mb * 16, nt * 8,
+                                                         lane, y[q][0], y[q][1], y[q][2], y[q][3]);
         }
       }
     }

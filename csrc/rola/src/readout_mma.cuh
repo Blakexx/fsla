@@ -108,10 +108,11 @@ __device__ __forceinline__ float clamp_bf16_finite(float x) {
 //: two paths issue identical loads in identical order. `kidx` is `nullptr` under
 //: `!COMPACT` and is never dereferenced.
 template <int BT, int BC, int SP, MmaPrec PREC, bool COMPACT>
-__device__ __forceinline__ void readout_fragment(
-    const float* __restrict__ A, const float* __restrict__ B, const int* __restrict__ kidx,
-    int ksteps, int mt, int ntg, int lane,
-    float& d0, float& d1, float& d2, float& d3) {
+__device__ __forceinline__ void readout_fragment(const float* __restrict__ A,
+                                                 const float* __restrict__ B,
+                                                 const int* __restrict__ kidx, int ksteps, int mt,
+                                                 int ntg, int lane, float& d0, float& d1, float& d2,
+                                                 float& d3) {
   const int g = lane >> 2;
   const int r = lane & 3;
   d0 = d1 = d2 = d3 = 0.0f;
@@ -130,12 +131,10 @@ __device__ __forceinline__ void readout_fragment(
       if (ks >= ksteps) break;
       const int ka = ks * 8;
       const int ra = mt * 16 + g;
-      mma_m16n8k8_tf32x3(
-          d0, d1, d2, d3,
-          A[ra * BC + ka + r], A[(ra + 8) * BC + ka + r],
-          A[ra * BC + ka + r + 4], A[(ra + 8) * BC + ka + r + 4],
-          B[brow(ka + r) * SP + ntg * 8 + g], B[brow(ka + r + 4) * SP + ntg * 8 + g],
-          d0, d1, d2, d3);
+      mma_m16n8k8_tf32x3(d0, d1, d2, d3, A[ra * BC + ka + r], A[(ra + 8) * BC + ka + r],
+                         A[ra * BC + ka + r + 4], A[(ra + 8) * BC + ka + r + 4],
+                         B[brow(ka + r) * SP + ntg * 8 + g], B[brow(ka + r + 4) * SP + ntg * 8 + g],
+                         d0, d1, d2, d3);
     }
   } else {
     // m16n8k16, bf16. A: a0..a3 pack (g, 2r|2r+1), (g+8, 2r|2r+1),
@@ -148,8 +147,8 @@ __device__ __forceinline__ void readout_fragment(
       const int ka = ks * 16;
       const int ra = mt * 16 + g;
       const int ca = ka + r * 2;
-      const unsigned a0 = pack_bf16x2(clamp_bf16_finite(A[ra * BC + ca]),
-                                      clamp_bf16_finite(A[ra * BC + ca + 1]));
+      const unsigned a0 =
+          pack_bf16x2(clamp_bf16_finite(A[ra * BC + ca]), clamp_bf16_finite(A[ra * BC + ca + 1]));
       const unsigned a1 = pack_bf16x2(clamp_bf16_finite(A[(ra + 8) * BC + ca]),
                                       clamp_bf16_finite(A[(ra + 8) * BC + ca + 1]));
       const unsigned a2 = pack_bf16x2(clamp_bf16_finite(A[ra * BC + ca + 8]),

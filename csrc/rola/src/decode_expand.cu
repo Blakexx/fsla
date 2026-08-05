@@ -61,8 +61,8 @@ using BlockScanT = cub::BlockScan<int, kDecodeThreads>;
 //: into the source would be a read-write race no barrier placement can fix. The two
 //: buffers are the fix and they are why the SMEM arm costs `2 * n_words` words.
 __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh,
-                                            const float* const* amp, uint32_t* buf0,
-                                            uint32_t* buf1, uint32_t* out) {
+                                            const float* const* amp, uint32_t* buf0, uint32_t* buf1,
+                                            uint32_t* out) {
   const int tid = threadIdx.x;
   const int nw = p.n_words;
   uint32_t* buf[2] = {buf0, buf1};

@@ -142,8 +142,8 @@ __global__ void scan_kernel(ScanParams p) {
       const int k = e / cols;
       const int c = e - k * cols;
       const int i = p.ws_leaf[slot * BC + k];
-      E[i * cols + c] = fmaf(p.ws_scale[slot * BC + k], E[i * cols + c],
-                             p.ws_state[(slot * BC + k) * cols + c]);
+      E[i * cols + c] =
+          fmaf(p.ws_scale[slot * BC + k], E[i * cols + c], p.ws_state[(slot * BC + k) * cols + c]);
     }
     __syncthreads();
     for (int e = threadIdx.x; e < n; e += blockDim.x) {
@@ -161,7 +161,7 @@ void scan_pass(const ScanParams& p) {
 }
 
 __global__ void divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
-                                 float* __restrict__ out, int64_t rows, int DV, float eps) {
+                              float* __restrict__ out, int64_t rows, int DV, float eps) {
   const int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
   if (idx >= rows * DV) return;
   const int64_t row = idx / DV;
@@ -183,8 +183,8 @@ int64_t rola_sm_shared_bytes() {
   int value = 0;
   int device = 0;
   C10_CUDA_CHECK(cudaGetDevice(&device));
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(
-      &value, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device));
+  C10_CUDA_CHECK(
+      cudaDeviceGetAttribute(&value, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device));
   return value;
 }
 
@@ -192,8 +192,8 @@ void divide_pass(const float* num, const float* den, float* out, int64_t rows, i
   const int64_t total = rows * d_v;
   const int threads = 256;
   const int64_t blocks = (total + threads - 1) / threads;
-  divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
-      num, den, out, rows, d_v, eps);
+  divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(num, den, out, rows, d_v,
+                                                                          eps);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -219,44 +219,47 @@ void rola_consumer_check_arch_table() {
   C10_CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
   const int arch = prop.major * 100 + prop.minor * 10;
   TORCH_CHECK(sm_arch_tabulated(arch),
-              "the new consumer's SM-resource table has no row for compute capability ",
-              prop.major, ".", prop.minor,
+              "the new consumer's SM-resource table has no row for compute capability ", prop.major,
+              ".", prop.minor,
               "; add it to sm_resources() rather than letting the launch bound guess");
   const SmResources want = sm_resources(arch);
   int smem_per_sm = 0;
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(
-      &smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev));
-  TORCH_CHECK(want.smem_per_sm == smem_per_sm &&
-                  want.max_threads_per_sm == prop.maxThreadsPerMultiProcessor &&
-                  want.regs_per_sm == prop.regsPerMultiprocessor,
-              "the new consumer's SM-resource table disagrees with the driver at "
-              "compute capability ", prop.major, ".", prop.minor, ": table {smem ",
-              want.smem_per_sm, ", threads ", want.max_threads_per_sm, ", regs ",
-              want.regs_per_sm, "} vs driver {smem ", smem_per_sm, ", threads ",
-              prop.maxThreadsPerMultiProcessor, ", regs ", prop.regsPerMultiprocessor,
-              "}. The launch bounds compiled into this binary were derived from the "
-              "table, so they are wrong for this device.");
+  C10_CUDA_CHECK(
+      cudaDeviceGetAttribute(&smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev));
+  TORCH_CHECK(
+      want.smem_per_sm == smem_per_sm && want.max_threads_per_sm == prop.maxThreadsPerMultiProcessor
+          && want.regs_per_sm == prop.regsPerMultiprocessor,
+      "the new consumer's SM-resource table disagrees with the driver at "
+      "compute capability ",
+      prop.major, ".", prop.minor, ": table {smem ", want.smem_per_sm, ", threads ",
+      want.max_threads_per_sm, ", regs ", want.regs_per_sm, "} vs driver {smem ", smem_per_sm,
+      ", threads ", prop.maxThreadsPerMultiProcessor, ", regs ", prop.regsPerMultiprocessor,
+      "}. The launch bounds compiled into this binary were derived from the "
+      "table, so they are wrong for this device.");
 }
 
 // THE LAUNCH DISPATCH. Declared restrictions are hard checks, never coercions.
-void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool global_norm,
-                  bool decay, const std::string& mma_precision, bool compact) {
+void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool global_norm, bool decay,
+                     const std::string& mma_precision, bool compact) {
   //: Checked ONCE per process, on the first launch rather than at import: a
   //: `cudaGetDeviceProperties` at module init would create a CUDA context as a side
   //: effect of `import`, which is a worse behaviour than the check is worth. By the
   //: first launch the context exists anyway, and nothing can reach a launch bound
   //: without passing through here.
-  static const bool arch_checked = [] { rola_consumer_check_arch_table(); return true; }();
+  static const bool arch_checked = [] {
+    rola_consumer_check_arch_table();
+    return true;
+  }();
   (void)arch_checked;
   //: THE FULL PLAN SURFACE, as of item 6a: `BT in {16, 32}` (`_SUPPORTED_BT`),
   //: `BC in {16, 64}` (`_SUPPORTED_BC`), `d_v in {32, 64}` (`_SUPPORTED_DV`). These
   //: are the planner's own supported sets, so the kernel instantiates exactly the
   //: configurations a plan can name: no shape a plan can select is refused, and no
   //: shape it cannot select is compiled.
-  TORCH_CHECK((BT == 16 || BT == 32) && (BC == 16 || BC == 64) &&
-                  (DV == 32 || DV == 64),
+  TORCH_CHECK((BT == 16 || BT == 32) && (BC == 16 || BC == 64) && (DV == 32 || DV == 64),
               "the consumer instantiates BT in {16, 32}, BC in {16, 64}, "
-              "d_v in {32, 64}; got BT=", BT, " BC=", BC, " d_v=", DV);
+              "d_v in {32, 64}; got BT=",
+              BT, " BC=", BC, " d_v=", DV);
 
   //: `mma_precision` selects BOTH GEMM sites together (RULING 1 revised): "bf16" is
   //: the production point, "tf32x3" the exactness-gate point. Both are instantiated.
@@ -352,8 +355,7 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 //: `__launch_bounds__` from `consumer_smem_bytes` is that a decay instantiation which
 //: regressed the budget would drop its OWN bound rather than silently over-promise,
 //: and this is how that is checked from Python rather than asserted.
-int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT,
-                                int64_t DV) {
+int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
   //: Queried at `D = 2`, the at-scale cell's topology depth. `D` changes only the
   //: `[D][BC]` digit table (256 B per level), so the residency answer is reported for
   //: the shape actually measured rather than for a nominal worst case.
@@ -403,7 +405,10 @@ int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT
   TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
   TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
   TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  if (BT == 16) ROLA_CONSUMER_OCC_BT(16) else ROLA_CONSUMER_OCC_BT(32)
+  if (BT == 16)
+    ROLA_CONSUMER_OCC_BT(16)
+  else
+    ROLA_CONSUMER_OCC_BT(32)
 #undef ROLA_CONSUMER_OCC_BT
 #undef ROLA_CONSUMER_OCC_DV
 #undef ROLA_CONSUMER_OCC_BC
@@ -411,8 +416,7 @@ int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT
   return blocks;
 }
 
-int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT,
-                                 int64_t DV) {
+int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
 #define ROLA_CONSUMER_SMEM(BTV, DVV, BCV, DECAYV, COMPACTV)                                \
   return static_cast<int64_t>(                                                        \
       consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault,             \
@@ -457,7 +461,8 @@ const float* f32_ptr(const at::Tensor& t, const char* name) {
 
 const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
   TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
-  TORCH_CHECK(t.scalar_type() == at::kInt, name, " must be int32 bit patterns, got ", t.scalar_type());
+  TORCH_CHECK(t.scalar_type() == at::kInt, name, " must be int32 bit patterns, got ",
+              t.scalar_type());
   TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
   return reinterpret_cast<const uint32_t*>(t.data_ptr<int32_t>());
 }
@@ -465,38 +470,17 @@ const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
 }  // namespace
 
 std::vector<at::Tensor> rola_consumer_forward(
-    std::vector<at::Tensor> amp_read,
-    std::vector<at::Tensor> amp_write,
-    c10::optional<std::vector<at::Tensor>> amp_clock,
-    c10::optional<at::Tensor> dials,
-    at::Tensor read_bits,
-    at::Tensor write_bits,
-    at::Tensor read_tok_bits,
-    at::Tensor write_tok_bits,
-    at::Tensor read_union,
-    at::Tensor write_union,
-    at::Tensor owners,
-    c10::optional<at::Tensor> g_read,
-    at::Tensor g_write,
-    at::Tensor v,
-    at::Tensor state,
-    c10::optional<at::Tensor> page_table,
-    std::vector<int64_t> level_stride,
-    std::vector<int64_t> level_modulus,
-    std::vector<int64_t> level_row_offset,
-    std::vector<int64_t> level_width,
-    std::vector<int64_t> owner_stride,
-    int64_t first_spanned_level,
-    int64_t slice_digits,
-    int64_t n_slices,
-    int64_t owners_total,
-    int64_t n_heads,
-    int64_t BT,
-    int64_t BC,
-    bool global_norm,
-    std::string mma_precision,
-    bool compact,
-    double eps,
+    std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
+    c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
+    at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
+    at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union, at::Tensor owners,
+    c10::optional<at::Tensor> g_read, at::Tensor g_write, at::Tensor v, at::Tensor state,
+    c10::optional<at::Tensor> page_table, std::vector<int64_t> level_stride,
+    std::vector<int64_t> level_modulus, std::vector<int64_t> level_row_offset,
+    std::vector<int64_t> level_width, std::vector<int64_t> owner_stride,
+    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, int64_t owners_total,
+    int64_t n_heads, int64_t BT, int64_t BC, bool global_norm, std::string mma_precision,
+    bool compact, double eps,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which
     // takes the single-launch path below unchanged).
@@ -513,7 +497,7 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<at::Tensor> ws_state,        // [n_slots, BC, cols] float32
     c10::optional<at::Tensor> ws_scale,        // [n_slots, BC] float32
     c10::optional<at::Tensor> ws_leaf,         // [n_slots, BC] int32
-    c10::optional<at::Tensor> ws_count) {       // [n_slots] int32
+    c10::optional<at::Tensor> ws_count) {      // [n_slots] int32
   const int64_t D = static_cast<int64_t>(amp_read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
   TORCH_CHECK(static_cast<int64_t>(amp_write.size()) == D, "amp_write must have D entries");
@@ -535,25 +519,23 @@ std::vector<at::Tensor> rola_consumer_forward(
     TORCH_CHECK(BC % kScanAtomLeaves == 0,
                 "BC must be a whole number of MMA_K_QUANTUM=", kScanAtomLeaves,
                 "-leaf atoms under paging (spec §1b); got BC=", BC);
-    TORCH_CHECK(state.dim() == 3 && state.size(1) == kScanAtomLeaves &&
-                    state.size(2) == cols,
-                "paged state must be [physical_slots, MMA_K_QUANTUM(",
-                kScanAtomLeaves, "), d_v(+1 under global)] -- the page granule is the "
+    TORCH_CHECK(state.dim() == 3 && state.size(1) == kScanAtomLeaves && state.size(2) == cols,
+                "paged state must be [physical_slots, MMA_K_QUANTUM(", kScanAtomLeaves,
+                "), d_v(+1 under global)] -- the page granule is the "
                 "ATOM, not the owner rectangle (spec §4.5)");
     const auto& table = *page_table;
     const int64_t atoms_per_bh = owners_total * BC / kScanAtomLeaves;
-    TORCH_CHECK(table.is_cuda() && table.is_contiguous() &&
-                    table.scalar_type() == at::kInt && table.dim() == 2 &&
-                    table.size(0) == BH && table.size(1) == atoms_per_bh,
-                "page_table must be contiguous int32 [BH, atoms_per_bh = N/",
-                kScanAtomLeaves, "] on the state's device");
+    TORCH_CHECK(table.is_cuda() && table.is_contiguous() && table.scalar_type() == at::kInt
+                    && table.dim() == 2 && table.size(0) == BH && table.size(1) == atoms_per_bh,
+                "page_table must be contiguous int32 [BH, atoms_per_bh = N/", kScanAtomLeaves,
+                "] on the state's device");
     N = owners_total * BC;
   } else {
     TORCH_CHECK(state.dim() == 3, "state must be [BH, N, d_v(+1)]");
     TORCH_CHECK(state.size(0) == BH, "state batch-head dim must match v");
     N = state.size(1);
-    TORCH_CHECK(state.size(2) == cols,
-                "state's last dim must be d_v(+1 under global), got ", state.size(2));
+    TORCH_CHECK(state.size(2) == cols, "state's last dim must be d_v(+1 under global), got ",
+                state.size(2));
   }
   TORCH_CHECK(owners.dim() == 2 && owners.size(1) == 2, "owners must be [n_owners, 2]");
   TORCH_CHECK(owners.scalar_type() == at::kInt, "owners must be int32");
@@ -564,12 +546,13 @@ std::vector<at::Tensor> rola_consumer_forward(
   // the gather.
   TORCH_CHECK(read_tok_bits.dim() == 3 && write_tok_bits.sizes() == read_tok_bits.sizes(),
               "read/write_tok_bits must both be [BH, n_tiles, total_rows]");
-  TORCH_CHECK(read_tok_bits.size(0) == read_bits.size(0) &&
-                  read_tok_bits.size(2) == read_bits.size(1),
-              "tok_bits must carry the same [BH, total_rows] level-digit rows as the tile bitmap");
+  TORCH_CHECK(
+      read_tok_bits.size(0) == read_bits.size(0) && read_tok_bits.size(2) == read_bits.size(1),
+      "tok_bits must carry the same [BH, total_rows] level-digit rows as the tile bitmap");
   TORCH_CHECK(BT >= 1 && BT <= 32,
               "BT must be in [1, 32] (spec §6): the support word carries one bit per token "
-              "of a tile, got BT=", BT);
+              "of a tile, got BT=",
+              BT);
 
   ConsumerParams p{};
   for (int64_t l = 0; l < D; ++l) {
@@ -579,7 +562,8 @@ std::vector<at::Tensor> rola_consumer_forward(
     p.level_pitch_read[l] = static_cast<int>(amp_read[l].size(3));
     p.level_pitch_write[l] = static_cast<int>(amp_write[l].size(3));
     if (amp_clock.has_value()) {
-      TORCH_CHECK((*amp_clock)[l].dim() == 4, "amp_clock[", l, "] must be [BH, n_tiles, BT, pitch]");
+      TORCH_CHECK((*amp_clock)[l].dim() == 4, "amp_clock[", l,
+                  "] must be [BH, n_tiles, BT, pitch]");
       p.amp_clock[l] = f32_ptr((*amp_clock)[l], "amp_clock");
       p.level_pitch_clock[l] = static_cast<int>((*amp_clock)[l].size(3));
     } else {
@@ -644,25 +628,25 @@ std::vector<at::Tensor> rola_consumer_forward(
   p.n_tiles = static_cast<int>(amp_read[0].size(1));
   p.n_words = static_cast<int>(read_bits.size(2));
   p.total_rows = static_cast<int>(read_bits.size(1));
-  TORCH_CHECK(read_tok_bits.size(1) == p.n_tiles,
-              "tok_bits' tile axis (", read_tok_bits.size(1), ") must match the amplitude "
-              "stream's (", p.n_tiles, ") -- a schedule built at a different BT");
+  TORCH_CHECK(read_tok_bits.size(1) == p.n_tiles, "tok_bits' tile axis (", read_tok_bits.size(1),
+              ") must match the amplitude "
+              "stream's (",
+              p.n_tiles, ") -- a schedule built at a different BT");
   p.n_slices = static_cast<int>(n_slices);
   p.D = static_cast<int>(D);
   p.first_spanned_level = static_cast<int>(first_spanned_level);
   p.slice_digits = static_cast<int>(slice_digits);
   p.n_owners = static_cast<int>(owners.size(0));
-  TORCH_CHECK(n_heads >= 1 && BH % n_heads == 0,
-              "H=", n_heads, " must be >= 1 and divide BH=", BH);
+  TORCH_CHECK(n_heads >= 1 && BH % n_heads == 0, "H=", n_heads, " must be >= 1 and divide BH=", BH);
   p.H = static_cast<int>(n_heads);
   if (decay) {
     TORCH_CHECK(dials->size(0) == n_heads && dials->size(1) == p.total_rows,
                 "dials must be [H, total_rows] = [", n_heads, ", ", p.total_rows, "], got [",
                 dials->size(0), ", ", dials->size(1), "]");
   }
-  TORCH_CHECK(p.n_words <= kMaxWords,
-              "n_words=", p.n_words, " exceeds the per-CTA SMEM candidate budget kMaxWords=",
-              kMaxWords, " (T > ", static_cast<int64_t>(kMaxWords) * 32 * BT,
+  TORCH_CHECK(p.n_words <= kMaxWords, "n_words=", p.n_words,
+              " exceeds the per-CTA SMEM candidate budget kMaxWords=", kMaxWords, " (T > ",
+              static_cast<int64_t>(kMaxWords) * 32 * BT,
               " at this BT); raise kMaxWords or tile the token range");
 
   // Numeric FORMAT axis (findings D4.3), stamped by the plan, resolved once here.
@@ -680,13 +664,12 @@ std::vector<at::Tensor> rola_consumer_forward(
   // the summary pass 1 emitted, and interposing a Python frame would let a caller
   // run them out of order or skip one. They are ordinary stream-ordered launches --
   // no device synchronization is taken and none is needed.
-  const int64_t n_sp = static_cast<int64_t>(work_seg.has_value()) +
-                       work_nseg.has_value() + work_slot.has_value() +
-                       summary_owners.has_value() + summary_seg.has_value() +
-                       summary_nseg.has_value() + summary_slot.has_value() +
-                       scan_owners.has_value() + scan_nseg.has_value() +
-                       scan_slot.has_value() + ws_state.has_value() +
-                       ws_scale.has_value() + ws_leaf.has_value() + ws_count.has_value();
+  const int64_t n_sp = static_cast<int64_t>(work_seg.has_value()) + work_nseg.has_value()
+                       + work_slot.has_value() + summary_owners.has_value()
+                       + summary_seg.has_value() + summary_nseg.has_value()
+                       + summary_slot.has_value() + scan_owners.has_value() + scan_nseg.has_value()
+                       + scan_slot.has_value() + ws_state.has_value() + ws_scale.has_value()
+                       + ws_leaf.has_value() + ws_count.has_value();
   TORCH_CHECK(n_sp == 0 || n_sp == 14,
               "the §6.4 sequence-parallel arguments are all-or-nothing: got ", n_sp,
               " of 14. A partial split plan would run some passes and not others, "
@@ -707,8 +690,8 @@ std::vector<at::Tensor> rola_consumer_forward(
   };
   if (split) {
     auto i32 = [](const at::Tensor& t, const char* name, int64_t rows) {
-      TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt,
-                  name, " must be a contiguous int32 CUDA tensor");
+      TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt, name,
+                  " must be a contiguous int32 CUDA tensor");
       TORCH_CHECK(t.dim() >= 1 && t.size(0) == rows, name, " must have ", rows, " rows");
       return t.data_ptr<int32_t>();
     };
@@ -721,12 +704,12 @@ std::vector<at::Tensor> rola_consumer_forward(
                 "scan_owners must be [n_split, 2]");
     TORCH_CHECK(ws_state->dim() == 3 && ws_state->size(1) == BC && ws_state->size(2) == cols,
                 "ws_state must be [n_slots, BC, d_v(+1 under global)]");
-    TORCH_CHECK(ws_state->is_cuda() && ws_state->is_contiguous() &&
-                    ws_state->scalar_type() == at::kFloat,
-                "ws_state must be contiguous float32 on the device");
-    TORCH_CHECK(ws_scale->is_cuda() && ws_scale->is_contiguous() &&
-                    ws_scale->scalar_type() == at::kFloat && ws_scale->dim() == 2 &&
-                    ws_scale->size(0) == ws_state->size(0) && ws_scale->size(1) == BC,
+    TORCH_CHECK(
+        ws_state->is_cuda() && ws_state->is_contiguous() && ws_state->scalar_type() == at::kFloat,
+        "ws_state must be contiguous float32 on the device");
+    TORCH_CHECK(ws_scale->is_cuda() && ws_scale->is_contiguous()
+                    && ws_scale->scalar_type() == at::kFloat && ws_scale->dim() == 2
+                    && ws_scale->size(0) == ws_state->size(0) && ws_scale->size(1) == BC,
                 "ws_scale must be contiguous float32 [n_slots, BC]");
     const int64_t n_slots = ws_state->size(0);
     p.ws_state = ws_state->data_ptr<float>();
@@ -780,8 +763,8 @@ std::vector<at::Tensor> rola_consumer_forward(
   at::Tensor y = num;
   if (global_norm) {
     y = at::empty_like(num);
-    divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(),
-              BH * T, static_cast<int>(d_v), static_cast<float>(eps));
+    divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(), BH * T,
+                static_cast<int>(d_v), static_cast<float>(eps));
   }
   return {y, state, num, global_norm ? den : at::Tensor()};
 }

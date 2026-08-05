@@ -51,8 +51,8 @@ constexpr bool sm_arch_tabulated(int arch) {
   return arch == 800 || arch == 860 || arch == 870 || arch == 890;
 }
 constexpr SmResources sm_resources(int arch) {
-  return (arch == 800) ? SmResources{167936, 2048, 65536}    // 8.0  GA100
-                       : SmResources{102400, 1536, 65536};   // 8.6 / 8.7 / 8.9
+  return (arch == 800) ? SmResources{167936, 2048, 65536}   // 8.0  GA100
+                       : SmResources{102400, 1536, 65536};  // 8.6 / 8.7 / 8.9
 }
 
 //: The arch this translation pass is compiling FOR. In the HOST pass `__CUDA_ARCH__`

@@ -240,13 +240,10 @@ __device__ __forceinline__ float panel_write_factor(float P, float p_ref, float 
 //: this tile and its true prefix IS zero. `keep^0 == 1` then makes every factor
 //: this file computes exactly `1`, which is §2's write-conditioned quiescence.
 template <int BT, int BC, int DV, bool COMPACT>
-__device__ __forceinline__ void panel_clock_prefix(const ConsumerParams& p, const int* base,
-                                                   int64_t tile_row, int tid,
-                                                   const int* __restrict__ c_slot,
-                                                   const float* __restrict__ log_keep,
-                                                   float* __restrict__ clk,
-                                                   float* __restrict__ p_ref,
-                                                   float* __restrict__ s0) {
+__device__ __forceinline__ void panel_clock_prefix(
+    const ConsumerParams& p, const int* base, int64_t tile_row, int tid,
+    const int* __restrict__ c_slot, const float* __restrict__ log_keep, float* __restrict__ clk,
+    float* __restrict__ p_ref, float* __restrict__ s0) {
   for (int i = tid; i < BC; i += DV) {
     const bool live = (!COMPACT || c_slot[i] >= 0);
     float acc = 0.0f;
@@ -255,8 +252,8 @@ __device__ __forceinline__ void panel_clock_prefix(const ConsumerParams& p, cons
       if (live) {
         cl = 1.0f;
         for (int l = 0; l < p.D; ++l) {
-          cl *= p.amp_clock[l][(tile_row + t) * p.level_pitch_clock[l]
-                               + leaf_digit(p, l, base[l], i)];
+          cl *= p.amp_clock[l]
+                           [(tile_row + t) * p.level_pitch_clock[l] + leaf_digit(p, l, base[l], i)];
         }
       }
       // fp32 accumulation is a requirement, not a default (spec §7.4's V3-specific
@@ -265,7 +262,7 @@ __device__ __forceinline__ void panel_clock_prefix(const ConsumerParams& p, cons
       acc += cl;
       clk[t * BC + i] = acc;
     }
-    const float pr = 0.5f * acc;   // §12 rule 1: the minimax mid-tile reference.
+    const float pr = 0.5f * acc;  // §12 rule 1: the minimax mid-tile reference.
     p_ref[i] = pr;
     // `pr >= 0` and `log_keep <= 0`, so `s0 <= 1` and no clamp is reachable on
     // this one. Underflow to zero is the correct limit (a leaf whose tile-total

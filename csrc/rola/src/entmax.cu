@@ -45,33 +45,31 @@ struct Strides {
   int64_t stream, token, col, tile, lane;
 };
 
-__device__ __forceinline__ int64_t addr(const Strides &s, int64_t stream, int64_t tok,
+__device__ __forceinline__ int64_t addr(const Strides& s, int64_t stream, int64_t tok,
                                         int64_t col) {
-  return stream * s.stream + tok * s.token + (tok >> 5) * s.tile + col * s.col +
-         (tok & 31) * s.lane;
+  return stream * s.stream + tok * s.token + (tok >> 5) * s.tile + col * s.col
+         + (tok & 31) * s.lane;
 }
 
 template <typename T>
-__device__ __forceinline__ void store_value(T *p, int64_t off, float v);
+__device__ __forceinline__ void store_value(T* p, int64_t off, float v);
 template <>
-__device__ __forceinline__ void store_value<float>(float *p, int64_t off, float v) {
+__device__ __forceinline__ void store_value<float>(float* p, int64_t off, float v) {
   p[off] = v;
 }
 template <>
-__device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16 *p, int64_t off,
-                                                           float v) {
+__device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
   p[off] = __float2bfloat16(v);
 }
 
 template <typename T>
-__device__ __forceinline__ float load_value(const T *p, int64_t off);
+__device__ __forceinline__ float load_value(const T* p, int64_t off);
 template <>
-__device__ __forceinline__ float load_value<float>(const float *p, int64_t off) {
+__device__ __forceinline__ float load_value<float>(const float* p, int64_t off) {
   return p[off];
 }
 template <>
-__device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16 *p,
-                                                           int64_t off) {
+__device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16* p, int64_t off) {
   return __bfloat162float(p[off]);
 }
 
@@ -83,7 +81,7 @@ struct Pair {
   float p, q;
 };
 struct PairAdd {
-  __device__ __forceinline__ Pair operator()(const Pair &a, const Pair &b) const {
+  __device__ __forceinline__ Pair operator()(const Pair& a, const Pair& b) const {
     return {a.p + b.p, a.q + b.q};
   }
 };
@@ -92,7 +90,7 @@ struct PairAdd {
 //: opposite-sign finite extrema overflow a raw subtraction while their midpoint stays
 //: representable, so the MAGNITUDE is clamped instead. Gate A1 holds this bit-identical
 //: against plain fp32 torch -- it is pure elementwise, so no reassociation exists.
-__device__ __forceinline__ float overflow_free_delta(float r, float w, bool *saturated) {
+__device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
   const float kMax = 3.4028234663852886e38f;
   const float kHalfMax = 1.7014117331926443e38f;
   bool rneg = r < 0.0f;
@@ -124,9 +122,9 @@ __device__ __forceinline__ bool bf16_nonzero(float v) {
 // ---------------------------------------------------------------------------
 template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forward_kernel(
-    const float *__restrict__ read_logits, const float *__restrict__ write_logits,
-    float *__restrict__ midpoint_values, int32_t *__restrict__ support_words,
-    OutT *__restrict__ read_values, OutT *__restrict__ write_values, int tokens, int width,
+    const float* __restrict__ read_logits, const float* __restrict__ write_logits,
+    float* __restrict__ midpoint_values, int32_t* __restrict__ support_words,
+    OutT* __restrict__ read_values, OutT* __restrict__ write_values, int tokens, int width,
     int n_words, Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
     Strides ssup) {
   constexpr int W_PAD = LW * IPT;
@@ -167,14 +165,13 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   //: naming all 32 lanes waits on threads that are somewhere else entirely. The member
   //: mask must name exactly this logical warp. (CUB's own collectives compute this
   //: internally; these hand broadcasts of their lane-0 results did not.)
-  const unsigned lmask =
-      (LW == WARP_SIZE) ? 0xffffffffu
-                        : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
-  const int logical = threadIdx.x / LW;               // logical warp id within the block
+  const unsigned lmask = (LW == WARP_SIZE)
+                             ? 0xffffffffu
+                             : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const int logical = threadIdx.x / LW;  // logical warp id within the block
   const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
-  char *slot = smem + warp * SLOT;
-  auto &sort_store =
-      reinterpret_cast<typename WarpSort::TempStorage *>(slot)[logical_in_warp];
+  char* slot = smem + warp * SLOT;
+  auto& sort_store = reinterpret_cast<typename WarpSort::TempStorage*>(slot)[logical_in_warp];
   typename WarpScanP::TempStorage scan_store;
   typename WarpRedF::TempStorage red_store;
   typename WarpRedU::TempStorage redu_store;
@@ -275,9 +272,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
     //: ONE reduction selects the greatest valid k AND carries its tau: the column in the
     //: high 32 bits makes integer Max pick it, and lane rank ranges are disjoint so a tie
     //: is impossible. `best_col = -1` maps to key 0, so an all-empty row yields tau = 0.
-    unsigned long long packed_key =
-        ((unsigned long long)(uint32_t)(best_col + 1) << 32) |
-        (unsigned long long)__float_as_uint(best_tau);
+    unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
+                                    | (unsigned long long)__float_as_uint(best_tau);
     packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
     packed_key = __shfl_sync(lmask, packed_key, 0, LW);
     const int chosen = (int)(uint32_t)(packed_key >> 32) - 1;
@@ -352,10 +348,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   //: no shared atomics, no zero-init pass.
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
-    for (int d = LW; d < WARP_SIZE; d <<= 1)
-      part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
+    for (int d = LW; d < WARP_SIZE; d <<= 1) part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
   }
-  uint32_t *stage = reinterpret_cast<uint32_t *>(smem + warp * SLOT);
+  uint32_t* stage = reinterpret_cast<uint32_t*>(smem + warp * SLOT);
   if (logical_in_warp == 0) {
 #pragma unroll
     for (int i = 0; i < IPT; ++i) stage[lane + i * LW] = part[i];
@@ -366,9 +361,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       uint32_t acc = 0u;
 #pragma unroll
       for (int w = 0; w < BLOCK_WARPS; ++w)
-        acc |= reinterpret_cast<const uint32_t *>(smem + w * SLOT)[col];
-      support_words[stream * ssup.stream + (int64_t)word * ssup.token +
-                    (int64_t)col * ssup.col] = (int32_t)acc;
+        acc |= reinterpret_cast<const uint32_t*>(smem + w * SLOT)[col];
+      support_words[stream * ssup.stream + (int64_t)word * ssup.token + (int64_t)col * ssup.col] =
+          (int32_t)acc;
     }
   }
 }
@@ -397,13 +392,13 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 // ---------------------------------------------------------------------------
 template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
-    const float *__restrict__ read_logits, const float *__restrict__ write_logits,
-    const float *__restrict__ midpoint_values, const int32_t *__restrict__ support_words,
-    const OutT *__restrict__ read_values, const OutT *__restrict__ write_values,
-    const OutT *__restrict__ d_read, const OutT *__restrict__ d_write,
-    float *__restrict__ d_read_logits, float *__restrict__ d_write_logits, int tokens,
-    int width, Strides sr, Strides sw, Strides smid, Strides srv, Strides swv,
-    Strides sdr, Strides sdw, Strides sdrl, Strides sdwl, Strides ssup) {
+    const float* __restrict__ read_logits, const float* __restrict__ write_logits,
+    const float* __restrict__ midpoint_values, const int32_t* __restrict__ support_words,
+    const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
+    const OutT* __restrict__ d_read, const OutT* __restrict__ d_write,
+    float* __restrict__ d_read_logits, float* __restrict__ d_write_logits, int tokens, int width,
+    Strides sr, Strides sw, Strides smid, Strides srv, Strides swv, Strides sdr, Strides sdw,
+    Strides sdrl, Strides sdwl, Strides ssup) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
   using WarpRedF = cub::WarpReduce<float, LW>;
@@ -416,9 +411,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
   const int lane = threadIdx.x % LW;
   const int logical = threadIdx.x / LW;
   //: see the forward kernel: a full-warp mask deadlocks on ragged words with LW < 32.
-  const unsigned lmask =
-      (LW == WARP_SIZE) ? 0xffffffffu
-                        : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const unsigned lmask = (LW == WARP_SIZE)
+                             ? 0xffffffffu
+                             : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
 
@@ -440,8 +435,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const int col = lane + i * LW;
       const bool valid = col < width;
       const uint32_t wword =
-          valid ? (uint32_t)support_words[stream * ssup.stream + (int64_t)word * ssup.token +
-                                          (int64_t)col * ssup.col]
+          valid ? (uint32_t)support_words[stream * ssup.stream + (int64_t)word * ssup.token
+                                          + (int64_t)col * ssup.col]
                 : 0u;
       if (valid && ((wword >> (token & 31)) & 1u)) support_mask |= (1u << i);
       const float wv = valid ? load_value(write_values, addr(swv, stream, token, col)) : 0.0f;
@@ -509,16 +504,14 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 // HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on nothing
 // (I2). One launch per union level, exactly as today.
 // ---------------------------------------------------------------------------
-Strides five(const torch::Tensor &t) {
-  if (t.dim() == 4)
-    return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
+Strides five(const torch::Tensor& t) {
+  if (t.dim() == 4) return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
   return {t.stride(0), t.stride(1), t.stride(2), 0, 0};
 }
 
 template <typename OutT>
-void launch_forward(const torch::Tensor &rl, const torch::Tensor &wl, torch::Tensor &mid,
-                    torch::Tensor &sup, torch::Tensor &rv, torch::Tensor &wv,
-                    double alpha) {
+void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Tensor& mid,
+                    torch::Tensor& sup, torch::Tensor& rv, torch::Tensor& wv, double alpha) {
   const int n_streams = rl.size(0), tokens = rl.size(1), width = rl.size(2);
   const int n_words = (tokens + WORD_TOKENS - 1) / WORD_TOKENS;
   dim3 grid(n_words, n_streams);
@@ -545,26 +538,42 @@ void launch_forward(const torch::Tensor &rl, const torch::Tensor &wl, torch::Ten
   } while (0)
 
   switch (w_pad) {
-    case 2: ROLA_ENTMAX_FWD(2, 1); break;
-    case 4: ROLA_ENTMAX_FWD(4, 1); break;
-    case 8: ROLA_ENTMAX_FWD(8, 1); break;
-    case 16: ROLA_ENTMAX_FWD(16, 1); break;
-    case 32: ROLA_ENTMAX_FWD(32, 1); break;
-    case 64: ROLA_ENTMAX_FWD(32, 2); break;
-    case 128: ROLA_ENTMAX_FWD(32, 4); break;
-    case 256: ROLA_ENTMAX_FWD(32, 8); break;
-    default: TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
+    case 2:
+      ROLA_ENTMAX_FWD(2, 1);
+      break;
+    case 4:
+      ROLA_ENTMAX_FWD(4, 1);
+      break;
+    case 8:
+      ROLA_ENTMAX_FWD(8, 1);
+      break;
+    case 16:
+      ROLA_ENTMAX_FWD(16, 1);
+      break;
+    case 32:
+      ROLA_ENTMAX_FWD(32, 1);
+      break;
+    case 64:
+      ROLA_ENTMAX_FWD(32, 2);
+      break;
+    case 128:
+      ROLA_ENTMAX_FWD(32, 4);
+      break;
+    case 256:
+      ROLA_ENTMAX_FWD(32, 8);
+      break;
+    default:
+      TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
   }
 #undef ROLA_ENTMAX_FWD
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <typename OutT>
-void launch_backward(const torch::Tensor &rl, const torch::Tensor &wl,
-                     const torch::Tensor &mid, const torch::Tensor &sup,
-                     const torch::Tensor &rv, const torch::Tensor &wv,
-                     const torch::Tensor &dr, const torch::Tensor &dw,
-                     torch::Tensor &drl, torch::Tensor &dwl, double alpha) {
+void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const torch::Tensor& mid,
+                     const torch::Tensor& sup, const torch::Tensor& rv, const torch::Tensor& wv,
+                     const torch::Tensor& dr, const torch::Tensor& dw, torch::Tensor& drl,
+                     torch::Tensor& dwl, double alpha) {
   const int n_streams = rl.size(0), tokens = rl.size(1), width = rl.size(2);
   const int n_words = (tokens + WORD_TOKENS - 1) / WORD_TOKENS;
   dim3 grid(n_words, n_streams);
@@ -588,15 +597,32 @@ void launch_backward(const torch::Tensor &rl, const torch::Tensor &wl,
   } while (0)
 
   switch (w_pad) {
-    case 2: ROLA_ENTMAX_BWD_A(2, 1); break;
-    case 4: ROLA_ENTMAX_BWD_A(4, 1); break;
-    case 8: ROLA_ENTMAX_BWD_A(8, 1); break;
-    case 16: ROLA_ENTMAX_BWD_A(16, 1); break;
-    case 32: ROLA_ENTMAX_BWD_A(32, 1); break;
-    case 64: ROLA_ENTMAX_BWD_A(32, 2); break;
-    case 128: ROLA_ENTMAX_BWD_A(32, 4); break;
-    case 256: ROLA_ENTMAX_BWD_A(32, 8); break;
-    default: TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
+    case 2:
+      ROLA_ENTMAX_BWD_A(2, 1);
+      break;
+    case 4:
+      ROLA_ENTMAX_BWD_A(4, 1);
+      break;
+    case 8:
+      ROLA_ENTMAX_BWD_A(8, 1);
+      break;
+    case 16:
+      ROLA_ENTMAX_BWD_A(16, 1);
+      break;
+    case 32:
+      ROLA_ENTMAX_BWD_A(32, 1);
+      break;
+    case 64:
+      ROLA_ENTMAX_BWD_A(32, 2);
+      break;
+    case 128:
+      ROLA_ENTMAX_BWD_A(32, 4);
+      break;
+    case 256:
+      ROLA_ENTMAX_BWD_A(32, 8);
+      break;
+    default:
+      TORCH_CHECK(false, "union entmax width ", width, " exceeds MAX_BRANCH_WIDTH");
   }
 #undef ROLA_ENTMAX_BWD_A
 #undef ROLA_ENTMAX_BWD
@@ -605,9 +631,9 @@ void launch_backward(const torch::Tensor &rl, const torch::Tensor &wl,
 
 }  // namespace
 
-void union_forward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
-                   torch::Tensor &midpoint_values, torch::Tensor &support_words,
-                   torch::Tensor &read_values, torch::Tensor &write_values, double alpha) {
+void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
+                   torch::Tensor& midpoint_values, torch::Tensor& support_words,
+                   torch::Tensor& read_values, torch::Tensor& write_values, double alpha) {
   TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
               "union entmax requires fp32 CUDA logits");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
@@ -615,33 +641,31 @@ void union_forward(const torch::Tensor &read_logits, const torch::Tensor &write_
               "read/write route values must share a dtype");
   const at::cuda::CUDAGuard guard(read_logits.device());
   if (read_values.scalar_type() == torch::kFloat32)
-    launch_forward<float>(read_logits, write_logits, midpoint_values, support_words,
-                          read_values, write_values, alpha);
+    launch_forward<float>(read_logits, write_logits, midpoint_values, support_words, read_values,
+                          write_values, alpha);
   else if (read_values.scalar_type() == torch::kBFloat16)
-    launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values,
-                                  support_words, read_values, write_values, alpha);
+    launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
+                                  read_values, write_values, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }
 
-void union_backward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
-                    const torch::Tensor &midpoint_values,
-                    const torch::Tensor &support_words, const torch::Tensor &read_values,
-                    const torch::Tensor &write_values, const torch::Tensor &d_read,
-                    const torch::Tensor &d_write, torch::Tensor &d_read_logits,
-                    torch::Tensor &d_write_logits, double alpha) {
+void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
+                    const torch::Tensor& midpoint_values, const torch::Tensor& support_words,
+                    const torch::Tensor& read_values, const torch::Tensor& write_values,
+                    const torch::Tensor& d_read, const torch::Tensor& d_write,
+                    torch::Tensor& d_read_logits, torch::Tensor& d_write_logits, double alpha) {
   TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
               "union entmax backward requires fp32 CUDA logits");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
   const at::cuda::CUDAGuard guard(read_logits.device());
   if (read_values.scalar_type() == torch::kFloat32)
-    launch_backward<float>(read_logits, write_logits, midpoint_values, support_words,
-                           read_values, write_values, d_read, d_write, d_read_logits,
-                           d_write_logits, alpha);
+    launch_backward<float>(read_logits, write_logits, midpoint_values, support_words, read_values,
+                           write_values, d_read, d_write, d_read_logits, d_write_logits, alpha);
   else if (read_values.scalar_type() == torch::kBFloat16)
-    launch_backward<__nv_bfloat16>(read_logits, write_logits, midpoint_values,
-                                   support_words, read_values, write_values, d_read,
-                                   d_write, d_read_logits, d_write_logits, alpha);
+    launch_backward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
+                                   read_values, write_values, d_read, d_write, d_read_logits,
+                                   d_write_logits, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }

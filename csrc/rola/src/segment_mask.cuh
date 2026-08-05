@@ -39,7 +39,7 @@ __device__ __forceinline__ uint32_t segment_word_mask(int w, int lo, int hi) {
   int b = hi - base;
   a = (a < 0) ? 0 : ((a > 32) ? 32 : a);
   b = (b < 0) ? 0 : ((b > 32) ? 32 : b);
-  if (b <= a) return 0u;   // also the only way `a == 32` could reach the shift below
+  if (b <= a) return 0u;  // also the only way `a == 32` could reach the shift below
   const uint32_t upto = (b == 32) ? 0xffffffffu : ((1u << b) - 1u);
   return upto & ~((1u << a) - 1u);
 }

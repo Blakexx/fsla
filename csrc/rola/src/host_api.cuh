@@ -24,38 +24,17 @@ namespace rola {
 //: `consumer.cu` -- the fused forward, its residency queries, and the closed-world
 //: rule-4 arch check (validated once, on the first launch, from `launch_consumer`).
 std::vector<at::Tensor> rola_consumer_forward(
-    std::vector<at::Tensor> amp_read,
-    std::vector<at::Tensor> amp_write,
-    c10::optional<std::vector<at::Tensor>> amp_clock,
-    c10::optional<at::Tensor> dials,
-    at::Tensor read_bits,
-    at::Tensor write_bits,
-    at::Tensor read_tok_bits,
-    at::Tensor write_tok_bits,
-    at::Tensor read_union,
-    at::Tensor write_union,
-    at::Tensor owners,
-    c10::optional<at::Tensor> g_read,
-    at::Tensor g_write,
-    at::Tensor v,
-    at::Tensor state,
-    c10::optional<at::Tensor> page_table,
-    std::vector<int64_t> level_stride,
-    std::vector<int64_t> level_modulus,
-    std::vector<int64_t> level_row_offset,
-    std::vector<int64_t> level_width,
-    std::vector<int64_t> owner_stride,
-    int64_t first_spanned_level,
-    int64_t slice_digits,
-    int64_t n_slices,
-    int64_t owners_total,
-    int64_t n_heads,
-    int64_t BT,
-    int64_t BC,
-    bool global_norm,
-    std::string mma_precision,
-    bool compact,
-    double eps,
+    std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
+    c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
+    at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
+    at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union, at::Tensor owners,
+    c10::optional<at::Tensor> g_read, at::Tensor g_write, at::Tensor v, at::Tensor state,
+    c10::optional<at::Tensor> page_table, std::vector<int64_t> level_stride,
+    std::vector<int64_t> level_modulus, std::vector<int64_t> level_row_offset,
+    std::vector<int64_t> level_width, std::vector<int64_t> owner_stride,
+    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, int64_t owners_total,
+    int64_t n_heads, int64_t BT, int64_t BC, bool global_norm, std::string mma_precision,
+    bool compact, double eps,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which
     // takes the single-launch path below unchanged).
@@ -74,11 +53,9 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<at::Tensor> ws_leaf,         // [n_slots, BC] int32
     c10::optional<at::Tensor> ws_count);
 
-int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT,
-                                int64_t DV);
+int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV);
 
-int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT,
-                                 int64_t DV);
+int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV);
 
 void rola_consumer_check_arch_table();
 
@@ -86,7 +63,4 @@ int64_t rola_sm_shared_bytes();
 
 }  // namespace rola
 
-namespace rola::paging {
-
-
-}  // namespace rola::paging
+namespace rola::paging {}  // namespace rola::paging

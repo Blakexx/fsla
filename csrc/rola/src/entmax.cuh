@@ -40,16 +40,15 @@ namespace entmax {
 // rank-4 tile-major arena slice has token=0. The single address expression
 // `stream*s + tok*t + (tok>>5)*tile + col*c + (tok&31)*lane` is correct for both, which
 // is why layout is NOT a codegen axis here (Triton needed a `tl.where(TILE_MAJOR, ...)`).
-void union_forward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
-                   torch::Tensor &midpoint_values, torch::Tensor &support_words,
-                   torch::Tensor &read_values, torch::Tensor &write_values, double alpha);
+void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
+                   torch::Tensor& midpoint_values, torch::Tensor& support_words,
+                   torch::Tensor& read_values, torch::Tensor& write_values, double alpha);
 
-void union_backward(const torch::Tensor &read_logits, const torch::Tensor &write_logits,
-                    const torch::Tensor &midpoint_values,
-                    const torch::Tensor &support_words, const torch::Tensor &read_values,
-                    const torch::Tensor &write_values, const torch::Tensor &d_read,
-                    const torch::Tensor &d_write, torch::Tensor &d_read_logits,
-                    torch::Tensor &d_write_logits, double alpha);
+void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
+                    const torch::Tensor& midpoint_values, const torch::Tensor& support_words,
+                    const torch::Tensor& read_values, const torch::Tensor& write_values,
+                    const torch::Tensor& d_read, const torch::Tensor& d_write,
+                    torch::Tensor& d_read_logits, torch::Tensor& d_write_logits, double alpha);
 
 }  // namespace entmax
 }  // namespace rola

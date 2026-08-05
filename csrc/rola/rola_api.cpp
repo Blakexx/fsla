@@ -62,12 +62,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // for the same reason paging does -- one contract, one ABI boundary.
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
-        py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"),
-        py::arg("dials"), py::arg("g_read"), py::arg("g_write"), py::arg("v"),
-        py::arg("state"), py::arg("bits"), py::arg("pc_coarse"), py::arg("ws"),
-        py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"),
-        py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("heads"),
-        py::arg("n_split"), py::arg("eps"), py::arg("global_norm"));
+        py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"), py::arg("dials"),
+        py::arg("g_read"), py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("bits"),
+        py::arg("pc_coarse"), py::arg("ws"), py::arg("ctr"), py::arg("level_widths"),
+        py::arg("level_strides"), py::arg("level_spans"), py::arg("level_row_offsets"),
+        py::arg("heads"), py::arg("n_split"), py::arg("eps"), py::arg("global_norm"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");
@@ -94,40 +93,38 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "condensation");
 
   // ---- the VMM owner ------------------------------------------------------
-  m.def("rola_vmm_probe", [](int device) {
-    const auto probe = rola::paging::VmmOwner::probe(device);
-    py::dict result;
-    result["device"] = probe.device;
-    result["supported"] = probe.supported;
-    result["allocation_granularity"] = probe.allocation_granularity;
-    result["reason"] = probe.reason;
-    return result;
-  }, py::arg("device"));
+  m.def(
+      "rola_vmm_probe",
+      [](int device) {
+        const auto probe = rola::paging::VmmOwner::probe(device);
+        py::dict result;
+        result["device"] = probe.device;
+        result["supported"] = probe.supported;
+        result["allocation_granularity"] = probe.allocation_granularity;
+        result["reason"] = probe.reason;
+        return result;
+      },
+      py::arg("device"));
 
-  py::class_<rola::paging::VmmOwner, std::shared_ptr<rola::paging::VmmOwner>>(
-      m, "RoLAVmmOwner")
+  py::class_<rola::paging::VmmOwner, std::shared_ptr<rola::paging::VmmOwner>>(m, "RoLAVmmOwner")
       .def("value_base", &rola::paging::VmmOwner::value_base)
       .def("mass_base", &rola::paging::VmmOwner::mass_base)
       .def("grow", &rola::paging::VmmOwner::grow, py::arg("required_pages"))
-      .def("rollback_to", &rola::paging::VmmOwner::rollback_to,
-           py::arg("mapped_capacity_pages"))
+      .def("rollback_to", &rola::paging::VmmOwner::rollback_to, py::arg("mapped_capacity_pages"))
       .def("reset", &rola::paging::VmmOwner::reset)
       .def("close", &rola::paging::VmmOwner::close)
       .def_property_readonly("closed", &rola::paging::VmmOwner::closed)
       .def_property_readonly("mapped_capacity_pages",
                              &rola::paging::VmmOwner::mapped_capacity_pages)
-      .def_property_readonly("max_physical_pages",
-                             &rola::paging::VmmOwner::max_physical_pages)
-      .def_property_readonly("committed_bytes",
-                             &rola::paging::VmmOwner::committed_bytes)
+      .def_property_readonly("max_physical_pages", &rola::paging::VmmOwner::max_physical_pages)
+      .def_property_readonly("committed_bytes", &rola::paging::VmmOwner::committed_bytes)
       .def_property_readonly("virtual_bytes", &rola::paging::VmmOwner::virtual_bytes)
       .def_property_readonly("allocation_granularity",
                              &rola::paging::VmmOwner::allocation_granularity)
       .def_property_readonly("chunk_pages", &rola::paging::VmmOwner::chunk_pages)
       .def_property_readonly("backing_kind", &rola::paging::VmmOwner::backing_kind);
 
-  m.def("rola_vmm_create", &rola::paging::create_vmm_owner,
-        py::arg("device"), py::arg("max_physical_pages"),
-        py::arg("bp"), py::arg("dqk"), py::arg("dv"), py::arg("global_mass"),
-        py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);
+  m.def("rola_vmm_create", &rola::paging::create_vmm_owner, py::arg("device"),
+        py::arg("max_physical_pages"), py::arg("bp"), py::arg("dqk"), py::arg("dv"),
+        py::arg("global_mass"), py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);
 }

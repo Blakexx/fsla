@@ -42,8 +42,8 @@ struct SharedState {
   int row_offset[kMaxLevels];
   int leaf_stride[kMaxLevels];
   int fixed_radix[kMaxLevels];
-  int level_pc[kMaxLevels];     //: popcount of the level's UNION digit set, this tile
-  int slice_pc[kMaxSlices];     //: per boundary slice, the union digit count
+  int level_pc[kMaxLevels];  //: popcount of the level's UNION digit set, this tile
+  int slice_pc[kMaxSlices];  //: per boundary slice, the union digit count
   unsigned char slice_any_r[kMaxSlices];
   unsigned char slice_any_w[kMaxSlices];
   union {
@@ -73,8 +73,8 @@ __device__ __forceinline__ void fold_u64(SharedState& s, unsigned long long valu
 //: Is this owner WRITE-CANDIDATE in the staged tile? A §4 product-set membership test
 //: on data the CTA already holds -- invariant I3's own criterion for an in-kernel
 //: decision -- and exact rather than conservative.
-__device__ __forceinline__ bool write_candidate(const SharedState& s,
-                                                const SummaryParams& p, int owner) {
+__device__ __forceinline__ bool write_candidate(const SharedState& s, const SummaryParams& p,
+                                                int owner) {
   const int slice = owner % p.n_slices;
   if (s.slice_any_w[slice] == 0) return false;
   const int rest = owner / p.n_slices;
@@ -136,8 +136,7 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
         for (int t = 0; t < p.token_tile; ++t) {
           const int token = t0 + t;
           if (token >= p.token_count) break;
-          const long long index =
-              (static_cast<long long>(bh) * p.token_count + token) * width + d;
+          const long long index = (static_cast<long long>(bh) * p.token_count + token) * width + d;
           rw |= (read_level[index] != 0.0f) ? (1 << t) : 0;
           ww |= (write_level[index] != 0.0f) ? (1 << t) : 0;
         }
@@ -276,9 +275,8 @@ __global__ __launch_bounds__(kThreads) void summaries_kernel(SummaryParams p) {
           const int lo = first > 0 ? first : 0;
           const int hi = first + p.state_block < kWarpSize ? first + p.state_block : kWarpSize;
           if (lo >= hi) continue;
-          const unsigned span = (hi - lo == kWarpSize)
-                                    ? 0xffffffffu
-                                    : (((1u << (hi - lo)) - 1u) << lo);
+          const unsigned span =
+              (hi - lo == kWarpSize) ? 0xffffffffu : (((1u << (hi - lo)) - 1u) << lo);
           if ((mask & span) == 0u) continue;
           const int bit = 1 << (owner & (kWarpSize - 1));
           const int old = atomicOr(&owner_bitmap[owner >> 5], bit);
@@ -304,23 +302,19 @@ void launch_summaries(const SummaryParams& params, cudaStream_t stream) {
 }
 
 void rola_routing_summaries_cuda(
-    const std::vector<torch::Tensor>& read_amps,
-    const std::vector<torch::Tensor>& write_amps,
-    const std::vector<int64_t>& level_widths,
-    int64_t token_tile, int64_t state_block, int64_t first_spanned_level,
-    int64_t slice_digits, int64_t n_slices,
-    torch::Tensor occupancy, torch::Tensor histogram,
-    torch::Tensor candidate_count, torch::Tensor written_owner_count,
+    const std::vector<torch::Tensor>& read_amps, const std::vector<torch::Tensor>& write_amps,
+    const std::vector<int64_t>& level_widths, int64_t token_tile, int64_t state_block,
+    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, torch::Tensor occupancy,
+    torch::Tensor histogram, torch::Tensor candidate_count, torch::Tensor written_owner_count,
     torch::Tensor written_leaf_bitmap, torch::Tensor written_owner_bitmap) {
   const int64_t D = static_cast<int64_t>(level_widths.size());
-  TORCH_CHECK(D >= 1 && D <= kMaxLevels,
-              "the summary pass carries at most ", kMaxLevels,
+  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "the summary pass carries at most ", kMaxLevels,
               " levels (the same bound FeederFlags' packed word has); got D=", D);
-  TORCH_CHECK(static_cast<int64_t>(read_amps.size()) == D &&
-                  static_cast<int64_t>(write_amps.size()) == D,
-              "one folded [BH, T, b_l] allocation per level per side is required");
-  TORCH_CHECK(token_tile >= 1 && token_tile <= kTokenBitsPerWord,
-              "BT must lie in [1, ", kTokenBitsPerWord,
+  TORCH_CHECK(
+      static_cast<int64_t>(read_amps.size()) == D && static_cast<int64_t>(write_amps.size()) == D,
+      "one folded [BH, T, b_l] allocation per level per side is required");
+  TORCH_CHECK(token_tile >= 1 && token_tile <= kTokenBitsPerWord, "BT must lie in [1, ",
+              kTokenBitsPerWord,
               "] so one tile's tokens are the BITS of one word; got BT=", token_tile,
               ". A wider BT is a representation change that must widen the word, not a "
               "runtime condition to branch on.");
@@ -335,27 +329,25 @@ void rola_routing_summaries_cuda(
   for (int64_t l = 0; l < D; ++l) {
     TORCH_CHECK(read_amps[l].is_cuda() && write_amps[l].is_cuda(),
                 "the summary pass is a CUDA kernel; level ", l, " is not on a device");
-    TORCH_CHECK(read_amps[l].scalar_type() == torch::kFloat32 &&
-                    write_amps[l].scalar_type() == torch::kFloat32,
+    TORCH_CHECK(read_amps[l].scalar_type() == torch::kFloat32
+                    && write_amps[l].scalar_type() == torch::kFloat32,
                 "the summary pass reads fp32 routing allocations");
-    TORCH_CHECK(read_amps[l].is_contiguous() && write_amps[l].is_contiguous(),
-                "level ", l, " must be contiguous [BH, T, b_l]");
-    TORCH_CHECK(read_amps[l].dim() == 3 && read_amps[l].size(0) == BH &&
-                    read_amps[l].size(1) == T &&
-                    read_amps[l].size(2) == level_widths[l],
-                "level ", l, " read allocation must be [", BH, ", ", T, ", ",
-                level_widths[l], "]");
-    TORCH_CHECK(write_amps[l].sizes() == read_amps[l].sizes(),
-                "level ", l, "'s two sides disagree in shape");
+    TORCH_CHECK(read_amps[l].is_contiguous() && write_amps[l].is_contiguous(), "level ", l,
+                " must be contiguous [BH, T, b_l]");
+    TORCH_CHECK(read_amps[l].dim() == 3 && read_amps[l].size(0) == BH && read_amps[l].size(1) == T
+                    && read_amps[l].size(2) == level_widths[l],
+                "level ", l, " read allocation must be [", BH, ", ", T, ", ", level_widths[l], "]");
+    TORCH_CHECK(write_amps[l].sizes() == read_amps[l].sizes(), "level ", l,
+                "'s two sides disagree in shape");
     total_digits += level_widths[l];
     leaf_count *= level_widths[l];
   }
-  TORCH_CHECK(total_digits <= kMaxTotalDigits,
-              "sum_l b_l = ", total_digits, " exceeds the ", kMaxTotalDigits,
+  TORCH_CHECK(total_digits <= kMaxTotalDigits, "sum_l b_l = ", total_digits, " exceeds the ",
+              kMaxTotalDigits,
               "-digit shared-memory budget one CTA stages. That is a BUDGET change "
               "(two int32 arrays of this length), not a runtime condition to branch on.");
-  TORCH_CHECK(n_slices >= 1 && n_slices <= kMaxSlices,
-              "n_slices=", n_slices, " exceeds the staged budget ", kMaxSlices);
+  TORCH_CHECK(n_slices >= 1 && n_slices <= kMaxSlices, "n_slices=", n_slices,
+              " exceeds the staged budget ", kMaxSlices);
   TORCH_CHECK(leaf_count % state_block == 0, "BC must divide N");
   TORCH_CHECK(first_spanned_level >= 0 && first_spanned_level < D,
               "first_spanned_level must index a level");
@@ -374,11 +366,11 @@ void rola_routing_summaries_cuda(
               "histogram must be an int64 [QPO + 1] = [", bins, "]");
   TORCH_CHECK(candidate_count.numel() == 1 && written_owner_count.numel() == 1,
               "the two counters are int64 scalars");
-  TORCH_CHECK(written_leaf_bitmap.numel() == BH * leaf_words &&
-                  written_leaf_bitmap.scalar_type() == torch::kInt,
+  TORCH_CHECK(written_leaf_bitmap.numel() == BH * leaf_words
+                  && written_leaf_bitmap.scalar_type() == torch::kInt,
               "written_leaf_bitmap must be an int32 [BH, ceil(N/32)]");
-  TORCH_CHECK(written_owner_bitmap.numel() == BH * owner_words &&
-                  written_owner_bitmap.scalar_type() == torch::kInt,
+  TORCH_CHECK(written_owner_bitmap.numel() == BH * owner_words
+                  && written_owner_bitmap.scalar_type() == torch::kInt,
               "written_owner_bitmap must be an int32 [BH, ceil(owners/32)]");
 
   SummaryParams params{};

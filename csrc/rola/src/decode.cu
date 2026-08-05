@@ -65,14 +65,16 @@ constexpr float kDecodeMaxExponent = 88.0f;
 //: walk to the word. This is what the coarse index is FOR, and it is the same array
 //: the walk consults to skip empty groups.
 __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bits_r,
-                                           const uint32_t* bits_w, int n_words,
-                                           int n_groups, int row, int& out_word,
-                                           int& out_skip) {
+                                           const uint32_t* bits_w, int n_words, int n_groups,
+                                           int row, int& out_word, int& out_skip) {
   int lo = 0;
   int hi = n_groups;
   while (lo < hi - 1) {
     const int mid = (lo + hi) >> 1;
-    if (pc[mid] <= row) lo = mid; else hi = mid;
+    if (pc[mid] <= row)
+      lo = mid;
+    else
+      hi = mid;
   }
   int acc = pc[lo];
   int w = lo * kCoarseGroupWords;
@@ -164,8 +166,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   //: `l < j` stay in the per-LEAF product instead -- the split between `R[0,s]` and
   //: `sr` is an owner-rectangle artefact and the product is the same product either
   //: way. What remains here is exactly the per-TOKEN part: the side gains.
-  const float sr = GLOBAL ? 1.0f
-                          : ((p.g_read != nullptr) ? p.g_read[bh] : 1.0f);
+  const float sr = GLOBAL ? 1.0f : ((p.g_read != nullptr) ? p.g_read[bh] : 1.0f);
   const float sw = p.g_write[bh];
 
   const uint32_t* bits_r = p.bits_r + static_cast<int64_t>(bh) * nw;
@@ -398,8 +399,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   if (p.n_split == 1) {
     if (tid < DV) {
       const float den = GLOBAL ? part[DV] : 1.0f;
-      p.y[static_cast<int64_t>(bh) * DV + tid] =
-          GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
+      p.y[static_cast<int64_t>(bh) * DV + tid] = GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
     }
     return;
   }
@@ -427,8 +427,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   __syncthreads();
   if (tid < DV) {
     const float den = GLOBAL ? part[DV] : 1.0f;
-    p.y[static_cast<int64_t>(bh) * DV + tid] =
-        GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
+    p.y[static_cast<int64_t>(bh) * DV + tid] = GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
   }
   //: Reset for the next step, so no `memset` launch stands between two decode steps
   //: and the counter is safe to capture in a CUDA graph.
@@ -474,7 +473,11 @@ void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool d
   const int cols = d_v + (global_norm ? 1 : 0);
   const size_t smem = decode_gemv_smem_bytes(p.total_rows, d_v, cols, decay);
   auto stream = at::cuda::getCurrentCUDAStream();
-  if (d_v == 64) { ROLA_DECODE_DISPATCH_GLOBAL(64) } else { ROLA_DECODE_DISPATCH_GLOBAL(32) }
+  if (d_v == 64) {
+    ROLA_DECODE_DISPATCH_GLOBAL(64)
+  } else {
+    ROLA_DECODE_DISPATCH_GLOBAL(32)
+  }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -513,34 +516,22 @@ int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 //: second, which is why this is bound.
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
-at::Tensor rola_decode_forward(
-    std::vector<at::Tensor> amp_read,
-    std::vector<at::Tensor> amp_write,
-    c10::optional<std::vector<at::Tensor>> amp_clock,
-    c10::optional<at::Tensor> dials,
-    c10::optional<at::Tensor> g_read,
-    at::Tensor g_write,
-    at::Tensor v,
-    at::Tensor state,
-    at::Tensor bits,
-    at::Tensor pc_coarse,
-    at::Tensor ws,
-    at::Tensor ctr,
-    std::vector<int64_t> level_widths,
-    std::vector<int64_t> level_strides,
-    std::vector<int64_t> level_spans,
-    std::vector<int64_t> level_row_offsets,
-    int64_t heads,
-    int64_t n_split,
-    double eps,
-    bool global_norm) {
+at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
+                               c10::optional<std::vector<at::Tensor>> amp_clock,
+                               c10::optional<at::Tensor> dials, c10::optional<at::Tensor> g_read,
+                               at::Tensor g_write, at::Tensor v, at::Tensor state, at::Tensor bits,
+                               at::Tensor pc_coarse, at::Tensor ws, at::Tensor ctr,
+                               std::vector<int64_t> level_widths,
+                               std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
+                               std::vector<int64_t> level_row_offsets, int64_t heads,
+                               int64_t n_split, double eps, bool global_norm) {
   const int D = static_cast<int>(amp_read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
   TORCH_CHECK(static_cast<int>(amp_write.size()) == D, "amp_write must have D entries");
-  TORCH_CHECK(static_cast<int>(level_widths.size()) == D &&
-                  static_cast<int>(level_strides.size()) == D &&
-                  static_cast<int>(level_spans.size()) == D &&
-                  static_cast<int>(level_row_offsets.size()) == D,
+  TORCH_CHECK(static_cast<int>(level_widths.size()) == D
+                  && static_cast<int>(level_strides.size()) == D
+                  && static_cast<int>(level_spans.size()) == D
+                  && static_cast<int>(level_row_offsets.size()) == D,
               "the four per-level integer vectors must each have D entries");
 
   check_f32(v, "v");
@@ -569,12 +560,10 @@ at::Tensor rola_decode_forward(
   //: below does not use, and a shape that lies is worse than no shape.
   TORCH_CHECK(bits.dim() == 1 && bits.size(0) == 4LL * BH * n_words,
               "bits must be a flat [4 * BH * ceil(N/32)] int32 workspace");
-  TORCH_CHECK(pc_coarse.dim() == 2 && pc_coarse.size(0) == BH &&
-                  pc_coarse.size(1) == n_groups + 1,
+  TORCH_CHECK(pc_coarse.dim() == 2 && pc_coarse.size(0) == BH && pc_coarse.size(1) == n_groups + 1,
               "pc_coarse must be [BH, ceil(n_words/32) + 1] int32");
   TORCH_CHECK(n_split >= 1, "n_split must be >= 1, got ", n_split);
-  TORCH_CHECK(ws.dim() == 3 && ws.size(0) == BH && ws.size(1) == n_split &&
-                  ws.size(2) == cols,
+  TORCH_CHECK(ws.dim() == 3 && ws.size(0) == BH && ws.size(1) == n_split && ws.size(2) == cols,
               "ws must be [BH, n_split, cols]");
   TORCH_CHECK(ctr.dim() == 1 && ctr.size(0) == BH, "ctr must be [BH] int32");
 
@@ -587,22 +576,21 @@ at::Tensor rola_decode_forward(
   int64_t expect_n = 1;
   for (int l = 0; l < D; ++l) {
     const int width = static_cast<int>(level_widths[l]);
-    TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth,
-                "level ", l, " width ", width, " exceeds the decode path's capacity ",
-                kDecodeMaxLevelWidth, " (see kProducerMaxBranchWidth)");
+    TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth, "level ", l, " width ", width,
+                " exceeds the decode path's capacity ", kDecodeMaxLevelWidth,
+                " (see kProducerMaxBranchWidth)");
     check_f32(amp_read[l], "amp_read[l]");
     check_f32(amp_write[l], "amp_write[l]");
-    TORCH_CHECK(amp_read[l].dim() == 2 && amp_read[l].size(0) == BH &&
-                    amp_read[l].size(1) == width,
+    TORCH_CHECK(amp_read[l].dim() == 2 && amp_read[l].size(0) == BH && amp_read[l].size(1) == width,
                 "amp_read[", l, "] must be [BH, width] contiguous");
-    TORCH_CHECK(amp_write[l].sizes() == amp_read[l].sizes(),
-                "amp_write[", l, "] must match amp_read[", l, "]");
+    TORCH_CHECK(amp_write[l].sizes() == amp_read[l].sizes(), "amp_write[", l,
+                "] must match amp_read[", l, "]");
     p.amp_read[l] = amp_read[l].data_ptr<float>();
     p.amp_write[l] = amp_write[l].data_ptr<float>();
     if (decay) {
       check_f32((*amp_clock)[l], "amp_clock[l]");
-      TORCH_CHECK((*amp_clock)[l].sizes() == amp_read[l].sizes(),
-                  "amp_clock[", l, "] must match amp_read[", l, "]");
+      TORCH_CHECK((*amp_clock)[l].sizes() == amp_read[l].sizes(), "amp_clock[", l,
+                  "] must match amp_read[", l, "]");
       p.amp_clock[l] = (*amp_clock)[l].data_ptr<float>();
     } else {
       p.amp_clock[l] = nullptr;
@@ -631,8 +619,7 @@ at::Tensor rola_decode_forward(
   if (g_read.has_value()) {
     check_f32(*g_read, "g_read");
     TORCH_CHECK(g_read->dim() == 1 && g_read->size(0) == BH, "g_read must be [BH]");
-    TORCH_CHECK(!global_norm,
-                "the global arm fixes g_read := 1 and must not be handed one");
+    TORCH_CHECK(!global_norm, "the global arm fixes g_read := 1 and must not be handed one");
     p.g_read = g_read->data_ptr<float>();
   }
 
@@ -663,8 +650,7 @@ at::Tensor rola_decode_forward(
   p.eps = static_cast<float>(eps);
 
   int smem_per_block = 0;
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(&smem_per_block,
-                                        cudaDevAttrMaxSharedMemoryPerBlock,
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(&smem_per_block, cudaDevAttrMaxSharedMemoryPerBlock,
                                         v.device().index()));
   launch_decode_expand(p, smem_per_block);
   const size_t gemv_smem = decode_gemv_smem_bytes(total_rows, d_v, cols, decay);

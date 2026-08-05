@@ -129,8 +129,8 @@ struct DecodeParams {
   //: Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is
   //: what makes decode's `y` RUN-REPRODUCIBLE -- see `decode.cu`'s combine block for
   //: why that diverges from the tiled consumer on purpose.
-  float* ws;      // [BH, n_split, cols]
-  int32_t* ctr;   // [BH]
+  float* ws;     // [BH, n_split, cols]
+  int32_t* ctr;  // [BH]
 
   int64_t N;
   int BH;
@@ -144,9 +144,7 @@ struct DecodeParams {
 };
 
 //: `ceil(n / d)` for non-negative ints, used on host and device.
-__host__ __device__ __forceinline__ int ceil_div_int(int n, int d) {
-  return (n + d - 1) / d;
-}
+__host__ __device__ __forceinline__ int ceil_div_int(int n, int d) { return (n + d - 1) / d; }
 
 //: EXTRACT `count` bits of a packed bitmap starting at BIT index `start`, returned in
 //: the low `count` bits (`count <= 32`). This is the shift-and-merge the Kronecker
@@ -159,8 +157,8 @@ __host__ __device__ __forceinline__ int ceil_div_int(int n, int d) {
 //: function; the standing "no branch to dodge edge cases" rule is satisfied because
 //: there is ONE strategy here (gather 32 bits from at most two source words) and the
 //: fork is inside it.
-__device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_words,
-                                                 int start, int count) {
+__device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_words, int start,
+                                                 int count) {
   const int w = start >> 5;
   const int sh = start & 31;
   const uint32_t lo = (w < src_words) ? src[w] : 0u;

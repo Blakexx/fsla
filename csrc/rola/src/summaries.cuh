@@ -111,35 +111,35 @@ struct SummaryParams {
   //: transfer and ZERO host synchronizations. Kernel parameters land in constant
   //: memory with the launch, so this costs no transfer at all. `kMaxLevels * (2*8 +
   //: 4*4) = 512` bytes, far inside the 4 KiB parameter limit.
-  const float* read_amps[kMaxLevels];   //: `[BH, T, b_l]` fp32, folded, contiguous
+  const float* read_amps[kMaxLevels];  //: `[BH, T, b_l]` fp32, folded, contiguous
   const float* write_amps[kMaxLevels];
-  int level_width[kMaxLevels];          //: `b_l`
-  int level_row_offset[kMaxLevels];     //: offset into the digit-row space
-  int level_leaf_stride[kMaxLevels];    //: `prod(b_{l+1..D-1})`
-  int level_fixed_radix[kMaxLevels];    //: `prod(b_{l+1..j-1})`; 1 on spanned levels
+  int level_width[kMaxLevels];        //: `b_l`
+  int level_row_offset[kMaxLevels];   //: offset into the digit-row space
+  int level_leaf_stride[kMaxLevels];  //: `prod(b_{l+1..D-1})`
+  int level_fixed_radix[kMaxLevels];  //: `prod(b_{l+1..j-1})`; 1 on spanned levels
 
-  int level_count;                  //: `D`
-  int batch_heads;                  //: `BH`
-  int token_count;                  //: `T`
-  int token_tile;                   //: `BT`
+  int level_count;  //: `D`
+  int batch_heads;  //: `BH`
+  int token_count;  //: `T`
+  int token_tile;   //: `BT`
   int n_tiles;
-  int total_digits;                 //: `sum_l b_l`
-  int leaf_count;                   //: `N`
-  int state_block;                  //: `BC`
-  int owners_total;                 //: `N / BC`
+  int total_digits;  //: `sum_l b_l`
+  int leaf_count;    //: `N`
+  int state_block;   //: `BC`
+  int owners_total;  //: `N / BC`
   int n_slices;
-  int slice_digits;                 //: `c`
-  int first_spanned_level;          //: `j`
-  int bins;                         //: `QPO + 1`, `QPO = BC / kMmaKQuantum`
-  int leaf_words;                   //: `ceil(N / 32)`
-  int owner_words;                  //: `ceil(owners_total / 32)`
+  int slice_digits;         //: `c`
+  int first_spanned_level;  //: `j`
+  int bins;                 //: `QPO + 1`, `QPO = BC / kMmaKQuantum`
+  int leaf_words;           //: `ceil(N / 32)`
+  int owner_words;          //: `ceil(owners_total / 32)`
 
-  unsigned long long* occupancy;         //: [2 * D] live `(token, digit)` pairs
-  unsigned long long* histogram;         //: [bins] candidate pairs per quantum
-  unsigned long long* candidate_count;   //: scalar
+  unsigned long long* occupancy;            //: [2 * D] live `(token, digit)` pairs
+  unsigned long long* histogram;            //: [bins] candidate pairs per quantum
+  unsigned long long* candidate_count;      //: scalar
   unsigned long long* written_owner_count;  //: scalar
-  int* written_leaf_bitmap;              //: [BH, leaf_words], §4.1's canonical truth
-  int* written_owner_bitmap;             //: [BH, owner_words], the derived condensation
+  int* written_leaf_bitmap;                 //: [BH, leaf_words], §4.1's canonical truth
+  int* written_owner_bitmap;                //: [BH, owner_words], the derived condensation
 };
 
 //: THE ENTRY POINT. One launch, no host synchronization, nothing allocated.
@@ -153,13 +153,10 @@ void launch_summaries(const SummaryParams& params, cudaStream_t stream);
 //: caller's tensors, so the Python side owns the ONE D2H transfer and can decide
 //: what rides it.
 void rola_routing_summaries_cuda(
-    const std::vector<torch::Tensor>& read_amps,
-    const std::vector<torch::Tensor>& write_amps,
-    const std::vector<int64_t>& level_widths,
-    int64_t token_tile, int64_t state_block, int64_t first_spanned_level,
-    int64_t slice_digits, int64_t n_slices,
-    torch::Tensor occupancy, torch::Tensor histogram,
-    torch::Tensor candidate_count, torch::Tensor written_owner_count,
+    const std::vector<torch::Tensor>& read_amps, const std::vector<torch::Tensor>& write_amps,
+    const std::vector<int64_t>& level_widths, int64_t token_tile, int64_t state_block,
+    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, torch::Tensor occupancy,
+    torch::Tensor histogram, torch::Tensor candidate_count, torch::Tensor written_owner_count,
     torch::Tensor written_leaf_bitmap, torch::Tensor written_owner_bitmap);
 
 }  // namespace rola::summaries
