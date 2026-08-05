@@ -87,7 +87,8 @@ one on synthetic SASS). That is what makes a green run mean something: a gate th
 cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
 MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH (§3.7), each
-`{"toolchain": {...}, "source": {...}, "shards": {...}, "entries": {<mangled name>:
+`{"toolchain": {ptxas, defines, nvcc_flags}, "source": {...}, "shards": {...},
+"entries": {<mangled name>:
 {...}}}`. The metadata blocks are siblings of the entries rather than reserved keys
 inside them, so an instantiation can never be confused for metadata by a name that
 happens to collide. `shards` is `{shard name: {members_sha256, count}}` -- MEMBERSHIP
@@ -356,6 +357,53 @@ def shipped_defines() -> dict[str, int]:
                              f"{name}; the provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out
+
+
+#: Flags that say HOW THE COMPILE IS RUN rather than WHAT CODE IT PRODUCES, and are
+#: therefore excluded from the ratified list. `-gencode` names the targets, which the
+#: per-arch FILING already records -- keeping it would make one arch's manifest
+#: disagree with another's on a block every arch file must share. `--threads` is a
+#: parallelism knob with an env override (`ROLA_NVCC_THREADS`), so including it would
+#: make a build that spends more cores on itself read as a codegen change.
+_NON_CODEGEN_FLAG_PREFIXES = ("-gencode", "--threads=")
+
+
+def ratified_flags() -> list[str]:
+    """The codegen flags a manifest is measured under, ARCH- AND JOB-INDEPENDENT.
+
+    Everything `tools/build_flags.py` emits except :data:`_NON_CODEGEN_FLAG_PREFIXES`:
+    the optimization level, the language standard, `-lineinfo`, the torch defines,
+    `--ptxas-options=-v` and the fatbin compression. Each of those either changes what
+    `ptxas` assembles or changes the report this gate parses.
+    """
+    flags = build_flags.torch_defines() + build_flags.nvcc_flags(())
+    return [f for f in flags if not f.startswith(_NON_CODEGEN_FLAG_PREFIXES)]
+
+
+def check_flags(manifest: dict) -> bool:
+    """The recorded flag list and the tree's flag list must be the same.
+
+    THE GAP THIS CLOSES, recorded when `-Xfatbin -compress-all` landed: the manifest
+    pinned the assembler and the calibration macros but not the flags, so a
+    codegen-affecting flag change left no fingerprint in anything a gate reads. It was
+    caught then only because both compilers import one flag list -- a property of the
+    code, not a gate. A missing block is a failure for the same reason a missing
+    `defines` block is: a manifest that cannot say what it compiled under cannot
+    certify what shipped.
+    """
+    want = ratified_flags()
+    got = manifest["toolchain"].get("nvcc_flags")
+    if got == want:
+        print(f"flags OK  {len(want)} codegen flags")
+        return True
+    missing = [f for f in want if f not in (got or [])]
+    extra = [f for f in (got or []) if f not in want]
+    print(f"\nFAIL  FLAG DRIFT. The manifest was measured under a different flag list "
+          f"than the tree compiles with.\n  in the tree, not the manifest: {missing}\n"
+          f"  in the manifest, not the tree: {extra}\n"
+          f"The ratified register and spill numbers describe a compile nobody runs; "
+          f"re-ratify with --write.")
+    return False
 
 
 def check_defines(manifest: dict) -> bool:
@@ -914,7 +962,14 @@ def main() -> int:
             #: measurement OF a source tree UNDER an assembler, and both halves of
             #: that sentence must be checkable (the freshness trigger, session 9).
             path.write_text(json.dumps(
-                {"toolchain": {"ptxas": version, "defines": shipped_defines()},
+                {"toolchain": {"ptxas": version, "defines": shipped_defines(),
+                                #: THE CODEGEN FLAG LIST, arch-independent part.
+                                #: A ratification is a measurement OF sources UNDER
+                                #: an assembler AND its flags; without this the
+                                #: third of those was unrecorded and a
+                                #: codegen-affecting flag could land without moving
+                                #: anything a gate reads.
+                                "nvcc_flags": ratified_flags()},
                  "source": {"csrc_sha256": csrc_digest(),
                             "date": time.strftime("%Y-%m-%d")},
                  #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
@@ -937,6 +992,7 @@ def main() -> int:
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
     ok = check_defines(manifest) and ok
+    ok = check_flags(manifest) and ok
     ok = check_freshness(manifest) and ok
     ok = check(entries, unhonored, want) and ok
     ok = check_hot_loop(hot, want) and ok

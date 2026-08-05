@@ -4,7 +4,21 @@
   "defines": {
    "ROLA_C_RING_DEPTH": 1,
    "ROLA_C_WT_WINDOW": 0
-  }
+  },
+  "nvcc_flags": [
+   "-D_GLIBCXX_USE_CXX11_ABI=0",
+   "-D__CUDA_NO_HALF_OPERATORS__",
+   "-D__CUDA_NO_HALF_CONVERSIONS__",
+   "-D__CUDA_NO_BFLOAT16_CONVERSIONS__",
+   "-D__CUDA_NO_HALF2_OPERATORS__",
+   "--expt-relaxed-constexpr",
+   "-O3",
+   "-std=c++17",
+   "-lineinfo",
+   "--ptxas-options=-v",
+   "-Xfatbin",
+   "-compress-all"
+  ]
  },
  "source": {
   "csrc_sha256": "e0a6e49ac61ccf0bdf49f7a103770161d64d3a2870379cd7cb0a76f615165e80",

@@ -6,7 +6,8 @@ exact `ptxas`:
 
 ```
 tools/manifests/sm_86.json
-  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...} },
+  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...},
+                   "nvcc_flags": [...] },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
                                               "count": 32 }, ... },
@@ -76,6 +77,7 @@ The gate reads `ptxas -v`. Four outcomes, and the difference between them is del
 | Rule | Refused | Enforced by |
 |---|---|---|
 | **R1** | building under an assembler the manifest was not ratified under | `setup.py::_gate_toolchain`, `ratify.py::check_toolchain` |
+| **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
 | **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
 | **R4** | launching on a device the kernel's arch table does not describe | `consumer_check_arch_table()` at run time, `static_assert` at compile time |
