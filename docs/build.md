@@ -48,7 +48,7 @@ mamba-ssm require the same thing for the same reason.
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. The consumer's 512 kernel instantiations are spread over
+5. **Compile.** `ninja`. The consumer's 256 kernel instantiations are spread over
    eight translation units (`csrc/rola/src/instantiations/`), so the matrix
    parallelizes across `MAX_JOBS` processes instead of serializing inside one
    `cicc`.
@@ -56,7 +56,7 @@ mamba-ssm require the same thing for the same reason.
    requires exactly one device entry per instantiation per architecture, each in
    the shard the matrix assigns it, and every ratified name present. This is the
    only gate that can see a *failed* split: duplicated device code leaves the build
-   green, the manifest byte-identical and `nm` at 512, because a `__global__`
+   green, the manifest byte-identical and `nm` at 256, because a `__global__`
    template's host stub is weak and the linker keeps one.
 7. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves
@@ -77,17 +77,25 @@ MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
 | no source change — gates, ratification, `_build_config.py` | **3m47s** |
 | one shard, one `nvcc`, both architectures | **43 s** |
 
-The dominant term used to be one `nvcc` process holding the whole 512-instantiation
-matrix: 411 s of wall, 4.4 GB of resident set, and no way to spend a second core on
-it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
+The dominant term a single translation unit imposes is measured: one `nvcc` process
+holding the whole matrix at 512 arms took 411 s of wall and 4.4 GB of resident set,
+with no way to spend a second core on it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
 the same ten translation units the build does, which a content-addressed compiler
 cache would turn into hits.
 
-The two clean rebuilds are byte-identical in every one of the 1,228 entry points'
-SASS (`tools/sass_bodies.py`), so those numbers are the same binary twice.
+The two clean rebuilds are byte-identical in every entry point's SASS
+(`tools/sass_bodies.py`), so those numbers are the same binary twice.
+
+**A SASS COMPARISON REQUIRES BOTH BUILDS AT THE SAME PATH.** `decode.cu` and
+`entmax.cu` put their kernels in an anonymous namespace, so 96 of the ratified names
+per architecture embed a discriminator derived from the SOURCE DIRECTORY. Two correct
+builds made in two different worktrees disagree on every one of them while being the
+same code. Check one tree out over the other; do not compare side by side. The same
+property makes the ratification manifest a certificate about a path as well as about a
+tree.
 
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
-changes the assembled code of 1,073 of the 1,228 entries, which under the
+changes the assembled code of 1,073 of the 1,228 entries then present, which under the
 closed-world policy is a kernel change requiring re-ratification, and it is slower
 besides -- the parallelism axes multiply, so it collapses `MAX_JOBS` from 7 to 1.
 Evidence: `workflows/refactor/p02_split_compile_trial_results.md`.

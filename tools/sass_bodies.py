@@ -11,11 +11,23 @@ routinely allocate the same number of registers.
 So: disassemble both binaries, index every entry point by `(arch, mangled name)`, and
 hash the instruction text. Two builds are codegen-equivalent iff the maps are equal.
 
-**WHAT IS AND IS NOT IN THE HASH.** The instruction stream as `cuobjdump -sass`
-prints it: opcodes, operands, offsets and the encoded words. Not in it: everything
-outside the disassembly -- `.nv_debug_*` sections and the rest of the `-lineinfo`
-metadata never appear in this output, which is the reason this is the form the
-comparison takes rather than a section-bytes diff.
+**WHAT IS AND IS NOT IN THE HASH.** Every line of the disassembly that carries
+codegen, whitespace-normalised: the instruction lines (offset marker, opcode, operands
+and the encoding word printed beside them) and the standalone continuation lines that
+carry the second encoding word. The encoding words are IN the hash and must be -- two
+instructions can print identically and encode differently (a predicate, a scheduling
+control field, a reuse flag). Not in the hash: `Function :` headers, `.headerflags`,
+`//## File` lineinfo lines and anything else without an offset marker or an encoding
+comment; the padding cuobjdump inserts to align the encoding column is normalised away,
+because column alignment is a property of the LISTING and moves with the longest
+instruction in it.
+
+**THE NAMES ARE PATH-DEPENDENT, SO BOTH BUILDS MUST BE MADE AT THE SAME PATH.**
+`decode.cu` and `entmax.cu` put their kernels in an ANONYMOUS namespace, so the mangled
+name embeds a discriminator derived from the source path (`_GLOBAL__N__<hash>_11_
+consumer_cu_<hash>`). A baseline built in a worktree at a different directory therefore
+mismatches on every non-consumer entry while being byte-identical code. Build the two
+trees at the SAME path -- check one out over the other -- rather than side by side.
 
 Two uses, both binary verdicts:
 
@@ -27,6 +39,9 @@ Usage:
 
     python tools/sass_bodies.py build_a/_C.so --json a.json
     python tools/sass_bodies.py --compare a.json b.json
+
+Both `.so`s must have been BUILT AT THE SAME PATH -- see the path-dependence note
+above.
 """
 from __future__ import annotations
 
@@ -43,9 +58,12 @@ import ratify  # noqa: E402
 
 _ARCH = re.compile(r"^arch = sm_(\d+)\s*$")
 _FUNC = re.compile(r"^\s*Function : (\S+)")
-#: The disassembly line: an instruction offset, the instruction, and (on the same or
-#: the following line) its encoded words. Every part of it is codegen.
-_INST = re.compile(r"/\*[0-9a-f]{4,}\*/\s+(.*?;)")
+#: An INSTRUCTION line: it carries an offset marker. The whole line is codegen --
+#: opcode, operands and the encoding word printed beside them.
+_INST = re.compile(r"/\*[0-9a-f]{4,}\*/")
+#: The CONTINUATION line: an encoding word alone, the second half of the instruction's
+#: encoding. It has no offset marker, so it needs its own pattern or it is not hashed.
+_ENC = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
 
 
 def bodies(so: Path) -> dict[str, str]:
@@ -79,9 +97,8 @@ def bodies(so: Path) -> dict[str, str]:
             continue
         if h is None:
             continue
-        m = _INST.search(line)
-        if m:
-            h.update(" ".join(m.group(1).split()).encode())
+        if _INST.search(line) or _ENC.match(line):
+            h.update(" ".join(line.split()).encode())
             h.update(b"\n")
     flush()
     rc = proc.wait()
