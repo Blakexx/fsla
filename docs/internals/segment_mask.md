@@ -14,7 +14,8 @@ segment's tile range.
 
 EXTRACTED from the REGISTER-RESIDENT consumer's kernel header when that consumer was
 deleted (item 6b, 2026-08-01). That header was also named `consumer_kernel.cuh` and is
-readable at `c3c2f845`; **it is a different kernel from today's file of that name.**
+readable at `c3c2f845` in the source repository `docs/provenance.md` names (the
+hash does not resolve in this repository); **it is a different kernel from today's file of that name.**
 
 Why it is not simply inlined into the kernel: the mask is read by the consumer kernel
 and, at `P > 1`, must agree BIT FOR BIT with the host-side segment partition the

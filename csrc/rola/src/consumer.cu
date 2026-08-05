@@ -1,35 +1,31 @@
 // RoLA V3 consumer -- THE HOST DISPATCH TRANSLATION UNIT.
-//
-// ROLA_V3_SPEC.md §3 (topology-agnostic kernel structure), §4 (schedule), §5
-// (consumer), §6.4 (sequence parallelism), §7.1 (paging).
+// ROLA_V3_SPEC.md §3 (structure), §4 (schedule), §5 (consumer), §6.4 (sequence
+// parallelism), §7.1 (paging).
 //
 // WHAT IS IN THIS FILE, and nothing else is:
 //   * the Torch-level entry `rola_consumer_forward` -- argument checking, the
 //     `ConsumerParams` fill, and §6.4's three-pass sequencing;
-//   * the launch dispatch `launch_consumer`, which resolves the plan's structural axes
-//     to ONE template instantiation of `consumer::consumer_forward_kernel`;
+//   * the launch dispatch `launch_consumer`, which resolves the plan's structural
+//     axes to ONE template instantiation of `consumer::consumer_forward_kernel`;
 //   * the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
 //     fold) and `divide_kernel` (`global`'s `num/den` epilogue);
 //   * the driver-backed residency and footprint queries, and the arch-table check;
 //   * the pybind surface.
 //
 // THE KERNEL ITSELF IS IN `consumer_kernel.cuh`, which is also where the §3/§5
-// algorithm and every structural decision behind it are documented. This file
-// deliberately does NOT restate them: two descriptions of one kernel is one that can
-// go stale.
+// algorithm is documented. This file deliberately does NOT restate it: two
+// descriptions of one kernel is one that can go stale.
 //
-// ONE CONSUMER (item 6b, 2026-08-01). The previous register-resident consumer
-// (its kernel header -- also named `consumer_kernel.cuh`, readable at
-// `c3c2f845`, and a DIFFERENT kernel from the one this file now includes --
-// plus `intra_gram.cuh`, `consumer_matrix.def` and its eight shard TUs), its `intra_lowering` template axis, its analytic SMEM mirror and
-// its intra-kernel tracer are DELETED. There is one kernel family, so there is no
-// second-kernel routing argument, no `intra_lowering` argument, and no second occupancy
-// oracle: what the planner prices and what the driver launches are the same thing by
-// construction rather than by a gate that pins two accountings together.
+// ONE CONSUMER (item 6b, 2026-08-01): the previous register-resident consumer, its
+// `intra_lowering` axis, its analytic SMEM mirror and its intra-kernel tracer are
+// DELETED, so what the planner prices and what the driver launches are the same
+// thing by construction. The three-pass §6.4 split below is DORMANT BY PLAN, not
+// dead: implemented, oracle-gated, and not currently selected.
+//
+// The dispatch matrix and its measured size, the residency query axes, the ordered
+// fold, the entry-state stash: docs/internals/consumer.md
 
-// The CUDA/ATen surface this TU launches and checks against. It used to arrive
-// transitively through the register-resident consumer's kernel header; with that
-// header deleted the dependency is stated where it is used.
+// The CUDA/ATen surface this TU launches and checks against.
 #include <torch/extension.h>
 
 #include <ATen/cuda/CUDAContext.h>
@@ -42,38 +38,18 @@
 
 namespace rola {
 
-// THE §10i.12 RESTRUCTURE, and the ONLY consumer. See `consumer_kernel.cuh`
-// for the algorithm; the supported shape surface is declared and TORCH_CHECKed at
-// `launch_consumer` below, which is its single authority.
-
 namespace {
 
 // ---------------------------------------------------------------------------
-// §6.4 pass 2: the ordered fold
+// §6.4 pass 2: the ordered fold. One CTA per SPLIT owner, sequential over that
+// owner's segments inside it, `E := A*E + B` ascending and no inverse of `A`
+// anywhere (P5.21's obligation). docs/internals/consumer.md#ordered-fold
 // ---------------------------------------------------------------------------
-//
-// One CTA per SPLIT owner; the composition is sequential over that owner's
-// segments inside it. `GRADIENT_PROOFS_WOLFRAM.md` P5.21's obligation is that the
-// fold is ORDERED and that nothing anywhere inverts `A` -- both hold literally
-// here: the loop runs `s = 0 .. nseg-2` ascending and the only operation is
-// `E := A*E + B`.
-//
-// The boundary is published DENSE, in place over the sparse summary the same slot
-// just supplied. §6.4 states both halves: the summary is normatively sparse
-// (traffic scales with realized writes, not with `P`), while the accumulated
-// boundary pass 3 reads is dense because cumulative write coverage saturates. They
-// are the same bytes at different points of the slot's life, which is what keeps the
-// per-boundary cost one slot rather than two.
-//
-// The owner's slot run is `P` slots, not `P - 1` (fix pass R1, spec §6.4's bound
-// amended to match): slot `slot0` is the ENTRY-STATE STASH this kernel publishes
-// below, and slots `slot0 + 1 .. slot0 + P - 1` are the `P - 1` summaries/boundaries.
-// The stash is what removes pass 3's intra-launch dependence on `p.state`.
+
 //: §4.5's page granule, mirrored from `rola.ops.paging.MMA_K_QUANTUM` and equal by
-//: construction to `consumer_kernel.cuh`'s `kMmaKQuantum` -- one number, and
-//: `tests/unit/test_paging_atoms.py` plus the paged equivalence fixtures are what
-//: keep the mirrors honest. Declared here because `scan_kernel` lives in this TU and
-//: must not include the consumer kernel's header.
+//: construction to `consumer_kernel.cuh`'s `kMmaKQuantum` -- one number, kept honest
+//: by `tests/unit/test_paging_atoms.py` and the paged equivalence fixtures. Declared
+//: here because `scan_kernel` must not include the consumer kernel's header.
 constexpr int kScanAtomLeaves = 16;
 
 __global__ void scan_kernel(ScanParams p) {
@@ -87,12 +63,8 @@ __global__ void scan_kernel(ScanParams p) {
   const int cols = p.cols;
   const int n = BC * cols;
 
-  // The owner's entry state, addressed exactly as the consumer addresses it (§4.5:
-  // a page is one `MMA_K_QUANTUM`-leaf ATOM, so an owner is `QPO = BC / 16`
-  // independently paged runs), so a paged and an unpaged fold see the same numbers.
-  // `BC` is a runtime value here, so the per-atom base is resolved per row rather
-  // than in an unrolled loop; this is pass 2 of a split launch, one CTA per SPLIT
-  // owner, and the resolution is an L1-resident int32 load.
+  // The owner's entry state, addressed exactly as the consumer addresses it, so a
+  // paged and an unpaged fold see the same numbers.
   const int atoms_per_bh = static_cast<int>(p.N / kScanAtomLeaves);
   for (int e = threadIdx.x; e < n; e += blockDim.x) {
     const int i = e / cols;
@@ -112,17 +84,8 @@ __global__ void scan_kernel(ScanParams p) {
   }
   __syncthreads();
 
-  // ---- the ENTRY-STATE STASH (fix pass R1) --------------------------------
-  // Slot `slot0` holds `M_0` itself, dense, published HERE -- in pass 2, a launch
-  // that strictly precedes pass 3. Pass 3's segment 0 reads it instead of reading
-  // `p.state`, which is what makes pass 3's reads disjoint from pass 3's writes
-  // (the last segment of the same owner stores those exact `p.state` rows from
-  // another CTA of that launch, with no ordering between them). The read this
-  // replaces was not free before -- segment 0 read the same numbers out of
-  // `p.state` -- so the added TRAFFIC is one dense store per split owner, and the
-  // added SPACE is the one slot that takes §6.4's bound from `(P-1)` to `P` per
-  // split owner. A non-resident owner stashes zeros, which is exactly what its
-  // segment 0 read before.
+  // ---- the ENTRY-STATE STASH (fix pass R1): what makes pass 3's reads disjoint
+  // from pass 3's writes. docs/internals/consumer.md#entry-stash ----------------
   for (int e = threadIdx.x; e < n; e += blockDim.x) {
     p.ws_state[static_cast<int64_t>(slot0) * n + e] = E[e];
   }
@@ -131,13 +94,7 @@ __global__ void scan_kernel(ScanParams p) {
   for (int s = 0; s < nseg - 1; ++s) {
     const int64_t slot = static_cast<int64_t>(slot0) + 1 + s;
     const int K = p.ws_count[slot];
-    // `E := A*E + B` ON THE WRITTEN-LEAF LIST ONLY. A leaf absent from the list is
-    // not read, not written, and not arithmetically touched -- which is what makes
-    // §6.4's unwritten-leaf carve-out BITWISE rather than merely equal, and is why
-    // the carve-out gate is a genuine detector of fold bugs rather than a
-    // concession. Emitting an identity row for it would be numerically exact too,
-    // but it would make the invariant depend on `fmaf(1, x, 0) == x` instead of on
-    // the leaf never being visited.
+    //: HAZARD written-leaf-fold -- docs/internals/consumer.md#written-leaf-fold
     for (int e = threadIdx.x; e < K * cols; e += blockDim.x) {
       const int k = e / cols;
       const int c = e - k * cols;
@@ -175,10 +132,8 @@ __global__ void divide_kernel(const float* __restrict__ num, const float* __rest
 // ---------------------------------------------------------------------------
 
 //: The SM's shared-memory BUDGET, device-queried. §10's ruling records this in the
-//: PLAN rather than reading it at launch, so that a plan is reproducible and its
-//: residency reasoning is auditable off the machine that made it. The planner's
-//: `DEFAULT_SM_SHARED_BYTES` is the CPU-only fallback and is deliberately a plan
-//: field, not a hidden default.
+//: PLAN rather than reading it at launch, so that a plan is reproducible off the
+//: machine that made it: docs/internals/consumer.md#arch-table
 int64_t rola_sm_shared_bytes() {
   int value = 0;
   int device = 0;
@@ -197,21 +152,11 @@ void divide_pass(const float* num, const float* den, float* out, int64_t rows, i
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-//: VALIDATE THE COMPILE-TIME ARCH TABLE AGAINST THE DRIVER.
-//:
-//: `__launch_bounds__` needs compile-time constants, so `sm_resources()` is a table
-//: keyed on `__CUDA_ARCH__` rather than a driver query. A table can be stale or
-//: mis-keyed in a way a query cannot, and the failure mode is SILENT: a bound derived
-//: from the wrong resource numbers is either DISCARDED by `ptxas` (out of range) or
-//: honoured at the wrong residency. So the table is CHECKED against `cudaDeviceProp`
-//: for the device actually running, and a mismatch is a hard error -- a
-//: compile-target/hardware mismatch must fail loudly rather than quietly cost
-//: occupancy.
-//:
-//: **THIS DOES NOT MAKE THE TABLE A PLANNING AUTHORITY.** Spec §6.5: the driver's
-//: occupancy API remains the sole authority on residency, and
-//: `rola_consumer_occupancy` -- which calls it -- is what every residency claim in
-//: this batch is read from. The table's only job is the launch bound.
+//: VALIDATE THE COMPILE-TIME ARCH TABLE AGAINST THE DRIVER. `__launch_bounds__`
+//: needs compile-time constants, so `sm_resources()` is a table, and a wrong table
+//: costs residency SILENTLY. This does NOT make the table a planning authority --
+//: spec §6.5 leaves that with the driver's occupancy API.
+//: docs/internals/consumer.md#arch-table
 void rola_consumer_check_arch_table() {
   int dev = 0;
   C10_CUDA_CHECK(cudaGetDevice(&dev));
@@ -241,21 +186,17 @@ void rola_consumer_check_arch_table() {
 // THE LAUNCH DISPATCH. Declared restrictions are hard checks, never coercions.
 void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool global_norm, bool decay,
                      const std::string& mma_precision, bool compact) {
-  //: Checked ONCE per process, on the first launch rather than at import: a
-  //: `cudaGetDeviceProperties` at module init would create a CUDA context as a side
-  //: effect of `import`, which is a worse behaviour than the check is worth. By the
-  //: first launch the context exists anyway, and nothing can reach a launch bound
-  //: without passing through here.
+  //: Checked ONCE per process, on the first launch rather than at import (a CUDA
+  //: context as a side effect of `import` is worse than the check is worth), and
+  //: nothing can reach a launch bound without passing through here.
   static const bool arch_checked = [] {
     rola_consumer_check_arch_table();
     return true;
   }();
   (void)arch_checked;
-  //: THE FULL PLAN SURFACE, as of item 6a: `BT in {16, 32}` (`_SUPPORTED_BT`),
-  //: `BC in {16, 64}` (`_SUPPORTED_BC`), `d_v in {32, 64}` (`_SUPPORTED_DV`). These
-  //: are the planner's own supported sets, so the kernel instantiates exactly the
-  //: configurations a plan can name: no shape a plan can select is refused, and no
-  //: shape it cannot select is compiled.
+  //: THE FULL PLAN SURFACE, and the single authority for it. These are the planner's
+  //: own supported sets, so no shape a plan can select is refused and no shape it
+  //: cannot select is compiled: docs/internals/consumer.md#plan-surface
   TORCH_CHECK((BT == 16 || BT == 32) && (BC == 16 || BC == 64) && (DV == 32 || DV == 64),
               "the consumer instantiates BT in {16, 32}, BC in {16, 64}, "
               "d_v in {32, 64}; got BT=",
@@ -264,24 +205,13 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
   //: `mma_precision` selects BOTH GEMM sites together (RULING 1 revised): "bf16" is
   //: the production point, "tf32x3" the exactness-gate point. Both are instantiated.
   const bool exact = (mma_precision == "tf32x3");
-  //: THE INSTANTIATION MATRIX, AND WHY EVERY ONE OF ITS AXES IS A TEMPLATE.
-  //:
-  //:   `BT(2) x BC(2) x DV(2) x D(4) x PREC(2) x DECAY(2) x GLOBAL(2) x COMPACT(2)`
-  //:   = **512** (item 6a; it was 128 before `BT` and `d_v` were lifted).
-  //:
-  //: Each is a STRUCTURAL plan fact, fixed before launch, with few legal values --
-  //: the standing "branch on structure, not thresholds" rule, and the same status
-  //: `BT` and `BC` have always had. `D` is the topology's level count (spec §1:
-  //: `1 <= D <= 4`); `DECAY` changes which terms exist; `GLOBAL` changes the
-  //: STATE'S SHAPE (the `+1` mass column) and so cannot be a runtime test without
-  //: making `cols` a runtime value in every state address.
-  //:
-  //: **There is deliberately no runtime fallback on ANY of them.** An out-of-range
-  //: value is a hard `TORCH_CHECK`, never a slower path: one comprehensive path
-  //: ships. Compile time is WATCHED rather than assumed -- measured at 64 s for 32
-  //: instantiations in this one translation unit. A `.def`-plus-shard-TU split (the
-  //: mechanism the deleted consumer's 256-tuple matrix used, readable at `c3c2f845`)
-  //: remains the answer if a later axis makes that false.
+  //: THE INSTANTIATION MATRIX. Every axis is a template because every axis is a
+  //: STRUCTURAL plan fact with few legal values -- the standing "branch on structure,
+  //: not thresholds" rule -- and there is deliberately NO runtime fallback on any of
+  //: them: an out-of-range value is a hard TORCH_CHECK, never a slower path.
+  //: The axes, why each one must be compile-time, the MEASURED instantiation count
+  //: (the ratification manifest is the authority, not this comment) and the measured
+  //: build cost: docs/internals/consumer.md#instantiation-matrix
 #define ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, COMPACTV)          \
   {                                                                                    \
     constexpr size_t smem =                                                            \
@@ -299,13 +229,7 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
     C10_CUDA_KERNEL_LAUNCH_CHECK();                                                    \
     return;                                                                            \
   }
-  //: **THE BRACES ARE LOAD-BEARING.** Every `ROLA_CONSUMER_ONE` is a braced block ending
-  //: in `return`, so the enclosing dispatch is a chain of `if (cond) BLOCK`. This
-  //: macro expands to TWO blocks, and without the outer braces the second one would
-  //: escape its guard and launch UNCONDITIONALLY -- which is exactly what an earlier
-  //: revision did: every call ran the `decay` instantiation, which dereferenced a
-  //: null `p.dials`. Caught by the compact gate's own dense arm, i.e. by the
-  //: instrument this axis was added with.
+  //: HAZARD dispatch-braces -- docs/internals/consumer.md#braces
 #define ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV)                    \
   {                                                                                    \
     if (compact) ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, true)      \
@@ -348,22 +272,12 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 #undef ROLA_CONSUMER_ONE
 }
 
-//: The new consumer's own residency answer, from the DRIVER, for the report's A/B
-//: table -- and it takes `decay` because RESIDENCY IS PER-INSTANTIATION. The decay
-//: arm carries three extra `[BC]` vectors, so a single reported number would either
-//: over-promise on one arm or under-report the other; the whole point of deriving
-//: `__launch_bounds__` from `consumer_smem_bytes` is that a decay instantiation which
-//: regressed the budget would drop its OWN bound rather than silently over-promise,
-//: and this is how that is checked from Python rather than asserted.
+//: The consumer's residency answer, from the DRIVER. It takes five axes because
+//: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
+//: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
 int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
-  //: Queried at `D = 2`, the at-scale cell's topology depth. `D` changes only the
-  //: `[D][BC]` digit table (256 B per level), so the residency answer is reported for
-  //: the shape actually measured rather than for a nominal worst case.
-  //:
-  //: `BC` IS A QUERY AXIS because it is the axis the launch bound's binding term
-  //: changes on: at `BC = 64` shared memory binds (3 CTAs), at `BC = 16` the REGISTER
-  //: FILE does (4). A residency claim about "the kernel" that quoted only `BC = 64`
-  //: would be a claim about half the matrix.
+  //: Queried at `D = 2`, the at-scale cell's topology depth; `D` is not a query axis
+  //: because it moves only the `[D][BC]` digit table.
   int blocks = 0;
 #define ROLA_CONSUMER_OCC(BTV, DVV, BCV, DECAYV, COMPACTV)                                 \
   {                                                                                   \
@@ -393,15 +307,6 @@ int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT
   { if (BC == 16) ROLA_CONSUMER_OCC_BC(BTV, DVV, 16) else ROLA_CONSUMER_OCC_BC(BTV, DVV, 64) }
 #define ROLA_CONSUMER_OCC_BT(BTV)                                                          \
   { if (DV == 32) ROLA_CONSUMER_OCC_DV(BTV, 32) else ROLA_CONSUMER_OCC_DV(BTV, 64) }
-  //: `compact` joins `decay` as a QUERY AXIS for the same reason: the compact arm
-  //: carries `c_idx`/`c_slot`/`c_count`, and `compact + decay` is the tightest
-  //: residency cell in the kernel (~140 B of margin at 3 CTAs/SM). A single reported
-  //: number would over-promise on it.
-  //: `BT` AND `d_v` JOIN THE QUERY AXES (item 6a) for exactly the reason `BC` and
-  //: `DECAY` are already on it: they move the two terms the bound is the minimum of.
-  //: `BT = 32` doubles the y-fragment count (the REGISTER term) and grows `WT`/`Gm`
-  //: (the SMEM term); `d_v = 32` halves the state block. A residency number that
-  //: quoted only `BT = 16, d_v = 64` would be a claim about a quarter of the matrix.
   TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
   TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
   TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
@@ -445,9 +350,9 @@ int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t B
 
 // ---------------------------------------------------------------------------
 // Torch-level entry. Consumes exactly the Stage 3 schedule
-// (`routing/planner/schedule.py`) plus the value stream and the dense state, and
-// returns `(y, final_state)`. Every argument is checked loudly; there is no
-// silent shape coercion and no CPU fallback.
+// (`rola/planner/schedule.py`) plus the value stream and the dense state. Every
+// argument is checked loudly; there is no silent shape coercion and no CPU
+// fallback. docs/internals/consumer.md#what-is-here
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -481,9 +386,8 @@ std::vector<at::Tensor> rola_consumer_forward(
     int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, int64_t owners_total,
     int64_t n_heads, int64_t BT, int64_t BC, bool global_norm, std::string mma_precision,
     bool compact, double eps,
-    // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
-    // present (a split plan) or none is (`P = 1`, the primary configuration, which
-    // takes the single-launch path below unchanged).
+    // ---- §6.4 sequence parallelism. ALL-OR-NOTHING (14 arguments or none; `P = 1`
+    // is the primary configuration): docs/internals/consumer.md#all-or-nothing
     c10::optional<at::Tensor> work_seg,        // [n_owners] int32, keyed like `owners`
     c10::optional<at::Tensor> work_nseg,       // [n_owners] int32
     c10::optional<at::Tensor> work_slot,       // [n_owners] int32
@@ -506,13 +410,8 @@ std::vector<at::Tensor> rola_consumer_forward(
   const int64_t BH = v.size(0);
   const int64_t T = v.size(1);
   const int64_t d_v = v.size(2);
-  // §4.5: paging changes the state's SHAPE, not its addressing rule, and the page
-  // granule is the MMA ATOM rather than the owner. Unpaged the state is
-  // `[BH, N, cols]` and atom `q` of owner `o` starts at `bh*N + o*BC + q*16`; paged
-  // it is `[physical_slots, MMA_K_QUANTUM, cols]` and that atom starts at
-  // `page_table[bh*atoms_per_bh + o*QPO + q] * 16`. `N` is then not readable off the
-  // state, so it is derived from the owner partition -- the definition,
-  // `N = owners_total * BC`.
+  // §4.5: paged, `N` is not readable off the state, so it is derived from the owner
+  // partition -- the definition. docs/internals/consumer.md#state-derivation
   const int64_t cols = d_v + (global_norm ? 1 : 0);
   int64_t N;
   if (page_table.has_value()) {
@@ -540,10 +439,9 @@ std::vector<at::Tensor> rola_consumer_forward(
   TORCH_CHECK(owners.dim() == 2 && owners.size(1) == 2, "owners must be [n_owners, 2]");
   TORCH_CHECK(owners.scalar_type() == at::kInt, "owners must be int32");
   TORCH_CHECK(read_bits.dim() == 3, "read_bits must be [BH, total_rows, n_words]");
-  // §4's support word, TILE-MAJOR. Shape-checked against the tile bitmap it is the
-  // refinement of (same `total_rows` level-digit rows) and, below, against the
-  // amplitude stream's tile axis -- so a stale or mis-shaped schedule cannot reach
-  // the gather.
+  // §4's support word, TILE-MAJOR. Shape-checked against the tile bitmap it refines
+  // and against the amplitude stream's tile axis, so a schedule built at a different
+  // BT cannot reach the gather. docs/internals/consumer.md#support-shape-check
   TORCH_CHECK(read_tok_bits.dim() == 3 && write_tok_bits.sizes() == read_tok_bits.sizes(),
               "read/write_tok_bits must both be [BH, n_tiles, total_rows]");
   TORCH_CHECK(
@@ -650,20 +548,13 @@ std::vector<at::Tensor> rola_consumer_forward(
               " at this BT); raise kMaxWords or tile the token range");
 
   // Numeric FORMAT axis (findings D4.3), stamped by the plan, resolved once here.
-  // Not a tolerance knob and not a density branch: tf32x3 is what the exactness
-  // gate against the fp64 oracle runs, bf16 is the performance configuration.
+  // Not a tolerance knob and not a density branch.
   TORCH_CHECK(mma_precision == "tf32x3" || mma_precision == "bf16",
               "mma_precision must be 'tf32x3' or 'bf16', got ", mma_precision);
-  // Both decay arms honour it: a read-only tile under LeafMassDecay takes the §5
-  // readout (its MIXED tiles take the token-sequential walk, which is fp32 and
-  // has no operand format to choose), so no stamped field is ignored here.
 
-  // ---- §6.4 sequence parallelism: three passes, two launch boundaries ------
-  // Sequenced HERE rather than by three Python calls, because the three passes are
-  // one contract: pass 3 is only correct against the boundary pass 2 published from
-  // the summary pass 1 emitted, and interposing a Python frame would let a caller
-  // run them out of order or skip one. They are ordinary stream-ordered launches --
-  // no device synchronization is taken and none is needed.
+  // ---- §6.4 sequence parallelism: three passes, two launch boundaries. Sequenced
+  // HERE rather than by three Python calls because the three passes are ONE
+  // CONTRACT: docs/internals/consumer.md#all-or-nothing
   const int64_t n_sp = static_cast<int64_t>(work_seg.has_value()) + work_nseg.has_value()
                        + work_slot.has_value() + summary_owners.has_value()
                        + summary_seg.has_value() + summary_nseg.has_value()
@@ -680,11 +571,9 @@ std::vector<at::Tensor> rola_consumer_forward(
   const int BC_i = static_cast<int>(BC);
   const int DV_i = static_cast<int>(d_v);
 
-  //: ONE dispatch point for every consumer launch this call makes -- the unsplit
-  //: one, and §6.4's pass 1 and pass 3. Written once so a pass cannot pick a
-  //: different kernel from the one its siblings picked. `P` is a WORK-LIST SHAPE,
-  //: not a kernel: both consumers read `work_seg`/`work_nseg`/`work_slot`/
-  //: `pass_mode` out of the same parameter block.
+  //: ONE dispatch point for every consumer launch this call makes, so a pass cannot
+  //: pick a different kernel from the one its siblings picked. `P` is a WORK-LIST
+  //: SHAPE, not a kernel.
   auto launch_pass = [&](ConsumerParams& pp) {
     launch_consumer(pp, BT_i, BC_i, DV_i, global_norm, decay, mma_precision, compact);
   };
@@ -717,12 +606,8 @@ std::vector<at::Tensor> rola_consumer_forward(
     p.ws_leaf = i32(*ws_leaf, "ws_leaf", n_slots);
     p.ws_count = i32(*ws_count, "ws_count", n_slots);
 
-    // ---- pass 1: the per-segment summaries ---------------------------------
-    // Grid is the summary work list, which omits every owner's LAST segment: that
-    // segment's outcome is the owner's final state and pass 3 produces it directly,
-    // so summarizing it would be `P`th of the work for nothing. The owner's slot run
-    // is nonetheless `P` slots: `P - 1` boundaries plus pass 2's entry-state stash
-    // (fix pass R1 -- it is what keeps pass 3's reads disjoint from pass 3's writes).
+    // ---- pass 1: the per-segment summaries. The grid OMITS every owner's last
+    // segment. docs/internals/consumer.md#all-or-nothing
     p.owners = i32(*summary_owners, "summary_owners", n_summary);
     p.n_owners = static_cast<int>(n_summary);
     p.work_seg = i32(*summary_seg, "summary_seg", n_summary);

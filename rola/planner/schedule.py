@@ -115,8 +115,8 @@ def consumer_occupancy() -> OccupancyOracle:
     **THE MIS-KEY THIS REPLACED IS A MEASURED DEFECT, NOT A HYPOTHETICAL ONE**
     (`rewrite.md` §2.34). The previous default queried the REGISTER-RESIDENT
     consumer (deleted at item 6b; its header was also named `v3_consumer_kernel.cuh`
-    -- readable at `c3c2f845`, and a different kernel from today's file of that
-    name), which has a different footprint -- 31680 B against 44672 at
+    -- readable at `c3c2f845` in the source repository `docs/provenance.md` names,
+    and a different kernel from today's file of that name), which has a different footprint -- 31680 B against 44672 at
     `BT = 16, BC = 64, d_v = 64`, 44416 against 72448 at `BT = 32` -- so it reported
     `2 / 1` CTAs/SM where the launched kernel runs at `3 / 2`, and the joint argmin
     reproduced 4 of its 8 measured rows instead of 8. With the right key `ncu`'s

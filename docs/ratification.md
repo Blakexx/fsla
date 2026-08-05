@@ -11,10 +11,13 @@ tools/manifests/sm_86.json
                                            "spill_loads": 24 }, ... } }
 ```
 
-512 entries per architecture, one per point of the
-`(BT, BC, DV, D, FOLD_PREC, READ_PREC, DECAY, GLOBAL, COMPACT)` product. The
-mangled name is the key because it is exact, stable, and encodes every template
-argument — an entry cannot be silently re-pointed at a different instantiation by a
+608 entries per architecture, measured on the current tree: 512 for the consumer,
+one per point of the
+`(BT, BC, DV, D, FOLD_PREC, READ_PREC, DECAY, GLOBAL, COMPACT)` product, plus 32
+`decode_gemv_kernel` and 32 each of `union_forward_kernel` and
+`union_backward_kernel`. The manifest is the authority on that count and no
+comment restates it. The mangled name is the key because it is exact, stable, and
+encodes every template argument — an entry cannot be silently re-pointed at a different instantiation by a
 rename or a reordering.
 
 ## Why it exists

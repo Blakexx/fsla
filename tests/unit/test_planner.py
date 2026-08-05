@@ -1140,7 +1140,8 @@ def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
 
 #: **`_CALIBRATION_AB` IS DELETED (item 6b, 2026-08-01), ON ITS OWN STATED TERMS.**
 #: It was a 48-cell compact/`BT` A/B of the DELETED register-resident consumer
-#: (`c3c2f845`)
+#: (`c3c2f845` in the source repository -- see `docs/provenance.md`; the hash does
+#: not resolve in this one)
 #: (`workflows/20260729-wave3/compaction2.md` §B2, RTX 3080 Ti, 30 reps median),
 #: whose gather is a different algorithm -- a scalar walk's trip count, a
 #: dense-panel-to-compacted copy, a staging-ring probe -- and on which compaction
