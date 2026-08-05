@@ -9,9 +9,19 @@ rendezvous — that is the whole point, and it is why these are counters and not
 The phases themselves are [`consumer_kernel.md`](consumer_kernel.md); the shared
 memory the control block occupies is priced by [`smem_layout.md`](smem_layout.md).
 
-**Section numbers are shared across the four consumer-kernel documents** —
-`consumer_kernel.md`, `smem_layout.md`, `mma_tile.md` and this file — so a `§N`
-reference in any of them names exactly one section, wherever it lives.
+## Reference conventions
+
+The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
+[`pipeline.md`](pipeline.md):
+
+- **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
+  at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
+  means a section of these documents.
+- **A section of these documents is referenced by LINK**, never by its number, so a
+  reference resolves without the reader knowing which of the four holds it.
+- Section numbers run continuously across the four documents, so a number identifies
+  one section — but it is the link, not the number, that is the reference.
 
 ## <a id="item-stream"></a>36. The control block and its two primitives
 
@@ -40,7 +50,7 @@ kCtlFold0 + w  window w's fold item-claim cursor -- the pool's whole state. One 
 ```
 
 Both PHASE counters count WARPS and every warp retires both UNCONDITIONALLY, which is what makes
-the deadlock argument (§37) a two-line one.
+the deadlock argument ([below](#ctl-reset)) a two-line one.
 
 The fold's claim cursors are ONE PER WINDOW, because a narrowed `WT` makes the fold's item pool
 per-window: window `w`'s pool must start at zero, and resetting a shared cursor mid-tile would
@@ -89,7 +99,7 @@ term 2 + emission), `B7` (end of tile).
 | `STAGE -> A`, `STAGE -> G_0` | the staging `__syncthreads()` (hardware) |
 | `G_w -> F_w`, `F_w -> G_{w+1}` | the window's SLOT-READY / SLOT-FREE `__syncthreads()` pair (`!kWtPlane` only; window `w+1`'s build overwrites `WT`'s rows) |
 | `A -> F` | `kCtlReadDone` reaching `kWarps` (readout READS `S`, the fold WRITES it). Taken ONCE, in window 0 |
-| `G -> C` | `kCtlGramDone` (`G` writes `Gm`, `C` reads it). `G`'s publication rides the LAST window. The mechanism FORKS on `kNarrowGate` and both forms carry the SAME edge (§38) |
+| `G -> C` | `kCtlGramDone` (`G` writes `Gm`, `C` reads it). `G`'s publication rides the LAST window. The mechanism FORKS on `kNarrowGate` and both forms carry the SAME edge ([`consumer_kernel.md#gram-gate`](consumer_kernel.md#gram-gate)) |
 | `F -> B7`, `C -> B7` | program order into the end-of-tile barrier |
 
 The relation is a TOTAL ORDER on `{STAGE, {A, G_0}, F_0, G_1, F_1, ..., C, B7}` and therefore

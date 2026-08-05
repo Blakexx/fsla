@@ -1,45 +1,25 @@
 # `csrc/rola/src/dispatch_switch.cuh` — host-side compile-time dispatch
 
-A kernel with `N` structural template axes is selected at runtime from `N` runtime
-values. The shape that selection takes is a real engineering choice, and this header
-is the one form this engine uses for it.
+A kernel whose structural axes are template parameters has to be selected at runtime
+from runtime values. This header is the mechanism for that selection in the
+hand-written launchers: `decode.cu`'s `launch_decode_gemv` and `entmax.cu`'s forward
+and backward launchers.
 
-The consumer's own dispatch does not use it: that ladder is GENERATED from the
-instantiation matrix by `tools/gen_shards.py` into
-`instantiations/dispatch_launch.inc`, where each leaf is a single function-pointer
-assignment and the enumeration is single-sourced with the shards themselves
-([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix)). This header
-is for the hand-written dispatches: `decode.cu`'s `launch_decode_gemv` and
-`entmax.cu`'s forward and backward launchers.
+The consumer does not use it. Its dispatch is GENERATED from the instantiation matrix
+by `tools/gen_shards.py` into `instantiations/dispatch_launch.inc`, where every leaf is
+a single function-pointer assignment and the enumeration is single-sourced with the
+shards it selects
+([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix)). The rule
+between the two is the size of the enumeration: one large enough that writing it out
+would be a second copy of the matrix is generated; a launcher with a handful of axes
+and one kernel is written here.
 
-## <a id="macro-ladder"></a>1. What it replaced, and why that form is refused
+## <a id="one-launch"></a>1. The launch is written ONCE
 
-A macro ladder: one `#define` per axis whose body restates the launch, so an
-`N`-axis dispatch spells the launch `2^N` times inside a preprocessor expansion.
-
-```cpp
-#define ROLA_DECODE_DISPATCH_DECAY(DV_, GLOBAL_)      \
-  if (decay) { ROLA_DECODE_DISPATCH_D(DV_, true,  GLOBAL_) } \
-  else       { ROLA_DECODE_DISPATCH_D(DV_, false, GLOBAL_) }
-```
-
-Three properties make it the wrong shape, and none of them is a matter of taste:
-
-1. **The launch configuration is written once per arm.** `entmax.cu`'s forward ladder
-   spelled a fourteen-argument `<<<...>>>` twice inside one macro, once per `alpha`
-   arm, and eight more times through the width `switch`. Nothing checks that the
-   copies agree; a drift between two arms is a silent wrong-result bug on the arm the
-   suite happens not to reach first.
-2. **The compiler cannot help.** A macro argument is a token, so a swapped `DECAY_`
-   and `GLOBAL_` is not a type error — it is a different kernel.
-3. **Neither a debugger nor a reader can step it.** The expansion has no source line
-   of its own.
-
-## <a id="one-launch"></a>2. The form used instead — the launch is written ONCE
-
-flash-attention's `BOOL_SWITCH` idiom with the macro removed. The axis walker is a
-function template; the launch is a generic lambda written once; each axis arrives as
-an `integral_constant` whose `::value` is a compile-time constant at the point of use.
+The axis walkers are function templates. The launch is a generic lambda. Each axis
+arrives as an `integral_constant` whose `::value` is a compile-time constant at the
+point of use, so a launcher's template arguments and its `<<<...>>>` configuration
+exist in exactly one place.
 
 ```cpp
 int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
@@ -55,21 +35,33 @@ int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
 });
 ```
 
-Two primitives, and deliberately only two:
+**Uniqueness of the launch text is the property this file exists to hold.**
+`entmax.cu`'s forward launch takes FIFTEEN arguments across thirty-two selectable
+arms. In a form where each arm carries its own copy of that argument list, an argument
+that disagrees between two copies is a wrong-result bug on whichever arm the suite
+reaches second, and nothing checks the copies against each other. With one copy the
+question cannot arise.
 
-| | axis | refusal |
+Two further properties follow from the body being real code rather than a
+preprocessor expansion: a swapped axis is a TYPE error at the call site, and every
+line has a source location a debugger and a profiler can name.
+
+## <a id="axes"></a>2. The two primitives, and why only two
+
+| | axis | unmatched value |
 |---|---|---|
-| `bool_switch(value, body)` | one boolean | none possible — both arms exist |
+| `bool_switch(value, body)` | one boolean | impossible — both arms exist |
 | `int_switch<VALUES...>(value, what, body)` | one integer over a CLOSED set | `TORCH_CHECK` naming the axis and the value |
 
-`int_switch`'s candidate set is part of the CALL, which is what makes an unmatched
-runtime value a refusal rather than a silently missing arm. The sets in this engine
-are two to six values wide, so the expansion is a comparison chain and does not need
-to be a jump table.
+**`int_switch`'s candidate set is part of the call.** The set is where the instantiated
+arms are declared, so a runtime value outside it is a NAMED REFUSAL and never a
+silently missing arm; `what` is the axis's name in that message.
 
-**Derived arm parameters stay derived.** `entmax.cu`'s width axis selects a
-`(lane width, items per thread)` pair, and the ladder tabulated that pair per case —
-`case 64: ROLA_ENTMAX_FWD(32, 2)`. It is now computed from the padded width inside the
+The sets in this engine are two to six values wide, so the expansion is a comparison
+chain rather than a jump table, which is the right shape at that width.
+
+**A derived arm parameter stays derived.** `entmax.cu`'s width axis carries a
+`(lane width, items per thread)` pair, computed from the padded width inside the
 lambda:
 
 ```cpp
@@ -77,18 +69,23 @@ constexpr int kLaneWidth      = kWPad < 32 ? kWPad : 32;
 constexpr int kItemsPerThread = kWPad / kLaneWidth;
 ```
 
-so the two cannot disagree with the width they were chosen for.
+A table of pairs, one row per width, is a second statement of an arithmetic relation,
+and a second statement can disagree with the width it was chosen for. The relation is
+stated once.
 
-## <a id="what-is-gated"></a>3. What a gate can and cannot say about this change
+## <a id="what-is-gated"></a>3. What the gates establish about a dispatch, and what they do not
 
-**The set of DEVICE instantiations is identical.** The same template arguments are
-named, so the fatbin carries the same entry points and the ratification manifest is
-unmoved — 608 entries per arch, `tools/ratify.py` and `tools/fatbin_entries.py`. An
-arm that stopped being instantiated fails those gates.
+A dispatch has two halves, covered by different things. Which is which is worth
+stating: a reader who assumes the binary gates cover both will trust an argument they
+do not have.
 
-**The HOST selection code is genuinely different**, it is not device code, and no SASS
-comparison can speak for it: `tools/sass_bodies.py` hashes device entry points, and
-the host `.text` of the extension is not in that hash. What covers the host side is
-the CUDA suites, which exercise every arm of both dispatches — the decode tier and the
-entmax gates. A claim of "no change" for this file rests on those, and stating that
-plainly is the point of this section.
+| half | what it is | what covers it |
+|---|---|---|
+| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py` (608 entries per arch) and `tools/fatbin_entries.py`, both reading the built `.so`. A tuple that stops being instantiated fails them. |
+| the SELECTION | which tuple a given set of runtime values reaches | the CUDA suites, which exercise every arm |
+
+`tools/sass_bodies.py` hashes DEVICE entry points. Host `.text` is not in that hash, so
+a SASS comparison is evidence about kernels and never about the host code that chooses
+between them: it cannot tell a correct selection from one that reaches the wrong
+instantiated arm. Only the suites can, which is why a dispatch is not verified without
+running them.

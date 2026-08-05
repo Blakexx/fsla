@@ -43,7 +43,8 @@ jobs:
     # mirror doc, is the README's support matrix the one the arch table and the
     # manifests decide — and none of them reads a device or compiles a kernel.
     # The register/spill ratchet is NOT here: it is GPU-free but it needs the CUDA
-    # toolchain, so it belongs to the GPU arm's runner image.
+    # toolchain, so it belongs to the GPU arm's runner image -- and so does
+    # `tools/header_selfcheck.py`, which needs `nvcc` but no device.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

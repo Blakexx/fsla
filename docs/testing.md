@@ -164,7 +164,7 @@ string.** It can never happen as a side effect of a kernel edit.
 
 ## The build-shape gates
 
-Three checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
+Four checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
 they are here because each one guards a property whose failure leaves every other
 gate green.
 
@@ -185,6 +185,16 @@ out of the fatbin — per architecture, per originating object — and requires 
 one per instantiation, in the shard the matrix assigns it, with every ratified name
 present. `nm` cannot answer this: a `__global__` template's host stub is weak, so
 the linker keeps one however many objects emitted the device code.
+
+**`python tools/header_selfcheck.py`** compiles every header under `csrc/rola/`
+ALONE — one generated translation unit per header, containing that header twice and
+nothing else, under the extension's own flag list. A header that uses a name it never
+included compiles anyway whenever some other file in the translation unit included
+that name's home first; nothing in a normal build says so, and the break surfaces
+later, at a new caller or at an unrelated include removal. Including the header twice
+is what makes the include guard part of the check. It needs `nvcc` but no device, and
+takes about 70 s for the whole tree, so it belongs to the GPU arm's runner image
+rather than to the CPU lane.
 
 ## The documentation gates
 

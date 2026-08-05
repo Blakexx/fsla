@@ -8,9 +8,19 @@ the authority on what a fragment contains.
 Where an operand LIVES is [`smem_layout.md`](smem_layout.md); which warp runs which
 tile, and in what phase order, is [`consumer_kernel.md`](consumer_kernel.md).
 
-**Section numbers are shared across the four consumer-kernel documents** —
-`consumer_kernel.md`, `smem_layout.md`, this file and `pipeline.md` — so a `§N`
-reference in any of them names exactly one section, wherever it lives.
+## Reference conventions
+
+The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
+[`pipeline.md`](pipeline.md):
+
+- **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
+  at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
+  means a section of these documents.
+- **A section of these documents is referenced by LINK**, never by its number, so a
+  reference resolves without the reader knowing which of the four holds it.
+- Section numbers run continuously across the four documents, so a number identifies
+  one section — but it is the link, not the number, that is the reference.
 
 # Part III — the operand maps
 
@@ -22,7 +32,7 @@ tile would waste 7/8 of a fragment. So it stays a scalar reduction and pays this
 instead: ~10 integer ops on `BT * BC` elements spread over `BT` threads, once per tile.
 
 **HAZARD `frag-a-get`.** `frag_a_get` is the hand-rolled INVERSE of `frag_a_slot`, and
-nothing checks the pair against each other — the CuTe cross-checks in §23 pin the library's
+nothing checks the pair against each other — the CuTe cross-checks in [the atom section](#ldsm-atoms) pin the library's
 maps, not this one. The two must be edited together: an inverse that disagrees with the
 forward map reads the wrong element and produces a plausible, wrong denominator with no
 diagnostic anywhere.
@@ -36,7 +46,7 @@ they are is `stage_is_narrow`'s answer, not `mma_tile`'s, and it FORKS BY ARM: o
 `tf32x3` arm `WT` and `Vw` are stored fp32, and the same buffers feed the bf16 intra GEMMs by
 narrowing at the fragment, which costs nothing extra (the pack was already a cast); on the
 bf16 arm `stage_is_narrow` makes both buffers narrow and `mma_tile` receives them already in
-the MMA's format (§14).
+the MMA's format ([`smem_layout.md#stage-format`](smem_layout.md#stage-format)).
 
 **The full-mantissa requirement is the `tf32x3` arm's alone.** Narrowing THAT arm's two
 buffers would save 4 KiB and make its fold precision unrecoverable, which is the point of

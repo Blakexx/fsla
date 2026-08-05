@@ -11,9 +11,19 @@ term, in the same order. The `ldmatrix` atoms that READ these layouts are
 [`mma_tile.md`](mma_tile.md); the control words the ledger budgets for are
 [`pipeline.md`](pipeline.md).
 
-**Section numbers are shared across the four consumer-kernel documents** —
-`consumer_kernel.md`, this file, `mma_tile.md` and `pipeline.md` — so a `§N`
-reference in any of them names exactly one section, wherever it lives.
+## Reference conventions
+
+The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
+[`pipeline.md`](pipeline.md):
+
+- **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
+  at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
+  means a section of these documents.
+- **A section of these documents is referenced by LINK**, never by its number, so a
+  reference resolves without the reader knowing which of the four holds it.
+- Section numbers run continuously across the four documents, so a number identifies
+  one section — but it is the link, not the number, that is the reference.
 
 # Part I — the compile-time budget
 
@@ -119,7 +129,9 @@ Three things the table decides, all three READINGS rather than choices:
 What is left is `NM`, and it is not close: at `NM = 2` the ratified formula's 64 and
 80 leave 1860-5614 spill bytes on the `BC = 16` keys where 96 leaves 0-344, and 96 is
 best-or-equal on ALL EIGHT `NM = 2` keys. `NM` is the same tile-count predicate the
-warp partition forks on (§36), so the budget and the codegen state the same
+warp partition forks on
+([`consumer_kernel.md#warp-partition`](consumer_kernel.md#warp-partition)), so the
+budget and the codegen state the same
 structural fact once.
 
 ### <a id="reg-budget-session9"></a>The one class that clears 64, and why every other `NM = 2` key stays at 96
@@ -192,7 +204,8 @@ answer at that working set AND what the allocator converges to when left alone �
 `ncu` confirms the residency is 4 CTAs/SM either way, so on that arm the bound
 converts a silent hazard into a stated invariant at zero measured occupancy cost.
 
-**And on the `BC = 16` decay arm the term returns 3, by measurement** — see §4, which
+**And on the `BC = 16` decay arm the term returns 3, by measurement** — see
+[above](#reg-budget), which
 carries both arms' `ncu` numbers. That arm's working set does not fit in 64
 registers, so a budget of 64 there does not buy the fourth CTA, it buys 66 st / 212 ld
 of SPILL; 3 CTAs at 80 registers is 6.5 % FASTER than 4 CTAs at 64 with the spill. The
@@ -212,7 +225,8 @@ matrix.
 
 How many TILES' worth of the STAGING SET the CTA holds at once. `1` is today's
 structure exactly — stage tile `n`, rendezvous, compute tile `n` — so an unfilled or
-over-large placeholder degrades to today's behaviour, never to a new one (§8's stated
+over-large placeholder degrades to today's behaviour, never to a new one ([the
+`C_WT_WINDOW` section](#wt-window)'s stated
 principle). `2` lets the staging of tile `n + 1` be issued from INSIDE tile `n`'s
 compute, at the one program point where the tile's work is finished and its warps
 would otherwise be sitting on the phase-C acquire.
@@ -247,14 +261,15 @@ non-empty subset of the staging set that can run ahead under `DECAY`.**
 
 Un-aliasing `clk` would dissolve it and does not fit: `clk`'s own region is
 `BT * (BC + 4) * 4` = 4,352 B at the flagship, against **2,941 B** of decay-arm
-headroom there (§8 states that figure's arm and conditions). The trade is a
+headroom there ([`C_WT_WINDOW`](#wt-window) states that figure's arm and conditions). The trade is a
 coordinator-level one, so the pin is asserted in the kernel as a correctness
 `static_assert` and never left to the footprint arithmetic to enforce. Un-aliasing
 `clk` is the only thing that changes this.
 
 ### <a id="ring-default"></a>The default is `1`, against §8's tabled `2`, and it is a measurement
 
-§8 tables `2` on the principle that a wrong placeholder degrades to today's behaviour.
+[`C_WT_WINDOW`](#wt-window) tables `2` on the principle that a wrong placeholder
+degrades to today's behaviour.
 At depth 2 it does not: `rola_consumer_occupancy` — the DRIVER, which is spec §6.5's
 sole residency authority — drops FOUR of the 32 `(decay, compact, BC, BT, DV)` shapes,
 two by shared memory and two by registers:
@@ -293,7 +308,8 @@ one parameter, not two designs (I4).
 `wt_window_rows`, so at `C_WT_WINDOW < QPO` the buffer really is `kNWin` times smaller
 and the residency really moves; the rows are indexed WINDOW-LOCALLY and reused window
 by window, which is what the SLOT-READY / SLOT-FREE `__syncthreads` pair in the tile's
-second phase exists to make safe (§39). That pair is D8.2's `2 * QPO` sync tax, and it
+second phase exists to make safe
+([`consumer_kernel.md#slot-ready-free`](consumer_kernel.md#slot-ready-free)). That pair is D8.2's `2 * QPO` sync tax, and it
 is the price of the footprint.
 
 `wt_window_rows` is THE definition — `consumer_smem_bytes` sizes the buffer from it and
@@ -332,11 +348,11 @@ while over-stating the other.
 
 | region | extent | bf16 (narrow) | tf32x3 | what it is |
 |---|---|---|---|---|
-| `S` | `[BC][SP]` fp32 | 17,408 | 17,408 | the STATE, resident for the owner's whole run. `SP = DV + 4` (§17), not `DV + 1` |
+| `S` | `[BC][SP]` fp32 | 17,408 | 17,408 | the STATE, resident for the owner's whole run. `SP = DV + 4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)), not `DV + 1` |
 | `sr`, `sw` | `RING * 2 * [BT]` fp32 | 128 | 128 | the §3 step-3 row scales |
 | `den` | `[BT]` fp32 | 64 | 64 | `GLOBAL` only |
 | `cand` | `2 * kMaxWords` u32 | 1,024 | 1,024 | the candidate-tile words |
-| `dig` | `[D][BC]` int | 512 | 512 | per-owner leaf digits (hoisted, §26) |
+| `dig` | `[D][BC]` int | 512 | 512 | per-owner leaf digits (hoisted, [`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
 | `WT` | `[kWinRows][BTP]` | 3,072 | 5,120 | write coefficients, LEAF-MAJOR; swizzled bf16 narrow, padded fp32 on `tf32x3` |
 | `Vw` (∪ `clk`) | `RING *` the union | 2,048 | 4,608 | the scale-folded value tile; swizzled and UNPADDED narrow |
 | `Rf` | `RING * NM * frag_a_words(BC)` | 2,048 | 4,096 | read coefficients, MMA-FRAGMENT ORDERED |
@@ -360,9 +376,10 @@ reproduces it EXACTLY on all 32 driver-queryable cells (`decay` x `compact` x `B
 | `DECAY` + `COMPACT` | 30,688 | 3 |
 
 `DECAY` adds 3,072 B here and not 768: the three `[BC]` vectors are 768, and the other
-2,304 is `clk` RAISING the `Vw` union from 2,048 to 4,352 (§11). `COMPACT` adds 520 B
+2,304 is `clk` RAISING the `Vw` union from 2,048 to 4,352 ([below](#vw-clk-union)). `COMPACT` adds 520 B
 flat. CTAs/SM is `rola_consumer_occupancy` — the driver, on the built binary — not the
-launch bound's own arithmetic, which is a floor rather than an answer (§5).
+launch bound's own arithmetic, which is a floor rather than an answer
+([above](#residency)).
 
 **The tightest shared-memory margin in the shipped matrix is 544 B**, at
 `DECAY + COMPACT, BC = 64, BT = 32, DV = 32`: 32,928 B/CTA, so
@@ -390,7 +407,8 @@ restated next to it — two numbers that must agree are one number too many.
   4,352 B at the flagship cell and 8,704 B at `BT = 32`. It does not have to be paid,
   and the argument is a LIFETIME rather than a saving: `clk` exists only to build `Rf`
   and `WT`, it is DEAD before `Vw` is live, so it ALIASES `Vw`'s storage and only the
-  raise of that union is charged (§11) — 3,072 B in total at the flagship against
+  raise of that union is charged ([below](#vw-clk-union)) — 3,072 B in total at the
+flagship against
   5,120 B un-aliased. **Decay ships at 3 CTAs/SM on the flagship cell, full
   residency** (30,168 B, driver-confirmed). Un-aliasing costs a CTA on the deepest arm
   in the matrix — `D = 4, BT = 16, BC = 64, DV = 64`, `DECAY + COMPACT`: 33,248 B
@@ -407,7 +425,8 @@ restated next to it — two numbers that must agree are one number too many.
   The DESIGN (§2.18(e)) budgeted a FOURTH buffer, `supp_leaf_r/w` (`2 * BC` u32),
   aliased onto `WT` by a lifetime argument. It does not exist here, and the reason is
   that the support words are consumed by ONE WARP in the same instruction stream that
-  produces them (§28), so they live in REGISTERS — which also removes the barrier that
+  produces them ([`consumer_kernel.md#candidate-walk`](consumer_kernel.md#candidate-walk)),
+  so they live in REGISTERS — which also removes the barrier that
   would have published them and the aliasing argument that would have licensed the
   storage. Same 520 B, one fewer barrier, no alias to keep sound.
 - **`GLOBAL`** adds `den[BT]`. The `raw` arm has no denominator stream at all, so
@@ -421,7 +440,7 @@ restated next to it — two numbers that must agree are one number too many.
   is not written down is not checkable. READ OFF THE DRIVER, not asserted: the tightest
   3-CTA arm in the matrix is `decay + compact, BC = 64, BT = 32, DV = 32` at
   `3 * (32928 + 1024) = 101856` against the SM's `102400`, i.e. **544 B of total
-  slack** — both numbers confirmed against the built binary (§10). Every other 3-CTA
+  slack** — both numbers confirmed against the built binary ([the ledger](#smem-ledger)). Every other 3-CTA
   arm has more. `rola_consumer_occupancy` returns the identical CTA count on all 32
   `(decay, compact, BC, BT, DV)` shapes as the pre-K3b kernel, which is the check that
   matters — the byte count is only the reason to expect it.
@@ -479,7 +498,7 @@ bank-decorrelation argument every other pitch here uses. The alias is sound beca
 `static_assert`s that sizing against the use rather than assuming the two agree. `clk`
 is declared AT THE CARVE rather than eighty lines later as `clk = Vw`: with two element
 types that assignment does not type-check, and the alias is the load-bearing fact. It
-names SLOT 0 and needs no ring index: `DECAY` pins `kRing == 1` (§7).
+names SLOT 0 and needs no ring index: `DECAY` pins `kRing == 1` ([above](#ring-depth)).
 
 ## <a id="bank-predicates"></a>12. The bank-conflict property, as a compile-time proof rather than a comment
 
@@ -489,7 +508,7 @@ conflict-free exactly when those 32 addresses land on 32 DISTINCT banks. `banks_
 ENUMERATES that condition instead of asserting a modular formula, so each operand proves
 its own pitch at compile time and a future change to `BT`/`BC`/`DV` fails the build rather
 than silently costing a 4x wavefront amplification — which is what the unpadded build did
-measure (§2.2, and §14 below).
+measure (§2.2, and [the storage format](#stage-format) below).
 
 `stride_g` / `stride_r` are the address deltas in 4-BYTE BANKS per unit `g` and `r`, which
 is why a bf16 operand read as 32-bit pairs contributes `pitch / 2`.
@@ -513,7 +532,8 @@ conflict-FREE, which is exactly the case `banks_distinct` cannot express.
 
 ## <a id="stage-layout"></a>13. The staged operands' SMEM layout, owned by CuTe
 
-Both predicates in §12 are HAND-ROLLED PROOFS ABOUT A PADDED PITCH, and the argument
+Both predicates in [the bank-conflict section](#bank-predicates) are HAND-ROLLED
+PROOFS ABOUT A PADDED PITCH, and the argument
 against leaving the staged operands on one is that the 32-bit predicate proves the wrong
 proposition about a 16-bit buffer in BOTH directions — a class of error an enumeration
 cannot warn you about, because you have to already suspect it.
@@ -685,7 +705,9 @@ in the order the MMA's A fragment wants: word `w` of lane `lane` at k-step `ks` 
 32 lanes x 16 B = 512 B, four full transactions, no bank conflict and no address arithmetic
 at all.
 
-BOTH precisions are laid out, because `READ_PREC` is a real axis (§6) and a layout that only
+BOTH precisions are laid out, because `READ_PREC` is a real axis
+([`consumer_kernel.md#mma-precision`](consumer_kernel.md#mma-precision)) and a layout
+that only
 served bf16 would silently un-support the tf32x3 readout. They share the storage SHAPE
 (`[ksteps][32][4]` 32-bit words) and differ only in the compile-time forward map, so there is
 one path, parameterized — not a fast path with a fallback.

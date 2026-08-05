@@ -31,6 +31,11 @@
 #include <cute/tensor.hpp>
 
 #include "arch_table.cuh"
+//: For `kMaxWords`, the candidate-tile word ceiling the carve reserves two arrays of.
+//: A LAYER HEADER STATES EVERY NAME IT USES: a header that compiles only when some
+//: other file included its dependency first is a latent break, not a saving, and this
+//: one was exactly that until `tools/header_selfcheck.py` compiled it alone.
+#include "consumer.cuh"
 #include "pipeline.cuh"
 #include "readout_mma.cuh"
 

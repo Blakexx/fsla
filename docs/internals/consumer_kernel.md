@@ -4,15 +4,13 @@ The ONLY consumer. This doc owns the kernel BODY: the §3/§5 algorithm, the poi
 carve as the body spells it, the staging ring's candidate walk, the four GEMMs in
 their phase order, the split-K epilogue, and the `COMPACT` / `DECAY` / `GLOBAL` arms.
 
-**The body composes three layers and each has its own document.** They are read
-together and their SECTION NUMBERS ARE SHARED, so a `§N` reference in any of the four
-names exactly one section wherever it lives:
+**The body composes three layers and each has its own document:**
 
 | document | source | owns |
 |---|---|---|
-| [`pipeline.md`](pipeline.md) | `pipeline.cuh` | the item stream — the control words, the release/acquire primitives, the edge DAG (§36–37) |
-| [`smem_layout.md`](smem_layout.md) | `smem_layout.cuh` | the carve — address functions, conflict proofs, the register/residency budget, the ring depth, the byte ledger (§4–5, §7–8, §10–14, §20) |
-| [`mma_tile.md`](mma_tile.md) | `mma_tile.cuh` | the operand maps — fragment order, the `ldmatrix` atoms, the GEMMs' inner sequences (§21–23) |
+| [`pipeline.md`](pipeline.md) | `pipeline.cuh` | the item stream — the control words, the release/acquire primitives, the edge DAG |
+| [`smem_layout.md`](smem_layout.md) | `smem_layout.cuh` | the carve — address functions, conflict proofs, the register/residency budget, the ring depth, the byte ledger |
+| [`mma_tile.md`](mma_tile.md) | `mma_tile.cuh` | the operand maps — fragment order, the `ldmatrix` atoms, the GEMMs' inner sequences |
 
 Its sibling is [`consumer.md`](consumer.md), which owns `ConsumerParams` and the
 host side and is NOT restated here: the leaf-digit decomposition, the paged state
@@ -20,10 +18,22 @@ layout and `kAbsentPage`, the §6.4 work list and its workspace, the three-pass
 driver, the instantiation matrix, and the residency query's axes all live there.
 Two descriptions of one kernel is one that can go stale.
 
-Spec references are to `ROLA_V3_SPEC.md` unless named otherwise: §3
-topology-agnostic kernel structure, §4 schedule, §5 consumer, §6.4 sequence
-parallelism, §7.4.1 the decay lowering. `GLA_MASS_DECAY_SPEC.md` §12 is the decay
-numerics contract.
+## Reference conventions
+
+The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
+[`pipeline.md`](pipeline.md):
+
+- **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
+  at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
+  means a section of these documents.
+- **A section of these documents is referenced by LINK**, never by its number, so a
+  reference resolves without the reader knowing which of the four holds it.
+- Section numbers run continuously across the four documents, so a number identifies
+  one section — but it is the link, not the number, that is the reference.
+
+The spec sections this document leans on: §3 topology-agnostic kernel structure, §4
+schedule, §5 consumer, §6.4 sequence parallelism, §7.4.1 the decay lowering.
 
 ---
 
@@ -127,7 +137,7 @@ kernel.
 One scope note that is an ALGORITHM fact rather than a dispatch fact: under
 `normalization = "global"` the mass column rides as column `DV` of the state and is
 handled by scalar reductions rather than as an extra MMA `n` — one extra `n` would
-waste 7/8 of an `n8` fragment (§21).
+waste 7/8 of an `n8` fragment ([`mma_tile.md#frag-a-get`](mma_tile.md#frag-a-get)).
 
 ## <a id="glossary"></a>3. Symbol glossary
 
@@ -146,15 +156,15 @@ waste 7/8 of an `n8` fragment (§21).
 | `kYTiles` | output fragments per warp, `ceil(NM * NT_DV / kWarps)` |
 | `kGTiles` | Gram fragments per warp, `ceil(NM * (BT/8) / kWarps)` |
 | `kGramWarps` | `min(NM * (BT/8), kWarps)` — the warps that STORE `Gm`, and the narrow phase-C target |
-| `kRing` | staging-ring depth, `1` or `2` (§7) |
-| `kWtWindow` | `WT` window size in ATOMS; `kWinRows = kWtWindow * 16` rows; `kNWin = kQPO / kWtWindow` windows per tile (§8) |
+| `kRing` | staging-ring depth, `1` or `2` ([`smem_layout.md#ring-depth`](smem_layout.md#ring-depth)) |
+| `kWtWindow` | `WT` window size in ATOMS; `kWinRows = kWtWindow * 16` rows; `kNWin = kQPO / kWtWindow` windows per tile ([`smem_layout.md#wt-window`](smem_layout.md#wt-window)) |
 | `S` | the STATE, `[BC][SP]` fp32 SMEM, resident for the owner's whole run |
-| `SP` | `S`'s row pitch, `DV + 4` (§17) |
+| `SP` | `S`'s row pitch, `DV + 4` ([below](#state-pitch)) |
 | `cols` | `DV + 1` under `GLOBAL` (the mass column), else `DV` |
 | `WT` | the write coefficient panel, LEAF-MAJOR, `[kWinRows][BTP]` |
-| `BTP` | `WT`'s row pitch; `BT + 8` narrow, `BT + 4` on `tf32x3` (§13) |
+| `BTP` | `WT`'s row pitch; `BT + 8` narrow, `BT + 4` on `tf32x3` ([`smem_layout.md#stage-format`](smem_layout.md#stage-format)) |
 | `Vw` | the scale-folded value tile, `Vw[t,ch] = sw[t] * v[t0+t, ch]` |
-| `VWP` | `Vw`'s row pitch on the `tf32x3` arm, `DV + 8`. The narrow arm has NO pitch — it is `StageLayout` (§12) |
+| `VWP` | `Vw`'s row pitch on the `tf32x3` arm, `DV + 8`. The narrow arm has NO pitch — it is `StageLayout` ([`smem_layout.md#stage-layout`](smem_layout.md#stage-layout)) |
 | `Gm` | the causal effective-score block `[BT][BT]`, pitch `GMP` |
 | `Rf` | the read coefficients, MMA-FRAGMENT-ORDERED, `NM` blocks of `frag_a_words(BC)` words |
 | `clk` | the tile's per-leaf INCLUSIVE clock prefix `[BT][CKP]` fp32, `CKP = BC + 4`; ALIASES `Vw`'s bytes |
@@ -162,7 +172,7 @@ waste 7/8 of an `n8` fragment (§21).
 | `sr`, `sw` | the §3 step-3 per-token read/write ROW SCALES, `[BT]` each |
 | `den` | the `GLOBAL` denominator accumulator, `[BT]` |
 | `dig` | the hoisted leaf digits, `[D][BC]` |
-| `ctl` | the K3b control block, `2 + QPO` ints (§32) |
+| `ctl` | the K3b control block, `2 + QPO` ints ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
 | `c_idx`, `c_slot`, `c_count` | `COMPACT`'s gathered leaf list, its inverse, and `{K, KI}` |
 | `K` / `KI` | the gathered list length / its §5 causal PREFIX length |
 | `Kpad`, `KIpad`, `KpadM` | the readout k-extent, the Gram k-extent and the fold m-extent, each rounded up to its quantum |
@@ -274,7 +284,8 @@ B, tf32           : banks = g * 1         + r * pitch
 | `banks_distinct(1, VWP)` | `Vw` as GEMM 4's B, `tf32x3` arm only |
 
 **`WT` carries BOTH pitch predicates on both arms** — its `BT + 8` is a derived pad, not a
-swizzle, and §14 gives the measurement that keeps it that way. `Vw`'s three narrow-arm
+swizzle, and [`smem_layout.md#stage-format`](smem_layout.md#stage-format) gives the
+measurement that keeps it that way. `Vw`'s three narrow-arm
 proofs are STRICTLY MORE than a pitch predicate: a pitch predicate asks only whether 32
 lanes striding by `2 * VWP` decorrelate, while these enumerate CuTe's own layout at the
 addresses the two accesses actually issue — the `ldmatrix` phase (with its alignment
@@ -332,13 +343,13 @@ path that is narrow.
 
 The pitch differs with the type because the FRAGMENT MAP does: the bf16 map reads 32-bit
 pairs (`stride_g = GMP/2`), the tf32 map single floats (`stride_g = GMP`). `GMP` is `BT + 8`
-on bf16 and `BT + 4` on tf32x3; both are proven by `banks_distinct` (§15).
+on bf16 and `BT + 4` on tf32x3; both are proven by `banks_distinct` ([below](#pitches)).
 
 ## <a id="pass1-alias"></a>19. §6.4 pass 1's own state, aliased onto `Rf`
 
 ```
 a_state[i]   the per-leaf survival product `A` over the segment. Identically 1 under
-             decay = None; under decay it accumulates s0^2 per write tile (§44).
+             decay = None; under decay it accumulates s0^2 per write tile ([below](#phase-c)).
 sum_slot[i]  the written-leaf FLAG, rewritten in place by the compaction to the leaf's
              POSITION in the emitted list (-1 if not in it).
 sum_count    the list length.
@@ -527,7 +538,7 @@ Everything the tile's COMPUTE consumes but does not produce: the gather, the clo
 row scales, the read panel, the write panel at the plane, and the value tile. At `kRing == 1`
 it is called at the top of the tile body and `slot` is identically 0, so the emitted code is
 the un-ringed one with the braces moved. At `kRing == 2` it is called ONE VISIT EARLY, from
-inside the previous tile's compute (§31).
+inside the previous tile's compute ([below](#row-scales)).
 
 The schedule bits arrive as ARGUMENTS rather than being re-derived from the candidate words: at
 depth 1 the caller has just computed them, and a second SMEM read costs the
@@ -602,7 +613,8 @@ columns `[K, Kpad)` are ZEROED at the panel build, and that — not the pad row 
 the padded product zero.
 
 `c_slot[i]` is the inverse, `-1` when leaf `i` is inert for the whole tile. It is read ONLY by
-the decay clock prefix, which is where the scatter-fill identity is realized (§30).
+the decay clock prefix, which is where the scatter-fill identity is realized
+([below](#decay-clock)).
 
 With `COMPACT` compiled out, the gather's answer is its `K == BC` degeneracy, known at compile
 time: every leaf is active, §5's causal sub-list is the whole ascending list, and
@@ -742,7 +754,7 @@ rendezvous between them.
 
 **The one arm that keeps the middle barrier is `DECAY`**, and it is a LIFETIME constraint rather
 than a publication one: `clk` ALIASES `Vw`'s bytes, both panel builds READ `clk`, and the `Vw`
-writers would clobber it. That barrier stands AT ITS REASON (§33) rather than as an incidental
+writers would clobber it. That barrier stands AT ITS REASON ([below](#build-wt)) rather than as an incidental
 side effect of `sw`'s publication, which is what keeps it from being lost to an edit that only
 looks at publication. On `DECAY = false` the rendezvous after the row scales
 publishes `sw` to the `Vw` writers, which is what lets the staging run inside the SAME phase as
@@ -808,7 +820,7 @@ state's `s0`). One panel, two consumers — rule 1's half-mass shift is what mak
 and it is why decay needs no second `[BT][BC]` buffer.
 
 This is the DIVISION by cumulative survival that §12 rule 3 exists for, and because the
-production fold is bf16 (§6) rule 3's second site — the `clamp_bf16_finite` at the narrowing
+production fold is bf16 ([above](#mma-precision)) rule 3's second site — the `clamp_bf16_finite` at the narrowing
 point — is LIVE on the WRITE side of the shipped arm, which is rule 3's own motivating case.
 Both sites are required and both are live: the exponent clamp bounds the value
 at `e^88 = 1.65e38` (finite in fp32 AND in bf16, which shares fp32's 8-bit exponent), and the
@@ -873,7 +885,7 @@ barrier, where `clk` is still live. `DECAY` pins `kWtPlane`, so the two facts ar
 
 ## <a id="clk-dead"></a>34. HAZARD `clk-dead` — the `clk -> Vw` lifetime barrier, and it is DECAY's alone
 
-`clk` (the tile's per-leaf inclusive clock prefix) ALIASES `Vw`'s bytes (§11). Both panel builds
+`clk` (the tile's per-leaf inclusive clock prefix) ALIASES `Vw`'s bytes ([`smem_layout.md#vw-clk-union`](smem_layout.md#vw-clk-union)). Both panel builds
 READ `clk` (the `panel_read_factor` / `panel_write_factor` calls), and the `Vw` staging WRITES
 those same bytes, so the two lifetimes need a rendezvous between them. **Removing or moving this
 `__syncthreads()` past a panel build silently corrupts the survival factors of the tile.**
@@ -916,7 +928,8 @@ of the schedule:
 - **No warp is spinning.** Every warp retires BOTH phase counters above this line (the
   `kCtlGramDone` retirement rides the last window), so the `__syncthreads()` inside the staging
   — `sw`'s publication to the `Vw` writers — is reached by the whole CTA with no warp blocked in
-  `await_count`. That is the always-runnable clause of the deadlock argument (§37), discharged
+  `await_count`. That is the always-runnable clause of the deadlock argument
+([`pipeline.md#ctl-reset`](pipeline.md#ctl-reset)), discharged
   for the one barrier that stands in the interior of a tile.
 
 `nxt` is CTA-uniform (`next_cand` reads only SMEM candidate words), so the guard cannot diverge
@@ -979,7 +992,8 @@ whichever one the tree happens to compile.
 **On the narrow arm `!mixed` skips the counter entirely**, at the retirement and at the wait. On
 a `!mixed` visit nobody writes `Gm` (the stores are `mixed`-guarded) and nobody reads it (GEMM 3
 and the mass column's term 2 are too), so the one edge this counter carries — `G -> C` of the
-edge DAG — is VACUOUS there. `Gm` is born and dies inside one tile (it has no ring slot, §10) and
+edge DAG — is VACUOUS there. `Gm` is born and dies inside one tile (it has no ring slot,
+[`smem_layout.md#staging-set`](smem_layout.md#staging-set)) and
 the next tile's stores are ordered behind the end-of-tile `__syncthreads()`, so nothing outside
 the tile observes it either. The counter word is re-zeroed unconditionally by every warp
 regardless of the branch taken, so the skip path leaves nothing inconsistent: it bypasses
@@ -1074,7 +1088,8 @@ den[t] = scale_read[t] * ( sum_i R[t,i] * S[i][DV]
 
 — the same split the value term takes, with `v := 1`. It is ONE column out of `DV + 1`, so it is
 ~1.5 % of the tile's arithmetic; making it an MMA `n` would waste 7/8 of an `n8` fragment (the
-same argument `frag_a_get` records, §21).
+same argument `frag_a_get` records,
+[`mma_tile.md#frag-a-get`](mma_tile.md#frag-a-get)).
 
 **The two terms STRADDLE the fold, and the windowed phase B is what forces it.** The fold's own
 mass recurrence WRITES `S[i][DV]`; the fold shares a phase with the Gram, so term 1 — which
@@ -1165,7 +1180,7 @@ and `mma_tile_fragA`'s own early exit does the rest.
 
 `G` is `[BT x BT]`: `NM` m-blocks x `BT/8` n-blocks of warp tiles, strided over the warps exactly
 as the readout and the fold are. At `BT = 16` the grid is `1 x 2` and warps 0-1 take one tile
-each, i.e. `warp < BT / 8`. Forked on `NM` for the same measured reason (§39).
+each, i.e. `warp < BT / 8`. Forked on `NM` for the same measured reason ([above](#warp-partition)).
 
 The causal test is on the TILE-GLOBAL token indices, so the m-block's row offset enters both
 sides of `u <= t`. At `NM == 1` the offset is zero and this is a plain `u <= t`.
@@ -1215,7 +1230,7 @@ a fragment of a different tile.
 
 ### <a id="fold-epilogue"></a>`DECAY`'s exit scale, riding the fold's existing read-modify-write
 
-`M_exit = s0 * (s0 * M_entry + Sum_j W~[j] v[j])`, and the inner `s0` was applied at entry (§30
+`M_exit = s0 * (s0 * M_entry + Sum_j W~[j] v[j])`, and the inner `s0` was applied at entry ([above](#decay-clock)
 step (c)), so what is left is `S <- s0 * (S + d)`. The fold ALREADY reads `S`, adds to it and
 writes it back; folding the scale into that epilogue costs ONE EXTRA MULTIPLY on a value already
 in a register and ZERO extra shared-memory traffic.
@@ -1278,7 +1293,7 @@ which is what keeps `y` live across phase B (the register cost the `ptxas` probe
 
 On the narrow arm `Vw` is fetched by `ldmatrix` here too — the SAME atom against the SAME layout
 the fold uses, which is what collapses the two access patterns the pitch had to choose between
-(§15) into one.
+([above](#pitches)) into one.
 
 The mass column's term 2 resumes from term 1's `den[t]`: `acc = den[t]`, then
 `acc += Gm[t][u] * sw[u]` over `u <= t`.
@@ -1304,7 +1319,7 @@ So the interval contains NO SMEM object written by one thread and read by anothe
 direction: nothing the emission writes is read by a lagging thread's mass reduction (it writes no
 SMEM at all), and nothing it reads is written by one (`sr` and `den` are both already-ordered).
 The read-then-write ordering on `S` is carried elsewhere entirely, by B6, which stands between
-the readout/mass-term-1 and phase B (§42) — so the emission sits on the far side of the fold and
+the readout/mass-term-1 and phase B ([above](#b6)) — so the emission sits on the far side of the fold and
 the discharge is indifferent to that: the argument is about the interval's read/write SETS, never
 about its position. **Any edit that puts a cross-thread SMEM dependence into this interval opens
 a race with nothing to order it.**
@@ -1331,7 +1346,8 @@ accumulators: **taking the address of a register-resident value is how an accumu
 local memory**, which is the one thing this fragment must not do. `y[q][*]` is indexed by an
 unrolled compile-time `q`, which is a REGISTER SELECTION rather than an address. The OUTPUT side
 does keep its hoist — one base pointer, no array, so no dynamic indexing and no local memory.
-Forked on `NM` for the same measured reason as the three GEMMs (§39).
+Forked on `NM` for the same measured reason as the three GEMMs
+([above](#warp-partition)).
 
 ## <a id="pass1-epilogue"></a>47. §6.4 pass 1's per-leaf epilogue
 
@@ -1348,7 +1364,7 @@ silently drops state. So the test is over-inclusion-safe by construction, which 
 direction every `!= 0.0f` skip in this kernel takes.
 
 **The COEFFICIENT half of the test is NOT here.** It runs in the write-panel build, on the fp32
-value, before the store (§33's `summary-prequant`), because a re-scan of `WT` reads a STORED
+value, before the store ([`summary-prequant`](#summary-prequant)), because a re-scan of `WT` reads a STORED
 coefficient and a stored coefficient is a QUANTIZED one wherever the buffer's format is narrow.
 What is left here is the term that has no pre-quantization site because it is not a coefficient
 at all:
@@ -1362,7 +1378,7 @@ under which `A` leaves `1`.
 
 `COMPACT`: a leaf OUTSIDE the gathered list cannot enter the summary, and that is exact on BOTH
 terms — it has no live write in this tile (so its write coefficients are zero, which the build's
-own test sees) and its `s0` is exactly `1` (the scatter-fill theorem, §30), so it cannot leave
+own test sees) and its `s0` is exactly `1` (the [scatter-fill theorem](#scatter-fill)), so it cannot leave
 `(A, B) = (1, 0)`.
 
 ### `A`, the segment's per-leaf survival product (§2.13)
