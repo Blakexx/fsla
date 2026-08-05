@@ -46,9 +46,7 @@ above.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -56,51 +54,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ratify  # noqa: E402
 
-_ARCH = re.compile(r"^arch = sm_(\d+)\s*$")
-_FUNC = re.compile(r"^\s*Function : (\S+)")
-#: An INSTRUCTION line: it carries an offset marker. The whole line is codegen --
-#: opcode, operands and the encoding word printed beside them.
-_INST = re.compile(r"/\*[0-9a-f]{4,}\*/")
-#: The CONTINUATION line: an encoding word alone, the second half of the instruction's
-#: encoding. It has no offset marker, so it needs its own pattern or it is not hashed.
-_ENC = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
-
 
 def bodies(so: Path) -> dict[str, str]:
-    """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point."""
+    """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point.
+
+    The scan is :func:`ratify.sass_scan`, not a second implementation of it: what
+    counts as a kernel's BODY has to mean one thing, or the build's per-instantiation
+    ratchet and this whole-binary comparison could disagree about whether the code
+    moved.
+    """
     proc = subprocess.Popen([ratify.cuda_bin("cuobjdump"), "-sass", str(so)],
                             stdout=subprocess.PIPE, text=True)
-    out: dict[str, str] = {}
-    arch, key, h = None, None, None
-
-    def flush():
-        if key is not None:
-            #: LAST WRITER WINS IS WRONG HERE, so it is refused: a name appearing in
-            #: two cubins of one arch means the kernel is duplicated across objects,
-            #: which is `tools/fatbin_entries.py`'s failure, and silently hashing one
-            #: of the two copies would hide it behind a green comparison.
-            if key in out and out[key] != h.hexdigest():
-                raise SystemExit(f"{key} is disassembled twice in {so.name} with "
-                                 f"DIFFERENT bodies; run tools/fatbin_entries.py")
-            out[key] = h.hexdigest()
-
-    for line in proc.stdout:
-        m = _ARCH.match(line)
-        if m:
-            flush()
-            arch, key, h = f"sm_{m.group(1)}", None, None
-            continue
-        m = _FUNC.match(line)
-        if m:
-            flush()
-            key, h = f"{arch}:{m.group(1)}", hashlib.sha256()
-            continue
-        if h is None:
-            continue
-        if _INST.search(line) or _ENC.match(line):
-            h.update(" ".join(line.split()).encode())
-            h.update(b"\n")
-    flush()
+    out = {k: v["body_sha256"] for k, v in ratify.sass_scan(proc.stdout).items()}
     rc = proc.wait()
     if rc != 0:
         raise SystemExit(f"cuobjdump -sass FAILED (rc={rc})")

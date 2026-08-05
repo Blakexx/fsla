@@ -658,6 +658,18 @@ _SASS_LABEL_DEF = re.compile(r"^\s*(\.L_[\w.]+):")
 _SASS_LOCAL = re.compile(r"\b(LDL|STL)\b")
 _SASS_BRA = re.compile(r"\bBRA\b.*?(?:`?\((\.L_[\w.]+)\)|0x([0-9a-f]+))")
 
+#: THE BODY-HASH LINE RULES, and they are deliberately WIDER than `_SASS_INST`'s.
+#: The hot-loop parser wants an instruction it can reason about, so it requires a
+#: terminating `;`; the body hash wants EVERY line that carries codegen, which
+#: includes the continuation line holding an instruction's second encoding word. Two
+#: instructions can print identically and encode differently -- a predicate, a
+#: scheduling control field, a reuse flag -- so the encoding words are in the hash
+#: and must be. Not in it: `Function :` headers, `.headerflags`, lineinfo, and the
+#: padding that aligns the encoding column, which is a property of the LISTING and
+#: moves with the longest instruction in it.
+_SASS_BODY_INST = re.compile(r"/\*[0-9a-f]{4,}\*/")
+_SASS_BODY_ENC = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
+
 
 def _hot_locals_in_function(items: list) -> list:
     """`items` = [(pos, kind, payload)] for one function, in order; kinds are
@@ -694,15 +706,41 @@ def _hot_locals_in_function(items: list) -> list:
     return hot
 
 
-def hot_loop_report(sass_lines, wanted: set) -> dict:
-    """Stream `cuobjdump -sass` output; return {key: [(addr, inst), ...]} for every
-    `wanted` instantiation, listing its local accesses inside loops (possibly [])."""
-    report: dict[str, list] = {}
-    arch, key, items, pos = None, None, [], 0
+def sass_scan(sass_lines, wanted: set | None = None) -> dict:
+    """ONE pass over `cuobjdump -sass`, answering every question asked of the SASS.
+
+    `{key -> {"body_sha256", "hot_locals": [(addr, inst)], "local_ops": int}}`:
+
+    * `body_sha256` is the assembled body's identity, and is what "the same code"
+      means in this repository -- names are the weaker check twice over, since a
+      mangling can move while the code is identical (a translation-unit restructure
+      does exactly that to anonymous-namespace kernels) and the code can move while
+      every name is identical.
+    * `hot_locals` is the in-loop local traffic the ratchet bounds.
+    * `local_ops` is EVERY `LDL`/`STL`, in a loop or not -- a seconds-cheap presence
+      count that catches local traffic the byte-level spill report does not (a
+      dynamically indexed local array is not a spill) and that the in-loop count does
+      not see outside a backward-branch interval.
+
+    `wanted` filters; `None` scans every entry point, which is what a whole-binary
+    comparison needs. A name appearing twice within one arch with DIFFERENT bodies
+    is refused rather than resolved last-writer-wins: it means the kernel is
+    duplicated across objects, which is `tools/fatbin_entries.py`'s failure, and
+    hashing one of the two copies would hide it behind a green comparison.
+    """
+    report: dict[str, dict] = {}
+    arch, key, items, pos, digest, locals_seen = None, None, [], 0, None, 0
 
     def flush():
-        if key in wanted and items:
-            report[key] = _hot_locals_in_function(items)
+        if key is None or (wanted is not None and key not in wanted):
+            return
+        entry = {"body_sha256": digest.hexdigest(),
+                 "hot_locals": _hot_locals_in_function(items),
+                 "local_ops": locals_seen}
+        if key in report and report[key]["body_sha256"] != entry["body_sha256"]:
+            raise SystemExit(f"{key} is disassembled twice with DIFFERENT bodies; "
+                             f"run tools/fatbin_entries.py")
+        report[key] = entry
 
     for line in sass_lines:
         m = _SASS_ARCH.match(line)
@@ -714,9 +752,13 @@ def hot_loop_report(sass_lines, wanted: set) -> dict:
         if m:
             flush()
             key, items, pos = f"{arch}:{m.group(1)}", [], 0
+            digest, locals_seen = hashlib.sha256(), 0
             continue
         if key is None:
             continue
+        if _SASS_BODY_INST.search(line) or _SASS_BODY_ENC.match(line):
+            digest.update(" ".join(line.split()).encode())
+            digest.update(b"\n")
         m = _SASS_LABEL_DEF.match(line)
         if m:
             items.append((pos, "label", m.group(1)))
@@ -726,22 +768,27 @@ def hot_loop_report(sass_lines, wanted: set) -> dict:
         if m:
             items.append((pos, "inst", (int(m.group(1), 16), m.group(2))))
             pos += 1
+            if _SASS_LOCAL.search(m.group(2)):
+                locals_seen += 1
     flush()
     return report
 
 
-def measure_hot_locals(objects: dict[str, str], entries: dict) -> dict[str, int]:
-    """Disassemble the SAME objects the register numbers came from and return the
-    per-instantiation count of local accesses inside loops."""
-    def one(obj: str) -> dict[str, list]:
+def measure_sass(objects: dict[str, str], entries: dict) -> dict[str, dict]:
+    """Disassemble the SAME objects the register numbers came from.
+
+    One `cuobjdump` pass per object serves all three SASS-derived facts, so arming
+    the body hash and the local-presence ratchet costs no additional disassembly.
+    """
+    def one(obj: str) -> dict[str, dict]:
         wanted = {k for k, v in objects.items() if v == obj}
         proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj],
                                 stdout=subprocess.PIPE, text=True)
-        got = hot_loop_report(proc.stdout, wanted)
+        got = sass_scan(proc.stdout, wanted)
         rc = proc.wait()
         if rc != 0:
             raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}) on {obj}; the "
-                             f"hot-loop gate cannot pass a binary it cannot read")
+                             f"SASS gates cannot pass a binary they cannot read")
         return got
 
     #: DISASSEMBLED IN PARALLEL, for the same reason the compiles are: this runs on
@@ -749,12 +796,14 @@ def measure_hot_locals(objects: dict[str, str], entries: dict) -> dict[str, int]
     #: back at the far end of the gate. The objects are disjoint by construction --
     #: each instantiation is emitted by exactly one of them -- so there is nothing to
     #: reconcile between the workers.
-    report: dict[str, list] = {}
+    report: dict[str, dict] = {}
     objs = sorted(set(objects.values()))
     with ThreadPoolExecutor(max_workers=min(len(objs), (os.cpu_count() or 1))) as pool:
         for got in pool.map(one, objs):
             report.update(got)
-    return {name: len(report.get(name, [])) for name in entries}
+    return {name: report.get(name, {"body_sha256": None, "hot_locals": [],
+                                    "local_ops": 0})
+            for name in entries}
 
 
 def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
@@ -776,6 +825,92 @@ def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
     print(f"hot-loop gate: in-loop local accesses within ratified counts on all "
           f"{len(hot)} entries (tree total {total}); PASS")
     return True
+
+
+def check_local_presence(local_ops: dict[str, int], want: dict) -> bool:
+    """The CHEAP RATCHET: `LDL`/`STL` PRESENCE, in a loop or not.
+
+    A complement to the two expensive gates rather than a replacement for either.
+    `ptxas`'s spill bytes miss local traffic that is not a spill -- a dynamically
+    indexed local array is the case that matters here -- and the in-loop count only
+    sees what sits inside a backward-branch interval. Counting every local access is
+    a single integer per instantiation, read off the disassembly the other gates
+    already produced, and it moves whenever either of them would.
+
+    A ratchet, not a ban: the decay arms carry structural local traffic that no
+    register budget removes, so each entry is held AT its ratified count.
+    """
+    missing = sorted(n for n in local_ops if n in want and "local_ops" not in want[n])
+    if missing:
+        print(f"\nFAIL  {len(missing)} manifest entr(ies) predate the local-presence "
+              f"ratchet (no `local_ops`). An unarmed ratchet is not a looser gate, "
+              f"it is no gate; re-ratify with --write, e.g.\n"
+              f"        {missing[0]}")
+        return False
+    grew = [(n, want[n]["local_ops"], c) for n, c in sorted(local_ops.items())
+            if n in want and c > want[n]["local_ops"]]
+    if grew:
+        print(f"\nFAIL  LOCAL-MEMORY GROWTH: {len(grew)} instantiation(s) execute "
+              f"MORE local accesses than were ratified. Local traffic is a memory "
+              f"round-trip the register file was supposed to absorb:")
+        for name, exp, got in grew[:10]:
+            print(f"        ratified {exp} -> realized {got}  {name}")
+        if len(grew) > 10:
+            print(f"        ... and {len(grew) - 10} more")
+        return False
+    print(f"local-presence gate: LDL/STL counts within ratified values on all "
+          f"{len(local_ops)} entries (tree total {sum(local_ops.values())}); PASS")
+    return True
+
+
+def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool) -> bool:
+    """THE INCREMENTAL RATCHET: per-instantiation codegen identity.
+
+    The source digest is a WHOLESALE trigger -- any edit under `csrc/rola/src` moves
+    it and invalidates every one of the ratified entries at once -- and that is
+    correct as a trigger and useless as a diagnosis. The body hash is the per-entry
+    answer to the question the digest can only ask globally: which instantiations'
+    CODE actually moved.
+
+    So the check reads two ways, and both are hard:
+
+    * `fresh` (the digest matches): every ratified body must still hash the same. The
+      digest says the inputs did not move; this says the OUTPUT did not either, which
+      is an independent statement and the one the spill numbers depend on.
+    * not `fresh` (the digest moved): the numbers must be re-measured, but the entries
+      whose bodies are unchanged are provably still described by their ratified
+      numbers. Naming the moved ones turns "re-ratify" into a scoped, checkable act
+      instead of a 1,216-entry re-derivation.
+    """
+    missing = sorted(n for n in bodies if n in want and "sass_sha256" not in want[n])
+    if missing:
+        print(f"\nFAIL  {len(missing)} manifest entr(ies) predate the SASS-body "
+              f"ratchet (no `sass_sha256`), so codegen identity is unratified and "
+              f"unfalsifiable. Re-ratify with --write, e.g.\n        {missing[0]}")
+        return False
+    moved = sorted(n for n, h in bodies.items()
+                   if n in want and h != want[n]["sass_sha256"])
+    if not moved:
+        if fresh:
+            print(f"SASS-body gate: all {len(bodies)} ratified bodies unchanged; PASS")
+            return True
+        print("\nFAIL  the source digest moved but NO ratified body did. The "
+              "manifest still describes this codegen exactly; re-ratify with "
+              "--write to record the new source digest.")
+        return False
+    print(f"\nFAIL  SASS BODY DRIFT: {len(moved)} of {len(bodies)} ratified "
+          f"instantiation(s) assemble to different code than was ratified"
+          + ("" if fresh else " (the source digest moved too, so this is the SCOPE "
+                             "of that move)") + ":")
+    for name in moved[:10]:
+        print(f"        {name}")
+    if len(moved) > 10:
+        print(f"        ... and {len(moved) - 10} more")
+    if fresh:
+        print("      The source digest did NOT move, so this is codegen changing "
+              "under a source tree that did not: a toolchain or environment "
+              "difference the digest cannot see.")
+    return False
 
 
 #: --------------------------------------------------------------------------
@@ -884,9 +1019,14 @@ def main() -> int:
             else ()
         entries, unhonored, objects = compile_and_parse(arches, tmp, sources,
                                                         defines=defines)
-        hot = measure_hot_locals(objects, entries)
-        for name, count in hot.items():
-            entries[name]["hot_locals"] = count
+        scan = measure_sass(objects, entries)
+        hot = {name: len(s["hot_locals"]) for name, s in scan.items()}
+        bodies = {name: s["body_sha256"] for name, s in scan.items()}
+        local_ops = {name: s["local_ops"] for name, s in scan.items()}
+        for name, s in scan.items():
+            entries[name]["hot_locals"] = len(s["hot_locals"])
+            entries[name]["local_ops"] = s["local_ops"]
+            entries[name]["sass_sha256"] = s["body_sha256"]
         if a.census:
             census_report(entries, unhonored, hot)
             if a.json:
@@ -937,9 +1077,15 @@ def main() -> int:
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
     ok = check_defines(manifest) and ok
-    ok = check_freshness(manifest) and ok
+    #: The freshness verdict is REUSED rather than recomputed: the body gate reads
+    #: differently on each side of it, and two independent computations of "is the
+    #: source digest current" could disagree.
+    fresh = check_freshness(manifest)
+    ok = fresh and ok
     ok = check(entries, unhonored, want) and ok
     ok = check_hot_loop(hot, want) and ok
+    ok = check_local_presence(local_ops, want) and ok
+    ok = check_sass_bodies(bodies, want, fresh) and ok
 
     if a.self_test:
         #: NON-VACUITY. Tighten one entry that actually spills (or, if nothing
@@ -1074,9 +1220,9 @@ def main() -> int:
             "        /*0010*/ IADD3 R3, R3, 1, RZ ;",
             "        /*0020*/ @P0 BRA `(.L_x_1) ;",
         ]
-        rep = hot_loop_report(iter(hot_sass), {"sm_86:k_hot", "sm_86:k_cold"})
+        rep = sass_scan(iter(hot_sass), {"sm_86:k_hot", "sm_86:k_cold"})
         print("\n--- SELF-TEST: the hot-loop parser on synthetic SASS ---")
-        counts = {k: len(v) for k, v in rep.items()}
+        counts = {k: len(v["hot_locals"]) for k, v in rep.items()}
         if counts != {"sm_86:k_hot": 1, "sm_86:k_cold": 0}:
             print(f"\nSELF-TEST FAILED: hot-loop parser reported {counts}; it "
                   f"must count exactly the in-loop LDL (k_hot=1, k_cold=0)")
@@ -1091,6 +1237,73 @@ def main() -> int:
                   "not ratified for")
             return 1
         print("SELF-TEST PASSED: the ratchet rejects in-loop growth")
+
+        #: NON-VACUITY OF THE LOCAL-PRESENCE RATCHET, on the same synthetic SASS.
+        #: `k_cold`'s `LDL` sits outside every loop, so the hot-loop gate clears it
+        #: and this one must NOT -- which is the whole reason the cheap count is
+        #: kept beside the expensive one.
+        print("\n--- SELF-TEST: local-presence growth on an out-of-loop LDL\n"
+              "    (this run MUST fail) ---")
+        assert rep["sm_86:k_cold"]["local_ops"] == 1
+        if check_local_presence({"sm_86:k_cold": 1},
+                                {"sm_86:k_cold": {"local_ops": 0}}):
+            print("\nSELF-TEST FAILED: the presence ratchet PASSED local traffic "
+                  "it was not ratified for")
+            return 1
+        print("SELF-TEST PASSED: the presence ratchet catches a local access the "
+              "in-loop gate is right to ignore")
+
+        #: NON-VACUITY OF THE BODY HASH, both directions. Two functions whose
+        #: instruction text differs must hash differently, or the comparison is
+        #: decorative; the SAME text laid out with different column padding must hash
+        #: identically, or every rebuild reads as a codegen change and the gate gets
+        #: turned off.
+        print("\n--- SELF-TEST: the SASS body hash on synthetic SASS ---")
+        moved_sass = [
+            "arch = sm_86",
+            "                Function : k_a",
+            "        /*0000*/ IADD3 R3, R3, 1, RZ ;",
+            "                                     /* 0x000fe200078e0203 */",
+            "                Function : k_b",
+            "        /*0000*/ IADD3 R3, R3, 2, RZ ;",
+            "                                     /* 0x000fe200078e0203 */",
+            "                Function : k_a_repadded",
+            "   /*0000*/     IADD3   R3,  R3, 1, RZ ;",
+            "     /* 0x000fe200078e0203 */",
+        ]
+        got = sass_scan(iter(moved_sass))
+        a, b = got["sm_86:k_a"]["body_sha256"], got["sm_86:k_b"]["body_sha256"]
+        repad = got["sm_86:k_a_repadded"]["body_sha256"]
+        if a == b:
+            print("\nSELF-TEST FAILED: two different instruction texts hashed the "
+                  "same; the body hash cannot detect a codegen change")
+            return 1
+        if a != repad:
+            print("\nSELF-TEST FAILED: re-padding the listing moved the body hash; "
+                  "the hash is over the LISTING's column alignment, not the code")
+            return 1
+        print("SELF-TEST PASSED: the body hash separates changed code and ignores "
+              "listing padding")
+
+        #: ... and the GATE built on it must fail on a perturbed ratified hash.
+        print("\n--- SELF-TEST: a ratified body hash that no longer matches\n"
+              "    (this run MUST fail) ---")
+        if check_sass_bodies({"sm_86:k_a": a},
+                             {"sm_86:k_a": {"sass_sha256": "0" * 64}}, True):
+            print("\nSELF-TEST FAILED: the gate ACCEPTED an instantiation whose "
+                  "assembled body is not the one that was ratified")
+            return 1
+        print("SELF-TEST PASSED: the gate rejects codegen it did not ratify")
+
+        #: ... and an UNARMED entry is a failure, not a pass. A ratchet with no
+        #: recorded value is the vacuous gate this discipline exists to catch.
+        print("\n--- SELF-TEST: a manifest entry with no ratified body hash\n"
+              "    (this run MUST fail) ---")
+        if check_sass_bodies({"sm_86:k_a": a}, {"sm_86:k_a": {}}, True):
+            print("\nSELF-TEST FAILED: an unratified body hash passed as though it "
+                  "had been checked")
+            return 1
+        print("SELF-TEST PASSED: an unarmed body ratchet fails rather than passes")
     return 0 if ok else 1
 
 

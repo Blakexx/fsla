@@ -12,7 +12,8 @@ tools/manifests/sm_86.json
                                               "count": 32 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
-                                            "hot_locals": 0 }, ... } }
+                                            "hot_locals": 0, "local_ops": 12,
+                                            "sass_sha256": "..." }, ... } }
 ```
 
 352 entries per architecture, measured on the current tree: 256 for the consumer,
@@ -62,14 +63,41 @@ subset would silently drop every instantiation it did not compile.
 
 ## What the gate refuses
 
-The gate reads `ptxas -v`. Four outcomes, and the difference between them is deliberate:
+The gate reads `ptxas -v` and the disassembly of the same objects. Its outcomes,
+and the difference between them, are deliberate:
 
 | Outcome | Meaning |
 |---|---|
 | **FAIL — toolchain drift** | The invoked `ptxas` is not the one the manifest was ratified under. A spill/register manifest is a property of the *assembler* as much as of the source, so these numbers say nothing about this assembler — in **both** directions. Re-ratification is required. |
 | **FAIL — spill growth** | An instantiation spills more than its manifest entry. Spills are the thing being bounded. |
 | **FAIL — an unhonored bound** | `ptxas` reported *"Value of threads per SM … is out of range"*. That entry compiled with **no launch bound at all**, so the assembler was free to spend registers as it liked. A hard failure even at zero spills. |
+| **FAIL — source drift** | The tree's `csrc/rola/src` digest is not the one the manifest was measured against. |
+| **FAIL — hot-loop growth** | An instantiation executes more `LDL`/`STL` *inside a loop* than it ratified. In-loop local traffic is a memory round-trip per iteration, disqualifying whatever the byte count. |
+| **FAIL — local-memory growth** | An instantiation executes more `LDL`/`STL` *anywhere* than it ratified. A cheap complement to the two above: `ptxas`'s spill bytes miss local traffic that is not a spill (a dynamically indexed local array), and the in-loop count only sees a backward-branch interval. |
+| **FAIL — SASS body drift** | An instantiation assembles to different code than was ratified. |
 | **REPORT — register drift** | A changed register count with no spill growth is printed, not failed. Register allocation is an outcome that legitimately moves; what must not move is the spilling. |
+
+### The body hash is the incremental half of the freshness trigger
+
+The source digest is **wholesale**: any edit under `csrc/rola/src` moves it and
+invalidates all ratified entries at once. That is right as a trigger and useless as
+a diagnosis. `sass_sha256` — the sha256 of an instantiation's assembled instruction
+text, whitespace-normalised, encoding words included, listing padding excluded — is
+the per-entry answer to what the digest can only ask globally, and it reads two ways:
+
+* **the digest matches** → every ratified body must still hash the same. The digest
+  says the *inputs* did not move; this says the *output* did not either, which is an
+  independent statement and the one the spill numbers depend on.
+* **the digest moved** → the numbers must be re-measured, but the entries whose
+  bodies are unchanged are provably still described by their ratified numbers, and
+  the gate names only the moved ones. That is what makes a scoped `--shard`
+  re-measurement a checkable claim rather than an assertion.
+
+**Both maps must come from binaries built at the same PATH.** `decode.cu` and
+`entmax.cu` place their kernels in an anonymous namespace, so the mangled name
+embeds a discriminator derived from the source path; a manifest written in a
+worktree names 192 kernels that no build at any other path will ever define. Build
+one tree over the other rather than side by side.
 
 ## The four closed-world rules
 
@@ -133,7 +161,13 @@ requires the gate to **fail** on the things it must reject:
 7. a perturbed source digest,
 8. in-loop local-access growth past a ratified count — plus the hot-loop parser
    proving, on synthetic SASS, that it counts an in-loop `LDL` and clears a cold
-   one.
+   one,
+9. local-access growth on the `LDL` the hot-loop gate is right to ignore, which is
+   what shows the cheap ratchet is not a restatement of the expensive one,
+10. a ratified `sass_sha256` that no longer matches, and an entry carrying none at
+    all — plus the hash itself proving, on synthetic SASS, that two different
+    instruction texts hash differently and that re-padding one listing does not
+    move its hash.
 
 A gate whose green run is unfalsifiable says nothing. This project has already
 shipped two gates that turned out to be vacuous before they were fixed, which is
