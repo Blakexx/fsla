@@ -48,6 +48,16 @@ static_assert(sm_arch_tabulated(kConsumerArch),
               "consumer_check_arch_table() rather than letting the launch bound guess");
 constexpr SmResources kSm = sm_resources(kConsumerArch);
 
+//: `MMA_K_QUANTUM` -- the hardware `mma.sync` k-extent on the sm80-class bf16 path,
+//: and THE named constant every quanta-shaped quantity in this engine is an expression
+//: in (spec §1 I1: no `BC`-derived literals). `QPO = BC / kMmaKQuantum` is "quanta per
+//: owner"; an ATOM is one `kMmaKQuantum`-leaf block in canonical leaf order, which is
+//: also §4.5's page granule. It lives HERE, with the other compile-time hardware facts,
+//: because it is one number for the consumer kernel, the §6.4 scan and the routing
+//: summary pass alike -- three readers that share no other header.
+//: docs/internals/arch_table.md#mma-quantum
+constexpr int kMmaKQuantum = 16;
+
 //: THE DRIVER'S PER-CTA SHARED-MEMORY RESERVE -- measured, and not an arch table
 //: entry because no attribute reports it. The residency condition is
 //: `ctas * (smem_per_cta + 1024) <= smem_per_sm`, NOT `ctas * smem <= smem_per_sm`;

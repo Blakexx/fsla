@@ -331,12 +331,13 @@ independently paged runs), so a paged and an unpaged fold see the same numbers.
 than in an unrolled loop; this is pass 2 of a split launch, one CTA per SPLIT
 owner, and the resolution is an L1-resident int32 load.
 
-`kScanAtomLeaves` is §4.5's page granule, mirrored from
-`rola.ops.paging.MMA_K_QUANTUM` and equal by construction to
-`consumer_kernel.cuh`'s `kMmaKQuantum` — one number, and
-`tests/unit/test_paging_atoms.py` plus the paged equivalence fixtures are what
-keep the mirrors honest. It is declared in this TU because `scan_kernel` lives
-here and must not include the consumer kernel's header.
+§4.5's page granule IS `arch_table.cuh`'s `kMmaKQuantum`
+([arch_table.md#mma-quantum](arch_table.md#mma-quantum)) — ONE definition, and that
+is exactly what lets `scan_kernel` address the state the way the consumer does while
+this TU deliberately does not include the consumer kernel's header.
+`rola.ops.paging.MMA_K_QUANTUM` is the Python mirror;
+`tests/unit/test_paging_atoms.py` plus the paged equivalence fixtures are what keep
+it honest.
 
 ## <a id="written-leaf-fold"></a>B5. The fold touches the written-leaf list ONLY
 

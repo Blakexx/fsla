@@ -81,3 +81,34 @@ The measurement the value rests on: a build at **32.94 KiB/CTA** satisfies the n
 form for 3 CTAs (98.8 KiB < 100 KiB) and **the driver reports 2**. Any residency
 desk-check written in the naive form — §10i.14's ledger among them — over-promises by
 exactly this term.
+
+## <a id="mma-quantum"></a>5. `kMmaKQuantum = 16` — the hardware `mma.sync` k-extent
+
+The k-extent of the `mma.sync.aligned.m16n8k16` instruction the consumer issues on
+the sm80-class bf16 path, and therefore **the** named constant every quanta-shaped
+quantity in this engine is an expression in (spec §1 invariant I1 forbids a
+`BC`-derived literal). Two derived names appear everywhere:
+
+| name | definition |
+|---|---|
+| ATOM | one `kMmaKQuantum`-leaf block in canonical leaf order |
+| `QPO` | quanta per owner, `BC / kMmaKQuantum` |
+
+It is a SHAPE of an instruction, never a tuning threshold, so it belongs with the
+other compile-time hardware facts rather than with any one consumer of it.
+
+**Why this header owns it.** Three translation units need the same number and share
+no other header: `consumer_kernel.cuh` (the atom granularity of the state block, the
+`WT` window, the control-word count), `consumer.cu`'s `scan_kernel` (§4.5's page
+granule — it must address the state exactly as the consumer does while deliberately
+NOT including the consumer kernel's header), and `summaries.cuh` (§6's bin count,
+`QPO + 1`). A per-file constant in each is three definitions of one hardware fact,
+which is how a re-key drifts. `arch_table.cuh` is host-safe and already reachable
+from all three.
+
+The Python side mirrors the same value at `rola.planner.schedule.MMA_K_QUANTUM`,
+`rola.routing.summaries.MMA_K_QUANTUM` and `rola.ops.paging.MMA_K_QUANTUM`; a C++
+`constexpr` cannot be imported there. `tests/unit/test_paging_atoms.py` and the paged
+equivalence fixtures are what keep those mirrors honest, and the summary pass's host
+entry checks its derived bin count against the caller's so a drift fails loudly
+rather than silently.

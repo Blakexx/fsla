@@ -58,14 +58,11 @@ using rola::detail::segment_word_mask;
 
 constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state frees
 
-//: `MMA_K_QUANTUM` -- the hardware `mma.sync` k-extent on the sm80-class bf16 path,
-//: and THE named constant every quanta-shaped quantity in this kernel is an
-//: expression in (spec §1 I1: no `BC`-derived literals). `QPO = BC / MMA_K_QUANTUM`
-//: is "quanta per owner"; an ATOM is one `MMA_K_QUANTUM`-leaf block in canonical leaf
-//: order. The planner mirrors this value at `rola.planner.schedule.MMA_K_QUANTUM`.
-constexpr int kMmaKQuantum = 16;
+//: `kMmaKQuantum` is `arch_table.cuh`'s, not this file's: it is one number for the
+//: kernel, the §6.4 scan and the summary pass. The planner mirrors the same value at
+//: `rola.planner.schedule.MMA_K_QUANTUM`. docs/internals/arch_table.md#mma-quantum
 
-//: §8 CALIBRATION PLACEHOLDER `C_WT_WINDOW` (I5): how many `MMA_K_QUANTUM`-leaf ATOMS
+//: §8 CALIBRATION PLACEHOLDER `C_WT_WINDOW` (I5): how many `kMmaKQuantum`-leaf ATOMS
 //: of the write panel `WT` the tile's second phase holds at once. `0` means `QPO`,
 //: which IS the plane, i.e. today's structure exactly. It is the ALLOCATION as well
 //: as the phase, and it is PINNED to the plane on the `DECAY` arm as a correctness

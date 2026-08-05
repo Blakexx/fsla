@@ -81,10 +81,15 @@ is what keeps the whole thing to one launch.**
 ## <a id="quantum"></a>4. `kMmaKQuantum = 16`
 
 §6's MMA k-extent, and therefore the quantum every gathered extent rounds up to. A
-SHAPE of the instruction the consumer issues, never a tuning threshold. Mirrored
-from `rola.routing.summaries.MMA_K_QUANTUM`; the host entry point checks the
-derived bin count against the caller's, so a drift is a failure and not a silent
-one.
+SHAPE of the instruction the consumer issues, never a tuning threshold.
+
+**It is not defined here.** This pass's bin count and the consumer's atom
+granularity are the same hardware number, so there is ONE definition — in
+`arch_table.cuh`, which this header includes:
+[arch_table.md#mma-quantum](arch_table.md#mma-quantum).
+`rola.routing.summaries.MMA_K_QUANTUM` is the Python mirror; the host entry point
+checks the derived bin count against the caller's, so a drift is a failure and not
+a silent one.
 
 ## <a id="declared-bounds"></a>5. The declared bounds, and why each is a refusal
 

@@ -61,11 +61,11 @@ namespace {
 // anywhere (P5.21's obligation). docs/internals/consumer.md#ordered-fold
 // ---------------------------------------------------------------------------
 
-//: §4.5's page granule, mirrored from `rola.ops.paging.MMA_K_QUANTUM` and equal by
-//: construction to `consumer_kernel.cuh`'s `kMmaKQuantum` -- one number, kept honest
-//: by `tests/unit/test_paging_atoms.py` and the paged equivalence fixtures. Declared
-//: here because `scan_kernel` must not include the consumer kernel's header.
-constexpr int kScanAtomLeaves = 16;
+//: §4.5's page granule IS `arch_table.cuh`'s `kMmaKQuantum` -- ONE definition, which is
+//: what lets `scan_kernel` address the state exactly as the consumer does without
+//: including the consumer kernel's header. Mirrored on the Python side by
+//: `rola.ops.paging.MMA_K_QUANTUM` and kept honest by `tests/unit/test_paging_atoms.py`
+//: and the paged equivalence fixtures. docs/internals/arch_table.md#mma-quantum
 
 __global__ void scan_kernel(ScanParams p) {
   extern __shared__ float E[];
@@ -80,17 +80,17 @@ __global__ void scan_kernel(ScanParams p) {
 
   // The owner's entry state, addressed exactly as the consumer addresses it, so a
   // paged and an unpaged fold see the same numbers.
-  const int atoms_per_bh = static_cast<int>(p.N / kScanAtomLeaves);
+  const int atoms_per_bh = static_cast<int>(p.N / kMmaKQuantum);
   for (int e = threadIdx.x; e < n; e += blockDim.x) {
     const int i = e / cols;
     const int c = e - i * cols;
-    const int q = i / kScanAtomLeaves;
-    const int r = i - q * kScanAtomLeaves;
+    const int q = i / kMmaKQuantum;
+    const int r = i - q * kMmaKQuantum;
     int64_t row;
     if (p.page_table != nullptr) {
-      const int physical = p.page_table[static_cast<int64_t>(bh) * atoms_per_bh
-                                        + owner * (BC / kScanAtomLeaves) + q];
-      row = physical >= 0 ? static_cast<int64_t>(physical) * kScanAtomLeaves + r
+      const int physical =
+          p.page_table[static_cast<int64_t>(bh) * atoms_per_bh + owner * (BC / kMmaKQuantum) + q];
+      row = physical >= 0 ? static_cast<int64_t>(physical) * kMmaKQuantum + r
                           : static_cast<int64_t>(-1);
     } else {
       row = static_cast<int64_t>(bh) * p.N + static_cast<int64_t>(owner) * BC + i;
@@ -374,18 +374,17 @@ std::vector<at::Tensor> rola_consumer_forward(
   const int64_t cols = d_v + (global_norm ? 1 : 0);
   int64_t N;
   if (page_table.has_value()) {
-    TORCH_CHECK(BC % kScanAtomLeaves == 0,
-                "BC must be a whole number of MMA_K_QUANTUM=", kScanAtomLeaves,
+    TORCH_CHECK(BC % kMmaKQuantum == 0, "BC must be a whole number of MMA_K_QUANTUM=", kMmaKQuantum,
                 "-leaf atoms under paging (spec §1b); got BC=", BC);
-    TORCH_CHECK(state.dim() == 3 && state.size(1) == kScanAtomLeaves && state.size(2) == cols,
-                "paged state must be [physical_slots, MMA_K_QUANTUM(", kScanAtomLeaves,
+    TORCH_CHECK(state.dim() == 3 && state.size(1) == kMmaKQuantum && state.size(2) == cols,
+                "paged state must be [physical_slots, MMA_K_QUANTUM(", kMmaKQuantum,
                 "), d_v(+1 under global)] -- the page granule is the "
                 "ATOM, not the owner rectangle (spec §4.5)");
     const auto& table = *page_table;
-    const int64_t atoms_per_bh = owners_total * BC / kScanAtomLeaves;
+    const int64_t atoms_per_bh = owners_total * BC / kMmaKQuantum;
     TORCH_CHECK(table.is_cuda() && table.is_contiguous() && table.scalar_type() == at::kInt
                     && table.dim() == 2 && table.size(0) == BH && table.size(1) == atoms_per_bh,
-                "page_table must be contiguous int32 [BH, atoms_per_bh = N/", kScanAtomLeaves,
+                "page_table must be contiguous int32 [BH, atoms_per_bh = N/", kMmaKQuantum,
                 "] on the state's device");
     N = owners_total * BC;
   } else {

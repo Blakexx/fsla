@@ -30,13 +30,14 @@
 
 #include <vector>
 
-namespace rola::summaries {
+//: For `kMmaKQuantum`, §6's MMA k-extent and therefore the quantum every gathered
+//: extent rounds up to. Taken from the one home rather than restated here: this pass's
+//: bin count and the consumer's atom granularity are the SAME number, and the host
+//: entry checks the derived bin count against the caller's so a drift fails loudly.
+//: docs/internals/arch_table.md#mma-quantum
+#include "arch_table.cuh"
 
-//: §6's MMA k-extent, and therefore the quantum every gathered extent rounds up to. A
-//: SHAPE of the instruction the consumer issues, never a tuning threshold. Mirrored
-//: from `rola.routing.summaries.MMA_K_QUANTUM`, and the host entry checks the derived
-//: bin count against the caller's so a drift fails loudly.
-constexpr int kMmaKQuantum = 16;
+namespace rola::summaries {
 
 //: Token bits carried by one support word. A `BT` above this cannot be
 //: represented and is REFUSED, never split into a second code path.

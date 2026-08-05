@@ -130,7 +130,7 @@ waste 7/8 of an `n8` fragment (§21).
 | `DV` | value width `d_v`; `{32, 64}` |
 | `D` | level count of the topology; `1 <= D <= 4` (spec §1) |
 | `j` | `first_spanned_level`. Levels `l < j` are FIXED for this owner |
-| `kMmaKQuantum` | `16` — the hardware `mma.sync` k-extent on the sm80 bf16 path, and the named constant every quanta-shaped quantity is an expression in (spec §1 I1) |
+| `kMmaKQuantum` | `16` — the hardware `mma.sync` k-extent on the sm80 bf16 path, and the named constant every quanta-shaped quantity is an expression in (spec §1 I1). Defined once, in `arch_table.cuh`: [arch_table.md#mma-quantum](arch_table.md#mma-quantum) |
 | `QPO` / `kQPO` | quanta per owner, `BC / kMmaKQuantum`. An ATOM is one `kMmaKQuantum`-leaf block in canonical leaf order |
 | `NM` | `BT / 16` — the tile's `m16` ROW BLOCKS |
 | `NT_DV` | `DV / 8` — the `n8` column tiles of a `DV`-wide output |
