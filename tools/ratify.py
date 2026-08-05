@@ -13,9 +13,9 @@ register budgets -- the decay arms' structural local-array traffic -- and the ga
 holds each one AT its ratified bytes. The original "one 4-byte spill on one of 128"
 phrasing described the pre-K3/K4 kernel and went stale; coverage-closure item 12.)
 
-Since the coverage-closure census extension the probe also measures the DECODE GEMV
-(32 instantiations) and the two UNION-ENTMAX kernels (64), so their
-`__launch_bounds__` are read off `ptxas -v` instead of asserted in comments.
+The gate also measures the DECODE GEMV (32 instantiations) and the two UNION-ENTMAX
+kernels (64), so their `__launch_bounds__` are read off `ptxas -v` instead of
+asserted in comments.
 
 SIX OUTCOMES, and the difference between them is deliberate:
 
@@ -53,10 +53,10 @@ SIX OUTCOMES, and the difference between them is deliberate:
   moves when the kernel changes; what must not move is the spilling.
 
 THE FORCING CENSUS (`--census [--force-ctas N] [--json PATH]`) is the measurement
-mode the register rung is derived from: one probe compile over the whole 512-entry
-dispatch matrix at a candidate launch bound, reported per structural key. It never
-touches a manifest, and `--force-ctas` outside `--census` is refused -- a forced
-bound must never be ratified.
+mode the register rung is derived from: a compile of the whole 512-entry dispatch
+matrix at a candidate launch bound, reported per structural key and per SHARD. It
+never touches a manifest, and `--force-ctas` outside `--census` is refused -- a
+forced bound must never be ratified.
 
 **RE-RATIFICATION IS A MEASUREMENT, NOT AN EDIT.** The manifest is regenerated only by
 `--write`, which re-runs this same compile and records what it reports. Hand-editing an
@@ -69,20 +69,32 @@ Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the l
 
     python tools/ratify.py
     python tools/ratify.py --arch 80 --arch 86
-    python tools/ratify.py --arch 89 --write        # bringing up a new architecture
+    python tools/ratify.py --arch 89 --write               # bringing up a new arch
+    python tools/ratify.py --shard consumer_bf16_raw_bt32  # triage one shard's slice
+
+`--shard` is a MEASUREMENT scope and never a ratification scope: a ratchet refusal is
+investigated one 64-entry slice at a time instead of by re-deriving 1,216 entries, but
+`--write` refuses it, because a manifest written from a subset of the translation
+units would silently drop every instantiation it did not compile.
 
 `--self-test` requires the gate to FAIL on the things it must reject: a deliberately
 tightened manifest, a perturbed `ptxas` version, an arch with no committed manifest, a
-per-arch split that does not rejoin to one digest, a perturbed source digest, and
-in-loop local-access growth past a ratified count (plus the hot-loop parser proving it
-counts an in-loop `LDL` and clears a cold one on synthetic SASS). That is what makes a
-green run mean something: a gate that cannot fail is not a gate (`rewrite.md`'s vacuity
-discipline, applied to itself).
+per-arch split that does not rejoin to one digest, per-arch files that disagree about
+shard membership, a shard block that is decorative or that is a property of the
+filing, a perturbed source digest, and in-loop local-access growth past a ratified
+count (plus the hot-loop parser proving it counts an in-loop `LDL` and clears a cold
+one on synthetic SASS). That is what makes a green run mean something: a gate that
+cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
 MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH (§3.7), each
-`{"toolchain": {"ptxas": <version string>}, "entries": {<mangled name>: {...}}}`. The
-toolchain block is a sibling of the entries rather than a reserved key inside them, so
-an instantiation can never be confused for metadata by a name that happens to collide.
+`{"toolchain": {...}, "source": {...}, "shards": {...}, "entries": {<mangled name>:
+{...}}}`. The metadata blocks are siblings of the entries rather than reserved keys
+inside them, so an instantiation can never be confused for metadata by a name that
+happens to collide. `shards` is `{shard name: {members_sha256, count}}` -- MEMBERSHIP
+ONLY, no paths and no ordering -- and it enters the digest, which is what makes "only
+shards X and Y were re-measured" a provable statement rather than a claim. Every arch
+file must agree on it: the per-arch split is a filing decision and may not become a
+split MATRIX.
 
 **WHY PER ARCH.** *"Does arch X have a ratified manifest?"* becomes a file-existence
 question, which is what `setup.py`'s rule-3 gate needs to ask before it compiles
@@ -103,6 +115,7 @@ import subprocess
 import sys
 import sysconfig
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -127,17 +140,64 @@ def cuda_bin(tool: str) -> str:
     return str(Path(home) / "bin" / tool)
 
 
-PROBE = Path(__file__).with_name("probe_launch_bounds.cu")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_flags  # noqa: E402
+import gen_shards  # noqa: E402
+
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
+
+#: THE TRANSLATION UNITS THIS GATE COMPILES -- THE SHIPPED ONES.
+#:
+#: It used to compile a probe: one file under `tools/` that re-enumerated the
+#: consumer's 512-instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to
+#: reach their dispatch closures. That probe was a SECOND enumeration of a set the
+#: dispatch already defined (the drift shape this project has been bitten by), it
+#: re-compiled the whole matrix on every build cycle on top of the build's own
+#: compile of it, and -- the part that was never stated -- its 96 decode/entmax keys
+#: named symbols that existed IN NO SHIPPED BINARY, because nvcc derives an
+#: anonymous-namespace kernel's mangled discriminator from the file that instantiates
+#: it, and that file was the probe.
+#:
+#: Now the gate compiles the shipped sources themselves: the eight generated
+#: instantiation shards, plus `decode.cu` and `entmax.cu` as the translation units
+#: they are in the build. The 512 consumer keys are unchanged by construction --
+#: `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
+#: depend on which translation unit expands it -- and the 96 decode/entmax keys now
+#: name the symbols that are actually in the `.so`, which `tools/fatbin_entries.py`
+#: checks rather than asserts.
+STANDALONE_TUS = ("decode.cu", "entmax.cu")
+
+
+def shard_paths() -> list[Path]:
+    return [SRC / "instantiations" / f"{name}.cu" for name in sorted(gen_shards.shards())]
+
+
+def tu_paths(shards: tuple[str, ...] | None = None) -> list[Path]:
+    """The translation units to compile. `shards` scopes to a subset by stem.
+
+    Scoping is a MEASUREMENT scope, never a ratification scope: `--write` still
+    refuses to file a manifest that does not carry the whole matrix, because a
+    partial manifest would silently drop every arm it did not compile.
+    """
+    paths = shard_paths()
+    if shards is not None:
+        by_stem = {p.stem: p for p in paths}
+        unknown = sorted(set(shards) - set(by_stem))
+        if unknown:
+            raise SystemExit(f"no such shard: {', '.join(unknown)}\n"
+                             f"    known: {', '.join(sorted(by_stem))}")
+        paths = [by_stem[s] for s in sorted(shards)]
+        return paths
+    return paths + [SRC / name for name in STANDALONE_TUS]
 #: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
 #: (repository headers first). This gate's whole premise is that it compiles the
-#: probe under the shipped kernel's flags; an include path the extension has and the
-#: probe does not is that premise failing silently.
+#: shipped translation units under the shipped kernel's flags; an include path the
+#: extension has and this gate does not is that premise failing silently.
 CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cutlass" / "include"
 
 #: The extension's own `-gencode` targets (`setup.py`'s `ROLA_CUDA_ARCHS`, default
-#: `80;86`), overridable per run with `--arch`. BOTH are probed by default, because
+#: `80;86`), overridable per run with `--arch`. BOTH are measured by default, because
 #: both are in the shipped fat binary and the two allocators reach different
 #: answers: sm_80 admits more CTAs by shared memory, so its bound is a different
 #: number and its spill profile is a different measurement.
@@ -164,6 +224,7 @@ def load_manifest(arches) -> dict:
     them would produce a record that describes no binary that was ever built.
     """
     toolchain = None
+    shards = None
     entries: dict[str, dict] = {}
     sources: dict[str, dict | None] = {}
     for arch in arches:
@@ -175,6 +236,18 @@ def load_manifest(arches) -> dict:
                 f"and put the numbers in the findings document")
         blob = json.loads(path.read_text())
         sources[arch] = blob.get("source")
+        #: THE SHARD MEMBERSHIP is a property of the ratification, not of one arch:
+        #: the same source files were compiled for every target. Two files that
+        #: disagree about which instantiations exist are not one ratification, and
+        #: merging them would produce a record describing no binary ever built --
+        #: the same failure the split-toolchain check above refuses.
+        if shards is None:
+            shards = blob.get("shards")
+        elif blob.get("shards") != shards:
+            raise SystemExit(
+                f"{path.name} records a different shard membership than the other "
+                f"manifests. The per-arch SPLIT is a filing decision; it may not "
+                f"become a split MATRIX. Re-ratify every arch off one tree.")
         if toolchain is None:
             toolchain = blob["toolchain"]
         elif blob["toolchain"] != toolchain:
@@ -188,19 +261,25 @@ def load_manifest(arches) -> dict:
             if key in entries:
                 raise SystemExit(f"{key} is ratified in two files")
             entries[key] = value
-    return {"toolchain": toolchain, "entries": entries, "sources": sources}
+    return {"toolchain": toolchain, "entries": entries, "shards": shards,
+            "sources": sources}
 
 
 def manifest_digest(manifest: dict) -> str:
     """The digest `setup.py` stamps into `_build_config.py`.
 
-    Canonical JSON of `{toolchain, entries}` with sorted keys -- NOT the bytes of
-    any file -- so the digest is a property of the RATIFICATION and not of its
-    filing. That is what makes §3.7's split provably non-semantic: the same 1024
+    Canonical JSON of `{toolchain, entries, shards}` with sorted keys -- NOT the
+    bytes of any file -- so the digest is a property of the RATIFICATION and not of
+    its filing. That is what makes §3.7's split provably non-semantic: the same 1216
     measurements in two files hash to what they hashed to in one.
+
+    THE SHARD BLOCK PARTICIPATES because "only shards X and Y were re-measured" is
+    otherwise an unprovable claim: it is membership (`{name: {members_sha256,
+    count}}`) and nothing else -- no paths, no ordering -- so it records WHAT was
+    ratified without recording how it was filed.
     """
-    blob = json.dumps({"toolchain": manifest["toolchain"], "entries": manifest["entries"]},
-                      sort_keys=True).encode()
+    blob = json.dumps({"toolchain": manifest["toolchain"], "entries": manifest["entries"],
+                       "shards": manifest["shards"]}, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
 
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+)'")
@@ -231,8 +310,34 @@ def parse_shape(mangled: str) -> dict | None:
                 compact=m.group(9) == "1")
 
 
+def shard_of_key(mangled: str) -> str:
+    """The translation unit that owns a ratified instantiation.
+
+    A consumer arm's shard is a STRUCTURAL function of its template tuple, so it is
+    recomputed from the mangled name rather than recorded beside it -- the name is
+    what the assembler saw and cannot disagree with the binary. The decode and entmax
+    kernels are single translation units and carry their file's stem, so every
+    ratified entry answers the same question in the same schema.
+    """
+    shape = parse_shape(mangled)
+    if shape is None:
+        for tu in STANDALONE_TUS:
+            if f"_{Path(tu).stem}_cu_" in mangled:
+                return Path(tu).stem
+        return "?"
+    return gen_shards.shard_of(dict(BT=shape["BT"], BC=shape["BC"], DV=shape["DV"],
+                                    D=shape["D"], PREC=shape["read"],
+                                    DECAY=shape["decay"], GLOBAL=shape["glob"],
+                                    COMPACT=shape["compact"]))
+
+
+def shard_field(entries: dict) -> dict[str, str]:
+    """`{entry key -> shard}`, the census's per-row shard column."""
+    return {name: shard_of_key(name.split(":", 1)[1]) for name in entries}
+
+
 #: The calibration macros a shipped binary compiles under (coverage-closure audit
-#: item 10). Neither `setup.py` nor this probe passes a `-D` for them, so the
+#: item 10). Neither `setup.py` nor this gate passes a `-D` for them, so the
 #: effective value is the header default; recording it in the manifest's toolchain
 #: blob is what makes a silent default flip (or a build that DID pass a `-D`) a
 #: checkable drift instead of an unverifiable claim, and it is what the ring-depth
@@ -286,33 +391,36 @@ def csrc_digest() -> str:
     """
     h = hashlib.sha256()
     for path in sorted(SRC.rglob("*")):
-        if path.is_file():
+        #: MARKDOWN IS NOT A CODEGEN INPUT. `instantiations/README.md` lives inside
+        #: the digested tree because it documents the generated files beside it;
+        #: hashing it would make an editorial change read as SOURCE DRIFT and demand
+        #: a full re-measurement, which is how people are trained to re-ratify
+        #: without reading. Paths participate as well as contents, so a `.cu`
+        #: renamed to `.md` still moves the digest -- by disappearing from it.
+        if path.is_file() and path.suffix != ".md":
             h.update(str(path.relative_to(SRC)).encode())
             h.update(path.read_bytes())
     return h.hexdigest()
 
 
-def _nvcc_command(arches) -> list[str]:
-    """The extension's own compile flags, taken from torch rather than restated.
+def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
+    """The extension's own compile flags, IMPORTED rather than restated.
 
-    Restating them would let this gate compile the probe under different flags than
-    the shipped kernel is built with, and a register/spill profile is a property of
-    the flags as much as of the source.
+    This gate compiles the same translation units the build does, so a flag list
+    maintained separately from `setup.py`'s would produce ratified numbers that
+    describe a binary nobody ships. `tools/build_flags.py` is the one source; only
+    the include paths are assembled here, because the standalone compile has to
+    resolve torch's headers itself.
     """
     import torch.utils.cpp_extension as ext
 
-    cmd = [cuda_bin("nvcc"), "-c", str(PROBE),
-           f"-I{SRC}", f"-I{CUTLASS_INC}"]
+    cmd = [cuda_bin("nvcc"), "-c", str(source), f"-I{SRC}", f"-I{CUTLASS_INC}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-isystem", inc]
     cmd += ["-isystem", sysconfig.get_paths()["include"]]
-    cmd += ["-D_GLIBCXX_USE_CXX11_ABI=0", "-D__CUDA_NO_HALF_OPERATORS__",
-            "-D__CUDA_NO_HALF_CONVERSIONS__", "-D__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "-D__CUDA_NO_HALF2_OPERATORS__", "--expt-relaxed-constexpr"]
-    for a in arches:
-        cmd.append(f"-gencode=arch=compute_{a},code=sm_{a}")
-    cmd += ["-O3", "-std=c++17", "-lineinfo", "--threads=2", "-Xptxas", "-v"]
-    return cmd
+    cmd += list(build_flags.TORCH_DEFINES)
+    cmd += build_flags.nvcc_flags(arches)
+    return cmd + ["-o", obj_path]
 
 
 def ptxas_version() -> str:
@@ -380,29 +488,11 @@ def check_freshness(manifest: dict, digest: str | None = None) -> bool:
     return ok
 
 
-def compile_and_parse(arches, obj_path: str = "/dev/null",
-                      defines: tuple[str, ...] = ()) -> tuple[dict, list[str]]:
-    """Compile the probe and read `ptxas`'s report. Returns (entries, unhonored).
-
-    `obj_path` keeps the object file (the hot-loop gate disassembles the SASS out
-    of the SAME compile the numbers came from, so the two can never describe
-    different binaries); `defines` is the census mode's `-DROLA_FORCE_CTAS=N`.
-    """
-    cmd = _nvcc_command(arches) + ["-o", obj_path] + [f"-D{d}" for d in defines]
-    t0 = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    wall = time.perf_counter() - t0
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        raise SystemExit(f"probe compile FAILED (rc={proc.returncode})")
-    print(f"probe compiled in {wall:.1f} s over {len(arches)} targets "
-          f"({', '.join('sm_' + a for a in arches)})"
-          + (f" with {' '.join(defines)}" if defines else ""))
-
+def _parse_report(stderr: str) -> tuple[dict, list[str]]:
     entries: dict[str, dict] = {}
-    unhonored = sorted(set(OUT_OF_RANGE.findall(proc.stderr)))
+    unhonored = sorted(set(OUT_OF_RANGE.findall(stderr)))
     key = None
-    for line in proc.stderr.splitlines():
+    for line in stderr.splitlines():
         m = ENTRY.search(line)
         if m:
             #: The MANGLED name is the key. It is exact, stable, and encodes every
@@ -421,6 +511,62 @@ def compile_and_parse(arches, obj_path: str = "/dev/null",
         if m:
             entries[key]["regs"] = int(m.group(1))
     return entries, unhonored
+
+
+def compile_and_parse(arches, objdir: str, sources: list[Path],
+                      defines: tuple[str, ...] = (),
+                      jobs: int | None = None) -> tuple[dict, list[str], dict[str, str]]:
+    """Compile the shipped translation units and read `ptxas`'s report.
+
+    Returns (entries, unhonored, objects) where `objects` maps each entry key to the
+    object file it came from -- the hot-loop gate disassembles the SASS out of the
+    SAME compile the register numbers came from, so the two can never describe
+    different binaries, and with more than one translation unit that association has
+    to be carried rather than assumed. `defines` is the census mode's
+    `-DROLA_FORCE_CTAS=N`.
+
+    The translation units are compiled CONCURRENTLY, at the same memory-derived job
+    count the build uses: this gate compiles the same matrix the build does, and
+    running it serially would put the second full-matrix compile back into every
+    build cycle, which is the cost the shard exists to remove.
+    """
+    jobs = jobs or build_flags.default_max_jobs(2)
+    entries: dict[str, dict] = {}
+    unhonored: set[str] = set()
+    objects: dict[str, str] = {}
+    t0 = time.perf_counter()
+
+    def run(source: Path) -> tuple[Path, str, str]:
+        obj = str(Path(objdir) / f"{source.stem}.o")
+        cmd = _nvcc_command(arches, source, obj) + [f"-D{d}" for d in defines]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stderr)
+            raise SystemExit(f"{source.name} FAILED to compile (rc={proc.returncode})")
+        return source, obj, proc.stderr
+
+    with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
+        for source, obj, stderr in pool.map(run, sources):
+            got, bad = _parse_report(stderr)
+            for key, value in got.items():
+                if key in entries:
+                    #: TWO TRANSLATION UNITS EMITTING ONE INSTANTIATION is the exact
+                    #: state the shard exists to prevent, and merging their reports
+                    #: would hide it behind numbers that look fine.
+                    raise SystemExit(
+                        f"{key} was compiled by more than one translation unit "
+                        f"({source.name} is the second). Nothing is sharded; run "
+                        f"tools/gen_shards.py --check and tools/fatbin_entries.py")
+                entries[key] = value
+                objects[key] = obj
+            unhonored |= set(bad)
+
+    wall = time.perf_counter() - t0
+    print(f"{len(sources)} translation unit(s) compiled in {wall:.1f} s at "
+          f"{min(jobs, len(sources))} jobs over {len(arches)} targets "
+          f"({', '.join('sm_' + a for a in arches)})"
+          + (f" with {' '.join(defines)}" if defines else ""))
+    return entries, sorted(unhonored), objects
 
 
 def check(entries: dict, unhonored: list[str], want: dict) -> bool:
@@ -471,7 +617,7 @@ def check(entries: dict, unhonored: list[str], want: dict) -> bool:
 
     spillers = [(n, e) for n, e in sorted(entries.items()) if e["spill_stores"]
                 or e["spill_loads"]]
-    print(f"\n{len(entries)} instantiations probed, {len(unhonored)} with an unhonored "
+    print(f"\n{len(entries)} instantiations measured, {len(unhonored)} with an unhonored "
           f"bound, {len(spillers)} that spill at all:")
     for name, e in spillers:
         print(f"    {e['spill_stores']:4d} st / {e['spill_loads']:4d} ld  "
@@ -586,16 +732,30 @@ def hot_loop_report(sass_lines, wanted: set) -> dict:
     return report
 
 
-def measure_hot_locals(obj_path: str, entries: dict) -> dict[str, int]:
-    """Disassemble the SAME object the register numbers came from and return the
+def measure_hot_locals(objects: dict[str, str], entries: dict) -> dict[str, int]:
+    """Disassemble the SAME objects the register numbers came from and return the
     per-instantiation count of local accesses inside loops."""
-    proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj_path],
-                            stdout=subprocess.PIPE, text=True)
-    report = hot_loop_report(proc.stdout, set(entries))
-    rc = proc.wait()
-    if rc != 0:
-        raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}); the hot-loop gate "
-                         f"cannot pass a binary it cannot read")
+    def one(obj: str) -> dict[str, list]:
+        wanted = {k for k, v in objects.items() if v == obj}
+        proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj],
+                                stdout=subprocess.PIPE, text=True)
+        got = hot_loop_report(proc.stdout, wanted)
+        rc = proc.wait()
+        if rc != 0:
+            raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}) on {obj}; the "
+                             f"hot-loop gate cannot pass a binary it cannot read")
+        return got
+
+    #: DISASSEMBLED IN PARALLEL, for the same reason the compiles are: this runs on
+    #: every build, and a serial pass over ten objects is the shard win being handed
+    #: back at the far end of the gate. The objects are disjoint by construction --
+    #: each instantiation is emitted by exactly one of them -- so there is nothing to
+    #: reconcile between the workers.
+    report: dict[str, list] = {}
+    objs = sorted(set(objects.values()))
+    with ThreadPoolExecutor(max_workers=min(len(objs), (os.cpu_count() or 1))) as pool:
+        for got in pool.map(one, objs):
+            report.update(got)
     return {name: len(report.get(name, [])) for name in entries}
 
 
@@ -622,7 +782,7 @@ def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
 
 #: --------------------------------------------------------------------------
 #: THE FORCING CENSUS (session 9, R0) -- the permanent instrument the register
-#: rung is derived from. `--census` compiles the whole 512-entry probe at a
+#: rung is derived from. `--census` compiles the whole 512-entry matrix at a
 #: candidate bound (`--force-ctas N` -> `-DROLA_FORCE_CTAS=N`; omitted -> the
 #: shipped derived bound) and prints the per-key register/spill table. It never
 #: touches a manifest: a census is a measurement of a CANDIDATE, ratification is
@@ -646,11 +806,15 @@ def census_report(entries: dict, unhonored: list[str],
         shape = parse_shape(name)
         if shape is None:
             continue
-        k = (arch, shape["BT"], shape["BC"], shape["DV"], shape["read"],
-             shape["decay"])
+        #: THE SHARD IS A CENSUS COLUMN. Every row of the register/spill table says
+        #: which translation unit would have to be recompiled to move it, which is
+        #: what turns "re-ratify only these shards" from a plan into a checkable
+        #: claim: csrc/rola/src/instantiations/README.md
+        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["BT"], shape["BC"],
+             shape["DV"], shape["read"], shape["decay"])
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'BT':>3} {'BC':>3} {'DV':>3} {'prec':7} {'decay':5} "
-          f"{'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
+    print(f"\n{'arch':6} {'shard':28} {'BT':>3} {'BC':>3} {'DV':>3} {'prec':7} "
+          f"{'decay':5} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
           f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
         regs = sorted(e["regs"] for e, _ in es)
@@ -662,8 +826,8 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:>3} {k[2]:>3} {k[3]:>3} {k[4]:7} "
-              f"{str(k[5]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
+        print(f"{k[0]:6} {k[1]:28} {k[2]:>3} {k[3]:>3} {k[4]:>3} {k[5]:7} "
+              f"{str(k[6]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())
     total_ld = sum(e["spill_loads"] for e in entries.values())
@@ -685,12 +849,12 @@ def main() -> int:
                     help="prove the gate can fail, by re-checking against a "
                          "deliberately tightened manifest")
     ap.add_argument("--arch", action="append", metavar="XX",
-                    help="a compute capability to probe and ratify, repeatable "
+                    help="a compute capability to measure and ratify, repeatable "
                          f"(default: {' '.join(DEFAULT_ARCHES)}). One manifest file "
                          "per arch, so bringing up a new one touches no other arch's "
                          "measurements.")
     ap.add_argument("--census", action="store_true",
-                    help="FORCING CENSUS: compile the whole probe matrix, print the "
+                    help="FORCING CENSUS: compile the whole matrix, print the "
                          "per-key register/spill table, touch no manifest")
     ap.add_argument("--force-ctas", type=int, metavar="N",
                     help="census only: compile with -DROLA_FORCE_CTAS=N, i.e. force "
@@ -698,6 +862,10 @@ def main() -> int:
     ap.add_argument("--json", metavar="PATH",
                     help="census only: dump the raw per-instantiation record for "
                          "arm-vs-arm diffing")
+    ap.add_argument("--shard", action="append", metavar="NAME",
+                    help="MEASUREMENT SCOPE: compile only these instantiation shards "
+                         "(repeatable). A ratchet refusal is investigated one shard "
+                         "at a time; --write still refuses a partial matrix.")
     a = ap.parse_args()
 
     arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
@@ -705,16 +873,20 @@ def main() -> int:
         raise SystemExit("--force-ctas is a CENSUS instrument; a forced bound must "
                          "never be ratified or checked against a manifest "
                          "(use --census)")
+    if a.shard and a.write:
+        raise SystemExit("--shard is a MEASUREMENT scope, not a ratification scope: "
+                         "a manifest written from a subset of the translation units "
+                         "would silently drop every instantiation it did not compile")
+    sources = tu_paths(tuple(a.shard) if a.shard else None)
 
     version = ptxas_version()
     import tempfile
     with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
-        obj = str(Path(tmp) / "probe.o")
         defines = (f"ROLA_FORCE_CTAS={a.force_ctas}",) if a.force_ctas is not None \
             else ()
-        entries, unhonored = compile_and_parse(arches, obj_path=obj,
-                                               defines=defines)
-        hot = measure_hot_locals(obj, entries)
+        entries, unhonored, objects = compile_and_parse(arches, tmp, sources,
+                                                        defines=defines)
+        hot = measure_hot_locals(objects, entries)
         for name, count in hot.items():
             entries[name]["hot_locals"] = count
         if a.census:
@@ -722,7 +894,8 @@ def main() -> int:
             if a.json:
                 Path(a.json).write_text(json.dumps(
                     dict(ptxas=version, force_ctas=a.force_ctas,
-                         csrc_sha256=csrc_digest(), entries=entries),
+                         csrc_sha256=csrc_digest(), entries=entries,
+                         shards=shard_field(entries)),
                     indent=1, sort_keys=True) + "\n")
                 print(f"census written to {a.json}")
             return 0
@@ -735,9 +908,9 @@ def main() -> int:
             mine = {k: v for k, v in sorted(entries.items()) if k.startswith(prefix)}
             if not mine:
                 raise SystemExit(
-                    f"the probe reported NO entries for sm_{arch}; refusing to write "
-                    f"an empty ratification. A manifest that exists but measures "
-                    f"nothing would pass rule 3 by file existence alone.")
+                    f"the compile reported NO entries for sm_{arch}; refusing to "
+                    f"write an empty ratification. A manifest that exists but "
+                    f"measures nothing would pass rule 3 by file existence alone.")
             path = manifest_path(arch)
             #: The SOURCE DIGEST is recorded beside the toolchain: a manifest is a
             #: measurement OF a source tree UNDER an assembler, and both halves of
@@ -746,6 +919,11 @@ def main() -> int:
                 {"toolchain": {"ptxas": version, "defines": shipped_defines()},
                  "source": {"csrc_sha256": csrc_digest(),
                             "date": time.strftime("%Y-%m-%d")},
+                 #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
+                 #: hash rather than by file list. It enters the digest, so a
+                 #: re-partition is a visible re-ratification and a scoped
+                 #: re-measurement is a provable statement.
+                 "shards": gen_shards.shard_manifest_block(),
                  "entries": mine}, indent=1) + "\n")
             print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
         print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
@@ -818,7 +996,7 @@ def main() -> int:
         #: `manifest_sha256` would stop identifying the ratification and start
         #: identifying a directory listing.
         halves = [load_manifest((x,)) for x in arches]
-        rejoined = {"toolchain": halves[0]["toolchain"],
+        rejoined = {"toolchain": halves[0]["toolchain"], "shards": halves[0]["shards"],
                     "entries": {k: v for h in halves for k, v in h["entries"].items()}}
         if manifest_digest(rejoined) != manifest_digest(manifest):
             print("\nSELF-TEST FAILED: the per-arch files do not rejoin to the same "
@@ -826,6 +1004,50 @@ def main() -> int:
             return 1
         print(f"SELF-TEST PASSED: {len(arches)} per-arch files rejoin to one digest "
               f"{manifest_digest(rejoined)[:16]}...")
+
+        #: ... AND THE SHARD BLOCK DOES NOT MAKE THE DIGEST A FILING PROPERTY. It is
+        #: membership only, so re-filing the same measurements -- reordering the
+        #: block's keys, or splitting the arches differently -- must move nothing. A
+        #: block that carried paths or an ordering would fail exactly here, which is
+        #: why it carries neither.
+        refiled = {"toolchain": manifest["toolchain"],
+                   "shards": dict(reversed(list(manifest["shards"].items()))),
+                   "entries": manifest["entries"]}
+        if manifest_digest(refiled) != manifest_digest(manifest):
+            print("\nSELF-TEST FAILED: re-filing the shard block moved the manifest "
+                  "digest; the block is recording HOW the ratification is filed, not "
+                  "WHAT it covers")
+            return 1
+        #: ... and it must still be LOAD-BEARING: a changed membership must move it.
+        moved = {"toolchain": manifest["toolchain"], "entries": manifest["entries"],
+                 "shards": {k: dict(v, count=v["count"] + 1)
+                            for k, v in manifest["shards"].items()}}
+        if manifest_digest(moved) == manifest_digest(manifest):
+            print("\nSELF-TEST FAILED: a changed shard membership did not move the "
+                  "manifest digest; the block is decorative")
+            return 1
+        print("SELF-TEST PASSED: the shard block is membership-only (re-filing is "
+              "digest-neutral) and load-bearing (a membership change is not)")
+
+        #: NON-VACUITY OF THE CROSS-ARCH AGREEMENT. Two arch files that disagree
+        #: about which instantiations exist are not one ratification.
+        print("\n--- SELF-TEST: per-arch manifests disagreeing on shard membership\n"
+              "    (this load MUST fail) ---")
+        real = manifest_path(arches[-1])
+        saved = real.read_text()
+        blob = json.loads(saved)
+        blob["shards"] = dict(blob.get("shards") or {}, __self_test__={"count": 1})
+        try:
+            real.write_text(json.dumps(blob, indent=1) + "\n")
+            load_manifest(arches)
+        except SystemExit as exc:
+            print(f"SELF-TEST PASSED: {str(exc).splitlines()[0]}")
+        else:
+            print("\nSELF-TEST FAILED: two manifests with different shard "
+                  "memberships loaded as one ratification")
+            return 1
+        finally:
+            real.write_text(saved)
 
         #: NON-VACUITY OF THE FRESHNESS TRIGGER. A perturbed source digest must
         #: fail: a freshness gate that passes a tree it was not measured on is the

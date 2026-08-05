@@ -429,32 +429,38 @@ def load_manifest(directory: Path = MANIFEST_DIR) -> dict:
     files = sorted(p for p in directory.glob("*.json"))
     assert files, f"no ratification manifest in {directory}"
     toolchain: dict | None = None
+    shards: dict | None = None
     entries: dict[str, dict] = {}
     for path in files:
         blob = json.loads(path.read_text())
         if toolchain is None:
-            toolchain = blob["toolchain"]
+            toolchain, shards = blob["toolchain"], blob["shards"]
         assert blob["toolchain"] == toolchain, (
             f"{path.name} pins a different assembler than {files[0].name}; the "
             "per-arch split may not become a split TOOLCHAIN")
+        assert blob["shards"] == shards, (
+            f"{path.name} records a different shard membership than "
+            f"{files[0].name}; the per-arch split may not become a split MATRIX")
         for key, value in blob["entries"].items():
             assert key not in entries, f"{key} is ratified twice"
             entries[key] = value
-    return {"toolchain": toolchain, "entries": entries}
+    return {"toolchain": toolchain, "shards": shards, "entries": entries}
 
 
 def manifest_sha256(directory: Path = MANIFEST_DIR) -> str:
     """The digest ``setup.py`` records in ``_build_config.py``, recomputed.
 
-    Canonical JSON of ``{toolchain, entries}`` with sorted keys -- NOT the raw file
-    bytes -- which is what makes the digest a property of the RATIFICATION rather
-    than of its formatting or of how many files it is filed in. §3.7's per-arch
-    split therefore does not change it, and that invariant is itself checked
-    (``tools/ratify.py --self-test``).
+    Canonical JSON of ``{toolchain, entries, shards}`` with sorted keys -- NOT the
+    raw file bytes -- which is what makes the digest a property of the RATIFICATION
+    rather than of its formatting or of how many files it is filed in. §3.7's
+    per-arch split therefore does not change it, and that invariant is itself
+    checked (``tools/ratify.py --self-test``). ``shards`` participates because it
+    records WHICH instantiations were measured, which is part of what was ratified
+    and not part of how it was filed.
     """
     m = load_manifest(directory)
-    blob = json.dumps({"toolchain": m["toolchain"], "entries": m["entries"]},
-                      sort_keys=True).encode()
+    blob = json.dumps({"toolchain": m["toolchain"], "entries": m["entries"],
+                       "shards": m["shards"]}, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
 
 
