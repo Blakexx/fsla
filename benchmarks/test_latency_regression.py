@@ -1,12 +1,24 @@
-"""The per-commit latency gate, as a ``pytest-benchmark`` test.
+"""The per-commit latency gate.
 
-``pytest-benchmark`` supplies the storage and comparison plumbing (§6.9): it runs
-each arm, keeps the distribution, and can save/compare runs across commits with
-``--benchmark-autosave`` / ``--benchmark-compare``. What it does NOT supply, and
-what this file therefore keeps, is the JUDGEMENT: the pass/fail line comes from
-:func:`bench.regression.threshold_ms`, derived from the arm's own committed IQR,
-because the library's own comparison flags are percentages of a previous run and a
-percentage is a number about nobody's hardware.
+The pass/fail line comes from :func:`bench.regression.threshold_ms`, derived from
+the arm's own committed IQR, because every off-the-shelf comparison flag is a
+percentage of a previous run and a percentage is a number about nobody's hardware.
+
+**THE GATED NUMBER IS TAKEN DIRECTLY, NOT FROM INSIDE A BENCHMARK RUNNER'S ROUND
+LOOP -- MEASURED, THIRD CORRECTION TO THIS FILE'S SPREAD.** It ran under
+``pytest-benchmark``, which re-enters ``measure`` dozens of times on its own
+calibration schedule and reports the LAST call's samples. Under the host timer that
+was invisible: the baseline's IQR was 0.03-0.06 ms and absorbed it. Under device
+events the committed spread is 0.001 ms and it stopped being absorbed -- three of
+four arms read up to +51 % (``global|warm`` 0.1362 ms against a 0.0924 ms limit),
+while the SAME arms measured alone, or in the same session under
+``--benchmark-disable``, read their baseline exactly (8/8 pass). The runner's
+rounds, not the kernel, were the difference; the arm's median is now measured once,
+the way the recorder measures it.
+
+The storage the library was adopted for is `perf/ledger.jsonl` now, which keeps the
+raw samples, the instrument and the provenance the library never had
+(`docs/measurement.md`).
 
 Run it explicitly -- it is marked ``bench`` and deselected everywhere else:
 
@@ -66,7 +78,7 @@ def _clocks_settled():
 
 
 @pytest.mark.parametrize("spec", ARMS, ids=[arm_id(*s) for s in ARMS])
-def test_an_arm_has_not_regressed_past_its_own_measured_spread(benchmark, spec):
+def test_an_arm_has_not_regressed_past_its_own_measured_spread(spec):
     key = arm_id(*spec)
     baseline = load_baseline()
     exp = baseline["arms"].get(key)
@@ -75,14 +87,10 @@ def test_an_arm_has_not_regressed_past_its_own_measured_spread(benchmark, spec):
         f"whole baseline with `python benchmarks/bench_regression.py --write` under "
         f"the lock, and commit it with its provenance.")
 
-    #: pytest-benchmark drives the repetition and keeps the distribution (that is the
-    #: plumbing being adopted), and its own reported columns time the WHOLE arm sweep
-    #: -- warm-ups included -- which is not the quantity being gated. The gated number
-    #: is the returned per-launch summary, taken with the harness's own timer so it is
-    #: the same quantity as the baseline. Two different numbers on purpose: the
-    #: library's is for its cross-commit history, ours is for the pass/fail line.
-    times = benchmark(measure, *spec, reps=11)
-    got = summarize(times)
+    #: ONE call, the recorder's own entry point at the recorder's rep count, so the
+    #: gate and the baseline are the same quantity by construction rather than by
+    #: two schedules happening to agree (see the module docstring's third correction).
+    got = summarize(measure(*spec, reps=11))
     #: The two sides must be the same quantity before they can be the same
     #: comparison. `measure` times with the committed instrument; the baseline says
     #: which one took it, and a disagreement is an error, never a widened band.

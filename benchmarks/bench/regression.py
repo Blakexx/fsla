@@ -1,11 +1,13 @@
-"""The CI regression layer: standard plumbing around a custom methodology (§6.9).
+"""The CI regression layer: the judgement, over the record :mod:`bench.ledger` keeps.
 
-**WHAT IS STANDARDIZED AND WHAT IS NOT.** The methodology stays this repository's
-own -- no library provides interleaved pairing, per-pair ratio IQRs, counter
-corroboration, or a committed statistics manifest (:mod:`bench.pairing` is where it
-lives). What a library DOES provide, and what was being hand-rolled, is storage and
-comparison: run this commit's latency per ``(cell, arm)``, keep it, and compare it
-to a recorded baseline. That is ``pytest-benchmark``'s job and it is now doing it.
+**WHAT IS SHARED AND WHAT IS NOT.** The methodology stays this repository's own --
+no library provides interleaved pairing, per-pair ratio IQRs, counter corroboration,
+or a committed statistics manifest (:mod:`bench.pairing` is where it lives). Storage
+and comparison are `perf/ledger.jsonl`: run this commit's latency per
+``(cell, arm)``, keep the RAW samples with the instrument that took them, and
+compare against the recorded baseline. A benchmark runner was tried in that role and
+removed on measurement -- its round schedule, not the kernel, set the number the gate
+read (`benchmarks/test_latency_regression.py`, third correction).
 
 **THE THRESHOLD IS DERIVED FROM THE CELL'S OWN MEASURED IQR, NEVER INVENTED.** A
 flat "fail at +5 %" is a number about nobody's hardware: on a cell whose IQR is 12 %

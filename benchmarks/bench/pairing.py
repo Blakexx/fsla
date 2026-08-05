@@ -39,9 +39,9 @@ documented as one, and nothing else in this package times an arm alone.
 
 No standard benchmarking library provides this -- interleaved pairing, ratio IQRs,
 counter corroboration, and a committed statistics manifest are the harness's own.
-What IS standardized is the plumbing around it (§6.9): pytest-benchmark stores and
-compares the per-``(cell, arm)`` latencies, at thresholds DERIVED from each cell's
-measured IQR.
+The plumbing around it is `perf/ledger.jsonl` (`docs/measurement.md`): it stores the
+raw per-``(cell, arm)`` samples with their instrument and provenance, and compares
+them at thresholds DERIVED from each cell's measured IQR.
 """
 from __future__ import annotations
 

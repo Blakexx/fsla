@@ -98,6 +98,21 @@ are unknown and the docket numbers were taken with a stopwatch that was not in t
 tree. They are kept because they are the record, not because they are comparable, and
 their `ts`, `sha` and `csrc_sha256` are null rather than invented.
 
+### The committed latency baseline
+
+`benchmarks/cells/latency_baseline.json` is the per-commit gate's reference, recorded
+by `benchmarks/bench_regression.py --write` and never by a test. Under the committed
+instrument its arms read 0.0625–0.2376 ms with block IQRs of 0.001–0.005 ms — a
+spread 30–60× tighter than the host timer's, because the launch and sync cost that
+dominated it is no longer in the measurement.
+
+**A tighter band exposes anything that was hiding inside the old one.** It exposed
+one immediately: the gate had been reading its number from inside a benchmark
+runner's round loop, and that runner's schedule — not the kernel — set the value. The
+gate now takes the arm's median once, through the recorder's own entry point, so the
+two sides are the same quantity by construction. `benchmarks/test_latency_regression.py`
+records the measurement that forced it.
+
 ## The flagging rule: three gates, all must fire
 
 1. **Effect size** — `bench.regression.threshold_ms`: `median + 3·IQR/1.349`, derived
