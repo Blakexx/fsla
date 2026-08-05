@@ -1,23 +1,20 @@
 // THE EXTENSION'S PYTHON BINDING -- and the only translation unit that knows
 // pybind exists.
 //
-// **WHY IT IS A `.cpp` AND NOT PART OF `consumer.cu`.** Binding code is host-only.
-// Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit,
-// and every future architecture added to the ratified set multiplies that cost.
-// `flash_api.cpp` is the convention; this is the same split.
+// Binding code is host-only, so it lives in a `.cpp`: inside a `.cu` it would be
+// recompiled once per `-gencode` target for no benefit. `flash_api.cpp` is the
+// convention this follows.
 //
-// **ONE MODULE, NOT TWO.** The consumer and the §7.1 paging arena register into the
-// same extension: the consumer reads the page table the plan publishes, so splitting
-// them would put a cross-module ABI between two halves of one contract. The two
-// JIT-era `*_pybind.cuh` fragment headers that used to do this registration are
-// gone -- their `m.def` bodies are here, and their declarations are in
-// `src/host_api.cuh`.
+// ONE MODULE, NOT TWO. The consumer, the decode sibling and the §7.1 paging arena all
+// register here, because they share one contract and a split would put a cross-module
+// ABI through the middle of it.
 //
-// The module name is supplied by the build (`TORCH_EXTENSION_NAME`), which
-// `setup.py` sets to `rola._C` -- NAMESPACED INSIDE THE PACKAGE, so the binary lands
-// in `rola/` for both an in-place build and a wheel. `rola/ops/_ext.py` imports it
-// package-relative and never builds it. Nothing in this file or under `src/` spells
-// the name, so the packaging layout can move without touching a kernel symbol.
+// The module name is supplied by the build (`TORCH_EXTENSION_NAME`). NOTHING in this
+// file or under `src/` spells it, so the packaging layout can move without touching a
+// kernel symbol.
+//
+// The full entry inventory, the summary pass's no-allocation contract, and the ledger
+// of the deleted V2 page-plan bindings: docs/internals/rola_api.md
 
 #include <torch/extension.h>
 
@@ -56,10 +53,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "plan records (§10 ruling)");
 
   // ---- the T=1 decode path (thunder §6b) ----------------------------------
-  //
-  // A SIBLING of the consumer, not a specialization of it: shared produce contract,
-  // own consumer, frozen config. It registers here rather than in a second extension
-  // for the same reason paging does -- one contract, one ABI boundary.
+  //: A SIBLING of the consumer, not a specialization of it: shared produce contract,
+  //: own consumer, frozen config. Two of its three entries are capacity GATES rather
+  //: than operations -- docs/internals/rola_api.md#registered-entries
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
         py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"), py::arg("dials"),
@@ -75,18 +71,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "constant so a stale mirror cannot silently satisfy the capacity static_assert");
 
   // ---- spec §4.1/§4.2 producer-epilogue summaries ---------------------------
-  //
-  // THE V2 CUDA PAGE-PLAN PRODUCER IS DELETED, and with it 8 bindings
-  // (`page_plan_abi_version`, `page_plan_status_codes`, `page_plan_workspace_bytes`,
-  // `rola_page_plan_{prepare,finalize,publish}`, `rola_page_admit_mask`,
-  // `rola_page_cache_reset`). Track P replaced it entirely with the torch
-  // PLANNED-EXACT-ASYNC arena in `rola/ops/paging.py`: nothing under `rola/`,
-  // `tests/` or `benchmarks/` referenced any of them, so they were unreachable from
-  // Python and dead by the no-dead-code standard. The page table the consumer reads
-  // is now published by that arena.
-  // THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS (THUNDER_RUN_SPEC.md §4.1/§4.2).
-  // One launch, no allocation, no host synchronization: every output is a caller-owned
-  // tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer.
+  //: THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS (THUNDER_RUN_SPEC.md §4.1/§4.2).
+  //: One launch, no allocation, no host synchronization: every output is a caller-owned
+  //: tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer,
+  //: which is why nothing here returns -- docs/internals/rola_api.md#summaries-contract
+  //:
+  //: The V2 CUDA page-plan producer that once registered alongside it is DELETED, with
+  //: its 8 bindings -- docs/internals/rola_api.md#deleted-page-plan
   m.def("rola_routing_summaries", &rola::summaries::rola_routing_summaries_cuda,
         "Producer-epilogue routing summaries: occupancy, the quantum histogram, the "
         "candidate count, and §4.1's canonical per-leaf write bitmap with its owner "

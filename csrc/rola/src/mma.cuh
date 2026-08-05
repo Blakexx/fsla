@@ -1,8 +1,9 @@
 #pragma once
 
 // Bare tensor-core PTX primitives (m16n8k16 bf16, m16n8k8 tf32x3, and the bf16x2
-// pack). No RoLA semantics -- these are the instruction wrappers the V3 readout
-// and the `gram` intra lowering issue.
+// pack). No RoLA semantics -- these are the instruction wrappers `readout_mma.cuh`
+// and `consumer_kernel.cuh` issue. (The `gram` intra lowering, the third historical
+// caller, was deleted with the old consumer at item 6b.)
 //
 // PROVENANCE: this file was `p0_shared_gram_mma.cuh`, the only V2 header the V3
 // consumer `#include`s. The `rola-v3` purge deleted the rest of the V2 kernel

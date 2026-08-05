@@ -3,14 +3,15 @@
 // Gates: `tests/unit/test_entmax_cuda_gates.py` (fp64 oracle only; the Triton kernel is
 // a debugging diagnostic and is never asserted against -- trackE.md §4).
 //
-// ONE ROW PER LOGICAL WARP. Every collective in the solve runs along one token's row, so
-// all of them are warp-scope and shuffle-based. Consequences, all structural:
-//   * register demand is O(items-per-lane), NOT O(CTA tile) -- so the warp count became
-//     a free occupancy knob, which it provably was not under Triton (producer-p3.md §1);
-//   * the solve uses ZERO shared memory (`cub::WarpScan`/`WarpReduce` TempStorage
-//     measures 1 byte -- the pure-shfl specializations), so the 75%-bank-conflict
-//     `tl.sort` scratch is ELIMINATED, not tuned;
-//   * exactly ONE `__syncthreads` in the whole kernel (see the epilogue).
+// ONE ROW PER LOGICAL WARP: every collective runs along one token's row, so all of them
+// are warp-scope and shuffle-based. Three facts follow, and each is load-bearing rather
+// than incidental -- register demand is O(items-per-lane) and NOT O(CTA tile); the solve
+// uses ZERO shared memory beyond the sort scratch, because every `cub::WarpScan` /
+// `WarpReduce` TempStorage here resolves to a measured 1-byte pure-shfl specialization;
+// and there is exactly ONE `__syncthreads` in each kernel, in the epilogue.
+//
+// The Triton history that forced hand CUDA, the phase-by-phase walk, the backward's
+// Jacobian derivation and its measured spill trades: docs/internals/entmax.md
 
 #include <cub/warp/warp_merge_sort.cuh>
 #include <cub/warp/warp_reduce.cuh>
@@ -27,20 +28,20 @@ namespace entmax {
 namespace {
 
 //: FROZEN (§4.1, nine downstream consumers): one CTA owns exactly the 32 tokens of one
-//: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass.
+//: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass
+//: -- docs/internals/entmax.md#frozen-support-word
 constexpr int WORD_TOKENS = 32;
 constexpr int BLOCK_WARPS = 4;
 constexpr int WARP_SIZE = 32;
 constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
-//: `__launch_bounds__(128, 8)` states the 64-register target to ptxas, so a regression
-//: becomes a compile-time allocation decision instead of a silent spill; the
-//: ratification manifest (`tools/ratify.py`) then fails the BUILD on spill growth.
+//: With `BLOCK_THREADS`, this is `__launch_bounds__(128, 8)`: a 64-register target
+//: stated to ptxas so a regression becomes a compile-time allocation decision instead
+//: of a silent spill, which `tools/ratify.py` then fails the BUILD on.
 constexpr int MIN_BLOCKS_PER_SM = 8;
 
-//: `(stream, token, col, tile, lane)` -- ONE expression serves both route-value layouts
-//: because `_value_strides` already zeroes the members the layout does not use (rank-3
-//: dense: tile=lane=0; rank-4 tile-major: token=0). Triton needed a
-//: `tl.where(TILE_MAJOR, ...)` select and a codegen axis for this; here layout is data.
+//: `(stream, token, col, tile, lane)` -- ONE address expression serves both route-value
+//: layouts because the caller zeroes the members its layout does not use, which is why
+//: layout is data here -- docs/internals/entmax.md#strides
 struct Strides {
   int64_t stream, token, col, tile, lane;
 };
@@ -86,10 +87,10 @@ struct PairAdd {
   }
 };
 
-//: The overflow-free read-write difference, verbatim from the shipped semantics: two
-//: opposite-sign finite extrema overflow a raw subtraction while their midpoint stays
-//: representable, so the MAGNITUDE is clamped instead. Gate A1 holds this bit-identical
-//: against plain fp32 torch -- it is pure elementwise, so no reassociation exists.
+//: The overflow-free read-write difference: two opposite-sign finite extrema overflow a
+//: raw subtraction while their midpoint stays representable, so the MAGNITUDE is clamped
+//: instead. `*saturated` marks where that clamp fired; the backward zeroes `d_delta`
+//: there -- docs/internals/entmax.md#overflow-free-delta
 __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
   const float kMax = 3.4028234663852886e38f;
   const float kHalfMax = 1.7014117331926443e38f;
@@ -105,10 +106,9 @@ __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* sat
   return opposite ? opp : same;
 }
 
-//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. Computed as
-//: `-(max(d,0) + log1p(exp(-|d|)))`: `log1pf` rather than `logf(1+x)` because the gate
-//: is the fp64 oracle (which uses `logsigmoid`), not the previous lowering -- this is
-//: strictly closer to the baseline that now governs.
+//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf`
+//: rather than `logf(1+x)` because the governing gate is the fp64 oracle's
+//: `logsigmoid` -- docs/internals/entmax.md#overflow-free-delta
 __device__ __forceinline__ float log_write_gate(float delta) {
   return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
 }
@@ -136,22 +136,19 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   using WarpRedF = cub::WarpReduce<float, LW>;
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
-  //: The support-word staging ALIASES the sort scratch. Each physical warp writes only
-  //: into ITS OWN slot, and its own sorts are already retired warp-synchronously by
-  //: then, so there is no cross-warp hazard and no barrier is needed BEFORE the write --
-  //: which is what gets the whole kernel down to ONE `__syncthreads`.
+  //: HAZARD smem-slot-alias -- docs/internals/entmax.md#smem-slot-alias
+  //: One per-physical-warp slot serves the sort scratch and then the support-word
+  //: staging. `SLOT` rounds to 16 B because `WarpMergeSort::TempStorage` is
+  //: `4 + 4*W_PAD` bytes, not a multiple of its own alignment.
   constexpr int SORT_BYTES = (WARP_SIZE / LW) * (int)sizeof(typename WarpSort::TempStorage);
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
-  //: rounded up so warp w's slot is 16B-aligned; `WarpMergeSort::TempStorage` is
-  //: 4 + 4*W_PAD bytes, i.e. NOT a multiple of its own alignment.
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
   __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
-  //: These three TempStorages are declared per-thread, not __shared__, which is only
-  //: legal because CUB resolves all of them to the pure-shfl specializations here. That
-  //: is MEASURED, not assumed (`<scratchpad>/cub_sizeof.cu`: 1 byte for every
-  //: WarpScan/WarpReduce instantiation this kernel uses), and the static_asserts below
-  //: turn a future CUB that changes its mind into a compile error rather than a race.
+  //: These three TempStorages are per-thread rather than __shared__, which is legal only
+  //: because CUB resolves all of them to pure-shfl specializations here. MEASURED at
+  //: 1 byte each; these static_asserts turn a future CUB that changes its mind into a
+  //: compile error rather than a race -- docs/internals/entmax.md#one-row-per-warp
   static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
   static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
   static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
@@ -159,12 +156,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
-  //: HAZARD, and it is NOT theoretical: a full 0xffffffff mask here DEADLOCKS. With
-  //: logical warps (LW < 32) and a ragged final support word, only SOME logical warps of
-  //: a physical warp have a live token -- the rest take the `continue` -- so a broadcast
-  //: naming all 32 lanes waits on threads that are somewhere else entirely. The member
-  //: mask must name exactly this logical warp. (CUB's own collectives compute this
-  //: internally; these hand broadcasts of their lane-0 results did not.)
+  //: HAZARD logical-warp-mask -- docs/internals/entmax.md#logical-warp-mask
+  //: The member mask for every hand `__shfl_sync` below. It names exactly THIS logical
+  //: warp; a full `0xffffffff` deadlocks on a ragged support word at `LW < 32`.
   const unsigned lmask = (LW == WARP_SIZE)
                              ? 0xffffffffu
                              : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
@@ -186,8 +180,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   for (int it = 0; it < ITERS; ++it) {
     const int local = it * LOGICAL_PER_BLOCK + logical;
     const int token = word * WORD_TOKENS + local;
-    //: A row past the end contributes nothing: today it yields has_valid=0 -> tau=0 ->
-    //: support=false -> every store masked off, so skipping is exactly equivalent.
+    //: Skipping a row past the end is EXACTLY equivalent, not merely close:
+    //: docs/internals/entmax.md#forward-phases
     if (local >= WORD_TOKENS || token >= tokens) continue;
 
     // ---- PHASE A: load striped (coalesced), fold, RETIRE both logit tiles ----
@@ -228,10 +222,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       //: value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
       keys[i] = valid ? midpoint[i] : (row_min - row_max) - 1.0f;
     }
-    //: A sort is a PERMUTATION -- exact, no arithmetic -- so the sorted sequence is
-    //: identical whatever algorithm produces it. Feeding striped data is fine: the
-    //: output arrangement is what the scan reads, and CUB delivers it blocked (rank
-    //: order across lanes), which is exactly what the prefix walk needs.
+    //: A sort is a PERMUTATION, so striped input is fine and CUB's blocked output is
+    //: what the prefix walk wants -- docs/internals/entmax.md#forward-phases
     WarpSort(sort_store).Sort(keys, Descending());
 
     // ---- PHASE C: tau. prefix/prefix_sq/tau_candidates/candidate/chosen_col all
@@ -270,8 +262,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       }
     }
     //: ONE reduction selects the greatest valid k AND carries its tau: the column in the
-    //: high 32 bits makes integer Max pick it, and lane rank ranges are disjoint so a tie
-    //: is impossible. `best_col = -1` maps to key 0, so an all-empty row yields tau = 0.
+    //: high 32 bits makes integer Max pick it, and `best_col = -1` maps to key 0 so an
+    //: all-empty row yields tau = 0 -- docs/internals/entmax.md#forward-phases
     unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
                                     | (unsigned long long)__float_as_uint(best_tau);
     packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
@@ -332,20 +324,16 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       const bool sup = (support_mask >> i) & 1u;
       const float write = (sup && has_weight) ? scaled[i] / safe_den : 0.0f;
       store_value(write_values, addr(swrite, stream, token, col), write);
-      //: Support is defined AT THE NATIVE bf16 STORAGE BOUNDARY, not by the
-      //: pre-quantization solve, so the scheduler and the route stream are one authority.
-      //: Union has one scheduling stream for both roles, so the union of post-cast
-      //: nonzeros is packed: either side may create harmless false-live work, but a
-      //: numerically live stored factor is never skipped.
+      //: HAZARD bf16-support-boundary -- docs/internals/entmax.md#bf16-support-boundary
+      //: Support is the union of POST-CAST nonzeros, never the pre-quantization solve.
       if (sup && (((read_live_mask >> i) & 1u) || bf16_nonzero(write)))
         part[i] |= (1u << (token & 31));
     }
   }
 
   // ---- EPILOGUE: pack the 32-token support word. ONE barrier. ----
-  //: Lanes holding the same column in one physical warp differ only in bits at or above
-  //: LW, so a butterfly over exactly those bits ORs across the logical warps in place --
-  //: no shared atomics, no zero-init pass.
+  //: The butterfly runs over exactly the bits at or above LW, which is what separates
+  //: lanes holding the same column: docs/internals/entmax.md#epilogue-butterfly
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     for (int d = LW; d < WARP_SIZE; d <<= 1) part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
@@ -371,24 +359,17 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 // ---------------------------------------------------------------------------
 // BACKWARD -- the alpha-entmax Jacobian action through the union split.
 //
-// No sort and no scan: this is a THREE-REDUCTION elementwise pass, which is why p3 could
-// defer it and why it still carried the pre-p3 one-big-tile shape and its spill wall.
-// It shares the forward's block/warp decomposition, width classes, striped access,
-// stride expression and launch bounds, and it RECOMPUTES `delta` rather than reloading
-// a saved tensor (cheaper than a third logit-sized read).
+// No sort and no scan: a THREE-REDUCTION elementwise pass. It shares the forward's
+// block/warp decomposition, width classes, striped access, stride expression and launch
+// bounds, and it RECOMPUTES `delta` rather than reloading a saved tensor.
 //
 // SUPPORT IS AN INPUT here -- unpacked from the same frozen `support_words` the forward
-// emitted -- so the two directions cannot disagree about the support set by construction.
+// emitted -- so the two directions cannot disagree about the support set by
+// construction. Off support every output term is an EXACT zero by multiplication, and
+// the gate asserts that FORM at rtol=0 rather than a magnitude.
 //
-// DEAD DIRECTIONS ARE EXACTLY ZERO, BY MULTIPLICATION. Off support: `s = 0`,
-// `read_values = 0` and `write_values = 0` (bf16 of exact zeros), hence
-// `d_log_weight = write_values * (...) = 0`, `d_midpoint_logits = s * (...) = 0`, and
-// `d_delta = d_read*read_values*write_gate - d_log_weight*read_gate = 0`. So both
-// `0.5*d_ml + d_delta` and `0.5*d_ml - d_delta` are exact zeros. The gate asserts the
-// FORM (rtol=0), not a magnitude.
-// ON support this is `diag(s) - s s^T / (1.s)` -- the alpha-entmax Jacobian action, with
-// `s = 1` (alpha=2) or `s = sqrt(p) = p^(2-alpha)` (alpha=1.5) -- plus the write side's
-// second rank-1 (the softmax form inside `d_log_weight`) and the diagonal gate terms.
+// The Jacobian derivation, the exact-zero argument, and the two MEASURED spill trades
+// that made this kernel re-read rather than stage: docs/internals/entmax.md#backward
 // ---------------------------------------------------------------------------
 template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
@@ -425,10 +406,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
     uint32_t support_mask = 0u, saturated_mask = 0u;
     // ---- the write-side rank-1: sum(d_write * write_values) ----
     //: This pass carries NOTHING into the next one but two scalars (`local_dot` and the
-    //: support mask). Staging `write_values`/`d_write` in registers instead cost 2*IPT
-    //: live registers and MEASURABLY spilled at IPT=8 (32 B stack frame under
-    //: `__launch_bounds__(128,8)`); re-reading them below is the cheaper trade on a
-    //: kernel whose DRAM throughput was already only ~30%.
+    //: support mask); staging its loads instead is a measured spill
+    //: -- docs/internals/entmax.md#backward
     float local_dot = 0.0f;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
@@ -447,8 +426,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
     dot = __shfl_sync(lmask, dot, 0, LW);
 
     //: `s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final
-    //: pass. Holding it as a third live IPT-array cost 24 B of spill at IPT=8 under
-    //: `__launch_bounds__(128,8)`; one extra load per element buys it back to zero.
+    //: pass, for the same measured reason -- docs/internals/entmax.md#backward
     float d_delta[IPT], d_mid[IPT];
     Pair partial{0.0f, 0.0f};
 #pragma unroll
@@ -469,8 +447,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const float mid = valid ? midpoint_values[addr(smid, stream, token, col)] : 0.0f;
       const float dr = valid ? load_value(d_read, addr(sdr, stream, token, col)) : 0.0f;
       const float rv = valid ? load_value(read_values, addr(srv, stream, token, col)) : 0.0f;
-      //: the VJP divides by the amplitude; at a TIE the amplitude is exactly 0, so the
-      //: guard substitutes 1 and the support mask zeroes the term. See the Wolfram sheet.
+      //: the VJP divides by the amplitude, which is exactly 0 at a TIE: substitute 1 and
+      //: let the support mask zero the term -- docs/internals/entmax.md#backward
       const float safe = (sup && mid != 0.0f) ? mid : 1.0f;
       d_mid[i] = dr * read_gate + (sup ? dlw / safe : 0.0f);
       d_delta[i] = (dr * rv * write_gate - dlw * read_gate) * (sat ? 0.0f : 1.0f);
@@ -502,7 +480,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 
 // ---------------------------------------------------------------------------
 // HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on nothing
-// (I2). One launch per union level, exactly as today.
+// (I2). One launch per union level. The (w_pad -> LW, IPT) table and why the launch
+// count is unchanged from the Triton lowering: docs/internals/entmax.md#launch-shape
 // ---------------------------------------------------------------------------
 Strides five(const torch::Tensor& t) {
   if (t.dim() == 4) return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
