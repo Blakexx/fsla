@@ -28,6 +28,20 @@ question "is this actually sharded?" has an exact answer in the shipped `.so`:
   which is what makes the manifest a description of the shipped codegen rather than
   of a probe nobody ships.
 
+**AND THE HOST SIDE, WHICH THE LINKER WILL NOT ENFORCE FOR US.** The dispatch reaches
+each arm through a host wrapper it can declare but not define, so a shard member that
+went missing leaves an UNRESOLVED reference. On a static link that would be a link
+error and the design would need nothing more. This is a Python extension module: `ld
+-shared` leaves undefined symbols for the loader to resolve, by design and correctly
+(the CPython and torch symbols in here are resolved that way), so the missing arm
+would surface as an `ImportError` at first import instead of as a build failure --
+and, for the occupancy wrapper, which has no device code of its own, the fatbin count
+above would not see it at all. `--no-undefined` is not available as a fix, for exactly
+the reason the loader-resolved symbols exist. So the closure is checked here: NO
+undefined `launch_consumer_arm` or `query_consumer_occupancy_arm` symbol may remain.
+Verified by removal -- dropping one arm from its shard leaves exactly one undefined
+symbol, naming its tuple.
+
 Usage:
 
     python tools/fatbin_entries.py --check rola/_C*.so     # the gate (setup.py runs it)
@@ -84,6 +98,22 @@ def device_entries(so: Path) -> list[tuple[str, str, str]]:
         raise SystemExit(f"{so} carries no device entry points at all; that is not a "
                          f"built RoLA extension")
     return out
+
+
+#: The two host entry points a shard is the only possible definer of.
+_SHARD_SYMBOLS = ("launch_consumer_arm", "query_consumer_occupancy_arm")
+
+
+def unresolved_arms(so: Path) -> list[str]:
+    """Per-arm host wrappers that nothing in this binary defines."""
+    proc = subprocess.run(["nm", "--undefined-only", str(so)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(f"nm FAILED on {so}; the shard gate cannot pass a binary it "
+                         f"cannot read")
+    return sorted(line.split()[-1] for line in proc.stdout.splitlines()
+                  if any(name in line for name in _SHARD_SYMBOLS))
 
 
 def expected_shards() -> dict[str, str]:
@@ -147,7 +177,21 @@ def check(so: Path, arches=None) -> bool:
             print(f"fatbin OK  {arch}: {len(got)} consumer entries, one per "
                   f"instantiation, each in the shard the matrix assigns it")
 
-    #: 2. THE MANIFEST DESCRIBES THIS BINARY. Every ratified name is a name the
+    #: 2. THE DISPATCH CLOSURE, host side. An arm the ladder can select and no shard
+    #: defines is an unresolved reference that this kind of link does not refuse.
+    unresolved = unresolved_arms(so)
+    if unresolved:
+        ok = False
+        print(f"\nFAIL  {len(unresolved)} per-arm entry point(s) are referenced by the "
+              f"dispatch and defined by no shard. This binary would raise ImportError "
+              f"on first import; the shard partition and the dispatch have drifted "
+              f"apart:")
+        for name in unresolved[:6]:
+            print(f"        {name}")
+    else:
+        print("link closure OK  every arm the dispatch can select is defined by a shard")
+
+    #: 3. THE MANIFEST DESCRIBES THIS BINARY. Every ratified name is a name the
     #: shipped `.so` actually carries -- which was NOT true while the register/spill
     #: numbers were measured on a probe translation unit that shipped in nothing.
     present = {f"{arch}:{name}" for arch, _, name in entries}
