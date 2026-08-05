@@ -469,19 +469,35 @@ generated from it:
 | consumer | what it gets |
 |---|---|
 | the eight shard translation units | 32 explicit instantiations each |
-| `instantiations/dispatch_launch.inc` | the launch ladder `launch_consumer` includes |
-| `instantiations/dispatch_rows.inc` | the concatenated `ShardRow` tables |
+| `instantiations/dispatch_table.inc` | the row blocks, the axis key and the row index |
 | `tools/ratify.py` | the translation units to compile, and the manifest's `shards` block |
 
-A `ShardRow` carries an arm's structural coordinates and the three things only its
-own shard can answer: `launch`, `occupancy`, and the `constexpr` `smem_bytes`. Both
-device-backed queries below resolve a row rather than re-enumerating the matrix,
-which is why this file does not include the kernel header at all.
+A `ShardRow` carries an arm's structural coordinates, the three things only its own
+shard can answer — `launch`, `occupancy`, and the `constexpr` `smem_bytes` — and the
+pair that identifies where it came from, `shard` and `src_key`.
 
-The launch ladder assigns a `LaunchFn` and returns nothing; `launch_consumer` calls
-it and checks the CUDA error state once. Taking the address of a specialization this
-translation unit cannot define is also what makes the split real: a dispatch arm with
-no shard member CANNOT be satisfied by a silent re-instantiation here.
+**EVERY RESOLUTION IN THE DISPATCH TRANSLATION UNIT IS ONE LOOKUP.** `dispatch_key`
+turns a [choice](#dispatch-choice) into a mixed-radix index over the axes' VALUE
+POSITIONS and `kRowByKey` turns that index into a row:
+
+```
+key = ((((((iBT * 2 + iBC) * 2 + iDV) * 4 + iD) * 2 + iPREC) * 2 + iDECAY) * 2 + iGLOBAL)
+row = kRowByKey[key]            // nullptr if the binary has no such arm
+```
+
+Both the per-axis index functions and `kRowByKey` are emitted from the matrix, so the
+axis ORDER exists once. An index formula written by hand beside a generated table is
+the drift this file exists to remove — and a search over the rows, which is what the
+queries did before, restates nothing but pays for the restatement it avoided.
+
+A value no arm carries makes `dispatch_key` return -1, and an absent arm makes
+`kRowByKey` yield `nullptr`; both are REFUSALS naming the choice. Neither resolves to
+a neighbouring row, which is the difference between a table and a threshold.
+
+The launch resolves a row and calls `row->launch`; the CUDA error state is checked
+once, after it. Taking the address of a specialization this translation unit cannot
+define is also what makes the split real: a dispatch arm with no shard member CANNOT
+be satisfied by a silent re-instantiation here.
 
 **It is not a link error, and the difference is the reason two gates exist.** This is
 a Python extension module, so `ld -shared` leaves the reference undefined for the
@@ -497,6 +513,68 @@ unresolved `launch_consumer_arm` symbol and would reach a shipped artifact as an
 
 Measured by removal: dropping one arm from its shard leaves exactly one undefined
 symbol, and the post-link gate names its tuple three ways.
+
+## <a id="dispatch-choice"></a>B9.1. What the table consumes: a CHOICE
+
+`DispatchChoice` is one value per matrix axis and nothing else — no statistics, no
+thresholds, no device facts. Something upstream DECIDES (the planner's selector, a
+test, a debug pin) and the table RESOLVES.
+
+The separation is the point rather than a tidiness: the selector is knowingly interim
+(`rola/planner/select.py` labels it so), and the table must not acquire any of its
+opinions, or replacing the model becomes surgery on the dispatch instead of a swap.
+So there is no scoring here, no default arm, and no "nearest" anything.
+
+## <a id="row-admission"></a>B9.2. The per-row enable predicate, and why it keys on an INPUT
+
+A row's footprint is `constexpr`; what a device grants a block is not. `row_admitted`
+compares the two:
+
+```
+row.smem_bytes <= DeviceFacts::max_dynamic_smem_bytes    // cudaDevAttrMaxSharedMemoryPerBlockOptin
+```
+
+The device fact is read ONCE per process and the launch refuses a row it excludes,
+naming both numbers — where the opt-in would otherwise fail inside the launcher and
+surface as a bare CUDA error. `rola_max_dynamic_smem_bytes` exposes the same fact so a
+planner can apply the same predicate BEFORE it selects, and
+`rola.planner.dispatch_table` mirrors the inequality exactly: a planner that selected
+an arm the launch then refused would have priced a plan that cannot run.
+
+**IT IS A PREDICATE ON A RUNTIME INPUT, NEVER ON A BUILD SYMBOL.** flash-attention
+gates its arms with `#ifndef FLASHATTENTION_DISABLE_HDIM{N}` around each generated
+instantiation (`hopper/generate_kernels.py`, verified in the local clone); that makes
+the arm set a property of the build, so the binary cannot say what it can run. Here
+the binary carries every arm it was built with and answers the question about THIS
+machine.
+
+## <a id="row-staleness"></a>B9.3. The staleness key on every row
+
+Each row carries the name of the generated translation unit that defines it and that
+unit's `members-sha256` — the hash of its sorted tuple list, which is exactly what
+`tools/manifests/sm_*.json` records under `shards` and what enters the manifest
+digest.
+
+Inside one binary a row and its kernel are compiled together and cannot disagree, and
+nothing here pretends otherwise. The key exists for the joins ACROSS the compile
+boundary: a recorded table, a cached plan, a manifest carried beside a rebuilt `.so`.
+`rola.planner.dispatch_table` performs that join against the ratified key set
+(`_build_config.py`'s `shards` block, so an installed wheel can make it with no
+repository) and FILTERS every row that does not match, recording what it dropped. A
+stale row is never returned and never launched — the Inductor `src_hash` discipline:
+a cache entry whose source moved is not repaired, it is not used. An empty surviving
+set is an error, because it means the binary and the record disagree about
+everything.
+
+## <a id="table-census"></a>B9.4. The census: the table and the binary carry one set
+
+`rola_dispatch_table()` returns every row as data and touches no device (the occupancy
+function pointer is deliberately not called), so the set the dispatch can reach is
+READABLE rather than inferred. `tests/unit/test_dispatch_table.py` joins it against
+`tools/fatbin_entries.py`'s device entry points, decoded from their MANGLED NAMES, and
+asserts set equality in BOTH directions per architecture: an entry the table cannot
+reach is dead payload, and a row with no entry is a dispatch into a launcher the
+binary does not define.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 

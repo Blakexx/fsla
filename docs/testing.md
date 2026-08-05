@@ -205,6 +205,15 @@ are here because a document nothing checks is a document that drifts.
 tables to `tools/supported.py --check`. A hand-maintained support table is a
 claim; a generated one is a report, and this is what keeps the difference real.
 
+**`tests/unit/test_dispatch_table.py`** is the CENSUS: it reads the dispatch table out
+of the built extension and joins it against the fatbin's device entry points, decoded
+from their mangled names, asserting set equality in both directions per architecture —
+an entry the table cannot reach is dead payload, a row with no entry is a dispatch into
+a launcher the binary does not define. It also gives the staleness filter teeth (a
+perturbed shard key must drop exactly that shard's rows, and they must stop resolving),
+proves the enable predicate is non-vacuous below the largest footprint, and pins the
+planner's `SUPPORTED_*` tuples to the table's own axis values.
+
 **`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
 engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
 one-line `//: HAZARD <slug>` stubs left at the sites they explain. Five rules,

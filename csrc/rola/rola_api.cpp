@@ -48,6 +48,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "(the launch bounds in this binary were derived from it)");
   m.def("rola_consumer_smem_bytes", &rola::rola_consumer_smem_bytes,
         "the consumer kernel's dynamic shared-memory footprint per CTA");
+  m.def("rola_dispatch_table", &rola::rola_dispatch_table,
+        "every row of the consumer's dispatch table: (BT, BC, d_v, D, precision, decay, "
+        "global, smem_bytes, shard, src_key). Touches no device.");
+  m.def("rola_max_dynamic_smem_bytes", &rola::rola_max_dynamic_smem_bytes,
+        "cudaDevAttrMaxSharedMemoryPerBlockOptin -- the device fact a row's footprint "
+        "is admitted against");
   m.def("rola_sm_shared_bytes", &rola::rola_sm_shared_bytes,
         "cudaDevAttrMaxSharedMemoryPerMultiprocessor -- the per-SM SMEM budget the "
         "plan records (§10 ruling)");

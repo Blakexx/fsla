@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import prod
+from typing import Protocol
 
 from rola.planner.feeder import FeederFlags
 
@@ -438,10 +439,175 @@ def atomic_work_per_token(static: StaticPlanInputs, BC: int, coeff: float) -> fl
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# SELECTION IS A SWAPPABLE INTERFACE (user ruling, 2026-08-05)
+# ---------------------------------------------------------------------------
+#
+# Three stages, and the seam is between them rather than inside any of them:
+#
+#     STATISTICS BUNDLE  ->  SELECTOR  ->  CHOICE  ->  the dispatch table
+#
+# The bundle is TYPED and VERSIONED, so a selector declares what it reads instead of
+# reaching into whatever the caller happened to have. The selector is an
+# IMPLEMENTATION -- today's cost model is one, and it is labelled INTERIM because its
+# constants have not been personally audited and are knowingly tolerated; a trivial
+# fixed-choice selector ships beside it for debugging and for A/B. The choice is a
+# frozen four axes, and `rola.planner.dispatch_table` CONSUMES it: the table resolves
+# a row, it never scores one.
+#
+# The point of the seam is replacement cost. When the interim model is retired, what
+# changes is which `Selector` the caller passes -- not the plan, not the schedule, not
+# the dispatch, and not this module's entry points. Precedent: Inductor's override
+# classes, where the policy object is an argument and the machinery below it never
+# learns which policy it got.
+
+
+#: Bumped when the BUNDLE's shape changes -- a field added, a field's meaning moved.
+#: A selector that reads a field records the version it read it under, so a bundle
+#: from an older producer is a REFUSAL rather than a silently different plan.
+SELECTOR_INTERFACE_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class StatisticsBundle:
+    """Everything a selector is allowed to read, named and versioned.
+
+    It carries the three §4.3 inputs unchanged -- the static record, the hardware
+    record, the producer epilogue's summaries -- plus the optional per-`BT` summaries a
+    caller may supply. Nothing is computed here: a bundle is a CARRIER, and a selector
+    that wants a derived quantity derives it and says so in its evidence.
+    """
+
+    static: StaticPlanInputs
+    hw: HardwareFacts
+    summaries: object
+    summaries_by_bt: dict | None = None
+    version: int = SELECTOR_INTERFACE_VERSION
+
+    def __post_init__(self) -> None:
+        if self.version != SELECTOR_INTERFACE_VERSION:
+            raise ValueError(
+                f"this bundle is version {self.version} and the interface is "
+                f"{SELECTOR_INTERFACE_VERSION}: the fields a selector reads have moved, "
+                "so the plan it would return is not the plan the producer asked for")
+
+    def at(self, BT: int):
+        """The summaries for one `BT` -- the per-granularity object if there is one.
+
+        THE ONE PLACE the single-vs-per-BT distinction is resolved, so a selector cannot
+        half-use it: `candidate_frac` and `quanta_hist` are statistics OF A TILING and
+        are not `BT`-invariant (`cf(16) = 0.1936` against `cf(32) = 0.3574`, MEASURED at
+        `atscale-L2048-BC16`).
+        """
+        return self.summaries if self.summaries_by_bt is None else self.summaries_by_bt[BT]
+
+    def expose(self) -> dict:
+        """The named statistics, flat -- for the auditor, the ledger and a plan record.
+
+        STAT-EXPOSE, and it is deliberately a DICT of scalars: what a selector read is
+        then recordable beside what it chose, which is what makes a disagreement
+        between two selectors a readable row rather than a rerun.
+        """
+        out = {
+            "interface_version": self.version,
+            "D": self.static.D,
+            "N": self.static.N,
+            "BH": self.static.BH,
+            "d_v": self.static.d_v,
+            "decay": self.static.decay,
+            "normalization": self.static.normalization,
+            "mma_precision": self.static.mma_precision,
+            "feasible_BC": tuple(self.static.feasible_BC),
+            "sm_count": self.hw.sm_count,
+            "atomic_coeff": self.hw.resolved_atomic_coeff(),
+            "per_bt_summaries": self.summaries_by_bt is not None,
+        }
+        for BT in SUPPORTED_BT:
+            per_bt = self.at(BT)
+            out[f"candidate_frac@BT{BT}"] = float(per_bt.candidate_frac)
+            out[f"k_hat@BT{BT}"] = mean_quantum(per_bt.quanta_hist)
+        return out
+
+
+class Selector(Protocol):
+    """WHO DECIDES. One call, one choice, and evidence when it has any.
+
+    `name` and `status` are part of the contract rather than decoration: a plan records
+    which selector produced it and whether that selector is interim, so a result taken
+    under a knowingly-unaudited model is never mistaken for one taken under a measured
+    one.
+    """
+
+    name: str
+    status: str
+
+    def __call__(self, bundle: StatisticsBundle) -> tuple[ConfigChoice, ConfigEvidence | None]:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class CostModelSelector:
+    """TODAY'S selector: the rule table's per-token cost, argmin over `(BC, BT)`.
+
+    **LABELLED INTERIM, and the label is the point.** Its coefficients are measured, but
+    the calibration inventory records that they are not personally audited and that two
+    of them (`C_SATURATION`, `C_ATOMIC_COEFF`) are placeholders whose sweeps do not
+    exist yet. Shipping it behind this interface is what makes replacing it a swap.
+    """
+
+    name: str = "cost-model"
+    status: str = "INTERIM"
+
+    def __call__(self, bundle: StatisticsBundle) -> tuple[ConfigChoice, ConfigEvidence]:
+        return select_config_with_evidence(
+            bundle.static, bundle.hw, bundle.summaries,
+            summaries_by_bt=bundle.summaries_by_bt)
+
+
+@dataclass(frozen=True, slots=True)
+class FixedChoiceSelector:
+    """A selector that reads NOTHING and returns the choice it was built with.
+
+    For debugging and for A/B: pinning one axis while another moves, reproducing a
+    recorded plan, or running the engine at a chosen arm without arguing with a model.
+    It returns no evidence because it weighed nothing -- an empty `ConfigEvidence` would
+    be a claim that a decision was reasoned.
+    """
+
+    choice: ConfigChoice
+    name: str = "fixed"
+    status: str = "DEBUG"
+
+    def __call__(self, bundle: StatisticsBundle) -> tuple[ConfigChoice, None]:
+        return self.choice, None
+
+
+#: The selector a caller gets when it does not name one. A module-level default rather
+#: than a hidden branch, so "which selector ran" has one answer and swapping it is an
+#: assignment.
+DEFAULT_SELECTOR: Selector = CostModelSelector()
+
+
+def select_with(selector: Selector, bundle: StatisticsBundle
+                ) -> tuple[ConfigChoice, ConfigEvidence | None]:
+    """Run one selector over one bundle. The whole of the interface.
+
+    Separate from :func:`select_config` because THIS is the swappable call: the frozen
+    §4.3 entry points below are a convenience over it, and they are what existing
+    callers keep using.
+    """
+    return selector(bundle)
+
+
 def select_config(static: StaticPlanInputs, hw: HardwareFacts,
-                  summaries) -> ConfigChoice:
-    """§4.3's frozen signature. See :func:`select_config_with_evidence`."""
-    return select_config_with_evidence(static, hw, summaries)[0]
+                  summaries, *, selector: Selector | None = None) -> ConfigChoice:
+    """§4.3's frozen signature, now with the selector as an optional argument.
+
+    The default is :data:`DEFAULT_SELECTOR`; passing one is how a test, a bench or an
+    A/B harness runs a different implementation without a different call path.
+    """
+    bundle = StatisticsBundle(static=static, hw=hw, summaries=summaries)
+    return select_with(selector or DEFAULT_SELECTOR, bundle)[0]
 
 
 def select_config_with_evidence(static: StaticPlanInputs, hw: HardwareFacts,
@@ -633,6 +799,7 @@ def freeze_for_decode(static: StaticPlanInputs, *,
 
 def config_for_step(static: StaticPlanInputs, hw: HardwareFacts, T: int, *,
                     summaries=None, frozen: FrozenConfig | None = None,
+                    selector: Selector | None = None,
                     **kwargs) -> tuple[ConfigChoice, ConfigEvidence | None]:
     """THE DISPATCH. One structural branch, and the decode arm touches no statistic.
 
@@ -653,6 +820,17 @@ def config_for_step(static: StaticPlanInputs, hw: HardwareFacts, T: int, *,
             f"select_config needs the producer epilogue's RoutingSummaries at T={T}; "
             "only the T == 1 decode arm bypasses selection (§6b), and it is taken on the "
             "shape of the schedule, never on a missing argument")
+    if selector is not None:
+        #: A NAMED SELECTOR TAKES THE WHOLE DECISION, bundle and all. The kwargs below
+        #: belong to the cost model's own signature, so they are refused here rather
+        #: than silently dropped into a selector that never reads them.
+        if kwargs:
+            raise TypeError(
+                f"config_for_step got {sorted(kwargs)} beside selector={selector.name!r}; "
+                "those arguments are the cost model's, and a selector reads a "
+                "StatisticsBundle instead")
+        return select_with(selector, StatisticsBundle(static=static, hw=hw,
+                                                      summaries=summaries))
     return select_config_with_evidence(static, hw, summaries, **kwargs)
 
 
@@ -714,16 +892,22 @@ __all__ = [
     "C_ATOMIC_COEFF",
     "C_COLLISION_GAMMA",
     "C_SATURATION",
+    "DEFAULT_SELECTOR",
     "MMA_K_QUANTUM",
     "RULE_TABLE_PROVENANCE",
+    "SELECTOR_INTERFACE_VERSION",
     "SUPPORTED_BC",
     "SUPPORTED_BT",
     "ConfigChoice",
     "ConfigEvidence",
+    "CostModelSelector",
+    "FixedChoiceSelector",
     "FrozenConfig",
     "HardwareFacts",
+    "Selector",
     "ShadowRecord",
     "StaticPlanInputs",
+    "StatisticsBundle",
     "atomic_work_per_token",
     "config_for_step",
     "cost_per_token",
@@ -736,6 +920,7 @@ __all__ = [
     "select_config",
     "select_config_with_evidence",
     "select_p",
+    "select_with",
     "shadow_step",
     "waves",
 ]

@@ -5,14 +5,18 @@ from runtime values. This header is the mechanism for that selection in the
 hand-written launchers: `decode.cu`'s `launch_decode_gemv` and `entmax.cu`'s forward
 and backward launchers.
 
-The consumer does not use it. Its dispatch is GENERATED from the instantiation matrix
-by `tools/gen_shards.py` into `instantiations/dispatch_launch.inc`, where every leaf is
-a single function-pointer assignment and the enumeration is single-sourced with the
-shards it selects
-([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix)). The rule
-between the two is the size of the enumeration: one large enough that writing it out
-would be a second copy of the matrix is generated; a launcher with a handful of axes
-and one kernel is written here.
+The consumer does not use it, and does not use a switch at all. Its dispatch is a
+GENERATED TABLE (`instantiations/dispatch_table.inc`): a mixed-radix key over the
+matrix axes indexes a row that carries the launcher, the residency query and the
+footprint, so selection is an array load and the enumeration is single-sourced with
+the shards it selects ([`consumer.md#shard-rows`](consumer.md#shard-rows)).
+
+THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
+axes and one kernel writes its selection here, in the one place its `<<<...>>>`
+configuration exists. A matrix large enough that spelling it out would be a SECOND
+COPY of the instantiation set is generated instead — and once it is generated, a table
+is the cheaper form than a nested switch, because the axis order then exists exactly
+once instead of once per nesting level.
 
 ## <a id="one-launch"></a>1. The launch is written ONCE
 
