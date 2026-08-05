@@ -6,7 +6,8 @@ exact `ptxas`:
 
 ```
 tools/manifests/sm_86.json
-  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...} },
+  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...},
+                   "nvcc_flags": [...], "sass_hash_version": 2 },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
                                               "count": 32 }, ... },
@@ -49,7 +50,7 @@ neither held before:
   decode/entmax keys named symbols that existed in no shipped `.so`. They now name
   the entry points the binary carries, and `tools/fatbin_entries.py` checks that
   rather than asserting it.
-- **there is one enumeration of the matrix.** The shards, the dispatch ladder and
+- **there is one enumeration of the matrix.** The shards, the dispatch table and
   this gate's source list all come out of `tools/gen_shards.py`; there is no second
   file that could enumerate a different 256.
 
@@ -99,11 +100,20 @@ embeds a discriminator derived from the source path; a manifest written in a
 worktree names 192 kernels that no build at any other path will ever define. Build
 one tree over the other rather than side by side.
 
+**And from the same SCANNER.** What reaches the digest is decided by
+`ratify.sass_scan`, so widening the capture moves every hash in an unchanged binary
+— a false verdict with exactly the path trap's shape. `ratify.SASS_HASH_VERSION` is
+the one definition of that decision; it is stamped into the manifest's `toolchain`
+block and into every map `tools/sass_bodies.py` writes, and both refuse a comparison
+that does not agree on it. A record carrying no stamp is refused rather than assumed
+to be version 1, because guessing produces a confident wrong answer.
+
 ## The four closed-world rules
 
 | Rule | Refused | Enforced by |
 |---|---|---|
 | **R1** | building under an assembler the manifest was not ratified under | `setup.py::_gate_toolchain`, `ratify.py::check_toolchain` |
+| **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
 | **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
 | **R4** | launching on a device the kernel's arch table does not describe | `consumer_check_arch_table()` at run time, `static_assert` at compile time |

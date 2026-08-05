@@ -49,9 +49,41 @@
 
 namespace rola {
 
-//: The generated table of every arm's launcher, residency query and footprint, one
-//: contiguous block per shard: csrc/rola/src/instantiations/README.md
-#include "instantiations/dispatch_rows.inc"
+//: THE GENERATED DISPATCH TABLE: every arm's launcher, residency query, footprint and
+//: staleness key, one contiguous block per shard, plus the mixed-radix key over the
+//: matrix axes and the index that turns a key into a row. Every resolution in this
+//: file -- the launch and both device-backed queries -- goes through it:
+//: csrc/rola/src/instantiations/README.md
+#include "instantiations/dispatch_table.inc"
+
+namespace {
+
+//: THE ONE RESOLUTION IN THIS FILE. A key is a mixed-radix index over the axes' value
+//: positions and the index is generated beside it, so there is no axis order written
+//: down twice and no search: an unreachable choice keys to -1, an absent arm indexes
+//: to `nullptr`, and everything else is a load. docs/internals/consumer.md#shard-rows
+const ShardRow* dispatch_row(const DispatchChoice& choice) {
+  const int key = dispatch_key(choice);
+  return key < 0 ? nullptr : kRowByKey[key];
+}
+
+//: THE DEVICE'S SHARE OF THE ADMISSION TEST, read ONCE per process. It is the
+//: per-block OPT-IN maximum and not the per-SM budget: the opt-in is what
+//: `cudaFuncSetAttribute` will grant a single block, which is the number a row's
+//: footprint has to fit inside. Cached because it cannot change under a process and
+//: because a launch is not the place to ask the driver a question with a fixed answer.
+DeviceFacts device_facts() {
+  static const DeviceFacts facts = [] {
+    int dev = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&dev));
+    int optin = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev));
+    return DeviceFacts{static_cast<size_t>(optin)};
+  }();
+  return facts;
+}
+
+}  // namespace
 
 namespace {
 
@@ -221,29 +253,33 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 
   //: `mma_precision` selects BOTH GEMM sites together (RULING 1 revised): "bf16" is
   //: the production point, "tf32x3" the exactness-gate point. Both are instantiated.
-  const bool exact = (mma_precision == "tf32x3");
   //: THE INSTANTIATION MATRIX. Every axis is a template because every axis is a
   //: STRUCTURAL plan fact with few legal values -- the standing "branch on structure,
   //: not thresholds" rule -- and there is deliberately NO runtime fallback on any of
-  //: them: an out-of-range value is a hard TORCH_CHECK, never a slower path.
+  //: them: an out-of-range value is a hard refusal, never a slower path.
   //: The axes, why each one must be compile-time, the MEASURED instantiation count
   //: (the ratification manifest is the authority, not this comment) and the measured
   //: build cost: docs/internals/consumer.md#instantiation-matrix
-  //:
-  //: The ladder below is GENERATED from the same matrix definition the shards are
-  //: (`tools/gen_shards.py`), so the set this dispatch can reach and the set the
-  //: binary contains are one enumeration and cannot drift apart. It resolves a
-  //: function POINTER rather than launching in place, which is what keeps the launch
-  //: error check at ONE site instead of 512.
-  const int p_D = p.D;
-  LaunchFn fn = nullptr;
-#include "instantiations/dispatch_launch.inc"
-  //: NOT REACHABLE, and checked anyway: the ladder is generated over the closure the
-  //: TORCH_CHECKs above admit, so a null here means the generator and the checks
-  //: disagree -- which is a defect to fail on, not to launch on.
-  TORCH_CHECK(fn != nullptr, "no consumer instantiation for BT=", BT, " BC=", BC, " d_v=", DV,
-              " D=", p_D, " precision=", mma_precision, " decay=", decay, " global=", global_norm);
-  fn(p, at::cuda::getCurrentCUDAStream());
+  const DispatchChoice choice{
+      BT,    BC,         DV, p.D, mma_precision == "tf32x3" ? MmaPrec::kTf32x3 : MmaPrec::kBf16,
+      decay, global_norm};
+  const ShardRow* row = dispatch_row(choice);
+  //: A KEY THIS BINARY HAS NO ARM FOR RESOLVES TO NOTHING, and nothing is what is
+  //: launched. The checks above already admit only the matrix's own closure, so a null
+  //: here means the generator and the checks disagree -- a defect to fail on.
+  TORCH_CHECK(row != nullptr, "no consumer instantiation for BT=", BT, " BC=", BC, " d_v=", DV,
+              " D=", p.D, " precision=", mma_precision, " decay=", decay, " global=", global_norm);
+  //: THE ROW'S ENABLE PREDICATE, ON A DEVICE INPUT. Its footprint is `constexpr`; what
+  //: this device grants a block is not. Refusing here names both numbers, where the
+  //: opt-in would otherwise fail inside the launcher and surface as a bare CUDA error.
+  const DeviceFacts device = device_facts();
+  TORCH_CHECK(row_admitted(*row, device), "the consumer arm BT=", BT, " BC=", BC, " d_v=", DV,
+              " D=", p.D, " precision=", mma_precision, " decay=", decay, " global=", global_norm,
+              " needs ", row->smem_bytes,
+              " B of dynamic shared memory and this device grants a block at most ",
+              device.max_dynamic_smem_bytes,
+              " B. The arm is compiled but not runnable here; select a smaller tile.");
+  row->launch(p, at::cuda::getCurrentCUDAStream());
   //: THE ONE ERROR SITE. The shard's launcher is torch-free and reports through the
   //: CUDA runtime's error state -- a refused shared-memory opt-in and a failed launch
   //: both land here: docs/internals/consumer.md#instantiation-matrix
@@ -251,25 +287,6 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 }
 
 namespace {
-
-//: THE ROW LOOKUP behind both device-backed queries. Linear over the concatenated
-//: shard blocks because a residency question is asked by the PLANNER, once per
-//: candidate, next to a driver call that costs orders of magnitude more -- and
-//: because an index formula would have to restate the matrix's axis order, which is
-//: the drift this batch exists to remove.
-const ShardRow* find_shard_row(int64_t BT, int64_t BC, int64_t DV, int D, MmaPrec prec, bool decay,
-                               bool global_norm) {
-  for (const ShardRowBlock& block : kShardRowBlocks) {
-    for (int i = 0; i < block.count; ++i) {
-      const ShardRow& row = block.rows[i];
-      if (row.BT == BT && row.BC == BC && row.DV == DV && row.D == D && row.prec == prec
-          && row.decay == decay && row.global_norm == global_norm) {
-        return &row;
-      }
-    }
-  }
-  return nullptr;
-}
 
 //: The residency and footprint queries answer at `D = 2`, the at-scale cell's
 //: topology depth (`D` moves only the `[D][BC]` digit table), under the planner's
@@ -279,12 +296,13 @@ constexpr bool kQueryGlobal = true;
 constexpr MmaPrec kQueryPrec = MmaPrec::kBf16;
 
 const ShardRow& query_row(bool decay, int64_t BC, int64_t BT, int64_t DV) {
-  TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
-  TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
-  TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  const ShardRow* row = find_shard_row(BT, BC, DV, kQueryD, kQueryPrec, decay, kQueryGlobal);
+  const ShardRow* row =
+      dispatch_row(DispatchChoice{static_cast<int>(BT), static_cast<int>(BC), static_cast<int>(DV),
+                                  kQueryD, kQueryPrec, decay, kQueryGlobal});
   TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BT=", BT, " BC=", BC,
-              " d_v=", DV);
+              " d_v=", DV,
+              ": the matrix carries BT in {16, 32}, BC in {16, 64} and "
+              "d_v in {32, 64}");
   return *row;
 }
 
@@ -299,6 +317,37 @@ int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV) 
   //: state; this is where it becomes a Python exception.
   C10_CUDA_CHECK(cudaGetLastError());
   return blocks;
+}
+
+//: THE TABLE, AS DATA. Every row this binary carries, in the generated order, so the
+//: set the dispatch can reach is READABLE rather than inferred. It touches no device:
+//: the fields are static data and the occupancy function pointer is deliberately NOT
+//: called here, so the census can run before a CUDA context exists.
+//: `tests/unit/test_dispatch_table.py` joins this against `cuobjdump`'s entry points,
+//: which is what makes "the table and the binary carry the same arms" a checked
+//: statement rather than a property of one generator.
+//: docs/internals/consumer.md#table-census
+std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
+                       std::string, std::string>>
+rola_dispatch_table() {
+  std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
+                         std::string, std::string>>
+      out;
+  for (const ShardRowBlock& block : kShardRowBlocks) {
+    for (int i = 0; i < block.count; ++i) {
+      const ShardRow& row = block.rows[i];
+      out.emplace_back(row.BT, row.BC, row.DV, row.D,
+                       row.prec == MmaPrec::kTf32x3 ? "tf32x3" : "bf16", row.decay, row.global_norm,
+                       static_cast<int64_t>(row.smem_bytes), row.shard, row.src_key);
+    }
+  }
+  return out;
+}
+
+//: The device fact the per-row enable predicate keys on, exposed so the same admission
+//: the launch performs can be performed by a planner before it selects.
+int64_t rola_max_dynamic_smem_bytes() {
+  return static_cast<int64_t>(device_facts().max_dynamic_smem_bytes);
 }
 
 int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t BT, int64_t DV) {

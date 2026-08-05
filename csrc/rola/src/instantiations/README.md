@@ -33,9 +33,10 @@ would reach a shipped artifact as an `ImportError`. Two gates close it instead:
 before anything compiles, and `python tools/fatbin_entries.py --check` refuses a
 built binary carrying an unresolved `launch_consumer_arm` after the link.
 
-`dispatch_launch.inc` is the launch selection ladder and `dispatch_rows.inc` the
-concatenation of the shard row tables that the residency and footprint queries
-resolve through. Both come out of the same matrix definition as the shards, so the
+`dispatch_table.inc` carries the shard row blocks, a mixed-radix `dispatch_key`
+over the matrix axes, and `kRowByKey`, which turns a key into a row. The launch and
+both device-backed queries resolve through it, so there is ONE lookup in the dispatch
+translation unit. It comes out of the same matrix definition as the shards, so the
 dispatch and the shards cannot enumerate different sets — which is the whole reason
 this generator exists.
 

@@ -195,6 +195,29 @@ using OccFn = int (*)();
 //: and footprint queries resolve a row rather than re-enumerating the matrix, which
 //: is why the dispatch translation unit does not include the kernel header at all.
 //: docs/internals/consumer.md#shard-rows
+//: THE CHOICE A DISPATCH CONSUMES. One value per matrix axis and nothing else: no
+//: statistics, no thresholds, no device facts. Something upstream -- the planner's
+//: selector, a test, a debug pin -- DECIDES, and the table RESOLVES. The table never
+//: computes a choice, which is what keeps selection replaceable without touching the
+//: dispatch. docs/internals/consumer.md#dispatch-choice
+struct DispatchChoice {
+  int BT;
+  int BC;
+  int DV;
+  int D;
+  MmaPrec prec;
+  bool decay;
+  bool global_norm;
+};
+
+//: THE MACHINE FACTS A ROW IS ADMITTED AGAINST. Filled from the driver once per
+//: process. Held as a struct rather than passed as a scalar so that a second fact
+//: (a register budget, a driver version) is a field and not a signature change.
+//: docs/internals/consumer.md#row-admission
+struct DeviceFacts {
+  size_t max_dynamic_smem_bytes;
+};
+
 struct ShardRow {
   int BT;
   int BC;
@@ -206,7 +229,25 @@ struct ShardRow {
   LaunchFn launch;
   OccFn occupancy;
   size_t smem_bytes;
+  //: The generated translation unit that OWNS this row, and that unit's
+  //: `members-sha256` -- the hash of the sorted tuple list it carries. The pair is
+  //: the row's STALENESS KEY: it is what `tools/manifests/sm_*.json` records under
+  //: `shards`, so a row can be joined against the ratification that measured it and
+  //: against any record taken of this binary. docs/internals/consumer.md#row-staleness
+  const char* shard;
+  const char* src_key;
 };
+
+//: THE PER-ROW ENABLE PREDICATE, AND IT KEYS ON AN INPUT. A row is selectable iff its
+//: `constexpr` footprint fits what THIS DEVICE will grant a block as dynamic shared
+//: memory. The predicate is evaluated per row against a runtime fact, never on a
+//: preprocessor symbol -- flash-attention's `#ifndef FLASHATTENTION_DISABLE_HDIM{N}`
+//: is the shape being refused: it makes the arm set a property of the build rather
+//: than of the machine, so the binary cannot say what it can run.
+//: docs/internals/consumer.md#row-admission
+inline bool row_admitted(const ShardRow& row, const DeviceFacts& device) {
+  return row.smem_bytes <= device.max_dynamic_smem_bytes;
+}
 
 //: One shard's contiguous slice of the table. The blocks are concatenated, never
 //: merged into one array: each shard OWNS its rows, so P06's generated dispatch

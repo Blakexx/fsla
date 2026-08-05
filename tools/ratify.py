@@ -87,7 +87,9 @@ one on synthetic SASS). That is what makes a green run mean something: a gate th
 cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
 MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH (§3.7), each
-`{"toolchain": {...}, "source": {...}, "shards": {...}, "entries": {<mangled name>:
+`{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version}, "source": {...},
+"shards": {...},
+"entries": {<mangled name>:
 {...}}}`. The metadata blocks are siblings of the entries rather than reserved keys
 inside them, so an instantiation can never be confused for metadata by a name that
 happens to collide. `shards` is `{shard name: {members_sha256, count}}` -- MEMBERSHIP
@@ -356,6 +358,64 @@ def shipped_defines() -> dict[str, int]:
                              f"{name}; the provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out
+
+
+#: Flags that say HOW THE COMPILE IS RUN rather than WHAT CODE IT PRODUCES, and are
+#: therefore excluded from the ratified list. `-gencode` names the targets, which the
+#: per-arch FILING already records -- keeping it would make one arch's manifest
+#: disagree with another's on a block every arch file must share. `--threads` is a
+#: parallelism knob with an env override (`ROLA_NVCC_THREADS`), so including it would
+#: make a build that spends more cores on itself read as a codegen change.
+_NON_CODEGEN_FLAG_PREFIXES = ("-gencode", "--threads=")
+
+
+def ratified_flags() -> list[str]:
+    """The codegen flags a manifest is measured under, ARCH- AND JOB-INDEPENDENT.
+
+    Everything `tools/build_flags.py` emits except :data:`_NON_CODEGEN_FLAG_PREFIXES`:
+    the optimization level, the language standard, `-lineinfo`, the torch defines,
+    `--ptxas-options=-v` and the fatbin compression. Each of those either changes what
+    `ptxas` assembles or changes the report this gate parses.
+    """
+    flags = build_flags.torch_defines() + build_flags.nvcc_flags(())
+    return [f for f in flags if not f.startswith(_NON_CODEGEN_FLAG_PREFIXES)]
+
+
+def check_flags(manifest: dict) -> bool:
+    """The recorded flag list and the tree's flag list must be the same.
+
+    THE GAP THIS CLOSES, recorded when `-Xfatbin -compress-all` landed: the manifest
+    pinned the assembler and the calibration macros but not the flags, so a
+    codegen-affecting flag change left no fingerprint in anything a gate reads. It was
+    caught then only because both compilers import one flag list -- a property of the
+    code, not a gate. A missing block is a failure for the same reason a missing
+    `defines` block is: a manifest that cannot say what it compiled under cannot
+    certify what shipped.
+    """
+    want = ratified_flags()
+    got = manifest["toolchain"].get("nvcc_flags")
+    if got == want:
+        print(f"flags OK  {len(want)} codegen flags")
+        return True
+    missing = [f for f in want if f not in (got or [])]
+    extra = [f for f in (got or []) if f not in want]
+    if got is not None and not missing and not extra:
+        #: SAME FLAGS, DIFFERENT ORDER. Order is compared deliberately -- `nvcc` reads
+        #: its flag list left to right and a later flag can override an earlier one, so
+        #: a reordering is not provably a no-op -- but a refusal whose two difference
+        #: lists are both empty says nothing, and a reader would take it for a bug in
+        #: the gate rather than a difference in the manifest.
+        print(f"\nFAIL  FLAG DRIFT (ORDER). The manifest records the same {len(want)} "
+              f"flags in a different order.\n  tree:     {want}\n  manifest: {got}\n"
+              f"Order is compared because `nvcc` reads the list left to right and a "
+              f"later flag can override an earlier one; re-ratify with --write.")
+        return False
+    print(f"\nFAIL  FLAG DRIFT. The manifest was measured under a different flag list "
+          f"than the tree compiles with.\n  in the tree, not the manifest: {missing}\n"
+          f"  in the manifest, not the tree: {extra}\n"
+          f"The ratified register and spill numbers describe a compile nobody runs; "
+          f"re-ratify with --write.")
+    return False
 
 
 def check_defines(manifest: dict) -> bool:
@@ -667,6 +727,17 @@ _SASS_BRA = re.compile(r"\bBRA\b.*?(?:`?\((\.L_[\w.]+)\)|0x([0-9a-f]+))")
 #: and must be. Not in it: `Function :` headers, `.headerflags`, lineinfo, and the
 #: padding that aligns the encoding column, which is a property of the LISTING and
 #: moves with the longest instruction in it.
+#: THE SCANNER'S OWN VERSION. What reaches the digest is a property of
+#: :func:`sass_scan`, not of the binary: widening the capture once moved every digest
+#: in an unchanged binary, which reads exactly like a codegen change and is not one.
+#: Every artifact carrying one of these hashes is stamped with it -- the maps
+#: `tools/sass_bodies.py` writes and the per-instantiation `sass_sha256` in every
+#: manifest -- and each refuses a comparison across two versions. BUMP IT in the same
+#: commit that changes which lines `sass_scan` feeds the digest.
+#: 1 = instruction text only (the pre-2026-08-05 capture, which dropped the encoding
+#: words); 2 = every offset-marked and encoding line, whitespace-normalised.
+SASS_HASH_VERSION = 2
+
 _SASS_BODY_INST = re.compile(r"/\*[0-9a-f]{4,}\*/")
 _SASS_BODY_ENC = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
 
@@ -863,7 +934,8 @@ def check_local_presence(local_ops: dict[str, int], want: dict) -> bool:
     return True
 
 
-def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool) -> bool:
+def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool,
+                      stamped_version) -> bool:
     """THE INCREMENTAL RATCHET: per-instantiation codegen identity.
 
     The source digest is a WHOLESALE trigger -- any edit under `csrc/rola/src` moves
@@ -882,6 +954,13 @@ def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool) -> bool:
       numbers. Naming the moved ones turns "re-ratify" into a scoped, checkable act
       instead of a 1,216-entry re-derivation.
     """
+    if stamped_version != SASS_HASH_VERSION:
+        print(f"\nFAIL  SASS HASH VERSION. The ratified bodies were hashed by scanner "
+              f"version {stamped_version!r}; this tool is version "
+              f"{SASS_HASH_VERSION}. Two versions hash DIFFERENT text, so their "
+              f"digests disagree on every entry while describing identical code -- "
+              f"the same false verdict the path trap produces. Re-ratify with --write.")
+        return False
     missing = sorted(n for n in bodies if n in want and "sass_sha256" not in want[n])
     if missing:
         print(f"\nFAIL  {len(missing)} manifest entr(ies) predate the SASS-body "
@@ -1054,7 +1133,19 @@ def main() -> int:
             #: measurement OF a source tree UNDER an assembler, and both halves of
             #: that sentence must be checkable (the freshness trigger, session 9).
             path.write_text(json.dumps(
-                {"toolchain": {"ptxas": version, "defines": shipped_defines()},
+                {"toolchain": {"ptxas": version, "defines": shipped_defines(),
+                                #: THE CODEGEN FLAG LIST, arch-independent part.
+                                #: A ratification is a measurement OF sources UNDER
+                                #: an assembler AND its flags; without this the
+                                #: third of those was unrecorded and a
+                                #: codegen-affecting flag could land without moving
+                                #: anything a gate reads.
+                                "nvcc_flags": ratified_flags(),
+                                #: The scanner version behind every entry's
+                                #: `sass_sha256`. Same argument as the flag list:
+                                #: a record that cannot say what produced its
+                                #: hashes cannot certify them.
+                                "sass_hash_version": SASS_HASH_VERSION},
                  "source": {"csrc_sha256": csrc_digest(),
                             "date": time.strftime("%Y-%m-%d")},
                  #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
@@ -1077,6 +1168,7 @@ def main() -> int:
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
     ok = check_defines(manifest) and ok
+    ok = check_flags(manifest) and ok
     #: The freshness verdict is REUSED rather than recomputed: the body gate reads
     #: differently on each side of it, and two independent computations of "is the
     #: source digest current" could disagree.
@@ -1085,7 +1177,8 @@ def main() -> int:
     ok = check(entries, unhonored, want) and ok
     ok = check_hot_loop(hot, want) and ok
     ok = check_local_presence(local_ops, want) and ok
-    ok = check_sass_bodies(bodies, want, fresh) and ok
+    ok = check_sass_bodies(bodies, want, fresh,
+                           manifest["toolchain"].get("sass_hash_version")) and ok
 
     if a.self_test:
         #: NON-VACUITY. Tighten one entry that actually spills (or, if nothing
@@ -1289,7 +1382,8 @@ def main() -> int:
         print("\n--- SELF-TEST: a ratified body hash that no longer matches\n"
               "    (this run MUST fail) ---")
         if check_sass_bodies({"sm_86:k_a": a},
-                             {"sm_86:k_a": {"sass_sha256": "0" * 64}}, True):
+                             {"sm_86:k_a": {"sass_sha256": "0" * 64}}, True,
+                             SASS_HASH_VERSION):
             print("\nSELF-TEST FAILED: the gate ACCEPTED an instantiation whose "
                   "assembled body is not the one that was ratified")
             return 1
@@ -1299,11 +1393,27 @@ def main() -> int:
         #: recorded value is the vacuous gate this discipline exists to catch.
         print("\n--- SELF-TEST: a manifest entry with no ratified body hash\n"
               "    (this run MUST fail) ---")
-        if check_sass_bodies({"sm_86:k_a": a}, {"sm_86:k_a": {}}, True):
+        if check_sass_bodies({"sm_86:k_a": a}, {"sm_86:k_a": {}}, True,
+                             SASS_HASH_VERSION):
             print("\nSELF-TEST FAILED: an unratified body hash passed as though it "
                   "had been checked")
             return 1
         print("SELF-TEST PASSED: an unarmed body ratchet fails rather than passes")
+
+        #: ... and a body hash produced by a DIFFERENT scanner version is refused
+        #: whatever it says. This is P06's map-stamp argument applied to the
+        #: manifest: two versions hash different text, so an unstamped or
+        #: differently-stamped ratification disagrees on every entry while
+        #: describing identical code.
+        print("\n--- SELF-TEST: ratified bodies hashed by another scanner version\n"
+              "    (both of these MUST fail) ---")
+        for stamped in (SASS_HASH_VERSION - 1, None):
+            if check_sass_bodies({"sm_86:k_a": a},
+                                 {"sm_86:k_a": {"sass_sha256": a}}, True, stamped):
+                print(f"\nSELF-TEST FAILED: bodies stamped {stamped!r} were compared "
+                      f"against version {SASS_HASH_VERSION} digests")
+                return 1
+        print("SELF-TEST PASSED: the gate rejects hashes it did not produce")
     return 0 if ok else 1
 
 

@@ -16,6 +16,7 @@
 #include <torch/extension.h>
 
 #include <cstdint>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,13 @@ std::vector<at::Tensor> rola_consumer_forward(
 int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV);
 
 int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t BT, int64_t DV);
+
+//: The dispatch table as data, and the device fact its rows are admitted against.
+std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
+                       std::string, std::string>>
+rola_dispatch_table();
+
+int64_t rola_max_dynamic_smem_bytes();
 
 void rola_consumer_check_arch_table();
 

@@ -29,6 +29,18 @@ consumer_cu_<hash>`). A baseline built in a worktree at a different directory th
 mismatches on every non-consumer entry while being byte-identical code. Build the two
 trees at the SAME path -- check one out over the other -- rather than side by side.
 
+**A WRITTEN MAP CARRIES THE HASHER'S VERSION, AND A MISMATCH IS REFUSED.** What is
+hashed is a property of the SCANNER, not of the binary: widening the capture once
+moved every digest in an unchanged binary. Two maps written by different versions
+therefore disagree on all 1,228 entries while describing identical code -- a false
+verdict with the same shape as the path trap above, and one the P06 review hit.
+`ratify.SASS_HASH_VERSION` is written into every map and `--compare` refuses a pair
+that does not agree on it, and refuses an unstamped map outright rather than guessing
+which version wrote it. It is defined beside `ratify.sass_scan`, which is what decides
+which lines reach the digest, and bumping it is that function's obligation -- the
+per-instantiation `sass_sha256` in every manifest is the same digest and is stamped
+with the same version.
+
 Two uses, both binary verdicts:
 
 * a TU restructure (P02's shard) -- pre-shard vs post-shard `.so` must be identical
@@ -54,6 +66,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ratify  # noqa: E402
 
+#: THE HASHER'S OWN VERSION, and it lives with the hasher: `ratify.sass_scan` is what
+#: decides which lines reach the digest, so the version that describes that decision
+#: cannot be defined here without the two being able to drift. Written into every map
+#: this tool produces AND into every manifest ratify writes, so both records say what
+#: hashed them.
+HASH_VERSION = ratify.SASS_HASH_VERSION
 
 def bodies(so: Path) -> dict[str, str]:
     """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point.
@@ -70,6 +88,35 @@ def bodies(so: Path) -> dict[str, str]:
     if rc != 0:
         raise SystemExit(f"cuobjdump -sass FAILED (rc={rc})")
     return out
+
+
+def write_map(path: Path, bodies_by_key: dict[str, str], so: Path) -> None:
+    """A map is a STAMPED RECORD: what hashed it, and what it hashed."""
+    path.write_text(json.dumps(
+        {"hash_version": HASH_VERSION, "so": str(so), "entries": len(bodies_by_key),
+         "bodies": bodies_by_key}, indent=1, sort_keys=True) + "\n")
+
+
+def read_map(path: str) -> dict[str, str]:
+    """The bodies out of a stamped map, or a REFUSAL naming what is wrong.
+
+    An unstamped map is refused rather than read as version 1: a map that predates the
+    stamp cannot say which capture wrote it, and the whole point of the stamp is that
+    guessing produces a confident wrong answer.
+    """
+    blob = json.loads(Path(path).read_text())
+    if not isinstance(blob, dict) or "hash_version" not in blob:
+        raise SystemExit(
+            f"{path} carries no `hash_version`, so nothing knows what hashed it. "
+            f"Maps written by different captures disagree on EVERY entry while "
+            f"describing identical code. Re-hash the binary with this tool "
+            f"(version {HASH_VERSION}).")
+    if blob["hash_version"] != HASH_VERSION:
+        raise SystemExit(
+            f"{path} was written by hash version {blob['hash_version']}; this tool is "
+            f"version {HASH_VERSION}. The two hash DIFFERENT text and their digests "
+            f"are not comparable -- re-hash both binaries with one version.")
+    return blob["bodies"]
 
 
 def compare(a: dict[str, str], b: dict[str, str], label_a: str, label_b: str) -> bool:
@@ -101,15 +148,15 @@ def main() -> int:
                     help="compare two written hash maps; nonzero exit on any difference")
     a = ap.parse_args()
     if a.compare:
-        maps = [json.loads(Path(p).read_text()) for p in a.compare]
+        maps = [read_map(p) for p in a.compare]
         return 0 if compare(maps[0], maps[1], *a.compare) else 1
     if a.so is None:
         raise SystemExit("pass a .so to hash, or --compare two written maps")
     got = bodies(a.so)
     print(f"{len(got)} entry points hashed in {a.so.name}")
     if a.json:
-        Path(a.json).write_text(json.dumps(got, indent=1, sort_keys=True) + "\n")
-        print(f"written to {a.json}")
+        write_map(Path(a.json), got, a.so)
+        print(f"written to {a.json} (hash version {HASH_VERSION})")
     return 0
 
 

@@ -50,10 +50,14 @@ CP_ASYNC_ROW_BYTES = 512
 
 _SUPPORTED_BT = (16, 32)
 
-#: The `BC` and `d_v` the consumer extension INSTANTIATES (`v3_consumer.cu`'s
-#: `V3_SMEM_BC` / `V3_SMEM_DV` ladders, which `TORCH_CHECK` outside these). Selection
-#: validates against them up front so the occupancy oracle is only ever asked about
-#: launchable instantiations.
+#: The `BC` and `d_v` the consumer extension INSTANTIATES; the dispatch refuses
+#: anything outside them. Selection validates against these up front so the occupancy
+#: oracle is only ever asked about launchable instantiations.
+#:
+#: Declared here so CPU-only planning works with no extension present, which makes
+#: them a MIRROR of the dispatch table -- and a mirror needs a gate:
+#: `tests/unit/test_dispatch_table.py` pins all three tuples to the table's own axis
+#: values, read off the built binary.
 _SUPPORTED_BC = (16, 64)
 _SUPPORTED_DV = (32, 64)
 
@@ -414,6 +418,22 @@ class Plan:
     #: an INPUT and is readable off the plan afterwards, so a plan states the
     #: residency it was reasoned for. `0` = hand-stamped, no occupancy consulted.
     occupancy_blocks_per_sm: int = 0
+    #: WHICH SELECTOR PRODUCED THIS PLAN, and whether it is one whose constants have
+    #: been audited. ADVISORY, on exactly the contract `sm_shared_bytes` and
+    #: `occupancy_blocks_per_sm` have: recorded next to the decision, read by no rule.
+    #:
+    #: The fields exist because "interim" is a property of the DECIDER, not of the
+    #: decision, and it cannot be recovered from the choice afterwards: a `(BC, BT)`
+    #: chosen by a knowingly-unaudited cost model and the same `(BC, BT)` chosen by a
+    #: measured one are the same four axes. A plan that does not say which produced it
+    #: cannot tell a reader that its numbers came from a model the calibration
+    #: inventory records as not yet personally audited. Empty means hand-stamped -- a
+    #: plan built without going through a selector at all.
+    #:
+    #: `ConfigChoice` deliberately does NOT carry them: its `(BC, BT, feeder_flags)`
+    #: shape is frozen by `THUNDER_RUN_SPEC.md` §4.3, and provenance is not a choice.
+    selector_name: str = ""
+    selector_status: str = ""
 
     def __post_init__(self) -> None:
         validate_normalization(self.normalization)

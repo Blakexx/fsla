@@ -10,11 +10,12 @@ definition). Here the matrix is DEFINED ONCE, and everything that enumerates it 
 GENERATED from that definition:
 
 * `csrc/rola/src/instantiations/consumer_*.cu` -- the eight shard translation units,
-  each carrying 64 explicit instantiations of the host launcher (and with it, exactly
-  once in the whole fatbin, the 64 device kernels), plus its 64 `ShardRow` records;
-* `csrc/rola/src/instantiations/dispatch_launch.inc` -- the launch selection ladder,
-  and `dispatch_rows.inc` -- the concatenation of the shard row tables, which is what
-  the residency and footprint queries resolve through;
+  each carrying `TARGET_MEMBERS_PER_SHARD` explicit instantiations of the host launcher
+  (and with them, exactly once in the whole fatbin, that many device kernels), plus one
+  `ShardRow` record each;
+* `csrc/rola/src/instantiations/dispatch_table.inc` -- the shard row blocks, the
+  mixed-radix key over the matrix axes, and the index that turns a key into a row;
+  the launch and both device-backed queries all resolve through it;
 * `csrc/rola/src/instantiations/README.md` -- the layout, regenerated with them.
 
 The files are CHECKED IN, not built: what is reviewed must be what compiles
@@ -230,6 +231,7 @@ def shard_source(name: str, rows: list[dict]) -> str:
     #: see the kernel header at all) be deleted. The `extern` is what gives the
     #: definition external linkage -- a namespace-scope `const` array is internal by
     #: default, and an internal one would link but resolve to nothing.
+    key = members_sha256(rows)
     body.append(f"extern const ShardRow kShardRows_{name}[{len(rows)}];\n")
     body.append(f"const ShardRow kShardRows_{name}[{len(rows)}] = {{\n")
     for row in rows:
@@ -239,91 +241,100 @@ def shard_source(name: str, rows: list[dict]) -> str:
             f"{_b(row['GLOBAL'])}, "
             f"&launch_consumer_arm<{targs(row)}>, "
             f"&query_consumer_occupancy_arm<{targs(row)}>, "
-            f"consumer::consumer_smem_bytes<{targs(row, prec_twice=True)}>()}},\n")
+            f"consumer::consumer_smem_bytes<{targs(row, prec_twice=True)}>(), "
+            f'"{name}", "{key}"}},\n')
     body.append("};\n")
     body.append("\n")
     body.append("}  // namespace rola\n")
     return "".join(body)
 
 
-def _ladder(rows: list[dict], axes: tuple[str, ...], leaf, indent: int = 0,
-            fixed: dict | None = None) -> list[str]:
-    """A nested selection over `axes`, emitted from the matrix itself.
+#: THE KEY'S RADIX, in axis-declaration order. The key is a mixed-radix index over
+#: the axis VALUE POSITIONS, so it is dense exactly when the matrix is a full cross
+#: product -- which it is, and which `--check` proves by construction because both the
+#: key function and the row index come out of this one definition.
+def axis_index_fn(axis) -> str:
+    """`dispatch_axis_<NAME>` -- one axis value -> its position, or -1.
 
-    Recursive rather than a flat 256-arm chain so the generated dispatch keeps the
-    same O(log n) shape the hand-written macro ladder had -- the point of generating
-    it is single-sourcing the enumeration, not changing what it costs.
+    A value the matrix does not carry returns -1 and the key returns -1 with it, so an
+    unreachable choice is REFUSED at the lookup rather than resolved to a neighbour.
+    That is the whole difference between a table and a threshold.
     """
-    fixed = fixed or {}
-    pad = "  " * indent
-    if not axes:
-        return [pad + leaf(dict(fixed)) + "\n"]
-    name, rest = axes[0], axes[1:]
-    axis = AXIS[name]
-    out: list[str] = []
-    if axis.selector is not None:
-        expr = {"BT": "BT", "BC": "BC", "DV": "DV", "D": "p_D"}[name]
-        out.append(f"{pad}switch ({expr}) {{\n")
-        for v in axis.values:
-            out.append(f"{pad}  case {axis.selector(v)}:\n")
-            out += _ladder(rows, rest, leaf, indent + 2, dict(fixed, **{name: v}))
-            out.append(f"{pad}    break;\n")
-        out.append(f"{pad}}}\n")
-        return out
-    #: The boolean and enum axes are host FLAGS, not integers: one `if`/`else` each.
-    pred = {"PREC": "exact", "DECAY": "decay", "GLOBAL": "global_norm"}[name]
-    true_value = "tf32x3" if name == "PREC" else True
-    out.append(f"{pad}if ({pred}) {{\n")
-    out += _ladder(rows, rest, leaf, indent + 1, dict(fixed, **{name: true_value}))
-    out.append(f"{pad}}} else {{\n")
-    false_value = "bf16" if name == "PREC" else False
-    out += _ladder(rows, rest, leaf, indent + 1, dict(fixed, **{name: false_value}))
-    out.append(f"{pad}}}\n")
-    return out
-
-
-def dispatch_launch_inc() -> str:
-    """The launch ladder: resolve the plan's axes to ONE shard-defined launcher.
-
-    It assigns a function POINTER rather than calling and returning, so the launch
-    error check lives in exactly one place in `consumer.cu` instead of 256 places
-    here. Taking the address of a specialization whose definition the dispatch
-    translation unit cannot see is also what makes the split real: that unit cannot
-    satisfy an arm locally. It does not make a missing arm a link error -- a Python
-    extension leaves the reference undefined for the loader -- so the closure is
-    checked, before the compile by `--check` and after the link by
-    `tools/fatbin_entries.py`.
-    """
-    lines = [BANNER,
-             "// The consumer launch ladder, over the full instantiation matrix.\n",
-             "// Included by `launch_consumer` (csrc/rola/src/consumer.cu), which "
-             "declares\n// `fn`, `exact`, `decay`, `global_norm`, `BT`, `BC`, `DV` "
-             "and `p_D`.\n"]
-    lines += _ladder(matrix(), tuple(a.name for a in AXES),
-                     lambda r: f"fn = &launch_consumer_arm<{targs(r)}>;")
+    lines = [f"inline int dispatch_axis_{axis.name}({axis_cxx_type(axis)} v) {{\n"]
+    if axis.values == (False, True):
+        lines.append("  return v ? 1 : 0;\n")
+    else:
+        lines.append("  switch (v) {\n")
+        for i, v in enumerate(axis.values):
+            lines.append(f"    case {axis.cxx(v)}: return {i};\n")
+        lines.append("  }\n  return -1;\n")
+    lines.append("}\n")
     return "".join(lines)
 
 
-def dispatch_rows_inc() -> str:
-    """The concatenation of the shard row tables.
+def axis_cxx_type(axis) -> str:
+    """The C++ type a choice carries this axis in."""
+    if axis.values == (False, True):
+        return "bool"
+    if axis.name == "PREC":
+        return "MmaPrec"
+    return "int"
 
-    `rola_consumer_occupancy` and `rola_consumer_smem_bytes` answer PER
-    INSTANTIATION -- a single reported number would over-promise on one arm and
-    under-report another -- and they used to do it with two more macro ladders that
-    took kernel addresses in the dispatch translation unit. Post-shard the kernel
-    address must live in the shard, so both queries resolve a `ShardRow` here
-    instead. That is also what removes the last reason for `consumer.cu` to include
-    the kernel header: the footprint arrives as a `constexpr` field of the row.
+
+def dispatch_table_inc() -> str:
+    """The whole dispatch table: the shard row blocks, the key, and the row index.
+
+    THE LAUNCH RESOLVES A ROW, exactly as the residency and footprint queries already
+    do, so there is ONE lookup in the translation unit and no arm-shaped code anywhere
+    in it. The row index is a mixed-radix array over the axes' value positions:
+    `kRowByKey[dispatch_key(choice)]`, a load, against the 1,054-line nested switch it
+    replaces (2,462 lines before the COMPACT axis left and the matrix halved). Both
+    the key function and the index are emitted from the matrix here, so they cannot
+    disagree about the axis order -- which is the failure a hand-written index formula
+    would reintroduce.
+
+    ABSENT KEYS ARE `nullptr`, not a neighbouring row. The matrix is a full cross
+    product today, so every key is populated; the null arm is what makes a
+    non-rectangular matrix (an axis whose values differ per shard) a REFUSAL instead
+    of a silent mis-dispatch.
     """
     sh = sorted(shards().items())
     lines = [BANNER,
-             "// The shard row tables, concatenated. Included by "
-             "`csrc/rola/src/consumer.cu`.\n"]
+             "// The dispatch table: every arm's row, the mixed-radix key over the\n"
+             "// matrix axes, and the index that turns a key into a row. Included by\n"
+             "// `csrc/rola/src/consumer.cu`.\n"]
     for name, rows in sh:
         lines.append(f"extern const ShardRow kShardRows_{name}[{len(rows)}];\n")
     lines.append("\nconstexpr ShardRowBlock kShardRowBlocks[] = {\n")
     for name, rows in sh:
         lines.append(f"    {{kShardRows_{name}, {len(rows)}}},\n")
+    lines.append("};\n\n")
+    for axis in AXES:
+        lines.append(axis_index_fn(axis))
+        lines.append("\n")
+    lines.append(f"constexpr int kDispatchKeys = {len(matrix())};\n\n")
+    lines.append("//: The choice's mixed-radix key, or -1 if any axis carries a value\n"
+                 "//: this binary has no arm for.\n"
+                 "inline int dispatch_key(const DispatchChoice& c) {\n")
+    lines.append("  int key = 0;\n")
+    for axis in AXES:
+        field = {"PREC": "prec", "DECAY": "decay", "GLOBAL": "global_norm"}.get(
+            axis.name, axis.name)
+        lines.append(f"  const int i_{axis.name} = dispatch_axis_{axis.name}(c.{field});\n")
+        lines.append(f"  if (i_{axis.name} < 0) return -1;\n")
+        lines.append(f"  key = key * {len(axis.values)} + i_{axis.name};\n")
+    lines.append("  return key;\n}\n\n")
+    #: THE INDEX. Each entry is the address of a row inside the shard array that owns
+    #: it -- an address constant, so the array is statically initialized and no code
+    #: runs before `main`.
+    where = {}
+    for name, rows in sh:
+        for i, row in enumerate(rows):
+            where[canonical(row)] = (name, i)
+    lines.append("const ShardRow* const kRowByKey[kDispatchKeys] = {\n")
+    for row in matrix():
+        name, i = where[canonical(row)]
+        lines.append(f"    &kShardRows_{name}[{i}],\n")
     lines.append("};\n")
     return "".join(lines)
 
@@ -364,9 +375,10 @@ would reach a shipped artifact as an `ImportError`. Two gates close it instead:
 before anything compiles, and `python tools/fatbin_entries.py --check` refuses a
 built binary carrying an unresolved `launch_consumer_arm` after the link.
 
-`dispatch_launch.inc` is the launch selection ladder and `dispatch_rows.inc` the
-concatenation of the shard row tables that the residency and footprint queries
-resolve through. Both come out of the same matrix definition as the shards, so the
+`dispatch_table.inc` carries the shard row blocks, a mixed-radix `dispatch_key`
+over the matrix axes, and `kRowByKey`, which turns a key into a row. The launch and
+both device-backed queries resolve through it, so there is ONE lookup in the dispatch
+translation unit. It comes out of the same matrix definition as the shards, so the
 dispatch and the shards cannot enumerate different sets — which is the whole reason
 this generator exists.
 
@@ -404,8 +416,7 @@ def readme() -> str:
 def generated() -> dict[str, str]:
     """Every file this generator owns: relative path -> content."""
     out = {f"{name}.cu": shard_source(name, rows) for name, rows in sorted(shards().items())}
-    out["dispatch_launch.inc"] = dispatch_launch_inc()
-    out["dispatch_rows.inc"] = dispatch_rows_inc()
+    out["dispatch_table.inc"] = dispatch_table_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)
     out["README.md"] = readme()

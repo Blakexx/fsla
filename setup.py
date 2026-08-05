@@ -302,6 +302,16 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) 
         "manifest_entries": {f"sm_{a}": sum(1 for k in manifest["entries"]
                                             if k.startswith(f"sm_{a}:"))
                              for a in archs},
+        #: THE RATIFIED SHARD MEMBERSHIP, `{shard: members_sha256}`, taken from the
+        #: manifest rather than recomputed. It is what the dispatch table's rows are
+        #: joined against at runtime: a row whose shard membership is not the one that
+        #: was MEASURED describes an arm nobody has register or spill numbers for, and
+        #: `rola.planner.dispatch_table` filters it rather than planning against it.
+        #: An installed wheel carries no `tools/manifests/`, so without this the join
+        #: could only be made from a repository checkout -- which is the half of the
+        #: closed world a user does not have.
+        "shards": {name: block["members_sha256"]
+                   for name, block in sorted(manifest["shards"].items())},
         "ptx_jit_fallback": False,
         #: THE VENDORED CODEGEN INPUTS, one entry per pinned library. Recorded next to
         #: `ptxas` because it answers the same question about the same binary: what

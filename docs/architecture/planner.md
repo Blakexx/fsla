@@ -120,14 +120,27 @@ and a selector with measured curves absorbs wherever a trained model's routing
 lands, which a point verdict does not (user ruling; journal, 2026-08-04, "no
 point-configuration verdicts").
 
-Today the cost model above is the ONLY selector: `select_config` is the interface.
-Making selection a swappable one — a typed, versioned statistics bundle, a `Selector`
-with today's cost model as one implementation labelled interim and a fixed-choice
-implementation beside it for debugging and A/B, and a choice the dispatch table
-consumes rather than computes — is the standing requirement on `P06` in the queue,
-and it is the reason the honesty above is recorded rather than repaired in place:
-the constants are known-interim, so replacing them must be a swap rather than
-surgery.
+SELECTION IS A SWAPPABLE INTERFACE, and that is why the honesty above is recorded
+rather than repaired in place: the constants are known-interim, so replacing them is
+a swap rather than surgery. Three stages, with the seam between them:
+
+```
+StatisticsBundle  ->  Selector  ->  ConfigChoice  ->  the dispatch table
+   typed,             name +          (BC, BT,          resolves a row;
+   versioned          status          feeder_flags)     never scores one
+```
+
+The cost model above is ONE implementation, `CostModelSelector`, and it reports
+`status = "INTERIM"` because this section's coefficients are what they are.
+`FixedChoiceSelector` sits beside it for debugging and A/B: it reads nothing and
+returns the choice it was built with. `select_with(selector, bundle)` is the
+swappable call; `select_config` and `config_for_step` keep their frozen §4.3
+signatures and take an optional keyword `selector=`.
+
+A plan RECORDS which selector produced it — `Plan.selector_name` and
+`Plan.selector_status`, advisory on the same contract `occupancy_blocks_per_sm` has:
+beside the decision, read by no rule. So a number taken under the interim model does
+not read as one taken under a measured one.
 
 Until those rows exist, a claim of the form "configuration X is the right default"
 is not supported by this repository, and the honest statement is the one made

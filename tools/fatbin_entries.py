@@ -5,7 +5,7 @@ failure modes that leave every other gate green:
 
 1. the per-arm launcher's DEFINITION becomes visible to the dispatch translation
    unit, which then implicitly instantiates all 256 kernels right back into itself;
-2. a query ladder (residency, footprint) keeps taking kernel ADDRESSES in the
+2. a query path (residency, footprint) keeps taking kernel ADDRESSES in the
    dispatch translation unit, duplicating the arms it queries.
 
 In both cases the build links, the ratification manifest is byte-identical, the
@@ -177,7 +177,7 @@ def check(so: Path, arches=None) -> bool:
             print(f"fatbin OK  {arch}: {len(got)} consumer entries, one per "
                   f"instantiation, each in the shard the matrix assigns it")
 
-    #: 2. THE DISPATCH CLOSURE, host side. An arm the ladder can select and no shard
+    #: 2. THE DISPATCH CLOSURE, host side. An arm the dispatch can select and no shard
     #: defines is an unresolved reference that this kind of link does not refuse.
     unresolved = unresolved_arms(so)
     if unresolved:
