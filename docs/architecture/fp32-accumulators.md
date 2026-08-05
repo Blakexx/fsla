@@ -24,7 +24,9 @@ A bf16 resident state — halving the state's shared-memory footprint — is
 - The re-quantization walk is **real and `sqrt(T)`-exact**: `1.06e-2` at `T=512`
   against a `BF16_RTOL` budget of `1e-2` — already over — and extrapolating to
   `~1.8e-1` at `N ≈ 65K`. The standing design-for-scale rule is what makes this
-  visible: a `T=37` fixture passes.
+  visible: a `T=37` fixture passes it, which is why the suite now carries a
+  512 / 2048 / 8192 arm (`docs/testing.md`, Tier 1's length axis) and charges the
+  output per token segment rather than against one global maximum.
 - The composition law is measured, not assumed (150 paired runs, 10 cells × 5 `T`
   × 3 seeds): the walk composes in **quadrature**, log-log slope `+0.490` against
   theory `+0.5`, with the quadrature constant flat in `V` (spread 1.06×) where a

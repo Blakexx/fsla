@@ -36,7 +36,7 @@ nothing and *changes* nothing, down to the last bit.
 ## 2. Proof by citation — the oracle
 
 The normative reference implementation is `rola/ops/naive.py`
-(`naive_rola_v3`, fp64, the eternal spec). Three lines carry the theorem.
+(`naive_rola`, fp64, the eternal spec). Three lines carry the theorem.
 
 **(a) The clock is the write product, not a time counter.** The docstring at
 `rola/ops/naive.py:183` states the spec's definition:

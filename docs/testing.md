@@ -32,6 +32,13 @@ Every cell of this cross-product is gated against the oracle:
 | `P` (sequence-parallel split) | 1, > 1 |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
 | `(widths, BC, BT, d_v)` | the planner's supported rectangles |
+| sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
+
+The length axis is not decoration. An error that ACCUMULATES along the sequence
+grows as `sqrt(T)`, so a short fixture under-charges it by `sqrt(8192/37) = 15x` —
+the blind spot a resident-state re-quantization walk was measured to exploit.
+`test_consumer_vs_oracle.py::test_mass_column_at_sequence_length` closes it, at
+the same two tolerances.
 
 ### Tolerance discipline
 
@@ -49,6 +56,18 @@ Every cell of this cross-product is gated against the oracle:
    DERIVED in code.** A number with neither is a defect.
 5. **Loosening a tolerance is a semantic change**: changelog entry, derivation,
    reviewer sign-off. Tightening needs none of that.
+6. **A tolerance is only half of a claim; the other half is the CHARGE — what the
+   error is divided by.** The output is charged PER TOKEN SEGMENT
+   (`_output_charge`: the max over eight segments of that segment's max absolute
+   error over that segment's max reference magnitude), never as one global max
+   over one global max. The readout is a ratio whose denominator is accumulated
+   write mass, so `|y|` at the cold start exceeds the rest of the sequence by up
+   to `2.4e4` at `T = 8192`: a single normalizer is set by the one token whose
+   state has been updated zero times, and the resulting metric was measured
+   BIT-IDENTICAL between two arms it was supposed to separate. A charge that
+   cannot fail is the same defect as a tolerance that cannot fail, and
+   `test_output_charge_sees_a_drift_the_global_max_cannot` holds the mutant that
+   proves the current one can.
 
 ## Tier 2 — geometry, as data
 

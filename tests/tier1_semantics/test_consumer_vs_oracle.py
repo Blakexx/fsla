@@ -63,6 +63,56 @@ RTOL = 2e-5
 BF16_RTOL = 1e-2
 
 
+#: How many token segments the output charge below is taken over. Eight is the
+#: octile split the defect was diagnosed on; the only property that matters is
+#: that the cold-start tokens occupy a segment of their own rather than setting
+#: the normalizer for the whole sequence.
+_OUTPUT_SEGMENTS = 8
+
+
+def _segments(T):
+    """The `[lo, hi)` token segments the output charge is taken over.
+
+    `min(8, T)` segments with integer-partitioned bounds, so every `T` -- including
+    `T = 1` and every non-divisible tail -- yields non-empty segments and every
+    token is charged in exactly one of them.
+    """
+    k = min(_OUTPUT_SEGMENTS, T)
+    return [((i * T) // k, ((i + 1) * T) // k) for i in range(k)]
+
+
+def _output_charge(y, y_ref):
+    """The output's relative error, charged PER TOKEN SEGMENT.
+
+    `max_seg ( max|y - y_ref| over the segment / max|y_ref| over the segment )`.
+
+    **Why not one global max over one global max.** The readout is a ratio whose
+    denominator is the accumulated write mass, so at `t = 0` -- where nothing has
+    accumulated -- `|y|` is orders of magnitude above the rest of the sequence
+    (measured: `|y_ref[0]| / median_t |y_ref[t]|` reaches 2.4e4 at `T = 8192` on
+    this file's own fixtures). A single global normalizer is therefore set by
+    token 0, and both the numerator's max and the normalizer's max land on the
+    same token whose state has been updated zero times. That metric is
+    structurally incapable of seeing any error that ACCUMULATES: the fp32-resident
+    and bf16-resident state arms were bit-identical under it in 150 of 150 paired
+    runs, at every cell, `T` and seed, while the per-segment charge separated them
+    by 3-4x from the second segment on
+    (`workflows/perf-campaign/vmax_budget.md` J1-E).
+
+    Segment 0 still contains the cold start and still normalizes by it, so this
+    charge SUBSUMES the old global one rather than trading it away; segments 1..7
+    are the teeth. `test_output_charge_sees_a_drift_the_global_max_cannot` holds
+    the falsification: a drift that the global form passes at 10x tolerance fails
+    here by ~10x.
+    """
+    dy = (y.double() - y_ref).abs()
+    ref = y_ref.abs()
+    return max(
+        float(dy[:, lo:hi].max()) / max(1e-30, float(ref[:, lo:hi].max()))
+        for lo, hi in _segments(y.shape[1])
+    )
+
+
 def _topology(widths, d_v):
     return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
 
@@ -209,9 +259,8 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
     if return_outputs:
         return y, state
     tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
-    scale_y = max(1e-30, float(y_ref.abs().max()))
     scale_s = max(1e-30, float(state_ref.abs().max()))
-    err_y = float((y.double() - y_ref).abs().max()) / scale_y
+    err_y = _output_charge(y, y_ref)
     err_s = float((state.double() - state_ref).abs().max()) / scale_s
     assert err_y < tol, f"output disagrees with the canonical oracle: relative {err_y:.3e}"
     assert err_s < tol, f"final state disagrees with the canonical oracle: relative {err_s:.3e}"
@@ -1272,11 +1321,15 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
 
 
 def _mass_errors(**kw):
-    """`(mass, value, ratio)` relative errors against the fp64 oracle.
+    """`(mass, value, output)` relative errors against the fp64 oracle.
 
     Each is normalized by its OWN reference scale, which is the point: the mass
-    column, the value block and the ratio are three different quantities and a
-    shared normalizer makes the smallest of them untestable.
+    column, the value block and the ratio readout are three different quantities
+    and a shared normalizer makes the smallest of them untestable. The same
+    argument one level down is why the output term is `_output_charge` -- a
+    per-token-segment maximum -- and not one global max over one global max: a
+    single normalizer for the whole sequence is set by the cold-start token, which
+    is the same failure of scale separation in the time axis.
     """
     d_v = kw["d_v"]
     y, state, y_ref, state_ref = _run_case(return_reference=True, **kw)
@@ -1286,7 +1339,7 @@ def _mass_errors(**kw):
     def err(a, b):
         return float((a - b).abs().max()) / max(1e-30, float(b.abs().max()))
 
-    return err(mass, mass_ref), err(val, val_ref), err(y.double(), y_ref)
+    return err(mass, mass_ref), err(val, val_ref), _output_charge(y, y_ref)
 
 
 #: The mass column carries no cancellation -- it is a sum of strictly positive
@@ -1301,13 +1354,13 @@ def _mass_errors(**kw):
 @pytest.mark.parametrize("mass_scale", [1e3, 1e-3])
 def test_mass_column_matches_canonical_oracle(widths, BC, BT, mma_precision, mass_scale):
     tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
-    e_mass, e_val, e_ratio = _mass_errors(
+    e_mass, e_val, e_out = _mass_errors(
         widths=widths, BC=BC, BT=BT, d_v=64, B=2, T=37, H=3, norm="global",
         p_read=0.4, p_write=0.3, nonzero_m0=True, seed=90210,
         mma_precision=mma_precision, mass_scale=mass_scale)
     assert e_mass < tol, f"the state's MASS column disagrees with the oracle: {e_mass:.3e}"
     assert e_val < tol, f"the state's VALUE block disagrees with the oracle: {e_val:.3e}"
-    assert e_ratio < tol, f"the RATIO readout disagrees with the oracle: {e_ratio:.3e}"
+    assert e_out < tol, f"the RATIO readout disagrees with the oracle: {e_out:.3e}"
 
 
 #: The decay arm separately, because the mass column takes the SAME exit scale
@@ -1319,14 +1372,14 @@ def test_mass_column_under_decay_matches_canonical_oracle(widths, BC, mma_precis
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(77)
     tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
-    e_mass, e_val, e_ratio = _mass_errors(
+    e_mass, e_val, e_out = _mass_errors(
         widths=widths, BC=BC, BT=32, d_v=64, B=2, T=37, H=3, norm="global",
         p_read=0.4, p_write=0.3, nonzero_m0=True, seed=555,
         decay_dials=_decay_dials(widths, 3, gen, device), mma_precision=mma_precision,
         mass_scale=1e-3)
     assert e_mass < tol, f"the decayed MASS column disagrees with the oracle: {e_mass:.3e}"
     assert e_val < tol, f"the decayed VALUE block disagrees with the oracle: {e_val:.3e}"
-    assert e_ratio < tol, f"the decayed RATIO readout disagrees with the oracle: {e_ratio:.3e}"
+    assert e_out < tol, f"the decayed RATIO readout disagrees with the oracle: {e_out:.3e}"
 
 
 #: **THE GATE'S OWN DISCRIMINATING POWER, MEASURED RATHER THAN ASSUMED.** A
@@ -1347,20 +1400,106 @@ def test_mass_column_gate_is_discriminating(mma_precision):
     kw = dict(widths=(8, 8), BC=64, BT=16, d_v=64, B=2, T=37, H=3, norm="global",
               p_read=1.0, p_write=1.0, nonzero_m0=True, seed=31337,
               mma_precision=mma_precision, mass_scale=1e3)
-    clean_mass, clean_val, clean_ratio = _mass_errors(**kw)
-    assert clean_mass < tol and clean_val < tol and clean_ratio < tol, (
+    clean_mass, clean_val, clean_out = _mass_errors(**kw)
+    assert clean_mass < tol and clean_val < tol and clean_out < tol, (
         "the unperturbed control must pass, or the perturbed run proves nothing "
-        f"(mass {clean_mass:.3e}, value {clean_val:.3e}, ratio {clean_ratio:.3e})")
+        f"(mass {clean_mass:.3e}, value {clean_val:.3e}, output {clean_out:.3e})")
 
     p = 100.0 * tol
-    bad_mass, bad_val, bad_ratio = _mass_errors(perturb_mass=p, **kw)
+    bad_mass, bad_val, bad_out = _mass_errors(perturb_mass=p, **kw)
     assert bad_mass > tol, (
         f"a mass perturbed by {p:.1e} relative moved the mass claim only to "
         f"{bad_mass:.3e}: the gate is blind to the defect it exists for")
-    assert bad_ratio > tol, (
+    assert bad_out > tol, (
         f"a mass perturbed by {p:.1e} relative moved the RATIO claim only to "
-        f"{bad_ratio:.3e}: the denominator's error is cancelling, so this is not "
+        f"{bad_out:.3e}: the denominator's error is cancelling, so this is not "
         "a gate on the ratio readout")
     assert bad_val < tol, (
         f"injecting into the mass column moved the VALUE block to {bad_val:.3e}: "
         "the three claims are not independent and the localization is unsound")
+
+
+# --- THE SEQUENCE-LENGTH ARM AND THE OUTPUT CHARGE'S FALSIFICATION ----------
+# Two defects of the same shape, fixed together because neither fix is worth
+# anything alone.
+#
+# 1. Every gate above runs at `T = 37`. An error that accumulates along the
+#    sequence -- a resident-state re-quantization walk grows as `sqrt(V)` with
+#    `V` the write-visit count, measured exponent `+0.49`
+#    (`workflows/perf-campaign/vmax_budget.md` J1-B) -- is a factor `sqrt(8192/37)
+#    = 15` smaller at `T = 37` than at the lengths production runs. A fixture that
+#    short passes a walk it should reject; that is the bf16-resident-state kill's
+#    stated blind spot.
+# 2. The old output metric normalized the whole sequence by ONE global max, which
+#    the cold-start token sets (`_output_charge`'s docstring). Raising `T` under
+#    that metric makes the blindness WORSE, not better: the cold-start outlier
+#    grows with `T` (`|y_ref[0]| / median_t |y_ref[t]|` measured at 4.5 for
+#    `T = 37`, 6.7e3 at `T = 2048`, 2.4e4 at `T = 8192`).
+#
+# So the length arm is only a gate once the charge is per-segment, and the
+# per-segment charge only earns its cost once the arm is long. NO NEW TOLERANCE:
+# both run at the file's existing `RTOL` / `BF16_RTOL`. Measured worst on the
+# shipped path over this matrix: `1.3e-6` = 6.5 % of `RTOL` (tf32x3) and
+# `6.8e-3` = 68 % of `BF16_RTOL` (bf16).
+
+
+@pytest.mark.parametrize("widths,BC", [((8, 8), 64), ((4, 4, 4), 16)])
+@pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
+@pytest.mark.parametrize("T", [512, 2048, 8192])
+@pytest.mark.parametrize("decay", [False, True])
+def test_mass_column_at_sequence_length(widths, BC, mma_precision, T, decay):
+    """The I6 claims at production sequence lengths, not only at `T = 37`."""
+    tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
+    dials = None
+    if decay:
+        gen = torch.Generator(device="cuda").manual_seed(77)
+        dials = _decay_dials(widths, 3, gen, "cuda")
+    e_mass, e_val, e_out = _mass_errors(
+        widths=widths, BC=BC, BT=16, d_v=64, B=2, T=T, H=3, norm="global",
+        p_read=0.4, p_write=0.3, nonzero_m0=True, seed=90210,
+        decay_dials=dials, mma_precision=mma_precision, mass_scale=1e-3)
+    assert e_mass < tol, f"T={T}: the MASS column disagrees with the oracle: {e_mass:.3e}"
+    assert e_val < tol, f"T={T}: the VALUE block disagrees with the oracle: {e_val:.3e}"
+    assert e_out < tol, f"T={T}: the OUTPUT disagrees with the oracle: {e_out:.3e}"
+
+
+#: **THE OUTPUT CHARGE'S OWN FALSIFICATION, RUN AS A TEST RATHER THAN CITED.**
+#: The mutant is a drift that GROWS AS `sqrt(t)` and is exactly zero at token 0 --
+#: the measured shape of a resident-state re-quantization walk (`vmax_budget.md`
+#: J1-B: slope `+0.49` in `sqrt(V)`; J1-E: the octile maxima are unchanged at
+#: token 0 and 3-4x from the second octile on). It is injected into the kernel's
+#: OUTPUT rather than into the kernel, because the claim under test is a property
+#: of the METRIC: whether the assert can see a defect of this shape at all.
+#:
+#: Both directions are required, and the first is the one that makes this a fix
+#: rather than a preference: at `10x` tolerance the OLD global-max form still
+#: PASSES, which is the falsification of the metric that was committed.
+@pytest.mark.parametrize("mma_precision", ["tf32x3", "bf16"])
+def test_output_charge_sees_a_drift_the_global_max_cannot(mma_precision):
+    tol = RTOL if mma_precision == "tf32x3" else BF16_RTOL
+    T = 2048
+    y, _state, y_ref, _state_ref = _run_case(
+        widths=(8, 8), BC=64, BT=16, d_v=64, B=2, T=T, H=3, norm="global",
+        p_read=0.4, p_write=0.3, nonzero_m0=True, seed=90210,
+        mma_precision=mma_precision, mass_scale=1e-3, return_reference=True)
+
+    def global_charge(a):
+        return float((a.double() - y_ref).abs().max()) / max(1e-30, float(y_ref.abs().max()))
+
+    assert global_charge(y) < tol and _output_charge(y, y_ref) < tol, (
+        "the unperturbed control must pass under BOTH forms, or the mutant proves "
+        f"nothing (global {global_charge(y):.3e}, per-segment {_output_charge(y, y_ref):.3e})")
+
+    p = 10.0 * tol
+    ramp = (torch.arange(T, device=y.device, dtype=torch.float64) / (T - 1)).sqrt()
+    mutant = y.double() * (1.0 + p * ramp[None, :, None, None])
+
+    assert global_charge(mutant) < tol, (
+        f"a {p:.1e} sqrt-t drift moved the OLD global-max charge to "
+        f"{global_charge(mutant):.3e}, i.e. past {tol:.0e}: the premise of this fix "
+        "is that the old form passes this mutant, and it no longer does -- re-derive "
+        "the mutant's size rather than deleting the claim")
+    assert _output_charge(mutant, y_ref) > tol, (
+        f"a {p:.1e} sqrt-t drift moved the per-segment charge only to "
+        f"{_output_charge(mutant, y_ref):.3e}: the replacement metric is as blind as "
+        "the one it replaced")
