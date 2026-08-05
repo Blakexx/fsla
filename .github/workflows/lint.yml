@@ -1,0 +1,27 @@
+# Lint arm — CPU-only, no GPU, no CUDA toolchain, no build. This is the
+# whole job: the same two pinned checks .pre-commit-config.yaml runs locally.
+# The build/test CI (GPU runner, the tiered suite) is P02's card, not this
+# file's scope.
+name: lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Pins match .pre-commit-config.yaml — one version of each tool, everywhere.
+      - run: pip install clang-format==19.1.7 ruff==0.14.10
+      - name: clang-format check (csrc/rola only — third_party is vendored, never formatted)
+        run: |
+          git ls-files 'csrc/rola/**/*.cu' 'csrc/rola/**/*.cuh' 'csrc/rola/**/*.cpp' 'csrc/rola/**/*.h' 'csrc/rola/**/*.hpp' 'csrc/rola/*.cpp' \
+            | xargs clang-format --style=file --dry-run --Werror
+      - name: ruff check
+        run: ruff check --force-exclude .

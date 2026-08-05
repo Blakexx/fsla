@@ -1,0 +1,24 @@
+# Lint gates, mirrored exactly by .github/workflows/lint.yml — one tool
+# version in both places, pinned, so a hook pass IS a CI pass.
+#
+#   pip install pre-commit && pre-commit install
+#
+# Both hooks are CHECKS, not rewriters: a commit that fails formatting is
+# refused with the diff named, and the author runs the formatter deliberately.
+# csrc/third_party is vendored under a PIN.json digest (setup.py rule R5) and
+# is never formatted — the `files` scope below is the enforcement of that.
+repos:
+  - repo: local
+    hooks:
+      - id: clang-format-check
+        name: clang-format --dry-run (csrc/rola)
+        language: python
+        additional_dependencies: ["clang-format==19.1.7"]
+        entry: clang-format --style=file --dry-run --Werror
+        files: ^csrc/rola/.*\.(cu|cuh|cpp|h|hpp)$
+      - id: ruff-check
+        name: ruff check
+        language: python
+        additional_dependencies: ["ruff==0.14.10"]
+        entry: ruff check --force-exclude
+        types_or: [python]
