@@ -1,13 +1,24 @@
-# Lint arm — CPU-only, no GPU, no CUDA toolchain, no build. This is the
-# whole job: the same two pinned checks .pre-commit-config.yaml runs locally.
-# The build/test CI (GPU runner, the tiered suite) is P02's card, not this
-# file's scope.
+# CPU CI. Two jobs, and the split is by what they NEED, not by how long they take:
+# `lint` needs a formatter, `cpu-gates` needs the repository's own instruments.
+# Neither needs a GPU, a CUDA toolchain or a build — which is the property that
+# makes this a fast lane rather than a subset of the real suite.
+#
+# The GPU arm (the tiered suite against a real device, and the build that produces
+# the binary it runs on) is declared here as a CONCURRENCY GROUP and nothing else.
+# This repository has no GPU runner attached, and a job that silently skipped its
+# only device would be worse than a group that honestly has nothing pointed at it
+# yet. A device is a single resource: two builds racing for it is how a
+# ratification gate ends up describing somebody else's binary.
 name: lint
 
 on:
   push:
     branches: [master]
   pull_request:
+
+concurrency:
+  group: rola-cpu-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -25,3 +36,31 @@ jobs:
             | xargs clang-format --style=file --dry-run --Werror
       - name: ruff check
         run: ruff check --force-exclude .
+
+  cpu-gates:
+    # THE GPU-FREE GATES. Each answers a question about the REPOSITORY — is the
+    # generated code what the generator produces, does every source carry its
+    # mirror doc, is the README's support matrix the one the arch table and the
+    # manifests decide — and none of them reads a device or compiles a kernel.
+    # The register/spill ratchet is NOT here: it is GPU-free but it needs the CUDA
+    # toolchain, so it belongs to the GPU arm's runner image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # clang-format is the shard GENERATOR's dependency: `--check` regenerates
+      # into memory and must produce the same formatted bytes that were committed,
+      # so the version is pinned to the one the hook and the lint job use.
+      - run: pip install pytest clang-format==19.1.7
+      - name: the instantiation shards are the ones the matrix definition produces
+        run: python tools/gen_shards.py --check
+      - name: the shard partition is a structure, not a file listing
+        run: python -m pytest tests/unit/test_shard_partition.py -q
+      - name: the docs mirror is complete and its anchors resolve
+        run: python -m pytest tests/unit/test_docs_mirror.py tests/unit/test_generated_docs.py -q
+      - name: the vendored codegen input matches its pin
+        run: python -m pytest tests/unit/test_vendored_pin.py -q
+      - name: the README's supported matrix is the derived one
+        run: python tools/supported.py --check
