@@ -68,17 +68,29 @@ mamba-ssm require the same thing for the same reason.
 ## What it costs
 
 MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
-including every gate above:
+`MAX_JOBS` at the derived default of 7:
 
 | | wall |
 |---|---|
-| clean rebuild, `MAX_JOBS` at the derived default | see `workflows/refactor/p02_landing.md` |
-| edit inside one shard's arms (one shard + link + gates) | idem |
-| the post-build ratification alone | idem |
+| clean rebuild, every gate including the post-build ratification | **7m20s / 7m08s** (two runs) |
+| edit inside one shard's arms — one shard, relink, shard and fatbin gates | **49 s** |
+| no source change — gates, ratification, `_build_config.py` | **3m47s** |
+| one shard, one `nvcc`, both architectures | **43 s** |
 
 The dominant term used to be one `nvcc` process holding the whole 512-instantiation
 matrix: 411 s of wall, 4.4 GB of resident set, and no way to spend a second core on
-it. A shard is 43 s and 0.61 GB.
+it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
+the same ten translation units the build does, which a content-addressed compiler
+cache would turn into hits.
+
+The two clean rebuilds are byte-identical in every one of the 1,228 entry points'
+SASS (`tools/sass_bodies.py`), so those numbers are the same binary twice.
+
+**`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
+changes the assembled code of 1,073 of the 1,228 entries, which under the
+closed-world policy is a kernel change requiring re-ratification, and it is slower
+besides -- the parallelism axes multiply, so it collapses `MAX_JOBS` from 7 to 1.
+Evidence: `workflows/refactor/p02_split_compile_trial_results.md`.
 
 ## Verifying a built binary
 
