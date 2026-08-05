@@ -21,6 +21,9 @@ The rules, and they are the whole contract:
 3. A ``//: HAZARD <slug>`` stub cites an anchor whose id is that same slug, so the
    slug in the source and the section in the doc cannot drift apart.
 4. No doc defines the same anchor twice, which would make a citation ambiguous.
+5. A directory of GENERATED sources is exempt from rule 1 and documented by its own
+   README instead -- and that exemption is itself checked: the README must exist and
+   the directory must contain nothing the generator does not produce.
 """
 from __future__ import annotations
 
@@ -47,11 +50,24 @@ STUB = re.compile(r"//:\s*HAZARD\s+([A-Za-z0-9_-]+)\b")
 ANCHOR = re.compile(r'<a id="([A-Za-z0-9_-]+)"')
 
 
+#: GENERATED SOURCES ARE DOCUMENTED BY THEIR GENERATOR, not one doc each. The eight
+#: instantiation shards under ``csrc/rola/src/instantiations/`` are emitted by
+#: ``tools/gen_shards.py`` from one matrix definition; eight mirror docs saying the
+#: same sentence eight times would be the ceremony this mandate exists to remove, and
+#: the next re-partition would silently orphan them. Their reasons live in ONE place
+#: that is regenerated with them -- ``csrc/rola/src/instantiations/README.md`` -- and
+#: rule 5 below is what keeps that exemption from being a hole: the directory must
+#: carry that README, and every file in it must be one the generator produces.
+GENERATED_DIRS = ("instantiations",)
+
+
 def _sources() -> list[Path]:
     return sorted(
         p
         for p in SRC.rglob("*")
-        if p.suffix in SOURCE_SUFFIXES and "third_party" not in p.parts
+        if p.suffix in SOURCE_SUFFIXES
+        and "third_party" not in p.parts
+        and not set(p.parts) & set(GENERATED_DIRS)
     )
 
 
@@ -73,6 +89,24 @@ def _mirror_for(source: Path) -> Path:
 
 def _anchors(doc: Path) -> list[str]:
     return ANCHOR.findall(doc.read_text())
+
+
+def test_generated_directories_are_documented_by_their_readme():
+    """Rule 5. The exemption from rule 1 costs a stricter check, not a weaker one."""
+    import subprocess
+    import sys
+
+    for name in GENERATED_DIRS:
+        directory = SRC / "src" / name
+        assert (directory / "README.md").is_file(), (
+            f"{directory.relative_to(ROOT)} is exempt from the per-file mirror rule "
+            f"because it is generated; that exemption requires its README.md")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "gen_shards.py"), "--check"],
+            cwd=str(ROOT), capture_output=True, text=True)
+        assert proc.returncode == 0, (
+            f"{directory.relative_to(ROOT)} contains something its generator does "
+            f"not produce:\n{proc.stdout}{proc.stderr}")
 
 
 def test_there_are_sources_to_check():

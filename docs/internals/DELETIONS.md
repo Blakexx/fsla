@@ -56,7 +56,6 @@ The ledger does not reconstruct what that repository's history already holds.
 | What | Where | Why it is kept | What would activate it |
 |---|---|---|---|
 | **The three-pass §6.4 sequence-parallel split** (`P > 1`): pass 1's sparse per-segment summary, `scan_kernel`'s ordered fold, pass 3's entry-state stash, the fourteen optional split arguments | `csrc/rola/src/consumer.cu`, `consumer.cuh`; [`consumer.md`](consumer.md#three-pass) | Fully implemented, oracle-gated, covered by `tests/tier2_geometry/`. `P = 1` is the primary benchmarked configuration and the planner chooses it everywhere today, so the machinery is reachable but unexercised in production. Its correctness structures (the stash) were paid for by a real failure, not a hypothetical one. | A measured cell where a split beats `P = 1`. The planner already takes `P` from the plan; nothing needs to be written to turn it on. |
-| **The `.def`-plus-shard-TU dispatch split** | not present; the mechanism is described at [`consumer.md`](consumer.md#instantiation-matrix) | Not code in this tree — a recorded ANSWER to a cost that has not yet been incurred. Recorded so that a future contributor facing an unacceptable build does not re-derive it. | A per-TU `nvcc` wall-clock measurement showing `consumer.cu` dominating the build under the shipped `MAX_JOBS`. |
 
 A row leaves this register in exactly two ways: it becomes plan-selected (and the
 row goes), or its activating measurement is taken and comes back negative for

@@ -79,6 +79,13 @@ CSRC = ROOT / "csrc" / "rola"
 MANIFEST_DIR = ROOT / "tools" / "manifests"
 CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 
+#: `tools/` is not an installed package -- it is the repository's instruments -- but
+#: the build and the ratification gate must not maintain two copies of the codegen
+#: flag list or two copies of the instantiation matrix. Both are imported from there.
+sys.path.insert(0, str(ROOT / "tools"))
+import build_flags  # noqa: E402
+import gen_shards  # noqa: E402
+
 #: THE RATIFIED SET. Overridable only downward in practice: adding an arch here
 #: without a manifest fails the build at ``_gate_ratified`` (rule 3), which is the
 #: point -- the supported matrix IS the ratified set, not a wish list.
@@ -119,20 +126,6 @@ def read_version() -> str:
 # ---------------------------------------------------------------------------
 # RULE 2 -- gencode
 # ---------------------------------------------------------------------------
-def gencodes(archs: list[str]) -> list[str]:
-    """``code=sm_XX`` ONLY.
-
-    A ``code=compute_XX`` entry would embed PTX in the fatbin and let the DRIVER
-    just-in-time compile this kernel for an architecture whose register and spill
-    behaviour was never measured -- precisely the failure the manifest exists to
-    exclude. There is no environment variable that turns this on.
-    """
-    flags: list[str] = []
-    for a in archs:
-        flags.append(f"-gencode=arch=compute_{a},code=sm_{a}")
-    return flags
-
-
 def assert_no_ptx(flags: list[str]) -> None:
     """Not decoration: this is what makes rule 2 survive a future editor who adds a
     'just for the next architecture' PTX line. The build fails rather than silently
@@ -282,21 +275,6 @@ def _gate_toolchain(manifest: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# MAX_JOBS -- a MEASURED constant, not a guess
-# ---------------------------------------------------------------------------
-def default_max_jobs(nvcc_threads: int) -> int:
-    """RAM, not cores, is the binding resource here, and that is a measurement:
-    ``MAX_JOBS=8`` was OOM-KILLED on this 23 GB / 16-core host after 8m32 (``ninja``
-    reported ``Killed``; ``sys`` time 28m47 -- the machine was thrashing, not
-    compiling). So the memory term participates rather than the core count alone."""
-    import psutil
-
-    cpus = os.cpu_count() or 1
-    free_gb = psutil.virtual_memory().available / (1024 ** 3)
-    return max(1, int(min(cpus // 2, free_gb / (5 * nvcc_threads))))
-
-
-# ---------------------------------------------------------------------------
 # _build_config.py -- the self-describing binary
 # ---------------------------------------------------------------------------
 def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) -> None:
@@ -344,6 +322,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict) 
 # ---------------------------------------------------------------------------
 # the extension
 # ---------------------------------------------------------------------------
+#: THE HAND-WRITTEN TRANSLATION UNITS. The consumer's 512 kernel instantiations are
+#: NOT here: they live in the generated shards under `csrc/rola/src/instantiations/`,
+#: which `shard_sources()` appends. `consumer.cu` is now the dispatch and the torch
+#: entry only, and compiles like the host file it is.
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     "csrc/rola/src/consumer.cu",
@@ -357,18 +339,44 @@ SOURCES = [
 ]
 
 
+def shard_sources() -> list[str]:
+    """The generated instantiation shards, TAKEN FROM THE GENERATOR.
+
+    Not globbed off the disk: a shard file that the matrix definition does not
+    produce must not be able to enter the build by being dropped in the directory,
+    and one it does produce must not be able to leave the build by being deleted.
+    The `--check` gate below is what makes the two agree.
+    """
+    return [f"csrc/rola/src/instantiations/{name}.cu"
+            for name in sorted(gen_shards.shards())]
+
+
+def _gate_shards() -> None:
+    """The checked-in shards are the ones the matrix definition produces.
+
+    Runs BEFORE the compile, with the other cheap gates. Generated sources are
+    committed so that what is reviewed is what compiles (closed-world); that promise
+    is only worth anything if a stale generated file fails the build instead of
+    silently shipping a matrix nobody wrote.
+    """
+    proc = subprocess.run([sys.executable, str(ROOT / "tools" / "gen_shards.py"), "--check"],
+                          cwd=str(ROOT))
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "the checked-in instantiation shards do not match the matrix definition "
+            "in tools/gen_shards.py. Regenerate them (`python tools/gen_shards.py "
+            "--write`) and review the diff -- a generated file that disagrees with "
+            "its generator is a matrix nobody wrote."
+        )
+
+
 def build_extension():
     nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
-    os.environ.setdefault("MAX_JOBS", str(default_max_jobs(nvcc_threads)))
+    os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
-    arch_flags = gencodes(ROLA_CUDA_ARCHS)
-    assert_no_ptx(arch_flags)
-
-    nvcc_flags = [
-        "-O3", "-std=c++17", "-lineinfo", f"--threads={nvcc_threads}",
-        #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.
-        "--ptxas-options=-v",
-    ] + arch_flags
+    nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
+        + list(build_flags.DEPFILE_FLAGS)
+    assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
     #: WSL puts the driver stub outside the toolkit's lib dir. A build knob, so it
@@ -379,7 +387,7 @@ def build_extension():
 
     return CUDAExtension(
         name=MODULE_NAME,
-        sources=SOURCES,
+        sources=SOURCES + shard_sources(),
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include")],
@@ -395,15 +403,47 @@ class RoLABuildExtension(BuildExtension):
         manifest = _gate_ratified(ROLA_CUDA_ARCHS)
         ptxas = _gate_toolchain(manifest)
         pin = _gate_vendored()
+        _gate_shards()
         super().run()
+        self._post_build_fatbin_check()
         self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin)
+
+    def _post_build_fatbin_check(self):
+        """THE SHARDING ITSELF, PROVEN FROM THE BINARY.
+
+        The two ways a translation-unit split silently fails to split anything --
+        the launcher's definition leaking into the dispatch TU, or a query ladder
+        still taking kernel addresses there -- both leave the build green, the
+        census correct and the manifest byte-identical, while every kernel gets
+        compiled twice and the compile time simply does not fall. `nm` cannot see
+        it either: a `__global__` template's host stub is weak and the linker keeps
+        one. The fatbin can: it carries one device entry per instantiating object.
+        `tools/fatbin_entries.py` counts them, per arch, and checks each one against
+        the shard the matrix says owns it.
+        """
+        so = next(Path(self.build_lib).rglob("_C*.so"), None) or \
+            next((ROOT / "rola").glob("_C*.so"), None)
+        if so is None:
+            raise RuntimeError("built extension not found; the fatbin gate cannot "
+                               "prove a binary it cannot read")
+        cmd = [sys.executable, str(ROOT / "tools" / "fatbin_entries.py"), "--check", str(so)]
+        if subprocess.run(cmd, cwd=str(ROOT)).returncode != 0:
+            raise RuntimeError(
+                "the built fatbin does not carry exactly one device entry per "
+                "instantiation in the shard the matrix assigns it to. The binary is "
+                "NOT shippable: either the shard partition and the dispatch have "
+                "drifted apart, or the instantiations are being duplicated across "
+                "translation units and nothing is actually sharded."
+            )
 
     def _post_build_manifest_check(self):
         """The pre-build gates prove the INPUTS were ratified. This proves the
         codegen still matches what was measured: `tools/ratify.py` re-compiles the
-        probe -- the whole 512-instantiation dispatch closure, under the same flags
-        -- and fails on any spill growth or unhonored launch bound."""
+        SHIPPED translation units -- the eight instantiation shards plus
+        `decode.cu` and `entmax.cu`, under the same flag list this build uses
+        (`tools/build_flags.py`) -- and fails on any spill growth or unhonored
+        launch bound."""
         if os.getenv("ROLA_SKIP_POST_BUILD_RATIFY") == "1":
             print("post-build ratification SKIPPED (ROLA_SKIP_POST_BUILD_RATIFY=1)")
             return

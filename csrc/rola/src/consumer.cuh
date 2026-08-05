@@ -17,6 +17,12 @@
 // its workspace, and why paging is BITWISE invisible: docs/internals/consumer.md
 
 #include <cstdint>
+#include <cuda_runtime.h>
+
+//: For `MmaPrec`, which is a template argument of every per-arm entry point declared
+//: at the bottom of this file. The host binding and the kernel must agree on the
+//: precision axis exactly as they must agree on `ConsumerParams`.
+#include "readout_mma.cuh"
 
 namespace rola {
 
@@ -157,6 +163,54 @@ struct ScanParams {
   int BC;
   int cols;
   int n_split;
+};
+
+// ---------------------------------------------------------------------------
+// THE PER-ARM ENTRY POINTS -- DECLARATIONS ONLY.
+//
+// One instantiation of each of these per template tuple lives in exactly one
+// generated shard (`csrc/rola/src/instantiations/`), and their DEFINITIONS live in
+// `consumer_launch.cuh`, which the dispatch translation unit must not include. A
+// dispatch arm with no shard member is therefore an undefined-reference LINK ERROR
+// rather than a silent re-instantiation that would leave the build unsharded and
+// every gate green: docs/internals/consumer.md#instantiation-matrix
+// ---------------------------------------------------------------------------
+
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream);
+
+template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL, bool COMPACT>
+int query_consumer_occupancy_arm();
+
+using LaunchFn = void (*)(const ConsumerParams&, cudaStream_t);
+using OccFn = int (*)();
+
+//: ONE ROW OF THE INSTANTIATION TABLE: an arm's structural coordinates and the three
+//: things only its own shard can answer -- how to launch it, what the driver says
+//: about its residency, and its `constexpr` shared-memory footprint. The residency
+//: and footprint queries resolve a row rather than re-enumerating the matrix, which
+//: is why the dispatch translation unit does not include the kernel header at all.
+//: docs/internals/consumer.md#shard-rows
+struct ShardRow {
+  int BT;
+  int BC;
+  int DV;
+  int D;
+  MmaPrec prec;
+  bool decay;
+  bool global_norm;
+  bool compact;
+  LaunchFn launch;
+  OccFn occupancy;
+  size_t smem_bytes;
+};
+
+//: One shard's contiguous slice of the table. The blocks are concatenated, never
+//: merged into one array: each shard OWNS its rows, so P06's generated dispatch
+//: table is a concatenation rather than a rebuild.
+struct ShardRowBlock {
+  const ShardRow* rows;
+  int count;
 };
 
 }  // namespace rola

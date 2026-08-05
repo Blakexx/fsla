@@ -24,6 +24,16 @@
 //
 // The dispatch matrix and its measured size, the residency query axes, the ordered
 // fold, the entry-state stash: docs/internals/consumer.md
+//
+// **THIS FILE DOES NOT INCLUDE `consumer_kernel.cuh` OR `consumer_launch.cuh`, AND
+// THAT IS A GATE, NOT AN ACCIDENT.** Every `consumer_forward_kernel` instantiation
+// lives in exactly one generated shard under `instantiations/`; this file reaches
+// them through declared-not-defined host wrappers. Were the launcher's definition
+// visible here, the compiler would instantiate all 512 kernels back into this
+// translation unit -- the build would link, the census would look right, and nothing
+// would be sharded. `tests/unit/test_shard_partition.py` asserts the two `#include`s
+// stay absent, and `tools/fatbin_entries.py` proves the outcome from the built
+// binary rather than from the source.
 
 // The CUDA/ATen surface this TU launches and checks against.
 #include <torch/extension.h>
@@ -33,10 +43,15 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include "consumer_kernel.cuh"
+#include "arch_table.cuh"
+#include "consumer.cuh"
 #include "host_api.cuh"
 
 namespace rola {
+
+//: The generated table of every arm's launcher, residency query and footprint, one
+//: contiguous block per shard: csrc/rola/src/instantiations/README.md
+#include "instantiations/dispatch_rows.inc"
 
 namespace {
 
@@ -202,6 +217,8 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
               "d_v in {32, 64}; got BT=",
               BT, " BC=", BC, " d_v=", DV);
 
+  TORCH_CHECK(p.D >= 1 && p.D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", p.D);
+
   //: `mma_precision` selects BOTH GEMM sites together (RULING 1 revised): "bf16" is
   //: the production point, "tf32x3" the exactness-gate point. Both are instantiated.
   const bool exact = (mma_precision == "tf32x3");
@@ -212,140 +229,82 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
   //: The axes, why each one must be compile-time, the MEASURED instantiation count
   //: (the ratification manifest is the authority, not this comment) and the measured
   //: build cost: docs/internals/consumer.md#instantiation-matrix
-#define ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, COMPACTV)          \
-  {                                                                                    \
-    constexpr size_t smem =                                                            \
-        consumer::consumer_smem_bytes<BTV, BCVAL, DVV, DVAL, PRECV, PRECV, DECAYV, GLOBALV,  \
-                                COMPACTV>();                                           \
-    auto kernel = consumer::consumer_forward_kernel<BTV, BCVAL, DVV, DVAL, PRECV, PRECV,  \
-                                                 DECAYV, GLOBALV, COMPACTV>;           \
-    if (smem > 48 * 1024) {                                                            \
-      C10_CUDA_CHECK(cudaFuncSetAttribute(                                             \
-          kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));\
-    }                                                                                  \
-    if (p.n_owners == 0) return;                                                       \
-    kernel<<<p.n_owners, consumer::kConsumerThreads, smem,                                   \
-             at::cuda::getCurrentCUDAStream()>>>(p);                                   \
-    C10_CUDA_KERNEL_LAUNCH_CHECK();                                                    \
-    return;                                                                            \
-  }
-  //: HAZARD dispatch-braces -- docs/internals/consumer.md#dispatch-braces
-#define ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV)                    \
-  {                                                                                    \
-    if (compact) ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, true)      \
-    ROLA_CONSUMER_ONE(BTV, DVV, BCVAL, DVAL, PRECV, DECAYV, GLOBALV, false)                  \
-  }
-#define ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, PRECV)                                    \
-  if (decay && global_norm) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, true)     \
-  if (decay) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, true, false)                   \
-  if (global_norm) ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, true)             \
-  ROLA_CONSUMER_CMP(BTV, DVV, BCVAL, DVAL, PRECV, false, false)
-#define ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, DVAL)                                         \
-  case DVAL: {                                                                         \
-    if (exact) { ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kTf32x3) }              \
-    ROLA_CONSUMER_PREC(BTV, DVV, BCVAL, DVAL, MmaPrec::kBf16)                               \
-  }
-#define ROLA_CONSUMER_D(BTV, DVV, BCVAL)                                                    \
-  switch (p.D) {                                                                       \
-    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 1)                                                \
-    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 2)                                                \
-    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 3)                                                \
-    ROLA_CONSUMER_LAUNCH(BTV, DVV, BCVAL, 4)                                                \
-    default:                                                                           \
-      TORCH_CHECK(false, "D must be in [1, 4] (spec §1), got ", p.D);                  \
-  }
-#define ROLA_CONSUMER_BC(BTV, DVV)                                                          \
-  if (BC == 16) { ROLA_CONSUMER_D(BTV, DVV, 16) } else { ROLA_CONSUMER_D(BTV, DVV, 64) }
-#define ROLA_CONSUMER_DV(BTV)                                                               \
-  if (DV == 32) { ROLA_CONSUMER_BC(BTV, 32) } else { ROLA_CONSUMER_BC(BTV, 64) }
-  if (BT == 16) {
-    ROLA_CONSUMER_DV(16)
-  } else {
-    ROLA_CONSUMER_DV(32)
-  }
-#undef ROLA_CONSUMER_DV
-#undef ROLA_CONSUMER_BC
-#undef ROLA_CONSUMER_D
-#undef ROLA_CONSUMER_LAUNCH
-#undef ROLA_CONSUMER_PREC
-#undef ROLA_CONSUMER_CMP
-#undef ROLA_CONSUMER_ONE
+  //:
+  //: The ladder below is GENERATED from the same matrix definition the shards are
+  //: (`tools/gen_shards.py`), so the set this dispatch can reach and the set the
+  //: binary contains are one enumeration and cannot drift apart. It resolves a
+  //: function POINTER rather than launching in place, which is what keeps the launch
+  //: error check at ONE site instead of 512.
+  const int p_D = p.D;
+  LaunchFn fn = nullptr;
+#include "instantiations/dispatch_launch.inc"
+  //: NOT REACHABLE, and checked anyway: the ladder is generated over the closure the
+  //: TORCH_CHECKs above admit, so a null here means the generator and the checks
+  //: disagree -- which is a defect to fail on, not to launch on.
+  TORCH_CHECK(fn != nullptr, "no consumer instantiation for BT=", BT, " BC=", BC, " d_v=", DV,
+              " D=", p_D, " precision=", mma_precision, " decay=", decay, " global=", global_norm,
+              " compact=", compact);
+  fn(p, at::cuda::getCurrentCUDAStream());
+  //: THE ONE ERROR SITE. The shard's launcher is torch-free and reports through the
+  //: CUDA runtime's error state -- a refused shared-memory opt-in and a failed launch
+  //: both land here: docs/internals/consumer.md#instantiation-matrix
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+
+namespace {
+
+//: THE ROW LOOKUP behind both device-backed queries. Linear over the concatenated
+//: shard blocks because a residency question is asked by the PLANNER, once per
+//: candidate, next to a driver call that costs orders of magnitude more -- and
+//: because an index formula would have to restate the matrix's axis order, which is
+//: the drift this batch exists to remove.
+const ShardRow* find_shard_row(int64_t BT, int64_t BC, int64_t DV, int D, MmaPrec prec, bool decay,
+                               bool global_norm, bool compact) {
+  for (const ShardRowBlock& block : kShardRowBlocks) {
+    for (int i = 0; i < block.count; ++i) {
+      const ShardRow& row = block.rows[i];
+      if (row.BT == BT && row.BC == BC && row.DV == DV && row.D == D && row.prec == prec
+          && row.decay == decay && row.global_norm == global_norm && row.compact == compact) {
+        return &row;
+      }
+    }
+  }
+  return nullptr;
+}
+
+//: The residency and footprint queries answer at `D = 2`, the at-scale cell's
+//: topology depth (`D` moves only the `[D][BC]` digit table), under the planner's
+//: `global` normalization and the production precision.
+constexpr int kQueryD = 2;
+constexpr bool kQueryGlobal = true;
+constexpr MmaPrec kQueryPrec = MmaPrec::kBf16;
+
+const ShardRow& query_row(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
+  TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
+  TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
+  TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
+  const ShardRow* row =
+      find_shard_row(BT, BC, DV, kQueryD, kQueryPrec, decay, kQueryGlobal, compact);
+  TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BT=", BT, " BC=", BC,
+              " d_v=", DV);
+  return *row;
+}
+
+}  // namespace
 
 //: The consumer's residency answer, from the DRIVER. It takes five axes because
 //: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
 //: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
 int64_t rola_consumer_occupancy(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
-  //: Queried at `D = 2`, the at-scale cell's topology depth; `D` is not a query axis
-  //: because it moves only the `[D][BC]` digit table.
-  int blocks = 0;
-#define ROLA_CONSUMER_OCC(BTV, DVV, BCV, DECAYV, COMPACTV)                                 \
-  {                                                                                   \
-    constexpr size_t smem =                                                           \
-        consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault,             \
-                                consumer::kFoldPrecDefault, DECAYV,                    \
-                                true, COMPACTV>();                                    \
-    auto kernel = consumer::consumer_forward_kernel<BTV, BCV, DVV, 2,                    \
-                                                 consumer::kFoldPrecDefault,             \
-                                                 consumer::kReadPrecDefault, DECAYV, true,\
-                                                 COMPACTV>;                           \
-    if (smem > 48 * 1024) {                                                           \
-      C10_CUDA_CHECK(cudaFuncSetAttribute(                                            \
-          kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));\
-    }                                                                                 \
-    C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(                     \
-        &blocks, kernel, consumer::kConsumerThreads, smem));                                \
-  }
-#define ROLA_CONSUMER_OCC_BC(BTV, DVV, BCV)                                                \
-  {                                                                                   \
-    if (decay && compact) ROLA_CONSUMER_OCC(BTV, DVV, BCV, true, true)                     \
-    else if (decay) ROLA_CONSUMER_OCC(BTV, DVV, BCV, true, false)                          \
-    else if (compact) ROLA_CONSUMER_OCC(BTV, DVV, BCV, false, true)                        \
-    else ROLA_CONSUMER_OCC(BTV, DVV, BCV, false, false)                                     \
-  }
-#define ROLA_CONSUMER_OCC_DV(BTV, DVV)                                                     \
-  { if (BC == 16) ROLA_CONSUMER_OCC_BC(BTV, DVV, 16) else ROLA_CONSUMER_OCC_BC(BTV, DVV, 64) }
-#define ROLA_CONSUMER_OCC_BT(BTV)                                                          \
-  { if (DV == 32) ROLA_CONSUMER_OCC_DV(BTV, 32) else ROLA_CONSUMER_OCC_DV(BTV, 64) }
-  TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
-  TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
-  TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  if (BT == 16)
-    ROLA_CONSUMER_OCC_BT(16)
-  else
-    ROLA_CONSUMER_OCC_BT(32)
-#undef ROLA_CONSUMER_OCC_BT
-#undef ROLA_CONSUMER_OCC_DV
-#undef ROLA_CONSUMER_OCC_BC
-#undef ROLA_CONSUMER_OCC
+  const int blocks = query_row(decay, compact, BC, BT, DV).occupancy();
+  //: The shard's query is torch-free and reports through the CUDA runtime's error
+  //: state; this is where it becomes a Python exception.
+  C10_CUDA_CHECK(cudaGetLastError());
   return blocks;
 }
 
 int64_t rola_consumer_smem_bytes(bool decay, bool compact, int64_t BC, int64_t BT, int64_t DV) {
-#define ROLA_CONSUMER_SMEM(BTV, DVV, BCV, DECAYV, COMPACTV)                                \
-  return static_cast<int64_t>(                                                        \
-      consumer::consumer_smem_bytes<BTV, BCV, DVV, 2, consumer::kReadPrecDefault,             \
-                                    consumer::kFoldPrecDefault, DECAYV, true,           \
-                              COMPACTV>());
-#define ROLA_CONSUMER_SMEM_BC(BTV, DVV, BCV)                                               \
-  {                                                                                   \
-    if (decay && compact) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, true, true)                    \
-    if (decay) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, true, false)                              \
-    if (compact) ROLA_CONSUMER_SMEM(BTV, DVV, BCV, false, true)                            \
-    ROLA_CONSUMER_SMEM(BTV, DVV, BCV, false, false)                                        \
-  }
-#define ROLA_CONSUMER_SMEM_DV(BTV, DVV)                                                    \
-  { if (BC == 16) ROLA_CONSUMER_SMEM_BC(BTV, DVV, 16) ROLA_CONSUMER_SMEM_BC(BTV, DVV, 64) }
-#define ROLA_CONSUMER_SMEM_BT(BTV)                                                         \
-  { if (DV == 32) ROLA_CONSUMER_SMEM_DV(BTV, 32) ROLA_CONSUMER_SMEM_DV(BTV, 64) }
-  TORCH_CHECK(BC == 16 || BC == 64, "BC must be 16 or 64, got ", BC);
-  TORCH_CHECK(BT == 16 || BT == 32, "BT must be 16 or 32, got ", BT);
-  TORCH_CHECK(DV == 32 || DV == 64, "d_v must be 32 or 64, got ", DV);
-  if (BT == 16) ROLA_CONSUMER_SMEM_BT(16) ROLA_CONSUMER_SMEM_BT(32)
-#undef ROLA_CONSUMER_SMEM_BT
-#undef ROLA_CONSUMER_SMEM_DV
-#undef ROLA_CONSUMER_SMEM_BC
-#undef ROLA_CONSUMER_SMEM
+  return static_cast<int64_t>(query_row(decay, compact, BC, BT, DV).smem_bytes);
 }
 
 // ---------------------------------------------------------------------------
