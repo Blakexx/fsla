@@ -166,6 +166,8 @@ waste 7/8 of an `n8` fragment ([`mma_tile.md#frag-a-get`](mma_tile.md#frag-a-get
 | `Vw` | the scale-folded value tile, `Vw[t,ch] = sw[t] * v[t0+t, ch]` |
 | `VWP` | `Vw`'s row pitch on the `tf32x3` arm, `DV + 8`. The narrow arm has NO pitch — it is `StageLayout` ([`smem_layout.md#stage-layout`](smem_layout.md#stage-layout)) |
 | `Gm` | the causal effective-score block `[BT][BT]`, pitch `GMP` |
+| `AmpRT`, `AmpWT` | the amplitude-class HBM storage types ([below](#amp-class-types)): bf16 on the `kBf16 && GLOBAL && !DECAY` arms (read side keyed to `READ_PREC`, write/value side to `FOLD_PREC`), `float` everywhere else |
+| `kAmpSplit` | whether the amplitude storage is ROLE-SPLIT on this arm (`sizeof(AmpRT) == 2 \|\| sizeof(AmpWT) == 2`): spanned levels narrow, fixed levels fp32 |
 | `Rf` | the read coefficients, MMA-FRAGMENT-ORDERED, `NM` blocks of `frag_a_words(BC)` words |
 | `clk` | the tile's per-leaf INCLUSIVE clock prefix `[BT][CKP]` fp32, `CKP = BC + 4`; ALIASES `Vw`'s bytes |
 | `log_keep`, `p_ref`, `s0` | `DECAY`'s three `[BC]` vectors — per-owner log retention, §12 rule 1's reference exponent, and the entry/exit scale |
@@ -341,6 +343,38 @@ path that is narrow.
 The pitch differs with the type because the FRAGMENT MAP does: the bf16 map reads 32-bit
 pairs (`stride_g = GMP/2`), the tf32 map single floats (`stride_g = GMP`). `GMP` is `BT + 8`
 on bf16 and `BT + 4` on tf32x3; both are proven by `banks_distinct` ([below](#pitches)).
+
+## <a id="amp-class-types"></a>18b. `AmpRT` / `AmpWT` — the amplitude-class storage types, in the body
+
+The P09 bf16-memory family narrows the HBM STORAGE of the spanned amplitude levels and the
+value stream on the `kBf16 && GLOBAL && !DECAY` arms. The dtype rules, the per-stream table
+and the measured carve rationale live with the parameter block they govern
+([`consumer.md#amp-dtype`](consumer.md#amp-dtype)); what belongs HERE is how the body carries
+the split without a new axis and without touching the hot loops:
+
+- **The types are DERIVED, not new template parameters** — `AmpRT` keys off `READ_PREC`,
+  `AmpWT` off `FOLD_PREC` (mirroring which GEMM consumes each stream), both gated on
+  `!DECAY && GLOBAL`, exactly the way `StageT` and `GmT` are derived. Zero new axes; the
+  dispatch matrix is unchanged.
+- **One widening point, `amp_to_float`** — identity on `float`, the explicit
+  `__bfloat162float` intrinsic on bf16. Overloads rather than a `static_cast`, so the
+  conversion survives the build's `__CUDA_NO_BFLOAT16_CONVERSIONS__`. Every spanned gather
+  (the read panel, `build_wt_rows`'s accessor, the `Vw` value load) widens through it; the
+  arithmetic beyond the load is fp32 either way.
+- **The tile bases keep the baseline's exact shape.** `amp_r[l]` / `amp_w[l]` are one typed
+  pointer advance per level, no per-level role branch — a role ternary at the base measurably
+  spilled the `D >= 3` decay arms. The cost of that shape is a stated caveat: on a split arm
+  the entries `l < j` carry a WRONGLY-SCALED address (the byte stride is `AmpRT`/`AmpWT`'s,
+  the fixed stream's is fp32) and are NEVER dereferenced there.
+- **`kAmpSplit` is where the fixed levels go instead**: the row-scale loops index their
+  always-fp32 streams directly off `p.amp_read[l]` / `p.amp_write[l]` under
+  `if constexpr (kAmpSplit)`. Those loops run `BT` trips per tile, outside every hot loop, so
+  the 64-bit re-derivation per element is paid where it does not price anything. On the
+  uniform-fp32 arms the row scales read the tile bases exactly as they always did.
+
+`v`'s load in the staging is typed `AmpWT` the same way (it feeds the fold's B operand, which
+the narrow arm's MMA takes in bf16 regardless). The clock, `num`/`den`, and the state stay
+fp32 unconditionally — accumulator class, never storage-narrowed.
 
 ## <a id="pass1-alias"></a>19. §6.4 pass 1's own state, aliased onto `Rf`
 
@@ -547,7 +581,9 @@ boundary and therefore its 4th CTA.
 The amplitude streams are `[BH, n_tiles, BT, pitch]`, so the row base needs 64 bits, but the
 offset WITHIN a tile does not — it is `t * pitch + digit`, bounded by `BT * pitch`. Folding the
 64-bit part into a base pointer once per (tile, level) leaves the inner loop in 32-bit index
-arithmetic.
+arithmetic. The bases are TYPED `AmpRT` / `AmpWT` ([above](#amp-class-types)): on a split arm
+the `l < j` entries carry a wrongly-scaled address and are never dereferenced — the fixed
+levels' consumers index the params directly instead.
 
 **It stands ONLY because `D` is compile-time, and that dependence is measured (§2.4).** With a
 RUNTIME `p.D` the level loop cannot unroll, so these arrays are dynamically indexed and `ptxas`
@@ -656,7 +692,10 @@ instructions a time).
 levels' amplitudes at the owner's own digit. They are constant along the leaf axis, which is why
 they are held out of the coefficient blocks at all (`readout_mma.cuh`'s argument), and they
 depend on NOTHING the tile computes: not the clock prefix, not either panel. Only on
-`(tile, token)` and the owner's `base[]`.
+`(tile, token)` and the owner's `base[]`. The fixed levels they read are ALWAYS fp32 (Option
+B, [`consumer.md#amp-dtype`](consumer.md#amp-dtype)); on a `kAmpSplit` arm these loops index
+that fp32 stream directly off the params, because the typed tile bases carry a wrongly-scaled
+address at `l < j` ([above](#amp-class-types)).
 
 **What their placement buys is an OVERLAP; the rendezvous count is the same either way.**
 Computing them WITH the panels makes the pre-GEMM section `[panels + row scales] [Vw]`, whose
@@ -681,7 +720,8 @@ second rendezvous would order nothing.
 `R[t, i] = scale_read[t] * prod_{l >= j} amp_read[l][t, digit_l(i)]`, with the row scale held
 OUT of the block: it is constant along both `k` and `n`, so it applies AFTER the accumulation
 (`readout_mma.cuh`'s own argument) and keeping it out of a bf16 operand keeps its precision.
-Fixed levels (`l < j`) hoist into the row scale.
+Fixed levels (`l < j`) hoist into the row scale. The spanned gather widens through
+`amp_to_float` ([above](#amp-class-types)) — `AmpRT` storage, fp32 product.
 
 The loop walks FRAGMENT SLOTS, not `(token, leaf)` pairs: `frag_a_slot` is the FORWARD map, so
 the store is `Rf[s]` with `s` contiguous in `tid` — conflict-free, one 32-bit store, no scatter.
@@ -714,7 +754,9 @@ emitted loop is the plane pass verbatim; windowed, the same function is the per-
 Extracting it is what makes "the plane" a VALUE OF THE DIAL rather than a second code path (I4).
 `WT`'s rows are WINDOW-LOCAL: the buffer holds `kWinRows` of them and `q_lo` is the window's
 first leaf position, so the stored row is `q - q_lo`; at the plane `q_lo == 0` and this is `q`
-exactly.
+exactly. The accessor's walk is SPANNED-ONLY (`l < j` continues), so every caller types its
+amplitude bases `AmpWT` and the gather widens through `amp_to_float`
+([above](#amp-class-types)).
 
 **DECAY step (d):** `fw[t,i] = keep_i^{-(P[t,i] - P_ref[i])}`, folded into the WRITE
 coefficient. THE SAME `WT` THEN SERVES BOTH GEMM 2 (the causal Gram, where it meets `Rf`'s `fr`
@@ -799,6 +841,8 @@ The write side folds `scale_write[t]` into the VALUE tile instead of into a row 
 there `t` is the CONTRACTION index and the scale cannot hoist out of the sum.
 `Vw[t, ch] = scale_write[t] * v[t0 + t, ch]` then serves BOTH the intra term and the boundary
 fold — one staged object, two GEMMs. Out-of-range tokens (`t0 + t >= T`) contribute `0.0f`.
+The `v` load is typed `AmpWT` and widens through `amp_to_float` ([above](#amp-class-types));
+the scale-fold multiply is fp32, and the store narrows once at `stage_put` on the narrow arm.
 
 ## <a id="run-ahead"></a>35. The run-ahead, and why it sits exactly where it does
 
