@@ -63,6 +63,36 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def bind_library(root: Path, label: str) -> Path:
+    """Import `rola` FROM `root`, and refuse to run if that is not what happened.
+
+    **THIS IS THE TRAP THAT MAKES A DUAL RUN VACUOUS, AND IT IS REAL, NOT
+    HYPOTHETICAL.** `rola` is installed editable, so `import rola` resolves through
+    the install's path entry -- which names the CANONICAL checkout. Run as a script
+    from a worktree, `sys.path[0]` is the script's own directory (`tools/`), the
+    worktree's root is on no path at all, and both sides of the protocol quietly
+    import the same canonical tree. Every comparison then passes, having compared
+    nothing. Measured: from `/home/blake/rola-wt-p07b3`, `python tools/...py`
+    imported `/home/blake/rola-standalone/rola/__init__.py`.
+
+    The library each side must use is therefore named explicitly and CHECKED after
+    the import, not merely arranged for. A path insertion that fails to take effect
+    is exactly as silent as no insertion at all; the assertion is what makes it
+    loud, and the printed path is what puts it in the record.
+    """
+    root = root.resolve()
+    sys.path.insert(0, str(root))
+    import rola
+
+    actual = Path(rola.__file__).resolve()
+    if root not in actual.parents:
+        raise SystemExit(
+            f"the {label} side imported {actual}, not the tree at {root} -- the "
+            f"comparison would be between that tree and itself")
+    print(f"{label} library: {actual.parent}")
+    return actual.parent
+
 #: P4's thresholds, from the measured agreement with one decade of headroom
 #: (workflows/refactor/p07_audit.md section 3.2: worst 1.42e-14 forward, 6.66e-16 VJP).
 #: The SUPPORT-SET claim carries no tolerance at all, by construction.
@@ -491,12 +521,20 @@ def _emit_old(tree: Path, ref: str, surface: str, out_path: Path,
     """Run this same file inside the old tree, against the old tree's library."""
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--surface", surface,
-         "--emit", str(out_path), "--chunk", str(chunk), "--chunks", str(chunks)],
+         "--emit", str(out_path), "--chunk", str(chunk), "--chunks", str(chunks),
+         "--library", str(tree)],
         cwd=str(tree), env={"PYTHONPATH": str(tree), **OLD_SIDE_ENV},
         capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout + proc.stderr)
         raise SystemExit(f"the OLD side ({ref}) failed to run (chunk {chunk}/{chunks})")
+    #: The old side's bound library is echoed once, on the first slice: the record
+    #: has to name BOTH trees, or "the old side imported the old tree" is a claim
+    #: about the code rather than about the run.
+    if chunk == 0:
+        for line in proc.stdout.splitlines():
+            if line.startswith("OLD library:"):
+                print(line)
 
 
 def report(surface: str, tallies: list, exceptions: set) -> bool:
@@ -532,6 +570,8 @@ def main() -> int:
     ap.add_argument("--emit", metavar="PATH",
                     help="internal: write THIS tree's side and exit")
     ap.add_argument("--chunk", type=int, default=0, help="internal: which slice to emit")
+    ap.add_argument("--library", metavar="TREE",
+                    help="internal: the tree whose `rola` this side must import")
     ap.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS,
                     help=f"slices to run the matrix in, one at a time "
                          f"(default {DEFAULT_CHUNKS}); bounds peak memory, "
@@ -544,6 +584,7 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.emit:
+        bind_library(Path(a.library) if a.library else ROOT, "OLD" if a.library else "NEW")
         torch.save(_emit(a.surface, a.chunk, a.chunks), a.emit)
         return 0
     if not a.against:
@@ -551,6 +592,9 @@ def main() -> int:
     if a.chunks < 1:
         raise SystemExit("--chunks must be at least 1")
 
+    #: BEFORE the mutant, which imports `rola` to patch it: a mutant applied to the
+    #: wrong tree is a mutant applied to the OLD side as well.
+    bind_library(ROOT, "NEW")
     if a.mutate:
         apply_mutant(a.mutate)
 
