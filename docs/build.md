@@ -110,10 +110,10 @@ its SASS map matches a canonical-path build of the same tip with 0 differing bod
 Three OTHER files' anonymous-namespace kernel blocks are unaffected and still
 path-dependent by name (`consumer.cu`'s `scan_kernel`/`divide_kernel`,
 `decode_expand.cu`'s `decode_expand_kernel`, `summaries.cu`'s `summaries_kernel`,
-5/arch) — P19 was scoped to the two files the ratified manifest actually certifies through this
-discriminator. These five were never in the ratified manifest to begin with (it holds
-352 entries/arch; the full SASS scan holds 358, and the 6/arch difference is these
-five kernels plus one path-independent CUB entry point), so their residual
+5/arch) — P19 was scoped to the two files the ratified manifest actually certifies
+through this discriminator. These five were never in the ratified manifest to begin
+with (it holds 352 entries/arch; the full SASS scan holds 358, and the 6/arch
+difference is these five kernels plus one path-independent CUB entry point), so their residual
 path-dependence shows up only in a raw `sass_bodies.py` dump, never in a build or a
 ratification gate. A worktree build no longer fails, and a same-tip SASS comparison
 across paths is 0-differing over every ratified entry.
