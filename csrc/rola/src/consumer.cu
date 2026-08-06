@@ -41,6 +41,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include "arch_table.cuh"
@@ -164,12 +165,23 @@ void scan_pass(const ScanParams& p) {
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+//: `OutT` is the P09 family's post-divide cast: the DIVIDE itself is fp32 over the
+//: fp32 `num`/`den` accumulators (which never narrow), and only the stored quotient
+//: takes the arm's output format (bf16 under `kBf16`, float under `kTf32x3`).
+//: Overloads, not `static_cast` -- the build defines
+//: `__CUDA_NO_BFLOAT16_CONVERSIONS__`, so the narrowing must be the intrinsic.
+__device__ __forceinline__ void store_quotient(float* out, int64_t i, float q) { out[i] = q; }
+__device__ __forceinline__ void store_quotient(__nv_bfloat16* out, int64_t i, float q) {
+  out[i] = __float2bfloat16(q);
+}
+
+template <typename OutT>
 __global__ void divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
-                              float* __restrict__ out, int64_t rows, int DV, float eps) {
+                              OutT* __restrict__ out, int64_t rows, int DV, float eps) {
   const int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
   if (idx >= rows * DV) return;
   const int64_t row = idx / DV;
-  out[idx] = num[idx] / (den[row] + eps);
+  store_quotient(out, idx, num[idx] / (den[row] + eps));
 }
 
 }  // namespace
@@ -190,12 +202,13 @@ int64_t rola_sm_shared_bytes() {
   return value;
 }
 
-void divide_pass(const float* num, const float* den, float* out, int64_t rows, int d_v, float eps) {
+template <typename OutT>
+void divide_pass(const float* num, const float* den, OutT* out, int64_t rows, int d_v, float eps) {
   const int64_t total = rows * d_v;
   const int threads = 256;
   const int64_t blocks = (total + threads - 1) / threads;
-  divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(num, den, out, rows, d_v,
-                                                                          eps);
+  divide_kernel<OutT>
+      <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(num, den, out, rows, d_v, eps);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -378,6 +391,22 @@ const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
   return reinterpret_cast<const uint32_t*>(t.data_ptr<int32_t>());
 }
 
+//: The MMA precision's AMPLITUDE-CLASS storage dtype (spanned amplitude levels and
+//: the value stream): bf16 under `bf16`, fp32 under `tf32x3`. A tensor bound
+//: through here must ALREADY be in that dtype -- a mismatch is a hard error, never
+//: a silent cast; the cast belongs to the schedule builder, below support
+//: selection (I6-B §2.B4).
+const void* amp_class_ptr(const at::Tensor& t, bool bf16_arm, const char* name) {
+  TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
+  TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
+  const auto expected = bf16_arm ? at::kBFloat16 : at::kFloat;
+  TORCH_CHECK(t.scalar_type() == expected, name, " must be ", expected,
+              " (the dtype mma_precision implies for this stream), got ", t.scalar_type(),
+              " -- the amplitude/value storage dtype is keyed to the MMA precision and a "
+              "mismatch is never silently cast");
+  return t.const_data_ptr();
+}
+
 }  // namespace
 
 std::vector<at::Tensor> rola_consumer_forward(
@@ -457,11 +486,32 @@ std::vector<at::Tensor> rola_consumer_forward(
               "of a tile, got BT=",
               BT);
 
+  // Numeric FORMAT axis (findings D4.3), stamped by the plan. Validated HERE --
+  // before any dtype-keyed binding below reads it -- so a bad string fails as
+  // itself rather than as a confusing amplitude-dtype mismatch.
+  TORCH_CHECK(mma_precision == "tf32x3" || mma_precision == "bf16",
+              "mma_precision must be 'tf32x3' or 'bf16', got ", mma_precision);
+  const bool bf16_arm = mma_precision == "bf16";
+  //: THE MEMORY-NARROWING SCOPE (P09 family): bf16 amplitude/value storage
+  //: applies on the bf16 GLOBAL-NORM NON-DECAY arms. Both carves are structural
+  //: template axes the dispatch already forks on, and both are MEASURED, not
+  //: preferred (workflows/perf/p09_bf16_family.md): the DECAY arms' clock/panel
+  //: registers sit at the allocator wall (the ratchet found in-loop spill on all
+  //: 22 offenders, every one bf16+decay); the RAW arm has no `num/den` ratio to
+  //: cancel the stacked roundings, and its worst tier-1 topology measured past
+  //: `BF16_RTOL` on 2 of 6 seeds under narrowed storage (the global arm sits at
+  //: ~60% of budget on the same cells).
+  const bool narrow_mem = bf16_arm && global_norm && !dials.has_value();
+
   ConsumerParams p{};
   for (int64_t l = 0; l < D; ++l) {
     TORCH_CHECK(amp_read[l].dim() == 4, "amp_read[", l, "] must be [BH, n_tiles, BT, pitch]");
-    p.amp_read[l] = f32_ptr(amp_read[l], "amp_read");
-    p.amp_write[l] = f32_ptr(amp_write[l], "amp_write");
+    // Per LEVEL ROLE (P09 family, Option B): SPANNED levels (`l >= j`) store the
+    // precision-implied amplitude type, FIXED levels (`l < j`) stay fp32 -- they
+    // feed the per-token row scales, whose error is uniform over the output row.
+    const bool spanned = l >= first_spanned_level;
+    p.amp_read[l] = amp_class_ptr(amp_read[l], narrow_mem && spanned, "amp_read");
+    p.amp_write[l] = amp_class_ptr(amp_write[l], narrow_mem && spanned, "amp_write");
     p.level_pitch_read[l] = static_cast<int>(amp_read[l].size(3));
     p.level_pitch_write[l] = static_cast<int>(amp_write[l].size(3));
     if (amp_clock.has_value()) {
@@ -505,7 +555,7 @@ std::vector<at::Tensor> rola_consumer_forward(
   p.owners = owners.data_ptr<int32_t>();
   p.g_read = g_read.has_value() ? f32_ptr(*g_read, "g_read") : nullptr;
   p.g_write = f32_ptr(g_write, "g_write");
-  p.v = f32_ptr(v, "v");
+  p.v = amp_class_ptr(v, narrow_mem, "v");
   TORCH_CHECK(state.scalar_type() == at::kFloat && state.is_contiguous(),
               "state must be contiguous float32");
   p.state = state.data_ptr<float>();
@@ -515,10 +565,14 @@ std::vector<at::Tensor> rola_consumer_forward(
               "normalization='global' fixes g_read := 1 (spec §1); pass g_read=None");
   TORCH_CHECK(global_norm || g_read.has_value(), "normalization='raw' requires g_read");
 
-  auto num = at::zeros({BH, T, d_v}, v.options());
+  // `num`/`den` are the atomically-accumulated readout accumulators and NEVER
+  // narrow (fp32-accumulator ruling, same class as `state`): fp32 whatever `v`'s
+  // storage dtype is. Only `y` -- the post-divide quotient -- takes the arm's
+  // output format, below.
+  auto num = at::zeros({BH, T, d_v}, v.options().dtype(at::kFloat));
   at::Tensor den;
   if (global_norm) {
-    den = at::zeros({BH, T}, v.options());
+    den = at::zeros({BH, T}, v.options().dtype(at::kFloat));
     p.den = den.data_ptr<float>();
   } else {
     p.den = nullptr;
@@ -551,11 +605,6 @@ std::vector<at::Tensor> rola_consumer_forward(
               " exceeds the per-CTA SMEM candidate budget kMaxWords=", kMaxWords, " (T > ",
               static_cast<int64_t>(kMaxWords) * 32 * BT,
               " at this BT); raise kMaxWords or tile the token range");
-
-  // Numeric FORMAT axis (findings D4.3), stamped by the plan, resolved once here.
-  // Not a tolerance knob and not a density branch.
-  TORCH_CHECK(mma_precision == "tf32x3" || mma_precision == "bf16",
-              "mma_precision must be 'tf32x3' or 'bf16', got ", mma_precision);
 
   // ---- §6.4 sequence parallelism: three passes, two launch boundaries. Sequenced
   // HERE rather than by three Python calls because the three passes are ONE
@@ -650,11 +699,25 @@ std::vector<at::Tensor> rola_consumer_forward(
     launch_pass(p);
   }
 
+  // `y` takes the arm's output format under `global` (P09 family: the cast is the
+  // divide epilogue's store -- the divide itself is fp32 over the fp32
+  // accumulators). The `raw` arm returns `num` UNCAST: the ruling's surface is
+  // the POST-DIVIDE quotient, and raw has no divide -- its `y` IS the
+  // accumulator, and narrowing it was MEASURED to put the raw arm's stacked
+  // family error at the BF16_RTOL line (2 of 6 seeds over on the worst tier-1
+  // cell; the global arm's ratio cancels the common roundings and sits at ~60%
+  // of budget). Evidence: workflows/perf/p09_bf16_family.md.
   at::Tensor y = num;
   if (global_norm) {
-    y = at::empty_like(num);
-    divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(), BH * T,
-                static_cast<int>(d_v), static_cast<float>(eps));
+    y = at::empty({BH, T, d_v}, v.options());
+    if (narrow_mem) {
+      divide_pass(num.data_ptr<float>(), den.data_ptr<float>(),
+                  reinterpret_cast<__nv_bfloat16*>(y.data_ptr<at::BFloat16>()), BH * T,
+                  static_cast<int>(d_v), static_cast<float>(eps));
+    } else {
+      divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(), BH * T,
+                  static_cast<int>(d_v), static_cast<float>(eps));
+    }
   }
   return {y, state, num, global_norm ? den : at::Tensor()};
 }

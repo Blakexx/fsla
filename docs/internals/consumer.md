@@ -103,6 +103,36 @@ is the authority for. This is the
 [self-masking theorem](../architecture/self-masking-theorem.md) in its
 "trustless flag" form.
 
+## <a id="amp-dtype"></a>A5b. Amplitude/value storage dtype — per level role, per arm
+
+The `amp_read` / `amp_write` / `v` pointers are type-erased (`const void*`)
+because their HBM storage dtype is decided per LEVEL ROLE and per instantiation
+(the P09 bf16-memory family), with zero new template axes — the kernel derives
+`AmpRT` / `AmpWT` from the existing `READ_PREC` / `FOLD_PREC` / `DECAY` /
+`GLOBAL` parameters exactly the way `StageT` and `GmT` are derived:
+
+| stream | dtype rule |
+|---|---|
+| SPANNED amplitude levels (`l >= j`) and `v` | bf16 on the `kBf16` + `GLOBAL` + `!DECAY` arms; fp32 everywhere else |
+| FIXED amplitude levels (`l < j`) | always fp32 — they feed the per-token row scales, whose error is uniform over the whole output row and never cancels (Option B) |
+| clock (`amp_clock`) | always fp32 — an exponent (see [A6](#dials-fp32) and `consumer_kernel.md#clock-prefix-fp32`) |
+| `num` / `den` / `state` | always fp32 — accumulators ([fp32 accumulators](../architecture/fp32-accumulators.md)) |
+| `y` | the divide epilogue stores the arm's output format on the narrowed arms; the `raw` arm returns `num` uncast |
+
+The narrowing rationale: on the bf16 arm these streams feed operands the MMA
+narrows to bf16 anyway, so the fp32 store carried bytes, not precision. The two
+arm carves are MEASURED, not preferred (`workflows/perf/p09_bf16_family.md`):
+the DECAY arms' clock/panel registers sit at the allocator wall (the ratchet
+found in-loop spill on every bf16+decay offender under narrowed storage), and
+the RAW arm has no `num/den` ratio to cancel the stacked roundings (its worst
+tier-1 topology measured past `BF16_RTOL` on tail seeds).
+
+The cast happens in the SCHEDULE BUILDER, strictly below support selection
+(`Plan.level_amp_dtype`; gate I6-B §2.B4 pins the ordering), and the host
+binding hard-checks every tensor's dtype against the precision-implied one — a
+mismatch is a loud error, never a silent cast. The oracle gate for the whole
+family is `tests/tier1_semantics/test_bf16_family_gate.py`.
+
 ## <a id="dials-fp32"></a>A6. `dials` — fp32, never bf16
 
 Flattened `LeafMassDecay` dials, `[H, total_rows]`, level `l` at `row_offset[l]`.

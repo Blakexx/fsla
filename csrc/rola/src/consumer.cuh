@@ -43,8 +43,15 @@ struct ConsumerParams;
 __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i);
 
 struct ConsumerParams {
-  const float* amp_read[kMaxLevels];   // [BH, n_tiles, BT, pitch_read]
-  const float* amp_write[kMaxLevels];  // [BH, n_tiles, BT, pitch_write]
+  //: [BH, n_tiles, BT, pitch] amplitude streams, TYPE-ERASED because the storage
+  //: dtype is per LEVEL ROLE and per instantiation: SPANNED levels (`l >= j`)
+  //: store the MMA precision's amplitude type (bf16 under `kBf16`, fp32 under
+  //: `kTf32x3`), FIXED levels (`l < j`) always fp32 (they feed the row scales).
+  //: Each kernel use site types its own pointer from its loop's level role, so a
+  //: missed site is a compile error; the host binding enforces the same rule per
+  //: level with a hard dtype check. docs/internals/consumer.md#amp-dtype
+  const void* amp_read[kMaxLevels];   // pitch_read elements per row
+  const void* amp_write[kMaxLevels];  // pitch_write elements per row
   //: LeafMassDecay clock stream, `c[t,s] = prod_l p_write_stored[t, d_l(s)]` (spec
   //: §2); nullptr under `decay=None`. Built SEPARATELY from the schedule, and the
   //: product runs over ALL levels: docs/internals/consumer.md#clock-stream
@@ -78,7 +85,10 @@ struct ConsumerParams {
 
   const float* g_read;   // [BH, T] or nullptr (global fixes g_read := 1)
   const float* g_write;  // [BH, T]
-  const float* v;        // [BH, T, DV]
+  //: [BH, T, DV] value stream, HBM storage in the MMA precision's amplitude type
+  //: (it is staged into the bf16 MMA operand either way on that arm); typed
+  //: in-kernel, bound with a hard per-precision dtype check.
+  const void* v;
 
   float* num;  // [BH, T, DV]   fp32, atomically accumulated
   float* den;  // [BH, T]       fp32, or nullptr under `raw`

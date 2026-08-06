@@ -321,7 +321,16 @@ def _consumer_forward(
         state = paging.state
         page_table = paging.page_table
 
-    v_f = v.permute(0, 2, 1, 3).reshape(BH, T, d_v).to(torch.float32).contiguous()
+    # The VALUE tensor's HBM storage is keyed to `mma_precision` (P09 family): the
+    # kernel stages `v` into its bf16 MMA operand anyway on that arm, so the fp32
+    # HBM copy carried no extra precision -- only bytes. The exactness arm keeps
+    # fp32, and so do the DECAY and RAW arms (the measured carves --
+    # `Plan.level_amp_dtype` states both). `y` comes back in the same dtype (cast
+    # AFTER the fp32 divide; num/den accumulators and state stay fp32, always).
+    v_dtype = (torch.bfloat16
+               if plan.mma_precision == "bf16" and not plan.decay and global_norm
+               else torch.float32)
+    v_f = v.permute(0, 2, 1, 3).reshape(BH, T, d_v).to(v_dtype).contiguous()
     desc = level_descriptors(topology, plan)
     geometry = plan.geometry
 
@@ -374,8 +383,14 @@ def _consumer_forward(
 
     ext = extension()
     y_f, state_out, _num, _den = ext.rola_consumer_forward(
-        [t.to(torch.float32).contiguous() for t in schedule.read_amps],
-        [t.to(torch.float32).contiguous() for t in schedule.write_amps],
+        # The amplitude streams pass through in the dtype the schedule BUILT them
+        # in (`Plan.level_amp_dtype`: spanned levels follow `amp_dtype`, fixed
+        # levels fp32); the extension hard-checks the per-level dtype against the
+        # precision-implied one -- a mismatch is a loud error, never a silent cast.
+        [t.contiguous() for t in schedule.read_amps],
+        [t.contiguous() for t in schedule.write_amps],
+        # The clock stays fp32 (build_clock_stream pins it; §4.7's exponent
+        # amplification, enforced by gate I6-B mutant M2).
         None if clock_amps is None else [t.to(torch.float32).contiguous() for t in clock_amps],
         dials,
         schedule.read_tile_bits.contiguous(),

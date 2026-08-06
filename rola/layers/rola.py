@@ -212,6 +212,23 @@ class RoLA(nn.Module):
         tensors = [t for t in operation_inputs if t is not None]
         return "oracle" if select_backend(*tensors) == "reference" else "cuda"
 
+    def _bf16_projection_active(self, x: torch.Tensor) -> bool:
+        """Whether this call's v/o projections run as bf16 GEMMs (P09 family).
+
+        Keyed to the SAME conditions that reach the kernel arm -- eval mode, no
+        grad anywhere (``torch.is_grad_enabled()`` off implies ``select_backend``
+        cannot pick the reference for gradient reasons), CUDA -- plus the
+        ``mma_precision`` format axis. Any grad-bearing call (training, the
+        reentrant-checkpointing eval case, a dial-only finetune) keeps the
+        module-dtype projections that feed the fp64 oracle. The GEMMs run with
+        bf16 operands and cuBLAS's fp32 compute type (the accumulate-in-fp32
+        ruling; the global reduced-precision-reduction knob is deliberately not
+        touched -- this is the same environment the FA comparison arm runs in).
+        """
+        return (not self.training and not torch.is_grad_enabled() and x.is_cuda
+                and self.expert.mma_precision == "bf16"
+                and self.normalization == "global")
+
     # --- forward -------------------------------------------------------------
 
     def forward(
@@ -242,7 +259,17 @@ class RoLA(nn.Module):
         cache_enabled = bool(use_cache)
         last_state = get_layer_cache(self, past_key_values)
 
-        v = self.v_proj(x)
+        # P09 matched-dtype family: on the kernel-bound bf16 arm both projections
+        # run as bf16 GEMMs (weights cast per call; the result returns to the
+        # module dtype, so everything downstream -- convs, routing, decode -- is
+        # unchanged, and the op re-narrows `v` at its own boundary, where the
+        # second cast is exact because the values are already bf16-rounded).
+        bf16_proj = self._bf16_projection_active(x)
+        if bf16_proj:
+            v = nn.functional.linear(
+                x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16)).to(x.dtype)
+        else:
+            v = self.v_proj(x)
         conv_states = list(last_state.conv_state) if (
             last_state is not None and last_state.conv_state is not None) else [None, None]
         if self.value_conv is not None:
@@ -312,7 +339,17 @@ class RoLA(nn.Module):
                 conv_state=tuple(conv_states) if (
                     self.value_conv is not None or self.route_conv is not None) else None,
                 offset=L)
-        return self.o_proj(out.reshape(B, L, H * self.head_v_dim)), None, past_key_values
+        out = out.reshape(B, L, H * self.head_v_dim)
+        if bf16_proj:
+            # Off the kernel arm `out`'s VALUES are already bf16-rounded (y is
+            # cast post-divide in the kernel and returned in the module dtype),
+            # so this operand cast is exact; the result returns to the module
+            # dtype at the layer boundary.
+            projected = nn.functional.linear(
+                out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
+        else:
+            projected = self.o_proj(out)
+        return projected, None, past_key_values
 
     # --- the two arms that need layer-owned state ----------------------------
 

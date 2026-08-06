@@ -65,6 +65,13 @@ using rola::detail::segment_word_mask;
 //: kernel, the §6.4 scan and the summary pass. The planner mirrors the same value at
 //: `rola.planner.schedule.MMA_K_QUANTUM`. docs/internals/arch_table.md#mma-quantum
 
+//: One widening for the amplitude-class storage types (`AmpRT`/`AmpWT`, P09
+//: family): identity on fp32 arms, the explicit intrinsic on bf16 -- overloads
+//: rather than a `static_cast` so the conversion survives
+//: `__CUDA_NO_BFLOAT16_CONVERSIONS__` builds.
+__device__ __forceinline__ float amp_to_float(float x) { return x; }
+__device__ __forceinline__ float amp_to_float(__nv_bfloat16 x) { return __bfloat162float(x); }
+
 //: §4.5's PAGED ADDRESS, RE-KEYED TO THE ATOM. A page is ONE `MMA_K_QUANTUM`-leaf
 //: ATOM, not one owner, so an owner spans `QPO` INDEPENDENTLY PAGED atoms whose slots
 //: are not contiguous in general and a CTA resolves `QPO` bases at startup. Returns
@@ -146,6 +153,27 @@ consumer_forward_kernel(ConsumerParams p) {
   using GmT =
       typename cuda::std::conditional<READ_PREC == MmaPrec::kBf16, __nv_bfloat16, float>::type;
   constexpr int GMP = (READ_PREC == MmaPrec::kBf16) ? BT + 8 : BT + 4;
+  //: THE AMPLITUDE-CLASS STORAGE TYPES (P09 family), derived from the EXISTING
+  //: precision and decay axes the way `StageT`/`GmT` are -- zero new template
+  //: axes. SPANNED amplitude levels (`l >= j`) and the value stream are stored in
+  //: the arm's amplitude type (bf16 under `kBf16`: they feed operands the MMA
+  //: narrows to bf16 anyway, so the fp32 store carried bytes, not precision).
+  //: FIXED levels (`l < j`) stay `float` -- they feed the per-token ROW SCALES,
+  //: whose error is uniform over the whole output row and never cancels
+  //: (Option B). The read side keys off `READ_PREC`, the write/value side off
+  //: `FOLD_PREC`, mirroring which GEMM consumes each stream. The clock stays
+  //: `float` unconditionally (an exponent;
+  //: docs/internals/consumer_kernel.md#clock-prefix-fp32). The DECAY and RAW
+  //: arms keep `float` storage outright -- MEASURED carves on structural axes,
+  //: not preferences (workflows/perf/p09_bf16_family.md): the ratchet found
+  //: every in-loop-spill offender under narrowed storage on the bf16+DECAY arms
+  //: (clock/panel registers at the allocator wall), and the RAW arm -- no
+  //: `num/den` ratio to cancel stacked roundings -- measured past `BF16_RTOL`
+  //: on its worst topology's tail seeds.
+  using AmpRT = typename cuda::std::conditional<READ_PREC == MmaPrec::kBf16 && !DECAY && GLOBAL,
+                                                __nv_bfloat16, float>::type;
+  using AmpWT = typename cuda::std::conditional<FOLD_PREC == MmaPrec::kBf16 && !DECAY && GLOBAL,
+                                                __nv_bfloat16, float>::type;
   constexpr int kRing = consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>();
   //: D2.3, AS A CORRECTNESS ASSERT AND NOT AS A FOOTPRINT ONE: `clk` aliases `Vw`'s
   //: bytes, so a ringed `Vw` under `DECAY` would put slot `s + 1`'s clock prefix on top
@@ -405,13 +433,24 @@ consumer_forward_kernel(ConsumerParams p) {
     StageT* Vw = Vw_r0 + slot * kVwSlot;
 
     const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
-    const float* amp_r[D];
-    const float* amp_w[D];
+    //: SPANNED-TYPED tile bases, in the baseline's exact shape (one typed
+    //: pointer advance per level, no role branch -- a per-level role ternary
+    //: here measurably spilled the D >= 3 decay arms). Entries `l < j` carry a
+    //: WRONGLY-SCALED address when `AmpRT`/`AmpWT` is not `float` and are never
+    //: dereferenced on that arm: the FIXED levels' consumers (the row-scale
+    //: loops below) index their always-fp32 streams directly from the params on
+    //: the split arm, outside any hot loop.
+    const AmpRT* amp_r[D];
+    const AmpWT* amp_w[D];
 #pragma unroll
     for (int l = 0; l < D; ++l) {
-      amp_r[l] = p.amp_read[l] + tile_row * p.level_pitch_read[l];
-      amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
+      amp_r[l] = static_cast<const AmpRT*>(p.amp_read[l]) + tile_row * p.level_pitch_read[l];
+      amp_w[l] = static_cast<const AmpWT*>(p.amp_write[l]) + tile_row * p.level_pitch_write[l];
     }
+    //: Whether the amplitude storage is ROLE-SPLIT on this arm (P09 family:
+    //: spanned narrow, fixed fp32). On the uniform-fp32 arms the row scales read
+    //: `amp_r`/`amp_w` exactly as they always did.
+    constexpr bool kAmpSplit = sizeof(AmpRT) == 2 || sizeof(AmpWT) == 2;
 
     // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0` -- INTO `Vw`'s bytes, guarded
     // ---- by `is_write` STRUCTURALLY. The clock product runs over ALL `D` levels where
@@ -463,7 +502,16 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l >= j) break;
-          s *= amp_r[l][t * p.level_pitch_read[l] + base[l]];
+          //: FIXED levels are ALWAYS fp32 (Option B). On the split arm `amp_r`
+          //: carries a spanned-scaled address for these slots, so the fp32
+          //: stream is indexed directly from the params; this loop runs BT
+          //: trips per tile, outside every hot loop.
+          if constexpr (kAmpSplit) {
+            s *= static_cast<const float*>(
+                p.amp_read[l])[(tile_row + t) * p.level_pitch_read[l] + base[l]];
+          } else {
+            s *= amp_r[l][t * p.level_pitch_read[l] + base[l]];
+          }
         }
         sr[t] = s;
       }
@@ -475,7 +523,12 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l >= j) break;
-          s *= amp_w[l][t * p.level_pitch_write[l] + base[l]];
+          if constexpr (kAmpSplit) {
+            s *= static_cast<const float*>(
+                p.amp_write[l])[(tile_row + t) * p.level_pitch_write[l] + base[l]];
+          } else {
+            s *= amp_w[l][t * p.level_pitch_write[l] + base[l]];
+          }
         }
         sw[t] = s;
       }
@@ -490,7 +543,7 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-          a *= amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]];
+          a *= amp_to_float(amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]]);
         }
         if (DECAY && is_write) {
           a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
@@ -520,7 +573,7 @@ consumer_forward_kernel(ConsumerParams p) {
     if constexpr (kWtPlane && kRing == 1) {
       if (is_write) {
         build_wt_rows(0, BC, [&](int l, int t, int i) {
-          return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+          return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
         });
       }
     }
@@ -534,8 +587,10 @@ consumer_forward_kernel(ConsumerParams p) {
         const int t = idx / DV;
         const int ch = idx - t * DV;
         const int token = t0 + t;
-        const float vv =
-            (token < p.T) ? p.v[(static_cast<int64_t>(bh) * p.T + token) * DV + ch] : 0.0f;
+        const float vv = (token < p.T)
+                             ? amp_to_float(static_cast<const AmpWT*>(
+                                   p.v)[(static_cast<int64_t>(bh) * p.T + token) * DV + ch])
+                             : 0.0f;
         stage_put(Vw[vw_index<BT, DV, kNarrowStage>(t, ch)], sw[t] * vv);
       }
     }
@@ -581,13 +636,15 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- Gram's read: docs/internals/consumer_kernel.md#wt-build-site
     if constexpr (kWtPlane && kRing == 2) {
       if (is_write) {
-        const float* amp_w[D];
+        // `build_wt_rows` walks SPANNED levels only (`l < j` continues), so the
+        // typed base is `AmpWT` for every level it touches.
+        const AmpWT* amp_w[D];
 #pragma unroll
         for (int l = 0; l < D; ++l) {
-          amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
+          amp_w[l] = static_cast<const AmpWT*>(p.amp_write[l]) + tile_row * p.level_pitch_write[l];
         }
         build_wt_rows(0, BC, [&](int l, int t, int i) {
-          return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+          return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
         });
       }
     }
@@ -674,13 +731,16 @@ consumer_forward_kernel(ConsumerParams p) {
         const int b_lo = w * kWinRows;
         const int b_hi = min(BC, b_lo + kWinRows);
         if (is_write && b_lo < b_hi) {
-          const float* amp_w[D];
+          // Spanned-only walk, as above: `AmpWT` for every level `build_wt_rows`
+          // touches.
+          const AmpWT* amp_w[D];
 #pragma unroll
           for (int l = 0; l < D; ++l) {
-            amp_w[l] = p.amp_write[l] + tile_row * p.level_pitch_write[l];
+            amp_w[l] =
+                static_cast<const AmpWT*>(p.amp_write[l]) + tile_row * p.level_pitch_write[l];
           }
           build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
-            return amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]];
+            return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
           });
         }
         __syncthreads();

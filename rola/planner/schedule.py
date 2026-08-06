@@ -380,7 +380,14 @@ class Plan:
     warp_tile: tuple[int, int]
     decay: bool = False
     mma_precision: str = "bf16"
-    amp_dtype: torch.dtype = torch.float32
+    #: STORAGE dtype of the SPANNED-level amplitude streams (``l >= j``), keyed to
+    #: ``mma_precision`` when not given: the bf16 arm stores bf16, the tf32x3
+    #: exactness arm stores fp32 (P09 family ruling; ``None`` = derive). One
+    #: numeric-format axis, not a second independent one. FIXED levels (``l < j``)
+    #: and the decay clock never narrow -- see :meth:`level_amp_dtype` and
+    #: :func:`build_clock_stream`. The cast happens strictly BELOW support
+    #: selection (`build_schedule` builds bitmaps from the exact fp32 folds).
+    amp_dtype: torch.dtype | None = None
     write_cost_weight: float = DEFAULT_WRITE_COST_WEIGHT
     #: The per-SM shared-memory budget §6 reasoned about when this plan was selected,
     #: RECORDED rather than re-read at launch (§10's ruling). Device-queried when a
@@ -440,6 +447,10 @@ class Plan:
         if self.mma_precision not in MMA_PRECISIONS:
             raise ValueError(
                 f"mma_precision must be one of {MMA_PRECISIONS}, got {self.mma_precision!r}")
+        if self.amp_dtype is None:
+            object.__setattr__(
+                self, "amp_dtype",
+                torch.bfloat16 if self.mma_precision == "bf16" else torch.float32)
         if self.ring_slots not in _RING_DEPTHS:
             raise ValueError(
                 f"ring_slots must be one of {_RING_DEPTHS} (deepest first; 1 declines the "
@@ -473,7 +484,33 @@ class Plan:
         """``BC * d_v / W`` -- invariant in ``(a, b)`` by construction (§5)."""
         return self.BC * self.topology.d_v // self.warps
 
-    def amplitude_pitch(self, width: int) -> int:
+    def level_amp_dtype(self, level: int) -> torch.dtype:
+        """Storage dtype of ``level``'s amplitude stream, split by LEVEL ROLE.
+
+        SPANNED levels (``level >= j``) carry ``amp_dtype`` -- they feed the
+        per-leaf coefficients, whose independent roundings partially cancel over
+        the ``BC``-term contraction. FIXED levels (``level < j``) feed the
+        per-token ROW SCALES, whose error is uniform on the whole output row and
+        does not cancel, so they never narrow: fp32 when ``amp_dtype`` is bf16
+        (Option B of the P09 family), ``amp_dtype`` itself otherwise (which keeps
+        the fp64 reference path uniformly fp64).
+
+        The DECAY and RAW arms never narrow at all -- MEASURED carves on
+        structural template axes, not preferences
+        (workflows/perf/p09_bf16_family.md): under narrowed storage the register
+        ratchet found in-loop spill on every bf16+decay offender (the clock and
+        survival panels sit at the allocator wall), and the raw arm -- whose
+        readout has no num/den ratio to cancel the stacked roundings -- measured
+        past BF16_RTOL on its worst topology's tail seeds. Both extensions are
+        parked on those measurements.
+        """
+        if self.amp_dtype == torch.bfloat16 and (
+                self.decay or self.normalization != "global"
+                or level < self.geometry.first_spanned_level):
+            return torch.float32
+        return self.amp_dtype
+
+    def amplitude_pitch(self, width: int, dtype: torch.dtype | None = None) -> int:
         """Pad a level's width so one tile's rows are a whole number of 512 B lines.
 
         The stream is stored token-major and contiguous per tile (§5 "Staging"), so
@@ -482,8 +519,13 @@ class Plan:
         Padding columns hold structural zeros, which are inert under §12 rule 4's
         zero-route annihilation and never appear in a bitmap (built over ``width``
         only), so padding cannot manufacture a live leaf.
+
+        ``dtype`` is the stream's STORAGE dtype (the pitch is an element count, so
+        it depends on the itemsize); default is the plan's spanned ``amp_dtype``.
+        A caller staging a differently-typed stream (a fixed level, the clock)
+        passes that stream's dtype.
         """
-        itemsize = torch.empty((), dtype=self.amp_dtype).element_size()
+        itemsize = torch.empty((), dtype=dtype or self.amp_dtype).element_size()
         elems_per_row = CP_ASYNC_ROW_BYTES // itemsize
         step = elems_per_row // gcd(self.BT, elems_per_row)
         return ((width + step - 1) // step) * step
@@ -1175,12 +1217,20 @@ def build_schedule(
     read_slice_union = slice_union[0].contiguous()
     write_slice_union = slice_union[1].contiguous()
 
+    # The amplitude CAST, strictly BELOW support selection (the bitmaps above are
+    # built from the exact fp32 folds -- gate I6-B §2.B4 pins the ordering). The
+    # dtype is per LEVEL ROLE: spanned levels take `plan.amp_dtype`, fixed levels
+    # never narrow (`Plan.level_amp_dtype`).
     read_amps = tuple(
-        _tile_major_amps(level, BT, n_tiles, plan.amplitude_pitch(width), plan.amp_dtype)
-        for level, width in zip(read_f, widths))
+        _tile_major_amps(level, BT, n_tiles,
+                         plan.amplitude_pitch(width, plan.level_amp_dtype(idx)),
+                         plan.level_amp_dtype(idx))
+        for idx, (level, width) in enumerate(zip(read_f, widths)))
     write_amps = tuple(
-        _tile_major_amps(level, BT, n_tiles, plan.amplitude_pitch(width), plan.amp_dtype)
-        for level, width in zip(write_f, widths))
+        _tile_major_amps(level, BT, n_tiles,
+                         plan.amplitude_pitch(width, plan.level_amp_dtype(idx)),
+                         plan.level_amp_dtype(idx))
+        for idx, (level, width) in enumerate(zip(write_f, widths)))
 
     # `grouped` is exactly the per-(slice, tile) boundary liveness the owner sort
     # needs; it is handed over rather than recomputed there.
@@ -1284,8 +1334,18 @@ def build_clock_stream(
             raise ValueError(
                 f"write_levels_stored[{level}] must fold to [{B * H},{T},{width}], "
                 f"got {tuple(tensor.shape)}")
+    # THE CLOCK IS PINNED: it never follows a narrow `amp_dtype`. The clock is an
+    # exponent -- a relative error `eps` on the prefix propagates as
+    # `exp(eps * E) - 1` on the survival factors with `|E|` up to the panel clamp
+    # (88), i.e. a bf16 clock is a ~19% error where a bf16 amplitude is a ~0.2%
+    # one, worsening with sequence length and decay strength (design §4.7; gate
+    # I6-B mutant M2 enforces this pin by measurement). A WIDER amp_dtype (the
+    # fp64 reference path) still applies.
+    clock_dtype = (torch.float32 if plan.amp_dtype == torch.bfloat16
+                   else plan.amp_dtype)
     return tuple(
-        _tile_major_amps(level, BT, n_tiles, plan.amplitude_pitch(width), plan.amp_dtype)
+        _tile_major_amps(level, BT, n_tiles,
+                         plan.amplitude_pitch(width, clock_dtype), clock_dtype)
         for level, width in zip(folded, widths))
 
 

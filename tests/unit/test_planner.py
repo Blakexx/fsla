@@ -595,22 +595,31 @@ def test_the_owner_order_is_head_major():
 
 @pytest.mark.parametrize("combo", _MATRIX, ids=_MATRIX_IDS)
 def test_amplitude_stream_fidelity(combo):
-    """§5 "Staging": amps reproduce the input exactly, zero-padded, cp.async-shaped."""
+    """§5 "Staging": amps reproduce the input exactly, zero-padded, cp.async-shaped.
+
+    The storage dtype is PER LEVEL (`Plan.level_amp_dtype`, P09 family: spanned
+    levels follow `amp_dtype`, fixed levels / decay / raw arms stay fp32), so the
+    cp.async shape check and the fidelity reference both use the level's own
+    dtype -- "exactly" means one well-defined cast of the folded fp32 value,
+    applied after support selection, and nothing else.
+    """
     widths, BT, t_kind, density = combo
     c = _build_combo(widths, BT, t_kind, density)
     schedule = build_schedule(c["read_levels"], c["write_levels"], c["g_read"], c["g_write"], c["plan"])
-    itemsize = torch.empty((), dtype=c["plan"].amp_dtype).element_size()
 
     for level, width in enumerate(widths):
+        dtype = c["plan"].level_amp_dtype(level)
+        itemsize = torch.empty((), dtype=dtype).element_size()
         for amps, src in ((schedule.read_amps[level], c["read_levels"][level]),
                            (schedule.write_amps[level], c["write_levels"][level])):
+            assert amps.dtype == dtype, (level, amps.dtype, dtype)
             pitch = amps.shape[-1]
             assert (BT * pitch * itemsize) % CP_ASYNC_ROW_BYTES == 0, (BT, pitch, itemsize)
             assert amps.is_contiguous()
             assert amps.stride(2) == pitch  # [BH,n_tiles,BT,pitch]: BT-axis stride == pitch
 
             folded = _oracle_fold(src)
-            expected = _oracle_tile_major(folded, BT, c["n_tiles"], pitch)
+            expected = _oracle_tile_major(folded, BT, c["n_tiles"], pitch).to(dtype)
             assert torch.equal(amps, expected)
             # Explicit padding check restated (redundant with equality above, but
             # pins the two padding regimes down by name per the task spec).
