@@ -28,14 +28,14 @@ std::vector<at::Tensor> rola_consumer_forward(
     std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
     at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
-    at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union, at::Tensor owners,
-    c10::optional<at::Tensor> g_read, at::Tensor g_write, at::Tensor v, at::Tensor state,
-    c10::optional<at::Tensor> page_table, std::vector<int64_t> level_stride,
-    std::vector<int64_t> level_modulus, std::vector<int64_t> level_row_offset,
-    std::vector<int64_t> level_width, std::vector<int64_t> owner_stride,
-    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, int64_t owners_total,
-    int64_t n_heads, int64_t BT, int64_t BC, bool global_norm, std::string mma_precision,
-    double eps,
+    at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union,
+    at::Tensor slice_union_tok, at::Tensor owners, c10::optional<at::Tensor> g_read,
+    at::Tensor g_write, at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
+    std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
+    std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
+    std::vector<int64_t> owner_stride, int64_t first_spanned_level, int64_t slice_digits,
+    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BT, int64_t BC,
+    bool global_norm, std::string mma_precision, double eps, bool token_gather,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which
     // takes the single-launch path below unchanged).

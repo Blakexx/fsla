@@ -79,6 +79,13 @@ struct ConsumerParams {
   const uint32_t* write_tok_bits;  // [BH, n_tiles, total_rows]
   const uint32_t* read_union;      // [BH, n_slices,  n_words]
   const uint32_t* write_union;     // [BH, n_slices,  n_words]
+  //: The TOKEN-GRANULAR slice union (schedule ABI v3): bit `t` of word
+  //: `[bh, slice, tile]` = "some digit of the slice at the boundary level is
+  //: read- OR write-live at token `tile*BT + t`". The token-gather ballot's
+  //: coarse term; the fine terms it ANDs under are the owner's fixed-level
+  //: `read/write_tok_bits` rows. Derived from the same support authority, so
+  //: over-approximation is impossible by construction.
+  const uint32_t* slice_union_tok;  // [BH, n_slices, n_tiles]
 
   //: Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   //: `rate[s] = prod_l delta_l[d_l(s)]`, a plain product of DIALS (spec §2).
@@ -145,6 +152,15 @@ struct ConsumerParams {
   //: drives are structure and not a distributional property -- the same status as
   //: `is_write`. docs/internals/consumer.md#pass-mode
   int pass_mode;
+
+  //: TOKEN-GATHER SCOPE, LAUNCH-UNIFORM AND STRUCTURAL: 1 iff BOTH routing sides
+  //: can produce exact zeros (the activation registry's `exact_zeros` column,
+  //: derived host-side) -- when either side is structurally full-support the
+  //: membership word is all-ones and the gather is the identity, so the aligned
+  //: walk IS the path there. The kernel additionally restricts the gathered walk
+  //: to `pass_mode == kPassRead` (the summary pass's per-leaf inclusion flags
+  //: are tile-framed this increment). docs/internals/consumer_kernel.md#token-gather
+  int token_gather;
 };
 
 __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i) {

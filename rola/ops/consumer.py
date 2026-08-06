@@ -116,6 +116,7 @@ def _consumer_forward(
     schedule: Schedule | None = None,
     sequence_parallel=None,
     sequence_parallel_tensors=None,
+    token_gather: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, Schedule]:
     """Run the V3 consumer. Signature mirrors ``naive_rola``'s routing inputs.
 
@@ -167,6 +168,16 @@ def _consumer_forward(
     RE-ASSOCIATION-EQUIVALENT to the ``P = 1`` state, not bitwise identical to it
     (§6.4, amended 2026-07-30): it is graded against the fp64 oracle at the same
     tolerance ``P = 1`` is held to, and the unwritten-leaf carve-out is bitwise.
+
+    ``token_gather``: ``None`` (the default, and the only production value)
+    derives the token-gather scope STRUCTURALLY from the activation registry:
+    the gathered walk runs iff BOTH routing sides can produce exact zeros
+    (``topology.activation_properties(level, duty).exact_zeros``) -- on any
+    launch where either side is structurally full-support the membership word
+    is all-ones and the gather is the identity, so the aligned walk IS the
+    path there (rung P, restated on the token axis). An explicit ``bool`` is
+    GATE MACHINERY ONLY (the degeneracy/equivalence gates pin one walk against
+    the other on the same routing); production callers must not pass it.
     """
     from rola.ops._ext import extension
 
@@ -327,6 +338,20 @@ def _consumer_forward(
     # fp32, and so do the DECAY and RAW arms (the measured carves --
     # `Plan.level_amp_dtype` states both). `y` comes back in the same dtype (cast
     # AFTER the fp32 divide; num/den accumulators and state stay fp32, always).
+    # The token-gather scope, derived from STRUCTURE (the activation registry's
+    # `exact_zeros` column, read through the topology's per-level capability
+    # views) unless a gate pins it. Both sides must be able to zero: a
+    # structurally full side saturates the read|write membership union and the
+    # gather degenerates to the identity walk.
+    if token_gather is None:
+        _token_gather = bool(
+            any(topology.activation_properties(level, "read").exact_zeros
+                for level in range(topology.D))
+            and any(topology.activation_properties(level, "write").exact_zeros
+                    for level in range(topology.D)))
+    else:
+        _token_gather = bool(token_gather)
+
     v_dtype = (torch.bfloat16
                if plan.mma_precision == "bf16" and not plan.decay and global_norm
                else torch.float32)
@@ -399,6 +424,7 @@ def _consumer_forward(
         schedule.write_token_bits.contiguous(),
         schedule.read_slice_union.contiguous(),
         schedule.write_slice_union.contiguous(),
+        schedule.slice_union_tok.contiguous(),
         owners_arg.contiguous(),
         None if global_norm else schedule.g_read.to(torch.float32).contiguous(),
         schedule.g_write.to(torch.float32).contiguous(),
@@ -420,6 +446,7 @@ def _consumer_forward(
         global_norm,
         plan.mma_precision,
         float(eps),
+        _token_gather,
         *sp_args,
     )
     y = y_f.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous().to(v.dtype)

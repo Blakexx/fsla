@@ -414,6 +414,11 @@ constexpr size_t consumer_smem_bytes_at() {
                                      : static_cast<size_t>(BT) * (BT + 4) * sizeof(float);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
+  //: `t_idx` -- the token gather's group list (`BT` global token indices),
+  //: written by warp 0 at ballot time and read by every staging loop of a
+  //: gathered visit. Reserved on every arm (the gather is a runtime,
+  //: structure-scoped walk, not a template axis): 64-128 B.
+  b += static_cast<size_t>(BT) * sizeof(int);  // t_idx (token gather)
   return b;
 }
 

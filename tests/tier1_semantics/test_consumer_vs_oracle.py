@@ -171,7 +171,8 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
               decay_dials=None, quantize_stored=False, mma_precision="tf32x3",
               read_levels=None, write_levels=None,
               return_outputs=False, g_write=None, plan=None,
-              mass_scale=1.0, perturb_mass=0.0, return_reference=False):
+              mass_scale=1.0, perturb_mass=0.0, return_reference=False,
+              token_gather=None):
     from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
@@ -252,7 +253,8 @@ def _run_case(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0
         plan,
         initial_state=kernel_m0,
         decay=decay,
-        write_levels_stored=None if stored is None else tuple(t.to(torch.float32) for t in stored))
+        write_levels_stored=None if stored is None else tuple(t.to(torch.float32) for t in stored),
+        token_gather=token_gather)
 
     if return_reference:
         return y, state, y_ref, state_ref

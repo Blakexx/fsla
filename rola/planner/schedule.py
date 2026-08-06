@@ -42,7 +42,7 @@ from rola.routing.types import Topology, validate_normalization
 
 # Bumped whenever the emitted layout changes in a way the CUDA consumer must
 # observe. The consumer asserts on it at load time.
-ROLA_SCHEDULE_ABI_VERSION = 2  # v2: §4's support word (`read/write_token_bits`)
+ROLA_SCHEDULE_ABI_VERSION = 3  # v3: token-granular slice union (`slice_union_tok`)
 
 #: A ``cp.async`` warp-wide transaction is 32 lanes x 16 B = 512 B (§5 "Staging":
 #: "innermost rows (512 B contiguous, cp.async-shaped)").
@@ -1027,6 +1027,14 @@ class Schedule:
     "``b_j / c`` entries"). This is the only union the owner cannot recover with a
     single row read.
 
+    ``slice_union_tok``: ``[BH, n_slices, n_tiles]`` ``int32`` (ABI v3) -- the
+    SAME union at TOKEN granularity, sides OR'd: bit ``t`` of entry
+    ``[bh, s, tile]`` is "some digit of slice ``s`` at the boundary level is
+    read- or write-live at token ``tile*BT + t``". One word per candidate visit;
+    the token-gather ballot reads it and ANDs it under the owner's fixed-level
+    ``token_bits`` rows to form the per-tile membership word. Derived from
+    ``token_bits``, so it can only agree with the fine authority.
+
     ``read_amps``/``write_amps``: one ``[BH, n_tiles, BT, pitch_l]`` tensor per
     level, token-major and contiguous per tile (§5 "Staging"). A nonzero entry *is*
     a live token (§4), so no separate token mask is stored.
@@ -1053,6 +1061,7 @@ class Schedule:
     write_token_bits: torch.Tensor
     read_slice_union: torch.Tensor
     write_slice_union: torch.Tensor
+    slice_union_tok: torch.Tensor
     read_amps: tuple[torch.Tensor, ...]
     write_amps: tuple[torch.Tensor, ...]
     g_read: torch.Tensor | None
@@ -1086,7 +1095,8 @@ class Schedule:
         return sum(t.numel() * t.element_size() for t in (
             self.read_tile_bits, self.write_tile_bits,
             self.read_token_bits, self.write_token_bits,
-            self.read_slice_union, self.write_slice_union))
+            self.read_slice_union, self.write_slice_union,
+            self.slice_union_tok))
 
     def stream_bytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in (*self.read_amps, *self.write_amps))
@@ -1217,6 +1227,23 @@ def build_schedule(
     read_slice_union = slice_union[0].contiguous()
     write_slice_union = slice_union[1].contiguous()
 
+    # The TOKEN-GRANULAR slice union (ABI v3): one 32-bit token word per
+    # (bh, slice, tile), bit ``t`` = "some digit of this slice at level ``j`` is
+    # live -- on EITHER side -- at token ``tile*BT + t``". It is the same
+    # reduction as ``slice_union`` one granularity finer (token bits instead of
+    # tile bits, sides OR'd because the walk visits the read|write union), and
+    # it is derived from ``token_bits`` so the two authorities cannot disagree.
+    # The kernel's token-gather ballot reads exactly this word; the per-side
+    # fine rows it ANDs against are the fixed levels' ``token_bits`` rows.
+    lj = token_bits[:, :, :, level_offsets[j]:level_offsets[j] + widths[j]]
+    union_j = (lj[0] | lj[1]).reshape(BH, n_tiles, n_slices, c)
+    while union_j.shape[-1] > 1:
+        half = union_j.shape[-1] // 2
+        head = union_j[..., :half] | union_j[..., half:2 * half]
+        union_j = (torch.cat([head, union_j[..., 2 * half:]], dim=-1)
+                   if union_j.shape[-1] % 2 else head)
+    slice_union_tok = union_j.squeeze(-1).permute(0, 2, 1).contiguous()
+
     # The amplitude CAST, strictly BELOW support selection (the bitmaps above are
     # built from the exact fp32 folds -- gate I6-B §2.B4 pins the ordering). The
     # dtype is per LEVEL ROLE: spanned levels take `plan.amp_dtype`, fixed levels
@@ -1247,6 +1274,7 @@ def build_schedule(
         read_tile_bits=read_tile_bits, write_tile_bits=write_tile_bits,
         read_token_bits=read_token_bits, write_token_bits=write_token_bits,
         read_slice_union=read_slice_union, write_slice_union=write_slice_union,
+        slice_union_tok=slice_union_tok,
         read_amps=read_amps, write_amps=write_amps,
         g_read=g_read_f, g_write=g_write_f,
         owners=owners, owner_costs=owner_costs)
