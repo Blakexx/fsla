@@ -21,6 +21,61 @@ second reference proves self-consistency only. This prohibition is not a
 preference; it is the direct lesson of a shared-router bug that agreed with a
 sibling implementation and disagreed with the definition.
 
+### What the oracle is, and what it promises
+
+The oracle FACTORS, and each factor is trusted for a different reason. The
+recurrence is textbook gated linear attention -- one state per leaf, a diagonal
+gate, a rank-one deposit, a linear readout -- written as the plain-torch loop a
+reader can check against any linear-attention paper, with normalization carried
+as a ones column of the value rather than as a second recurrence. The feature
+map's hard part, entmax, is the DeepSPIN authors' own package, pinned. What is
+OURS is the glue -- the leaf address map, the gate values, the ratio readout --
+and it is deliberately small, because it is the one shared blind spot the
+factoring does not remove.
+
+Three promises a caller can rely on:
+
+* **Both outputs are `float64`, whatever the inputs were.** Casting back is the
+  caller's business; a reference that rounded itself to an operand's precision
+  would make an accuracy gate compare against a rounded reference.
+* **An input the output does not depend on gets `None`, not a manufactured
+  zero.** `write_levels_stored` is the standing case: the spec detaches the
+  clock, so it never receives a gradient.
+* **The address map is the oracle's own**, derived from the widths rather than
+  imported from `Topology`, so a wrong stride convention cannot agree with
+  itself in every gate the repository has.
+
+### Changing the oracle: the dual-run protocol
+
+`rola/ops/naive.py` and the routing references are the crown jewels, so a change
+to them is not reviewed by reading the diff -- the question is never "is this
+code reasonable" but "does it compute the same function". Both versions are RUN:
+
+```bash
+TORCHINDUCTOR_COMPILE_THREADS=4 flock /tmp/rola_ram.lock \
+  python tools/oracle_dual_run.py --surface oracle --against HEAD~1
+```
+
+The old side is the parent commit's real code in a throwaway worktree, run in a
+subprocess; the matrix is generated at the NEW commit for both sides; the
+comparison is BIT-IDENTITY, forward and backward, with `None` recorded as `None`.
+Three declaration forms exist and none of them is an exemption: `--except`
+names a quantity whose answer legitimately changed and which must then be
+asserted in its own test, `--reassociated` holds a reordered sum to
+`REASSOCIATION_RTOL` instead of bit-identity, and `--mutate` injects a known
+defect that the run MUST fail on -- a protocol that cannot fail is not a
+protocol.
+
+**`flock /tmp/rola_ram.lock`, and the grid runs in slices.** The backward
+retains one autograd graph per token per cell; run whole, the protocol peaked
+near 18 GB and froze the host twice. One grid at a time, host-wide.
+
+**`rola` is installed editable, so a tool run from a WORKTREE imports the
+canonical checkout unless it is stopped.** The protocol binds and then CHECKS
+the library each side imported, and prints both. Test runs are unaffected --
+pytest puts the rootdir on the path -- but any new tool that imports `rola` and
+compares two trees inherits the trap.
+
 Every cell of this cross-product is gated against the oracle:
 
 | Axis | Values |
@@ -257,7 +312,16 @@ flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # T
 flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
 flock /tmp/rola_gpu.lock pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
 python benchmarks/rola_probe.py duration consumer_forward --ab global:raw    # NO flock -- see below
+ROLA_FLA_CROSSCHECK=1 pytest tests/unit/test_oracle_vs_fla.py                # one-time, opt-in -- see below
 ```
+
+`tests/unit/test_oracle_vs_fla.py` is SKIPPED BY DEFAULT and that is the design.
+It checks the oracle's recurrence against `flash-linear-attention`'s naive GLA
+loop under a renaming, once, to catch a transcription error that every in-tree
+gate would be blind to -- and then stops, because a fast-moving kernel library
+is not something this tree takes a standing dependency on. Measured at adoption
+(fla 0.4.2): worst `2.98e-08`, which is float32's resolution, since FLA
+accumulates there.
 
 **THE LOCK IS `/tmp/rola_gpu.lock` — that exact path, with an underscore.** `flock`
 is advisory and keyed on a NAME, so a second spelling excludes nothing and silently

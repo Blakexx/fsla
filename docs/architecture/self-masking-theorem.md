@@ -39,46 +39,50 @@ The normative reference implementation is `rola/ops/naive.py`
 (`naive_rola`, fp64, the eternal spec). Three lines carry the theorem.
 
 **(a) The clock is the write product, not a time counter.** The docstring at
-`rola/ops/naive.py:183` states the spec's definition:
+`rola/ops/naive.py:137` states the spec's definition:
 
 ```
 clock reads (spec §2: ``c[t,s] = stop_gradient(prod_l p_write_stored[...])``);
 ```
 
-and the implementation is `:246`:
+and the implementation is `:207`:
 
 ```python
-c = _leaf_product(stored_f, strides, N).detach()   # [BH,T,N], stop_gradient (spec §2)
+c = _leaf_product(stored64, strides, N).detach()   # [B,T,H,N]
 ```
 
 `c[t,s]` is the same product of per-level write factors that forms `W[t,s]`
-(`:235`, `W = g_write_f[..., None] * _leaf_product(write_f, strides, N)`), with
+(`:197`, `W = g_write64[..., None] * _leaf_product(write64, strides, N)`), with
 gradient detached. **Therefore `W[t,s] = 0` and `c[t,s] = 0` have the same
 cause** — some level's factor at `s` is an exact zero.
 
-**(b) A zero clock is an exact identity survival factor.** `:247`:
+**(b) A zero clock is an exact identity survival factor.** `:208`:
 
 ```python
-keep = torch.pow(1.0 - rate[:, None, :], c)        # [BH,T,N]
+keep = torch.pow(1.0 - rate, c)                    # [B,T,H,N]
 ```
 
 `x ** 0 == 1.0` exactly in IEEE arithmetic for every finite `x`, including
-`x = 0`. No rounding, no tolerance. And when `decay is None`, `:238` sets `keep`
+`x = 0`. No rounding, no tolerance. And when `decay is None`, `:203` sets `keep`
 to exact ones unconditionally, so the no-decay path is the same statement
 trivially.
 
-**(c) The update is therefore the identity.** `:260-262`:
+**(c) The update is therefore the identity.** `:219`:
 
 ```python
-value_state = keep_t[..., None] * value_state + W_t[..., None] * vf[:, t, :][:, None, :]
-if mass_state is not None:
-    mass_state = keep_t * mass_state + W_t
+state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]
 ```
 
-Substituting `keep_t[s] = 1` and `W_t[s] = 0` gives `value_state[s] <-
-value_state[s]` and `mass_state[s] <- mass_state[s]` — multiplication by exactly
-`1.0` and addition of exactly `0.0`, both bit-preserving. **Nothing in the leaf's
-row moves.**
+Substituting `keep[t,s] = 1` and `W[t,s] = 0` gives `state[s] <- state[s]` —
+multiplication by exactly `1.0` and addition of exactly `0.0`, both
+bit-preserving. **Nothing in the leaf's row moves.**
+
+There is ONE such line and not two. The mass state is the same recurrence run on
+a value of all ones, so under `normalization="global"` it is the state's last
+column (`deposit_value` carries a ones column) rather than a second update with
+its own copy of the argument. The substitution therefore covers value and mass
+together, which is the strongest form the citation can take: there is no second
+line where the theorem could fail to hold.
 
 The property is therefore not asserted about the kernel and hoped for in the
 reference: it is a readable consequence of three lines of the reference, and the
