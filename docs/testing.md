@@ -255,6 +255,8 @@ flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                           # t
 flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # TIER 1
 flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
 flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
+flock /tmp/rola_gpu.lock pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
+python benchmarks/rola_probe.py duration consumer_forward --ab global:raw    # NO flock -- see below
 ```
 
 **THE LOCK IS `/tmp/rola_gpu.lock` — that exact path, with an underscore.** `flock`
@@ -264,8 +266,22 @@ time and neither can tell. Every command in this repository, every benchmark's u
 line and every agent brief uses this one path. If you find another spelling anywhere,
 it is a defect — fix it rather than adding a second lock beside it.
 
-**EVERY LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME QUESTION
-AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
+**THE ONE EXCEPTION IS `rola-probe`, AND WRAPPING IT IS A DEADLOCK, NOT BELT AND
+BRACES.** The probe harness acquires this same lock itself, by design — the
+discipline is enforced rather than documented (`docs/measurement.md`). `flock` locks
+are held per open file description, so an outer `flock /tmp/rola_gpu.lock` around
+`python benchmarks/rola_probe.py …` blocks the harness's own acquisition of the same
+file, forever, with no output. The canonical rule is therefore:
+
+> **everything that reaches a device is wrapped in `flock /tmp/rola_gpu.lock`,
+> EXCEPT `rola-probe`, which is invoked bare.**
+
+`ROLA_GPU_LOCK` exists to MOVE the harness's lock for a caller that must compose with
+a genuinely different outer lock; pointing it at the path the caller is already
+holding is the deadlock it exists to avoid.
+
+**EVERY OTHER LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME
+QUESTION AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
 lets the first line avoid initializing a CUDA context at all. It is **not** a device
 partition: `tests/tier2_geometry` and `tests/layers` carry 78 rows that launch kernels
 without being `cuda`-marked (e.g.

@@ -49,7 +49,7 @@ flag that skips any of them.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. `ROLA_GPU_LOCK` may MOVE the lock for a caller composing with an outer one; it cannot switch it off. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. **Invoke `rola-probe` BARE — never under an outer `flock` on this path.** `flock` locks are held per open file description, so wrapping the harness in the lock it is about to take blocks it forever with no output. `ROLA_GPU_LOCK` exists to MOVE the harness's lock for a caller composing with a genuinely DIFFERENT outer lock; pointing it at the path the caller already holds is the deadlock it exists to avoid. |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `bench.instruments.settle_clocks()`; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
@@ -142,8 +142,11 @@ python benchmarks/rola_probe.py sass --json bodies.json [--diff-against before.j
 python benchmarks/rola_probe.py report [--probe consumer_forward] [--format md]
 ```
 
-No `flock` on those lines: the harness takes the lock itself. `sass` and `report`
-take none because neither runs a kernel.
+**No `flock` on those lines, and adding one HANGS the command** — the harness takes
+the lock itself, and a second acquisition of the same path from the parent process
+blocks its child forever. Everything else that reaches a device is wrapped;
+`rola-probe` is invoked bare (`docs/testing.md`, "Running it"). `sass` and `report`
+take no lock at all because neither runs a kernel.
 
 `rola-probe` is not a console script. The installed wheel ships `rola/`, not
 `benchmarks/`, so a `rola-probe` on PATH would be a command that exists and cannot

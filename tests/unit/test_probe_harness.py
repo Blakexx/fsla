@@ -65,6 +65,54 @@ def test_the_harness_waits_for_a_lock_another_process_holds(tmp_path):
         holder.wait(timeout=10)
 
 
+def test_an_outer_flock_on_the_same_path_is_refused_not_waited_on(tmp_path):
+    """PLANTED VIOLATION, and it is the one a reviewer actually tripped over:
+    `flock /tmp/rola_gpu.lock python benchmarks/rola_probe.py ...`.
+
+    The parent holds the lock the harness is about to take, and waits for the child
+    that is waiting for it. Nothing times out and nothing prints. The harness must
+    NAME that and exit, so the rule ("everything wrapped EXCEPT rola-probe") has a
+    mechanical detector and not only a paragraph in docs/testing.md.
+    """
+    lock = tmp_path / "gpu.lock"
+    child = f"""
+        import sys
+        sys.path.insert(0, {str(ROOT / "benchmarks")!r})
+        from probe.discipline import gpu_lock
+        with gpu_lock({str(lock)!r}):
+            print("ACQUIRED")
+    """
+    wrapper = subprocess.run(
+        ["flock", str(lock), sys.executable, "-c", textwrap.dedent(child)],
+        capture_output=True, text=True, timeout=60)
+    assert "ACQUIRED" not in wrapper.stdout, (
+        "the harness acquired a lock its own caller was holding")
+    assert "DEADLOCK REFUSED" in wrapper.stderr, wrapper.stderr[-2000:]
+    assert wrapper.returncode != 0
+
+
+def test_a_lock_held_by_an_unrelated_process_is_still_waited_on(tmp_path):
+    """The refusal must be narrow: an unrelated holder is CONTENTION, which is what
+    the lock is for, and waiting is the correct behaviour there. Without this the
+    deadlock detector could turn every real wait into a refusal and nothing would
+    notice."""
+    lock = tmp_path / "gpu.lock"
+    assert discipline._ancestor_holding(str(lock)) is None
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import fcntl, os, time
+            fd = os.open({str(lock)!r}, os.O_CREAT | os.O_RDWR, 0o666)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            print("held", flush=True)
+            time.sleep(2)
+        """)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        assert discipline._ancestor_holding(str(lock)) is None
+    finally:
+        holder.wait(timeout=10)
+
+
 def test_the_lock_path_is_the_one_the_repository_documents():
     """One lock file, or the exclusion excludes nobody. `ROLA_GPU_LOCK` may MOVE it
     for a caller composing with an outer lock; it cannot switch it off."""

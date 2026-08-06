@@ -49,19 +49,58 @@ MEMORY_FRACTION = 0.65
 TIERS = ("light", "landing")
 
 
+def _ancestor_holding(path: str) -> int | None:
+    """The pid of an ancestor process that already has `path` open, if any.
+
+    `flock` locks are held per OPEN FILE DESCRIPTION, so a parent that wrapped this
+    command in `flock <path>` blocks this process's own acquisition of the same file
+    — permanently, and silently, because the parent is waiting for the child it is
+    blocking. That is not a contention case to wait out; it is a caller error with
+    exactly one remedy, so it is DETECTED and named rather than hung on.
+    """
+    target = os.path.realpath(path)
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            for entry in os.scandir(f"/proc/{pid}/fd"):
+                try:
+                    if os.path.realpath(entry.path) == target:
+                        return pid
+                except OSError:
+                    continue
+            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+                pid = next(int(line.split()[1]) for line in fh
+                           if line.startswith("PPid:"))
+        except (OSError, StopIteration):
+            return None
+    return None
+
+
 @contextmanager
 def gpu_lock(path: str = LOCK_PATH):
     """Exclusive use of the device, for the duration of the block.
 
     Non-blocking first, so a waiting run SAYS it is waiting instead of appearing
     hung; then blocking. The lock is released by closing the descriptor, which
-    happens even if the probe raises.
+    happens even if the probe raises. A CALLER-HELD lock on the same path is refused
+    outright — see :func:`_ancestor_holding`.
     """
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            holder = _ancestor_holding(path)
+            if holder is not None:
+                raise SystemExit(
+                    f"DEADLOCK REFUSED: this process's ancestor (pid {holder}) is "
+                    f"already holding {path}, and the harness takes that lock "
+                    f"itself. Waiting would block forever, because the holder is "
+                    f"waiting for this command. Invoke rola-probe BARE -- every "
+                    f"other device line is wrapped in `flock {path}`, this one is "
+                    f"not (docs/testing.md, 'Running it'). ROLA_GPU_LOCK moves the "
+                    f"harness's lock for a genuinely DIFFERENT outer lock; it must "
+                    f"never name the path the caller already holds.") from None
             print(f"waiting for the GPU lock at {path} ...", file=sys.stderr)
             fcntl.flock(fd, fcntl.LOCK_EX)
         yield path
