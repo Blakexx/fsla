@@ -338,7 +338,41 @@ PYTORCH_NO_CUDA_MEMORY_CACHING=1  # every free becomes a device-synchronizing cu
 ```
 
 A bug that disappears under either is an allocator-lifetime or stream-ordering bug —
-a missing `record_stream` or a missing join — not a device memory hazard. The
-`CUDA_LAUNCH_BLOCKING` half is already mechanized:
-`tests/tier2_geometry/test_paging_stream_races.py` runs its allocator-pressure cell in
-a blocking child process and requires bit-identity with the async run.
+a missing `record_stream` or a missing join — not a device memory hazard.
+
+### The stream-discipline fixture, and what every crossing path owes
+
+`tests/tier2_geometry/stream_discipline.py` is the fixture; it was four bespoke cells
+guarding one module, and copying them into each new path is how three of the four end
+up missing. **A path that crosses a stream instantiates all five checks.**
+
+| check | makes deterministic |
+|---|---|
+| `OrderingSpy` | the publication is joined before the consumer reads it — and a join performed *inside* the publication is recorded distinctly, so it cannot satisfy the outer claim |
+| `record_stream_spy` | a tensor crossing to another stream declares its lifetime there |
+| `allocator_pressure` | the window a lifetime bug needs is actually opened |
+| `assert_agrees_under_launch_blocking` | async and serialized runs agree bit-for-bit |
+| `assert_capture_rejoins` | a fork that never rejoins **refuses to close a CUDA graph capture** |
+
+The last is the only *mechanical* detector of the missing-join class that exists
+anywhere, and it is not ours: `cudaStreamEndCapture` returns
+`cudaErrorStreamCaptureUnjoined` when a stream forked inside the captured region never
+joins back. Measured here (sm_86, CUDA 12.4): the joined region closes its capture,
+the same region with the join deleted raises *"capturing stream has unjoined work"*.
+Each attempt runs in its own process, because a failed capture leaves the context in
+an error state that later calls inherit.
+
+**Its limits are measured too, and the paged path is outside them.** Capture validates
+only the captured region, cannot see an event recorded on the *wrong* stream, and
+requires the region to be capture-legal. `PageArena` owns a persistent side stream and
+records its readiness event outside any capture, which the capture rejects as a
+cross-capture dependency before the body even runs — so the production paged path
+cannot be wrapped in one today. The detector is therefore the contract for paths that
+*can* be captured, and `test_stream_discipline_fixture.py` proves it reads on this
+driver in both directions rather than leaving that an assumption.
+
+Every check in that file is run against a planted violation as well as a correct
+path — an unjoined fork, a publication read before its join, an inner join standing in
+for an outer one, a tensor crossing without `record_stream`, a burst that allocates
+nothing. A fixture that cannot be shown failing converts "we checked" into a sentence
+nobody can falsify.

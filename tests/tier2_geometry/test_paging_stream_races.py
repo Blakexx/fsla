@@ -9,6 +9,13 @@ the fixes could regress and no test would say so until the timing happened to
 expose them again. These spies make the ordering and lifetime contracts
 DETERMINISTIC test failures instead of timing-dependent context poisonings.
 
+**THE SPIES THEMSELVES LIVE IN `stream_discipline.py`.** This file INSTANTIATES the
+fixture for the paged path; it owns the cell, not the instruments. The four checks
+below are what any stream-crossing path owes, and copying them into each new path is
+how three of the four end up missing. The fixture's own teeth -- each check run
+against a planted violation, plus the CUDA-graph capture detector proved in both
+directions -- are in `test_stream_discipline_fixture.py`.
+
 Four cells:
 
 (a) ORDERING -- on the paged path the observed sequence must be
@@ -37,16 +44,19 @@ gate the same configurations that file proves bit-identical.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-
 import pytest
 import torch
 
 import rola.ops._ext as ext_mod
 from rola.ops.paging import PageArena
 from rola.planner.schedule import build_schedule
+from tests.tier2_geometry.stream_discipline import (
+    OrderingSpy,
+    allocator_pressure,
+    assert_agrees_under_launch_blocking,
+    assert_recorded_on,
+    record_stream_spy,
+)
 from tests.tier2_geometry.test_paging_equivalence import (
     _arena,
     _fixture,
@@ -75,58 +85,22 @@ def _cell():
 # ---------------------------------------------------------------------------
 
 def test_the_paged_path_orders_plan_exact_then_wait_then_launch(monkeypatch):
+    """The publication must be JOINED before the consumer reads it.
+
+    The spy is `stream_discipline.OrderingSpy`, not a private one: this is the check
+    every stream-crossing path owes, and `reset()`'s own join is recorded as
+    `wait_inner` so it cannot stand in for the pre-launch one.
+    """
     plan, fixture, BH = _cell()
-    events: list[str] = []
-
-    orig_plan_exact = PageArena.plan_exact
-    orig_wait = PageArena.wait
-    in_plan = [0]
-
-    def spy_plan_exact(self, *a, **k):
-        events.append("plan_exact")
-        in_plan[0] += 1
-        try:
-            return orig_plan_exact(self, *a, **k)
-        finally:
-            in_plan[0] -= 1
-
-    def spy_wait(self):
-        # `reset()` inside a fresh plan_exact also waits; that INNER wait orders
-        # the reset against the PREVIOUS publication and cannot stand in for the
-        # pre-launch join, so it is recorded distinctly.
-        events.append("wait_inner" if in_plan[0] else "wait")
-        return orig_wait(self)
-
-    real_ext = ext_mod.extension()
-
-    class SpyExt:
-        def __getattr__(self, name):
-            attr = getattr(real_ext, name)
-            if name == "rola_consumer_forward":
-                def launch(*a, **k):
-                    events.append("launch")
-                    return attr(*a, **k)
-                return launch
-            return attr
-
-    monkeypatch.setattr(PageArena, "plan_exact", spy_plan_exact)
-    monkeypatch.setattr(PageArena, "wait", spy_wait)
-    monkeypatch.setattr(ext_mod, "extension", lambda: SpyExt())
+    spy = OrderingSpy()
+    spy.watch(monkeypatch, PageArena, "plan_exact", label="plan_exact")
+    spy.watch(monkeypatch, PageArena, "wait", label="wait", nested_label="wait_inner")
+    spy.watch_extension(monkeypatch, ext_mod, "rola_consumer_forward", label="launch")
 
     arena = _arena(plan, BH=BH)
     _run(plan, fixture, arena=arena)
 
-    assert "plan_exact" in events and "launch" in events, events
-    plan_i = events.index("plan_exact")
-    launch_i = events.index("launch")
-    # §4.5's join: an OUTER wait between the publication and the launch. The
-    # inner (reset-side) wait is excluded above, so this cannot pass on it.
-    between = [e for e in events[plan_i + 1:launch_i] if e == "wait"]
-    assert between, (
-        f"no PageArena.wait() between plan_exact and the consumer launch -- the "
-        f"§4.5 event-join is gone and the kernel reads an unpublished page table "
-        f"(observed order: {events})")
-    assert launch_i > plan_i
+    spy.assert_between("plan_exact", "wait", "launch")
 
 
 # ---------------------------------------------------------------------------
@@ -134,48 +108,29 @@ def test_the_paged_path_orders_plan_exact_then_wait_then_launch(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_atom_ids_crossing_to_the_side_stream_is_record_streamed(monkeypatch):
+    """`atom_ids` crosses to the arena's side stream, so it must declare its lifetime
+    there. Its absence WAS the measured `index_copy_(): index out of bounds`."""
     plan, fixture, BH = _cell()
-    recorded: list[tuple[int, object]] = []
     admitted: list[int] = []
-
-    orig_record = torch.Tensor.record_stream
     orig_admit = PageArena._admit_pages
-
-    def spy_record(self, stream):
-        recorded.append((id(self), stream))
-        return orig_record(self, stream)
 
     def spy_admit(self, atom_ids, first_slot):
         admitted.append(id(atom_ids))
         return orig_admit(self, atom_ids, first_slot)
 
-    monkeypatch.setattr(torch.Tensor, "record_stream", spy_record)
     monkeypatch.setattr(PageArena, "_admit_pages", spy_admit)
 
-    arena = _arena(plan, BH=BH)
-    _run(plan, fixture, arena=arena)
+    with record_stream_spy(monkeypatch) as recorded:
+        arena = _arena(plan, BH=BH)
+        _run(plan, fixture, arena=arena)
 
     assert admitted, "the fixture admitted no atoms; it gates nothing"
-    side = arena._stream
-    hits = [tid for tid, stream in recorded
-            if tid in admitted and getattr(stream, "cuda_stream", None) == side.cuda_stream]
-    assert hits, (
-        "atom_ids crossed to the arena's side stream WITHOUT record_stream(side): "
-        "the caching allocator may reuse its bytes while index_copy_ still reads "
-        "them -- the measured `index out of bounds` class the postmerge fix closed")
+    assert_recorded_on(recorded, admitted, arena._stream, what="atom_ids")
 
 
 # ---------------------------------------------------------------------------
 # (c) allocator-reuse pressure between plan_exact and the launch
 # ---------------------------------------------------------------------------
-
-def _pressure_burst(device="cuda"):
-    """Alloc/free churn sized to make the caching allocator recycle blocks fast."""
-    for _ in range(64):
-        t = torch.empty(1 << 20, device=device)  # 4 MiB, dropped immediately
-        del t
-        torch.randn(1 << 12, device=device).sum()
-
 
 def _pressured_state_and_dense(seed_burst=True):
     plan, fixture, BH = _cell()
@@ -186,7 +141,7 @@ def _pressured_state_and_dense(seed_burst=True):
     def pressured_plan(self, schedule, *, fresh=True):
         result = orig_plan(self, schedule, fresh=fresh)
         if seed_burst:
-            _pressure_burst()
+            allocator_pressure()
         return result
 
     _dense_y, dense_state, _ = _run(plan, fixture)
@@ -217,23 +172,16 @@ def test_allocator_reuse_pressure_agrees_with_a_launch_blocking_child():
 
     Blocking serializes the streams, so a run that only passes blocked (or only
     passes unblocked) is a stream race by signature -- exactly how the postmerge
-    defect was diagnosed. The state is deterministic, so agreement is bit-level:
-    both runs must equal the unpaged dense state.
+    defect was diagnosed. The state is deterministic, so agreement is bit-level.
     """
-    child = (
-        f"import sys; sys.path.insert(0, {os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))!r})\n"
-        "import torch; torch.cuda.set_per_process_memory_fraction(0.65)\n"
-        "from tests.tier2_geometry.test_paging_stream_races import _pressured_state_and_dense\n"
-        "dense, paged, _y, _yd, _p = _pressured_state_and_dense()\n"
-        "assert torch.equal(dense, paged), 'blocked run: paged state moved'\n"
-        "print('OK')\n"
-    )
-    env = dict(os.environ, CUDA_LAUNCH_BLOCKING="1")
-    proc = subprocess.run([sys.executable, "-c", child], capture_output=True,
-                          text=True, env=env, timeout=600)
-    assert proc.returncode == 0 and proc.stdout.startswith("OK"), (
-        f"CUDA_LAUNCH_BLOCKING=1 child disagreed with the async run:\n"
-        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
+    assert_agrees_under_launch_blocking("""
+        import torch
+        torch.cuda.set_per_process_memory_fraction(0.65)
+        from tests.tier2_geometry.test_paging_stream_races import _pressured_state_and_dense
+        dense, paged, _y, _yd, _p = _pressured_state_and_dense()
+        assert torch.equal(dense, paged), 'blocked run: paged state moved'
+        print('OK')
+    """)
 
 
 # ---------------------------------------------------------------------------
