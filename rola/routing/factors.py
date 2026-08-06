@@ -96,6 +96,7 @@ class RouteFactors:
     g_write: torch.Tensor
     density: StaticDensity
     exposed_counts: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
+    exposed_bits: dict[int, torch.Tensor] = field(default_factory=dict)
     slack_history: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
     origin: object = None
     #: Derivations computed on demand and reused within the bundle's lifetime. A view
@@ -155,7 +156,8 @@ class RouteFactors:
         if bits is None:
             B, H = self.batch, self.heads
             bits = {
-                level: touched_bitset_update(
+                level: self.exposed_bits.get(level) if level in self.exposed_bits else
+                touched_bitset_update(
                     torch.zeros(B, H, self.topology.widths[level], dtype=torch.bool,
                                 device=self.device),
                     self.write[level].permute(0, 2, 1, 3))
@@ -323,6 +325,7 @@ class RouteProducer(nn.Module):
         read: list[torch.Tensor | None] = [None] * D
         write: list[torch.Tensor | None] = [None] * D
         exposed: dict[tuple[int, str], torch.Tensor] = {}
+        exposed_bits: dict[int, torch.Tensor] = {}
         slack: dict[tuple[int, str], torch.Tensor] = {}
         for producer, slots in zip(self.producers, self.slots):
             try:
@@ -341,6 +344,8 @@ class RouteProducer(nn.Module):
                 write[level] = produced.write[local]
             for (local, side), value in getattr(produced, "support_counts", {}).items():
                 exposed[(slots[local], side)] = value
+            for local, value in getattr(produced, "touched_bits", {}).items():
+                exposed_bits[slots[local]] = value
             for (local, side), value in getattr(produced, "slack_history", {}).items():
                 slack[(slots[local], side)] = value
 
@@ -363,8 +368,8 @@ class RouteProducer(nn.Module):
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,
             read=read_levels, write=write_levels, g_read=g_read, g_write=g_write,
-            density=self.density, exposed_counts=exposed, slack_history=slack,
-            origin=_DERIVED)
+            density=self.density, exposed_counts=exposed, exposed_bits=exposed_bits,
+            slack_history=slack, origin=_DERIVED)
 
 
 # --- construction-time assembly ---------------------------------------------
