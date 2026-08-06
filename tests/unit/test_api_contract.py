@@ -12,8 +12,10 @@ FAIL-DEMONSTRABLE in the way this tree requires: plant the violation, observe th
 refusal, restore. Where a row asserts that something is REFUSED, the refusal itself is
 the observation.
 
-Everything here runs on the CPU except the rows that name a device: the surface is a
-surface, and a row that needed a GPU would be testing the kernel.
+Everything here runs on the CPU except the three rows marked ``cuda``: the surface is a
+surface, and a row that needed a device would be testing the kernel. The three that do
+are the ones about the SEAM -- the summary pass a plan is derived from is a CUDA kernel
+with no CPU path by design, and executing a synthetic plan means executing.
 """
 from __future__ import annotations
 
@@ -358,7 +360,7 @@ def _prime_hardware(device, blocks=4):
         sm_count=80, occupancy=lambda *args, **kwargs: blocks)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the summary pass is a CUDA kernel")
+@pytest.mark.cuda
 def test_the_selector_swaps_through_the_seam_and_the_plan_records_which_one_ran():
     """The card's binding constraint, at the seam it now lives behind.
 
@@ -386,7 +388,7 @@ def test_the_selector_swaps_through_the_seam_and_the_plan_records_which_one_ran(
     assert default.selector_name == "cost-model"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the summary pass is a CUDA kernel")
+@pytest.mark.cuda
 def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path():
     """The `decay` flag used to be computed twice, by two different expressions, on two
     different paths out of the layer. One path now: the plan reads its model fields from
@@ -404,7 +406,7 @@ def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_pat
     assert derive_plan(factors, device=factors.device).topology is factors.topology
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="executes the CUDA consumer")
+@pytest.mark.cuda
 def test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen():
     """The seam's whole point: a plan is DATA, so a plan nobody derived is runnable.
 
