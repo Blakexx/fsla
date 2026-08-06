@@ -199,7 +199,7 @@ def test_production_factor_mask_ties_support_values_and_vjp(alpha):
     zp = z.detach().clone().requires_grad_()
     p, support_words = production_factor(zp, "entmax", alpha=alpha, mask=mask)
     zr = z.detach().clone().to(torch.float64).requires_grad_()
-    ref = entmax(zr, alpha, dim=-1, n_iter=80, mask=mask)
+    ref = entmax(zr, alpha, dim=-1, mask=mask)
     support = _unpack_token_support(support_words, z.shape[-2])
     assert support_words.dtype == torch.int32
     assert support_words.shape == (1, z.shape[-1])
@@ -227,7 +227,7 @@ def test_production_factor_packs_bit31_and_zeroes_tail_words(alpha, length):
     if remainder:
         tail_bits = 0xFFFFFFFF ^ ((1 << remainder) - 1)
         assert torch.count_nonzero(raw_words[:, -1, :] & tail_bits) == 0
-    _assert_matches_oracle(p, entmax(z.to(torch.float64), alpha, dim=-1, n_iter=80))
+    _assert_matches_oracle(p, entmax(z.to(torch.float64), alpha, dim=-1))
 
 
 def test_production_factor_packs_masked_arbitrary_leading_dimensions():
@@ -240,7 +240,7 @@ def test_production_factor_packs_masked_arbitrary_leading_dimensions():
     mask[..., 0] = True
 
     p, support_words = production_factor(z, "entmax", alpha=1.5, mask=mask)
-    ref = entmax(z.to(torch.float64), 1.5, dim=-1, n_iter=80, mask=mask)
+    ref = entmax(z.to(torch.float64), 1.5, dim=-1, mask=mask)
 
     assert support_words.shape == (2, 3, 2, 4)
     assert torch.equal(_unpack_token_support(support_words, z.shape[-2]), p != 0)

@@ -106,14 +106,34 @@ def _routing_cells():
 # THE OLD/NEW SIDE (whichever library is on sys.path)
 # ---------------------------------------------------------------------------
 
+def _call(fn, **kwargs):
+    """Call `fn` with the arguments it actually accepts, and only those.
+
+    The protocol compares SEMANTICS across a change that may move the API -- removing
+    a solver's iteration count is exactly such a change, and it is one of the things
+    under test. Binding by signature is what lets the two sides be asked the same
+    question through two different spellings; it is not a fallback, because the
+    quantity compared afterwards is unchanged and every dropped argument is one this
+    version does not have.
+    """
+    import inspect
+
+    accepted = inspect.signature(fn).parameters
+    return fn(**{k: v for k, v in kwargs.items() if k in accepted})
+
 def emit_producer() -> dict:
     """Every producer quantity, from whichever `rola` is importable."""
     from rola.routing.entmax.reference import entmax, entmax_forward
     from rola.routing.reference import _union_split_with_support, union_split
 
+    #: The old reference's own routing-level iteration count, passed only where the
+    #: parameter still exists. `rola/routing/reference.py` used 80 before the swap.
+    iters = {"n_iter": 80}
+
     out: dict[str, torch.Tensor] = {}
     for name, z, mask, alpha in _producer_cells():
-        p, support, tau = entmax_forward(z, alpha, dim=-1, mask=mask)
+        p, support, tau = _call(entmax_forward, z=z, alpha=alpha, dim=-1, mask=mask,
+                                **iters)
         out[f"{name}/p"] = p
         out[f"{name}/support"] = support
         out[f"{name}/tau"] = tau
@@ -121,21 +141,22 @@ def emit_producer() -> dict:
         #: backward is half of what a reference promises and the card's backward
         #: conformance depends on it.
         zg = z.clone().requires_grad_(True)
-        pv = entmax(zg, alpha, dim=-1, mask=mask)
+        pv = _call(entmax, z=zg, alpha=alpha, dim=-1, mask=mask, **iters)
         dp = torch.linspace(-1.0, 1.0, pv.numel(), dtype=torch.float64).reshape(pv.shape)
         (dz,) = torch.autograd.grad(pv, zg, grad_outputs=dp)
         out[f"{name}/dz"] = dz
 
     for name, r, w, mask in _routing_cells():
-        read, write = union_split(r, w, alpha=1.5, n_iter=80, mask=mask)
+        read, write = _call(union_split, read_logits=r, write_logits=w, alpha=1.5,
+                            mask=mask, **iters)
         out[f"{name}/read"] = read
         out[f"{name}/write"] = write
         #: The PACKED support is captured through the private entry point on
         #: purpose: it is the reference's wire format, and a packing change that the
         #: semantic outputs cannot see is exactly what the kernel would then be
         #: gated against.
-        out[f"{name}/packed"] = _union_split_with_support(
-            r, w, alpha=1.5, n_iter=80, mask=mask)[2]
+        out[f"{name}/packed"] = _call(_union_split_with_support, read_logits=r,
+                                      write_logits=w, alpha=1.5, mask=mask, **iters)[2]
     return out
 
 

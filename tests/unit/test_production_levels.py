@@ -514,7 +514,7 @@ def test_the_solve_never_reaches_the_bisection_reference_cuda(monkeypatch):
     def _forbidden(*args, **kwargs):
         raise AssertionError("production routing called the fp64 bisection reference")
 
-    monkeypatch.setattr(entmax_reference, "entmax_tau_bisection", _forbidden)
+    monkeypatch.setattr(entmax_reference, "entmax_tau", _forbidden)
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cuda", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cuda", seed=32).requires_grad_()
@@ -535,7 +535,7 @@ def test_the_solve_never_reaches_the_bisection_reference_cpu(monkeypatch):
     def _forbidden(*args, **kwargs):
         raise AssertionError("production routing called the fp64 bisection reference")
 
-    monkeypatch.setattr(entmax_reference, "entmax_tau_bisection", _forbidden)
+    monkeypatch.setattr(entmax_reference, "entmax_tau", _forbidden)
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cpu", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cpu", seed=32).requires_grad_()

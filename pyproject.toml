@@ -29,7 +29,12 @@ fla   = ["fla-core"]
 # committed spread narrowed to a device-event IQR. `perf/ledger.jsonl` is the record
 # now (docs/measurement.md), and nothing else in the tree imports the plugin.
 bench = ["matplotlib", "pandas"]
-test  = ["pytest", "pytest-xdist"]
+# `entmax` (DeepSPIN) is the fp64 REFERENCE the routing gates are anchored to -- the
+# paper authors' own implementation, pure python with torch as its only dependency.
+# A TEST dependency and never a runtime one: `rola/routing/entmax/production.py` is
+# RoLA's own Triton producer and imports nothing from it, which
+# `tests/unit/test_production_levels.py` asserts rather than assumes.
+test  = ["pytest", "pytest-xdist", "entmax"]
 dev   = ["pytest", "ruff", "pre-commit"]
 
 [build-system]

@@ -20,8 +20,6 @@ from rola.routing.types import (
     _validated_alpha,
 )
 
-_ROUTING_REFERENCE_N_ITER = 80
-
 
 def _pack_token_support(support: torch.Tensor) -> torch.Tensor:
     """Pack semantic ``[..., L, branch]`` support into signed uint32-bit words."""
@@ -42,15 +40,14 @@ def _activation_factors(
     logits: torch.Tensor,
     activation: RoutingActivation,
     *,
-    n_iter: int,
     mask: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if isinstance(activation, SoftmaxActivation):
         masked = logits if mask is None else logits.masked_fill(~mask, float("-inf"))
         return torch.softmax(masked, dim=-1), None
     if isinstance(activation, EntmaxActivation):
-        values = entmax(logits, activation.alpha, dim=-1, n_iter=n_iter, mask=mask)
-        _, support, _ = entmax_forward(logits, activation.alpha, dim=-1, n_iter=n_iter, mask=mask)
+        values = entmax(logits, activation.alpha, dim=-1, mask=mask)
+        _, support, _ = entmax_forward(logits, activation.alpha, dim=-1, mask=mask)
         return values, _pack_token_support(support)
     raise TypeError(f"activation must be a routing activation, got {activation!r}")
 
@@ -60,21 +57,13 @@ def _union_split_with_support(
     write_logits: torch.Tensor,
     *,
     alpha: float = 1.5,
-    n_iter: int,
     mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Use entmax support before splitting read/write roles."""
     alpha = _validated_alpha(alpha, "union_split")
     combined_logits = 0.5 * read_logits + 0.5 * write_logits
-    support_values = entmax(
-        combined_logits,
-        alpha,
-        dim=-1,
-        n_iter=n_iter,
-        mask=mask,
-    )
-    _, support, _ = entmax_forward(
-        combined_logits, alpha, dim=-1, n_iter=n_iter, mask=mask)
+    support_values = entmax(combined_logits, alpha, dim=-1, mask=mask)
+    _, support, _ = entmax_forward(combined_logits, alpha, dim=-1, mask=mask)
     finfo = torch.finfo(support_values.dtype)
     # Preserve representable deltas and give subtraction overflow the clamp's zero direct adjoint.
     delta = (read_logits - write_logits).clamp(min=-finfo.max, max=finfo.max)
@@ -91,12 +80,11 @@ def union_split(
     write_logits: torch.Tensor,
     *,
     alpha: float = 1.5,
-    n_iter: int,
     mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Use entmax support before splitting read/write roles."""
     read, write, _ = _union_split_with_support(
-        read_logits, write_logits, alpha=alpha, n_iter=n_iter, mask=mask)
+        read_logits, write_logits, alpha=alpha, mask=mask)
     return read, write
 
 
@@ -134,29 +122,23 @@ def routing_factor_levels(
         write_level = write_logits[..., span]
         if isinstance(level, UnionRouting):
             read_factor, write_factor, _ = _union_split_with_support(
-                read_level, write_level, alpha=level.alpha,
-                n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                read_level, write_level, alpha=level.alpha, mask=None)
         else:
             assert isinstance(level, IndependentRouting)
             if level.shares_solve:
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation,
-                    n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                    write_level, level.write_activation, mask=None)
                 read_factor = write_factor
             elif level.tied:
                 read_factor, _ = _activation_factors(
-                    write_level, level.read_activation,
-                    n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                    write_level, level.read_activation, mask=None)
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation,
-                    n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                    write_level, level.write_activation, mask=None)
             else:
                 read_factor, _ = _activation_factors(
-                    read_level, level.read_activation,
-                    n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                    read_level, level.read_activation, mask=None)
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation,
-                    n_iter=_ROUTING_REFERENCE_N_ITER, mask=None)
+                    write_level, level.write_activation, mask=None)
         reads.append(read_factor)
         writes.append(write_factor)
 

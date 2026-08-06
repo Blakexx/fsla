@@ -39,7 +39,7 @@ import pytest
 import torch
 
 from rola.routing.entmax.production import _overflow_free_delta
-from rola.routing.entmax.reference import entmax_tau_bisection
+from rola.routing.entmax.reference import entmax_tau
 
 #: The repo's ratified production tolerances. Values duplicated rather than imported
 #: because they are module-private in `tests/unit/test_production_levels.py:55-58`;
@@ -48,10 +48,6 @@ _PRODUCTION_RTOL = 2e-5
 _PRODUCTION_ATOL = 2e-6
 _PRODUCTION_GRAD_RTOL = 5e-5
 _PRODUCTION_GRAD_ATOL = 5e-6
-
-#: fp64 bisection depth. 120 >> the 60 the oracle defaults to: the oracle must be
-#: unambiguously tighter than the fp32 solve it judges, or the gate measures the oracle.
-_ORACLE_ITERS = 120
 
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA entmax kernels")
 
@@ -118,9 +114,14 @@ def assert_fold_bit_identical(got_midpoint, got_delta, read_logits, write_logits
 # The fp64 oracle, consuming the kernel's own fp32 midpoint (trackE.md §4.1)
 # ---------------------------------------------------------------------------
 def oracle_solve(midpoint_fp32, alpha):
-    """``(support, values)`` in fp64 from the independent bisection reference."""
+    """``(support, values)`` in fp64 from the independent reference.
+
+    The threshold is SOLVED, not approached: the reference inverts it from the
+    DeepSPIN package's closed-form values, so there is no iteration depth to choose
+    and no question of the oracle being looser than the fp32 solve it judges.
+    """
     z = midpoint_fp32.double()
-    tau = entmax_tau_bisection(z, float(alpha), dim=-1, n_iter=_ORACLE_ITERS)
+    tau = entmax_tau(z, float(alpha), dim=-1)
     support = z > tau
     base = ((float(alpha) - 1.0) * (z - tau)).clamp(min=0.0)
     values = torch.where(support, base if alpha == 2.0 else base * base,
@@ -155,8 +156,7 @@ def assert_support_exact(got_support, midpoint_fp32, alpha, ctx=""):
         n = bad.shape[0]
         s, t, c = bad[0].tolist()
         z = midpoint_fp32[s, t, c].double()
-        tau = entmax_tau_bisection(midpoint_fp32.double(), float(alpha), dim=-1,
-                                   n_iter=_ORACLE_ITERS)[s, t, 0]
+        tau = entmax_tau(midpoint_fp32.double(), float(alpha), dim=-1)[s, t, 0]
         ulp = torch.finfo(torch.float32).eps * max(abs(float(z)), 1.0)
         raise AssertionError(
             f"GATE A2 (support) FAILED{ctx}: {n} of {want.numel()} membership bits "
