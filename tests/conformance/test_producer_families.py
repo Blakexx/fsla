@@ -93,11 +93,12 @@ def _demonstrated_by_some_arm(family, views):
                 f"no arm of the sweep demonstrates ({axis}, {value}): {errors}")
 
 
-def test_the_swept_gain_family_agrees_across_both_arms():
+@pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-raw-d2"])
+def test_the_swept_gain_family_agrees_across_both_arms(name):
     from rola import rola_op
     from rola.expert import PlanOverrides
 
-    family = FAMILY_BY_NAME["producer/swept-gain"]
+    family = FAMILY_BY_NAME[name]
     producer, x, v = _producer_and_stream(family)
     densities, views = [], []
     for gain in family.params["gains"]:

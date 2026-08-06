@@ -226,6 +226,46 @@ _STRATIFIED: tuple[Family, ...] = (
         _cfg(seed=109, T=83, p_read=0.6, p_write=0.6, norm="global"),
         basis="T = 83 under BT = 16: a five-token partial tile. The stratified "
               "twin of the adversarial ragged corner, at mid-box density."),
+    #: ARM VARIANTS. The named cells above run at one (norm, decay) arm each;
+    #: these close the near-default census holes — each variant exists because
+    #: the join listed its (DECAY/GLOBAL x regime) pair as empty and the pair is
+    #: CHEAP to cover, which the design prefers to expecting it empty.
+    Family(
+        "stratified/dense-full-raw-plain", "stratified",
+        dict(density="dense", coherence="iid", rw_correlation="independent",
+             mass="spread", tail="divisible", support="full"),
+        _cfg(seed=111),
+        basis="the dense-full cell at the (raw, no-decay) arm."),
+    Family(
+        "stratified/tied-global-decay", "stratified",
+        dict(density="sparse", coherence="iid", rw_correlation="tied",
+             mass="spread", tail="divisible", support="partial"),
+        _cfg(seed=114, p_read=0.5, p_write=0.5, norm="global", decay=True),
+        params=dict(tied=True),
+        basis="the tied cell at the (global, decay) arm."),
+    Family(
+        "stratified/anti-global-decay", "stratified",
+        dict(density="sparse", coherence="iid", rw_correlation="anti",
+             mass="cold_read", tail="divisible", support="partial"),
+        _cfg(seed=115, m0=True, norm="global", decay=True),
+        params=dict(anti=True),
+        basis="the anti cell at the (global, decay) arm — decayed state under "
+              "cold reads is where a clock that wrongly ticks on READS would "
+              "show (the clock is the STORED WRITE product, spec §2)."),
+    Family(
+        "stratified/singleton-global-decay", "stratified",
+        dict(density="sparse", coherence="iid", rw_correlation="independent",
+             mass="concentrated", tail="divisible", support="singleton"),
+        _cfg(seed=113, m0=True, norm="global", decay=True),
+        params=dict(one_hot=True),
+        basis="the singleton cell at the (global, decay) arm."),
+    Family(
+        "stratified/ragged-raw-decay", "stratified",
+        dict(density="sparse", coherence="iid", rw_correlation="independent",
+             mass="spread", tail="ragged", support="partial"),
+        _cfg(seed=119, T=83, p_read=0.6, p_write=0.6, decay=True),
+        basis="the ragged cell at the (raw, decay) arm — a partial tile is "
+              "where a decay clock accumulated per full tile would slip."),
 )
 
 
@@ -246,6 +286,16 @@ _PRODUCER: tuple[Family, ...] = (
               "that no sampler imitates, and the gain is the knob that sweeps its "
               "density in training. Each gain's bundle runs both arms of rola_op "
               "and they must agree at the exactness tolerance.",
+        generator="swept_gain"),
+    Family(
+        "producer/swept-gain-raw-d2", "producer",
+        dict(density="swept", coherence="coherent", rw_correlation="independent",
+             mass="spread", tail="divisible", support="partial"),
+        _cfg(widths=(8, 8), d_v=32, T=64, H=4, seed=203),
+        params=dict(gains=(0.25, 1.0, 4.0, 16.0)),
+        basis="the gain sweep at the raw arm over the default two-level "
+              "topology: the raw readout carries a realized g_read, so the "
+              "sweep's mass fold reaches the read channel only here.",
         generator="swept_gain"),
     Family(
         "producer/stale-plan", "producer",
@@ -282,6 +332,16 @@ _ADVERSARIAL: tuple[Family, ...] = (
               "carve-out's data regime, and the self-normalizing-readout fact "
               "([[rola-self-normalizing-dead-leaves-inert]]) made checkable: "
               "reading never-written state must be exact, not approximately dead."),
+    Family(
+        "corner/cold-read-global-decay", "adversarial",
+        dict(density="sparse", coherence="iid", rw_correlation="independent",
+             mass="cold_read", tail="divisible", support="partial"),
+        _cfg(seed=306, m0=True, norm="global", decay=True),
+        params=dict(write_live_digits=2),
+        basis="the cold-read corner at the (global, decay) arm: a decayed, "
+              "normalized readout over never-written leaves — the denominator "
+              "must come from the carried mass column alone, and the clock must "
+              "not tick where no write lands."),
     Family(
         "corner/all-read-only", "adversarial",
         dict(density="sparse", coherence="coherent", rw_correlation="anti",
