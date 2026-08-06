@@ -229,6 +229,14 @@ consumer_forward_kernel(ConsumerParams p) {
   //: the group-entry `__syncthreads()`, read by every staging loop of a
   //: gathered visit. Dead bytes on an aligned walk.
   int* t_idx = ctl + ctl_words(BC);
+  //: The group assembler's CROSS-VISIT CARRY, in SMEM so that NO gather state is
+  //: register-live across the visit body on ANY arm (holding it in registers
+  //: cost the pressure-critical dense arms up to +22 % wall clock -- the §7.3
+  //: stateful-walk hazard, measured). Layout: [0] fill, [1] gtile, [2] fr,
+  //: [3] fw, [4] member word, [5] group flags (bit0 read, bit1 write),
+  //: [6..6+D) the scan's fixed-level row indices. Written by tid 0 only, read
+  //: by every thread; each visit's barriers order the handoff.
+  int* g_scan = t_idx + BT;
   static_assert(!DECAY
                     || static_cast<size_t>(BT) * CKP * sizeof(float)
                            <= vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
@@ -723,26 +731,23 @@ consumer_forward_kernel(ConsumerParams p) {
   }
   int cur = tile_lo;  // both schedulers' source-tile cursor
   int visit = 0;      // aligned ring parity
-  // The gathered assembler's carry: the word remainder of a split tile and the
-  // group under fill. CTA-uniform values in registers -- every thread runs the
-  // scan redundantly (all its loads are CTA-uniform addresses), so the group
-  // boundaries are uniform with no broadcast and no per-tile barrier; only
-  // warp 0 stores `t_idx`.
-  int gtile = 0;
-  uint32_t g_fr = 0u, g_fw = 0u, member = 0u;
-  int fill = 0;
-  bool gr = false, gw = false;
-  //: The scan's fixed-level row indices, hoisted ONCE per CTA and STATICALLY
-  //: indexed everywhere (unrolled-with-break, the row-scale loops' pattern), so
-  //: the array stays in registers -- a runtime `l < j` loop reading `base[l]`
-  //: per candidate tile put dynamic local traffic INSIDE the walk loop and the
-  //: ratchet refused it.
-  int srow[D];
+  if (tg) {
+    //: The carry's once-per-CTA reset + the scan's fixed-level row indices
+    //: (hoisted so the per-tile refill is two SMEM loads per fixed level, never
+    //: a `base[]` local access inside the walk loop). `tg` is CTA-uniform, so
+    //: the barrier inside the branch is uniform too.
+    if (tid == 0) {
 #pragma unroll
-  for (int l = 0; l < D; ++l) srow[l] = p.level_row_offset[l] + base[l];
+      for (int q = 0; q < 6; ++q) g_scan[q] = 0;
+#pragma unroll
+      for (int l = 0; l < D; ++l) g_scan[6 + l] = p.level_row_offset[l] + base[l];
+    }
+    __syncthreads();
+  }
   for (;;) {
     int tile, slot, gN;
     bool is_read, is_write;
+    int g_next1 = 0, g_next2 = 0, g_next3 = 0, g_next4 = 0;
     if (!tg) {
       const int nx = next_cand(cur);
       if (nx >= tile_hi) break;
@@ -762,6 +767,17 @@ consumer_forward_kernel(ConsumerParams p) {
       // ---- intra Gram's causal mask is order-relative, so STABILITY IS THE
       // ---- CORRECTNESS REQUIREMENT. The word loop is bounded (a word splits
       // ---- across at most `ceil(32/BT) + 1` groups), never a per-token scan.
+      // ---- Every thread assembles REDUNDANTLY in registers from the SMEM
+      // ---- carry (published by the previous visit's end barrier; all loads
+      // ---- are CTA-uniform, so the boundaries are uniform); the updated carry
+      // ---- is stored by tid 0 behind the group-entry barrier below.
+      int fill = g_scan[0];
+      int gtile = g_scan[1];
+      uint32_t g_fr = static_cast<uint32_t>(g_scan[2]);
+      uint32_t g_fw = static_cast<uint32_t>(g_scan[3]);
+      uint32_t member = static_cast<uint32_t>(g_scan[4]);
+      bool gr = (g_scan[5] & 1) != 0;
+      bool gw = (g_scan[5] & 2) != 0;
       while (fill < BT) {
         if (member == 0u) {
           const int nx = next_cand(cur);
@@ -774,8 +790,8 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             if (l >= j) break;
-            g_fr &= p.read_tok_bits[slab + srow[l]];
-            g_fw &= p.write_tok_bits[slab + srow[l]];
+            g_fr &= p.read_tok_bits[slab + g_scan[6 + l]];
+            g_fw &= p.write_tok_bits[slab + g_scan[6 + l]];
           }
           member = (g_fr | g_fw)
                    & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_tiles
@@ -808,6 +824,13 @@ consumer_forward_kernel(ConsumerParams p) {
       is_read = gr;
       is_write = gw;
       gN = fill;
+      //: The NEXT visit's carry: the consumed group resets to empty, the split
+      //: word's remainder persists. Registers here; stored behind the entry
+      //: barrier below (tid 0), read again only after the end-of-visit barrier.
+      g_next1 = gtile;
+      g_next2 = static_cast<int>(g_fr);
+      g_next3 = static_cast<int>(g_fw);
+      g_next4 = static_cast<int>(member);
     }
     const bool ga = tile < 0;
     const int t0 = ga ? 0 : tile * BT;
@@ -824,7 +847,18 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- docs/internals/pipeline.md#edge-dag
     if (tid < ctl_words(BC)) ctl[tid] = 0;
     if (ga) {
-      __syncthreads();  // publish warp 0's `t_idx` writes to every staging loop
+      //: Publishes warp 0's `t_idx` writes to every staging loop AND orders
+      //: every thread's carry LOADS (in the assembler above) before tid 0's
+      //: carry STORES below.
+      __syncthreads();
+      if (tid == 0) {
+        g_scan[0] = 0;
+        g_scan[1] = g_next1;
+        g_scan[2] = g_next2;
+        g_scan[3] = g_next3;
+        g_scan[4] = g_next4;
+        g_scan[5] = 0;
+      }
       stage_tile(-1, 0, is_read, is_write, gN);
     } else if constexpr (kRing == 1) {
       stage_tile(tile, 0, is_read, is_write, BT);
@@ -1268,11 +1302,6 @@ consumer_forward_kernel(ConsumerParams p) {
       }
     }
     __syncthreads();
-    if (tg) {
-      fill = 0;
-      gr = false;
-      gw = false;
-    }
   }
 
   if (summary) {

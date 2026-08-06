@@ -656,9 +656,15 @@ scattered-emission microbench priced exactly this pattern at a 1.0009x DRAM-byte
 (banded), which is what licensed building the gather at all
 (`workflows/perf/p14_microbench.md`).
 
-**Cost of carrying both walks:** `t_idx` = `BT` ints of SMEM on every arm
-(smem_layout.md#smem-ledger), plus the register class of the max-over-branches allocation —
-ratified per instantiation by the spill manifest like every other body change.
+**Cost of carrying both walks:** `t_idx` + the assembler's cross-visit carry `g_scan` =
+`BT + 6 + D` ints of SMEM on every arm (smem_layout.md#smem-ledger), plus the register class
+of the max-over-branches allocation — ratified per instantiation by the spill manifest like
+every other body change. The carry lives in SMEM, not registers, and that is a MEASURED
+placement, not a preference: register-resident carry (plus a register `srow[]`) cost the
+pressure-critical dense arms up to +22 % wall clock (topo-D4-BC16); the SMEM form's residual
+is ~+5 % on that one arm and inside the 3-sigma band on the other seven gated arms. The
+handoff needs no extra barrier: every thread loads the carry after the previous visit's end
+barrier, and tid 0 stores the update behind the group-entry barrier.
 
 ## <a id="decay-clock"></a>30. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
