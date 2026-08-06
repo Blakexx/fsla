@@ -487,6 +487,15 @@ template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, b
 constexpr bool consumer_amp_prefetch() {
   if (consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>() != 1) return false;
   if (wt_window_atoms(BC, DECAY) != BC / kMmaKQuantum) return false;
+  //: A MEASURED SCOPE, the phase-C gate's precedent (P00): outside the narrow
+  //: format at `BC = 64`, the ratification census found the issue walk's address
+  //: arithmetic acquiring IN-LOOP spill -- the `BC = 16` arms run a 64-register
+  //: budget with zero headroom (and are 4-CTA shapes whose extra warps already
+  //: hide latency), and the `tf32x3` arms sit at their 128-register wall with a
+  //: doubled fp32 slab. The scope is the format axis plus the state-block axis the
+  //: register budget itself is keyed on -- axes the dispatch already forks on.
+  //: docs/internals/smem_layout.md#amp-prefetch
+  if (!stage_is_narrow<READ_PREC, FOLD_PREC>() || BC != 64) return false;
   constexpr int budget = consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
   constexpr size_t base =
       consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, 1>();

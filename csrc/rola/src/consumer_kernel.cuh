@@ -420,9 +420,14 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- Each `(level, token)` row copies from its 16-byte-aligned floor (align-down
   // ---- never underflows the 256-byte-aligned stream base) and clamps against the
   // ---- stream's end through the zero-fill operand; the per-row lead lands in the
-  // ---- offset table so the gather pays no realignment. The level loop is unrolled
-  // ---- so `base[l]` stays constant-indexed (HAZARD no-captured-arrays' register
-  // ---- rule). docs/internals/consumer_kernel.md#amp-prefetch
+  // ---- offset table so the gather pays no realignment. The level loop is
+  // ---- DELIBERATELY NOT UNROLLED: this is COLD code (once per tile, ~one line per
+  // ---- thread) and unrolling it over D levels x two sides is pure register
+  // ---- pressure -- the first census measured exactly that as in-loop spill on the
+  // ---- 64-register arms. A spanned level's base needs no `base[]` capture either:
+  // ---- it is `slice * slice_digits` at `l == j` and zero above (§3), so the
+  // ---- no-captured-arrays rule is satisfied by derivation, not by unrolling.
+  // ---- docs/internals/consumer_kernel.md#amp-prefetch
   auto pf_issue = [&](int tile) {
     const bool rd = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
     const bool wrt = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
@@ -431,9 +436,9 @@ consumer_forward_kernel(ConsumerParams p) {
       using T = typename cuda::std::remove_pointer<decltype(slab)>::type;
       constexpr int c = 16 / static_cast<int>(sizeof(T));
       int lvl_off = 0;
-#pragma unroll
-      for (int l = 0; l < D; ++l) {
-        if (l < j) continue;  // fixed levels feed the row scales, never the slab
+#pragma unroll 1
+      for (int l = j; l < D; ++l) {
+        const int lbase = (l == j) ? slice * p.slice_digits : 0;
         const int span = leaf_digit_span(p.level_stride[l], p.level_modulus[l], BC);
         const int rp = amp_slab_row_pitch(span, c);
         const int nch = rp / c;
@@ -442,9 +447,9 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int u = tid; u < BT * nch; u += kConsumerThreads) {
           const int t = u / nch;
           const int k = u - t * nch;
-          const int64_t e0 = (trow + t) * pitch[l] + base[l];
+          const int64_t e0 = (trow + t) * pitch[l] + lbase;
           const int lead = static_cast<int>(e0) & (c - 1);
-          if (k == 0) off[l * BT + t] = lvl_off + t * rp + lead - base[l];
+          if (k == 0) off[l * BT + t] = lvl_off + t * rp + lead - lbase;
           const int64_t src = (e0 - lead) + static_cast<int64_t>(k) * c;
           const int64_t rem = end - src;
           const int nbytes =

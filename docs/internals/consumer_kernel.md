@@ -919,12 +919,15 @@ through the zero-fill operand.
 the candidate words), so a read-only visit fetches no write slab and vice versa; an unfetched
 side is never gathered.
 
-**Structural exclusions, both compile-time:** `kRing == 2` (the run-ahead stages into the slab's
+**Structural exclusions, all compile-time:** `kRing == 2` (the run-ahead stages into the slab's
 consumption window — the derivation keeps the two mutually exclusive, and the depth-2 ring is
-itself a measured decline) and the windowed `WT` build (`!kWtPlane`, which rebuilds from the
-amplitude stream inside phase B, after the slab has been refilled). `DECAY` is NOT excluded:
-the clock stream keeps its direct fetch (out of the slab's scope) and the amplitude gathers slab
-exactly as the non-decay arms — the footprint rule alone decides those arms.
+itself a measured decline), the windowed `WT` build (`!kWtPlane`, which rebuilds from the
+amplitude stream inside phase B, after the slab has been refilled), and the MEASURED census
+scope — the narrow format at `BC = 64` — recorded at
+[`smem_layout.md#amp-prefetch`](smem_layout.md#amp-prefetch). `DECAY` is not structurally
+excluded: the clock stream keeps its direct fetch (out of the slab's scope) and the amplitude
+gathers would slab exactly as the non-decay arms — the footprint rule declines the decay arms
+on their fp32 slab's size.
 
 ---
 

@@ -26,7 +26,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "518fc623912ae5403103066a7783c6c36394b0180e68fb3e777281c956b327d0",
+  "csrc_sha256": "07e78efd8c5112f200e07facf5c1fa64da5bcc6d418716fb5b6a80ee44d055bb",
   "date": "2026-08-06"
  },
  "shards": {
@@ -1641,12 +1641,12 @@
    "sass_sha256": "c5030eae5ddd6899931fadbc2f2b9d0a9e16991f38e4d0336a73c4accc79108d"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi64ELi1ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 63,
+   "regs": 79,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "6403919bb4e95d6fbd062007b0ae91dd2ccc63ab4f878e0a642c3fce68b94d95"
+   "sass_sha256": "c22149b5d4d705e2ef58893132a2ca774df729d362e2c38c2986ca2834593cc7"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi64ELi1ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 56,
@@ -1705,12 +1705,12 @@
    "sass_sha256": "8769b837ec7ae6268e81dc0a072939c33e966f7a6717aed6d938e73f39653aca"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 63,
+   "regs": 80,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 10,
    "local_ops": 16,
-   "sass_sha256": "22594a89296e8635eb6e2893dbdf5d60e63a045146209de471d8e8a0cc538a85"
+   "sass_sha256": "75ecb47d8b972a35f344ba50e369b30af0bcfc9cd6836b27ce607486b27c9e15"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 80,
@@ -2665,12 +2665,12 @@
    "sass_sha256": "888580d4924b788a929ba79f7281f6f9d5b8de261c7db00b758529bd7f080201"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi1ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 117,
+   "regs": 125,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "eaa512001cf49b894228a90fd8fea2a5b219d678edfc523edb300bea143bf5c2"
+   "sass_sha256": "fb92984b30ba77a71f291e655da55814c4de606343c8475c702ccd4ca6684505"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi1ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 128,
@@ -2729,12 +2729,12 @@
    "sass_sha256": "70ae38d3c08593444df9f406b87923a37b3f980efb22b38e43e2b38157a8cec9"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 72,
+   "regs": 94,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 10,
    "local_ops": 16,
-   "sass_sha256": "29b692e10a38840b0ea87a9ce59b34ccfacb5aff487194884e625c9d64ec12d9"
+   "sass_sha256": "2f33dab063b973ee8391d2a591414a1ebbf632b011acaf025de6ddbed2d71df0"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi2ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 126,
@@ -2793,12 +2793,12 @@
    "sass_sha256": "ee9063876a619a72ec4a71d8b4da7d9db5bda65c19dcabf1cc963269714e90f3"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi3ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 71,
+   "regs": 92,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 10,
    "local_ops": 19,
-   "sass_sha256": "f57a73e5113cb431684dae134fc5ebd359f88c5daaa607e9727e820424787c81"
+   "sass_sha256": "c9975d378e86376964b2947d208d6d235307a4b11229cb178244d01f2f468904"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi3ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 128,
@@ -2857,12 +2857,12 @@
    "sass_sha256": "3054f8c2d0c9783bd5e144fe3efbf03e46ffa5755e6cfea68d783581aed316a2"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi4ELNS_7MmaPrecE1ELS2_1ELb0ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 78,
+   "regs": 92,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 9,
    "local_ops": 21,
-   "sass_sha256": "1bfce34368df53985a73265d35eef446e92142f68ed5ec858b455c907ba28f2e"
+   "sass_sha256": "8a9263ef2c40e487b3199b338045681da6efcfc20e0e7e6fe7cd46a96138af00"
   },
   "sm_86:_ZN4rola8consumer23consumer_forward_kernelILi32ELi64ELi64ELi4ELNS_7MmaPrecE1ELS2_1ELb1ELb0EEEvNS_14ConsumerParamsE": {
    "regs": 128,

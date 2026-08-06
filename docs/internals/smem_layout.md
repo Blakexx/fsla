@@ -305,7 +305,13 @@ line size, and the whole block sits past the depth-1 carve
 [ring-depth rule](#ring-depth): the slab is taken iff it costs NO CTA under
 `ctas_for_residency` AND under the shared-memory term alone, off the same arithmetic the launch
 bound is derived from. Two structural preconditions come first — the staging ring at depth 1
-and the `WT` build at the plane — for the reasons stated at the kernel's schedule table. At the
+and the `WT` build at the plane — for the reasons stated at the kernel's schedule table, and one
+MEASURED scope (the phase-C gate's P00 precedent): the narrow format at `BC = 64` only. Outside
+it the ratification census found the issue walk acquiring IN-LOOP spill — the `BC = 16` arms
+run a 64-register budget with zero headroom (and are 4-CTA shapes whose extra warps already
+hide latency), and the `tf32x3` arms sit at their 128-register wall with a doubled fp32 slab.
+The scope is the format axis plus the state-block axis the register budget itself is keyed on.
+At the
 flagship instantiation (`BT16 BC64 DV64 D2 bf16 !decay global`) the derivation lands ON:
 27,096 -> 32,480 B with 3 CTAs/SM kept. No new template axis exists: every input is an axis the
 dispatch already forks on, and arms where the slab would cost residency simply keep the direct
