@@ -103,6 +103,17 @@ is the authority for. This is the
 [self-masking theorem](../architecture/self-masking-theorem.md) in its
 "trustless flag" form.
 
+## <a id="slice-union-tok"></a>A5c. `slice_union_tok` — the token-granular slice union (ABI v3)
+
+`[BH, n_slices, n_tiles]` int32: bit `t` of `[bh, s, tile]` = "some digit of slice `s` at
+the boundary level is read- OR write-live at token `tile * BT + t`". The tile-granular
+`read_union`/`write_union` one granularity finer, sides OR'd (union-visit semantics), and
+derived from the SAME `token_bits` authority in `build_schedule`, so the two cannot
+disagree. Its one consumer is the token-gather ballot (consumer_kernel.md#token-gather):
+membership = the owner's fixed-level `tok_bits` rows AND'd per side, OR'd, AND this word.
+`p.token_gather` (launch-uniform, structural: both routing sides carry the registry's
+`exact_zeros`) selects the gathered walk; the tensor is bound and checked unconditionally.
+
 ## <a id="amp-dtype"></a>A5b. Amplitude/value storage dtype — per level role, per arm
 
 The `amp_read` / `amp_write` / `v` pointers are type-erased (`const void*`)
