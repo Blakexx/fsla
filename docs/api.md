@@ -33,7 +33,7 @@ y, final_state = rola.rola_op(factors, v, decay())
 
 ```python
 rola_op(routes: RouteFactors, v: Tensor, decay: LeafMassDecay | None = None, *,
-        initial_state=None, output_final_state=False) -> (y, final_state)
+        initial_state=None, output_final_state=False, expert=None) -> (y, final_state)
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `v` is `[B, T, H, d_v]`. `decay` is
@@ -58,8 +58,8 @@ any one call site.
 ### 2.1 The gateway
 
 ```python
-RouteProducer(producers, *, d_v, num_heads, hidden_size,
-              normalization='global', gain=True) -> RouteFactors
+RouteProducer(producers, *, d_v, num_heads, hidden_size, normalization='global',
+              gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
 ```
 
 `RouteProducer` is the **only** way to obtain a `RouteFactors`, and that is the point.
