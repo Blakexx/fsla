@@ -132,7 +132,8 @@ def _guarded_new_empty(self, *args, **kwargs):
 #: planner/schedule logic and is deliberately outside the guard. NOTE (coverage-closure
 #: 2026-08-03): this previously gated on `tests/ops/` and `tests/modules/` — the FORK's
 #: layout, neither of which exists here — so the NaN-poison guard had never run.
-_POISON_TIERS = ('tests/tier1_semantics/', 'tests/tier2_geometry/', 'tests/layers/')
+_POISON_TIERS = ('tests/tier1_semantics/', 'tests/tier2_geometry/', 'tests/layers/',
+                 'tests/conformance/')
 
 
 @pytest.fixture(scope="function", autouse=True)

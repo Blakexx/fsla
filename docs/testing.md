@@ -1,18 +1,23 @@
-# Testing — the two tiers
+# Testing — the tiers
 
-The suite answers **two different questions**, and conflating them is how a real
-bug hides. It is organized into two named tiers plus a units layer.
+The suite answers **three different questions**, and conflating them is how a
+real bug hides. It is organized into three named tiers plus a units layer.
 
 | Tier | Question | Compares |
 |---|---|---|
 | **Tier 1 — inter-implementation** | Does the kernel compute the right function? | the kernel against the **fp64 oracle** |
 | **Tier 2 — intra-implementation** | Does the kernel compute the *same* function at every runtime geometry the planner may choose? | the kernel against **itself** |
+| **Conformance — the data-regime box** | Is it that function over the whole DISTRIBUTION SPACE the model can put through it? | the kernel against the oracle, at DECLARED regime cells |
 
 Tier 1 alone is insufficient because a per-geometry tolerance can absorb a geometry
 bug. Tier 2 alone is insufficient because two geometries can agree with each other
 and both be wrong — this project has a bug that passed exactly that way. Tier 2
 therefore **never stands alone**: every geometry it relates is independently
-anchored to the oracle in Tier 1.
+anchored to the oracle in Tier 1. The conformance tier exists because routing is a
+MOVING distribution (the gain knob alone sweeps candidate fraction ~0.96 → ~0.09
+in training), so both other tiers' fixed fixtures answer their questions at a
+handful of unmarked points in that space; conformance makes the covered regimes
+declared and the uncovered ones listed.
 
 ## Tier 1 — semantics
 
@@ -180,6 +185,58 @@ Note the third row: class (a) not because the arithmetic happens to agree but
 because the spec *requires* it to. That is exactly why the class must be declared
 data rather than inferred from behaviour.
 
+## The conformance tier — the data-regime box
+
+`tests/conformance/`. The regime axes and every family are DATA
+(`families.py`, pure CPU, the matrix.py doctrine); generation and the
+non-vacuity checkers live in `generators.py`; execution in the `test_*`
+files. Three fixture sources cover the box, and each is there for a stated
+reason:
+
+* **stratified** — random generation confined to one stratum per axis
+  (density, temporal coherence, read-write correlation, mass concentration,
+  tail, support cardinality). Axis-DEFINED, never naive random: independent
+  per-token sampling manufactures anti-structure exactly where realized
+  routing is coincident.
+* **producer** — the REAL entmax gateway at swept input gains (realized
+  density 1.00 → 0.10, monotone, asserted), because some correlations only
+  realized routing produces. The stale-plan family drives `rola.expert`'s
+  derive/execute seam with a plan priced on a distribution 4x dead.
+* **adversarial** — named corners FROZEN PERMANENT (cold read, all-read-only,
+  K = 0 fold, ragged tail, chunk boundary): the bug list, kept forever, and
+  enforced by `test_family_meta.py::test_the_adversarial_corners_are_permanent`.
+
+**Self-policing**: every family carries an IN-TEST non-vacuity assertion —
+checkers keyed `(axis, value)` so a claim cannot be declared without its
+proof running — and a fixture that cannot demonstrate its claimed regime
+FAILS before any kernel comparison (the token-0 vacuity lesson generalized).
+The checkers themselves are under test: each is fed a violating fixture and
+must refuse it, and each accepts an in-regime witness.
+
+**The census join** (`test_conformance_census.py`, pure CPU) extends M1 by one
+dimension: (instantiation x data-regime), pairwise, with the left-hand side
+IMPORTED from `matrix.py` so a new template parameter fails here demanding
+families or expected-empty rows. Empty cells are LISTED against a committed
+`EXPECTED_EMPTY` rule with named exceptions, asserted with exact equality in
+both directions — a newly-empty cell fails, and a stale listing fails too.
+
+**Decode** is its own family (`test_decode_family.py`): the prefill→decode
+handoff across the arms from a ragged prefill, a 32-step horizon with
+checkpoints ALONG it (the cross-call-compounding blindness the bf16-state
+kill named), frozen density declarations proven performance-only under
+drifting realized routing, and ONE walk crossing every dispatch boundary
+forward and backward with the graph asserted alive on the grad legs.
+
+**Backward** (`test_backward_family.py`): the reference backward is autograd
+through the decomposed fp64 oracle with the detachment as literal spec — the
+stored-clock input gets `None`, asserted per regime cell — plus one
+spec-derived structural-zero test (the anti cell), and the producer VJP
+against the pinned DeepSPIN package's own backward. `gradcheck` is DEMOTED to
+one-time insurance behind `ROLA_GRADCHECK_INSURANCE=1`, never a lane gate:
+it cannot express the spec's detachment, and the insurance harness holds the
+clock constant explicitly to demonstrate exactly that. When the native
+backward lands (M-2), its kernel-VJP gates plug into these same families.
+
 ## The three meta-tests
 
 `tests/tier2_geometry/test_meta.py`. Without these the matrix is a list of tests
@@ -306,14 +363,29 @@ Both run in the CPU line. They read files; they never touch a device.
 
 ```bash
 pytest tests/unit tests/tier1_semantics -m "not cuda"                       # CPU: no device, no build
+pytest tests/conformance -m "not cuda"                                       # conformance meta + census, CPU
 flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
 flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # TIER 1
 flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
 flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
+flock /tmp/rola_gpu.lock pytest tests/conformance                            # CONFORMANCE families (incl. decode + backward)
 flock /tmp/rola_gpu.lock pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
 python benchmarks/rola_probe.py duration consumer_forward --ab global:raw    # NO flock -- see below
 ROLA_FLA_CROSSCHECK=1 pytest tests/unit/test_oracle_vs_fla.py                # one-time, opt-in -- see below
+ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # one-time, opt-in -- see above
 ```
+
+**The lane, measured** (2026-08-06, sm_86, warm build): CPU 70 s; unit-cuda
+2.5 s; tier 1 123 s; tier 2 9 s; layers 6 s; conformance 4.5 s — the WHOLE
+battery is ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
+IS the full battery above and no per-commit subset needs choosing. The
+build-shape gates and `tools/ratify.py` run additionally at a batch tip (and
+always when csrc, manifests or codegen flags moved); the latency gate and the
+sanitizer lane are scheduled, never per-commit. The runtime x
+unique-assertion audit that sized this (evidence:
+`workflows/refactor/p07_conformance.md`) removed nothing: every tier-1 row
+carries a mutant-proven charge, every tier-2 row is census-required, and the
+conformance tier is new coverage at 4.5 s.
 
 `tests/unit/test_oracle_vs_fla.py` is SKIPPED BY DEFAULT and that is the design.
 It checks the oracle's recurrence against `flash-linear-attention`'s naive GLA

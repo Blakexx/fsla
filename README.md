@@ -209,8 +209,8 @@ median of per-pair ratios, IQR reported alongside — is documented in
   principle, and the guarantees/choices/preferences taxonomy.
 - [`docs/internals/`](docs/internals/README.md) — one document per source file,
   carrying the reasons attached to a line, plus the deletion ledger.
-- [`docs/testing.md`](docs/testing.md) — the two tiers, the tolerance discipline, the
-  geometry matrix and its three meta-tests.
+- [`docs/testing.md`](docs/testing.md) — the tiers, the tolerance discipline, the
+  geometry matrix and its meta-tests, and the conformance data-regime box.
 - [`docs/measurement.md`](docs/measurement.md) — the one stopwatch, the discipline
   the probe harness acquires rather than documents, and the append-only ledger.
 - [`docs/ratification.md`](docs/ratification.md) — what a manifest is, what the
