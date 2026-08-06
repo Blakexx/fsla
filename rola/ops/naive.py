@@ -35,6 +35,49 @@ def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
     )
 
 
+def _leaf_capacity(widths: tuple[int, ...]) -> int:
+    """``N = prod_l width_l`` -- the number of leaves the address space has.
+
+    Derived here, from the widths alone. See :func:`_radix_strides` for why the
+    oracle re-derives its own address map instead of importing production's.
+    """
+    capacity = 1
+    for width in widths:
+        capacity *= width
+    return capacity
+
+
+def _radix_strides(widths: tuple[int, ...]) -> tuple[int, ...]:
+    """MSB-first mixed-radix strides: ``stride_l = prod(width_{l+1..D-1})``.
+
+    **THE ORACLE DERIVES ITS OWN LEAF ADDRESSES, AND THAT IS THE POINT.** This is
+    three lines that `rola.routing.types.Topology.radix_strides` also computes, and
+    the duplication is deliberate: it is the difference between a reference and a
+    second opinion. Every Tier 1 gate compares the kernel against this file, and the
+    kernel's addressing comes from that production property; importing it here would
+    make a wrong stride convention agree with itself in every gate the repository
+    has. Two independent derivations disagree when one is wrong, which is the only
+    reason to have a reference at all.
+
+    The agreement is then a TESTED CLAIM rather than an unexamined shared import:
+    `tests/unit/test_oracle_independence.py` asserts these strides equal the
+    production property over the whole supported width space, and is allowed to fail.
+
+    The convention, stated so the reader can check it without leaving the file: leaf
+    ``s`` decomposes MSB-first, level 0 being the most significant digit, so level
+    ``l``'s digit is ``(s // stride_l) % width_l`` with ``stride_l`` the product of
+    every width BELOW it (`ROLA_V3_SPEC.md` section 2). Level ``D-1`` therefore has
+    stride 1 and varies fastest.
+    """
+    strides = []
+    for index in range(len(widths)):
+        stride = 1
+        for width in widths[index + 1:]:
+            stride *= width
+        strides.append(stride)
+    return tuple(strides)
+
+
 def _leaf_product(
     levels: tuple[torch.Tensor, ...], radix_strides: tuple[int, ...], N: int
 ) -> torch.Tensor:
@@ -196,8 +239,12 @@ def naive_rola(
     B, T, H, d_v = _validate_inputs(
         v, read_levels, write_levels, write_levels_stored, g_read, g_write, topology, decay, normalization
     )
-    N = topology.N
-    strides = topology.radix_strides
+    #: DERIVED HERE, not read off `topology`. The oracle's address map is its own
+    #: (see `_radix_strides`); `topology` supplies the SHAPE (`widths`), which is
+    #: configuration the caller chose, never the interpretation of it.
+    widths = topology.widths
+    N = _leaf_capacity(widths)
+    strides = _radix_strides(widths)
 
     v64 = v.to(torch.float64)
     read64 = tuple(level.to(torch.float64) for level in read_levels)

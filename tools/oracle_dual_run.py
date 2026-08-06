@@ -234,18 +234,20 @@ def apply_mutant(kind: str) -> None:
     that does not fail names a hole in the comparison rather than a harmless change.
     """
     if kind == "strides":
-        #: F3's blind spot: the oracle borrows the leaf-address map from production.
-        #: Reversing one stride must be visible; if it is not, the oracle and the
-        #: thing it certifies are wrong together.
-        import rola.routing.types as types
+        #: THE LEAF-ADDRESS MAP, perturbed where the oracle actually reads it: its
+        #: OWN derivation (`rola/ops/naive.py::_radix_strides`).
+        #:
+        #: This mutant used to reverse `Topology.radix_strides`, because the oracle
+        #: imported it. It no longer does (audit finding F3), so that perturbation
+        #: now moves nothing here BY DESIGN -- and the inverted claim, that a wrong
+        #: production stride leaves the oracle unmoved and therefore DISAGREEING
+        #: with the kernel, is asserted where it belongs, in
+        #: `tests/unit/test_oracle_independence.py`. What this file must still be
+        #: able to see is a change to the address map the oracle uses.
+        import rola.ops.naive as naive
 
-        original = types.Topology.radix_strides.fget
-
-        def reversed_strides(self):
-            got = list(original(self))
-            return tuple(got[::-1])
-
-        types.Topology.radix_strides = property(reversed_strides)
+        original = naive._radix_strides
+        naive._radix_strides = lambda widths: tuple(original(widths)[::-1])
     elif kind == "eps":
         #: The readout's epsilon changes the FUNCTION, not its accuracy.
         import rola.ops.naive as naive
