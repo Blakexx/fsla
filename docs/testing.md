@@ -376,3 +376,37 @@ path — an unjoined fork, a publication read before its join, an inner join sta
 for an outer one, a tensor crossing without `record_stream`, a burst that allocates
 nothing. A fixture that cannot be shown failing converts "we checked" into a sentence
 nobody can falsify.
+
+### The sanitizer lane
+
+```bash
+python benchmarks/rola_probe.py sanitize consumer_forward --tool memcheck
+```
+
+**A scheduled lane over a named subset, never a PR gate** — the shape every surveyed
+adopter converged on, because the tools cost one to two orders of magnitude and a gate
+that takes an hour gets disabled. `--error-exitcode=1`, a committed suppressions file,
+and an explicit skip-list whose entries carry their reason.
+
+Measured on this box, `consumer_forward`: memcheck, initcheck and synccheck are CLEAN
+in 4.4–4.6 s each.
+
+**Sold honestly, in both directions.**
+
+* It does **not** own our historical bug class. Both escaped races were host-side
+  Python ordering; `racecheck` detects on-chip shared-memory hazards only. The
+  stream-discipline fixture above is what covers that class.
+* `racecheck` is **skipped for the consumer kernel**, and the reason is structural
+  rather than a time budget: it reports 4 hazards (131072 each) between the `Gm` write
+  and its read, because that edge is published by the item pipeline's own
+  release/acquire protocol (`retire_item`'s `__threadfence_block` plus an atomic
+  counter, `await_count`'s spin) instead of `__syncthreads`. racecheck orders shared
+  memory by standard barriers only and cannot be taught the protocol, so every
+  write/read pair across that edge reads as unordered. A kernel that publishes through
+  a standard barrier is still checked.
+* `--leak-check full` is **not** used: torch's caching allocator retains its pools by
+  design, so the flag reports 3 "leaks" on a clean run — a lane whose clean state is
+  three errors is a lane whose findings nobody reads.
+* An overrun that stays **inside** a caching-allocator segment is invisible: tensors
+  are suballocated, so that memory is legitimately the allocator's. The lane detects
+  accesses that escape the segment, and the planted-violation test plants exactly one.

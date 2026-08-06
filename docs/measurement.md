@@ -138,6 +138,7 @@ says the design cannot decide, the second says it decided.
 ```bash
 python benchmarks/rola_probe.py duration consumer_forward --ab global:raw --tier landing
 python benchmarks/rola_probe.py counters consumer_forward --arm global --section RolaMemOcc
+python benchmarks/rola_probe.py sanitize consumer_forward --tool memcheck
 python benchmarks/rola_probe.py sass --json bodies.json [--diff-against before.json]
 python benchmarks/rola_probe.py report [--probe consumer_forward] [--format md]
 ```

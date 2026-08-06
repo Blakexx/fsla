@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  compute-sanitizer suppressions for the RoLA sanitize lane.
+
+  A SUPPRESSION IS A RECORDED DECISION, NOT A CONVENIENCE. Every entry states which
+  finding it silences, in whose code, and why that finding is not ours to fix. An
+  entry with no reason is a defect: the whole value of running the tool is that a
+  finding means something, and an unexplained suppression converts a real report into
+  a silence nobody can audit later.
+
+  EMPTY IS THE CORRECT STATE UNTIL A FINDING IS TRIAGED. The file exists and is passed
+  on every invocation so that adding an entry is a reviewable diff rather than a flag
+  someone appends to a command line. A whole TOOL that reports a structural false
+  positive belongs in `sanitize.py`'s SKIP table with its reason, not here: a
+  per-location suppression for a structural cause rots the moment the code moves.
+
+  The root element name is the tool's, verified by running it: a file with any other
+  root is refused with "Error reading ...: No such node (ComputeSanitizerOutput)" on
+  every invocation, which is a broken lane that still exits zero.
+-->
+<ComputeSanitizerOutput>
+</ComputeSanitizerOutput>

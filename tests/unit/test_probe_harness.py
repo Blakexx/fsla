@@ -217,6 +217,88 @@ def test_a_corrupt_section_file_is_refused(tmp_path):
         validate_sections(tmp_path)
 
 
+# ---------------------------------------------------------------------------
+# THE SANITIZER LANE (I-7)
+# ---------------------------------------------------------------------------
+
+def test_the_sanitizer_lane_reports_a_planted_out_of_bounds_write():
+    """PLANTED VIOLATION: a kernel that writes one element past its allocation.
+
+    The lane's value is entirely in `--error-exitcode=1` plus a readable suppressions
+    file, and both are easy to have wrong in a way that exits zero forever. So the
+    exact command the lane builds is run against a program that IS broken, and must
+    come back non-zero with the finding named.
+
+    Deliberately not the RoLA kernel: this proves the INSTRUMENT reads. What the tool
+    does and does not own for our kernels is `sanitize.SKIP`'s subject.
+
+    **THE OVERRUN IS FAR PAST THE END, AND THAT IS A MEASURED LIMITATION, NOT A
+    CONVENIENCE.** A one-element overrun on a torch tensor is invisible to memcheck:
+    the caching allocator SUBALLOCATES from large segments, so the write lands inside
+    memory the allocator legitimately owns and no tool can call it out of bounds.
+    `--padding` pads `cudaMalloc`ed allocations, which is the extension's own, not a
+    tensor's slot inside a segment. So this lane detects accesses that escape the
+    SEGMENT, and an overrun within one is a hole the lane cannot cover -- stated here
+    rather than left for someone to discover after trusting a clean run.
+    """
+    import shutil
+
+    import torch
+
+    if shutil.which("compute-sanitizer") is None:
+        pytest.skip("compute-sanitizer ships with the CUDA toolkit; not on PATH")
+    if not torch.cuda.is_available():
+        pytest.skip("the sanitizer needs a device")
+
+    from probe.sanitize import base_command
+
+    planted = textwrap.dedent("""
+        import torch
+        from torch.utils.cpp_extension import load_inline
+        mod = load_inline(
+            name="rola_planted_oob",
+            cpp_sources="void run(torch::Tensor t);",
+            cuda_sources=(
+                "#include <torch/extension.h>\\n"
+                "__global__ void k(float* p, int n) { p[n + (1 << 22)] = 1.0f; }\\n"
+                "void run(torch::Tensor t) {\\n"
+                "  k<<<1, 1>>>(t.data_ptr<float>(), t.numel());\\n"
+                "}\\n"),
+            functions=["run"], verbose=False)
+        t = torch.zeros(32, device="cuda")
+        mod.run(t)
+        torch.cuda.synchronize()
+    """)
+    #: THE LANE'S OWN COMMAND, not a restatement of it -- including `--padding`,
+    #: which is what makes the ONE-ELEMENT overrun planted above visible at all. The
+    #: caching allocator's block rounding swallows it otherwise, measured.
+    proc = subprocess.run(
+        base_command("memcheck") + [sys.executable, "-c", planted],
+        capture_output=True, text=True, timeout=1800)
+
+    combined = proc.stdout + proc.stderr
+    assert "Error reading" not in combined, (
+        f"the committed suppressions file is not readable by this tool, so every "
+        f"lane run prints an error and still exits zero:\n{combined[:1500]}")
+    assert proc.returncode != 0, (
+        f"an out-of-bounds write exited ZERO under the lane's own flags:\n"
+        f"{combined[-3000:]}")
+    assert "Invalid __global__ write" in combined or "out of bounds" in combined, (
+        f"the sanitizer ran but named no memory error:\n{combined[-3000:]}")
+
+
+def test_every_sanitizer_skip_states_a_reason():
+    """A skip-list entry without a reason is a silence nobody can audit. The reasons
+    are long on purpose -- each has to say why the finding is not ours to fix."""
+    from probe.registry import PROBES
+    from probe.sanitize import SKIP, TOOLS
+
+    for (probe, tool), reason in SKIP.items():
+        assert probe in PROBES, probe
+        assert tool in TOOLS, tool
+        assert len(reason) > 80, f"{probe}/{tool}: a bare skip is not a decision"
+
+
 def test_the_stock_section_folder_is_passed_alongside_ours():
     """`--section-folder` REPLACES the default search path. Passing only ours would
     silently delete every stock section, so the command must name both."""

@@ -2,6 +2,7 @@
 
     python benchmarks/rola_probe.py duration consumer_forward --ab global:raw --tier landing
     python benchmarks/rola_probe.py counters consumer_forward --arm global --section RolaMemOcc
+    python benchmarks/rola_probe.py sanitize consumer_forward --tool memcheck
     python benchmarks/rola_probe.py sass --json bodies.json [--diff-against before.json]
     python benchmarks/rola_probe.py report [--probe consumer_forward] [--format md]
 
@@ -23,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from probe import counters, duration, report, sass  # noqa: E402
+from probe import counters, duration, report, sanitize, sass  # noqa: E402
 from probe.discipline import TIERS, disciplined  # noqa: E402
 from probe.registry import PROBES  # noqa: E402
 
@@ -58,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--census", action="store_true",
                    help="ratify's forcing census: registers and spills per key")
 
+    n = sub.add_parser("sanitize",
+                       help="compute-sanitizer over one probe; a NIGHTLY lane, "
+                            "never a PR gate")
+    n.add_argument("probe", choices=sorted(PROBES))
+    n.add_argument("--tool", default="memcheck", choices=sanitize.TOOLS)
+    n.add_argument("--tier", choices=TIERS, default="light")
+
     r = sub.add_parser("report", help="the ledger, as a table")
     r.add_argument("--fingerprint", help="a fingerprint prefix to filter on")
     r.add_argument("--probe", choices=sorted(PROBES))
@@ -80,6 +88,8 @@ def main(argv=None) -> int:
         if a.command == "duration":
             return duration.run(run_ctx=run_ctx, probe_name=a.probe, ab=a.ab,
                                 rounds=a.rounds)
+        if a.command == "sanitize":
+            return sanitize.run(run_ctx=run_ctx, probe_name=a.probe, tool=a.tool)
         return counters.run(run_ctx=run_ctx, probe_name=a.probe, arm=a.arm,
                             section=a.section, replay_mode=a.replay_mode)
 
