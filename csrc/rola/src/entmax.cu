@@ -26,7 +26,7 @@
 
 namespace rola {
 namespace entmax {
-namespace {
+namespace detail {
 
 //: FROZEN (§4.1, nine downstream consumers): one CTA owns exactly the 32 tokens of one
 //: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass
@@ -553,7 +553,7 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-}  // namespace
+}  // namespace detail
 
 void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                    torch::Tensor& midpoint_values, torch::Tensor& support_words,
@@ -565,11 +565,11 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
               "read/write route values must share a dtype");
   const at::cuda::CUDAGuard guard(read_logits.device());
   if (read_values.scalar_type() == torch::kFloat32)
-    launch_forward<float>(read_logits, write_logits, midpoint_values, support_words, read_values,
-                          write_values, alpha);
-  else if (read_values.scalar_type() == torch::kBFloat16)
-    launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
+    detail::launch_forward<float>(read_logits, write_logits, midpoint_values, support_words,
                                   read_values, write_values, alpha);
+  else if (read_values.scalar_type() == torch::kBFloat16)
+    detail::launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
+                                          read_values, write_values, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }
@@ -584,12 +584,13 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
   const at::cuda::CUDAGuard guard(read_logits.device());
   if (read_values.scalar_type() == torch::kFloat32)
-    launch_backward<float>(read_logits, write_logits, midpoint_values, support_words, read_values,
-                           write_values, d_read, d_write, d_read_logits, d_write_logits, alpha);
-  else if (read_values.scalar_type() == torch::kBFloat16)
-    launch_backward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
+    detail::launch_backward<float>(read_logits, write_logits, midpoint_values, support_words,
                                    read_values, write_values, d_read, d_write, d_read_logits,
                                    d_write_logits, alpha);
+  else if (read_values.scalar_type() == torch::kBFloat16)
+    detail::launch_backward<__nv_bfloat16>(read_logits, write_logits, midpoint_values,
+                                           support_words, read_values, write_values, d_read,
+                                           d_write, d_read_logits, d_write_logits, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }

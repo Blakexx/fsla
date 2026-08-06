@@ -30,7 +30,7 @@
 
 namespace rola {
 namespace decode {
-namespace {
+namespace detail {
 
 //: `expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as
 //: `intra_panel.cuh`'s `kPanelMaxExponent`, restated because decode shares none of that
@@ -377,7 +377,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   if (tid == 0) p.ctr[bh] = 0;
 }
 
-}  // namespace
+}  // namespace detail
 
 size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 4 : 2);
@@ -401,8 +401,8 @@ void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool d
     bool_switch(global_norm, [&](auto GLOBAL) {
       bool_switch(decay, [&](auto DECAY) {
         int_switch<1, 2, 3, 4>(p.D, "D (spec §1)", [&](auto LEVELS) {
-          decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value, decltype(DECAY)::value,
-                             decltype(GLOBAL)::value>
+          detail::decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value,
+                                     decltype(DECAY)::value, decltype(GLOBAL)::value>
               <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
         });
       });
@@ -415,7 +415,7 @@ void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool d
 // Host entry
 // ---------------------------------------------------------------------------
 
-namespace {
+namespace detail {
 
 void check_f32(const at::Tensor& t, const char* name) {
   TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
@@ -429,7 +429,7 @@ void check_i32(const at::Tensor& t, const char* name) {
   TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
 }
 
-}  // namespace
+}  // namespace detail
 
 int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 
@@ -457,13 +457,13 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                   && static_cast<int>(level_row_offsets.size()) == D,
               "the four per-level integer vectors must each have D entries");
 
-  check_f32(v, "v");
-  check_f32(g_write, "g_write");
-  check_f32(state, "state");
-  check_i32(bits, "bits");
-  check_i32(pc_coarse, "pc_coarse");
-  check_f32(ws, "ws");
-  check_i32(ctr, "ctr");
+  detail::check_f32(v, "v");
+  detail::check_f32(g_write, "g_write");
+  detail::check_f32(state, "state");
+  detail::check_i32(bits, "bits");
+  detail::check_i32(pc_coarse, "pc_coarse");
+  detail::check_f32(ws, "ws");
+  detail::check_i32(ctr, "ctr");
 
   TORCH_CHECK(v.dim() == 2, "v must be [BH, d_v]");
   const int BH = static_cast<int>(v.size(0));
@@ -501,8 +501,8 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
     TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth, "level ", l, " width ", width,
                 " exceeds the decode path's capacity ", kDecodeMaxLevelWidth,
                 " (see kProducerMaxBranchWidth)");
-    check_f32(amp_read[l], "amp_read[l]");
-    check_f32(amp_write[l], "amp_write[l]");
+    detail::check_f32(amp_read[l], "amp_read[l]");
+    detail::check_f32(amp_write[l], "amp_write[l]");
     TORCH_CHECK(amp_read[l].dim() == 2 && amp_read[l].size(0) == BH && amp_read[l].size(1) == width,
                 "amp_read[", l, "] must be [BH, width] contiguous");
     TORCH_CHECK(amp_write[l].sizes() == amp_read[l].sizes(), "amp_write[", l,
@@ -510,7 +510,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
     p.amp_read[l] = amp_read[l].data_ptr<float>();
     p.amp_write[l] = amp_write[l].data_ptr<float>();
     if (decay) {
-      check_f32((*amp_clock)[l], "amp_clock[l]");
+      detail::check_f32((*amp_clock)[l], "amp_clock[l]");
       TORCH_CHECK((*amp_clock)[l].sizes() == amp_read[l].sizes(), "amp_clock[", l,
                   "] must match amp_read[", l, "]");
       p.amp_clock[l] = (*amp_clock)[l].data_ptr<float>();
@@ -533,13 +533,13 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
               "level_strides[D-1] must be 1 (the innermost level is contiguous in leaf order)");
 
   if (decay) {
-    check_f32(*dials, "dials");
+    detail::check_f32(*dials, "dials");
     TORCH_CHECK(dials->dim() == 2 && dials->size(0) == heads && dials->size(1) == total_rows,
                 "dials must be [H, sum_l width_l]");
     p.dials = dials->data_ptr<float>();
   }
   if (g_read.has_value()) {
-    check_f32(*g_read, "g_read");
+    detail::check_f32(*g_read, "g_read");
     TORCH_CHECK(g_read->dim() == 1 && g_read->size(0) == BH, "g_read must be [BH]");
     TORCH_CHECK(!global_norm, "the global arm fixes g_read := 1 and must not be handed one");
     p.g_read = g_read->data_ptr<float>();
