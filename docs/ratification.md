@@ -7,7 +7,8 @@ exact `ptxas`:
 ```
 tools/manifests/sm_86.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...},
-                   "nvcc_flags": [...], "sass_hash_version": 2 },
+                   "nvcc_flags": [...], "sass_hash_version": 2,
+                   "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
                                               "count": 32 }, ... },
@@ -77,6 +78,7 @@ and the difference between them, are deliberate:
 | **FAIL — local-memory growth** | An instantiation executes more `LDL`/`STL` *anywhere* than it ratified. A cheap complement to the two above: `ptxas`'s spill bytes miss local traffic that is not a spill (a dynamically indexed local array), and the in-loop count only sees a backward-branch interval. |
 | **FAIL — SASS body drift** | An instantiation assembles to different code than was ratified. |
 | **REPORT — register drift** | A changed register count with no spill growth is printed, not failed. Register allocation is an outcome that legitimately moves; what must not move is the spilling. |
+| **REPORT — sccache drift** | The recorded `toolchain.sccache` (`{version, sha256}` or `null`) differs from this run's. Printed, not failed: `sccache` is a measured-transparent pass-through (`docs/build.md#sccache`), so its version cannot move a ratified register/spill number the way a `ptxas` swap can. What IS gated hard, before it is used at all, is that a resolved `sccache` matches `tools/sccache_pin.json` (`tools/sccache_toolchain.py`). |
 
 ### The body hash is the incremental half of the freshness trigger
 

@@ -49,6 +49,41 @@ def torch_defines() -> list[str]:
     abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
     return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *_COMMON_NVCC_FLAGS]
 
+
+def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
+    """Flags `torch.utils.cpp_extension` adds to EVERY nvcc invocation in the
+    extension, for CACHE-KEY FIDELITY only -- NOT part of the ratified codegen
+    flag list (`nvcc_flags`/`torch_defines` above), and never passed to
+    `check_flags`/recorded in a manifest.
+
+    Two independently discovered sources, both host-side and inert for the
+    kernel-only `.cu` TUs `tools/ratify.py` compiles:
+    `--compiler-options '-fPIC'` (`_write_ninja_file`'s `cuda_flags +=
+    ['--compiler-options', "'-fPIC'"]`, unconditional for any CUDA compile) and
+    `-DTORCH_EXTENSION_NAME=<name> -DTORCH_API_INCLUDE_EXTENSION_H` plus
+    `_get_pybind11_abi_build_flags()` (`common_cflags`, added to every source).
+    `tools/ratify.py`'s standalone recompile has never modeled either
+    (deliberately: inert for the shipped kernel TUs, per the FLAG FIDELITY note
+    in `setup.py`'s module docstring), which was harmless before sccache
+    existed. It stops being harmless once a compiler cache is in the loop:
+    sccache's cache key is a function of the FULL argv, inert flags included,
+    so the two compiles of the same TU (`setup.py`'s ninja build, `ratify.py`'s
+    post-build recompile) hash to DIFFERENT keys without this and the second
+    can never hit the first's cache entry -- measured (twice: the first pass
+    caught only the defines and still missed 100%, because `--compiler-options
+    '-fPIC'` was still absent), `tools/sccache_toolchain.py`'s module docstring
+    and `docs/build.md#sccache`. Adding them to the COMPILE INVOCATION (not to
+    the ratified flag list) closes the gap without touching what the manifest
+    certifies: neither flag moves what `ptxas` assembles in a TU that never
+    expands the pybind macros and has no host code `-fPIC` would change the
+    codegen of, which is exactly why they were safe to omit from ratification
+    and are safe to add here.
+    """
+    from torch.utils.cpp_extension import _get_pybind11_abi_build_flags
+    return ["--compiler-options", "'-fPIC'",
+            f"-DTORCH_EXTENSION_NAME={name}", "-DTORCH_API_INCLUDE_EXTENSION_H",
+            *(str(x) for x in _get_pybind11_abi_build_flags())]
+
 #: THE `-MP` INSURANCE. It adds a phony make target per header to the dependency
 #: file, so a depfile consumer that meets a header which no longer exists treats the
 #: rule as dirty instead of erroring. On the pinned toolchain (nvcc 12.4) with
