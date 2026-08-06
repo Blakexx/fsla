@@ -277,12 +277,18 @@ Determinism argument, in one line: every workspace byte has one writer, the
 term set is run-invariant, the fold order is host-fixed, and each output
 element is a per-thread SEQUENTIAL fp32 sum — no step depends on scheduling.
 
-Measured price (sm_86, `perf/ledger.jsonl` + `workflows/perf/p10_splitk.md`):
-the canonical at-scale sparse cell `atscale-L2048` pays **+7.1%** step time
-(7.989 → 8.557 ms); the small probe cells pay more relatively (the reduce's
-read-back does not shrink with `T`): `topo-D2-w64x64-BC64|global` 0.077 →
-0.110 ms, the high-K `topo-D4-w8x8x8x16-BC16|global` 0.230 → 0.477 ms. The
-latency baseline was re-recorded at the P10 tip with this note.
+Measured price (sm_86, `perf/ledger.jsonl` + `workflows/perf/p10_splitk.md`,
+P22-remedy figures — the original `+7.1%` / `0.077 ms` numbers were
+UNLEDGERED and did not reconcile against either binary; superseded in place,
+`workflows/perf/p10_splitk.md` carries the audit): the canonical at-scale
+sparse cell `atscale-L2048` pays **+23.0%** step time (6.959 → 8.562 ms,
+master `8ce8797c` vs tip `70f607b0`, min-of-blocks over two `cuda_events`
+armtime runs each); the small probe cells pay more relatively (the reduce's
+read-back does not shrink with `T`): `topo-D2-w64x64-BC64|global` **+35.4%**
+(0.081 → 0.110 ms), the high-K `topo-D4-w8x8x8x16-BC16|global` 0.230 →
+0.477 ms (not re-measured by the remedy; the ~+108% figure carries the same
+unaudited-arithmetic caveat P10's review left open). The latency baseline
+was re-recorded at the P10 tip with this note.
 
 Cost and scaling (stated per the design-for-scale rule): the workspace is
 launch-scoped, `4 * n_work * T * (DV + 1)` bytes ≈ 8.6 GB at the flagship
