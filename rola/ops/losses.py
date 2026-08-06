@@ -1,8 +1,8 @@
 """Training-side budget-conditioning losses (architecture §4.5; NOT layer/producer scope).
 
 This module owns the two loss tiers the producer's conditioning surface
-(`routing/producer_v3.py`) actuates against, but does not itself produce
-routing or own any nn.Parameter -- it consumes a `RoutingOutput` (or its
+(`routing/producer.py`) actuates against, but does not itself produce
+routing or own any nn.Parameter -- it consumes a `RouteFactors` (or its
 constituent tensors) and returns loss terms plus updated dual variables, which
 a training loop is responsible for adding into the total loss and carrying
 forward across steps.

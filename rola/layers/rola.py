@@ -1,91 +1,49 @@
-# Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""The RoLA layer: a value projection, the feature-map slot, and the op.
 
-"""RoLA — Routed (Value) Linear Attention, V3 layer.
+    RoLA(hidden_size, num_heads, routes, decay=..., layer_idx=...)
 
-``ROLA_V3_SPEC.md`` §10 Stage 2 / ``ROLA_HIERARCHICAL_VALUE_MEMORY_ARCHITECTURE.md``
-§8, §9.4: this layer owns the value/route/gain/decay projection contract and
-public routing configuration; it does not own, project, or reference Q or K in
-any form. Architecture §9.3 ("Delete after parity"): this replaces the Q/K-era
-layer in place, per the migration inventory row `fla_rola/layers/rola.py`.
+``routes`` is a :class:`~rola.routing.factors.RouteProducer` -- the feature map, which
+carries the topology, the value width, the normalization arm and the producers that
+fill each level. ``decay`` is a decay SOURCE (:mod:`rola.routing.decay`), the slot that
+decides where the recurrence's forgetting rates come from. Everything else the layer
+used to take was either one of those two facts spelled out flat, or a launch decision
+the planner makes.
 
-**Execution backends, and the rule that picks between them.** This layer has THREE
-execution backends and the choice between them is STRUCTURAL, decided by
-:meth:`RoLA.select_execution_backend` and then by the ``L == 1`` fork inside its
-``'cuda'`` arm, before any of them runs:
+**Execution backends, and the rule that picks between them.** The layer has three, and
+the choice is STRUCTURAL -- decided before any of them runs:
 
-* ``'oracle'`` -- ``naive_rola``, the Stage 1 canonical reference run in the
-  layer's working dtype. It is fully differentiable and it is **the only
-  implemented training path**, which is not the same thing as a fallback: nothing
-  degrades into it after a failure, and no configuration reaches it because
-  something else declined. It is selected when the module is in training mode,
-  when the operation's own inputs carry a gradient, and when the tensors are not
-  on a CUDA device.
-* ``'cuda'`` -- the plan-selected V3 consumer (`ROLA_V3_SPEC.md` §3-§6):
-  ``summarize_routing`` measures the realized routing in ONE kernel launch,
-  ``select_config`` picks ``(BC, BT)`` from it in closed form, the ``Plan``
-  is stamped with the residency that choice was reasoned at, ``build_schedule``
-  builds the §4 schedule from the same folded view, and ``_consumer_forward``
-  launches the template instantiation that plan names. ``BC`` is chosen PER LAUNCH
-  (§4.3), which is safe over live paged state only because a page is keyed on the
-  MMA atom and not on ``BC`` (§4.5). The consumer is **forward-only** -- there is no native backward for
-  it yet -- so it requires eval mode AND no gradient reachability AND a CUDA device
-  AND a launchable configuration; it is refused the moment any of those fails.
-* ``'decode'`` -- the T=1 sibling kernel (THUNDER_RUN_SPEC.md §6b). Selected inside
-  the ``'cuda'`` arm when the call consumes exactly one token AND carries a recurrent
-  state: at ``T = 1`` every stage-2 decision is degenerate, so the decode path bypasses
-  selection architecturally and runs a token-stationary gather-GEMV over the exact
-  support bitmap instead of the tiled consumer. It is a SIBLING of ``'cuda'``, not a
-  specialization of it -- shared produce contract, own consumer, frozen config -- and it
-  is forward-only for the same reason, which is why it forks INSIDE the guard rather
-  than beside it. Counted under its own key so a dispatch test can tell the two CUDA
-  branches apart.
+* ``'oracle'`` -- ``naive_rola``, the canonical reference run in the layer's working
+  dtype. It is fully differentiable and it is the ONLY implemented training path, which
+  is not the same thing as a fallback: nothing degrades into it after a failure, and no
+  configuration reaches it because something else declined.
+* ``'cuda'`` -- the plan-selected consumer, through :func:`rola.rola_op`.
+* ``'decode'`` -- the ``T = 1`` sibling kernel. At one token every selection decision is
+  degenerate (no tile to choose, no split, a statistics population of one), so decode
+  bypasses selection ARCHITECTURALLY rather than running the planner on degenerate
+  inputs. It is a SIBLING of the tiled path, not a specialization: shared production
+  contract, own consumer, frozen config.
 
-**The autograd trap this dispatch exists to close** (memory note
-`layer-dispatch-autograd-gap`; the fleet-smoke ``x.grad=None`` failure was exactly
-this class): a forward-only kernel reachable from a grad-requiring context does not
-raise, it silently returns a tensor with no ``grad_fn`` and the graph is severed at
-this layer. The predicate is therefore ``torch.is_grad_enabled() and any input to
-the OPERATION requires grad`` -- evaluated on ``v``, the producer's own outputs, and
-the decay dials (``LeafMassDecay.dials``, when a decay config is in play), which
-are the tensors the operation actually consumes, not on the module's parameters (a
-frozen-parameter, non-requiring-grad input under ``torch.no_grad`` has no graph to
-sever and correctly takes the CUDA path). The decay dials are an OPERATION input --
-``_consumer_forward`` is called with ``decay=decay_config`` -- and were missing
-from the predicate before the fix pass recorded at `wiring-review.md` §2; a
-dial-only-unfrozen finetune (the configuration ``decay_target_leaf_rate`` exists
-for) reached the CUDA consumer and silently produced ``decay_theta.grad = None``.
+**The autograd trap this dispatch exists to close** (`[[layer-dispatch-autograd-gap]]`):
+a forward-only kernel reachable from a gradient-requiring context does not raise. It
+returns a tensor with no ``grad_fn`` and the graph is severed here. ``rola_op`` owns the
+predicate -- it is evaluated on the tensors the OPERATION consumes, not on the module's
+parameters -- and the layer adds ONE condition of its own, which has no meaning for a
+free function: ``self.training``. Reentrant gradient checkpointing runs its first pass
+under ``torch.no_grad()`` with ``module.training`` still ``True``, so a predicate keyed
+only on gradient reachability would take the CUDA path there while backward recomputes
+the same step on the oracle -- the value flowing downstream and the gradient taken would
+come from two implementations agreeing only to a tolerance. Gating on training mode
+closes that structurally.
 
-**Training mode is also a dispatch condition, not just a gradient one** (fix pass,
-`wiring-review.md` §3). ``self.training`` gates the CUDA path independently of
-``torch.is_grad_enabled()``, because reentrant gradient checkpointing
-(``torch.utils.checkpoint.checkpoint(..., use_reentrant=True)``, still PyTorch's
-default when unset) runs its first pass under ``torch.no_grad()`` with
-``module.training`` still ``True``. Without this condition that first pass selects
-``'cuda'`` while backward recomputes the SAME step on the oracle -- the value that
-flows downstream and the gradient that is taken would come from two different
-implementations agreeing only to ``RTOL``, not from one graph. Gating on
-``self.training`` closes this structurally: a module in training mode never takes
-the CUDA path, under any wrapper, so a training-mode forward is graph-faithful
-everywhere it is called, and eval mode is where the CUDA path's inference speed
-is meant to matter.
-
-**There is no silent degradation in the other direction either.** Once the CUDA
-backend is selected, a configuration the consumer cannot run -- an unimplemented
-intra lowering, an un-instantiated ``(d_v, BC, BT)``, an unrealized warp tile --
-raises loudly out of ``select_config``/``_consumer_forward``/the kernel's own
-``TORCH_CHECK``s. It never falls back to the oracle.
-
-**Deletion inventory applied here** (spec §1.2): `head_k_dim`, `qkv_proj`,
-`qk_norm`/`q_norm`/`k_norm`, `q_conv1d`/`k_conv1d`, `_feature_map`, and all
-Q/K-aware cache fields are gone. **Retained** (do not delete by association,
-spec §1.2): `v_conv1d`, `read_route_conv1d`/`write_route_conv1d`, and the
-`RMSNorm` module (unused by this layer today, kept importable for any future
-non-Q/K route-source normalization -- none is wired here, since that would be
-a new model justification per architecture §8).
+**There is no silent degradation in the other direction either.** Once the CUDA backend
+is chosen, a configuration the consumer cannot run -- an un-instantiated tiling, an
+unrealized warp tile -- raises out of the planner, the op, or the kernel's own checks.
+It never falls back to the oracle.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -93,786 +51,168 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from rola.utils.cache import get_layer_cache, update_layer_cache
-
-# OPTIONAL: the fused short causal convolution, used only when the caller asks for
-# `use_short_conv=True` (default False). Guarded exactly as mamba-ssm guards
-# `causal_conv1d`: the import never fails, and the assert that names the remedy is
-# deferred to the point where the module is actually needed. This is what keeps
-# `rola`'s hard dependency set at torch/einops/triton.
-try:
-    from fla.modules import ShortConvolution
-except ImportError:  # noqa: BLE001
-    ShortConvolution = None
-from rola.interface import select_backend
-from rola.ops.consumer import _consumer_forward, sm_shared_bytes
+from rola.interface import rola_op, select_backend
 from rola.ops.decode import decode_forward, freeze_decode_config
-from rola.ops.naive import naive_rola
-from rola.planner.schedule import (
-    MMA_PRECISIONS,
-    Plan,
-    StaticDensity,
-    build_schedule,
-    consumer_occupancy,
-    owner_geometry,
-    routing_views,
-)
-from rola.planner.select import (
-    DEFAULT_SELECTOR,
-    SUPPORTED_BT,
-    HardwareFacts,
-    StatisticsBundle,
-    freeze_for_decode,
-    select_with,
-)
-from rola.routing.producer import (
-    BudgetConditioning,
-    init_temp_bias,
-    produce_routing,
-    resolved_routing_from_topology,
-)
-from rola.routing.side_gain import GainConfig, init_side_gain_bias
-from rola.routing.summaries import summarize_routing
-from rola.routing.topology import resolve_b_spec
-from rola.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    LeafMassDecay,
-    LevelConfig,
-    SoftmaxActivation,
-    Topology,
-    UnionRouting,
-)
-
-
-@dataclass(frozen=True)
-class _DecodeConfigCache:
-    """§6b's frozen carrier plus the key it is valid for.
-
-    A tiny named type rather than a bare tuple because the validity KEY is the whole
-    point: the carrier is frozen for a sequence, and a cache whose key a reader has to
-    reconstruct from an unpacking site is a cache that will eventually be reused across
-    a shape it was not built for.
-    """
-    key: tuple
-    value: object
-
-
-@dataclass(frozen=True)
-class _HardwareCache:
-    """§4.3 tier H plus the DEVICE it is a fact about.
-
-    Same shape and the same reason as :class:`_DecodeConfigCache`: the validity key is
-    the point. Tier H is measured once per (device, install) and carries no routing
-    statistic, so caching it does not touch the per-step selection ruling.
-    """
-    key: object
-    value: object
-
-
-@dataclass(frozen=True)
-class LevelRoutingConfig:
-    """Public read/write routing semantics for one factorization level.
-
-    Unchanged from the Q/K-era layer -- this dataclass has never referenced
-    Q/K, it only translates public read/write/tied/alpha choices into the
-    ops-internal `IndependentRouting | UnionRouting` tags (`_resolve_level_routing`
-    below), which is exactly `ROLA_V3_SPEC.md` §1's `LevelRouting` vocabulary.
-
-    ``read``/``write`` are ``'dense'`` (softmax) or ``'sparse'`` (exact entmax
-    with ``alpha`` equal to 1.5 or 2.0). An untied sparse/sparse level resolves
-    to union routing: entmax determines shared support, then read and write
-    mass split across that support. All other combinations resolve to
-    independent routing. ``tied=True`` shares one projection; equal
-    activations also share one solve.
-    """
-    read: str = 'dense'
-    write: str = 'dense'
-    tied: bool = False
-    alpha: float = 1.5
-
-    def __post_init__(self):
-        if type(self.tied) is not bool:
-            raise TypeError(f"LevelRoutingConfig.tied must be bool, got {self.tied!r}")
-        for _side, _v in (('read', self.read), ('write', self.write)):
-            if _v not in ('sparse', 'dense'):
-                raise ValueError(f"LevelRoutingConfig.{_side} must be 'sparse' or 'dense', got {_v!r}")
-        object.__setattr__(self, 'alpha', EntmaxActivation(self.alpha).alpha)
-
-
-def resolve_level_routing_configs(
-    level_routing_configs: LevelRoutingConfig | list[LevelRoutingConfig],
-    D: int,
-) -> list[LevelRoutingConfig]:
-    """Resolve the layer's per-level routing config list of length D:
-      - a single `LevelRoutingConfig`: broadcast to all D levels.
-      - a `list[LevelRoutingConfig]` of length D: used as-is (explicit per-level control).
-    Any other length raises — the list-length IS the structural check (branch on structure, not a
-    magic threshold)."""
-    if isinstance(level_routing_configs, LevelRoutingConfig):
-        return [level_routing_configs] * D
-    configs = list(level_routing_configs)
-    if len(configs) != D:
-        raise ValueError(
-            f"level_routing_configs list must have exactly D={D} entries (one per routing level), "
-            f"got {len(configs)}")
-    if any(type(config) is not LevelRoutingConfig for config in configs):
-        raise TypeError("level_routing_configs entries must be LevelRoutingConfig instances")
-    return configs
-
-
-def _resolve_level_routing(config: LevelRoutingConfig):
-    """Translate one public config into the tagged operation plan exactly once."""
-    if not config.tied and config.read == 'sparse' and config.write == 'sparse':
-        return UnionRouting(config.alpha)
-
-    def activation(side: str):
-        return EntmaxActivation(config.alpha) if side == 'sparse' else SoftmaxActivation()
-
-    return IndependentRouting(
-        tied=config.tied,
-        read_activation=activation(config.read),
-        write_activation=activation(config.write),
-    )
-
+from rola.planner.select import freeze_for_decode
+from rola.routing.decay import validate_decay_source
+from rola.routing.factors import RouteProducer
+from rola.utils.cache import get_layer_cache, update_layer_cache
 
 if TYPE_CHECKING:
     from transformers.processing_utils import Unpack
 
     from rola.state import RoLAState
 
+__all__ = ["RoLA"]
+
+
+@dataclass(frozen=True)
+class _DecodeConfigCache:
+    """The frozen decode carrier plus the key it is valid for.
+
+    A named type rather than a bare tuple because the validity KEY is the whole point:
+    a cache whose key a reader has to reconstruct from an unpacking site is a cache that
+    will eventually be reused across a shape it was not built for.
+    """
+
+    key: tuple
+    value: object
+
 
 class RoLA(nn.Module):
-    r"""Routed (Value) Linear Attention layer -- V3.
+    """Routed linear attention.
 
     Args:
-        hidden_size (int): model dim. Default 1024.
-        num_heads (int): number of heads (H). Default 8.
-        head_v_dim (int): per-head value dim (d_v). Default 32.
-        levels_per_head (int): routing depth D. Default 1.
-        states_per_level (int | list[int]): branching at every level (architecture §4.1).
-            An int gives uniform branching b (N = b**D). A length-D list gives mixed-radix
-            per-level branching. Every entry must be >= 2 (`LevelConfig` degenerate-width
-            exception aside; the layer itself requires >= 2, matching V1/V2's routing
-            convention -- a width-1 level carries no routing information).
-        decay (str): 'none' | 'leaf_mass' (architecture §4.4). Default 'none'.
-        decay_target_leaf_rate (float): the symmetric product-rate init target `rho_init`
-            (architecture §4.4: `delta_l_init = rho_init ** (1/D)`); only used when
-            `decay='leaf_mass'`. Default `2**-8`.
-        state_norm (str): 'raw' | 'global'. Default 'global'.
-        router_bias (bool): bias on the routing projections. Default False.
-        gain_bias_init (float | None): if given, initializes the side-gain bias so that
-            an all-zero-logit gain starts at this value (`side_gain.init_side_gain_bias`).
-            **Flagged model decision** (spec §1.1): `None` (the default) leaves the gain
-            bias at zero, i.e. unit gain at zero logits -- this is explicitly NOT
-            migration-equivalent to any V1/V2 checkpoint (architecture §4.2 gives
-            `g_read=sqrt(K)`, `g_write=K` for the exact decomposition at a specific K)
-            and must not be presented as such; it is recorded here as the deliberate,
-            simplest starting point, to be revisited by its own quality/stability gate
-            before large training (spec §1.1 `TODO`).
-        use_short_conv (bool): causal depthwise short conv on the value and routing-source
-            streams. Default False.
-        conv_size (int): short-conv kernel size. Default 4.
-        conv_bias (bool): bias in the short conv. Default False.
-        layer_idx (int): layer index (for the KV cache). Default None.
-        level_routing_configs (LevelRoutingConfig | list[LevelRoutingConfig] | None): explicit
-            per-level routing config. Default None, which broadcasts `LevelRoutingConfig()`
-            (dense/dense, untied) to all levels.
-        progressive_memory (bool): retained flag. Superseded for the CUDA path by
-            `paging` below, which is the actual `ROLA_V3_SPEC.md` §7.1 mechanism.
-            Default True.
-        paging (bool): commit state pages on first write to an owner (spec §7.1).
-            The resident state then scales with the owners the routing REALIZES
-            rather than with the topology's provisioned `N`. One page is one ATOM
-            (`page_states := MMA_K_QUANTUM`, spec §1b), pages are admitted by the
-            write-side plan, and an atom without a page reads as zeros -- so paging
-            is BITWISE INVISIBLE, not an approximation. CUDA backend only; the oracle path has
-            no page table and raises rather than silently ignoring the flag.
-            Default False.
-        max_physical_pages (int | None): §7.1's allocator hard cap, in ATOMS.
-            `None` (default) provisions the dense limit, at which the ceiling can
-            never bind. A finite value is a POLICY limit: a launch whose realized
-            write footprint exceeds it is REFUSED, host-side, naming the demand and
-            the arena size. It is never degraded -- the capped mode that granted a
-            prefix and annihilated the denied writes is DELETED.
-        budget (BudgetConditioning | None): architecture §4.5 Tier 1 + usage-conditioning
-            configuration. `None` (default) disables all conditioning machinery -- the
-            "zero-budget-conditioning baseline is the unconstrained measurement" path
-            (spec §4.5), and no conditioning parameters are allocated.
-        temp_bias_init (float): target Tier-1 temperature `c` at an all-zero-logit
-            actuator (`temp_W`/`temp_b` initialize to zero weight / this bias), only
-            meaningful when `budget` configures at least one budgeted pair. Default 1.0.
-            **Flagged model decision** (spec §4.5, D5 fix): unlike `gain_bias_init`
-            (which defaults to `None`/raw-zero and is explicitly NOT neutral), this
-            defaults to the actuator's neutral point -- `c = softplus(bias) +
-            _TEMPERATURE_FLOOR` is never 1 at raw bias 0, so merely *configuring* a
-            budgeted level would otherwise perturb an otherwise-baseline model's
-            routing distribution before any training signal exists. `1.0` keeps a
-            freshly budgeted level a no-op at init; pass a different target to start
-            pre-biased toward a tighter/looser initial support.
-        state_block (int | None): `BC`, the number of leafs one owner block owns --
-            the CTA's resident state tile. **An EXPERT PIN over a planner-selected
-            axis** (`THUNDER_RUN_SPEC.md` §4.3/§6 P6), no longer a contract the caller
-            must supply: an explicit value shrinks the feasible set to itself and the
-            planner never runs; `None` takes the LARGEST FEASIBLE `BC`.
-
-            **WHAT `widths[-1]` WAS, AND WHY IT IS NOT THE DEFAULT ANY MORE.** The old
-            default was the innermost level's width, defended as the unique `BC` whose
-            owner rectangle is exactly one full innermost level (`j = D-1`, inner
-            extent 1, so both alignment conditions hold identically for every
-            topology). That defence is true and it is not the question: alignment is
-            necessary, not sufficient. `widths[-1]` is not INSTANTIATED on a topology
-            whose last level is wide -- `branches=[4, 256]` resolves it to `BC = 256`,
-            which no kernel implements -- so the caller got a plan-time
-            `NotImplementedError` out of the occupancy oracle instead of a
-            construction-time error, on a value they never chose. It is also merely
-            the smallest feasible `BC` on a topology whose last level is narrow, which
-            costs the per-leaf amortization and the `N/BC`-way atomic reduction that
-            make `BC` worth selecting at all.
-
-            The largest feasible `BC` is the alignment-admissible set intersected with
-            the instantiated ladder, maximized (`rola.planner.select.largest_feasible_bc`).
-            Both are computed AT CONSTRUCTION, so a topology the ladder cannot serve
-            and an inadmissible explicit pin are both construction-time errors and
-            never plan-time surprises.
+        hidden_size: model dim. Must match the routing gateway's.
+        num_heads: head count ``H``. Must match the routing gateway's.
+        routes: the feature-map slot -- a :class:`~rola.routing.factors.RouteProducer`.
+            It owns the topology (levels, widths), the per-head value width ``d_v``, the
+            normalization arm and the side gains, because all of those are facts about
+            the map rather than about the layer wrapping it.
+        decay: a decay source (:mod:`rola.routing.decay`), or ``None`` for a
+            non-decaying recurrence. Validated against the topology at construction.
+        value_conv: an optional causal short convolution over the value stream, e.g.
+            ``fla.modules.ShortConvolution``. A module, not three scalars: the layer
+            does not need to know how it is configured, only where it goes.
+        route_conv: the same, over the routing source stream.
+        layer_idx: index into the recurrent cache.
+        expert: :class:`rola.expert.PlanOverrides`. Everything it pins is an axis the
+            planner selects; it is quarantined because a caller pinning one is not
+            describing a model.
     """
 
     def __init__(
         self,
-        hidden_size: int = 1024,
-        num_heads: int = 8,
-        head_v_dim: int = 32,
-        levels_per_head: int = 1,
-        states_per_level: int | list[int] = 16,
-        decay: str = 'none',
-        decay_target_leaf_rate: float = 2.0 ** -8,
-        state_norm: str = 'global',
-        router_bias: bool = False,
-        gain_bias_init: float | None = None,
-        gain: bool = True,
-        gain_config: GainConfig | None = None,
-        use_short_conv: bool = False,
-        conv_size: int = 4,
-        conv_bias: bool = False,
+        hidden_size: int,
+        num_heads: int,
+        routes: RouteProducer,
+        *,
+        decay=None,
+        value_conv: nn.Module | None = None,
+        route_conv: nn.Module | None = None,
         layer_idx: int | None = None,
-        level_routing_configs: LevelRoutingConfig | list[LevelRoutingConfig] | None = None,
-        progressive_memory: bool = True,
-        budget: BudgetConditioning | None = None,
-        temp_bias_init: float = 1.0,
-        state_block: int | None = None,
-        paging: bool = False,
-        max_physical_pages: int | None = None,
-        mma_precision: str = "bf16",
-    ) -> RoLA:
+        expert=None,
+    ) -> None:
         super().__init__()
-        if decay not in ('none', 'leaf_mass'):
-            raise ValueError(f"decay must be 'none' or 'leaf_mass', got {decay!r}")
-        if level_routing_configs is None:
-            level_routing_configs = LevelRoutingConfig()
-        if state_norm not in ('raw', 'global'):
-            raise ValueError(f"state_norm must be 'raw' or 'global', got {state_norm!r}")
-        if mma_precision not in MMA_PRECISIONS:
+        if type(routes) is not RouteProducer:
+            raise TypeError(
+                "RoLA's `routes` argument is the feature-map slot and must be a "
+                f"rola.RouteProducer, got {type(routes).__name__}. It is what carries the "
+                "topology, the value width and the producers that fill each level.")
+        if routes.hidden_size != hidden_size or routes.num_heads != num_heads:
             raise ValueError(
-                f"mma_precision must be one of {MMA_PRECISIONS}, got {mma_precision!r}")
-        if type(progressive_memory) is not bool:
-            raise TypeError("progressive_memory must be bool")
-        if budget is not None and type(budget) is not BudgetConditioning:
-            raise TypeError(f"budget must be None or BudgetConditioning, got {budget!r}")
+                f"this layer is {hidden_size} wide with {num_heads} heads, but its RouteProducer "
+                f"was built for {routes.hidden_size}/{routes.num_heads}")
+        if decay is not None:
+            validate_decay_source(decay, routes.topology, num_heads)
+
+        from rola.expert import PlanOverrides
+        from rola.planner.select import feasible_bc
+
+        overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+        # CONSTRUCTION TIME, NOT PLAN TIME. `feasible_bc` is the alignment-admissible set
+        # intersected with the instantiated ladder, and it raises with the topology's own
+        # diagnosis when the ladder cannot serve it at all. Resolving it here means a
+        # topology nothing implements, and an inadmissible expert pin, both fail on the
+        # line that chose them rather than inside a forward several frames away.
+        #: The `BC` ladder this topology can run on. An expert pin SHRINKS it to itself.
+        self.feasible_BC = feasible_bc(
+            routes.topology.widths,
+            **({} if overrides.state_block is None else {"pinned": overrides.state_block}))
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-        #: The readout MMA's NUMERIC FORMAT, forwarded into every plan this layer
-        #: selects. `bf16` is the production default (`MMA_PRECISIONS` records the
-        #: measurement and why the exactness gates pin `tf32x3` explicitly instead);
-        #: it is a layer field rather than a plan-time default so that a gate
-        #: comparing this layer against the fp64 oracle can ask for the exact arm.
-        self.mma_precision = mma_precision
-        self.head_v_dim = head_v_dim
-        branches = resolve_b_spec(states_per_level, levels_per_head)
-        self.level_routing_configs = resolve_level_routing_configs(level_routing_configs, levels_per_head)
-        levels = tuple(
-            LevelConfig(width, _resolve_level_routing(config))
-            for width, config in zip(branches, self.level_routing_configs)
-        )
-        self.topology = Topology(levels=levels, d_v=head_v_dim)
-        # WHICH (level, side) CELLS ARE FULL-SUPPORT BY CONSTRUCTION, decided ONCE,
-        # here (§2.7's level-structure-awareness ruling, 2026-08-01). This is a
-        # property of the configured activations -- read from the registry's
-        # `exact_zeros` column by `StaticDensity.from_topology` -- so it cannot
-        # change between steps, and it is what lets the planner substitute a closed
-        # form for the dense side's tile statistics instead of measuring a rectangle
-        # it already knows the shape of. The declaration is sound HERE, and only
-        # here, because this layer's `produce_routing` applies exactly the
-        # activations this topology names; a caller holding routing tensors of
-        # unrelated provenance passes nothing and gets the fully measured pass.
-        self.static_density = StaticDensity.from_topology(self.topology)
-        if budget is not None:
-            budget.validate_against(self.topology)
-        self.budget = budget
-
-        # `BC` -- contract, not a §6-selected axis. `owner_geometry` is the authority
-        # on admissibility and it raises rather than re-aligning, so an inadmissible
-        # `state_block` is a construction-time error and never a forward-time surprise.
-        # §6 P6: the FEASIBLE SET and the largest-feasible default, both resolved at
-        # CONSTRUCTION so an inadmissible topology or an inadmissible pin fails here and
-        # not inside a forward. `feasible_bc` raises with the topology's own diagnosis
-        # when the ladder cannot serve it at all.
-        from rola.planner.select import feasible_bc, largest_feasible_bc
-
-        if state_block is None:
-            self.state_block = largest_feasible_bc(self.topology.widths)
-            self.feasible_BC = feasible_bc(self.topology.widths)
-        else:
-            self.state_block = int(state_block)
-            # An explicit pin SHRINKS THE FEASIBLE SET TO ITSELF (§4.3) -- the planner
-            # then has nothing to choose and never runs. It is alignment-validated like
-            # any other member rather than trusted, which is what makes it a pin over a
-            # selected axis instead of a bypass of one.
-            self.feasible_BC = feasible_bc(self.topology.widths, pinned=self.state_block)
-        owner_geometry(self.topology.widths, self.state_block)
-
-        # Execution-backend telemetry. Plain Python attributes (not buffers, not
-        # parameters): they are diagnostic state, must not enter a state_dict, and
-        # must not be cast by `_apply`. The dispatch gate asserts on these rather
-        # than on wall-clock, because timing cannot distinguish "took the CUDA path"
-        # from "took a fast oracle path" and this is exactly the distinction the
-        # autograd trap turns on.
-        #: 'decode' is a THIRD key rather than a sub-count of 'cuda', because the two
-        #: CUDA branches are different kernels with different gates and a dispatch test
-        #: that could not tell them apart would pass while the wrong one ran.
-        self._execution_backend_counts = {'oracle': 0, 'cuda': 0, 'decode': 0}
-        self.last_execution_backend: str | None = None
-        self.last_selected_plan = None
-        #: `rola.planner.select.ConfigEvidence` for the most recent CUDA prefill:
-        #: `cost_per_token`, the full `(BC, BT)` grid, the residency and wave count
-        #: the choice was reasoned at, and the provenance string. Diagnostic state,
-        #: deliberately not a buffer.
-        self.last_plan_axes = None
-        #: `(BC, BT)` the §4.2 summary pass was MEASURED at, which is not in general
-        #: the `(BC, BT)` the plan selected: the pass needs one owner geometry and one
-        #: tiling, and `select_config` reuses its statistics across the whole feasible
-        #: grid. Recorded so a plan states the granularity it was priced at.
-        self.last_summary_granularity = None
-        #: Tier-H record, cached on the device it is a fact about (see
-        #: `_hardware_facts`). Not a plan cache -- no routing statistic lives here.
-        self._hardware = None
-        #: `PagingResult` for the most recent paged forward, or `None`. Committed-state
-        #: accounting (spec §7.1): peak pages, realized owners, resident vs dense
-        #: bytes. Same plain-attribute surface as the counters
-        #: above -- diagnostic state, deliberately not a buffer.
-        self.last_paging_stats = None
-
-        self.decay_kind = decay
-        self.decay_target_leaf_rate = decay_target_leaf_rate
-        if decay == 'leaf_mass':
-            self.decay_theta = nn.ParameterList([
-                nn.Parameter(theta) for theta in self._init_decay_thetas(
-                    num_heads, self.topology.widths, decay_target_leaf_rate)
-            ])
-
-        self.state_norm = state_norm
-        self.router_bias = router_bias
-        self.use_short_conv = use_short_conv
-        self.conv_size = conv_size
+        self.routes = routes
+        self.decay = decay
+        self.value_conv = value_conv
+        self.route_conv = route_conv
         self.layer_idx = layer_idx
-        self.progressive_memory = progressive_memory
-        if type(paging) is not bool:
-            raise TypeError("paging must be bool")
-        self.paging = paging
-        self.max_physical_pages = max_physical_pages
-        #: The §7.1 arena, built on first paged forward (it needs `BH`, which is a
-        #: forward-time quantity). Plain attribute, like the other execution-backend
-        #: diagnostics below: it is runtime state, must not enter a `state_dict`, and
-        #: must not be cast by `_apply`.
-        self._page_arena = None
-        #: §6b's frozen carrier and its scratch, both built at the first decode step and
-        #: reused for the sequence. The carrier is a pure function of the topology, the
-        #: normalization arm and the device, so caching it is not a staleness risk the
-        #: way a cached PLAN would be -- there is no per-step statistic in it.
-        self._decode_config = None
-        self._decode_workspace = None
+        self.expert = overrides
 
-        self.value_dim = num_heads * head_v_dim
+        self.value_dim = num_heads * routes.d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        # The packed router layout is a pure routing-plan fact, so it is READ OFF the
-        # resolved plan rather than re-derived here: `ResolvedRouting` owns the column
-        # layout (`packed_router_width`, `packed_slot_offsets`) that `routing/projection.py`
-        # slices, and a second derivation in the layer is a second definition that can
-        # drift from the one the projection actually indexes.
-        resolved_routing = resolved_routing_from_topology(self.topology)
-        D = self.topology.D
-        untied_levels = resolved_routing.untied_levels
+        # Execution telemetry. Plain attributes, not buffers: diagnostic state must not
+        # enter a state_dict and must not be cast by `_apply`. The dispatch gate asserts
+        # on these rather than on wall-clock, because timing cannot distinguish "took
+        # the CUDA path" from "took a fast oracle path" and that is exactly the
+        # distinction the autograd trap turns on.
+        self._execution_backend_counts = {"oracle": 0, "cuda": 0, "decode": 0}
+        self.last_execution_backend: str | None = None
+        self.last_selected_plan = None
+        #: The paging arena, built on the first paged forward (it needs ``BH``, a
+        #: forward-time quantity), and the frozen decode carrier with its scratch. Both
+        #: are runtime state.
+        self._page_arena = None
+        self._decode_config = None
+        self._decode_workspace = None
 
-        if use_short_conv:
-            assert ShortConvolution is not None, (
-                "use_short_conv=True needs the fused short convolution from "
-                "flash-linear-attention, which is an optional companion of `rola`:\n"
-                "    pip install 'rola[fla]'\n"
-                "There is no vendored substitute: the convolution is not RoLA's "
-                "code and forking it here would fork its maintenance. Pass "
-                "use_short_conv=False to run without it.")
-            self.v_conv1d = ShortConvolution(self.value_dim, conv_size, bias=conv_bias, activation='silu')
-            self.write_route_conv1d = ShortConvolution(hidden_size, conv_size, bias=conv_bias, activation=None)
-            if untied_levels:
-                self.read_route_conv1d = ShortConvolution(hidden_size, conv_size, bias=conv_bias, activation=None)
+    # --- accessors ----------------------------------------------------------
 
-        # CHECKPOINT-FORMAT NOTE: this parameter was `[H, packed_slots, hidden, max(width)]`
-        # until the pad-free cut. Every slot feeds exactly ONE level, so a slot narrower
-        # than the widest carried dead columns -- dead parameters, dead optimizer moments,
-        # dead gradient buffers, and a per-step `torch.cat` whose only job was to strip
-        # them. The stored parameter is now the packed layout itself.
-        packed_router_width = resolved_routing.packed_router_width
-        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, packed_router_width))
-        self._init_factor_router(self.route_W)
-        if router_bias:
-            self.route_bias_param = nn.Parameter(torch.zeros(num_heads, packed_router_width))
-        else:
-            self.register_parameter('route_bias_param', None)
+    @property
+    def topology(self):
+        """The routing topology, which is the feature map's, not the layer's."""
+        return self.routes.topology
 
-        # Side gains (spec §1.1, architecture §4.2; gain-surface ruling 2026-08-01).
-        # `gain_layout` decides the columns from the algebra: the write gain is a real
-        # dial (`write_gain=False` REMOVES it, rather than pinning it to 1, so no dead
-        # parameter is optimized), and the read gain is a consequence of the
-        # normalization mode -- present under `raw`, structurally absent under `global`.
-        #: PUBLIC surface is the single `gain: bool`; `gain_config` is the internal
-        #: two-boolean research surface behind it, for fine-grained combinations that
-        #: are deliberately not public parameters.
-        if gain_config is not None:
-            self.gain_config = gain_config.validate(state_norm)
-        else:
-            self.gain_config = GainConfig.from_public(gain, state_norm).validate(state_norm)
-        self.write_gain = self.gain_config.write_gain
-        self.read_gain = self.gain_config.read_gain
-        self.gain_sides = self.gain_config.layout
-        gain_sides = len(self.gain_sides)
-        self.gain_W = nn.Parameter(torch.empty(num_heads, gain_sides, hidden_size))
-        if gain_sides:
-            nn.init.kaiming_uniform_(
-                self.gain_W.view(num_heads * gain_sides, hidden_size), a=5 ** 0.5)
-        gain_bias_value = 0.0 if gain_bias_init is None else init_side_gain_bias(gain_bias_init)
-        self.gain_bias = nn.Parameter(torch.full((num_heads, gain_sides), gain_bias_value))
+    @property
+    def head_v_dim(self) -> int:
+        return self.routes.d_v
 
-        if budget is not None:
-            pairs = budget.budgeted_pairs
-            if pairs:
-                self.temp_W = nn.Parameter(torch.zeros(num_heads, len(pairs), 2))
-                # D5 fix: init the bias (not the weight) so an all-zero-conditioning-input
-                # actuator starts at exactly `temp_bias_init` (default neutral c=1) instead
-                # of the raw-zero-bias default, which is never neutral for this positive
-                # parameterization (see `producer_v3.init_temp_bias`).
-                self.temp_b = nn.Parameter(
-                    torch.full((num_heads, len(pairs)), init_temp_bias(temp_bias_init)))
-                # D5r fix: `temp_b` is materialized at the default (fp32) dtype, rounding the
-                # fp64-precise `init_temp_bias` target before `_apply` ever runs. Record the
-                # exact scalar target plus an at-construction snapshot so `_apply` can rebuild
-                # the baseline exactly in whatever dtype a later `.double()` lands on, instead
-                # of merely casting the already-rounded fp32 value forward.
-                self._temp_bias_target = float(temp_bias_init)
-                self._temp_b_init_snapshot = self.temp_b.data.clone()
-            else:
-                self.register_parameter('temp_W', None)
-                self.register_parameter('temp_b', None)
-            if budget.usage_bias_enabled:
-                self.usage_bias_W = nn.Parameter(torch.zeros(num_heads, D, 4))
-                self.usage_bias_b = nn.Parameter(torch.zeros(num_heads, D))
-            else:
-                self.register_parameter('usage_bias_W', None)
-                self.register_parameter('usage_bias_b', None)
-            self.budget_embed_W = nn.Parameter(torch.zeros(hidden_size))
-        else:
-            self.register_parameter('temp_W', None)
-            self.register_parameter('temp_b', None)
-            self.register_parameter('usage_bias_W', None)
-            self.register_parameter('usage_bias_b', None)
-            self.register_parameter('budget_embed_W', None)
+    @property
+    def normalization(self) -> str:
+        return self.routes.normalization
 
-    @staticmethod
-    def _init_factor_router(W: nn.Parameter):
-        """Init the packed per-head router weight [H, hidden, packed_router_width] like an
-        nn.Linear(hidden, cols): the routing logit is h·W[head] (== Linear with weight
-        W[head]^T), so the init must be a transposed Linear weight with kaiming
-        fan_in == hidden.
+    @property
+    def state_block(self) -> int:
+        """``BC``, the leafs one owner block owns -- pinned, or the largest feasible.
 
-        THE DISTRIBUTION IS UNCHANGED BY THE PAD-FREE CUT, and that is checkable rather
-        than asserted: `kaiming_uniform_(a=sqrt(5))` on a `[out, hidden]` matrix draws
-        `U(-1/sqrt(hidden), +1/sqrt(hidden))` per element -- `fan_in` is `hidden` and the
-        bound does not depend on `out`. The padded layout drew `H * slots * max(width)`
-        such elements and threw the padding away; this draws `H * packed_router_width`
-        and keeps all of them. Every level therefore still gets exactly the per-level
-        fan-in semantics it had, which is what the projection GEMM's fan-in IS: one dot
-        product over the full hidden dim per column, regardless of which level owns it."""
-        H, hidden, cols = W.shape
-        wt = torch.empty(H * cols, hidden)
-        nn.init.kaiming_uniform_(wt, a=5 ** 0.5)
-        W.data.copy_(wt.view(H, cols, hidden).transpose(-1, -2))
-
-    @staticmethod
-    def _init_decay_thetas(
-        num_heads: int, widths: tuple[int, ...], rho_init: float,
-    ) -> tuple[torch.Tensor, ...]:
-        """Symmetric product-rate initialization (architecture §4.4): every level gets an
-        equal share of the target leaf rate, ``delta_l_init = rho_init ** (1/D)``, so that
-        ``prod_l delta_l_init == rho_init`` exactly at init. Returns one ``[H, width_l]``
-        logit tensor per level (``theta = logit(delta)``, since ``LeafMassDecay.dials``
-        wants the sigmoid-parameterized ``delta`` directly, not a packed layout -- V3's
-        per-level dial tensors make the V1/V2 packed-offset bookkeeping unnecessary)."""
-        D = len(widths)
-        delta_init = rho_init ** (1.0 / D)
-        theta = math.log(delta_init) - math.log1p(-delta_init)
-        return tuple(torch.full((num_heads, width), theta, dtype=torch.float32) for width in widths)
-
-    def _apply(self, fn, recurse=True):
-        """Apply module transforms while keeping compact decay parameters in fp32, and
-        keeping ``temp_b``'s baseline exact under a dtype-widening transform (D5r).
-
-        Mirrors the V1/V2 layer's ``theta`` hook, adapted for V3's per-level
-        ``ParameterList`` (one dial tensor per level rather than one packed
-        tensor): exclude it from ``Module._apply``'s default recursion, apply
-        ``fn`` exactly once per level, then cast back to fp32 and restore
-        registration -- so a ``.half()``/``.to(device)`` call moves the compact
-        decay dials without leaving them in a reduced-precision dtype.
-
-        ``temp_b`` gets a different treatment: it starts life fp32-rounded
-        (``torch.full`` at the default dtype), so a naive ``fn(param.data)`` cast to
-        fp64 would carry that rounding forward and never recover the exact
-        ``init_temp_bias`` target. Instead, decompose the current value into
-        ``init_snapshot + drift`` (``drift`` is exactly zero until training moves the
-        parameter), cast the drift with ``fn`` like any other tensor, and rebuild the
-        init term by *recomputing* ``init_temp_bias`` directly in the post-``fn``
-        dtype rather than casting the stale fp32 constant. An untrained ``temp_b``
-        therefore lands on the exact target in any dtype; a trained one keeps its
-        drift with ordinary cast precision.
+        It is a PROPERTY rather than stored state because it is not a decision this
+        layer makes: the planner chooses it per launch from the feasible set, and an
+        expert pin is a set of one.
         """
-        decay_theta = self._modules.get('decay_theta')
-        temp_b = self._parameters.get('temp_b')
-        if decay_theta is None and temp_b is None:
-            return super()._apply(fn, recurse=recurse)
-        if decay_theta is not None:
-            del self._modules['decay_theta']
-        if temp_b is not None:
-            del self._parameters['temp_b']
-        try:
-            result = super()._apply(fn, recurse=recurse)
-            with torch.no_grad():
-                if decay_theta is not None:
-                    for param in decay_theta:
-                        param.data = fn(param.data).float()
-                        if param.grad is not None:
-                            param.grad = fn(param.grad).float()
-                if temp_b is not None:
-                    cast_ref = fn(temp_b.data)
-                    exact_init = torch.full_like(cast_ref, init_temp_bias(self._temp_bias_target))
-                    drift = fn(temp_b.data - self._temp_b_init_snapshot)
-                    temp_b.data = exact_init + drift
-                    if temp_b.grad is not None:
-                        temp_b.grad = fn(temp_b.grad)
-                    self._temp_b_init_snapshot = exact_init.clone()
-            return result
-        finally:
-            if decay_theta is not None:
-                self._modules['decay_theta'] = decay_theta
-            if temp_b is not None:
-                self._parameters['temp_b'] = temp_b
+        return self.feasible_BC[-1]
 
     @property
     def execution_backend_counts(self) -> dict[str, int]:
-        """How many forwards took each backend, since construction.
-
-        Read-only view. This is the gate surface for "the CUDA path was actually
-        taken": a dispatch test asserts on the delta of these counters, which is a
-        fact about which branch executed, whereas a timing comparison is an
-        inference from a number that has other explanations.
-        """
+        """How many forwards took each backend, since construction. Read-only view."""
         return dict(self._execution_backend_counts)
 
-    @property
-    def has_read_gain(self) -> bool:
-        """Whether this configuration projects a read gain. Read-only, by design."""
-        return 'read' in self.gain_sides
+    def select_execution_backend(self, *operation_inputs) -> str:
+        """``'oracle'`` or ``'cuda'`` from the module's mode and the OPERATION's inputs.
 
-    def select_execution_backend(self, *operation_inputs: torch.Tensor | None) -> str:
-        """Choose ``'oracle'`` or ``'cuda'`` from the module's mode and the
-        OPERATION's own inputs.
-
-        Three structural conditions. The first is evaluated on ``self``; the other
-        two are evaluated on the tensors the V3 operation consumes -- ``v``, the
-        per-level read/write allocations, the side gains, and the decay dials when
-        a decay config is in play -- rather than on the module's parameters or a
-        configuration flag:
-
-        1. **Training mode.** ``self.training`` alone selects ``'oracle'``,
-           independent of ``torch.is_grad_enabled()``. Reentrant gradient
-           checkpointing's first pass runs under ``torch.no_grad()`` with
-           ``module.training`` still ``True`` (PyTorch's default when
-           ``use_reentrant`` is unset), so a predicate keyed only on gradient
-           reachability would select ``'cuda'`` for that first pass while backward
-           recomputes the same step on the oracle -- two different
-           implementations, not one graph. Gating on training mode closes this
-           structurally: a module in training mode never takes the CUDA path,
-           under any wrapper. Eval mode is where the CUDA path's inference speed
-           is meant to matter.
-        2. **Gradient reachability.** ``torch.is_grad_enabled()`` and any input
-           requiring grad selects ``'oracle'``. The V3 CUDA consumer is
-           forward-only; it has no native backward, so reaching it from a
-           grad-requiring context would not raise, it would return a tensor with no
-           ``grad_fn`` and silently sever the graph at this layer -- the
-           ``x.grad = None`` failure class. The oracle is differentiable and is the
-           only implemented training path. Calling it a fallback would be wrong in
-           both directions: nothing failed to reach it, and nothing else exists to
-           fall back from. The decay dials are included in ``operation_inputs``
-           precisely because they are an operation input -- ``_consumer_forward``
-           is called with ``decay=decay_config`` -- not because they are a module
-           parameter; a dial-only-unfrozen forward has no other input requiring
-           grad, and without the dials in this list the predicate could not see it.
-        3. **Device.** The consumer is a CUDA kernel. On CPU tensors the oracle is
-           the only implementation that exists for that device, which is a device
-           dispatch and not a degradation -- there is no CPU lowering to decline.
-
-        Everything else that could make a CUDA-context launch impossible -- an
-        un-instantiated ``d_v`` or ``BC``, an unrealized warp tile -- is deliberately
-        NOT a condition here. Those raise loudly downstream
-        (``_consumer_forward``, the kernel's ``TORCH_CHECK``s). Folding them in would turn a loud unsupported
-        configuration into a silent slow path, which is the pattern spec §7.4.1
-        forbids.
+        Training mode alone selects the oracle, independent of
+        ``torch.is_grad_enabled()`` -- see this module's docstring for the
+        reentrant-checkpointing case that condition exists for. The other two conditions
+        (gradient reachability, device) are the op's own, shared verbatim so the layer
+        and the free function cannot drift into two slightly different answers.
         """
         if self.training:
-            return 'oracle'
-        # Conditions 2 and 3 are `rola.interface.select_backend`, shared verbatim with
-        # the functional op, so the layer and `rola_func` cannot drift into two
-        # slightly different answers to the same question. Condition 1 stays here:
-        # `self.training` is a property of a module and has no meaning for a free
-        # function.
+            return "oracle"
         tensors = [t for t in operation_inputs if t is not None]
-        return 'oracle' if select_backend(*tensors) == 'reference' else 'cuda'
+        return "oracle" if select_backend(*tensors) == "reference" else "cuda"
 
-    def _decay_config(self) -> LeafMassDecay | None:
-        if self.decay_kind == 'none':
-            return None
-        return LeafMassDecay(dials=tuple(torch.sigmoid(theta) for theta in self.decay_theta))
-
-    def _resolve_page_arena(self, plan, BH: int, device):
-        """The layer's §7.1 arena, built once and reused across steps.
-
-        Pooled across every `(batch, head)` pair of this layer -- V2's shape, and
-        the reason the savings math works (§7.1): a per-pair arena would round each
-        pair's tiny live fraction up to its own growth chunk and cap savings at the
-        chunk-to-footprint ratio, while a pooled arena tracks the live fraction of
-        the whole layer.
-
-        Rebuilt (not resized) whenever `BH`, the device or `BC` changes.
-
-        **`BT` LEFT THIS LIST WITH THE §4.5 RE-KEY**, and that is the point of the
-        re-key rather than an incidental simplification. It was here because the old
-        arena recorded `first_write_tile` in units of the plan's `BT` (findings
-        `paging.md` D3), so live pages could not be reinterpreted under a different
-        tile. Under PLANNED-EXACT-ASYNC allocation nothing records a tile at all: the
-        footprint is the popcount of §4.1's atom condensation, admission order is
-        ascending canonical leaf order, and neither mentions `BT`. Since `BT` is now
-        selected PER LAUNCH (§4.3), an arena that had to be rebuilt on a `BT` flip would
-        have been rebuilt constantly.
-
-        **`BC` LEAVES THIS LIST WITH THE CONSUMER'S ADDRESS RE-KEY.** It was the last
-        `BC`-keyed thing here, and it was only ever defensible while the KERNEL
-        addressed a page as an owner rectangle. Now that a page is one
-        `MMA_K_QUANTUM`-leaf atom on both sides, every stored object AND every address
-        the kernel forms is `BC`-invariant, so two launches at different `BC` over one
-        arena address the same bytes of the same slots. Since `select_config` chooses
-        `BC` per launch (§4.3), keeping it here would rebuild the arena -- dropping
-        every live page -- on a purely COMPUTE-tile decision, which is precisely the
-        arena-rebuild class §4.5 exists to kill. The arena's own `BC`-derived
-        attributes (`atoms_per_owner`, `owners_total`, the default `extent_atoms`) are
-        allocator POLICY and reporting only; nothing addressed depends on them.
-        """
-        from rola.ops.paging import PageArena
-
-        cols = self.head_v_dim + (1 if self.state_norm == 'global' else 0)
-        arena = self._page_arena
-        if (arena is not None and arena.BH == BH and arena.device == device
-                and arena.cols == cols):
-            return arena
-        arena = PageArena(
-            widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
-            max_physical_pages=self.max_physical_pages)
-        self._page_arena = arena
-        return arena
-
-    def _hardware_facts(self, device):
-        """§4.3 tier H: the machine facts, measured once per (device, install).
-
-        The occupancy oracle is the DRIVER's
-        ``cudaOccupancyMaxActiveBlocksPerMultiprocessor`` on the real templated kernel
-        at its real dynamic shared-memory size -- the SOLE AUTHORITY for physical facts
-        (standing ruling). It enters selection as an INPUT and is recorded next to the
-        decision it drove, which is what keeps ``select_config`` a pure function of its
-        recorded inputs rather than something that queries the machine ambiently.
-
-        Cached on the DEVICE because that is what it is a fact about. Neither member
-        can move within a process for a fixed device, so this is not a stale-plan
-        hazard of the kind per-step selection exists to avoid: no routing statistic
-        lives here.
-        """
-        device = torch.device(device)
-        cached = self._hardware
-        if cached is not None and cached.key == device:
-            return cached.value
-        facts = HardwareFacts(
-            sm_count=torch.cuda.get_device_properties(device).multi_processor_count,
-            occupancy=consumer_occupancy())
-        self._hardware = _HardwareCache(key=device, value=facts)
-        return facts
-
-    def _static_plan_inputs(self, BH: int):
-        """§4.3 tier 0: everything the selector needs that is fixed at construction.
-
-        Built per call because ``BH`` is the only member that is not a construction-time
-        fact, and it is one dataclass allocation of already-computed values -- there is
-        nothing here to cache and a cache keyed on ``BH`` would be a second place for
-        the topology to be wrong.
-
-        ``pinned_BC`` is the EXPERT PIN: ``state_block`` was supplied explicitly iff the
-        feasible set was shrunk to one value at construction (§4.3, §6 P6), which is
-        exactly what ``len(self.feasible_BC) == 1 and self.feasible_BC[0] ==
-        self.state_block`` says without storing a second flag that could disagree.
-        """
-        from rola.planner.select import StaticPlanInputs
-
-        pinned = (self.state_block
-                  if self.feasible_BC == (self.state_block,) else None)
-        return StaticPlanInputs(
-            widths=tuple(self.topology.widths), d_v=self.head_v_dim,
-            normalization=self.state_norm, decay=self.decay_kind != 'none',
-            mma_precision=self.mma_precision, density=self.static_density,
-            feasible_BC=tuple(self.feasible_BC), BH=int(BH), pinned_BC=pinned)
-
-    def _resolve_decode_config(self, BH: int, device):
-        """§6b's frozen config, built once at the prefill->decode boundary.
-
-        Rebuilt only when its inputs move (``BH`` and the device; the topology and the
-        normalization arm are construction-time facts). It is FROZEN in the sense that
-        matters -- no per-step statistic enters it, so a decode step never runs a
-        selection, which is the gap §6b dissolves.
-
-        **THE FEEDER FLAGS COME FROM THE CANONICAL CARRIER (§8b items 4 and 6).**
-        :func:`rola.planner.select.freeze_for_decode` builds Track P's ``FrozenConfig``
-        -- the object §4.3 defines and the one this layer must not re-implement -- and
-        the kernel-layout carrier reads its ``feeder_flags`` by value. Before this
-        reconciliation the layer passed NEITHER ``frozen`` nor ``static_density``, so a
-        decode step silently ran with ``feeder_flags = 0`` while the prefill path passed
-        ``static_density=self.static_density`` to its plan: the two arms of one layer
-        disagreed about a declared density. That is now one source.
-        """
-        config = self._decode_config
-        if config is not None and config.key == (BH, torch.device(device)):
-            return config.value
-        value = freeze_decode_config(
-            self.topology, self.state_norm, decay=self.decay_kind != 'none',
-            BH=BH, device=device,
-            frozen=freeze_for_decode(self._static_plan_inputs(BH)),
-            mma_precision=self.mma_precision)
-        self._decode_config = _DecodeConfigCache(key=(BH, torch.device(device)), value=value)
-        return value
+    # --- forward -------------------------------------------------------------
 
     def forward(
         self,
@@ -880,358 +220,219 @@ class RoLA(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: RoLAState | None = None,
         use_cache: bool | None = False,
-        output_attentions: bool | None = False,
-        budget_r: torch.Tensor | None = None,
+        budget: torch.Tensor | None = None,
         **kwargs: Unpack[dict],
     ) -> tuple[torch.Tensor, None, RoLAState | None]:
-        if attention_mask is not None:
-            assert attention_mask.dim() == 2, (
-                "Expected attention_mask as a [batch, seq_len] 0-1 padding matrix; "
-                "[batch, seq_len, seq_len] masks are not supported."
-            )
+        if attention_mask is not None and attention_mask.dim() != 2:
+            raise ValueError(
+                "attention_mask must be a [batch, seq_len] 0-1 padding matrix; "
+                "[batch, seq_len, seq_len] masks are not supported.")
+        for key in kwargs:
+            # READ WHAT YOU SUPPORT, RAISE ON THE REST. A swallowed keyword is a knob
+            # that silently does nothing, which is how a caller comes to believe a model
+            # was configured a way it never was.
+            raise TypeError(
+                f"RoLA.forward got an unsupported keyword {key!r}. Variable-length packing "
+                "(`cu_seqlens`) and attention-probability outputs are not implemented; RoLA "
+                "has no attention matrix to return.")
+
         x = hidden_states
         B, L, _ = x.shape
         H = self.num_heads
         cache_enabled = bool(use_cache)
         last_state = get_layer_cache(self, past_key_values)
-        cu_seqlens = kwargs.get('cu_seqlens')
-        if cu_seqlens is not None:
-            raise NotImplementedError("cu_seqlens (varlen) is not supported by RoLA.")
-        if budget_r is not None and self.budget is None:
-            raise ValueError("budget_r was supplied but this layer has no BudgetConditioning configured")
 
         v = self.v_proj(x)
+        conv_states = list(last_state.conv_state) if (
+            last_state is not None and last_state.conv_state is not None) else [None, None]
+        if self.value_conv is not None:
+            if not cache_enabled and conv_states[0] is not None:
+                conv_states[0] = conv_states[0].clone()
+            v, conv_states[0] = self.value_conv(
+                v, cache=conv_states[0], output_final_state=cache_enabled)
+        source = x
+        if self.route_conv is not None:
+            if not cache_enabled and conv_states[1] is not None:
+                conv_states[1] = conv_states[1].clone()
+            source, conv_states[1] = self.route_conv(
+                x, cache=conv_states[1], output_final_state=cache_enabled)
 
-        if self.use_short_conv:
-            carried_conv = None if last_state is None else last_state.conv_state
-            conv_states = list(carried_conv) if carried_conv is not None else []
-            while len(conv_states) < 3:
-                conv_states.append(None)
-            if not cache_enabled:
-                conv_states = [state.clone() if state is not None else None for state in conv_states]
-            conv_state_v, conv_state_wl, conv_state_rl = conv_states
-            v, conv_state_v = self.v_conv1d(v, cache=conv_state_v,
-                                             output_final_state=cache_enabled, cu_seqlens=cu_seqlens)
-            wx, conv_state_wl = self.write_route_conv1d(
-                x, cache=conv_state_wl, output_final_state=cache_enabled, cu_seqlens=cu_seqlens)
-            has_untied = any(
-                isinstance(level.routing, UnionRouting) or not level.routing.tied
-                for level in self.topology.levels
-            )
-            if has_untied:
-                rx, conv_state_rl = self.read_route_conv1d(
-                    x, cache=conv_state_rl, output_final_state=cache_enabled, cu_seqlens=cu_seqlens)
-            else:
-                rx = wx
-        else:
-            wx = x
-            rx = x
-
-        v = rearrange(v, 'b l (h d) -> b l h d', d=self.head_v_dim)
-        h_w = None if rx is wx else wx
-
+        v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         recurrent_state = last_state.recurrent_state if last_state is not None else None
         if recurrent_state is not None and torch.is_grad_enabled():
             raise RuntimeError("RoLA carried-state execution is inference-only")
 
-        routing_out = produce_routing(
-            rx, h_w, v, self.route_W, self.route_bias_param, self.gain_W, self.gain_bias,
-            self.topology, self.state_norm,
-            budget=self.budget, r=budget_r, budget_embed_W=self.budget_embed_W,
-            temp_W=self.temp_W, temp_b=self.temp_b,
-            usage_bias_W=self.usage_bias_W, usage_bias_b=self.usage_bias_b,
-            write_gain=self.write_gain, read_gain=self.read_gain,
-        )
-        decay_config = self._decay_config()
+        routes = self.routes(source, budget=budget)
+        decay = None if self.decay is None else self.decay()
         backend = self.select_execution_backend(
-            v, routing_out.g_read, routing_out.g_write,
-            *routing_out.read_levels, *routing_out.write_levels,
-            # fix pass (wiring-review.md §2, BLOCKER): the dials are handed straight
-            # to `_consumer_forward(..., decay=decay_config)` below, so they are an
-            # OPERATION input and must be visible to the predicate -- a dial-only
-            # unfrozen forward has no other grad-requiring operand.
-            *(decay_config.dials if decay_config is not None else ()),
-        )
-        if backend == 'cuda' and L == 1 and recurrent_state is not None and not self.paging:
-            # ===== TRACK D / THUNDER §6b -- THE T == 1 DECODE FORK (MERGE MARKER) =====
-            # Track D owns the decode kernels; this branch is the ONE edit it needs in
-            # this file and is marked for merge reconciliation with Track P's §6b
-            # dispatch work.
-            #
-            # STRUCTURAL, NOT A THRESHOLD. `L == 1` is the NO-TILING case: there is no
-            # `BT` to choose, no `P` to split (the token's support IS the schedule)
-            # and a statistics population of one, so every stage-2 decision is
-            # degenerate. §6b requires this to bypass selection ARCHITECTURALLY rather
-            # than by running `select_config` with degenerate inputs, which is why the
-            # branch is here and not inside the planner. `recurrent_state is not None`
-            # is the second half of the predicate and is not redundant: a one-token call
-            # with no carried state is a degenerate PREFILL, not a decode step, and it
-            # has no frozen carrier -- it must take the tiled path. Neither clause
-            # compares a dimension against a tuned number (spec I2).
-            #
-            # REACHABILITY FROM A GRAD CONTEXT IS ALREADY EXCLUDED, which is why this
-            # fork sits INSIDE the `backend == 'cuda'` branch and adds no guard of its
-            # own: `select_execution_backend` above returns 'oracle' under training mode,
-            # under `torch.is_grad_enabled()` with any grad-requiring operation input, and
-            # on a non-CUDA device. The decode kernels are forward-only, so reaching them
-            # from a grad context would return a tensor with no `grad_fn` and silently
-            # sever the graph -- the [[layer-dispatch-autograd-gap]] failure class.
-            # `rola.ops.decode` re-checks and RAISES for a direct caller;
-            # `tests/layers/test_decode_dispatch.py` gates the whole table.
-            #
-            # `not self.paging`: the decode path is unpaged only until §4.5's atom re-key
-            # lands (a paged decode address would have to know `BC`, and BC-blindness is
-            # the property the kernel is built on). A paged layer keeps the tiled path,
-            # which is exact -- not a silent degradation, because paging is bitwise
-            # invisible and the cap stays enforced by the arena the tiled path uses.
-            config = self._resolve_decode_config(B * H, v.device)
-            # `decode_forward` updates its state argument IN PLACE, and the cached
-            # state is fp32-contiguous in steady decode, so both casts below are
-            # IDENTITY and would alias the caller's cache. Under `use_cache=True`
-            # that aliasing IS the intended in-place carry; under `use_cache=False`
-            # the caller's cache must be left untouched, so the alias is severed
-            # with a clone -- the same seam discipline as the unpaged prefill's
-            # `initial_state...clone()` (`rola/ops/consumer.py`). Only the identity
-            # case clones: a non-identity cast already copied. (H10,
-            # tests/layers/test_decode_cache_isolation.py.)
-            decode_state = recurrent_state.to(torch.float32).contiguous()
-            if not cache_enabled and decode_state.data_ptr() == recurrent_state.data_ptr():
-                decode_state = decode_state.clone()
-            out, final_state, self._decode_workspace = decode_forward(
-                v, routing_out.read_levels, routing_out.write_levels,
-                routing_out.g_read, routing_out.g_write, config,
-                decode_state,
-                decay=decay_config, workspace=self._decode_workspace)
-            self.last_paging_stats = None
-            backend = 'decode'
-            if not cache_enabled:
-                final_state = None
-            # ===== END TRACK D MERGE MARKER =====
-        elif backend == 'cuda':
-            # ===== §4.3's SELECTION PATH (ledger item 2, the layer cut-over) =====
-            #
-            # `produce_routing -> summarize_routing -> select_config -> Plan ->
-            # build_schedule`. This REPLACES `plan_and_schedule`, and the replacement
-            # is not a refactor:
-            #
-            #  * `plan_and_schedule` lives in the CALIBRATION package. It prices every
-            #    candidate by walking the routing tensors again per `BT`
-            #    candidate -- the exact census -- and it carries a
-            #    `torch.compile`/inductor edge. §6 P4 retired it from the runtime; the
-            #    layer was the last caller keeping that edge live on the hot path.
-            #  * `select_config` is the CLOSED FORM the calibration fit compiles down
-            #    to. Its inputs are one summary pass (one CUDA launch, one D2H
-            #    transfer, zero host syncs) plus tier-0 and tier-H records, and it
-            #    chooses `BC` as well as `BT` -- which the old path could not, because
-            #    `BC` was a construction-time constant handed in as `self.state_block`.
-            #
-            # **`BC` IS NOW PER LAUNCH, and it is SAFE per launch only because the
-            # paired atom re-key landed first.** `select_config` may return a different
-            # `BC` than the previous step's, and under paging the arena holds live
-            # state across that change. That is a no-op exactly because §4.5 keys a
-            # page on the MMA ATOM: every stored object and every address the consumer
-            # forms is `BC`-invariant, so two launches at different `BC` address the
-            # same bytes of the same slots (`_resolve_page_arena` no longer carries
-            # `BC` in its rebuild key, for that reason). Landing this cut-over ahead of
-            # the re-key would have put a `BC`-choosing planner in front of a
-            # `BC`-keyed page table.
-            #
-            # G7 STANDS: selection is PER STEP, never cached per shape. The statistics
-            # it prices are exact over the realized routing, so a cached plan prices a
-            # `K` distribution that no longer exists the moment training moves the
-            # distribution. What is cached is `_hardware_facts`, which is a fact about
-            # the DEVICE and carries no routing statistic.
-            #
-            # The `RoutingViews` fold is still computed ONCE and shared: the summary
-            # pass consumes `read_folded`/`write_folded` and `build_schedule` takes the
-            # same object, so the `[B,T,H,w] -> [BH,T,w]` copy and the exact-nonzero
-            # masks are paid once per forward, as they were under the fused entry
-            # point. A view lives inside one forward and cannot go stale.
-            views = routing_views(routing_out.read_levels, routing_out.write_levels,
-                                  self.topology)
-            static = self._static_plan_inputs(B * H)
-            hw = self._hardware_facts(v.device)
+            v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
 
-            # THE SUMMARY GRANULARITY, stated rather than hidden.
-            #
-            # `BT`: §4.2 fixes the pass at the FINEST instantiated tile. `candidate_frac`
-            # and `quanta_hist` are statistics OF A TILING and neither is `BT`-invariant
-            # (P measured cf(16)/cf(32) = 1.846), so reusing the finest-`BT` value at
-            # `BT = 32` under-prices the coarser tile. §4.2 freezes the struct at one
-            # granularity and `ConfigEvidence.provenance` records which arm was taken;
-            # supplying `summaries_by_bt` would cost a second launch and is the
-            # caller's option, not this layer's default.
-            #
-            # `BC`: the pass needs an OWNER GEOMETRY, so it is measured at ONE `BC`
-            # while `select_config` reuses `quanta_hist` across the whole feasible
-            # grid. §4.2 is SILENT on this axis. The choice here is the same one §4.2
-            # makes for `BT` -- the FINEST instantiated granularity, i.e. the smallest
-            # feasible `BC`, the finest owner rectangle -- taken by symmetry rather
-            # than improvised, and RECORDED on `last_summary_granularity` so a plan
-            # states the granularity it was priced at. Resolving the bias (a per-`BC`
-            # summary, or a `BC`-invariant statistic) is open work, not something this
-            # cut-over silently decides.
-            summary_BC = static.feasible_BC[0]
-            summary_BT = min(SUPPORTED_BT)
-            summaries = summarize_routing(
-                views.read_folded, views.write_folded,
-                owner_geometry(tuple(self.topology.widths), summary_BC), summary_BT,
-                # The build-time density declaration (see `__init__`): every side it
-                # marks full-support is asserted realized under the debug env flag.
-                density=self.static_density)
-            self.last_summary_granularity = (summary_BC, summary_BT)
-
-            #: THE SELECTOR IS NAMED HERE, and it is the one the plan will record.
-            #: `DEFAULT_SELECTOR` rather than a bare `select_config_with_evidence`
-            #: call, so that the layer goes through the same seam a caller swapping
-            #: the model would go through -- if the default were reached by a
-            #: different path, swapping it would miss this one.
-            selector = DEFAULT_SELECTOR
-            choice, evidence = select_with(
-                selector, StatisticsBundle(static=static, hw=hw, summaries=summaries))
-            plan = Plan(
-                topology=self.topology, normalization=self.state_norm,
-                BT=choice.BT, BC=choice.BC,
-                # The realized warp tile the consumer implements, stated rather than
-                # defaulted so the driver's check has something to check.
-                warp_tile=(1, max(1, self.head_v_dim // 32)),
-                decay=decay_config is not None,
-                mma_precision=self.mma_precision,
-                # The per-SM SMEM budget, device-queried once and RECORDED in the
-                # plan (§10's ruling), so the plan carries the machine it reasoned
-                # about rather than depending on the one it is replayed on.
-                #
-                # PROVENANCE ONLY as of item 6b: no selection rule reads it any more.
-                # It backed the analytic occupancy mirror, which modelled the deleted
-                # consumer's footprint and was measured INVERTING the bound it
-                # claimed, so the mirror was deleted rather than re-fitted. The field
-                # stays because a plan stating the machine it was built on is what
-                # makes a replayed plan auditable.
-                sm_shared_bytes=sm_shared_bytes(),
-                # The residency §4.3 reasoned at, recorded next to the decision it
-                # drove -- the same contract `sm_shared_bytes` has.
-                occupancy_blocks_per_sm=evidence.blocks_per_sm,
-                # WHO DECIDED, and whether that decider is audited. Advisory, on the
-                # same contract as the two fields above: recorded beside the decision,
-                # read by no rule. `CostModelSelector` reports `INTERIM` because the
-                # calibration inventory records its constants as not yet personally
-                # audited, and a plan that did not say so would let a number taken
-                # under that model read as one taken under a measured one.
-                selector_name=selector.name,
-                selector_status=selector.status)
-            schedule = build_schedule(
-                routing_out.read_levels, routing_out.write_levels,
-                routing_out.g_read, routing_out.g_write, plan, views=views)
-            # `last_plan_axes` now carries `ConfigEvidence` -- `cost_per_token`, the
-            # full `(BC, BT)` grid, `blocks_per_sm`, `waves` and the provenance string
-            # -- in place of the calibration package's `PlanAxes`. Same role: WHY the
-            # plan is what it is, recorded beside the number it produced.
-            self.last_selected_plan, self.last_plan_axes = plan, evidence
-            if self.paging:
-                arena = self._resolve_page_arena(plan, B * H, v.device)
-                continue_paging = recurrent_state is not None
-                if recurrent_state is None:
-                    # A fresh forward starts from a ZERO state. `_consumer_forward`
-                    # is call-scoped by default (fix pass BLOCKER B1,
-                    # `workflows/20260730-wiring/paging-review.md`): its own
-                    # `paging.plan(schedule, fresh=True)` resets the arena before
-                    # planning, so nothing needs to be done here. (Before the fix
-                    # pass this branch called `arena.reset()` itself, which is now
-                    # redundant with the default and would have doubled the reset
-                    # launch on every fresh forward.)
-                    pass
-                else:
-                    # An explicit bridge, not an implicit one: `adopt_dense` provisions
-                    # every owner, so it must be a visible act. What SHOULD cross a call
-                    # boundary under paging is spec §7.3's question, which §7.1 says it
-                    # does not settle -- so this layer keeps the existing dense cache
-                    # contract and pays the bridge, rather than inventing a page-table
-                    # continuation contract here. `arena.reset()` clears the page table
-                    # before loading the dense state; `continue_paging=True` below is
-                    # what then stops `_consumer_forward`'s own default reset from
-                    # wiping the state `adopt_dense` just committed.
-                    arena.reset()
-                    arena.adopt_dense(recurrent_state.reshape(arena.BH, arena.N, arena.cols)
-                                      .to(torch.float32).contiguous())
-                out, _arena, _schedule = _consumer_forward(
-                    v, routing_out.read_levels, routing_out.write_levels,
-                    routing_out.g_read, routing_out.g_write, plan,
-                    decay=decay_config, schedule=schedule, paging=arena,
-                    continue_paging=continue_paging)
-                self.last_paging_stats = arena.last_result
-                final_state = arena.materialize().view(B, H, arena.N, arena.cols) \
-                    if cache_enabled else None
-            else:
-                self.last_paging_stats = None
-                out, final_state, _schedule = _consumer_forward(
-                    v, routing_out.read_levels, routing_out.write_levels,
-                    routing_out.g_read, routing_out.g_write, plan,
-                    initial_state=recurrent_state, decay=decay_config, schedule=schedule)
+        if backend == "cuda" and L == 1 and recurrent_state is not None and not self.paging:
+            out, final_state = self._decode(routes, v, decay, recurrent_state, B, H, cache_enabled)
+            backend = "decode"
+        elif backend == "cuda":
+            out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
         else:
             if self.paging:
-                # [[layer-dispatch-autograd-gap]]'s shape of failure: a flag honoured on
-                # one dispatch arm and silently ignored on the other. The oracle has no
-                # page table, so a paged layer that falls back to it would silently run
-                # unpaged -- exact here (paging is bitwise invisible), but it would also
-                # silently discard the `max_physical_pages` cap, which is NOT invisible.
+                # `[[layer-dispatch-autograd-gap]]`'s shape of failure, in its other
+                # direction: a feature honoured on one dispatch arm and silently dropped
+                # on the other. The reference has no page table, so a paged layer that
+                # reaches it would run unpaged -- EXACT, because paging is bitwise
+                # invisible, but it would also silently discard `max_physical_pages`,
+                # which is not invisible. A configured feature is honoured or REFUSED,
+                # never dropped.
                 raise NotImplementedError(
-                    "paging=True is a CUDA-backend feature (spec §7.1); this forward "
-                    "dispatched to the fp64 oracle, which has no page table. The cap "
-                    "would be silently unenforced, so this raises rather than degrading.")
-            out, final_state = naive_rola(
-                v, routing_out.read_levels, routing_out.write_levels,
-                routing_out.g_read, routing_out.g_write, self.topology, decay_config,
-                self.state_norm, initial_state=recurrent_state,
-                output_final_state=cache_enabled,
-            )
+                    "paging is a CUDA-backend feature; this forward dispatched to the "
+                    "differentiable reference, which has no page table. The cap would be "
+                    "silently unenforced, so this raises rather than degrading. Run under "
+                    "`torch.no_grad()` in eval mode to reach the kernel, or drop the "
+                    "paging override.")
+            # The reference arm is the op, entire. `_arm` is how the layer contributes
+            # its training-mode condition, which is a property of a module and has no
+            # meaning for a free function.
+            out, final_state = rola_op(
+                routes, v, decay, initial_state=recurrent_state,
+                output_final_state=cache_enabled, expert=self.expert, _arm="reference")
+            self.last_selected_plan = None
+
         self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
-
         if cache_enabled:
-            # Cache contract across the two backends. The carried recurrent state has
-            # the SAME SHAPE `[B, H, N, d_v + (norm == 'global')]` and the same
-            # meaning on both paths; only its dtype differs (the oracle accumulates in
-            # fp64, the consumer in fp32), and BOTH entry points accept either
-            # (`naive._initial_cache` casts to fp64, `_consumer_forward` casts to
-            # fp32). A continuation may therefore cross backends without
-            # reinterpretation. The guard above only covers CONSUMPTION -- a
-            # grad-context step with a prior `recurrent_state` raises -- so a
-            # grad-context step never *consumes* a carried state; it is not
-            # guarded against *producing* one (a fresh `use_cache=True` step under
-            # grad, e.g. the oracle half of the cross-backend cache test below,
-            # legitimately produces a `final_state`, since the oracle is fully
-            # differentiable and there is no severance to prevent). Harmless today
-            # -- both backends write the same layout -- but recorded precisely
-            # rather than as a wider guard that does not exist (fix pass,
-            # `wiring-review.md` §4).
+            # The carried state has the SAME SHAPE and meaning on every backend; only the
+            # accumulation dtype differs (fp64 oracle, fp32 kernel) and every entry point
+            # accepts either, so a continuation may cross backends between steps.
             update_layer_cache(
                 self, past_key_values, recurrent_state=final_state,
-                conv_state=(conv_state_v, conv_state_wl, conv_state_rl) if self.use_short_conv else None,
+                conv_state=tuple(conv_states) if (
+                    self.value_conv is not None or self.route_conv is not None) else None,
                 offset=L)
+        return self.o_proj(out.reshape(B, L, H * self.head_v_dim)), None, past_key_values
 
-        o = self.o_proj(out.reshape(B, L, H * self.head_v_dim))
-        return o, None, past_key_values
+    # --- the two arms that need layer-owned state ----------------------------
 
-    # --- state accounting (zoology Hybrid.state_size / LM matched-state read these) ---
+    @property
+    def paging(self) -> bool:
+        """Whether the state is committed page by page (an allocator policy, not math).
+
+        Paging is BITWISE INVISIBLE: one page is one MMA atom, pages are admitted by the
+        write-side plan, and an atom without a page reads as zeros. It lives on the
+        expert surface because it changes what the layer allocates and nothing about
+        what it computes.
+
+        A CAP IMPLIES IT: asking for `max_physical_pages` without asking for paging would
+        be asking for a ceiling on an allocator that is not running, and refusing that
+        combination would be a validation rule with no purpose. Paging without a cap is
+        the uncapped arena, provisioned to the dense limit, where the ceiling can never
+        bind.
+        """
+        return self.expert.paging or self.expert.max_physical_pages is not None
+
+    def _tiled(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
+        """The kernel arm, paged or not, through the op's own two halves.
+
+        The layer opens the seam here rather than calling `rola_op` because it REPORTS
+        the plan (`last_selected_plan` is the diagnostic a dispatch gate asserts on), and
+        a plan the op derived and discarded is a plan nothing can be asserted about. It
+        is the same two functions `rola_op` composes, in the same order, with the arm
+        already decided one frame up -- not a second implementation of anything.
+        """
+        from rola.expert import derive_plan, execute
+
+        plan = derive_plan(routes, decay=decay, expert=self.expert, device=v.device)
+        self.last_selected_plan = plan
+        if not self.paging:
+            out, final_state, _schedule = execute(
+                plan, routes, v, decay=decay, initial_state=recurrent_state)
+            return out, (final_state if cache_enabled else None)
+
+        arena = self._resolve_page_arena(plan, B * H, v.device)
+        continue_paging = recurrent_state is not None
+        if continue_paging:
+            # An explicit bridge, not an implicit one: `adopt_dense` provisions every
+            # owner, so it must be a visible act. `reset` clears the page table before
+            # loading the dense state; `continue_paging` is what then stops the
+            # consumer's own default reset from wiping what was just committed.
+            arena.reset()
+            arena.adopt_dense(recurrent_state.reshape(arena.BH, arena.N, arena.cols)
+                              .to(torch.float32).contiguous())
+        out, _arena, _schedule = execute(
+            plan, routes, v, decay=decay, paging=arena, continue_paging=continue_paging)
+        final_state = (arena.materialize().view(B, H, arena.N, arena.cols)
+                       if cache_enabled else None)
+        return out, final_state
+
+    def _decode(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
+        """The ``T = 1`` sibling kernel, over the frozen carrier."""
+        config = self._resolve_decode_config(B * H, v.device)
+        # `decode_forward` updates its state argument IN PLACE, and the cached state is
+        # fp32-contiguous in steady decode, so both casts below are IDENTITY and would
+        # alias the caller's cache. Under `use_cache` that aliasing IS the intended
+        # carry; without it the caller's cache must be left untouched, so the alias is
+        # severed. Only the identity case clones -- a real cast already copied.
+        state = recurrent_state.to(torch.float32).contiguous()
+        if not cache_enabled and state.data_ptr() == recurrent_state.data_ptr():
+            state = state.clone()
+        out, final_state, self._decode_workspace = decode_forward(
+            v, routes.read, routes.write, routes.g_read, routes.g_write, config, state,
+            decay=decay, workspace=self._decode_workspace)
+        self.last_selected_plan = None
+        return out, (final_state if cache_enabled else None)
+
+    def _resolve_page_arena(self, plan, BH: int, device):
+        """The page arena, built once and reused across steps.
+
+        Pooled across every ``(batch, head)`` pair of this layer, which is what makes the
+        savings math work: a per-pair arena would round each pair's tiny live fraction up
+        to its own growth chunk. Rebuilt when ``BH``, the device or the column count
+        moves -- and NOT when ``BC`` does, because a page is one MMA atom on both sides,
+        so every stored object and every address the kernel forms is ``BC``-invariant and
+        two launches at different ``BC`` address the same bytes of the same slots.
+        """
+        from rola.ops.paging import PageArena
+
+        cols = self.head_v_dim + (1 if self.normalization == "global" else 0)
+        arena = self._page_arena
+        if (arena is not None and arena.BH == BH and arena.device == device
+                and arena.cols == cols):
+            return arena
+        arena = PageArena(
+            widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
+            max_physical_pages=self.expert.max_physical_pages)
+        self._page_arena = arena
+        return arena
+
+    def _resolve_decode_config(self, BH: int, device):
+        """The frozen decode config, built once at the prefill/decode boundary.
+
+        Rebuilt only when its inputs move (``BH`` and the device; everything else is a
+        construction-time fact). It is frozen in the sense that matters: no per-step
+        statistic enters it, so a decode step never runs a selection.
+        """
+        from rola.interface import _static_tier0
+
+        cached = self._decode_config
+        key = (BH, torch.device(device), self.decay is not None)
+        if cached is not None and cached.key == key:
+            return cached.value
+        static = _static_tier0(
+            self.topology, self.normalization, self.routes.density,
+            decay=self.decay is not None, BH=BH, overrides=self.expert)
+        value = freeze_decode_config(
+            self.topology, self.normalization, decay=self.decay is not None, BH=BH, device=device,
+            frozen=freeze_for_decode(static), mma_precision=self.expert.mma_precision)
+        self._decode_config = _DecodeConfigCache(key=key, value=value)
+        return value
+
+    # --- state accounting (zoology's Hybrid.state_size reads these) ----------
+
     def get_stats(self):
-        d_v = self.head_v_dim + int(self.state_norm != 'raw')
-        conv_state = 0
-        if self.use_short_conv:
-            has_untied = any(
-                isinstance(level.routing, UnionRouting) or not level.routing.tied
-                for level in self.topology.levels
-            )
-            conv_state = self.conv_size * (self.value_dim + 2 * self.hidden_size if has_untied
-                                            else self.value_dim + self.hidden_size)
+        cols = self.head_v_dim + int(self.normalization != "raw")
         return {
-            'd_v': self.head_v_dim,
-            'n_heads': self.num_heads,
-            'num_chunks': self.topology.N,
-            'state_floats': self.num_heads * self.topology.N * d_v + conv_state,
+            "d_v": self.head_v_dim,
+            "n_heads": self.num_heads,
+            "num_chunks": self.topology.N,
+            "state_floats": self.num_heads * self.topology.N * cols,
         }
 
     def state_size(self, sequence_length: int = None, **kwargs) -> int:
-        return self.get_stats()['state_floats']
-
-
-__all__ = ['LevelRoutingConfig', 'RoLA', 'resolve_level_routing_configs']
+        return self.get_stats()["state_floats"]

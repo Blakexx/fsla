@@ -35,8 +35,7 @@ import json
 
 import torch
 
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
+from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
 from rola.ops.consumer import _consumer_forward
 
 # G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
@@ -46,7 +45,6 @@ from rola.ops.consumer import _consumer_forward
 # keeps `import rola` free of the calibration package's inductor edge.
 from rola.planner.calibration.cost_model import select_plan
 from rola.planner.schedule import Plan, build_clock_stream, build_schedule
-from rola.routing.producer import produce_routing
 
 # V2 whole-layer medians (ms) from `20260728-stage0/baseline.md` §3 at this exact
 # cell. Carried as data, not re-measured here: this script benchmarks V3, and
@@ -218,37 +216,37 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
 
     for decay_on in decays:
         for norm in ("raw", "global"):
+            from rola import LearnedDecay
+
+            routing = sparse_routing(1.5) if side == "sparse" else dense_routing()
+            producer = SimplexProducer(
+                tuple(branches), routing, hidden_size=hidden, num_heads=H)
+            routes = RouteProducer(
+                [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+            decay_source = (LearnedDecay(widths=routes.widths, num_heads=H)
+                            if decay_on else None)
             layer = RoLA(
-                hidden_size=hidden, num_heads=H, head_v_dim=d_v,
-                levels_per_head=len(branches), states_per_level=branches,
-                decay="leaf_mass" if decay_on else "none", state_norm=norm,
-                level_routing_configs=LevelRoutingConfig(read=side, write=side,
-                                                        tied=False, alpha=1.5),
-                layer_idx=0).to(dev, torch.float32)
+                hidden, H, routes, decay=decay_source, layer_idx=0,
+            ).to(dev, torch.float32)
             if logit_gain != 1.0:
                 with torch.no_grad():
-                    layer.route_W.mul_(logit_gain)
+                    producer.route_W.mul_(logit_gain)
             topology = layer.topology
             x = torch.randn(B, L, hidden, device=dev, dtype=torch.float32)
             v = torch.randn(B, L, H, d_v, device=dev, dtype=torch.float32)
 
             def produce():
                 with torch.no_grad():
-                    return produce_routing(
-                        x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-                        layer.gain_bias, topology, norm, budget=layer.budget, r=None,
-                        budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
-                        temp_b=layer.temp_b, usage_bias_W=layer.usage_bias_W,
-                        usage_bias_b=layer.usage_bias_b)
+                    return layer.routes(x)
 
             ro = produce()
-            read_levels = tuple(t.float() for t in ro.read_levels)
-            write_levels = tuple(t.float() for t in ro.write_levels)
+            read_levels = tuple(t.float() for t in ro.read)
+            write_levels = tuple(t.float() for t in ro.write)
             g_read = None if norm == "global" else ro.g_read.float()
             g_write = ro.g_write.float()
             # The layer's own decay config, not a synthetic dial: this is the dial
             # distribution the model actually trains toward.
-            decay = layer._decay_config() if decay_on else None
+            decay = None if layer.decay is None else layer.decay()
             # THE PLAN BUILD, run on THIS cell's realized routing. Every row below
             # carries `plan_selected`, so "plan-selected" in a findings doc is a
             # field of the output rather than a label a human attached afterwards

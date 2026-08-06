@@ -99,7 +99,27 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
         normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
     ("entmax", 2.0): ActivationProperties(
         normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
+    ("opaque", None): ActivationProperties(
+        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
 }
+
+#: THE ROW FOR A CELL WE DID NOT SOLVE. A producer is duck-typed
+#: (:class:`rola.routing.producer.LevelProducer`), so a level may be filled by a map
+#: this table has never heard of. Such a cell is `opaque`, and its row states the
+#: honest position of every column:
+#:
+#: * `normalized` is TRUE because the gateway normalizes what it stores: it factors
+#:   every level into `(mass, simplex)` and folds the mass into the side gain, so the
+#:   stored level is on the simplex whatever the producer returned.
+#: * `exact_zeros` is TRUE, which is the CONSERVATIVE reading: it means "may produce
+#:   zeros", so the planner measures this cell's density instead of substituting a
+#:   closed form. A producer that knows better declares `dense_sides` and is trusted.
+#: * `support_differentiable` is FALSE, the assumption that never over-promises.
+#: * `kerneled` is TRUE, and it is the one that needs saying. The column means "the
+#:   CONSUMER has been ratified for this cell", and the consumer eats tensors: it
+#:   cannot tell what produced them (no producer identity reaches `ConsumerParams`).
+#:   A foreign producer's own solve is its own module's business, so there is no
+#:   unratified kernel of ours to route around.
 
 #: The column names, derived from the dataclass so a new column cannot be added to
 #: the rows and forgotten by the generated capability matrix.

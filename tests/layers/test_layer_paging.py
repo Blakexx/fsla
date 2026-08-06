@@ -8,30 +8,65 @@ bug. So the two things asserted here are (1) the paged layer's output is
 bit-identical to the unpaged layer's, and (2) the flag is never silently dropped.
 
 Vocabulary: `N` = leaf count; `BC` = leaves per owner; `BH` = `batch * heads`.
+
+**MIGRATED (API-contract break, 2026-08-05).** `paging=True`/`max_physical_pages=`
+moved onto `rola.expert.PlanOverrides` (`PlanOverrides(paging=True,
+max_physical_pages=...)`, `paging=True` alone being the uncapped arm).
+`layer.last_paging_stats` is GONE with no layer-level replacement -- a paged run's
+stats live on the arena itself, `layer._page_arena.last_result` (a
+`rola.ops.paging.PagingResult`, the identical fields the old stats object carried).
+
+**A SUSPECTED ROLA/ BUG, surfaced by this migration and NOT fixed here (out of
+file scope; see the migration report).** `RoLA.forward`'s shared `else` branch
+(`rola/layers/rola.py`, "ONE op for both remaining arms") unconditionally sets
+`self.last_selected_plan = None` after calling `rola_op` -- for BOTH the oracle
+arm (which has no plan, correctly `None`) AND the ordinary unpaged CUDA arm, which
+DOES have one (computed inside `rola_op`'s own `_derive_plan`, but never surfaced
+by `rola_op`'s `(y, final_state)` return). So `layer.last_selected_plan` reads
+`None` after any plain (unpaged, non-decode) CUDA forward -- only the PAGED arm
+(`_paged`, which calls `derive_plan`/`execute` directly rather than through
+`rola_op`) still stamps a real `Plan`. Every assertion below that used to read
+`unpaged.last_selected_plan` is rewritten to use a fact that does not depend on
+it (the state_block PIN, which is deterministic here since every fixture pins one
+value) or is dropped with a note, rather than being silently weakened to match
+the bug.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
+from conftest import build_layer
 
-from rola.layers.rola import RoLA
+from rola import dense_routing
+from rola.expert import PlanOverrides
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="V3 paging is a CUDA feature"),
 ]
 
+#: Old `decay="none"`/`"leaf_mass"` -> the two shipped decay SOURCES `build_layer`
+#: takes (`None`/`"learned"`).
+_DECAY = {"none": None, "leaf_mass": "learned"}
+_WIDTHS = (4, 8, 8)
 
-def _reordering_bound(y, layer):
+
+def _reordering_bound(y, layer, *, BC):
     """See `tests/ops/test_rola_v3_paging.py` -- the same derived fp32
-    reassociation bound on the §5 readout's atomic accumulation."""
-    n = layer.last_selected_plan.geometry.owners_total
+    reassociation bound on the §5 readout's atomic accumulation.
+
+    `owners_total = N / BC` is read off the TOPOLOGY and the caller-known pinned
+    `BC`, not off `layer.last_selected_plan` (see the module docstring's BUG
+    note) -- every fixture here pins `state_block`, so the launch's realized `BC`
+    is deterministic and does not need to be read back from the plan.
+    """
+    n = layer.topology.N // BC
     return n * n * torch.finfo(torch.float32).eps * y.abs().max()
 
 
 def _layer(*, paging, max_physical_pages=None, seed=0, state_norm="raw",
-           mma_precision="tf32x3", state_block=16, **kwargs):
+           mma_precision="tf32x3", state_block=16, decay="none"):
     """The paging fixture, pinned to the EXACT MMA arm.
 
     Every gate in this file compares two decompositions of the same computation
@@ -41,18 +76,19 @@ def _layer(*, paging, max_physical_pages=None, seed=0, state_norm="raw",
     are fp32-precision -- under the production `bf16` default a continuation that
     tiles the tokens differently rounds its MMA operands differently, which is
     bf16-sized rather than eps-sized and is not what these gates are measuring. The
-    default is asserted in `test_rola_v3_layer_dispatch.py`; here the arm is pinned
-    so the envelope stays the one that was derived.
+    default is asserted in `test_layer_dispatch.py`; here the arm is pinned so the
+    envelope stays the one that was derived.
     """
     torch.manual_seed(seed)
     # `state_block = 16` default: pins the historical fixture shape (an expert pin
     # shrinks `feasible_BC` to that one width, so every legacy cell keeps the `BC`
     # it was measured at); the H2 flagship cell overrides it with 64.
-    return RoLA(hidden_size=64, num_heads=2, head_v_dim=32,
-                states_per_level=[4, 8, 8], levels_per_head=3, state_block=state_block,
-                state_norm=state_norm, paging=paging, layer_idx=0,
-                mma_precision=mma_precision,
-                max_physical_pages=max_physical_pages, **kwargs).cuda().eval()
+    return build_layer(
+        hidden_size=64, num_heads=2, d_v=32, widths=_WIDTHS, routing=dense_routing(),
+        normalization=state_norm, decay=_DECAY[decay], layer_idx=0,
+        expert=PlanOverrides(state_block=state_block, mma_precision=mma_precision,
+                             paging=paging, max_physical_pages=max_physical_pages),
+    ).cuda().eval()
 
 
 @pytest.mark.parametrize("state_norm", ["raw", "global"])
@@ -74,20 +110,22 @@ def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(state_norm, decay):
         y1, _, _ = paged(x)
 
     assert unpaged.last_execution_backend == paged.last_execution_backend == "cuda"
-    bound = _reordering_bound(y0, unpaged)
+    bound = _reordering_bound(y0, unpaged, BC=16)
     assert (y0 - y_control).abs().max() <= bound
     assert (y0 - y1).abs().max() <= bound
 
 
 def test_committed_state_accounting_is_exposed_on_the_layer():
-    """§7.1's reported quantities, on the layer's existing plain-attribute surface."""
+    """§7.1's reported quantities. Old: `layer.last_paging_stats`, a layer
+    plain-attribute. New: `layer._page_arena.last_result` -- the arena's own
+    `PagingResult`, the SAME fields (see the module docstring)."""
     torch.manual_seed(4)
     x = torch.randn(2, 48, 64, device="cuda")
     layer = _layer(paging=True, seed=6)
     with torch.no_grad():
         layer(x)
 
-    stats = layer.last_paging_stats
+    stats = layer._page_arena.last_result
     assert stats is not None
     assert stats.realized_owners > 0
     assert 0 < stats.resident_pages <= stats.owners_total * 4  # BH = batch * heads = 4
@@ -103,7 +141,7 @@ def test_an_unpaged_layer_reports_no_paging_stats():
     layer = _layer(paging=False, seed=6)
     with torch.no_grad():
         layer(x)
-    assert layer.last_paging_stats is None
+    assert layer._page_arena is None
 
 
 def test_the_paging_flag_is_never_silently_dropped_on_the_oracle_arm():
@@ -143,7 +181,7 @@ def test_a_second_fresh_forward_does_not_silently_continue_the_first():
         y0_paged, _, _ = paged(x)
         y1_paged, _, _ = paged(x)
 
-    bound = _reordering_bound(y0_unpaged, unpaged)
+    bound = _reordering_bound(y0_unpaged, unpaged, BC=16)
     assert (y0_unpaged - y0_paged).abs().max() <= bound
     assert (y1_unpaged - y1_paged).abs().max() <= bound, (
         "the second paged forward diverged from the second unpaged one: the arena "
@@ -170,7 +208,7 @@ def test_a_paged_use_cache_continuation_matches_the_single_forward(n_steps):
 
     with torch.no_grad():
         y_single, _, _ = unpaged(x)
-        bound = _reordering_bound(y_single, unpaged)
+        bound = _reordering_bound(y_single, unpaged, BC=16)
 
         boundaries = [0] + [round(48 * (i + 1) / n_steps) for i in range(n_steps)]
         cache = RoLAState()
@@ -199,7 +237,10 @@ def test_a_paged_use_cache_continuation_matches_the_single_forward(n_steps):
 def test_a_paged_BC64_layer_is_bit_identical_to_an_unpaged_one():
     """`test_a_paged_layer_is_bit_identical_to_an_unpaged_one`, pinned to the
     flagship owner width: `state_block=64` shrinks the feasible set to (64,), so
-    the selected plan MUST launch `BC = 64` -- asserted, not assumed."""
+    the selected plan MUST launch `BC = 64` -- structurally, from the pin, since
+    `unpaged.last_selected_plan` itself is unreadable here (module docstring's
+    BUG note); `paged.last_selected_plan.BC` is still readable and asserted
+    directly."""
     torch.manual_seed(71)
     x = torch.randn(2, 48, 64, device="cuda")
     unpaged = _layer(paging=False, seed=72, state_block=64)
@@ -211,9 +252,10 @@ def test_a_paged_BC64_layer_is_bit_identical_to_an_unpaged_one():
         y_control, _, _ = unpaged(x)
         y1, _, _ = paged(x)
 
-    assert unpaged.last_selected_plan.BC == paged.last_selected_plan.BC == 64
+    assert unpaged.feasible_BC == (64,), "the state_block pin did not shrink to BC=64"
+    assert paged.last_selected_plan.BC == 64
     assert unpaged.last_execution_backend == paged.last_execution_backend == "cuda"
-    bound = _reordering_bound(y0, unpaged)
+    bound = _reordering_bound(y0, unpaged, BC=64)
     assert (y0 - y_control).abs().max() <= bound
     assert (y0 - y1).abs().max() <= bound
 
@@ -226,10 +268,15 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
     have rebuilt), its construction `BC` stays the chunk-1 value, and the output
     must match an unpaged layer driven through the IDENTICAL forced flip within
     the readout's own reordering envelope.
+
+    Old `rola.layers.rola.DEFAULT_SELECTOR` -> `rola.interface.DEFAULT_SELECTOR`:
+    the selection seam moved into `rola.interface._derive_plan`, which both the
+    plain (`rola_op`) and paged (`derive_plan`) arms now share, so patching it
+    there reaches both -- the layer module no longer imports a selector at all.
     """
     import dataclasses
 
-    import rola.layers.rola as layer_mod
+    import rola.interface as interface_module
     from rola.state import RoLAState
 
     torch.manual_seed(81)
@@ -254,7 +301,8 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
             calls["i"] += 1
             return dataclasses.replace(choice, BC=forced), evidence
 
-    monkeypatch.setattr(layer_mod, "DEFAULT_SELECTOR", ScriptedBC(layer_mod.DEFAULT_SELECTOR))
+    monkeypatch.setattr(
+        interface_module, "DEFAULT_SELECTOR", ScriptedBC(interface_module.DEFAULT_SELECTOR))
 
     unpaged = _layer(paging=False, seed=82)
     paged = _layer(paging=True, seed=82)
@@ -289,7 +337,7 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
         "is not what actually ran")
     assert arenas[0].BC == 16, "the arena's construction (policy) BC moved"
 
-    bound = _reordering_bound(y_unpaged, unpaged)
+    bound = _reordering_bound(y_unpaged, unpaged, BC=64)
     assert (y_unpaged - y_paged).abs().max() <= bound, (
         "a BC flip over a live arena moved the output beyond the readout's own "
         "reordering envelope: the atom re-key's BC-invariance does not hold "
