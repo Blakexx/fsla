@@ -252,20 +252,37 @@ the HOST fixes. The arrangement is CUTLASS's parallel split-K
   skipped row can never be read as garbage. Within a live row every channel is
   stored, zeros included.
 - **The fold order** is the sort of the pass-3 work list by
-  `(bh * owners_total + owner) * (n_tiles + 1) + seg` — unique per work item,
+  `(bh * owners_total + owner) [* (n_tiles + 1) + seg]` — unique per work item,
   a function of the routing alone, independent of the planner's cost sort and
-  of any scheduler decision. `rola_consumer_forward` materializes it per call
-  as `works [n_work] i32` grouped by `bh` plus `off [BH+1]` bounds.
-- `emit_reduce_kernel` (grid `(n_tiles, BH)` x 256): one CTA owns a tile's
-  `BT x DV` outputs in registers, walks its batch-head's work items in that
-  order, skips `rowmask == 0` entries and dead rows, and writes `num`/`den`
-  FULLY — both are `at::empty`, and a token nothing contributes to gets the
-  sum of zero terms, `0.0f`, the pre-P10 `at::zeros` semantics. `divide_pass`
-  is unchanged downstream.
+  of any scheduler decision. It arrives as the `emit_works [n_work] i32` /
+  `emit_off [BH+1] i32` arguments, BUILT UPSTREAM
+  (`rola.planner.schedule.emit_reduce_order`): once per schedule on the
+  `P = 1` path — rebuilding it per call measurably dominated small cells —
+  and per call, with the `seg` term, on the split path
+  (`rola/ops/consumer.py`). The extension validates shape/dtype and never
+  computes an order of its own.
+- `emit_reduce_kernel` (one THREAD per output element, flat grid over
+  `BH * T * DV`): each thread walks its batch-head's work items in that order,
+  skips dead rows off the mask (a warp spans one token's channels, so the mask
+  word is a warp-broadcast load and the payload is coalesced), and writes
+  `num`/`den` FULLY — both are `at::empty`, and a token nothing contributes to
+  gets the sum of zero terms, `0.0f`, the pre-P10 `at::zeros` semantics. The
+  `ch == 0` lane folds the token's denominator in the same walk.
+  `divide_pass` is unchanged downstream. (A CTA-per-tile register-tile form
+  and a 4-way interleaved-accumulator form were both measured no better on
+  the worst high-K/short-T probe cell — the walk is bound by the workspace
+  read-back — so the simplest shape ships.)
 
 Determinism argument, in one line: every workspace byte has one writer, the
 term set is run-invariant, the fold order is host-fixed, and each output
 element is a per-thread SEQUENTIAL fp32 sum — no step depends on scheduling.
+
+Measured price (sm_86, `perf/ledger.jsonl` + `workflows/perf/p10_splitk.md`):
+the canonical at-scale sparse cell `atscale-L2048` pays **+7.1%** step time
+(7.989 → 8.557 ms); the small probe cells pay more relatively (the reduce's
+read-back does not shrink with `T`): `topo-D2-w64x64-BC64|global` 0.077 →
+0.110 ms, the high-K `topo-D4-w8x8x8x16-BC16|global` 0.230 → 0.477 ms. The
+latency baseline was re-recorded at the P10 tip with this note.
 
 Cost and scaling (stated per the design-for-scale rule): the workspace is
 launch-scoped, `4 * n_work * T * (DV + 1)` bytes ≈ 8.6 GB at the flagship

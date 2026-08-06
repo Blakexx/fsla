@@ -339,6 +339,8 @@ def _consumer_forward(
     # reached it through before `P` existed, or the primary benchmarked
     # configuration is not the configuration that was benchmarked.
     owners_arg = schedule.owners
+    # P = 1: the schedule-cached fold order (built once per schedule).
+    emit_works, emit_off = schedule.emit_reduce_works, schedule.emit_reduce_off
     sp_args: tuple = (None,) * 14
     if sequence_parallel is not None and sequence_parallel.split:
         from rola.routing.sequence_parallel import build_sequence_parallel_tensors
@@ -362,6 +364,13 @@ def _consumer_forward(
                       else build_sequence_parallel_tensors(sequence_parallel, schedule))
         owners_arg = sp_tensors.owners
         sp_args = sp_tensors.as_kernel_arguments()
+        # The emission reduce's fold order over the SPLIT work list: the schedule's
+        # cached P = 1 order does not know the seg axis, so it is rebuilt here with
+        # the seg term (same key family; docs/internals/consumer.md#emit-workspace).
+        from rola.planner.schedule import emit_reduce_order
+        emit_works, emit_off = emit_reduce_order(
+            sp_tensors.owners, geometry.owners_total, BH,
+            seg=sp_tensors.work_seg, n_tiles=schedule.n_tiles)
 
     if paging is not None:
         # §4.5's ONE EVENT-WAIT, and it is a CORRECTNESS requirement rather than a
@@ -400,6 +409,8 @@ def _consumer_forward(
         schedule.read_slice_union.contiguous(),
         schedule.write_slice_union.contiguous(),
         owners_arg.contiguous(),
+        emit_works,
+        emit_off,
         None if global_norm else schedule.g_read.to(torch.float32).contiguous(),
         schedule.g_write.to(torch.float32).contiguous(),
         v_f,

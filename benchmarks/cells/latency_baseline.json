@@ -3,29 +3,29 @@
  "arms": {
   "topo-D2-w64x64-BC64|global|none": {
    "clock_settled": true,
-   "iqr_ms": 0.001024,
-   "median_ms": 0.0768,
+   "iqr_ms": 0.000928,
+   "median_ms": 0.109568,
    "reps": 35,
    "source": "cuda_events"
   },
   "topo-D2-w64x64-BC64|global|warm": {
    "clock_settled": true,
-   "iqr_ms": 0.001024,
-   "median_ms": 0.090112,
+   "iqr_ms": 0.002048,
+   "median_ms": 0.117088,
    "reps": 35,
    "source": "cuda_events"
   },
   "topo-D2-w64x64-BC64|raw|none": {
    "clock_settled": true,
    "iqr_ms": 0.001024,
-   "median_ms": 0.062464,
+   "median_ms": 0.090112,
    "reps": 35,
    "source": "cuda_events"
   },
   "topo-D4-w8x8x8x16-BC16|global|none": {
    "clock_settled": true,
-   "iqr_ms": 0.00512,
-   "median_ms": 0.237568,
+   "iqr_ms": 0.00224,
+   "median_ms": 0.484512,
    "reps": 35,
    "source": "cuda_events"
   }
@@ -33,7 +33,7 @@
  "provenance": {
   "driver_cuda": "12.4",
   "gpu": "NVIDIA GeForce RTX 3080 Ti",
-  "manifest_sha256": "7b82d02e58b20df4be127beb59a460a81177cd20bb5578f263bc6c377b38f289",
+  "manifest_sha256": "b42cea19bb27615a1e18819f80bdc6bc61fa0feed8a3ea15e4973bca2a7138e7",
   "ptxas": "ptxas: NVIDIA (R) Ptx optimizing assembler Copyright (c) 2005-2024 NVIDIA Corporation Built on Tue_Feb_27_16:15:50_PST_2024 Cuda compilation tools, release 12.4, V12.4.99 Build cuda_12.4.r12.4/compiler.33961263_0",
   "rola": "0.1.0.dev0",
   "sm": "sm_86",
