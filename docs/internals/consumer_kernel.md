@@ -615,9 +615,13 @@ Every thread computes the scan REDUNDANTLY (all loads are CTA-uniform addresses)
 boundaries are uniform with no broadcast and no per-tile barrier; only warp 0 stores `t_idx`
 (lane = bit, slot = `fill + popc(below)`). A word with more live tokens than the group has
 room for is split at the `(room+1)`-th set bit (`__fns`); the loop is bounded by
-`ceil(32/BT) + 1` rounds per word, never a per-token scan. When `fill == BT` the group runs:
-one `__syncthreads()` publishes `t_idx`, the control block resets, `stage_tile(-1, 0, ...)`
-stages the group, and `compute_visit(-1, 0, ...)` runs the SAME body an aligned tile runs.
+`ceil(32/BT) + 1` rounds per word, never a per-token scan. Each thread assembles from the
+SMEM cross-visit carry `g_scan` (fill, split-word remainder, group flags, the hoisted
+fixed-row indices) in registers; when `fill == BT` (or the stream ends ragged) the scheduler
+yields `tile = -1` and the walk's ONE inline visit body runs it: the control block resets,
+the group-entry `__syncthreads()` publishes warp 0's `t_idx` writes AND orders the carry
+loads before tid 0 stores the updated carry, `stage_tile(-1, 0, ...)` stages the group, and
+the SAME body an aligned tile runs follows.
 
 **Stability is the correctness requirement, not a nicety.** Source tiles are visited
 ascending and each word is consumed LSB-first, so `t_idx` is GLOBALLY ascending. The intra
