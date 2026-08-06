@@ -1,0 +1,142 @@
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""The oracle's input contract: everything `naive_rola` refuses, and why.
+
+The oracle is read, not just run. It is the definition every Tier 1 gate is
+anchored to, so the literal-clarity standard says the file should read like the
+mathematics -- and it did not: 69 lines of shape and domain checking stood
+between the reader and 40 lines of recurrence (audit finding F4). None of it is
+math. All of it is a boundary.
+
+So the boundary lives here and `rola/ops/naive.py` calls it in one line. Nothing
+is weakened by the move: every check below is the one that was there, and the
+one semantic slack among them -- the simplex tolerance -- is now a named
+constant with its derivation attached rather than a keyword default nobody had
+to justify (finding F5).
+
+`ROLA_V3_SPEC.md` section references are the contract's authority; each check
+cites the clause it enforces.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from rola.routing.types import DecayConfig, LeafMassDecay, Topology
+
+#: How far a routing level's mass may sit from 1 and still be accepted as a
+#: simplex.
+#:
+#: THIS IS A SEMANTIC SLACK, NOT A FLOATING-POINT ONE, which is why it is named
+#: here instead of defaulting quietly inside the check. A caller may hand the
+#: oracle levels that have been through a bf16 storage round-trip -- that is the
+#: quantization boundary `write_levels_stored` exists to exercise -- and bf16
+#: carries about 8 mantissa bits, so a width-256 simplex's per-entry rounding
+#: accumulates to a few parts in 1e3 across the sum. `5e-3` covers that and
+#: nothing more: an input that is genuinely unnormalized (a missing softmax, a
+#: level summing to its width) misses it by orders of magnitude.
+SIMPLEX_ATOL = 5e-3
+
+
+def validate_simplex(
+    name: str, levels: tuple[torch.Tensor, ...], *, atol: float = SIMPLEX_ATOL
+) -> None:
+    """Each level is nonnegative and sums to 1 over its width (spec section 4.1)."""
+    for level, factors in enumerate(levels):
+        if torch.any(factors < -atol):
+            raise ValueError(f"{name}[{level}] must be nonnegative (spec §4.1: p >= 0)")
+        mass = factors.sum(dim=-1)
+        if not torch.allclose(mass, torch.ones_like(mass), atol=atol):
+            raise ValueError(
+                f"{name}[{level}] must sum to 1 over its width (spec §4.1: sum_d p = 1); "
+                f"max deviation {float((mass - 1).abs().max())}"
+            )
+
+
+def validate_inputs(
+    v: torch.Tensor,
+    read_levels: tuple[torch.Tensor, ...],
+    write_levels: tuple[torch.Tensor, ...],
+    write_levels_stored: tuple[torch.Tensor, ...],
+    g_read: torch.Tensor | None,
+    g_write: torch.Tensor,
+    topology: Topology,
+    decay: DecayConfig,
+    normalization: str,
+) -> tuple[int, int, int, int]:
+    """Shapes, domains and the normalization mode's own rule. Returns `(B, T, H, d_v)`."""
+    if v.ndim != 4:
+        raise ValueError(f"v must have shape [B,T,H,d_v], got {tuple(v.shape)}")
+    B, T, H, d_v = v.shape
+    if d_v != topology.d_v:
+        raise ValueError(f"v's last dim {d_v} must match topology.d_v={topology.d_v}")
+    widths = topology.widths
+    for name, levels in (("read_levels", read_levels), ("write_levels", write_levels)):
+        levels = tuple(levels)
+        if len(levels) != topology.D:
+            raise ValueError(f"{name} must contain one tensor per level (D={topology.D}), got {len(levels)}")
+        for level, (factors, width) in enumerate(zip(levels, widths)):
+            if not isinstance(factors, torch.Tensor):
+                raise TypeError(f"{name}[{level}] must be a torch.Tensor, got {type(factors).__name__}")
+            if tuple(factors.shape) != (B, T, H, width):
+                raise ValueError(
+                    f"{name}[{level}] must have shape [B,T,H,width_l]=({B},{T},{H},{width}), "
+                    f"got {tuple(factors.shape)}"
+                )
+    write_levels_stored = tuple(write_levels_stored)
+    if len(write_levels_stored) != topology.D:
+        raise ValueError(
+            "write_levels_stored must contain one tensor per level "
+            f"(D={topology.D}), got {len(write_levels_stored)}"
+        )
+    for level, (factors, width) in enumerate(zip(write_levels_stored, widths)):
+        if tuple(factors.shape) != (B, T, H, width):
+            raise ValueError(
+                f"write_levels_stored[{level}] must have shape [B,T,H,width_l]="
+                f"({B},{T},{H},{width}), got {tuple(factors.shape)}"
+            )
+    if tuple(g_write.shape) != (B, T, H):
+        raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
+    if torch.any(g_write <= 0):
+        raise ValueError("g_write must be strictly positive (spec §4.2: g_write[t] > 0)")
+    if normalization == "global":
+        if g_read is not None:
+            raise ValueError(
+                "normalization='global' fixes g_read := 1 (spec §4.2); production has no "
+                "read-gain projection in global cells, so a supplied g_read would be silently "
+                "ignored -- pass g_read=None"
+            )
+    else:
+        if g_read is None:
+            raise ValueError("normalization='raw' requires an explicit g_read")
+        if tuple(g_read.shape) != (B, T, H):
+            raise ValueError(f"g_read must have shape [B,T,H]={(B, T, H)}, got {tuple(g_read.shape)}")
+        if torch.any(g_read <= 0):
+            raise ValueError("g_read must be strictly positive (spec §4.2: g_read[t] > 0)")
+    if decay is not None:
+        if not isinstance(decay, LeafMassDecay):
+            raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")
+        decay.validate_against(topology)
+        for level, dial in enumerate(decay.dials):
+            if dial.shape[0] != H:
+                raise ValueError(
+                    f"decay.dials[{level}] head dim {dial.shape[0]} must match H={H}"
+                )
+    return B, T, H, d_v
+
+
+def initial_cache(
+    initial_state: torch.Tensor | None, *, B: int, H: int, N: int, d_v: int, norm: str, device
+) -> torch.Tensor:
+    """The carried state a run starts from, `[B,H,N,d_v + (norm == "global")]` fp64."""
+    width = d_v + int(norm == "global")
+    expected = (B, H, N, width)
+    if initial_state is None:
+        return torch.zeros(expected, device=device, dtype=torch.float64)
+    if not isinstance(initial_state, torch.Tensor) or tuple(initial_state.shape) != expected:
+        shape = getattr(initial_state, "shape", None)
+        raise ValueError(f"initial_state must have shape {expected}, got {shape}")
+    return initial_state.to(device=device, dtype=torch.float64)
+
+
+__all__ = ["SIMPLEX_ATOL", "initial_cache", "validate_inputs", "validate_simplex"]

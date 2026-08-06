@@ -266,7 +266,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     **This is a ROBUSTNESS row, not a semantics row, and the distinction is itself a
     finding.** ``M = 0`` requires some level to have no live digit on EITHER side, and
     every routing level is a SIMPLEX — it sums to 1, so it always has one. The canonical
-    oracle enforces exactly that (``naive._validate_simplex`` refuses an all-zero level),
+    oracle enforces exactly that (``_oracle_contract.validate_simplex`` refuses an all-zero level),
     which means the corner is UNREACHABLE from a valid producer and cannot be gated
     against the oracle at all: there is no reference answer because there is no legal
     input. Asserting against the oracle here would have meant weakening the oracle.

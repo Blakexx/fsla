@@ -20,13 +20,9 @@ from __future__ import annotations
 
 import torch
 
+from rola.ops._oracle_contract import initial_cache, validate_inputs, validate_simplex
 from rola.ops.constants import READOUT_EPS
-from rola.routing.types import (
-    DecayConfig,
-    LeafMassDecay,
-    Topology,
-    validate_normalization,
-)
+from rola.routing.types import DecayConfig, Topology, validate_normalization
 
 
 def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
@@ -101,102 +97,6 @@ def _leaf_product(
     return leaves
 
 
-def _validate_simplex(name: str, levels: tuple[torch.Tensor, ...], *, atol: float) -> None:
-    for level, factors in enumerate(levels):
-        if torch.any(factors < -atol):
-            raise ValueError(f"{name}[{level}] must be nonnegative (spec §4.1: p >= 0)")
-        mass = factors.sum(dim=-1)
-        if not torch.allclose(mass, torch.ones_like(mass), atol=atol):
-            raise ValueError(
-                f"{name}[{level}] must sum to 1 over its width (spec §4.1: sum_d p = 1); "
-                f"max deviation {float((mass - 1).abs().max())}"
-            )
-
-
-def _validate_inputs(
-    v: torch.Tensor,
-    read_levels: tuple[torch.Tensor, ...],
-    write_levels: tuple[torch.Tensor, ...],
-    write_levels_stored: tuple[torch.Tensor, ...],
-    g_read: torch.Tensor | None,
-    g_write: torch.Tensor,
-    topology: Topology,
-    decay: DecayConfig,
-    normalization: str,
-) -> tuple[int, int, int, int]:
-    if v.ndim != 4:
-        raise ValueError(f"v must have shape [B,T,H,d_v], got {tuple(v.shape)}")
-    B, T, H, d_v = v.shape
-    if d_v != topology.d_v:
-        raise ValueError(f"v's last dim {d_v} must match topology.d_v={topology.d_v}")
-    widths = topology.widths
-    for name, levels in (("read_levels", read_levels), ("write_levels", write_levels)):
-        levels = tuple(levels)
-        if len(levels) != topology.D:
-            raise ValueError(f"{name} must contain one tensor per level (D={topology.D}), got {len(levels)}")
-        for level, (factors, width) in enumerate(zip(levels, widths)):
-            if not isinstance(factors, torch.Tensor):
-                raise TypeError(f"{name}[{level}] must be a torch.Tensor, got {type(factors).__name__}")
-            if tuple(factors.shape) != (B, T, H, width):
-                raise ValueError(
-                    f"{name}[{level}] must have shape [B,T,H,width_l]=({B},{T},{H},{width}), "
-                    f"got {tuple(factors.shape)}"
-                )
-    write_levels_stored = tuple(write_levels_stored)
-    if len(write_levels_stored) != topology.D:
-        raise ValueError(
-            "write_levels_stored must contain one tensor per level "
-            f"(D={topology.D}), got {len(write_levels_stored)}"
-        )
-    for level, (factors, width) in enumerate(zip(write_levels_stored, widths)):
-        if tuple(factors.shape) != (B, T, H, width):
-            raise ValueError(
-                f"write_levels_stored[{level}] must have shape [B,T,H,width_l]="
-                f"({B},{T},{H},{width}), got {tuple(factors.shape)}"
-            )
-    if tuple(g_write.shape) != (B, T, H):
-        raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
-    if torch.any(g_write <= 0):
-        raise ValueError("g_write must be strictly positive (spec §4.2: g_write[t] > 0)")
-    if normalization == "global":
-        if g_read is not None:
-            raise ValueError(
-                "normalization='global' fixes g_read := 1 (spec §4.2); production has no "
-                "read-gain projection in global cells, so a supplied g_read would be silently "
-                "ignored -- pass g_read=None"
-            )
-    else:
-        if g_read is None:
-            raise ValueError("normalization='raw' requires an explicit g_read")
-        if tuple(g_read.shape) != (B, T, H):
-            raise ValueError(f"g_read must have shape [B,T,H]={(B, T, H)}, got {tuple(g_read.shape)}")
-        if torch.any(g_read <= 0):
-            raise ValueError("g_read must be strictly positive (spec §4.2: g_read[t] > 0)")
-    if decay is not None:
-        if not isinstance(decay, LeafMassDecay):
-            raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")
-        decay.validate_against(topology)
-        for level, dial in enumerate(decay.dials):
-            if dial.shape[0] != H:
-                raise ValueError(
-                    f"decay.dials[{level}] head dim {dial.shape[0]} must match H={H}"
-                )
-    return B, T, H, d_v
-
-
-def _initial_cache(
-    initial_state: torch.Tensor | None, *, B: int, H: int, N: int, d_v: int, norm: str, device
-) -> torch.Tensor:
-    width = d_v + int(norm == "global")
-    expected = (B, H, N, width)
-    if initial_state is None:
-        return torch.zeros(expected, device=device, dtype=torch.float64)
-    if not isinstance(initial_state, torch.Tensor) or tuple(initial_state.shape) != expected:
-        shape = getattr(initial_state, "shape", None)
-        raise ValueError(f"initial_state must have shape {expected}, got {shape}")
-    return initial_state.to(device=device, dtype=torch.float64)
-
-
 def naive_rola(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
@@ -237,7 +137,7 @@ def naive_rola(
     validate_normalization(normalization)
     write_levels = tuple(write_levels)
     write_levels_stored = write_levels if write_levels_stored is None else tuple(write_levels_stored)
-    B, T, H, d_v = _validate_inputs(
+    B, T, H, d_v = validate_inputs(
         v, read_levels, write_levels, write_levels_stored, g_read, g_write, topology, decay, normalization
     )
     #: DERIVED HERE, not read off `topology`. The oracle's address map is its own
@@ -251,12 +151,8 @@ def naive_rola(
     read64 = tuple(level.to(torch.float64) for level in read_levels)
     write64 = tuple(level.to(torch.float64) for level in write_levels)
     stored64 = tuple(level.to(torch.float64) for level in write_levels_stored)
-    # atol accommodates a level tensor that has been through a bf16 storage
-    # round-trip before reaching the oracle (bf16 has ~8 bits of mantissa, so a
-    # width-256 simplex's per-entry rounding can sum to a few 1e-3 off from 1);
-    # it is still tight enough to catch a genuinely unnormalized input.
-    _validate_simplex("read_levels", read64, atol=5e-3)
-    _validate_simplex("write_levels", write64, atol=5e-3)
+    validate_simplex("read_levels", read64)
+    validate_simplex("write_levels", write64)
 
     g_write64 = g_write.to(torch.float64)
     if normalization == "global":
@@ -294,7 +190,7 @@ def naive_rola(
         c = _leaf_product(stored_f, strides, N).detach()                  # [BH,T,N], stop_gradient (spec §2)
         keep = torch.pow(1.0 - rate[:, None, :], c)                       # [BH,T,N]
 
-    cache = _initial_cache(
+    cache = initial_cache(
         initial_state, B=B, H=H, N=N, d_v=d_v, norm=normalization, device=v.device
     ).reshape(BH, N, d_v + int(normalization == "global"))
     value_state = cache[..., :d_v]

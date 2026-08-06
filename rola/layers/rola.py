@@ -1192,7 +1192,7 @@ class RoLA(nn.Module):
             # the SAME SHAPE `[B, H, N, d_v + (norm == 'global')]` and the same
             # meaning on both paths; only its dtype differs (the oracle accumulates in
             # fp64, the consumer in fp32), and BOTH entry points accept either
-            # (`naive._initial_cache` casts to fp64, `_consumer_forward` casts to
+            # (`_oracle_contract.initial_cache` casts to fp64, `_consumer_forward` casts to
             # fp32). A continuation may therefore cross backends without
             # reinterpretation. The guard above only covers CONSUMPTION -- a
             # grad-context step with a prior `recurrent_state` raises -- so a
