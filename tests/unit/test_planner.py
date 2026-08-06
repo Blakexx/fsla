@@ -777,7 +777,11 @@ def test_no_o_of_n_allocation_at_large_topology():
     # WORD. It is 32x the bitmap and still O(L/BT * sum widths); the quantity this
     # test bounds is dependence on N, and the support word has none.
     support_word_bytes = 2 * BH * n_tiles * 4 * sum(widths)
-    expected_bytes = 2 * BH * n_words * 4 * (sum(widths) + n_slices) + support_word_bytes
+    # ... plus the token-granular slice union (ABI v3): ONE side-OR'd int32 token
+    # word per (bh, slice, tile) -- O(L/BT * n_slices), no N dependence either.
+    slice_union_tok_bytes = BH * n_slices * n_tiles * 4
+    expected_bytes = (2 * BH * n_words * 4 * (sum(widths) + n_slices)
+                      + support_word_bytes + slice_union_tok_bytes)
     assert schedule.schedule_bytes() == expected_bytes
     assert support_word_bytes < 4 * (BC * 256)  # N = 65536 leafs; not O(N)
 

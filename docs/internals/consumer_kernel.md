@@ -563,13 +563,14 @@ in LOCAL memory, which is §2.4's rejected hoist. An ACCESSOR crosses as CODE: t
 it stays a register there and nothing about the function's shape can move it. Measured:
 rebuilding the array inside instead costs the `BC = 16` decay arm 12/28 -> 40/80 spill bytes.
 
-### `stage_tile(tile, slot, is_read, is_write)`
+### `stage_tile(tile, slot, is_read, is_write, gN)`
 
 Everything the tile's COMPUTE consumes but does not produce: the clock prefix, the
 row scales, the read panel, the write panel at the plane, and the value tile. At `kRing == 1`
 it is called at the top of the tile body and `slot` is identically 0, so the emitted code is
 the un-ringed one with the braces moved. At `kRing == 2` it is called ONE VISIT EARLY, from
-inside the previous tile's compute ([below](#row-scales)).
+inside the previous tile's compute ([below](#row-scales)). `tile < 0` is a GATHERED visit
+([below](#token-gather)): the staged tokens are `t_idx[0..gN)` and `slot` is 0.
 
 The schedule bits arrive as ARGUMENTS rather than being re-derived from the candidate words: at
 depth 1 the caller has just computed them, and a second SMEM read costs the
@@ -594,6 +595,70 @@ therefore statically indexed and live in registers. This is also what `D` being 
 buys beyond the dispatch: it is a topology fact with four legal values (spec §1), not a
 threshold, so branching on it is the standing "branch on structure, not thresholds" rule rather
 than an exception to it.
+
+## <a id="token-gather"></a>28b. The token-gather walk (P14, incremental form)
+
+The kernel has TWO walks over one visit body, selected by a LAUNCH-UNIFORM structural fact:
+`tg = p.token_gather && !summary`. `p.token_gather` is derived host-side from the activation
+registry's `exact_zeros` column — set iff BOTH routing sides can produce exact zeros. When
+either side is structurally full-support the membership word below is all-ones and the gather
+would be the identity, so the aligned walk IS the path there and pays nothing; the summary
+pass keeps the aligned walk because its per-leaf inclusion flags (`sum_slot`) are tile-framed.
+This is a runtime fork on structure, not a template axis: zero new instantiations.
+
+**The gathered walk.** The aligned candidate stream (`next_cand`, unchanged) feeds a
+MEMBERSHIP scan: per candidate tile, `fr`/`fw` = the AND over the owner's `l < j` fixed-level
+`read/write_tok_bits` rows, and `member = (fr | fw) & slice_union_tok[bh, slice, tile]` — the
+token-granular slice union (schedule ABI v3), sides OR'd because the walk visits the
+read|write union. Ballot-time exclusion of slice-dead tokens is what keeps groups full.
+Every thread computes the scan REDUNDANTLY (all loads are CTA-uniform addresses), so group
+boundaries are uniform with no broadcast and no per-tile barrier; only warp 0 stores `t_idx`
+(lane = bit, slot = `fill + popc(below)`). A word with more live tokens than the group has
+room for is split at the `(room+1)`-th set bit (`__fns`); the loop is bounded by
+`ceil(32/BT) + 1` rounds per word, never a per-token scan. When `fill == BT` the group runs:
+one `__syncthreads()` publishes `t_idx`, the control block resets, `stage_tile(-1, 0, ...)`
+stages the group, and `compute_visit(-1, 0, ...)` runs the SAME body an aligned tile runs.
+
+**Stability is the correctness requirement, not a nicety.** Source tiles are visited
+ascending and each word is consumed LSB-first, so `t_idx` is GLOBALLY ascending. The intra
+Gram's inclusive causal mask is order-relative; an unstable gather produces a plausible wrong
+answer that only the oracle gate catches (`tests/tier2_geometry/test_token_gather.py`, whose
+teeth are mutant-proven against both a dropped-token and a permuted-order ballot).
+
+**Why skipped tokens are exact identities** (the token-axis twin theorem): a token outside
+the membership word has exact-zero coefficients on every leaf of this owner on both sides,
+and under `DECAY` an exactly-zero clock product (`build_clock_stream` enforces
+`stored != 0 => live != 0`, and membership exclusion implies a write-dead level for every
+leaf), so it moves neither the state nor the output of THIS owner. Groups therefore preserve
+the recurrence exactly; sparse results are tolerance-graded against the oracle (grouping
+re-associates the intra term), while full-support routing is BIT-identical to the aligned
+walk (gate-asserted).
+
+**The ragged flush** (`fill < BT` at `tile_hi`): slots `[gN, BT)` stage EXACT-ZERO
+coefficient rows (the gathered accessors return `0.0f` and never read `t_idx` for a padded
+slot), zero row scales, and — under `DECAY` — a FINITE zero clock prefix (`clk` rows
+zero-filled so both panel factors stay finite; `keep^0 == 1`). Padded slots are then inert
+through every GEMM exactly the way the aligned walk's `token >= T` tail is, and the emission's
+`out == 0` early-out never touches their addresses.
+
+**Ring interaction.** A gathered visit does not ride the staging ring: it stages at the group
+top into slot 0 on every arm (the next group's membership is not known until the scan reaches
+it). On `kRing == 2` arms the aligned depth-2 write-panel build and the run-ahead are
+`!ga`-guarded; the gathered write panel is built inside `stage_tile` behind the same pre-GEMM
+barrier. Ringing the gathered walk (scan-ahead group assembly) is a recorded follow-on, not a
+correctness need.
+
+**Token addressing.** All four GEMMs are token-oblivious; token indices enter only through
+the staging accessors and the emission/mass epilogue, as `t_idx[t]` against the `bh` stream
+base (the aligned arm keeps its per-tile base and 32-bit inner offsets — its accessor bodies
+are textually unchanged). The gathered split-K emission scatters through `t_idx`; the P14
+scattered-emission microbench priced exactly this pattern at a 1.0009x DRAM-byte ratio
+(banded), which is what licensed building the gather at all
+(`workflows/perf/p14_microbench.md`).
+
+**Cost of carrying both walks:** `t_idx` = `BT` ints of SMEM on every arm
+(smem_layout.md#smem-ledger), plus the register class of the max-over-branches allocation —
+ratified per instantiation by the spill manifest like every other body change.
 
 ## <a id="decay-clock"></a>30. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
