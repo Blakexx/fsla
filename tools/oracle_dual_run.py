@@ -31,10 +31,18 @@ Two surfaces, because the two steps of the decomposition have different contract
   purpose of that step is to replace a bisection with a third party's closed form,
   so agreement to 1e-14 is the result, and the support-set equality is the claim with
   teeth (a threshold that moves by one entry is a routing change, not rounding).
-* `--surface oracle` -- `naive_rola` itself. Compared BY BIT-IDENTITY (P2): both
-  sides run fp64 on identical inputs, so a rewrite that only nearly reproduces the
-  old one has changed the definition. Declared exceptions are named on the command
-  line and asserted individually; anything undeclared is a failure.
+* `--surface oracle` -- `naive_rola` itself, FORWARD AND BACKWARD. Compared BY
+  BIT-IDENTITY (P2): both sides run fp64 on identical inputs, so a rewrite that only
+  nearly reproduces the old one has changed the definition. Declared exceptions are
+  named on the command line (exact key, or a `fnmatch` pattern such as
+  `*/dstored0`) and asserted individually; anything undeclared is a failure.
+
+**THE BACKWARD HALF IS P3, AND IT IS NOT OPTIONAL.** A seeded VJP per cell over every
+operand, with `None` recorded as `None` rather than coerced to zeros -- because the
+oracle's `.detach()` at the clock is its literal spec, and the difference between "no
+gradient" and "a zero gradient" is precisely what a manufactured graph edge hides. The
+stored clock is passed as a DISTINCT tensor for the same reason: aliased to the
+deposit it trains through, it cannot be observed at all.
 
 **P5, NON-VACUITY.** `--mutate` injects a known defect into the NEW side and the run
 must FAIL. A protocol that cannot fail is not a protocol, and this one is the gate
@@ -43,6 +51,7 @@ that stands between a quiet oracle change and every Tier 1 claim in the reposito
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
 import sys
@@ -160,6 +169,14 @@ def emit_producer() -> dict:
     return out
 
 
+#: P3's marker for "this input received NO gradient". An empty tensor rather than a
+#: zero one, because the whole point of the backward half is that `None` and `0.0`
+#: are DIFFERENT answers: `.detach()` at the clock is the oracle's literal spec, and
+#: a manufactured graph edge that turns the refusal into a zero is exactly the defect
+#: audit finding F1 names. A shape mismatch is then how the comparison reports it.
+NO_GRAD = torch.zeros(0, dtype=torch.float64)
+
+
 def emit_oracle() -> dict:
     """`naive_rola`'s outputs over the structural matrix, forward and backward."""
     from rola.ops.naive import naive_rola
@@ -212,12 +229,60 @@ def emit_oracle() -> dict:
                             decay = LeafMassDecay(dials=dials)
                         name = (f"{'x'.join(map(str, widths))}-dv{d_v}-{normalization}-"
                                 f"{'decay' if decay_on else 'nodecay'}-T{T}")
+                        #: The stored clock is a DISTINCT tensor, not the default
+                        #: alias of `write`. It is the one input the spec says must
+                        #: receive no gradient (`c = stop_gradient(...)`), and it
+                        #: cannot be observed at all while it is the same object the
+                        #: deposit trains through.
+                        stored = tuple(level.clone() for level in write)
+                        operands = _differentiable(
+                            v=v, g_read=g_read, g_write=g_write, read=read,
+                            write=write, stored=stored,
+                            dials=None if decay is None else decay.dials)
                         y, state = naive_rola(
                             v, read, write, g_read, g_write, topo, decay,
-                            normalization, output_final_state=True)
+                            normalization, write_levels_stored=stored,
+                            output_final_state=True)
                         out[f"{name}/y"] = y
                         out[f"{name}/state"] = state
+                        out.update(_backward(name, y, state, operands))
     return out
+
+
+def _differentiable(**named):
+    """Flatten the oracle's operands into `{key: tensor}`, marking each for grad.
+
+    Tuples are expanded per level; `None` operands (no read gain under `global`,
+    no dials without decay) simply do not appear, so a cell's key set states which
+    operands that cell HAS.
+    """
+    flat: dict[str, torch.Tensor] = {}
+    for key, value in named.items():
+        if value is None:
+            continue
+        items = value if isinstance(value, tuple) else (value,)
+        for index, tensor in enumerate(items):
+            label = key if not isinstance(value, tuple) else f"{key}{index}"
+            tensor.requires_grad_(True)
+            flat[label] = tensor
+    return flat
+
+
+def _backward(name: str, y, state, operands: dict) -> dict:
+    """P3: one seeded VJP per cell, every operand, `None` recorded as `None`.
+
+    The cotangents are `linspace`, not random: the generator's state must not
+    depend on how many cells ran before this one, or a matrix edit silently
+    re-seeds every backward in the run.
+    """
+    dy = torch.linspace(-1.0, 1.0, y.numel(), dtype=torch.float64).reshape(y.shape)
+    dstate = torch.linspace(0.25, -0.75, state.numel(), dtype=torch.float64).reshape(state.shape)
+    keys = sorted(operands)
+    grads = torch.autograd.grad(
+        outputs=(y, state), inputs=[operands[k] for k in keys],
+        grad_outputs=(dy, dstate), allow_unused=True)
+    return {f"{name}/d{key}": (NO_GRAD if grad is None else grad.detach())
+            for key, grad in zip(keys, grads)}
 
 
 SURFACES = {"producer": emit_producer, "oracle": emit_oracle}
@@ -256,6 +321,26 @@ def apply_mutant(kind: str) -> None:
         #: default rather than the call sites is deliberate: it is the same thing a
         #: careless edit to the constant would do.
         naive.naive_rola.__kwdefaults__["eps"] = 2e-5
+    elif kind == "clock":
+        #: THE DETACHMENT AT THE CLOCK, removed. `c = stop_gradient(prod_l
+        #: p_write_stored)` is the spec's own wording, so a gradient reaching the
+        #: stored levels is a semantic change that the FORWARD cannot see at all --
+        #: this is the mutant that says whether P3's backward half has teeth.
+        #:
+        #: Source-level, because the detachment is an expression inside the
+        #: recurrence rather than a name that can be rebound. The module is
+        #: re-executed in its own globals with the call removed; the count assert
+        #: is what stops a future edit from making the mutant a no-op.
+        import rola.ops.naive as naive
+
+        source = Path(naive.__file__).read_text()
+        if source.count(".detach()") != 1:
+            raise SystemExit(
+                f"the `clock` mutant expects exactly one `.detach()` in "
+                f"{naive.__file__}, found {source.count('.detach()')}")
+        namespace = dict(naive.__dict__)
+        exec(compile(source.replace(".detach()", ""), naive.__file__, "exec"), namespace)
+        naive.naive_rola = namespace["naive_rola"]
     elif kind == "support":
         #: One entry pushed out of the support: the claim P4 makes with no tolerance.
         import rola.routing.entmax.reference as ref
@@ -274,7 +359,7 @@ def apply_mutant(kind: str) -> None:
 
         ref.entmax_forward = clipped
     else:
-        raise SystemExit(f"unknown mutant {kind!r}; known: strides, eps, support")
+        raise SystemExit(f"unknown mutant {kind!r}; known: strides, eps, clock, support")
     print(f"MUTANT ACTIVE: {kind}  (this run MUST fail)")
 
 
@@ -282,9 +367,19 @@ def apply_mutant(kind: str) -> None:
 # THE COMPARISON
 # ---------------------------------------------------------------------------
 
+def _excepted(key: str, exceptions) -> bool:
+    """A declared P2 exception matches by exact key or by `fnmatch` pattern.
+
+    Patterns exist because an exception is usually a QUANTITY (`*/dstored0`, every
+    cell's stored-clock gradient) rather than one cell, and ninety-six spellings of
+    the same declaration is a declaration nobody reads.
+    """
+    return any(key == e or fnmatch.fnmatch(key, e) for e in exceptions)
+
+
 def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
-    only_old = sorted(set(old) - set(new))
-    only_new = sorted(set(new) - set(old))
+    only_old = sorted(k for k in set(old) - set(new) if not _excepted(k, exceptions))
+    only_new = sorted(k for k in set(new) - set(old) if not _excepted(k, exceptions))
     if only_old or only_new:
         print(f"\nFAIL  the two sides do not answer the same questions: "
               f"{len(only_old)} key(s) only in OLD, {len(only_new)} only in NEW")
@@ -298,7 +393,11 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
         a, b = old[key], new[key]
         quantity = key.rsplit("/", 1)[-1]
         if a.shape != b.shape:
-            failures.append((key, f"shape {tuple(a.shape)} -> {tuple(b.shape)}"))
+            if not _excepted(key, exceptions):
+                #: A gradient that appeared or vanished lands here, since NO_GRAD is
+                #: the empty tensor: the message names the transition rather than a
+                #: number, which is the only useful thing to say about it.
+                failures.append((key, f"shape {tuple(a.shape)} -> {tuple(b.shape)}"))
             continue
         if a.dtype == torch.bool or quantity in ("support", "packed"):
             #: NO TOLERANCE. A support set or a packed word is a discrete claim; one
@@ -310,7 +409,7 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
         delta = (a.double() - b.double()).abs().max().item()
         if delta > worst["value"]:
             worst = {"value": delta, "key": key}
-        if surface == "oracle" and key not in exceptions:
+        if surface == "oracle" and not _excepted(key, exceptions):
             if not torch.equal(a, b):
                 failures.append((key, f"not bit-identical, max|d| = {delta:.3e}"))
         elif delta > PRODUCER_ATOL:
