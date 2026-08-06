@@ -1,5 +1,22 @@
 """Canonical fp64 reference implementation for the V3 routing-native RoLA oracle.
 
+**THE CORRECTNESS REFERENCE IS THE TEXTBOOK, BECAUSE THE REDUCTION THEOREM SAYS
+IT MUST BE.** RoLA's consumer is a gated linear-attention recurrence over a
+routed leaf address space, and once the routing allocations are materialized it
+IS textbook gated LA: one state per leaf, a diagonal gate, a rank-one deposit,
+a linear readout. So the recurrence below is written as that and nothing else --
+the plain-torch few-line form a reader can check against any linear-attention
+paper -- and the parts that are OURS are pushed to the edges where they can be
+audited: the leaf address map (``_leaf_product``), the gate values
+(``keep = (1 - rate) ** c``) and the ratio readout.
+
+Normalization uses the ONES-COLUMN trick rather than a second recurrence. The
+mass state is what you get by running the same recurrence on a value vector of
+all ones, so it is not a separate object: ``v`` gains a column of ones under
+``normalization="global"``, the state carries ``d_v + 1`` columns, and the last
+one IS the mass. One recurrence, one state, one readout -- and the state's
+layout is then literally the ``[B,H,N,d_v+1]`` cache both backends exchange.
+
 Implements ``ROLA_V3_SPEC.md`` §2 exactly. There is no Q/K, no feature map, and
 no privileged routing level here -- every level is an ordinary mixed-radix
 routing level, and the oracle consumes already-materialized per-level, per-side
@@ -23,13 +40,6 @@ import torch
 from rola.ops._oracle_contract import initial_cache, validate_inputs, validate_simplex
 from rola.ops.constants import READOUT_EPS
 from rola.routing.types import DecayConfig, Topology, validate_normalization
-
-
-def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
-    """Fold a public ``[B, T, H, *]`` tensor into ``[B*H, T, *]``."""
-    return tensor.permute(0, 2, 1, 3).reshape(
-        tensor.shape[0] * tensor.shape[2], tensor.shape[1], *tensor.shape[3:]
-    )
 
 
 def _leaf_capacity(widths: tuple[int, ...]) -> int:
@@ -160,6 +170,7 @@ def naive_rola(
     widths = topology.widths
     N = _leaf_capacity(widths)
     strides = _radix_strides(widths)
+    normalized = normalization == "global"
 
     v64 = v.to(torch.float64)
     read64 = tuple(level.to(torch.float64) for level in read_levels)
@@ -169,63 +180,51 @@ def naive_rola(
     validate_simplex("write_levels", write64)
 
     g_write64 = g_write.to(torch.float64)
-    if normalization == "global":
-        g_read64 = torch.ones((B, T, H), device=v.device, dtype=torch.float64)
-    else:
-        g_read64 = g_read.to(torch.float64)
+    #: Spec §4.2 fixes `g_read := 1` under global normalization, so the literal
+    #: statement of that is a tensor of ones and the recurrence has no second form.
+    g_read64 = (torch.ones((B, T, H), device=v.device, dtype=torch.float64)
+                if normalized else g_read.to(torch.float64))
 
-    vf = _fold_bth(v64)                       # [BH,T,d_v]
-    read_f = tuple(_fold_bth(level) for level in read64)     # each [BH,T,w_l]
-    write_f = tuple(_fold_bth(level) for level in write64)
-    stored_f = tuple(_fold_bth(level) for level in stored64)
-    g_read_f = _fold_bth(g_read64.unsqueeze(-1)).squeeze(-1)   # [BH,T]
-    g_write_f = _fold_bth(g_write64.unsqueeze(-1)).squeeze(-1)
+    #: THE ONES COLUMN. The mass state is the same recurrence run on a value of
+    #: all ones, so it is a COLUMN of the value, not a second state. `[B,T,H,d_v+1]`
+    #: under global normalization, `[B,T,H,d_v]` otherwise.
+    deposit_value = torch.cat(
+        (v64, torch.ones((B, T, H, 1), device=v.device, dtype=torch.float64)), dim=-1
+    ) if normalized else v64
 
-    BH = B * H
-    R = g_read_f[..., None] * _leaf_product(read_f, strides, N)    # [BH,T,N]
-    W = g_write_f[..., None] * _leaf_product(write_f, strides, N)  # [BH,T,N]
+    #: The read and write allocations, materialized per leaf. `[B,T,H,N]`.
+    R = g_read64[..., None] * _leaf_product(read64, strides, N)
+    W = g_write64[..., None] * _leaf_product(write64, strides, N)
 
+    #: The gate. `keep[t,s] = (1 - rate[s]) ** c[t,s]` -- a DIAGONAL gate, which is
+    #: what makes this the gated-LA recurrence and not something new. `rate` trains
+    #: through the dials; `c`, the clock, is stop-gradient by spec §2.
     if decay is None:
-        keep = torch.ones((BH, T, N), device=v.device, dtype=torch.float64)
+        keep = torch.ones((B, T, H, N), device=v.device, dtype=torch.float64)
     else:
-        dial_f = tuple(
-            dial.to(device=v.device, dtype=torch.float64).unsqueeze(0).expand(B, -1, -1).reshape(BH, -1)
-            for dial in decay.dials
-        )
-        rate = _leaf_product(dial_f, strides, N)                          # [BH,N], trains through delta
-        c = _leaf_product(stored_f, strides, N).detach()                  # [BH,T,N], stop_gradient (spec §2)
-        keep = torch.pow(1.0 - rate[:, None, :], c)                       # [BH,T,N]
+        dials = tuple(dial.to(device=v.device, dtype=torch.float64) for dial in decay.dials)
+        rate = _leaf_product(dials, strides, N)                       # [H,N]
+        c = _leaf_product(stored64, strides, N).detach()              # [B,T,H,N]
+        keep = torch.pow(1.0 - rate, c)
 
-    cache = initial_cache(
+    #: The state, in the layout it is handed back in: one row per leaf, `d_v`
+    #: columns of value plus, when normalized, the ones column's mass.
+    state = initial_cache(
         initial_state, B=B, H=H, N=N, d_v=d_v, norm=normalization, device=v.device
-    ).reshape(BH, N, d_v + int(normalization == "global"))
-    value_state = cache[..., :d_v]
-    mass_state = cache[..., d_v] if normalization == "global" else None
+    )
 
     outputs = []
     for t in range(T):
-        keep_t = keep[:, t, :]           # [BH,N]
-        W_t = W[:, t, :]                 # [BH,N]
-        # M[t,s,:] = keep[t,s] * M[t-1,s,:] + W[t,s] * v[t,:]  (spec §2)
-        value_state = keep_t[..., None] * value_state + W_t[..., None] * vf[:, t, :][:, None, :]
-        if mass_state is not None:
-            mass_state = keep_t * mass_state + W_t
-        # num[t,:] = sum_s R[t,s] * M[t,s,:], inclusive read-after-write (spec §2)
-        R_t = R[:, t, :]
-        numerator = torch.einsum("bs,bsv->bv", R_t, value_state)
-        if mass_state is None:
-            outputs.append(numerator)
-        else:
-            denominator = torch.einsum("bs,bs->b", R_t, mass_state)
-            outputs.append(numerator / (denominator[:, None] + eps))
+        # S[t,s,:] = keep[t,s] * S[t-1,s,:] + W[t,s] * v[t,:]   (spec §2)
+        state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]
+        # o[t,:] = sum_s R[t,s] * S[t,s,:], inclusive read-after-write (spec §2)
+        readout = torch.einsum("bhn,bhnv->bhv", R[:, t], state)
+        outputs.append(
+            readout[..., :d_v] / (readout[..., d_v:] + eps) if normalized else readout)
 
-    out_bh = torch.stack(outputs, dim=1) if outputs else vf.new_empty(BH, 0, d_v)
-    output_public = out_bh.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous()
-    if not output_final_state:
-        return output_public, None
-    final_cache = value_state if mass_state is None else torch.cat((value_state, mass_state[..., None]), dim=-1)
-    return output_public, final_cache.view(
-        B, H, N, d_v + int(normalization == "global")).contiguous()
+    y = (torch.stack(outputs, dim=1) if outputs
+         else v64.new_zeros((B, 0, H, d_v)))
+    return y, (state if output_final_state else None)
 
 
 __all__ = ["naive_rola"]

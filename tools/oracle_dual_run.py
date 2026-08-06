@@ -98,6 +98,16 @@ def bind_library(root: Path, label: str) -> Path:
 #: The SUPPORT-SET claim carries no tolerance at all, by construction.
 PRODUCER_ATOL = 1e-13
 
+#: The bound a REASSOCIATED quantity is held to instead of bit-identity.
+#:
+#: Reassociation is the one difference a rewrite can legitimately introduce: the
+#: same sum, added up in a different order. Its size is bounded by the length of
+#: the sum times the unit roundoff, and the longest sum here is over the leaves,
+#: `N <= 4096` in the matrix -- so `N * 2^-53 = 4.5e-13`. `1e-12` is that with a
+#: factor of two of headroom, and it is RELATIVE, because the quantities span many
+#: decades. A difference that does not fit is not reassociation.
+REASSOCIATION_RTOL = 1e-12
+
 #: fp64 seeds. Fixed here rather than passed in: a matrix whose inputs depend on the
 #: caller is a matrix two runs can disagree about without either being wrong.
 SEED = 20260805
@@ -448,7 +458,13 @@ def _excepted(key: str, exceptions) -> bool:
     return any(key == e or fnmatch.fnmatch(key, e) for e in exceptions)
 
 
-def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> dict:
+def _matches(key: str, patterns) -> bool:
+    """Same matching rule, for the reassociation register."""
+    return any(key == p or fnmatch.fnmatch(key, p) for p in patterns)
+
+
+def compare(old: dict, new: dict, *, surface: str, exceptions: set,
+            reassociated: set = frozenset()) -> dict:
     """One chunk's tally: how many quantities, the worst difference, the failures."""
     only_old = sorted(k for k in set(old) - set(new) if not _excepted(k, exceptions))
     only_new = sorted(k for k in set(new) - set(old) if not _excepted(k, exceptions))
@@ -484,6 +500,17 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> dict:
         delta = (a.double() - b.double()).abs().max().item()
         if delta > worst["value"]:
             worst = {"value": delta, "key": key}
+        if _matches(key, reassociated):
+            #: DECLARED REASSOCIATION. Not an exemption: the quantity still has to
+            #: agree, just under the bound a reordered sum can produce rather than
+            #: under bit-identity. Anything larger is a changed definition wearing a
+            #: rounding difference's clothes.
+            scale = max(float(a.abs().max()), float(b.abs().max()), 1.0)
+            if delta > REASSOCIATION_RTOL * scale:
+                failures.append(
+                    (key, f"max|d| = {delta:.3e} exceeds the reassociation bound "
+                          f"{REASSOCIATION_RTOL * scale:.3e}"))
+            continue
         if surface == "oracle" and not _excepted(key, exceptions):
             if not torch.equal(a, b):
                 failures.append((key, f"not bit-identical, max|d| = {delta:.3e}"))
@@ -542,7 +569,8 @@ def _emit_old(tree: Path, ref: str, surface: str, out_path: Path,
                 print(line)
 
 
-def report(surface: str, tallies: list, exceptions: set) -> bool:
+def report(surface: str, tallies: list, exceptions: set,
+           reassociated: set = frozenset()) -> bool:
     """One verdict over every chunk. A chunked run reads exactly like an unchunked one."""
     count = sum(t["count"] for t in tallies)
     worst = max((t["worst"] for t in tallies), key=lambda w: w["value"],
@@ -555,6 +583,9 @@ def report(surface: str, tallies: list, exceptions: set) -> bool:
           + (f"  at {worst['key']}" if worst["key"] else ""))
     if exceptions:
         print(f"declared exceptions ({len(exceptions)}): {sorted(exceptions)}")
+    if reassociated:
+        print(f"declared reassociations ({len(reassociated)}, held to "
+              f"{REASSOCIATION_RTOL:.0e} relative): {sorted(reassociated)}")
     if failures:
         print(f"\nFAIL  {len(failures)} quantit(ies) disagree:")
         for key, why in failures[:12]:
@@ -585,6 +616,9 @@ def main() -> int:
                     help="P5: inject a known defect into the NEW side; the run must fail")
     ap.add_argument("--except", dest="exceptions", action="append", default=[],
                     metavar="KEY", help="a declared P2 exception (key or fnmatch), repeatable")
+    ap.add_argument("--reassociated", action="append", default=[], metavar="KEY",
+                    help="a quantity whose sum is reordered by the change under test: "
+                         "held to REASSOCIATION_RTOL instead of bit-identity, never exempt")
     ap.add_argument("--json", metavar="PATH", help="write the record")
     a = ap.parse_args()
 
@@ -618,10 +652,11 @@ def main() -> int:
                 _emit_old(tree, a.against, a.surface, old_path, chunk, a.chunks)
                 old = torch.load(old_path, weights_only=False)
             new = _emit(a.surface, chunk, a.chunks)
-            tallies.append(compare(old, new, surface=a.surface, exceptions=exceptions))
+            tallies.append(compare(old, new, surface=a.surface, exceptions=exceptions,
+                                   reassociated=set(a.reassociated)))
             del old, new
 
-    ok = report(a.surface, tallies, exceptions)
+    ok = report(a.surface, tallies, exceptions, set(a.reassociated))
     if a.mutate:
         #: The mutant inverts the verdict: a mutant run that PASSES means the
         #: comparison is blind to the defect, which is the failure being tested for.
@@ -636,6 +671,11 @@ def main() -> int:
         Path(a.json).write_text(json.dumps(
             {"old": a.against, "surface": a.surface, "mutant": a.mutate,
              "exceptions": sorted(exceptions), "chunks": a.chunks,
+             "reassociated": sorted(set(a.reassociated)),
+             #: EVERY failure, not the twelve that fit on a screen: the record is
+             #: what a reviewer audits, and a truncated one cannot be joined to the
+             #: tree (P6).
+             "failures": [[k, why] for t in tallies for k, why in t["failures"]],
              "quantities": sum(t["count"] for t in tallies),
              "worst": max((t["worst"]["value"] for t in tallies), default=0.0),
              "passed": ok}, indent=1, sort_keys=True) + "\n")
