@@ -28,6 +28,7 @@ from math import prod
 
 import torch
 
+from rola.ops.constants import READOUT_EPS
 from rola.planner.schedule import (
     DEFAULT_SM_SHARED_BYTES,
     PANEL_MAX_EXPONENT,
@@ -111,7 +112,7 @@ def _consumer_forward(
     continue_paging: bool = False,
     decay=None,
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
-    eps: float = 1e-5,
+    eps: float = READOUT_EPS,
     schedule: Schedule | None = None,
     sequence_parallel=None,
     sequence_parallel_tensors=None,

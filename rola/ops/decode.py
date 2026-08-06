@@ -78,6 +78,7 @@ from dataclasses import dataclass, field
 import torch
 
 from rola.ops._ext import extension
+from rola.ops.constants import READOUT_EPS
 from rola.planner.schedule import MMA_PRECISIONS, leaf_rate_dials
 from rola.routing.types import Topology
 
@@ -162,7 +163,7 @@ def freeze_decode_config(
     decay: bool,
     BH: int,
     device: torch.device | str,
-    eps: float = 1e-5,
+    eps: float = READOUT_EPS,
     frozen=None,
     static_density: tuple[tuple[bool, bool], ...] | None = None,
     n_split: int | None = None,

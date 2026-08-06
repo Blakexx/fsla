@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from rola.ops.constants import READOUT_EPS
 from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
 
@@ -206,7 +207,7 @@ def rola_func(
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
-    eps: float = 1e-5,
+    eps: float = READOUT_EPS,
     schedule: Schedule | None = None,
     **consumer_kwargs: Any,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
