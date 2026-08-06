@@ -74,7 +74,7 @@ def _summaries(k_hat=1.0, candidate_frac=0.5, BC=64, D=2):
 
 def _static(*, decay=False, widths=(64, 64), BC=64, BH=8):
     return StaticPlanInputs(
-        widths=widths, d_v=64, normalization="global", decay=decay,
+        topology=_topology(widths), normalization="global", decay=decay,
         mma_precision="bf16",
         density=StaticDensity(read=(False,) * len(widths), write=(False,) * len(widths)),
         feasible_BC=(BC,), BH=BH)
@@ -342,20 +342,22 @@ def test_a_plan_carries_the_selector_name_and_status_advisorily():
         if f.name not in ignored}
 
 
-def test_the_layer_stamps_the_selector_it_actually_ran():
+def test_the_op_stamps_the_selector_it_actually_ran():
     """The stamp is taken FROM the selector object, not written out beside it.
 
-    `rola/layers/rola.py` names `DEFAULT_SELECTOR`, runs it through `select_with`, and
-    stamps `selector.name` / `selector.status`. Asserting the source rather than the
+    `rola/interface.py`'s `_derive_plan` -- the private seam, which is where selection
+    now lives, because choosing a cost model is not describing a model -- resolves the
+    selector (the expert override or `DEFAULT_SELECTOR`), runs it through `select_with`,
+    and stamps `selector.name` / `selector.status`. Asserting the SOURCE rather than the
     string is what keeps a swapped selector's plan honest: this row passes only while
     the two come from one object.
     """
     import inspect
 
-    import rola.layers.rola as layer_mod
+    import rola.interface as layer_mod
 
     src = inspect.getsource(layer_mod)
-    assert "selector = DEFAULT_SELECTOR" in src
+    assert "selector = overrides.selector or DEFAULT_SELECTOR" in src
     assert "select_with(" in src
     assert "selector_name=selector.name" in src
     assert "selector_status=selector.status" in src

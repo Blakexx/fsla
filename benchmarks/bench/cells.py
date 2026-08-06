@@ -185,11 +185,11 @@ class Cell:
     * **SYNTHETIC** (`producer_route_w_mul is None`). Routing tensors are drawn
       directly by the support constructors above. Full control over the density
       axis, and the only way to build a fixture the decay/`raw`/write-`k` arms need,
-      because the trained layer this repo ships is `decay="none"` /
-      `state_norm="global"` only.
+      because the trained layer this repo ships has no decay source and
+      `normalization="global"` only.
     * **PRODUCER** (`producer_route_w_mul` set). A real
-      :class:`~rola.layers.RoLA` is constructed and `produce_routing` is run
-      on it, so the supports are the ones the MODEL emits. The plan is then chosen
+      :class:`~rola.layers.RoLA` is constructed and its `RouteProducer` gateway
+      is run on it, so the supports are the ones the MODEL emits. The plan is then chosen
       by `plan_and_schedule` -- the PLANNER, not a hand-built `Plan` -- which
       is what makes "plan-selected" claims about this cell true.
 
@@ -223,7 +223,7 @@ class Cell:
     #: routing IS; a synthetic cell's own sparsity comes from the support
     #: constructors. Forced true on producer cells (they route `sparse`/`sparse`).
     sparse_activation: bool = False
-    #: PRODUCER MODE. The `layer.route_W.mul_(...)` factor. `None` = synthetic.
+    #: PRODUCER MODE. The producer's `route_W.mul_(...)` factor. `None` = synthetic.
     producer_route_w_mul: float | None = None
     note: str = ""
 
@@ -251,53 +251,60 @@ class Cell:
         `torch.manual_seed(seed)` before construction is part of the fixture: the
         layer's parameter init consumes the global RNG, so the seed determines the
         routing projection and therefore the supports.
+
+        MIGRATED (API-contract break, 2026-08-05): the layer is now built from a
+        `RouteProducer` over a `SimplexProducer` (the feature-map slot) rather
+        than the deleted flat `head_v_dim=`/`levels_per_head=`/`level_routing_
+        configs=` kwargs; `route_W` lives on the producer, not the layer.
         """
-        from rola.layers import RoLA
-        from rola.layers.rola import LevelRoutingConfig
+        from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
+        from rola.expert import PlanOverrides
         torch.manual_seed(self.seed)
-        layer = RoLA(hidden_size=self.H * self.d_v, num_heads=self.H,
-                     head_v_dim=self.d_v, levels_per_head=len(self.widths),
-                     states_per_level=self.widths, decay="none", state_norm="global",
-                     level_routing_configs=LevelRoutingConfig(
-                         read="sparse", write="sparse", tied=False, alpha=1.5),
-                     paging=False, state_block=self.BC,
-                     layer_idx=0).to("cuda", torch.float32).eval()
+        hidden = self.H * self.d_v
+        producer = SimplexProducer(
+            self.widths, sparse_routing(1.5), hidden_size=hidden, num_heads=self.H)
+        routes = RouteProducer(
+            [producer], d_v=self.d_v, num_heads=self.H, hidden_size=hidden,
+            normalization="global")
+        layer = RoLA(
+            hidden, self.H, routes, layer_idx=0,
+            expert=PlanOverrides(state_block=self.BC),
+        ).to("cuda", torch.float32).eval()
         with torch.no_grad():
-            layer.route_W.mul_(self.producer_route_w_mul)
+            producer.route_W.mul_(self.producer_route_w_mul)
         for p in layer.parameters():
             p.requires_grad_(False)
         return layer
 
     def _build_producer(self):
-        from rola.routing.producer import produce_routing
+        """MIGRATED: `produce_routing(x, ..., route_W, ...)` -> `layer.routes(x)`,
+        the gateway call itself. No budget/temperature/usage-bias kwargs are
+        threaded through by hand any more -- the gateway owns them, and this cell
+        configures none (`SimplexProducer(..., budget=None)`, the default)."""
         layer = self._layer()
         hidden = self.H * self.d_v
         x = torch.randn(self.B, self.T, hidden, device="cuda", dtype=torch.float32)
         with torch.no_grad():
             v = layer.v_proj(x).view(self.B, self.T, self.H, self.d_v)
-            ro = produce_routing(
-                x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-                layer.gain_bias, layer.topology, "global", budget=layer.budget, r=None,
-                budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
-                temp_b=layer.temp_b, usage_bias_W=layer.usage_bias_W,
-                usage_bias_b=layer.usage_bias_b)
+            ro = layer.routes(x)
         g = torch.Generator(device="cuda").manual_seed(self.seed + 977)
         dials = {t: tuple(lo + span * torch.rand(self.H, w, device="cuda",
                                                  dtype=torch.float64, generator=g)
                           for w in self.widths)
                  for t, (lo, span) in _DIAL_RANGE.items()}
-        #: `produce_routing(..., "global")` returns `g_read = None`, because spec
-        #: §4.2 FIXES `g_read := 1` under `global` and production has no read-gain
-        #: projection to supply one. A `raw` arm on a producer cell therefore has no
-        #: producer-supplied read gain to use, and one is synthesised here from the
-        #: cell's own seed -- stated rather than silently substituted, because it
-        #: means a producer cell's `raw` arm is PART synthetic and its `raw` numbers
-        #: are not "what the model emits" the way its `global` numbers are.
+        #: `RouteProducer(..., normalization="global")(x)` returns `g_read = None`,
+        #: because spec §4.2 FIXES `g_read := 1` under `global` and production has
+        #: no read-gain projection to supply one. A `raw` arm on a producer cell
+        #: therefore has no producer-supplied read gain to use, and one is
+        #: synthesised here from the cell's own seed -- stated rather than
+        #: silently substituted, because it means a producer cell's `raw` arm is
+        #: PART synthetic and its `raw` numbers are not "what the model emits" the
+        #: way its `global` numbers are.
         g_read = ro.g_read
         if g_read is None:
             g_read = torch.rand(self.B, self.T, self.H, device="cuda",
                                 dtype=torch.float32, generator=g) + 0.5
-        return _with_f32(dict(read_levels=ro.read_levels, write_levels=ro.write_levels,
+        return _with_f32(dict(read_levels=ro.read, write_levels=ro.write,
                               g_read=g_read, g_write=ro.g_write, v=v, dials=dials,
                               topology=layer.topology))
 

@@ -270,17 +270,29 @@ class RoLA(nn.Module):
         if backend == "cuda" and L == 1 and recurrent_state is not None and not self.paging:
             out, final_state = self._decode(routes, v, decay, recurrent_state, B, H, cache_enabled)
             backend = "decode"
-        elif backend == "cuda" and self.paging:
-            out, final_state = self._paged(routes, v, decay, recurrent_state, B, H, cache_enabled)
+        elif backend == "cuda":
+            out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
         else:
-            # ONE op for both remaining arms. `rola_op` decides between the kernel and
-            # the differentiable reference from the operands themselves; `_arm` is how
-            # the layer contributes its training-mode condition, which is a property of
-            # a module and has no meaning for a free function.
+            if self.paging:
+                # `[[layer-dispatch-autograd-gap]]`'s shape of failure, in its other
+                # direction: a feature honoured on one dispatch arm and silently dropped
+                # on the other. The reference has no page table, so a paged layer that
+                # reaches it would run unpaged -- EXACT, because paging is bitwise
+                # invisible, but it would also silently discard `max_physical_pages`,
+                # which is not invisible. A configured feature is honoured or REFUSED,
+                # never dropped.
+                raise NotImplementedError(
+                    "paging is a CUDA-backend feature; this forward dispatched to the "
+                    "differentiable reference, which has no page table. The cap would be "
+                    "silently unenforced, so this raises rather than degrading. Run under "
+                    "`torch.no_grad()` in eval mode to reach the kernel, or drop the "
+                    "paging override.")
+            # The reference arm is the op, entire. `_arm` is how the layer contributes
+            # its training-mode condition, which is a property of a module and has no
+            # meaning for a free function.
             out, final_state = rola_op(
                 routes, v, decay, initial_state=recurrent_state,
-                output_final_state=cache_enabled, expert=self.expert,
-                _arm="reference" if backend == "oracle" else None)
+                output_final_state=cache_enabled, expert=self.expert, _arm="reference")
             self.last_selected_plan = None
 
         self._execution_backend_counts[backend] += 1
@@ -315,12 +327,24 @@ class RoLA(nn.Module):
         """
         return self.expert.paging or self.expert.max_physical_pages is not None
 
-    def _paged(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
-        """The tiled arm with a page arena carried across steps."""
+    def _tiled(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
+        """The kernel arm, paged or not, through the op's own two halves.
+
+        The layer opens the seam here rather than calling `rola_op` because it REPORTS
+        the plan (`last_selected_plan` is the diagnostic a dispatch gate asserts on), and
+        a plan the op derived and discarded is a plan nothing can be asserted about. It
+        is the same two functions `rola_op` composes, in the same order, with the arm
+        already decided one frame up -- not a second implementation of anything.
+        """
         from rola.expert import derive_plan, execute
 
         plan = derive_plan(routes, decay=decay, expert=self.expert, device=v.device)
         self.last_selected_plan = plan
+        if not self.paging:
+            out, final_state, _schedule = execute(
+                plan, routes, v, decay=decay, initial_state=recurrent_state)
+            return out, (final_state if cache_enabled else None)
+
         arena = self._resolve_page_arena(plan, B * H, v.device)
         continue_paging = recurrent_state is not None
         if continue_paging:

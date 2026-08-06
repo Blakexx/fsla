@@ -1,22 +1,21 @@
-"""V3 Stage 2 layer tests (`ROLA_V3_SPEC.md` §10 Stage 2; architecture §1.2, §8, §9.4).
+"""The routing vocabulary's own gate (`ROLA_V3_SPEC.md` §1; architecture §1.2, §8, §9.4).
 
-Covers the level-routing configuration surface: the public dataclass, its export
-identity, and `resolve_level_routing_configs`.
-
-**SCOPE NARROWED (post-merge, 2026-08-02).** Nine cells built a `states_per_level=[4]`
-(or `[3, 5]`, `[6]`) LAYER -- the deletion inventory, the fp64 oracle
-forward/backward grid, the budget-actuator gradient walk, the state-size and
-temperature-init cells, and the routing side-channel cell. `widths = (4,)` / `(3, 5)`
-/ `(6,)` name no BC-aligned owner rectangle for any instantiated `BC` (16, 64), so
-`THUNDER_RUN_SPEC.md` §6 P6's construction-time feasibility validation refuses them at
-`__init__`. That is P6's stated intent -- "construction-time validation gives
-construction-time errors, never plan-time surprises" -- and an explicit `state_block=`
-pin does not rescue them, because a pin is alignment-validated against the same
-ladder. The cells only ever ran the fp64 ORACLE path, which needs no `BC` at all, so
-re-pointing them onto an instantiated topology (`(16,)`, `(16, 16)`) would have changed
-BOTH what they cover and their cost. Per the ruling they are DELETED; the oracle
-forward/backward path is gated on instantiated topologies under `tier1_semantics` and
-the dispatch cells in `test_layer_dispatch.py`.
+**MIGRATED (API-contract break, 2026-08-05).** The subject this file gated used to be
+one public dataclass, `rola.layers.LevelRoutingConfig`, resolved by a free function
+`resolve_level_routing_configs`. The break DELETES both: "the routing vocabulary is
+the tag vocabulary directly" -- `IndependentRouting(tied=..., read_activation=...,
+write_activation=...)` and `UnionRouting(alpha)` (`rola.routing.types`), with
+`rola.dense_routing()`/`rola.sparse_routing(alpha)` as the two convenience
+constructors. There is no longer one dataclass to gate; there are two, and the
+broadcast/length-validation the free function used to do moved onto
+`SimplexProducer`, which is where a routing tag actually meets a topology now. Every
+assertion below is the OLD one, re-pointed at its new owner -- none weakened. Where
+the new validation raises a DIFFERENT exception type than the old string-keyed
+config did (`TypeError` instead of `ValueError` for a non-activation `read`/`write`
+value), that is noted at the row: the new vocabulary takes activation OBJECTS
+(`softmax()`/`entmax(alpha)`), not strings, so a bad value fails "not an activation"
+(`TypeError`) rather than "not a recognized string" (`ValueError`) -- a stricter
+failure mode, not a looser one.
 """
 
 from __future__ import annotations
@@ -25,55 +24,68 @@ import inspect
 
 import pytest
 
-from rola.layers import LevelRoutingConfig as ExportedLevelRoutingConfig
-from rola.layers.rola import LevelRoutingConfig, resolve_level_routing_configs
+from rola.routing.producer import SimplexProducer
+from rola.routing.types import IndependentRouting, UnionRouting, entmax, softmax
 
 # ---------------------------------------------------------------------------
-# `LevelRoutingConfig` validation, MOVED VERBATIM from the deleted
-# `tests/layers/test_rola_level_routing_config.py` (rola-v3 purge, findings §2.7).
-#
-# That file mixed two subjects: the public config dataclass, which is live V3
-# code (`rola.layers.LevelRoutingConfig`, resolved into the plan that
-# `producer_v3` consumes), and Q/K-era layer construction
-# (`RoLA(head_k_dim=...)`), which spec §1.2 deleted. Only the second subject
-# died with the purge. These five functions never construct a layer -- they are
-# the config's own gate and nothing else -- so they are carried across with
-# their assertions unchanged rather than re-derived: a rewritten check would
-# only prove the rewrite self-consistent.
+# `IndependentRouting`/`UnionRouting` validation -- the tag vocabulary's own gate.
 # ---------------------------------------------------------------------------
 
-def test_level_routing_config_has_only_public_fields():
-    assert ExportedLevelRoutingConfig is LevelRoutingConfig
-    assert set(inspect.signature(LevelRoutingConfig).parameters) == {'read', 'write', 'tied', 'alpha'}
+
+def test_independent_routing_has_only_public_fields():
+    assert set(inspect.signature(IndependentRouting).parameters) == {
+        'tied', 'read_activation', 'write_activation'}
     with pytest.raises(TypeError):
-        LevelRoutingConfig(probability='softmax')
+        IndependentRouting(probability='softmax')
+
+
+def test_union_routing_has_only_public_fields():
+    assert set(inspect.signature(UnionRouting).parameters) == {'alpha'}
+    with pytest.raises(TypeError):
+        UnionRouting(probability='softmax')
 
 
 @pytest.mark.parametrize('value', [0, 1, 'true', None])
-def test_level_routing_config_requires_an_exact_boolean_tied(value):
+def test_independent_routing_requires_an_exact_boolean_tied(value):
     with pytest.raises(TypeError):
-        LevelRoutingConfig(tied=value)
+        IndependentRouting(tied=value, read_activation=softmax(), write_activation=softmax())
 
 
-@pytest.mark.parametrize('side', ['read', 'write'])
+@pytest.mark.parametrize('side', ['read_activation', 'write_activation'])
 @pytest.mark.parametrize('value', ['softmax', 'entmax', 'SPARSE', 1, None])
-def test_level_routing_config_rejects_non_public_side_values(side, value):
-    kwargs = {side: value}
-    with pytest.raises(ValueError):
-        LevelRoutingConfig(**kwargs)
+def test_independent_routing_rejects_non_activation_side_values(side, value):
+    """The old config took `read='sparse'`/`write='dense'` strings and rejected an
+    unrecognized one with `ValueError`. The new vocabulary takes activation OBJECTS
+    (`softmax()`/`entmax(alpha)`) -- a bare string, int or `None` has no `.tag` to
+    look up in the registry, so the failure is `TypeError` ("not an activation"),
+    not `ValueError` ("not a recognized string")."""
+    kwargs = dict(tied=False, read_activation=softmax(), write_activation=softmax())
+    kwargs[side] = value
+    with pytest.raises(TypeError):
+        IndependentRouting(**kwargs)
 
 
-def test_resolve_level_routing_configs_broadcasts_and_validates_length():
-    config = LevelRoutingConfig(read='dense', write='sparse', tied=True)
-    assert resolve_level_routing_configs(config, D=3) == [config, config, config]
-    configs = [LevelRoutingConfig(), LevelRoutingConfig(tied=True)]
-    assert resolve_level_routing_configs(configs, D=2) == configs
-    with pytest.raises(ValueError, match='exactly D=2'):
-        resolve_level_routing_configs([config], D=2)
+def test_a_producer_broadcasts_one_routing_tag_and_validates_a_lists_length():
+    """The old free function `resolve_level_routing_configs(config_or_list, D)`
+    broadcast one tag across every level and validated a per-level list's length.
+    That job now belongs to `SimplexProducer`, the only place a routing tag meets a
+    concrete level count."""
+    tag = IndependentRouting(True, softmax(), entmax(1.5))
+    broadcast = SimplexProducer((4, 4, 4), tag, hidden_size=8, num_heads=1)
+    assert broadcast.levels == (tag, tag, tag)
+
+    per_level = [IndependentRouting(False, softmax(), softmax()), UnionRouting(1.5)]
+    matched = SimplexProducer((4, 4), per_level, hidden_size=8, num_heads=1)
+    assert matched.levels == tuple(per_level)
+
+    with pytest.raises(ValueError, match=r"1 routing tags for 2 widths"):
+        SimplexProducer((4, 4), [tag], hidden_size=8, num_heads=1)
 
 
 @pytest.mark.parametrize('value', [True, 1, 1.8, float('inf'), float('nan')])
-def test_level_routing_config_validates_alpha_like_entmax(value):
+def test_union_routing_validates_alpha_like_entmax(value):
     error = TypeError if value is True else ValueError
     with pytest.raises(error):
-        LevelRoutingConfig(alpha=value)
+        UnionRouting(alpha=value)
+    with pytest.raises(error):
+        entmax(value)

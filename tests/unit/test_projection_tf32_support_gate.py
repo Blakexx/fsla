@@ -29,12 +29,12 @@ must not move the production support set away from the fp64 oracle's.
 
 import pytest
 import torch
+from conftest import build_layer, resolved_routing_from_topology
 
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
+from rola import entmax, softmax
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.producer import resolved_routing_from_topology
 from rola.routing.projection import packed_router_logits, packed_router_logits_reference
+from rola.routing.types import IndependentRouting
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 
@@ -65,23 +65,26 @@ def test_packed_router_logits_matches_fp64_oracle_support(seed):
     what makes this non-common-mode with the producer under test.
     """
     torch.manual_seed(seed)
-    layer = RoLA(
-        hidden_size=_HIDDEN, num_heads=_HEADS, head_v_dim=_HEAD_V_DIM,
-        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-        decay="none", state_norm="global",
-        level_routing_configs=LevelRoutingConfig(read="dense", write="sparse", tied=False, alpha=1.5),
-        layer_idx=0,
+    # Old: `level_routing_configs=LevelRoutingConfig(read="dense", write="sparse",
+    # tied=False, alpha=1.5)` -- a mixed per-side tag, so neither `dense_routing()`
+    # nor `sparse_routing()` (the symmetric convenience constructors) applies; built
+    # directly as the `IndependentRouting` the old mapping produced.
+    layer = build_layer(
+        hidden_size=_HIDDEN, num_heads=_HEADS, d_v=_HEAD_V_DIM, widths=_BRANCHES,
+        routing=IndependentRouting(False, softmax(), entmax(1.5)),
+        normalization="global", decay=None,
     ).to("cuda", torch.float32).eval()
     for p in layer.parameters():
         p.requires_grad_(False)
+    producer = layer.routes.producers[0]
     routing = resolved_routing_from_topology(layer.topology)
     h = torch.randn(1, _LENGTH, _HIDDEN, device="cuda", dtype=torch.float32)
 
     read_logits, write_logits = packed_router_logits(
-        h, layer.route_W, routing, route_bias=layer.route_bias_param)
+        h, producer.route_W, routing, route_bias=producer.route_bias)
     read64, write64 = packed_router_logits_reference(
-        h.double(), layer.route_W.double(), routing,
-        route_bias=None if layer.route_bias_param is None else layer.route_bias_param.double())
+        h.double(), producer.route_W.double(), routing,
+        route_bias=None if producer.route_bias is None else producer.route_bias.double())
 
     production_support = _support(read_logits, write_logits, routing)
     oracle_support = _support(read64.float(), write64.float(), routing)

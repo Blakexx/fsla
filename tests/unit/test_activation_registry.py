@@ -42,10 +42,15 @@ from rola.routing.types import (
 # --- the table itself --------------------------------------------------------
 
 def test_v0_1_ratifies_exactly_the_two_declared_activation_families():
-    """§4.6: v0.1 ships exactly two ratified instances. A third row appearing without
-    a version bump and a docs change is the thing this catches."""
+    """§4.6: v0.1 ships exactly two ratified families, plus the opaque row.
+
+    A fourth row appearing without a version bump and a docs change is the thing this
+    catches. ``("opaque", None)`` is the row a level filled by a FOREIGN producer reads,
+    and it is a row rather than a special case precisely so that every rule quantifying
+    over cells covers such a level without knowing it is one.
+    """
     assert set(ACTIVATION_REGISTRY) == {
-        ("softmax", None), ("entmax", 1.5), ("entmax", 2.0)}
+        ("softmax", None), ("entmax", 1.5), ("entmax", 2.0), ("opaque", None)}
     assert all(row.kerneled for row in ACTIVATION_REGISTRY.values())
 
 

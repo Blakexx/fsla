@@ -82,8 +82,8 @@ import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from bench.instruments import settle_clocks
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
+from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
+from rola.expert import PlanOverrides
 from rola.ops.consumer import _consumer_forward
 
 # G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
@@ -93,7 +93,33 @@ from rola.ops.consumer import _consumer_forward
 # keeps `import rola` free of the calibration package's inductor edge.
 from rola.planner.calibration.cost_model import plan_and_schedule, select_plan
 from rola.planner.schedule import build_schedule
-from rola.routing.producer import produce_routing
+
+
+def _select_evidence(layer, x, decay_config):
+    """Reconstruct `(ConfigChoice, ConfigEvidence)` on the SAME routing bundle a
+    forward would use -- the private seam `rola.interface._derive_plan` walks
+    internally.
+
+    MIGRATED (API-contract break, 2026-08-05): `layer.last_plan_axes` (the
+    `ConfigEvidence` a forward used to retain beside its `Plan`) is GONE with no
+    layer-level replacement -- `rola.interface._derive_plan` computes it and
+    discards it now. This walks the same private seam by hand so the reporting
+    columns below (`k_hat`, `candidate_frac`, `selected_cost_per_token`,
+    `selection_provenance`) stay populated. It ALSO sidesteps a separate,
+    suspected rola/ bug (see the migration report): `layer.last_selected_plan`
+    itself reads back `None` after the ordinary (unpaged, non-decode) CUDA arm,
+    because `RoLA.forward`'s shared oracle/cuda `else` branch unconditionally
+    nulls it after calling `rola_op`, which never surfaces the `Plan` it computed
+    internally. Re-deriving here is unaffected by that bug.
+    """
+    from rola.interface import _hardware_facts, _static_inputs
+    from rola.planner.select import DEFAULT_SELECTOR, SUPPORTED_BT, StatisticsBundle, select_with
+
+    routes = layer.routes(x)
+    static = _static_inputs(routes, decay=decay_config, overrides=layer.expert)
+    hardware = _hardware_facts(routes.device)
+    summaries = routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
+    return select_with(DEFAULT_SELECTOR, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -275,8 +301,23 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
     diagnostic row (both produced by this same function) are never confused for
     each other downstream.
     """
-    def side(router: str) -> str:
-        return "sparse" if router == "entmax" else "dense"
+    def routing_tag(read_router: str, write_router: str):
+        """Old `LevelRoutingConfig(read=side(read_router), write=side(write_router),
+        tied=False, alpha=1.5)`. Per the migration mapping: both sides sparse and
+        untied -> `UnionRouting(alpha)` (`sparse_routing(1.5)`); otherwise
+        `IndependentRouting(tied, ...)` with each side's own activation -- which
+        is what a MIXED read/write router (the read-dense/write-sparse parity
+        cell) needs, since `IndependentRouting` already takes per-side
+        activations independently of `tied`."""
+        from rola import entmax, softmax
+        from rola.routing.types import IndependentRouting
+
+        def activation(router: str):
+            return entmax(1.5) if router == "entmax" else softmax()
+
+        if read_router == "entmax" and write_router == "entmax":
+            return sparse_routing(1.5)
+        return IndependentRouting(False, activation(read_router), activation(write_router))
 
     row = {"arm": arm, "cell_role": cell_role, "L": L, "B": B, "H": H, "d_v": d_v,
            "hidden": hidden, "branches": list(branches),
@@ -288,17 +329,21 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "dtype": "float32", "reps": reps, "warmup": warmup}
     try:
         torch.manual_seed(0)
-        layer = RoLA(hidden_size=hidden, num_heads=H, head_v_dim=d_v,
-                     levels_per_head=len(branches), states_per_level=branches,
-                     decay="leaf_mass" if decay_on else "none", state_norm=norm,
-                     level_routing_configs=LevelRoutingConfig(
-                         read=side(read_router), write=side(write_router),
-                         tied=False, alpha=1.5),
-                     paging=paging, state_block=state_block,
-                     layer_idx=0).to("cuda", torch.float32).eval()
+        from rola import LearnedDecay
+
+        producer = SimplexProducer(
+            tuple(branches), routing_tag(read_router, write_router),
+            hidden_size=hidden, num_heads=H)
+        routes = RouteProducer(
+            [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+        decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay_on else None
+        layer = RoLA(
+            hidden, H, routes, decay=decay_source, layer_idx=0,
+            expert=PlanOverrides(paging=paging, state_block=state_block),
+        ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
             with torch.no_grad():
-                layer.route_W.mul_(logit_gain)
+                producer.route_W.mul_(logit_gain)
         for param in layer.parameters():
             param.requires_grad_(False)
         x = torch.randn(B, L, hidden, device="cuda", dtype=torch.float32)
@@ -312,13 +357,20 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
             "would be an oracle timing")
         row["BC"] = layer.state_block
-        plan = layer.last_selected_plan
+        decay_config = None if layer.decay is None else layer.decay()
+        # `layer.last_selected_plan`/`layer.last_plan_axes`: see `_select_evidence`'s
+        # docstring -- both are re-derived here rather than read off the layer.
+        from rola.expert import derive_plan
+
+        _choice, evidence = _select_evidence(layer, x, decay_config)
+        plan = derive_plan(
+            layer.routes(x), decay=decay_config, expert=layer.expert, device=x.device)
         # `Plan.intra_lowering` and the whole crossover it drove (`INTRA_LOWERINGS`,
         # `select_intra_lowering`) were retired at item 6b (`schedule.py` §6 docstring,
         # 2026-08-01): there is one topology-agnostic kernel family now, so there is
         # nothing left on this axis to record.
         row.update({"selected_BT": plan.BT})
-        if layer.last_plan_axes is not None:
+        if evidence is not None:
             # G16 RE-POINT (terminal cycle): `last_plan_axes` carries
             # `rola.planner.select.ConfigEvidence` since the closed-form cut-over --
             # the pre-cut-over `PlanAxes.stats` object (mean_K / mean_K_candidate /
@@ -327,12 +379,13 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             # over the realized k-extent, spec §4.2) and `candidate_frac` survives by name;
             # both are recorded from the evidence the decision actually used, which
             # is stronger provenance than a re-derived statistic.
-            evidence = layer.last_plan_axes
             row["k_hat"] = round(evidence.k_hat, 4)
             row["candidate_frac"] = round(evidence.candidate_frac, 6)
             row["selected_cost_per_token"] = round(evidence.cost_per_token, 4)
             row["selection_provenance"] = evidence.provenance
-        stats_paging = layer.last_paging_stats
+        # Old `layer.last_paging_stats` -> the arena's own `PagingResult`
+        # (`layer._page_arena.last_result`), the same fields.
+        stats_paging = layer._page_arena.last_result if layer._page_arena is not None else None
         if stats_paging is not None:
             row.update({
                 "owners_total": stats_paging.owners_total,
@@ -374,28 +427,23 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
 
             def producer():
                 with torch.no_grad():
-                    return produce_routing(
-                        x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-                        layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
-                        budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
-                        temp_b=layer.temp_b, usage_bias_W=layer.usage_bias_W,
-                        usage_bias_b=layer.usage_bias_b)
+                    return layer.routes(x)
 
             with torch.no_grad():
                 ro = producer()
-            read_levels, write_levels = ro.read_levels, ro.write_levels
+            read_levels, write_levels = ro.read, ro.write
             g_read, g_write = ro.g_read, ro.g_write
-            decay = layer._decay_config() if decay_on else None
+            decay = decay_config
 
-            # `static_density` is the LAYER's own build-time declaration, and it is
-            # passed here for the same reason `layer.topology`/`layer.state_block`
-            # are: a plane that dropped it would time a planner call the whole-layer
-            # row above does not make.
+            # `layer.routes.density` is the ROUTE PRODUCER's own build-time
+            # declaration (old: `layer.static_density`), passed here for the same
+            # reason `layer.topology`/`layer.state_block` are: a plane that dropped
+            # it would time a planner call the whole-layer row above does not make.
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
                                             normalization=norm, decay=decay_on,
-                                            static_density=layer.static_density)
+                                            static_density=layer.routes.density)
 
             sel_plan, _axes, sched = planner()
 
@@ -403,7 +451,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
                 return select_plan(read_levels, write_levels, layer.topology,
                                       layer.state_block, normalization=norm,
                                       decay=decay_on,
-                                      static_density=layer.static_density)
+                                      static_density=layer.routes.density)
 
             def schedule_only():
                 return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)
