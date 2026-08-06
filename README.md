@@ -123,6 +123,7 @@ research surface, never a silent fallback.
 | --- | --- | --- | --- | --- |
 | entmax(alpha=1.5) | yes | yes | no | yes |
 | entmax(alpha=2) | yes | yes | no | yes |
+| opaque | yes | yes | no | yes |
 | softmax | yes | no | yes | yes |
 <!-- END GENERATED: rola.routing.activations.capability_table -->
 
