@@ -4,8 +4,11 @@
 what `routing/producer_v3.py` calls. It has two lowerings of one semantics -- a DEVICE
 lowering at CUDA fp32 and the identical sorted closed form in torch on CPU/fp64 -- and
 both are gated here against the ONE canonical ground truth this branch authorizes for
-the routing primitive: the fp64 bisection oracle in `routing/reference.py`
-(`entmax/reference.py:entmax`), which no runtime path touches.
+the routing primitive: the fp64 oracle in `routing/reference.py`
+(`entmax/reference.py:entmax`), which no runtime path touches. The oracle is a closed
+form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- the third
+party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
+anywhere in this file's ground truth.
 
 **THE DEVICE LOWERING IS NOT ONE KERNEL, and this file's wording used to say "fused
 Triton" as though it were** (corrected at the thunder merge, 2026-08-02). Independent
@@ -26,15 +29,20 @@ excluded from that hard assertion, and neither is a tolerance in disguise:
   and differ between fp32 and fp64 by construction. Exact support is asserted for
   exactly the zero-capable sides (`ResolvedRouting.read/write_level_can_zero`).
 * **the exact-tie fixture**, which is not gated against the oracle at all. Where a
-  logit sits exactly on the threshold the ORACLE is the side that cannot answer: 80
-  bisection halvings resolve tau only to ~1e-16, so it reports the tied digit as
-  supported with an ~1e-16 amplitude, while the closed form answers the exact
-  `z_i > tau` question correctly. The amplitude artifact is ~1e-16 but the GRADIENT
-  artifact is O(1) -- one extra support member halves `den` in `s*(dp - num/den)` --
-  so nothing about that fixture can be gated on the oracle without gating an exact
-  solve against a resolution artifact. It is instead gated on the two production
-  lowerings, which are closed forms rather than iterates and must therefore agree on
-  support exactly (`test_the_two_lowerings_agree_on_exact_ties`).
+  logit sits exactly on the threshold, an oracle comparison is a comparison of TWO
+  INDEPENDENT closed forms -- production's fp32 sorted solve and the oracle's fp64
+  `entmax_tau` -- at an exact equality, each free to land on either side of the same
+  strict `z_i > tau` boundary. They are not obligated to agree there, and measured
+  directly they do not always (alpha=1.5, the `union` shape, level 0 disagrees). One
+  extra support member at that boundary moves `den` in `s*(dp - num/den)`, so the
+  GRADIENT effect of a boundary disagreement is O(1) even though the two sides'
+  amplitudes are close -- so nothing about that fixture can be gated on the oracle
+  without gating one boundary comparison against a second one that has no obligation
+  to agree with it. It is instead gated on the two PRODUCTION lowerings against each
+  other -- the SAME closed form computed by two different code paths (the fused
+  CUDA/CUB and Triton kernels vs the pure-torch fallback), both handed the SAME fp32
+  inputs -- which must therefore agree on support exactly
+  (`test_the_two_lowerings_agree_on_exact_ties`).
 """
 
 from __future__ import annotations
@@ -195,9 +203,9 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     if kind == "near_boundary":
         # Quantizing to halves clusters logits onto the candidate thresholds; the jitter
         # then separates them by ~1e-4, which is far inside any tolerance here but still
-        # a value the bisection oracle resolves. This is the case where the
-        # greatest-valid-k rule and a bisection iterate are most likely to disagree about
-        # where the support boundary falls.
+        # a value the closed-form oracle resolves exactly. This is the case where
+        # production's greatest-valid-k rule and the oracle's closed-form tau are most
+        # likely to disagree about where the support boundary falls.
         jitter = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
         return torch.round(base * 2.0) / 2.0 + 1.0e-4 * jitter
     if kind == "exact_tie":
@@ -319,7 +327,7 @@ def _check_against_oracle(
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
-    """CPU/fp64 lowering: exact same support, amplitudes and VJP as the bisection oracle."""
+    """CPU/fp64 lowering: exact same support, amplitudes and VJP as the closed-form oracle."""
     routing = _routings(alpha)[shape]
     read = _stress_logits(routing, kind, device="cpu", seed=17)
     write = _stress_logits(routing, kind, device="cpu", seed=18)
@@ -332,7 +340,7 @@ def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_triton_lowering_matches_the_fp64_oracle(alpha, shape, kind):
-    """CUDA fp32 lowering: exact same support, amplitudes and VJP as the bisection oracle."""
+    """CUDA fp32 lowering: exact same support, amplitudes and VJP as the closed-form oracle."""
     routing = _routings(alpha)[shape]
     read = _stress_logits(routing, kind, device="cuda", seed=17)
     write = _stress_logits(routing, kind, device="cuda", seed=18)
@@ -506,15 +514,25 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
     _assert_levels_match(cuda_vjp[1].cpu(), cpu_vjp[1], gradient=True)
 
 
-@_CUDA
-def test_the_solve_never_reaches_the_bisection_reference_cuda(monkeypatch):
-    """No runtime path may fall back to the oracle -- the port's whole point (CUDA half)."""
+def _forbid_every_reference_entry_point(monkeypatch) -> None:
+    """Patch all THREE of the reference module's public entry points
+    (``__all__ = ["entmax", "entmax_forward", "entmax_tau"]``), not just the one this
+    solve happens to call today. Patching only ``entmax_tau`` proves the solve does not
+    reach that one function; it says nothing about ``entmax`` or ``entmax_forward``, and
+    a caller that reached either of those would have passed the narrower guard."""
     import rola.routing.entmax.reference as entmax_reference
 
     def _forbidden(*args, **kwargs):
-        raise AssertionError("production routing called the fp64 bisection reference")
+        raise AssertionError("production routing called the fp64 reference")
 
-    monkeypatch.setattr(entmax_reference, "entmax_tau", _forbidden)
+    for name in entmax_reference.__all__:
+        monkeypatch.setattr(entmax_reference, name, _forbidden)
+
+
+@_CUDA
+def test_the_solve_never_reaches_the_reference_cuda(monkeypatch):
+    """No runtime path may fall back to the oracle -- the port's whole point (CUDA half)."""
+    _forbid_every_reference_entry_point(monkeypatch)
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cuda", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cuda", seed=32).requires_grad_()
@@ -523,19 +541,14 @@ def test_the_solve_never_reaches_the_bisection_reference_cuda(monkeypatch):
     assert read.grad is not None and write.grad is not None
 
 
-def test_the_solve_never_reaches_the_bisection_reference_cpu(monkeypatch):
+def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
     """No runtime path may fall back to the oracle -- the port's whole point (CPU half).
 
     Split from the CUDA half (adversarial review NOTE): the torch lowering needs no GPU,
     so this must run on a CPU-only runner instead of being skipped along with the CUDA
     half under one `@_CUDA`-marked test.
     """
-    import rola.routing.entmax.reference as entmax_reference
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError("production routing called the fp64 bisection reference")
-
-    monkeypatch.setattr(entmax_reference, "entmax_tau", _forbidden)
+    _forbid_every_reference_entry_point(monkeypatch)
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cpu", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cpu", seed=32).requires_grad_()
@@ -680,7 +693,7 @@ def test_producer_production_path_matches_its_oracle_path(
 def test_the_two_lowerings_agree_directly(alpha, shape, kind):
     """V9 item 2: torch vs Triton, DIRECTLY, on the ordinary fixtures.
 
-    Both lowerings are separately gated against the fp64 bisection oracle above, so
+    Both lowerings are separately gated against the fp64 oracle above, so
     their mutual drift was only TRANSITIVELY bounded, at twice the oracle tolerance
     (producer-port-review Claim 2). Two lowerings can each sit at the edge of that
     envelope on opposite sides and still pass, which is exactly the drift a port
@@ -759,7 +772,7 @@ def test_producer_conditioned_path_backward_matches_its_oracle_path(monkeypatch,
        This comparison does NOT isolate the port: the shared conditioning
        recurrence runs at different precisions in the two arms, so the deviation
        is dominated by fp32-vs-fp64 drift of shared code (measured by a
-       control arm running the bisection solve on fp32 params, which reproduces
+       control arm running the oracle solve on fp32 params, which reproduces
        the deviation without the Triton kernel anywhere in the loop). What this
        assertion gates is the COMPOSITION: a port whose backward is detached,
        support-broken, or grossly wrong fails it; port-level precision is gated at
@@ -858,3 +871,37 @@ def test_producer_conditioned_path_backward_matches_its_oracle_path(monkeypatch,
             "shared recurrence's fp32-vs-fp64 drift -- so this is either a real "
             "port regression or a drift event past everything the derivation "
             "sweep observed; re-run the batch-2b sweep before touching the bound.")
+
+
+def test_production_imports_nothing_from_the_reference_package():
+    """The STRONGER, STATIC claim, checked directly rather than inferred from a
+    monkeypatch. `pyproject.toml` and this module's own docstring say production
+    "imports nothing" from the reference package -- a claim about the IMPORT GRAPH,
+    stronger than and independent of `test_the_solve_never_reaches_the_reference_*`
+    above (those prove the three entry points are never CALLED at runtime; a module
+    can import a name and still never call it). This is the trivially checkable form
+    the adversarial review found asserted nowhere: read `production.py` as an AST and
+    confirm no import statement names `rola.routing.entmax.reference` or
+    `rola.routing.reference` (the oracle-facing module of the same shape), by module
+    or by symbol.
+    """
+    import ast
+    import inspect
+
+    import rola.routing.entmax.production as production_module
+
+    source = inspect.getsource(production_module)
+    tree = ast.parse(source, filename=production_module.__file__)
+    forbidden_modules = {"rola.routing.entmax.reference", "rola.routing.reference"}
+    offending: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_modules:
+                    offending.append(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module in forbidden_modules:
+            offending.append(node.module)
+    assert not offending, (
+        f"production.py imports from the reference package: {offending} -- the "
+        "producer's own contract (module docstring, pyproject.toml) is that it "
+        "imports nothing from it")

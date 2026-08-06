@@ -396,14 +396,18 @@ in 4.4–4.6 s each.
 * It does **not** own our historical bug class. Both escaped races were host-side
   Python ordering; `racecheck` detects on-chip shared-memory hazards only. The
   stream-discipline fixture above is what covers that class.
-* `racecheck` is **skipped for the consumer kernel**, and the reason is structural
-  rather than a time budget: it reports 4 hazards (131072 each) between the `Gm` write
-  and its read, because that edge is published by the item pipeline's own
+* `racecheck` is **skipped for both registered probes** (`consumer_forward` and
+  `consumer_forward_deep` — the whole lane, there being no others), and the reason is
+  structural rather than a time budget: it reports 4 hazards (131072 each) between the
+  `Gm` write and its read, because that edge is published by the item pipeline's own
   release/acquire protocol (`retire_item`'s `__threadfence_block` plus an atomic
   counter, `await_count`'s spin) instead of `__syncthreads`. racecheck orders shared
   memory by standard barriers only and cannot be taught the protocol, so every
-  write/read pair across that edge reads as unordered. A kernel that publishes through
-  a standard barrier is still checked.
+  write/read pair across that edge reads as unordered. **racecheck therefore runs on
+  NO registered probe today** — the arm is dormant, not narrowed — and stays that way
+  until a probe over a kernel without a pipeline-published edge registers; a kernel
+  that publishes through a standard barrier WOULD be checked by this lane, but none is
+  registered.
 * `--leak-check full` is **not** used: torch's caching allocator retains its pools by
   design, so the flag reports 3 "leaks" on a clean run — a lane whose clean state is
   three errors is a lane whose findings nobody reads.

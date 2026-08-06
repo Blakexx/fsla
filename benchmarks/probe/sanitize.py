@@ -71,14 +71,21 @@ SKIP: dict[tuple[str, str], str] = {
         "spin-acquire; pipeline.cuh, docs/internals/pipeline.md#release-acquire), "
         "which the kernel uses DELIBERATELY so an early warp takes another work item "
         "rather than stalling on a rendezvous. The tool cannot be taught that "
-        "protocol, so every write/read pair across the edge reads as unordered. A "
-        "kernel that publishes through a standard barrier is still checked by this "
-        "lane; this cell is not, and the reason is structural rather than a budget.",
+        "protocol, so every write/read pair across the edge reads as unordered. "
+        "THERE ARE EXACTLY TWO REGISTERED PROBES AND BOTH ARE SKIPPED HERE (see the "
+        "consumer_forward_deep entry below), so racecheck currently runs on NO "
+        "probe in this repository -- the lane's racecheck arm is dormant, not "
+        "narrowed to this cell, until a probe over a kernel WITHOUT a "
+        "pipeline-published edge registers. A kernel that publishes through a "
+        "standard barrier WOULD be checked by this lane; none is registered, and "
+        "the reason this cell is skipped is structural rather than a budget.",
     ("consumer_forward_deep", "racecheck"):
         "Same kernel and the same publication protocol as consumer_forward above: "
         "the item pipeline's release/acquire edge is invisible to racecheck, which "
         "orders shared memory by standard barriers only, so the hazards it reports "
-        "here are the tool's blind spot rather than a defect in this cell.",
+        "here are the tool's blind spot rather than a defect in this cell. With "
+        "consumer_forward also skipped above, racecheck covers NEITHER of the two "
+        "registered probes -- zero cells, not a reduced set.",
 }
 
 
