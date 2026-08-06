@@ -89,9 +89,19 @@ class FeederFlags:
         cannot silently disagree with it.
         """
         D = len(density.read)
-        detected = ((False,) * D, (False,) * D) if occupancy is None else tuple(
-            tuple(float(occupancy[side][level]) >= saturation for level in range(D))
-            for side in (0, 1))
+        if occupancy is None:
+            detected = ((False,) * D, (False,) * D)
+        else:
+            # ONE TRANSFER, not one per (side, level). `occupancy` is a device tensor, so
+            # reading it element by element costs a host sync per element -- four at
+            # D=2 -- and what a sync costs is the pipeline drain, not the bytes. Compare
+            # on the device and bring back the whole boolean array at once. (Paired with
+            # `mean_quantum`'s histogram read: each alone measures NULL because the other
+            # still drains the pipe; together they are 2.88% of the step at L=4096.
+            # Evidence: `workflows/refactor/p12_lane3.md`.)
+            flags = (occupancy[:, :D] >= saturation).tolist()
+            detected = (tuple(bool(flag) for flag in flags[0]),
+                        tuple(bool(flag) for flag in flags[1]))
         return cls(
             read=tuple(bool(a) or bool(b) for a, b in zip(density.read, detected[0])),
             write=tuple(bool(a) or bool(b) for a, b in zip(density.write, detected[1])))
