@@ -480,14 +480,14 @@ consumer_forward_kernel(ConsumerParams p) {
       //: ONE textual clock product for both walks (§3.4's restriction: the loop
       //: BOUNDS move, the product expression does not). `crow(t)` is the token's
       //: amplitude row under the base above: `t` aligned, `t_idx[t]` gathered.
-      auto clock_prefix = [&](auto&& crow, int nT) {
+      auto clock_prefix = [&](auto&& camp, int nT) {
         for (int i = tid; i < BC; i += kConsumerThreads) {
           float acc = 0.0f;
           for (int t = 0; t < nT; ++t) {
             float cl = 1.0f;
 #pragma unroll
             for (int l = 0; l < D; ++l) {
-              cl *= amp_c[l][crow(t) * p.level_pitch_clock[l] + dig[l * BC + i]];
+              cl *= camp(l, t, i);
             }
             //: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
             acc += cl;
@@ -502,10 +502,21 @@ consumer_forward_kernel(ConsumerParams p) {
           s0[i] = expf(pr * log_keep[i]);
         }
       };
+      //: The gathered accessor indexes the PARAMS directly (`tile_row` is the
+      //: `bh` stream base there): capturing the per-level pointer ARRAY in a
+      //: second lambda instantiation is the no-captured-arrays hazard, and the
+      //: ratchet measured exactly that as D-scaled in-loop local growth.
       if (ga) {
-        clock_prefix([&](int t) { return static_cast<int64_t>(t_idx[t]); }, gN);
+        clock_prefix(
+            [&](int l, int t, int i) {
+              return p
+                  .amp_clock[l][(tile_row + t_idx[t]) * p.level_pitch_clock[l] + dig[l * BC + i]];
+            },
+            gN);
       } else {
-        clock_prefix([&](int t) { return t; }, BT);
+        clock_prefix([&](int l, int t,
+                         int i) { return amp_c[l][t * p.level_pitch_clock[l] + dig[l * BC + i]]; },
+                     BT);
       }
       __syncthreads();
       // ---- DECAY, step (c): the entry state enters the reference frame. `s0`
@@ -599,14 +610,17 @@ consumer_forward_kernel(ConsumerParams p) {
         }
       };
       if (ga) {
+        //: Params-direct indexing, scalar captures only (no-captured-arrays):
+        //: `tile_row` is the `bh` stream base on the gathered arm.
         build_rf([&](int t, int i) {
           if (t >= gN) return 0.0f;
-          const int64_t tr = t_idx[t];
+          const int64_t tr = tile_row + t_idx[t];
           float a = 1.0f;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-            a *= amp_to_float(amp_r[l][tr * p.level_pitch_read[l] + dig[l * BC + i]]);
+            a *= amp_to_float(static_cast<const AmpRT*>(
+                p.amp_read[l])[tr * p.level_pitch_read[l] + dig[l * BC + i]]);
           }
           if (DECAY && is_write) {
             a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
@@ -637,8 +651,8 @@ consumer_forward_kernel(ConsumerParams p) {
         if (ga) {
           build_wt_rows(0, BC, [&](int l, int t, int i) {
             if (t >= gN) return 0.0f;
-            return amp_to_float(amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l]
-                                         + dig[l * BC + i]]);
+            return amp_to_float(static_cast<const AmpWT*>(
+                p.amp_write[l])[(tile_row + t_idx[t]) * p.level_pitch_write[l] + dig[l * BC + i]]);
           });
         } else {
           build_wt_rows(0, BC, [&](int l, int t, int i) {
@@ -653,8 +667,8 @@ consumer_forward_kernel(ConsumerParams p) {
       if (ga && is_write) {
         build_wt_rows(0, BC, [&](int l, int t, int i) {
           if (t >= gN) return 0.0f;
-          return amp_to_float(
-              amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l] + dig[l * BC + i]]);
+          return amp_to_float(static_cast<const AmpWT*>(
+              p.amp_write[l])[(tile_row + t_idx[t]) * p.level_pitch_write[l] + dig[l * BC + i]]);
         });
       }
     }
@@ -687,19 +701,134 @@ consumer_forward_kernel(ConsumerParams p) {
   //: docs/internals/consumer_kernel.md#token-gather
   const bool tg = (p.token_gather != 0) && !summary;
 
-  // ---- THE VISIT'S COMPUTE, AS A FUNCTION OF (TILE-OR-GROUP, SLOT): everything
-  // ---- from the pre-GEMM barrier to the end-of-visit barrier. `tile >= 0` is an
-  // ---- aligned tile (tokens `tile*BT + t`); `tile < 0` is a GATHERED group
-  // ---- (tokens `t_idx[0..gN)`, slot 0, staged at the group top). The four GEMMs
-  // ---- are token-oblivious; only the emission and the mass epilogue index tokens,
-  // ---- through the same accessor the staging used.
-  auto compute_visit = [&](int tile, int slot, bool is_read, bool is_write, int gN) {
+  // ---- THE WALK: ONE visit body at ONE call site, TWO SCHEDULERS ahead of it.
+  // ---- The aligned cursor and the gathered group assembler both advance to the
+  // ---- next visit's coordinates `(tile, slot, is_read, is_write, gN)`; the body
+  // ---- below is emitted ONCE, inline, so its accumulator arrays stay registers
+  // ---- (a two-call-site body outlined and the ratchet refused it -- 444 arms of
+  // ---- in-loop local growth). `tile >= 0` is an aligned tile (tokens
+  // ---- `tile*BT + t`); `tile < 0` is a GATHERED group (tokens `t_idx[0..gN)`,
+  // ---- slot 0, staged at the group top). The four GEMMs are token-oblivious;
+  // ---- only the emission and the mass epilogue index tokens, through the same
+  // ---- accessor the staging used. Gathered walk: docs/internals/consumer_kernel.md#token-gather
+  //: HAZARD loop-induction -- docs/internals/consumer_kernel.md#loop-induction
+  if constexpr (kRing == 2) {
+    if (!tg) {
+      const int first = next_cand(tile_lo);
+      if (first < tile_hi) {
+        stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
+                   ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u, BT);
+      }
+    }
+  }
+  int cur = tile_lo;  // both schedulers' source-tile cursor
+  int visit = 0;      // aligned ring parity
+  // The gathered assembler's carry: the word remainder of a split tile and the
+  // group under fill. CTA-uniform values in registers -- every thread runs the
+  // scan redundantly (all its loads are CTA-uniform addresses), so the group
+  // boundaries are uniform with no broadcast and no per-tile barrier; only
+  // warp 0 stores `t_idx`.
+  int gtile = 0;
+  uint32_t g_fr = 0u, g_fw = 0u, member = 0u;
+  int fill = 0;
+  bool gr = false, gw = false;
+  //: The scan's fixed-level row indices, hoisted ONCE per CTA and STATICALLY
+  //: indexed everywhere (unrolled-with-break, the row-scale loops' pattern), so
+  //: the array stays in registers -- a runtime `l < j` loop reading `base[l]`
+  //: per candidate tile put dynamic local traffic INSIDE the walk loop and the
+  //: ratchet refused it.
+  int srow[D];
+#pragma unroll
+  for (int l = 0; l < D; ++l) srow[l] = p.level_row_offset[l] + base[l];
+  for (;;) {
+    int tile, slot, gN;
+    bool is_read, is_write;
+    if (!tg) {
+      const int nx = next_cand(cur);
+      if (nx >= tile_hi) break;
+      cur = nx + 1;
+      tile = nx;
+      is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+      is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+      slot = (kRing == 2) ? (visit & 1) : 0;
+      gN = BT;
+      ++visit;
+    } else {
+      // ---- THE GROUP ASSEMBLER (§8, incremental form). Membership = (AND of
+      // ---- the owner's fixed-level token rows, per side, OR'd) AND the
+      // ---- token-granular slice union -- ballot-time exclusion of slice-dead
+      // ---- tokens is what keeps groups full. Source tiles ascend and each
+      // ---- word is consumed LSB-first, so `t_idx` is GLOBALLY ascending: the
+      // ---- intra Gram's causal mask is order-relative, so STABILITY IS THE
+      // ---- CORRECTNESS REQUIREMENT. The word loop is bounded (a word splits
+      // ---- across at most `ceil(32/BT) + 1` groups), never a per-token scan.
+      while (fill < BT) {
+        if (member == 0u) {
+          const int nx = next_cand(cur);
+          if (nx >= tile_hi) break;
+          cur = nx + 1;
+          gtile = nx;
+          g_fr = 0xffffffffu;
+          g_fw = 0xffffffffu;
+          const int64_t slab = (static_cast<int64_t>(bh) * p.n_tiles + gtile) * p.total_rows;
+#pragma unroll
+          for (int l = 0; l < D; ++l) {
+            if (l >= j) break;
+            g_fr &= p.read_tok_bits[slab + srow[l]];
+            g_fw &= p.write_tok_bits[slab + srow[l]];
+          }
+          member = (g_fr | g_fw)
+                   & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_tiles
+                                       + gtile];
+          continue;
+        }
+        const int room = BT - fill;  // >= 1: a full group ran and reset `fill`
+        uint32_t taken = member;
+        if (__popc(member) > room) {
+          //: the (room+1)-th set bit; bits below it are exactly the lowest
+          //: `room` live tokens -- the remainder waits for the next group.
+          const unsigned cut = __fns(member, 0, room + 1);
+          taken = member & ((1u << cut) - 1u);
+        }
+        if (warp == 0) {
+          if (((taken >> lane) & 1u) != 0u) {
+            t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = gtile * BT + lane;
+          }
+        }
+        gr = gr || (g_fr & taken) != 0u;
+        gw = gw || (g_fw & taken) != 0u;
+        fill += __popc(taken);
+        member ^= taken;
+      }
+      //: The final flush is the ragged group (`fill < BT`); its padded slots
+      //: stage exact zeros. `fill == 0` is the stream's end.
+      if (fill == 0) break;
+      tile = -1;
+      slot = 0;
+      is_read = gr;
+      is_write = gw;
+      gN = fill;
+    }
     const bool ga = tile < 0;
     const int t0 = ga ? 0 : tile * BT;
     float* sr = sr_r0 + slot * 2 * BT;
     float* sw = sr + BT;
     unsigned* Rf = Rf_r0 + slot * kRfWords;
     StageT* Vw = Vw_r0 + slot * kVwSlot;
+
+    // ---- THE TILE'S CONTROL BLOCK, RESET. It needs no barrier of its own on
+    // ---- EITHER side: behind it stands the previous visit's end-of-visit
+    // ---- `__syncthreads()`, ahead of it the unconditional staging publication.
+    // ---- The edge DAG this reset serves, and the two-part always-runnable
+    // ---- claim that makes the tile deadlock-free:
+    // ---- docs/internals/pipeline.md#edge-dag
+    if (tid < ctl_words(BC)) ctl[tid] = 0;
+    if (ga) {
+      __syncthreads();  // publish warp 0's `t_idx` writes to every staging loop
+      stage_tile(-1, 0, is_read, is_write, gN);
+    } else if constexpr (kRing == 1) {
+      stage_tile(tile, 0, is_read, is_write, BT);
+    }
 
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
     // ---- THE WRITE PANEL AT DEPTH 2, AND IT COSTS NO BARRIER: the previous tile's
@@ -819,8 +948,8 @@ consumer_forward_kernel(ConsumerParams p) {
           if (ga) {
             build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
               if (t >= gN) return 0.0f;
-              return amp_to_float(amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l]
-                                           + dig[l * BC + i]]);
+              return amp_to_float(static_cast<const AmpWT*>(
+                  p.amp_write[l])[(wrow + t_idx[t]) * p.level_pitch_write[l] + dig[l * BC + i]]);
             });
           } else {
             build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
@@ -1139,99 +1268,10 @@ consumer_forward_kernel(ConsumerParams p) {
       }
     }
     __syncthreads();
-  };  // compute_visit
-
-  if (tg) {
-    // ---- THE GATHERED WALK (§8, incremental form): the aligned candidate stream
-    // ---- feeds a MEMBERSHIP scan, live tokens are balloted into dense groups of
-    // ---- `BT`, and each full (or final ragged) group runs the SAME visit body.
-    // ---- The scan is computed REDUNDANTLY by every thread -- all of its loads are
-    // ---- CTA-uniform addresses, so the group boundaries are uniform and no
-    // ---- broadcast or per-tile barrier exists; only warp 0 stores `t_idx`.
-    // ---- Membership = (AND of the owner's fixed-level token rows, per side,
-    // ---- OR'd) AND the token-granular slice union -- ballot-time exclusion of
-    // ---- slice-dead tokens is what keeps groups full (the card's
-    // ---- ballot-time-intersection ruling). Ascending LSB-first consumption makes
-    // ---- `t_idx` globally ascending: the intra Gram's causal mask is
-    // ---- order-relative, so STABILITY IS THE CORRECTNESS REQUIREMENT.
-    // ---- docs/internals/consumer_kernel.md#token-gather
-    int fill = 0;
-    bool gr = false, gw = false;
-    auto run_group = [&](int gN) {
-      __syncthreads();  // publish warp 0's `t_idx` writes to every staging loop
-      // The control-block reset needs no barrier of its own here either: behind
-      // it stands the barrier above, ahead of it the staging publication.
-      if (tid < ctl_words(BC)) ctl[tid] = 0;
-      stage_tile(-1, 0, gr, gw, gN);
-      compute_visit(-1, 0, gr, gw, gN);
+    if (tg) {
       fill = 0;
       gr = false;
       gw = false;
-    };
-    for (int tile = next_cand(tile_lo); tile < tile_hi; tile = next_cand(tile + 1)) {
-      uint32_t fr = 0xffffffffu, fw = 0xffffffffu;
-      const int64_t slab = (static_cast<int64_t>(bh) * p.n_tiles + tile) * p.total_rows;
-      for (int l = 0; l < j; ++l) {
-        const int row = p.level_row_offset[l] + base[l];
-        fr &= p.read_tok_bits[slab + row];
-        fw &= p.write_tok_bits[slab + row];
-      }
-      uint32_t member =
-          (fr | fw)
-          & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_tiles + tile];
-      //: Bounded: at most `ceil(32/BT) + 1` rounds (a word never splits across
-      //: more groups than it has `BT`-slot spans), never a per-token scan.
-      while (member != 0u) {
-        const int room = BT - fill;  // >= 1: a full group ran and reset `fill`
-        uint32_t taken = member;
-        if (__popc(member) > room) {
-          //: the (room+1)-th set bit; bits below it are exactly the lowest
-          //: `room` live tokens -- the remainder waits for the next group.
-          const unsigned cut = __fns(member, 0, room + 1);
-          taken = member & ((1u << cut) - 1u);
-        }
-        if (warp == 0) {
-          if (((taken >> lane) & 1u) != 0u) {
-            t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = tile * BT + lane;
-          }
-        }
-        gr = gr || (fr & taken) != 0u;
-        gw = gw || (fw & taken) != 0u;
-        fill += __popc(taken);
-        member ^= taken;
-        if (fill == BT) run_group(BT);
-      }
-    }
-    //: The segment's ragged flush: slots `[fill, BT)` stage exact zeros.
-    if (fill > 0) run_group(fill);
-  } else {
-    // ---- THE ALIGNED CANDIDATE WALK, SOFTWARE-PIPELINED AT `kRing == 2`.
-    // ---- `visit` -- not `tile` -- indexes the ring, because the slots alternate
-    // ---- over CANDIDATE VISITS while the tile index skips.
-    //: HAZARD loop-induction -- docs/internals/consumer_kernel.md#loop-induction
-    if constexpr (kRing == 2) {
-      const int first = next_cand(tile_lo);
-      if (first < tile_hi) {
-        stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
-                   ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u, BT);
-      }
-    }
-    for (int tile = tile_lo, visit = 0; tile < tile_hi; ++tile) {
-      const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-      const bool is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-      if (!is_read && !is_write) continue;
-
-      const int slot = (kRing == 2) ? (visit & 1) : 0;
-      // ---- THE TILE'S CONTROL BLOCK, RESET. It needs no barrier of its own on
-      // ---- EITHER side: behind it stands the previous tile's end-of-tile
-      // ---- `__syncthreads()`, ahead of it the unconditional staging publication.
-      // ---- The edge DAG this reset serves, and the two-part always-runnable
-      // ---- claim that makes the tile deadlock-free:
-      // ---- docs/internals/pipeline.md#edge-dag
-      if (tid < ctl_words(BC)) ctl[tid] = 0;
-      if constexpr (kRing == 1) stage_tile(tile, 0, is_read, is_write, BT);
-      compute_visit(tile, slot, is_read, is_write, BT);
-      ++visit;
     }
   }
 
