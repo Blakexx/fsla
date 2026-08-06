@@ -96,6 +96,13 @@ class PlanOverrides:
     ``mma_precision``: the readout MMA's numeric format. ``bf16`` is production; a gate
     comparing against the fp64 oracle asks for the exact arm here.
 
+    ``paging``: commit state pages on first write to an owner, so the resident state
+    scales with the owners the routing REALIZES rather than with the topology's
+    provisioned capacity. One page is one MMA atom, pages are admitted by the write-side
+    plan, and an atom with no page reads as zeros -- so paging is BITWISE INVISIBLE, and
+    it is here rather than on the model because it changes what is allocated and nothing
+    about what is computed. A cap implies it.
+
     ``max_physical_pages``: the paging allocator's hard cap, in atoms. ``None``
     provisions the dense limit, at which the ceiling can never bind. A finite value is a
     POLICY limit: a launch whose realized write footprint exceeds it is REFUSED,
@@ -109,6 +116,7 @@ class PlanOverrides:
 
     state_block: int | None = None
     mma_precision: str = "bf16"
+    paging: bool = False
     max_physical_pages: int | None = None
     selector: Any = None
 
@@ -118,6 +126,8 @@ class PlanOverrides:
         if self.mma_precision not in MMA_PRECISIONS:
             raise ValueError(
                 f"mma_precision must be one of {MMA_PRECISIONS}, got {self.mma_precision!r}")
+        if type(self.paging) is not bool:
+            raise TypeError(f"paging must be bool, got {self.paging!r}")
         if self.max_physical_pages is not None and type(self.max_physical_pages) is not int:
             raise TypeError(
                 f"max_physical_pages must be None or an exact int, got {self.max_physical_pages!r}")

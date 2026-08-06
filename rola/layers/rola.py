@@ -306,8 +306,14 @@ class RoLA(nn.Module):
         write-side plan, and an atom without a page reads as zeros. It lives on the
         expert surface because it changes what the layer allocates and nothing about
         what it computes.
+
+        A CAP IMPLIES IT: asking for `max_physical_pages` without asking for paging would
+        be asking for a ceiling on an allocator that is not running, and refusing that
+        combination would be a validation rule with no purpose. Paging without a cap is
+        the uncapped arena, provisioned to the dense limit, where the ceiling can never
+        bind.
         """
-        return self.expert.max_physical_pages is not None
+        return self.expert.paging or self.expert.max_physical_pages is not None
 
     def _paged(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
         """The tiled arm with a page arena carried across steps."""
