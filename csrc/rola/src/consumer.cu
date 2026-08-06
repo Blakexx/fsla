@@ -7,8 +7,9 @@
 //     `ConsumerParams` fill, and §6.4's three-pass sequencing;
 //   * the launch dispatch `launch_consumer`, which resolves the plan's structural
 //     axes to ONE template instantiation of `consumer::consumer_forward_kernel`;
-//   * the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
-//     fold) and `divide_kernel` (`global`'s `num/den` epilogue);
+//   * the three non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
+//     fold), `emit_reduce_kernel` (the split-K emission's fixed-order fold) and
+//     `divide_kernel` (`global`'s `num/den` epilogue);
 //   * the driver-backed residency and footprint queries, and the arch-table check;
 //   * the pybind surface.
 //
@@ -162,6 +163,81 @@ void scan_pass(const ScanParams& p) {
   if (p.n_split == 0) return;
   const size_t smem = static_cast<size_t>(p.BC) * p.cols * sizeof(float);
   scan_kernel<<<p.n_split, 256, smem, at::cuda::getCurrentCUDAStream()>>>(p);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// The split-K emission reduce: ONE fixed-order fold of the consumer's
+// single-writer workspace slots into `num`/`den`. This launch is what makes `y`
+// bit-identical across runs -- the consumer stores plain contributions into its
+// own slot and the order they are combined in is decided HERE, by the host's
+// `(owner, seg)`-sorted work list, never by the scheduler.
+// docs/internals/consumer.md#emit-workspace
+// ---------------------------------------------------------------------------
+
+struct EmitReduceParams {
+  const float* ws_num;      // [n_work, T, DV]
+  const float* ws_den;      // [n_work, T] or nullptr under `raw`
+  const uint32_t* rowmask;  // [n_work, n_tiles]; bit t of (w, tile) = row emitted
+  const int32_t* works;     // [n_work] work ids, grouped by bh, (owner, seg) ascending
+  const int32_t* off;       // [BH + 1] group bounds into `works`
+  float* num;               // [BH, T, DV] -- written FULLY (empty-allocated)
+  float* den;               // [BH, T] or nullptr
+  int T;
+  int DV;
+  int BT;
+  int n_tiles;
+};
+
+//: One CTA per `(tile, bh)` owns the tile's `BT x DV` outputs in registers and
+//: walks the batch-head's work items in the host-fixed order, so every output
+//: element is a per-thread SEQUENTIAL fp32 sum over an order-invariant term list.
+//: `kEmitReduceMax` is the largest per-thread output count over the shape
+//: surface (BT=32, DV=64); smaller tiles leave trailing slots dead.
+constexpr int kEmitReduceThreads = 256;
+constexpr int kEmitReduceMax = (32 * 64) / kEmitReduceThreads;
+
+__global__ void emit_reduce_kernel(EmitReduceParams p) {
+  const int tile = blockIdx.x;
+  const int bh = blockIdx.y;
+  const int t0 = tile * p.BT;
+  const int tid = threadIdx.x;
+  const int n_out = p.BT * p.DV;
+  //: Each thread's element `r` is `idx = tid + r * threads`; its token row is
+  //: fixed across the whole walk, so the row-mask test is one shift per term.
+  int row[kEmitReduceMax];
+  float acc[kEmitReduceMax];
+#pragma unroll
+  for (int r = 0; r < kEmitReduceMax; ++r) {
+    const int idx = tid + r * kEmitReduceThreads;
+    row[r] = idx < n_out ? idx / p.DV : -1;
+    acc[r] = 0.0f;
+  }
+  float dacc = 0.0f;
+  const bool den_lane = p.ws_den != nullptr && tid < p.BT;
+  for (int k = p.off[bh]; k < p.off[bh + 1]; ++k) {
+    const int w = p.works[k];
+    const uint32_t m = p.rowmask[static_cast<int64_t>(w) * p.n_tiles + tile];
+    if (m == 0u) continue;
+    const float* src = p.ws_num + (static_cast<int64_t>(w) * p.T + t0) * p.DV;
+#pragma unroll
+    for (int r = 0; r < kEmitReduceMax; ++r) {
+      if (row[r] >= 0 && ((m >> row[r]) & 1u)) acc[r] += src[tid + r * kEmitReduceThreads];
+    }
+    if (den_lane && ((m >> tid) & 1u)) dacc += p.ws_den[static_cast<int64_t>(w) * p.T + t0 + tid];
+  }
+#pragma unroll
+  for (int r = 0; r < kEmitReduceMax; ++r) {
+    if (row[r] < 0 || t0 + row[r] >= p.T) continue;
+    const int idx = tid + r * kEmitReduceThreads;
+    p.num[(static_cast<int64_t>(bh) * p.T + t0) * p.DV + idx] = acc[r];
+  }
+  if (den_lane && t0 + tid < p.T) p.den[static_cast<int64_t>(bh) * p.T + t0 + tid] = dacc;
+}
+
+void emit_reduce_pass(const EmitReduceParams& p, int BH) {
+  dim3 grid(p.n_tiles, BH);
+  emit_reduce_kernel<<<grid, kEmitReduceThreads, 0, at::cuda::getCurrentCUDAStream()>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -565,19 +641,37 @@ std::vector<at::Tensor> rola_consumer_forward(
               "normalization='global' fixes g_read := 1 (spec §1); pass g_read=None");
   TORCH_CHECK(global_norm || g_read.has_value(), "normalization='raw' requires g_read");
 
-  // `num`/`den` are the atomically-accumulated readout accumulators and NEVER
-  // narrow (fp32-accumulator ruling, same class as `state`): fp32 whatever `v`'s
-  // storage dtype is. Only `y` -- the post-divide quotient -- takes the arm's
-  // output format, below.
-  auto num = at::zeros({BH, T, d_v}, v.options().dtype(at::kFloat));
+  // `num`/`den` are the readout accumulators and NEVER narrow (fp32-accumulator
+  // ruling, same class as `state`): fp32 whatever `v`'s storage dtype is. Only
+  // `y` -- the post-divide quotient -- takes the arm's output format, below.
+  // Both are `empty`, not `zeros`: `emit_reduce_kernel` writes every element
+  // (a token nothing contributes to gets the sum of zero terms, 0.0f).
+  auto num = at::empty({BH, T, d_v}, v.options().dtype(at::kFloat));
   at::Tensor den;
-  if (global_norm) {
-    den = at::zeros({BH, T}, v.options().dtype(at::kFloat));
-    p.den = den.data_ptr<float>();
-  } else {
-    p.den = nullptr;
-  }
-  p.num = num.data_ptr<float>();
+  if (global_norm) den = at::empty({BH, T}, v.options().dtype(at::kFloat));
+
+  // ---- the split-K emission workspace: one slot per (work item, token), a row
+  // mask per (work item, tile), and the reduce's host-FIXED fold order. The sort
+  // key `(bh * owners_total + owner) * (n_tiles + 1) + seg` is unique per work
+  // item, so the order is a function of the routing alone -- independent of the
+  // planner's cost sort and identical across runs, which is what the whole
+  // launch exists for. docs/internals/consumer.md#emit-workspace
+  const int64_t n_work = owners.size(0);
+  const int64_t n_tiles_l = amp_read[0].size(1);
+  auto ws_num = at::empty({n_work, T, d_v}, v.options().dtype(at::kFloat));
+  at::Tensor ws_den;
+  if (global_norm) ws_den = at::empty({n_work, T}, v.options().dtype(at::kFloat));
+  auto rowmask = at::zeros({n_work, n_tiles_l}, v.options().dtype(at::kInt));
+  const auto owners_bh = owners.select(1, 0).to(at::kLong);
+  const auto owners_ow = owners.select(1, 1).to(at::kLong);
+  auto sort_key = (owners_bh * owners_total + owners_ow) * (n_tiles_l + 1);
+  if (work_seg.has_value()) sort_key = sort_key + work_seg->to(at::kLong);
+  const auto red_works = sort_key.argsort().to(at::kInt).contiguous();
+  auto red_off = at::zeros({BH + 1}, owners.options());
+  red_off.narrow(0, 1, BH).copy_(at::bincount(owners_bh, {}, BH).cumsum(0).to(at::kInt));
+  p.emit_num = ws_num.data_ptr<float>();
+  p.emit_den = global_norm ? ws_den.data_ptr<float>() : nullptr;
+  p.emit_rowmask = reinterpret_cast<uint32_t*>(rowmask.data_ptr<int32_t>());
 
   p.N = N;
   p.BH = static_cast<int>(BH);
@@ -638,7 +732,6 @@ std::vector<at::Tensor> rola_consumer_forward(
       TORCH_CHECK(t.dim() >= 1 && t.size(0) == rows, name, " must have ", rows, " rows");
       return t.data_ptr<int32_t>();
     };
-    const int64_t n_work = owners.size(0);
     const int64_t n_summary = summary_owners->size(0);
     const int64_t n_split = scan_owners->size(0);
     TORCH_CHECK(summary_owners->dim() == 2 && summary_owners->size(1) == 2,
@@ -698,6 +791,22 @@ std::vector<at::Tensor> rola_consumer_forward(
   } else {
     launch_pass(p);
   }
+
+  // ---- the emission reduce: the ONE ordered fold of the split-K partials.
+  // After pass 3 (the only emitting pass), before the divide.
+  EmitReduceParams er{};
+  er.ws_num = p.emit_num;
+  er.ws_den = p.emit_den;
+  er.rowmask = p.emit_rowmask;
+  er.works = red_works.data_ptr<int32_t>();
+  er.off = red_off.data_ptr<int32_t>();
+  er.num = num.data_ptr<float>();
+  er.den = global_norm ? den.data_ptr<float>() : nullptr;
+  er.T = p.T;
+  er.DV = static_cast<int>(d_v);
+  er.BT = BT_i;
+  er.n_tiles = p.n_tiles;
+  emit_reduce_pass(er, p.BH);
 
   // `y` takes the arm's output format under `global` (P09 family: the cast is the
   // divide epilogue's store -- the divide itself is fp32 over the fp32

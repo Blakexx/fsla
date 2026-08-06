@@ -71,8 +71,11 @@ ONCE at entry and written ONCE at exit.
 11. wait on `kCtlGramDone`, then **PHASE C**: **GEMM 3, the intra term** —
     `y_tile += G . Vw` into the same registers the readout used, plus the mass
     column's TERM 2;
-12. **EMIT** — the split-K `atomicAdd` of `sr[t] * y` into `num` (and of the
-    denominator into `den` under `GLOBAL`).
+12. **EMIT** — the deterministic split-K emission: plain stores of `sr[t] * y`
+    into this work item's OWN workspace slot (`emit_num`; the denominator into
+    `emit_den` under `GLOBAL`), plus the tile's row mask. `emit_reduce_kernel`
+    (`consumer.cu`) folds the slots into `num`/`den` in one host-fixed order
+    after the pass ([below](#split-k-emission)).
 
 **Per CTA, at exit:** under §6.4 pass 1, publish the sparse `(A, B)` summary;
 otherwise, if this is the owner's last segment, store `S` back atom-wise.
@@ -102,7 +105,8 @@ Held FIXED across that comparison, and unchanged here: `ConsumerParams`, the
 schedule, the candidate walk (`read_union` / `write_union` AND the fixed levels' tile
 bitmaps, §4), the owner-stationary run-to-completion dataflow (ONE CTA PER OWNER,
 `blockIdx.x` indexing the work list — traffic-optimal, §10i.12), and the split-K
-atomic `num`/`den` accumulation with its `divide_pass`.
+`num`/`den` accumulation with its `divide_pass` (then atomic; deterministic
+workspace + reduce since P10).
 
 The three moves:
 
@@ -1222,7 +1226,8 @@ is the SMEM read/write SETS of the interval, ENUMERATED rather than eyeballed:
 - the emission READS `y[q][*]` (REGISTERS, so no barrier can order them and none is needed —
   they are the same warp's own accumulators), `sr[t]` (published three barriers back, at the end
   of the panel phase) and `den[t]`;
-- the emission WRITES only GLOBAL memory, through `atomicAdd`;
+- the emission WRITES only GLOBAL memory (this work item's own `emit_num`/`emit_den` slot and
+  the row-mask word);
 - `den[t]` is written at `den[t] = acc` above and read at the denominator emit below **BY THE
   SAME THREAD** — both loops are `t = tid; t < BT; t += kConsumerThreads`, so the dependence is
   program order, not a cross-thread one.
@@ -1236,20 +1241,34 @@ the discharge is indifferent to that: the argument is about the interval's read/
 about its position. **Any edit that puts a cross-thread SMEM dependence into this interval opens
 a race with nothing to order it.**
 
-## <a id="split-k-emission"></a>46. The split-K emission
+## <a id="split-k-emission"></a>46. The split-K emission — deterministic, single-writer
 
 Straight out of the D fragment: `d0,d1 -> (row g, col 2r, 2r+1)` and `d2,d3 -> (row g+8, ...)`,
 with the §3 step-3 row scale `sr[t]` applied HERE because it is constant along both `k` and `n`.
-Out-of-range tokens (`t0 + t >= T`) emit nothing. Under `GLOBAL` the denominator takes the same
-shape: `sr[t] * den[t]`, atomically into `p.den`.
+Out-of-range tokens (`t0 + t >= T`) emit nothing.
 
-The `if (out != 0.0f)` guard is a PERFORMANCE SKIP ON A VALUE, not a membership decision — adding
-`0.0f` is the identity, so including the term is a no-op and the test is over-inclusion-safe in
-the direction that matters. See [`consumer.md`](consumer.md#split-k-emission) for its two
-load-bearing consequences, including why it makes the intra term a SECOND atomic per
-(token, channel) on a mixed tile — cause #1 in
-[`intra_panel.md`](intra_panel.md#measured-status) for `panel` measuring slower than the walk.
-Fusing the intra term into the readout epilogue is the standing follow-up for BOTH lowerings.
+**The stores are PLAIN, never atomic, because every destination byte has exactly one writer:**
+work item `w`'s contribution to token `t` lands at `emit_num[(w*T + t)*DV + ch]` (and
+`emit_den[w*T + t]` under `GLOBAL`), a slot no other CTA addresses, and the CTA is its tile's
+only visitor. The cross-owner sum is performed AFTER the pass by `emit_reduce_kernel`
+(`consumer.cu`), which folds the slots in one host-fixed `(owner, seg)` order — that separation
+is what makes `y` bit-identical across runs, the CUTLASS parallel-split-K arrangement rather
+than its atomic mode. Workspace shape, fold order and reduce launch:
+[`consumer.md#emit-workspace`](consumer.md#emit-workspace).
+
+**The `sr[t] == 0.0f` guard is a ROW-LEVEL skip the row mask PUBLISHES, never a membership
+decision**: thread 0 stores one `uint32` per visited read tile whose bit `t` is
+`token < T && sr[t] != 0`, and the reduce reads exactly the rows the mask names — producer and
+reducer agree on which bytes exist, so the skip cannot desynchronize them. Within a live row
+every channel is stored, zeros included (the pre-P10 elementwise `out != 0.0f` skip is
+impossible here: a skipped element would leave workspace garbage the reduce would read).
+Membership stays with the §4 support words alone. The row mask needs no extra barrier: thread
+0 reads `sr[0..BT)` behind the same barriers that already order the emission's own cross-thread
+`sr[t]` reads.
+
+The intra term still lands fused into the same fragment as the readout (one store per
+(token, channel) on a mixed tile); see [`intra_panel.md`](intra_panel.md#measured-status) for
+the `panel`-vs-walk measurement history.
 
 ### <a id="emit-no-pointer-array"></a>HAZARD `emit-no-pointer-array` — never take the address of an accumulator
 

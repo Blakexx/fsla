@@ -945,19 +945,31 @@ consumer_forward_kernel(ConsumerParams p) {
 
     // ---- SPLIT-K EMISSION of this tile's partial, straight out of the D fragment,
     // ---- with the §3 step-3 row scale applied here because it is constant along both
-    // ---- `k` and `n`. The `!= 0.0f` guard is a PERFORMANCE SKIP ON A VALUE, never a
-    // ---- membership decision: docs/internals/consumer_kernel.md#split-k-emission
+    // ---- `k` and `n`. DETERMINISTIC: plain stores into this work item's OWN
+    // ---- workspace slot, never an atomic -- `emit_reduce_kernel` folds the slots in
+    // ---- one host-fixed order after the pass. The `sr[t] == 0` guard is a ROW-LEVEL
+    // ---- skip the row mask PUBLISHES, so producer and reducer agree on exactly which
+    // ---- bytes exist; it is never a membership decision:
+    // ---- docs/internals/consumer_kernel.md#split-k-emission
     //: HAZARD emit-no-pointer-array -- docs/internals/consumer_kernel.md#emit-no-pointer-array
     if (is_read) {
+      if (tid == 0) {
+        uint32_t live = 0u;
+        for (int t = 0; t < BT; ++t) {
+          if (t0 + t < p.T && sr[t] != 0.0f) live |= 1u << t;
+        }
+        p.emit_rowmask[static_cast<int64_t>(work) * p.n_tiles + tile] = live;
+      }
+      float* out_t0 = p.emit_num + (static_cast<int64_t>(work) * p.T + t0) * DV;
       if constexpr (NM == 1) {
         if (warp < NT_DV) {
           CONSUMER_D_ROWS(lane);
           const int n0 = warp * 8;
-          float* num_t0 = p.num + (static_cast<int64_t>(bh) * p.T + t0) * DV;
           auto emit = [&](int t, int ch, float val) {
             if (t0 + t >= p.T) return;
-            const float out = sr[t] * val;
-            if (out != 0.0f) atomicAdd(&num_t0[t * DV + ch], out);
+            const float s = sr[t];
+            if (s == 0.0f) return;  // the row the mask declares dead
+            out_t0[t * DV + ch] = s * val;
           };
           const int c0 = n0 + 2 * _r, c1 = c0 + 1;
           emit(_g, c0, y[0][0]);
@@ -967,11 +979,11 @@ consumer_forward_kernel(ConsumerParams p) {
         }
       } else {
         CONSUMER_D_ROWS(lane);
-        float* num_t0 = p.num + (static_cast<int64_t>(bh) * p.T + t0) * DV;
         auto emit = [&](int t, int ch, float val) {
           if (t0 + t >= p.T) return;
-          const float out = sr[t] * val;
-          if (out != 0.0f) atomicAdd(&num_t0[t * DV + ch], out);
+          const float s = sr[t];
+          if (s == 0.0f) return;  // the row the mask declares dead
+          out_t0[t * DV + ch] = s * val;
         };
 #pragma unroll
         for (int q = 0; q < kYTiles; ++q) {
@@ -990,8 +1002,8 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int t = tid; t < BT; t += kConsumerThreads) {
           const int token = t0 + t;
           if (token >= p.T) continue;
-          const float d = sr[t] * den[t];
-          if (d != 0.0f) atomicAdd(&p.den[static_cast<int64_t>(bh) * p.T + token], d);
+          if (sr[t] == 0.0f) continue;  // the same row-level skip the mask publishes
+          p.emit_den[static_cast<int64_t>(work) * p.T + token] = sr[t] * den[t];
         }
       }
     }

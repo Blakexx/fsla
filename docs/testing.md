@@ -142,11 +142,11 @@ structural and the structure is stated in the row's `basis`.
 
 **Every such row declares a VALIDITY PRECONDITION and the test asserts it.** The
 `BC` row, for example, is only meaningful with no initial state carried and with
-both `BC` values tiling the same state columns — and it compares STATE, never `y`,
-because the split-K `atomicAdd` across concurrent owner CTAs makes `y`
-nondeterministic *by construction*, so a bit comparison there would be testing the
-scheduler. A bit-identity assertion whose precondition is unstated is a future
-flake.
+both `BC` values tiling the same state columns — and it compares STATE, not `y`,
+because a `BC` flip changes how the readout's per-owner partials PARTITION the
+sum (a genuine reassociation) even though the emission itself has been
+deterministic since P10. A bit-identity assertion whose precondition is unstated
+is a future flake.
 
 ### Class (b) — REASSOCIATION-EQUIVALENT
 
@@ -157,12 +157,14 @@ The two geometries legitimately reorder floating-point accumulation. Tested by
    of the *same* oracle point. This is what stops two wrong geometries from
    agreeing.
 2. **Derived mutual bound** — the two are within a bound *derived* from the
-   reassociation (`atomic_readout_n2_eps`, `carry_fold_T_eps`), never chosen.
+   reassociation (`split_readout_n2_eps`, `carry_fold_T_eps`), never chosen.
 
 Two prohibitions, both of which have cost this project time:
 
-- **Never bitwise-vs-each-other.** `atomicAdd` order is a random variable; one draw
-  agreeing is not a property (`test_split_k_determinism_is_not_assumed`).
+- **Never bitwise-vs-each-other.** A class-(b) pair reorders or regroups the sum's
+  TERMS by design, so one draw agreeing is not a property. (Rerun identity at
+  FIXED geometry is a different, engineered claim — `y` holds it since P10's
+  deterministic emission, gated by `test_split_k_is_bit_deterministic`.)
 - **Never a loosened tolerance in place of a derived bound.** If a pair misses its
   bound, the answer is a bug hunt or a corrected derivation — never a bigger
   number.

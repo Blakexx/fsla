@@ -318,36 +318,36 @@ def test_an_unsplit_plan_is_bit_identical_to_passing_no_plan_at_all():
     An unsplit plan carries no work list and no workspace, so the consumer takes the
     single-launch path with every sequence-parallel pointer null.
 
-    **The comparison is on STATE, and ``y`` is deliberately excluded.** ``y`` is not
-    bitwise reproducible at ``P = 1`` either: the §5 readout lands through
-    ``atomicAdd`` into ``num``/``den`` from concurrently scheduled owners, so its
-    summation order is a race by construction and two identical launches already
-    disagree in the last bits. State is the output ``P`` actually moves from
-    deterministic to re-associated -- it is per-owner and published exactly once --
-    so it is the output the bitwise discipline can and does apply to. Asserting
-    ``torch.equal`` on ``y`` here would be asserting a property the kernel has never
-    had, and it would fail on the unmodified kernel.
+    **The comparison covers BOTH outputs, bitwise.** State is per-owner and
+    published once; ``y`` joined it in P10 -- the deterministic emission stores
+    per-work-item partials and folds them in a host-fixed ``(owner, seg)`` order,
+    so two identical launches produce identical bits. (This docstring used to
+    exclude ``y`` because the atomic emission made its summation order a
+    scheduler race.)
     """
     fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
                   p_read=1.0, p_write=1.0, seed=4001)
     unsplit = fx.policy_plan(policy=SequenceParallelPolicy(workspace_cap=0))
     assert not unsplit.split, "the capacity gate at cap=0 must admit no split"
-    _, s_none, _ = fx.run(1)
-    _, s_plan, _ = fx.run(1, sequence_parallel=unsplit)
+    y_none, s_none, _ = fx.run(1)
+    y_plan, s_plan, _ = fx.run(1, sequence_parallel=unsplit)
     assert torch.equal(s_none, s_plan)
+    assert torch.equal(y_none, y_plan)
 
 
-def test_P_equals_one_launched_twice_is_bit_identical_on_state():
+def test_P_equals_one_launched_twice_is_bit_identical():
     """The NULL CONTROL for the envelope below, and a real invariant in its own
-    right: the state is per-owner and published once, so it does not inherit the
-    split-K epilogue's atomic non-determinism the way ``y`` does."""
+    right. State always had it (per-owner, published once); ``y`` has it since
+    P10's deterministic emission (the tier-1 rerun gate
+    ``test_split_k_is_bit_deterministic`` sweeps it wider)."""
     fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
                   p_read=1.0, p_write=1.0, seed=4002)
-    _, s_a, _ = fx.run(1)
-    _, s_b, _ = fx.run(1)
+    y_a, s_a, _ = fx.run(1)
+    y_b, s_b, _ = fx.run(1)
     assert torch.equal(s_a, s_b), (
         "P = 1 is not reproducible on STATE, which would invalidate the envelope "
         "below: a P > 1 difference could then be launch noise rather than the fold")
+    assert torch.equal(y_a, y_b), "P = 1 is not reproducible on y (the determinism gate)"
 
 
 def test_P_equals_two_from_a_zero_initial_state_is_bit_identical_on_state():
@@ -936,14 +936,15 @@ def test_the_pass_three_work_list_order_is_not_load_bearing():
     y_p, state_p, _ = _launch(permuted)
 
     # `y` is the output the hazard corrupted (to relative error 1.0), and it is the
-    # gate that matters here. It is graded against the fp64 oracle rather than
-    # bitwise against the canonical order, because the §5 readout's `atomicAdd`
-    # ordering is a race at every `P` including 1 -- a permuted work list legitimately
-    # changes the last bits of `y` and nothing else.
-    assert _relative(y_p, y_ref) < RTOL, (
-        "the permuted pass-3 work list changed `y`; some pass-3 CTA is reading state "
-        "another CTA of the same launch writes")
+    # gate that matters here. Since P10 it is graded BITWISE against the canonical
+    # order, which is strictly stronger than the old oracle-tolerance grading: the
+    # emission's fold order is keyed on `(owner, seg)`, not on work-list position,
+    # so a permuted list must reproduce `y` exactly.
     assert _relative(y_c, y_ref) < RTOL
+    assert torch.equal(y_p, y_c), (
+        "the permuted pass-3 work list changed `y` bits; either some pass-3 CTA is "
+        "reading state another CTA of the same launch writes, or the emission fold "
+        "order leaked work-list position")
     # State is per-owner and published once, so the permutation must not move a bit
     # of it: each owner's segments perform the identical arithmetic in the identical
     # order whatever position they occupy in the list.

@@ -27,9 +27,10 @@ kernel edit.
 THREE DEVIATIONS FROM THE DESIGN SKETCH, RECORDED
 -------------------------------------------------
 1. **Rows carry an ``output``.** §6.2's own ``P`` sub-case table splits ``state``
-   (class (a) from a zero initial state — no atomic) from ``y`` (class (b) —
-   split-K ``atomicAdd``) on the *same* geometry pair. The output is therefore
-   part of the row's identity, not a detail of its test.
+   (class (a) from a zero initial state) from ``y`` (class (b) — the split-K
+   partials' terms move with the geometry even under the deterministic fold) on
+   the *same* geometry pair. The output is therefore part of the row's identity,
+   not a detail of its test.
 2. **Rows carry an optional ``restrict``.** §6.4's unwritten-leaf carve-out is
    normative and bitwise *on a subset of the state* while the written leaves next
    to it are legitimately re-associated. A selector name makes that a declared row
@@ -292,11 +293,13 @@ def _p_rows() -> tuple[GeometryPair, ...]:
             GeometryPair(
                 "P", {"P": 1}, {"P": P}, "y", REASSOCIATION_EQUIVALENT,
                 fixture="split_written",
-                precondition="owners_total > 1, so the readout is a split-K atomicAdd",
-                basis="the §5 readout accumulates one output element from several "
-                      "owner CTAs by atomicAdd; the split changes how many partials "
-                      "and in what order they arrive.",
-                bound="atomic_readout_n2_eps"),
+                precondition="a nonzero initial state and written leaves on every segment",
+                basis="a segment's read partials are computed FROM its scan-folded "
+                      "entry state, which is itself re-associated against the serial "
+                      "walk (the class-(b) state row above) -- so the deterministic "
+                      "emission fold sums bit-different TERMS at P > 1. The fold "
+                      "order is host-fixed either way; it is the terms that move.",
+                bound="split_readout_n2_eps"),
             GeometryPair(
                 "P", {"P": 1}, {"P": P}, "state", ENGINEERED_IDENTITY,
                 fixture="read_only_owner", restrict="never_written_leaves",
@@ -327,10 +330,11 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
         "BC", {"BC": 16}, {"BC": 64}, "y", REASSOCIATION_EQUIVALENT,
         fixture="multi_owner_dense",
         precondition="the two BC values give DIFFERENT owners_total (4 vs 1)",
-        basis="`y` sums one element over `owners_total` partials by atomicAdd; at "
-              "BC = 64 there is one owner and the sum is a single deposit, at BC = 16 "
-              "there are four arriving in scheduler order.",
-        bound="atomic_readout_n2_eps"),
+        basis="`y` sums one element over `owners_total` per-owner partials (the "
+              "deterministic emission fold); at BC = 64 the whole contraction runs "
+              "inside one owner, at BC = 16 it is four partials folded after the "
+              "fact -- a reassociation of the same sum, fixed-order or not.",
+        bound="split_readout_n2_eps"),
 
     # -- BT -----------------------------------------------------------------
     GeometryPair(
@@ -347,8 +351,9 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
         fixture="multi_owner_dense",
         precondition="T is a multiple of both BT values, so neither arm is a ragged tail",
         basis="the readout contracts over the tile's tokens, so `BT` changes the "
-              "contraction length, on top of the split-K atomicAdd over owners.",
-        bound="atomic_readout_n2_eps"),
+              "contraction length feeding each per-owner partial of the "
+              "deterministic emission fold.",
+        bound="split_readout_n2_eps"),
 
     # -- P ------------------------------------------------------------------
     *_p_rows(),
@@ -364,14 +369,17 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
               "(a wrong page id, a missed commitment, a mis-ordered admission) lands here.",
     ),
     GeometryPair(
-        "paging", {"paging": False}, {"paging": True}, "y", REASSOCIATION_EQUIVALENT,
+        "paging", {"paging": False}, {"paging": True}, "y", ENGINEERED_IDENTITY,
         fixture="paged_dense",
-        precondition="owners_total > 1, so the readout is a split-K atomicAdd",
-        basis="paging does not reorder the readout by design, but the readout's atomics "
-              "are unordered ANYWAY: `y` differs run-to-run at fixed geometry "
-              "(`test_split_k_determinism_is_not_assumed`). Claiming bit-equality here "
-              "would be claiming a property of the scheduler.",
-        bound="atomic_readout_n2_eps"),
+        precondition="the arena is materialized back to the dense layout before comparing",
+        basis="§7.1: a page table changes the ADDRESS of an owner's state rows and "
+              "nothing else, and the P10 emission is deterministic — each work item's "
+              "contribution lands in its own single-writer workspace slot and "
+              "`emit_reduce_kernel` folds the slots in a host-fixed `(owner, seg)` "
+              "order paging does not touch. The pre-P10 class-(b) version of this row "
+              "existed ONLY because the atomic emission made `y`'s bit-equality a "
+              "scheduler property; `test_split_k_is_bit_deterministic` holds the "
+              "rerun half of the claim."),
 )
 
 

@@ -125,15 +125,17 @@ SELECTORS = {"never_written_leaves": _never_written_leaves}
 # Derived bounds — class (b) only, and never a constant
 # ---------------------------------------------------------------------------
 
-def _atomic_readout_n2_eps(fx_a, fx_b, out_a, out_b):
-    """The most `y` can move under a reassociation of the §5 readout's atomics.
+def _split_readout_n2_eps(fx_a, fx_b, out_a, out_b):
+    """The most `y` can move under a reassociation of the §5 split-K readout.
 
-    One output element is a sum of at most `owners_total` fp32 partials, and
-    reassociating an `n`-term fp32 sum perturbs it by at most
-    `(n-1) * eps * sum|terms|`. Bounding `sum|terms|` by `n * max|y|` (the reachable
-    scale when the partials do not catastrophically cancel) gives `n^2 * eps * max|y|`.
-    `n` is the LARGER of the two geometries' owner counts, because the bound must
-    cover whichever arm re-associates more. Derived arithmetic, not a tuned number.
+    One output element is a sum of at most `owners_total` fp32 partials (the
+    deterministic emission fold — the ORDER is fixed per geometry, but the two
+    geometries partition or compute the partials differently), and reassociating
+    an `n`-term fp32 sum perturbs it by at most `(n-1) * eps * sum|terms|`.
+    Bounding `sum|terms|` by `n * max|y|` (the reachable scale when the partials
+    do not catastrophically cancel) gives `n^2 * eps * max|y|`. `n` is the LARGER
+    of the two geometries' owner counts, because the bound must cover whichever
+    arm re-associates more. Derived arithmetic, not a tuned number.
     """
     n = max(fx_a.plan.geometry.owners_total, fx_b.plan.geometry.owners_total)
     return n * n * _EPS * float(out_a.abs().max())
@@ -153,7 +155,7 @@ def _carry_fold_T_eps(fx_a, fx_b, out_a, out_b):
 
 
 BOUNDS = {
-    "atomic_readout_n2_eps": _atomic_readout_n2_eps,
+    "split_readout_n2_eps": _split_readout_n2_eps,
     "carry_fold_T_eps": _carry_fold_T_eps,
 }
 

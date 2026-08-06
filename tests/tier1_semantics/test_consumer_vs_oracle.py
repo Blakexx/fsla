@@ -564,30 +564,46 @@ def test_all_zero_write_level_is_read_only():
     assert torch.allclose(state.double(), m0, atol=1e-6, rtol=0)
 
 
-def test_split_k_determinism_is_not_assumed():
-    """fp32 `atomicAdd` reduction order is nondeterministic, so two runs may
-    differ in the last bits. This test records that as an accepted property of
-    the §5 epilogue rather than letting a later flake be mistaken for a bug: the
-    two runs must agree to the fp32 accumulation tolerance, NOT bitwise."""
+@pytest.mark.parametrize("widths,BC,BT,norm,T", [
+    #: MULTI-OWNER cells (owners/bh = 16): the only regime that can exercise the
+    #: claim -- a single-owner cell has one CTA per output element and reruns
+    #: bit-stably even under an atomic emission. The pre-P10 version of this
+    #: test ("determinism is not assumed") lived on exactly such a cell.
+    ((16, 16), 16, 16, "global", 512),
+    ((16, 16), 16, 16, "raw", 512),
+    ((16, 16), 16, 32, "global", 2048),
+    #: The historical shape (owners/bh = 1), kept as the trivial end.
+    ((8, 8), 64, 32, "raw", 40),
+])
+def test_split_k_is_bit_deterministic(widths, BC, BT, norm, T):
+    """`y` is BIT-IDENTICAL across reruns of the same inputs -- `torch.equal`,
+    no tolerance. The §5 emission stores each work item's contribution into its
+    own single-writer workspace slot and `emit_reduce_kernel` folds the slots in
+    one host-fixed `(owner, seg)` order, so no scheduler decision can reach the
+    sum. This retires the pre-P10 rerun floor: the atomic-emission kernel FAILS
+    this exact assertion on every multi-owner cell above (11/11 rerun pairs
+    each, worst |dy| 9.8e-4, measured at master `8ce8797`; the recorded
+    refutation is `workflows/perf/p10_evidence/master_rerun_probe.8ce8797.txt`)."""
     from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(31)
-    widths, d_v = (8, 8), 64
+    d_v = 64
     topology = _topology(widths, d_v)
-    plan = Plan(topology=topology, normalization="raw", BT=32, BC=64, warp_tile=(1, 2))
+    plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC, warp_tile=(1, 2))
     args = (
-        torch.randn(1, 40, 2, d_v, device=device),
-        tuple(_simplex((1, 40, 2, w), 0.5, generator, device).float() for w in widths),
-        tuple(_simplex((1, 40, 2, w), 0.4, generator, device).float() for w in widths),
-        (torch.rand(1, 40, 2, device=device) + 0.5),
-        (torch.rand(1, 40, 2, device=device) + 0.5),
+        torch.randn(1, T, 2, d_v, device=device),
+        tuple(_simplex((1, T, 2, w), 0.5, generator, device).float() for w in widths),
+        tuple(_simplex((1, T, 2, w), 0.4, generator, device).float() for w in widths),
+        None if norm == "global" else (torch.rand(1, T, 2, device=device) + 0.5),
+        (torch.rand(1, T, 2, device=device) + 0.5),
         plan,
     )
-    y1, _, _ = _consumer_forward(*args)
-    y2, _, _ = _consumer_forward(*args)
-    scale = max(1e-30, float(y1.abs().max()))
-    assert float((y1 - y2).abs().max()) / scale < RTOL
+    y1, state1, _ = _consumer_forward(*args)
+    for _ in range(3):
+        y2, state2, _ = _consumer_forward(*args)
+        assert torch.equal(y1, y2), "y moved between reruns of identical inputs"
+        assert torch.equal(state1, state2), "state moved between reruns"
 
 
 # --- LeafMassDecay (increment 2) --------------------------------------------

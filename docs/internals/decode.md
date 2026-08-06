@@ -236,17 +236,18 @@ The only reductions in the file are the 8-way cross-warp fold and the
 fixed-order sums rather than tree primitives because each is `cols` INDEPENDENT
 reductions over 8 (or `n_split`) values — a shape no block-reduce primitive has.
 
-## <a id="determinism"></a>16. Determinism is a shipped property here, and it diverges from the tiled consumer on purpose
+## <a id="determinism"></a>16. Determinism is a shipped property here — and, since P10, everywhere
 
-The tiled consumer emits each token's output as a split-K partial through
-`atomicAdd` into `num`/`den`, so its `y` is not reproducible against its own
-binary wherever a `bh` holds more than one owner. **Measured: 384 of 976 fixture
-cases differ between two runs of one binary.**
+Decode shipped the deterministic split-K combine FIRST, because its `y` feeds an
+argmax or a sample that picks the NEXT TOKEN: a last-bit difference in `den`
+flips a near-tie logit and the divergence compounds autoregressively. (The tiled
+consumer of that era emitted through `atomicAdd` and measured 384 of 976 fixture
+cases differing between two runs of one binary.)
 
-Prefill's `y` feeds a loss or an eval aggregate, and that is tolerable. Decode's
-`y` feeds an argmax or a sample that picks the NEXT TOKEN, so a last-bit
-difference in `den` flips a near-tie logit and the divergence compounds
-autoregressively for the rest of the generation.
+P10 brought the tiled consumer to the same standard by the same principle —
+single-writer partials, one fixed fold order
+([`consumer.md#emit-workspace`](consumer.md#emit-workspace)) — so slot-order
+determinism is now an engine-wide property, not a decode divergence.
 
 At `T = 1` the partials are `n_split * cols` floats per `bh`, so the fixed-order
 combine costs one workspace slot per CTA, one `__threadfence()` and one

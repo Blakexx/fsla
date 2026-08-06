@@ -93,8 +93,17 @@ struct ConsumerParams {
   //: arm); typed in-kernel, bound with a hard per-precision dtype check.
   const void* v;
 
-  float* num;  // [BH, T, DV]   fp32, atomically accumulated
-  float* den;  // [BH, T]       fp32, or nullptr under `raw`
+  //: THE SPLIT-K EMISSION WORKSPACE -- single-writer slots, never an atomic
+  //: target. Work item `w`'s contribution to token `t` lands at
+  //: `emit_num[(w*T + t)*DV + ch]` (and `emit_den[w*T + t]` under `global`);
+  //: `emit_rowmask` bit `t` of entry `(w, tile)` -- host-zeroed -- says the row
+  //: was emitted, so the reduce reads exactly the bytes the producer wrote.
+  //: `num`/`den` themselves are written by `emit_reduce_kernel` in `consumer.cu`,
+  //: which folds the contributions in one host-fixed order -- what makes `y`
+  //: bit-identical across runs. docs/internals/consumer.md#emit-workspace
+  float* emit_num;         // [n_work, T, DV] fp32
+  float* emit_den;         // [n_work, T]     fp32, or nullptr under `raw`
+  uint32_t* emit_rowmask;  // [n_work, n_tiles], zero-initialized by the host
   //: Unpaged: `[BH, N, DV (+1 mass column under `global`)]`. Paged (spec §4.5):
   //: `[physical_slots, MMA_K_QUANTUM, cols]`. A page is one `MMA_K_QUANTUM`-leaf
   //: ATOM and NOT one owner; `atom_row_base` in `consumer_kernel.cuh` is the one
