@@ -7,9 +7,8 @@
 //     `ConsumerParams` fill, and §6.4's three-pass sequencing;
 //   * the launch dispatch `launch_consumer`, which resolves the plan's structural
 //     axes to ONE template instantiation of `consumer::consumer_forward_kernel`;
-//   * the three non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
-//     fold), `emit_reduce_kernel` (the split-K emission's fixed-order fold) and
-//     `divide_kernel` (`global`'s `num/den` epilogue);
+//   * the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
+//     fold) and `divide_kernel` (`global`'s `num/den` epilogue);
 //   * the driver-backed residency and footprint queries, and the arch-table check;
 //   * the pybind surface.
 //
@@ -163,73 +162,6 @@ void scan_pass(const ScanParams& p) {
   if (p.n_split == 0) return;
   const size_t smem = static_cast<size_t>(p.BC) * p.cols * sizeof(float);
   scan_kernel<<<p.n_split, 256, smem, at::cuda::getCurrentCUDAStream()>>>(p);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
-// ---------------------------------------------------------------------------
-// The split-K emission reduce: ONE fixed-order fold of the consumer's
-// single-writer workspace slots into `num`/`den`. This launch is what makes `y`
-// bit-identical across runs -- the consumer stores plain contributions into its
-// own slot and the order they are combined in is decided HERE, by the host's
-// `(owner, seg)`-sorted work list, never by the scheduler.
-// docs/internals/consumer.md#emit-workspace
-// ---------------------------------------------------------------------------
-
-struct EmitReduceParams {
-  const float* ws_num;      // [n_work, T, DV]
-  const float* ws_den;      // [n_work, T] or nullptr under `raw`
-  const uint32_t* rowmask;  // [n_work, n_tiles]; bit t of (w, tile) = row emitted
-  const int32_t* works;     // [n_work] work ids, grouped by bh, (owner, seg) ascending
-  const int32_t* off;       // [BH + 1] group bounds into `works`
-  float* num;               // [BH, T, DV] -- written FULLY (empty-allocated)
-  float* den;               // [BH, T] or nullptr
-  int BH;
-  int T;
-  int DV;
-  int BT;
-  int n_tiles;
-};
-
-//: One THREAD per output element `(bh, token, ch)`, walking its batch-head's
-//: work items in the host-fixed order -- every output is one SEQUENTIAL fp32
-//: sum over an order-invariant term list, which is the whole determinism
-//: argument. A warp spans consecutive channels of one token, so the row-mask
-//: word is a warp-broadcast load and the payload/store are fully coalesced.
-//: The `ch == 0` lane folds the token's denominator into the same walk (the
-//: mask word is already in hand).
-constexpr int kEmitReduceThreads = 256;
-
-__global__ void emit_reduce_kernel(EmitReduceParams p) {
-  const int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-  if (idx >= static_cast<int64_t>(p.BH) * p.T * p.DV) return;
-  const int ch = static_cast<int>(idx % p.DV);
-  const int64_t row = idx / p.DV;  // bh * T + token
-  const int bh = static_cast<int>(row / p.T);
-  const int token = static_cast<int>(row - static_cast<int64_t>(bh) * p.T);
-  const int tile = token / p.BT;
-  const int t = token - tile * p.BT;
-  const bool den_lane = p.ws_den != nullptr && ch == 0;
-  //: One SEQUENTIAL fp32 sum in the host-fixed order. A 4-way interleaved
-  //: accumulator variant was measured a wash on the worst (high-K, short-T)
-  //: probe cell -- the walk is bound by the workspace read-back, not by the
-  //: dependent-add chain -- so the simplest order ships.
-  float acc = 0.0f;
-  float dacc = 0.0f;
-  for (int k = p.off[bh]; k < p.off[bh + 1]; ++k) {
-    const int w = p.works[k];
-    const uint32_t m = p.rowmask[static_cast<int64_t>(w) * p.n_tiles + tile];
-    if (((m >> t) & 1u) == 0u) continue;
-    acc += p.ws_num[(static_cast<int64_t>(w) * p.T + token) * p.DV + ch];
-    if (den_lane) dacc += p.ws_den[static_cast<int64_t>(w) * p.T + token];
-  }
-  p.num[idx] = acc;
-  if (den_lane) p.den[row] = dacc;
-}
-
-void emit_reduce_pass(const EmitReduceParams& p) {
-  const int64_t total = static_cast<int64_t>(p.BH) * p.T * p.DV;
-  const int64_t blocks = (total + kEmitReduceThreads - 1) / kEmitReduceThreads;
-  emit_reduce_kernel<<<blocks, kEmitReduceThreads, 0, at::cuda::getCurrentCUDAStream()>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -482,13 +414,13 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
     at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
     at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union, at::Tensor owners,
-    at::Tensor emit_works, at::Tensor emit_off, c10::optional<at::Tensor> g_read,
-    at::Tensor g_write, at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
-    std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
-    std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
-    std::vector<int64_t> owner_stride, int64_t first_spanned_level, int64_t slice_digits,
-    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BT, int64_t BC,
-    bool global_norm, std::string mma_precision, double eps,
+    c10::optional<at::Tensor> g_read, at::Tensor g_write, at::Tensor v, at::Tensor state,
+    c10::optional<at::Tensor> page_table, std::vector<int64_t> level_stride,
+    std::vector<int64_t> level_modulus, std::vector<int64_t> level_row_offset,
+    std::vector<int64_t> level_width, std::vector<int64_t> owner_stride,
+    int64_t first_spanned_level, int64_t slice_digits, int64_t n_slices, int64_t owners_total,
+    int64_t n_heads, int64_t BT, int64_t BC, bool global_norm, std::string mma_precision,
+    double eps,
     // ---- §6.4 sequence parallelism. ALL-OR-NOTHING (14 arguments or none; `P = 1`
     // is the primary configuration): docs/internals/consumer.md#all-or-nothing
     c10::optional<at::Tensor> work_seg,        // [n_owners] int32, keyed like `owners`
@@ -633,38 +565,19 @@ std::vector<at::Tensor> rola_consumer_forward(
               "normalization='global' fixes g_read := 1 (spec §1); pass g_read=None");
   TORCH_CHECK(global_norm || g_read.has_value(), "normalization='raw' requires g_read");
 
-  // `num`/`den` are the readout accumulators and NEVER narrow (fp32-accumulator
-  // ruling, same class as `state`): fp32 whatever `v`'s storage dtype is. Only
-  // `y` -- the post-divide quotient -- takes the arm's output format, below.
-  // Both are `empty`, not `zeros`: `emit_reduce_kernel` writes every element
-  // (a token nothing contributes to gets the sum of zero terms, 0.0f).
-  auto num = at::empty({BH, T, d_v}, v.options().dtype(at::kFloat));
+  // `num`/`den` are the atomically-accumulated readout accumulators and NEVER
+  // narrow (fp32-accumulator ruling, same class as `state`): fp32 whatever `v`'s
+  // storage dtype is. Only `y` -- the post-divide quotient -- takes the arm's
+  // output format, below.
+  auto num = at::zeros({BH, T, d_v}, v.options().dtype(at::kFloat));
   at::Tensor den;
-  if (global_norm) den = at::empty({BH, T}, v.options().dtype(at::kFloat));
-
-  // ---- the split-K emission workspace: one slot per (work item, token), a row
-  // mask per (work item, tile), and the reduce's host-FIXED fold order --
-  // `emit_works`/`emit_off`, BUILT UPSTREAM (once per schedule at `P = 1`, per
-  // call from the split work list) so the per-step cost here is three
-  // allocations and one memset. docs/internals/consumer.md#emit-workspace
-  const int64_t n_work = owners.size(0);
-  const int64_t n_tiles_l = amp_read[0].size(1);
-  TORCH_CHECK(emit_works.is_cuda() && emit_works.is_contiguous()
-                  && emit_works.scalar_type() == at::kInt && emit_works.dim() == 1
-                  && emit_works.size(0) == n_work,
-              "emit_works must be a contiguous int32 [n_work] CUDA tensor keyed to the "
-              "SAME work list as `owners` -- a mismatched fold order is a wrong answer, "
-              "not a slower one");
-  TORCH_CHECK(emit_off.is_cuda() && emit_off.is_contiguous() && emit_off.scalar_type() == at::kInt
-                  && emit_off.dim() == 1 && emit_off.size(0) == BH + 1,
-              "emit_off must be a contiguous int32 [BH + 1] CUDA tensor");
-  auto ws_num = at::empty({n_work, T, d_v}, v.options().dtype(at::kFloat));
-  at::Tensor ws_den;
-  if (global_norm) ws_den = at::empty({n_work, T}, v.options().dtype(at::kFloat));
-  auto rowmask = at::zeros({n_work, n_tiles_l}, v.options().dtype(at::kInt));
-  p.emit_num = ws_num.data_ptr<float>();
-  p.emit_den = global_norm ? ws_den.data_ptr<float>() : nullptr;
-  p.emit_rowmask = reinterpret_cast<uint32_t*>(rowmask.data_ptr<int32_t>());
+  if (global_norm) {
+    den = at::zeros({BH, T}, v.options().dtype(at::kFloat));
+    p.den = den.data_ptr<float>();
+  } else {
+    p.den = nullptr;
+  }
+  p.num = num.data_ptr<float>();
 
   p.N = N;
   p.BH = static_cast<int>(BH);
@@ -725,6 +638,7 @@ std::vector<at::Tensor> rola_consumer_forward(
       TORCH_CHECK(t.dim() >= 1 && t.size(0) == rows, name, " must have ", rows, " rows");
       return t.data_ptr<int32_t>();
     };
+    const int64_t n_work = owners.size(0);
     const int64_t n_summary = summary_owners->size(0);
     const int64_t n_split = scan_owners->size(0);
     TORCH_CHECK(summary_owners->dim() == 2 && summary_owners->size(1) == 2,
@@ -784,23 +698,6 @@ std::vector<at::Tensor> rola_consumer_forward(
   } else {
     launch_pass(p);
   }
-
-  // ---- the emission reduce: the ONE ordered fold of the split-K partials.
-  // After pass 3 (the only emitting pass), before the divide.
-  EmitReduceParams er{};
-  er.ws_num = p.emit_num;
-  er.ws_den = p.emit_den;
-  er.rowmask = p.emit_rowmask;
-  er.works = emit_works.data_ptr<int32_t>();
-  er.off = emit_off.data_ptr<int32_t>();
-  er.num = num.data_ptr<float>();
-  er.den = global_norm ? den.data_ptr<float>() : nullptr;
-  er.BH = p.BH;
-  er.T = p.T;
-  er.DV = static_cast<int>(d_v);
-  er.BT = BT_i;
-  er.n_tiles = p.n_tiles;
-  emit_reduce_pass(er);
 
   // `y` takes the arm's output format under `global` (P09 family: the cast is the
   // divide epilogue's store -- the divide itself is fp32 over the fp32

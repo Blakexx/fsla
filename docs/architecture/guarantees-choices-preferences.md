@@ -69,9 +69,14 @@ bit-reproducible run to run: split-K uses non-deterministic atomics, and two run
 of the unchanged code differ by ~`5e-7` max-abs at the parity cell. The **state**
 *is* byte-equal and is gated as such. Every `y` comparison in this repository is
 therefore reported against a measured same-order floor. Converting `y` to
-byte-equality is a live design item (deterministic split-K with a workspace
-reduce), and its dividend is correctness *infrastructure* — it would convert a
-whole class of tolerance gates into equality gates.
+byte-equality was BUILT and MEASURED (a single-writer workspace + one host-fixed-
+order reduce kernel, P10) and then REVERTED (P23, U08 ruling): the mechanism
+priced at **+23.0%** step time at the canonical at-scale cell — over 3x the
+figure it was first accepted against — and Blake ruled the price not worth
+carrying. It survives in git (`perf/deterministic-splitk`, tip `70f607b`) and
+revives on a hard external bitwise-reproducibility requirement AND a banded
+workspace reduction that fixes both the price and the mechanism's nc-scaling
+cliff together.
 
 ## 2. Choices — measured, and revisable
 

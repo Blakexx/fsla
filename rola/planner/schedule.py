@@ -42,7 +42,7 @@ from rola.routing.types import Topology, validate_normalization
 
 # Bumped whenever the emitted layout changes in a way the CUDA consumer must
 # observe. The consumer asserts on it at load time.
-ROLA_SCHEDULE_ABI_VERSION = 3  # v3: P10's emission fold order (`emit_reduce_works/off`)
+ROLA_SCHEDULE_ABI_VERSION = 2  # v2: §4's support word (`read/write_token_bits`)
 
 #: A ``cp.async`` warp-wide transaction is 32 lanes x 16 B = 512 B (§5 "Staging":
 #: "innermost rows (512 B contiguous, cp.async-shaped)").
@@ -991,31 +991,6 @@ class DecayStream:
                 and self.versions(stored, write) == self.src_versions)
 
 
-def emit_reduce_order(owners: torch.Tensor, owners_total: int, BH: int,
-                      seg: torch.Tensor | None = None,
-                      n_tiles: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """The P10 emission reduce's host-fixed fold order, from a work list.
-
-    ``owners`` is ``[n_work, 2]`` int32 ``(bh, owner)`` rows; the returned
-    ``works`` is the row indices sorted by
-    ``(bh * owners_total + owner) [* (n_tiles + 1) + seg]`` (unique per work
-    item -- a function of the routing alone, so the order is invariant under
-    any permutation of the list itself) and ``off`` is the ``[BH + 1]`` group
-    bounds. ``seg`` (with ``n_tiles``) is the sequence-parallel term; ``None``
-    is the ``P = 1`` form.
-    """
-    bh = owners[:, 0].to(torch.int64)
-    key = bh * owners_total + owners[:, 1].to(torch.int64)
-    if seg is not None:
-        assert n_tiles is not None, "the seg term needs the tile count for its radix"
-        key = key * (n_tiles + 1) + seg.to(torch.int64)
-    works = key.argsort().to(torch.int32).contiguous()
-    counts = torch.bincount(bh, minlength=BH)
-    off = torch.zeros(BH + 1, device=owners.device, dtype=torch.int64)
-    off[1:] = counts.cumsum(0)
-    return works, off.to(torch.int32).contiguous()
-
-
 @dataclass(frozen=True, slots=True)
 class Schedule:
     """The §4 schedule plus the token-major route stream the consumer loads.
@@ -1060,9 +1035,6 @@ class Schedule:
     ascending, estimated cost descending within a ``bh`` (:func:`_sort_owners`).
     An owner with no candidate tile on either side is absent entirely.
 
-    ``emit_reduce_works``/``emit_reduce_off``: the emission reduce's fold order
-    (P10) -- see the field comment below.
-
     **Per-owner candidate bitmaps are deliberately NOT a field.** §4: the
     intersection "is not materialized per owner in memory (Pi-shaped, one reader
     each, strictly more traffic than recomputing)". The builder forms them
@@ -1087,17 +1059,6 @@ class Schedule:
     g_write: torch.Tensor
     owners: torch.Tensor
     owner_costs: torch.Tensor
-    #: The P10 emission reduce's host-FIXED fold order at ``P = 1``: ``owners``
-    #: row indices sorted by ``bh * owners_total + owner`` (grouped by ``bh``,
-    #: owner ascending within it) plus the ``[BH + 1]`` group bounds. A function
-    #: of the routing alone -- independent of the cost sort above -- which is
-    #: what keeps ``y``'s bits invariant under work-list permutations. Built
-    #: here, once per schedule, because rebuilding it per call measurably
-    #: dominated small cells. The SPLIT path rebuilds it per call with the
-    #: ``seg`` term (`rola/ops/consumer.py`).
-    #: docs/internals/consumer.md#emit-workspace
-    emit_reduce_works: torch.Tensor
-    emit_reduce_off: torch.Tensor
     abi_version: int = ROLA_SCHEDULE_ABI_VERSION
     #: Attached lazily by `_consumer_forward` on the decay arm; see
     #: :class:`DecayStream`. `None` on the `decay=None` arm, always.
@@ -1280,9 +1241,6 @@ def build_schedule(
     g_read_f = None if g_read is None else _fold_bth(g_read.unsqueeze(-1)).squeeze(-1).contiguous()
     g_write_f = _fold_bth(g_write.unsqueeze(-1)).squeeze(-1).contiguous()
 
-    emit_reduce_works, emit_reduce_off = emit_reduce_order(
-        owners, geometry.owners_total, BH)
-
     return Schedule(
         plan=plan, BH=BH, T=T, n_tiles=n_tiles, n_words=n_words,
         level_offsets=tuple(level_offsets),
@@ -1291,8 +1249,7 @@ def build_schedule(
         read_slice_union=read_slice_union, write_slice_union=write_slice_union,
         read_amps=read_amps, write_amps=write_amps,
         g_read=g_read_f, g_write=g_write_f,
-        owners=owners, owner_costs=owner_costs,
-        emit_reduce_works=emit_reduce_works, emit_reduce_off=emit_reduce_off)
+        owners=owners, owner_costs=owner_costs)
 
 
 def build_clock_stream(

@@ -232,73 +232,6 @@ realized writes), and the accumulated boundary pass 3 reads is dense. The stash
 slot uses only `ws_state`; its `ws_scale` / `ws_leaf` / `ws_count` entries are
 neither written nor read (the scan's fold indexes `slot[owner] + 1 + s`).
 
-## <a id="emit-workspace"></a>A11b. The split-K emission workspace, and the one fixed fold order
-
-The `emit_num` / `emit_den` / `emit_rowmask` fields are what makes `y`
-BIT-IDENTICAL across runs (P10): the kernel's §5 emission never touches an
-atomic — it stores each work item's contribution into a slot only it addresses,
-and the cross-owner sum happens afterwards, in `emit_reduce_kernel`, in an order
-the HOST fixes. The arrangement is CUTLASS's parallel split-K
-(workspace + `ReduceSplitK`) rather than its nondeterministic atomic mode.
-
-- `emit_num [n_work, T, DV] fp32` — work item `w`'s contribution to token `t`
-  at `(w*T + t)*DV + ch`. Single writer by construction: a CTA is the only
-  visitor of its own (work, tile) pairs.
-- `emit_den [n_work, T] fp32` — the denominator stream, `global` arms only.
-- `emit_rowmask [n_work, n_tiles] u32`, ZEROED by the host each call — bit `t`
-  of entry `(w, tile)` says row `t` was emitted (`token < T && sr[t] != 0`).
-  The mask is the producer/reducer AGREEMENT on which workspace bytes exist:
-  the kernel's row-level `sr[t] == 0` skip is published, never inferred, so a
-  skipped row can never be read as garbage. Within a live row every channel is
-  stored, zeros included.
-- **The fold order** is the sort of the pass-3 work list by
-  `(bh * owners_total + owner) [* (n_tiles + 1) + seg]` — unique per work item,
-  a function of the routing alone, independent of the planner's cost sort and
-  of any scheduler decision. It arrives as the `emit_works [n_work] i32` /
-  `emit_off [BH+1] i32` arguments, BUILT UPSTREAM
-  (`rola.planner.schedule.emit_reduce_order`): once per schedule on the
-  `P = 1` path — rebuilding it per call measurably dominated small cells —
-  and per call, with the `seg` term, on the split path
-  (`rola/ops/consumer.py`). The extension validates shape/dtype and never
-  computes an order of its own.
-- `emit_reduce_kernel` (one THREAD per output element, flat grid over
-  `BH * T * DV`): each thread walks its batch-head's work items in that order,
-  skips dead rows off the mask (a warp spans one token's channels, so the mask
-  word is a warp-broadcast load and the payload is coalesced), and writes
-  `num`/`den` FULLY — both are `at::empty`, and a token nothing contributes to
-  gets the sum of zero terms, `0.0f`, the pre-P10 `at::zeros` semantics. The
-  `ch == 0` lane folds the token's denominator in the same walk.
-  `divide_pass` is unchanged downstream. (A CTA-per-tile register-tile form
-  and a 4-way interleaved-accumulator form were both measured no better on
-  the worst high-K/short-T probe cell — the walk is bound by the workspace
-  read-back — so the simplest shape ships.)
-
-Determinism argument, in one line: every workspace byte has one writer, the
-term set is run-invariant, the fold order is host-fixed, and each output
-element is a per-thread SEQUENTIAL fp32 sum — no step depends on scheduling.
-
-Measured price (sm_86, `perf/ledger.jsonl` + `workflows/perf/p10_splitk.md`,
-P22-remedy figures — the original `+7.1%` / `0.077 ms` numbers were
-UNLEDGERED and did not reconcile against either binary; superseded in place,
-`workflows/perf/p10_splitk.md` carries the audit): the canonical at-scale
-sparse cell `atscale-L2048` pays **+23.0%** step time (6.959 → 8.562 ms,
-master `8ce8797c` vs tip `70f607b0`, min-of-blocks over two `cuda_events`
-armtime runs each); the small probe cells pay more relatively (the reduce's
-read-back does not shrink with `T`): `topo-D2-w64x64-BC64|global` **+35.4%**
-(0.081 → 0.110 ms), the high-K `topo-D4-w8x8x8x16-BC16|global` 0.230 →
-0.477 ms (not re-measured by the remedy; the ~+108% figure carries the same
-unaudited-arithmetic caveat P10's review left open). The latency baseline
-was re-recorded at the P10 tip with this note.
-
-Cost and scaling (stated per the design-for-scale rule): the workspace is
-launch-scoped, `4 * n_work * T * (DV + 1)` bytes ≈ 8.6 GB at the flagship
-parity cell, freed to the caching allocator after the reduce; its traffic is
-the emission volume the atomic path already paid, plus the reduce's read of
-the same bytes. It scales as `O(BH * (N/BC) * T * DV)`, which exceeds device
-memory at the 1M-scale parity anchor — the at-scale extension is a tile-banded
-workspace reduced per band through the §6.4 segment machinery. Evidence and
-the A/B: `workflows/perf/p10_splitk.md`.
-
 ## <a id="pass-mode"></a>A12. `pass_mode` is launch-uniform
 
 Every CTA in a launch has the same value, so the branches it drives are uniform
@@ -339,9 +272,8 @@ sites, not the revival of a switch that is already there. See
   `ConsumerParams` fill, and §6.4's three-pass sequencing;
 - the launch dispatch `launch_consumer`, which resolves the plan's structural
   axes to ONE template instantiation of `consumer::consumer_forward_kernel`;
-- the three non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
-  fold), `emit_reduce_kernel` (the split-K emission's fixed-order fold,
-  [A11b](#emit-workspace)) and `divide_kernel` (`global`'s `num/den` epilogue);
+- the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
+  fold) and `divide_kernel` (`global`'s `num/den` epilogue);
 - the driver-backed residency and footprint queries, and the arch-table check;
 - the pybind surface.
 
@@ -743,12 +675,13 @@ because the support word carries one bit per token of a tile (spec §6).
 
 ## <a id="split-k-emission"></a>B14. The split-K emission sites
 
-The kernel emits its readout (with the intra term already fused into the same
-fragment) as plain stores into the emission workspace ([A11b](#emit-workspace)),
-guarded by a ROW-LEVEL `sr[t] == 0.0f` skip that the row mask publishes. The
-skip is a PERFORMANCE choice licensed by the
-[self-masking theorem](../architecture/self-masking-theorem.md) (`0.0f` terms
-are the identity), never a membership decision (A5) — and it is row-granular
-rather than the pre-P10 elementwise `out != 0.0f`, because the reduce reads
-exactly the bytes the mask names and an element-level skip would leave workspace
-garbage inside a live row.
+The kernel emits its readout and its intra term as separate split-K atomics
+guarded by `if (out != 0.0f)`. Two facts about that guard, both load-bearing:
+
+1. It is a PERFORMANCE SKIP, not a membership decision (A5) — licensed by the
+   [self-masking theorem](../architecture/self-masking-theorem.md).
+2. It is what makes the intra term a second atomic per (token, channel) on a
+   mixed tile, which is cause #1 in
+   [`intra_panel.md`](intra_panel.md#measured-status) for `panel` measuring
+   slower than the walk. Fusing the intra term into the readout epilogue is the
+   standing follow-up for BOTH lowerings.

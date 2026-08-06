@@ -29,12 +29,6 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
     at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
     at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union, at::Tensor owners,
-    //: The emission reduce's host-FIXED fold order (P10): the work list sorted by
-    //: `(bh * owners_total + owner) [* (n_tiles + 1) + seg]`, grouped by `bh`.
-    //: Built ONCE per schedule (`rola/planner/schedule.py`) on the `P = 1` path,
-    //: per call from the split work list. docs/internals/consumer.md#emit-workspace
-    at::Tensor emit_works,  // [n_work] int32 work ids
-    at::Tensor emit_off,    // [BH + 1] int32 group bounds
     c10::optional<at::Tensor> g_read, at::Tensor g_write, at::Tensor v, at::Tensor state,
     c10::optional<at::Tensor> page_table, std::vector<int64_t> level_stride,
     std::vector<int64_t> level_modulus, std::vector<int64_t> level_row_offset,

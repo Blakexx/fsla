@@ -564,26 +564,46 @@ def test_all_zero_write_level_is_read_only():
     assert torch.allclose(state.double(), m0, atol=1e-6, rtol=0)
 
 
+#: The MEASURED rerun-spread floor (U08 ruling, 2026-08-06: deterministic
+#: split-K reverted to atomics -- P23 -- because the +23.0% measured price
+#: (P22-remedy ledger) was not worth bitwise determinism). `atomicAdd`
+#: reduction order is a REAL, measured nondeterminism, not a hypothetical one
+#: -- the P10 evidence's own rerun probe against this same atomic binary found
+#: 33/33 rerun pairs differing on every multi-owner cell, worst |dy| 9.8e-4
+#: (`workflows/perf/p10_evidence/master_rerun_probe.8ce8797.txt`). This floor
+#: is 5x that measured worst case, so the gate has margin without being a
+#: vacuous "always passes" tolerance; a future flake that BLOWS this floor is
+#: a real regression, not sampling noise.
+_RERUN_ATOL = 5e-3
+
+
 @pytest.mark.parametrize("widths,BC,BT,norm,T", [
-    #: MULTI-OWNER cells (owners/bh = 16): the only regime that can exercise the
-    #: claim -- a single-owner cell has one CTA per output element and reruns
-    #: bit-stably even under an atomic emission. The pre-P10 version of this
-    #: test ("determinism is not assumed") lived on exactly such a cell.
+    #: MULTI-OWNER cells (owners/bh = 16) -- the only regime that can exercise
+    #: the claim: a single-owner cell has one CTA per output element and
+    #: reruns bit-stably even under an atomic emission, which is exactly why
+    #: the ORIGINAL (pre-P10) form of this test was vacuous -- it lived on
+    #: nothing but that shape.
     ((16, 16), 16, 16, "global", 512),
     ((16, 16), 16, 16, "raw", 512),
     ((16, 16), 16, 32, "global", 2048),
-    #: The historical shape (owners/bh = 1), kept as the trivial end.
+    #: The historical shape (owners/bh = 1), kept as the trivial end: it must
+    #: still pass, at zero measured spread, alongside the honest cells above.
     ((8, 8), 64, 32, "raw", 40),
 ])
-def test_split_k_is_bit_deterministic(widths, BC, BT, norm, T):
-    """`y` is BIT-IDENTICAL across reruns of the same inputs -- `torch.equal`,
-    no tolerance. The §5 emission stores each work item's contribution into its
-    own single-writer workspace slot and `emit_reduce_kernel` folds the slots in
-    one host-fixed `(owner, seg)` order, so no scheduler decision can reach the
-    sum. This retires the pre-P10 rerun floor: the atomic-emission kernel FAILS
-    this exact assertion on every multi-owner cell above (11/11 rerun pairs
-    each, worst |dy| 9.8e-4, measured at master `8ce8797`; the recorded
-    refutation is `workflows/perf/p10_evidence/master_rerun_probe.8ce8797.txt`)."""
+def test_split_k_determinism_is_not_assumed(widths, BC, BT, norm, T):
+    """fp32 `atomicAdd` reduction order is nondeterministic, so two runs may
+    differ in the last bits -- this test records that as an accepted property
+    of the §5 epilogue rather than letting a later flake be mistaken for a bug.
+
+    It is a FLOOR, not a bitwise assertion, because atomics are the shipped
+    mechanism (U08 ruling: P10's deterministic single-writer-workspace +
+    fixed-order-reduce fold cost +23.0% at the canonical at-scale cell, and
+    that price was ruled not worth carrying -- P23 reverted it). The floor is
+    `_RERUN_ATOL`, MEASURED with margin over the P10 evidence's own rerun
+    probe (see the module-level comment above `_RERUN_ATOL`), and it is run on
+    MULTI-OWNER cells -- never the single-owner-only shape the original
+    version of this test used, which could not have failed no matter how the
+    epilogue behaved."""
     from rola.ops.consumer import _consumer_forward
 
     device = "cuda"
@@ -599,11 +619,11 @@ def test_split_k_is_bit_deterministic(widths, BC, BT, norm, T):
         (torch.rand(1, T, 2, device=device) + 0.5),
         plan,
     )
-    y1, state1, _ = _consumer_forward(*args)
+    y1, _, _ = _consumer_forward(*args)
     for _ in range(3):
-        y2, state2, _ = _consumer_forward(*args)
-        assert torch.equal(y1, y2), "y moved between reruns of identical inputs"
-        assert torch.equal(state1, state2), "state moved between reruns"
+        y2, _, _ = _consumer_forward(*args)
+        assert float((y1 - y2).abs().max()) < _RERUN_ATOL, (
+            "y moved between reruns by more than the measured atomic-reduction floor")
 
 
 # --- LeafMassDecay (increment 2) --------------------------------------------

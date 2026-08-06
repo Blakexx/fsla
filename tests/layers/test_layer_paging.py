@@ -53,11 +53,8 @@ _WIDTHS = (4, 8, 8)
 
 
 def _reordering_bound(y, layer, *, BC):
-    """The derived fp32 reassociation envelope (`n^2 * eps * max|y|`) on the §5
-    split-K readout, for comparisons that CHANGE THE DECOMPOSITION -- a token
-    re-chunking or a `BC` flip regroups the fold's terms. Since P10 the emission
-    is deterministic, so a FIXED decomposition needs no envelope at all: those
-    gates assert `torch.equal` directly.
+    """See `tests/ops/test_rola_v3_paging.py` -- the same derived fp32
+    reassociation bound on the §5 readout's atomic accumulation.
 
     `owners_total = N / BC` is read off the TOPOLOGY and the caller-known pinned
     `BC`, not off `layer.last_selected_plan` (see the module docstring's BUG
@@ -105,15 +102,17 @@ def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(state_norm, decay):
 
     with torch.no_grad():
         y0, _, _ = unpaged(x)
-        # Null control: the SAME unpaged layer, run twice. The P10 deterministic
-        # emission makes `y` bit-reproducible against itself, so the control --
-        # and paging, which changes addresses and nothing else -- is `torch.equal`.
+        # Null control: the SAME unpaged layer, run twice. The consumer's readout
+        # accumulates across owners with `atomicAdd`, so `y` is not bit-reproducible
+        # against itself (see `tests/ops/test_rola_v3_paging.py`'s module docstring
+        # and findings `paging.md` §2). Paging is allowed no more movement than that.
         y_control, _, _ = unpaged(x)
         y1, _, _ = paged(x)
 
     assert unpaged.last_execution_backend == paged.last_execution_backend == "cuda"
-    assert torch.equal(y0, y_control), "an identical rerun moved y (determinism gate)"
-    assert torch.equal(y0, y1), "paging moved a bit of y"
+    bound = _reordering_bound(y0, unpaged, BC=16)
+    assert (y0 - y_control).abs().max() <= bound
+    assert (y0 - y1).abs().max() <= bound
 
 
 def test_committed_state_accounting_is_exposed_on_the_layer():
@@ -182,8 +181,9 @@ def test_a_second_fresh_forward_does_not_silently_continue_the_first():
         y0_paged, _, _ = paged(x)
         y1_paged, _, _ = paged(x)
 
-    assert torch.equal(y0_unpaged, y0_paged)
-    assert torch.equal(y1_unpaged, y1_paged), (
+    bound = _reordering_bound(y0_unpaged, unpaged, BC=16)
+    assert (y0_unpaged - y0_paged).abs().max() <= bound
+    assert (y1_unpaged - y1_paged).abs().max() <= bound, (
         "the second paged forward diverged from the second unpaged one: the arena "
         "carried step 1's pages into a call that must start from zeros")
 
@@ -255,8 +255,9 @@ def test_a_paged_BC64_layer_is_bit_identical_to_an_unpaged_one():
     assert unpaged.feasible_BC == (64,), "the state_block pin did not shrink to BC=64"
     assert paged.last_selected_plan.BC == 64
     assert unpaged.last_execution_backend == paged.last_execution_backend == "cuda"
-    assert torch.equal(y0, y_control), "an identical rerun moved y (determinism gate)"
-    assert torch.equal(y0, y1), "paging moved a bit of y at BC=64"
+    bound = _reordering_bound(y0, unpaged, BC=64)
+    assert (y0 - y_control).abs().max() <= bound
+    assert (y0 - y1).abs().max() <= bound
 
 
 def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
