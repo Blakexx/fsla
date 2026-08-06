@@ -223,6 +223,12 @@ consumer_forward_kernel(ConsumerParams p) {
   float* s0 = p_ref + (DECAY ? BC : 0);
   constexpr int CKP = BC + 4;  // clk's row pitch, token-major
   int* ctl = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
+  //: The token gather's group list: `t_idx[q]` = the q-th gathered GLOBAL token
+  //: index, ascending (§8's stable gather -- ordering is the causality
+  //: requirement, not a nicety). Written by warp 0 at ballot time, published by
+  //: the group-entry `__syncthreads()`, read by every staging loop of a
+  //: gathered visit. Dead bytes on an aligned walk.
+  int* t_idx = ctl + ctl_words(BC);
   static_assert(!DECAY
                     || static_cast<size_t>(BT) * CKP * sizeof(float)
                            <= vw_union_bytes<BT, BC, DV, DECAY, READ_PREC, FOLD_PREC>(),
@@ -424,15 +430,25 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- consumes but does not produce. At `kRing == 1` it is called at the top of the
   // ---- tile body with `slot` identically 0; at `kRing == 2`, ONE VISIT EARLY, from
   // ---- inside the previous tile's compute.
-  // ---- docs/internals/consumer_kernel.md#candidate-walk
-  auto stage_tile = [&](int tile, int slot, bool is_read, bool is_write) {
-    const int t0 = tile * BT;
+  // ---- `tile < 0` is a GATHERED visit: the staged tokens are `t_idx[0..gN)`
+  // ---- (globally ascending), `slot` is 0 and the ring is not used -- the gathered
+  // ---- walk stages at the group top on every arm. Slots `[gN, BT)` of a ragged
+  // ---- group stage EXACT-ZERO coefficient rows and zero row scales, so they are
+  // ---- inert through every GEMM the way the aligned walk's `token >= T` tail is.
+  // ---- docs/internals/consumer_kernel.md#candidate-walk, #token-gather
+  auto stage_tile = [&](int tile, int slot, bool is_read, bool is_write, int gN) {
+    const bool ga = tile < 0;
+    const int t0 = ga ? 0 : tile * BT;
     float* sr = sr_r0 + slot * 2 * BT;
     float* sw = sr + BT;
     unsigned* Rf = Rf_r0 + slot * kRfWords;
     StageT* Vw = Vw_r0 + slot * kVwSlot;
 
-    const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
+    //: The amplitude-row base this visit's typed pointers advance by: the tile's
+    //: first token row when aligned, the `bh` stream base when gathered (each
+    //: gathered access then offsets by its own global token index).
+    const int64_t tile_row = ga ? static_cast<int64_t>(bh) * p.n_tiles * BT
+                                : (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
     //: SPANNED-TYPED tile bases, in the baseline's exact shape (one typed
     //: pointer advance per level, no role branch -- a per-level role ternary
     //: here measurably spilled the D >= 3 decay arms). Entries `l < j` carry a
@@ -461,21 +477,35 @@ consumer_forward_kernel(ConsumerParams p) {
       for (int l = 0; l < D; ++l) {
         amp_c[l] = p.amp_clock[l] + tile_row * p.level_pitch_clock[l];
       }
-      for (int i = tid; i < BC; i += kConsumerThreads) {
-        float acc = 0.0f;
-        for (int t = 0; t < BT; ++t) {
-          float cl = 1.0f;
+      //: ONE textual clock product for both walks (§3.4's restriction: the loop
+      //: BOUNDS move, the product expression does not). `crow(t)` is the token's
+      //: amplitude row under the base above: `t` aligned, `t_idx[t]` gathered.
+      auto clock_prefix = [&](auto&& crow, int nT) {
+        for (int i = tid; i < BC; i += kConsumerThreads) {
+          float acc = 0.0f;
+          for (int t = 0; t < nT; ++t) {
+            float cl = 1.0f;
 #pragma unroll
-          for (int l = 0; l < D; ++l) {
-            cl *= amp_c[l][t * p.level_pitch_clock[l] + dig[l * BC + i]];
+            for (int l = 0; l < D; ++l) {
+              cl *= amp_c[l][crow(t) * p.level_pitch_clock[l] + dig[l * BC + i]];
+            }
+            //: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
+            acc += cl;
+            clk[t * CKP + i] = acc;
           }
-          //: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
-          acc += cl;
-          clk[t * CKP + i] = acc;
+          //: A ragged group's padded slots take a FINITE zero prefix so both
+          //: panel factors stay finite (`keep^0 == 1`); their coefficient rows
+          //: are exact zeros anyway. Aligned `nT == BT` makes this loop empty.
+          for (int t = nT; t < BT; ++t) clk[t * CKP + i] = 0.0f;
+          const float pr = 0.5f * acc;
+          p_ref[i] = pr;
+          s0[i] = expf(pr * log_keep[i]);
         }
-        const float pr = 0.5f * acc;
-        p_ref[i] = pr;
-        s0[i] = expf(pr * log_keep[i]);
+      };
+      if (ga) {
+        clock_prefix([&](int t) { return static_cast<int64_t>(t_idx[t]); }, gN);
+      } else {
+        clock_prefix([&](int t) { return t; }, BT);
       }
       __syncthreads();
       // ---- DECAY, step (c): the entry state enters the reference frame. `s0`
@@ -494,23 +524,28 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- docs/internals/consumer_kernel.md#row-scales
     if (is_read) {
       for (int t = tid; t < BT; t += kConsumerThreads) {
-        const int token = t0 + t;
-        float s =
-            (token < p.T)
-                ? (p.g_read != nullptr ? p.g_read[static_cast<int64_t>(bh) * p.T + token] : 1.0f)
-                : 0.0f;
+        float s = 0.0f;
+        if (!ga || t < gN) {
+          const int token = ga ? t_idx[t] : t0 + t;
+          //: The token's row under this visit's base: local `t` aligned, the
+          //: global index gathered (`tile_row` is then the `bh` stream base).
+          const int64_t tr = ga ? static_cast<int64_t>(token) : t;
+          s = (token < p.T)
+                  ? (p.g_read != nullptr ? p.g_read[static_cast<int64_t>(bh) * p.T + token] : 1.0f)
+                  : 0.0f;
 #pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l >= j) break;
-          //: FIXED levels are ALWAYS fp32 (Option B). On the split arm `amp_r`
-          //: carries a spanned-scaled address for these slots, so the fp32
-          //: stream is indexed directly from the params; this loop runs BT
-          //: trips per tile, outside every hot loop.
-          if constexpr (kAmpSplit) {
-            s *= static_cast<const float*>(
-                p.amp_read[l])[(tile_row + t) * p.level_pitch_read[l] + base[l]];
-          } else {
-            s *= amp_r[l][t * p.level_pitch_read[l] + base[l]];
+          for (int l = 0; l < D; ++l) {
+            if (l >= j) break;
+            //: FIXED levels are ALWAYS fp32 (Option B). On the split arm `amp_r`
+            //: carries a spanned-scaled address for these slots, so the fp32
+            //: stream is indexed directly from the params; this loop runs BT
+            //: trips per tile, outside every hot loop.
+            if constexpr (kAmpSplit) {
+              s *= static_cast<const float*>(
+                  p.amp_read[l])[(tile_row + tr) * p.level_pitch_read[l] + base[l]];
+            } else {
+              s *= amp_r[l][tr * p.level_pitch_read[l] + base[l]];
+            }
           }
         }
         sr[t] = s;
@@ -518,16 +553,20 @@ consumer_forward_kernel(ConsumerParams p) {
     }
     if (is_write) {
       for (int t = tid; t < BT; t += kConsumerThreads) {
-        const int token = t0 + t;
-        float s = (token < p.T) ? p.g_write[static_cast<int64_t>(bh) * p.T + token] : 0.0f;
+        float s = 0.0f;
+        if (!ga || t < gN) {
+          const int token = ga ? t_idx[t] : t0 + t;
+          const int64_t tr = ga ? static_cast<int64_t>(token) : t;
+          s = (token < p.T) ? p.g_write[static_cast<int64_t>(bh) * p.T + token] : 0.0f;
 #pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l >= j) break;
-          if constexpr (kAmpSplit) {
-            s *= static_cast<const float*>(
-                p.amp_write[l])[(tile_row + t) * p.level_pitch_write[l] + base[l]];
-          } else {
-            s *= amp_w[l][t * p.level_pitch_write[l] + base[l]];
+          for (int l = 0; l < D; ++l) {
+            if (l >= j) break;
+            if constexpr (kAmpSplit) {
+              s *= static_cast<const float*>(
+                  p.amp_write[l])[(tile_row + tr) * p.level_pitch_write[l] + base[l]];
+            } else {
+              s *= amp_w[l][tr * p.level_pitch_write[l] + base[l]];
+            }
           }
         }
         sw[t] = s;
@@ -538,32 +577,55 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- `(token, leaf)` pairs, so the store is contiguous in `tid`:
     // ---- docs/internals/consumer_kernel.md#read-panel
     if (is_read) {
-      auto amp_read_at = [&](int t, int i) {
-        float a = 1.0f;
+      //: ONE fragment-slot walk, two coefficient accessors -- the gathered one
+      //: indexes the same product through `t_idx` and returns an exact zero for
+      //: a ragged group's padded slots (its `clk` prefix is a finite zero, so
+      //: the decay factor it skips is finite too).
+      auto build_rf = [&](auto&& amp_read_at) {
 #pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-          a *= amp_to_float(amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]]);
-        }
-        if (DECAY && is_write) {
-          a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
-        }
-        return a;
-      };
-#pragma unroll
-      for (int mb = 0; mb < NM; ++mb) {
-        unsigned* Rb = Rf + mb * kRfBlock;
-        for (int sl = tid; sl < kRfBlock; sl += kConsumerThreads) {
-          int tl, k;
-          frag_a_slot<READ_PREC>(sl, tl, k);
-          const int t = mb * 16 + tl;
-          if (READ_PREC == MmaPrec::kBf16) {
-            Rb[sl] = pack_bf16x2(clamp_bf16_finite(amp_read_at(t, k)),
-                                 clamp_bf16_finite(amp_read_at(t, k + 1)));
-          } else {
-            Rb[sl] = __float_as_uint(amp_read_at(t, k));
+        for (int mb = 0; mb < NM; ++mb) {
+          unsigned* Rb = Rf + mb * kRfBlock;
+          for (int sl = tid; sl < kRfBlock; sl += kConsumerThreads) {
+            int tl, k;
+            frag_a_slot<READ_PREC>(sl, tl, k);
+            const int t = mb * 16 + tl;
+            if (READ_PREC == MmaPrec::kBf16) {
+              Rb[sl] = pack_bf16x2(clamp_bf16_finite(amp_read_at(t, k)),
+                                   clamp_bf16_finite(amp_read_at(t, k + 1)));
+            } else {
+              Rb[sl] = __float_as_uint(amp_read_at(t, k));
+            }
           }
         }
+      };
+      if (ga) {
+        build_rf([&](int t, int i) {
+          if (t >= gN) return 0.0f;
+          const int64_t tr = t_idx[t];
+          float a = 1.0f;
+#pragma unroll
+          for (int l = 0; l < D; ++l) {
+            if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
+            a *= amp_to_float(amp_r[l][tr * p.level_pitch_read[l] + dig[l * BC + i]]);
+          }
+          if (DECAY && is_write) {
+            a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+          }
+          return a;
+        });
+      } else {
+        build_rf([&](int t, int i) {
+          float a = 1.0f;
+#pragma unroll
+          for (int l = 0; l < D; ++l) {
+            if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
+            a *= amp_to_float(amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]]);
+          }
+          if (DECAY && is_write) {
+            a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+          }
+          return a;
+        });
       }
     }
     // ---- THE WRITE PANEL'S PLANE CALL SITE, hoisted OUT of the window loop when the
@@ -572,8 +634,27 @@ consumer_forward_kernel(ConsumerParams p) {
     //: HAZARD wt-build-site -- docs/internals/consumer_kernel.md#wt-build-site
     if constexpr (kWtPlane && kRing == 1) {
       if (is_write) {
+        if (ga) {
+          build_wt_rows(0, BC, [&](int l, int t, int i) {
+            if (t >= gN) return 0.0f;
+            return amp_to_float(amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l]
+                                         + dig[l * BC + i]]);
+          });
+        } else {
+          build_wt_rows(0, BC, [&](int l, int t, int i) {
+            return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
+          });
+        }
+      }
+    } else if constexpr (kWtPlane) {
+      //: `kRing == 2` arms build the ALIGNED write panel at depth 2 in the walk;
+      //: a GATHERED visit stages at the group top on every arm (it does not ride
+      //: the ring), so its panel is built here, behind the same pre-GEMM barrier.
+      if (ga && is_write) {
         build_wt_rows(0, BC, [&](int l, int t, int i) {
-          return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
+          if (t >= gN) return 0.0f;
+          return amp_to_float(
+              amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l] + dig[l * BC + i]]);
         });
       }
     }
@@ -586,56 +667,50 @@ consumer_forward_kernel(ConsumerParams p) {
       for (int idx = tid; idx < BT * DV; idx += kConsumerThreads) {
         const int t = idx / DV;
         const int ch = idx - t * DV;
-        const int token = t0 + t;
-        const float vv = (token < p.T)
-                             ? amp_to_float(static_cast<const AmpWT*>(
+        float vv = 0.0f;
+        if (!ga || t < gN) {
+          const int token = ga ? t_idx[t] : t0 + t;
+          vv = (token < p.T) ? amp_to_float(static_cast<const AmpWT*>(
                                    p.v)[(static_cast<int64_t>(bh) * p.T + token) * DV + ch])
                              : 0.0f;
+        }
         stage_put(Vw[vw_index<BT, DV, kNarrowStage>(t, ch)], sw[t] * vv);
       }
     }
   };
 
-  // ---- THE CANDIDATE WALK, SOFTWARE-PIPELINED AT `kRing == 2`. `visit` -- not
-  // ---- `tile` -- indexes the ring, because the slots alternate over CANDIDATE VISITS
-  // ---- while the tile index skips.
-  //: HAZARD loop-induction -- docs/internals/consumer_kernel.md#loop-induction
-  if constexpr (kRing == 2) {
-    const int first = next_cand(tile_lo);
-    if (first < tile_hi) {
-      stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
-                 ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u);
-    }
-  }
-  for (int tile = tile_lo, visit = 0; tile < tile_hi; ++tile) {
-    const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-    const bool is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
-    if (!is_read && !is_write) continue;
+  //: THE TOKEN-GATHER SCOPE, resolved once per CTA: launch-structural (both
+  //: routing sides can zero -- `p.token_gather`, derived host-side from the
+  //: activation registry) and read-pass only (the summary pass's per-leaf
+  //: inclusion flags are tile-framed this increment). LAUNCH-UNIFORM, so the
+  //: fork below is structure, not a distributional property.
+  //: docs/internals/consumer_kernel.md#token-gather
+  const bool tg = (p.token_gather != 0) && !summary;
 
-    const int t0 = tile * BT;
-    const int slot = (kRing == 2) ? (visit & 1) : 0;
+  // ---- THE VISIT'S COMPUTE, AS A FUNCTION OF (TILE-OR-GROUP, SLOT): everything
+  // ---- from the pre-GEMM barrier to the end-of-visit barrier. `tile >= 0` is an
+  // ---- aligned tile (tokens `tile*BT + t`); `tile < 0` is a GATHERED group
+  // ---- (tokens `t_idx[0..gN)`, slot 0, staged at the group top). The four GEMMs
+  // ---- are token-oblivious; only the emission and the mass epilogue index tokens,
+  // ---- through the same accessor the staging used.
+  auto compute_visit = [&](int tile, int slot, bool is_read, bool is_write, int gN) {
+    const bool ga = tile < 0;
+    const int t0 = ga ? 0 : tile * BT;
     float* sr = sr_r0 + slot * 2 * BT;
     float* sw = sr + BT;
     unsigned* Rf = Rf_r0 + slot * kRfWords;
     StageT* Vw = Vw_r0 + slot * kVwSlot;
 
-    // ---- THE TILE'S CONTROL BLOCK, RESET. It needs no barrier of its own on
-    // ---- EITHER side: behind it stands the previous tile's end-of-tile
-    // ---- `__syncthreads()`, ahead of it the unconditional staging publication. The
-    // ---- edge DAG this reset serves, and the two-part always-runnable claim that
-    // ---- makes the tile deadlock-free:
-    // ---- docs/internals/pipeline.md#edge-dag
-    if (tid < ctl_words(BC)) ctl[tid] = 0;
-    if constexpr (kRing == 1) stage_tile(tile, 0, is_read, is_write);
-
     constexpr int kUnit = (READ_PREC == MmaPrec::kTf32x3) ? 8 : 16;
-    const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
     // ---- THE WRITE PANEL AT DEPTH 2, AND IT COSTS NO BARRIER: the previous tile's
     // ---- end-of-tile barrier stands between the last fold read of `WT` and this
     // ---- write, and the publication rendezvous below between this write and the
-    // ---- Gram's read: docs/internals/consumer_kernel.md#wt-build-site
+    // ---- Gram's read. ALIGNED VISITS ONLY -- a gathered visit does not ride the
+    // ---- ring and built its panel in `stage_tile`, behind the same barriers:
+    // ---- docs/internals/consumer_kernel.md#wt-build-site
     if constexpr (kWtPlane && kRing == 2) {
-      if (is_write) {
+      if (!ga && is_write) {
+        const int64_t tile_row = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
         // `build_wt_rows` walks SPANNED levels only (`l < j` continues), so the
         // typed base is `AmpWT` for every level it touches.
         const AmpWT* amp_w[D];
@@ -732,16 +807,26 @@ consumer_forward_kernel(ConsumerParams p) {
         const int b_hi = min(BC, b_lo + kWinRows);
         if (is_write && b_lo < b_hi) {
           // Spanned-only walk, as above: `AmpWT` for every level `build_wt_rows`
-          // touches.
+          // touches. The gathered accessor indexes the same product through
+          // `t_idx` off the `bh` stream base, zeros on a ragged group's pad.
           const AmpWT* amp_w[D];
+          const int64_t wrow = ga ? static_cast<int64_t>(bh) * p.n_tiles * BT
+                                  : (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
-            amp_w[l] =
-                static_cast<const AmpWT*>(p.amp_write[l]) + tile_row * p.level_pitch_write[l];
+            amp_w[l] = static_cast<const AmpWT*>(p.amp_write[l]) + wrow * p.level_pitch_write[l];
           }
-          build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
-            return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
-          });
+          if (ga) {
+            build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
+              if (t >= gN) return 0.0f;
+              return amp_to_float(amp_w[l][static_cast<int64_t>(t_idx[t]) * p.level_pitch_write[l]
+                                           + dig[l * BC + i]]);
+            });
+          } else {
+            build_wt_rows(b_lo, b_hi, [&](int l, int t, int i) {
+              return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
+            });
+          }
         }
         __syncthreads();
       }
@@ -884,10 +969,12 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- compute left to protect. Four facts license the placement and all four are
     // ---- properties of that point: docs/internals/consumer_kernel.md#run-ahead
     if constexpr (kRing == 2) {
-      const int nxt = next_cand(tile + 1);
-      if (nxt < tile_hi) {
-        stage_tile(nxt, slot ^ 1, ((cand_read[nxt >> 5] >> (nxt & 31)) & 1u) != 0u,
-                   ((cand_write[nxt >> 5] >> (nxt & 31)) & 1u) != 0u);
+      if (!ga) {
+        const int nxt = next_cand(tile + 1);
+        if (nxt < tile_hi) {
+          stage_tile(nxt, slot ^ 1, ((cand_read[nxt >> 5] >> (nxt & 31)) & 1u) != 0u,
+                     ((cand_write[nxt >> 5] >> (nxt & 31)) & 1u) != 0u, BT);
+        }
       }
     }
 
@@ -949,21 +1036,58 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- membership decision: docs/internals/consumer_kernel.md#split-k-emission
     //: HAZARD emit-no-pointer-array -- docs/internals/consumer_kernel.md#emit-no-pointer-array
     if (is_read) {
+      //: A GATHERED visit's emission scatters through `t_idx` (the P14 microbench
+      //: priced exactly this pattern: banded, DRAM-byte ratio 1.0009x at the
+      //: measured gap). The `out == 0` early-out runs FIRST so a ragged group's
+      //: padded slots (`sr == 0`, coefficient rows exactly zero) never read
+      //: `t_idx` at all; gathered tokens are `< T` by construction (the support
+      //: word's padded tail carries no bit).
       if constexpr (NM == 1) {
         if (warp < NT_DV) {
           CONSUMER_D_ROWS(lane);
           const int n0 = warp * 8;
-          float* num_t0 = p.num + (static_cast<int64_t>(bh) * p.T + t0) * DV;
-          auto emit = [&](int t, int ch, float val) {
-            if (t0 + t >= p.T) return;
-            const float out = sr[t] * val;
-            if (out != 0.0f) atomicAdd(&num_t0[t * DV + ch], out);
-          };
           const int c0 = n0 + 2 * _r, c1 = c0 + 1;
-          emit(_g, c0, y[0][0]);
-          emit(_g, c1, y[0][1]);
-          emit(_g + 8, c0, y[0][2]);
-          emit(_g + 8, c1, y[0][3]);
+          if (ga) {
+            auto emit = [&](int t, int ch, float val) {
+              const float out = sr[t] * val;
+              if (out == 0.0f) return;
+              atomicAdd(&p.num[(static_cast<int64_t>(bh) * p.T + t_idx[t]) * DV + ch], out);
+            };
+            emit(_g, c0, y[0][0]);
+            emit(_g, c1, y[0][1]);
+            emit(_g + 8, c0, y[0][2]);
+            emit(_g + 8, c1, y[0][3]);
+          } else {
+            float* num_t0 = p.num + (static_cast<int64_t>(bh) * p.T + t0) * DV;
+            auto emit = [&](int t, int ch, float val) {
+              if (t0 + t >= p.T) return;
+              const float out = sr[t] * val;
+              if (out != 0.0f) atomicAdd(&num_t0[t * DV + ch], out);
+            };
+            emit(_g, c0, y[0][0]);
+            emit(_g, c1, y[0][1]);
+            emit(_g + 8, c0, y[0][2]);
+            emit(_g + 8, c1, y[0][3]);
+          }
+        }
+      } else if (ga) {
+        CONSUMER_D_ROWS(lane);
+        auto emit = [&](int t, int ch, float val) {
+          const float out = sr[t] * val;
+          if (out == 0.0f) return;
+          atomicAdd(&p.num[(static_cast<int64_t>(bh) * p.T + t_idx[t]) * DV + ch], out);
+        };
+#pragma unroll
+        for (int q = 0; q < kYTiles; ++q) {
+          const int wt = warp + q * kWarps;
+          if (wt >= NM * NT_DV) break;
+          const int mb = wt / NT_DV, nt = wt - mb * NT_DV;
+          const int n0 = nt * 8, m0 = mb * 16;
+          const int c0 = n0 + 2 * _r, c1 = c0 + 1;
+          emit(m0 + _g, c0, y[q][0]);
+          emit(m0 + _g, c1, y[q][1]);
+          emit(m0 + _g + 8, c0, y[q][2]);
+          emit(m0 + _g + 8, c1, y[q][3]);
         }
       } else {
         CONSUMER_D_ROWS(lane);
@@ -988,7 +1112,8 @@ consumer_forward_kernel(ConsumerParams p) {
       }
       if (GLOBAL) {
         for (int t = tid; t < BT; t += kConsumerThreads) {
-          const int token = t0 + t;
+          if (ga && t >= gN) continue;
+          const int token = ga ? t_idx[t] : t0 + t;
           if (token >= p.T) continue;
           const float d = sr[t] * den[t];
           if (d != 0.0f) atomicAdd(&p.den[static_cast<int64_t>(bh) * p.T + token], d);
@@ -1014,7 +1139,100 @@ consumer_forward_kernel(ConsumerParams p) {
       }
     }
     __syncthreads();
-    ++visit;
+  };  // compute_visit
+
+  if (tg) {
+    // ---- THE GATHERED WALK (§8, incremental form): the aligned candidate stream
+    // ---- feeds a MEMBERSHIP scan, live tokens are balloted into dense groups of
+    // ---- `BT`, and each full (or final ragged) group runs the SAME visit body.
+    // ---- The scan is computed REDUNDANTLY by every thread -- all of its loads are
+    // ---- CTA-uniform addresses, so the group boundaries are uniform and no
+    // ---- broadcast or per-tile barrier exists; only warp 0 stores `t_idx`.
+    // ---- Membership = (AND of the owner's fixed-level token rows, per side,
+    // ---- OR'd) AND the token-granular slice union -- ballot-time exclusion of
+    // ---- slice-dead tokens is what keeps groups full (the card's
+    // ---- ballot-time-intersection ruling). Ascending LSB-first consumption makes
+    // ---- `t_idx` globally ascending: the intra Gram's causal mask is
+    // ---- order-relative, so STABILITY IS THE CORRECTNESS REQUIREMENT.
+    // ---- docs/internals/consumer_kernel.md#token-gather
+    int fill = 0;
+    bool gr = false, gw = false;
+    auto run_group = [&](int gN) {
+      __syncthreads();  // publish warp 0's `t_idx` writes to every staging loop
+      // The control-block reset needs no barrier of its own here either: behind
+      // it stands the barrier above, ahead of it the staging publication.
+      if (tid < ctl_words(BC)) ctl[tid] = 0;
+      stage_tile(-1, 0, gr, gw, gN);
+      compute_visit(-1, 0, gr, gw, gN);
+      fill = 0;
+      gr = false;
+      gw = false;
+    };
+    for (int tile = next_cand(tile_lo); tile < tile_hi; tile = next_cand(tile + 1)) {
+      uint32_t fr = 0xffffffffu, fw = 0xffffffffu;
+      const int64_t slab = (static_cast<int64_t>(bh) * p.n_tiles + tile) * p.total_rows;
+      for (int l = 0; l < j; ++l) {
+        const int row = p.level_row_offset[l] + base[l];
+        fr &= p.read_tok_bits[slab + row];
+        fw &= p.write_tok_bits[slab + row];
+      }
+      uint32_t member =
+          (fr | fw)
+          & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_tiles + tile];
+      //: Bounded: at most `ceil(32/BT) + 1` rounds (a word never splits across
+      //: more groups than it has `BT`-slot spans), never a per-token scan.
+      while (member != 0u) {
+        const int room = BT - fill;  // >= 1: a full group ran and reset `fill`
+        uint32_t taken = member;
+        if (__popc(member) > room) {
+          //: the (room+1)-th set bit; bits below it are exactly the lowest
+          //: `room` live tokens -- the remainder waits for the next group.
+          const unsigned cut = __fns(member, 0, room + 1);
+          taken = member & ((1u << cut) - 1u);
+        }
+        if (warp == 0) {
+          if (((taken >> lane) & 1u) != 0u) {
+            t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = tile * BT + lane;
+          }
+        }
+        gr = gr || (fr & taken) != 0u;
+        gw = gw || (fw & taken) != 0u;
+        fill += __popc(taken);
+        member ^= taken;
+        if (fill == BT) run_group(BT);
+      }
+    }
+    //: The segment's ragged flush: slots `[fill, BT)` stage exact zeros.
+    if (fill > 0) run_group(fill);
+  } else {
+    // ---- THE ALIGNED CANDIDATE WALK, SOFTWARE-PIPELINED AT `kRing == 2`.
+    // ---- `visit` -- not `tile` -- indexes the ring, because the slots alternate
+    // ---- over CANDIDATE VISITS while the tile index skips.
+    //: HAZARD loop-induction -- docs/internals/consumer_kernel.md#loop-induction
+    if constexpr (kRing == 2) {
+      const int first = next_cand(tile_lo);
+      if (first < tile_hi) {
+        stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
+                   ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u, BT);
+      }
+    }
+    for (int tile = tile_lo, visit = 0; tile < tile_hi; ++tile) {
+      const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+      const bool is_write = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+      if (!is_read && !is_write) continue;
+
+      const int slot = (kRing == 2) ? (visit & 1) : 0;
+      // ---- THE TILE'S CONTROL BLOCK, RESET. It needs no barrier of its own on
+      // ---- EITHER side: behind it stands the previous tile's end-of-tile
+      // ---- `__syncthreads()`, ahead of it the unconditional staging publication.
+      // ---- The edge DAG this reset serves, and the two-part always-runnable
+      // ---- claim that makes the tile deadlock-free:
+      // ---- docs/internals/pipeline.md#edge-dag
+      if (tid < ctl_words(BC)) ctl[tid] = 0;
+      if constexpr (kRing == 1) stage_tile(tile, 0, is_read, is_write, BT);
+      compute_visit(tile, slot, is_read, is_write, BT);
+      ++visit;
+    }
   }
 
   if (summary) {
