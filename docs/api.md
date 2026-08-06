@@ -113,7 +113,10 @@ nothing about how the kernel wants its tensors arranged. The solve emits `[BH, T
 which is already what the kernel's view wants, and the public layout is a permute of it —
 so exactly one of the two can be the materialized tensor, and it is the kernel's. The
 public tensors are views. Materializing the public layout instead and folding it back is
-an inverse copy pair; it was measured at 2.8 % of the step at `L = 4096`.
+an inverse copy pair. It was priced at 2.82 % of the whole step at `L = 4096`
+(`workflows/refactor/p12_lane3.md`), and the same harness measures it directly against
+the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
+0.835 ms at `L = 1024` — 12.9 % and 12.7 % of production-plus-fold, at both lengths.
 
 ### 2.3 The shipped producer
 
@@ -220,9 +223,27 @@ A producer that already knows a statistic as a byproduct of its own solve may su
 (`expose_stats=True` on the shipped producer), and the gateway then measures only what is
 left. **Supplied statistics feed pricing only.** Membership and support bits are always
 recomputed from the tensors, so a wrong declaration costs its author performance and can
-never cost anyone correctness. Which arm is faster is a measurement, not a design
-opinion; `benchmarks/bench_api_stats.py` is the harness and the numbers are in the
-performance ledger.
+never cost anyone correctness.
+
+Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` is the harness;
+median per-call duration over 21 rounds, CUDA events, on `B=2, hidden=1024, H=8,
+widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger:
+
+| arm | `L = 4096` | `L = 1024` |
+|---|---|---|
+| `stats_unused` — production alone | 2.599 ms | 0.794 ms |
+| `stats_gateway` — derived from the stored tensors | 3.221 ms (+23.9 %) | 1.008 ms (+27.0 %) |
+| `stats_fused` — supplied by the producer | 3.277 ms (+26.1 %) | 1.041 ms (+31.2 %) |
+
+**The fused arm loses, at both lengths, and the reason is instructive.** "Fused" at this
+seam means the producer computes the counts on its own solve output — still a separate
+reduction, and one that then has to be laid out in the public statistic layout, which is
+a transpose the gateway's arm gets for free from tensors it is already reading. A fused
+arm that WON would have to fall out of the solve kernel itself, where the support is
+already known; the entmax kernel emits a support bitmap, so that door is open, but it is
+a kernel change and not an API one. What the measurement actually settles is the third
+row: the statistics cost roughly a quarter of the production call, and nothing in the
+library reads them, which is why they are derived on demand and not before.
 
 ## 6. The expert surface
 

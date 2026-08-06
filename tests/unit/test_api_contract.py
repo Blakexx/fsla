@@ -336,3 +336,102 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
         layer(x, output_attentions=True)
     with pytest.raises(TypeError, match="cu_seqlens"):
         layer(x, cu_seqlens=torch.tensor([0, 6]))
+
+
+# ---------------------------------------------------------------------------
+# The seam
+# ---------------------------------------------------------------------------
+
+
+def _prime_hardware(device, blocks=4):
+    """Tier H, supplied rather than measured, so the seam is testable without a device.
+
+    `_hardware_facts` is a per-device cache of facts that cannot move within a process;
+    priming it is the documented injection point for a test that is about SELECTION
+    rather than about the driver, and it is what keeps `_derive_plan` a pure function of
+    its recorded inputs.
+    """
+    from rola.interface import _HARDWARE
+    from rola.planner.select import HardwareFacts
+
+    _HARDWARE[torch.device(device)] = HardwareFacts(
+        sm_count=80, occupancy=lambda *args, **kwargs: blocks)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the summary pass is a CUDA kernel")
+def test_the_selector_swaps_through_the_seam_and_the_plan_records_which_one_ran():
+    """The card's binding constraint, at the seam it now lives behind.
+
+    Selection is REPLACEABLE: the cost model that decides today is one implementation
+    behind an interface, and swapping it must be an assignment rather than surgery. It
+    is reachable only through the expert door, because a caller choosing a cost model is
+    not describing a model.
+    """
+    from rola.expert import PlanOverrides, derive_plan
+    from rola.planner.select import ConfigChoice, FixedChoiceSelector
+
+    gateway = _routes(widths=(16, 16), d_v=64).cuda()
+    factors = gateway(_x(gateway, dtype=torch.float32).cuda())
+    _prime_hardware(factors.device)
+
+    pinned = ConfigChoice(BC=16, BT=32, feeder_flags=None)
+    plan = derive_plan(
+        factors, expert=PlanOverrides(selector=FixedChoiceSelector(pinned)),
+        device=factors.device)
+    assert (plan.BC, plan.BT) == (16, 32), "the swapped selector's choice must be obeyed"
+    assert (plan.selector_name, plan.selector_status) == ("fixed", "DEBUG"), (
+        "the stamp must come FROM the selector object that ran")
+
+    default = derive_plan(factors, device=factors.device)
+    assert default.selector_name == "cost-model"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the summary pass is a CUDA kernel")
+def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path():
+    """The `decay` flag used to be computed twice, by two different expressions, on two
+    different paths out of the layer. One path now: the plan reads its model fields from
+    the tier-0 record the planner was given.
+    """
+    from rola.expert import derive_plan
+
+    gateway = _routes(widths=(16, 16), d_v=64).cuda()
+    factors = gateway(_x(gateway, dtype=torch.float32).cuda())
+    _prime_hardware(factors.device)
+    source = rola.LearnedDecay(widths=gateway.widths, num_heads=2)
+
+    assert derive_plan(factors, device=factors.device).decay is False
+    assert derive_plan(factors, decay=source(), device=factors.device).decay is True
+    assert derive_plan(factors, device=factors.device).topology is factors.topology
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="executes the CUDA consumer")
+def test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen():
+    """The seam's whole point: a plan is DATA, so a plan nobody derived is runnable.
+
+    This is the handle the conformance families need. A pipeline that derived its plan
+    and immediately used it could only ever be tested at the plan its own cost model
+    picked -- which is exactly the plan least likely to expose a boundary bug. Here the
+    tiling is chosen to disagree with the planner's, and the result must still be the
+    one the definition gives.
+    """
+    from rola.expert import Plan, derive_plan, execute
+
+    torch.manual_seed(0)
+    gateway = _routes(widths=(16, 16), d_v=64).cuda()
+    x = _x(gateway, B=1, T=64, dtype=torch.float32).cuda()
+    factors = gateway(x)
+    v = torch.randn(1, 64, 2, 64, device="cuda")
+
+    chosen = derive_plan(factors, device=v.device)
+    other_BT = 32 if chosen.BT == 16 else 16
+    synthetic = Plan(topology=factors.topology, normalization=factors.normalization,
+                     BT=other_BT, BC=chosen.BC, warp_tile=chosen.warp_tile,
+                     decay=False, mma_precision="tf32x3")
+    with torch.no_grad():
+        y_synthetic, _state, _schedule = execute(synthetic, factors, v)
+        reference, _ = rola.naive_rola(
+            v.double(), tuple(t.double() for t in factors.read),
+            tuple(t.double() for t in factors.write), None,
+            factors.g_write.double(), factors.topology, None, factors.normalization)
+    assert torch.allclose(y_synthetic.double(), reference, rtol=2e-3, atol=2e-3), (
+        "a plan the planner did not pick must still compute the definition")

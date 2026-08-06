@@ -30,7 +30,7 @@ zero-copy hand-off, measured rather than argued.
 Run it BARE (no outer ``flock``): the harness takes the GPU lock itself, settles the
 clock, and refuses to measure a ramping box.
 
-    python benchmarks/bench_api_stats.py --ledger results/perf/api_contract.jsonl
+    python benchmarks/bench_api_stats.py --ledger
 """
 
 from __future__ import annotations
@@ -135,7 +135,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--L", type=int, default=4096)
     parser.add_argument("--rounds", type=int, default=21)
-    parser.add_argument("--ledger", type=Path, default=None)
+    parser.add_argument("--ledger", action="store_true",
+                        help="append the raw samples to the repository's perf ledger")
     args = parser.parse_args()
     cell = dict(B=2, L=args.L, hidden=1024, heads=8, d_v=64, widths=(64, 64))
 
@@ -145,11 +146,11 @@ def main() -> int:
         for name, values in results.items():
             median = statistics.median(values)
             print(f"{name:>14}  median {median:8.4f} ms   n={len(values)}")
-            if args.ledger is not None:
-                append(args.ledger, run.row(
+            if args.ledger:
+                append([run.row(
                     probe=f"api_contract:{name}", probe_version=PROBE_VERSION,
                     arm=arm_key, source="cuda_events", metric="duration", unit="ms",
-                    values=values))
+                    values=values)])
     base = statistics.median(results["stats_unused"])
     for name in ("stats_gateway", "stats_fused"):
         delta = statistics.median(results[name]) - base

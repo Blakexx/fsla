@@ -177,7 +177,11 @@ def _derive_plan(
         # Recorded beside the decision they drove: the plan carries the machine it
         # reasoned about rather than depending on the one it is replayed on.
         sm_shared_bytes=sm_shared_bytes(),
-        occupancy_blocks_per_sm=evidence.blocks_per_sm,
+        # A selector that WEIGHED nothing returns no evidence, and the plan must say so
+        # with the not-recorded value rather than with a plausible number: the residency
+        # field means "the residency this decision was reasoned at", and a fixed choice
+        # was not reasoned at one.
+        occupancy_blocks_per_sm=0 if evidence is None else evidence.blocks_per_sm,
         selector_name=selector.name, selector_status=selector.status)
 
 
