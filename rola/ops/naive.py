@@ -133,6 +133,12 @@ def naive_rola(
     Returns ``(y, final_state)`` with ``y: [B,T,H,d_v]`` and, if
     ``output_final_state``, ``final_state: [B,H,N,d_v(+1)]`` (the ``+1`` column
     carries the global-normalization mass state; absent for ``raw``).
+
+    AN INPUT THE OUTPUT DOES NOT DEPEND ON GETS ``None`` FOR ITS GRADIENT, which
+    is autograd's ordinary answer and this function states nothing else.
+    ``write_levels_stored`` is the standing case: the clock is
+    ``stop_gradient``-ed by the spec, so it never receives one. A test that wants
+    a zero there asserts ``grad is None`` and supplies the zero itself.
     """
     validate_normalization(normalization)
     write_levels = tuple(write_levels)
@@ -168,19 +174,11 @@ def naive_rola(
     g_write_f = _fold_bth(g_write64.unsqueeze(-1)).squeeze(-1)
 
     BH = B * H
-    graph_zero = (
-        vf.sum() * 0 + g_read_f.sum() * 0 + g_write_f.sum() * 0
-        + sum(level.sum() * 0 for level in read_f)
-        + sum(level.sum() * 0 for level in write_f)
-        + sum(level.sum() * 0 for level in stored_f)
-    )
-
     R = g_read_f[..., None] * _leaf_product(read_f, strides, N)    # [BH,T,N]
     W = g_write_f[..., None] * _leaf_product(write_f, strides, N)  # [BH,T,N]
 
     if decay is None:
         keep = torch.ones((BH, T, N), device=v.device, dtype=torch.float64)
-        graph_zero = graph_zero + keep.sum() * 0
     else:
         dial_f = tuple(
             dial.to(device=v.device, dtype=torch.float64).unsqueeze(0).expand(B, -1, -1).reshape(BH, -1)
@@ -214,16 +212,12 @@ def naive_rola(
             outputs.append(numerator / (denominator[:, None] + eps))
 
     out_bh = torch.stack(outputs, dim=1) if outputs else vf.new_empty(BH, 0, d_v)
-    output_public = (
-        out_bh.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous().to(v.dtype) + graph_zero.to(v.dtype)
-    )
+    output_public = out_bh.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous().to(v.dtype)
     if not output_final_state:
         return output_public, None
     final_cache = value_state if mass_state is None else torch.cat((value_state, mass_state[..., None]), dim=-1)
-    return (
-        output_public,
-        final_cache.view(B, H, N, d_v + int(normalization == "global")).contiguous() + graph_zero,
-    )
+    return output_public, final_cache.view(
+        B, H, N, d_v + int(normalization == "global")).contiguous()
 
 
 __all__ = ["naive_rola"]
