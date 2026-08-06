@@ -128,32 +128,42 @@ research surface, never a silent fallback.
 
 ## Usage
 
-### The functional op
+The API is the reduction theorem: linear attention's contract, plus ONE new concept —
+the feature map. `docs/api.md` is the contract in full.
+
+### The op
 
 ```python
-import torch
-from rola import LevelConfig, Topology, rola_func, select_plan
+import rola
 
-topology = Topology(levels=(LevelConfig(8, routing), LevelConfig(8, routing)), d_v=64)
-plan = select_plan(topology, normalization="global")
-y, state = rola_func(v, read_levels, write_levels, g_read, g_write, plan)
+producer = rola.SimplexProducer((8, 8), rola.sparse_routing(1.5),
+                                hidden_size=512, num_heads=8)
+routes   = rola.RouteProducer([producer], d_v=64, num_heads=8, hidden_size=512)
+
+factors = routes(hidden_states)          # the (q, k) pair, after the feature map
+y, state = rola.rola_op(factors, v)
 ```
 
-`rola_func` is the **single autograd boundary**. A call that requires gradients runs
+`rola_op` is the **single autograd boundary**. A call that requires gradients runs
 the whole operation — forward and backward, from one graph — on the differentiable
 reference, so a value and its gradient never come from two implementations that
-merely agree to a tolerance.
+merely agree to a tolerance. It takes no plan and no configuration: those are how the
+op runs rather than what the model is, and the op decides how it runs, per call, from
+the routing it was actually given.
 
 ### The layer
 
 ```python
-from rola import RoLA
+from rola import RoLA, LearnedDecay
 
-layer = RoLA(hidden_size=512, num_heads=8, head_v_dim=64,
-             levels_per_head=2, states_per_level=[8, 8],
-             state_norm="global", layer_idx=0).cuda()
+layer = RoLA(512, 8, routes,
+             decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
+             layer_idx=0).cuda()
 y, _, state = layer(x, use_cache=True)
 ```
+
+Four arguments, because everything else was either a fact about the feature map (which
+lives on the feature map) or a launch decision (which the planner makes).
 
 ### The state
 
@@ -165,10 +175,12 @@ interop lives behind the `[transformers]` extra.
 
 ### The planner
 
-`select_plan` chooses the runtime geometry from a cost model whose constants are
-traceable to committed cells. A `Plan` can also be built by hand and passed straight
-to `rola_func` — the kernel's correctness does not depend on which geometry the
-planner picked, and that is what Tier 2 exists to prove.
+The planner chooses the runtime geometry from a cost model whose constants are
+traceable to committed cells, inside the op, per call. It is not on the public
+surface: `rola.expert` is the marked door for a caller that must pin an axis, and a
+`Plan` built by hand there can be executed straight through `rola.expert.execute` —
+the kernel's correctness does not depend on which geometry the planner picked, and
+that is what Tier 2 exists to prove.
 
 ### The oracle
 

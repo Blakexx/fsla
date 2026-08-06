@@ -127,6 +127,18 @@ class RoLA(nn.Module):
             validate_decay_source(decay, routes.topology, num_heads)
 
         from rola.expert import PlanOverrides
+        from rola.planner.select import feasible_bc
+
+        overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+        # CONSTRUCTION TIME, NOT PLAN TIME. `feasible_bc` is the alignment-admissible set
+        # intersected with the instantiated ladder, and it raises with the topology's own
+        # diagnosis when the ladder cannot serve it at all. Resolving it here means a
+        # topology nothing implements, and an inadmissible expert pin, both fail on the
+        # line that chose them rather than inside a forward several frames away.
+        #: The `BC` ladder this topology can run on. An expert pin SHRINKS it to itself.
+        self.feasible_BC = feasible_bc(
+            routes.topology.widths,
+            **({} if overrides.state_block is None else {"pinned": overrides.state_block}))
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -135,7 +147,7 @@ class RoLA(nn.Module):
         self.value_conv = value_conv
         self.route_conv = route_conv
         self.layer_idx = layer_idx
-        self.expert = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+        self.expert = overrides
 
         self.value_dim = num_heads * routes.d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
@@ -170,6 +182,16 @@ class RoLA(nn.Module):
     @property
     def normalization(self) -> str:
         return self.routes.normalization
+
+    @property
+    def state_block(self) -> int:
+        """``BC``, the leafs one owner block owns -- pinned, or the largest feasible.
+
+        It is a PROPERTY rather than stored state because it is not a decision this
+        layer makes: the planner chooses it per launch from the feasible set, and an
+        expert pin is a set of one.
+        """
+        return self.feasible_BC[-1]
 
     @property
     def execution_backend_counts(self) -> dict[str, int]:

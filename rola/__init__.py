@@ -90,7 +90,7 @@ __all__ = [
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
     "RoLAState",
     "LayerRecurrentState",
-    # oracle — ships in the wheel; it is the definition (docs/evidence.md)
+    # oracle — ships in the wheel; it is the definition (docs/testing.md)
     "naive_rola",
     # configuration
     "Topology",

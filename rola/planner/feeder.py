@@ -99,7 +99,13 @@ class FeederFlags:
             # `mean_quantum`'s histogram read: each alone measures NULL because the other
             # still drains the pipe; together they are 2.88% of the step at L=4096.
             # Evidence: `workflows/refactor/p12_lane3.md`.)
-            flags = (occupancy[:, :D] >= saturation).tolist()
+            if hasattr(occupancy, "ge"):
+                flags = (occupancy[:, :D] >= saturation).tolist()
+            else:
+                # A recorded row (a plain nested sequence) is already on the host, so
+                # there is nothing to transfer and the comparison is the same one.
+                flags = [[value >= saturation for value in occupancy[side][:D]]
+                         for side in (0, 1)]
             detected = (tuple(bool(flag) for flag in flags[0]),
                         tuple(bool(flag) for flag in flags[1]))
         return cls(
