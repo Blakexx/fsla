@@ -195,10 +195,16 @@ class StaticPlanInputs:
     ladder (§6 P6). ``pinned_BC`` is the expert override: when it is set the feasible
     set is that single value, which is what "``state_block`` remains only as an expert
     pin that shrinks the feasible set to itself" (§4.3) means operationally.
+
+    **The TOPOLOGY travels, not its parts.** ``widths`` and ``d_v`` are properties of
+    the object that owns them rather than fields copied out of it, so this tier holds
+    one model fact instead of a destructured set that can be assembled inconsistently,
+    and the plan reads its model fields from HERE rather than from a second path out
+    of the layer -- which is what closed the `decay` flag being computed twice by two
+    different expressions.
     """
 
-    widths: tuple[int, ...]
-    d_v: int
+    topology: object                     # rola.routing.types.Topology
     normalization: str
     decay: bool
     mma_precision: str
@@ -206,6 +212,14 @@ class StaticPlanInputs:
     feasible_BC: tuple[int, ...]
     BH: int
     pinned_BC: int | None = None
+
+    @property
+    def widths(self) -> tuple[int, ...]:
+        return self.topology.widths
+
+    @property
+    def d_v(self) -> int:
+        return self.topology.d_v
 
     @property
     def D(self) -> int:
@@ -366,7 +380,16 @@ def mean_quantum(quanta_hist) -> float:
     that gather nothing and skip every GEMM) needs no new statistic, only a different
     reduction. Taking the mean here is a property of TODAY's rule, not of the data.
     """
-    return float(sum(q * float(quanta_hist[q]) for q in range(len(quanta_hist))))
+    # ONE TRANSFER, not one per bin. `quanta_hist` is a device tensor in production, so
+    # indexing it bin by bin costs a host sync per bin -- eight at BC=128 -- and what a
+    # sync costs is the pipeline drain, not the four bytes. `tolist()` brings the whole
+    # histogram back in one transfer and the arithmetic is unchanged. (Paired with the
+    # FeederFlags read in `rola/planner/feeder.py`: each alone measures NULL because the
+    # other still drains the pipe; together they are 2.88% of the step at L=4096.
+    # Evidence: `workflows/refactor/p12_lane3.md`. This module still touches no tensor
+    # arithmetic -- it reads one already-computed statistic, once.)
+    bins = quanta_hist.tolist() if hasattr(quanta_hist, "tolist") else list(quanta_hist)
+    return float(sum(q * float(value) for q, value in enumerate(bins)))
 
 
 def cost_per_token(BC: int, BT: int, *, decay: bool,

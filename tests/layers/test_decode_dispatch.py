@@ -29,25 +29,28 @@ from __future__ import annotations
 
 import pytest
 import torch
+from conftest import build_layer
 
-from rola.layers.rola import LevelRoutingConfig, RoLA
+from rola.expert import PlanOverrides
 from rola.state import RoLAState
 
 #: `[8, 16]` at `d_v = 64` so the TILED arm lands on an instantiated `(BC, d_v)` --
 #: `BC` defaults to the innermost width, and `BC = 8` is not in the consumer's set.
 #: Decode itself is indifferent (it is BC-blind, and ran fine on the narrower fixture),
 #: but the rows that must reach the tiled kernel have to be launchable there.
-_HIDDEN, _H, _DV, _BRANCHES = 128, 2, 64, [8, 16]
+_HIDDEN, _H, _DV, _BRANCHES = 128, 2, 64, (8, 16)
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the decode fork is a CUDA kernel")
+
+#: Old `decay="none"`/`"leaf_mass"` -> the two shipped decay SOURCES `build_layer`
+#: takes (`None`/`"learned"`); the exact rate is immaterial to these dispatch-only
+#: gates, only whether a decay source is present at all.
+_DECAY = {"none": None, "leaf_mass": "learned"}
 
 
 def _layer(device, *, norm="global", decay="none"):
-    return RoLA(
-        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-        decay=decay, state_norm=norm,
-        level_routing_configs=LevelRoutingConfig(read='dense', write='dense', tied=False),
-        layer_idx=0,
+    return build_layer(
+        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
+        normalization=norm, decay=_DECAY[decay], layer_idx=0,
     ).to(device, torch.float32)
 
 
@@ -187,11 +190,9 @@ def test_a_paged_layer_keeps_the_tiled_path():
     drop the cap: the same shape of failure the oracle arm's paging refusal names.
     """
     device = "cuda"
-    layer = RoLA(
-        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-        state_norm="global", paging=True,
-        level_routing_configs=LevelRoutingConfig(read='dense', write='dense', tied=False),
+    layer = build_layer(
+        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
+        normalization="global", expert=PlanOverrides(paging=True),
         layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()
@@ -263,11 +264,9 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin(precision):
     against the parametrized value, not against ``"bf16"``.
     """
     device = "cuda"
-    layer = RoLA(
-        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-        decay='none', state_norm='global', mma_precision=precision,
-        level_routing_configs=LevelRoutingConfig(read='dense', write='dense', tied=False),
+    layer = build_layer(
+        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
+        normalization="global", expert=PlanOverrides(mma_precision=precision),
         layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()

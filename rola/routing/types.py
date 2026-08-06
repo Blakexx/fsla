@@ -585,7 +585,46 @@ class ResolvedRouting:
 # Q/K-era producer and out of scope for V3 stage 1.
 # ---------------------------------------------------------------------------
 
-LevelRouting: TypeAlias = IndependentRouting | UnionRouting
+@dataclass(frozen=True, slots=True)
+class OpaqueActivation:
+    """The activation of a cell this package did not solve.
+
+    A producer is duck-typed, so a level may be filled by a map with no registry row of
+    its own. Its cell still has to answer every question the rules ask -- density,
+    ratification, normalization -- and it answers them from ONE row, ``("opaque",
+    None)``, whose columns are argued in ``rola/routing/activations.py``.
+    """
+
+    @property
+    def tag(self) -> ActivationTag:
+        return ("opaque", None)
+
+    @property
+    def properties(self) -> ActivationProperties:
+        return properties_for(self.tag, owner="OpaqueActivation")
+
+    @property
+    def can_zero(self) -> bool:
+        return self.properties.exact_zeros
+
+
+@dataclass(frozen=True, slots=True)
+class OpaqueRouting:
+    """The routing tag of a level produced by a foreign producer.
+
+    It carries no configuration -- there is nothing for the library to configure,
+    because the producer owns the map. Both duties report the opaque activation, so
+    every rule that quantifies over ``(level, duty)`` cells covers a foreign level
+    without having to know it is one.
+    """
+
+    def activation(self, duty: str) -> OpaqueActivation:
+        if duty not in ("read", "write"):
+            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+        return OpaqueActivation()
+
+
+LevelRouting: TypeAlias = IndependentRouting | UnionRouting | OpaqueRouting
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,9 +642,10 @@ class LevelConfig:
             # is not a modeling choice, it makes N/radix_strides ill-defined
             # (division by zero), so it is rejected as a structural invariant.
             raise ValueError(f"LevelConfig.width must be >= 1, got {self.width}")
-        if type(self.routing) not in (IndependentRouting, UnionRouting):
+        if type(self.routing) not in (IndependentRouting, UnionRouting, OpaqueRouting):
             raise TypeError(
-                f"LevelConfig.routing must be IndependentRouting or UnionRouting, got {self.routing!r}")
+                "LevelConfig.routing must be IndependentRouting, UnionRouting or "
+                f"OpaqueRouting, got {self.routing!r}")
 
 
 @dataclass(frozen=True, slots=True)

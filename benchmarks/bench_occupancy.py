@@ -45,11 +45,9 @@ import argparse
 
 import torch
 
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
+from rola import RoLA, RouteProducer, SimplexProducer, dense_routing
 from rola.ops.consumer import _consumer_forward
 from rola.planner.schedule import Plan, build_schedule
-from rola.routing.producer import produce_routing
 
 
 def _median_ms(fn, reps: int, warmup: int = 4) -> float:
@@ -72,11 +70,10 @@ def run(reps: int = 20) -> list[dict]:
     H, d_v, BC, BT = 8, 64, 16, 32
     hidden = H * d_v
     torch.manual_seed(0)
-    layer = RoLA(
-        hidden_size=hidden, num_heads=H, head_v_dim=d_v, levels_per_head=2,
-        states_per_level=[8, 16], decay="none", state_norm="raw",
-        level_routing_configs=LevelRoutingConfig(read="dense", write="dense", tied=False),
-        layer_idx=0).to("cuda", torch.float32)
+    producer = SimplexProducer((8, 16), dense_routing(), hidden_size=hidden, num_heads=H)
+    routes = RouteProducer(
+        [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization="raw")
+    layer = RoLA(hidden, H, routes, layer_idx=0).to("cuda", torch.float32)
     plan = Plan(topology=layer.topology, normalization="raw", BT=BT, BC=BC,
                   warp_tile=(1, d_v // 32), decay=False)
 
@@ -93,14 +90,9 @@ def run(reps: int = 20) -> list[dict]:
         x = torch.randn(B, L, hidden, device="cuda")
         v = torch.randn(B, L, H, d_v, device="cuda")
         with torch.no_grad():
-            ro = produce_routing(
-                x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-                layer.gain_bias, layer.topology, "raw", budget=layer.budget, r=None,
-                budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
-                temp_b=layer.temp_b, usage_bias_W=layer.usage_bias_W,
-                usage_bias_b=layer.usage_bias_b)
-        rl = tuple(t.float() for t in ro.read_levels)
-        wl = tuple(t.float() for t in ro.write_levels)
+            ro = layer.routes(x)
+        rl = tuple(t.float() for t in ro.read)
+        wl = tuple(t.float() for t in ro.write)
         gr, gw = ro.g_read.float(), ro.g_write.float()
         sch = build_schedule(rl, wl, gr, gw, plan)
         ms = _median_ms(

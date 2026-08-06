@@ -177,7 +177,7 @@ def _consumer_forward(
     if not v.is_cuda:
         raise ValueError("the RoLA consumer is a CUDA kernel; v must be on a CUDA device")
     # §4.6's `kerneled` column, enforced where the launch happens and not only where
-    # the dispatch is decided. `rola_func` routes such a config to the reference path;
+    # the dispatch is decided. `rola_op` routes such a config to the reference path;
     # this refusal is what makes that routing a guarantee rather than a convention
     # that a direct caller of the private path gets to ignore.
     unratified = topology.unratified_activations
@@ -186,7 +186,7 @@ def _consumer_forward(
             f"the configured activations {unratified} have no ratified kernel row "
             "(`kerneled=False` in rola/routing/activations.py). This is NOT the kernel "
             "declining work it was asked to do: nothing was ever measured for these, so "
-            "there is nothing to launch. Call `rola.rola_func`, which runs an unratified "
+            "there is nothing to launch. Call `rola.rola_op`, which runs an unratified "
             "activation on the reference path carrying an explicit `not_kerneled` flag "
             "-- a labeled research surface, which a silent kernel path would not be")
     global_norm = plan.normalization == "global"

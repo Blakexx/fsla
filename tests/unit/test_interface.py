@@ -2,13 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op stack (`rola/interface.py`) and the O-3 name contract.
 
-Two things are gated here. The first is the DISPATCH -- which arm `rola_func` takes,
+Two things are gated here. The first is the DISPATCH -- which arm `rola_op` takes,
 made explicit and asserted from both sides, because `[[layer-dispatch-autograd-gap]]`
 is a failure that produces no exception and no wrong number, only a `grad_fn` that
 quietly is not there. The second is the NAME contract: no public spelling says `v3`.
 
 The CUDA arm's own numerics are gated in `tests/tier1_semantics/`; nothing here
 re-measures them.
+
+**MIGRATED (API-contract break, 2026-08-05).** `rola_func(v, read, write, g_read,
+g_write, plan, ...)` and the separate inference entrypoint `rola_forward(...)` are
+both gone, replaced by the ONE op `rola_op(routes: RouteFactors, v, decay=None, *,
+...)`. There is no more `plan` argument (the op derives its own) and no more
+`_StubPlan` -- the reference arm reads a `RouteFactors` bundle's own `.topology`/
+`.normalization`, so the dispatch fixture below builds a real bundle through
+`RouteProducer` instead of five loose tensors plus a plan stand-in.
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ import pathlib
 
 import pytest
 import torch
+from conftest import build_routes
 
 import rola
 from rola.interface import BackwardNotImplemented, RoLAConsumer, requires_backward
@@ -77,21 +86,6 @@ def test_the_consumer_node_does_not_mark_its_output_non_differentiable():
 
 # --- the dispatch, end to end ------------------------------------------------
 
-def _tiny_routing(requires_grad: bool, device: str = "cpu"):
-    torch.manual_seed(3)
-    B, T, H, d_v, w = 1, 8, 1, 16, 4
-    v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
-    level = torch.softmax(torch.randn(B, T, H, w, device=device), dim=-1)
-    level.requires_grad_(requires_grad)
-    g_write = torch.rand(B, T, H, device=device) + 0.5
-    g_write.requires_grad_(requires_grad)
-    g_read = torch.rand(B, T, H, device=device) + 0.5
-    g_read.requires_grad_(requires_grad)
-    topology = rola.Topology(
-        levels=(rola.LevelConfig(width=w, routing=_dense_routing()),), d_v=d_v)
-    return v, (level,), (level,), g_read, g_write, topology
-
-
 def _dense_routing():
     from rola.routing.types import IndependentRouting
 
@@ -101,46 +95,68 @@ def _dense_routing():
         write_activation=rola.SoftmaxActivation())
 
 
-class _StubPlan:
-    """A `Plan` stand-in carrying only what the reference arm reads.
+def _tiny_routing(requires_grad: bool, device: str = "cpu"):
+    """A real `RouteFactors` bundle, on the smallest topology the tests need.
 
-    The reference arm needs `topology` and `normalization` and nothing else; using a
-    real `Plan` here would drag in device-dependent selection to test a dispatch
-    decision, which is the wrong thing to couple.
+    Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
+    carrying only `topology`/`normalization`. New: `rola_op` takes a
+    `RouteFactors`, obtainable only from `RouteProducer`, so the fixture builds
+    one -- `requires_grad` on the source stream `x` reaches every tensor the
+    gateway derives (read/write levels, gains), exactly as `requires_grad` on the
+    five loose tensors used to.
     """
-
-    def __init__(self, topology, normalization="raw"):
-        self.topology = topology
-        self.normalization = normalization
+    torch.manual_seed(3)
+    B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
+    gateway = build_routes(
+        hidden_size=hidden, num_heads=H, d_v=d_v, widths=(w,), routing=_dense_routing()
+    ).to(device)
+    x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
+    routes = gateway(x)
+    v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
+    return v, routes
 
 
 def test_a_grad_requiring_call_lands_on_the_reference_arm_with_a_live_graph():
     """The whole point. The op must come back differentiable, from ONE
     implementation -- not a kernel value with an oracle gradient bolted on."""
-    v, read, write, g_read, g_write, topology = _tiny_routing(requires_grad=True)
-    assert requires_backward(v, read, write, g_read, g_write) is True
-    y, final = rola.rola_func(v, read, write, g_read, g_write, _StubPlan(topology))
+    v, routes = _tiny_routing(requires_grad=True)
+    assert requires_backward(v, *routes.tensors()) is True
+    y, final = rola.rola_op(routes, v)
     assert y.grad_fn is not None, "the graph was severed at the op boundary"
     assert final is None
     y.sum().backward()
     assert v.grad is not None and torch.isfinite(v.grad).all()
 
 
-def test_the_reference_arm_refuses_consumer_only_options_rather_than_ignoring_them():
-    """A flag honoured on one arm and silently ignored on the other is exactly
-    `[[layer-dispatch-autograd-gap]]`'s shape of failure."""
-    v, read, write, g_read, g_write, topology = _tiny_routing(requires_grad=True)
-    with pytest.raises(ValueError, match="CUDA-consumer options"):
-        rola.rola_func(v, read, write, g_read, g_write, _StubPlan(topology), paging=object())
+def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
+    """OLD: `rola_func` accepted CUDA-consumer-only options (`paging`, ...) on
+    BOTH arms and refused them explicitly with `ValueError` on the reference
+    arm -- one function, two arms, one of which had to actively reject what the
+    other used. `rola_op` structurally cannot have that failure mode: paging,
+    scheduling and every other CUDA-consumer detail live behind
+    `rola.expert.execute`'s own seam, reachable only from the CUDA path, and
+    `rola_op`'s signature carries no CUDA-consumer-only parameter at all -- so
+    passing one is a plain `TypeError` (unknown keyword) regardless of which arm
+    the call would otherwise take, rather than a case the op has to notice and
+    refuse."""
+    v, routes = _tiny_routing(requires_grad=True)
+    with pytest.raises(TypeError):
+        rola.rola_op(routes, v, paging=object())
 
 
-def test_rola_forward_cannot_be_talked_into_building_a_graph():
-    """`rola_forward` establishes the no-grad context itself, so an inference caller
-    cannot be wrong about it by forgetting one somewhere up the stack. On CPU that
-    means the reference arm runs, undifferentiably -- the assertion is about the
-    absence of a graph, not about which device ran it."""
-    v, read, write, g_read, g_write, topology = _tiny_routing(requires_grad=True)
-    y, _ = rola.rola_forward(v, read, write, g_read, g_write, _StubPlan(topology))
+def test_an_explicit_no_grad_context_around_rola_op_builds_no_graph():
+    """OLD: `rola_forward` was a separate entrypoint that established its own
+    no-grad context internally, so an inference caller could not be wrong about
+    it by forgetting to wrap the call. `rola_op` merges the two entrypoints into
+    one: there is no separate inference spelling any more, and the caller's own
+    `torch.no_grad()` is what an inference site now uses -- exactly as any other
+    PyTorch op. This pins the surviving half of the old claim: wrapped in
+    `torch.no_grad()`, `rola_op` produces no graph even though every input
+    requires grad.
+    """
+    v, routes = _tiny_routing(requires_grad=True)
+    with torch.no_grad():
+        y, _ = rola.rola_op(routes, v)
     assert y.grad_fn is None and not y.requires_grad
 
 
@@ -149,11 +165,10 @@ def test_turning_the_gradient_off_changes_the_arm_and_nothing_else():
     two agree exactly, because on CPU both arms ARE the reference -- which is the
     point of asserting it here: the dispatch decision is visible in the `grad_fn`
     and invisible in the numbers."""
-    v, read, write, g_read, g_write, topology = _tiny_routing(requires_grad=True)
-    plan = _StubPlan(topology)
+    v, routes = _tiny_routing(requires_grad=True)
     with torch.no_grad():
-        y_off, _ = rola.rola_func(v, read, write, g_read, g_write, plan)
-    y_on, _ = rola.rola_func(v, read, write, g_read, g_write, plan)
+        y_off, _ = rola.rola_op(routes, v)
+    y_on, _ = rola.rola_op(routes, v)
     assert y_off.grad_fn is None and y_on.grad_fn is not None
     assert torch.allclose(y_off, y_on.detach())
 
@@ -230,6 +245,6 @@ def test_the_top_level_exports_are_exactly_the_declared_api():
     nobody promised and everybody will import anyway."""
     for name in rola.__all__:
         assert hasattr(rola, name), f"{name} is in __all__ but not importable"
-    assert "rola_func" in rola.__all__ and "rola_forward" in rola.__all__
+    assert "rola_op" in rola.__all__
     assert not any(name.startswith("_") and name != "__version__" for name in rola.__all__), (
-        "a private name must not be re-exported: the op's public spelling is rola_func")
+        "a private name must not be re-exported: the op's public spelling is rola_op")

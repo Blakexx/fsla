@@ -34,6 +34,9 @@ schedule* (how often slack is recomputed and fed back) is chunk-granular.
 
 from __future__ import annotations
 
+import warnings
+from dataclasses import dataclass
+
 import torch
 
 DEFAULT_CHUNK_SIZE = 32
@@ -127,8 +130,85 @@ def chunk_boundaries(token_count: int, chunk_size: int = DEFAULT_CHUNK_SIZE) -> 
     return [(start, min(start + chunk_size, token_count)) for start in range(0, token_count, chunk_size)]
 
 
+@dataclass(frozen=True, slots=True)
+class BudgetConditioning:
+    """Tier-1 and usage-conditioning configuration for one producer (architecture §4.5).
+
+    ``budgeted_write_levels``/``budgeted_read_levels``: indices into the PRODUCER's own
+    level list whose activation is temperature-actuated against ``(r, slack)``. Every
+    entry must name a zero-capable (entmax) level-side -- a budget on a softmax side is
+    a loud configuration error, not a no-op -- which :meth:`validate_against` checks
+    against the concrete routing plan.
+    ``usage_bias_enabled``: the ablation gate for the usage-conditioned per-digit logit
+    bias ``g``, applied to every write level when on.
+    ``chunk_size``: the training-time conditioning granularity. It tracks the kernel's
+    default tile, and is a training choice rather than that constant.
+    """
+
+    budgeted_write_levels: tuple[int, ...] = ()
+    budgeted_read_levels: tuple[int, ...] = ()
+    usage_bias_enabled: bool = False
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+
+    def __post_init__(self) -> None:
+        for name, levels in (
+            ("budgeted_write_levels", self.budgeted_write_levels),
+            ("budgeted_read_levels", self.budgeted_read_levels),
+        ):
+            levels = tuple(levels)
+            if len(set(levels)) != len(levels):
+                raise ValueError(f"{name} must not repeat a level index, got {levels!r}")
+            if any(type(level) is not int or level < 0 for level in levels):
+                raise ValueError(f"{name} entries must be nonnegative exact ints, got {levels!r}")
+            object.__setattr__(self, name, levels)
+        if type(self.usage_bias_enabled) is not bool:
+            raise TypeError("usage_bias_enabled must be bool")
+        if self.chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
+        if not self.budgeted_pairs and not self.usage_bias_enabled:
+            # An entirely inert conditioning object is accepted -- unlike the
+            # softmax-side budget, which is a loud error -- but must not pass silently:
+            # a producer built from it allocates conditioning parameters that do
+            # nothing.
+            warnings.warn(
+                "BudgetConditioning has no budgeted pairs and usage_bias_enabled=False -- this "
+                "conditioning object is fully inert. If that is intentional, pass budget=None "
+                "instead.",
+                stacklevel=2,
+            )
+
+    @property
+    def budgeted_pairs(self) -> tuple[tuple[int, str], ...]:
+        return tuple(
+            (level, "write") for level in self.budgeted_write_levels
+        ) + tuple((level, "read") for level in self.budgeted_read_levels)
+
+    def validate_against(self, routing) -> None:
+        """Check every budgeted cell exists and can reach an exact zero.
+
+        ``routing`` is a :class:`~rola.routing.types.ResolvedRouting` -- the producer's
+        own levels in its own order, which is the frame these indices are written in.
+        """
+        D = routing.D
+        for level in (*self.budgeted_write_levels, *self.budgeted_read_levels):
+            if level >= D:
+                raise ValueError(
+                    f"budgeted level {level} is out of range for a producer covering {D} levels")
+        for level in self.budgeted_write_levels:
+            if not routing.write_level_can_zero[level]:
+                raise ValueError(
+                    f"budget conditioning on level {level}'s write side requires a zero-capable "
+                    "(entmax) activation; softmax sides cannot carry a budget (architecture §4.5)")
+        for level in self.budgeted_read_levels:
+            if not routing.read_level_can_zero[level]:
+                raise ValueError(
+                    f"budget conditioning on level {level}'s read side requires a zero-capable "
+                    "(entmax) activation; softmax sides cannot carry a budget (architecture §4.5)")
+
+
 __all__ = [
     "DEFAULT_CHUNK_SIZE",
+    "BudgetConditioning",
     "chunk_boundaries",
     "chunk_slack",
     "chunk_target_count",

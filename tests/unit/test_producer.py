@@ -15,16 +15,10 @@ from __future__ import annotations
 
 import pytest
 import torch
+from conftest import _project_logits, embed_budget, produce_routing, resolved_routing_from_topology
 
 from rola.ops.naive import naive_rola
-from rola.routing.budget import chunk_boundaries
-from rola.routing.producer import (
-    BudgetConditioning,
-    _project_logits,
-    embed_budget,
-    produce_routing,
-    resolved_routing_from_topology,
-)
+from rola.routing.budget import BudgetConditioning, chunk_boundaries
 from rola.routing.types import (
     IndependentRouting,
     LevelConfig,
@@ -244,12 +238,15 @@ def test_fully_inert_budget_conditioning_warns_loudly():
 
 
 def test_budget_conditioning_rejects_softmax_level():
-    """Spec §4.5: "a budget on a softmax side is a loud config validation error, not a no-op"."""
+    """Spec §4.5: "a budget on a softmax side is a loud config validation error, not a no-op".
+
+    `validate_against` takes a `ResolvedRouting` (the producer's own levels), not a
+    `Topology` -- see the module's `resolved_routing_from_topology` adapter."""
     topology = Topology(
         levels=(LevelConfig(4, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),), d_v=2)
     budget = BudgetConditioning(budgeted_write_levels=(0,))
     with pytest.raises(ValueError, match="zero-capable"):
-        budget.validate_against(topology)
+        budget.validate_against(resolved_routing_from_topology(topology))
 
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])

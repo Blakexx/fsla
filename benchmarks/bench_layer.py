@@ -34,8 +34,7 @@ import time
 
 import torch
 
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
+from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
 from rola.ops.consumer import _consumer_forward
 
 # G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
@@ -45,7 +44,6 @@ from rola.ops.consumer import _consumer_forward
 # keeps `import rola` free of the calibration package's inductor edge.
 from rola.planner.calibration.cost_model import plan_and_schedule, select_plan
 from rola.planner.schedule import build_schedule
-from rola.routing.producer import produce_routing
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -199,20 +197,25 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
     for decay_on in (False, True):
         for norm in ("raw", "global"):
             torch.manual_seed(0)
+            from rola import LearnedDecay
+
+            routing = sparse_routing(1.5) if side == "sparse" else dense_routing()
+            producer = SimplexProducer(
+                tuple(branches), routing, hidden_size=hidden, num_heads=H)
+            routes = RouteProducer(
+                [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+            decay_source = (LearnedDecay(widths=routes.widths, num_heads=H)
+                            if decay_on else None)
             layer = RoLA(
-                hidden_size=hidden, num_heads=H, head_v_dim=d_v,
-                levels_per_head=len(branches), states_per_level=branches,
-                decay="leaf_mass" if decay_on else "none", state_norm=norm,
-                level_routing_configs=LevelRoutingConfig(read=side, write=side,
-                                                         tied=False, alpha=1.5),
-                layer_idx=0).to("cuda", dtype)
+                hidden, H, routes, decay=decay_source, layer_idx=0,
+            ).to("cuda", dtype)
             # Fix pass item 2 (wiring-review.md §3): the CUDA path now additionally
             # requires eval mode. This script measures inference-path cost, so eval
             # is correct here, not incidental.
             layer.eval()
             if logit_gain != 1.0:
                 with torch.no_grad():
-                    layer.route_W.mul_(logit_gain)
+                    producer.route_W.mul_(logit_gain)
             for param in layer.parameters():
                 param.requires_grad_(False)
             x = torch.randn(B, L, hidden, device="cuda", dtype=dtype)
@@ -235,27 +238,23 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
 
             def producer():
                 with torch.no_grad():
-                    return produce_routing(
-                        x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-                        layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
-                        budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W,
-                        temp_b=layer.temp_b, usage_bias_W=layer.usage_bias_W,
-                        usage_bias_b=layer.usage_bias_b)
+                    return layer.routes(x)
 
             with torch.no_grad():
                 ro = producer()
-            read_levels, write_levels = ro.read_levels, ro.write_levels
+            read_levels, write_levels = ro.read, ro.write
             g_read, g_write = ro.g_read, ro.g_write
-            decay = layer._decay_config() if decay_on else None
+            decay = None if layer.decay is None else layer.decay()
 
-            # `static_density` is the LAYER's own build-time declaration, passed
-            # here for the same reason `layer.topology`/`layer.state_block` are: a
-            # plane that dropped it would time a planner call the layer never makes.
+            # `layer.routes.density` is the ROUTE PRODUCER's own build-time
+            # declaration (old: `layer.static_density`), passed here for the same
+            # reason `layer.topology`/`layer.state_block` are: a plane that dropped
+            # it would time a planner call the layer never makes.
             def select():
                 return select_plan(read_levels, write_levels, layer.topology,
                                       layer.state_block, normalization=norm,
                                       decay=decay_on,
-                                      static_density=layer.static_density)
+                                      static_density=layer.routes.density)
 
             plan, axes = select()
 
@@ -275,7 +274,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
                                             normalization=norm, decay=decay_on,
-                                            static_density=layer.static_density)
+                                            static_density=layer.routes.density)
 
             planner()
 

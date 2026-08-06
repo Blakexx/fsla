@@ -55,26 +55,21 @@ import time
 
 import torch
 
-from rola.layers.rola import LevelRoutingConfig, RoLA
+from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
+from rola.expert import PlanOverrides
 from rola.planner.schedule import build_schedule
-from rola.routing.producer import produce_routing
 
 
 def _routing_of(layer, x):
     """The layer's own routing allocations, on the layer's own inputs.
 
-    Reproduces the forward's producer call rather than re-deriving it, so the
+    Reproduces the forward's gateway call rather than re-deriving it, so the
     schedule the paging plane is timed against is the schedule the layer actually
-    hands the arena.
+    hands the arena. Old: the free function `produce_routing` over the layer's own
+    parameter tensors; new: the layer's `RouteProducer` gateway itself.
     """
-    v = layer.v_proj(x).view(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim)
-    out = produce_routing(
-        x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W, layer.gain_bias,
-        layer.topology, layer.state_norm,
-        budget=layer.budget, r=None, budget_embed_W=layer.budget_embed_W,
-        temp_W=layer.temp_W, temp_b=layer.temp_b,
-        usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
-    return out.read_levels, out.write_levels, out.g_read, out.g_write
+    out = layer.routes(x)
+    return out.read, out.write, out.g_read, out.g_write
 
 _MiB = 1024 * 1024
 
@@ -94,14 +89,18 @@ def _median_ms(fn, *, reps: int, warmup: int) -> float:
 
 
 def _layer(*, hidden, H, d_v, branches, router, norm, decay, paging, seed=0):
-    side = "sparse" if router == "entmax" else "dense"
+    from rola import LearnedDecay
+
+    routing = sparse_routing(1.5) if router == "entmax" else dense_routing()
     torch.manual_seed(seed)
+    producer = SimplexProducer(tuple(branches), routing, hidden_size=hidden, num_heads=H)
+    routes = RouteProducer(
+        [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+    decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay else None
     layer = RoLA(
-        hidden_size=hidden, num_heads=H, head_v_dim=d_v,
-        levels_per_head=len(branches), states_per_level=branches,
-        decay="leaf_mass" if decay else "none", state_norm=norm,
-        level_routing_configs=LevelRoutingConfig(read=side, write=side, tied=False, alpha=1.5),
-        paging=paging, layer_idx=0).cuda().eval()
+        hidden, H, routes, decay=decay_source, layer_idx=0,
+        expert=PlanOverrides(paging=paging),
+    ).cuda().eval()
     for param in layer.parameters():
         param.requires_grad_(False)
     return layer
@@ -114,7 +113,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
                    norm=norm, decay=decay, paging=True)
     if logit_gain != 1.0:
         with torch.no_grad():
-            layer.route_W.mul_(logit_gain)
+            layer.routes.producers[0].route_W.mul_(logit_gain)
     x = torch.randn(B, L, hidden, device="cuda")
 
     def step(module):
@@ -131,7 +130,9 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     assert layer.last_execution_backend == "cuda", (
         f"the paged cell took the {layer.last_execution_backend!r} backend, so this row "
         "would be an oracle timing")
-    stats = layer.last_paging_stats
+    # Old `layer.last_paging_stats` -> the arena's own `PagingResult`
+    # (`layer._page_arena.last_result`), the same fields.
+    stats = layer._page_arena.last_result
 
     # The paging plane ALONE: `prepare -> publish -> admit mask` against the exact
     # schedule this cell's routing produces. This is the number that answers "what

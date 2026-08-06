@@ -49,14 +49,11 @@ from __future__ import annotations
 
 import pytest
 import torch
+from conftest import produce_routing, resolved_routing_from_topology
 
-import rola.routing.producer as producer_v3
+import rola.routing.entmax.production as producer_v3
+from rola.routing.budget import BudgetConditioning
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.producer import (
-    BudgetConditioning,
-    produce_routing,
-    resolved_routing_from_topology,
-)
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
     EntmaxActivation,

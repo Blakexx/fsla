@@ -39,18 +39,17 @@ import subprocess
 
 import torch
 
-from rola.layers import RoLA
-from rola.layers.rola import LevelRoutingConfig
-from rola.ops.consumer import _consumer_forward
+from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
 
 # G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
 # `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
 # the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
 # proxies still resolve these names, but importing them from their real home is what
 # keeps `import rola` free of the calibration package's inductor edge.
+from rola.expert import PlanOverrides
+from rola.ops.consumer import _consumer_forward
 from rola.planner.calibration.cost_model import plan_and_schedule
 from rola.planner.schedule import Plan, build_schedule
-from rola.routing.producer import produce_routing
 from rola.routing.sequence_parallel import (
     MEASURED_HBM_BYTES_PER_S,
     SequenceParallelPlan,
@@ -151,39 +150,38 @@ def _fixture(norm: str, decay_on: bool, L: int, BC: int, device: str = "cuda",
     saturates, the occupancy gate closes and `P` is never selected at all. Defaults
     reproduce the flagship cell exactly, so no previously recorded number moves.
 
-    Routing comes from `produce_routing` on a constructed `RoLA`, not from a
-    synthetic density dial, so the owner list and `owner_costs` the `P` apportionment
-    reads are the ones the model emits. `decay` is the layer's own `_decay_config()`
-    for the same reason.
+    Routing comes from the layer's own `RouteProducer` gateway on a constructed
+    `RoLA`, not from a synthetic density dial, so the owner list and `owner_costs`
+    the `P` apportionment reads are the ones the model emits. `decay` is the
+    layer's own decay source, called, for the same reason.
     """
+    from rola import LearnedDecay
+
     B, H, d_v = 1, 8, 64
     branches = [8, 16] if branches is None else list(branches)
-    side = "sparse" if router == "entmax" else "dense"
+    routing = sparse_routing(1.5) if router == "entmax" else dense_routing()
     hidden = H * d_v
+    producer = SimplexProducer(tuple(branches), routing, hidden_size=hidden, num_heads=H)
+    routes = RouteProducer(
+        [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+    decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay_on else None
     layer = RoLA(
-        hidden_size=hidden, num_heads=H, head_v_dim=d_v,
-        levels_per_head=len(branches), states_per_level=branches,
-        decay="leaf_mass" if decay_on else "none", state_norm=norm,
-        level_routing_configs=LevelRoutingConfig(read=side, write=side,
-                                                tied=False, alpha=1.5),
-        state_block=BC, layer_idx=0).to(device, torch.float32)
+        hidden, H, routes, decay=decay_source, layer_idx=0,
+        expert=PlanOverrides(state_block=BC),
+    ).to(device, torch.float32)
     if logit_gain != 1.0:
         with torch.no_grad():
-            layer.route_W.mul_(logit_gain)
+            producer.route_W.mul_(logit_gain)
     topology = layer.topology
     x = torch.randn(B, L, hidden, device=device, dtype=torch.float32)
     v = torch.randn(B, L, H, d_v, device=device, dtype=torch.float32)
     with torch.no_grad():
-        ro = produce_routing(
-            x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-            layer.gain_bias, topology, norm, budget=layer.budget, r=None,
-            budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
-            usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
-    read_levels = tuple(t.float() for t in ro.read_levels)
-    write_levels = tuple(t.float() for t in ro.write_levels)
+        ro = layer.routes(x)
+    read_levels = tuple(t.float() for t in ro.read)
+    write_levels = tuple(t.float() for t in ro.write)
     g_read = None if norm == "global" else ro.g_read.float()
     g_write = ro.g_write.float()
-    decay = layer._decay_config() if decay_on else None
+    decay = None if layer.decay is None else layer.decay()
     return dict(v=v, read_levels=read_levels, write_levels=write_levels, g_read=g_read,
                 g_write=g_write, topology=topology, decay=decay, layer=layer, BC=BC,
                 norm=norm, decay_on=decay_on)

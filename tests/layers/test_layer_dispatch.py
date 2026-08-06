@@ -31,6 +31,22 @@ Four properties, and they are the four the wiring increment claims:
    production sparse entmax router as well as the dense softmax one.
 4. **Nothing degrades silently in either direction.** A CUDA-context configuration
    the consumer cannot launch RAISES; it does not quietly land on the oracle.
+
+**MIGRATED (API-contract break, 2026-08-05).** `RoLA.__init__`'s flat kwargs
+(`head_v_dim`, `levels_per_head`/`states_per_level`, `level_routing_configs`,
+`state_norm`, `paging`, `mma_precision`) are gone; a layer is now built from a
+`RouteProducer` (the feature-map slot) plus a decay SOURCE and a
+`rola.expert.PlanOverrides` (`state_block`/`mma_precision`/`max_physical_pages`).
+`layer.last_plan_axes` -- the `ConfigEvidence` (`.grid`/`.k_hat`/`.waves`/
+`.blocks_per_sm`) the layer used to retain beside its chosen `Plan` -- has NO
+replacement on the layer: the new dispatch (`rola.interface._derive_plan`) computes
+and discards it, keeping only the `Plan` itself (`last_selected_plan`). The three
+tests that read `last_plan_axes` reconstruct the evidence by hand, through
+`_select_evidence` below, walking the SAME private seam (`_static_inputs`,
+`_hardware_facts`, `rola.planner.select.select_with`) `_derive_plan` calls
+internally on the identical routing bundle -- so the evidence-level assertions
+(grid coverage, `k_hat` re-measurement) keep exactly the claims they made before,
+rather than being dropped or loosened.
 """
 
 from __future__ import annotations
@@ -38,8 +54,10 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.utils.checkpoint as torch_checkpoint
+from conftest import build_layer, build_routes, produce_routing
 
-from rola.layers.rola import LevelRoutingConfig, RoLA
+from rola import RoLA, dense_routing, sparse_routing
+from rola.expert import PlanOverrides
 from rola.planner.schedule import _SUPPORTED_BC
 from rola.planner.select import SUPPORTED_BT, largest_feasible_bc
 
@@ -64,9 +82,21 @@ _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the V3 consume
 #: `branches=[8, 16]`, `d_v=64`, `H=8` -- the Stage 0 matched cell, and the
 #: `(d_v, BC) = (64, 16)` instantiation the kernel actually compiles. `BC` is left
 #: at its default, which resolves to the innermost width 16.
-_BRANCHES = [8, 16]
+_BRANCHES = (8, 16)
 _H, _DV = 8, 64
 _HIDDEN = _H * _DV
+
+#: Old `decay="none"`/`"leaf_mass"` -> the two shipped decay SOURCES `build_layer`
+#: takes (`None`/`"learned"`); the exact rate is immaterial to these dispatch-only
+#: gates, only whether a decay source is present at all.
+_DECAY = {"none": None, "leaf_mass": "learned"}
+
+
+def _routing_for(router: str):
+    """Old `LevelRoutingConfig(read=router, write=router, tied=False, alpha=1.5)`
+    with a symmetric side -- exactly the case `dense_routing()`/`sparse_routing()`
+    (the tag vocabulary's own convenience constructors) name."""
+    return dense_routing() if router == "dense" else sparse_routing(1.5)
 
 
 def _layer(*, norm: str, decay: str, router: str = "dense", device: str = "cuda",
@@ -82,13 +112,11 @@ def _layer(*, norm: str, decay: str, router: str = "dense", device: str = "cuda"
     the STRUCTURAL gates pin `tf32x3` here and the default itself is asserted
     separately, rather than the tolerance being widened.
     """
-    branches = _BRANCHES if branches is None else branches
-    layer = RoLA(
-        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=head_v_dim,
-        levels_per_head=len(branches), states_per_level=branches,
-        decay=decay, state_norm=norm, mma_precision=mma_precision,
-        level_routing_configs=LevelRoutingConfig(read=router, write=router, tied=False, alpha=1.5),
-        layer_idx=0,
+    branches = _BRANCHES if branches is None else tuple(branches)
+    layer = build_layer(
+        hidden_size=_HIDDEN, num_heads=_H, d_v=head_v_dim, widths=branches,
+        routing=_routing_for(router), normalization=norm, decay=_DECAY[decay],
+        expert=PlanOverrides(mma_precision=mma_precision), layer_idx=0,
     ).to(device, torch.float32)
     if logit_gain != 1.0:
         # Sharpens an UNTRAINED exact-entmax router into a real sparse support. The
@@ -97,24 +125,55 @@ def _layer(*, norm: str, decay: str, router: str = "dense", device: str = "cuda"
         # for training, and that is what makes this a usable sparse fixture rather
         # than a second dense one.
         with torch.no_grad():
-            layer.route_W.mul_(logit_gain)
+            layer.routes.producers[0].route_W.mul_(logit_gain)
     return layer
+
+
+def _decay_config(layer: RoLA):
+    return None if layer.decay is None else layer.decay()
 
 
 def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     """Realized exact-zero fraction of the router's write allocations, so a test
     that claims to exercise a sparse fixture can prove the fixture is sparse."""
-    from rola.routing.producer import produce_routing
+    producer = layer.routes.producers[0]
     with torch.no_grad():
         out = produce_routing(
             x, None, torch.zeros(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim,
                                  device=x.device, dtype=x.dtype),
-            layer.route_W, layer.route_bias_param, layer.gain_W, layer.gain_bias,
-            layer.topology, layer.state_norm, budget=layer.budget, r=None,
-            budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
-            usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
+            producer.route_W, producer.route_bias, layer.routes.gain_W, layer.routes.gain_bias,
+            layer.topology, layer.normalization)
     zeros = sum(float((t == 0).float().mean()) * t.shape[-1] for t in out.write_levels)
     return zeros / sum(t.shape[-1] for t in out.write_levels)
+
+
+def _select_evidence(layer: RoLA, x: torch.Tensor, decay_config):
+    """Reconstruct `(ConfigChoice, ConfigEvidence)` on the SAME routing bundle a
+    forward would use -- the private seam `rola.interface._derive_plan` walks
+    internally, called by hand because the layer no longer retains the evidence
+    (see the module docstring's MIGRATED note)."""
+    from rola.interface import _hardware_facts, _static_inputs
+    from rola.planner.select import DEFAULT_SELECTOR, StatisticsBundle, select_with
+
+    routes = layer.routes(x)
+    static = _static_inputs(routes, decay=decay_config, overrides=layer.expert)
+    hardware = _hardware_facts(routes.device)
+    summaries = routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
+    return select_with(DEFAULT_SELECTOR, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
+
+
+def _summaries_for(layer: RoLA, x: torch.Tensor):
+    """The §4.2 summary the plan was priced from, on the SAME routing a forward used.
+
+    Reconstructed rather than read off the layer: the statistics ride the routing bundle
+    (`RouteFactors.summaries`), which lives inside one forward, and a layer that retained
+    them would be retaining a per-step measurement past the step it describes.
+    """
+    from rola.interface import _static_inputs
+
+    routes = layer.routes(x)
+    static = _static_inputs(routes, decay=None, overrides=layer.expert)
+    return routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
 
 
 # ---------------------------------------------------------------------------
@@ -193,15 +252,15 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     """Property 2, asserted on the counter and on the stamped plan -- not on timing.
 
     The plan the layer ran is recorded, so this also pins that the layer went
-    through `select_plan` (the axes are a QUERY of the realized routing) rather
-    than through a hand-written plan constant: `last_plan_axes` carries the
-    `ConfigEvidence` the decision was priced from.
+    through selection (the axes are a QUERY of the realized routing) rather than
+    through a hand-written plan constant: `_select_evidence` reconstructs the
+    `ConfigEvidence` the decision was priced from (see the module docstring).
 
     **RE-POINTED WITH THE LAYER CUT-OVER (ledger item 2).** It used to assert
     `plan.BC == layer.state_block == _BRANCHES[-1]` -- three things at once, and all
     three moved. `state_block` is now the LARGEST feasible `BC` rather than the
-    innermost width (§6 P6), and `plan.BC` is chosen PER LAUNCH by `select_config`
-    from the feasible set, so it is not pinned to `state_block` at all any more. What
+    innermost width (§6 P6), and `plan.BC` is chosen PER LAUNCH by the selector from
+    the feasible set, so it is not pinned to `state_block` at all any more. What
     replaces the assertion is the property that actually has to hold: the chosen `BC`
     is a member of the feasible set, and the evidence's grid is keyed on the choice.
     """
@@ -212,14 +271,15 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    plan, evidence = layer.last_selected_plan, layer.last_plan_axes
+    plan = layer.last_selected_plan
+    choice, evidence = _select_evidence(layer, x, _decay_config(layer))
     assert plan is not None and evidence is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
     assert plan.normalization == norm
     # The evidence is keyed on the decision it explains, over the whole grid the
     # selection actually walked.
-    assert (plan.BC, plan.BT) in evidence.grid
+    assert (choice.BC, choice.BT) in evidence.grid
     assert set(evidence.grid) == {
         (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
     assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
@@ -230,17 +290,23 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
 def test_the_selected_plan_is_re_measured_every_step_not_cached():
     """The coordinator's per-step ruling, gated rather than commented.
 
-    Moving the routing distribution (here by sharpening the router between two
-    no-grad forwards on the same shape) must move the measured statistics the plan
-    was priced from. A per-shape cache would return the first step's stats for the
-    second step's routing, which is precisely the staleness the ruling rejects.
+    Moving the routing distribution (here by sharpening the router between two no-grad
+    forwards on the same shape) must move the measured statistics the plan was priced
+    from. A per-shape cache would return the first step's statistics for the second
+    step's routing, which is precisely the staleness the ruling rejects.
 
-    **RE-POINTED WITH THE LAYER CUT-OVER (ledger item 2).** `last_plan_axes` is now
-    `ConfigEvidence`, so the re-measured statistic is `k_hat` -- the mean of
-    `ceil(K_hat / MMA_K_QUANTUM)` over candidate `(owner, tile)` pairs -- in place of
-    the calibration census's `stats.mean_K`. It is the SAME quantity the same
-    sharpening moves, read off the §4.2 summary pass rather than off the exact census,
-    which is exactly what the cut-over replaced.
+    **RE-POINTED TWICE, AND THE SECOND TIME IS A CORRECTION.** `last_plan_axes` no longer
+    exists on the layer (the API contract; the evidence is reconstructed here on the same
+    bundle a forward used). The statistic also changed, and that is the correction: this
+    row used to assert on `k_hat`, the mean of `ceil(K_hat / MMA_K_QUANTUM)` over
+    candidate `(owner, tile)` pairs, and at THIS cell `k_hat` cannot move. The summary
+    pass is measured at the finest feasible `BC = 16`, so `QPO = 1` and every candidate
+    pair quantizes to exactly one k-step whether its support is 94 % or 19 % of the
+    rectangle. Measured on the pre-break tree, the assertion passed on `1.0` against
+    `0.9999999403953552` -- a difference of 6e-8, one fp32 ulp of accumulation noise, not
+    a re-measurement. `candidate_frac` is the statistic that actually carries the change
+    at this granularity (1.0 -> 0.943 for the same 16x sharpening), and `occupancy` is
+    asserted beside it because it is the quantity the sharpening directly moves.
     """
     torch.manual_seed(11)
     layer = _layer(norm="raw", decay="none", router="sparse")
@@ -248,14 +314,17 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     x = torch.randn(1, 128, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
-        dense = layer.last_plan_axes
-        layer.route_W.mul_(16.0)
+        dense = _summaries_for(layer, x)
+        layer.routes.producers[0].route_W.mul_(16.0)
         layer(x)
-        sharp = layer.last_plan_axes
+        sharp = _summaries_for(layer, x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 2, "decode": 0}
-    assert sharp.k_hat < dense.k_hat, (
-        f"the per-step selection did not re-measure: k_hat went {dense.k_hat} -> "
-        f"{sharp.k_hat} after a 16x router sharpening")
+    assert sharp.occupancy.max() < 0.5 < dense.occupancy.min(), (
+        "the sharpening did not move the routing it is supposed to move: occupancy went "
+        f"{dense.occupancy.tolist()} -> {sharp.occupancy.tolist()}")
+    assert sharp.candidate_frac < dense.candidate_frac - 1e-3, (
+        "the per-step selection did not re-measure: candidate_frac went "
+        f"{dense.candidate_frac} -> {sharp.candidate_frac} after a 16x router sharpening")
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +396,7 @@ def test_the_shipped_bf16_default_layer_agrees_with_the_oracle(norm, decay):
     """
     torch.manual_seed(29)
     layer = _layer(norm=norm, decay=decay, mma_precision="bf16")
-    assert layer.mma_precision == "bf16"
+    assert layer.expert.mma_precision == "bf16"
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
 
     x_grad = x.clone().requires_grad_(True)
@@ -453,21 +522,19 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
     from rola.planner.calibration.cost_model import select_plan  # G16
-    from rola.routing.producer import produce_routing
 
     torch.manual_seed(41)
     layer = _layer(norm=norm, decay=decay)
     layer.eval()
+    producer = layer.routes.producers[0]
     x = torch.randn(1, 48, _HIDDEN, device="cuda")
 
     with torch.no_grad():
         v = layer.v_proj(x).view(1, 48, _H, _DV)
         ro = produce_routing(
-            x, None, v, layer.route_W, layer.route_bias_param, layer.gain_W,
-            layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
-            budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
-            usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
-        decay_config = layer._decay_config()
+            x, None, v, producer.route_W, producer.route_bias, layer.routes.gain_W,
+            layer.routes.gain_bias, layer.topology, norm)
+        decay_config = _decay_config(layer)
         plan, _axes = select_plan(
             ro.read_levels, ro.write_levels, layer.topology, layer.state_block,
             normalization=norm, decay=decay_config is not None)
@@ -481,13 +548,11 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     v2 = layer.v_proj(x).view(1, 48, _H, _DV)
     with torch.enable_grad():
         ro2 = produce_routing(
-            x, None, v2, layer.route_W, layer.route_bias_param, layer.gain_W,
-            layer.gain_bias, layer.topology, norm, budget=layer.budget, r=None,
-            budget_embed_W=layer.budget_embed_W, temp_W=layer.temp_W, temp_b=layer.temp_b,
-            usage_bias_W=layer.usage_bias_W, usage_bias_b=layer.usage_bias_b)
+            x, None, v2, producer.route_W, producer.route_bias, layer.routes.gain_W,
+            layer.routes.gain_bias, layer.topology, norm)
         out2, oracle_state2 = naive_rola(
             v2, ro2.read_levels, ro2.write_levels, ro2.g_read, ro2.g_write,
-            layer.topology, layer._decay_config(), norm,
+            layer.topology, _decay_config(layer), norm,
             initial_state=cuda_state, output_final_state=True)
     assert torch.isfinite(out2).all()
     assert oracle_state2.dtype == torch.float64
@@ -532,23 +597,27 @@ def _freeze_all_but(layer: RoLA, *keep_prefixes: str) -> None:
 
 @_CUDA
 def test_the_decay_dials_are_a_grad_requiring_operation_input():
-    """Property, per the fix pass: a context where ONLY `decay_theta` requires grad
-    (`v`, `g_read`, `g_write` and the read/write allocations do not, because
-    `v_proj`/`route_W`/`gain_W`/`gain_bias` are frozen and `x` does not require
-    grad) IS a grad-requiring operation input, because the dials are handed straight
-    to `_consumer_forward(..., decay=decay_config)`.
+    """Property, per the fix pass: a context where ONLY the decay source's `theta`
+    requires grad (`v`, `g_read`, `g_write` and the read/write allocations do not,
+    because `v_proj`/the producer's `route_W`/the gateway's `gain_W`/`gain_bias` are
+    frozen and `x` does not require grad) IS a grad-requiring operation input,
+    because the dials are handed straight to `_consumer_forward(..., decay=...)`.
 
     `o_proj` is left trainable (matching the reviewer's fixture, wiring-review.md
     §2): its weight requiring grad is what lets `.backward()` complete regardless of
     whether the dispatch is correct, exactly as measured -- `o_proj` sits downstream
     of the consumer and re-attaches a graph there whether or not the upstream
-    graph is severed. So the assertion that binds is `decay_theta.grad`, not
+    graph is severed. So the assertion that binds is `decay.theta.grad`, not
     whether backward raised.
+
+    Old `layer.decay_theta` (the layer's own `ParameterList`) -> `layer.decay.theta`
+    (`rola.LearnedDecay`'s own): the dials live on the decay SOURCE now, not on the
+    layer that consumes it.
     """
     torch.manual_seed(29)
     layer = _layer(norm="global", decay="leaf_mass")
     layer.eval()
-    _freeze_all_but(layer, "decay_theta", "o_proj")
+    _freeze_all_but(layer, "decay.theta", "o_proj")
     x = torch.randn(1, 64, _HIDDEN, device="cuda")  # does not require grad
     assert torch.is_grad_enabled()
 
@@ -557,38 +626,53 @@ def test_the_decay_dials_are_a_grad_requiring_operation_input():
 
     assert layer.last_execution_backend == "oracle"
     assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}, (
-        "a context where only decay_theta requires grad reached the forward-only "
+        "a context where only the decay dials require grad reached the forward-only "
         "CUDA consumer")
-    for theta in layer.decay_theta:
-        assert theta.grad is not None, "decay_theta received no gradient"
-        assert torch.isfinite(theta.grad).all(), "decay_theta received a non-finite gradient"
-        assert float(theta.grad.abs().max()) > 0, "decay_theta received an all-zero gradient"
+    for theta in layer.decay.theta:
+        assert theta.grad is not None, "the decay dials received no gradient"
+        assert torch.isfinite(theta.grad).all(), "the decay dials received a non-finite gradient"
+        assert float(theta.grad.abs().max()) > 0, "the decay dials received an all-zero gradient"
 
 
 @_CUDA
 def test_forcing_cuda_in_the_decay_only_grad_context_severs_the_decay_gradient(monkeypatch):
     """Mutation test mirroring the measurement in wiring-review.md §2: this is what
     WOULD happen on the exact fixture above if the dials were not in the predicate.
-    Forcing `select_execution_backend` to return `'cuda'` severs `decay_theta`'s
-    graph (`grad is None`) while `o_proj.weight` survives -- it is applied AFTER the
-    severance and re-attaches a graph downstream of the cut, so training would
-    *appear* to work. This exists to prove the gate can actually detect the bug
-    class the test above closes; the unmutated dispatch (proven by the test above)
-    is what avoids it in production.
+    Forcing the dispatch to `'cuda'` severs the decay dials' graph (`grad is None`)
+    while `o_proj.weight` survives -- it is applied AFTER the severance and
+    re-attaches a graph downstream of the cut, so training would *appear* to work.
+    This exists to prove the gate can actually detect the bug class the test above
+    closes; the unmutated dispatch (proven by the test above) is what avoids it in
+    production.
+
+    **MIGRATED, with an extra layer of forcing.** `rola_op` (the op the layer's
+    `else` branch calls for both remaining arms) now RE-DERIVES its own backend
+    from operand gradient-reachability (`rola.interface._backend_for`) whenever the
+    layer passes `_arm=None` -- i.e. whenever the layer itself did not choose
+    `'oracle'`. That is defense in depth the pre-break code did not have: mutating
+    only `RoLA.select_execution_backend` (as the pre-break mutation did) no longer
+    reaches the consumer here, because `rola_op`'s own check independently sees the
+    decay dials requiring grad and still routes to the oracle -- measured: the old
+    mutation alone left `theta.grad` NONZERO, i.e. the graph did NOT sever. Forcing
+    the CUDA arm all the way through now requires mutating `rola.interface.
+    select_backend` as well, which is what this does.
     """
     torch.manual_seed(29)
     layer = _layer(norm="global", decay="leaf_mass")
     layer.eval()
-    _freeze_all_but(layer, "decay_theta", "o_proj")
+    _freeze_all_but(layer, "decay.theta", "o_proj")
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
 
+    import rola.interface as interface_module
+
     monkeypatch.setattr(RoLA, "select_execution_backend", lambda *args, **kwargs: "cuda")
+    monkeypatch.setattr(interface_module, "select_backend", lambda *args, **kwargs: "cuda")
     out, _, _ = layer(x)
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "cuda"
-    for theta in layer.decay_theta:
-        assert theta.grad is None, "the mutation test's premise did not hold: decay_theta got a grad"
+    for theta in layer.decay.theta:
+        assert theta.grad is None, "the mutation test's premise did not hold: the decay dials got a grad"
     assert layer.o_proj.weight.grad is not None, (
         "the mutation test's premise did not hold: o_proj did not survive the severance")
 
@@ -650,14 +734,13 @@ def test_an_inadmissible_state_block_is_rejected_at_construction():
     `N = 128`? It does not -- and even a divisor that does not name a `BC`-aligned
     rectangle must be refused at construction rather than at the first CUDA forward,
     so the error names the configuration and not a launch."""
+    routes = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
     with pytest.raises(ValueError):
-        RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV, levels_per_head=2,
-             states_per_level=_BRANCHES, state_block=24)
+        RoLA(_HIDDEN, _H, routes, expert=PlanOverrides(state_block=24))
     with pytest.raises(ValueError):
         # 32 divides N=128 but implies c = 32/16 = 2 digits of level 0 (width 8) --
         # aligned -- while 12 divides nothing: the second case is the alignment one.
-        RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV, levels_per_head=2,
-             states_per_level=_BRANCHES, state_block=12)
+        RoLA(_HIDDEN, _H, routes, expert=PlanOverrides(state_block=12))
 
 
 def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
@@ -671,23 +754,23 @@ def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
     `BC = 4` kernel, and the old default produced a construction that could only ever
     run on the oracle.
 
-    `state_block` is now a CEILING and no longer pins the launch: `select_config`
+    `state_block` is now a CEILING and no longer pins the launch: the selector
     chooses `BC` per launch from `feasible_BC`, and an explicit `state_block=` is the
     EXPERT PIN that shrinks the feasible set to one value (§4.3). Both halves are
     asserted here, because the default losing its pinning role is the whole content of
     the change.
     """
     for branches in ([8, 16], [4, 4, 8], [16], [2, 3, 16]):
-        layer = RoLA(hidden_size=32, num_heads=2, head_v_dim=8,
-                     levels_per_head=len(branches), states_per_level=branches)
+        routes = build_routes(hidden_size=32, num_heads=2, d_v=8, widths=tuple(branches))
+        layer = RoLA(32, 2, routes)
         assert layer.state_block == largest_feasible_bc(tuple(branches))
         assert layer.state_block == layer.feasible_BC[-1]
         assert set(layer.feasible_BC) <= set(_SUPPORTED_BC)
         assert layer.last_execution_backend is None
 
     # The expert pin, which is the ONLY thing that fixes `BC` for a launch now.
-    pinned = RoLA(hidden_size=32, num_heads=2, head_v_dim=8, levels_per_head=2,
-                  states_per_level=[8, 16], state_block=16)
+    pinned_routes = build_routes(hidden_size=32, num_heads=2, d_v=8, widths=(8, 16))
+    pinned = RoLA(32, 2, pinned_routes, expert=PlanOverrides(state_block=16))
     assert pinned.feasible_BC == (16,)
 
 
@@ -697,17 +780,17 @@ def test_the_layer_selects_the_production_bf16_readout_by_default():
     `_layer` pins `tf32x3` so the structural gates in this file measure structure
     rather than bf16 rounding, which means nothing else here would notice if the
     layer stopped forwarding its own default. This asserts both halves: the
-    constructor default is `bf16`, and the plan the forward selects carries it.
+    constructor default is `bf16` (`PlanOverrides`' own default), and the plan the
+    forward selects carries it.
     """
     layer = _layer(norm="global", decay="none", mma_precision="bf16")
-    assert layer.mma_precision == "bf16"
+    assert layer.expert.mma_precision == "bf16"
     layer.eval()
     with torch.no_grad():
         layer(torch.randn(1, 96, _HIDDEN, device="cuda"))
     assert layer.last_selected_plan.mma_precision == "bf16"
-    assert RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-                levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-                layer_idx=0).mma_precision == "bf16"
+    default_routes = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
+    assert RoLA(_HIDDEN, _H, default_routes, layer_idx=0).expert.mma_precision == "bf16"
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +801,7 @@ def test_the_layer_selects_the_production_bf16_readout_by_default():
 # default lives ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
 # ---------------------------------------------------------------------------
 
-_BC64_BRANCHES = [4, 8, 8]  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
+_BC64_BRANCHES = (4, 8, 8)  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
 
 
 @pytest.mark.parametrize("norm", ["raw", "global"])
@@ -735,12 +818,13 @@ def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(norm, decay):
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    plan, evidence = layer.last_selected_plan, layer.last_plan_axes
+    plan = layer.last_selected_plan
+    choice, evidence = _select_evidence(layer, x, _decay_config(layer))
     assert plan is not None and evidence is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
     assert plan.normalization == norm
-    assert (plan.BC, plan.BT) in evidence.grid
+    assert (choice.BC, choice.BT) in evidence.grid
     assert set(evidence.grid) == {
         (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
     assert any(BC == 64 for BC, _BT in evidence.grid), (
@@ -769,11 +853,10 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     host-side, specific, and context-preserving -- not one axis's wording.
     """
     layer = _layer(norm="global", decay="none")
-    layer_32 = RoLA(hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-                    levels_per_head=2, states_per_level=_BRANCHES, state_block=32,
-                    level_routing_configs=LevelRoutingConfig(
-                        read='dense', write='dense', tied=False),
-                    layer_idx=0).to("cuda", torch.float32).eval()
+    routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
+    layer_32 = RoLA(
+        _HIDDEN, _H, routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
+    ).to("cuda", torch.float32).eval()
     assert layer_32.feasible_BC == (32,)
     x = torch.randn(1, 32, _HIDDEN, device="cuda")
     with pytest.raises(RuntimeError,
@@ -804,13 +887,14 @@ def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance(norm):
 
     torch.manual_seed(23)
     unpaged = _layer(norm=norm, decay="none", mma_precision="bf16")
-    paged = RoLA(
-        hidden_size=_HIDDEN, num_heads=_H, head_v_dim=_DV,
-        levels_per_head=len(_BRANCHES), states_per_level=_BRANCHES,
-        decay="none", state_norm=norm, mma_precision="bf16", paging=True,
-        level_routing_configs=LevelRoutingConfig(read='dense', write='dense',
-                                                 tied=False),
-        layer_idx=0).to("cuda", torch.float32)
+    # Old `paging=True` -> `PlanOverrides(paging=True)`, the UNCAPPED paging arm
+    # (`max_physical_pages=None` provisions the dense limit, which can never bind).
+    paged = build_layer(
+        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
+        routing=dense_routing(), normalization=norm, decay=None,
+        expert=PlanOverrides(mma_precision="bf16", paging=True),
+        layer_idx=0,
+    ).to("cuda", torch.float32)
     paged.load_state_dict(unpaged.state_dict())
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
 

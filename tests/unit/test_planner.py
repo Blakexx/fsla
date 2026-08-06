@@ -2396,7 +2396,7 @@ def _static_for(cell, *, decay, dense=False):
     _widths, _d_v, _BC, n_cohorts, _ = _ARGMIN_STATS[cell]
     BH = n_cohorts // (prod(widths) // BC)
     return StaticPlanInputs(
-        widths=widths, d_v=d_v, normalization="global", decay=decay,
+        topology=_topology(widths, d_v=d_v), normalization="global", decay=decay,
         mma_precision="bf16",
         density=StaticDensity(read=(dense,) * D, write=(False,) * D),
         feasible_BC=(BC,), BH=BH)
@@ -2443,7 +2443,7 @@ def test_the_selector_is_BC_generic_on_a_fake_instantiation():
     """
     widths = (8, 16)
     static = StaticPlanInputs(
-        widths=widths, d_v=64, normalization="global", decay=False,
+        topology=_topology(widths, d_v=64), normalization="global", decay=False,
         mma_precision="bf16",
         density=StaticDensity(read=(False, False), write=(False, False)),
         feasible_BC=(16, 32, 64), BH=4)
@@ -2710,7 +2710,7 @@ def test_the_decode_path_issues_zero_statistics_work():
 
     widths = (8, 16)
     static = StaticPlanInputs(
-        widths=widths, d_v=64, normalization="global", decay=False,
+        topology=_topology(widths, d_v=64), normalization="global", decay=False,
         mma_precision="bf16",
         density=StaticDensity(read=(True, True), write=(False, False)),
         feasible_BC=(16, 64), BH=4)
@@ -2816,24 +2816,27 @@ def test_an_inadmissible_pin_and_an_unservable_topology_are_construction_time_er
 def test_the_layer_resolves_the_largest_feasible_bc_and_records_the_feasible_set():
     """The construction-time half, on the layer that owns it.
 
-    `branches=[4, 256]` is the row that used to resolve `state_block` to 256 -- aligned,
-    uninstantiated, and discovered at plan time. An explicit pin must still win
-    unchanged, because nine external instruments pass one.
+    `widths=(4, 256)` is the row that used to resolve `state_block` to 256 -- aligned,
+    uninstantiated, and discovered at plan time. An explicit expert pin must still win
+    unchanged, and an inadmissible one must fail on the line that wrote it.
     """
-    from rola.layers import RoLA
+    from rola import RoLA, RouteProducer, SimplexProducer, dense_routing
+    from rola.expert import PlanOverrides
 
-    layer = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
-                 states_per_level=[4, 256])
+    def _layer(**expert):
+        producer = SimplexProducer((4, 256), dense_routing(), hidden_size=64, num_heads=2)
+        routes = RouteProducer([producer], d_v=32, num_heads=2, hidden_size=64)
+        return RoLA(64, 2, routes, expert=PlanOverrides(**expert) if expert else None)
+
+    layer = _layer()
     assert layer.topology.widths == (4, 256)
     assert layer.state_block == 64, (
         "the layer kept the widths[-1] default; 256 is aligned but not instantiated")
     assert layer.feasible_BC == (16, 64)
 
-    pinned = RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
-                  states_per_level=[4, 256], state_block=16)
+    pinned = _layer(state_block=16)
     assert pinned.state_block == 16
     assert pinned.feasible_BC == (16,), "an explicit pin must shrink the set to itself"
 
     with pytest.raises(ValueError):
-        RoLA(hidden_size=64, num_heads=2, head_v_dim=32, levels_per_head=2,
-             states_per_level=[4, 256], state_block=24)
+        _layer(state_block=24)

@@ -1,11 +1,17 @@
 """A constant that changes the FUNCTION has exactly one home, and this checks it.
 
 The readout epsilon appeared four times as a bare literal -- in the oracle, the
-fused consumer, decode and the public entry point -- and the four defaults merely
-happened to agree (audit finding F6). Four agreeing literals are indistinguishable
-from four independent decisions until one of them is edited, at which point the
-oracle and the kernel compute different functions and every Tier 1 gate reports the
-difference as a kernel bug.
+fused consumer, decode and the then-public `rola_func` -- and the four defaults
+merely happened to agree (audit finding F6). Four agreeing literals are
+indistinguishable from four independent decisions until one of them is edited, at
+which point the oracle and the kernel compute different functions and every Tier 1
+gate reports the difference as a kernel bug.
+
+Three sites remain: the API contract (P16) took the `eps` knob off the public
+surface entirely, which is the same conclusion reached from the other end -- a
+number that changes the FUNCTION is not a caller's argument. The grep rule below
+is the one that still covers the whole package, including the entry point that no
+longer has a parameter to check.
 
 Two claims, and the second is the one with teeth:
 
@@ -36,7 +42,6 @@ EPS_SITES = (
     ("rola/ops/naive.py", "naive_rola"),
     ("rola/ops/consumer.py", "_consumer_forward"),
     ("rola/ops/decode.py", "freeze_decode_config"),
-    ("rola/interface.py", "rola_func"),
 )
 
 
@@ -77,12 +82,11 @@ def test_every_eps_default_is_the_named_constant_not_a_literal(relative, functio
 
 def test_every_eps_default_is_the_same_value_at_runtime():
     """Rule 1, through the signature a caller actually binds against."""
-    from rola.interface import rola_func
     from rola.ops.consumer import _consumer_forward
     from rola.ops.decode import freeze_decode_config
     from rola.ops.naive import naive_rola
 
-    for fn in (naive_rola, _consumer_forward, freeze_decode_config, rola_func):
+    for fn in (naive_rola, _consumer_forward, freeze_decode_config):
         default = inspect.signature(fn).parameters["eps"].default
         assert default == READOUT_EPS, f"{fn.__qualname__} binds eps={default}"
 
