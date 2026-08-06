@@ -51,6 +51,7 @@ that stands between a quiet oracle change and every Tier 1 claim in the reposito
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import json
 import subprocess
@@ -70,6 +71,24 @@ PRODUCER_ATOL = 1e-13
 #: fp64 seeds. Fixed here rather than passed in: a matrix whose inputs depend on the
 #: caller is a matrix two runs can disagree about without either being wrong.
 SEED = 20260805
+
+#: How many slices the matrix runs in by default.
+#:
+#: THE UNCHUNKED RUN IS A HOST HAZARD, not merely a large one. The backward retains
+#: one autograd graph per token per cell and the largest cells are `64x64` (N = 4096
+#: leaves) at `T = 64`; run whole, the protocol peaked near 18 GB on a 23 GB machine
+#: shared with build lanes and drove it into swap twice. Measured peak RSS of the
+#: whole run (parent plus the old side), against an unchanged tree:
+#:
+#:     chunks=1   ~18 GB    (froze the host)
+#:     chunks=4    13.0 GB  0:58
+#:     chunks=16    4.6 GB  1:49
+#:
+#: 16 buys the headroom at 51 s. CHUNKING PROVABLY CANNOT CHANGE THE NUMBERS: the
+#: inputs are drawn for every cell at every chunk count and only the oracle call is
+#: skipped, and it is checked rather than argued -- the union over `chunks=4` and the
+#: union over `chunks=8` are the same 1328 quantities, bit-identical, 0 mismatches.
+DEFAULT_CHUNKS = 16
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +196,16 @@ def emit_producer() -> dict:
 NO_GRAD = torch.zeros(0, dtype=torch.float64)
 
 
-def emit_oracle() -> dict:
-    """`naive_rola`'s outputs over the structural matrix, forward and backward."""
+def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
+    """`naive_rola`'s outputs over the structural matrix, forward and backward.
+
+    `chunk`/`chunks` select every `chunks`-th cell. THE INPUTS ARE DRAWN FOR EVERY
+    CELL REGARDLESS -- only the oracle call is skipped -- so the generator reaches
+    each cell in the same state at every chunk count, and a run split four ways
+    compares the same numbers as a run split none ways. Chunking exists for peak
+    memory (the backward retains one graph per token) and must not be able to
+    change what is measured.
+    """
     from rola.ops.naive import naive_rola
     from rola.routing.types import (
         IndependentRouting,
@@ -205,11 +232,13 @@ def emit_oracle() -> dict:
     #: The structural rectangles, the two `d_v`, both normalizations, decay off and
     #: on, and the tile-boundary/ragged `T` values. Named adversarial corners are
     #: mandatory rows, not options (the card's fixture design).
+    index = -1
     for widths in ((64, 64), (8, 8, 8, 16), (4, 4)):
         for d_v in (32, 64):
             for normalization in ("raw", "global"):
                 for decay_on in (False, True):
                     for T in (1, 17, 37, 64):
+                        index += 1
                         B, H = 1, 2
                         topo = Topology(
                             levels=tuple(LevelConfig(w, routing) for w in widths),
@@ -227,6 +256,8 @@ def emit_oracle() -> dict:
                                 torch.rand(H, w, generator=g, dtype=torch.float64)
                                 * 0.3 + 0.1 for w in widths)
                             decay = LeafMassDecay(dials=dials)
+                        if index % chunks != chunk:
+                            continue
                         name = (f"{'x'.join(map(str, widths))}-dv{d_v}-{normalization}-"
                                 f"{'decay' if decay_on else 'nodecay'}-T{T}")
                         #: The stored clock is a DISTINCT tensor, not the default
@@ -285,7 +316,17 @@ def _backward(name: str, y, state, operands: dict) -> dict:
             for key, grad in zip(keys, grads)}
 
 
+#: `emit_producer` takes no chunk arguments: its matrix is 90 small quantities and
+#: splitting it would buy nothing. The dispatch passes them only where they exist.
 SURFACES = {"producer": emit_producer, "oracle": emit_oracle}
+
+
+def _emit(surface: str, chunk: int, chunks: int) -> dict:
+    if surface == "oracle":
+        return emit_oracle(chunk=chunk, chunks=chunks)
+    if chunk:
+        return {}
+    return emit_producer()
 
 
 # ---------------------------------------------------------------------------
@@ -377,15 +418,14 @@ def _excepted(key: str, exceptions) -> bool:
     return any(key == e or fnmatch.fnmatch(key, e) for e in exceptions)
 
 
-def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
+def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> dict:
+    """One chunk's tally: how many quantities, the worst difference, the failures."""
     only_old = sorted(k for k in set(old) - set(new) if not _excepted(k, exceptions))
     only_new = sorted(k for k in set(new) - set(old) if not _excepted(k, exceptions))
     if only_old or only_new:
-        print(f"\nFAIL  the two sides do not answer the same questions: "
-              f"{len(only_old)} key(s) only in OLD, {len(only_new)} only in NEW")
-        for key in (only_old + only_new)[:8]:
-            print(f"        {key}")
-        return False
+        return {"count": len(old), "worst": {"value": 0.0, "key": None},
+                "failures": [(key, "answered by only one side")
+                             for key in only_old + only_new]}
 
     worst = {"value": 0.0, "key": None}
     failures = []
@@ -415,9 +455,59 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
         elif delta > PRODUCER_ATOL:
             failures.append((key, f"max|d| = {delta:.3e} > {PRODUCER_ATOL:.0e}"))
 
+    return {"count": len(old), "worst": worst, "failures": failures}
+
+
+#: The OLD side's subprocess environment. `TORCHINDUCTOR_COMPILE_THREADS` is
+#: pinned because torch fans out one compile worker per core on import and the
+#: protocol runs two interpreters at once on a 23 GB host shared with build lanes;
+#: nothing here is compiled, so the workers were pure overhead. `PATH` stays
+#: minimal so the old tree cannot pick up a tool from the caller's shell.
+OLD_SIDE_ENV = {"PATH": "/usr/bin:/bin", "TORCHINDUCTOR_COMPILE_THREADS": "4",
+                "OMP_NUM_THREADS": "4"}
+
+
+@contextlib.contextmanager
+def _old_tree(ref: str):
+    """`ref` checked out into a throwaway worktree, for the life of the run.
+
+    One worktree for every chunk: checking out again per chunk would be the same
+    tree fetched N times, and a tree that changed between chunks would silently
+    make the chunks incomparable.
+    """
+    with tempfile.TemporaryDirectory(prefix="rola_dualrun_") as tmp:
+        tree = Path(tmp) / "old"
+        subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "--detach",
+                        str(tree), ref], check=True, capture_output=True, text=True)
+        try:
+            yield tree
+        finally:
+            subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force",
+                            str(tree)], check=False, capture_output=True)
+
+
+def _emit_old(tree: Path, ref: str, surface: str, out_path: Path,
+              chunk: int, chunks: int) -> None:
+    """Run this same file inside the old tree, against the old tree's library."""
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "--surface", surface,
+         "--emit", str(out_path), "--chunk", str(chunk), "--chunks", str(chunks)],
+        cwd=str(tree), env={"PYTHONPATH": str(tree), **OLD_SIDE_ENV},
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stdout + proc.stderr)
+        raise SystemExit(f"the OLD side ({ref}) failed to run (chunk {chunk}/{chunks})")
+
+
+def report(surface: str, tallies: list, exceptions: set) -> bool:
+    """One verdict over every chunk. A chunked run reads exactly like an unchunked one."""
+    count = sum(t["count"] for t in tallies)
+    worst = max((t["worst"] for t in tallies), key=lambda w: w["value"],
+                default={"value": 0.0, "key": None})
+    failures = [item for t in tallies for item in t["failures"]]
     rule = ("BIT-IDENTITY" if surface == "oracle"
             else f"producer contract (atol {PRODUCER_ATOL:.0e}, support sets exact)")
-    print(f"\n{len(old)} quantities compared under {rule}")
+    print(f"\n{count} quantities compared under {rule}")
     print(f"worst continuous difference: {worst['value']:.3e}"
           + (f"  at {worst['key']}" if worst["key"] else ""))
     if exceptions:
@@ -433,26 +523,6 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> bool:
     return True
 
 
-def _run_old_side(ref: str, surface: str, out_path: Path) -> None:
-    """Check `ref` out into a throwaway worktree and emit its side there."""
-    with tempfile.TemporaryDirectory(prefix="rola_dualrun_") as tmp:
-        tree = Path(tmp) / "old"
-        subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "--detach",
-                        str(tree), ref], check=True, capture_output=True, text=True)
-        try:
-            proc = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve()), "--surface", surface,
-                 "--emit", str(out_path)],
-                cwd=str(tree), env={"PYTHONPATH": str(tree), "PATH": "/usr/bin:/bin"},
-                capture_output=True, text=True)
-            if proc.returncode != 0:
-                sys.stderr.write(proc.stdout + proc.stderr)
-                raise SystemExit(f"the OLD side ({ref}) failed to run")
-        finally:
-            subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force",
-                            str(tree)], check=False, capture_output=True)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -461,30 +531,48 @@ def main() -> int:
                     help="the commit whose oracle is the OLD side (e.g. HEAD~1)")
     ap.add_argument("--emit", metavar="PATH",
                     help="internal: write THIS tree's side and exit")
+    ap.add_argument("--chunk", type=int, default=0, help="internal: which slice to emit")
+    ap.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS,
+                    help=f"slices to run the matrix in, one at a time "
+                         f"(default {DEFAULT_CHUNKS}); bounds peak memory, "
+                         f"changes nothing measured")
     ap.add_argument("--mutate", metavar="KIND",
                     help="P5: inject a known defect into the NEW side; the run must fail")
     ap.add_argument("--except", dest="exceptions", action="append", default=[],
-                    metavar="KEY", help="a declared P2 exception, repeatable")
+                    metavar="KEY", help="a declared P2 exception (key or fnmatch), repeatable")
     ap.add_argument("--json", metavar="PATH", help="write the record")
     a = ap.parse_args()
 
     if a.emit:
-        torch.save(SURFACES[a.surface](), a.emit)
+        torch.save(_emit(a.surface, a.chunk, a.chunks), a.emit)
         return 0
     if not a.against:
         raise SystemExit("--against REF is required (the OLD side is a real commit)")
+    if a.chunks < 1:
+        raise SystemExit("--chunks must be at least 1")
 
     if a.mutate:
         apply_mutant(a.mutate)
 
-    with tempfile.TemporaryDirectory(prefix="rola_dualrun_out_") as tmp:
-        old_path = Path(tmp) / "old.pt"
-        _run_old_side(a.against, a.surface, old_path)
-        old = torch.load(old_path, weights_only=False)
-    new = SURFACES[a.surface]()
+    exceptions = set(a.exceptions)
+    print(f"OLD = {a.against}   NEW = working tree   surface = {a.surface}"
+          + (f"   chunks = {a.chunks}" if a.chunks > 1 else ""))
+    tallies = []
+    with _old_tree(a.against) as tree:
+        for chunk in range(a.chunks):
+            #: ONE CHUNK LIVE AT A TIME, on both sides. The old side's dict is
+            #: dropped before the next subprocess starts and the new side's before
+            #: the next chunk is built, so peak memory is the largest slice rather
+            #: than the whole matrix twice.
+            with tempfile.TemporaryDirectory(prefix="rola_dualrun_out_") as tmp:
+                old_path = Path(tmp) / "old.pt"
+                _emit_old(tree, a.against, a.surface, old_path, chunk, a.chunks)
+                old = torch.load(old_path, weights_only=False)
+            new = _emit(a.surface, chunk, a.chunks)
+            tallies.append(compare(old, new, surface=a.surface, exceptions=exceptions))
+            del old, new
 
-    print(f"OLD = {a.against}   NEW = working tree   surface = {a.surface}")
-    ok = compare(old, new, surface=a.surface, exceptions=set(a.exceptions))
+    ok = report(a.surface, tallies, exceptions)
     if a.mutate:
         #: The mutant inverts the verdict: a mutant run that PASSES means the
         #: comparison is blind to the defect, which is the failure being tested for.
@@ -498,7 +586,9 @@ def main() -> int:
     if a.json:
         Path(a.json).write_text(json.dumps(
             {"old": a.against, "surface": a.surface, "mutant": a.mutate,
-             "exceptions": sorted(set(a.exceptions)), "quantities": len(new),
+             "exceptions": sorted(exceptions), "chunks": a.chunks,
+             "quantities": sum(t["count"] for t in tallies),
+             "worst": max((t["worst"]["value"] for t in tallies), default=0.0),
              "passed": ok}, indent=1, sort_keys=True) + "\n")
     return 0 if ok else 1
 
