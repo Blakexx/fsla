@@ -316,7 +316,7 @@ class SimplexProducer(LevelProducer):
         finally:
             self._parameters["temp_b"] = temp_b
 
-    # --- fusion --------------------------------------------------------------
+    # --- pricing columns -----------------------------------------------------
 
     @property
     def level_routing(self) -> tuple[LevelRouting, ...]:

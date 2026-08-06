@@ -227,7 +227,10 @@ never cost anyone correctness.
 
 Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` is the harness;
 median per-call duration over 21 rounds, CUDA events, on `B=2, hidden=1024, H=8,
-widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger:
+widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger (rows
+recorded at `1338854` on a then-dirty tree — immaterial to the claims, which are
+relative comparisons among five arms sharing one `run_id` on one tree, as the rows
+themselves record):
 
 | arm | `L = 4096` | `L = 1024` |
 |---|---|---|

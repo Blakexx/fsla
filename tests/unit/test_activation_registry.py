@@ -226,7 +226,7 @@ class _StubPlan:
 def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_flag():
     """§4.6: a LABELED RESEARCH SURFACE, not a kernel fallback. The flag is a
     property of the configuration, so it is answerable before the call and without a
-    device -- and `rola_func` honours it even when everything else says 'cuda'."""
+    device -- and `dispatch_for` honours it even when everything else says 'cuda'."""
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
         normalized=True, exact_zeros=True, support_differentiable=False, kerneled=False)
