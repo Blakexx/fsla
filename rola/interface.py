@@ -221,9 +221,14 @@ def rola_func(
 
     Returns `(y, final_state)`, `y: [B, T, H, d_v]`, `final_state:
     [B, H, N, d_v + (norm == "global")]` when `output_final_state`, else `None`.
-    Both arms return the same shapes with the same meaning; only the accumulation
-    dtype differs (fp64 reference, fp32 kernel) and both accept either on input, so
-    a carried state may cross arms between steps.
+    Both arms return the same shapes with the same meaning; only the DTYPE differs,
+    and it differs for both returned tensors together: the reference arm is the fp64
+    oracle and hands back fp64 `y` and fp64 state whatever it was given, the kernel
+    arm accumulates in fp32 and hands back the operand dtype. Both accept either on
+    input, so a carried state may cross arms between steps. Cast the output if your
+    downstream needs a particular dtype -- neither arm guesses, because a reference
+    that silently rounded its own result to an operand's precision would make an
+    accuracy gate compare against a rounded reference.
 
     `consumer_kwargs` (`paging`, `continue_paging`, `sequence_parallel`, ...) are
     kernel-arm options. Passing one on a call that dispatches to the reference arm

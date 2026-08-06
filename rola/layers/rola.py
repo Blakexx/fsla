@@ -1184,6 +1184,12 @@ class RoLA(nn.Module):
                 self.state_norm, initial_state=recurrent_state,
                 output_final_state=cache_enabled,
             )
+            # The oracle returns fp64 for both outputs whatever it was handed, and
+            # casting back is the caller's business because the caller is the one who
+            # knows why. Here that reason is `o_proj`, which holds the module's
+            # working dtype; the carried state deliberately stays fp64, since the
+            # cache contract below is dtype-agnostic by design.
+            out = out.to(v.dtype)
         self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
 

@@ -476,6 +476,11 @@ def compare(old: dict, new: dict, *, surface: str, exceptions: set) -> dict:
                 differing = int((a != b).sum())
                 failures.append((key, f"{differing} discrete entr(ies) differ"))
             continue
+        if a.numel() == 0:
+            #: Both sides answered `None` (the shapes already agree, so this is not a
+            #: transition). There is no continuous quantity to compare and `max()`
+            #: has no answer on an empty tensor; agreeing refusals agree.
+            continue
         delta = (a.double() - b.double()).abs().max().item()
         if delta > worst["value"]:
             worst = {"value": delta, "key": key}

@@ -134,6 +134,14 @@ def naive_rola(
     ``output_final_state``, ``final_state: [B,H,N,d_v(+1)]`` (the ``+1`` column
     carries the global-normalization mass state; absent for ``raw``).
 
+    BOTH OUTPUTS ARE ``float64``, WHATEVER THE INPUTS WERE. Inputs of any dtype
+    are accepted and cast up; nothing is cast back down. This is the fp64 oracle,
+    and a function that returned an fp32 ``y`` beside an fp64 state would be
+    making its two claims about one run in two precisions -- an accuracy gate
+    would then be comparing against a reference that had itself been rounded.
+    Casting the result to a caller's working dtype is the caller's business, and
+    it is the caller who knows why.
+
     AN INPUT THE OUTPUT DOES NOT DEPEND ON GETS ``None`` FOR ITS GRADIENT, which
     is autograd's ordinary answer and this function states nothing else.
     ``write_levels_stored`` is the standing case: the clock is
@@ -212,7 +220,7 @@ def naive_rola(
             outputs.append(numerator / (denominator[:, None] + eps))
 
     out_bh = torch.stack(outputs, dim=1) if outputs else vf.new_empty(BH, 0, d_v)
-    output_public = out_bh.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous().to(v.dtype)
+    output_public = out_bh.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous()
     if not output_final_state:
         return output_public, None
     final_cache = value_state if mass_state is None else torch.cat((value_state, mass_state[..., None]), dim=-1)

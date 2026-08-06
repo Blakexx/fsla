@@ -1,4 +1,4 @@
-"""What the oracle differentiates, and what it refuses to -- stated as tests.
+"""What the oracle returns and what it differentiates -- both stated as tests.
 
 `naive_rola` used to add `sum(x) * 0` over every input to both of its outputs, so
 that autograd would hand back a ZERO gradient rather than `None` for inputs the
@@ -23,6 +23,13 @@ The contract, in three claims:
 3. **THE DETACHMENT IS LOAD-BEARING**, not incidental: the stored levels DO move
    the forward result under decay, so claim 1 is a statement about the gradient
    and not about an unused input.
+
+And one claim about what it RETURNS: `y` used to be cast back to `v.dtype` while
+the final state stayed fp64 (audit finding F2), so "the fp64 oracle" handed an
+fp32 caller two claims about one run in two precisions -- and an accuracy gate
+comparing against it would have been comparing against a reference that had
+itself been rounded. Both outputs are fp64 now, always, and the cast belongs to
+the caller who knows why they want one.
 
 No device: the oracle is fp64 torch.
 """
@@ -146,3 +153,30 @@ def test_the_oracle_declares_the_none_answer_in_its_docstring():
     """The behaviour is a contract, so it is written down where a caller reads it."""
     assert "None" in naive_rola.__doc__ and "write_levels_stored" in naive_rola.__doc__
 
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float64])
+@pytest.mark.parametrize("normalization", ["raw", "global"])
+def test_both_outputs_are_fp64_whatever_the_inputs_were(dtype, normalization):
+    """Claim 4 (audit F2): the fp64 oracle returns fp64, and the two agree."""
+    operands, _stored, run = _case(decay_on=True, normalization=normalization)
+    lowered = {}
+    for key, tensor in operands.items():
+        lowered[key] = tensor.detach().to(dtype)
+    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in WIDTHS), d_v=D_V)
+    read = tuple(lowered[f"read{i}"] for i in range(len(WIDTHS)))
+    write = tuple(lowered[f"write{i}"] for i in range(len(WIDTHS)))
+    dials = tuple(lowered[f"dial{i}"] for i in range(len(WIDTHS)))
+    y, state = naive_rola(
+        lowered["v"], read, write,
+        lowered.get("g_read"), lowered["g_write"], topology,
+        LeafMassDecay(dials=dials), normalization,
+        write_levels_stored=write, output_final_state=True)
+    assert y.dtype is torch.float64, (
+        f"y came back as {y.dtype} for {dtype} inputs; the oracle returns fp64")
+    assert state.dtype is torch.float64, f"the final state came back as {state.dtype}"
+
+
+def test_the_dtype_policy_is_stated_where_a_caller_reads_it():
+    """A contract nobody can find is a convention. It is in the docstring."""
+    assert "float64" in naive_rola.__doc__
