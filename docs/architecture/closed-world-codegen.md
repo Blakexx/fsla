@@ -119,7 +119,45 @@ central claims are numeric buys the second with the first.
   reject; a build-cache wrapper is admissible only with its own toolchain pin,
   which is R1 extended to the cache.
 
-## 5. What this discipline is *not* claiming
+## 5. The input-closure rule
+
+Every stamping, keying, or fingerprinting mechanism this design adds must enumerate,
+explicitly, everything its key and its value depend on — not just what it *means* to
+depend on. A mechanism that silently depends on more than it enumerates produces a
+false verdict that reads as a true one, because the gate still runs and still prints
+PASS or FAIL; it is answering a question nobody asked.
+
+Two measured instances, both in this tree:
+
+- **A symbol name is a key, and it depended on the checkout PATH.** `decode.cu` and
+  `entmax.cu` put their kernels in an anonymous namespace, whose mangled name embeds a
+  discriminator derived from the source directory — an input the ratification manifest
+  never named, because "the source" was assumed to mean the file's *content*. A
+  worktree build at a different path was therefore certifiable-looking and wrong: the
+  manifest's key set didn't match the binary's, and the failure mode was a hard build
+  refusal (`workflows/refactor/p06_review.md`) rather than a silent pass — which is the
+  lucky case. Fixed at the cause, not papered over with a path convention: those three
+  blocks moved into a named internal namespace (P19, `docs/build.md`'s path-trap
+  section, `workflows/refactor/p19_symbols.md`), so the key is a function of content
+  and toolchain only, the two things the manifest already claimed to certify.
+- **A manifest is a value, and it depended on the codegen flag list.** The manifest
+  pinned the assembler version and the calibration macros but not the `nvcc` flag
+  list itself, so a codegen-affecting flag change left no fingerprint in anything a
+  gate read — caught only because both the build and the ratification import one flag
+  list in code, a property of the *source*, not of the *gate* (`tools/ratify.py`'s
+  `check_flags`, "THE GAP THIS CLOSES"). Fixed by adding `toolchain.nvcc_flags` to the
+  manifest and checking it on every ratification, refused exactly like a missing
+  `defines` block.
+
+Both instances have the same shape: a fingerprint whose *stated* input space (source
+content, or source content plus assembler) was narrower than its *actual* input space
+(source content plus checkout path; source content plus assembler plus flags). The
+rule this teaches is checked at design time, not caught by a gate — the gate is what
+reveals the gap after the fact, which is exactly the failure mode it is meant to
+avoid repeating. Before landing a new stamp, key, or hash: write down everything it
+is sensitive to, then verify nothing sensitive is missing from that list.
+
+## 6. What this discipline is *not* claiming
 
 It does not claim the kernel is optimal, or that the measured numbers are good.
 It claims they are **the numbers**, that they were taken, and that they cannot

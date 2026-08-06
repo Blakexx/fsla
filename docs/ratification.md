@@ -94,15 +94,18 @@ the per-entry answer to what the digest can only ask globally, and it reads two 
   the gate names only the moved ones. That is what makes a scoped `--shard`
   re-measurement a checkable claim rather than an assertion.
 
-**Both maps must come from binaries built at the same PATH.** `decode.cu` and
-`entmax.cu` place their kernels in an anonymous namespace, so the mangled name
-embeds a discriminator derived from the source path; a manifest written in a
-worktree names 192 kernels that no build at any other path will ever define. Build
-one tree over the other rather than side by side.
+**Maps may now come from binaries built at different paths.** `decode.cu` and
+`entmax.cu` used to place their kernels in an anonymous namespace, so the mangled
+name embedded a discriminator derived from the source path; a manifest written in a
+worktree named 192 kernels that no build at any other path would ever define. Fixed
+by moving those kernels into a named internal namespace (P19,
+`workflows/refactor/p19_symbols.md`) — the ratified names are a function of source
+content and toolchain only, and a worktree build now ratifies clean. History:
+`docs/build.md`'s path-trap section.
 
 **And from the same SCANNER.** What reaches the digest is decided by
 `ratify.sass_scan`, so widening the capture moves every hash in an unchanged binary
-— a false verdict with exactly the path trap's shape. `ratify.SASS_HASH_VERSION` is
+— a false verdict with exactly the (now-fixed) path trap's shape. `ratify.SASS_HASH_VERSION` is
 the one definition of that decision; it is stamped into the manifest's `toolchain`
 block and into every map `tools/sass_bodies.py` writes, and both refuse a comparison
 that does not agree on it. A record carrying no stamp is refused rather than assumed

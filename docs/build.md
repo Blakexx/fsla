@@ -92,25 +92,31 @@ binary, so widening the capture moves every digest in an unchanged binary. Maps 
 stamped with `HASH_VERSION` and `--compare` refuses a mismatched or unstamped pair
 rather than reporting the whole matrix as differing.
 
-**A SASS COMPARISON REQUIRES BOTH BUILDS AT THE SAME PATH.** `decode.cu` and
-`entmax.cu` put their kernels in an anonymous namespace, so 96 of the ratified names
-per architecture embed a discriminator derived from the SOURCE DIRECTORY. Two correct
-builds made in two different worktrees disagree on every one of them while being the
-same code. Check one tree out over the other; do not compare side by side. The same
-property makes the ratification manifest a certificate about a path as well as about a
-tree.
+**THE PATH TRAP IS REMOVED. Worktree builds and cross-path SASS comparison are
+ordinary operations.** `decode.cu` and `entmax.cu` used to put their kernels in an
+anonymous namespace, whose mangled names embed a discriminator derived from the
+SOURCE DIRECTORY — 96 of the ratified names per architecture moved with the checkout
+path, so a worktree build failed the post-build gate by construction (*"192 ratified
+instantiation(s) name no entry point … the manifest certifies a binary that is not
+this one"*) and a cross-path SASS comparison disagreed on all 192 while describing
+identical code. Fixed by moving those three blocks into a named internal namespace
+(`rola::decode::detail`, `rola::entmax::detail` — P19,
+`workflows/refactor/p19_symbols.md`): the ratified names are now a function of source
+content and toolchain only, never of where the tree happens to be checked out.
+Verified non-vacuously: master built in a fresh worktree fails exactly as described
+above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
+its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-**Which means `setup.py build_ext` DOES NOT COMPLETE IN A WORKTREE.** This is not a
-SASS-comparison caveat, it is the build: the post-build gate reads the ratified names
-out of the fatbin, 192 of them are the path-dependent ones, and none of those exists
-in a binary built anywhere else — *"192 ratified instantiation(s) name no entry point
-… the manifest certifies a binary that is not this one"*. There is no environment
-variable for it and there should not be, since a binary the manifest does not
-describe is exactly what the closed-world policy refuses to ship. To measure from a
-worktree: `python tools/ratify.py --write` there, build, then restore the committed
-manifests with `git checkout -- tools/manifests`. Nothing measured under such a build
-may be committed as a baseline — its `manifest_sha256` names a ratification that
-exists in no checkout.
+Three OTHER files' anonymous-namespace kernel blocks are unaffected and still
+path-dependent by name (`consumer.cu`'s `scan_kernel`/`divide_kernel`,
+`decode_expand.cu`'s `decode_expand_kernel`, `summaries.cu`'s `summaries_kernel`,
+5/arch) — P19 was scoped to the two files the ratified manifest actually certifies through this
+discriminator. These five were never in the ratified manifest to begin with (it holds
+352 entries/arch; the full SASS scan holds 358, and the 6/arch difference is these
+five kernels plus one path-independent CUB entry point), so their residual
+path-dependence shows up only in a raw `sass_bodies.py` dump, never in a build or a
+ratification gate. A worktree build no longer fails, and a same-tip SASS comparison
+across paths is 0-differing over every ratified entry.
 
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
 changes the assembled code of 1,073 of the 1,228 entries then present, which under the

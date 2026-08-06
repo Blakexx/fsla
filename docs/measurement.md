@@ -173,9 +173,10 @@ mandatory.
 ### SASS
 
 `rola-probe sass` is a front door to `tools/ratify.py` and `tools/sass_bodies.py`; it
-re-implements neither the disassembly nor the compile flags. **Both binaries in a
-comparison must have been built at the same path** — see `docs/ratification.md` for
-why, and `docs/build.md` for what a worktree build does instead.
+re-implements neither the disassembly nor the compile flags. Both binaries in a
+comparison no longer need to have been built at the same path (P19,
+`docs/build.md`'s path-trap section) — they must agree on `ratify.SASS_HASH_VERSION`,
+which `--compare` checks and refuses on mismatch.
 
 ## What is deliberately not here
 

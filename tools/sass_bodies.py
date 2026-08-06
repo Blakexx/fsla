@@ -22,12 +22,26 @@ comment; the padding cuobjdump inserts to align the encoding column is normalise
 because column alignment is a property of the LISTING and moves with the longest
 instruction in it.
 
-**THE NAMES ARE PATH-DEPENDENT, SO BOTH BUILDS MUST BE MADE AT THE SAME PATH.**
-`decode.cu` and `entmax.cu` put their kernels in an ANONYMOUS namespace, so the mangled
-name embeds a discriminator derived from the source path (`_GLOBAL__N__<hash>_11_
-consumer_cu_<hash>`). A baseline built in a worktree at a different directory therefore
-mismatches on every non-consumer entry while being byte-identical code. Build the two
-trees at the SAME path -- check one out over the other -- rather than side by side.
+**THE SAME-PATH REQUIREMENT IS GONE FOR THE RATIFIED SET (P19,
+`workflows/refactor/p19_symbols.md`).** `decode.cu` and `entmax.cu` used to put their
+kernels in an ANONYMOUS namespace, so the mangled name embedded a discriminator
+derived from the source path (`_GLOBAL__N__<hash>_9_decode_cu_<hash>`), and a baseline
+built in a worktree at a different directory mismatched on all 192 of those names
+(96/arch) while being byte-identical code. Both files now use a named internal
+namespace (`rola::decode::detail`, `rola::entmax::detail`), so those names are a
+function of source content and toolchain only -- build the two trees anywhere, side by
+side or one checked out over the other.
+
+Three OTHER files still put kernels in an anonymous namespace and remain
+path-dependent by name: `consumer.cu`'s `scan_kernel`/`divide_kernel`,
+`decode_expand.cu`'s `decode_expand_kernel`, `summaries.cu`'s `summaries_kernel`
+(5/arch). None of the five is in the RATIFIED manifest, so they never gate a build or
+a ratification and a comparison over the ratified set is unaffected either way -- but
+a full whole-binary dump (this tool's normal mode) will still show up to 10 absences
+across two differently-pathed builds. Not a false verdict: `--compare` reports them as
+present-only-on-one-side, which is the true state of those five names, not a body
+difference. Filter them out (or check one tree out over the other, still the simplest
+way to get a clean 0/0/0) if a whole-binary comparison must stay quiet about them too.
 
 **A WRITTEN MAP CARRIES THE HASHER'S VERSION, AND A MISMATCH IS REFUSED.** What is
 hashed is a property of the SCANNER, not of the binary: widening the capture once
@@ -52,8 +66,9 @@ Usage:
     python tools/sass_bodies.py build_a/_C.so --json a.json
     python tools/sass_bodies.py --compare a.json b.json
 
-Both `.so`s must have been BUILT AT THE SAME PATH -- see the path-dependence note
-above.
+Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
+version-stamp note above. They no longer need to have been built at the same path
+(P19) except for the five still-anonymous, unratified kernel names noted above.
 """
 from __future__ import annotations
 
