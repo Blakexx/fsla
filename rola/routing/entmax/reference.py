@@ -35,12 +35,26 @@
 #
 # NOT ON THE PRODUCTION IMPORT PATH. `rola/routing/entmax/production.py` is RoLA's own
 # Triton producer and imports nothing from here; `tests/unit/test_production_levels.py`
-# asserts that by making this module's entry points raise if production reaches them.
+# asserts that by making this module's entry points raise if production reaches them,
+# and separately greps that production imports nothing from this module at all.
+#
+# PINNED (`PIN.json`, `pin.py`). Every figure above is a property of (this adapter,
+# entmax 1.3), and `pyproject.toml`'s `entmax==1.3` is only the coarse half of naming
+# that: it stops the resolver from installing a different release, but not an editable
+# or re-published install that keeps the version string over different bytes.
+# `pin.gate()` runs at import time, below, and refuses BOTH kinds of drift -- the ONLY
+# guard on either, because the dual-run protocol imports the same installed package on
+# both its OLD and NEW sides and cannot see a bump itself.
 
 from __future__ import annotations
 
 import torch
-from entmax import entmax15, entmax_bisect, sparsemax
+
+from rola.routing.entmax import pin as _pin
+
+_pin.gate()
+
+from entmax import entmax15, entmax_bisect, sparsemax  # noqa: E402
 
 __all__ = [
     "entmax",
