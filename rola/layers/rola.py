@@ -260,14 +260,19 @@ class RoLA(nn.Module):
         last_state = get_layer_cache(self, past_key_values)
 
         # P09 matched-dtype family: on the kernel-bound bf16 arm both projections
-        # run as bf16 GEMMs (weights cast per call; the result returns to the
-        # module dtype, so everything downstream -- convs, routing, decode -- is
-        # unchanged, and the op re-narrows `v` at its own boundary, where the
-        # second cast is exact because the values are already bf16-rounded).
+        # run as bf16 GEMMs (weights cast per call), and `v` FLOWS bf16 straight
+        # into the op -- round-tripping it through the module dtype was MEASURED
+        # to cost two elementwise casts per call (a v downcast + a y upcast,
+        # ~12-13% of a small cell's op time; workflows/perf/p09_bf16_family.md).
+        # A configured value_conv runs in the module dtype, so its presence is
+        # the one (structural) case where `v` returns to `x.dtype` here and the
+        # op re-narrows at its boundary -- exactly, the values being
+        # bf16-rounded already.
         bf16_proj = self._bf16_projection_active(x)
         if bf16_proj:
-            v = nn.functional.linear(
-                x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16)).to(x.dtype)
+            v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
+            if self.value_conv is not None:
+                v = v.to(x.dtype)
         else:
             v = self.v_proj(x)
         conv_states = list(last_state.conv_state) if (
@@ -415,6 +420,11 @@ class RoLA(nn.Module):
         state = recurrent_state.to(torch.float32).contiguous()
         if not cache_enabled and state.data_ptr() == recurrent_state.data_ptr():
             state = state.clone()
+        # Decode is an fp32 boundary by contract (out of the P09 bf16-memory
+        # family's scope -- a [BH, width] object with no measured pressure); a
+        # bf16-projected `v` re-widens here, and the cast is exact because the
+        # values are bf16-rounded already. Identity for an fp32 module.
+        v = v.to(torch.float32)
         out, final_state, self._decode_workspace = decode_forward(
             v, routes.read, routes.write, routes.g_read, routes.g_write, config, state,
             decay=decay, workspace=self._decode_workspace)
