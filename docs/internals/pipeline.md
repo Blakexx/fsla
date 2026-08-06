@@ -131,3 +131,25 @@ neither `S` nor `Gm`'s readers — and so are `F` and `C`: `F` writes `S`, `C` r
    CTA-uniform), and the only wait inside the loop — `kCtlReadDone` in window 0 — is on a counter
    every warp has already retired, ABOVE the loop. So a warp sitting at a SLOT-READY or SLOT-FREE
    barrier is never waiting on a warp that is spinning on something that warp itself must supply.
+
+## <a id="cp-async"></a>37b. The async fetch primitives (`cp.async`)
+
+`cp_async16` / `cp_async_commit` / `cp_async_wait_all` are the sm_80+ async
+global-to-shared copy, held here because an async copy's COMPLETION is a
+phase-ordering fact exactly like the counters above: the kernel issues a tile's
+amplitude fetch at one program point and consumes it behind a later barrier
+([`consumer_kernel.md#amp-prefetch`](consumer_kernel.md#amp-prefetch)), and the
+commit/wait pair is what makes that edge real rather than timed.
+
+Three properties are load-bearing:
+
+- **`cg`, not `ca`**: the copy bypasses L1. The slab is read once per tile, so
+  an L1 line would be evicted work; L2 still serves any re-fetch across CTAs.
+- **The zero-fill operand**: `cp.async.cg.shared.global [dst], [src], 16,
+  src_bytes` always writes 16 bytes of shared memory, reads only `src_bytes`
+  of global and zero-fills the rest — branch-free handling of the last line of
+  a stream, with `src_bytes = 0` a pure zero write.
+- **`wait_group` is per-thread**: it settles only the ISSUING thread's
+  committed groups. Cross-thread visibility of the copied bytes still requires
+  a barrier, which is why every wait in the kernel sits immediately in front of
+  a `__syncthreads()` the tile already owned.

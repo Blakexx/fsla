@@ -48,6 +48,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "(the launch bounds in this binary were derived from it)");
   m.def("rola_consumer_smem_bytes", &rola::rola_consumer_smem_bytes,
         "the consumer kernel's dynamic shared-memory footprint per CTA");
+  m.def("rola_consumer_amp_prefetch", &rola::rola_consumer_amp_prefetch,
+        "whether the queried consumer arm derived the amplitude-prefetch slab "
+        "(a per-instantiation footprint decision; same query pin as smem_bytes)");
   m.def("rola_dispatch_table", &rola::rola_dispatch_table,
         "every row of the consumer's dispatch table: (BT, BC, d_v, D, precision, decay, "
         "global, smem_bytes, shard, src_key). Touches no device.");

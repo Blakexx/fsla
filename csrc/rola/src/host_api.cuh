@@ -64,6 +64,10 @@ int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV);
 
 int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t BT, int64_t DV);
 
+//: Whether the queried arm derived the P11 amplitude-prefetch slab. Same query axes
+//: (and the same `D = 2`/`global`/bf16 query pin) as the two functions above.
+bool rola_consumer_amp_prefetch(bool decay, int64_t BC, int64_t BT, int64_t DV);
+
 //: The dispatch table as data, and the device fact its rows are admitted against.
 std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
                        std::string, std::string>>

@@ -160,6 +160,44 @@ __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, in
   return base + (i / p.level_stride[level]) % p.level_modulus[level];
 }
 
+//: THE DIGIT SPAN OF ONE LEVEL over an owner's `BC` leaves: `(i / stride) % modulus`
+//: over `i in [0, BC)` takes the CONTIGUOUS value range `[0, span)` (it either never
+//: wraps or covers the full modulus), so level `level`'s touched digits are exactly
+//: `[base, base + span)`. This is what makes the amplitude fetch a per-token ROW
+//: SEGMENT rather than a scatter, and it is owner-geometry arithmetic, so it lives
+//: beside `leaf_digit` and is shared by the kernel's slab walk, the slab budget and
+//: the launch-time geometry check. docs/internals/consumer.md#digit-span
+__host__ __device__ __forceinline__ constexpr int leaf_digit_span(int stride, int modulus, int BC) {
+  const int count = (BC - 1) / stride + 1;
+  return count < modulus ? count : modulus;
+}
+
+//: A digit span's SLAB ROW PITCH in elements: the span plus up to `chunk - 1`
+//: elements of leading 16-byte-alignment slack, rounded up to whole chunks
+//: (`chunk` = elements per 16-byte `cp.async` transfer). One definition serves the
+//: allocation budget, the kernel's runtime walk and the launch check, so the three
+//: cannot disagree. docs/internals/consumer.md#digit-span
+__host__ __device__ __forceinline__ constexpr int amp_slab_row_pitch(int span, int chunk) {
+  return ((span + 2 * (chunk - 1)) / chunk) * chunk;
+}
+
+//: THE SLAB BUDGET'S WORST CASE, enumerated: the largest `sum_l amp_slab_row_pitch`
+//: any §3 rectangle can realize at this `(BC, D, chunk)` -- the maximum over
+//: factorizations of `BC` into exactly `D` factors (a fixed level is the factor 1).
+//: The spanned levels' spans multiply to `BC` because the owner's leaf block IS the
+//: rectangle they enumerate; the launch checks the realized sum against exactly this
+//: number. docs/internals/consumer.md#digit-span
+constexpr int amp_slab_worst_elems(int BC, int D, int chunk) {
+  if (D == 1) return amp_slab_row_pitch(BC, chunk);
+  int best = 0;
+  for (int s = 1; s <= BC; ++s) {
+    if (BC % s != 0) continue;
+    const int v = amp_slab_row_pitch(s, chunk) + amp_slab_worst_elems(BC / s, D - 1, chunk);
+    best = v > best ? v : best;
+  }
+  return best;
+}
+
 //: §6.4's three passes. Pass 2 is `scan_kernel`, a separate launch, so only the two
 //: consumer passes appear here. docs/internals/consumer.md#pass-mode
 enum PassMode : int {
@@ -251,6 +289,13 @@ struct ShardRow {
   LaunchFn launch;
   OccFn occupancy;
   size_t smem_bytes;
+  //: Whether this arm derived the P11 amplitude-prefetch slab
+  //: (`consumer_amp_prefetch`, a footprint decision only the shard can answer).
+  //: Exposed so the launch can apply the slab's geometry check exactly where the
+  //: slab exists, and so a gate can pin WHICH arms carry the mechanism -- an
+  //: enablement that silently derived false everywhere would leave every
+  //: correctness gate green and vacuous. docs/internals/consumer.md#shard-rows
+  bool amp_prefetch;
   //: The generated translation unit that OWNS this row, and that unit's
   //: `members-sha256` -- the hash of the sorted tuple list it carries. The pair is
   //: the row's STALENESS KEY: it is what `tools/manifests/sm_*.json` records under

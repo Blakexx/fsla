@@ -360,6 +360,27 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
               " B of dynamic shared memory and this device grants a block at most ",
               device.max_dynamic_smem_bytes,
               " B. The arm is compiled but not runnable here; select a smaller tile.");
+  //: THE PREFETCH ARMS' GEOMETRY CHECK. The slab was carved for the WORST §3
+  //: rectangle (`amp_slab_worst_elems`), which bounds every schedule whose spanned
+  //: spans multiply to `BC` -- the structural invariant of the owner decomposition.
+  //: A schedule outside it is refused HERE, by name, rather than allowed to walk a
+  //: slab row past its reservation inside the kernel.
+  //: docs/internals/consumer.md#digit-span
+  if (row->amp_prefetch) {
+    const int chunk = 16 / ((row->prec == MmaPrec::kBf16 && !decay && global_norm) ? 2 : 4);
+    int rows_sum = 0;
+    for (int l = p.first_spanned_level; l < p.D; ++l) {
+      rows_sum +=
+          amp_slab_row_pitch(leaf_digit_span(p.level_stride[l], p.level_modulus[l], BC), chunk);
+    }
+    TORCH_CHECK(rows_sum <= amp_slab_worst_elems(BC, p.D, chunk),
+                "this schedule's spanned-level digit spans need ", rows_sum,
+                " slab elements per token and the amplitude-prefetch carve budgeted ",
+                amp_slab_worst_elems(BC, p.D, chunk), " (the §3 rectangle bound at BC=", BC,
+                ", D=", p.D,
+                "). The schedule's level geometry is outside the owner-rectangle "
+                "invariant the slab was sized for.");
+  }
   row->launch(p, at::cuda::getCurrentCUDAStream());
   //: THE ONE ERROR SITE. The shard's launcher is torch-free and reports through the
   //: CUDA runtime's error state -- a refused shared-memory opt-in and a failed launch
@@ -433,6 +454,10 @@ int64_t rola_max_dynamic_smem_bytes() {
 
 int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t BT, int64_t DV) {
   return static_cast<int64_t>(query_row(decay, BC, BT, DV).smem_bytes);
+}
+
+bool rola_consumer_amp_prefetch(bool decay, int64_t BC, int64_t BT, int64_t DV) {
+  return query_row(decay, BC, BT, DV).amp_prefetch;
 }
 
 // ---------------------------------------------------------------------------

@@ -242,6 +242,7 @@ def shard_source(name: str, rows: list[dict]) -> str:
             f"&launch_consumer_arm<{targs(row)}>, "
             f"&query_consumer_occupancy_arm<{targs(row)}>, "
             f"consumer::consumer_smem_bytes<{targs(row, prec_twice=True)}>(), "
+            f"consumer::consumer_amp_prefetch<{targs(row, prec_twice=True)}>(), "
             f'"{name}", "{key}"}},\n')
     body.append("};\n")
     body.append("\n")

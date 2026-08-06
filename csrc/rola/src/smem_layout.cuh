@@ -340,6 +340,7 @@ __host__ __device__ __forceinline__ constexpr int wt_index(int q, int t) {
 }
 
 constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
+constexpr size_t align16(size_t x) { return (x + 15) & ~static_cast<size_t>(15); }
 
 //: FRAGMENT-ORDER OPERAND SYNTHESIS. We SYNTHESISE the read coefficients in SMEM
 //: rather than receiving them, so we can store them in the order the MMA's A fragment
@@ -417,6 +418,32 @@ constexpr size_t consumer_smem_bytes_at() {
   return b;
 }
 
+//: THE AMPLITUDE-CLASS ELEMENT SIZE, as the byte count the slab budget needs -- the
+//: `AmpRT`/`AmpWT` storage rule (P09 family, the kernel's alias block) restated
+//: once as arithmetic: bf16 exactly on the `kBf16 && !DECAY && GLOBAL` arms, fp32
+//: everywhere else. The kernel's `using` aliases and this function must agree, and
+//: the slab's element type IS the amplitude storage type, so one rule serves both.
+template <MmaPrec PREC, bool DECAY, bool GLOBAL>
+constexpr int amp_class_bytes() {
+  return (PREC == MmaPrec::kBf16 && !DECAY && GLOBAL) ? 2 : 4;
+}
+
+//: THE AMPLITUDE-PREFETCH SLAB'S FOOTPRINT: one read-side and one write-side slab
+//: (each `BT` rows of the WORST-CASE `amp_slab_worst_elems` row budget, since the
+//: realized per-level spans are runtime geometry and the carve is not), plus the two
+//: `[D][BT]` per-tile offset tables the gather indexes through. Regions are 16-byte
+//: aligned because `cp.async` writes 16-byte lines.
+//: docs/internals/smem_layout.md#amp-prefetch
+template <int BT, int BC, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY, bool GLOBAL>
+constexpr size_t amp_prefetch_bytes() {
+  constexpr int rb = amp_class_bytes<READ_PREC, DECAY, GLOBAL>();
+  constexpr int wb = amp_class_bytes<FOLD_PREC, DECAY, GLOBAL>();
+  size_t b = align16(static_cast<size_t>(BT) * amp_slab_worst_elems(BC, D, 16 / rb) * rb);
+  b += align16(static_cast<size_t>(BT) * amp_slab_worst_elems(BC, D, 16 / wb) * wb);
+  b += align16(2 * static_cast<size_t>(D) * BT * sizeof(int));  // offR then offW
+  return b;
+}
+
 //: THE RING DEPTH, DERIVED. One rule, applied per instantiation: take the deeper
 //: staging set iff it costs NO CTA, off the same `ctas_for_residency`
 //: `__launch_bounds__` is derived from, so the ring cannot silently disagree with the
@@ -445,12 +472,47 @@ constexpr int consumer_ring_depth() {
   return cap_two == cap_one ? 2 : 1;
 }
 
+//: WHETHER THE AMPLITUDE FETCH IS PREFETCHED, DERIVED (the ring-depth pattern): the
+//: slab is taken iff it costs NO CTA, off the same `ctas_for_residency` the launch
+//: bound is derived from, with the shared-memory term checked separately for the
+//: same reason `consumer_ring_depth` checks it. Two STRUCTURAL preconditions come
+//: first: the staging ring at depth 1 (a depth-2 run-ahead stages INTO the slab's
+//: consumption window -- the two mechanisms answer the same latency and are mutually
+//: exclusive by construction), and the write panel at the PLANE (a windowed `WT`
+//: rebuilds from the amplitude stream inside phase B, after the slab has been
+//: refilled for the next tile). No new template axis: every input is an existing
+//: one. docs/internals/smem_layout.md#amp-prefetch
+template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
+          bool GLOBAL>
+constexpr bool consumer_amp_prefetch() {
+  if (consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>() != 1) return false;
+  if (wt_window_atoms(BC, DECAY) != BC / kMmaKQuantum) return false;
+  constexpr int budget = consumer_reg_budget(BT, BC, DECAY, READ_PREC, FOLD_PREC, DV);
+  constexpr size_t base =
+      consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, 1>();
+  constexpr size_t with =
+      align16(base) + amp_prefetch_bytes<BT, BC, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>();
+  if (ctas_for_residency(with, budget) != ctas_for_residency(base, budget)) return false;
+  constexpr int threads = kSm.max_threads_per_sm / kConsumerThreads;
+  constexpr int smem_base = static_cast<int>(kSm.smem_per_sm / (base + kDriverSmemReservePerCta));
+  constexpr int smem_with = static_cast<int>(kSm.smem_per_sm / (with + kDriverSmemReservePerCta));
+  const int cap_base = smem_base < threads ? smem_base : threads;
+  const int cap_with = smem_with < threads ? smem_with : threads;
+  return cap_with == cap_base;
+}
+
 template <int BT, int BC, int DV, int D, MmaPrec READ_PREC, MmaPrec FOLD_PREC, bool DECAY,
           bool GLOBAL>
 constexpr size_t consumer_smem_bytes() {
-  return consumer_smem_bytes_at<
+  constexpr size_t base = consumer_smem_bytes_at<
       BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL,
       consumer_ring_depth<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>()>();
+  if (consumer_amp_prefetch<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>()) {
+    //: The prefetch derivation pinned the ring at 1, so `base` here IS the depth-1
+    //: carve the derivation priced.
+    return align16(base) + amp_prefetch_bytes<BT, BC, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>();
+  }
+  return base;
 }
 
 }  // namespace consumer

@@ -60,6 +60,30 @@ product over ALL levels (it is an exponent, so a fixed level cannot hoist into
 the row scale), which is the one operand assembly that walks the leaf digits
 outside the kernel translation unit.
 
+## <a id="digit-span"></a>A2b. The digit span, and the slab-row arithmetic it feeds
+
+`leaf_digit_span(stride, modulus, BC)`: over an owner's `BC` leaves,
+`(i / stride) % modulus` takes the CONTIGUOUS value range `[0, span)` with
+`span = min(modulus, floor((BC - 1) / stride) + 1)` — the quotient walks
+`0, 1, 2, ...` and either never reaches `modulus` (no wrap) or wraps and covers
+all of it. Level `l`'s touched digits are therefore exactly the segment
+`[base_l, base_l + span_l)`, which is what makes the amplitude fetch a
+per-token ROW SEGMENT a 16-byte async copy can serve rather than a scatter.
+
+Two companions live beside it because allocation, kernel walk and launch check
+must share one definition:
+
+- `amp_slab_row_pitch(span, chunk)` — the span plus up to `chunk - 1` elements
+  of leading alignment slack, rounded to whole 16-byte lines (`chunk` =
+  elements per line).
+- `amp_slab_worst_elems(BC, D, chunk)` — the enumerated worst case of
+  `sum_l amp_slab_row_pitch(span_l, chunk)` over factorizations of `BC` into
+  exactly `D` factors (a fixed level is the factor 1). The spanned levels'
+  spans multiply to `BC` because the owner's leaf block IS the §3 rectangle
+  they enumerate; `launch_consumer` refuses, by name, any schedule whose
+  realized sum exceeds this bound on an arm that carries the prefetch slab
+  ([`smem_layout.md#amp-prefetch`](smem_layout.md#amp-prefetch)).
+
 ## <a id="ring-depth"></a>A3. The staging-ring depth is compile-time
 
 `consumer_ring_depth()` in `smem_layout.cuh` resolves it per instantiation

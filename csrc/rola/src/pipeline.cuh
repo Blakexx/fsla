@@ -64,5 +64,25 @@ __device__ __forceinline__ void await_count(const volatile int* counter, int tar
   }
 }
 
+//: THE ASYNC FETCH PRIMITIVES (sm_80+ `cp.async`), here because completion of an
+//: async copy is a PHASE-ORDERING fact exactly like the counters above: the kernel
+//: issues a tile's fetch at one program point and consumes it behind a later
+//: barrier, and the wait/commit pair is what makes that edge real. `cg` bypasses L1
+//: (the amplitude slab is read once per tile) and the 4th operand is the PTX
+//: zero-fill form: the copy always writes 16 bytes of shared memory, reading only
+//: `src_bytes` of global and zero-filling the rest -- branch-free ragged-tail
+//: handling at a stream's end. docs/internals/pipeline.md#cp-async
+__device__ __forceinline__ void cp_async16(void* dst_smem, const void* src_gmem, int src_bytes) {
+  const unsigned dst = static_cast<unsigned>(__cvta_generic_to_shared(dst_smem));
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::"r"(dst), "l"(src_gmem),
+               "r"(src_bytes));
+}
+
+__device__ __forceinline__ void cp_async_commit() { asm volatile("cp.async.commit_group;"); }
+
+//: Waits on THIS THREAD's committed groups only; cross-thread visibility of the
+//: copied bytes still requires the barrier the caller already owns.
+__device__ __forceinline__ void cp_async_wait_all() { asm volatile("cp.async.wait_group 0;"); }
+
 }  // namespace consumer
 }  // namespace rola

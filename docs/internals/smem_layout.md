@@ -288,6 +288,29 @@ undeclared surplus. No `constexpr` can see a `ptxas` output. Re-deriving
 `consumer_reg_budget` — D8-Q1, already open — is the thing that would let this default
 move to `2`.
 
+## <a id="amp-prefetch"></a>7b. The amplitude-prefetch slab — footprint and derivation (P11)
+
+`amp_prefetch_bytes` prices the P11 slab
+([`consumer_kernel.md#amp-prefetch`](consumer_kernel.md#amp-prefetch)): one read-side and one
+write-side region of `BT x amp_slab_worst_elems(BC, D, chunk)` amplitude-class elements each
+(`amp_class_bytes` restates the `AmpRT`/`AmpWT` storage rule as arithmetic; `chunk` is the
+element count of one 16-byte `cp.async` line), plus the two `[D][BT]` int offset tables. The
+row budget is the WORST §3 rectangle because the realized per-level spans are runtime geometry
+and the carve is not ([`consumer.md#digit-span`](consumer.md#digit-span)); the launch checks
+every schedule against the same enumerated bound. Regions are 16-byte aligned for the copy's
+line size, and the whole block sits past the depth-1 carve
+(`align16(consumer_smem_bytes_at<..., 1>())`), so no existing offset moves.
+
+`consumer_amp_prefetch` derives the enablement per instantiation by exactly the
+[ring-depth rule](#ring-depth): the slab is taken iff it costs NO CTA under
+`ctas_for_residency` AND under the shared-memory term alone, off the same arithmetic the launch
+bound is derived from. Two structural preconditions come first — the staging ring at depth 1
+and the `WT` build at the plane — for the reasons stated at the kernel's schedule table. At the
+flagship instantiation (`BT16 BC64 DV64 D2 bf16 !decay global`) the derivation lands ON:
+27,096 -> 32,480 B with 3 CTAs/SM kept. No new template axis exists: every input is an axis the
+dispatch already forks on, and arms where the slab would cost residency simply keep the direct
+fetch — a compile-time structure, not a runtime fallback.
+
 ## <a id="wt-window"></a>8. §8 calibration placeholder `C_WT_WINDOW` — the `WT` window
 
 How many `kMmaKQuantum`-leaf ATOMS of the write panel `WT` the tile's second phase

@@ -878,6 +878,54 @@ of the schedule:
 `nxt` is CTA-uniform (`next_cand` reads only SMEM candidate words), so the guard cannot diverge
 across the barrier inside.
 
+## <a id="amp-prefetch"></a>35b. The amplitude-prefetch slab (P11)
+
+On the arms `consumer_amp_prefetch` derives it
+([`smem_layout.md#amp-prefetch`](smem_layout.md#amp-prefetch)), the NEXT candidate tile's
+spanned-level amplitude row segments are fetched into a dedicated SMEM slab by `cp.async.cg`
+([`pipeline.md#cp-async`](pipeline.md#cp-async)) a full tile ahead of their consumption, and the
+panel builds' per-`(token, leaf)` gather becomes a shared-memory read. The transformation is the
+RecMII-corrected one the software-pipelining analysis prescribes: the amplitude FETCH depends
+only on the tile index — never on the carried state — so issuing it early removes a DRAM latency
+from the carried chain, where the staging ring's depth-2 run-ahead (§35) merely added a buffer
+stage and measured as a wash-to-regression.
+
+**The schedule, against the tile body's landmarks:**
+
+| point | prefetch action | why it is legal there |
+|---|---|---|
+| prologue, once per CTA | issue + `commit` + `wait` + `__syncthreads()` for the FIRST candidate | the one visit with no runway (the entry epoch); the barrier publishes every thread's lines |
+| just after the pre-GEMM `__syncthreads()` | issue + `commit` for `next_cand(tile + 1)` | every gather sits inside `stage_tile`, behind the barrier just crossed — the slab is DEAD, and the whole tile (four GEMMs, the gate, the emission) becomes the fetch's runway |
+| just before the end-of-tile `__syncthreads()` | `cp.async.wait_group 0` | the issuing thread's own lines complete before the barrier that publishes them; after a tile of runway the wait is expected settled |
+
+**Single-buffered on purpose.** Consumption ends before the pre-GEMM barrier and the refill
+starts after it, so a second buffer would have no reader. That is the ring-sizing rule applied
+(consumption rate x refill latency, never range-matched): the slab refills once per candidate
+tile and the refill latency is a DRAM round-trip, orders of magnitude inside the tile's compute
+time — depth 1 is the derived depth at any `L`, including the 1M design target, because the
+slab's size is per-tile constant (`BT` rows x a `BC`-bounded span) and independent of `L`, `N`
+and `n_tiles`.
+
+**The gather's address path.** `pf_issue` writes, per side and per `(level, token)` row, the
+offset-table entry `off[l][t] = lvl_off_l + t * rp_l + lead - base_l`, where `rp_l` is the
+level's slab row pitch and `lead` the row's 16-byte-alignment slack
+([`consumer.md#digit-span`](consumer.md#digit-span)); the hot-loop index is then
+`off[l][t] + dig[l][i]` — one SMEM read and one add where the direct path paid a pointer, an
+IMUL and a long-latency LDG. Copies start at the row's aligned floor (align-down can never
+underflow the 256-byte-aligned stream base) and the last line clamps against the stream's end
+through the zero-fill operand.
+
+**Sides are predicated by the PREFETCHED tile's own candidacy** (`is_read`/`is_write` read off
+the candidate words), so a read-only visit fetches no write slab and vice versa; an unfetched
+side is never gathered.
+
+**Structural exclusions, both compile-time:** `kRing == 2` (the run-ahead stages into the slab's
+consumption window — the derivation keeps the two mutually exclusive, and the depth-2 ring is
+itself a measured decline) and the windowed `WT` build (`!kWtPlane`, which rebuilds from the
+amplitude stream inside phase B, after the slab has been refilled). `DECAY` is NOT excluded:
+the clock stream keeps its direct fetch (out of the slab's scope) and the amplitude gathers slab
+exactly as the non-decay arms — the footprint rule alone decides those arms.
+
 ---
 
 # Part V — the phase-C gate

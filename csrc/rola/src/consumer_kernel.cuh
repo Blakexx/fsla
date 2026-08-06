@@ -233,6 +233,32 @@ consumer_forward_kernel(ConsumerParams p) {
   static_assert(frag_a_words<READ_PREC>(BC) >= 2 * BC + 1,
                 "pass 1's summary state must fit inside the read-coefficient buffer");
 
+  // ---- THE AMPLITUDE-PREFETCH SLAB (P11). The NEXT candidate tile's spanned-level
+  // ---- amplitude ROW SEGMENTS, fetched by `cp.async` a full tile ahead of their
+  // ---- consumption -- the fetch depends only on the tile index, so it legally leaves
+  // ---- the carried chain -- and the panel builds' gather becomes a shared-memory
+  // ---- read through the `[D][BT]` offset tables. SINGLE-buffered: the slab is dead
+  // ---- before the tile's pre-GEMM barrier and refilled only after it, so a second
+  // ---- buffer would have no reader. Enablement is DERIVED per instantiation
+  // ---- (`consumer_amp_prefetch`, the ring-depth pattern); the whole region sits
+  // ---- past the depth-1 carve. docs/internals/consumer_kernel.md#amp-prefetch
+  constexpr bool kPF = consumer_amp_prefetch<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL>();
+  static_assert(!kPF || kRing == 1,
+                "the prefetch supersedes the staging ring's run-ahead; the derivation "
+                "must keep the two mutually exclusive");
+  constexpr size_t kPfOff =
+      align16(consumer_smem_bytes_at<BT, BC, DV, D, READ_PREC, FOLD_PREC, DECAY, GLOBAL, 1>());
+  constexpr int kPfCr = 16 / static_cast<int>(sizeof(AmpRT));
+  constexpr int kPfCw = 16 / static_cast<int>(sizeof(AmpWT));
+  constexpr size_t kPfRBytes =
+      align16(static_cast<size_t>(BT) * amp_slab_worst_elems(BC, D, kPfCr) * sizeof(AmpRT));
+  constexpr size_t kPfWBytes =
+      align16(static_cast<size_t>(BT) * amp_slab_worst_elems(BC, D, kPfCw) * sizeof(AmpWT));
+  AmpRT* pfR = reinterpret_cast<AmpRT*>(smem_raw + kPfOff);
+  AmpWT* pfW = reinterpret_cast<AmpWT*>(smem_raw + kPfOff + kPfRBytes);
+  int* offR = reinterpret_cast<int*>(smem_raw + kPfOff + kPfRBytes + kPfWBytes);
+  int* offW = offR + D * BT;
+
   // ---- EACH OPERAND'S PITCH PROVES ITS OWN CONFLICT-FREEDOM. `stride_g`/`stride_r`
   // ---- are read straight off `mma_tile`'s fragment maps; the whole ledger, and which
   // ---- predicate each buffer's STORAGE FORMAT makes correct:
@@ -389,6 +415,48 @@ consumer_forward_kernel(ConsumerParams p) {
     }
     return t;
   };
+  // ---- THE PREFETCH ISSUE: tile `tile`'s spanned-level amplitude segments as
+  // ---- 16-byte `cp.async.cg` lines, sides predicated by the tile's own candidacy.
+  // ---- Each `(level, token)` row copies from its 16-byte-aligned floor (align-down
+  // ---- never underflows the 256-byte-aligned stream base) and clamps against the
+  // ---- stream's end through the zero-fill operand; the per-row lead lands in the
+  // ---- offset table so the gather pays no realignment. The level loop is unrolled
+  // ---- so `base[l]` stays constant-indexed (HAZARD no-captured-arrays' register
+  // ---- rule). docs/internals/consumer_kernel.md#amp-prefetch
+  auto pf_issue = [&](int tile) {
+    const bool rd = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+    const bool wrt = ((cand_write[tile >> 5] >> (tile & 31)) & 1u) != 0u;
+    const int64_t trow = (static_cast<int64_t>(bh) * p.n_tiles + tile) * BT;
+    auto side = [&](auto* slab, int* off, const void* const* amps, const int* pitch) {
+      using T = typename cuda::std::remove_pointer<decltype(slab)>::type;
+      constexpr int c = 16 / static_cast<int>(sizeof(T));
+      int lvl_off = 0;
+#pragma unroll
+      for (int l = 0; l < D; ++l) {
+        if (l < j) continue;  // fixed levels feed the row scales, never the slab
+        const int span = leaf_digit_span(p.level_stride[l], p.level_modulus[l], BC);
+        const int rp = amp_slab_row_pitch(span, c);
+        const int nch = rp / c;
+        const T* src0 = static_cast<const T*>(amps[l]);
+        const int64_t end = static_cast<int64_t>(p.BH) * p.n_tiles * BT * pitch[l];
+        for (int u = tid; u < BT * nch; u += kConsumerThreads) {
+          const int t = u / nch;
+          const int k = u - t * nch;
+          const int64_t e0 = (trow + t) * pitch[l] + base[l];
+          const int lead = static_cast<int>(e0) & (c - 1);
+          if (k == 0) off[l * BT + t] = lvl_off + t * rp + lead - base[l];
+          const int64_t src = (e0 - lead) + static_cast<int64_t>(k) * c;
+          const int64_t rem = end - src;
+          const int nbytes =
+              rem >= c ? 16 : (rem > 0 ? static_cast<int>(rem) * static_cast<int>(sizeof(T)) : 0);
+          cp_async16(slab + (lvl_off + t * rp + k * c), src0 + src, nbytes);
+        }
+        lvl_off += BT * rp;
+      }
+    };
+    if (rd) side(pfR, offR, p.amp_read, p.level_pitch_read);
+    if (wrt) side(pfW, offW, p.amp_write, p.level_pitch_write);
+  };
   // ---- THE BUILD IS AN ATOM-RANGE FUNCTION, NOT A PLANE PASS: at the plane the
   // ---- range folds away and the emitted loop is the plane pass verbatim, which is what
   // ---- makes "the plane" a VALUE OF THE DIAL rather than a second code path (I4).
@@ -543,7 +611,13 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-          a *= amp_to_float(amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]]);
+          if constexpr (kPF) {
+            //: The prefetched slab, through the per-tile offset table: the same
+            //: bytes the direct fetch would read, already resident.
+            a *= amp_to_float(pfR[offR[l * BT + t] + dig[l * BC + i]]);
+          } else {
+            a *= amp_to_float(amp_r[l][t * p.level_pitch_read[l] + dig[l * BC + i]]);
+          }
         }
         if (DECAY && is_write) {
           a *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
@@ -570,7 +644,13 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- window IS the plane -- which is what keeps the `DECAY` arm's build ABOVE the
     // ---- `clk -> Vw` lifetime barrier, where `clk` is still live.
     //: HAZARD wt-build-site -- docs/internals/consumer_kernel.md#wt-build-site
-    if constexpr (kWtPlane && kRing == 1) {
+    if constexpr (kWtPlane && kRing == 1 && kPF) {
+      if (is_write) {
+        build_wt_rows(0, BC, [&](int l, int t, int i) {
+          return amp_to_float(pfW[offW[l * BT + t] + dig[l * BC + i]]);
+        });
+      }
+    } else if constexpr (kWtPlane && kRing == 1) {
       if (is_write) {
         build_wt_rows(0, BC, [&](int l, int t, int i) {
           return amp_to_float(amp_w[l][t * p.level_pitch_write[l] + dig[l * BC + i]]);
@@ -606,6 +686,17 @@ consumer_forward_kernel(ConsumerParams p) {
       stage_tile(first, 0, ((cand_read[first >> 5] >> (first & 31)) & 1u) != 0u,
                  ((cand_write[first >> 5] >> (first & 31)) & 1u) != 0u);
     }
+  }
+  // ---- THE PREFETCH PROLOGUE: the FIRST candidate is the one visit with no runway,
+  // ---- so its fetch is issued and awaited here, once per CTA (the entry epoch;
+  // ---- co-residency covers it). The barrier makes every thread's lines visible to
+  // ---- every gatherer. docs/internals/consumer_kernel.md#amp-prefetch
+  if constexpr (kPF) {
+    const int first = next_cand(tile_lo);
+    if (first < tile_hi) pf_issue(first);
+    cp_async_commit();
+    cp_async_wait_all();
+    __syncthreads();
   }
   for (int tile = tile_lo, visit = 0; tile < tile_hi; ++tile) {
     const bool is_read = ((cand_read[tile >> 5] >> (tile & 31)) & 1u) != 0u;
@@ -650,6 +741,19 @@ consumer_forward_kernel(ConsumerParams p) {
     }
 
     __syncthreads();
+
+    // ---- THE PREFETCH ISSUE POINT: the earliest program point where this tile's
+    // ---- slab is DEAD (every gather sits inside `stage_tile`, behind the barrier
+    // ---- just crossed), so the next candidate's fetch is issued here and the whole
+    // ---- tile -- four GEMMs, the gate, the emission -- is its runway. The wait is at
+    // ---- the tile's end, in front of the existing end-of-tile barrier: RecMII
+    // ---- shortened, no new barrier, no register held across the latency.
+    // ---- docs/internals/consumer_kernel.md#amp-prefetch
+    if constexpr (kPF) {
+      const int nxt = next_cand(tile + 1);
+      if (nxt < tile_hi) pf_issue(nxt);
+      cp_async_commit();
+    }
 
     // ---- GEMM 1: THE READOUT, `y_tile = R . S`. The B operand is packed out of `S` on
     // ---- the fly; STATE AND ACCUMULATION STAY fp32. The y-tile accumulator is
@@ -1025,6 +1129,9 @@ consumer_forward_kernel(ConsumerParams p) {
         }
       }
     }
+    //: The issuing thread's own lines must be complete before the barrier publishes
+    //: them; after a whole tile of runway this wait is expected settled.
+    if constexpr (kPF) cp_async_wait_all();
     __syncthreads();
     ++visit;
   }
