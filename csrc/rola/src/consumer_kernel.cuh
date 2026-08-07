@@ -35,9 +35,11 @@
 //
 // THE ONE PRECISION STORY: bf16 storage, fp32 accumulation, fp64 reference as
 // oracle. The staged operands, amplitude streams and value stream are bf16; the
-// state, accumulators, clock and row scales are fp32; the DECAY panel factors are
-// APPLIED IN fp16 (U07-d: factor computed fp32, narrowed once, paired `__hmul2`
-// against the packed amplitude pair, product narrowed to the bf16 operand).
+// state, accumulators, clock, row scales AND the decay panel application are
+// fp32. (U07-d's fp16 application was built and CARVED on measurement: an
+// admitted hot routing put the survival factor past fp16's 65504 range --
+// measured NaN, not rounding. bf16 amplitude STORAGE on the decay arms
+// survives the carve; the register cost is the ratchet's to adjudicate.)
 //
 // Three facts a reader must not miss:
 //   1. THE STATE LIVES IN SMEM (`S[BC][SP]`), not in registers. That is what
@@ -55,7 +57,6 @@
 // deadlock argument and the hazard index: docs/internals/consumer_kernel.md
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 
 #include "arch_table.cuh"
 #include "intra_panel.cuh"
@@ -388,31 +389,19 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- THE READ PANEL (§3 steps 2-3), LIVE ATOMS ONLY. The loop walks FRAGMENT
     // ---- SLOTS (one k-step = one atom = 128 words), so the store is contiguous in
     // ---- `tid` and the buffer is atom-blocked by construction. The bf16 slot packs
-    // ---- the leaf pair `(k, k+1)`, which is the fp16 application's natural pair.
+    // ---- the leaf pair `(k, k+1)`.
     // ---- docs/internals/consumer_kernel.md#read-panel
     if (is_read) {
-      //: One coefficient-pair accessor. Under `DECAY && is_write` the survival
-      //: factor is computed fp32, narrowed ONCE to fp16, and the amplitude pair
-      //: rides `__hmul2` (U07-d) -- factor first, so the intermediate magnitude
-      //: tracks the factor, not the raw amplitude product.
+      //: One coefficient-pair accessor. THE fp16 APPLICATION IS CARVED OUT
+      //: (U07-d built, adjudicated 2026-08-06): an ADMITTED hot routing (panel
+      //: bound 23.3 of 40) put the survival factor at ~e^15+, past fp16's
+      //: 65504 max -- measured NaN, not a rounding. The panels apply in fp32
+      //: against the bf16 STORAGE (the memory win survives the carve); the
+      //: register cost is the ratchet's to adjudicate.
+      //: Evidence: workflows/perf/p26_evidence/m2_fp16_breach.txt.
       auto rf_pair = [&](int t, int k) -> unsigned {
         if (t >= gN) return 0u;  // padded slot: exact-zero pair
         const int64_t tr = tok_base + t_idx[t];
-        if (DECAY && is_write) {
-          __half2 acc = __floats2half2_rn(
-              panel_read_factor(clk[t * CKP + k], p_ref[k], log_keep[k]),
-              panel_read_factor(clk[t * CKP + k + 1], p_ref[k + 1], log_keep[k + 1]));
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l < j) continue;
-            const __nv_bfloat16* row =
-                static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l];
-            acc = __hmul2(acc, __floats2half2_rn(__bfloat162float(row[dig[l * BC + k]]),
-                                                 __bfloat162float(row[dig[l * BC + k + 1]])));
-          }
-          const float2 f = __half22float2(acc);
-          return pack_bf16x2(clamp_bf16_finite(f.x), clamp_bf16_finite(f.y));
-        }
         float a0 = 1.0f, a1 = 1.0f;
 #pragma unroll
         for (int l = 0; l < D; ++l) {
@@ -421,6 +410,10 @@ consumer_forward_kernel(ConsumerParams p) {
               static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l];
           a0 *= __bfloat162float(row[dig[l * BC + k]]);
           a1 *= __bfloat162float(row[dig[l * BC + k + 1]]);
+        }
+        if (DECAY && is_write) {
+          a0 *= panel_read_factor(clk[t * CKP + k], p_ref[k], log_keep[k]);
+          a1 *= panel_read_factor(clk[t * CKP + k + 1], p_ref[k + 1], log_keep[k + 1]);
         }
         return pack_bf16x2(clamp_bf16_finite(a0), clamp_bf16_finite(a1));
       };
@@ -441,8 +434,8 @@ consumer_forward_kernel(ConsumerParams p) {
         }
       }
     }
-    // ---- THE WRITE PANEL, LIVE ATOMS ONLY -- one leaf-PAIR per thread visit (the
-    // ---- fp16 application's pair again). The pass-1 inclusion ballot rides the
+    // ---- THE WRITE PANEL, LIVE ATOMS ONLY -- one leaf-PAIR per thread visit.
+    // ---- The pass-1 inclusion ballot rides the
     // ---- same 16-lane token run per leaf. docs/internals/consumer_kernel.md#write-panel
     if (is_write) {
       auto wt_pairs = [&](int q) {
@@ -453,33 +446,22 @@ consumer_forward_kernel(ConsumerParams p) {
           const int i0 = q * kMmaKQuantum + 2 * pr_i;
           float a0 = 0.0f, a1 = 0.0f;
           if (t < gN) {
+            //: fp32 application against bf16 storage (the fp16 carve; see the
+            //: read panel's note).
             const int64_t tr = tok_base + t_idx[t];
+            a0 = 1.0f;
+            a1 = 1.0f;
+#pragma unroll
+            for (int l = 0; l < D; ++l) {
+              if (l < j) continue;
+              const __nv_bfloat16* row =
+                  static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l];
+              a0 *= __bfloat162float(row[dig[l * BC + i0]]);
+              a1 *= __bfloat162float(row[dig[l * BC + i0 + 1]]);
+            }
             if (DECAY) {
-              __half2 acc = __floats2half2_rn(
-                  panel_write_factor(clk[t * CKP + i0], p_ref[i0], log_keep[i0]),
-                  panel_write_factor(clk[t * CKP + i0 + 1], p_ref[i0 + 1], log_keep[i0 + 1]));
-#pragma unroll
-              for (int l = 0; l < D; ++l) {
-                if (l < j) continue;
-                const __nv_bfloat16* row =
-                    static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l];
-                acc = __hmul2(acc, __floats2half2_rn(__bfloat162float(row[dig[l * BC + i0]]),
-                                                     __bfloat162float(row[dig[l * BC + i0 + 1]])));
-              }
-              const float2 f = __half22float2(acc);
-              a0 = f.x;
-              a1 = f.y;
-            } else {
-              a0 = 1.0f;
-              a1 = 1.0f;
-#pragma unroll
-              for (int l = 0; l < D; ++l) {
-                if (l < j) continue;
-                const __nv_bfloat16* row =
-                    static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l];
-                a0 *= __bfloat162float(row[dig[l * BC + i0]]);
-                a1 *= __bfloat162float(row[dig[l * BC + i0 + 1]]);
-              }
+              a0 *= panel_write_factor(clk[t * CKP + i0], p_ref[i0], log_keep[i0]);
+              a1 *= panel_write_factor(clk[t * CKP + i0 + 1], p_ref[i0 + 1], log_keep[i0 + 1]);
             }
           }
           //: §6.4 PASS 1's per-leaf inclusion, COEFFICIENT HALF: a leaf is included
