@@ -16,10 +16,15 @@ un-attributable hang rather than a failure. So every cell below runs in a CHILD
 PROCESS UNDER A WALL-CLOCK TIMEOUT, and a timeout is reported as a FAILED
 LIVENESS CLAIM naming the cell.
 
-Symbols: `BC` leafs per owner (one CTA = one owner); `BT` token tile; `DV` = `d_v`
-the value width; `D` level count; `NM = BT/16` the tile's `m16` row blocks;
-`NT_DV = DV/8` its `n8` column blocks; `kWarps = 8`; `P` the sequence-parallel
-segment count.
+Symbols: `BC` leafs per owner (one CTA = one owner); `DV` = `d_v` the value
+width; `D` level count; `NT_DV = DV/8` the readout's `n8` column blocks;
+`kWarps = 8`; `P` the sequence-parallel segment count. (P26 note: the file
+predates the endgame executor's move off a fixed `BT` token tile onto the
+32-token `TOKEN_WORD` scan word with dynamic `MMA_K_QUANTUM`-token groups; the
+starvation axis below -- more/fewer items than warps, tiles that are
+read-only/write-only/mixed within one launch, many tiles, the `P > 1`
+summary pass -- is unchanged by that move and is what every cell still
+exercises.)
 
 THE STARVATION AXIS, and every cell below is chosen ON it rather than for coverage:
 
@@ -68,10 +73,13 @@ pytestmark = [
 #: orders of magnitude of slack, so a timeout is a HANG and not a slow machine.
 TIMEOUT_S = 240
 
-#: The oracle bound. This file is not a precision gate -- `test_consumer_smem_
-#: precision_gate.py` owns that -- so the bound here is the tier-1 bf16 value
-#: bound, present as a tripwire for a DROPPED or DOUBLE-EXECUTED item, which
-#: moves a result by ~100 %, not by ~1 %.
+#: The oracle bound. This file is not a precision gate -- `test_consumer_vs_
+#: oracle.py` owns that -- so the bound here is the tier-1 bf16 value bound,
+#: present as a tripwire for a DROPPED or DOUBLE-EXECUTED item, which moves a
+#: result by ~100 %, not by ~1 %. (P26: `test_consumer_smem_precision_gate.py`,
+#: the file this comment used to point at, is deleted -- its whole subject was
+#: the dead `mma_precision`/`raw` axis; see `workflows/perf/p26_endgame.md`
+#: DELETIONS.)
 RTOL = 2e-2
 
 _CHILD = textwrap.dedent(
@@ -102,8 +110,8 @@ _CHILD = textwrap.dedent(
         x = torch.where(x.sum(-1, keepdim=True) == 0, torch.ones_like(x), x)
         return x / x.sum(-1, keepdim=True)
 
-    widths, BC, BT, d_v = {widths!r}, {BC!r}, {BT!r}, {d_v!r}
-    norm, decay, prec = {norm!r}, {decay!r}, {prec!r}
+    widths, BC, d_v = {widths!r}, {BC!r}, {d_v!r}
+    decay = {decay!r}
     p_read, p_write, T, P = {p_read!r}, {p_write!r}, {T!r}, {P!r}
     B, H, device = 2, 3, "cuda"
 
@@ -112,8 +120,8 @@ _CHILD = textwrap.dedent(
     rl = tuple(simplex((B, T, H, w), p_read, g, device) for w in widths)
     wl = tuple(simplex((B, T, H, w), p_write, g, device) for w in widths)
     gw = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=g) + 0.5
-    gr = (None if norm == "global"
-          else torch.rand(B, T, H, device=device, dtype=torch.float64, generator=g) + 0.5)
+    # `normalization` is always "global" now, so `g_read` is always None.
+    gr = None
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=g)
     dec = None
     if decay:
@@ -121,12 +129,11 @@ _CHILD = textwrap.dedent(
             0.05 + 0.85 * torch.rand(H, w, device=device, dtype=torch.float64, generator=g)
             for w in widths))
 
-    y_ref, s_ref = naive_rola(v, rl, wl, gr, gw, topo, dec, norm,
+    y_ref, s_ref = naive_rola(v, rl, wl, gr, gw, topo, dec, "global",
                               initial_state=None, output_final_state=True)
 
-    plan = Plan(topology=topo, normalization=norm, BT=BT, BC=BC,
-                warp_tile=(1, max(1, d_v // 32)), decay=dec is not None,
-                mma_precision=prec)
+    plan = Plan(topology=topo, normalization="global", BC=BC,
+                warp_tile=(1, max(1, d_v // 32)), decay=dec is not None)
     args = (v.to(torch.float32),
             tuple(t.to(torch.float32) for t in rl),
             tuple(t.to(torch.float32) for t in wl),
@@ -197,7 +204,6 @@ def _run_cell(**kw):
      ((8, 8), 64, 32),         # 16 fold items, 4 output tiles
      ((8, 8), 64, 64)],        # the flagship shape -- the balanced control
 )
-@pytest.mark.parametrize("BT", [16, 32])
 @pytest.mark.parametrize(
     "p_read,p_write",
     [(0.25, 0.25),   # (c) read-only, write-only and mixed tiles in ONE launch
@@ -206,35 +212,22 @@ def _run_cell(**kw):
 )
 @pytest.mark.parametrize("decay", [False, True])
 def test_item_stream_is_live_and_exact_under_role_imbalance(
-        widths, BC, d_v, BT, p_read, p_write, decay):
-    _run_cell(widths=widths, BC=BC, BT=BT, d_v=d_v, norm="global", decay=decay,
-              prec="bf16", p_read=p_read, p_write=p_write,
-              T=521, P=1, seed=8100 + BC + BT + d_v + int(decay))
+        widths, BC, d_v, p_read, p_write, decay):
+    _run_cell(widths=widths, BC=BC, d_v=d_v, decay=decay,
+              p_read=p_read, p_write=p_write,
+              T=521, P=1, seed=8100 + BC + d_v + int(decay))
 
 
 # ---------------------------------------------------------------------------
 # (e) -- the `P > 1` three-pass path. Its SUMMARY pass forces `is_read = false`
 # on every tile, so phase A is empty on every iteration and the counters carry a
-# phase graph with one side permanently absent. `raw` is included because it also
-# removes the mass column, i.e. the only per-thread work phase A has left.
+# phase graph with one side permanently absent. `normalization` is always
+# `global` now (the `raw` arm this row set used to also cover is dead -- see
+# `workflows/perf/p26_endgame.md` DELETIONS).
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("P", [2, 3])
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", [False, True])
-def test_item_stream_is_live_on_the_segmented_path(P, norm, decay):
-    _run_cell(widths=(8, 8), BC=64, BT=16, d_v=64, norm=norm, decay=decay,
-              prec="bf16", p_read=1.0, p_write=0.3,
+def test_item_stream_is_live_on_the_segmented_path(P, decay):
+    _run_cell(widths=(8, 8), BC=64, d_v=64, decay=decay,
+              p_read=1.0, p_write=0.3,
               T=521, P=P, seed=8700 + P + int(decay))
-
-
-# ---------------------------------------------------------------------------
-# The tf32x3 exactness arm, at the starvation shape. It is a different
-# instantiation of the same control flow (`READ_PREC`/`FOLD_PREC` change the
-# staged element type, not the phase graph), and it is here so that a counter
-# edit that compiles only on the narrow arm cannot ship.
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize("BC,d_v", [(16, 32), (64, 64)])
-def test_item_stream_is_live_on_the_tf32x3_arm(BC, d_v):
-    _run_cell(widths=((16,) if BC == 16 else (8, 8)), BC=BC, BT=16, d_v=d_v,
-              norm="global", decay=True, prec="tf32x3",
-              p_read=0.4, p_write=0.4, T=257, P=1, seed=8900 + BC + d_v)

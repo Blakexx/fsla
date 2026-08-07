@@ -24,6 +24,25 @@ emulator below is the *subject*, not the standard.
 change to the kernel's control structure that is not mirrored here makes this gate
 test a stale algorithm -- which is still a real signal (it would then disagree with
 the CUDA gate), but the intent is that they move together.
+
+**P26 migration note (2026-08-06): the tolerance dropped from EXACT to
+BF16_RTOL.** Before P26 this file forced the schedule's amplitude storage to
+``amp_dtype=torch.float64`` specifically so precision and algorithm were
+decoupled: any disagreement with the oracle at ``EXACT = 1e-10`` was
+attributable to the *algorithm*, never to a storage rounding. ``Plan`` no
+longer exposes an ``amp_dtype`` override -- ``level_amp_dtype`` now hardcodes
+bf16 for every SPANNED level unconditionally (the family ruling, 2026-08-04) --
+so a schedule built from this file's ``Plan`` always carries real bf16
+quantization on its spanned amplitude stream, the same as the CUDA kernel's.
+There is no longer a way to build a full-precision schedule to decouple
+against, so the achievable tolerance is the bf16 family bound
+``BF16_RTOL = 1e-2``, not ``EXACT``. This does not erase the file's
+discriminating power for what it exists to catch: every property under test
+here (owner-rectangle digit lowering, the causal ``jj <= t`` Gram, the ordered
+epoch, the token-sequential decay walk) is a STRUCTURAL claim whose violation
+is an O(1) disagreement (see e.g. ``test_decay_matches_oracle``'s docstring),
+easily separated from a ~1e-2 rounding floor -- the file just can no longer
+also certify the algorithm to fp64 precision on top of that.
 """
 
 from __future__ import annotations
@@ -34,6 +53,7 @@ import torch
 from rola.ops.consumer import level_descriptors
 from rola.ops.naive import naive_rola
 from rola.planner.schedule import (
+    TOKEN_WORD,
     Plan,
     build_clock_stream,
     build_schedule,
@@ -47,10 +67,10 @@ from rola.routing.types import (
     Topology,
 )
 
-#: Both sides run fp64, so this is a "the algorithm is exact" threshold with six
-#: orders of margin over the observed ~1e-16, not a slack knob. It must never be
-#: loosened to accommodate a structural disagreement.
-EXACT = 1e-10
+#: The derived bf16 family budget (see the module docstring's P26 note) -- the
+#: one tolerance available now that the schedule's spanned-level amplitude
+#: storage is unconditionally bf16.
+BF16_RTOL = 1e-2
 
 _ROUTING = IndependentRouting(
     tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
@@ -77,7 +97,7 @@ def emulate(v, read_levels, write_levels, g_read, g_write, plan, initial_state,
     """
     topo = plan.topology
     B, T, H, d_v = v.shape
-    BH, BT, BC = B * H, plan.BT, plan.BC
+    BH, BT, BC = B * H, TOKEN_WORD, plan.BC
     N = topo.N
     glob = plan.normalization == "global"
     cols = d_v + (1 if glob else 0)
@@ -92,7 +112,7 @@ def emulate(v, read_levels, write_levels, g_read, g_write, plan, initial_state,
     geom = plan.geometry
     j, c, ns = geom.first_spanned_level, geom.slice_digits, geom.n_slices
 
-    n_tiles = sched.n_tiles
+    n_tiles = sched.n_twords
     read_bits = unpack_bits(sched.read_tile_bits, n_tiles)      # [BH, sum(widths), n_tiles]
     write_bits = unpack_bits(sched.write_tile_bits, n_tiles)
     read_un = unpack_bits(sched.read_slice_union, n_tiles)      # [BH, n_slices, n_tiles]
@@ -282,24 +302,25 @@ def _dials(widths, H, generator, *, hot):
                  for w in widths)
 
 
-def _check(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0, seed,
+def _check(widths, BC, d_v, B, T, H, p_read, p_write, *, nonzero_m0, seed,
            decay_dials=None, quantize_stored=False):
     generator = torch.Generator().manual_seed(seed)
     topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
     read_levels = tuple(_simplex((B, T, H, w), p_read, generator) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), p_write, generator) for w in widths)
     g_write = torch.rand(B, T, H, dtype=torch.float64, generator=generator) + 0.5
-    g_read = (None if norm == "global"
-              else torch.rand(B, T, H, dtype=torch.float64, generator=generator) + 0.5)
+    # `normalization` is always "global" now (Plan validates no other value), so
+    # `g_read` is always None -- the kernel raises on a non-None `g_read` under
+    # global normalization.
+    g_read = None
     v = torch.randn(B, T, H, d_v, dtype=torch.float64, generator=generator)
-    cols = d_v + (1 if norm == "global" else 0)
+    cols = d_v + 1
     initial_state = None
     if nonzero_m0:
         initial_state = 0.1 * torch.randn(
             B, H, topology.N, cols, dtype=torch.float64, generator=generator)
-        if norm == "global":
-            # The mass column is a nonnegative accumulated write mass.
-            initial_state[..., d_v] = initial_state[..., d_v].abs()
+        # The mass column is a nonnegative accumulated write mass.
+        initial_state[..., d_v] = initial_state[..., d_v].abs()
 
     decay = None if decay_dials is None else LeafMassDecay(dials=decay_dials)
     stored = None
@@ -311,40 +332,43 @@ def _check(widths, BC, BT, d_v, B, T, H, norm, p_read, p_write, *, nonzero_m0, s
         stored = tuple(t.to(torch.bfloat16).to(torch.float64) for t in write_levels)
 
     y_ref, state_ref = naive_rola(
-        v, read_levels, write_levels, g_read, g_write, topology, decay, norm,
+        v, read_levels, write_levels, g_read, g_write, topology, decay, "global",
         write_levels_stored=stored,
         initial_state=initial_state, output_final_state=True)
-    plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
-                  warp_tile=(1, max(1, d_v // 32)), amp_dtype=torch.float64,
+    plan = Plan(topology=topology, normalization="global", BC=BC,
+                  warp_tile=(1, max(1, d_v // 32)),
                   decay=decay is not None)
     y, state = emulate(v, read_levels, write_levels, g_read, g_write, plan, initial_state,
                        decay=decay, write_levels_stored=stored)
 
     err_y = float((y - y_ref).abs().max()) / max(1e-30, float(y_ref.abs().max()))
     err_s = float((state - state_ref).abs().max()) / max(1e-30, float(state_ref.abs().max()))
-    assert err_y < EXACT, f"algorithm disagrees with the canonical oracle: y relative {err_y:.3e}"
-    assert err_s < EXACT, f"algorithm disagrees with the canonical oracle: state {err_s:.3e}"
+    assert err_y < BF16_RTOL, f"algorithm disagrees with the canonical oracle: y relative {err_y:.3e}"
+    assert err_s < BF16_RTOL, f"algorithm disagrees with the canonical oracle: state {err_s:.3e}"
 
 
 # Each entry is a DIFFERENT owner rectangle -- `j` (first spanned level) and `c`
 # (aligned sub-range width) are derived from `(widths, BC)` per §3, so this is the
-# real structural axis, not a size sweep.
-@pytest.mark.parametrize("widths,BC,BT,p_read,p_write,label", [
-    ((16,), 16, 32, 0.4, 0.3, "D1 j=0"),
-    ((8, 4), 16, 32, 0.4, 0.3, "D2 j=0 sparse"),
-    ((8, 4), 16, 32, 1.0, 1.0, "D2 j=0 dense"),
-    ((8, 8), 16, 32, 0.4, 0.3, "D2 j=0, 4 owners"),
-    ((8, 8), 64, 32, 0.4, 0.3, "D2 BC == N, one owner"),
-    ((4, 4, 4), 16, 32, 0.5, 0.4, "D3 j=1, one fixed level"),
-    ((4, 4, 4, 4), 16, 32, 0.5, 0.4, "D4 j=2, two fixed levels (j+1 AND chain)"),
-    ((2, 3, 4, 4), 16, 32, 0.5, 0.4, "D4 j=2, non-power-of-two widths"),
-    ((8, 4, 2), 16, 32, 0.5, 0.4, "D3 mixed widths"),
-    ((2, 2, 2, 2), 16, 32, 0.6, 0.5, "D4 j=0, D at its cap"),
-    ((8, 4), 16, 16, 0.4, 0.3, "BT=16"),
+# real structural axis, not a size sweep. The dead `BT=16` row (P26: `TOKEN_WORD`
+# is a fixed 32-token machine word, no second value survives to compare against)
+# is deleted; see `workflows/perf/p26_endgame.md` DELETIONS.
+@pytest.mark.parametrize("widths,BC,p_read,p_write,label", [
+    ((16,), 16, 0.4, 0.3, "D1 j=0"),
+    ((8, 4), 16, 0.4, 0.3, "D2 j=0 sparse"),
+    ((8, 4), 16, 1.0, 1.0, "D2 j=0 dense"),
+    ((8, 8), 16, 0.4, 0.3, "D2 j=0, 4 owners"),
+    ((8, 8), 64, 0.4, 0.3, "D2 BC == N, one owner"),
+    ((4, 4, 4), 16, 0.5, 0.4, "D3 j=1, one fixed level"),
+    ((4, 4, 4, 4), 16, 0.5, 0.4, "D4 j=2, two fixed levels (j+1 AND chain)"),
+    ((2, 3, 4, 4), 16, 0.5, 0.4, "D4 j=2, non-power-of-two widths"),
+    ((8, 4, 2), 16, 0.5, 0.4, "D3 mixed widths"),
+    ((2, 2, 2, 2), 16, 0.6, 0.5, "D4 j=0, D at its cap"),
 ])
-def test_algorithm_matches_oracle_raw(widths, BC, BT, p_read, p_write, label):
-    """§3/§5 control structure equals the canonical oracle under `raw`."""
-    _check(widths, BC, BT, 8, 2, 37, 3, "raw", p_read, p_write, nonzero_m0=False, seed=1234)
+def test_algorithm_matches_oracle_structural_topologies(widths, BC, p_read, p_write, label):
+    """§3/§5 control structure equals the canonical oracle across owner-rectangle
+    shapes (the real axis this row set sweeps -- `normalization` is always
+    `global` now, so there is nothing left to sweep it against)."""
+    _check(widths, BC, 8, 2, 37, 3, p_read, p_write, nonzero_m0=False, seed=1234)
 
 
 @pytest.mark.parametrize("widths,BC,p_read,p_write,nonzero_m0,label", [
@@ -355,7 +379,7 @@ def test_algorithm_matches_oracle_raw(widths, BC, BT, p_read, p_write, label):
 def test_algorithm_matches_oracle_global(widths, BC, p_read, p_write, nonzero_m0, label):
     """`global`: `num` and `den` accumulate separately and divide in an epilogue
     (D4.6) -- `den` is only complete after every owner has landed."""
-    _check(widths, BC, 32, 8, 2, 37, 3, "global", p_read, p_write,
+    _check(widths, BC, 8, 2, 37, 3, p_read, p_write,
            nonzero_m0=nonzero_m0, seed=99)
 
 
@@ -364,56 +388,55 @@ def test_algorithm_carries_nonzero_initial_state():
     contributes `R * M_0`. Zero-route annihilation is a WRITE-side statement, so
     the carry path must be exercised from a nonzero state, where the distinction
     is visible."""
-    _check((8, 4), 16, 32, 8, 2, 37, 3, "raw", 0.4, 0.3, nonzero_m0=True, seed=7)
+    _check((8, 4), 16, 8, 2, 37, 3, 0.4, 0.3, nonzero_m0=True, seed=7)
 
 
 @pytest.mark.parametrize("T", [1, 8, 16, 17, 31, 32, 33, 64, 65])
 def test_algorithm_token_tile_boundaries(T):
-    """`BT` edges: below one tile, exactly one, one over, and across a word
-    boundary. The amplitude stream is zero-padded past `T`, so a tail token must
-    contribute exactly nothing -- checked from a nonzero `M_0` so that a spurious
-    tail read would show up rather than multiplying zero."""
-    _check((8, 4), 16, 32, 8, 1, T, 2, "raw", 0.4, 0.3, nonzero_m0=True, seed=5)
+    """`TOKEN_WORD` edges: below one word, exactly one, one over, and across a
+    word boundary. The amplitude stream is zero-padded past `T`, so a tail token
+    must contribute exactly nothing -- checked from a nonzero `M_0` so that a
+    spurious tail read would show up rather than multiplying zero."""
+    _check((8, 4), 16, 8, 1, T, 2, 0.4, 0.3, nonzero_m0=True, seed=5)
 
 
 # --- LeafMassDecay (increment 2) --------------------------------------------
+# The dead `BT=16` row is deleted here too (same reason as the structural-topology
+# matrix above); the `norm` parametrization collapses out (only `global` exists).
 
 
-@pytest.mark.parametrize("widths,BC,BT,label", [
-    ((16,), 16, 32, "D1 j=0"),
-    ((8, 4), 16, 32, "D2 j=0"),
-    ((8, 8), 64, 32, "BC == N, one owner"),
-    ((4, 4, 4), 16, 32, "D3 j=1, one fixed level"),
-    ((4, 4, 4, 4), 16, 32, "D4 j=2, two fixed levels"),
-    ((2, 3, 4, 4), 16, 32, "D4 non-power-of-two"),
-    ((8, 4), 16, 16, "BT=16"),
+@pytest.mark.parametrize("widths,BC,label", [
+    ((16,), 16, "D1 j=0"),
+    ((8, 4), 16, "D2 j=0"),
+    ((8, 8), 64, "BC == N, one owner"),
+    ((4, 4, 4), 16, "D3 j=1, one fixed level"),
+    ((4, 4, 4, 4), 16, "D4 j=2, two fixed levels"),
+    ((2, 3, 4, 4), 16, "D4 non-power-of-two"),
 ])
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
-def test_decay_matches_oracle(widths, BC, BT, label, norm, p_read, p_write):
+def test_decay_matches_oracle(widths, BC, label, p_read, p_write):
     """The survival scan is *inclusive at* ``j = t``: the deposit at ``t`` is read
     at ``t`` with survival exactly 1. Off-by-one in either direction (decaying
     after the deposit, or reading before it) shows up here as an O(1) error, not a
     rounding one."""
     H = 3
     generator = torch.Generator().manual_seed(4242)
-    _check(widths, BC, BT, 8, 2, 37, H, norm, p_read, p_write, nonzero_m0=True, seed=1234,
+    _check(widths, BC, 8, 2, 37, H, p_read, p_write, nonzero_m0=True, seed=1234,
            decay_dials=_dials(widths, H, generator, hot=False))
 
 
 @pytest.mark.parametrize("T", [1, 8, 16, 17, 31, 32, 33, 64, 65])
 def test_decay_token_tile_boundaries(T):
-    """Decay across tile edges: survival must compose across the tile boundary,
+    """Decay across word edges: survival must compose across the word boundary,
     which the token-sequential walk gets only because the owner's state is
-    resident across tiles rather than reloaded per tile."""
+    resident across words rather than reloaded per word."""
     H = 2
     generator = torch.Generator().manual_seed(77)
-    _check((8, 4), 16, 32, 8, 1, T, H, "raw", 0.4, 0.3, nonzero_m0=True, seed=5,
+    _check((8, 4), 16, 8, 1, T, H, 0.4, 0.3, nonzero_m0=True, seed=5,
            decay_dials=_dials((8, 4), H, generator, hot=False))
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_decay_near_unit_rate(norm):
+def test_decay_near_unit_rate():
     """Dials near 1 drive the leaf rate ``prod_l delta_l`` toward 1, where
     ``1 - rate`` cancels catastrophically. fp64 here proves the *algorithm* is
     right in that regime; the fp32 accumulation requirement it implies for the
@@ -421,12 +444,11 @@ def test_decay_near_unit_rate(norm):
     test does not and cannot discharge."""
     H = 2
     generator = torch.Generator().manual_seed(909)
-    _check((8, 4), 16, 32, 8, 1, 37, H, norm, 0.5, 0.5, nonzero_m0=True, seed=13,
+    _check((8, 4), 16, 8, 1, 37, H, 0.5, 0.5, nonzero_m0=True, seed=13,
            decay_dials=_dials((8, 4), H, generator, hot=True))
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_decay_stored_clock_diverges_from_live_deposit(norm):
+def test_decay_stored_clock_diverges_from_live_deposit():
     """The clock and the deposit come from genuinely different tensors.
 
     ``write_levels_stored`` is a bf16 round-trip of the live ``write_levels``, so
@@ -441,5 +463,5 @@ def test_decay_stored_clock_diverges_from_live_deposit(norm):
     ``test_rola_v3_schedule.py::test_build_clock_stream_accepts_stored_zero_with_live_nonzero``."""
     H = 2
     generator = torch.Generator().manual_seed(31337)
-    _check((8, 4), 16, 32, 8, 2, 37, H, norm, 0.5, 0.4, nonzero_m0=True, seed=21,
+    _check((8, 4), 16, 8, 2, 37, H, 0.5, 0.4, nonzero_m0=True, seed=21,
            decay_dials=_dials((8, 4), H, generator, hot=False), quantize_stored=True)
