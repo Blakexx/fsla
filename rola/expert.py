@@ -28,7 +28,6 @@ from rola.interface import Dispatch, dispatch_for, requires_backward, select_bac
 from rola.interface import _derive_plan as derive_plan
 from rola.interface import _execute as execute
 from rola.planner.schedule import (
-    MMA_PRECISIONS,
     Plan,
     PlanAxes,
     Schedule,
@@ -53,7 +52,6 @@ from rola.planner.select import (
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
-    "MMA_PRECISIONS",
     "ConfigChoice",
     "ConfigEvidence",
     "CostModelSelector",
@@ -93,8 +91,10 @@ class PlanOverrides:
     member, which is what makes it a pin over a selected axis rather than a bypass of
     one. ``None`` takes the largest feasible value.
 
-    ``mma_precision``: the readout MMA's numeric format. ``bf16`` is production; a gate
-    comparing against the fp64 oracle asks for the exact arm here.
+    ``mma_precision``: DEAD AXIS, retained as a declared restriction: ``"bf16"`` is
+    the only value (bf16 storage, fp32 accumulation, fp64 reference as oracle); any
+    other value is a hard refusal. A gate needing more precision runs the fp64
+    reference path.
 
     ``paging``: commit state pages on first write to an owner, so the resident state
     scales with the owners the routing REALIZES rather than with the topology's
@@ -123,9 +123,10 @@ class PlanOverrides:
     def __post_init__(self) -> None:
         if self.state_block is not None and type(self.state_block) is not int:
             raise TypeError(f"state_block must be None or an exact int, got {self.state_block!r}")
-        if self.mma_precision not in MMA_PRECISIONS:
+        if self.mma_precision != "bf16":
             raise ValueError(
-                f"mma_precision must be one of {MMA_PRECISIONS}, got {self.mma_precision!r}")
+                "mma_precision is a dead axis: 'bf16' is the only value (the fp64 "
+                f"reference path is the precision escape), got {self.mma_precision!r}")
         if type(self.paging) is not bool:
             raise TypeError(f"paging must be bool, got {self.paging!r}")
         if self.max_physical_pages is not None and type(self.max_physical_pages) is not int:

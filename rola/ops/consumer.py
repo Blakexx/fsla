@@ -116,7 +116,6 @@ def _consumer_forward(
     schedule: Schedule | None = None,
     sequence_parallel=None,
     sequence_parallel_tensors=None,
-    token_gather: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, Schedule]:
     """Run the V3 consumer. Signature mirrors ``naive_rola``'s routing inputs.
 
@@ -169,15 +168,6 @@ def _consumer_forward(
     (§6.4, amended 2026-07-30): it is graded against the fp64 oracle at the same
     tolerance ``P = 1`` is held to, and the unwritten-leaf carve-out is bitwise.
 
-    ``token_gather``: ``None`` (the default, and the only production value)
-    derives the token-gather scope STRUCTURALLY from the activation registry:
-    the gathered walk runs iff BOTH routing sides can produce exact zeros
-    (``topology.activation_properties(level, duty).exact_zeros``) -- on any
-    launch where either side is structurally full-support the membership word
-    is all-ones and the gather is the identity, so the aligned walk IS the
-    path there (rung P, restated on the token axis). An explicit ``bool`` is
-    GATE MACHINERY ONLY (the degeneracy/equivalence gates pin one walk against
-    the other on the same routing); production callers must not pass it.
     """
     from rola.ops._ext import extension
 
@@ -200,11 +190,10 @@ def _consumer_forward(
             "there is nothing to launch. Call `rola.rola_op`, which runs an unratified "
             "activation on the reference path carrying an explicit `not_kerneled` flag "
             "-- a labeled research surface, which a silent kernel path would not be")
-    global_norm = plan.normalization == "global"
-    if global_norm and g_read is not None:
+    # raw is DEAD: `global` is the one normalization (the plan validated it) and
+    # it fixes g_read := 1 (spec §1).
+    if g_read is not None:
         raise ValueError("normalization='global' fixes g_read := 1 (spec §1); pass g_read=None")
-    if not global_norm and g_read is None:
-        raise ValueError("normalization='raw' requires an explicit g_read")
 
     # §5's warp tiling, as REALIZED. One thread per channel makes the CTA `d_v`
     # threads, i.e. `W = d_v/32` warps partitioned purely along the channel axis:
@@ -257,15 +246,15 @@ def _consumer_forward(
         def _build_decay_stream():
             ca = build_clock_stream(stored_src, write_src, plan)
             dl = leaf_rate_dials(decay, topology).to(v.device)
-            pb = panel_exponent_bound(ca, decay, plan.BT)
+            pb = panel_exponent_bound(ca, decay)
             return DecayStream(
                 clock_amps=ca, dials=dl, panel_bound=pb,
                 src_stored=stored_src, src_write=write_src,
                 src_versions=DecayStream.versions(stored_src, write_src),
-                decay=decay, BT=plan.BT)
+                decay=decay)
 
         stream = schedule.decay_artifacts(
-            stored_src, write_src, decay, plan.BT, build=_build_decay_stream)
+            stored_src, write_src, decay, build=_build_decay_stream)
         clock_amps = stream.clock_amps
         dials = stream.dials
         # ---- THE PANEL DOMAIN IS NOW EVERY DECAY LAUNCH'S DOMAIN ------------
@@ -307,7 +296,7 @@ def _consumer_forward(
 
     BH = B * H
     N = topology.N
-    cols = d_v + (1 if global_norm else 0)
+    cols = d_v + 1  # the mass column is unconditional (raw is dead)
     if continue_paging and paging is None:
         raise ValueError("continue_paging=True is meaningless without paging=an arena")
     page_table = None
@@ -332,30 +321,10 @@ def _consumer_forward(
         state = paging.state
         page_table = paging.page_table
 
-    # The VALUE tensor's HBM storage is keyed to `mma_precision` (P09 family): the
-    # kernel stages `v` into its bf16 MMA operand anyway on that arm, so the fp32
-    # HBM copy carried no extra precision -- only bytes. The exactness arm keeps
-    # fp32, and so do the DECAY and RAW arms (the measured carves --
-    # `Plan.level_amp_dtype` states both). `y` comes back in the same dtype (cast
-    # AFTER the fp32 divide; num/den accumulators and state stay fp32, always).
-    # The token-gather scope, derived from STRUCTURE (the activation registry's
-    # `exact_zeros` column, read through the topology's per-level capability
-    # views) unless a gate pins it. Both sides must be able to zero: a
-    # structurally full side saturates the read|write membership union and the
-    # gather degenerates to the identity walk.
-    if token_gather is None:
-        _token_gather = bool(
-            any(topology.activation_properties(level, "read").exact_zeros
-                for level in range(topology.D))
-            and any(topology.activation_properties(level, "write").exact_zeros
-                    for level in range(topology.D)))
-    else:
-        _token_gather = bool(token_gather)
-
-    v_dtype = (torch.bfloat16
-               if plan.mma_precision == "bf16" and not plan.decay and global_norm
-               else torch.float32)
-    v_f = v.permute(0, 2, 1, 3).reshape(BH, T, d_v).to(v_dtype).contiguous()
+    # bf16 storage, fp32 accumulation, fp64 reference as oracle: `v` is bf16 on
+    # every arm; `y` comes back bf16 (cast AFTER the fp32 divide; num/den and the
+    # state stay fp32, always).
+    v_f = v.permute(0, 2, 1, 3).reshape(BH, T, d_v).to(torch.bfloat16).contiguous()
     desc = level_descriptors(topology, plan)
     geometry = plan.geometry
 
@@ -409,24 +378,21 @@ def _consumer_forward(
     ext = extension()
     y_f, state_out, _num, _den = ext.rola_consumer_forward(
         # The amplitude streams pass through in the dtype the schedule BUILT them
-        # in (`Plan.level_amp_dtype`: spanned levels follow `amp_dtype`, fixed
-        # levels fp32); the extension hard-checks the per-level dtype against the
-        # precision-implied one -- a mismatch is a loud error, never a silent cast.
+        # in (`Plan.level_amp_dtype`: spanned levels bf16, fixed levels fp32); the
+        # extension hard-checks the per-level dtype -- a mismatch is a loud error,
+        # never a silent cast.
         [t.contiguous() for t in schedule.read_amps],
         [t.contiguous() for t in schedule.write_amps],
         # The clock stays fp32 (build_clock_stream pins it; §4.7's exponent
         # amplification, enforced by gate I6-B mutant M2).
         None if clock_amps is None else [t.to(torch.float32).contiguous() for t in clock_amps],
         dials,
-        schedule.read_tile_bits.contiguous(),
-        schedule.write_tile_bits.contiguous(),
         schedule.read_token_bits.contiguous(),
         schedule.write_token_bits.contiguous(),
-        schedule.read_slice_union.contiguous(),
-        schedule.write_slice_union.contiguous(),
         schedule.slice_union_tok.contiguous(),
+        schedule.read_atom_bytes.contiguous(),
+        schedule.write_atom_bytes.contiguous(),
         owners_arg.contiguous(),
-        None if global_norm else schedule.g_read.to(torch.float32).contiguous(),
         schedule.g_write.to(torch.float32).contiguous(),
         v_f,
         state,
@@ -441,12 +407,8 @@ def _consumer_forward(
         geometry.n_slices,
         geometry.owners_total,
         H,
-        plan.BT,
         plan.BC,
-        global_norm,
-        plan.mma_precision,
         float(eps),
-        _token_gather,
         *sp_args,
     )
     y = y_f.view(B, H, T, d_v).permute(0, 2, 1, 3).contiguous().to(v.dtype)

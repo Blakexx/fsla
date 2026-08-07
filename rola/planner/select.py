@@ -58,8 +58,10 @@ from rola.planner.feeder import FeederFlags
 MMA_K_QUANTUM = 16
 
 #: The ``BT`` the consumer instantiates, finest first. The finest is also the
-#: granularity §4.2 specifies the layer's summary call at.
-SUPPORTED_BT = (16, 32)
+#: The BT axis is DEAD (endgame executor): the work unit is a GROUP of
+#: `MMA_K_QUANTUM` gathered tokens, always full. The cost rules below price
+#: work in that fixed quantum.
+GROUP_TOKENS = 16
 
 #: The ``BC`` the consumer instantiates. Declared here so CPU-only planning works with
 #: no extension present, which makes it a MIRROR of the dispatch table -- and a mirror
@@ -264,13 +266,13 @@ class ConfigChoice:
 
     Evidence -- the residency the decision was reasoned at, the wave count, the key it
     minimized -- is deliberately NOT a field: §4.3 defines
-    ``ConfigChoice = (BC, BT, feeder_flags)`` and neither track may edit it.
+    ``ConfigChoice = (BC, feeder_flags)`` (the BT axis is dead; §4.3's tuple
+    loses it by the same ruling that deleted it from the kernel).
     :func:`select_config_with_evidence` returns the evidence beside the choice for the
     auditor and the shadow ledger.
     """
 
     BC: int
-    BT: int
     feeder_flags: FeederFlags
 
 
@@ -284,9 +286,9 @@ class ConfigEvidence:
     effective_key: float
     k_hat: float
     candidate_frac: float
-    #: ``{(BC, BT): key}`` over the whole feasible grid -- the margin the decision won
+    #: ``{BC: key}`` over the whole feasible grid -- the margin the decision won
     #: by, which is what the approximation contract (§2) says a decision must carry.
-    grid: dict[tuple[int, int], float] = field(default_factory=dict)
+    grid: dict[int, float] = field(default_factory=dict)
     provenance: str = ""
 
     @property
@@ -548,10 +550,9 @@ class StatisticsBundle:
             "atomic_coeff": self.hw.resolved_atomic_coeff(),
             "per_bt_summaries": self.summaries_by_bt is not None,
         }
-        for BT in SUPPORTED_BT:
-            per_bt = self.at(BT)
-            out[f"candidate_frac@BT{BT}"] = float(per_bt.candidate_frac)
-            out[f"k_hat@BT{BT}"] = mean_quantum(per_bt.quanta_hist)
+        per_g = self.at(GROUP_TOKENS)
+        out[f"candidate_frac@G{GROUP_TOKENS}"] = float(per_g.candidate_frac)
+        out[f"k_hat@G{GROUP_TOKENS}"] = mean_quantum(per_g.quanta_hist)
         return out
 
 
@@ -672,36 +673,31 @@ def select_config_with_evidence(static: StaticPlanInputs, hw: HardwareFacts,
     coeff = hw.resolved_atomic_coeff()
 
     best = None
-    grid: dict[tuple[int, int], float] = {}
+    grid: dict[int, float] = {}
+    per_g = (summaries if summaries_by_bt is None
+             else summaries_by_bt.get(GROUP_TOKENS, summaries))
+    k_hat = mean_quantum(per_g.quanta_hist)
+    cf = per_g.candidate_frac
     for BC in feasible:
-        for BT in SUPPORTED_BT:
-            per_bt = summaries if summaries_by_bt is None else summaries_by_bt[BT]
-            k_hat = mean_quantum(per_bt.quanta_hist)
-            cf = per_bt.candidate_frac
-            blocks = hw.occupancy(BT, BC, static.d_v, static.normalization == "global",
-                                  static.decay, static.mma_precision,
-                                  _gram_cols(static.widths, BC), 0)
-            if blocks == 0:
-                raise ValueError(
-                    f"the candidate BC={BC}, BT={BT} does not fit an "
-                    "SM: the occupancy oracle reports 0 CTAs/SM, so its footprint "
-                    "exceeds the shared memory and the launch would fail")
-            cost = cost_per_token(BC, BT, decay=static.decay, candidate_frac=cf)
-            w = waves(static.n_cohorts(BC), blocks, hw.sm_count)
-            key = cost * w + atomic_work_per_token(static, BC, coeff)
-            grid[(BC, BT)] = key
-            if best is None or key < best[0]:
-                best = (key, BC, BT, blocks, w, cost, k_hat, cf)
+        blocks = hw.occupancy(BC, static.d_v, static.decay)
+        if blocks == 0:
+            raise ValueError(
+                f"the candidate BC={BC} does not fit an "
+                "SM: the occupancy oracle reports 0 CTAs/SM, so its footprint "
+                "exceeds the shared memory and the launch would fail")
+        cost = cost_per_token(BC, GROUP_TOKENS, decay=static.decay, candidate_frac=cf)
+        w = waves(static.n_cohorts(BC), blocks, hw.sm_count)
+        key = cost * w + atomic_work_per_token(static, BC, coeff)
+        grid[BC] = key
+        if best is None or key < best[0]:
+            best = (key, BC, blocks, w, cost)
 
-    _, BC, BT, blocks, w, cost, k_hat, cf = best
-    granularity = ("per-BT summaries supplied"
-                   if summaries_by_bt is not None
-                   else "SINGLE-granularity summaries reused at every BT (§4.2 frozen "
-                        "shape; cf and k_hat are not BT-invariant -- see the findings)")
-    return ConfigChoice(BC=BC, BT=BT, feeder_flags=flags), ConfigEvidence(
-        blocks_per_sm=blocks, waves=w, cost_per_token=cost, effective_key=grid[(BC, BT)],
+    _, BC, blocks, w, cost = best
+    return ConfigChoice(BC=BC, feeder_flags=flags), ConfigEvidence(
+        blocks_per_sm=blocks, waves=w, cost_per_token=cost, effective_key=grid[BC],
         k_hat=k_hat, candidate_frac=cf, grid=grid,
-        provenance=f"waves={w:.4f} at {blocks} CTAs/SM; {granularity}")
+        provenance=f"waves={w:.4f} at {blocks} CTAs/SM; group-quantum statistics "
+                   f"(G={GROUP_TOKENS}; the BT axis is dead)")
 
 
 def _gram_cols(widths: tuple[int, ...], BC: int) -> int:
@@ -737,9 +733,7 @@ def select_p(plan, schedule, hw: HardwareFacts, *, policy=None,
     """
     from rola.routing.sequence_parallel import select_sequence_parallelism
 
-    blocks = hw.occupancy(plan.BT, plan.BC, plan.topology.d_v,
-                          plan.normalization == "global", plan.decay,
-                          plan.mma_precision, 0, plan.ring_slots)
+    blocks = hw.occupancy(plan.BC, plan.topology.d_v, plan.decay)
     return select_sequence_parallelism(
         plan, schedule, policy=policy, arena_page_bytes=arena_page_bytes,
         blocks_per_sm=blocks, sms=hw.sm_count)
@@ -823,7 +817,7 @@ def freeze_for_decode(static: StaticPlanInputs, *,
         BC = largest_feasible_bc(static.widths)
     flags = FeederFlags.derive(static.density, None, saturation=C_SATURATION)
     return FrozenConfig(
-        choice=ConfigChoice(BC=BC, BT=SUPPORTED_BT[0], feeder_flags=flags),
+        choice=ConfigChoice(BC=BC, feeder_flags=flags),
         frozen_from=prefill)
 
 
@@ -912,8 +906,8 @@ def shadow_step(static: StaticPlanInputs, hw: HardwareFacts, summaries, *,
         return ShadowRecord(decision=choice, exact=None, margin=evidence.margin,
                             regret=None, step=step)
     exact_choice, exact_key = exact
-    agreed = (exact_choice.BC, exact_choice.BT) == (choice.BC, choice.BT)
-    regret = None if agreed else (evidence.grid[(choice.BC, choice.BT)] - exact_key) / exact_key
+    agreed = exact_choice.BC == choice.BC
+    regret = None if agreed else (evidence.grid[choice.BC] - exact_key) / exact_key
     return ShadowRecord(decision=choice, exact=exact_choice, margin=evidence.margin,
                         regret=regret, step=step)
 
@@ -923,11 +917,11 @@ __all__ = [
     "C_COLLISION_GAMMA",
     "C_SATURATION",
     "DEFAULT_SELECTOR",
+    "GROUP_TOKENS",
     "MMA_K_QUANTUM",
     "RULE_TABLE_PROVENANCE",
     "SELECTOR_INTERFACE_VERSION",
     "SUPPORTED_BC",
-    "SUPPORTED_BT",
     "ConfigChoice",
     "ConfigEvidence",
     "CostModelSelector",

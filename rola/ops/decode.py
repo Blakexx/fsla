@@ -79,7 +79,7 @@ import torch
 
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
-from rola.planner.schedule import MMA_PRECISIONS, leaf_rate_dials
+from rola.planner.schedule import leaf_rate_dials
 from rola.routing.types import Topology
 
 __all__ = [
@@ -185,9 +185,10 @@ def freeze_decode_config(
     no prefill behind it). Passing BOTH is refused: two sources for one word is two
     answers to one question, and ordering them silently is how a stale declaration wins.
     """
-    if mma_precision not in MMA_PRECISIONS:
+    if mma_precision != "bf16":
         raise ValueError(
-            f"mma_precision must be one of {MMA_PRECISIONS}, got {mma_precision!r}")
+            "mma_precision is a dead axis: 'bf16' is the only value, "
+            f"got {mma_precision!r}")
     widths = tuple(topology.widths)
     D = len(widths)
     N = math.prod(widths)

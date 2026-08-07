@@ -51,7 +51,7 @@ from rola.ops.naive import naive_rola
 from rola.planner.schedule import Plan, build_schedule, consumer_occupancy
 from rola.planner.select import (
     DEFAULT_SELECTOR,
-    SUPPORTED_BT,
+    GROUP_TOKENS,
     HardwareFacts,
     StaticPlanInputs,
     StatisticsBundle,
@@ -165,7 +165,7 @@ def _derive_plan(
     device = routes.device if device is None else device
     static = _static_inputs(routes, decay=decay, overrides=overrides)
     hardware = _hardware_facts(device)
-    summaries = routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
+    summaries = routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
     selector = overrides.selector or DEFAULT_SELECTOR
     choice, evidence = select_with(
         selector, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
@@ -175,8 +175,7 @@ def _derive_plan(
         # handed its own copy, which is how one boolean came to be computed twice by
         # two different expressions.
         topology=static.topology, normalization=static.normalization,
-        decay=static.decay, mma_precision=static.mma_precision,
-        BT=choice.BT, BC=choice.BC,
+        decay=static.decay, BC=choice.BC,
         # The realized warp tile the consumer implements, stated rather than defaulted
         # so the driver's check has something to check.
         warp_tile=(1, max(1, static.d_v // 32)),
@@ -241,7 +240,7 @@ def _static_tier0(topology, normalization, density, *, decay: bool, BH: int,
                 else feasible_bc(topology.widths, pinned=int(pinned)))
     return StaticPlanInputs(
         topology=topology, normalization=normalization, decay=bool(decay),
-        mma_precision=overrides.mma_precision, density=density,
+        mma_precision="bf16", density=density,
         feasible_BC=tuple(feasible), BH=int(BH),
         pinned_BC=None if pinned is None else int(pinned))
 

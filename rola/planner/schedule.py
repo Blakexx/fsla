@@ -16,7 +16,7 @@ This module does **not** reuse ``routing/schedule.py``. That file is the V2
 prefix-run planner (``PREFIX_SCHEDULE_ABI_VERSION = 9``, ``RouteDescriptor``,
 run-length tile records): a different schedule representation keyed to the Q/K-era
 descriptor ABI, in which the §4 representation is not expressible. The only thing
-shared is the token-tile concept, and V3's tile size ``BT`` is a plan parameter in
+shared is the token-word concept (the 32-token metadata granule) in
 ``{16, 32}`` (§6) rather than V2's hard-pinned 32.
 
 Two orientations are emitted, matching §4's table:
@@ -42,13 +42,16 @@ from rola.routing.types import Topology, validate_normalization
 
 # Bumped whenever the emitted layout changes in a way the CUDA consumer must
 # observe. The consumer asserts on it at load time.
-ROLA_SCHEDULE_ABI_VERSION = 3  # v3: token-granular slice union (`slice_union_tok`)
+ROLA_SCHEDULE_ABI_VERSION = 4  # v4: 32-token word granule + per-token atom-union bytes
 
 #: A ``cp.async`` warp-wide transaction is 32 lanes x 16 B = 512 B (§5 "Staging":
 #: "innermost rows (512 B contiguous, cp.async-shaped)").
 CP_ASYNC_ROW_BYTES = 512
 
-_SUPPORTED_BT = (16, 32)
+#: The scan stream's METADATA GRANULE: the 32-token machine word. The BT axis is
+#: DEAD (endgame executor: groups of MMA_K_QUANTUM gathered tokens are the work
+#: unit; the word is bit-packing, not a boundary).
+TOKEN_WORD = 32
 
 #: The `BC` and `d_v` the consumer extension INSTANTIATES; the dispatch refuses
 #: anything outside them. Selection validates against these up front so the occupancy
@@ -61,37 +64,12 @@ _SUPPORTED_BT = (16, 32)
 _SUPPORTED_BC = (16, 64)
 _SUPPORTED_DV = (32, 64)
 
-#: Ring DEPTHS the consumer implements, deepest first. Depth `n` means `n` staging
-#: slots: one being consumed and `n-1` being filled by `cp.async` for the next
-#: candidate tiles. **Depth 1 is the ring DECLINED** -- the kernel stages
-#: synchronously inside the visit, which is the pre-ring dataflow exactly.
-#:
-#: The KERNEL implements depths 1 and 2, which is what this tuple advertises (a
-#: depth-3 ring needs the lookahead iterator to name two tiles ahead and is not
-#: built). The depth actually RUN is COMPILE-TIME, not a runtime plan axis:
-#: `consumer_ring_depth()` (consumer_kernel.cuh) resolves it per instantiation from
-#: `ROLA_C_RING_DEPTH`, and the runtime `ring_slots` plumbing that once carried a
-#: plan value to the launch was read by no kernel line and was removed
-#: (coverage-closure H3, 2026-08-03).
-_RING_DEPTHS = (2, 1)
-
-#: The depth the SHIPPED binary compiles: `ROLA_C_RING_DEPTH = 1` -- depth 2 was
-#: DECLINED ON MEASUREMENT (session-9 R2(b): one realized-CTA loss, hot-ratchet and
-#: spill-manifest growth). The ratification manifest records the macro
-#: (`tools/ratify.py`, `RATIFIED_DEFINES`), and the agreement gate
-#: `tests/unit/test_ring_depth_agreement.py` pins this constant, `Plan.ring_slots`
-#: and the manifest to one value -- so a macro flip that is not re-stated here is a
-#: test failure, not a silent three-way drift (the state H3 found).
-COMPILED_RING_DEPTH = 1
+#: THE RING IS DEAD: the endgame executor stages at the group top (the aligned
+#: walk and its run-ahead ring were deleted with the BT axis).
 
 
-#: An OCCUPANCY ORACLE: `(BT, BC, d_v, global_norm, decay, mma_precision,
-#: gram_cols, ring_slots) -> CTAs/SM`.
-#:
-#: **`mma_precision` IS PART OF THE INSTANTIATION IDENTITY and is passed per query,
-#: never closed over.** `MmaPrec` is a real template axis with its own register
-#: pressure, so pricing a bf16 plan against the tf32x3 kernel's occupancy is exactly
-#: the register-blindness this interface exists to remove.
+#: An OCCUPANCY ORACLE: `(BC, d_v, decay) -> CTAs/SM` (the BT, precision and
+#: normalization axes are dead).
 #:
 #: **A MACHINE FACT ENTERING THE PLAN THROUGH THE INTERFACE THE PLAN ALREADY HAS FOR
 #: MACHINE FACTS** (coordinator ruling 2026-07-31): supplied as an input, recorded
@@ -127,38 +105,15 @@ def consumer_occupancy() -> OccupancyOracle:
     `launch__occupancy_limit_registers` and the driver agree on all 16 profiled
     instantiations, byte for byte on `launch__shared_mem_per_block_dynamic`.
 
-    **`global_norm` IS A REAL TEMPLATE AXIS THAT THIS ORACLE DOES NOT RESOLVE, and
-    the pinning STANDS** (coordinator ruling, 2026-08-01, `rewrite.md` §2.37).
-    `launch_consumer` instantiates `GLOBAL` both ways; `rola_consumer_occupancy`
-    pins it to `true`. That is CONSERVATIVE rather than sloppy and the reason is at
-    the `del` in the query body: `global` costs strictly more shared memory, so the
-    pinned answer can only UNDER-report a raw plan's residency, and an under-report
-    makes the wave term charge MORE. A raw plan can be mis-ranked only toward
-    caution. Making it a real query axis is a C++ dispatch change, not a docstring.
-
     The kernel's shared memory is entirely COMPILE-TIME
-    (`consumer::consumer_smem_bytes<BT, BC, DV, D=2, prec, decay, global>`), so
-    `gram_cols`, `ring_slots` and `mma_precision` are not query axes for it: they are
-    accepted to satisfy the :data:`OccupancyOracle` contract -- one signature, so a
-    caller cannot silently hand the wrong oracle the wrong arity -- and ignored with
-    that reason stated rather than dropped from the signature.
+    (`consumer::consumer_smem_bytes<BC, DV, D=2, decay>`), so the three surviving
+    axes are the whole query.
     """
     from rola.ops._ext import extension
     ext = extension()
 
-    def query(BT: int, BC: int, d_v: int, global_norm: bool, decay: bool,
-              mma_precision: str, gram_cols: int, ring_slots: int) -> int:
-        # `global_norm` IS a template axis of the kernel but is PINNED TO `global`
-        # inside `rola_consumer_occupancy`, and that is CONSERVATIVE rather than
-        # sloppy: `global` costs strictly more shared memory than `raw` (one extra
-        # `[BT]` float row, the `den` accumulator -- `consumer_smem_bytes`'s
-        # `(GLOBAL ? 3 : 2) * BT * sizeof(float)` term), so the pinned answer can
-        # only ever UNDER-report a raw plan's residency, never over-report it. An
-        # under-report makes the wave term charge MORE, so a raw plan can be
-        # mis-ranked only in the direction of caution. Recorded in `rewrite.md`
-        # §2.36 as the one axis the oracle does not resolve.
-        del global_norm, mma_precision, gram_cols, ring_slots
-        return int(ext.rola_consumer_occupancy(decay, BC, BT, d_v))
+    def query(BC: int, d_v: int, decay: bool) -> int:
+        return int(ext.rola_consumer_occupancy(decay, BC, d_v))
 
     return query
 
@@ -228,7 +183,8 @@ DEFAULT_WRITE_COST_WEIGHT = 0.125
 #: tolerance and worth ~7-10 %, which is what a production default should be --
 #: while a structural gate must keep the arm whose own error cannot swamp the
 #: disagreement it exists to detect.
-MMA_PRECISIONS = ("tf32x3", "bf16")
+#: The precision axis is DEAD: bf16 storage, fp32 accumulation, fp64 reference
+#: as oracle (revival = git).
 
 #: Per-SM shared-memory budget, in bytes, when no device can be asked -- the CPU-only
 #: fallback for §6 selection. 100 KiB is `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
@@ -375,19 +331,9 @@ class Plan:
 
     topology: Topology
     normalization: str
-    BT: int
     BC: int
     warp_tile: tuple[int, int]
     decay: bool = False
-    mma_precision: str = "bf16"
-    #: STORAGE dtype of the SPANNED-level amplitude streams (``l >= j``), keyed to
-    #: ``mma_precision`` when not given: the bf16 arm stores bf16, the tf32x3
-    #: exactness arm stores fp32 (P09 family ruling; ``None`` = derive). One
-    #: numeric-format axis, not a second independent one. FIXED levels (``l < j``)
-    #: and the decay clock never narrow -- see :meth:`level_amp_dtype` and
-    #: :func:`build_clock_stream`. The cast happens strictly BELOW support
-    #: selection (`build_schedule` builds bitmaps from the exact fp32 folds).
-    amp_dtype: torch.dtype | None = None
     write_cost_weight: float = DEFAULT_WRITE_COST_WEIGHT
     #: The per-SM shared-memory budget §6 reasoned about when this plan was selected,
     #: RECORDED rather than re-read at launch (§10's ruling). Device-queried when a
@@ -405,20 +351,6 @@ class Plan:
     #: binding and `DEFAULT_SM_SHARED_BYTES`; it dies at the standalone-package
     #: extraction, not before.
     sm_shared_bytes: int = DEFAULT_SM_SHARED_BYTES
-    #: Staging RING depth (§6 residency): slots of the `[BT, gram_cols]` staged rows.
-    #: `>= 2` pipelines the next candidate tile's gathered columns with `cp.async`;
-    #: `1` DECLINES the ring and stages synchronously inside the visit.
-    #:
-    #: STATED, not selected (M-1 RULING A, 2026-08-01), and what it states is the
-    #: COMPILED depth: the ring is resolved at COMPILE TIME from `ROLA_C_RING_DEPTH`
-    #: (`consumer_ring_depth()`, shipped 1 -- see :data:`COMPILED_RING_DEPTH`), so a
-    #: plan records the depth its launches actually run, and the agreement gate pins
-    #: this default to the ratification manifest's recorded macro. The previous
-    #: default (`_RING_DEPTHS[0] = 2`, "deepest built") described a runtime carriage
-    #: the kernel never read -- the three-way drift H3 closed. Reopens as a real
-    #: plan axis only if the ring ever becomes runtime again, priced by a NEW
-    #: measurement on that kernel.
-    ring_slots: int = COMPILED_RING_DEPTH
     #: The CTAs/SM §6 reasoned about when this plan was selected, RECORDED next to
     #: the decision it drove -- the same contract `sm_shared_bytes` has, and for the
     #: same reason (coordinator ruling 2026-07-31): a machine fact enters the plan as
@@ -444,21 +376,6 @@ class Plan:
 
     def __post_init__(self) -> None:
         validate_normalization(self.normalization)
-        if self.mma_precision not in MMA_PRECISIONS:
-            raise ValueError(
-                f"mma_precision must be one of {MMA_PRECISIONS}, got {self.mma_precision!r}")
-        if self.amp_dtype is None:
-            object.__setattr__(
-                self, "amp_dtype",
-                torch.bfloat16 if self.mma_precision == "bf16" else torch.float32)
-        if self.ring_slots not in _RING_DEPTHS:
-            raise ValueError(
-                f"ring_slots must be one of {_RING_DEPTHS} (deepest first; 1 declines the "
-                f"ring), got {self.ring_slots}")
-        if self.BT not in _SUPPORTED_BT:
-            raise ValueError(
-                f"BT must be a compile-time constant in {_SUPPORTED_BT} (spec §6): below 16 "
-                f"wastes MMA rows, intra cost is quadratic in BT; got {self.BT}")
         owner_geometry(self.topology.widths, self.BC)  # validates the BC alignment, loudly
         a, b = self.warp_tile
         if a < 1 or b < 1:
@@ -487,28 +404,18 @@ class Plan:
     def level_amp_dtype(self, level: int) -> torch.dtype:
         """Storage dtype of ``level``'s amplitude stream, split by LEVEL ROLE.
 
-        SPANNED levels (``level >= j``) carry ``amp_dtype`` -- they feed the
-        per-leaf coefficients, whose independent roundings partially cancel over
-        the ``BC``-term contraction. FIXED levels (``level < j``) feed the
-        per-token ROW SCALES, whose error is uniform on the whole output row and
-        does not cancel, so they never narrow: fp32 when ``amp_dtype`` is bf16
-        (Option B of the P09 family), ``amp_dtype`` itself otherwise (which keeps
-        the fp64 reference path uniformly fp64).
-
-        The DECAY and RAW arms never narrow at all -- MEASURED carves on
-        structural template axes, not preferences
-        (workflows/perf/p09_bf16_family.md): under narrowed storage the register
-        ratchet found in-loop spill on every bf16+decay offender (the clock and
-        survival panels sit at the allocator wall), and the raw arm -- whose
-        readout has no num/den ratio to cancel the stacked roundings -- measured
-        past BF16_RTOL on its worst topology's tail seeds. Both extensions are
-        parked on those measurements.
+        SPANNED levels (``level >= j``) store bf16 -- they feed the per-leaf
+        coefficients, whose independent roundings partially cancel over the
+        ``BC``-term contraction; the DECAY arm applies its survival panels in
+        fp16 against the same bf16 storage (U07-d -- the P09 decay carve is
+        dead). FIXED levels (``level < j``) feed the per-token ROW SCALES, whose
+        error is uniform on the whole output row and does not cancel, so they
+        never narrow (Option B): fp32 always. The decay clock is fp32 always
+        (:func:`build_clock_stream`).
         """
-        if self.amp_dtype == torch.bfloat16 and (
-                self.decay or self.normalization != "global"
-                or level < self.geometry.first_spanned_level):
+        if level < self.geometry.first_spanned_level:
             return torch.float32
-        return self.amp_dtype
+        return torch.bfloat16
 
     def amplitude_pitch(self, width: int, dtype: torch.dtype | None = None) -> int:
         """Pad a level's width so one tile's rows are a whole number of 512 B lines.
@@ -521,13 +428,14 @@ class Plan:
         only), so padding cannot manufacture a live leaf.
 
         ``dtype`` is the stream's STORAGE dtype (the pitch is an element count, so
-        it depends on the itemsize); default is the plan's spanned ``amp_dtype``.
-        A caller staging a differently-typed stream (a fixed level, the clock)
-        passes that stream's dtype.
+        it depends on the itemsize); default is the spanned bf16. A caller
+        staging a differently-typed stream (a fixed level, the clock) passes
+        that stream's dtype. The block quantum is the 32-token machine word
+        (``TOKEN_WORD``) -- the BT axis is dead.
         """
-        itemsize = torch.empty((), dtype=dtype or self.amp_dtype).element_size()
+        itemsize = torch.empty((), dtype=dtype or torch.bfloat16).element_size()
         elems_per_row = CP_ASYNC_ROW_BYTES // itemsize
-        step = elems_per_row // gcd(self.BT, elems_per_row)
+        step = elems_per_row // gcd(TOKEN_WORD, elems_per_row)
         return ((width + step - 1) // step) * step
 
 
@@ -975,15 +883,14 @@ class DecayStream:
     src_write: tuple[torch.Tensor, ...]
     src_versions: tuple[int, ...]
     decay: object
-    BT: int
 
     @staticmethod
     def versions(stored, write) -> tuple[int, ...]:
         return tuple(t._version for t in (*stored, *write))
 
-    def matches(self, stored, write, decay, BT) -> bool:
+    def matches(self, stored, write, decay) -> bool:
         """Every component is necessary; none is a heuristic."""
-        return (decay is self.decay and BT == self.BT
+        return (decay is self.decay
                 and len(stored) == len(self.src_stored)
                 and len(write) == len(self.src_write)
                 and all(a is b for a, b in zip(stored, self.src_stored))
@@ -1052,8 +959,7 @@ class Schedule:
     plan: Plan
     BH: int
     T: int
-    n_tiles: int
-    n_words: int
+    n_twords: int  # ceil(T / 32): the scan stream's word count
     level_offsets: tuple[int, ...]
     read_tile_bits: torch.Tensor
     write_tile_bits: torch.Tensor
@@ -1062,6 +968,14 @@ class Schedule:
     read_slice_union: torch.Tensor
     write_slice_union: torch.Tensor
     slice_union_tok: torch.Tensor
+    #: TWO UNION FORMS, form (b): the per-token ATOM-GRANULE union bytes,
+    #: ``[BH, n_slices, T]`` uint8 per side -- bit ``q`` of byte
+    #: ``[bh, s, token]`` = "some leaf of atom ``q`` of slice ``s`` has its WHOLE
+    #: spanned product live at this token on this side". The walk's per-side atom
+    #: masks; DERIVED from the same masks the token bits are (the per-(owner,word)
+    #: pre-OR'd form is FORBIDDEN -- the per-visit OR is the kernel's job).
+    read_atom_bytes: torch.Tensor
+    write_atom_bytes: torch.Tensor
     read_amps: tuple[torch.Tensor, ...]
     write_amps: tuple[torch.Tensor, ...]
     g_read: torch.Tensor | None
@@ -1073,7 +987,7 @@ class Schedule:
     #: :class:`DecayStream`. `None` on the `decay=None` arm, always.
     decay_stream: DecayStream | None = None
 
-    def decay_artifacts(self, stored, write, decay, BT, *, build):
+    def decay_artifacts(self, stored, write, decay, *, build):
         """Return this schedule's decay artifacts, building them at most once.
 
         `build()` is called only on a miss. The result is attached to this frozen
@@ -1084,7 +998,7 @@ class Schedule:
         assumed.
         """
         cached = self.decay_stream
-        if cached is not None and cached.matches(stored, write, decay, BT):
+        if cached is not None and cached.matches(stored, write, decay):
             return cached
         fresh = build()
         object.__setattr__(self, "decay_stream", fresh)
@@ -1096,7 +1010,7 @@ class Schedule:
             self.read_tile_bits, self.write_tile_bits,
             self.read_token_bits, self.write_token_bits,
             self.read_slice_union, self.write_slice_union,
-            self.slice_union_tok))
+            self.slice_union_tok, self.read_atom_bytes, self.write_atom_bytes))
 
     def stream_bytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in (*self.read_amps, *self.write_amps))
@@ -1131,6 +1045,59 @@ def _tile_major_amps(level: torch.Tensor, BT: int, n_tiles: int, pitch: int,
     out = level.new_zeros((BH, n_tiles * BT, pitch), dtype=dtype)
     out[:, :T, :width] = level.to(dtype)
     return out.view(BH, n_tiles, BT, pitch).contiguous()
+
+
+def _atom_union_bytes(views: RoutingViews, geometry: OwnerGeometry, BH: int, T: int,
+                      level_offsets: list[int], widths: tuple[int, ...]
+                      ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-token ATOM-GRANULE union bytes, ``[BH, n_slices, T]`` uint8 per side.
+
+    Bit ``q`` of byte ``[bh, s, t]`` = "some leaf of atom ``q`` of slice ``s``
+    has EVERY spanned level's digit live at token ``t``" (an atom =
+    ``MMA_K_QUANTUM`` consecutive leaves in canonical order; ``QPO = BC/16 <= 8``
+    bits used). Fixed levels do not enter: they are the membership ballot's own
+    AND terms, and the byte is per-SLICE precisely so it covers the structure
+    every owner of the slice shares.
+
+    Chunked over leaves so no ``[BH, T, N]`` tensor is materialized at once
+    (design-for-1M: the production form at scale is a producer-epilogue
+    OR-reduce over the same authority; this is its host reference). The flat
+    global-leaf mixed radix below is exact because ``BC = c * inner`` makes the
+    slice offset ``s*BC`` decompose into ``s*c`` boundary digits and a multiple
+    of every lower level's width.
+    """
+    device = views.read_mask[0].device
+    j = geometry.first_spanned_level
+    D = len(widths)
+    BC = geometry.BC
+    n_slices = geometry.n_slices
+    qpo = BC // MMA_K_QUANTUM
+    n_span = n_slices * BC
+    leaf = torch.arange(n_span, device=device)
+    digit_idx = []
+    for level in range(j, D):
+        stride = 1
+        for width in widths[level + 1:]:
+            stride *= width
+        digit_idx.append((leaf // stride) % widths[level])
+    weights = (torch.ones((), dtype=torch.int32, device=device)
+               << torch.arange(qpo, device=device, dtype=torch.int32))
+    sides = []
+    chunk = 64 * MMA_K_QUANTUM
+    for masks in (views.read_mask, views.write_mask):
+        atoms_live = torch.zeros((BH, T, n_span // MMA_K_QUANTUM), dtype=torch.bool,
+                                 device=device)
+        for lo in range(0, n_span, chunk):
+            hi = min(lo + chunk, n_span)
+            live = None
+            for k, level in enumerate(range(j, D)):
+                m = masks[level][:, :, digit_idx[k][lo:hi]]  # [BH, T, hi-lo]
+                live = m if live is None else live & m
+            atoms_live[:, :, lo // MMA_K_QUANTUM:hi // MMA_K_QUANTUM] = live.view(
+                BH, T, (hi - lo) // MMA_K_QUANTUM, MMA_K_QUANTUM).any(dim=-1)
+        packed = (atoms_live.view(BH, T, n_slices, qpo).to(torch.int32) * weights).sum(-1)
+        sides.append(packed.to(torch.uint8).permute(0, 2, 1).contiguous())
+    return sides[0], sides[1]
 
 
 def build_schedule(
@@ -1170,9 +1137,8 @@ def build_schedule(
         raise ValueError(f"read/write levels must contain one tensor per level (D={topology.D})")
     B, T, H, _ = read_levels[0].shape
     BH = B * H
-    BT = plan.BT
-    n_tiles = (T + BT - 1) // BT
-    n_words = (n_tiles + _BITS_PER_WORD - 1) // _BITS_PER_WORD
+    BT = TOKEN_WORD  # the 32-token machine word: the metadata granule (no BT axis)
+    n_tiles = (T + BT - 1) // BT  # = n_twords
     geometry = plan.geometry
 
     if views is None:
@@ -1244,6 +1210,17 @@ def build_schedule(
                    if union_j.shape[-1] % 2 else head)
     slice_union_tok = union_j.squeeze(-1).permute(0, 2, 1).contiguous()
 
+    # TWO UNION FORMS, form (b): the per-token ATOM-GRANULE union bytes. An atom
+    # is MMA_K_QUANTUM consecutive leaves of a slice's spanned rectangle; its bit
+    # is set at a token iff SOME leaf of it has EVERY spanned level's digit live
+    # there (the fixed levels enter membership separately, at the ballot's AND).
+    # Derived from the same masks as the token bits -- one authority -- and
+    # CHUNKED over atoms so no [BH, T, N] leaf tensor is ever materialized (the
+    # production path at scale is a producer-epilogue OR-reduce; this host
+    # builder is its reference).
+    read_atom_bytes, write_atom_bytes = _atom_union_bytes(
+        views, geometry, BH, T, level_offsets, widths)
+
     # The amplitude CAST, strictly BELOW support selection (the bitmaps above are
     # built from the exact fp32 folds -- gate I6-B §2.B4 pins the ordering). The
     # dtype is per LEVEL ROLE: spanned levels take `plan.amp_dtype`, fixed levels
@@ -1269,12 +1246,13 @@ def build_schedule(
     g_write_f = _fold_bth(g_write.unsqueeze(-1)).squeeze(-1).contiguous()
 
     return Schedule(
-        plan=plan, BH=BH, T=T, n_tiles=n_tiles, n_words=n_words,
+        plan=plan, BH=BH, T=T, n_twords=n_tiles,
         level_offsets=tuple(level_offsets),
         read_tile_bits=read_tile_bits, write_tile_bits=write_tile_bits,
         read_token_bits=read_token_bits, write_token_bits=write_token_bits,
         read_slice_union=read_slice_union, write_slice_union=write_slice_union,
         slice_union_tok=slice_union_tok,
+        read_atom_bytes=read_atom_bytes, write_atom_bytes=write_atom_bytes,
         read_amps=read_amps, write_amps=write_amps,
         g_read=g_read_f, g_write=g_write_f,
         owners=owners, owner_costs=owner_costs)
@@ -1354,7 +1332,7 @@ def build_clock_stream(
                 "causes); it is rejected rather than silently dropping the leaf's survival to "
                 "an O(1)-wrong value on the one path with no equivalence-based validation.")
     B, T, H, _ = stored[0].shape
-    BT = plan.BT
+    BT = TOKEN_WORD
     n_tiles = (T + BT - 1) // BT
     folded = tuple(_fold_bth(level) for level in stored)
     for level, (tensor, width) in enumerate(zip(folded, widths)):
@@ -1369,8 +1347,7 @@ def build_clock_stream(
     # one, worsening with sequence length and decay strength (design §4.7; gate
     # I6-B mutant M2 enforces this pin by measurement). A WIDER amp_dtype (the
     # fp64 reference path) still applies.
-    clock_dtype = (torch.float32 if plan.amp_dtype == torch.bfloat16
-                   else plan.amp_dtype)
+    clock_dtype = torch.float32
     return tuple(
         _tile_major_amps(level, BT, n_tiles,
                          plan.amplitude_pitch(width, clock_dtype), clock_dtype)
@@ -1396,8 +1373,7 @@ def build_clock_stream(
 PANEL_MAX_EXPONENT = 40.0
 
 
-def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay,
-                         BT: int) -> float:
+def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay) -> float:
     """An EXACT UPPER BOUND on ``panel``'s largest per-leaf reference exponent.
 
     ``intra_panel.cuh`` forms ``keep_i^{+(P[t,i]-P_ref[i])}`` and
@@ -1448,14 +1424,23 @@ def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay,
     # is over one tile, never across tiles: `P` restarts every tile because the
     # reference frame is entered and left inside it).
     per_token = None
-    for amps in clock_amps:            # [BH, n_tiles, BT, pitch], zero padded
-        level_max = amps.amax(dim=-1)  # [BH, n_tiles, BT]
+    for amps in clock_amps:            # [BH, n_twords, 32, pitch], zero padded
+        level_max = amps.amax(dim=-1)  # [BH, n_twords, 32]
         per_token = level_max if per_token is None else per_token * level_max
-    if per_token.shape[-1] != BT:
+    if per_token.shape[-1] != TOKEN_WORD:
         raise ValueError(
-            f"the staged clock stream has {per_token.shape[-1]} tokens per tile but the "
-            f"plan says BT={BT}; the bound is over one tile's prefix, so the two must agree")
-    p_hat = float(per_token.sum(dim=-1).max()) if per_token.numel() else 0.0
+            f"the staged clock stream has {per_token.shape[-1]} tokens per word; the "
+            f"granule is the {TOKEN_WORD}-token machine word")
+    # A GROUP is any 16 MEMBER tokens of the whole sequence (dynamic tile
+    # boundaries -- alignment gives no bound), so the per-group prefix is bounded
+    # by the sum of the 16 LARGEST per-token clock bounds. Conservative
+    # (refusal-side only), exact when the 16 largest happen to share a group.
+    flat = per_token.reshape(per_token.shape[0], -1)  # [BH, Tpad]
+    if flat.numel() == 0:
+        p_hat = 0.0
+    else:
+        k = min(MMA_K_QUANTUM, flat.shape[-1])
+        p_hat = float(flat.topk(k, dim=-1).values.sum(dim=-1).max())
     return 0.5 * p_hat * g_max
 
 
@@ -1660,7 +1645,6 @@ __all__ = [
     "DEFAULT_SM_SHARED_BYTES",
     "DEFAULT_WRITE_COST_WEIGHT",
     "MMA_K_QUANTUM",
-    "MMA_PRECISIONS",
     "PANEL_MAX_EXPONENT",
     "ROLA_SCHEDULE_ABI_VERSION",
     "LevelSupportStats",

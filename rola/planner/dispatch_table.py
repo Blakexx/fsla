@@ -46,20 +46,17 @@ from dataclasses import dataclass
 #: The axes a row is keyed by, in the generated table's own order. Restating this
 #: tuple is what the table exists to make unnecessary -- it is here as the NAMES of
 #: the fields, not as their values.
-AXES = ("BT", "BC", "DV", "D", "prec", "decay", "global_norm")
+AXES = ("BC", "DV", "D", "decay")
 
 
 @dataclass(frozen=True, slots=True)
 class DispatchRow:
     """One compiled arm, exactly as the binary carries it."""
 
-    BT: int
     BC: int
     DV: int
     D: int
-    prec: str
     decay: bool
-    global_norm: bool
     smem_bytes: int
     shard: str
     src_key: str
@@ -67,7 +64,7 @@ class DispatchRow:
     @property
     def key(self) -> tuple:
         """The arm's coordinates, which is what a choice is compared against."""
-        return (self.BT, self.BC, self.DV, self.D, self.prec, self.decay, self.global_norm)
+        return (self.BC, self.DV, self.D, self.decay)
 
     def admitted_by(self, max_dynamic_smem_bytes: int) -> bool:
         """THE ENABLE PREDICATE, on an INPUT: does this machine grant a block enough?
@@ -150,21 +147,19 @@ class DispatchTable:
         return tuple(r for r in self._rows if r.admitted_by(max_dynamic_smem_bytes))
 
     # -- resolution ----------------------------------------------------------
-    def resolve(self, BT: int, BC: int, DV: int, D: int, prec: str, decay: bool,
-                global_norm: bool) -> DispatchRow:
+    def resolve(self, BC: int, DV: int, D: int, decay: bool) -> DispatchRow:
         """The row for a fully-determined choice, or a refusal naming the choice.
 
         No nearest match and no default: a choice this binary has no arm for is an
         error, exactly as it is at the C++ lookup.
         """
-        want = (BT, BC, DV, D, prec, bool(decay), bool(global_norm))
+        want = (BC, DV, D, bool(decay))
         for row in self._rows:
             if row.key == want:
                 return row
         raise KeyError(
-            f"no compiled arm for BT={BT}, BC={BC}, d_v={DV}, D={D}, prec={prec!r}, "
-            f"decay={decay}, global={global_norm}. The table carries "
-            f"{len(self._rows)} arms over "
+            f"no compiled arm for BC={BC}, d_v={DV}, D={D}, decay={decay}. The table "
+            f"carries {len(self._rows)} arms over "
             + ", ".join(f"{a}={self.values(a)}" for a in AXES))
 
 

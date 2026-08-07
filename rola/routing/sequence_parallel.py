@@ -368,12 +368,10 @@ def consumer_blocks_per_sm(plan) -> int:
     from rola.ops._ext import extension
 
     # The consumer's shared memory is entirely COMPILE-TIME
-    # (`consumer::consumer_smem_bytes<...>`), so `gram_cols` is not a query axis: the
-    # instantiation identity is `(decay, BC, BT, d_v)` and nothing else
-    # moves the footprint. `_spanned_moduli`, which existed only to build the old
-    # consumer's runtime `gram_cols` argument, went with it (item 6b).
+    # (`consumer::consumer_smem_bytes<...>`), so the instantiation identity is
+    # `(decay, BC, d_v)` and nothing else moves the footprint.
     return int(extension().rola_consumer_occupancy(
-        plan.decay, plan.BC, plan.BT, plan.topology.d_v))
+        plan.decay, plan.BC, plan.topology.d_v))
 
 
 def select_sequence_parallelism(
@@ -446,7 +444,7 @@ def select_sequence_parallelism(
     n_owners = int(schedule.owners.shape[0])
     BC = plan.BC
     cols = plan.topology.d_v + (1 if plan.normalization == "global" else 0)
-    n_tiles = schedule.n_tiles
+    n_tiles = schedule.n_twords
 
     if sms is None:
         sms = torch.cuda.get_device_properties(schedule.owners.device).multi_processor_count

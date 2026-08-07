@@ -814,12 +814,17 @@ class LeafMassDecay:
 # V3 (spec §1 rationale) and must not be reintroduced here.
 DecayConfig: TypeAlias = None | LeafMassDecay
 
-NORMALIZATION_KINDS = ("raw", "global")
+#: RAW IS DEAD (ruling 2026-08-06): the self-normalizing ratio IS the design, so
+#: "global" is the one normalization. The name survives as a declared restriction
+#: (a hard check, never a coercion); revival = git.
+NORMALIZATION_KINDS = ("global",)
 Normalization: TypeAlias = str
 
 
 def validate_normalization(value: str) -> str:
-    """Validate the V3 ``Normalization`` contract: ``raw | global`` (spec §1)."""
+    """Validate the ``Normalization`` contract: ``global`` only (raw is dead)."""
     if value not in NORMALIZATION_KINDS:
-        raise ValueError(f"Normalization must be one of {NORMALIZATION_KINDS}, got {value!r}")
+        raise ValueError(
+            f"Normalization must be 'global' (raw is a dead axis; the self-normalizing "
+            f"ratio is the design, revival = git), got {value!r}")
     return value
