@@ -19,19 +19,14 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 
-//: For `MmaPrec`, which is a template argument of every per-arm entry point declared
-//: at the bottom of this file. The host binding and the kernel must agree on the
-//: precision axis exactly as they must agree on `ConsumerParams`.
+//: For `clamp_bf16_finite` and the bf16 MMA primitives shared with the kernel. The
+//: precision AXIS is gone (bf16 storage, fp32 accumulation, fp64 reference as
+//: oracle -- the one precision story); what remains here is the format guard.
 #include "readout_mma.cuh"
 
 namespace rola {
 
-constexpr int kMaxLevels = 4;   // spec §1: 1 <= D <= 4
-constexpr int kMaxWords = 128;  // candidate-tile words held in SMEM per CTA
-
-//: The staging-ring depth is COMPILE-TIME (`consumer_ring_depth()` resolves it per
-//: instantiation from `ROLA_C_RING_DEPTH`, shipped 1) and the ratification manifest
-//: records the macro: docs/internals/consumer.md#ring-depth
+constexpr int kMaxLevels = 4;  // spec §1: 1 <= D <= 4
 
 struct ConsumerParams;
 
@@ -43,21 +38,22 @@ struct ConsumerParams;
 __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i);
 
 struct ConsumerParams {
-  //: [BH, n_tiles, BT, pitch] amplitude streams, TYPE-ERASED because the storage
-  //: dtype is per LEVEL ROLE and per instantiation: SPANNED levels (`l >= j`)
-  //: store the arm's amplitude type `AmpRT`/`AmpWT` (bf16 on the
-  //: `kBf16 && GLOBAL && !DECAY` arms -- the decay and raw carves are measured,
-  //: see the kernel's alias block -- fp32 everywhere else), FIXED levels
-  //: (`l < j`) always fp32 (they feed the row scales). Each kernel use site
-  //: types its own pointer from its loop's level role, so a missed site is a
-  //: compile error; the host binding enforces the same rule per level with a
-  //: hard dtype check. docs/internals/consumer.md#amp-dtype
+  //: [BH, n_twords, 32, pitch] amplitude streams (token-major; the 32-token
+  //: MACHINE WORD is the metadata granule, so the padding quantum is 32),
+  //: TYPE-ERASED because the storage dtype is per LEVEL ROLE and per
+  //: instantiation: SPANNED levels (`l >= j`) store the arm's amplitude type
+  //: `AmpRT`/`AmpWT` (bf16 on the `kBf16` arms -- U07-d's fp16 decay
+  //: application unified the decay carve), FIXED levels (`l < j`) always fp32
+  //: (they feed the row scales). Each kernel use site types its own pointer
+  //: from its loop's level role, so a missed site is a compile error; the host
+  //: binding enforces the same rule per level with a hard dtype check.
+  //: docs/internals/consumer.md#amp-dtype
   const void* amp_read[kMaxLevels];   // pitch_read elements per row
   const void* amp_write[kMaxLevels];  // pitch_write elements per row
   //: LeafMassDecay clock stream, `c[t,s] = prod_l p_write_stored[t, d_l(s)]` (spec
   //: §2); nullptr under `decay=None`. Built SEPARATELY from the schedule, and the
   //: product runs over ALL levels: docs/internals/consumer.md#clock-stream
-  const float* amp_clock[kMaxLevels];  // [BH, n_tiles, BT, pitch_clock] or nullptr
+  const float* amp_clock[kMaxLevels];  // [BH, n_twords, 32, pitch_clock] or nullptr
   int level_pitch_clock[kMaxLevels];
   int level_stride[kMaxLevels];  // per-level (i / stride) % modulus
   int level_modulus[kMaxLevels];
@@ -67,37 +63,41 @@ struct ConsumerParams {
   int level_pitch_write[kMaxLevels];
   // prod(widths[l+1:j]) for the fixed levels l < j; the owner-id mixed radix.
   int owner_stride[kMaxLevels];
-  const int32_t* owners;       // [n_owners, 2]  (bh, owner)
-  const uint32_t* read_bits;   // [BH, total_rows, n_words]
-  const uint32_t* write_bits;  // [BH, total_rows, n_words]
-  //: §4's SUPPORT WORD, materialized: `[BH, n_tiles, total_rows]`, bit `t` = token
-  //: `tile * BT + t` (`BT <= 32`, spec §6). TILE-MAJOR, so one visit reads one
-  //: contiguous slab; `read_bits` is literally its tile reduction.
+  const int32_t* owners;  // [n_owners, 2]  (bh, owner)
+  //: §4's SUPPORT WORD, materialized: `[BH, n_twords, total_rows]`, bit `t` =
+  //: token `word * 32 + t`. WORD-MAJOR, so the membership scan reads one
+  //: contiguous slab per 32-token word.
   //: THIS IS THE SOLE SUPPORT AUTHORITY -- no membership decision is derived from an
   //: amplitude magnitude. docs/internals/consumer.md#support-word
-  const uint32_t* read_tok_bits;   // [BH, n_tiles, total_rows]
-  const uint32_t* write_tok_bits;  // [BH, n_tiles, total_rows]
-  const uint32_t* read_union;      // [BH, n_slices,  n_words]
-  const uint32_t* write_union;     // [BH, n_slices,  n_words]
-  //: The TOKEN-GRANULAR slice union (schedule ABI v3): bit `t` of word
-  //: `[bh, slice, tile]` = "some digit of the slice at the boundary level is
-  //: read- OR write-live at token `tile*BT + t`". The token-gather ballot's
-  //: coarse term; the fine terms it ANDs under are the owner's fixed-level
-  //: `read/write_tok_bits` rows. Derived from the same support authority, so
-  //: over-approximation is impossible by construction.
-  const uint32_t* slice_union_tok;  // [BH, n_slices, n_tiles]
+  const uint32_t* read_tok_bits;   // [BH, n_twords, total_rows]
+  const uint32_t* write_tok_bits;  // [BH, n_twords, total_rows]
+  //: The TOKEN-GRANULAR slice union (schedule ABI v4; the card's TWO UNION
+  //: FORMS, form (a)): bit `t` of word `[bh, slice, word]` = "some digit of the
+  //: slice at the boundary level is read- OR write-live at token `word*32 + t`".
+  //: The membership ballot's coarse term; the fine terms it ANDs under are the
+  //: owner's fixed-level `read/write_tok_bits` rows. Derived from the same
+  //: support authority, so over-approximation is impossible by construction.
+  const uint32_t* slice_union_tok;  // [BH, n_slices, n_twords]
+  //: The PER-TOKEN ATOM-GRANULE UNION BYTES (TWO UNION FORMS, form (b)): bit
+  //: `q` of byte `[bh, slice, token]` = "some leaf of atom `q` of this slice is
+  //: live at this token on this side" (an atom = kMmaKQuantum consecutive
+  //: leaves; QPO = BC/16 <= 8 bits used). The walk's per-side masks: the visit
+  //: OR of the group's <= 16 bytes is the compact-into-registers atom walk's
+  //: whole consumption. Derived host-side with the token bits (one summaries
+  //: pass, consistency by construction); the per-(owner,word) pre-OR'd form is
+  //: FORBIDDEN (materialization rule) -- the per-visit OR is the kernel's job.
+  const uint8_t* read_atom_bytes;   // [BH, n_slices, T]
+  const uint8_t* write_atom_bytes;  // [BH, n_slices, T]
 
   //: Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   //: `rate[s] = prod_l delta_l[d_l(s)]`, a plain product of DIALS (spec §2).
   //: HAZARD dials-fp32 -- docs/internals/consumer.md#dials-fp32
   const float* dials;  // [H, total_rows] or nullptr
 
-  const float* g_read;   // [BH, T] or nullptr (global fixes g_read := 1)
+  //: `g_read` is GONE: `global` fixes g_read := 1 and raw is dead.
   const float* g_write;  // [BH, T]
-  //: [BH, T, DV] value stream, HBM storage in the arm's amplitude type `AmpWT`
-  //: (same scope as the spanned amplitudes: bf16 on `kBf16 && GLOBAL && !DECAY`,
-  //: fp32 elsewhere; it is staged into the bf16 MMA operand either way on that
-  //: arm); typed in-kernel, bound with a hard per-precision dtype check.
+  //: [BH, T, DV] value stream, HBM storage bf16 (the one precision story); bound
+  //: with a hard dtype check.
   const void* v;
 
   float* num;  // [BH, T, DV]   fp32, atomically accumulated
@@ -117,8 +117,7 @@ struct ConsumerParams {
   int64_t N;
   int BH;
   int T;
-  int n_tiles;
-  int n_words;
+  int n_twords;  // ceil(T / 32): the scan stream's word count
   int total_rows;
   int n_slices;
   int D;
@@ -150,17 +149,8 @@ struct ConsumerParams {
 
   //: Which of §6.4's three passes this launch is. LAUNCH-UNIFORM, so the branches it
   //: drives are structure and not a distributional property -- the same status as
-  //: `is_write`. docs/internals/consumer.md#pass-mode
+  //: `is_write`. docs/internals/consumer_kernel.md#pass-mode
   int pass_mode;
-
-  //: TOKEN-GATHER SCOPE, LAUNCH-UNIFORM AND STRUCTURAL: 1 iff BOTH routing sides
-  //: can produce exact zeros (the activation registry's `exact_zeros` column,
-  //: derived host-side) -- when either side is structurally full-support the
-  //: membership word is all-ones and the gather is the identity, so the aligned
-  //: walk IS the path there. The kernel additionally restricts the gathered walk
-  //: to `pass_mode == kPassRead` (the summary pass's per-leaf inclusion flags
-  //: are tile-framed this increment). docs/internals/consumer_kernel.md#token-gather
-  int token_gather;
 };
 
 __device__ __forceinline__ int leaf_digit(const ConsumerParams& p, int level, int base, int i) {
@@ -209,10 +199,10 @@ struct ScanParams {
 // docs/internals/consumer.md#instantiation-matrix
 // ---------------------------------------------------------------------------
 
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
+template <int BC, int DV, int D, bool DECAY>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream);
 
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
+template <int BC, int DV, int D, bool DECAY>
 int query_consumer_occupancy_arm();
 
 using LaunchFn = void (*)(const ConsumerParams&, cudaStream_t);
@@ -230,13 +220,10 @@ using OccFn = int (*)();
 //: computes a choice, which is what keeps selection replaceable without touching the
 //: dispatch. docs/internals/consumer.md#dispatch-choice
 struct DispatchChoice {
-  int BT;
   int BC;
   int DV;
   int D;
-  MmaPrec prec;
   bool decay;
-  bool global_norm;
 };
 
 //: THE MACHINE FACTS A ROW IS ADMITTED AGAINST. Filled from the driver once per
@@ -248,13 +235,10 @@ struct DeviceFacts {
 };
 
 struct ShardRow {
-  int BT;
   int BC;
   int DV;
   int D;
-  MmaPrec prec;
   bool decay;
-  bool global_norm;
   LaunchFn launch;
   OccFn occupancy;
   size_t smem_bytes;

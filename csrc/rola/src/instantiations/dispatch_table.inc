@@ -2,31 +2,17 @@
 // The dispatch table: every arm's row, the mixed-radix key over the
 // matrix axes, and the index that turns a key into a row. Included by
 // `csrc/rola/src/consumer.cu`.
-extern const ShardRow kShardRows_consumer_bf16_global_bt16[32];
-extern const ShardRow kShardRows_consumer_bf16_global_bt32[32];
-extern const ShardRow kShardRows_consumer_bf16_raw_bt16[32];
-extern const ShardRow kShardRows_consumer_bf16_raw_bt32[32];
-extern const ShardRow kShardRows_consumer_tf32x3_global_bt16[32];
-extern const ShardRow kShardRows_consumer_tf32x3_global_bt32[32];
-extern const ShardRow kShardRows_consumer_tf32x3_raw_bt16[32];
-extern const ShardRow kShardRows_consumer_tf32x3_raw_bt32[32];
+extern const ShardRow kShardRows_consumer_decay_bc16[8];
+extern const ShardRow kShardRows_consumer_decay_bc64[8];
+extern const ShardRow kShardRows_consumer_nodecay_bc16[8];
+extern const ShardRow kShardRows_consumer_nodecay_bc64[8];
 
 constexpr ShardRowBlock kShardRowBlocks[] = {
-    {kShardRows_consumer_bf16_global_bt16, 32},   {kShardRows_consumer_bf16_global_bt32, 32},
-    {kShardRows_consumer_bf16_raw_bt16, 32},      {kShardRows_consumer_bf16_raw_bt32, 32},
-    {kShardRows_consumer_tf32x3_global_bt16, 32}, {kShardRows_consumer_tf32x3_global_bt32, 32},
-    {kShardRows_consumer_tf32x3_raw_bt16, 32},    {kShardRows_consumer_tf32x3_raw_bt32, 32},
+    {kShardRows_consumer_decay_bc16, 8},
+    {kShardRows_consumer_decay_bc64, 8},
+    {kShardRows_consumer_nodecay_bc16, 8},
+    {kShardRows_consumer_nodecay_bc64, 8},
 };
-
-inline int dispatch_axis_BT(int v) {
-  switch (v) {
-    case 16:
-      return 0;
-    case 32:
-      return 1;
-  }
-  return -1;
-}
 
 inline int dispatch_axis_BC(int v) {
   switch (v) {
@@ -62,29 +48,14 @@ inline int dispatch_axis_D(int v) {
   return -1;
 }
 
-inline int dispatch_axis_PREC(MmaPrec v) {
-  switch (v) {
-    case MmaPrec::kBf16:
-      return 0;
-    case MmaPrec::kTf32x3:
-      return 1;
-  }
-  return -1;
-}
-
 inline int dispatch_axis_DECAY(bool v) { return v ? 1 : 0; }
 
-inline int dispatch_axis_GLOBAL(bool v) { return v ? 1 : 0; }
-
-constexpr int kDispatchKeys = 256;
+constexpr int kDispatchKeys = 32;
 
 //: The choice's mixed-radix key, or -1 if any axis carries a value
 //: this binary has no arm for.
 inline int dispatch_key(const DispatchChoice& c) {
   int key = 0;
-  const int i_BT = dispatch_axis_BT(c.BT);
-  if (i_BT < 0) return -1;
-  key = key * 2 + i_BT;
   const int i_BC = dispatch_axis_BC(c.BC);
   if (i_BC < 0) return -1;
   key = key * 2 + i_BC;
@@ -94,145 +65,27 @@ inline int dispatch_key(const DispatchChoice& c) {
   const int i_D = dispatch_axis_D(c.D);
   if (i_D < 0) return -1;
   key = key * 4 + i_D;
-  const int i_PREC = dispatch_axis_PREC(c.prec);
-  if (i_PREC < 0) return -1;
-  key = key * 2 + i_PREC;
   const int i_DECAY = dispatch_axis_DECAY(c.decay);
   if (i_DECAY < 0) return -1;
   key = key * 2 + i_DECAY;
-  const int i_GLOBAL = dispatch_axis_GLOBAL(c.global_norm);
-  if (i_GLOBAL < 0) return -1;
-  key = key * 2 + i_GLOBAL;
   return key;
 }
 
 const ShardRow* const kRowByKey[kDispatchKeys] = {
-    &kShardRows_consumer_bf16_raw_bt16[0],    &kShardRows_consumer_bf16_global_bt16[0],
-    &kShardRows_consumer_bf16_raw_bt16[1],    &kShardRows_consumer_bf16_global_bt16[1],
-    &kShardRows_consumer_tf32x3_raw_bt16[0],  &kShardRows_consumer_tf32x3_global_bt16[0],
-    &kShardRows_consumer_tf32x3_raw_bt16[1],  &kShardRows_consumer_tf32x3_global_bt16[1],
-    &kShardRows_consumer_bf16_raw_bt16[2],    &kShardRows_consumer_bf16_global_bt16[2],
-    &kShardRows_consumer_bf16_raw_bt16[3],    &kShardRows_consumer_bf16_global_bt16[3],
-    &kShardRows_consumer_tf32x3_raw_bt16[2],  &kShardRows_consumer_tf32x3_global_bt16[2],
-    &kShardRows_consumer_tf32x3_raw_bt16[3],  &kShardRows_consumer_tf32x3_global_bt16[3],
-    &kShardRows_consumer_bf16_raw_bt16[4],    &kShardRows_consumer_bf16_global_bt16[4],
-    &kShardRows_consumer_bf16_raw_bt16[5],    &kShardRows_consumer_bf16_global_bt16[5],
-    &kShardRows_consumer_tf32x3_raw_bt16[4],  &kShardRows_consumer_tf32x3_global_bt16[4],
-    &kShardRows_consumer_tf32x3_raw_bt16[5],  &kShardRows_consumer_tf32x3_global_bt16[5],
-    &kShardRows_consumer_bf16_raw_bt16[6],    &kShardRows_consumer_bf16_global_bt16[6],
-    &kShardRows_consumer_bf16_raw_bt16[7],    &kShardRows_consumer_bf16_global_bt16[7],
-    &kShardRows_consumer_tf32x3_raw_bt16[6],  &kShardRows_consumer_tf32x3_global_bt16[6],
-    &kShardRows_consumer_tf32x3_raw_bt16[7],  &kShardRows_consumer_tf32x3_global_bt16[7],
-    &kShardRows_consumer_bf16_raw_bt16[8],    &kShardRows_consumer_bf16_global_bt16[8],
-    &kShardRows_consumer_bf16_raw_bt16[9],    &kShardRows_consumer_bf16_global_bt16[9],
-    &kShardRows_consumer_tf32x3_raw_bt16[8],  &kShardRows_consumer_tf32x3_global_bt16[8],
-    &kShardRows_consumer_tf32x3_raw_bt16[9],  &kShardRows_consumer_tf32x3_global_bt16[9],
-    &kShardRows_consumer_bf16_raw_bt16[10],   &kShardRows_consumer_bf16_global_bt16[10],
-    &kShardRows_consumer_bf16_raw_bt16[11],   &kShardRows_consumer_bf16_global_bt16[11],
-    &kShardRows_consumer_tf32x3_raw_bt16[10], &kShardRows_consumer_tf32x3_global_bt16[10],
-    &kShardRows_consumer_tf32x3_raw_bt16[11], &kShardRows_consumer_tf32x3_global_bt16[11],
-    &kShardRows_consumer_bf16_raw_bt16[12],   &kShardRows_consumer_bf16_global_bt16[12],
-    &kShardRows_consumer_bf16_raw_bt16[13],   &kShardRows_consumer_bf16_global_bt16[13],
-    &kShardRows_consumer_tf32x3_raw_bt16[12], &kShardRows_consumer_tf32x3_global_bt16[12],
-    &kShardRows_consumer_tf32x3_raw_bt16[13], &kShardRows_consumer_tf32x3_global_bt16[13],
-    &kShardRows_consumer_bf16_raw_bt16[14],   &kShardRows_consumer_bf16_global_bt16[14],
-    &kShardRows_consumer_bf16_raw_bt16[15],   &kShardRows_consumer_bf16_global_bt16[15],
-    &kShardRows_consumer_tf32x3_raw_bt16[14], &kShardRows_consumer_tf32x3_global_bt16[14],
-    &kShardRows_consumer_tf32x3_raw_bt16[15], &kShardRows_consumer_tf32x3_global_bt16[15],
-    &kShardRows_consumer_bf16_raw_bt16[16],   &kShardRows_consumer_bf16_global_bt16[16],
-    &kShardRows_consumer_bf16_raw_bt16[17],   &kShardRows_consumer_bf16_global_bt16[17],
-    &kShardRows_consumer_tf32x3_raw_bt16[16], &kShardRows_consumer_tf32x3_global_bt16[16],
-    &kShardRows_consumer_tf32x3_raw_bt16[17], &kShardRows_consumer_tf32x3_global_bt16[17],
-    &kShardRows_consumer_bf16_raw_bt16[18],   &kShardRows_consumer_bf16_global_bt16[18],
-    &kShardRows_consumer_bf16_raw_bt16[19],   &kShardRows_consumer_bf16_global_bt16[19],
-    &kShardRows_consumer_tf32x3_raw_bt16[18], &kShardRows_consumer_tf32x3_global_bt16[18],
-    &kShardRows_consumer_tf32x3_raw_bt16[19], &kShardRows_consumer_tf32x3_global_bt16[19],
-    &kShardRows_consumer_bf16_raw_bt16[20],   &kShardRows_consumer_bf16_global_bt16[20],
-    &kShardRows_consumer_bf16_raw_bt16[21],   &kShardRows_consumer_bf16_global_bt16[21],
-    &kShardRows_consumer_tf32x3_raw_bt16[20], &kShardRows_consumer_tf32x3_global_bt16[20],
-    &kShardRows_consumer_tf32x3_raw_bt16[21], &kShardRows_consumer_tf32x3_global_bt16[21],
-    &kShardRows_consumer_bf16_raw_bt16[22],   &kShardRows_consumer_bf16_global_bt16[22],
-    &kShardRows_consumer_bf16_raw_bt16[23],   &kShardRows_consumer_bf16_global_bt16[23],
-    &kShardRows_consumer_tf32x3_raw_bt16[22], &kShardRows_consumer_tf32x3_global_bt16[22],
-    &kShardRows_consumer_tf32x3_raw_bt16[23], &kShardRows_consumer_tf32x3_global_bt16[23],
-    &kShardRows_consumer_bf16_raw_bt16[24],   &kShardRows_consumer_bf16_global_bt16[24],
-    &kShardRows_consumer_bf16_raw_bt16[25],   &kShardRows_consumer_bf16_global_bt16[25],
-    &kShardRows_consumer_tf32x3_raw_bt16[24], &kShardRows_consumer_tf32x3_global_bt16[24],
-    &kShardRows_consumer_tf32x3_raw_bt16[25], &kShardRows_consumer_tf32x3_global_bt16[25],
-    &kShardRows_consumer_bf16_raw_bt16[26],   &kShardRows_consumer_bf16_global_bt16[26],
-    &kShardRows_consumer_bf16_raw_bt16[27],   &kShardRows_consumer_bf16_global_bt16[27],
-    &kShardRows_consumer_tf32x3_raw_bt16[26], &kShardRows_consumer_tf32x3_global_bt16[26],
-    &kShardRows_consumer_tf32x3_raw_bt16[27], &kShardRows_consumer_tf32x3_global_bt16[27],
-    &kShardRows_consumer_bf16_raw_bt16[28],   &kShardRows_consumer_bf16_global_bt16[28],
-    &kShardRows_consumer_bf16_raw_bt16[29],   &kShardRows_consumer_bf16_global_bt16[29],
-    &kShardRows_consumer_tf32x3_raw_bt16[28], &kShardRows_consumer_tf32x3_global_bt16[28],
-    &kShardRows_consumer_tf32x3_raw_bt16[29], &kShardRows_consumer_tf32x3_global_bt16[29],
-    &kShardRows_consumer_bf16_raw_bt16[30],   &kShardRows_consumer_bf16_global_bt16[30],
-    &kShardRows_consumer_bf16_raw_bt16[31],   &kShardRows_consumer_bf16_global_bt16[31],
-    &kShardRows_consumer_tf32x3_raw_bt16[30], &kShardRows_consumer_tf32x3_global_bt16[30],
-    &kShardRows_consumer_tf32x3_raw_bt16[31], &kShardRows_consumer_tf32x3_global_bt16[31],
-    &kShardRows_consumer_bf16_raw_bt32[0],    &kShardRows_consumer_bf16_global_bt32[0],
-    &kShardRows_consumer_bf16_raw_bt32[1],    &kShardRows_consumer_bf16_global_bt32[1],
-    &kShardRows_consumer_tf32x3_raw_bt32[0],  &kShardRows_consumer_tf32x3_global_bt32[0],
-    &kShardRows_consumer_tf32x3_raw_bt32[1],  &kShardRows_consumer_tf32x3_global_bt32[1],
-    &kShardRows_consumer_bf16_raw_bt32[2],    &kShardRows_consumer_bf16_global_bt32[2],
-    &kShardRows_consumer_bf16_raw_bt32[3],    &kShardRows_consumer_bf16_global_bt32[3],
-    &kShardRows_consumer_tf32x3_raw_bt32[2],  &kShardRows_consumer_tf32x3_global_bt32[2],
-    &kShardRows_consumer_tf32x3_raw_bt32[3],  &kShardRows_consumer_tf32x3_global_bt32[3],
-    &kShardRows_consumer_bf16_raw_bt32[4],    &kShardRows_consumer_bf16_global_bt32[4],
-    &kShardRows_consumer_bf16_raw_bt32[5],    &kShardRows_consumer_bf16_global_bt32[5],
-    &kShardRows_consumer_tf32x3_raw_bt32[4],  &kShardRows_consumer_tf32x3_global_bt32[4],
-    &kShardRows_consumer_tf32x3_raw_bt32[5],  &kShardRows_consumer_tf32x3_global_bt32[5],
-    &kShardRows_consumer_bf16_raw_bt32[6],    &kShardRows_consumer_bf16_global_bt32[6],
-    &kShardRows_consumer_bf16_raw_bt32[7],    &kShardRows_consumer_bf16_global_bt32[7],
-    &kShardRows_consumer_tf32x3_raw_bt32[6],  &kShardRows_consumer_tf32x3_global_bt32[6],
-    &kShardRows_consumer_tf32x3_raw_bt32[7],  &kShardRows_consumer_tf32x3_global_bt32[7],
-    &kShardRows_consumer_bf16_raw_bt32[8],    &kShardRows_consumer_bf16_global_bt32[8],
-    &kShardRows_consumer_bf16_raw_bt32[9],    &kShardRows_consumer_bf16_global_bt32[9],
-    &kShardRows_consumer_tf32x3_raw_bt32[8],  &kShardRows_consumer_tf32x3_global_bt32[8],
-    &kShardRows_consumer_tf32x3_raw_bt32[9],  &kShardRows_consumer_tf32x3_global_bt32[9],
-    &kShardRows_consumer_bf16_raw_bt32[10],   &kShardRows_consumer_bf16_global_bt32[10],
-    &kShardRows_consumer_bf16_raw_bt32[11],   &kShardRows_consumer_bf16_global_bt32[11],
-    &kShardRows_consumer_tf32x3_raw_bt32[10], &kShardRows_consumer_tf32x3_global_bt32[10],
-    &kShardRows_consumer_tf32x3_raw_bt32[11], &kShardRows_consumer_tf32x3_global_bt32[11],
-    &kShardRows_consumer_bf16_raw_bt32[12],   &kShardRows_consumer_bf16_global_bt32[12],
-    &kShardRows_consumer_bf16_raw_bt32[13],   &kShardRows_consumer_bf16_global_bt32[13],
-    &kShardRows_consumer_tf32x3_raw_bt32[12], &kShardRows_consumer_tf32x3_global_bt32[12],
-    &kShardRows_consumer_tf32x3_raw_bt32[13], &kShardRows_consumer_tf32x3_global_bt32[13],
-    &kShardRows_consumer_bf16_raw_bt32[14],   &kShardRows_consumer_bf16_global_bt32[14],
-    &kShardRows_consumer_bf16_raw_bt32[15],   &kShardRows_consumer_bf16_global_bt32[15],
-    &kShardRows_consumer_tf32x3_raw_bt32[14], &kShardRows_consumer_tf32x3_global_bt32[14],
-    &kShardRows_consumer_tf32x3_raw_bt32[15], &kShardRows_consumer_tf32x3_global_bt32[15],
-    &kShardRows_consumer_bf16_raw_bt32[16],   &kShardRows_consumer_bf16_global_bt32[16],
-    &kShardRows_consumer_bf16_raw_bt32[17],   &kShardRows_consumer_bf16_global_bt32[17],
-    &kShardRows_consumer_tf32x3_raw_bt32[16], &kShardRows_consumer_tf32x3_global_bt32[16],
-    &kShardRows_consumer_tf32x3_raw_bt32[17], &kShardRows_consumer_tf32x3_global_bt32[17],
-    &kShardRows_consumer_bf16_raw_bt32[18],   &kShardRows_consumer_bf16_global_bt32[18],
-    &kShardRows_consumer_bf16_raw_bt32[19],   &kShardRows_consumer_bf16_global_bt32[19],
-    &kShardRows_consumer_tf32x3_raw_bt32[18], &kShardRows_consumer_tf32x3_global_bt32[18],
-    &kShardRows_consumer_tf32x3_raw_bt32[19], &kShardRows_consumer_tf32x3_global_bt32[19],
-    &kShardRows_consumer_bf16_raw_bt32[20],   &kShardRows_consumer_bf16_global_bt32[20],
-    &kShardRows_consumer_bf16_raw_bt32[21],   &kShardRows_consumer_bf16_global_bt32[21],
-    &kShardRows_consumer_tf32x3_raw_bt32[20], &kShardRows_consumer_tf32x3_global_bt32[20],
-    &kShardRows_consumer_tf32x3_raw_bt32[21], &kShardRows_consumer_tf32x3_global_bt32[21],
-    &kShardRows_consumer_bf16_raw_bt32[22],   &kShardRows_consumer_bf16_global_bt32[22],
-    &kShardRows_consumer_bf16_raw_bt32[23],   &kShardRows_consumer_bf16_global_bt32[23],
-    &kShardRows_consumer_tf32x3_raw_bt32[22], &kShardRows_consumer_tf32x3_global_bt32[22],
-    &kShardRows_consumer_tf32x3_raw_bt32[23], &kShardRows_consumer_tf32x3_global_bt32[23],
-    &kShardRows_consumer_bf16_raw_bt32[24],   &kShardRows_consumer_bf16_global_bt32[24],
-    &kShardRows_consumer_bf16_raw_bt32[25],   &kShardRows_consumer_bf16_global_bt32[25],
-    &kShardRows_consumer_tf32x3_raw_bt32[24], &kShardRows_consumer_tf32x3_global_bt32[24],
-    &kShardRows_consumer_tf32x3_raw_bt32[25], &kShardRows_consumer_tf32x3_global_bt32[25],
-    &kShardRows_consumer_bf16_raw_bt32[26],   &kShardRows_consumer_bf16_global_bt32[26],
-    &kShardRows_consumer_bf16_raw_bt32[27],   &kShardRows_consumer_bf16_global_bt32[27],
-    &kShardRows_consumer_tf32x3_raw_bt32[26], &kShardRows_consumer_tf32x3_global_bt32[26],
-    &kShardRows_consumer_tf32x3_raw_bt32[27], &kShardRows_consumer_tf32x3_global_bt32[27],
-    &kShardRows_consumer_bf16_raw_bt32[28],   &kShardRows_consumer_bf16_global_bt32[28],
-    &kShardRows_consumer_bf16_raw_bt32[29],   &kShardRows_consumer_bf16_global_bt32[29],
-    &kShardRows_consumer_tf32x3_raw_bt32[28], &kShardRows_consumer_tf32x3_global_bt32[28],
-    &kShardRows_consumer_tf32x3_raw_bt32[29], &kShardRows_consumer_tf32x3_global_bt32[29],
-    &kShardRows_consumer_bf16_raw_bt32[30],   &kShardRows_consumer_bf16_global_bt32[30],
-    &kShardRows_consumer_bf16_raw_bt32[31],   &kShardRows_consumer_bf16_global_bt32[31],
-    &kShardRows_consumer_tf32x3_raw_bt32[30], &kShardRows_consumer_tf32x3_global_bt32[30],
-    &kShardRows_consumer_tf32x3_raw_bt32[31], &kShardRows_consumer_tf32x3_global_bt32[31],
+    &kShardRows_consumer_nodecay_bc16[0], &kShardRows_consumer_decay_bc16[0],
+    &kShardRows_consumer_nodecay_bc16[1], &kShardRows_consumer_decay_bc16[1],
+    &kShardRows_consumer_nodecay_bc16[2], &kShardRows_consumer_decay_bc16[2],
+    &kShardRows_consumer_nodecay_bc16[3], &kShardRows_consumer_decay_bc16[3],
+    &kShardRows_consumer_nodecay_bc16[4], &kShardRows_consumer_decay_bc16[4],
+    &kShardRows_consumer_nodecay_bc16[5], &kShardRows_consumer_decay_bc16[5],
+    &kShardRows_consumer_nodecay_bc16[6], &kShardRows_consumer_decay_bc16[6],
+    &kShardRows_consumer_nodecay_bc16[7], &kShardRows_consumer_decay_bc16[7],
+    &kShardRows_consumer_nodecay_bc64[0], &kShardRows_consumer_decay_bc64[0],
+    &kShardRows_consumer_nodecay_bc64[1], &kShardRows_consumer_decay_bc64[1],
+    &kShardRows_consumer_nodecay_bc64[2], &kShardRows_consumer_decay_bc64[2],
+    &kShardRows_consumer_nodecay_bc64[3], &kShardRows_consumer_decay_bc64[3],
+    &kShardRows_consumer_nodecay_bc64[4], &kShardRows_consumer_decay_bc64[4],
+    &kShardRows_consumer_nodecay_bc64[5], &kShardRows_consumer_decay_bc64[5],
+    &kShardRows_consumer_nodecay_bc64[6], &kShardRows_consumer_decay_bc64[6],
+    &kShardRows_consumer_nodecay_bc64[7], &kShardRows_consumer_decay_bc64[7],
 };

@@ -10,14 +10,14 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` has
-256 reachable instantiations — the exact set `launch_consumer` can select, no
-more and no fewer. Compiling them in ONE translation unit put 256 template
-expansions through one `cicc`; they are split across **8 shards of
-32 instantiations** on **PREC x GLOBAL x BT**, whole-program (no `-rdc`), so the compile
+`consumer_forward_kernel<BC, DV, D, DECAY>` has
+32 reachable instantiations — the exact set `launch_consumer` can select, no
+more and no fewer. Compiling them in ONE translation unit put 32 template
+expansions through one `cicc`; they are split across **4 shards of
+8 instantiations** on **DECAY x BC**, whole-program (no `-rdc`), so the compile
 parallelizes and a ratchet refusal scopes to one shard's slice of the manifest.
 
-Each shard carries, for its 32 tuples: an explicit instantiation of the host
+Each shard carries, for its 8 tuples: an explicit instantiation of the host
 launcher `launch_consumer_arm` (which is what pulls in the device kernel, exactly
 once in the whole fatbin), one of `query_consumer_occupancy_arm`, and a `ShardRow`
 record holding both plus the arm's `constexpr` shared-memory footprint. The
@@ -44,8 +44,7 @@ this generator exists.
 
 The axes are chosen by `SHARD_AXIS_PRIORITY` and `TARGET_MEMBERS_PER_SHARD`, and by
 nothing else — membership is a structural function of the template tuple, never a
-measured compile time. Repartitioning (P17's read-path axis takes the matrix to
-1,024) is a change to those two constants.
+measured compile time. Repartitioning is a change to those two constants.
 
 ## The membership hash
 
@@ -59,11 +58,7 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `consumer_bf16_global_bt16.cu` | 32 |
-| `consumer_bf16_global_bt32.cu` | 32 |
-| `consumer_bf16_raw_bt16.cu` | 32 |
-| `consumer_bf16_raw_bt32.cu` | 32 |
-| `consumer_tf32x3_global_bt16.cu` | 32 |
-| `consumer_tf32x3_global_bt32.cu` | 32 |
-| `consumer_tf32x3_raw_bt16.cu` | 32 |
-| `consumer_tf32x3_raw_bt32.cu` | 32 |
+| `consumer_decay_bc16.cu` | 8 |
+| `consumer_decay_bc64.cu` | 8 |
+| `consumer_nodecay_bc16.cu` | 8 |
+| `consumer_nodecay_bc64.cu` | 8 |

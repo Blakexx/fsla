@@ -1,7 +1,7 @@
 """THE ONE ENUMERATION of the consumer's instantiation matrix.
 
 **WHAT THIS OWNS.** Before this file the matrix
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` was
+`consumer_forward_kernel<BC, DV, D, DECAY>` was
 written out THREE times -- the dispatch ladder in `consumer.cu`, the occupancy and
 footprint ladders beside it, and a probe translation unit under `tools/`. Three
 independent enumerations of one set is the drift shape this project has already been
@@ -27,18 +27,15 @@ what CI and `tests/unit/test_shard_partition.py` run.
 name using an ordered AXIS PRIORITY list and a target member count, and nothing else
 -- no measured compile time, no hand-written file list, no size threshold. "Rebalance
 the shards by how long they took to compile last week" is therefore not a thing that
-can be expressed here; changing the partition (P17 adds a read-path axis and takes
-the matrix to 1,024) is a change to `SHARD_AXIS_PRIORITY` or
+can be expressed here; changing the partition is a change to `SHARD_AXIS_PRIORITY` or
 `TARGET_MEMBERS_PER_SHARD` and nothing else. `tests/unit/test_shard_partition.py`
 asserts every member of every generated file maps back to that file.
 
-**WHY THESE THREE AXES.** PREC, GLOBAL and BT, in that priority. Every recorded
-ratchet co-movement episode clustered perfectly on ONE of PREC, GLOBAL or BT and never
-on BC/DV/D, so a shard-per-axis-value makes a ratchet refusal a one-shard-slice event;
-the fourth axis is RESERVED rather than spent, because the next queued template axis
-(P17's dense read path) doubles the matrix and will need it. The evidence:
-`rola-scratch/workflows/refactor/p02_build_measure.md`; the adjudication:
-`p02_shard_review.md` answer 1.
+**WHY THESE AXES.** DECAY then BC, in that priority: DECAY is the one surviving
+axis the recorded ratchet co-movement episodes clustered on (the precision,
+normalization and BT axes are dead), and BC keys the register budget. A
+shard-per-axis-value keeps a ratchet refusal a one-shard-slice event on the
+collapsed 32-arm matrix.
 
 Usage:
 
@@ -84,30 +81,23 @@ def _b(v):
     return "true" if v else "false"
 
 
-#: DECLARATION ORDER of `consumer_forward_kernel`'s template parameters, minus the
-#: duplicated precision parameter. The kernel takes FOLD and READ separately; the
-#: dispatch has always passed them EQUAL (one `mma_precision` plan field selects both
-#: GEMM sites together), so the matrix carries one PREC axis and the generator writes
-#: it twice. That funnel is the reason the space is 256 and not 512, and it is
-#: recorded here rather than rediscovered from a macro.
+#: DECLARATION ORDER of `consumer_forward_kernel`'s template parameters. The BT,
+#: precision and normalization axes are DEAD (endgame executor: the group is the
+#: fixed MMA quantum; bf16 is the only storage format; raw normalization is
+#: deleted -- revival = git), so the matrix is exactly the four axes below.
 AXES = (
-    Axis("BT", (16, 32), str, lambda v: f"bt{v}", str),
     Axis("BC", (16, 64), str, lambda v: f"bc{v}", str),
     Axis("DV", (32, 64), str, lambda v: f"dv{v}", str),
     Axis("D", (1, 2, 3, 4), str, lambda v: f"d{v}", str),
-    Axis("PREC", ("bf16", "tf32x3"),
-         lambda v: f"MmaPrec::{'kBf16' if v == 'bf16' else 'kTf32x3'}",
-         lambda v: v, None),
     Axis("DECAY", (False, True), _b, lambda v: "decay" if v else "nodecay", None),
-    Axis("GLOBAL", (False, True), _b, lambda v: "global" if v else "raw", None),
 )
 AXIS = {a.name: a for a in AXES}
 
 #: THE PARTITION, as two constants and nothing else. The prefix of this list that is
 #: long enough to reach `TARGET_MEMBERS_PER_SHARD` is the set of sharded axes; the
 #: rest of the matrix lives inside a shard.
-SHARD_AXIS_PRIORITY = ("PREC", "GLOBAL", "BT", "BC", "DV", "DECAY", "D")
-TARGET_MEMBERS_PER_SHARD = 32
+SHARD_AXIS_PRIORITY = ("DECAY", "BC", "DV", "D")
+TARGET_MEMBERS_PER_SHARD = 8
 
 
 def matrix() -> list[dict]:
@@ -176,15 +166,10 @@ def shard_manifest_block() -> dict:
             for name, rows in sorted(shards().items())}
 
 
-def targs(row: dict, prec_twice: bool = False) -> str:
+def targs(row: dict) -> str:
     """The C++ template argument list for one tuple."""
-    prec = AXIS["PREC"].cxx(row["PREC"])
-    args = [AXIS["BT"].cxx(row["BT"]), AXIS["BC"].cxx(row["BC"]),
-            AXIS["DV"].cxx(row["DV"]), AXIS["D"].cxx(row["D"]), prec]
-    if prec_twice:
-        args.append(prec)
-    args += [AXIS["DECAY"].cxx(row["DECAY"]), AXIS["GLOBAL"].cxx(row["GLOBAL"])]
-    return ", ".join(args)
+    return ", ".join([AXIS["BC"].cxx(row["BC"]), AXIS["DV"].cxx(row["DV"]),
+                      AXIS["D"].cxx(row["D"]), AXIS["DECAY"].cxx(row["DECAY"])])
 
 
 # ---------------------------------------------------------------------------
@@ -236,12 +221,10 @@ def shard_source(name: str, rows: list[dict]) -> str:
     body.append(f"const ShardRow kShardRows_{name}[{len(rows)}] = {{\n")
     for row in rows:
         body.append(
-            f"    {{{row['BT']}, {row['BC']}, {row['DV']}, {row['D']}, "
-            f"{AXIS['PREC'].cxx(row['PREC'])}, {_b(row['DECAY'])}, "
-            f"{_b(row['GLOBAL'])}, "
+            f"    {{{row['BC']}, {row['DV']}, {row['D']}, {_b(row['DECAY'])}, "
             f"&launch_consumer_arm<{targs(row)}>, "
             f"&query_consumer_occupancy_arm<{targs(row)}>, "
-            f"consumer::consumer_smem_bytes<{targs(row, prec_twice=True)}>(), "
+            f"consumer::consumer_smem_bytes<{targs(row)}>(), "
             f'"{name}", "{key}"}},\n')
     body.append("};\n")
     body.append("\n")
@@ -276,8 +259,6 @@ def axis_cxx_type(axis) -> str:
     """The C++ type a choice carries this axis in."""
     if axis.values == (False, True):
         return "bool"
-    if axis.name == "PREC":
-        return "MmaPrec"
     return "int"
 
 
@@ -318,8 +299,7 @@ def dispatch_table_inc() -> str:
                  "inline int dispatch_key(const DispatchChoice& c) {\n")
     lines.append("  int key = 0;\n")
     for axis in AXES:
-        field = {"PREC": "prec", "DECAY": "decay", "GLOBAL": "global_norm"}.get(
-            axis.name, axis.name)
+        field = {"DECAY": "decay"}.get(axis.name, axis.name)
         lines.append(f"  const int i_{axis.name} = dispatch_axis_{axis.name}(c.{field});\n")
         lines.append(f"  if (i_{axis.name} < 0) return -1;\n")
         lines.append(f"  key = key * {len(axis.values)} + i_{axis.name};\n")
@@ -352,7 +332,7 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`consumer_forward_kernel<BT, BC, DV, D, FOLD, READ, DECAY, GLOBAL>` has
+`consumer_forward_kernel<BC, DV, D, DECAY>` has
 {total} reachable instantiations — the exact set `launch_consumer` can select, no
 more and no fewer. Compiling them in ONE translation unit put {total} template
 expansions through one `cicc`; they are split across **{nshards} shards of
@@ -386,8 +366,7 @@ this generator exists.
 
 The axes are chosen by `SHARD_AXIS_PRIORITY` and `TARGET_MEMBERS_PER_SHARD`, and by
 nothing else — membership is a structural function of the template tuple, never a
-measured compile time. Repartitioning (P17's read-path axis takes the matrix to
-1,024) is a change to those two constants.
+measured compile time. Repartitioning is a change to those two constants.
 
 ## The membership hash
 

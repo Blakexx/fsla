@@ -165,23 +165,16 @@ void scan_pass(const ScanParams& p) {
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-//: `OutT` is the P09 family's post-divide cast: the DIVIDE itself is fp32 over the
-//: fp32 `num`/`den` accumulators (which never narrow), and only the stored quotient
-//: takes the arm's output format (bf16 under `kBf16`, float under `kTf32x3`).
-//: Overloads, not `static_cast` -- the build defines
-//: `__CUDA_NO_BFLOAT16_CONVERSIONS__`, so the narrowing must be the intrinsic.
-__device__ __forceinline__ void store_quotient(float* out, int64_t i, float q) { out[i] = q; }
-__device__ __forceinline__ void store_quotient(__nv_bfloat16* out, int64_t i, float q) {
-  out[i] = __float2bfloat16(q);
-}
-
-template <typename OutT>
+//: The post-divide cast: the DIVIDE itself is fp32 over the fp32 `num`/`den`
+//: accumulators (which never narrow); only the stored quotient is bf16. The
+//: intrinsic, not `static_cast` -- the build defines
+//: `__CUDA_NO_BFLOAT16_CONVERSIONS__`.
 __global__ void divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
-                              OutT* __restrict__ out, int64_t rows, int DV, float eps) {
+                              __nv_bfloat16* __restrict__ out, int64_t rows, int DV, float eps) {
   const int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
   if (idx >= rows * DV) return;
   const int64_t row = idx / DV;
-  store_quotient(out, idx, num[idx] / (den[row] + eps));
+  out[idx] = __float2bfloat16(num[idx] / (den[row] + eps));
 }
 
 }  // namespace
@@ -202,13 +195,13 @@ int64_t rola_sm_shared_bytes() {
   return value;
 }
 
-template <typename OutT>
-void divide_pass(const float* num, const float* den, OutT* out, int64_t rows, int d_v, float eps) {
+void divide_pass(const float* num, const float* den, __nv_bfloat16* out, int64_t rows, int d_v,
+                 float eps) {
   const int64_t total = rows * d_v;
   const int threads = 256;
   const int64_t blocks = (total + threads - 1) / threads;
-  divide_kernel<OutT>
-      <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(num, den, out, rows, d_v, eps);
+  divide_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(num, den, out, rows, d_v,
+                                                                          eps);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -244,8 +237,7 @@ void rola_consumer_check_arch_table() {
 }
 
 // THE LAUNCH DISPATCH. Declared restrictions are hard checks, never coercions.
-void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool global_norm, bool decay,
-                     const std::string& mma_precision) {
+void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay) {
   //: Checked ONCE per process, on the first launch rather than at import (a CUDA
   //: context as a side effect of `import` is worse than the check is worth), and
   //: nothing can reach a launch bound without passing through here.
@@ -257,38 +249,30 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
   //: THE FULL PLAN SURFACE, and the single authority for it. These are the planner's
   //: own supported sets, so no shape a plan can select is refused and no shape it
   //: cannot select is compiled: docs/internals/consumer.md#plan-surface
-  TORCH_CHECK((BT == 16 || BT == 32) && (BC == 16 || BC == 64) && (DV == 32 || DV == 64),
-              "the consumer instantiates BT in {16, 32}, BC in {16, 64}, "
-              "d_v in {32, 64}; got BT=",
-              BT, " BC=", BC, " d_v=", DV);
+  TORCH_CHECK((BC == 16 || BC == 64) && (DV == 32 || DV == 64),
+              "the consumer instantiates BC in {16, 64}, d_v in {32, 64}; got BC=", BC,
+              " d_v=", DV);
 
   TORCH_CHECK(p.D >= 1 && p.D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", p.D);
 
-  //: `mma_precision` selects BOTH GEMM sites together (RULING 1 revised): "bf16" is
-  //: the production point, "tf32x3" the exactness-gate point. Both are instantiated.
   //: THE INSTANTIATION MATRIX. Every axis is a template because every axis is a
   //: STRUCTURAL plan fact with few legal values -- the standing "branch on structure,
   //: not thresholds" rule -- and there is deliberately NO runtime fallback on any of
   //: them: an out-of-range value is a hard refusal, never a slower path.
-  //: The axes, why each one must be compile-time, the MEASURED instantiation count
-  //: (the ratification manifest is the authority, not this comment) and the measured
-  //: build cost: docs/internals/consumer.md#instantiation-matrix
-  const DispatchChoice choice{
-      BT,    BC,         DV, p.D, mma_precision == "tf32x3" ? MmaPrec::kTf32x3 : MmaPrec::kBf16,
-      decay, global_norm};
+  //: docs/internals/consumer.md#instantiation-matrix
+  const DispatchChoice choice{BC, DV, p.D, decay};
   const ShardRow* row = dispatch_row(choice);
   //: A KEY THIS BINARY HAS NO ARM FOR RESOLVES TO NOTHING, and nothing is what is
   //: launched. The checks above already admit only the matrix's own closure, so a null
   //: here means the generator and the checks disagree -- a defect to fail on.
-  TORCH_CHECK(row != nullptr, "no consumer instantiation for BT=", BT, " BC=", BC, " d_v=", DV,
-              " D=", p.D, " precision=", mma_precision, " decay=", decay, " global=", global_norm);
+  TORCH_CHECK(row != nullptr, "no consumer instantiation for BC=", BC, " d_v=", DV, " D=", p.D,
+              " decay=", decay);
   //: THE ROW'S ENABLE PREDICATE, ON A DEVICE INPUT. Its footprint is `constexpr`; what
   //: this device grants a block is not. Refusing here names both numbers, where the
   //: opt-in would otherwise fail inside the launcher and surface as a bare CUDA error.
   const DeviceFacts device = device_facts();
-  TORCH_CHECK(row_admitted(*row, device), "the consumer arm BT=", BT, " BC=", BC, " d_v=", DV,
-              " D=", p.D, " precision=", mma_precision, " decay=", decay, " global=", global_norm,
-              " needs ", row->smem_bytes,
+  TORCH_CHECK(row_admitted(*row, device), "the consumer arm BC=", BC, " d_v=", DV, " D=", p.D,
+              " decay=", decay, " needs ", row->smem_bytes,
               " B of dynamic shared memory and this device grants a block at most ",
               device.max_dynamic_smem_bytes,
               " B. The arm is compiled but not runnable here; select a smaller tile.");
@@ -302,20 +286,14 @@ void launch_consumer(const ConsumerParams& p, int BT, int BC, int DV, bool globa
 namespace {
 
 //: The residency and footprint queries answer at `D = 2`, the at-scale cell's
-//: topology depth (`D` moves only the `[D][BC]` digit table), under the planner's
-//: `global` normalization and the production precision.
+//: topology depth (`D` moves only the `[D][BC]` digit table).
 constexpr int kQueryD = 2;
-constexpr bool kQueryGlobal = true;
-constexpr MmaPrec kQueryPrec = MmaPrec::kBf16;
 
-const ShardRow& query_row(bool decay, int64_t BC, int64_t BT, int64_t DV) {
+const ShardRow& query_row(bool decay, int64_t BC, int64_t DV) {
   const ShardRow* row =
-      dispatch_row(DispatchChoice{static_cast<int>(BT), static_cast<int>(BC), static_cast<int>(DV),
-                                  kQueryD, kQueryPrec, decay, kQueryGlobal});
-  TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BT=", BT, " BC=", BC,
-              " d_v=", DV,
-              ": the matrix carries BT in {16, 32}, BC in {16, 64} and "
-              "d_v in {32, 64}");
+      dispatch_row(DispatchChoice{static_cast<int>(BC), static_cast<int>(DV), kQueryD, decay});
+  TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BC=", BC, " d_v=", DV,
+              ": the matrix carries BC in {16, 64} and d_v in {32, 64}");
   return *row;
 }
 
@@ -324,8 +302,8 @@ const ShardRow& query_row(bool decay, int64_t BC, int64_t BT, int64_t DV) {
 //: The consumer's residency answer, from the DRIVER. It takes four axes because
 //: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
 //: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
-int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV) {
-  const int blocks = query_row(decay, BC, BT, DV).occupancy();
+int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV) {
+  const int blocks = query_row(decay, BC, DV).occupancy();
   //: The shard's query is torch-free and reports through the CUDA runtime's error
   //: state; this is where it becomes a Python exception.
   C10_CUDA_CHECK(cudaGetLastError());
@@ -340,18 +318,14 @@ int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t BT, int64_t DV) 
 //: which is what makes "the table and the binary carry the same arms" a checked
 //: statement rather than a property of one generator.
 //: docs/internals/consumer.md#table-census
-std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
-                       std::string, std::string>>
+std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, std::string, std::string>>
 rola_dispatch_table() {
-  std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t, std::string, bool, bool, int64_t,
-                         std::string, std::string>>
-      out;
+  std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, std::string, std::string>> out;
   for (const ShardRowBlock& block : kShardRowBlocks) {
     for (int i = 0; i < block.count; ++i) {
       const ShardRow& row = block.rows[i];
-      out.emplace_back(row.BT, row.BC, row.DV, row.D,
-                       row.prec == MmaPrec::kTf32x3 ? "tf32x3" : "bf16", row.decay, row.global_norm,
-                       static_cast<int64_t>(row.smem_bytes), row.shard, row.src_key);
+      out.emplace_back(row.BC, row.DV, row.D, row.decay, static_cast<int64_t>(row.smem_bytes),
+                       row.shard, row.src_key);
     }
   }
   return out;
@@ -363,8 +337,8 @@ int64_t rola_max_dynamic_smem_bytes() {
   return static_cast<int64_t>(device_facts().max_dynamic_smem_bytes);
 }
 
-int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t BT, int64_t DV) {
-  return static_cast<int64_t>(query_row(decay, BC, BT, DV).smem_bytes);
+int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV) {
+  return static_cast<int64_t>(query_row(decay, BC, DV).smem_bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,19 +365,24 @@ const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
   return reinterpret_cast<const uint32_t*>(t.data_ptr<int32_t>());
 }
 
-//: The MMA precision's AMPLITUDE-CLASS storage dtype (spanned amplitude levels and
-//: the value stream): bf16 under `bf16`, fp32 under `tf32x3`. A tensor bound
-//: through here must ALREADY be in that dtype -- a mismatch is a hard error, never
-//: a silent cast; the cast belongs to the schedule builder, below support
-//: selection (I6-B §2.B4).
-const void* amp_class_ptr(const at::Tensor& t, bool bf16_arm, const char* name) {
+const uint8_t* u8_ptr(const at::Tensor& t, const char* name) {
+  TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
+  TORCH_CHECK(t.scalar_type() == at::kByte, name, " must be uint8, got ", t.scalar_type());
+  TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
+  return t.data_ptr<uint8_t>();
+}
+
+//: The AMPLITUDE-CLASS storage dtype (spanned amplitude levels and the value
+//: stream): bf16, unconditionally -- the one precision story. A tensor bound
+//: through here must ALREADY be bf16; a mismatch is a hard error, never a silent
+//: cast; the cast belongs to the schedule builder, below support selection.
+const void* amp_class_ptr(const at::Tensor& t, bool bf16_stream, const char* name) {
   TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
   TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
-  const auto expected = bf16_arm ? at::kBFloat16 : at::kFloat;
+  const auto expected = bf16_stream ? at::kBFloat16 : at::kFloat;
   TORCH_CHECK(t.scalar_type() == expected, name, " must be ", expected,
-              " (the dtype mma_precision implies for this stream), got ", t.scalar_type(),
-              " -- the amplitude/value storage dtype is keyed to the MMA precision and a "
-              "mismatch is never silently cast");
+              " (spanned levels and the value stream are bf16; fixed levels fp32), got ",
+              t.scalar_type(), " -- never silently cast");
   return t.const_data_ptr();
 }
 
@@ -412,15 +391,13 @@ const void* amp_class_ptr(const at::Tensor& t, bool bf16_arm, const char* name) 
 std::vector<at::Tensor> rola_consumer_forward(
     std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
-    at::Tensor read_bits, at::Tensor write_bits, at::Tensor read_tok_bits,
-    at::Tensor write_tok_bits, at::Tensor read_union, at::Tensor write_union,
-    at::Tensor slice_union_tok, at::Tensor owners, c10::optional<at::Tensor> g_read,
-    at::Tensor g_write, at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
+    at::Tensor read_tok_bits, at::Tensor write_tok_bits, at::Tensor slice_union_tok,
+    at::Tensor read_atom_bytes, at::Tensor write_atom_bytes, at::Tensor owners, at::Tensor g_write,
+    at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
     std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
     std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
     std::vector<int64_t> owner_stride, int64_t first_spanned_level, int64_t slice_digits,
-    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BT, int64_t BC,
-    bool global_norm, std::string mma_precision, double eps, bool token_gather,
+    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BC, double eps,
     // ---- §6.4 sequence parallelism. ALL-OR-NOTHING (14 arguments or none; `P = 1`
     // is the primary configuration): docs/internals/consumer.md#all-or-nothing
     c10::optional<at::Tensor> work_seg,        // [n_owners] int32, keyed like `owners`
@@ -447,7 +424,7 @@ std::vector<at::Tensor> rola_consumer_forward(
   const int64_t d_v = v.size(2);
   // §4.5: paged, `N` is not readable off the state, so it is derived from the owner
   // partition -- the definition. docs/internals/consumer.md#state-derivation
-  const int64_t cols = d_v + (global_norm ? 1 : 0);
+  const int64_t cols = d_v + 1;  // the mass column is unconditional (raw is dead)
   int64_t N;
   if (page_table.has_value()) {
     TORCH_CHECK(BC % kMmaKQuantum == 0, "BC must be a whole number of MMA_K_QUANTUM=", kMmaKQuantum,
@@ -472,51 +449,31 @@ std::vector<at::Tensor> rola_consumer_forward(
   }
   TORCH_CHECK(owners.dim() == 2 && owners.size(1) == 2, "owners must be [n_owners, 2]");
   TORCH_CHECK(owners.scalar_type() == at::kInt, "owners must be int32");
-  TORCH_CHECK(read_bits.dim() == 3, "read_bits must be [BH, total_rows, n_words]");
-  // §4's support word, TILE-MAJOR. Shape-checked against the tile bitmap it refines
-  // and against the amplitude stream's tile axis, so a schedule built at a different
-  // BT cannot reach the gather. docs/internals/consumer.md#support-shape-check
+  // §4's support word, WORD-MAJOR (the 32-token machine word is the metadata
+  // granule). docs/internals/consumer.md#support-shape-check
   TORCH_CHECK(read_tok_bits.dim() == 3 && write_tok_bits.sizes() == read_tok_bits.sizes(),
-              "read/write_tok_bits must both be [BH, n_tiles, total_rows]");
-  TORCH_CHECK(
-      read_tok_bits.size(0) == read_bits.size(0) && read_tok_bits.size(2) == read_bits.size(1),
-      "tok_bits must carry the same [BH, total_rows] level-digit rows as the tile bitmap");
-  TORCH_CHECK(BT >= 1 && BT <= 32,
-              "BT must be in [1, 32] (spec §6): the support word carries one bit per token "
-              "of a tile, got BT=",
-              BT);
-
-  // Numeric FORMAT axis (findings D4.3), stamped by the plan. Validated HERE --
-  // before any dtype-keyed binding below reads it -- so a bad string fails as
-  // itself rather than as a confusing amplitude-dtype mismatch.
-  TORCH_CHECK(mma_precision == "tf32x3" || mma_precision == "bf16",
-              "mma_precision must be 'tf32x3' or 'bf16', got ", mma_precision);
-  const bool bf16_arm = mma_precision == "bf16";
-  //: THE MEMORY-NARROWING SCOPE (P09 family): bf16 amplitude/value storage
-  //: applies on the bf16 GLOBAL-NORM NON-DECAY arms. Both carves are structural
-  //: template axes the dispatch already forks on, and both are MEASURED, not
-  //: preferred (workflows/perf/p09_bf16_family.md): the DECAY arms' clock/panel
-  //: registers sit at the allocator wall (the ratchet found in-loop spill on all
-  //: 22 offenders, every one bf16+decay); the RAW arm has no `num/den` ratio to
-  //: cancel the stacked roundings, and its worst tier-1 topology measured past
-  //: `BF16_RTOL` on 2 of 6 seeds under narrowed storage (the global arm sits at
-  //: ~60% of budget on the same cells).
-  const bool narrow_mem = bf16_arm && global_norm && !dials.has_value();
+              "read/write_tok_bits must both be [BH, n_twords, total_rows]");
+  const int64_t n_twords = read_tok_bits.size(1);
+  TORCH_CHECK(read_tok_bits.size(0) == BH && n_twords == (T + 31) / 32,
+              "tok_bits must be [BH, ceil(T/32), total_rows]; got [", read_tok_bits.size(0), ", ",
+              n_twords, ", ", read_tok_bits.size(2), "] against BH=", BH, " T=", T);
 
   ConsumerParams p{};
   for (int64_t l = 0; l < D; ++l) {
-    TORCH_CHECK(amp_read[l].dim() == 4, "amp_read[", l, "] must be [BH, n_tiles, BT, pitch]");
-    // Per LEVEL ROLE (P09 family, Option B): SPANNED levels (`l >= j`) store the
-    // precision-implied amplitude type, FIXED levels (`l < j`) stay fp32 -- they
-    // feed the per-token row scales, whose error is uniform over the output row.
+    TORCH_CHECK(
+        amp_read[l].dim() == 4 && amp_read[l].size(1) == n_twords && amp_read[l].size(2) == 32,
+        "amp_read[", l, "] must be [BH, n_twords, 32, pitch] (token-major, 32-padded)");
+    // Per LEVEL ROLE (Option B): SPANNED levels (`l >= j`) store bf16, FIXED levels
+    // (`l < j`) stay fp32 -- they feed the per-token row scales, whose error is
+    // uniform over the output row.
     const bool spanned = l >= first_spanned_level;
-    p.amp_read[l] = amp_class_ptr(amp_read[l], narrow_mem && spanned, "amp_read");
-    p.amp_write[l] = amp_class_ptr(amp_write[l], narrow_mem && spanned, "amp_write");
+    p.amp_read[l] = amp_class_ptr(amp_read[l], spanned, "amp_read");
+    p.amp_write[l] = amp_class_ptr(amp_write[l], spanned, "amp_write");
     p.level_pitch_read[l] = static_cast<int>(amp_read[l].size(3));
     p.level_pitch_write[l] = static_cast<int>(amp_write[l].size(3));
     if (amp_clock.has_value()) {
       TORCH_CHECK((*amp_clock)[l].dim() == 4, "amp_clock[", l,
-                  "] must be [BH, n_tiles, BT, pitch]");
+                  "] must be [BH, n_twords, 32, pitch]");
       p.amp_clock[l] = f32_ptr((*amp_clock)[l], "amp_clock");
       p.level_pitch_clock[l] = static_cast<int>((*amp_clock)[l].size(3));
     } else {
@@ -546,57 +503,44 @@ std::vector<at::Tensor> rola_consumer_forward(
     p.dials = nullptr;
   }
 
-  p.read_bits = u32_ptr(read_bits, "read_bits");
   p.read_tok_bits = u32_ptr(read_tok_bits, "read_tok_bits");
   p.write_tok_bits = u32_ptr(write_tok_bits, "write_tok_bits");
-  p.write_bits = u32_ptr(write_bits, "write_bits");
-  p.read_union = u32_ptr(read_union, "read_union");
-  p.write_union = u32_ptr(write_union, "write_union");
-  // The token-granular slice union (schedule ABI v3): one 32-bit token word per
-  // (bh, slice, tile), read|write OR -- the token-gather ballot's coarse term.
-  TORCH_CHECK(slice_union_tok.dim() == 3 && slice_union_tok.size(0) == read_bits.size(0)
-                  && slice_union_tok.size(1) == n_slices
-                  && slice_union_tok.size(2) == read_tok_bits.size(1),
-              "slice_union_tok must be [BH, n_slices, n_tiles]");
+  // The token-granular slice union (ABI v4, union form (a)): one 32-bit token word
+  // per (bh, slice, word), read|write OR -- the membership ballot's coarse term.
+  TORCH_CHECK(slice_union_tok.dim() == 3 && slice_union_tok.size(0) == BH
+                  && slice_union_tok.size(1) == n_slices && slice_union_tok.size(2) == n_twords,
+              "slice_union_tok must be [BH, n_slices, n_twords]");
   p.slice_union_tok = u32_ptr(slice_union_tok, "slice_union_tok");
-  p.token_gather = token_gather ? 1 : 0;
+  // The per-token atom-granule union bytes (ABI v4, union form (b)): the walk's
+  // per-side atom masks, one byte per (bh, slice, token).
+  TORCH_CHECK(read_atom_bytes.dim() == 3 && read_atom_bytes.size(0) == BH
+                  && read_atom_bytes.size(1) == n_slices && read_atom_bytes.size(2) == T
+                  && write_atom_bytes.sizes() == read_atom_bytes.sizes(),
+              "read/write_atom_bytes must both be [BH, n_slices, T] uint8");
+  p.read_atom_bytes = u8_ptr(read_atom_bytes, "read_atom_bytes");
+  p.write_atom_bytes = u8_ptr(write_atom_bytes, "write_atom_bytes");
   p.owners = owners.data_ptr<int32_t>();
-  p.g_read = g_read.has_value() ? f32_ptr(*g_read, "g_read") : nullptr;
   p.g_write = f32_ptr(g_write, "g_write");
-  p.v = amp_class_ptr(v, narrow_mem, "v");
+  p.v = amp_class_ptr(v, true, "v");
   TORCH_CHECK(state.scalar_type() == at::kFloat && state.is_contiguous(),
               "state must be contiguous float32");
   p.state = state.data_ptr<float>();
   p.page_table = page_table.has_value() ? page_table->data_ptr<int32_t>() : nullptr;
 
-  TORCH_CHECK(!(global_norm && g_read.has_value()),
-              "normalization='global' fixes g_read := 1 (spec §1); pass g_read=None");
-  TORCH_CHECK(global_norm || g_read.has_value(), "normalization='raw' requires g_read");
-
   // `num`/`den` are the atomically-accumulated readout accumulators and NEVER
   // narrow (fp32-accumulator ruling, same class as `state`): fp32 whatever `v`'s
-  // storage dtype is. Only `y` -- the post-divide quotient -- takes the arm's
-  // output format, below.
+  // storage dtype is. Only `y` -- the post-divide quotient -- takes the output
+  // format, below.
   auto num = at::zeros({BH, T, d_v}, v.options().dtype(at::kFloat));
-  at::Tensor den;
-  if (global_norm) {
-    den = at::zeros({BH, T}, v.options().dtype(at::kFloat));
-    p.den = den.data_ptr<float>();
-  } else {
-    p.den = nullptr;
-  }
+  at::Tensor den = at::zeros({BH, T}, v.options().dtype(at::kFloat));
+  p.den = den.data_ptr<float>();
   p.num = num.data_ptr<float>();
 
   p.N = N;
   p.BH = static_cast<int>(BH);
   p.T = static_cast<int>(T);
-  p.n_tiles = static_cast<int>(amp_read[0].size(1));
-  p.n_words = static_cast<int>(read_bits.size(2));
-  p.total_rows = static_cast<int>(read_bits.size(1));
-  TORCH_CHECK(read_tok_bits.size(1) == p.n_tiles, "tok_bits' tile axis (", read_tok_bits.size(1),
-              ") must match the amplitude "
-              "stream's (",
-              p.n_tiles, ") -- a schedule built at a different BT");
+  p.n_twords = static_cast<int>(n_twords);
+  p.total_rows = static_cast<int>(read_tok_bits.size(2));
   p.n_slices = static_cast<int>(n_slices);
   p.D = static_cast<int>(D);
   p.first_spanned_level = static_cast<int>(first_spanned_level);
@@ -609,11 +553,6 @@ std::vector<at::Tensor> rola_consumer_forward(
                 "dials must be [H, total_rows] = [", n_heads, ", ", p.total_rows, "], got [",
                 dials->size(0), ", ", dials->size(1), "]");
   }
-  TORCH_CHECK(p.n_words <= kMaxWords, "n_words=", p.n_words,
-              " exceeds the per-CTA SMEM candidate budget kMaxWords=", kMaxWords, " (T > ",
-              static_cast<int64_t>(kMaxWords) * 32 * BT,
-              " at this BT); raise kMaxWords or tile the token range");
-
   // ---- §6.4 sequence parallelism: three passes, two launch boundaries. Sequenced
   // HERE rather than by three Python calls because the three passes are ONE
   // CONTRACT: docs/internals/consumer.md#all-or-nothing
@@ -629,16 +568,13 @@ std::vector<at::Tensor> rola_consumer_forward(
               "which is not a degraded answer but a wrong one.");
   const bool split = n_sp == 14;
 
-  const int BT_i = static_cast<int>(BT);
   const int BC_i = static_cast<int>(BC);
   const int DV_i = static_cast<int>(d_v);
 
   //: ONE dispatch point for every consumer launch this call makes, so a pass cannot
   //: pick a different kernel from the one its siblings picked. `P` is a WORK-LIST
   //: SHAPE, not a kernel.
-  auto launch_pass = [&](ConsumerParams& pp) {
-    launch_consumer(pp, BT_i, BC_i, DV_i, global_norm, decay, mma_precision);
-  };
+  auto launch_pass = [&](ConsumerParams& pp) { launch_consumer(pp, BC_i, DV_i, decay); };
   if (split) {
     auto i32 = [](const at::Tensor& t, const char* name, int64_t rows) {
       TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt, name,
@@ -707,27 +643,13 @@ std::vector<at::Tensor> rola_consumer_forward(
     launch_pass(p);
   }
 
-  // `y` takes the arm's output format under `global` (P09 family: the cast is the
-  // divide epilogue's store -- the divide itself is fp32 over the fp32
-  // accumulators). The `raw` arm returns `num` UNCAST: the ruling's surface is
-  // the POST-DIVIDE quotient, and raw has no divide -- its `y` IS the
-  // accumulator, and narrowing it was MEASURED to put the raw arm's stacked
-  // family error at the BF16_RTOL line (2 of 6 seeds over on the worst tier-1
-  // cell; the global arm's ratio cancels the common roundings and sits at ~60%
-  // of budget). Evidence: workflows/perf/p09_bf16_family.md.
-  at::Tensor y = num;
-  if (global_norm) {
-    y = at::empty({BH, T, d_v}, v.options());
-    if (narrow_mem) {
-      divide_pass(num.data_ptr<float>(), den.data_ptr<float>(),
-                  reinterpret_cast<__nv_bfloat16*>(y.data_ptr<at::BFloat16>()), BH * T,
-                  static_cast<int>(d_v), static_cast<float>(eps));
-    } else {
-      divide_pass(num.data_ptr<float>(), den.data_ptr<float>(), y.data_ptr<float>(), BH * T,
-                  static_cast<int>(d_v), static_cast<float>(eps));
-    }
-  }
-  return {y, state, num, global_norm ? den : at::Tensor()};
+  // `y` is the post-divide quotient in bf16 (the divide itself is fp32 over the
+  // fp32 accumulators, which never narrow).
+  at::Tensor y = at::empty({BH, T, d_v}, v.options());
+  divide_pass(num.data_ptr<float>(), den.data_ptr<float>(),
+              reinterpret_cast<__nv_bfloat16*>(y.data_ptr<at::BFloat16>()), BH * T,
+              static_cast<int>(d_v), static_cast<float>(eps));
+  return {y, state, num, den};
 }
 
 }  // namespace rola

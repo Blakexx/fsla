@@ -12,33 +12,19 @@
 // the dispatch translation unit, the compiler would implicitly instantiate every
 // dispatched arm right back into it -- the build would still link, every gate would
 // still pass, the census would still report the full matrix, and NOTHING WOULD BE
-// SHARDED. With the definition here and only here, that is impossible. (This is
-// flash-attention's arrangement: `flash.h` declares,
-// `flash_fwd_launch_template.h` defines, the generated instantiation TUs include the
-// second and the API TU includes only the first.)
+// SHARDED. With the definition here and only here, that is impossible.
 //
-// What the arrangement does NOT buy is a link error on a missing member, and that
-// distinction is why the gates below exist. This is a Python extension module:
-// `ld -shared` leaves undefined symbols for the loader, by design and correctly, so
-// a dropped arm leaves ONE unresolved `launch_consumer_arm` symbol and reaches a
-// SHIPPED artifact as an ImportError instead of failing the build. `--no-undefined`
-// is unavailable for exactly the reason those loader-resolved symbols exist. The
-// closure is CHECKED instead -- the shard gate refuses a missing member before the
-// compile, `tools/fatbin_entries.py` refuses it after the link.
+// What the arrangement does NOT buy is a link error on a missing member: this is a
+// Python extension module, so `ld -shared` leaves undefined symbols for the loader
+// and a dropped arm reaches a SHIPPED artifact as an ImportError. The closure is
+// CHECKED instead -- the shard gate refuses a missing member before the compile,
+// `tools/fatbin_entries.py` refuses it after the link.
 // docs/internals/consumer_launch.md#shard-only
 //
-// **NO TORCH.** The signature takes a `cudaStream_t` instead of asking
-// `at::cuda::getCurrentCUDAStream()` for it, and reports failure through the CUDA
-// runtime's own error state instead of `C10_CUDA_CHECK`. Two reasons, both
-// measured: eight translation units that each parsed the torch host headers would
-// spend a large fraction of what the split saves on header parse, and
-// `tools/ratify.py` compiles these exact files to produce the register/spill
-// manifest -- a gate whose flag surface must stay narrow enough to be identical to
-// the shipped build's.
-//
-// The launch's shared-memory opt-in, the residency query and why the query is
-// instantiated for every arm rather than only the queried ones:
-// docs/internals/consumer_launch.md
+// **NO TORCH.** The signature takes a `cudaStream_t` and reports failure through
+// the CUDA runtime's own error state: `tools/ratify.py` compiles these exact files
+// to produce the register/spill manifest, and that gate's flag surface must stay
+// identical to the shipped build's.
 
 #include <cuda_runtime.h>
 
@@ -47,20 +33,16 @@
 namespace rola {
 
 //: The launch, for ONE instantiation. `p.n_owners == 0` returns after the
-//: shared-memory opt-in, exactly as the pre-shard dispatch did -- the opt-in is a
-//: property of the kernel, not of the grid.
-//: docs/internals/consumer_launch.md#launch
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
+//: shared-memory opt-in, exactly as before -- the opt-in is a property of the
+//: kernel, not of the grid. docs/internals/consumer_launch.md#launch
+template <int BC, int DV, int D, bool DECAY>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
-  constexpr size_t smem = consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>();
-  auto kernel = consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
   if (smem > 48 * 1024) {
-    //: A REFUSAL HERE IS NOT SWALLOWED. `cudaFuncSetAttribute`'s failure is recorded
-    //: in the same per-thread error state `cudaGetLastError` reads, and
-    //: `launch_consumer` reads it through `C10_CUDA_CHECK` the instant this returns;
-    //: launching without the opt-in would fail there anyway, so returning early
-    //: reports the FIRST cause rather than its consequence.
-    //: docs/internals/consumer_launch.md#error-state
+    //: A REFUSAL HERE IS NOT SWALLOWED: it lands in the same per-thread error
+    //: state `launch_consumer` reads through `C10_CUDA_CHECK` the instant this
+    //: returns. docs/internals/consumer_launch.md#error-state
     if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                              static_cast<int>(smem))
         != cudaSuccess) {
@@ -71,15 +53,13 @@ void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
   kernel<<<p.n_owners, consumer::kConsumerThreads, smem, stream>>>(p);
 }
 
-//: The DRIVER's residency answer for ONE instantiation. Instantiated for every arm
-//: rather than only the arms `rola_consumer_occupancy` queries: it is host-only code
-//: over a kernel address that already exists in the shard, and a partition that
-//: carried a different member set for the launcher and the query would be a special
-//: case with nothing behind it. docs/internals/consumer_launch.md#residency
-template <int BT, int BC, int DV, int D, MmaPrec PREC, bool DECAY, bool GLOBAL>
+//: The DRIVER's residency answer for ONE instantiation. Instantiated for every arm:
+//: it is host-only code over a kernel address that already exists in the shard.
+//: docs/internals/consumer_launch.md#residency
+template <int BC, int DV, int D, bool DECAY>
 int query_consumer_occupancy_arm() {
-  constexpr size_t smem = consumer::consumer_smem_bytes<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>();
-  auto kernel = consumer::consumer_forward_kernel<BT, BC, DV, D, PREC, PREC, DECAY, GLOBAL>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
   if (smem > 48 * 1024) {
     if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                              static_cast<int>(smem))

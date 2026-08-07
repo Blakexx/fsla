@@ -30,7 +30,9 @@ namespace consumer {
 constexpr int kCtlReadDone = 0;
 constexpr int kCtlGramDone = 1;
 constexpr int kCtlFold0 = 2;
-constexpr int ctl_words(int BC) { return kCtlFold0 + BC / kMmaKQuantum; }
+//: One fold cursor: the write panel is one plane (the per-window cursors died with
+//: the window placeholder; the atom walk owns sub-plane economy now).
+constexpr int ctl_words(int) { return kCtlFold0 + 1; }
 
 //: THE TILE'S INTRA-CTA PHASE ORDERING IS CARRIED BY COUNTERS RATHER THAN BY
 //: `__syncthreads()`. The point is not to spell a barrier differently: a warp

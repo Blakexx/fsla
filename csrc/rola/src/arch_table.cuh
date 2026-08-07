@@ -58,6 +58,13 @@ constexpr SmResources kSm = sm_resources(kConsumerArch);
 //: docs/internals/arch_table.md#mma-quantum
 constexpr int kMmaKQuantum = 16;
 
+//: One DRAM/L2 sector, in bytes -- the memory system's fetch floor. Named because
+//: the tree's UNIVERSAL INVARIANT `kMmaKQuantum * sizeof(bf16) == kSectorBytes`
+//: (one atom of digits IS one sector: fetch floor = compute floor = union granule)
+//: is asserted against it in `smem_layout.cuh`. fp32 storage is dead, so there is
+//: no second sector arithmetic anywhere.
+constexpr int kSectorBytes = 32;
+
 //: THE DRIVER'S PER-CTA SHARED-MEMORY RESERVE -- measured, and not an arch table
 //: entry because no attribute reports it. The residency condition is
 //: `ctas * (smem_per_cta + 1024) <= smem_per_sm`, NOT `ctas * smem <= smem_per_sm`;
