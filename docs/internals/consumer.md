@@ -106,21 +106,28 @@ plus this one — at static addresses; there is no tile-candidacy question and n
 coarse pre-filter above word granularity, because an intersection does not
 survive coarsening.
 
-## <a id="atom-union-bytes"></a>A5a. `read_atom_bytes` / `write_atom_bytes` — the per-token atom-granule union
+## <a id="atom-union-bytes"></a>A5a. `read_atom_bits` / `write_atom_bits` — the atom-major contiguous union bitlists
 
-`[BH, n_slices, T]` uint8 (schedule ABI v4, form (b)): bit `q` of byte
-`[bh, slice, token]` = "some leaf of atom `q` of this slice is live at this
-token on this side" (an atom is `kMmaKQuantum` consecutive leaves; at most
-`BC / 16` bits are used). These are the walk's per-side masks: at ballot time
-the executor ORs a group's up to 16 members' bytes into per-side atom masks, and
-the compact-into-registers atom walk visits only the atoms either mask sets.
-`mask == FULL` selects the statically-unrolled dense arm, so dense pays no mask
-instructions.
+`[BH, n_slices, QPO, n_twords]` int32 (schedule ABI v4, form (b); `QPO = BC /
+kMmaKQuantum`, `n_twords = ceil(T/32)`; Blake's confirmed layout, 2026-08-06):
+bit `t` of word `[bh, slice, q, w]` = "some leaf of atom `q` of this slice is
+live at token `w*32 + t` on this side" (an atom is `kMmaKQuantum` consecutive
+leaves). ATOM-MAJOR CONTIGUOUS: one atom's whole token-liveness row is
+contiguous — the layout the per-atom fetch era streams without a migration.
+
+These are the walk's per-side masks, consumed WORD-WISE, not by an OR into a
+byte: for the taken word of a ballot round, atom `q`'s bit in the group's mask
+= `(row q's word at the taken source word) & taken != 0` — one uniform load per
+`(side, atom)` per ballot round, `<= 2 * QPO` total
+(`consumer_kernel.cuh`, the `g_scan` assembler). The compact-into-registers atom
+walk then visits only the atoms either mask sets; `mask == kFullMask` selects
+the statically-unrolled dense arm, so dense pays no mask instructions.
 
 Derived host-side alongside `slice_union_tok`, from the same support authority
-(one summaries pass, consistency by construction). The per-(owner, word)
-pre-OR'd form is FORBIDDEN by the materialization rule — the per-visit OR is the
-kernel's job, not the schedule's.
+(`rola/planner/schedule.py`'s `_atom_union_bits`, one summaries pass,
+consistency by construction). The per-(owner, word) pre-OR'd form is FORBIDDEN
+by the materialization rule — the per-visit OR/AND is the kernel's job, not the
+schedule's.
 
 ## <a id="amp-dtype"></a>A6. Amplitude/value storage dtype — per level role
 
@@ -298,7 +305,7 @@ descriptions of one kernel is one that can go stale.
 rola_consumer_forward(
     amp_read, amp_write, amp_clock?, dials?,
     read_tok_bits, write_tok_bits, slice_union_tok,
-    read_atom_bytes, write_atom_bytes, owners, g_write, v, state, page_table?,
+    read_atom_bits, write_atom_bits, owners, g_write, v, state, page_table?,
     level_stride, level_modulus, level_row_offset, level_width, owner_stride,
     first_spanned_level, slice_digits, n_slices, owners_total, n_heads, BC, eps,
     # §6.4, all-or-nothing (14 tensors or none):
