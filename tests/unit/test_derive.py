@@ -20,7 +20,6 @@ from __future__ import annotations
 import pytest
 
 from rola.planner.derive import (
-    RING_RESERVE_BYTES,
     WAVES_TARGET,
     MachineFacts,
     box_admitted,
@@ -113,16 +112,6 @@ def test_the_box_admits_exactly_the_arms_whose_carve_plus_rings_fit():
                         64, 2, False) == (16,)
 
 
-def test_the_box_charges_the_ring_reservation_to_the_same_budget():
-    """The rings and the carve are spent from ONE per-CTA budget, not two."""
-    carve = {(16, 64, 2, False): 12000, (64, 64, 2, False): 32000}
-    budget = 32000 + RING_RESERVE_BYTES
-    assert box_admitted(_machine(carve=carve, max_dynamic_smem_bytes=budget),
-                        64, 2, False) == (16, 64)
-    assert box_admitted(_machine(carve=carve, max_dynamic_smem_bytes=budget - 1),
-                        64, 2, False) == (16,)
-
-
 def test_the_box_binds_the_derivation_when_the_wide_arm_does_not_fit():
     carve = {(16, 64, 2, False): 12000, (64, 64, 2, False): 32000}
     machine = _machine(carve=carve, max_dynamic_smem_bytes=20000, sm_count=1)
@@ -151,9 +140,10 @@ def test_the_box_arithmetic_holds_against_the_binarys_own_carve():
     """The real numbers: every admitted arm is one the launch would also admit.
 
     ``MachineFacts.for_device`` reads the ``constexpr`` footprints out of the built
-    binary, so this is the KERNEL's arithmetic rather than a model of it. The claim is
-    the enable predicate's own: admitted means ``smem_bytes + rings <= the block
-    limit``, refused means it does not fit, and the two partition the compiled set.
+    binary -- carves that already include the cooked schedule ring -- so this is the
+    KERNEL's arithmetic rather than a model of it. The claim is the enable predicate's
+    own: admitted means ``smem_bytes <= the block limit``, refused means it does not
+    fit, and the two partition the compiled set.
     """
     import torch
 
@@ -165,8 +155,7 @@ def test_the_box_arithmetic_holds_against_the_binarys_own_carve():
     for row in table.rows:
         assert machine.arm_smem_bytes[row.key] == row.smem_bytes
         admitted = row.BC in box_admitted(machine, row.DV, row.D, row.decay)
-        assert admitted == (row.smem_bytes + RING_RESERVE_BYTES
-                            <= machine.max_dynamic_smem_bytes)
+        assert admitted == (row.smem_bytes <= machine.max_dynamic_smem_bytes)
         if admitted:
             assert row.admitted_by(machine.max_dynamic_smem_bytes)
 

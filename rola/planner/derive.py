@@ -19,7 +19,7 @@ distribution:
 ``subtree_ceiling``
     How large can a block be before it OWNS LEAVES FROM INDEPENDENT SUBTREES?
 ``box_ceiling``
-    How large a block does the shared-memory carve fit, once the rings are reserved?
+    How large a block does the compiled shared-memory carve fit?
 ``fill_ceiling``
     How large a block still leaves enough CTAs to fill the machine?
 
@@ -52,16 +52,6 @@ GROUP_TOKENS = MMA_K_QUANTUM
 #: the table's own axis values, read off the built binary. The runtime derivation reads
 #: the table itself and never this tuple.
 SUPPORTED_BC = (16, 64)
-
-#: Shared memory reserved per CTA for the schedule and cook RINGS, in bytes, before the
-#: state slab and the staging carve are priced against the budget. The endgame executor
-#: on this tree stages at the group top and holds no ring, so the reservation is ZERO
-#: and the box term prices the carve alone. It is named rather than absent because the
-#: ring era's budget plugs in HERE and nowhere else: rings are what replace co-residency
-#: as the latency-hiding mechanism, so their depth is bought with exactly the shared
-#: memory a larger ``BC`` would otherwise spend on the state slab, and this constant is
-#: that trade written down.
-RING_RESERVE_BYTES = 0
 
 #: How many waves of CTAs the grid must supply before a larger block is preferred.
 #:
@@ -156,28 +146,34 @@ def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[
 
     ONE inequality, and it is the launch's own::
 
-        arm_smem_bytes[(BC, d_v, D, decay)] + RING_RESERVE_BYTES
-            <= max_dynamic_smem_bytes
+        arm_smem_bytes[(BC, d_v, D, decay)] <= max_dynamic_smem_bytes
 
     the ``cudaFuncAttributeMaxDynamicSharedMemorySize`` admission
-    (:meth:`~rola.planner.dispatch_table.DispatchRow.admitted_by`) with the ring
-    reservation added to the demand. A ``BC`` this refuses is one whose launch the
-    driver would refuse, so the box is a FEASIBILITY ceiling and not a preference:
-    there is no candidate above it to prefer.
+    (:meth:`~rola.planner.dispatch_table.DispatchRow.admitted_by`). A ``BC`` this
+    refuses is one whose launch the driver would refuse, so the box is a FEASIBILITY
+    ceiling and not a preference: there is no candidate above it to prefer.
 
-    **``BC`` is what the budget is spent on.** The state slab is ``BC * (d_v + 4)``
-    fp32 words and the digit, ``WT``, fragment and decay-panel buffers all scale with
-    ``BC`` too, so the carve is affine in ``BC`` with a large slope -- which is why the
-    per-CTA budget, and not co-residency, is the term that bounds the block. Residency
-    does not appear: the endgame executor hides latency INSIDE one CTA through the item
-    stream, so a second resident CTA is not what the shared memory is for. When the
-    rings land, :data:`RING_RESERVE_BYTES` moves off zero and this is the inequality
-    that trades their depth against the slab.
+    **THE RING IS ALREADY IN THE NUMBER, AND THAT IS THE WHOLE POINT.**
+    ``arm_smem_bytes`` is the arm's ``constexpr`` ``consumer_smem_bytes``, read off the
+    built binary, and that carve includes the cooked schedule ring -- ``kSchedSlots``
+    group descriptors, their per-slot row scales, and the producer's cursor state --
+    beside the state slab. So the trade this term arbitrates is not modelled here at
+    all: a deeper ``ROLA_SCHED_DEPTH`` and a wider ``BC`` compete inside ONE compiled
+    number, and the box responds to a depth change without a constant to keep in step
+    with it. Subtracting a separate ring reservation would double-count it.
+
+    **``BC`` is what the rest of the budget is spent on.** The state slab is
+    ``BC * (d_v + 4)`` fp32 words and the digit, ``WT``, fragment and decay-panel
+    buffers all scale with ``BC`` too, so the carve is affine in ``BC`` with a large
+    slope -- which is why the per-CTA budget, and not co-residency, is the term that
+    bounds the block. Residency does not appear: the executor hides latency INSIDE one
+    CTA (the item stream and the producer warp's run-ahead), so a second resident CTA
+    is not what the shared memory is for.
 
     Empty is a REFUSAL, not a fallback: a machine that will not grant a block enough
     shared memory for any compiled arm has no launch, so it has no plan.
     """
-    budget = int(machine.max_dynamic_smem_bytes) - RING_RESERVE_BYTES
+    budget = int(machine.max_dynamic_smem_bytes)
     admitted = tuple(BC for BC in machine.compiled_bc(d_v, D, decay)
                      if machine.arm_smem_bytes[(BC, d_v, D, bool(decay))] <= budget)
     if not admitted:
@@ -185,10 +181,9 @@ def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[
                   for BC in machine.compiled_bc(d_v, D, decay)}
         raise ValueError(
             f"no compiled arm fits shared memory at d_v={d_v}, D={D}, decay={bool(decay)}: "
-            f"the carves are {carved} bytes, the rings reserve {RING_RESERVE_BYTES}, and "
-            f"this device grants a block {machine.max_dynamic_smem_bytes}. The launch "
-            "would be refused by the driver, so there is no plan for this geometry on "
-            "this machine.")
+            f"the carves are {carved} bytes and this device grants a block "
+            f"{machine.max_dynamic_smem_bytes}. The launch would be refused by the "
+            "driver, so there is no plan for this geometry on this machine.")
     return admitted
 
 
@@ -330,7 +325,6 @@ def derive_bc(topology, machine: MachineFacts, *, BH: int, decay: bool,
 __all__ = [
     "GROUP_TOKENS",
     "MMA_K_QUANTUM",
-    "RING_RESERVE_BYTES",
     "SUPPORTED_BC",
     "WAVES_TARGET",
     "MachineFacts",

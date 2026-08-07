@@ -41,8 +41,8 @@ independent subtrees retiring no more work than the subtree-aligned blocks it
 replaces at the same realized support.
 
 **`box_admitted(machine, d_v, D, decay)`** — the compiled `BC` values whose
-`constexpr` shared-memory carve, plus `RING_RESERVE_BYTES`, fits the per-CTA
-budget (`cudaFuncAttributeMaxDynamicSharedMemorySize`). The carve is read off
+`constexpr` shared-memory carve fits the per-CTA budget
+(`cudaFuncAttributeMaxDynamicSharedMemorySize`). The carve is read off
 the dispatch table of the *built binary* — `MachineFacts.arm_smem_bytes`, a
 `{(BC, d_v, D, decay): bytes}` map taken from `DispatchTable.from_extension`
 after the staleness join — so the box arithmetic is the kernel's own
@@ -53,11 +53,14 @@ there is no candidate above it to prefer. An empty result is a loud
 substituted silently — refusing everything is the correct answer when nothing
 fits.
 
-`RING_RESERVE_BYTES` is `0` on this tree: the executor stages at the group top
-and holds no ring, so the box term prices the state slab alone. It is named
-rather than omitted because it is the ring era's plug-in point — rings replace
-co-residency as the latency-hiding mechanism, so their depth is bought with
-exactly the shared memory a larger `BC` would otherwise spend on the slab.
+The cooked schedule ring is ALREADY IN that number — `kSchedSlots` group
+descriptors, their per-slot row scales and the producer's cursor state are
+carved by `consumer_smem_bytes` beside the state slab. So the trade the box
+arbitrates is not modelled anywhere: a deeper `ROLA_SCHED_DEPTH` and a wider
+`BC` compete inside ONE compiled number, and the box responds to a depth change
+with no constant to keep in step with it. Rings are what replace co-residency
+as the latency-hiding mechanism, which is why residency is not a term here:
+the executor hides latency inside one CTA.
 
 **`fill_ceiling(N, BH, sm_count) = BH*N // (sm_count * WAVES_TARGET)`**, with
 `WAVES_TARGET = 2` — how large a block still leaves enough CTAs to fill the
