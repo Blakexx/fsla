@@ -369,9 +369,11 @@ consumer_forward_kernel(ConsumerParams p) {
     uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
     uint32_t p_gfr = static_cast<uint32_t>(p_st[5]);
     uint32_t p_gfw = static_cast<uint32_t>(p_st[6]);
-    uint32_t p_fr = static_cast<uint32_t>(p_chunk[0 * 32 + lane]);
-    uint32_t p_fw = static_cast<uint32_t>(p_chunk[1 * 32 + lane]);
-    uint32_t p_mem = static_cast<uint32_t>(p_chunk[2 * 32 + lane]);
+    //: THE CHUNK PLANES ARE NEVER LOADED INTO REGISTERS. They are read ONE SCALAR
+    //: AT A TIME at word selection, by the uniform index the ballot picked -- the
+    //: same value a `__shfl` of a register plane would have produced, minus THREE
+    //: per-lane registers held live across the entire cook. The
+    //: `BC = 16, decay = 0` key's budget is 64 and that is the margin it lacked.
     uint32_t p_ra = static_cast<uint32_t>(p_chunk[3 * 32 + lane]);
     uint32_t p_wa = static_cast<uint32_t>(p_chunk[4 * 32 + lane]);
     int fill = 0;
@@ -403,20 +405,26 @@ consumer_forward_kernel(ConsumerParams p) {
             //: semantics on one side); `summary` is LAUNCH-UNIFORM.
             mem = (summary ? fw : (fr | fw)) & un;
           }
-          p_fr = fr;
-          p_fw = fw;
-          p_mem = mem;
+          //: The cooked chunk goes STRAIGHT to its planes. `fr`/`fw`/`mem` are
+          //: transient here and die at the end of this iteration.
+          p_chunk[0 * 32 + lane] = static_cast<int>(fr);
+          p_chunk[1 * 32 + lane] = static_cast<int>(fw);
+          p_chunk[2 * 32 + lane] = static_cast<int>(mem);
           p_chunk_base = p_cur;
           p_cur += kSchedChunkWords;
           p_live = __ballot_sync(0xffffffffu, mem != 0u);
+          //: HAZARD producer-chunk-reconverge: lane `w` wrote word `w`'s plane
+          //: entries; the selection below reads the SELECTED lane's entries from
+          //: every lane. Same reconvergence requirement as `p_st`.
+          __syncwarp();
         }
         if (p_live == 0u) break;  // the segment's stream end
         const int sel = __ffs(static_cast<int>(p_live)) - 1;
         p_live &= p_live - 1u;
         p_word = p_chunk_base + sel;
-        p_rem = __shfl_sync(0xffffffffu, p_mem, sel);
-        p_gfr = __shfl_sync(0xffffffffu, p_fr, sel);
-        p_gfw = __shfl_sync(0xffffffffu, p_fw, sel);
+        p_rem = static_cast<uint32_t>(p_chunk[2 * 32 + sel]);
+        p_gfr = static_cast<uint32_t>(p_chunk[0 * 32 + sel]);
+        p_gfw = static_cast<uint32_t>(p_chunk[1 * 32 + sel]);
         //: Form (b)'s ingredient, ONE LANE PER ATOM -- which is what turns the
         //: base's `2 * QPO` per-warp tests into the two ballots below. Loaded
         //: ONCE PER SOURCE WORD, not once per ballot round.
@@ -523,9 +531,8 @@ consumer_forward_kernel(ConsumerParams p) {
       p_st[5] = static_cast<int>(p_gfr);
       p_st[6] = static_cast<int>(p_gfw);
     }
-    p_chunk[0 * 32 + lane] = static_cast<int>(p_fr);
-    p_chunk[1 * 32 + lane] = static_cast<int>(p_fw);
-    p_chunk[2 * 32 + lane] = static_cast<int>(p_mem);
+    //: Only the ingredient planes are written back: the cooked chunk's three
+    //: planes were stored at refill and never left SMEM.
     p_chunk[3 * 32 + lane] = static_cast<int>(p_ra);
     p_chunk[4 * 32 + lane] = static_cast<int>(p_wa);
   };
