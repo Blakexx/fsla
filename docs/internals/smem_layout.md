@@ -48,10 +48,14 @@ static_assert(kMmaKQuantum * sizeof(__nv_bfloat16) == kSectorBytes)   // 16 * 2 
 One atom of bf16 digits — `kMmaKQuantum == 16` leaves — IS one 32-byte memory sector.
 This is THE central invariant tying together the atom (one `kMmaKQuantum`-leaf block
 of the owner's leaf axis), the MMA k-quantum (`mma.sync`'s hardware k-extent on the
-sm80 bf16 path), and the fetch/union machinery's granule: `read_atom_bytes` /
-`write_atom_bytes` carry one bit per atom because one atom is exactly one fetch
-sector. The walk assumes this unconditionally; there is no fp32-sector side path,
-because fp32 amplitude storage is dead.
+sm80 bf16 path), and the fetch/union machinery's granule: `read_atom_bits` /
+`write_atom_bits` (host ABI `[BH, n_slices, QPO, n_twords]` int32 —
+[`consumer.md#atom-union-bytes`](consumer.md#atom-union-bytes)) devote one whole
+CONTIGUOUS row of `n_twords` token-liveness words to each atom, because one atom is
+exactly one fetch sector — the ballot ANDs a row's word against the taken token word
+to produce that atom's single bit in `rmask`/`wmask`. The walk assumes this
+unconditionally; there is no fp32-sector side path, because fp32 amplitude storage is
+dead.
 
 `csrc/third_party/cutlass`, v3.5.1, closed-world rule 5. It is a CODEGEN INPUT, not a
 packaging one — every line instantiated here is code `ptxas` assembles — which is why
@@ -209,14 +213,17 @@ the axis deleted the branch, not the column.
 ### <a id="atom-masks"></a>The group scheduler's SMEM block
 
 `t_idx[0..kGT)` holds the group's gathered GLOBAL token indices, ascending, written by
-warp 0 at ballot time. `g_scan[0..8+D)` is the ENTIRE cross-visit state the membership
+warp 0 at ballot time. `g_scan[0..6+D)` is the ENTIRE cross-visit state the membership
 scan and group assembler carry: `[0]` fill count, `[1]` the scan's current word,
 `[2]`/`[3]` the split word's read/write remainder (`fr`/`fw`), `[4]` the member-word
-remainder, `[5]` group flags (bit 0 = read-live, bit 1 = write-live), `[6]`/`[7]` the
-visit's read/write ATOM MASKS (published by warp 0 lane 0 at ballot end), `[8..8+D)`
-the scan's per-level fixed-row indices (hoisted once so the per-word refill costs two
-SMEM loads per fixed level, never a `base[]` re-derivation inside the scan loop).
-Putting this in SMEM rather than registers is what keeps no scheduler state
+remainder, `[5]` group flags (bit 0 = read-live, bit 1 = write-live), `[6..6+D)` the
+scan's per-level fixed-row indices (hoisted once so the per-word refill costs two SMEM
+loads per fixed level, never a `base[]` re-derivation inside the scan loop). The
+visit's read/write ATOM MASKS (`rmask`/`wmask`) are NOT carried in `g_scan` (Change 1,
+`8675f95`): every thread rebuilds them redundantly in registers each visit, word-wise
+from `read_atom_bits`/`write_atom_bits` against the ballot's `taken` word — there is
+nothing to publish across threads for them, unlike the fields above. Putting the
+cross-visit fields in SMEM rather than registers is what keeps no scheduler state
 register-live across the visit body — every thread reloads the carry after the
 previous visit's end barrier and only tid 0 stores the update, behind the group-entry
 barrier.

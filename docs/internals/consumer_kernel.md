@@ -127,7 +127,7 @@ Three facts a reader must not miss:
 | `dig` | the hoisted leaf digits, `[D][BC]` |
 | `ctl` | the item-stream control block, `kCtlFold0 + 1` ints — ONE fold cursor ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
 | `t_idx` | the group's `kGT` gathered GLOBAL token indices, ascending |
-| `g_scan` | the group assembler's SMEM cross-visit carry AND the visit's per-side atom masks — `[8 + D]` ints ([below](#group-assembler)) |
+| `g_scan` | the group assembler's SMEM cross-visit carry (`fill`/`gword`/`g_fr`/`g_fw`/`member`/`gr,gw`) plus the `D` fixed-level row offsets — `[6 + D]` ints; the visit's read/write atom masks are plain per-thread registers, not carried here ([below](#group-assembler)) |
 | `A`, `B` | §6.4's per-segment summary: the per-leaf survival product and the accumulated deposit |
 | `w_lo`, `w_hi` | this segment's word range over the scan stream, `[w_lo, w_hi)` |
 | atom | one `kMmaKQuantum`-leaf block of the owner's leaf axis; also one 32-byte fetch sector ([`smem_layout.md#cute-pin`](smem_layout.md#cute-pin)) |
@@ -295,12 +295,20 @@ every thread evaluates it identically).
 - **ballot**: if `member` has more live tokens than the group has room for, it is cut
   at the `(room+1)`-th set bit (`__fns`) — the bits below the cut are exactly the
   lowest `room` live tokens, the remainder carries to the next group. Warp 0 writes
-  `t_idx[fill + popc(taken & below-lane)] = token` for each taken bit and ORs the
-  member token's `read_atom_bytes` / `write_atom_bytes` into per-lane accumulators
-  `lrb` / `lwb`;
-- when the group fills (or the stream ends ragged), warp 0 reduces `lrb`/`lwb` across
-  its 32 lanes (`__reduce_or_sync`) into the visit's read/write ATOM MASKS, published
-  into `g_scan[6]`/`g_scan[7]`.
+  `t_idx[fill + popc(taken & below-lane)] = token` for each taken bit;
+- **atom masks, word-wise** (Change 1, `8675f95`): every thread redundantly ANDs
+  `taken` against the `read_atom_bits` / `write_atom_bits` ROW for each of the
+  `kQPO = BC / kMmaKQuantum` atoms at this ballot word (`ab_base + q * n_twords +
+  gword`, `<= 2 * QPO` uniform loads) and ORs the nonzero result into `rmask` /
+  `wmask` bit `q` — CTA-uniform by construction (uniform loads, uniform `taken`),
+  no per-lane accumulator and no `__reduce_or_sync`. This is the atom-major
+  contiguous layout's payoff: an atom's whole token-liveness row is one
+  contiguous load per word, not a per-token byte gather;
+- when the group fills (or the stream ends ragged), `rmask`/`wmask` are complete
+  for the visit — plain per-thread REGISTERS, not SMEM: every thread rebuilt them
+  redundantly from the same uniform loads/`taken` this iteration, so there is
+  nothing to publish across the group-entry barrier for them (unlike `t_idx` and
+  the `g_scan` cross-visit carry, which genuinely cross threads/iterations).
 
 **Stability is the correctness requirement.** Words ascend and each word is consumed
 LSB-first, so `t_idx` is GLOBALLY ascending — the intra Gram's inclusive causal mask
@@ -526,16 +534,33 @@ on to compute the same `(mt, nt)` for the same MMA.
 delta is zero and its exit scale is `s0 == 1` (ticks ride writes,
 [above](#decay-clock)).
 
+**The item's RMW is ATOM-MAJOR, not per-window** (Change 1, `8675f95`): the claimed
+atom's 4-value accumulator loads to registers ONCE (`a0..a3` from `S`) and stays
+resident across an inner `#pragma unroll for (gs = 0; gs < kFoldStagedGroups;
+++gs)` that walks every staged slot the atom must consume — each iteration computes
+one `mma_fold_tile` delta and applies the exit-scale epilogue in registers — before
+the ONE writeback back to `S`. `kFoldStagedGroups` is `smem_layout.cuh`'s
+`kFoldStagedGroups`, PINNED to 1 today, so the loop is a single iteration in
+practice; the per-atom fetch era that deepens staging is expected to raise only this
+constant and its staging producer, not restructure the claim/writeback shape around
+it. The mass column's fold term (below) walks the identical `gs` nest over the same
+constant.
+
 ### <a id="fold-epilogue"></a>`DECAY`'s exit scale, riding the fold's existing read-modify-write
 
 ```
-S[i0][n0] = e0 * (S[i0][n0] + d0)      // e0 = DECAY ? s0[i0] : 1.0f
+for (gs = 0; gs < kFoldStagedGroups; ++gs) {
+  a0 = e0 * (a0 + d0);   // e0 = DECAY ? s0[i0] : 1.0f, d0 from mma_fold_tile(gs)
+  ...
+}
+S[i0][n0] = a0;          // the ONE writeback, after every staged slot is folded in
 ```
 
-One extra multiply on a value already in a register — no separate scaling pass. The
-mass column's fold term (`S[row][DV] += acc`, live write atoms only) takes the same
-epilogue: a dead atom's rows have `acc == 0` and `s0 == 1`, so the skip is the
-identity there too.
+One extra multiply per staged slot on a value that stays in registers for the whole
+inner loop — no separate scaling pass and no intermediate write to `S`. The mass
+column's fold term (`S[row][DV]`, live write atoms only) takes the same `gs`-nested
+epilogue: a dead atom's rows have `acc == 0` on every staged slot and `s0 == 1`, so
+the skip is the identity there too.
 
 ## <a id="phase-c"></a>24. Phase C — GEMM 3, the intra term, and the mass column's term 2
 

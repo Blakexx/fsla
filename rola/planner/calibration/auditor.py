@@ -32,6 +32,7 @@ from rola.planner.calibration.cost_model import (
     plan_cost_per_token,
     plan_waves,
 )
+from rola.planner.schedule import TOKEN_WORD
 from rola.planner.select import (
     ConfigChoice,
     HardwareFacts,
@@ -70,7 +71,13 @@ class AuditRow:
 
     @property
     def agreed(self) -> bool:
-        return self.exact_BT == self.closed.BT
+        # ``ConfigChoice`` has no ``BT`` field (P26 killed the runtime BT decision
+        # entirely -- the executor always runs at the fixed 32-token ``TOKEN_WORD``,
+        # not a per-launch choice). "The closed form's BT" is therefore the constant
+        # every launch actually uses, not a field to read off `closed`; the audit
+        # question this property answers is unchanged -- does the calibration-time
+        # exact argmin still prefer the value the runtime is structurally pinned to.
+        return self.exact_BT == TOKEN_WORD
 
     def as_ledger_entry(self) -> tuple[str, int, int, float]:
         """The row shape the gate's ``_SELECTOR_DISAGREEMENTS`` table asserts.
@@ -82,7 +89,7 @@ class AuditRow:
         (the smallest live row is 0.17) and far coarser than any reassociation.
         """
         return (f"{self.cell}/decay={self.decay}",
-                self.closed.BT,
+                TOKEN_WORD,
                 self.exact_BT,
                 round(self.regret, 4) if self.regret is not None else 0.0)
 
@@ -122,8 +129,10 @@ def audit_cell(cell: str, static: StaticPlanInputs, hw: HardwareFacts,
         static.widths, static.d_v, choice.BC, static.decay, stats_by_bt,
         blocks_by_bt, hw.sm_count)
     regret = None
-    if exact_BT != choice.BT:
-        regret = (keys[choice.BT] - keys[exact_BT]) / keys[exact_BT]
+    if exact_BT != TOKEN_WORD:
+        # `choice` (a `ConfigChoice`) carries no `BT` -- the runtime is pinned to
+        # `TOKEN_WORD` unconditionally now; see `AuditRow.agreed`.
+        regret = (keys[TOKEN_WORD] - keys[exact_BT]) / keys[exact_BT]
     return AuditRow(cell=cell, decay=static.decay, closed=choice, exact_BT=exact_BT,
                     margin=evidence.margin, regret=regret)
 
