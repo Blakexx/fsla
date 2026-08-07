@@ -326,7 +326,9 @@ int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t GT) 
 //: docs/internals/consumer.md#table-census
 std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>>
 rola_dispatch_table() {
-  std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>> out;
+  std::vector<
+      std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>>
+      out;
   for (const ShardRowBlock& block : kShardRowBlocks) {
     for (int i = 0; i < block.count; ++i) {
       const ShardRow& row = block.rows[i];
@@ -473,6 +475,28 @@ std::vector<at::Tensor> rola_consumer_forward(
     p.amp_write[l] = amp_class_ptr(amp_write[l], spanned, "amp_write");
     p.level_pitch_read[l] = static_cast<int>(amp_read[l].size(3));
     p.level_pitch_write[l] = static_cast<int>(amp_write[l].size(3));
+    // THE PREFETCH'S ONE STRUCTURAL REQUIREMENT, CHECKED RATHER THAN ASSUMED. A
+    // spanned level's amplitude row is a `cp.async` SOURCE, so every token row must
+    // start on a 16-byte boundary -- which is what makes the copy's alignment lead a
+    // per-LEVEL constant instead of a per-(level, token) table, and that is what keeps
+    // the prefetched gather cheaper than the direct one it replaces.
+    // `Plan.amplitude_pitch` already pads to exactly this quantum; the check is what
+    // makes the kernel's assumption a property of the ABI rather than of one builder.
+    // docs/internals/consumer.md#amp-alignment
+    if (spanned) {
+      constexpr int kAmpRowQuantum = 16 / static_cast<int>(sizeof(at::BFloat16));
+      TORCH_CHECK(p.level_pitch_read[l] % kAmpRowQuantum == 0
+                      && p.level_pitch_write[l] % kAmpRowQuantum == 0,
+                  "spanned level ", l, " has amplitude pitch (", p.level_pitch_read[l], ", ",
+                  p.level_pitch_write[l], "), not a multiple of ", kAmpRowQuantum,
+                  " bf16 elements: the consumer prefetches these rows with cp.async and every "
+                  "token row must be 16-byte aligned (Plan.amplitude_pitch pads to this)");
+      TORCH_CHECK(reinterpret_cast<uintptr_t>(p.amp_read[l]) % 16 == 0
+                      && reinterpret_cast<uintptr_t>(p.amp_write[l]) % 16 == 0,
+                  "spanned level ", l,
+                  " amplitude storage is not 16-byte aligned; the consumer's cp.async prefetch "
+                  "reads it in 16-byte chunks");
+    }
     if (amp_clock.has_value()) {
       TORCH_CHECK((*amp_clock)[l].dim() == 4, "amp_clock[", l,
                   "] must be [BH, n_twords, 32, pitch]");

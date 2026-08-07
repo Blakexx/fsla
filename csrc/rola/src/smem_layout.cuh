@@ -74,16 +74,20 @@ constexpr int window_groups(int GT) { return GT / kGroupTokens; }
 constexpr int kSchedChunkWords = 32;
 static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of the producer warp");
 
-//: **THE RUN-AHEAD DEPTH.** How many groups the producer
-//: warp runs ahead of the consumers. It is a `constexpr` (overridable at compile
-//: time for the dial sweep), NEVER a template axis: the instantiation matrix does
-//: not gain a coordinate. The ring holds `depth + 1` slots, so the ring is always
-//: at least 2 (contract item 2: the producer must never write the slot being
-//: read) and `depth = 1` is the CONFIGURATION-COLLAPSIBLE NULL -- minimal
-//: machinery, one group of run-ahead, one descriptor of extra storage.
+//: **THE RUN-AHEAD DEPTH.** How many WINDOWS' worth of groups the producer warp runs
+//: ahead of the consumers. It is a `constexpr` (overridable at compile time for the
+//: dial sweep), NEVER a template axis: the instantiation matrix does not gain a
+//: coordinate. The ring holds `depth + 1` windows, so the producer never writes the
+//: slots being read.
+//: **TWO IS THE FLOOR, AND THE PREFETCH IS WHY.** The amplitude slab for window
+//: `w + 1` is issued from inside window `w`'s visit -- that is the entire overlap --
+//: so window `w + 1`'s TOKEN LIST must already be published when window `w` is
+//: staging. At depth 1 it is not: the producer cooks `w + 1` during visit `w` and
+//: publishes it at that visit's end. Depth 2 costs `W` descriptor slots (208 B at the
+//: group quantum) and is the null configuration from here.
 //: docs/internals/smem_layout.md#sched-ring
 #ifndef ROLA_SCHED_DEPTH
-#define ROLA_SCHED_DEPTH 1
+#define ROLA_SCHED_DEPTH 2
 #endif
 constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
 static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
@@ -383,6 +387,10 @@ __host__ __device__ __forceinline__ constexpr int wt_index(int q, int t) {
 
 constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
 
+//: The prefetch slab is a `cp.async` DESTINATION, so its base carries the 16-byte
+//: requirement the instruction imposes -- which `align4` does not imply.
+constexpr size_t align16(size_t x) { return (x + 15) & ~static_cast<size_t>(15); }
+
 //: FRAGMENT-ORDER OPERAND SYNTHESIS. We SYNTHESISE the read coefficients in SMEM
 //: rather than receiving them, so we can store them in the order the MMA's A fragment
 //: wants -- word `w` of lane `lane` at k-step `ks` at `[ks * 128 + lane * 4 + w]` --
@@ -392,6 +400,23 @@ constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
 //: what lets the atom walk index a live atom's block affinely.
 //: docs/internals/smem_layout.md#frag-order
 constexpr int frag_a_words(int K) { return (K / kMmaKQuantum) * 128; }
+
+//: **THE AMPLITUDE PREFETCH SLAB'S ROW PITCH, IN bf16 ELEMENTS.** One row per WINDOW
+//: TOKEN holds every SPANNED level's digit sub-range, concatenated: level `l`
+//: contributes `align8(lead_l + span_l)` elements, where `span_l` is the owner's
+//: contiguous digit range at that level and `lead_l = base_l & 7` is the alignment
+//: slack the 16-byte copy leaves in front of it. Both slabs -- read and write -- take
+//: this layout, because the digit map is side-independent and both streams' pitches
+//: obey the same alignment rule.
+//: THE COMPILE-TIME WORST CASE IS THE DEGENERATE FACTORISATION. The spanned spans
+//: multiply to `BC` (the owner rectangle's invariant), and `sum_l align8(7 + f_l)`
+//: over `prod_l f_l == BC` is maximised by one span of `BC` and the rest at 1.
+//: docs/internals/smem_layout.md#prefetch-slab
+constexpr int amp_slab_pitch(int BC, int D) { return ((7 + BC + 7) / 8) * 8 + 8 * (D - 1); }
+
+//: The slab row's 16-byte chunk count -- the extent of the per-owner chunk
+//: descriptors (`ch_lvl` / `ch_src` / `ch_atoms`) and of the issue loop.
+constexpr int amp_slab_chunks(int BC, int D) { return amp_slab_pitch(BC, D) / 8; }
 
 //: THE `Vw` / `clk` UNION, AND WHY IT IS SIZED IN **BYTES** RATHER THAN ELEMENTS.
 //: `clk` is DEAD before `Vw` is live, so it aliases `Vw`'s storage and the region is
@@ -412,11 +437,12 @@ constexpr size_t vw_union_bytes() {
   return align4(vw > clk ? vw : clk);
 }
 
-//: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
-//: from it rather than restated next to it. Every term, its measured residency
-//: consequence and `DECAY`'s carve: docs/internals/smem_layout.md#smem-ledger
+//: The carve UP TO the prefetch slab. Split out because the slab's base must be
+//: 16-byte aligned and the kernel forms that base as `smem_raw + align16(core)`; one
+//: expression serves the reservation and the carve.
+//: docs/internals/smem_layout.md#smem-ledger
 template <int BC, int DV, int D, bool DECAY, int GT>
-constexpr size_t consumer_smem_bytes() {
+constexpr size_t consumer_smem_core_bytes() {
   constexpr int W = window_groups(GT);
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);  // S (+ mass column pad)
   b += static_cast<size_t>(D) * BC * sizeof(int);                 // dig
@@ -447,7 +473,27 @@ constexpr size_t consumer_smem_bytes() {
   //: held in registers is live across the visit body and spills the tightest key:
   //: docs/internals/smem_layout.md#reg-budget.
   b += (8 + 5 * 32) * sizeof(int);
+  //: THE PER-OWNER CHUNK DESCRIPTORS: for each 16-byte chunk of a slab row, the level
+  //: it belongs to, its element offset inside that level's amplitude row, and the SET
+  //: OF ATOMS whose digits it carries. Built once per owner; read once per issued
+  //: copy. docs/internals/smem_layout.md#prefetch-slab
+  b += 3 * static_cast<size_t>(amp_slab_chunks(BC, D)) * sizeof(int);
   return b;
+}
+
+//: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
+//: from it rather than restated next to it. Every term, its measured residency
+//: consequence and `DECAY`'s carve: docs/internals/smem_layout.md#smem-ledger
+template <int BC, int DV, int D, bool DECAY, int GT>
+constexpr size_t consumer_smem_bytes() {
+  //: THE AMPLITUDE PREFETCH SLABS, read and write: `GT` token rows of
+  //: `amp_slab_pitch` bf16 each. They are the LAST region so that the 16-byte
+  //: alignment `cp.async` needs is one align-up rather than a constraint on every
+  //: region before them. The CLOCK stream does not ride this slab -- it is fp32 and
+  //: its consumer is a per-leaf column walk, and a window-deep fp32 slab is what
+  //: would push the wide window past the per-CTA cap.
+  return align16(consumer_smem_core_bytes<BC, DV, D, DECAY, GT>())
+         + 2 * static_cast<size_t>(GT) * amp_slab_pitch(BC, D) * sizeof(__nv_bfloat16);
 }
 
 }  // namespace consumer

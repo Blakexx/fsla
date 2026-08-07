@@ -32,6 +32,13 @@
 //   * WHOLE-COVERED-SPAN FETCH: a member token's covered amplitude span is read
 //     by position (no support inspection anywhere below the ballot); zeros ride
 //     the self-masking theorem.
+//   * THE AMPLITUDE STREAMS ARE PREFETCHED. Both panels' coefficients come out of a
+//     SHARED-MEMORY SLAB filled by `cp.async` from inside the PREVIOUS window's
+//     visit, so the gather's DRAM latency leaves the visit's critical path entirely
+//     and is not hidden by co-residency. A chunk no live atom reads is issued with
+//     src-size zero -- the hardware zero-fills it, which is exactly the value a dead
+//     atom's coefficient must take. Zero new barriers in the steady state: the issue
+//     rides the staging barrier and the drain rides the end-of-window barrier.
 //
 // THE ONE PRECISION STORY: bf16 storage, fp32 accumulation, fp64 reference as
 // oracle. The staged operands, amplitude streams and value stream are bf16; the
@@ -59,6 +66,7 @@
 #include <cuda_bf16.h>
 
 #include "arch_table.cuh"
+#include "cp_async.cuh"
 #include "intra_panel.cuh"
 #include "consumer.cuh"
 //: The two layers, in one include: `mma_tile.cuh` -> `smem_layout.cuh`.
@@ -151,6 +159,10 @@ consumer_forward_kernel(ConsumerParams p) {
   //: The n8 tile count of one Gram sub-block: the Gram's `n` axis is the WRITE
   //: group's tokens, so it is the GROUP's extent, never the window's.
   constexpr int NT_GM = kGroupTokens / 8;
+  //: THE PREFETCH SLAB's row pitch and 16-byte chunk count, both compile-time worst
+  //: cases over the owner rectangle's factorisations: docs/internals/smem_layout.md#prefetch-slab
+  constexpr int kPfPitch = amp_slab_pitch(BC, D);
+  constexpr int kPfChunks = amp_slab_chunks(BC, D);
 
   float* S = reinterpret_cast<float*>(smem_raw);
   char* carve = smem_raw + align4(static_cast<size_t>(BC) * SP * sizeof(float));
@@ -340,6 +352,23 @@ consumer_forward_kernel(ConsumerParams p) {
   //: [6] p_gfw, then the PER-LANE chunk (fr, fw, mem) and ingredient (ra, wa)
   //: planes, one word per lane each.
   int* p_chunk = p_st + 8;  // [5][32]: fr, fw, mem, ra, wa
+  //: THE PREFETCH'S PER-OWNER CHUNK DESCRIPTORS. One entry per 16-byte chunk of a
+  //: slab row: the SPANNED LEVEL it belongs to, its element offset inside that
+  //: level's amplitude row (already aligned down to the 16-byte boundary), and the
+  //: SET OF ATOMS whose digits it carries -- which is what makes the copy per-atom.
+  //: Built once per owner because the owner's digit rectangle is fixed for the whole
+  //: kernel; only the ATOM MASK the set is tested against varies per group.
+  int* const ch_lvl = p_chunk + 5 * 32;
+  int* const ch_src = ch_lvl + kPfChunks;
+  int* const ch_atoms = ch_src + kPfChunks;
+  //: THE TWO SLABS, read and write, `kGT` token rows each. They are the LAST regions
+  //: of the carve so that `cp.async`'s 16-byte destination alignment is ONE align-up
+  //: rather than a constraint every region before them would have to carry.
+  constexpr size_t kPfBase = align16(consumer_smem_core_bytes<BC, DV, D, DECAY, GT>());
+  __nv_bfloat16* const pfR = reinterpret_cast<__nv_bfloat16*>(smem_raw + kPfBase);
+  __nv_bfloat16* const pfW = pfR + kGT * kPfPitch;
+  static_assert(kPfBase % 16 == 0 && (kGT * kPfPitch * sizeof(__nv_bfloat16)) % 16 == 0,
+                "both prefetch slab bases must be 16-byte aligned for cp.async");
   if (tid == 0) {
     p_st[0] = w_lo;
 #pragma unroll
@@ -348,6 +377,79 @@ consumer_forward_kernel(ConsumerParams p) {
   if (warp == 0) {
 #pragma unroll
     for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
+  }
+
+  // ---- THE PREFETCH SLAB'S OWNER-LEVEL GEOMETRY. A level's digits over the owner's
+  // ---- `BC` leaves are the CONTIGUOUS range `[base_l, base_l + span_l)` -- the value
+  // ---- set of `(i / stride) % modulus` over `i < BC` is either `0 .. (BC-1)/stride`
+  // ---- or, on wrap, all of `[0, modulus)`. Each spanned level takes that range,
+  // ---- aligned down to a 16-byte boundary and rounded up to one, as a sub-row of the
+  // ---- slab; `pf_off[l]` is the one number a gather adds to its digit.
+  // ---- **`pf_off` IS A REGISTER ARRAY, NOT A TABLE**, and that is the whole reason
+  // ---- this gather is cheaper than the one it replaces: every gather's level loop is
+  // ---- `#pragma unroll`, so `l` is a compile-time constant at every use and the
+  // ---- offset never touches shared memory. `Plan.amplitude_pitch` is what licenses
+  // ---- it -- the padded pitch makes a level's per-token lead a CONSTANT rather than
+  // ---- a function of the token. docs/internals/consumer_kernel.md#prefetch
+  int pf_off[D];
+  int pf_nch = 0;
+  {
+    int at = 0;
+#pragma unroll
+    for (int l = 0; l < D; ++l) {
+      pf_off[l] = 0;
+      if (l < j) continue;
+      const int stride_l = p.level_stride[l];
+      const int mod_l = p.level_modulus[l];
+      const int span_l = min(mod_l, (BC - 1) / stride_l + 1);
+      const int lead_l = base[l] & 7;
+      pf_off[l] = at + lead_l - base[l];
+      at += ((lead_l + span_l + 7) / 8) * 8;
+    }
+    pf_nch = at >> 3;
+  }
+  //: THE CHUNK DESCRIPTORS, SERIAL ON ONE THREAD. `kPfChunks` is at most 12 and the
+  //: work is once per owner; spreading it would cost a barrier to publish `at`.
+  if (tid == 0) {
+    int at = 0;
+#pragma unroll
+    for (int l = 0; l < D; ++l) {
+      if (l < j) continue;
+      const int stride_l = p.level_stride[l];
+      const int mod_l = p.level_modulus[l];
+      const int span_l = min(mod_l, (BC - 1) / stride_l + 1);
+      const int lead_l = base[l] & 7;
+      const int nc = (lead_l + span_l + 7) / 8;
+      for (int c = 0; c < nc; ++c) {
+        //: The chunk's digit range, in offsets from `base[l]`.
+        const int c_lo = c * 8 - lead_l;
+        unsigned bits = 0u;
+        //: ATOM `q`'s digit range at this level. `(i / stride)` over the atom's 16
+        //: leaves is the contiguous `[u0, u1]`; taken modulo the level's modulus it
+        //: stays contiguous unless it wraps, and a wrap is answered with the whole
+        //: range -- a SUPERSET only ever fetches a chunk that could have been
+        //: zero-filled, which is safe in the one direction that matters.
+#pragma unroll
+        for (int q = 0; q < kQPO; ++q) {
+          const int u0 = (q * kMmaKQuantum) / stride_l;
+          const int u1 = (q * kMmaKQuantum + kMmaKQuantum - 1) / stride_l;
+          int lo = 0, hi = mod_l - 1;
+          if (u1 - u0 < mod_l - 1) {
+            const int a0 = u0 % mod_l, a1 = u1 % mod_l;
+            if (a0 <= a1) {
+              lo = a0;
+              hi = a1;
+            }
+          }
+          if (hi > span_l - 1) hi = span_l - 1;
+          if (!(hi < c_lo || lo >= c_lo + 8)) bits |= 1u << q;
+        }
+        ch_lvl[at + c] = l;
+        ch_src[at + c] = (base[l] & ~7) + c * 8;
+        ch_atoms[at + c] = static_cast<int>(bits);
+      }
+      at += nc;
+    }
   }
   //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`, formed
   //: AT THE POINT OF USE: `base[]` is already live across the whole kernel (the
@@ -533,6 +635,63 @@ consumer_forward_kernel(ConsumerParams p) {
     }
   };
 
+  // ---- THE PREFETCH ISSUE. Fills BOTH slabs for window `wnext` out of the cooked
+  // ---- descriptors the producer published a window earlier. One `cp.async` per
+  // ---- (window token, chunk, side); nothing here reads the amplitude data and
+  // ---- nothing waits.
+  // ----
+  // ---- **THE DELEGATED CHOICE (P25 contract item 7), MADE HERE.** On sm_86 the
+  // ---- `cp.async` commit/wait state is PER WARP, so the question was warp-
+  // ---- partitioned streams against interleaved commit order. The answer is ONE
+  // ---- COMMIT GROUP PER WARP PER VISIT, issued on a FLAT CTA-WIDE INDEX: the visit
+  // ---- consumes the whole slab at a single point, so there is exactly one drain and
+  // ---- a partial-fill ordering has no consumer that could use it -- interleaved
+  // ---- groups would buy bookkeeping and nothing else. The flat stride is what makes
+  // ---- a warp's 32 lanes take 32 CONSECUTIVE chunks, so each warp's group is a
+  // ---- contiguous byte range, which is the only property the memory system rewards.
+  // ----
+  // ---- THE PREDICATE IS THE MECHANISM'S PER-ATOM HALF. A chunk is copied iff some
+  // ---- atom LIVE ON THAT SIDE IN THAT GROUP holds a digit in it; otherwise it is
+  // ---- issued with src-size zero and the hardware zero-fills it. That is EXACT: a
+  // ---- leaf reading a zero-filled chunk belongs to an atom dead on that side, whose
+  // ---- staged coefficient must be exactly zero, and zeroing one of its level
+  // ---- factors delivers exactly that. The ragged tail rides the same predicate,
+  // ---- with the token index CLAMPED so no out-of-range address is ever formed.
+  // ---- docs/internals/consumer_kernel.md#prefetch
+  auto pf_issue = [&](int wnext) {
+    const int* const Rn = g_ring + ((wnext * W) % kSlots) * kSchedSlotInts;
+    for (int idx = tid; idx < kGT * kPfChunks; idx += kConsumerThreads) {
+      const int t = idx / kPfChunks;
+      const int cg = idx - t * kPfChunks;
+      if (cg >= pf_nch) continue;
+      const int* const Ra = Rn + (t / kGroupTokens) * kSchedSlotInts;
+      const int tt = t % kGroupTokens;
+      const bool in_group = tt < Ra[kSchedGN];
+      const int flags = Ra[kSchedFlags];
+      //: The STAGED masks -- the side flag already folded in, exactly as the visit
+      //: body's `rmr` / `wmr` fold it -- ANDed with the chunk's atom set.
+      const unsigned atoms = static_cast<unsigned>(ch_atoms[cg]);
+      const unsigned rm = (in_group && !summary && (flags & 1) != 0)
+                              ? (atoms & static_cast<unsigned>(Ra[kSchedRMask]))
+                              : 0u;
+      const unsigned wm =
+          (in_group && (flags & 2) != 0) ? (atoms & static_cast<unsigned>(Ra[kSchedWMask])) : 0u;
+      const int l = ch_lvl[cg];
+      const int64_t tr = tok_base + (in_group ? Ra[tt] : 0);
+      const int so = ch_src[cg];
+      const int dst = t * kPfPitch + cg * 8;
+      cp_async_16(
+          pfR + dst,
+          static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l] + so,
+          rm != 0u);
+      cp_async_16(
+          pfW + dst,
+          static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l] + so,
+          wm != 0u);
+    }
+    cp_async_commit();
+  };
+
   //: THE RING'S COLD START -- the producer fills a WHOLE WINDOW of run-ahead before
   //: the first visit, so the steady state never waits on production. The residue the
   //: contract admits (item 6) is exactly this ramp plus the final drain.
@@ -540,6 +699,13 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll 1
     for (int s = 0; s < W * kSchedDepth; ++s) produce_group(s);
   }
+  //: THE ENTRY EPOCH, and the ONE barrier the prefetch adds anywhere -- once per
+  //: kernel, never in the loop. It publishes the cold-start descriptors and the chunk
+  //: descriptors to the threads that issue window 0's copies; the steady state's
+  //: issue rides a barrier that already exists.
+  __syncthreads();
+  pf_issue(0);
+  cp_async_wait_all();
   __syncthreads();
 
   // ---- THE WALK, OVER WINDOWS. The producer's COOKED RING feeds one visit body per
@@ -673,7 +839,6 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- docs/internals/consumer_kernel.md#upper-product
     for (int a = 0; a < W; ++a) {
       const int gN = gN_of(a);
-      const int* const T = tk_of(a);
       const bool is_read = rmr[a] != 0u;
       const bool is_write = wmr[a] != 0u;
       //: The window token index of this group's slot `t` -- the row `clk` is indexed
@@ -695,15 +860,17 @@ consumer_forward_kernel(ConsumerParams p) {
         //: Evidence: workflows/perf/p26_evidence/m2_fp16_breach.txt.
         auto rf_pair = [&](int t, int k) -> unsigned {
           if (t >= gN) return 0u;  // padded slot: exact-zero pair
-          const int64_t tr = tok_base + T[t];
+          //: THE PREFETCHED ROW. `t0 + t` is the WINDOW token index the slab is keyed
+          //: by; `pf_off[l]` is a register at a compile-time `l`, so the whole address
+          //: is one 32-bit add over the digit the walk already reads -- where the
+          //: direct form paid a 64-bit `tr * pitch` and a global load.
+          const __nv_bfloat16* const pf = pfR + (t0 + t) * kPfPitch;
           float a0 = 1.0f, a1 = 1.0f;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-            const __nv_bfloat16* row =
-                static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l];
-            a0 *= __bfloat162float(row[dig[l * BC + k]]);
-            a1 *= __bfloat162float(row[dig[l * BC + k + 1]]);
+            a0 *= __bfloat162float(pf[pf_off[l] + dig[l * BC + k]]);
+            a1 *= __bfloat162float(pf[pf_off[l] + dig[l * BC + k + 1]]);
           }
           //: THE WINDOW'S WRITE SIDE, NOT THE GROUP'S: a read-live group inside a
           //: write-live window sees state that the window's OTHER groups have
@@ -739,17 +906,15 @@ consumer_forward_kernel(ConsumerParams p) {
             float a0 = 0.0f, a1 = 0.0f;
             if (t < gN) {
               //: fp32 application against bf16 storage (the fp16 carve; see the
-              //: read panel's note).
-              const int64_t tr = tok_base + T[t];
+              //: read panel's note), out of the prefetched row.
+              const __nv_bfloat16* const pf = pfW + (t0 + t) * kPfPitch;
               a0 = 1.0f;
               a1 = 1.0f;
 #pragma unroll
               for (int l = 0; l < D; ++l) {
                 if (l < j) continue;
-                const __nv_bfloat16* row =
-                    static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l];
-                a0 *= __bfloat162float(row[dig[l * BC + i0]]);
-                a1 *= __bfloat162float(row[dig[l * BC + i0 + 1]]);
+                a0 *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i0]]);
+                a1 *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i0 + 1]]);
               }
               if (DECAY) {
                 a0 *= panel_write_factor(clk[(t0 + t) * CKP + i0], p_ref[i0], log_keep[i0]);
@@ -825,6 +990,14 @@ consumer_forward_kernel(ConsumerParams p) {
     }
 
     __syncthreads();
+
+    //: **THE PREFETCH'S ISSUE POINT, AND IT COSTS NO BARRIER.** The barrier above is
+    //: already there to publish the staged operands; it equally guarantees that every
+    //: warp has finished READING the slab, which is the condition for refilling it.
+    //: From here the copies for the next window run concurrently with this window's
+    //: entire compute -- both Gram phases, the emission and the fold -- and are
+    //: drained at the end of the visit body.
+    pf_issue(widx + 1);
 
     // ---- PHASE A -- the two GEMMs that read only the ENTRY state and the staged
     // ---- panels: the readouts and the window Gram. They share a phase because
@@ -1191,6 +1364,12 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll 1
       for (int a = 0; a < W; ++a) produce_group(((widx + kSchedDepth) * W + a) % kSlots);
     }
+    //: THE DRAIN, IMMEDIATELY BEFORE A BARRIER THAT ALREADY EXISTS. `cp.async`
+    //: completion is visible to the ISSUING THREAD only, so the cross-warp
+    //: publication is the end-of-window rendezvous below -- which is why the wait
+    //: goes here and not at the top of the next visit, where it would need a barrier
+    //: of its own.
+    cp_async_wait_all();
     __syncthreads();
   }
 
