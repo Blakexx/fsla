@@ -137,13 +137,6 @@ registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller c
 supply is metadata a caller could supply wrong, and a validator reading it would be
 checking a claim instead of a fact.
 
-**No conditioning surface.** An earlier revision carried architecture §4.5's
-budget-conditioning surface here (temperature actuation, a budget embedding, a
-usage-conditioned per-digit bias) — routing-coherence residual losses plus injected
-routing factors. That whole family is DESCOPED (queue P29, 2026-08-06,
-`docs/internals/DELETIONS.md`): the endgame's data-adaptive executor obsoletes the
-premise, and paper 1's thesis stands on incoherent entmax routing without it.
-
 ### 2.4 Foreign producers
 
 Any module satisfying the interface works, with no registration and no tier. This is
@@ -179,10 +172,10 @@ Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`. A so
 validated against the topology at layer construction. Duck-typed like a producer:
 declare `widths` and `num_heads`, return a `LeafMassDecay`.
 
-There is no `'level'` scope: under `keep = (1 - prod_l delta_l)**c` (one write-conditioned
-clock per leaf), a per-level rate only ever enters through that product, so it would be an
-unidentifiable reparameterization of `'global'` — same forward/backward behavior, no
-distinguishing gradient. Ruled out 2026-08-06.
+`state` and `global` are the two IDENTIFIABLE resolutions: under `keep = (1 - prod_l
+delta_l)**c` (one write-conditioned clock per leaf), a rate only ever enters the
+recurrence through that per-leaf product, so per-digit and per-head are the two degrees
+of freedom the product structure lets the recurrence actually distinguish.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast, the
 planner OBSERVES that in the realized routing, and prices accordingly — through exactly

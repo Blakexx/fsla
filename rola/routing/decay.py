@@ -99,7 +99,7 @@ class ConstantDecay(DecaySource):
 
 
 class LearnedDecay(DecaySource):
-    """Rates learned through a sigmoid, at one of three resolutions.
+    """Rates learned through a sigmoid, at one of two resolutions.
 
     ``scope='state'`` learns one rate per head per digit (the finest the recurrence can
     use), ``'global'`` one per head. Every scope emits the same ``[H, width_l]`` dials --
@@ -107,14 +107,11 @@ class LearnedDecay(DecaySource):
     recurrence is identical across them and the choice is purely how many degrees of
     freedom the model gets.
 
-    **There is no ``'level'`` scope.** Under ``keep = (1 - prod_l delta_l)**c`` (one
-    write-conditioned clock per LEAF, architecture §4.4), a per-level rate only ever
-    enters through that product -- the recurrence has no way to observe which level
-    contributed how much of it. A per-level scope would therefore be an
-    unidentifiable reparameterization of ``'global'``: same product, same forward and
-    backward behavior, extra parameters with no distinguishing gradient. Ruled out
-    2026-08-06 (docket); the two real resolutions are ``'state'`` (per-digit) and
-    ``'global'`` (one clock).
+    These are the two IDENTIFIABLE resolutions: under ``keep = (1 - prod_l delta_l)**c``
+    (one write-conditioned clock per leaf, architecture §4.4), a rate only ever enters
+    the recurrence through that per-leaf product, so per-digit (``'state'``) and
+    per-head (``'global'``) are the two degrees of freedom the product structure lets
+    the recurrence actually distinguish.
 
     The dials are held in fp32 regardless of the module's dtype: the kernel reads an
     fp32 rate, and a dial rounded through bf16 would quantize the forgetting schedule

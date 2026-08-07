@@ -44,15 +44,6 @@ correctness.
 projection and solves it with the exact production entmax/softmax closed form
 (``entmax/production.py``). It is a duck like any other: it implements this interface
 and gets no privileged path.
-
-**No injected routing factors.** An earlier revision carried architecture §4.5's
-budget-conditioning surface (Tier-1 temperature actuation, a budget embedding, a
-usage-conditioned per-digit logit bias) -- factors injected into the router's logits
-from an external target. That whole family (routing-coherence residual losses +
-injected routing factors) is DESCOPED (queue P29, 2026-08-06): the endgame's
-data-adaptive executor obsoletes the premise a compute budget needed a router-side
-lever to hit, and paper 1's thesis stands on incoherent entmax routing without it.
-Revival = git (this file's pre-P29 tip).
 """
 
 from __future__ import annotations

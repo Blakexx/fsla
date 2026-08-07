@@ -5,15 +5,6 @@ Both functions here are consumed by :class:`~rola.routing.factors.RouteFactors`'
 a routing allocation touched, derived on demand from the stored tensors rather than
 computed eagerly every step (`docs/internals/DELETIONS.md`, the "eager auxiliary
 statistics" row).
-
-This module used to also carry architecture §4.5's budget-conditioning arithmetic
-(the target/slack/usage machinery a router-side temperature actuator consumed) and
-the ``BudgetConditioning`` config object. That whole family -- routing-coherence
-residual losses plus injected routing factors -- is DESCOPED (queue P29,
-2026-08-06): the endgame's data-adaptive executor obsoletes the premise, and paper
-1's thesis stands on incoherent entmax routing without it. What remains here is
-general-purpose and has nothing to do with a budget. Revival = git (this file's
-pre-P29 tip).
 """
 
 from __future__ import annotations
