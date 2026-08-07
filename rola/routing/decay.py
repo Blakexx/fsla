@@ -102,17 +102,26 @@ class LearnedDecay(DecaySource):
     """Rates learned through a sigmoid, at one of three resolutions.
 
     ``scope='state'`` learns one rate per head per digit (the finest the recurrence can
-    use), ``'level'`` one per head per level, ``'global'`` one per head. Every scope
-    emits the same ``[H, width_l]`` dials -- broadcasting is where the coarser scopes
-    differ, not the contract -- so the recurrence is identical across them and the
-    choice is purely how many degrees of freedom the model gets.
+    use), ``'global'`` one per head. Every scope emits the same ``[H, width_l]`` dials --
+    broadcasting is where the coarser scope differs, not the contract -- so the
+    recurrence is identical across them and the choice is purely how many degrees of
+    freedom the model gets.
+
+    **There is no ``'level'`` scope.** Under ``keep = (1 - prod_l delta_l)**c`` (one
+    write-conditioned clock per LEAF, architecture §4.4), a per-level rate only ever
+    enters through that product -- the recurrence has no way to observe which level
+    contributed how much of it. A per-level scope would therefore be an
+    unidentifiable reparameterization of ``'global'``: same product, same forward and
+    backward behavior, extra parameters with no distinguishing gradient. Ruled out
+    2026-08-06 (docket); the two real resolutions are ``'state'`` (per-digit) and
+    ``'global'`` (one clock).
 
     The dials are held in fp32 regardless of the module's dtype: the kernel reads an
     fp32 rate, and a dial rounded through bf16 would quantize the forgetting schedule
     to a handful of distinct rates.
     """
 
-    _SCOPES = ("state", "level", "global")
+    _SCOPES = ("state", "global")
 
     def __init__(
         self,
@@ -132,8 +141,6 @@ class LearnedDecay(DecaySource):
         theta = math.log(rate) - math.log1p(-rate)
         if scope == "global":
             shapes = [(self.num_heads, 1)]
-        elif scope == "level":
-            shapes = [(self.num_heads, 1) for _ in self.widths]
         else:
             shapes = [(self.num_heads, width) for width in self.widths]
         self.theta = nn.ParameterList([

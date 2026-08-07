@@ -169,12 +169,17 @@ tell the answers apart:
 
 ```python
 rola.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fixed
-rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'level' | 'global'
+rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'global'
 ```
 
 Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`. A source is
 validated against the topology at layer construction. Duck-typed like a producer:
 declare `widths` and `num_heads`, return a `LeafMassDecay`.
+
+There is no `'level'` scope: under `keep = (1 - prod_l delta_l)**c` (one write-conditioned
+clock per leaf), a per-level rate only ever enters through that product, so it would be an
+unidentifiable reparameterization of `'global'` — same forward/backward behavior, no
+distinguishing gradient. Ruled out 2026-08-06.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast, the
 planner OBSERVES that in the realized routing, and prices accordingly — through exactly

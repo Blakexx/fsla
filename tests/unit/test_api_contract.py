@@ -235,7 +235,7 @@ def test_the_stored_levels_are_simplices_and_the_mass_went_to_the_gain():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("scope", ["state", "level", "global"])
+@pytest.mark.parametrize("scope", ["state", "global"])
 def test_every_learned_decay_scope_emits_the_same_dial_shape(scope):
     """The scopes differ in degrees of freedom, never in what the recurrence reads."""
     source = rola.LearnedDecay(2 ** -8, widths=(4, 6), num_heads=2, scope=scope)
