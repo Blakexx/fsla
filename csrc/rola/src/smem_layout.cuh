@@ -51,16 +51,6 @@ constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state f
 //: worth of tokens against one multiply's worth of state rows.
 constexpr int kGroupTokens = kMmaKQuantum;
 
-//: THE MEMBERSHIP SCAN'S BATCH: how many 32-token words one refill stages into
-//: SMEM. The scan words are CTA-uniform, so a per-thread (per-warp-redundant)
-//: global walk pays 8x the sectors and instructions the stream carries --
-//: MEASURED as the whole of the endgame's first-cut L1-sector regression
-//: (+7.6M sectors at atscale-L2048). One thread loads each word's rows ONCE,
-//: the member word is PRECOMPUTED into the batch, and the assembler consumes
-//: SMEM; two barriers per kScanBatch words. 32 = one word per thread of one
-//: warp per refill and a power of two well above the split-carry horizon.
-constexpr int kScanBatch = 32;
-
 //: THE SECTOR INVARIANT, UNIVERSAL: one atom's worth of bf16 digits IS one memory
 //: sector. `kMmaKQuantum` bf16 elements = 32 B = the fetch floor = the MMA k-quantum
 //: = the union-bitmap granule. The fetch/union/atom code assumes this
@@ -348,7 +338,6 @@ constexpr size_t consumer_smem_bytes() {
   //: per-visit read/write ATOM MASKS and the scan's `D` fixed-level row indices
   //: -- SMEM so no scheduler state is register-live across the visit body).
   b += static_cast<size_t>(kGroupTokens + 8 + D) * sizeof(int);  // t_idx + g_scan
-  b += 3 * static_cast<size_t>(kScanBatch) * sizeof(int);        // the scan batch (fr, fw, member)
   return b;
 }
 
