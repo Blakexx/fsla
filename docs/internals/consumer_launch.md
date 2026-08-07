@@ -3,7 +3,7 @@
 The definition of the two host entry points every consumer instantiation is reached
 through: `launch_consumer_arm` (launch this arm) and `query_consumer_occupancy_arm`
 (ask the driver about its residency). Both are function templates over the same
-tuple the kernel is: `<BC, DV, D, DECAY>`.
+tuple the kernel is: `<BC, DV, D, DECAY, GT>`.
 
 Symbols: an *arm* is one instantiation of `consumer_forward_kernel`; a *shard* is one
 generated translation unit carrying 8 of them
@@ -11,11 +11,12 @@ generated translation unit carrying 8 of them
 translation unit's device code is assembled independently, with no device linker
 (`-rdc` is off).
 
-This file's design is generic over the matrix — it takes the four template
+This file's design is generic over the matrix — it takes the five template
 parameters and does not know their legal values — so the endgame-executor rewrite
-that dropped `BT`, `PREC` and `GLOBAL` from the matrix ([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix))
+that dropped `BT`, `PREC` and `GLOBAL` from the matrix, and the window batch that
+added `GT` ([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix)),
 changed nothing here beyond the tuple's arity. The counts below are the current
-32-arm, 4-shard matrix.
+64-arm, 8-shard matrix.
 
 ---
 
@@ -35,7 +36,7 @@ file's own uses by IMPLICITLY INSTANTIATING every dispatched arm locally. The bu
 would link. The ratification manifest would be byte-identical — `consumer_forward_kernel`
 lives in a named namespace, so its mangled name does not depend on which translation
 unit expands it. The geometry census would still report the whole matrix. `nm` would
-still report 32 symbols, because a `__global__` template's host stub is weak and the
+still report 64 symbols, because a `__global__` template's host stub is weak and the
 linker keeps exactly one. Nothing would be sharded, every kernel would be compiled
 twice, and no gate in that list could tell.
 
@@ -83,7 +84,7 @@ There is no `C10_CUDA_CHECK` here and no return code. A refused shared-memory op
 returns early; a failed launch sets the error asynchronously; either way the failure
 is recorded in the per-thread error state, and `launch_consumer` (`consumer.cu`)
 reads it through `C10_CUDA_KERNEL_LAUNCH_CHECK()` the instant the call returns. That
-is ONE error site for 32 arms instead of 32, and it is what lets the launcher's
+is ONE error site for 64 arms instead of 64, and it is what lets the launcher's
 signature be the plain `void(const ConsumerParams&, cudaStream_t)` that
 `ShardRow::launch` stores.
 
@@ -103,9 +104,9 @@ Three steps, in this order, unchanged from the pre-shard dispatch:
 
 ## <a id="residency"></a>5. The residency query, instantiated for every arm
 
-`rola_consumer_occupancy` asks about 8 of the 32 arms (`D = 2` — the one axis the
-query pins, since it moves only a 256 B digit table; `BC`, `DV` and `DECAY` stay
-free). The wrapper is nevertheless instantiated for ALL of them.
+`rola_consumer_occupancy` asks about 16 of the 64 arms (`D = 2` — the one axis the
+query pins, since it moves only a 256 B digit table; `BC`, `DV`, `DECAY` and `GT`
+stay free). The wrapper is nevertheless instantiated for ALL of them.
 
 It is host-only code over a kernel address that already exists in the shard, so it
 costs nothing measurable, and the alternative is a partition whose launcher members

@@ -100,8 +100,8 @@ is a claim; a generated one is a report.
 <!-- BEGIN GENERATED: tools/supported.py -->
 | Compute capability | GPUs | Ratified under | Instantiations | Status |
 |---|---|---|---|---|
-| `sm_80` | A100, A30 | ptxas 12.4.99 | 112 | ratified |
-| `sm_86` | A10, A40, RTX 30xx | ptxas 12.4.99 | 112 | ratified |
+| `sm_80` | A100, A30 | ptxas 12.4.99 | 144 | ratified |
+| `sm_86` | A10, A40, RTX 30xx | ptxas 12.4.99 | 144 | ratified |
 | `sm_87` | Jetson Orin | — | — | **not ratified — will refuse to load** |
 | `sm_89` | L40S, RTX 40xx | — | — | **not ratified — will refuse to load** |
 <!-- END GENERATED: tools/supported.py -->

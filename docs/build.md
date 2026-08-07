@@ -50,7 +50,7 @@ mamba-ssm require the same thing for the same reason.
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. The consumer's 256 kernel instantiations are spread over
+5. **Compile.** `ninja`. The consumer's 64 kernel instantiations are spread over
    eight translation units (`csrc/rola/src/instantiations/`), so the matrix
    parallelizes across `MAX_JOBS` processes instead of serializing inside one
    `cicc`.
@@ -58,7 +58,7 @@ mamba-ssm require the same thing for the same reason.
    requires exactly one device entry per instantiation per architecture, each in
    the shard the matrix assigns it, and every ratified name present. This is the
    only gate that can see a *failed* split: duplicated device code leaves the build
-   green, the manifest byte-identical and `nm` at 256, because a `__global__`
+   green, the manifest byte-identical and `nm` at 64, because a `__global__`
    template's host stub is weak and the linker keeps one.
 7. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves

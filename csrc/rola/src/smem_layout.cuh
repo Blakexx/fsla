@@ -45,19 +45,26 @@ namespace consumer {
 
 constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state frees
 
-//: THE GROUP -- the executor's work unit: `kMmaKQuantum` gathered tokens, one MMA
+//: THE GROUP -- the PRODUCER's work unit: `kMmaKQuantum` gathered tokens, one MMA
 //: m-quantum. It is deliberately THE SAME constant as the k-quantum: one multiply's
-//: worth of tokens against one multiply's worth of state rows.
+//: worth of tokens against one multiply's worth of state rows. The cook, the ballot
+//: and the ring descriptor are all sized by it and none of them varies with the
+//: window below.
 constexpr int kGroupTokens = kMmaKQuantum;
 
-//: THE FOLD'S STAGED-GROUP DEPTH (Blake's confirmed atom-major nest,
-//: 2026-08-06): how many groups' staged panels the fold consumes per atom
-//: residency. PINNED 1 today -- the staging carve holds one group's set -- and
-//: it is the ONE constant the per-atom fetch era deepens (together with the
-//: staging producer); the fold's loop nest is already written over it, so
-//: deepening is not a migration. The depth > 1 decay/window algebra is that
-//: era's design item.
-constexpr int kFoldStagedGroups = 1;
+//: **THE WINDOW, `GT` -- THE CONSUMER'S TOKEN QUANTUM, AND A TEMPLATE AXIS.** One
+//: VISIT stages and consumes `W = GT / kGroupTokens` groups against ONE entry state
+//: and folds them back in ONE writeback. `W > 1` is not a scheduling depth: pacing
+//: the fold `W` groups behind means those groups all read the same entry state, so
+//: their mutual deposits must arrive as Gram cross-terms and the Gram has to span
+//: the window -- the enlarged-chunk formulation, whose cost is a block LOWER
+//: TRIANGULAR `[GT x GT]` Gram (`W(W+1)/2` sub-blocks) and whose payment is that
+//: every per-visit term -- the three barriers, the fold's read-modify-write of `S`,
+//: the descriptor decode -- amortises `W`-fold.
+//: `GT` is DISTRIBUTION-DEPENDENT and therefore a PLAN-SELECTED AXIS, never a
+//: raised constant: a wide window is free at dense gathering and wastes tile at low
+//: gathered-token counts. docs/internals/smem_layout.md#window
+constexpr int window_groups(int GT) { return GT / kGroupTokens; }
 
 //: THE SCHEDULE CHUNK: how many 32-token words the PRODUCER WARP cooks per
 //: refill. It is exactly one word per lane, so a refill is one cooperative load
@@ -80,28 +87,27 @@ static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of 
 #endif
 constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
 static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
-constexpr int kSchedSlots = kSchedDepth + 1;
 
-//: **THE VALUES-SHARD DIAL (contract item 4) IS STRUCTURALLY INERT AT
-//: `kFoldStagedGroups == 1`, AND IS THEREFORE NOT BUILT -- a derivation, not an
-//: omission.** The dial's stated selection criterion is the VALUES-RING
-//: HEAD-OF-LINE residual: with one shared value tile the slowest atom consumer
-//: paces the ring's recycling, and `k` shards buy pacing slack by giving disjoint
-//: atom sets their own copies. That residual is a function of how long an atom
-//: holds the tile. At `kFoldStagedGroups == 1` every atom consumes the staged
-//: tile INSIDE ONE VISIT, between the same two barriers, so the tile's lifetime
-//: is the visit and its recycling condition is discharged by the end-of-visit
-//: `__syncthreads()` that already exists: THE CURSOR SPREAD IS ZERO AND THERE IS
-//: NOTHING TO SHARD. `k > 1` would be `k` byte-identical copies of one tile that
-//: no code path distinguishes -- dead storage behind a dead branch.
-//: The dial becomes live exactly when the fold's staged depth deepens (an atom
-//: then holds its accumulator across several groups' tiles and the spreads open
-//: up), which is why this note lives next to the constant that gates it. Until
-//: then `k` is a PLAN-TIME quantity only, pinned at 1 by the host.
-static_assert(kFoldStagedGroups == 1,
-              "the values-shard dial's premise changed: with the fold holding more "
-              "than one staged group per atom residency the cursor spread is no "
-              "longer zero, so `k` stops being inert and has to be built and swept");
+//: The cooked ring holds a WHOLE WINDOW plus the run-ahead: the visit reads `W`
+//: descriptors at once, so `W` slots must be simultaneously live and the producer
+//: must still be cooking into slots nobody is reading.
+constexpr int sched_slots(int GT) { return window_groups(GT) * (kSchedDepth + 1); }
+
+//: **THE VALUES-SHARD DIAL (P25 contract item 4) IS STRUCTURALLY INERT AT EVERY
+//: `GT`, AND IS THEREFORE NOT BUILT -- a derivation, not an omission.** The dial's
+//: stated selection criterion is the VALUES-RING HEAD-OF-LINE residual: with one
+//: shared value tile the slowest atom consumer paces the tile's recycling, and `k`
+//: shards buy pacing slack by giving disjoint atom sets their own copies. That
+//: residual is a function of how long an atom holds a tile RELATIVE TO ITS
+//: NEIGHBOURS. The window widened the fold's accumulator residency from one staged
+//: group to `W` -- but all `W` slots are staged in the SAME PHASE of the SAME
+//: VISIT and released by the SAME end-of-window `__syncthreads()`, so every atom
+//: holds every tile for exactly the window and THE CURSOR SPREAD IS STILL ZERO.
+//: `k > 1` would be `k` byte-identical copies of tiles that no code path
+//: distinguishes -- dead storage behind a dead branch. The dial becomes live only
+//: if the window's staging stops being one barrier-delimited phase; until then `k`
+//: is a PLAN-TIME quantity, pinned at 1 by the host.
+//: docs/internals/smem_layout.md#values-shard
 
 //: ONE COOKED GROUP DESCRIPTOR, in ints: the `kGroupTokens` gathered GLOBAL token
 //: indices (ascending -- stability IS causality), then `gN` (the group's member
@@ -132,8 +138,21 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: because a too-small budget is bought back by SPILLING. (The former `NM` key died
 //: with the BT axis: every group is one m16 row block.)
 //: docs/internals/smem_layout.md#reg-budget
-constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
+constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
   (void)DV;
+  //: `GT` IS IN THE KEY, BY CENSUS like every other number here. The window carries
+  //: `ceil(W * DV/8 / kWarps)` readout fragments and `ceil(W / kWarps)` mass
+  //: fragments live across the Gram phase -- fp32 the `GT == 16` visit does not
+  //: have -- and the fold's accumulator is resident across `W` staged groups.
+  //: Measured over all 32 window arms on both arches: 87..117 registers (sm_86;
+  //: 113 max on sm_80), zero spill. `112` below is the FIXED budget this function
+  //: returns for the key, a margin under the measured 117 rather than equal to
+  //: it: `ctas_for_residency` only needs the residency arithmetic to still admit
+  //: the CTA count `BC = 16` keeps at the true measured maximum, and it does
+  //: (`117 regs * 256 threads * 2 CTAs = 59,904 < 65,536`). At `BC = 64` the
+  //: window is SMEM-bound at one CTA/SM regardless; at `BC = 16` this budget is
+  //: what keeps two.
+  if (GT > kGroupTokens) return 112;
   //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
   //: structural template axis and the cook's working set grows with it (one
   //: fixed-level bit row per level, per side, per refill): measured over all 32
@@ -381,34 +400,47 @@ constexpr int frag_a_words(int K) { return (K / kMmaKQuantum) * 128; }
 //: own layout; only the RESERVATION is the max, and on the DECAY arm `clk` is the
 //: larger tenant at every shipped shape:
 //: docs/internals/smem_layout.md#vw-clk-union
-template <int BC, int DV, bool DECAY>
+//: The `Vw` REGION is `W` staged slots; `clk` is ONE buffer over the whole window
+//: (the clock prefix runs across the window, not across a group), so the two tenants
+//: scale differently and the max is taken over both at the window's width.
+template <int BC, int DV, int D, bool DECAY, int GT>
 constexpr size_t vw_union_bytes() {
-  const size_t vw = static_cast<size_t>(vw_elems<DV>()) * sizeof(__nv_bfloat16);
+  (void)D;
+  const size_t vw = static_cast<size_t>(window_groups(GT)) * vw_elems<DV>() * sizeof(__nv_bfloat16);
   const size_t clk =
-      DECAY ? static_cast<size_t>(kGroupTokens) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
+      DECAY ? static_cast<size_t>(GT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
   return align4(vw > clk ? vw : clk);
 }
 
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
 //: from it rather than restated next to it. Every term, its measured residency
 //: consequence and `DECAY`'s carve: docs/internals/smem_layout.md#smem-ledger
-template <int BC, int DV, int D, bool DECAY>
+template <int BC, int DV, int D, bool DECAY, int GT>
 constexpr size_t consumer_smem_bytes() {
-  size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);            // S (+ mass column pad)
-  b += static_cast<size_t>(D) * BC * sizeof(int);                           // dig
-  b += align4(static_cast<size_t>(BC) * kWtPitch * sizeof(__nv_bfloat16));  // WT
-  b += vw_union_bytes<BC, DV, DECAY>();                                     // Vw (+ clk)
-  b += static_cast<size_t>(frag_a_words(BC)) * sizeof(unsigned);            // Rf
-  b += static_cast<size_t>(kGroupTokens) * (kGroupTokens + 8) * sizeof(__nv_bfloat16);  // Gm
-  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
-  //: THE COOKED SCHEDULE RING: `kSchedSlots` group descriptors, written by the
-  //: PRODUCER WARP a whole visit ahead and read by every consumer warp. It is the
+  constexpr int W = window_groups(GT);
+  size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);  // S (+ mass column pad)
+  b += static_cast<size_t>(D) * BC * sizeof(int);                 // dig
+  //: `WT`, `Vw` and `Rf` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
+  //: buffer: that is what carries every one of their layout proofs across the
+  //: window unchanged. Only `Gm` -- the window Gram -- takes a new shape.
+  b += align4(static_cast<size_t>(W) * BC * kWtPitch * sizeof(__nv_bfloat16));  // WT
+  b += vw_union_bytes<BC, DV, D, DECAY, GT>();                                  // Vw (+ clk)
+  b += static_cast<size_t>(W) * frag_a_words(BC) * sizeof(unsigned);            // Rf
+  //: THE WINDOW GRAM, `[GT][GT + 8]`. Square, though only the block LOWER TRIANGLE
+  //: is ever written or read: a packed triangular layout would make a block's base
+  //: a non-affine function of `(a, b)`, and one closed-form address function per
+  //: buffer is the standard every other operand here is held to. The waste is the
+  //: strict upper triangle.
+  b += static_cast<size_t>(GT) * (GT + 8) * sizeof(__nv_bfloat16);  // Gm
+  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);      // log_keep, p_ref, s0
+  //: THE COOKED SCHEDULE RING: `sched_slots(GT)` group descriptors, written by the
+  //: PRODUCER WARP a whole window ahead and read by every consumer warp. It is the
   //: only schedule storage the consumers touch.
-  b += static_cast<size_t>(kSchedSlots) * kSchedSlotInts * sizeof(int);
+  b += static_cast<size_t>(sched_slots(GT)) * kSchedSlotInts * sizeof(int);
   //: The slot's PER-OWNER UPPER PRODUCTS (`sr`, `sw`) -- §3 step 3's row scales,
   //: cooked in the ring beside the member word, one pair of `kGroupTokens` floats
   //: per slot.
-  b += static_cast<size_t>(kSchedSlots) * 2 * kGroupTokens * sizeof(float);
+  b += static_cast<size_t>(sched_slots(GT)) * 2 * kGroupTokens * sizeof(float);
   //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
   //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
   //: HERE rather than in the producer warp's registers because scheduler state

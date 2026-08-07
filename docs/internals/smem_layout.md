@@ -25,10 +25,97 @@ The same in all three consumer-kernel documents — [`consumer_kernel.md`](consu
 
 ## The group is the tile
 
-The executor's work unit is a GROUP of `kGroupTokens == kMmaKQuantum == 16` gathered
+The PRODUCER's work unit is a GROUP of `kGroupTokens == kMmaKQuantum == 16` gathered
 tokens — one MMA m-quantum's worth. Groups are always full; only a segment's final
 flush is ragged. Every quantity below that would once have been `BT`-shaped is
-`kGroupTokens`-shaped instead: there is no separate tile-token axis.
+`kGroupTokens`-shaped instead: there is no separate tile-token axis. The cook, the
+ballot and the ring descriptor are all sized by it, and none of them varies with the
+window below.
+
+## <a id="window"></a>The window is the consumer's token quantum
+
+One VISIT does not consume one group; it consumes a WINDOW of `W = GT / kGroupTokens`
+groups against ONE entry state and folds them back in ONE writeback. `GT` — the
+window's token extent — is a fifth structural template axis, `{16, 64}`
+([`consumer.md#instantiation-matrix`](consumer.md#instantiation-matrix)), and
+`window_groups(GT)` / `sched_slots(GT)` (`smem_layout.cuh`) are its two derived
+quantities: the group count and the schedule ring's slot count (`W * (kSchedDepth +
+1)`, since a whole window of run-ahead must be simultaneously live).
+
+**Why `W > 1` needs a Gram cross-term, not just a wider stage.** Pacing the fold `W`
+groups behind means all `W` groups read the SAME entry state, so the deposits the
+un-paced fold would already have written are missing from it and must arrive as Gram
+cross-terms — the Gram has to span the window. In `kGroupTokens x kGroupTokens` blocks
+indexed by group `(a, b)` (`a` = read group, `b` = write group), the window Gram is
+block LOWER TRIANGULAR: `b > a` is identically zero and never formed or stored, `b ==
+a` is today's within-group masked block, and `b < a` — every token of group `b`
+strictly precedes every token of group `a` — is unmasked and dense (FLA's
+sub-chunked-diagonal split, `fla/ops/gla/chunk.py`'s `chunk_gla_fwd_A_kernel_intra_sub_inter`
+/ `..._intra_sub_intra`, transplanted with the diagonal kept as a masked GEMM rather
+than their scalar row loop). The causal mask therefore stays `O(W)` — only the `W`
+diagonal blocks carry a predicate — while the Gram's storage grows `O(W^2)`.
+
+What the window buys against that price: every PER-VISIT term amortises `W`-fold —
+the three `__syncthreads()`, the fold's SMEM read-modify-write of `S`, the descriptor
+decode, the atom-mask decode. The producer's cook cadence and the emission cadence
+are unchanged: the producer still cooks one group at a time, and `y` is still emitted
+per group.
+
+**Multi-slot, not wide-tile.** `WT`, `Vw` and `Rf` become `W` INDEPENDENT SLOTS of
+their existing per-group shape, never one `W`-times-wider buffer — every one of their
+layout proofs is therefore a statement about ONE slot and stands unchanged across the
+window. `clk` is the one exception among the group-shaped buffers: the clock prefix
+runs across the WHOLE window (not per group, because the window is one reference
+frame under decay), so it is `[GT][BC+4]` fp32, one buffer. `Gm`'s shape is the only
+buffer whose address function moves: `[GT][GT+8]`, square, though only the block lower
+triangle is ever written or read — a packed triangular layout would make a block's
+base a non-affine function of `(a, b)`, and one closed-form address function per
+buffer is the standard every other operand here is held to. The waste is the strict
+upper triangle.
+
+**The budget, flagship `<BC=64, DV=64, D=2>` on `sm_86` (`smem_per_sm = 102400`)**,
+as a function of `W`:
+
+```
+nodecay:  512 W^2 + 7840 W + 18592 bytes
+decay:    512 W^2 + 10144 W + 19360 bytes
+```
+
+`W = 4` (`GT = 64`) lands at ONE CTA/SM there; `W = 8` (`GT = 128`) does not fit a CTA
+on `sm_86` at all (the `512 W^2` term), which is why `128` is not in the instantiated
+set. Residency at `GT = 64` falls to one CTA/SM at `BC = 64` (SMEM-bound) and to two at
+`BC = 16`; register budget for `GT > kGroupTokens` is 112 — censused 87..117 on `sm_86`
+(113 max on `sm_80`) across the 32 window arms, zero spill everywhere
+([below](#reg-budget)).
+Per the standing register/SMEM policy, the residency loss at `BC = 64, GT = 64` is a
+PURCHASE: occupancy buys only latency hiding, and this kernel hides latency
+explicitly (the producer ring, the resident accumulators).
+
+`GT` is DISTRIBUTION-DEPENDENT and therefore a PLAN-SELECTED axis, never a raised
+constant: a wide window is free at dense gathering and wastes tile at low
+gathered-token counts (a window's only waste is a ragged tail of dead groups), and
+under decay the panel's admission bound scales linearly with the window
+(`rola/planner/schedule.py`'s `panel_exponent_bound`, `group_tokens` parameter) —
+a `W = 4` window admits a quarter of the routing a `W = 1` window admits. Both facts
+are why `select_window` (`rola/planner/schedule.py`) picks `GT` per routing rather
+than the kernel picking a fixed one.
+
+### <a id="values-shard"></a>The values-shard dial stays inert at every `GT`
+
+The former `kFoldStagedGroups` constant — PINNED to 1, with a `static_assert` tripwire
+naming the P25 contract's values-shard dial (item 4) as the thing that would need
+building the day the fold held more than one staged group per atom residency — is
+gone. `GT`/`window_groups` is its CAPABILITY REPLACEMENT, not a workaround: the fold
+now DOES hold `W` staged groups per atom residency at `GT = 64`, which is exactly the
+condition the tripwire named — and the dial is STILL inert, because the tripwire's
+premise was about the cursor SPREAD, not the staged depth as such. All `W` slots of a
+window are staged in the SAME phase of the SAME visit and released by the SAME
+end-of-window `__syncthreads()`, so every atom holds every tile for exactly the
+window's duration and the cursor spread stays zero. `k > 1` would still be `k`
+byte-identical copies of tiles no code path distinguishes. The dial becomes live only
+if the window's staging stops being one barrier-delimited phase; until then `k` is a
+PLAN-TIME quantity, pinned at 1 by the host. Revival of the old constant, if the
+tripwire's premise is ever restated: git `2decba5^`.
 
 ## The one precision story
 
@@ -73,20 +160,32 @@ what keeps the closed form honest to it.
 ## <a id="reg-budget"></a>4. `consumer_reg_budget` — a MEASURED kernel fact, not an architecture fact and not a threshold
 
 ```
-consumer_reg_budget(BC, decay, DV, D) = (BC >= 64 || decay || D >= 4) ? 80 : 64
+consumer_reg_budget(BC, decay, DV, D, GT) =
+  GT > kGroupTokens ? 112 : (BC >= 64 || decay || D >= 4) ? 80 : 64
 ```
 
 This is the register working set `ptxas` reports for the kernel's GEMM inner loop
 when it is given slack, keyed on the axes the working set MEASURABLY varies with
-— `BC`, `DECAY` and `D` — with every number read off `-Xptxas -v` and the MAXIMUM per
-key taken, because a too-small budget is bought back by SPILLING (the conservative
-direction is well defined: over-stating a budget only understates the residency the
-register file admits, under-stating it makes the allocator spill to buy the
-difference). `DV` does NOT key it — the parameter is accepted and ignored
+— `BC`, `DECAY`, `D` and now `GT` — with every number read off `-Xptxas -v` and the
+MAXIMUM per key taken, because a too-small budget is bought back by SPILLING (the
+conservative direction is well defined: over-stating a budget only understates the
+residency the register file admits, under-stating it makes the allocator spill to buy
+the difference). `DV` does NOT key it — the parameter is accepted and ignored
 (`(void)DV;`), stated explicitly rather than silently dropped, because the working
 set the atom walk touches per visit does not scale with the value width the way it
 once did under the deleted `NM`/row-block axis: every group is one `m16` row block
 now, so there is no second row-block term to key on.
+
+`GT` KEYS FIRST AND UNCONDITIONALLY, at 112: the window carries `ceil(W * DV/8 /
+kWarps)` readout fragments and `ceil(W / kWarps)` mass fragments live across the Gram
+phase — fp32 residency the `GT == kGroupTokens` visit does not have — plus the fold's
+accumulator resident across `W` staged groups. Measured over all 32 window arms:
+87..117 registers on `sm_86` (113 max on `sm_80`), zero spill; `112` is the fixed
+budget the residency arithmetic uses for the key, a margin under the true measured
+maximum rather than equal to it — the arithmetic only needs to still admit the CTA
+count `BC = 16` keeps at 117 registers, and it does (`117 * 256 threads * 2 CTAs =
+59,904 < 65,536`). At `BC = 64` the window is SMEM-bound at one CTA/SM regardless
+of the register budget; at `BC = 16` this budget is what keeps two CTAs/SM.
 
 `BC >= 64` takes the wide budget unconditionally (the `BC = 64` arms are shared-memory
 bound at every occupancy the register term could buy, so a slack budget costs
@@ -132,13 +231,13 @@ on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_
 every one is the formula evaluated:
 
 ```
-BC=16, DV=32, D=1, DECAY=false   smem = 6,528 B   reg_budget = 64
+BC=16, DV=32, D=1, DECAY=false, GT=16   smem = 6,528 B   reg_budget = 64
   by_smem    = 102400 / (6528 + 1024)  = 13
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 64)      = 4
   ctas_for_residency = min(13, 6, 4) = 4
 
-BC=64, DV=64, D=2, DECAY=true    smem = 30,016 B  reg_budget = 80
+BC=64, DV=64, D=2, DECAY=true, GT=16    smem = 30,016 B  reg_budget = 80
   by_smem    = 102400 / (30016 + 1024) = 3
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 80)      = 3
@@ -169,20 +268,23 @@ formula.
 
 ## <a id="smem-ledger"></a>10. The ledger — `consumer_smem_bytes`, term by term
 
-Every term of `consumer_smem_bytes<BC, DV, D, DECAY>()`, in carve order (the kernel
-body's pointer arithmetic follows this exact sequence):
+Every term of `consumer_smem_bytes<BC, DV, D, DECAY, GT>()`, in carve order (the
+kernel body's pointer arithmetic follows this exact sequence). `W = window_groups(GT)`
+is the window's group count; every region marked "PER SLOT" is `W` independent slots
+of the group's own shape ([`#window`](#window)), and `Gm` is the one exception — a
+single buffer at the WINDOW's extent:
 
 | region | extent | bytes | what it is |
 |---|---|---|---|
 | `S` | `[BC][DV+4]` fp32 | `BC*(DV+4)*4` | the STATE, resident for the owner's whole run. Pitch `SP = DV+4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)) |
 | `dig` | `[D][BC]` int | `D*BC*4` | per-owner hoisted leaf digits ([`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
-| `WT` | `[BC][kWtPitch]` bf16, `align4` | `align4(BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGT+8 = 24` ([below](#stage-format)) |
-| `Vw` ∪ `clk` | the union, `align4` | `vw_union_bytes<BC,DV,DECAY>()` | the scale-folded value tile; on `DECAY` ALIASES the clock prefix ([below](#vw-clk-union)) |
-| `Rf` | `frag_a_words(BC)` u32 | `(BC/16)*128*4` | read coefficients, MMA-FRAGMENT ORDERED ([below](#frag-order)) |
-| `Gm` | `[kGT][kGT+8]` bf16 | `16*24*2 = 768` | the causal effective-score block, pitch `GMP = kGT+8 = 24` — an `ldmatrix` SOURCE (GEMM 3's A and the intra mass term's), so its base carries the same 16-byte alignment `WT`/`Vw` do |
+| `WT` | `W` slots of `[BC][kWtPitch]` bf16, `align4` | `align4(W*BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGroupTokens+8 = 24` ([below](#stage-format)) |
+| `Vw` ∪ `clk` | the union, `align4` | `vw_union_bytes<BC,DV,D,DECAY,GT>()` | `W` slots of the scale-folded value tile; on `DECAY` ALIASES the WINDOW's clock prefix ([below](#vw-clk-union)) |
+| `Rf` | `W` slots of `frag_a_words(BC)` u32 | `W*(BC/16)*128*4` | read coefficients, MMA-FRAGMENT ORDERED, per slot ([below](#frag-order)) |
+| `Gm` | `[GT][GT+8]` bf16, ONE buffer | `GT*(GT+8)*2` | the WINDOW Gram, pitch `GMP = GT+8` — an `ldmatrix` SOURCE (GEMM 3's A and the intra mass term's), so its base carries the same 16-byte alignment `WT`/`Vw` do. Only the block lower triangle is written or read ([`#window`](#window)) |
 | `log_keep`, `p_ref`, `s0` | `3 * [BC]` fp32, `DECAY` only | `DECAY ? 3*BC*4 : 0` | `DECAY`'s three per-leaf vectors |
-| `g_ring` | `kSchedSlots * kSchedSlotInts` int | `kSchedSlots*(kGT+4)*4` | the [cooked schedule ring](#sched-ring): `kSchedSlots` group descriptors, each the group's `kGT` ascending token indices plus `gN`/read-mask/write-mask/flags |
-| `g_up` | `kSchedSlots * 2 * kGT` fp32 | `kSchedSlots*2*16*4` | the ring's per-owner [upper-product](consumer_kernel.md#upper-product) pairs — `sr`/`sw`, cooked beside the member word |
+| `g_ring` | `sched_slots(GT) * kSchedSlotInts` int | `sched_slots(GT)*(kGroupTokens+4)*4` | the [cooked schedule ring](#sched-ring): `sched_slots(GT) = W*(kSchedDepth+1)` group descriptors, each ONE GROUP's `kGroupTokens` ascending token indices plus `gN`/read-mask/write-mask/flags |
+| `g_up` | `sched_slots(GT) * 2 * kGroupTokens` fp32 | `sched_slots(GT)*2*16*4` | the ring's per-owner [upper-product](consumer_kernel.md#upper-product) pairs — `sr`/`sw`, cooked beside the member word |
 | producer cursor state | `(8 + 5*32)` int | `168*4 = 672` | the [producer's cursor](consumer_kernel.md#producer-state) (7 uniform scalars, 1 pad) and its 5 32-lane cook planes — rests here between cooks so no scheduler state is register-live across the visit body |
 
 `cols = DV + 1` is unconditional (the mass column always exists — normalization is no
@@ -195,22 +297,26 @@ column's one extra live column within it.
 cross-checked against `consumer_smem_bytes` in Python):
 
 ```
-BC=16, DV=32, D=1, DECAY=false (kSchedDepth=1, kSchedSlots=2):
+BC=16, DV=32, D=1, DECAY=false, GT=16 (W=1, kSchedDepth=1, sched_slots=2):
   S=2304  dig=64  WT=768  Vw∪clk=1024
   Rf=512  Gm=768  decay-extra=0
   g_ring=160  g_up=256  producer-state=672
   total = 6,528 B  (~6.4 KiB)
 
-BC=64, DV=64, D=2, DECAY=true (kSchedDepth=1, kSchedSlots=2):
+BC=64, DV=64, D=2, DECAY=true, GT=16 (W=1, kSchedDepth=1, sched_slots=2):
   S=17408  dig=512  WT=3072  Vw∪clk=4352
   Rf=2048  Gm=768  decay-extra=768
   g_ring=160  g_up=256  producer-state=672
   total = 30,016 B  (~29.3 KiB)
 ```
 
-These are the same two shapes [the residency section](#residency) plugs into
+At `GT = 64` (`W = 4`) the same flagship shape's budget follows the closed forms in
+[`#window`](#window): `512 W^2 + 7840 W + 18592` (nodecay) and `512 W^2 + 10144 W +
+19360` (decay) bytes, landing at one CTA/SM.
+
+These are the same two `GT=16` shapes [the residency section](#residency) plugs into
 `ctas_for_residency`. No other shape's byte total is stated here; plug the formula
-above into `consumer_smem_bytes` for any other `(BC, DV, D, DECAY)` — that function,
+above into `consumer_smem_bytes` for any other `(BC, DV, D, DECAY, GT)` — that function,
 not this prose, is the authority a future carve change must agree with.
 
 ### <a id="mass-col"></a>The mass column is unconditional
@@ -230,16 +336,21 @@ Warp 0 (the [producer](consumer_kernel.md#producer)) is the ONLY warp that touch
 word per lane of the producer warp, `kSchedChunkWords == 32` — entirely in registers
 (the AND of the owner's fixed-level rows and the ballot that finds the chunk's live
 words), then ballots members into a group and publishes a COOKED GROUP DESCRIPTOR
-into `g_ring`, one of `kSchedSlots = kSchedDepth + 1` slots
-([`consumer_kernel.md#sched-ring`](consumer_kernel.md#sched-ring)). Every consumer
+into `g_ring`, one of `sched_slots(GT) = window_groups(GT) * (kSchedDepth + 1)` slots
+([`consumer_kernel.md#sched-ring`](consumer_kernel.md#sched-ring)) — a WHOLE WINDOW of
+run-ahead, because a visit reads `window_groups(GT)` descriptors at once and the
+producer must still be cooking into slots nobody is reading. Every consumer
 warp reads a descriptor rather than deriving it: this SMEM block is bought by the
 consumption multiplicity that earns it, one writer against `n_atoms + 1` readers.
 
-`g_ring[slot]` is `kSchedSlotInts = kGT + 4` ints: the group's `kGT` gathered token
-indices ascending, then `gN` (member count, `0` = stream end), the read atom mask, the
-write atom mask, and the side flags. `g_up[slot]` is the matching pair of `kGT`-float
+`g_ring[slot]` is `kSchedSlotInts = kGroupTokens + 4` ints, ONE GROUP per slot: the
+group's `kGroupTokens` gathered token indices ascending, then `gN` (member count, `0` =
+stream end), the read atom mask, the write atom mask, and the side flags. `g_up[slot]`
+is the matching pair of `kGroupTokens`-float
 [upper products](consumer_kernel.md#upper-product), `sr` then `sw`, cooked in the same
-pass.
+pass. The ring stays group-shaped even though the visit spans a window — a window's
+slots are the `window_groups(GT)` CONTIGUOUS slots starting at its first, since
+`window_groups(GT)` divides `sched_slots(GT)` by construction.
 
 The producer's OWN cursor (word cursor, chunk base, live-word mask, selected word,
 remainder — 7 scalars, uniform across the producer warp) and its cook planes (5
@@ -255,15 +366,21 @@ of use inside the next cook, and the ring's publication rides the end-of-visit
 ## <a id="vw-clk-union"></a>11. The `Vw` / `clk` union, and why it is sized in BYTES rather than elements
 
 ```
-vw_union_bytes<BC,DV,DECAY>() = align4(max(vw_bytes, clk_bytes))
-  vw_bytes  = kGT * DV * sizeof(bf16)
-  clk_bytes = DECAY ? kGT * (BC+4) * sizeof(float) : 0
+vw_union_bytes<BC,DV,D,DECAY,GT>() = align4(max(vw_bytes, clk_bytes))
+  vw_bytes  = window_groups(GT) * kGroupTokens * DV * sizeof(bf16)   // W slots
+  clk_bytes = DECAY ? GT * (BC+4) * sizeof(float) : 0                // ONE window buffer
 ```
 
-`clk` (the visit's per-leaf inclusive clock prefix, `[kGT][BC+4]` fp32, token-major)
-is DEAD before `Vw` (the scale-folded value tile) is live within one visit — the clock
-prefix is fully consumed building `Rf` and `WT` before the value staging that fills
-`Vw` runs, and a `__syncthreads()` (HAZARD `clk-dead`,
+`Vw` is `W = window_groups(GT)` SLOTS of the group's own `kGroupTokens * DV` shape —
+one tenant of the union scales with the window like every other staged operand. `clk`
+(the visit's per-leaf inclusive clock prefix, `[GT][BC+4]` fp32, token-major) does NOT:
+it is ONE buffer over the whole window, because the clock prefix runs across the
+window's tokens — the reference frame the window shares — not per group
+([`#window`](#window)).
+
+`clk` is DEAD before `Vw` is live within one visit — the clock prefix is fully
+consumed building `Rf` and `WT` before the value staging that fills `Vw` runs, and a
+`__syncthreads()` (HAZARD `clk-dead`,
 [`consumer_kernel.md#clk-dead`](consumer_kernel.md#clk-dead)) marks the exact point
 past which `Vw` may overwrite `clk`'s bytes. So `clk` ALIASES `Vw`'s storage rather
 than getting its own region.
@@ -271,17 +388,17 @@ than getting its own region.
 **The max is over BYTES, and that is load-bearing** because the two tenants do not
 share an element size: `Vw` is bf16, `clk` is fp32, so an element-wise max would
 under-allocate by 2x, silently. `clk` is the larger tenant at every shipped `DECAY`
-shape (`kGT*(BC+4)*4` against `kGT*DV*2`; at `BC=64,DV=64` that is 4,352 against
-2,048), so on the decay arms narrowing `Vw` frees no shared memory at all — the
-reservation is the max, whatever the smaller tenant does. `Vw` is still ADDRESSED at
-its own layout; only the RESERVATION is the max.
+shape (`GT*(BC+4)*4` against `W*kGroupTokens*DV*2`; at `GT=16,BC=64,DV=64` that is
+4,352 against 2,048), so on the decay arms narrowing `Vw` frees no shared memory at
+all — the reservation is the max, whatever the smaller tenant does. `Vw` is still
+ADDRESSED at its own layout; only the RESERVATION is the max.
 
 `clk` is declared AT THE CARVE (`float* clk = reinterpret_cast<float*>(carve);`)
 rather than assigned from `Vw` later, because the two element types make that
 assignment not type-check — the alias is the load-bearing fact, stated where the
 pointer is born. The kernel body carries a `static_assert` pinning
-`kGT * CKP * sizeof(float) <= vw_union_bytes<BC,DV,DECAY>()` so the sizing is checked
-against the actual use, never assumed to agree.
+`GT * CKP * sizeof(float) <= vw_union_bytes<BC,DV,D,DECAY,GT>()` so the sizing is
+checked against the actual use, never assumed to agree.
 
 ## <a id="bank-predicates"></a>12. The bank-conflict proofs, as compile-time predicates rather than comments
 
@@ -375,8 +492,8 @@ GEMM 4 (fold), WT as A    A[m*lda + k]    m = leaf per g,         k = token step
 ```
 
 Enumerated over `pad in {4, 8, 12, 16}`, **`kWtPitch = kGroupTokens + 8 = 24` is the
-UNIQUE pad that passes both** — pinned by `pitched_ldsm_banks_ok<kMmaKQuantum, kGT,
-kWtPitch>()` (the `ldmatrix` phase, including the 16-byte alignment `WT`'s row bytes
+UNIQUE pad that passes both** — pinned by `pitched_ldsm_banks_ok<kMmaKQuantum,
+kGroupTokens, kWtPitch>()` (the `ldmatrix` phase, including the 16-byte alignment `WT`'s row bytes
 give: `kWtPitch * 2 = 48`, a multiple of 16) and by the two `static_assert`s in the
 kernel body pinning `WT`'s two scalar-fragment-map readings
 ([`consumer_kernel.md#pitches`](consumer_kernel.md#pitches)).

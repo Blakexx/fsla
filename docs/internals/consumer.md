@@ -465,18 +465,44 @@ fallback and is deliberately a plan field, not a hidden default.
 ## <a id="instantiation-matrix"></a>B8. The instantiation matrix, and why every axis is a template
 
 ```
-BC(2) x DV(2) x D(4) x DECAY(2)  =  32 arms
+BC(2) x DV(2) x D(4) x DECAY(2) x GT(2)  =  64 arms
 ```
 
-`consumer_forward_kernel<BC, DV, D, DECAY>`: `BC` in `{16, 64}`, `DV` in
+`consumer_forward_kernel<BC, DV, D, DECAY, GT>`: `BC` in `{16, 64}`, `DV` in
 `{32, 64}`, `D` in `{1, 2, 3, 4}` (spec §1: `1 <= D <= 4`), `DECAY` in
-`{false, true}`. There is no `BT` axis, no `PREC` axis and no `GLOBAL` axis —
-those three were the plan surface's precision, tiling and normalization
+`{false, true}`, `GT` in `{16, 64}` — the WINDOW, the consumer's token quantum:
+how many gathered tokens one VISIT stages and consumes against one entry state
+before folding back. `GT = 16` is one producer group per visit (`W = 1`); `GT =
+64` is four (`W = 4`), amortising every per-visit term `W`-fold against a Gram
+that grows quadratically in `W` ([`smem_layout.md#window`](smem_layout.md#window)).
+`128` is not instantiated — the Gram term does not fit `sm_86`'s opt-in SMEM
+at the flagship shape. There is no `BT` axis, no `PREC` axis and no `GLOBAL`
+axis — those three were the plan surface's precision, tiling and normalization
 knobs and are dead; the mass column and the `num`/`den` divide are
 unconditional now (`cols = DV + 1` always), and the amplitude/value storage
 dtype is a function of level role, not a template choice ([A6](#amp-dtype)).
 Why they died, and the ratchet evidence: `DELETIONS.md`; the axes that
 remain are the ones `tools/gen_shards.py`'s own header names as the survivors.
+
+`GT` is a PLANNER-SELECTED axis rather than a shape-derived one: the other four
+axes come from the routing's structural shape (topology, dtype, decay), but the
+window is chosen widest-first over `CONSUMER_WINDOWS` by
+`rola.planner.schedule.select_window`, which runs its refusals CHEAPEST-FIRST
+because it sits on the launch path beside kernels that take a fifth of a
+millisecond: the device's SMEM grant (a cached driver fact), then RESIDENCY — a
+wider window is admitted only where it costs NO CTA per SM against the group
+quantum — then, on the decay arm, `panel_exponent_bound`'s window-scaled
+admission bound, then last the routing's member-fill statistic
+(`union_member_median`, the one refusal that costs a device-side sweep of the
+slice-union bitmap, memoized on the schedule so it is paid at most once).
+MEASURED on `sm_86`, the residency refusal is TOTAL: `select_window` returns
+the group quantum on every arm this batch measured, because widening `GT`
+costs CTA residency (`BC = 16`, 4 -> 2 CTAs; `BC = 64`, 3 -> 1) and the loss
+tracks the residency given up, not the window's own extra arithmetic — the
+kernel's panel builds gather amplitudes straight from global memory,
+unprefetched, so warps are still what hides that latency. The rule is
+ARCH-GENERAL, not a pin to this box: `architecture/planner.md#7` states it and
+its evidence.
 
 Each remaining axis is a STRUCTURAL plan fact, fixed before launch, with few
 legal values — the standing "branch on structure, not thresholds" rule
@@ -495,14 +521,17 @@ closure and compares; see [`docs/ratification.md`](../ratification.md). A prose
 count in a source comment is a number that rots the first time an axis moves —
 `gen_shards.py`'s `AXES` tuple is the one place the count is defined.
 
-### The 32 arms are compiled in four shards, not one translation unit
+### The 64 arms are compiled in eight shards, not one translation unit
 
-The instantiations do not live in this file. They live in four generated
+The instantiations do not live in this file. They live in eight generated
 translation units under `csrc/rola/src/instantiations/` —
-`consumer_decay_bc16`, `consumer_decay_bc64`, `consumer_nodecay_bc16`,
-`consumer_nodecay_bc64`, eight members each — partitioned on `DECAY` then `BC`
-(`tools/gen_shards.py`'s `SHARD_AXIS_PRIORITY`, the shortest prefix of which
-reaches `TARGET_MEMBERS_PER_SHARD = 8`), and `consumer.cu` reaches them through
+`consumer_gt16_decay_bc16`, `consumer_gt16_decay_bc64`,
+`consumer_gt16_nodecay_bc16`, `consumer_gt16_nodecay_bc64`,
+`consumer_gt64_decay_bc16`, `consumer_gt64_decay_bc64`,
+`consumer_gt64_nodecay_bc16`, `consumer_gt64_nodecay_bc64`, eight members each
+— partitioned on `GT` then `DECAY` then `BC` (`tools/gen_shards.py`'s
+`SHARD_AXIS_PRIORITY`, the shortest prefix of which reaches
+`TARGET_MEMBERS_PER_SHARD = 8`), and `consumer.cu` reaches them through
 host wrappers it can DECLARE but not define
 ([`consumer_launch.md`](consumer_launch.md#shard-only)).
 
@@ -512,7 +541,7 @@ nothing would be sharded; that is what `tools/fatbin_entries.py` refuses.
 
 ## <a id="shard-rows"></a>B9. One table, and why the matrix is enumerated once
 
-Four hand-maintained spellings of one 32-element set — a dispatch ladder, a
+Four hand-maintained spellings of one 64-element set — a dispatch ladder, a
 residency ladder, a footprint ladder and a probe translation unit — is a shape that
 drifts without anything failing. It is REFUSED here.
 
@@ -521,7 +550,7 @@ generated from it:
 
 | consumer | what it gets |
 |---|---|
-| the four shard translation units | 8 explicit instantiations each |
+| the eight shard translation units | 8 explicit instantiations each |
 | `instantiations/dispatch_table.inc` | the row blocks, the axis key and the row index |
 | `tools/ratify.py` | the translation units to compile, and the manifest's `shards` block |
 
@@ -531,11 +560,11 @@ pair that identifies where it came from, `shard` and `src_key`.
 
 **EVERY RESOLUTION IN THE DISPATCH TRANSLATION UNIT IS ONE LOOKUP.** `dispatch_key`
 turns a [choice](#dispatch-choice) into a mixed-radix index over the axes' VALUE
-POSITIONS, in declaration order (`BC`, `DV`, `D`, `DECAY`), and `kRowByKey` turns that
-index into a row:
+POSITIONS, in declaration order (`BC`, `DV`, `D`, `DECAY`, `GT`), and `kRowByKey` turns
+that index into a row:
 
 ```
-key = ((iBC * 2 + iDV) * 4 + iD) * 2 + iDECAY
+key = (((iBC * 2 + iDV) * 4 + iD) * 2 + iDECAY) * 2 + iGT
 row = kRowByKey[key]            // nullptr if the binary has no such arm
 ```
 
@@ -570,9 +599,10 @@ symbol, and the post-link gate names its tuple three ways.
 
 ## <a id="dispatch-choice"></a>B9.1. What the table consumes: a CHOICE
 
-`DispatchChoice{BC, DV, D, decay}` is one value per matrix axis and nothing else — no
-statistics, no thresholds, no device facts. Something upstream DECIDES (`derive_bc`'s
-closed form, a test, a debug pin) and the table RESOLVES.
+`DispatchChoice{BC, DV, D, decay, GT}` is one value per matrix axis and nothing else —
+no statistics, no thresholds, no device facts. Something upstream DECIDES (`derive_bc`'s
+closed form for `BC`/`DV`/`D`/`decay`, `select_window` for `GT`, a test, a debug pin)
+and the table RESOLVES.
 
 The separation is the point rather than a tidiness: `derive_bc`
 (`rola/planner/derive.py`) reads the table's own arm carve as one of its three
@@ -633,7 +663,7 @@ binary does not define.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
-`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC` and `DV`
+`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC`, `DV` and `GT`
 because a single reported number would over-promise on one arm and under-report
 another. The whole point of deriving `__launch_bounds__` from
 `consumer_smem_bytes` is that a decay instantiation which regressed the budget
@@ -645,11 +675,12 @@ Why each axis is on the query:
 | axis | what it moves |
 |---|---|
 | `DECAY` | three extra `[BC]` vectors |
-| `BC` | which term BINDS: at `BC = 64` shared memory binds (3 CTAs), at `BC = 16` the REGISTER FILE does (4) |
+| `BC` | which term BINDS: at `BC = 64` shared memory binds, at `BC = 16` the REGISTER FILE does |
 | `DV` | `DV = 32` halves the state block |
+| `GT` | the window Gram is quadratic in `GT`: `GT = 64` costs residency directly — `BC = 64, GT = 64` runs at ONE CTA/SM (SMEM-bound), `BC = 16, GT = 64` keeps two |
 
-A residency claim about "the kernel" that quoted only one `(BC, DV)` pair would
-be a claim about a quarter of the matrix.
+A residency claim about "the kernel" that quoted only one `(BC, DV, GT)` triple
+would be a claim about an eighth of the matrix.
 
 `D` is NOT a query axis: it changes only the `[D][BC]` digit table (256 B per
 level), and the query is fixed at `D = 2` (`kQueryD` in `consumer.cu`), the
@@ -659,17 +690,19 @@ measured rather than for a nominal worst case.
 Both queries resolve a `ShardRow` (B9) and read one field of it —
 `occupancy()` calls the driver through the shard's wrapper, because post-shard the
 kernel ADDRESS lives in the shard; `smem_bytes` is a `constexpr` the shard computed
-at compile time. The wrapper is instantiated for all 32 arms rather than the 4
+at compile time. The wrapper is instantiated for all 64 arms rather than the 8
 queried, which is why adding a query axis needs no matching change in the shards
 ([`consumer_launch.md`](consumer_launch.md#residency)).
 
 ## <a id="plan-surface"></a>B11. The supported shape surface
 
-`BC in {16, 64}`, `DV in {32, 64}` — and these are the planner's own supported
-sets, so the kernel instantiates exactly the configurations a plan can name:
-**no shape a plan can select is refused, and no shape it cannot select is
-compiled.** `launch_consumer`'s `TORCH_CHECK` is the single authority for that
-surface; `p.D` is checked separately against `[1, 4]`.
+`BC in {16, 64}`, `DV in {32, 64}`, `GT in {16, 64}` — and these are the
+planner's own supported sets (`GT`'s via `CONSUMER_WINDOWS` and `select_window`,
+[`smem_layout.md#window`](smem_layout.md#window)), so the kernel instantiates
+exactly the configurations a plan can name: **no shape a plan can select is
+refused, and no shape it cannot select is compiled.** `launch_consumer`'s
+`TORCH_CHECK` is the single authority for that surface; `p.D` is checked
+separately against `[1, 4]`.
 
 ## <a id="state-derivation"></a>B12. Under paging, `N` is derived rather than read
 

@@ -71,11 +71,13 @@ host partition that filled `work_seg` / `work_nseg`.
 ## <a id="scalar-plan-args"></a>4. The scalar plan arguments are the compile-time axes, passed by value
 
 `BC` arrives as an ordinary argument and is dispatched inside `consumer.cu`,
-alongside `p.D` (the length of the `amp_read` vector) and `decay` (`=
-dials.has_value()`), to a template instantiation `consumer_forward_kernel<BC, DV,
-D, DECAY>`. `DV` is read off `v`'s last dimension, never passed explicitly. All
-four are PLAN-TIME axes, not runtime branches: the plan chooses one instantiation
-and the kernel body branches on none of them.
+alongside `p.D` (the length of the `amp_read` vector), `decay` (`=
+dials.has_value()`), and `group_tokens` (the window's token quantum, `16` or
+`64` — the plan's selected `GT`, `rola/planner/schedule.py:select_window`), to a
+template instantiation `consumer_forward_kernel<BC, DV, D, DECAY, GT>`. `DV` is
+read off `v`'s last dimension, never passed explicitly. All five are PLAN-TIME
+axes, not runtime branches: the plan chooses one instantiation and the kernel
+body branches on none of them.
 
 There is no `BT` argument and no `global_norm` or `mma_precision` argument. The
 `BT` axis is dead — the executor's work unit is always a full group of

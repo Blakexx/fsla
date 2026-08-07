@@ -237,7 +237,7 @@ void rola_consumer_check_arch_table() {
 }
 
 // THE LAUNCH DISPATCH. Declared restrictions are hard checks, never coercions.
-void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay) {
+void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay, int GT) {
   //: Checked ONCE per process, on the first launch rather than at import (a CUDA
   //: context as a side effect of `import` is worse than the check is worth), and
   //: nothing can reach a launch bound without passing through here.
@@ -254,19 +254,23 @@ void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay) {
               " d_v=", DV);
 
   TORCH_CHECK(p.D >= 1 && p.D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", p.D);
+  //: THE WINDOW IS A PLAN FACT WITH A CLOSED SET, checked here like every other axis:
+  //: an unsupported width is a REFUSAL, never a coercion to a neighbour.
+  TORCH_CHECK(GT == 16 || GT == 64,
+              "the consumer instantiates a window of 16 or 64 tokens; got group_tokens=", GT);
 
   //: THE INSTANTIATION MATRIX. Every axis is a template because every axis is a
   //: STRUCTURAL plan fact with few legal values -- the standing "branch on structure,
   //: not thresholds" rule -- and there is deliberately NO runtime fallback on any of
   //: them: an out-of-range value is a hard refusal, never a slower path.
   //: docs/internals/consumer.md#instantiation-matrix
-  const DispatchChoice choice{BC, DV, p.D, decay};
+  const DispatchChoice choice{BC, DV, p.D, decay, GT};
   const ShardRow* row = dispatch_row(choice);
   //: A KEY THIS BINARY HAS NO ARM FOR RESOLVES TO NOTHING, and nothing is what is
   //: launched. The checks above already admit only the matrix's own closure, so a null
   //: here means the generator and the checks disagree -- a defect to fail on.
   TORCH_CHECK(row != nullptr, "no consumer instantiation for BC=", BC, " d_v=", DV, " D=", p.D,
-              " decay=", decay);
+              " decay=", decay, " group_tokens=", GT);
   //: THE ROW'S ENABLE PREDICATE, ON A DEVICE INPUT. Its footprint is `constexpr`; what
   //: this device grants a block is not. Refusing here names both numbers, where the
   //: opt-in would otherwise fail inside the launcher and surface as a bare CUDA error.
@@ -289,11 +293,13 @@ namespace {
 //: topology depth (`D` moves only the `[D][BC]` digit table).
 constexpr int kQueryD = 2;
 
-const ShardRow& query_row(bool decay, int64_t BC, int64_t DV) {
-  const ShardRow* row =
-      dispatch_row(DispatchChoice{static_cast<int>(BC), static_cast<int>(DV), kQueryD, decay});
+const ShardRow& query_row(bool decay, int64_t BC, int64_t DV, int64_t GT) {
+  const ShardRow* row = dispatch_row(DispatchChoice{static_cast<int>(BC), static_cast<int>(DV),
+                                                    kQueryD, decay, static_cast<int>(GT)});
   TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BC=", BC, " d_v=", DV,
-              ": the matrix carries BC in {16, 64} and d_v in {32, 64}");
+              " group_tokens=", GT,
+              ": the matrix carries BC in {16, 64}, d_v in {32, 64} and a window of "
+              "16 or 64 tokens");
   return *row;
 }
 
@@ -302,8 +308,8 @@ const ShardRow& query_row(bool decay, int64_t BC, int64_t DV) {
 //: The consumer's residency answer, from the DRIVER. It takes four axes because
 //: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
 //: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
-int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV) {
-  const int blocks = query_row(decay, BC, DV).occupancy();
+int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t GT) {
+  const int blocks = query_row(decay, BC, DV, GT).occupancy();
   //: The shard's query is torch-free and reports through the CUDA runtime's error
   //: state; this is where it becomes a Python exception.
   C10_CUDA_CHECK(cudaGetLastError());
@@ -318,14 +324,14 @@ int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV) {
 //: which is what makes "the table and the binary carry the same arms" a checked
 //: statement rather than a property of one generator.
 //: docs/internals/consumer.md#table-census
-std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, std::string, std::string>>
+std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>>
 rola_dispatch_table() {
-  std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, std::string, std::string>> out;
+  std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>> out;
   for (const ShardRowBlock& block : kShardRowBlocks) {
     for (int i = 0; i < block.count; ++i) {
       const ShardRow& row = block.rows[i];
-      out.emplace_back(row.BC, row.DV, row.D, row.decay, static_cast<int64_t>(row.smem_bytes),
-                       row.shard, row.src_key);
+      out.emplace_back(row.BC, row.DV, row.D, row.decay, static_cast<int64_t>(row.GT),
+                       static_cast<int64_t>(row.smem_bytes), row.shard, row.src_key);
     }
   }
   return out;
@@ -337,8 +343,8 @@ int64_t rola_max_dynamic_smem_bytes() {
   return static_cast<int64_t>(device_facts().max_dynamic_smem_bytes);
 }
 
-int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV) {
-  return static_cast<int64_t>(query_row(decay, BC, DV).smem_bytes);
+int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t GT) {
+  return static_cast<int64_t>(query_row(decay, BC, DV, GT).smem_bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +396,10 @@ std::vector<at::Tensor> rola_consumer_forward(
     std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
     std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
     std::vector<int64_t> owner_stride, int64_t first_spanned_level, int64_t slice_digits,
-    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BC, double eps,
+    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BC,
+    //: THE WINDOW, in tokens -- the consumer's token quantum, chosen by the
+    //: PLANNER from the realized routing (`rola.planner.schedule.select_window`).
+    int64_t group_tokens, double eps,
     // ---- §6.4 sequence parallelism. ALL-OR-NOTHING (14 arguments or none; `P = 1`
     // is the primary configuration): docs/internals/consumer.md#all-or-nothing
     c10::optional<at::Tensor> work_seg,        // [n_owners] int32, keyed like `owners`
@@ -569,7 +578,8 @@ std::vector<at::Tensor> rola_consumer_forward(
   //: ONE dispatch point for every consumer launch this call makes, so a pass cannot
   //: pick a different kernel from the one its siblings picked. `P` is a WORK-LIST
   //: SHAPE, not a kernel.
-  auto launch_pass = [&](ConsumerParams& pp) { launch_consumer(pp, BC_i, DV_i, decay); };
+  const int GT_i = static_cast<int>(group_tokens);
+  auto launch_pass = [&](ConsumerParams& pp) { launch_consumer(pp, BC_i, DV_i, decay, GT_i); };
   if (split) {
     auto i32 = [](const at::Tensor& t, const char* name, int64_t rows) {
       TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt, name,

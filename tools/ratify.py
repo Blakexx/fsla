@@ -336,12 +336,12 @@ REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
 #: The consumer kernel's mangled template arguments, in declaration order:
-#: `<int BC, int DV, int D, bool DECAY>` (the endgame matrix -- BT, PREC and
-#: GLOBAL are dead). The mangled name is the manifest key, so this is the ONE
-#: place a key is turned back into a shape; the census's per-key grouping and
-#: the hot-loop gate's reporting both go through it.
+#: `<int BC, int DV, int D, bool DECAY, int GT>` (the endgame matrix plus the
+#: window -- BT, PREC and GLOBAL are dead). The mangled name is the manifest key,
+#: so this is the ONE place a key is turned back into a shape; the census's
+#: per-key grouping and the hot-loop gate's reporting both go through it.
 CONSUMER_TPL = re.compile(
-    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
+    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)ELi(\d+)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -350,7 +350,7 @@ def parse_shape(mangled: str) -> dict | None:
     if not m:
         return None
     return dict(BC=int(m.group(1)), DV=int(m.group(2)), D=int(m.group(3)),
-                decay=m.group(4) == "1")
+                decay=m.group(4) == "1", GT=int(m.group(5)))
 
 
 def shard_of_key(mangled: str) -> str:
@@ -368,8 +368,8 @@ def shard_of_key(mangled: str) -> str:
             if f"_{Path(tu).stem}_cu_" in mangled:
                 return Path(tu).stem
         return "?"
-    return gen_shards.shard_of(dict(BC=shape["BC"], DV=shape["DV"],
-                                    D=shape["D"], DECAY=shape["decay"]))
+    return gen_shards.shard_of(dict(BC=shape["BC"], DV=shape["DV"], D=shape["D"],
+                                    DECAY=shape["decay"], GT=shape["GT"]))
 
 
 def shard_field(entries: dict) -> dict[str, str]:
