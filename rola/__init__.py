@@ -22,7 +22,7 @@ gateway, whose list of producers is the feature map:
 **No public name says `v3`.** This repository IS that generation; encoding it in the
 API would force a break at the next one for a reason that is not an API reason.
 
-**What is deliberately NOT here.** Plans, schedules, cost models, tilings, numeric arms,
+**What is deliberately NOT here.** Plans, schedules, launch geometry, numeric arms,
 allocator caps -- every one of them is how the op RUNS rather than what the model IS,
 and the op decides how it runs. They live in :mod:`rola.expert`, which is a marked door
 and not part of the contract.

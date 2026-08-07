@@ -251,8 +251,9 @@ library reads them, which is why they are derived on demand and not before.
 
 ## 6. The expert surface
 
-`rola.expert` holds everything BELOW the contract line — plans, schedules, cost models,
-the seam the op is split at, the allocator cap, the numeric arm:
+`rola.expert` holds everything BELOW the contract line — plans, schedules, the
+derivation that fixes their geometry, the seam the op is split at, the allocator cap,
+the numeric arm:
 
 ```python
 from rola.expert import PlanOverrides

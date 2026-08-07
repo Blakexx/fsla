@@ -267,13 +267,13 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
     must match an unpaged layer driven through the IDENTICAL forced flip within
     the readout's own reordering envelope.
 
-    Old `rola.layers.rola.DEFAULT_SELECTOR` -> `rola.interface.DEFAULT_SELECTOR`:
-    the selection seam moved into `rola.interface._derive_plan`, which both the
-    plain (`rola_op`) and paged (`derive_plan`) arms now share, so patching it
-    there reaches both -- the layer module no longer imports a selector at all.
+    There is no selector seam any more: `BC` is derived by
+    `rola.planner.derive.derive_bc`, called from `rola.interface._derive_plan`, which
+    both the plain (`rola_op`) and paged (`derive_plan`) arms share. Forcing a
+    per-call scripted `BC` therefore means patching `derive_bc` at the name
+    `rola.interface` imported it under, which reaches both arms the same way the old
+    selector patch did.
     """
-    import dataclasses
-
     import rola.interface as interface_module
     from rola.state import RoLAState
 
@@ -282,25 +282,15 @@ def test_a_BC_flip_over_a_live_arena_is_invisible(monkeypatch):
     script = [16, 64]
     calls = {"i": 0}
 
-    #: THE FORCING GOES THROUGH THE SELECTOR SEAM, not around it: a `Selector` is
-    #: exactly the object whose job is to decide, so a test that wants a scripted
-    #: decision installs one. It wraps the shipped selector rather than replacing it,
-    #: because what this row is about is the `BC` flip and everything else about the
-    #: plan should stay the plan the model would have produced.
-    class ScriptedBC:
-        name, status = "scripted-BC", "DEBUG"
+    #: THE FORCING GOES THROUGH THE DERIVATION ITSELF: `derive_bc` is exactly the
+    #: function whose job is to pick `BC`, so a test that wants a scripted decision
+    #: replaces it outright rather than reaching around it.
+    def scripted_derive_bc(topology, machine, *, BH, decay, pinned=None):
+        forced = script[min(calls["i"], len(script) - 1)]
+        calls["i"] += 1
+        return forced
 
-        def __init__(self, inner):
-            self._inner = inner
-
-        def __call__(self, bundle):
-            choice, evidence = self._inner(bundle)
-            forced = script[min(calls["i"], len(script) - 1)]
-            calls["i"] += 1
-            return dataclasses.replace(choice, BC=forced), evidence
-
-    monkeypatch.setattr(
-        interface_module, "DEFAULT_SELECTOR", ScriptedBC(interface_module.DEFAULT_SELECTOR))
+    monkeypatch.setattr(interface_module, "derive_bc", scripted_derive_bc)
 
     unpaged = _layer(paging=False, seed=82)
     paged = _layer(paging=True, seed=82)

@@ -44,30 +44,12 @@ path does not implement it: a page table is REFUSED loudly rather than approxima
 so that decode's BC-blindness is a property of what it accepts and not of what a
 caller happens to pass.
 
-**THE CARRIER IS A CROSS-TRACK CONTRACT -- RECONCILED (merge phase, §8b items 4 and 6).**
-The two objects are NOT two names for one thing and neither absorbs the other:
-
-* :class:`rola.planner.select.FrozenConfig` is the **SELECTION** carrier and is
-  **CANONICAL**. It answers "what did the prefill -> decode boundary freeze?" and its
-  content is §4.3's ``ConfigChoice = (BC, BT, feeder_flags)``.
-* :class:`FrozenDecodeConfig` below is the **KERNEL-LAYOUT** carrier. It answers "what
-  shape is the launch?" -- widths, mixed-radix strides, spans, row offsets, word and
-  group counts, ``d_v``, the normalization and decay arms, ``eps``, ``n_split``. None of
-  that is a selected axis and none of it appears in ``ConfigChoice``.
-
-They overlap in EXACTLY ONE field, ``feeder_flags``, and the mapping is an identity
-rather than a translation: P packs bit ``2l`` = ``dense_read[l]`` and bit ``2l+1`` =
-``dense_write[l]`` (``FeederFlags.packed``), which is bit-for-bit the layout D's
-``freeze_decode_config`` derived from ``static_density``.
-``tests/unit/test_decode_capacity.py`` pins the two packings equal over a topology
-matrix, so a future edit to either layout is a test failure and not a silent drift.
-
-So **D consumes P's object**: pass ``frozen=`` and the flags come from the canonical
-carrier. ``static_density=`` remains for a caller that has no ``FrozenConfig`` (a cold
-decode with no prefill). Supplying both is refused rather than silently ordered.
-``BC`` and ``BT`` are deliberately NOT read: ``BC`` is not a field of the
-kernel-layout carrier at all (BC-blindness, gated), and at ``T = 1`` ``BT`` is
-structurally inert.
+**THE KERNEL-LAYOUT CARRIER.** :class:`FrozenDecodeConfig` answers "what shape is the
+launch?" -- widths, mixed-radix strides, spans, row offsets, word and group counts,
+``d_v``, the normalization and decay arms, ``eps``, ``n_split``. None of that is a
+derived axis. ``BC`` is deliberately NOT a field: owner blocking is a property of how
+the tiled consumer amortizes a ``[BC, cols]`` block across many tokens, and with one
+token there is nothing to amortize, so the decode kernels are BC-blind by construction.
 """
 
 from __future__ import annotations
@@ -123,11 +105,6 @@ class FrozenDecodeConfig:
     has_decay: bool
     eps: float
     n_split: int
-    #: §4.4, two bits per level. STATIC declarations only: at T = 1 the
-    #: detected-saturation trigger is structurally unavailable (a population of one),
-    #: and the kernel never branches on these — they size ``n_split`` on the host and
-    #: nothing else.
-    feeder_flags: int = 0
     #: The layer's numeric-format pin, carried across the boundary so the carrier can
     #: never silently disagree with the layer that froze it (coverage-closure H9: the
     #: field was missing and the pin was dropped at ``L == 1``). At ``T = 1`` there is
@@ -163,8 +140,6 @@ def freeze_decode_config(
     BH: int,
     device: torch.device | str,
     eps: float = READOUT_EPS,
-    frozen=None,
-    static_density: tuple[tuple[bool, bool], ...] | None = None,
     n_split: int | None = None,
     mma_precision: str,
 ) -> FrozenDecodeConfig:
@@ -175,14 +150,6 @@ def freeze_decode_config(
     beyond the realized touched-row count read one L2 word and exit; that
     over-launching is the price of never reading a device value back to the host, which
     is the one thing a decode step must not do.
-
-    ``frozen`` is :class:`rola.planner.select.FrozenConfig` -- the CANONICAL selection
-    carrier (§8b items 4 and 6). When supplied, ``feeder_flags`` is taken from it
-    (``frozen.choice.feeder_flags.packed()``) instead of being re-derived, so the
-    kernel-layout carrier and the selection carrier cannot disagree about the one field
-    they share. ``static_density`` is the no-``FrozenConfig`` path (a cold decode with
-    no prefill behind it). Passing BOTH is refused: two sources for one word is two
-    answers to one question, and ordering them silently is how a stale declaration wins.
     """
     if mma_precision != "bf16":
         raise ValueError(
@@ -201,35 +168,11 @@ def freeze_decode_config(
     n_words = (N + 31) // 32
     n_groups = (n_words + 31) // 32
 
-    if frozen is not None and static_density is not None:
-        raise ValueError(
-            "freeze_decode_config takes feeder_flags from the CANONICAL FrozenConfig "
-            "(frozen=) or from a static_density declaration, never both -- two sources "
-            "for one word is two answers to one question (§8b items 4 and 6)")
-
-    flags = 0
-    if frozen is not None:
-        # §8b item 4: P's FrozenConfig is canonical and this reads it by VALUE. The
-        # packed word is `FeederFlags.packed()` -- bit 2l = dense_read[l], bit 2l+1 =
-        # dense_write[l] -- which is bit-for-bit the layout the static_density branch
-        # below builds, and `tests/unit/test_decode_capacity.py` pins the two equal.
-        flags = int(frozen.choice.feeder_flags.packed())
-        packed_D = frozen.choice.feeder_flags.D
-        if packed_D != D:
-            raise ValueError(
-                f"the frozen config carries feeder flags for {packed_D} levels but this "
-                f"topology has {D}; the carrier was frozen against another topology")
-    elif static_density is not None:
-        if len(static_density) != D:
-            raise ValueError(f"static_density must have {D} entries, got {len(static_density)}")
-        for level, (dense_read, dense_write) in enumerate(static_density):
-            flags |= (1 if dense_read else 0) << (2 * level)
-            flags |= (1 if dense_write else 0) << (2 * level + 1)
-
     if n_split is None:
-        # M_ceiling: dense-declared levels contribute their full width; the rest
-        # contribute their width too, because the support EMA placeholder's
-        # conservative default is "dense" (more CTAs, never fewer).
+        # M_ceiling: every level contributes its full width. The realized touched-row
+        # count is a device fact and reading it back is the one thing a decode step must
+        # not do, so the split is sized for the whole row space -- more CTAs, never
+        # fewer.
         m_ceiling = N
         dev = torch.device(device)
         if dev.type == "cuda":
@@ -243,7 +186,7 @@ def freeze_decode_config(
         D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
         level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
         d_v=topology.d_v, has_decay=decay,
-        eps=eps, n_split=int(n_split), feeder_flags=flags,
+        eps=eps, n_split=int(n_split),
         mma_precision=mma_precision)
 
 

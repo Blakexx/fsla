@@ -15,19 +15,19 @@ how it runs.
 **The private seam.** Inside, the work splits in two:
 
 ``_derive_plan(routes, ...) -> Plan``
-    Choose the launch geometry. Everything it reads is already resident -- the
-    summaries the routing bundle carries, the topology, the device's own facts -- so it
-    is host-side arithmetic plus a plan assembly, not a pass over the tensors.
+    Derive the launch geometry. Everything it reads is launch-static -- the topology,
+    the cohort count, the device's own facts -- so it is host-side arithmetic over
+    :func:`~rola.planner.derive.derive_bc`'s three ceilings, never a pass over the
+    tensors.
 
 ``_execute(plan, routes, v, ...)``
     Build the §4 schedule from the realized masks and run the kernel.
 
-The seam is where the SELECTOR is swapped, and it is deliberately private: a caller
-choosing a cost model is not describing a model, and the reduction theorem is what the
-public surface is allowed to say. :mod:`rola.expert` is the quarantined door to it,
-and it is also what lets a conformance test drive ``_execute`` with a SYNTHETIC plan --
-a stale one, one straddling a boundary -- which is the adversarial handle a
-plan-derived-then-immediately-used pipeline would not have.
+The seam is deliberately private: how a launch is shaped is not a model fact, and the
+reduction theorem is what the public surface is allowed to say. :mod:`rola.expert` is
+the quarantined door to it, and it is also what lets a conformance test drive
+``_execute`` with a SYNTHETIC plan -- a stale one, one straddling a boundary -- which
+is the adversarial handle a plan-derived-then-immediately-used pipeline would not have.
 
 **Why the boundary sits here** (`[[layer-dispatch-autograd-gap]]`): a forward-only
 kernel reachable from a gradient-requiring context does not raise. It returns a
@@ -48,16 +48,8 @@ import torch
 
 from rola.ops.consumer import _consumer_forward, sm_shared_bytes
 from rola.ops.naive import naive_rola
-from rola.planner.schedule import Plan, build_schedule, consumer_occupancy
-from rola.planner.select import (
-    DEFAULT_SELECTOR,
-    GROUP_TOKENS,
-    HardwareFacts,
-    StaticPlanInputs,
-    StatisticsBundle,
-    feasible_bc,
-    select_with,
-)
+from rola.planner.derive import MachineFacts, derive_bc
+from rola.planner.schedule import Plan, build_plan, build_schedule
 
 if TYPE_CHECKING:
     from rola.planner.schedule import Schedule
@@ -66,10 +58,9 @@ if TYPE_CHECKING:
 
 __all__ = ["BackwardNotImplemented", "RoLAConsumer", "rola_op"]
 
-#: Tier-H facts, cached on the DEVICE they are facts about. Neither member can move
-#: within a process for a fixed device, and no routing statistic lives here, so this is
-#: not the per-step-selection staleness hazard a cached PLAN would be.
-_HARDWARE: dict[torch.device, HardwareFacts] = {}
+#: Tier-H facts, cached on the DEVICE they are facts about. No member can move within a
+#: process for a fixed device, and no routing statistic lives here.
+_MACHINE: dict[torch.device, MachineFacts] = {}
 
 
 class BackwardNotImplemented(NotImplementedError):
@@ -116,7 +107,7 @@ def rola_op(
 
     ``expert``: :class:`rola.expert.PlanOverrides`, the quarantined advanced surface.
     It is a keyword argument with a default of ``None`` because the op does not need
-    it: every axis it pins is one the planner selects.
+    it: every axis it pins is one the planner derives.
     """
     _validate_call(routes, v, decay)
     operands = (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
@@ -147,47 +138,29 @@ def _derive_plan(
     expert: Any = None,
     device: torch.device | None = None,
 ) -> Plan:
-    """Choose this launch's geometry from resident facts.
+    """Derive this launch's geometry from launch-static facts.
 
-    Three tiers, and the split is what keeps selection a pure function of its recorded
-    inputs rather than something that queries the machine ambiently: tier 0 is fixed at
-    construction (the topology, the feasible ``BC`` ladder, the declared density), tier
-    H is measured once per device, and the per-step tier is the summary the routing
-    bundle already carries.
-
-    **Selection is PER STEP and never cached per shape.** The statistics it prices are
-    exact over the REALIZED routing, so a cached plan prices a support distribution
-    that no longer exists the moment training moves it.
+    Two tiers, and the split is what keeps the derivation a pure function of recorded
+    inputs rather than something that queries the machine ambiently: the model facts
+    come off the routing bundle, and tier H is measured once per device.
+    :func:`~rola.planner.derive.derive_bc` closes the form over them.
     """
     from rola.expert import PlanOverrides
 
     overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
     device = routes.device if device is None else device
-    static = _static_inputs(routes, decay=decay, overrides=overrides)
-    hardware = _hardware_facts(device)
-    summaries = routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
-    selector = overrides.selector or DEFAULT_SELECTOR
-    choice, evidence = select_with(
-        selector, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
-    return Plan(
-        # THE MODEL FIELDS COME FROM TIER 0, not from a second path out of the caller.
-        # They used to be written into the plan from the layer while the planner was
-        # handed its own copy, which is how one boolean came to be computed twice by
-        # two different expressions.
-        topology=static.topology, normalization=static.normalization,
-        decay=static.decay, BC=choice.BC,
-        # The realized warp tile the consumer implements, stated rather than defaulted
-        # so the driver's check has something to check.
-        warp_tile=(1, max(1, static.d_v // 32)),
-        # Recorded beside the decision they drove: the plan carries the machine it
-        # reasoned about rather than depending on the one it is replayed on.
-        sm_shared_bytes=sm_shared_bytes(),
-        # A selector that WEIGHED nothing returns no evidence, and the plan must say so
-        # with the not-recorded value rather than with a plausible number: the residency
-        # field means "the residency this decision was reasoned at", and a fixed choice
-        # was not reasoned at one.
-        occupancy_blocks_per_sm=0 if evidence is None else evidence.blocks_per_sm,
-        selector_name=selector.name, selector_status=selector.status)
+    topology = routes.topology
+    # THE MODEL FIELDS COME OFF THE BUNDLE, not from a second path out of the caller:
+    # one boolean computed twice by two different expressions is how the `decay` flag
+    # once came to disagree with itself.
+    return build_plan(
+        topology,
+        derive_bc(topology, _machine_facts(device), BH=routes.batch * routes.heads,
+                  decay=decay is not None, pinned=overrides.state_block),
+        normalization=routes.normalization, decay=decay is not None,
+        # Recorded beside the geometry it bounded: the plan carries the machine it was
+        # derived for rather than depending on the one it is replayed on.
+        sm_shared_bytes=sm_shared_bytes())
 
 
 def _execute(
@@ -219,46 +192,18 @@ def _execute(
              continue_paging=continue_paging))
 
 
-def _static_inputs(routes: RouteFactors, *, decay: DecayConfig, overrides) -> StaticPlanInputs:
-    """Tier 0, assembled from the bundle's own construction-time facts."""
-    return _static_tier0(
-        routes.topology, routes.normalization, routes.density,
-        decay=decay is not None, BH=routes.batch * routes.heads, overrides=overrides)
+def _machine_facts(device) -> MachineFacts:
+    """Tier H: the SM count and the binary's own arm carve, measured once per device.
 
-
-def _static_tier0(topology, normalization, density, *, decay: bool, BH: int,
-                  overrides) -> StaticPlanInputs:
-    """Tier 0 from the model facts alone, for callers with no bundle in hand.
-
-    ``feasible_BC`` is the alignment-admissible set intersected with the instantiated
-    ladder; an expert pin SHRINKS that set to itself rather than bypassing the check,
-    which is what makes it a pin over a selected axis and not an escape from one.
-    """
-    pinned = overrides.state_block
-    feasible = (feasible_bc(topology.widths) if pinned is None
-                else feasible_bc(topology.widths, pinned=int(pinned)))
-    return StaticPlanInputs(
-        topology=topology, normalization=normalization, decay=bool(decay),
-        mma_precision="bf16", density=density,
-        feasible_BC=tuple(feasible), BH=int(BH),
-        pinned_BC=None if pinned is None else int(pinned))
-
-
-def _hardware_facts(device) -> HardwareFacts:
-    """Tier H: the driver's occupancy oracle and the SM count, measured once per device.
-
-    The occupancy oracle is ``cudaOccupancyMaxActiveBlocksPerMultiprocessor`` on the
-    real templated kernel at its real dynamic shared-memory size -- the sole authority
-    for physical facts. It enters selection as an INPUT and is recorded next to the
-    decision it drove.
+    Both are facts about the machine and the install, so they enter the derivation as
+    an INPUT and are cached on the device they describe -- never queried from inside
+    the formula, which is what keeps it replayable.
     """
     device = torch.device(device)
-    facts = _HARDWARE.get(device)
+    facts = _MACHINE.get(device)
     if facts is None:
-        facts = HardwareFacts(
-            sm_count=torch.cuda.get_device_properties(device).multi_processor_count,
-            occupancy=consumer_occupancy())
-        _HARDWARE[device] = facts
+        facts = MachineFacts.for_device(device)
+        _MACHINE[device] = facts
     return facts
 
 

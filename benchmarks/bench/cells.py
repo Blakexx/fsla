@@ -29,12 +29,7 @@ from pathlib import Path
 
 import torch
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from rola.planner.calibration.cost_model import tile_union_stats
+from rola.planner.calibration.union_stats import tile_union_stats
 from rola.planner.schedule import Plan, build_schedule, owner_geometry, unpack_bits
 from rola.routing.entmax.reference import entmax
 from rola.routing.types import EntmaxActivation, IndependentRouting, LevelConfig, SoftmaxActivation, Topology
@@ -357,21 +352,10 @@ class Cell:
         if self.is_producer and fx is not None:
             import dataclasses as _dc
 
-            from rola.planner.calibration.cost_model import plan_and_schedule  # G16
-            #: NO ORACLE IS INJECTED, and that is item 6b's point: the planner's
-            #: DEFAULT occupancy oracle is now the one kernel's own. This file used
-            #: to inject `consumer_occupancy()` because the default queried the OLD
-            #: consumer -- a different footprint (31680 B against 44672 at
-            #: `BT=16, BC=64, d_v=64`), reporting 2 CTAs/SM where the launched kernel
-            #: runs 3, the residency contradiction `rewrite.md` §2.33 recorded and
-            #: §2.34 resolved. With one kernel the injection would be a no-op that
-            #: hid whether the default was right.
-            kw = {}
-            if bt is not None:
-                kw["bt_candidates"] = (bt,)
-            plan, _axes, sched = plan_and_schedule(
+            from rola.planner.schedule import plan_and_schedule
+            plan, sched = plan_and_schedule(
                 fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"],
-                fx["topology"], self.BC, normalization=norm, decay=decay_on, **kw)
+                fx["topology"], self.BC, normalization=norm, decay=decay_on)
             return _dc.replace(plan, mma_precision=prec), sched
         return Plan(topology=fx["topology"] if fx else self.topology(),
                       normalization=norm, BT=self.BT if bt is None else bt, BC=self.BC,

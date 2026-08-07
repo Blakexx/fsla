@@ -53,41 +53,7 @@ CP_ASYNC_ROW_BYTES = 512
 #: unit; the word is bit-packing, not a boundary).
 TOKEN_WORD = 32
 
-#: The `BC` and `d_v` the consumer extension INSTANTIATES; the dispatch refuses
-#: anything outside them. Selection validates against these up front so the occupancy
-#: oracle is only ever asked about launchable instantiations.
-#:
-#: Declared here so CPU-only planning works with no extension present, which makes
-#: them a MIRROR of the dispatch table -- and a mirror needs a gate:
-#: `tests/unit/test_dispatch_table.py` pins all three tuples to the table's own axis
-#: values, read off the built binary.
-_SUPPORTED_BC = (16, 64)
-_SUPPORTED_DV = (32, 64)
-
-#: THE RING IS DEAD: the endgame executor stages at the group top (the aligned
-#: walk and its run-ahead ring were deleted with the BT axis).
-
-
-#: An OCCUPANCY ORACLE: `(BC, d_v, decay) -> CTAs/SM` (the BT, precision and
-#: normalization axes are dead).
-#:
-#: **A MACHINE FACT ENTERING THE PLAN THROUGH THE INTERFACE THE PLAN ALREADY HAS FOR
-#: MACHINE FACTS** (coordinator ruling 2026-07-31): supplied as an input, recorded
-#: next to the decision it drove, never queried ambiently from inside selection.
-#: Selection is therefore a PURE FUNCTION of its recorded inputs -- same inputs, same
-#: plan -- which is the machine-independence §10 actually needs, as distinct from
-#: "never look at the machine"; and tests inject a table.
-#:
-#: **THERE IS NO ANALYTIC MIRROR AND NO FALLBACK ORACLE** (item 6b, 2026-08-01). The
-#: shared-memory-only `mirror_occupancy` modelled the DELETED consumer's footprint,
-#: and the exhaustive driver probe measured it INVERTING the bound it claimed (mirror
-#: 2 against the driver's 3 at the at-scale `BC = 64` cell), so it was not merely
-#: loose but wrong in direction. A planning call with no injected oracle and no bound
-#: extension is now an ImportError, not a silently worse plan.
-OccupancyOracle = Callable[..., int]
-
-
-def consumer_occupancy() -> OccupancyOracle:
+def consumer_occupancy() -> Callable[..., int]:
     """THE occupancy oracle: `cudaOccupancyMaxActiveBlocksPerMultiprocessor` on the
     real templated kernel at its real dynamic SMEM size.
 
@@ -117,40 +83,6 @@ def consumer_occupancy() -> OccupancyOracle:
 
     return query
 
-
-def resolve_occupancy(occupancy: OccupancyOracle | None, *,
-                      BC: int, d_v: int) -> OccupancyOracle:
-    """The CALL-SITE default: the injected oracle if there is one, the driver else.
-
-    This is the only place that decides; `select_plan_axes` consults the resolved
-    oracle and nothing else, which is what keeps selection a pure function of its
-    inputs. An INJECTED oracle is the caller taking responsibility for the machine --
-    a synthetic one in the planner gates, a real table in production -- so no
-    instantiation guard applies to it: the caller answers for whatever it is asked.
-
-    **THE INSTANTIATION GUARD IS NOW A REFUSAL, NOT A FALLBACK** (item 6b,
-    2026-08-01). It used to divert an un-instantiated `(BC, d_v)` to the analytic
-    mirror, so a geometry the kernel cannot launch still got a plan -- a plausible
-    number for an impossible launch. The mirror is deleted (it modelled the deleted
-    consumer and was measured inverting the bound it claimed), and the honest
-    replacement is not a different fallback but none: a geometry outside
-    `_SUPPORTED_BC` x `_SUPPORTED_DV` has no kernel, so it has no residency, so it
-    has no plan. Callers that legitimately plan such a geometry -- CPU-only planner
-    gates on toy topologies -- INJECT an oracle, which is what the injection
-    interface is for and is stated above.
-    """
-    if occupancy is not None:
-        return occupancy
-    if BC not in _SUPPORTED_BC or d_v not in _SUPPORTED_DV:
-        raise NotImplementedError(
-            f"the consumer instantiates BC in {_SUPPORTED_BC} and d_v in "
-            f"{_SUPPORTED_DV}; this plan asks for BC={BC}, d_v={d_v}, which no "
-            "kernel implements, so the driver has no residency to report for it. "
-            "Pass `occupancy=` a table if you are deliberately planning a geometry "
-            "off the instantiation matrix (the CPU-only planner gates do); there is "
-            "no analytic fallback any more, because the one that existed modelled a "
-            "different kernel and was measured inverting the bound it claimed.")
-    return consumer_occupancy()
 
 _BITS_PER_WORD = 32
 
@@ -194,12 +126,11 @@ DEFAULT_WRITE_COST_WEIGHT = 0.125
 #: fallback-selected plan from a device-selected one (§10's ruling).
 DEFAULT_SM_SHARED_BYTES = 100 * 1024
 
-#: SM count, when no device can be asked -- the CPU-only fallback for §6's WAVE
-#: term (`plan_waves`). 80 is the RTX 3080 Ti this repo's measurement basis was
-#: taken on. Unlike `DEFAULT_SM_SHARED_BYTES` there is NO architectural value to
-#: fall back to -- SM count is a per-SKU fact, not a per-architecture one -- so this
-#: is a declared target rather than a safe default, and the number is carried on
-#: `PlanAxes` for exactly that reason: a plan states the machine it reasoned for.
+#: SM count, when no device can be asked -- the CPU-only fallback for the fill
+#: ceiling. 80 is the RTX 3080 Ti this repo's measurement basis was taken on. Unlike
+#: `DEFAULT_SM_SHARED_BYTES` there is NO architectural value to fall back to -- SM
+#: count is a per-SKU fact, not a per-architecture one -- so this is a declared target
+#: rather than a safe default.
 DEFAULT_SM_COUNT = 80
 
 #: The candidate-tile word budget the kernel holds in SMEM per CTA
@@ -341,38 +272,13 @@ class Plan:
     #: so a plan states the machine it was reasoned for instead of silently depending
     #: on the machine it is replayed on.
     #:
-    #: **PROVENANCE ONLY: NO SELECTION RULE READS IT** (coordinator ruling,
-    #: 2026-08-01, `rewrite.md` §2.37). It fed `mirror_occupancy` and nothing else,
-    #: and the mirror died with the consumer it modelled (item 6b). It is RETAINED
-    #: on the same contract `sm_count` has -- a plan states the machine it was
-    #: reasoned for, so a replayed plan is auditable -- with the difference stated
-    #: rather than hidden: `sm_count` IS read (by `plan_waves`), this is not.
-    #: Deleting it cascades into `layers/rola.py`, the `rola_sm_shared_bytes`
-    #: binding and `DEFAULT_SM_SHARED_BYTES`; it dies at the standalone-package
-    #: extraction, not before.
+    #: **PROVENANCE ONLY: NO DERIVATION RULE READS IT.** The box term prices the
+    #: PER-CTA budget (`cudaFuncAttributeMaxDynamicSharedMemorySize`), not the per-SM
+    #: one, because the endgame executor hides latency inside one CTA. This field is
+    #: RETAINED so a replayed plan states the machine it was built for; it dies at the
+    #: standalone-package extraction, together with the `rola_sm_shared_bytes` binding
+    #: and `DEFAULT_SM_SHARED_BYTES`.
     sm_shared_bytes: int = DEFAULT_SM_SHARED_BYTES
-    #: The CTAs/SM §6 reasoned about when this plan was selected, RECORDED next to
-    #: the decision it drove -- the same contract `sm_shared_bytes` has, and for the
-    #: same reason (coordinator ruling 2026-07-31): a machine fact enters the plan as
-    #: an INPUT and is readable off the plan afterwards, so a plan states the
-    #: residency it was reasoned for. `0` = hand-stamped, no occupancy consulted.
-    occupancy_blocks_per_sm: int = 0
-    #: WHICH SELECTOR PRODUCED THIS PLAN, and whether it is one whose constants have
-    #: been audited. ADVISORY, on exactly the contract `sm_shared_bytes` and
-    #: `occupancy_blocks_per_sm` have: recorded next to the decision, read by no rule.
-    #:
-    #: The fields exist because "interim" is a property of the DECIDER, not of the
-    #: decision, and it cannot be recovered from the choice afterwards: a `(BC, BT)`
-    #: chosen by a knowingly-unaudited cost model and the same `(BC, BT)` chosen by a
-    #: measured one are the same four axes. A plan that does not say which produced it
-    #: cannot tell a reader that its numbers came from a model the calibration
-    #: inventory records as not yet personally audited. Empty means hand-stamped -- a
-    #: plan built without going through a selector at all.
-    #:
-    #: `ConfigChoice` deliberately does NOT carry them: its `(BC, BT, feeder_flags)`
-    #: shape is frozen by `THUNDER_RUN_SPEC.md` §4.3, and provenance is not a choice.
-    selector_name: str = ""
-    selector_status: str = ""
 
     def __post_init__(self) -> None:
         validate_normalization(self.normalization)
@@ -483,20 +389,17 @@ def spanned_moduli(topology: Topology, BC: int) -> tuple[int, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Shared routing views -- the ONE pass the selector and the builder both walk
+# Shared routing views -- the ONE pass the statistics and the builder both walk
 # ---------------------------------------------------------------------------
 
 
 class RoutingViews:
     """The routing prefix the planner and the schedule builder BOTH need, computed once.
 
-    Three things were being recomputed. (1) The ``[B,T,H,w] -> [BH,T,w]`` fold,
-    which is a permute-then-reshape and therefore a real copy, done once by
-    :func:`tile_union_stats` per ``BT`` candidate and again by
-    :func:`build_schedule`. (2) The exact-nonzero liveness mask, same. (3) The
-    per-``(level, digit)`` TILE bitmap ``[BH, n_tiles, w]``, which the selector
-    forms at every candidate ``BT`` and the builder forms again at the selected
-    one.
+    Three things would otherwise be recomputed by any caller that wants both the
+    statistics and the schedule. (1) The ``[B,T,H,w] -> [BH,T,w]`` fold, which is a
+    permute-then-reshape and therefore a real copy. (2) The exact-nonzero liveness
+    mask. (3) The per-``(level, digit)`` TILE bitmap ``[BH, n_tiles, w]``.
 
     Nothing here is a cache across STEPS: a ``RoutingViews`` is built from one
     realization of the routing tensors and is as short-lived as they are. It is
@@ -1128,10 +1031,9 @@ def build_schedule(
     therefore does not accept ``write_levels_stored`` at all -- the wrong tensor
     is not merely discouraged, it is unreachable.
 
-    ``views`` is an optional :class:`RoutingViews`, normally the SAME one the
-    plan was selected from (:func:`plan_and_schedule`), carrying the folded
-    tensors and the §4 tile bitmaps at ``plan.BT`` -- both of which the selector
-    has already computed over these exact tensors. It changes what is RECOMPUTED,
+    ``views`` is an optional :class:`RoutingViews`, normally the SAME one the caller
+    already built (:func:`plan_and_schedule`), carrying the folded tensors and the §4
+    tile bitmaps over these exact tensors. It changes what is RECOMPUTED,
     never what is built: the fold, the ``!= 0`` and the tile reduction are the same
     operations on the same inputs either way, and the shape validation below runs
     identically in both cases.
@@ -1653,6 +1555,50 @@ def _cartesian(sets: list[list[int]]):
     yield from _iter_product(*sets)
 
 
+# ---------------------------------------------------------------------------
+# Plan assembly
+# ---------------------------------------------------------------------------
+
+
+def build_plan(topology: Topology, BC: int, *, normalization: str, decay: bool,
+               sm_shared_bytes: int | None = None) -> Plan:
+    """A ``Plan`` over one topology at one ``BC``, with the derived fields filled.
+
+    ``BC`` is an ARGUMENT: :func:`rola.planner.derive.derive_bc` is what supplies it on
+    the dispatch path, and a bench or a conformance gate supplies its own so it can
+    exercise a geometry the derivation would not pick. Everything else here is either a
+    model fact (``topology``, ``normalization``, ``decay``) or derived from one -- the
+    warp tile is the ``(1, d_v/32)`` the consumer implements, stated rather than
+    defaulted so the driver's check has something to check.
+    """
+    return Plan(
+        topology=topology, normalization=normalization, BC=int(BC), decay=bool(decay),
+        warp_tile=(1, max(1, topology.d_v // 32)),
+        sm_shared_bytes=(DEFAULT_SM_SHARED_BYTES if sm_shared_bytes is None
+                         else int(sm_shared_bytes)))
+
+
+def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
+                      write_levels: tuple[torch.Tensor, ...],
+                      g_read: torch.Tensor | None,
+                      g_write: torch.Tensor,
+                      topology: Topology, BC: int, *, normalization: str, decay: bool,
+                      sm_shared_bytes: int | None = None) -> tuple[Plan, Schedule]:
+    """The plan and its §4 schedule from ONE pass over the routing tensors.
+
+    :func:`build_schedule` builds its own :class:`RoutingViews` when none is supplied;
+    building it here and handing it over is what keeps the ``[B,T,H,w] -> [BH,T,w]``
+    fold, the exact-nonzero mask and the per-``(level, digit)`` tile bitmap computed
+    once for a caller that wants both objects. Nothing about the result moves: the plan
+    is :func:`build_plan`'s and the schedule is :func:`build_schedule`'s.
+    """
+    views = routing_views(read_levels, write_levels, topology)
+    plan = build_plan(topology, BC, normalization=normalization, decay=decay,
+                      sm_shared_bytes=sm_shared_bytes)
+    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan, views=views)
+    return plan, schedule
+
+
 __all__ = [
     "CP_ASYNC_ROW_BYTES",
     "DEFAULT_SM_COUNT",
@@ -1667,11 +1613,13 @@ __all__ = [
     "RoutingViews",
     "Schedule",
     "build_clock_stream",
+    "build_plan",
     "build_schedule",
     "leaf_rate_dials",
     "owner_geometry",
     "panel_exponent_bound",
     "permuted_topology",
+    "plan_and_schedule",
     "rank_spans",
     "routing_views",
     "span_score",
@@ -1679,81 +1627,3 @@ __all__ = [
     "unpack_bits",
 ]
 
-
-# ---------------------------------------------------------------------------
-# THE RELOCATION SHIM (`THUNDER_RUN_SPEC.md` §6 P4)
-# ---------------------------------------------------------------------------
-#
-# The exact census, `plan_cost_per_token` and its six measured constants,
-# `TileUnionStats` and the `BT` ARGMIN moved to
-# `rola/planner/calibration/`. They are documented public API
-# (`rola/__init__.py`: "STABLE construction, ADVISORY contents") and five bench
-# instruments plus two out-of-track test suites call them, so the names survive here
-# as LAZY CALL PROXIES for one release.
-#
-# **THE PACKAGE LIVES IN `rola/` AND NOT IN `benchmarks/`** (post-merge, 2026-08-02).
-# It was `benchmarks/planner_calibration/`, resolved through a `sys.path` insert
-# relative to THIS FILE, which worked from a source checkout and only from one:
-# `setup.py` packages `find_packages(include=["rola", "rola.*"])`, so an installed
-# wheel has no `benchmarks/` sibling and every relocated name raised
-# `ModuleNotFoundError`. That was a release blocker while the layer's CUDA prefill
-# still called `plan_and_schedule`; the cut-over below removed the RUNTIME edge, and
-# moving the package removes the PACKAGING one. `benchmarks/` remains the PRODUCER --
-# it is what re-measures the constants and regenerates the fit -- but the fitted
-# module ships.
-#
-# **WHY PROXIES AND NOT RE-EXPORTS, and this is still the whole point.**
-# `census` makes `torch.compile`/inductor an import-time dependency, on CPU as well as
-# CUDA, with no eager path kept beside it -- its own docstring says so. A module-level
-# re-export would pull that edge into `import rola`. A proxy resolves on CALL, so:
-#
-#   * `import rola` never touches inductor;
-#   * a bench or a gate that calls `select_plan` gets the real function;
-#   * and the RUNTIME reaches none of it -- `rola.planner.select`'s closed form is
-#     what the layer calls, and `tests/unit/test_planner.py`'s subprocess probe
-#     asserts `sys.modules` stays free of the package after `import rola`.
-#
-# It is a deprecation shim with a stated horizon, not a fallback: there is exactly one
-# implementation and the proxy dispatches to it. Nothing degrades.
-
-#: The names that moved. Anything not here is genuinely gone.
-_RELOCATED = (
-    "COST_MODEL_PROVENANCE", "DECAY_KSTEP_WORK", "GATHER_CANDIDATE_FIXED_WORK",
-    "GATHER_CANDIDATE_QUANTUM_WORK", "INTRA_GRAM_KSTEP_WORK",
-    "READOUT_FOLD_KSTEP_WORK", "TILE_FIXED_WORK",
-    "PlanAxes", "TileUnionStats", "plan_and_schedule", "plan_cost_per_token",
-    "plan_waves", "select_plan", "select_plan_axes", "tile_union_stats",
-)
-
-
-def _calibration_module():
-    """Import `rola.planner.calibration.cost_model`, ON CALL and never at import.
-
-    A plain import inside the function body -- there is no path dance any more, and
-    that is the packaging fix: the package is a `rola.*` subpackage, so `find_packages`
-    ships it and an installed wheel resolves it exactly as a source checkout does.
-    Deferring it to CALL time is what keeps `import rola` free of the census's
-    `torch.compile`/inductor edge, which is a different property from being installed
-    and is the one the proxies exist for.
-    """
-    from rola.planner.calibration import cost_model
-
-    return cost_model
-
-
-def __getattr__(name: str):
-    """PEP 562: resolve a relocated name to a proxy that imports on CALL."""
-    if name not in _RELOCATED:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-    def _proxy(*args, **kwargs):
-        return getattr(_calibration_module(), name)(*args, **kwargs)
-
-    _proxy.__name__ = name
-    _proxy.__qualname__ = name
-    _proxy.__doc__ = (
-        f"RELOCATED to `rola.planner.calibration.cost_model.{name}` "
-        "(THUNDER_RUN_SPEC.md §6 P4). This is a lazy call proxy kept for one release; "
-        "it resolves on call so that `import rola` does not pull the calibration "
-        "package's inductor dependency into the shipped package's import graph.")
-    return _proxy

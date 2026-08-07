@@ -918,20 +918,16 @@ def test_a_vanishing_write_gain_with_a_live_write_allocation():
 
 @pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 8), 64)])
 @pytest.mark.parametrize("decay", [False, True])
-def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, decay):
-    """The WIRED path: a plan whose §6 axes are SELECTED, not hand-written.
+def test_the_plan_built_path_is_oracle_exact_and_bit_identical(widths, BC, decay):
+    """The WIRED path: the `Plan` the package's own builder produces.
 
-    `select_plan` is the plan build -- it measures the realized routing tensors,
-    prices §6's axes, and returns a `Plan`. This gate runs the selector's own
-    output end to end.
-
-    The property it claims: **the selected plan is RUNNABLE and oracle-exact** --
-    on BOTH decay arms. That is not free: selection ranges over the arm's
-    implemented lowerings, so the plan the driver receives can actually launch.
+    `build_plan` fills a plan's derived fields (the warp tile, the SMEM budget) over
+    one `BC`. This gate runs that object end to end rather than a plan the test wrote
+    by hand, on BOTH decay arms, and claims it is RUNNABLE and oracle-exact.
     """
     from math import prod
 
-    from rola.planner.calibration.cost_model import select_plan  # G16
+    from rola.planner.schedule import build_plan
 
     assert prod(widths) // BC == 1, "this gate is only meaningful on a single-owner rectangle"
     device = "cuda"
@@ -941,11 +937,7 @@ def test_the_plan_selected_path_is_oracle_exact_and_bit_identical(widths, BC, de
     read_levels = tuple(_simplex((B, T, H, w), 1.0, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 1.0, generator, device) for w in widths)
 
-    plan, axes = select_plan(
-        tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
-        topology, BC, normalization="global", decay=decay)
-    # The fixture is dense, so the selector must see saturation.
-    assert axes.stats.mean_K_candidate == BC
+    plan = build_plan(topology, BC, normalization="global", decay=decay)
 
     dials = _decay_dials(widths, H, generator, device) if decay else None
     kwargs = dict(nonzero_m0=True, seed=7301, decay_dials=dials,
@@ -990,7 +982,7 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
                     f"BC={BC} d_v={d_v} decay={decay} "
                     f"is resident {blocks} time(s) per SM. The 1-CTA cliff is "
                     "reachable again, and §6's residency rule was deleted on the "
-                    "measurement that it is not -- see `select_plan_axes`.")
+                    "measurement that it is not.")
     assert len(seen) == 8, f"the surface is 8 keys, queried {len(seen)}"
 
 

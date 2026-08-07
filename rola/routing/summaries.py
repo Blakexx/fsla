@@ -43,13 +43,12 @@ over-state it. ``K_hat <= BC`` always, because the boundary level contributes at
 ``BC`` by the owner rectangle -- so the histogram's ``QPO + 1`` bins are exhaustive
 and no clamp is needed.
 
-The residual is the cross-level COLLISION correction ``C_COLLISION_GAMMA`` (§8), whose
-conservative default ``1.0`` leaves the bound uncorrected. The constant is OWNED by
-:mod:`rola.planner.select` -- a fitted number belongs with the rules that spend it, not
-with the pass that measures -- and is passed in as the ``gamma`` argument, because it
-has to be applied per ``(owner, tile)`` BEFORE the quantization and this is the only
-place that granularity still exists. At the default the multiply is skipped outright,
-so an uncalibrated run is bit-identical to one with no hook at all.
+The residual is the cross-level COLLISION correction, passed in as the ``gamma``
+argument, whose conservative default ``1.0`` leaves the bound uncorrected. It is an
+argument rather than a constant because it has to be applied per ``(owner, tile)``
+BEFORE the quantization and this is the only place that granularity still exists. At
+the default the multiply is skipped outright, so an uncorrected run is bit-identical to
+one with no hook at all.
 
 ---- COST, STATED RATHER THAN DISCOVERED --------------------------------------
 
@@ -322,7 +321,7 @@ def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
     imports the planner would make the routing package depend on the package that
     depends on it.
 
-    ``gamma`` is ``C_COLLISION_GAMMA`` (§8), also passed rather than imported, for the
+    ``gamma`` is the cross-level collision correction, an argument for the
     same one-owner reason. **It is applied HERE, per ``(owner, tile)``, BEFORE the
     quantization, and that placement is the whole content of the constant.**
     ``ceil`` is nonlinear and the ``q = 0`` mass is a distribution fact the mean
@@ -343,7 +342,7 @@ def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
     write_mask = tuple(t if t.dtype == torch.bool else t != 0 for t in write_mask)
     if not 0.0 < gamma <= 1.0:
         raise ValueError(
-            f"C_COLLISION_GAMMA must lie in (0, 1]: K_hat is an UPPER bound on K and the "
+            f"the collision correction gamma must lie in (0, 1]: K_hat is an UPPER bound on K and the "
             f"correction can only shrink it toward the truth, never past it. Got {gamma!r}.")
     if BC % MMA_K_QUANTUM:
         raise ValueError(
@@ -603,7 +602,7 @@ def _validate(widths: tuple[int, ...], BC: int, BT: int, gamma: float) -> None:
             "(spec §1b: every legal BC is a whole number of atoms by construction)")
     if not 0.0 < gamma <= 1.0:
         raise ValueError(
-            f"C_COLLISION_GAMMA must lie in (0, 1]: K_hat is an UPPER bound on K and the "
+            f"the collision correction gamma must lie in (0, 1]: K_hat is an UPPER bound on K and the "
             f"correction can only shrink it toward the truth, never past it. Got {gamma!r}.")
     del widths
 

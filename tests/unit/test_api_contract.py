@@ -270,8 +270,8 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     the top level, one shelf below the model types, and the tier label on it was a
     warning sign at eye level. It now lives behind a marked door.
     """
-    quarantined = {"Plan", "PlanAxes", "Schedule", "StaticDensity", "select_plan",
-                   "plan_and_schedule", "StaticPlanInputs",
+    quarantined = {"Plan", "Schedule", "StaticDensity",
+                   "plan_and_schedule",
                    "PlanOverrides", "derive_plan", "execute", "requires_backward",
                    "dispatch_for"}
     import rola.expert as expert
@@ -345,49 +345,6 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 # ---------------------------------------------------------------------------
 
 
-def _prime_hardware(device, blocks=4):
-    """Tier H, supplied rather than measured, so the seam is testable without a device.
-
-    `_hardware_facts` is a per-device cache of facts that cannot move within a process;
-    priming it is the documented injection point for a test that is about SELECTION
-    rather than about the driver, and it is what keeps `_derive_plan` a pure function of
-    its recorded inputs.
-    """
-    from rola.interface import _HARDWARE
-    from rola.planner.select import HardwareFacts
-
-    _HARDWARE[torch.device(device)] = HardwareFacts(
-        sm_count=80, occupancy=lambda *args, **kwargs: blocks)
-
-
-@pytest.mark.cuda
-def test_the_selector_swaps_through_the_seam_and_the_plan_records_which_one_ran():
-    """The card's binding constraint, at the seam it now lives behind.
-
-    Selection is REPLACEABLE: the cost model that decides today is one implementation
-    behind an interface, and swapping it must be an assignment rather than surgery. It
-    is reachable only through the expert door, because a caller choosing a cost model is
-    not describing a model.
-    """
-    from rola.expert import PlanOverrides, derive_plan
-    from rola.planner.select import ConfigChoice, FixedChoiceSelector
-
-    gateway = _routes(widths=(16, 16), d_v=64).cuda()
-    factors = gateway(_x(gateway, dtype=torch.float32).cuda())
-    _prime_hardware(factors.device)
-
-    pinned = ConfigChoice(BC=16, feeder_flags=None)
-    plan = derive_plan(
-        factors, expert=PlanOverrides(selector=FixedChoiceSelector(pinned)),
-        device=factors.device)
-    assert plan.BC == 16, "the swapped selector's choice must be obeyed"
-    assert (plan.selector_name, plan.selector_status) == ("fixed", "DEBUG"), (
-        "the stamp must come FROM the selector object that ran")
-
-    default = derive_plan(factors, device=factors.device)
-    assert default.selector_name == "cost-model"
-
-
 @pytest.mark.cuda
 def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path():
     """The `decay` flag used to be computed twice, by two different expressions, on two
@@ -398,7 +355,6 @@ def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_pat
 
     gateway = _routes(widths=(16, 16), d_v=64).cuda()
     factors = gateway(_x(gateway, dtype=torch.float32).cuda())
-    _prime_hardware(factors.device)
     source = rola.LearnedDecay(widths=gateway.widths, num_heads=2)
 
     assert derive_plan(factors, device=factors.device).decay is False

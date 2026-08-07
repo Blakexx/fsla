@@ -37,13 +37,11 @@ import torch
 from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
 from rola.ops.consumer import _consumer_forward
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from rola.planner.calibration.cost_model import plan_and_schedule, select_plan
-from rola.planner.schedule import build_schedule
+# `BC` is derived once, in closed form, over launch-static facts
+# (`rola.planner.derive.derive_bc`); `build_plan`/`build_schedule`/`plan_and_schedule`
+# in `rola.planner.schedule` take it as an argument rather than choosing among
+# candidates.
+from rola.planner.schedule import build_plan, build_schedule, plan_and_schedule
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -246,17 +244,11 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             g_read, g_write = ro.g_read, ro.g_write
             decay = None if layer.decay is None else layer.decay()
 
-            # `layer.routes.density` is the ROUTE PRODUCER's own build-time
-            # declaration (old: `layer.static_density`), passed here for the same
-            # reason `layer.topology`/`layer.state_block` are: a plane that dropped
-            # it would time a planner call the layer never makes.
             def select():
-                return select_plan(read_levels, write_levels, layer.topology,
-                                      layer.state_block, normalization=norm,
-                                      decay=decay_on,
-                                      static_density=layer.routes.density)
+                return build_plan(layer.topology, layer.state_block,
+                                   normalization=norm, decay=decay_on)
 
-            plan, axes = select()
+            plan = select()
 
             def schedule_build():
                 return build_schedule(read_levels, write_levels, g_read, g_write, plan)
@@ -273,8 +265,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on,
-                                            static_density=layer.routes.density)
+                                            normalization=norm, decay=decay_on)
 
             planner()
 
@@ -305,13 +296,6 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
                 "dtype": str(dtype).replace("torch.", ""),
                 "B": B, "H": H, "L": L, "d_v": d_v, "branches": list(branches),
                 "BC": layer.state_block,
-                # `Plan.intra_lowering` (and `INTRA_LOWERINGS`/`select_intra_lowering`)
-                # was retired at item 6b (2026-08-01, `schedule.py` §6 docstring): one
-                # topology-agnostic kernel family now, nothing left on that axis to
-                # record.
-                "selected_BT": plan.BT,
-                "selected_cost_per_token": round(axes.cost_per_token, 3),
-                "mean_K_per_tile": round(axes.stats.mean_K, 3),
                 "total_ms": round(total_ms, 4),
                 "producer_ms": round(producer_ms, 4),
                 "planner_ms": round(planner_ms, 4),
@@ -372,7 +356,7 @@ def main() -> None:
               f"consumer={r['consumer_ms']:6.3f} "
               f"(event {r['planes']['consumer']['event_ms']:5.3f}) "
               f"glue={r['glue_ms']:7.3f} | peak={r['peak_alloc_gb']:.3f} GB | "
-              f"plan BT={r['selected_BT']} "
+              f"BC={r['BC']} "
               f"| A_r={r['A_r']}/{r['N']}")
     print("\nTIMES ABOVE ARE SYNCHRONIZED WALL-CLOCK. The `cuda.Event` median is carried per\n"
           "plane in the JSON (`planes.<name>.event_ms`) and is quoted inline for the consumer,\n"

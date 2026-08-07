@@ -48,7 +48,7 @@ def sm_shared_bytes() -> int:
     """The device's per-SM shared-memory budget, for §6's residency rule.
 
     Device-queried once (`cudaDevAttrMaxSharedMemoryPerMultiprocessor`) and RECORDED
-    IN THE PLAN by `select_plan`, per the §10 ruling: a plan then states the
+    IN THE PLAN, per the §10 ruling: a plan then states the
     machine it reasoned for instead of silently depending on the machine it is
     replayed on. Falls back to `DEFAULT_SM_SHARED_BYTES` when there is no device or
     no extension -- the CPU-only path §6.2/§6.3 selection must keep working on, and

@@ -569,13 +569,14 @@ symbol, and the post-link gate names its tuple three ways.
 ## <a id="dispatch-choice"></a>B9.1. What the table consumes: a CHOICE
 
 `DispatchChoice{BC, DV, D, decay}` is one value per matrix axis and nothing else — no
-statistics, no thresholds, no device facts. Something upstream DECIDES (the planner's
-selector, a test, a debug pin) and the table RESOLVES.
+statistics, no thresholds, no device facts. Something upstream DECIDES (`derive_bc`'s
+closed form, a test, a debug pin) and the table RESOLVES.
 
-The separation is the point rather than a tidiness: the selector is knowingly interim
-(`rola/planner/select.py` labels it so), and the table must not acquire any of its
-opinions, or replacing the model becomes surgery on the dispatch instead of a swap.
-So there is no scoring here, no default arm, and no "nearest" anything.
+The separation is the point rather than a tidiness: `derive_bc`
+(`rola/planner/derive.py`) reads the table's own arm carve as one of its three
+ceilings, but the table itself scores nothing and holds no opinion about which row is
+preferred — it is a pure `{axis tuple: row}` map. So there is no scoring here, no
+default arm, and no "nearest" anything.
 
 ## <a id="row-admission"></a>B9.2. The per-row enable predicate, and why it keys on an INPUT
 

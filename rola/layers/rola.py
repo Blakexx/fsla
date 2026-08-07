@@ -53,7 +53,6 @@ from einops import rearrange
 
 from rola.interface import rola_op, select_backend
 from rola.ops.decode import decode_forward, freeze_decode_config
-from rola.planner.select import freeze_for_decode
 from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
 from rola.utils.cache import get_layer_cache, update_layer_cache
@@ -97,7 +96,7 @@ class RoLA(nn.Module):
         route_conv: the same, over the routing source stream.
         layer_idx: index into the recurrent cache.
         expert: :class:`rola.expert.PlanOverrides`. Everything it pins is an axis the
-            planner selects; it is quarantined because a caller pinning one is not
+            planner derives; it is quarantined because a caller pinning one is not
             describing a model.
     """
 
@@ -127,7 +126,7 @@ class RoLA(nn.Module):
             validate_decay_source(decay, routes.topology, num_heads)
 
         from rola.expert import PlanOverrides
-        from rola.planner.select import feasible_bc
+        from rola.planner.derive import feasible_bc
 
         overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
         # CONSTRUCTION TIME, NOT PLAN TIME. `feasible_bc` is the alignment-admissible set
@@ -460,18 +459,13 @@ class RoLA(nn.Module):
         construction-time fact). It is frozen in the sense that matters: no per-step
         statistic enters it, so a decode step never runs a selection.
         """
-        from rola.interface import _static_tier0
-
         cached = self._decode_config
         key = (BH, torch.device(device), self.decay is not None)
         if cached is not None and cached.key == key:
             return cached.value
-        static = _static_tier0(
-            self.topology, self.normalization, self.routes.density,
-            decay=self.decay is not None, BH=BH, overrides=self.expert)
         value = freeze_decode_config(
             self.topology, self.normalization, decay=self.decay is not None, BH=BH, device=device,
-            frozen=freeze_for_decode(static), mma_precision=self.expert.mma_precision)
+            mma_precision=self.expert.mma_precision)
         self._decode_config = _DecodeConfigCache(key=key, value=value)
         return value
 
