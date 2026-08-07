@@ -179,6 +179,14 @@ consumer_forward_kernel(ConsumerParams p) {
   //: barrier; the mask slots [6..7] are per-visit values written by warp 0 lane 0
   //: at ballot end, published by the same barrier.
   int* g_scan = t_idx + kGT;
+  //: THE SCAN BATCH (kScanBatch words): per-word fixed-AND results and the
+  //: PRECOMPUTED member word, staged by ONE thread per word per refill and
+  //: consumed CTA-uniformly from SMEM -- the schedule stream is fetched once
+  //: per CTA, never once per warp (measured: the per-warp-redundant walk WAS
+  //: the first cut's +7.6M-sector regression at atscale-L2048).
+  int* scan_fr = g_scan + 8 + D;
+  int* scan_fw = scan_fr + kScanBatch;
+  int* scan_mem = scan_fw + kScanBatch;
   static_assert(
       !DECAY || static_cast<size_t>(kGT) * CKP * sizeof(float) <= vw_union_bytes<BC, DV, DECAY>(),
       "clk aliases the Vw region and must fit IN BYTES");
@@ -310,8 +318,10 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- consumes but does not produce. Tokens are `t_idx[0..gN)`, globally
   // ---- ascending; slots `[gN, kGT)` of a ragged group stage EXACT-ZERO
   // ---- coefficient rows and zero row scales, so they are inert through every GEMM.
-  // ---- Leaf-axis loops walk LIVE ATOMS ONLY (the compact-into-registers walk);
-  // ---- a dead atom's rows are never fetched, staged or read.
+  // ---- STAGING IS BRANCHLESS (fetch consults nothing): dead atoms stage the
+  // ---- exact zeros the tensors hold; the ATOM MASKS ARE COMPUTE-ONLY -- the
+  // ---- MMA walks and the fold's RMW skip dead atoms (the compact-into-
+  // ---- registers walk), exactly and only as an efficiency.
   // ---- docs/internals/consumer_kernel.md#staging
   auto stage_group = [&](bool is_read, bool is_write, int gN, unsigned rmask, unsigned wmask) {
     // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0` -- INTO `Vw`'s bytes,
@@ -386,7 +396,7 @@ consumer_forward_kernel(ConsumerParams p) {
       }
     }
     if (!DECAY && is_write) __syncthreads();  // sw published to the Vw staging below
-    // ---- THE READ PANEL (§3 steps 2-3), LIVE ATOMS ONLY. The loop walks FRAGMENT
+    // ---- THE READ PANEL (§3 steps 2-3). The loop walks FRAGMENT
     // ---- SLOTS (one k-step = one atom = 128 words), so the store is contiguous in
     // ---- `tid` and the buffer is atom-blocked by construction. The bf16 slot packs
     // ---- the leaf pair `(k, k+1)`.
@@ -417,24 +427,17 @@ consumer_forward_kernel(ConsumerParams p) {
         }
         return pack_bf16x2(clamp_bf16_finite(a0), clamp_bf16_finite(a1));
       };
-      if (rmask == kFullMask) {
-        for (int sl = tid; sl < kRfWords; sl += kConsumerThreads) {
-          int t, k;
-          frag_a_slot(sl, t, k);
-          Rf[sl] = rf_pair(t, k);
-        }
-      } else {
-        const int nlive = __popc(rmask);
-        for (int idx = tid; idx < nlive * 128; idx += kConsumerThreads) {
-          const int q = __fns(rmask, 0, (idx >> 7) + 1);
-          const int sl = q * 128 + (idx & 127);
-          int t, k;
-          frag_a_slot(sl, t, k);
-          Rf[sl] = rf_pair(t, k);
-        }
+      //: BRANCHLESS (fetch consults nothing -- the ruling): every atom's slots
+      //: are staged by the pure affine walk; a dead atom's positions hold the
+      //: exact zeros the amplitude tensor already holds (entmax), so the fetch
+      //: layer cannot be wrong -- the masks are COMPUTE-ONLY (MMA skip).
+      for (int sl = tid; sl < kRfWords; sl += kConsumerThreads) {
+        int t, k;
+        frag_a_slot(sl, t, k);
+        Rf[sl] = rf_pair(t, k);
       }
     }
-    // ---- THE WRITE PANEL, LIVE ATOMS ONLY -- one leaf-PAIR per thread visit.
+    // ---- THE WRITE PANEL -- one leaf-PAIR per thread visit.
     // ---- The pass-1 inclusion ballot rides the
     // ---- same 16-lane token run per leaf. docs/internals/consumer_kernel.md#write-panel
     if (is_write) {
@@ -477,12 +480,10 @@ consumer_forward_kernel(ConsumerParams p) {
           stage_put(WT[wt_index(i0 + 1, t)], a1);
         }
       };
-      if (wmask == kFullMask) {
+      //: BRANCHLESS, as the read panel: every atom staged, zeros ride
+      //: self-masking, masks stay compute-only.
 #pragma unroll
-        for (int q = 0; q < kQPO; ++q) wt_pairs(q);
-      } else {
-        for (unsigned m = wmask; m; m &= m - 1) wt_pairs(__ffs(m) - 1);
-      }
+      for (int q = 0; q < kQPO; ++q) wt_pairs(q);
     }
     //: HAZARD clk-dead -- docs/internals/consumer_kernel.md#clk-dead
     if (DECAY && is_write) __syncthreads();  // <- clk is now DEAD; Vw may overwrite
@@ -513,7 +514,10 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- so the boundaries are uniform); warp 0 additionally gathers the member
   // ---- tokens' ATOM-UNION BYTES per side and lane 0 publishes the visit masks.
   // ---- docs/internals/consumer_kernel.md#group-assembler
-  int cur = w_lo;  // the scan's word cursor (register; uniform by construction)
+  int cur = w_lo;      // next word to LOAD into the batch (uniform)
+  int batch_base = 0;  // word index of batch slot 0
+  int bnext = 0;       // next batch slot to consume
+  int bcount = 0;      // valid slots in the current batch
   for (;;) {
     int fill = g_scan[0];
     int gword = g_scan[1];
@@ -526,25 +530,57 @@ consumer_forward_kernel(ConsumerParams p) {
     int g_next1 = 0, g_next2 = 0, g_next3 = 0, g_next4 = 0;
     while (fill < kGT) {
       if (member == 0u) {
-        // ---- THE MEMBERSHIP SCAN's word refill: AND of the owner's fixed-level
-        // ---- token rows per side; the ballot term is (read | write) AND the
-        // ---- token-granular slice-union word -- ballot-time exclusion of
-        // ---- slice-dead tokens is what keeps groups full. The summary pass
-        // ---- ballots the WRITE side alone (union-visit semantics on one side).
-        if (cur >= w_hi) break;
-        gword = cur++;
-        g_fr = 0xffffffffu;
-        g_fw = 0xffffffffu;
-        const int64_t slab = (static_cast<int64_t>(bh) * p.n_twords + gword) * p.total_rows;
+        // ---- THE MEMBERSHIP SCAN, BATCHED. One thread per word loads the
+        // ---- owner's fixed-level token rows (per side) and the token-granular
+        // ---- slice-union word ONCE PER CTA and PRECOMPUTES the member word
+        // ---- into the batch; the assembler consumes SMEM, skipping dead words
+        // ---- at one SMEM read each. Ballot-time exclusion of slice-dead
+        // ---- tokens is what keeps groups full; the summary pass ballots the
+        // ---- WRITE side alone (union-visit semantics on one side). Every
+        // ---- quantity steering the loop is CTA-uniform, so the two refill
+        // ---- barriers are uniform too.
+        int found = -1;
+        for (;;) {
+          while (bnext < bcount) {
+            if (scan_mem[bnext] != 0) {
+              found = bnext;
+              break;
+            }
+            ++bnext;
+          }
+          if (found >= 0 || cur >= w_hi) break;
+          __syncthreads();  // every thread is past the old batch's last read
+          for (int w = tid; w < kScanBatch; w += kConsumerThreads) {
+            if (cur + w < w_hi) {
+              uint32_t fr = 0xffffffffu;
+              uint32_t fw = 0xffffffffu;
+              const int64_t slab = (static_cast<int64_t>(bh) * p.n_twords + cur + w) * p.total_rows;
 #pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l >= j) break;
-          g_fr &= p.read_tok_bits[slab + g_scan[8 + l]];
-          g_fw &= p.write_tok_bits[slab + g_scan[8 + l]];
+              for (int l = 0; l < D; ++l) {
+                if (l >= j) break;
+                fr &= p.read_tok_bits[slab + g_scan[8 + l]];
+                fw &= p.write_tok_bits[slab + g_scan[8 + l]];
+              }
+              const uint32_t un =
+                  p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords
+                                    + cur + w];
+              scan_fr[w] = static_cast<int>(fr);
+              scan_fw[w] = static_cast<int>(fw);
+              scan_mem[w] = static_cast<int>((summary ? fw : (fr | fw)) & un);
+            }
+          }
+          __syncthreads();  // the batch is published
+          batch_base = cur;
+          bcount = (w_hi - cur < kScanBatch) ? (w_hi - cur) : kScanBatch;
+          cur += bcount;
+          bnext = 0;
         }
-        member = (summary ? g_fw : (g_fr | g_fw))
-                 & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords
-                                     + gword];
+        if (found < 0) break;  // the segment's stream end
+        gword = batch_base + found;
+        g_fr = static_cast<uint32_t>(scan_fr[found]);
+        g_fw = static_cast<uint32_t>(scan_fw[found]);
+        member = static_cast<uint32_t>(scan_mem[found]);
+        ++bnext;
         continue;
       }
       const int room = kGT - fill;  // >= 1: a full group ran and reset `fill`
