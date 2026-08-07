@@ -30,7 +30,8 @@ Correctness criteria, and the DERIVED tolerance each cell is held to:
    workflow evidence, not shipped gates).
 4. **Adversarial corners:** cold read (never-written owners), ragged tail
    (T % 32, T % 16), group boundary (memberships straddling word splits),
-   decay (fp16 application; ticks-ride-writes exactness of the fold skip),
+   decay (fp32 panel application against bf16 storage -- the fp16 carve,
+   e474da9; ticks-ride-writes exactness of the fold skip),
    union-visit semantics (read-only and write-only tokens interleaved),
    P in {2, 4} word-range segments.
 """

@@ -174,14 +174,14 @@ consumer_forward_kernel(ConsumerParams p) {
   //: (stability IS causality). Written by warp 0 at ballot time, published by the
   //: group-entry `__syncthreads()`, read by every staging loop of the visit.
   int* t_idx = ctl + ctl_words(BC);
-  //: The group assembler's CROSS-VISIT CARRY + the visit's atom masks, in SMEM so
-  //: NO scheduler state is register-live across the visit body (the measured §7.3
-  //: stateful-walk hazard). Layout: [0] fill, [1] scan word, [2] fr, [3] fw,
+  //: The group assembler's CROSS-VISIT CARRY, in SMEM so NO scheduler state is
+  //: register-live across the visit body (the measured §7.3 stateful-walk
+  //: hazard). Layout: [0] fill, [1] scan word, [2] fr, [3] fw,
   //: [4] member-word remainder, [5] group flags (bit0 read, bit1 write),
-  //: [6] read atom mask, [7] write atom mask, [8..8+D) the scan's fixed-level row
-  //: indices. Carry slots [0..5] are written by tid 0 behind the group-entry
-  //: barrier; the mask slots [6..7] are per-visit values written by warp 0 lane 0
-  //: at ballot end, published by the same barrier.
+  //: [6..6+D) the scan's fixed-level row indices. Carry slots [0..5] are written
+  //: by tid 0 behind the group-entry barrier; the row indices are hoisted once
+  //: per CTA. The visit's atom masks are NOT here: since Change 1's word-wise
+  //: bitlist ballot they are CTA-uniform per-thread registers (`rmask`/`wmask`).
   int* g_scan = t_idx + kGT;
   //: THE SCAN BATCH (kScanBatch words): per-word fixed-AND results and the
   //: PRECOMPUTED member word, staged by ONE thread per word per refill and
