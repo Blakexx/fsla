@@ -78,16 +78,19 @@ struct ConsumerParams {
   //: owner's fixed-level `read/write_tok_bits` rows. Derived from the same
   //: support authority, so over-approximation is impossible by construction.
   const uint32_t* slice_union_tok;  // [BH, n_slices, n_twords]
-  //: The PER-TOKEN ATOM-GRANULE UNION BYTES (TWO UNION FORMS, form (b)): bit
-  //: `q` of byte `[bh, slice, token]` = "some leaf of atom `q` of this slice is
-  //: live at this token on this side" (an atom = kMmaKQuantum consecutive
-  //: leaves; QPO = BC/16 <= 8 bits used). The walk's per-side masks: the visit
-  //: OR of the group's <= 16 bytes is the compact-into-registers atom walk's
-  //: whole consumption. Derived host-side with the token bits (one summaries
-  //: pass, consistency by construction); the per-(owner,word) pre-OR'd form is
-  //: FORBIDDEN (materialization rule) -- the per-visit OR is the kernel's job.
-  const uint8_t* read_atom_bytes;   // [BH, n_slices, T]
-  const uint8_t* write_atom_bytes;  // [BH, n_slices, T]
+  //: The ATOM-MAJOR CONTIGUOUS UNION BITLISTS (TWO UNION FORMS, form (b);
+  //: Blake's confirmed layout 2026-08-06): bit `t` of word `[bh, slice, q, w]`
+  //: = "some leaf of atom `q` of this slice is live at token `w*32+t` on this
+  //: side" (an atom = kMmaKQuantum consecutive leaves; QPO = BC/16 rows per
+  //: slice). ATOM-MAJOR so one atom's whole token-liveness row is CONTIGUOUS
+  //: -- the per-atom fetch era streams it without a layout migration. The
+  //: ballot consumes it WORD-WISE: atom bit q of a visit's mask = (row q's
+  //: word at the taken source word) AND taken != 0. Derived host-side with
+  //: the token bits (one summaries pass, consistency by construction); the
+  //: per-(owner,word) pre-OR'd form is FORBIDDEN (materialization rule) --
+  //: the per-visit OR is the kernel's job.
+  const uint32_t* read_atom_bits;   // [BH, n_slices, QPO, n_twords]
+  const uint32_t* write_atom_bits;  // [BH, n_slices, QPO, n_twords]
 
   //: Flattened LeafMassDecay dials, [H, total_rows], level `l` at row_offset[l].
   //: `rate[s] = prod_l delta_l[d_l(s)]`, a plain product of DIALS (spec §2).

@@ -51,6 +51,15 @@ constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state f
 //: worth of tokens against one multiply's worth of state rows.
 constexpr int kGroupTokens = kMmaKQuantum;
 
+//: THE FOLD'S STAGED-GROUP DEPTH (Blake's confirmed atom-major nest,
+//: 2026-08-06): how many groups' staged panels the fold consumes per atom
+//: residency. PINNED 1 today -- the staging carve holds one group's set -- and
+//: it is the ONE constant the per-atom fetch era deepens (together with the
+//: staging producer); the fold's loop nest is already written over it, so
+//: deepening is not a migration. The depth > 1 decay/window algebra is that
+//: era's design item.
+constexpr int kFoldStagedGroups = 1;
+
 //: THE SECTOR INVARIANT, UNIVERSAL: one atom's worth of bf16 digits IS one memory
 //: sector. `kMmaKQuantum` bf16 elements = 32 B = the fetch floor = the MMA k-quantum
 //: = the union-bitmap granule. The fetch/union/atom code assumes this
@@ -334,10 +343,11 @@ constexpr size_t consumer_smem_bytes() {
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
   //: The group scheduler's SMEM block: `t_idx` (`kGroupTokens` global token
   //: indices, warp 0 at ballot time) + `g_scan` (the assembler's cross-visit
-  //: carry: fill, word cursor word, fr, fw, member remainder, flags, plus the
-  //: per-visit read/write ATOM MASKS and the scan's `D` fixed-level row indices
-  //: -- SMEM so no scheduler state is register-live across the visit body).
-  b += static_cast<size_t>(kGroupTokens + 8 + D) * sizeof(int);  // t_idx + g_scan
+  //: carry: fill, word cursor, fr, fw, member remainder, flags, plus the
+  //: scan's `D` fixed-level row indices -- SMEM so no scheduler state is
+  //: register-live across the visit body; the atom masks are CTA-uniform
+  //: registers, derived word-wise from the bitlists at ballot).
+  b += static_cast<size_t>(kGroupTokens + 6 + D) * sizeof(int);  // t_idx + g_scan
   return b;
 }
 

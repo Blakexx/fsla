@@ -28,7 +28,7 @@ std::vector<at::Tensor> rola_consumer_forward(
     std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
     at::Tensor read_tok_bits, at::Tensor write_tok_bits, at::Tensor slice_union_tok,
-    at::Tensor read_atom_bytes, at::Tensor write_atom_bytes, at::Tensor owners, at::Tensor g_write,
+    at::Tensor read_atom_bits, at::Tensor write_atom_bits, at::Tensor owners, at::Tensor g_write,
     at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
     std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
     std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,

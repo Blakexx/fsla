@@ -968,14 +968,16 @@ class Schedule:
     read_slice_union: torch.Tensor
     write_slice_union: torch.Tensor
     slice_union_tok: torch.Tensor
-    #: TWO UNION FORMS, form (b): the per-token ATOM-GRANULE union bytes,
-    #: ``[BH, n_slices, T]`` uint8 per side -- bit ``q`` of byte
-    #: ``[bh, s, token]`` = "some leaf of atom ``q`` of slice ``s`` has its WHOLE
-    #: spanned product live at this token on this side". The walk's per-side atom
-    #: masks; DERIVED from the same masks the token bits are (the per-(owner,word)
+    #: TWO UNION FORMS, form (b): the ATOM-MAJOR CONTIGUOUS union bitlists,
+    #: ``[BH, n_slices, QPO, n_twords]`` int32 per side -- bit ``t`` of word
+    #: ``[bh, s, q, w]`` = "some leaf of atom ``q`` of slice ``s`` has its WHOLE
+    #: spanned product live at token ``w*32+t`` on this side". The walk's
+    #: per-side atom masks, consumed word-wise at the ballot; atom-major so the
+    #: per-atom fetch era streams one atom's row contiguously (no migration).
+    #: DERIVED from the same masks the token bits are (the per-(owner,word)
     #: pre-OR'd form is FORBIDDEN -- the per-visit OR is the kernel's job).
-    read_atom_bytes: torch.Tensor
-    write_atom_bytes: torch.Tensor
+    read_atom_bits: torch.Tensor
+    write_atom_bits: torch.Tensor
     read_amps: tuple[torch.Tensor, ...]
     write_amps: tuple[torch.Tensor, ...]
     g_read: torch.Tensor | None
@@ -1010,7 +1012,7 @@ class Schedule:
             self.read_tile_bits, self.write_tile_bits,
             self.read_token_bits, self.write_token_bits,
             self.read_slice_union, self.write_slice_union,
-            self.slice_union_tok, self.read_atom_bytes, self.write_atom_bytes))
+            self.slice_union_tok, self.read_atom_bits, self.write_atom_bits))
 
     def stream_bytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in (*self.read_amps, *self.write_amps))
@@ -1047,17 +1049,21 @@ def _tile_major_amps(level: torch.Tensor, BT: int, n_tiles: int, pitch: int,
     return out.view(BH, n_tiles, BT, pitch).contiguous()
 
 
-def _atom_union_bytes(views: RoutingViews, geometry: OwnerGeometry, BH: int, T: int,
-                      level_offsets: list[int], widths: tuple[int, ...]
-                      ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-token ATOM-GRANULE union bytes, ``[BH, n_slices, T]`` uint8 per side.
+def _atom_union_bits(views: RoutingViews, geometry: OwnerGeometry, BH: int, T: int,
+                     level_offsets: list[int], widths: tuple[int, ...]
+                     ) -> tuple[torch.Tensor, torch.Tensor]:
+    """ATOM-MAJOR CONTIGUOUS union bitlists, ``[BH, n_slices, QPO, n_twords]``
+    int32 per side (Blake's confirmed layout, 2026-08-06).
 
-    Bit ``q`` of byte ``[bh, s, t]`` = "some leaf of atom ``q`` of slice ``s``
-    has EVERY spanned level's digit live at token ``t``" (an atom =
-    ``MMA_K_QUANTUM`` consecutive leaves in canonical order; ``QPO = BC/16 <= 8``
-    bits used). Fixed levels do not enter: they are the membership ballot's own
-    AND terms, and the byte is per-SLICE precisely so it covers the structure
-    every owner of the slice shares.
+    Bit ``t`` of word ``[bh, s, q, w]`` = "some leaf of atom ``q`` of slice
+    ``s`` has EVERY spanned level's digit live at token ``w*32 + t``" (an atom
+    = ``MMA_K_QUANTUM`` consecutive leaves in canonical order;
+    ``QPO = BC/16``). ATOM-MAJOR so one atom's whole token-liveness row is
+    CONTIGUOUS -- the layout the per-atom fetch era streams without a
+    migration; the ballot consumes it word-wise (atom row word AND the taken
+    word). Fixed levels do not enter: they are the membership ballot's own AND
+    terms, and the row is per-SLICE precisely so it covers the structure every
+    owner of the slice shares.
 
     Chunked over leaves so no ``[BH, T, N]`` tensor is materialized at once
     (design-for-1M: the production form at scale is a producer-epilogue
@@ -1080,8 +1086,6 @@ def _atom_union_bytes(views: RoutingViews, geometry: OwnerGeometry, BH: int, T: 
         for width in widths[level + 1:]:
             stride *= width
         digit_idx.append((leaf // stride) % widths[level])
-    weights = (torch.ones((), dtype=torch.int32, device=device)
-               << torch.arange(qpo, device=device, dtype=torch.int32))
     sides = []
     chunk = 64 * MMA_K_QUANTUM
     for masks in (views.read_mask, views.write_mask):
@@ -1095,8 +1099,9 @@ def _atom_union_bytes(views: RoutingViews, geometry: OwnerGeometry, BH: int, T: 
                 live = m if live is None else live & m
             atoms_live[:, :, lo // MMA_K_QUANTUM:hi // MMA_K_QUANTUM] = live.view(
                 BH, T, (hi - lo) // MMA_K_QUANTUM, MMA_K_QUANTUM).any(dim=-1)
-        packed = (atoms_live.view(BH, T, n_slices, qpo).to(torch.int32) * weights).sum(-1)
-        sides.append(packed.to(torch.uint8).permute(0, 2, 1).contiguous())
+        # [BH, T, n_slices, qpo] -> [BH, n_slices, qpo, T] -> T packed to words.
+        rows = atoms_live.view(BH, T, n_slices, qpo).permute(0, 2, 3, 1)
+        sides.append(_pack_bits(rows).contiguous())
     return sides[0], sides[1]
 
 
@@ -1210,15 +1215,15 @@ def build_schedule(
                    if union_j.shape[-1] % 2 else head)
     slice_union_tok = union_j.squeeze(-1).permute(0, 2, 1).contiguous()
 
-    # TWO UNION FORMS, form (b): the per-token ATOM-GRANULE union bytes. An atom
-    # is MMA_K_QUANTUM consecutive leaves of a slice's spanned rectangle; its bit
-    # is set at a token iff SOME leaf of it has EVERY spanned level's digit live
-    # there (the fixed levels enter membership separately, at the ballot's AND).
-    # Derived from the same masks as the token bits -- one authority -- and
-    # CHUNKED over atoms so no [BH, T, N] leaf tensor is ever materialized (the
-    # production path at scale is a producer-epilogue OR-reduce; this host
-    # builder is its reference).
-    read_atom_bytes, write_atom_bytes = _atom_union_bytes(
+    # TWO UNION FORMS, form (b): the ATOM-MAJOR CONTIGUOUS union bitlists. An
+    # atom is MMA_K_QUANTUM consecutive leaves of a slice's spanned rectangle;
+    # its bit is set at a token iff SOME leaf of it has EVERY spanned level's
+    # digit live there (the fixed levels enter membership separately, at the
+    # ballot's AND). Derived from the same masks as the token bits -- one
+    # authority -- and CHUNKED over atoms so no [BH, T, N] leaf tensor is ever
+    # materialized (the production path at scale is a producer-epilogue
+    # OR-reduce; this host builder is its reference).
+    read_atom_bits, write_atom_bits = _atom_union_bits(
         views, geometry, BH, T, level_offsets, widths)
 
     # The amplitude CAST, strictly BELOW support selection (the bitmaps above are
@@ -1252,7 +1257,7 @@ def build_schedule(
         read_token_bits=read_token_bits, write_token_bits=write_token_bits,
         read_slice_union=read_slice_union, write_slice_union=write_slice_union,
         slice_union_tok=slice_union_tok,
-        read_atom_bytes=read_atom_bytes, write_atom_bytes=write_atom_bytes,
+        read_atom_bits=read_atom_bits, write_atom_bits=write_atom_bits,
         read_amps=read_amps, write_amps=write_amps,
         g_read=g_read_f, g_write=g_write_f,
         owners=owners, owner_costs=owner_costs)

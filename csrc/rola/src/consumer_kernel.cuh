@@ -136,6 +136,10 @@ consumer_forward_kernel(ConsumerParams p) {
   //: unrolled dense arm -- dense inputs pay zero mask instructions.
   constexpr unsigned kFullMask = (kQPO >= 32) ? 0xffffffffu : ((1u << kQPO) - 1u);
   constexpr int kRfWords = frag_a_words(BC);
+  //: The staged-slot strides the atom-major fold walks (one slot today:
+  //: `kFoldStagedGroups` is pinned 1 and these fold to zero offsets).
+  constexpr int kWtSlotElems = BC * kWtPitch;
+  constexpr int kVwSlotElems = vw_elems<DV>();
 
   float* S = reinterpret_cast<float*>(smem_raw);
   char* carve = smem_raw + align4(static_cast<size_t>(BC) * SP * sizeof(float));
@@ -292,19 +296,21 @@ consumer_forward_kernel(ConsumerParams p) {
   }
   //: The scheduler's once-per-CTA reset: the carry, the scan's fixed-level row
   //: indices (hoisted so the per-word refill is two SMEM loads per fixed level,
-  //: never a `base[]` access inside the scan loop), and the mask slots.
+  //: never a `base[]` access inside the scan loop).
   if (tid == 0) {
 #pragma unroll
-    for (int q = 0; q < 8; ++q) g_scan[q] = 0;
+    for (int q = 0; q < 6; ++q) g_scan[q] = 0;
 #pragma unroll
-    for (int l = 0; l < D; ++l) g_scan[8 + l] = p.level_row_offset[l] + base[l];
+    for (int l = 0; l < D; ++l) g_scan[6 + l] = p.level_row_offset[l] + base[l];
   }
   __syncthreads();
 
   //: The token-major amplitude stream base for this `bh`: a member token's row is
   //: `tok_base + token` (whole-covered-span fetch: the span is read by position).
   const int64_t tok_base = static_cast<int64_t>(bh) * p.n_twords * 32;
-  const int64_t ab_row = (static_cast<int64_t>(bh) * p.n_slices + slice) * p.T;
+  //: The slice's ATOM-MAJOR bitlist base: row `q`'s word for source word `w` is
+  //: `ab_base + q * n_twords + w` -- one CONTIGUOUS token-bit row per atom.
+  const int64_t ab_base = (static_cast<int64_t>(bh) * p.n_slices + slice) * kQPO * p.n_twords;
 
   // ---- THE STAGING, AS A FUNCTION OF THE GROUP: everything the visit's COMPUTE
   // ---- consumes but does not produce. Tokens are `t_idx[0..gN)`, globally
@@ -522,7 +528,10 @@ consumer_forward_kernel(ConsumerParams p) {
     uint32_t member = static_cast<uint32_t>(g_scan[4]);
     bool gr = (g_scan[5] & 1) != 0;
     bool gw = (g_scan[5] & 2) != 0;
-    unsigned lrb = 0, lwb = 0;  // warp 0's per-lane atom-byte accumulators
+    //: The visit's per-side ATOM MASKS, accumulated word-wise from the
+    //: atom-major bitlists as the ballot takes each word -- CTA-uniform by
+    //: construction (uniform loads, uniform `taken`).
+    unsigned rmask = 0u, wmask = 0u;
     int g_next1 = 0, g_next2 = 0, g_next3 = 0, g_next4 = 0;
     while (fill < kGT) {
       if (member == 0u) {
@@ -539,8 +548,8 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
         for (int l = 0; l < D; ++l) {
           if (l >= j) break;
-          g_fr &= p.read_tok_bits[slab + g_scan[8 + l]];
-          g_fw &= p.write_tok_bits[slab + g_scan[8 + l]];
+          g_fr &= p.read_tok_bits[slab + g_scan[6 + l]];
+          g_fw &= p.write_tok_bits[slab + g_scan[6 + l]];
         }
         member = (summary ? g_fw : (g_fr | g_fw))
                  & p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords
@@ -555,16 +564,16 @@ consumer_forward_kernel(ConsumerParams p) {
         const unsigned cut = __fns(member, 0, room + 1);
         taken = member & ((1u << cut) - 1u);
       }
-      if (warp == 0) {
-        if (((taken >> lane) & 1u) != 0u) {
-          const int token = gword * 32 + lane;
-          t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = token;
-          //: The member stream's union bytes (form (b)): one read + one write
-          //: byte per member, OR'd into the visit's atom masks. ~16 one-byte ORs
-          //: per visit -- the walk's whole mask consumption.
-          lrb |= p.read_atom_bytes[ab_row + token];
-          lwb |= p.write_atom_bytes[ab_row + token];
-        }
+      if (warp == 0 && ((taken >> lane) & 1u) != 0u) {
+        t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = gword * 32 + lane;
+      }
+      //: Form (b)'s consumption, word-wise: atom `q` is live for this group iff
+      //: its bitlist row intersects the taken word. <= 2*QPO uniform loads per
+      //: ballot round -- the compact-into-registers walk's whole mask cost.
+#pragma unroll
+      for (int q = 0; q < kQPO; ++q) {
+        if ((p.read_atom_bits[ab_base + q * p.n_twords + gword] & taken) != 0u) rmask |= 1u << q;
+        if ((p.write_atom_bits[ab_base + q * p.n_twords + gword] & taken) != 0u) wmask |= 1u << q;
       }
       gr = gr || (g_fr & taken) != 0u;
       gw = gw || (g_fw & taken) != 0u;
@@ -574,14 +583,6 @@ consumer_forward_kernel(ConsumerParams p) {
     //: The final flush is the ragged group (`fill < kGT`); `fill == 0` is the
     //: stream's end.
     if (fill == 0) break;
-    if (warp == 0) {
-      const unsigned rm = __reduce_or_sync(0xffffffffu, lrb);
-      const unsigned wm = __reduce_or_sync(0xffffffffu, lwb);
-      if (lane == 0) {
-        g_scan[6] = static_cast<int>(rm);
-        g_scan[7] = static_cast<int>(wm);
-      }
-    }
     const int gN = fill;
     //: The NEXT visit's carry: the consumed group resets to empty, the split
     //: word's remainder persists. Registers here; stored behind the entry
@@ -595,9 +596,9 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- end-of-visit `__syncthreads()`, ahead of it the entry barrier below.
     // ---- docs/internals/pipeline.md#edge-dag
     if (tid < ctl_words(BC)) ctl[tid] = 0;
-    //: Publishes warp 0's `t_idx` writes and the mask slots to every staging loop,
-    //: AND orders every thread's carry LOADS (in the assembler above) before tid
-    //: 0's carry STORES below.
+    //: Publishes warp 0's `t_idx` writes to every staging loop, AND orders
+    //: every thread's carry LOADS (in the assembler above) before tid 0's
+    //: carry STORES below.
     __syncthreads();
     if (tid == 0) {
       g_scan[0] = 0;
@@ -607,12 +608,10 @@ consumer_forward_kernel(ConsumerParams p) {
       g_scan[4] = g_next4;
       g_scan[5] = 0;
     }
-    //: The visit's atom masks and side flags, CTA-uniform. A side whose mask is
-    //: empty is a side with no live coefficients anywhere in the slice this visit
-    //: -- skipping it is exact (the whole-visit emptiness early-out the tile-level
-    //: machinery structurally could not see).
-    const unsigned rmask = static_cast<unsigned>(g_scan[6]);
-    const unsigned wmask = static_cast<unsigned>(g_scan[7]);
+    //: The visit's side flags. A side whose atom mask is empty is a side with
+    //: no live coefficients anywhere in the slice this visit -- skipping it is
+    //: exact (the whole-visit emptiness early-out the tile-level machinery
+    //: structurally could not see).
     const bool is_read = !summary && gr && rmask != 0u;
     const bool is_write = gw && wmask != 0u;
     const unsigned gmask = rmask & wmask;
@@ -700,9 +699,16 @@ consumer_forward_kernel(ConsumerParams p) {
     //: HAZARD gram-gate-guard -- docs/internals/consumer_kernel.md#gram-gate-guard
     if (mixed && warp < kGramWarps) retire_item(&ctl[kCtlGramDone], lane);
 
-    // ---- GEMM 4, THE BOUNDARY FOLD `S += W^T . Vw`, THE VISIT'S FLUID ITEM POOL --
-    // ---- LIVE WRITE ATOMS ONLY. Skipping a dead atom's RMW is exact: its delta is
-    // ---- zero and its exit scale is s0 == 1 (ticks ride writes).
+    // ---- GEMM 4, THE BOUNDARY FOLD `S += W^T . Vw`, THE VISIT'S FLUID ITEM POOL,
+    // ---- ATOM-MAJOR (Blake's confirmed loop-nest, 2026-08-06): an item claims one
+    // ---- (live write atom, column tile); the atom's accumulator loads to
+    // ---- registers, stays resident while the atom CONSUMES EVERY STAGED GROUP
+    // ---- SLOT (`kFoldStagedGroups` -- 1 today; the per-atom fetch era deepens
+    // ---- the staging and ONLY this constant and the staging producer move),
+    // ---- then ONE writeback, release, next item. The readout stays group-major:
+    // ---- its state reads are read-only. LIVE WRITE ATOMS ONLY -- skipping a
+    // ---- dead atom's RMW is exact: its delta is zero and its exit scale is
+    // ---- s0 == 1 (ticks ride writes).
     // ---- docs/internals/consumer_kernel.md#gemm-fold
     if (is_write) {
       await_count(&ctl[kCtlReadDone], kWarps);
@@ -718,31 +724,54 @@ consumer_forward_kernel(ConsumerParams p) {
         const int mr = c / NT_DV;  // index into the LIVE atom list
         const int nt = c - mr * NT_DV;
         const int mt = (wmask == kFullMask) ? mr : static_cast<int>(__fns(wmask, 0, mr + 1));
-        float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-        mma_fold_tile<DV>(WT + mt * kMmaKQuantum * BTP, Vw, nt * 8, lane, d0, d1, d2, d3);
         const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
-        // ---- DECAY's EXIT SCALE RIDES THE FOLD'S EXISTING READ-MODIFY-WRITE:
-        // ---- `S <- s0 * (S + d)`, ONE extra multiply on a value already in a
-        // ---- register. docs/internals/consumer_kernel.md#fold-epilogue
         const int i0 = r0, i1 = r0 + 8;
-        const float e0 = DECAY ? s0[i0] : 1.0f;
-        const float e1 = DECAY ? s0[i1] : 1.0f;
-        S[i0 * SP + n0] = e0 * (S[i0 * SP + n0] + d0);
-        S[i0 * SP + n0 + 1] = e0 * (S[i0 * SP + n0 + 1] + d1);
-        S[i1 * SP + n0] = e1 * (S[i1 * SP + n0] + d2);
-        S[i1 * SP + n0 + 1] = e1 * (S[i1 * SP + n0 + 1] + d3);
+        // ---- the atom's accumulator: RESIDENT IN REGISTERS from the load to
+        // ---- the one writeback below.
+        float a0 = S[i0 * SP + n0];
+        float a1 = S[i0 * SP + n0 + 1];
+        float a2 = S[i1 * SP + n0];
+        float a3 = S[i1 * SP + n0 + 1];
+#pragma unroll
+        for (int gs = 0; gs < kFoldStagedGroups; ++gs) {
+          float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
+          mma_fold_tile<DV>(WT + gs * kWtSlotElems + mt * kMmaKQuantum * BTP,
+                            Vw + gs * kVwSlotElems, nt * 8, lane, d0, d1, d2, d3);
+          // ---- DECAY's EXIT SCALE RIDES THE ACCUMULATOR, per staged group:
+          // ---- `acc <- s0 * (acc + d)`, one multiply on a register value.
+          // ---- (At depth > 1 the per-group s0/window algebra is the per-atom
+          // ---- fetch era's design item; depth is PINNED 1 until then.)
+          // ---- docs/internals/consumer_kernel.md#fold-epilogue
+          const float e0 = DECAY ? s0[i0] : 1.0f;
+          const float e1 = DECAY ? s0[i1] : 1.0f;
+          a0 = e0 * (a0 + d0);
+          a1 = e0 * (a1 + d1);
+          a2 = e1 * (a2 + d2);
+          a3 = e1 * (a3 + d3);
+        }
+        // ---- the ONE writeback: the atom releases its accumulator.
+        S[i0 * SP + n0] = a0;
+        S[i0 * SP + n0 + 1] = a1;
+        S[i1 * SP + n0] = a2;
+        S[i1 * SP + n0 + 1] = a3;
       }
-      // ---- the mass column's fold term, live write atoms only (a dead atom's
-      // ---- rows: acc == 0 and s0 == 1 -- the skip is the identity).
+      // ---- the mass column's fold term, the same atom-major nest (a dead
+      // ---- atom's rows: acc == 0 and s0 == 1 -- the skip is the identity).
       {
         const int n_live_rows = __popc(wmask) * kMmaKQuantum;
         for (int idx = tid; idx < n_live_rows; idx += kConsumerThreads) {
           const int q =
               (wmask == kFullMask) ? (idx >> 4) : static_cast<int>(__fns(wmask, 0, (idx >> 4) + 1));
           const int row = q * kMmaKQuantum + (idx & 15);
-          float acc = 0.0f;
-          for (int t = 0; t < kGT; ++t) acc += mma_src(WT[wt_index(row, t)]) * sw[t];
-          S[row * SP + DV] = (DECAY ? s0[row] : 1.0f) * (S[row * SP + DV] + acc);
+          float m = S[row * SP + DV];
+#pragma unroll
+          for (int gs = 0; gs < kFoldStagedGroups; ++gs) {
+            float acc = 0.0f;
+            for (int t = 0; t < kGT; ++t)
+              acc += mma_src(WT[gs * kWtSlotElems + wt_index(row, t)]) * sw[t];
+            m = (DECAY ? s0[row] : 1.0f) * (m + acc);
+          }
+          S[row * SP + DV] = m;
         }
       }
     }

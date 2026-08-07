@@ -365,13 +365,6 @@ const uint32_t* u32_ptr(const at::Tensor& t, const char* name) {
   return reinterpret_cast<const uint32_t*>(t.data_ptr<int32_t>());
 }
 
-const uint8_t* u8_ptr(const at::Tensor& t, const char* name) {
-  TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
-  TORCH_CHECK(t.scalar_type() == at::kByte, name, " must be uint8, got ", t.scalar_type());
-  TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
-  return t.data_ptr<uint8_t>();
-}
-
 //: The AMPLITUDE-CLASS storage dtype (spanned amplitude levels and the value
 //: stream): bf16, unconditionally -- the one precision story. A tensor bound
 //: through here must ALREADY be bf16; a mismatch is a hard error, never a silent
@@ -392,7 +385,7 @@ std::vector<at::Tensor> rola_consumer_forward(
     std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
     c10::optional<std::vector<at::Tensor>> amp_clock, c10::optional<at::Tensor> dials,
     at::Tensor read_tok_bits, at::Tensor write_tok_bits, at::Tensor slice_union_tok,
-    at::Tensor read_atom_bytes, at::Tensor write_atom_bytes, at::Tensor owners, at::Tensor g_write,
+    at::Tensor read_atom_bits, at::Tensor write_atom_bits, at::Tensor owners, at::Tensor g_write,
     at::Tensor v, at::Tensor state, c10::optional<at::Tensor> page_table,
     std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
     std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
@@ -511,14 +504,16 @@ std::vector<at::Tensor> rola_consumer_forward(
                   && slice_union_tok.size(1) == n_slices && slice_union_tok.size(2) == n_twords,
               "slice_union_tok must be [BH, n_slices, n_twords]");
   p.slice_union_tok = u32_ptr(slice_union_tok, "slice_union_tok");
-  // The per-token atom-granule union bytes (ABI v4, union form (b)): the walk's
-  // per-side atom masks, one byte per (bh, slice, token).
-  TORCH_CHECK(read_atom_bytes.dim() == 3 && read_atom_bytes.size(0) == BH
-                  && read_atom_bytes.size(1) == n_slices && read_atom_bytes.size(2) == T
-                  && write_atom_bytes.sizes() == read_atom_bytes.sizes(),
-              "read/write_atom_bytes must both be [BH, n_slices, T] uint8");
-  p.read_atom_bytes = u8_ptr(read_atom_bytes, "read_atom_bytes");
-  p.write_atom_bytes = u8_ptr(write_atom_bytes, "write_atom_bytes");
+  // The atom-major contiguous union bitlists (ABI v4, union form (b)): the
+  // walk's per-side atom masks, one token-bit row per (bh, slice, atom).
+  TORCH_CHECK(read_atom_bits.dim() == 4 && read_atom_bits.size(0) == BH
+                  && read_atom_bits.size(1) == n_slices
+                  && read_atom_bits.size(2) == BC / kMmaKQuantum
+                  && read_atom_bits.size(3) == n_twords
+                  && write_atom_bits.sizes() == read_atom_bits.sizes(),
+              "read/write_atom_bits must both be [BH, n_slices, QPO=BC/16, n_twords] int32");
+  p.read_atom_bits = u32_ptr(read_atom_bits, "read_atom_bits");
+  p.write_atom_bits = u32_ptr(write_atom_bits, "write_atom_bits");
   p.owners = owners.data_ptr<int32_t>();
   p.g_write = f32_ptr(g_write, "g_write");
   p.v = amp_class_ptr(v, true, "v");
