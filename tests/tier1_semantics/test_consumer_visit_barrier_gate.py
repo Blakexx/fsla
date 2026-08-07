@@ -1,20 +1,23 @@
-"""Liveness + starvation gate for the consumer's COUNTER-GATED phase ordering (K3b).
+"""Liveness + starvation gate for the consumer's VISIT BARRIER.
 
-THUNDER_RUN_SPEC.md §5 K3 moves the consumer's intra-tile phase ordering off
-`__syncthreads()` and onto SMEM counters: the readout's consumption of the state
-`S` is published by `kCtlReadDone` and the Gram's publication of `Gm` by
-`kCtlGramDone`, both retired through `retire_item` and observed through
-`eligible` (`consumer_kernel.cuh`), and the boundary fold's warp tiles become a
-FLUID ITEM POOL claimed from `kCtlFoldClaim` instead of a strided warp loop.
+The consumer orders one visit's phases with ONE `__syncthreads()`, placed after
+the Gram and before phase C and the fold. It carries both of the visit's
+intra-CTA edges at once -- the readout's reads of the state `S` complete before
+the fold's writes, and the Gram's stores to `Gm` are published to phase C -- and
+the fold's items are claimed by a STATIC strided partition
+(`for (c = warp; c < n_fold_items; c += kWarps)`) rather than a pool.
 
-WHY THIS FILE EXISTS AND WHY IT IS NOT THE ORACLE SUITE. A software barrier has a
-failure mode a hardware barrier does not: it can HANG. The oracle suites
-(`test_consumer_vs_oracle.py`, `test_consumer_smem_precision_gate.py`) gate the
-VALUES, and they gate them thoroughly -- but a deadlocked kernel does not produce
-a wrong value, it produces no value at all, and inside a pytest process that is an
-un-attributable hang rather than a failure. So every cell below runs in a CHILD
-PROCESS UNDER A WALL-CLOCK TIMEOUT, and a timeout is reported as a FAILED
-LIVENESS CLAIM naming the cell.
+WHY THIS FILE EXISTS AND WHY IT IS NOT THE ORACLE SUITE. A CTA-wide barrier has a
+failure mode a value gate cannot see: it HANGS. `__syncthreads()` is only safe
+where every thread of the CTA reaches it, so the guarantee the whole visit body
+rests on is that every predicate wrapping a barrier -- `is_read`, `is_write`,
+`mixed`, `DECAY && is_write` -- is CTA-UNIFORM. A predicate that becomes
+per-warp deadlocks the launch, and the oracle suites
+(`test_consumer_vs_oracle.py`) gate the VALUES: a deadlocked kernel does not
+produce a wrong value, it produces no value at all, and inside a pytest process
+that is an un-attributable hang rather than a failure. So every cell below runs
+in a CHILD PROCESS UNDER A WALL-CLOCK TIMEOUT, and a timeout is reported as a
+FAILED LIVENESS CLAIM naming the cell.
 
 Symbols: `BC` leafs per owner (one CTA = one owner); `DV` = `d_v` the value
 width; `D` level count; `NT_DV = DV/8` the readout's `n8` column blocks;
@@ -22,22 +25,21 @@ width; `D` level count; `NT_DV = DV/8` the readout's `n8` column blocks;
 
 THE STARVATION AXIS, and every cell below is chosen ON it rather than for coverage:
 
-  (a) **more warps than items.** `BC = 16, DV = 32` gives `n_mt = 1` fold m-tile
-      and `NT_DV = 4` n-tiles, i.e. FOUR fold items for EIGHT warps -- half the
-      CTA claims nothing and must still retire both counters and reach the
-      end-of-tile barrier. This is the cell that catches a retirement made
-      conditional on having done work.
-  (b) **no readout tiles for half the CTA.** `BT = 16, DV = 32` gives
-      `NM * NT_DV = 4` output tiles, so warps 4-7 hold no `y` fragment at all and
-      pass through phase A and phase C empty.
+  (a) **more warps than items.** `BC = 16, DV = 32` gives one fold m-tile and
+      `NT_DV = 4` n-tiles, i.e. FOUR fold items for EIGHT warps -- half the CTA
+      claims nothing under the static partition and must still reach the
+      barrier. This is the cell that catches a barrier made conditional on
+      having done work.
+  (b) **no readout tiles for half the CTA.** `DV = 32` gives `NT_DV = 4` output
+      tiles, so warps 4-7 hold no `y` fragment at all and pass through the
+      readout and phase C empty.
   (c) **tiles that are read-only, write-only and mixed within ONE launch.**
-      Independent read/write densities make `is_read`/`is_write` vary tile by
-      tile, so the CTA takes a different subset of the phase graph on successive
-      iterations of the SAME tile loop -- which is where a counter that is not
-      reset, or is reset on the wrong side of a barrier, shows up.
-  (d) **many tiles.** `T = 521` at `BT = 16` is 33 tiles per owner, so a
-      once-per-few-thousand-tiles race gets thousands of chances per cell rather
-      than one.
+      Independent read/write densities make `is_read`/`is_write` vary group by
+      group, so the CTA takes a different subset of the phase graph on
+      successive iterations of the SAME visit loop -- which is where a barrier
+      placed inside a predicate that is not actually CTA-uniform shows up.
+  (d) **many visits.** `T = 521` is 33 groups per owner, so a
+      once-in-thousands race gets thousands of chances per cell rather than one.
 
 Each cell ALSO asserts its values against the fp64 oracle in the same child
 process, so "it finished" is never the whole claim: a schedule that completes but
@@ -83,7 +85,7 @@ _CHILD = textwrap.dedent(
     import rola
     assert os.path.realpath(rola.__file__).startswith(
         os.path.realpath({repo!r}) + os.sep), (
-        "the K3 gate is testing a FOREIGN tree: rola resolved to "
+        "the barrier gate is testing a FOREIGN tree: rola resolved to "
         f"{{rola.__file__}} instead of under {repo!r}")
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
@@ -139,8 +141,8 @@ _CHILD = textwrap.dedent(
 
     ey, es = rel(y, y_ref), rel(state, s_ref)
     print("OK", ey, es)
-    assert ey < {rtol!r} and es < {rtol!r}, ("item stream moved a value: "
-                                             f"y {{ey:.3e}} state {{es:.3e}}")
+    assert ey < {rtol!r} and es < {rtol!r}, ("the visit's phase schedule moved a "
+                                             f"value: y {{ey:.3e}} state {{es:.3e}}")
     '''
 )
 
@@ -148,10 +150,11 @@ _CHILD = textwrap.dedent(
 def _run_cell(**kw):
     """Run one stress cell in a child process under a wall-clock timeout.
 
-    The timeout IS the liveness gate. A counter-gated kernel that deadlocks
-    leaves the child in an uninterruptible CUDA wait, so the child is killed and
-    the cell is reported as a liveness failure naming its parameters -- which is
-    the attribution a bare hang inside the pytest process cannot give.
+    The timeout IS the liveness gate. A kernel whose barrier is reached by only
+    part of the CTA deadlocks, leaving the child in an uninterruptible CUDA
+    wait, so the child is killed and the cell is reported as a liveness failure
+    naming its parameters -- which is the attribution a bare hang inside the
+    pytest process cannot give.
     """
     repo = str(pathlib.Path(__file__).resolve().parents[2])
     src = _CHILD.format(repo=repo, rtol=RTOL, **kw)
@@ -161,10 +164,10 @@ def _run_cell(**kw):
     except subprocess.TimeoutExpired:
         pytest.fail(
             f"LIVENESS FAILURE: the consumer did not complete in {TIMEOUT_S}s on cell "
-            f"{kw}. The counter-gated phase ordering (kCtlReadDone / kCtlGramDone) or "
-            f"the fold's claim pool (kCtlFoldClaim) has a warp waiting on a retirement "
-            f"that never arrives -- see the deadlock-freedom argument at the head of "
-            f"the tile body in consumer_kernel.cuh")
+            f"{kw}. Some thread of the CTA is not reaching the visit's "
+            f"__syncthreads() -- a predicate wrapping a barrier (is_read, is_write, "
+            f"mixed, DECAY && is_write) has stopped being CTA-uniform. See the "
+            f"barrier argument in docs/internals/consumer_kernel.md#visit-barrier")
     assert proc.returncode == 0, (
         f"cell {kw} failed:\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
     assert proc.stdout.startswith("OK"), proc.stdout
@@ -189,7 +192,7 @@ def _run_cell(**kw):
      (1.0, 1.0)],    # every tile mixed -- no phase-subset variation at all
 )
 @pytest.mark.parametrize("decay", [False, True])
-def test_item_stream_is_live_and_exact_under_role_imbalance(
+def test_the_visit_barrier_is_live_and_exact_under_role_imbalance(
         widths, BC, d_v, p_read, p_write, decay):
     _run_cell(widths=widths, BC=BC, d_v=d_v, decay=decay,
               p_read=p_read, p_write=p_write,

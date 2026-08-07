@@ -795,8 +795,12 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- is a HARDWARE rendezvous because both edges are CTA-WIDE and CTA-UNIFORM;
     // ---- there is no work a warp could do instead of arriving, because every
     // ---- remaining item pool below is statically partitioned.
+    // ---- BOTH EDGES REQUIRE `mixed`, SO THE BARRIER DOES: a read-only visit runs no
+    // ---- fold and a write-only visit reads no state, and neither has a Gram. A
+    // ---- SINGLE-SIDED VISIT PAYS NOTHING, which is what the small topologies (whose
+    // ---- visits are frequently one-sided) actually measure.
     // ---- docs/internals/consumer_kernel.md#visit-barrier
-    __syncthreads();
+    if (mixed) __syncthreads();
 
     // ---- PHASE C -- GEMM 3, the intra term `y_group += G . Vw`: the SAME warp
     // ---- tiling the readout used, so the two GEMMs accumulate into the same
@@ -914,8 +918,13 @@ consumer_forward_kernel(ConsumerParams p) {
         CONSUMER_D_ROWS(lane);
         const int mt = (wmask == kFullMask) ? mi : static_cast<int>(__fns(wmask, 0, mi + 1));
         const int i0 = mt * kMmaKQuantum + _g, i1 = i0 + 8;
-        float a0 = S[i0 * SP + DV];
-        float a1 = S[i1 * SP + DV];
+        //: THE RMW IS ONE LANE PER LEAF. Output column 0 of a broadcast-B tile
+        //: carries the result, so the accumulator is only meaningful on `_r == 0`
+        //: and the OTHER three lanes of the row must not touch `S` at all -- a
+        //: read they would discard is still a shared-memory access to an address
+        //: their own warp is about to write.
+        float a0 = (_r == 0) ? S[i0 * SP + DV] : 0.0f;
+        float a1 = (_r == 0) ? S[i1 * SP + DV] : 0.0f;
 #pragma unroll
         for (int gs = 0; gs < kFoldStagedGroups; ++gs) {
           float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
