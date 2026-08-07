@@ -589,17 +589,19 @@ consumer_forward_kernel(ConsumerParams p) {
     //: `extern __shared__` block, so the compiler must assume the fold's stores to
     //: `S` may alias the ring -- and a descriptor field read at its point of use is
     //: then a real SMEM load INSIDE the fold's item loop, re-issued per item and
-    //: per slot, that no amount of `const` can hoist. Two masks and a count per
-    //: group is `3 * W` registers against that, which is the register policy's own
-    //: test: a register that deletes instructions in the hot loop is bought, not
-    //: leaked.
-    int gNr[W];
+    //: per slot, that no amount of `const` can hoist. Two masks per group is
+    //: `2 * W` registers against that, which is the register policy's own test: a
+    //: register that deletes instructions in the hot loop is bought, not leaked.
+    //: THE MEMBER COUNT IS NOT AMONG THEM, and that is a measured line rather than
+    //: an oversight: `gN` is read only by the STAGING loops, which run before the
+    //: fold and are not the aliasing site, so hoisting it bought nothing -- and it
+    //: was the register that put `<BC=16, DV=32, D<=3, nodecay>`, the tightest key
+    //: in the matrix, over its 64-register budget and into an 8..20 B spill.
     unsigned rmr[W], wmr[W];
     bool w_read = false, w_write = false;
     unsigned w_wmask = 0u;
 #pragma unroll
     for (int a = 0; a < W; ++a) {
-      gNr[a] = gN_of(a);
       const int flags = Rw[a * kSchedSlotInts + kSchedFlags];
       rmr[a] = (!summary && (flags & 1) != 0) ? rm_of(a) : 0u;
       wmr[a] = ((flags & 2) != 0) ? wm_of(a) : 0u;
@@ -633,7 +635,7 @@ consumer_forward_kernel(ConsumerParams p) {
         float acc = 0.0f;
         for (int a = 0; a < W; ++a) {
           const int* T = tk_of(a);
-          const int gna = gNr[a];
+          const int gna = gN_of(a);
           for (int t = 0; t < gna; ++t) {
             float cl = 1.0f;
 #pragma unroll
@@ -670,7 +672,7 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- so it needs no barrier of its own.
     // ---- docs/internals/consumer_kernel.md#upper-product
     for (int a = 0; a < W; ++a) {
-      const int gN = gNr[a];
+      const int gN = gN_of(a);
       const int* const T = tk_of(a);
       const bool is_read = rmr[a] != 0u;
       const bool is_write = wmr[a] != 0u;
@@ -807,7 +809,7 @@ consumer_forward_kernel(ConsumerParams p) {
         }
         continue;
       }
-      const int gN = gNr[a];
+      const int gN = gN_of(a);
       const int* const T = tk_of(a);
       const float* const swa = sw_of(a);
       for (int idx = tid; idx < kGroupTokens * DV; idx += kConsumerThreads) {

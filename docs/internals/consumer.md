@@ -486,11 +486,23 @@ remain are the ones `tools/gen_shards.py`'s own header names as the survivors.
 
 `GT` is a PLANNER-SELECTED axis rather than a shape-derived one: the other four
 axes come from the routing's structural shape (topology, dtype, decay), but the
-window is chosen from the REALIZED routing density by
-`rola.planner.schedule.select_window` — widest first, refused down by the
-device's SMEM grant and, on the decay arm, by `panel_exponent_bound`'s
-window-scaled admission bound (that function's own docstring is the authority
-on the bound; see `rola/planner/schedule.py`).
+window is chosen widest-first over `CONSUMER_WINDOWS` by
+`rola.planner.schedule.select_window`, which runs its refusals CHEAPEST-FIRST
+because it sits on the launch path beside kernels that take a fifth of a
+millisecond: the device's SMEM grant (a cached driver fact), then RESIDENCY — a
+wider window is admitted only where it costs NO CTA per SM against the group
+quantum — then, on the decay arm, `panel_exponent_bound`'s window-scaled
+admission bound, then last the routing's member-fill statistic
+(`union_member_median`, the one refusal that costs a device-side sweep of the
+slice-union bitmap, memoized on the schedule so it is paid at most once).
+MEASURED on `sm_86`, the residency refusal is TOTAL: `select_window` returns
+the group quantum on every arm this batch measured, because widening `GT`
+costs CTA residency (`BC = 16`, 4 -> 2 CTAs; `BC = 64`, 3 -> 1) and the loss
+tracks the residency given up, not the window's own extra arithmetic — the
+kernel's panel builds gather amplitudes straight from global memory,
+unprefetched, so warps are still what hides that latency. The rule is
+ARCH-GENERAL, not a pin to this box: `architecture/planner.md#7` states it and
+its evidence.
 
 Each remaining axis is a STRUCTURAL plan fact, fixed before launch, with few
 legal values — the standing "branch on structure, not thresholds" rule

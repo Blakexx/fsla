@@ -147,12 +147,56 @@ table.
 The consumer's WINDOW, `GT` (the token quantum one visit consumes;
 [`smem_layout.md#window`](../internals/smem_layout.md#window)), is a SECOND
 structural axis the dispatch table carries, and it is selected differently
-from `BC` on purpose: `rola.planner.schedule.select_window` reads the realized
-routing's coarse slice-union popcount to pick the widest `CONSUMER_WINDOWS`
-member a routing's group-stream length, the device's SMEM grant, and (under
-decay) `panel_exponent_bound`'s window-scaled admission bound all clear. That
-IS reading a per-step distribution to decide how to run — the thing this
-document's opening rule forbids for `BC`.
+from `BC` on purpose: `rola.planner.schedule.select_window` picks the widest
+`CONSUMER_WINDOWS` member that clears four refusals. That IS reading a
+per-step distribution to decide how to run — the thing this document's opening
+rule forbids for `BC` — and [§7.1](#71-the-refusal-order) below is why the
+order those four refusals run in is itself load-bearing, not incidental.
+
+### 7.1. The refusal order
+
+`select_window` runs on the LAUNCH path, beside kernels that take a fifth of a
+millisecond, so it refuses CHEAPEST-FIRST: the device's SMEM grant (a cached
+driver fact — the window Gram's storage is quadratic in `GT`, so a wide window
+is the first arm a small-SMEM device cannot grant a block), then RESIDENCY (the
+same cached driver facts, queried again at the wider arm — see
+[§7.2](#72-the-residency-rule)), then, on the decay arm,
+`panel_exponent_bound`'s window-scaled admission bound (a plan-time
+computation, not a driver query), then last the routing's member-fill
+statistic, `union_member_median` — a device-side sweep of the whole
+slice-union bitmap, memoized on the schedule because it is the one refusal
+expensive enough that it must not be paid twice, and cheap enough to still
+belong on the launch path only because it runs last, after the other three
+have already settled most arms.
+
+### 7.2. The residency rule
+
+**A wider window is taken only where it costs NO CTA per SM against the group
+quantum.** The window's whole trade is per-visit overhead amortised `W`-fold
+against a Gram quadratic in `W`
+([`smem_layout.md#window`](../internals/smem_layout.md#window)); MEASURED on
+`sm_86`, that trade never wins the residency it costs, and the refusal is
+TOTAL — `select_window` returns the group quantum (`GT = 16`) on every arm
+this batch measured. The wide window ships compiled, ratified and
+oracle-exact; it is simply never the one selected on this box. The evidence is
+that the loss TRACKS THE RESIDENCY GIVEN UP, not the extra arithmetic the wider
+Gram triangle costs: at `BC = 16` the wider window drops residency 4 CTAs -> 2
+and costs +43% at `topo-D4-w8x8x8x16-BC16`; at `BC = 64` it drops 3 CTAs -> 1
+and costs +84% on the whole-layer dense `N = L = 4096` cell, +145% at
+`atscale-L2048`. Full session record: `workflows/perf/p36_quantum.md`.
+
+WHY residency binds here rather than the window's own arithmetic paying for
+itself: this kernel's panel builds gather amplitudes straight from global
+memory and they are NOT prefetched, so warps are still what hides that
+latency, not spare SMEM — P31 measured 66% of cycles with no eligible warp.
+Occupancy is not idle capacity for this kernel; it is the latency-hiding
+mechanism the window's own amortisation competes against.
+
+The rule is ARCH-GENERAL, not a pin to `sm_86`: `select_window` re-derives it
+from the driver's own occupancy query on whichever device is running, so on an
+architecture whose SMEM budget carries the wider carve at the same occupancy
+(e.g. `sm_90`'s 228 KB/SM against `sm_86`'s ~100 KB/SM) the same check admits
+`GT = 64` with no code change.
 
 The two axes do not conflict because they answer different questions at
 different times. `BC` fixes the STATE LAYOUT — a structural fact every step of

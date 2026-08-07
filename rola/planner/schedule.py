@@ -1479,7 +1479,7 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     `W`; measured on this box, the amortisation is worth far less than the CTAs
     the wider carve gives up, and the loss tracks the residency given up rather
     than the extra arithmetic (`BC = 16`, 4 CTAs -> 2: +43% at
-    `topo-D4-w8x8x8x16-BC16`; `BC = 64`, 3 -> 1: +92% whole-layer at the dense
+    `topo-D4-w8x8x8x16-BC16`; `BC = 64`, 3 -> 1: +84% whole-layer at the dense
     `N = L = 4096` cell). That is `sm_86`'s 100 KB/SM speaking, not the
     formulation: the kernel's panel builds gather amplitudes straight from global
     memory and are NOT prefetched, so warps are still what hides that latency --
@@ -1497,23 +1497,6 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     """
     if schedule.window is not None:
         return schedule.window
-        union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
-        if union.numel() == 0:
-            members = 0
-        else:
-            # THE SWAR POPCOUNT, six elementwise passes over the bitmap rather
-            # than the thirty-two a shift-and-test loop takes. It must be cheap:
-            # it runs on a launch path beside kernels that take a fifth of a
-            # millisecond. (It is also why the answer is memoized above -- cheap
-            # is not free.)
-            x = union.to(torch.int64) & 0xFFFFFFFF
-            x = x - ((x >> 1) & 0x5555555555555555)
-            x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
-            x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F
-            per_owner = ((x * 0x0101010101010101) >> 56).sum(dim=-1).reshape(-1)
-            members = int(per_owner.median())
-        object.__setattr__(schedule, "union_members", members)
-        return members
 
     # THE REFUSALS RUN CHEAPEST-FIRST, AND THAT ORDER IS LOAD-BEARING RATHER THAN
     # TIDY. This runs on the LAUNCH path, beside kernels that take a fifth of a
