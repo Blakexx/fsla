@@ -137,7 +137,7 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV) {
   (void)DV;
-  return (BC >= 64) ? 80 : (decay ? 80 : 64);
+  return 80;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
