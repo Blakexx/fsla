@@ -168,17 +168,10 @@ AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
         basis="LeafMassDecay on/off is a different recurrence, not a different "
               "execution of one. Both arms are tier-1 oracle-gated, including the "
               "`1 - rate` catastrophic-cancellation arm."),
-    #: RUNTIME axes. These leave NO symbol in the binary — `P` is a host-side
-    #: segmentation of the launch and paging is an allocation of the state — so
-    #: the census cannot discover them, and an undeclared one would be invisible.
-    #: They are listed here precisely so that the completeness claim covers them.
-    AxisDeclaration(
-        "P", AxisKind.GEOMETRY, (1, 2, 3, 4), "runtime",
-        census=Census.VS_REFERENCE, reference=1,
-        basis="the sequence-parallel split per owner. `P = 1` is the UNSPLIT "
-              "launch and the definitional baseline; `P = 2` against `P = 3` "
-              "would relate two folds to each other with nothing anchoring "
-              "either, which is the two-wrong-geometries-agreeing failure."),
+    #: RUNTIME axes. These leave NO symbol in the binary — paging is an
+    #: allocation of the state — so the census cannot discover them, and an
+    #: undeclared one would be invisible. Listed here precisely so that the
+    #: completeness claim covers them.
     AxisDeclaration(
         "paging", AxisKind.GEOMETRY, (False, True), "runtime", census=Census.ADJACENT,
         basis="§7.1's page arena decides WHERE an owner's `BC` state rows live, "
@@ -236,62 +229,6 @@ class GeometryPair:
         return f"{tag}:{self.restrict}" if self.restrict else tag
 
 
-def _p_rows() -> tuple[GeometryPair, ...]:
-    """§6.2's `P` sub-case table, over every split the census demands.
-
-    Generated rather than transcribed four times: the sub-case STRUCTURE is the
-    declaration, and a hand-copy of it per `P` is four chances to typo a class.
-    """
-    rows: list[GeometryPair] = [
-        #: `P = 2` ONLY, and the restriction is STRUCTURAL, not a fixture accident:
-        #: from a zero initial state, pass 1 summarizes segments `0 .. P-2` from
-        #: zero, so at `P = 2` the single summary IS the serial prefix and the last
-        #: segment then runs serially from it -- there is no re-associated boundary
-        #: anywhere. At `P >= 3` the intermediate summaries are accumulated into the
-        #: boundaries, which IS a reassociation (MEASURED: 1.2e-7 at `P = 3, 4` on
-        #: this fixture), so those cells are the class-(b) rows below and not a
-        #: loosened version of this one.
-        GeometryPair(
-            "P", {"P": 1}, {"P": 2}, "state", ENGINEERED_IDENTITY,
-            fixture="split_zero_init",
-            precondition="initial_state is None, P == 2, so no intermediate summary "
-                         "is folded into any boundary",
-            basis="spec §6.4: the state has no atomic -- one CTA stores per owner "
-                  "slot -- and at P = 2 from a zero initial state segment 0's summary "
-                  "IS the serial prefix, so the fold performs no addition to reorder."),
-    ]
-    for P in (2, 3, 4):
-        rows += [
-            GeometryPair(
-                "P", {"P": 1}, {"P": P}, "state", REASSOCIATION_EQUIVALENT,
-                fixture="split_written",
-                precondition="a nonzero initial state and written leaves on every segment",
-                basis="the carry fold re-associates: the serial walk accumulates "
-                      "token by token, the split accumulates per-segment summaries "
-                      "and then folds them.",
-                bound="carry_fold_T_eps"),
-            GeometryPair(
-                "P", {"P": 1}, {"P": P}, "y", REASSOCIATION_EQUIVALENT,
-                fixture="split_written",
-                precondition="owners_total > 1, so the readout is a split-K atomicAdd",
-                basis="the §5 readout accumulates one output element from several "
-                      "owner CTAs by atomicAdd; the split changes how many partials "
-                      "and in what order they arrive.",
-                bound="split_readout_n2_eps"),
-            GeometryPair(
-                "P", {"P": 1}, {"P": P}, "state", ENGINEERED_IDENTITY,
-                fixture="read_only_owner", restrict="never_written_leaves",
-                nonvacuity_probe="initial_state",
-                precondition="the selected leaves have NO write on any segment, and the "
-                             "written leaves in the same fixture are NOT bit-identical",
-                basis="spec §6.4's carve-out is NORMATIVE and bitwise: a segment with "
-                      "no write contributes `(1, 0)`, so an unwritten leaf must not be "
-                      "visited by the fold at all. This row is class (a) because the "
-                      "SPEC REQUIRES it, not because the arithmetic happens to agree."),
-        ]
-    return tuple(rows)
-
-
 GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
     # -- BC -----------------------------------------------------------------
     GeometryPair(
@@ -312,9 +249,6 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
               "BC = 64 there is one owner and the sum is a single deposit, at BC = 16 "
               "there are four arriving in scheduler order.",
         bound="split_readout_n2_eps"),
-
-    # -- P ------------------------------------------------------------------
-    *_p_rows(),
 
     # -- paging -------------------------------------------------------------
     GeometryPair(

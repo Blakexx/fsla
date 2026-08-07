@@ -95,8 +95,8 @@ def _packed_router_logits(
     fully_tied = read_slots == write_slots
 
     if fully_tied:
-        # ONE solve serves both duties, and callers (the budget-conditioning path, the
-        # arena's `fully_shared`) rely on getting the SAME TENSOR OBJECT back twice.
+        # ONE solve serves both duties, and callers (the arena's `fully_shared`) rely
+        # on getting the SAME TENSOR OBJECT back twice.
         tied_logits = project(h if h_w is None else h_w, *pack_weight(write_slots))
         return tied_logits, tied_logits
 

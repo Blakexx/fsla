@@ -92,9 +92,9 @@ never asks what a producer is, only that its output is well formed:
 | `level_routing` | no | per-level routing tag, for the pricing columns |
 
 `source` is a `RouteSource` carrying the `[B, T, hidden_size]` read and write streams
-(the same object when the model does not split them) and the optional per-sequence
-budget. `ProducedRoutes` carries one `[B, T, H, width_l]` tensor per level per side, and
-optionally any statistic the producer already knew.
+(the same object when the model does not split them). `ProducedRoutes` carries one
+`[B, T, H, width_l]` tensor per level per side, and optionally any statistic the
+producer already knew.
 
 Levels need not be unit-sum: the gateway factors each into `(mass, simplex)` and folds
 the mass into the side gain, which is where a per-level magnitude belongs.
@@ -122,7 +122,7 @@ the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 
 ```python
 SimplexProducer(widths, routing=dense_routing(), *, hidden_size, num_heads,
-                bias=False, budget=None, expose_stats=False)
+                bias=False, expose_stats=False)
 ```
 
 A learned packed per-head router projection, solved with the exact production
@@ -136,10 +136,6 @@ Activation *properties* are never supplied by a caller — they come from the cl
 registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller could
 supply is metadata a caller could supply wrong, and a validator reading it would be
 checking a claim instead of a fact.
-
-`budget` carries the architecture's Tier-1 conditioning (temperature actuation over
-`(r, slack)`, the budget embedding, the usage-conditioned per-digit bias), indexed on
-the producer's own levels.
 
 ### 2.4 Foreign producers
 
@@ -169,12 +165,17 @@ tell the answers apart:
 
 ```python
 rola.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fixed
-rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'level' | 'global'
+rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'global'
 ```
 
 Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`. A source is
 validated against the topology at layer construction. Duck-typed like a producer:
 declare `widths` and `num_heads`, return a `LeafMassDecay`.
+
+`state` and `global` are the two IDENTIFIABLE resolutions: under `keep = (1 - prod_l
+delta_l)**c` (one write-conditioned clock per leaf), a rate only ever enters the
+recurrence through that per-leaf product, so per-digit and per-head are the two degrees
+of freedom the product structure lets the recurrence actually distinguish.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast, the
 planner OBSERVES that in the realized routing, and prices accordingly — through exactly
@@ -215,9 +216,9 @@ factors.support_counts()   # {(level, side): [B, T, H]}
 factors.touched_bits()     # {level: [B, H, width_l]}
 ```
 
-Nothing in the library reads them; they exist for the budget losses and for diagnostics.
-Producing them eagerly spent launches per level per step on numbers no consumer had
-asked for — measured at 3.0 % of the step at `L = 4096`.
+Nothing in the library reads them; they exist for diagnostics only. Producing them
+eagerly spent launches per level per step on numbers no consumer had asked for —
+measured at 3.0 % of the step at `L = 4096`.
 
 A producer that already knows a statistic as a byproduct of its own solve may supply it
 (`expose_stats=True` on the shipped producer), and the gateway then measures only what is
@@ -250,8 +251,9 @@ library reads them, which is why they are derived on demand and not before.
 
 ## 6. The expert surface
 
-`rola.expert` holds everything BELOW the contract line — plans, schedules, cost models,
-the seam the op is split at, the allocator cap, the numeric arm:
+`rola.expert` holds everything BELOW the contract line — plans, schedules, the
+derivation that fixes their geometry, the seam the op is split at, the allocator cap,
+the numeric arm:
 
 ```python
 from rola.expert import PlanOverrides

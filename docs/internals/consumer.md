@@ -339,22 +339,20 @@ construction** — not two accountings held together by a gate.
 Pre-extraction removals, with the repository and commit they are readable at, are
 in [`DELETIONS.md`](DELETIONS.md).
 
-## <a id="three-pass"></a>B2. The three-pass split is DORMANT BY PLAN, not dead
+## <a id="three-pass"></a>B2. The three-pass split is DORMANT, not dead
 
 `P > 1` machinery — pass 1's sparse summary, `scan_kernel`, pass 3's stash read,
 the `work_seg`/`work_nseg`/`work_slot` triple, and the fourteen optional
-sequence-parallel arguments — is fully implemented, oracle-gated, and **not
-currently selected by the planner**: `P = 1` is the primary benchmarked
-configuration and the plan chooses it everywhere today.
+sequence-parallel arguments — is fully implemented and compiled into the binary.
+No Python caller constructs a non-null argument set for it: `rola.ops.consumer`
+always passes the fourteen arguments null, so every launch takes the single-pass
+`P = 1` path.
 
-This is recorded explicitly because it looks like dead code and is not. It is
-reachable (the driver takes `P` from the plan), it is tested
-(`tests/tier2_geometry/`), and its unblock condition is a measured cell where a
-split wins — the same standing as `panel` in
-[`intra_panel.md`](intra_panel.md#measured-status). Deleting it would delete a
-measured-and-kept capability. [`DELETIONS.md`](DELETIONS.md) records it as
-dormant rather than removed. The endgame executor re-keys the split onto WORD
-ranges rather than tile ranges; its shape (14 arguments, three passes, the
+This is recorded explicitly because it looks like dead code and is not. The
+kernel-side mechanism is intact and reachable by any caller of the extension
+directly (bypassing `rola.ops.consumer`). [`DELETIONS.md`](DELETIONS.md) records
+it as dormant rather than removed. The endgame executor re-keys the split onto
+WORD ranges rather than tile ranges; its shape (14 arguments, three passes, the
 stash) is otherwise unchanged by that rewrite.
 
 ## <a id="all-or-nothing"></a>B3. The §6.4 arguments are all-or-nothing
@@ -573,13 +571,14 @@ symbol, and the post-link gate names its tuple three ways.
 ## <a id="dispatch-choice"></a>B9.1. What the table consumes: a CHOICE
 
 `DispatchChoice{BC, DV, D, decay}` is one value per matrix axis and nothing else — no
-statistics, no thresholds, no device facts. Something upstream DECIDES (the planner's
-selector, a test, a debug pin) and the table RESOLVES.
+statistics, no thresholds, no device facts. Something upstream DECIDES (`derive_bc`'s
+closed form, a test, a debug pin) and the table RESOLVES.
 
-The separation is the point rather than a tidiness: the selector is knowingly interim
-(`rola/planner/select.py` labels it so), and the table must not acquire any of its
-opinions, or replacing the model becomes surgery on the dispatch instead of a swap.
-So there is no scoring here, no default arm, and no "nearest" anything.
+The separation is the point rather than a tidiness: `derive_bc`
+(`rola/planner/derive.py`) reads the table's own arm carve as one of its three
+ceilings, but the table itself scores nothing and holds no opinion about which row is
+preferred — it is a pure `{axis tuple: row}` map. So there is no scoring here, no
+default arm, and no "nearest" anything.
 
 ## <a id="row-admission"></a>B9.2. The per-row enable predicate, and why it keys on an INPUT
 

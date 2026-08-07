@@ -154,8 +154,6 @@ def test_corner_checks_have_teeth():
 FROZEN_CORNERS = frozenset({
     "corner/cold-read",
     "corner/all-read-only",
-    "corner/k0-fold",
-    "corner/ragged-tail",
     "corner/chunk-boundary",
 })
 

@@ -48,7 +48,7 @@ def sm_shared_bytes() -> int:
     """The device's per-SM shared-memory budget, for §6's residency rule.
 
     Device-queried once (`cudaDevAttrMaxSharedMemoryPerMultiprocessor`) and RECORDED
-    IN THE PLAN by `select_plan`, per the §10 ruling: a plan then states the
+    IN THE PLAN, per the §10 ruling: a plan then states the
     machine it reasoned for instead of silently depending on the machine it is
     replayed on. Falls back to `DEFAULT_SM_SHARED_BYTES` when there is no device or
     no extension -- the CPU-only path §6.2/§6.3 selection must keep working on, and
@@ -114,8 +114,6 @@ def _consumer_forward(
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     eps: float = READOUT_EPS,
     schedule: Schedule | None = None,
-    sequence_parallel=None,
-    sequence_parallel_tensors=None,
 ) -> tuple[torch.Tensor, torch.Tensor, Schedule]:
     """Run the V3 consumer. Signature mirrors ``naive_rola``'s routing inputs.
 
@@ -152,22 +150,8 @@ def _consumer_forward(
     liveness keys on the live deposit ``W``, never on the clock) is structural
     here rather than a convention.
 
-    ``sequence_parallel``: an optional
-    :class:`~rola.routing.sequence_parallel.SequenceParallelPlan`
-    (spec §6.4). ``None`` -- and equally a plan whose ``split`` is ``False`` -- is
-    ``P = 1``: the single-launch path, with every sequence-parallel pointer null in
-    the kernel, bit-identical to the pre-``P`` kernel. ``P = 1`` is the DEFAULT and
-    the primary benchmarked configuration everywhere (§6.4); any headline number
-    quoted at ``P > 1`` is a reporting defect.
-
-    Under a split plan the launch becomes §6.4's three passes with two launch
-    boundaries -- summaries, ordered fold, reads -- sequenced inside the extension
-    entry so a caller cannot run them out of order, and the returned
-    ``final_state`` is published by pass 3's LAST segment. That state is
-    RE-ASSOCIATION-EQUIVALENT to the ``P = 1`` state, not bitwise identical to it
-    (§6.4, amended 2026-07-30): it is graded against the fp64 oracle at the same
-    tolerance ``P = 1`` is held to, and the unwritten-leaf carve-out is bitwise.
-
+    The launch is always the single-owner-set path: the extension's ABI declares a
+    trailing block of sequence-parallel pointer arguments, all of them passed null.
     """
     from rola.ops._ext import extension
 
@@ -328,34 +312,10 @@ def _consumer_forward(
     desc = level_descriptors(topology, plan)
     geometry = plan.geometry
 
-    # §6.4. An unsplit plan is indistinguishable from no plan at all here, on
-    # purpose: `P = 1` must reach the kernel through exactly the arguments it
-    # reached it through before `P` existed, or the primary benchmarked
-    # configuration is not the configuration that was benchmarked.
+    # The extension's ABI declares a trailing block of sequence-parallel pointer
+    # arguments; every launch passes them null.
     owners_arg = schedule.owners
     sp_args: tuple = (None,) * 14
-    if sequence_parallel is not None and sequence_parallel.split:
-        from rola.routing.sequence_parallel import build_sequence_parallel_tensors
-        if tuple(sequence_parallel.P) and len(sequence_parallel.P) != schedule.owners.shape[0]:
-            raise ValueError(
-                f"the sequence-parallel plan covers {len(sequence_parallel.P)} owners but the "
-                f"schedule has {schedule.owners.shape[0]}; `P` is keyed on `schedule.owners` "
-                "row for row (spec §6.4), so a mismatch is a plan built against other routing")
-        if sequence_parallel.BC != plan.BC or sequence_parallel.cols != cols:
-            raise ValueError(
-                f"the sequence-parallel workspace is shaped (BC={sequence_parallel.BC}, "
-                f"cols={sequence_parallel.cols}) but this launch is (BC={plan.BC}, cols={cols})")
-        # `sequence_parallel_tensors` lets a caller supply the realized work lists and
-        # workspace instead of having them built here. The one in-tree use is the gate
-        # that POISONS the workspace with NaN to prove every byte of it is written
-        # before it is read (the workspace is `torch.empty`, so that is a claim the
-        # kernel makes and something has to check it). It is not a performance hook:
-        # the tensors are launch-scoped either way.
-        sp_tensors = (sequence_parallel_tensors
-                      if sequence_parallel_tensors is not None
-                      else build_sequence_parallel_tensors(sequence_parallel, schedule))
-        owners_arg = sp_tensors.owners
-        sp_args = sp_tensors.as_kernel_arguments()
 
     if paging is not None:
         # §4.5's ONE EVENT-WAIT, and it is a CORRECTNESS requirement rather than a

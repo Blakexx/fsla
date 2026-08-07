@@ -28,51 +28,33 @@ import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from rola.planner.calibration.census import resolve_census, summary_fractions, tile_union_census
-from rola.planner.calibration.cost_model import (
+from rola.planner.calibration.union_stats import (
     _STATS_OWNER_CHUNK_ELEMS,
     TileUnionStats,
     _tile_union_stats_multi,
     _tile_union_stats_multi_enumerated,
-    plan_and_schedule,
-    plan_cost_per_token,
-    plan_waves,
-    select_plan,
-    select_plan_axes,
 )
-from rola.planner.feeder import FeederFlags
+from rola.planner.derive import feasible_bc, largest_feasible_bc
 from rola.planner.schedule import (
     CP_ASYNC_ROW_BYTES,
-    DEFAULT_SM_COUNT,
     DEFAULT_WRITE_COST_WEIGHT,
     MMA_K_QUANTUM,
     LevelSupportStats,
     Plan,
     StaticDensity,
     build_clock_stream,
+    build_plan,
     build_schedule,
     leaf_rate_dials,
     owner_geometry,
     permuted_topology,
+    plan_and_schedule,
     rank_spans,
     routing_views,
     span_score,
     spanned_moduli,
     unpack_bits,
 )
-from rola.planner.select import (
-    HardwareFacts,
-    StaticPlanInputs,
-    feasible_bc,
-    freeze_for_decode,
-    largest_feasible_bc,
-    quanta_per_owner,
-    select_config,
-    select_p,
-)
-from rola.planner.select import (
-    config_for_step as select_config_for_step,
-)
-from rola.routing.summaries import RoutingSummaries
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -98,25 +80,6 @@ def _routing():
         tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
 
 
-def _toy_occupancy(blocks=4):
-    """A SYNTHETIC occupancy oracle for the CPU-only gates on toy geometries.
-
-    The two gates below plan `(BC, d_v)` the consumer does not instantiate -- `BC`
-    in {1..4}, `d_v = 4` -- because what they are about is view sharing and the
-    default numeric format, not residency. As of item 6b `resolve_occupancy`
-    REFUSES such a geometry instead of diverting it to an analytic mirror (the
-    mirror modelled the deleted consumer and was measured inverting the bound it
-    claimed), so these gates now supply the machine fact themselves. That is what
-    the injection interface is documented to be for, and it makes the dependency
-    explicit rather than ambient: a constant oracle is a stated assumption, a
-    silent fallback was not.
-    """
-    def query(BC, d_v, decay):
-        return blocks
-
-    return query
-
-
 def _topology(widths, d_v=4):
     return Topology(
         levels=tuple(LevelConfig(width=w, routing=_routing()) for w in widths), d_v=d_v)
@@ -124,11 +87,8 @@ def _topology(widths, d_v=4):
 
 def _plan(widths, BT, BC, *, d_v=4, decay=False,
           write_cost_weight=DEFAULT_WRITE_COST_WEIGHT, warp_tile=(1, 1)):
-    # `BT` stays a PARAMETER of this helper -- most callers still thread it into
-    # the CALIBRATION module's own oracle/cost-model helpers below, which take
-    # `BT` directly and are unaffected by P26 (`rola.planner.select`'s RUNTIME
-    # `select_config` is what dropped it, not the offline fitting instrument in
-    # `rola.planner.calibration`). `Plan` itself never took it as a field.
+    # `BT` stays a PARAMETER of this helper: callers thread it into the oracle
+    # helpers below, which take `BT` directly. `Plan` itself has no `BT` field.
     topo = _topology(widths, d_v=d_v)
     return Plan(
         topology=topo, normalization="global", BC=BC, warp_tile=warp_tile,
@@ -698,10 +658,6 @@ def test_write_liveness_uses_live_deposit_not_a_clock():
     stale = routing_views(read_levels, write_stored, plan.topology)
     with pytest.raises(ValueError, match="different routing tensors"):
         build_schedule(read_levels, write_levels, g_read, g_write, plan, views=stale)
-    # ... and the same guard on the selection side, which reads the same masks.
-    with pytest.raises(ValueError, match="different routing tensors"):
-        select_plan(read_levels, write_levels, plan.topology, plan.BC,
-                       normalization="global", decay=False, views=stale)
 
 
 # ---------------------------------------------------------------------------
@@ -795,22 +751,16 @@ def test_no_o_of_n_allocation_at_large_topology():
 
 
 # ---------------------------------------------------------------------------
-# 9. the BT selection and its cost model
+# 9. The owner rectangle's spanned-level bound
 # ---------------------------------------------------------------------------
 
 
 def test_the_spanned_sum_never_exceeds_BC_and_ties_at_one_spanned_level():
     """``sum_{l>=j} m_l <= prod_{l>=j} m_l = BC``, with equality iff ``D - j == 1``.
 
-    A pure property of the OWNER RECTANGLE (§3), and M-1 (2026-08-01) turned it from
-    a bound on a priced extent into the reason a whole term could hide: the EQUALITY
-    case is why no calibration cell could ever see `gram_cols` as a variable. All
-    four cells of `_CALIBRATION_ARGMIN` span ONE level, so `gram_cols == BC` on every
-    row that bound `STAGE_COLUMN_WORK`, and the term was algebraically
-    indistinguishable from a per-dense-k-quantum one. The `iso-gc-*` cells exist to
-    break exactly this degeneracy (`D - j == 2`), and they measured the per-column
-    price as exactly zero. Kept as a gate because the next term priced on a rectangle
-    statistic must be isolated on a cell where the statistic is FREE of `BC`."""
+    A pure property of the OWNER RECTANGLE (§3): the spanned levels' moduli multiply
+    to exactly ``BC``, and the sum reaches ``BC`` only in the degenerate one-level case.
+    """
     for widths, BC, spans_one in (((8, 16), 16, True), ((8, 16), 64, False),
                                   ((4, 4), 4, True), ((4, 4, 4), 16, False)):
         topology = _topology(widths, d_v=4)
@@ -821,451 +771,8 @@ def test_the_spanned_sum_never_exceeds_BC_and_ties_at_one_spanned_level():
         assert (len(moduli) == 1) == spans_one
 
 
-def test_feeder_flags_pack_the_frozen_bit_layout_and_or_their_two_triggers():
-    """§4.4: 2 bits per level, `dense_read[l]` then `dense_write[l]`, D <= 16.
-
-    The layout is a CONTACT with Track K's kernel decode, so it is pinned here bit by
-    bit rather than round-tripped only through `unpack`: a self-consistent pack/unpack
-    pair would agree with itself under any layout at all.
-    """
-    flags = FeederFlags(read=(True, False, True), write=(False, True, True))
-    assert flags.packed() == (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5)
-    assert FeederFlags.unpack(flags.packed(), 3) == flags
-    assert FeederFlags.none(3).packed() == 0
-
-    # Two triggers, one mechanism: the OR of the declaration and the detection.
-    density = StaticDensity(read=(True, False), write=(False, False))
-    occupancy = ((1.0, 1.0), (0.5, 1.0))
-    derived = FeederFlags.derive(density, occupancy, saturation=1.0)
-    assert derived.read == (True, True)      # level 1 detected, level 0 declared
-    assert derived.write == (False, True)    # level 1 detected only
-    assert FeederFlags.derive(density, None, saturation=1.0) == FeederFlags(
-        read=(True, False), write=(False, False)), (
-        "with no summaries the detection trigger fired anyway")
-
-    with pytest.raises(ValueError, match="D <= 16"):
-        FeederFlags.none(17)
-
-
-def test_select_plan_axes_returns_a_runnable_plan_on_the_decay_arm():
-    """The LeafMassDecay leg of the joint selector -- review §4.3's REQUIRED item.
-
-    Before 2026-07-30 this half of the parameter space had NO runnable plan and no
-    test said so: past the crossover the arm's dense limit is ``panel`` -- which was
-    unimplemented, so every input returned a plan the driver refuses to launch. The
-    only selector test swept ``decay=False``, so the whole arm was invisible.
-
-    Amended 2026-08-01 (item 6b): the ``intra_lowering`` AXIS is gone. The consumer
-    includes ``intra_panel.cuh`` unconditionally and does one intra lowering, so
-    "did the selector name a lowering the driver implements" is no longer a
-    question anything can answer. What this still gates -- and what was actually
-    missing in the first place -- is that the decay arm returns a plan that is
-    STAMPABLE and self-consistently priced, at both a saturated and a collapsing
-    union and at both ``BC``."""
-    topology = _topology((8, 16), d_v=64)
-    T = 256
-
-    def levels(density: float, seed: int):
-        generator = torch.Generator().manual_seed(seed)
-        out = []
-        for width in topology.widths:
-            amps = torch.rand((1, T, 1, width), generator=generator)
-            out.append(torch.where(amps < density, amps, torch.zeros_like(amps)))
-        return tuple(out)
-
-    dense_r = tuple(torch.ones((1, T, 1, w)) for w in topology.widths)
-    sparse_r, sparse_w = levels(0.12, 11), levels(0.12, 12)
-
-    for BC in (16, 64):
-        for reads, writes, label in ((dense_r, dense_r, "saturated"),
-                                     (sparse_r, sparse_w, "collapsing")):
-            result = select_plan_axes(reads, writes, topology, BC, decay=True)
-            # The returned axes must be STAMPABLE: `Plan`'s own arm rules are a
-            # second authority, and axes that pass the selector and fail the plan
-            # are still not a plan. `Plan` itself no longer carries `BT` (P26 --
-            # the calibration module's `select_plan_axes` still prices a `BT`
-            # argmin offline, but nothing downstream of it is a `Plan` field
-            # anymore), so the STAMPABLE claim is now just "this BC/decay/topology
-            # combination constructs".
-            plan = Plan(topology=topology, normalization="global", BC=BC,
-                          warp_tile=(1, 2), decay=True)
-            assert plan.BC == BC
-            # THE `BT == 32` ASSERTION THAT USED TO SIT HERE IS WITHDRAWN, 2026-08-01,
-            # AND ITS STATED REASON WAS THE THING THAT DIED.
-            #
-            # It read: "the per-tile fixed cost is the only BT term on this arm, so 32
-            # is the cost argmin and nothing else may win silently". That premise was
-            # true of the PRE-QUANTA model, in which the decay arm's only `BT`-bearing
-            # term was `TILE_FIXED_WORK / BT`. It is false of this one, which carries
-            # three further `BT`-dependent terms, every one of them measured:
-            # `readout_fold_kstep_work * ksteps * (BT/16)`, `decay_kstep_work * ksteps
-            # * (BT/16)`, and the causal `BT(BT+1)/272` intra Gram -- plus
-            # `candidate_frac`, which is NOT `BT`-invariant (a 32-token tile union
-            # catches owners a 16-token one misses; measured 1.846x at
-            # `atscale-L2048-BC16`). The claim was therefore verbatim the superseded
-            # `_CALIBRATION_BT` table's disposition, re-asserted here as if it were a
-            # structural property, and §2.32 measured `BT = 16` FASTER at the flagship
-            # on every arm by 89-153 %.
-            #
-            # WHAT REPLACES IT IS THE PROPERTY THIS TEST CAN ACTUALLY OWN: the `BT`
-            # that comes back is the joint argmin's, self-consistently priced. The
-            # *value* of the argmin on frozen cells is bound by
-            # `_CALIBRATION_ARGMIN`'s 8 measured rows, which is where a disposition
-            # claim belongs -- not on a synthetic fixture no measurement covers.
-            assert result.BT in (16, 32)
-            assert result.cost_per_token == plan_cost_per_token(
-                topology, BC, result.stats, decay=True), (
-                f"at BC={BC} ({label}) the decay-arm axes report a cost that "
-                "re-pricing the returned axes does not reproduce: the plan and its "
-                "recorded evidence are not the same plan")
-
-
-
-
-#: **`_CALIBRATION_AB` IS DELETED (item 6b, 2026-08-01), ON ITS OWN STATED TERMS.**
-#: It was a 48-cell A/B of the DELETED register-resident consumer
-#: (`c3c2f845` in the source repository -- see `docs/provenance.md`; the hash does
-#: not resolve in this one), a different algorithm from this kernel. It was retained
-#: UNASSERTED with the note "it is the old consumer's calibration and is deleted
-#: with that kernel in item 6b"; that kernel is deleted, so it is. Every constant
-#: this model carries was re-measured on the surviving kernel and is bound by
-#: `_CALIBRATION_ARGMIN` below.
-
-#: **SUPERSEDED 2026-08-01 -- `_CALIBRATION_BT` IS DELETED, AND ITS KEY WAS WRONG,
-#: NOT JUST ITS VALUES** (`rewrite.md` §2.32/§2.34, coordinator ruling item 4).
-#:
-#: It was `{(BC, decay) -> BT}`, measured on the OLD consumer. In the eight joint
-#: argmins of the §2.32 `BT` matrix -- measured on the kernel this model now prices
-#: -- NEITHER `BC` NOR `decay` appears in the partition: both `BC` agree with each
-#: other on every row and both decay arms agree with each other on every row. What
-#: the answer tracks is the ROUTING (`candidate_frac`, `mean_ksteps_candidate`) and
-#: the WAVE REGIME, and the table had no column for either. Its values were also
-#: hazardous: it selects `BT = 32` at `decay=True` where §2.32 measures `BT = 32`
-#: 64-153 % SLOWER at the flagship.
-#:
-#: What replaces it is `_CALIBRATION_ARGMIN` below -- the `BT` decision
-#: `select_plan_axes` actually makes, against the argmin measured for it,
-#: rather than per-slice orderings the planner never evaluates.
-
-#: THE §2.32 `BT` MATRIX, as the eight decisions the planner makes.
-#:
-#: Every field is a RECORDED MEASUREMENT of a named, frozen cell in
-#: `benchmarks/ops/benchmark_rola_v3_new_consumer.py`, carried here so the gate runs
-#: on a CPU-only host and so no constant can drift away from what set it:
-#:
-#:   * `candidate_frac`, `ksteps`, `kisteps` -- the exact stats-pass reduction over
-#:     the realized schedule at each `BT` (`--mode manifest` reproduces them);
-#:   * `bpsm` -- `rola_consumer_occupancy`, the DRIVER's
-#:     `cudaOccupancyMaxActiveBlocksPerMultiprocessor` on the exact consumer
-#:     instantiation, cross-checked against `ncu`'s
-#:     `min(launch__occupancy_limit_{registers,shared_mem,warps,blocks})` on all 16
-#:     profiled arms with zero disagreement (§2.34);
-#:   * `n_cohorts` -- `owners_total * BH`, the requested CTA grid;
-#:   * the argmin -- §2.32's table, per cell and decay arm, each entry
-#:     with its own instrument (paired interleaved timers where the IQR resolves,
-#:     `ncu --clock-control base` durations where it does not).
-#:
-#: `(cell, widths, d_v, BC, n_cohorts, decay, {BT: (candidate_frac, ksteps, kisteps,
-#:   {decay: bpsm})}, measured_argmin)` -- flattened into rows below.
-_ARGMIN_STATS = {
-    # cell -> (widths, d_v, BC, n_cohorts, {BT: (candidate_frac, ksteps, kisteps)})
-    "atscale-L2048": ((256, 256), 64, 64, 8192, {
-        16: (0.19916152954101562, 0.6086546380892184, 0.6086546380892184),
-        32: (0.35765838623046875, 0.6364416903090936, 0.6364416903090936)}),
-    "atscale-L2048-BC16": ((256, 256), 64, 16, 32768, {
-        16: (0.19362306594848633, 0.22103670174384385, 0.22103670174384385),
-        32: (0.3573589324951172, 0.23429485639867847, 0.23429485639867847)}),
-    "topo-D2-w64x64-BC64": ((64, 64), 64, 64, 128, {
-        16: (1.0, 4.0, 4.0), 32: (1.0, 4.0, 4.0)}),
-    "topo-D2-w64x16-BC16": ((64, 16), 64, 16, 128, {
-        16: (1.0, 1.0, 1.0), 32: (1.0, 1.0, 1.0)}),
-}
-
-#: `rola_consumer_occupancy(decay, BC, BT, d_v)` -> CTAs/SM, the rows the
-#: eight argmins need.
-_ARGMIN_BPSM = {
-    (64, 16, False): 3, (64, 16, True): 3, (64, 32, False): 2, (64, 32, True): 2,
-    (16, 16, False): 4, (16, 16, True): 3, (16, 32, False): 2, (16, 32, True): 2,
-}
-
-#: `(cell, decay) -> measured argmin BT`, §2.32's table. Every many-wave cell wants
-#: `16`; every one-wave cell wants `32`.
-_CALIBRATION_ARGMIN = {
-    ("atscale-L2048", False): 16,
-    ("atscale-L2048", True): 16,
-    ("atscale-L2048-BC16", False): 16,
-    ("atscale-L2048-BC16", True): 16,
-    ("topo-D2-w64x64-BC64", False): 32,
-    ("topo-D2-w64x64-BC64", True): 32,
-    ("topo-D2-w64x16-BC16", False): 32,
-    ("topo-D2-w64x16-BC16", True): 32,
-}
-
-
-def _argmin_stats(cell, BT):
-    """The recorded `TileUnionStats` for one calibration row."""
-    widths, d_v, BC, n_cohorts, per_bt = _ARGMIN_STATS[cell]
-    cf, ks, kis = per_bt[BT]
-    return TileUnionStats(
-        BC=BC, BT=BT, mean_K=cf * BC, saturated_frac=1.0 if cf == 1.0 else 0.0,
-        mean_K_candidate=ks * MMA_K_QUANTUM, mean_KI_candidate=kis * MMA_K_QUANTUM,
-        mean_ksteps_candidate=ks, mean_kisteps_candidate=kis,
-        candidate_frac=cf, n_pairs=0, n_cohorts=n_cohorts)
-
-
-def _modelled_argmin(cell, decay, *, sm_count=DEFAULT_SM_COUNT, **overrides):
-    """The `BT` argmin `select_plan_axes` would return on this row.
-
-    Reproduces the selection's own arithmetic on RECORDED inputs: price every
-    `BT`, multiply by `plan_waves` from the recorded occupancy and cohort
-    count, take the minimum. There is no ring argument any more: M-1 measured the
-    staging term's per-column price as EXACTLY zero and retired it, so the model is
-    ring-INVARIANT and `select_plan_axes` states the depth rather than arbitrating
-    it. This reproduction is exact rather than a simplification.
-    """
-    widths, d_v, BC, _n_cohorts, _ = _ARGMIN_STATS[cell]
-    topology = _topology(widths, d_v=d_v)
-    out = {}
-    for BT in (16, 32):
-        stats = _argmin_stats(cell, BT)
-        cost = plan_cost_per_token(topology, BC, stats, decay=decay, **overrides)
-        waves = plan_waves(stats.n_cohorts, _ARGMIN_BPSM[(BC, BT, decay)], sm_count)
-        out[BT] = cost * waves
-    return min(out, key=out.get), out
-
-
-def test_the_cost_model_reproduces_its_calibration():
-    """§6's constants must still reproduce the DECISION they were measured from.
-
-    **THE BINDING TARGET CHANGED 2026-08-01 (coordinator ruling, `rewrite.md`
-    §2.32-§2.34), and that is the point of this gate rather than a detail of it.**
-    It used to assert PER-SLICE orderings at combinations the planner never
-    evaluates. `select_plan_axes` emits ONE plan, so a per-slice ordering can be
-    wrong at a combination the planner never reaches.
-
-    What is asserted now is the EIGHT MEASURED ARGMINS of §2.32's `BT` matrix: four
-    frozen cells x two decay arms, each timed or counted with its instrument named.
-    That is strictly closer to what the planner does, and strictly harder to satisfy
-    by accident -- a wrong constant flips the one-wave rows' `BT` down.
-
-    It remains a CALIBRATION gate, not a performance gate: it asserts the model's
-    argmin matches the measurement's, never that any millisecond is reproducible on
-    another machine. Its inputs are RECORDED (routing statistics from the exact
-    stats pass, CTAs/SM from the driver's occupancy oracle, the cohort count), so it
-    runs with no GPU.
-
-    **BINDING IS ASSERTED, NOT CLAIMED (adversarial review 2026-07-30 §4.2).** The
-    docstring used to name three constants; mutation showed it bound one. So the
-    final sections exhibit, per constant, a value at which these eight rows FAIL --
-    with the SIDE it fails from, because several are one-sided -- and then assert
-    which two constants this gate does NOT identify, so a non-binding is a checked
-    fact rather than an unwritten one."""
-    # ---- THE EIGHT ARGMINS -------------------------------------------------
-    for (cell, decay), expected in _CALIBRATION_ARGMIN.items():
-        got, table = _modelled_argmin(cell, decay)
-        assert got == expected, (
-            f"the model's BT argmin at {cell} decay={decay} is "
-            f"{got}, but the §2.32 matrix measured {expected}. Effective costs: "
-            f"{ {k: round(v, 1) for k, v in table.items()} }")
-
-    # ---- EACH CONSTANT BINDS: a value at which the eight rows FAIL -----------
-    def _rows_hold(**overrides) -> bool:
-        return all(_modelled_argmin(cell, decay, **overrides)[0] == expected
-                   for (cell, decay), expected in _CALIBRATION_ARGMIN.items())
-
-    assert _rows_hold(), "the eight argmins must hold at the calibrated defaults"
-
-    # `DECAY_KSTEP_WORK` is quoted as a MEAN of two measured slopes, so the whole
-    # measured range is asserted rather than the midpoint: every ordering must hold
-    # across `[959.7, 1106.3]`, which makes the residual spread between the two
-    # isolating solves a GATED property instead of a rounding choice.
-    # `TILE_FIXED_WORK` is likewise quoted as a MEAN, of the two independent
-    # isolating solves M-1 ran (`iso-tile-w16x4x64-BC{64,16}-T{128,256,512}` gives
-    # 3507.0; `topo-D2-w64x{64,16}-BC{64,16}` + `iso-tile-w64x{64,16}-BC*-T256`
-    # gives 3513.7), so the whole measured range is asserted rather than the
-    # midpoint.
-    for value in (3507.0, 3513.7):
-        assert _rows_hold(tile_fixed_work=value), (
-            f"the argmins do not survive TILE_FIXED_WORK={value}, which is an END of "
-            "the range the two isolating solves bracket -- the landed value is their "
-            "mean and the model may not depend on which solve it sits at")
-    for value in (959.7, 1106.3):
-        assert _rows_hold(decay_kstep_work=value), (
-            f"the argmins do not survive DECAY_KSTEP_WORK={value}, which is an END "
-            "of the measured bracket -- the landed value is the mean of the two "
-            "isolating solves and the model may not depend on which end it sits at")
-
-    # WHICH CONSTANTS THIS GATE IDENTIFIES, AND FROM WHICH SIDE. Swept rather than
-    # asserted: each line below is a value at which the eight rows FAIL, and the
-    # side it fails from is stated because several of these are one-sided.
-    #
-    # `INTRA_GRAM_KSTEP_WORK`, from ABOVE. It is the only `BT(BT+1)/2` term, so a
-    # large value makes `BT = 32` quadratically expensive and the one-wave `BC = 64`
-    # cell loses the `BT = 32` it measured 4.2-15.1 % faster.
-    assert not _rows_hold(intra_gram_kstep_work=5000.0), (
-        "INTRA_GRAM_KSTEP_WORK no longer binds from above: the eight argmins "
-        "reproduce at 5000 as well as at its measured 144")
-    # `TILE_FIXED_WORK`, from BELOW, and it is IDENTIFIED HERE ONLY SINCE M-1
-    # (2026-08-01). It is `BT`-invariant per tile, so per token it divides by `BT`
-    # and it is the term that pays for the larger tile on a one-wave cell. Until M-1
-    # it was 120 and decision-INERT from 0 to 1e6, because the work it names was
-    # being carried by `STAGE_COLUMN_WORK` -- a term priced on `gram_cols`, a
-    # variable no calibration cell could see (all four span ONE level, so
-    # `gram_cols == BC` on every row). The `iso-gc-*` cells measured the per-column
-    # price as EXACTLY zero, the `iso-tile-*` cells measured this constant as
-    # 3510.35, and the four one-wave `topo` rows -- which flipped to `(16, dense)`
-    # when the staging term was simply zeroed -- are back on the measured
-    # `(32, dense)` because the term that carries them is now the one that was
-    # measured to carry them.
-    assert not _rows_hold(tile_fixed_work=0.0), (
-        "TILE_FIXED_WORK no longer binds from below: the eight argmins reproduce at "
-        "0 as well as at its measured 3510.35, so nothing in this gate is holding "
-        "the per-candidate-tile constant M-1 identified")
-
-    # ---- AND WHAT THIS GATE DOES **NOT** IDENTIFY, RECORDED AS AN ASSERTION --
-    # Two constants are measured but decision-INERT at these eight rows, and saying
-    # so in a comment is exactly the failure mode the 2026-07-30 review caught
-    # (`MMA_ISSUE_WORK` was documented as bound and was not). So it is asserted: if
-    # a future change makes either of them identified here, THIS fails, and the
-    # correct response is to move the constant into the binding list above -- not to
-    # delete the check.
-    #
-    # `READOUT_FOLD_KSTEP_WORK` is inert here by ALGEBRA, not by coincidence. Its
-    # per-tile term is `rd * ds * (BT / 16)` and the polynomial divides by `BT`, so
-    # per token it is `rd * ds / 16` -- exactly `BT`-invariant, hence unable to move
-    # a `BT` argmin at any value. It is pinned by its own isolating cell
-    # (`atscale-L2048`), not by this table, and it is what the ABSOLUTE-total
-    # recording below is sensitive to.
-    assert _rows_hold(readout_fold_kstep_work=0.0) and _rows_hold(
-        readout_fold_kstep_work=1e6), (
-        "READOUT_FOLD_KSTEP_WORK is now IDENTIFIED by the BT argmin, which the "
-        "polynomial's algebra says it cannot be -- promote it into the binding "
-        "sweep above and re-derive why")
-    #
-    # `DECAY_KSTEP_WORK` rides the SAME `ksteps` quantum as the readout, so the same
-    # algebra makes it `BT`-invariant per token, and it enters only the decay arms.
-    # It is pinned by its own two-point isolating solve
-    # (`topo-D2-w64x64-BC64` against `topo-D2-w64x16-BC16`, slopes 1106.3 and 959.7
-    # with intercepts within 10 % of zero), NOT by this table -- and the bracket
-    # assertion above still gates that the answer does not depend on which end of
-    # the measured range the landed mean sits at.
-    assert _rows_hold(decay_kstep_work=0.0) and _rows_hold(decay_kstep_work=1e6), (
-        "DECAY_KSTEP_WORK is now IDENTIFIED by the BT argmin, which it was not "
-        "when this gate landed -- promote it into the binding sweep above")
-
-
-#: THE ABSOLUTE `smsp__inst_executed.sum` TOTALS, per profiled arm, at `BT = 16`.
-#: `(cell, decay) -> (n_pairs, recorded_total)`.
-#:
-#: `n_pairs` is `TileUnionStats.n_pairs = owners_total * BH * n_tiles` -- it ALREADY
-#: CARRIES `BH`, which is the one construction error worth naming here, because the
-#: obvious `candidate_frac * n_pairs * BH * w_tile` form multiplies `BH` twice and
-#: inflates every residual by 2.5x-14x. Confirmed against the "1024 candidate pairs
-#: each" both `topo` cells report at `BH = 2`.
-#:
-#: Provenance: the `topo` rows are `rewrite.md` §2.32's `btab` `BT = 16` counters
-#: (which §2.33 states reproduce §2.20's to the digit); the `atscale` rows are
-#: §2.33's decay-constant solve. Instrument in every case `ncu --clock-control base`,
-#: `smsp__inst_executed.sum`, ONE profiled launch per arm. Quoted to the precision
-#: the sections record (0.1 M and 1 M respectively), which is far finer than the
-#: residuals below and therefore not the limiting term in any of them.
-_RECORDED_INSTRUCTION_TOTALS = {
-    ("topo-D2-w64x64-BC64", False): (1024, 9.410e6),
-    ("topo-D2-w64x64-BC64", True): (1024, 13.888e6),
-    ("topo-D2-w64x16-BC16", False): (1024, 5.298e6),
-    ("topo-D2-w64x16-BC16", True): (1024, 6.377e6),
-    ("atscale-L2048", False): (1048576, 1812.1e6),
-    ("atscale-L2048", True): (1048576, 2719.6e6),
-}
-
-
-def test_the_absolute_instruction_totals_are_a_RECORDING_not_an_assertion(capsys):
-    """THE ABSOLUTE-TOTAL GATE, IN EXPLICIT RECORDING MODE. It computes and commits
-    the per-cell residual table and **ASSERTS NO TOLERANCE ON IT, DELIBERATELY.**
-
-    Every other gate in this file binds a DECISION -- an argmin, an ordering, an
-    unreachability. This one asks a strictly harder question the model has never
-    been held to: does `w_tile` predict the ABSOLUTE instruction count a profiled
-    launch retires? The answer is recorded rather than asserted, and both halves of
-    that sentence are deliberate.
-
-    **WHY NOTHING IS ASSERTED.** The residuals below run to +45 %. A tolerance wide
-    enough to admit that would be FITTED to the rows it must pass -- the standing
-    rule forbids exactly that -- and it would certify an absolute accuracy the model
-    does not have and does not claim. Asserting a tolerance here would make the gate
-    a decoration; recording the table makes it EVIDENCE, and evidence is what the
-    missing terms are identified from. **This gate is how M-1 was found and it is
-    how the next term will be**, so it stays in recording mode.
-
-    **WHAT THE SHAPE OF THE RESIDUALS SAID, AND WHAT M-1 DID WITH IT (2026-08-01).**
-    The table used to be printed in two columns, WITH and WITHOUT the staging term.
-    With it the sign FLIPPED ON `BC` (+27..+84 % at `BC = 64`, -26..-35 % at
-    `BC = 16`, max 83.9 %, mean 41.9 %) -- not the shape of a model that prices only
-    what it measured, and the quantitative half of the finding that
-    `STAGE_COLUMN_WORK` priced a staging ring the kernel does not have. Zeroing it
-    made every row UNDER-predict (-8..-61 %, mean 27.5 %, signs consistent) and
-    flipped four of the eight argmins, which is why it could not simply be deleted.
-
-    M-1 measured the term out and measured the remainder in: the per-column price is
-    EXACTLY zero (the `iso-gc-*` cells are byte-identical across a 2.1x range of
-    `gram_cols`) and the work was a per-candidate-tile CONSTANT, `TILE_FIXED_WORK`,
-    re-measured 120 -> 3510.35 on the `iso-tile-*` cells. The residuals below are
-    the result: **max 44.8 %, mean 17.4 %, signs CONSISTENT (+)**, against 83.9 % /
-    41.9 % / mixed before -- and the `BC = 16` rows, which were -26..-35 %, are now
-    +2.9..+4.6 %.
-
-    **THE REMAINING RESIDUAL IS NAMED, MEASURED AND ONE-SIDED**, which is what makes
-    it the next item rather than noise: (1) the model charges 1899 per dense
-    k-quantum (`READOUT_FOLD_KSTEP_WORK + INTRA_GRAM_KSTEP_WORK`) where M-1's `BC`
-    sweep measures 1033 / 1155 / 1316 at `D = 1 / 2 / 3` -- so every row over-
-    predicts in proportion to its k-steps, and the quantum itself grows ~141 per
-    level, which no constant in this model expresses; (2) at `atscale-L2048` 39 % of
-    candidate pairs have an EMPTY union, and such a tile retires less than the model
-    charges it. Both are MEASUREMENTS to make, on isolating cells, exactly as this
-    one was. Nothing here may be closed by choosing a number.
-
-    Runs on CPU: every input is recorded (`_ARGMIN_STATS`,
-    `_RECORDED_INSTRUCTION_TOTALS`).
-    """
-    rows = []
-    for (cell, decay), (n_pairs, recorded) in _RECORDED_INSTRUCTION_TOTALS.items():
-        widths, d_v, BC, _n_cohorts, _ = _ARGMIN_STATS[cell]
-        topology = _topology(widths, d_v=d_v)
-        stats = _argmin_stats(cell, 16)
-        # `pred = candidate_frac * n_pairs * w_tile`, and
-        # `plan_cost_per_token = candidate_frac * w_tile / BT`, so the prediction is
-        # `cost * BT * n_pairs` -- the model's OWN arithmetic, with no separate
-        # reimplementation of `w_tile` that could drift away from it.
-        pred = plan_cost_per_token(topology, BC, stats, decay=decay) * 16 * n_pairs
-        rows.append((cell, decay, recorded, pred, pred / recorded - 1.0))
-
-    hdr = (f"\n{'cell':22s} {'decay':>5s} {'ncu (M)':>10s} "
-           f"{'pred (M)':>10s} {'resid':>8s}")
-    lines = [hdr, "-" * len(hdr)]
-    for cell, decay, rec, pred, resid in rows:
-        lines.append(f"{cell:22s} {str(decay):>5s} {rec / 1e6:10.1f} "
-                     f"{pred / 1e6:10.1f} {resid * 100:+7.1f}%")
-    lines.append(f"max |resid| {max(abs(r[4]) for r in rows) * 100:.1f} %, "
-                 f"mean |resid| "
-                 f"{sum(abs(r[4]) for r in rows) / len(rows) * 100:.1f} %; "
-                 f"signs {sorted({'+' if r[4] > 0 else '-' for r in rows})} "
-                 f"(pre-M-1: 83.9 %, 41.9 %, ['+', '-'])")
-    with capsys.disabled():
-        print("\n".join(lines))
-
-    # THE ONLY ASSERTION IS THAT THE TABLE WAS PRODUCED -- that every row priced to a
-    # finite positive number, i.e. the recording actually ran. It is NOT an accuracy
-    # claim and must never become one by having a tolerance added to it.
-    assert len(rows) == len(_RECORDED_INSTRUCTION_TOTALS)
-    for cell, decay, _rec, pred, _resid in rows:
-        assert math.isfinite(pred) and pred > 0, (
-            f"the model priced {cell} decay={decay} to a "
-            f"non-finite or non-positive absolute total ({pred}) -- the recording "
-            "did not run, which is the one thing this gate does assert")
-
-
 # ---------------------------------------------------------------------------
-# 10. rank_spans / permuted_topology
+# 9. rank_spans / permuted_topology
 # ---------------------------------------------------------------------------
 
 
@@ -1688,13 +1195,14 @@ def test_the_causal_carry_is_load_bearing_in_the_fold():
 @pytest.mark.parametrize("scenario", ["dense", "sparse", "mixed"])
 @pytest.mark.xfail(reason="_atom_union_bits crashes/over-allocates outside MMA_K_QUANTUM=16-aligned BC (see workflows/perf/p26_test_migration.md Suspected product findings)", strict=False)
 def test_the_shared_view_changes_nothing_it_only_stops_recomputing(widths, scenario):
-    """``plan_and_schedule`` returns the split path's plan and schedule, exactly.
+    """``plan_and_schedule`` returns the manually-composed plan and schedule, exactly.
 
-    The fusion shares the fold, the ``!= 0`` mask and the §4 tile bitmaps between
-    the selector and the builder. It must therefore be a pure work deletion: the
-    plan compares equal field for field and every schedule tensor compares
-    BIT-identical (``torch.equal``, not ``allclose`` -- the bitmaps are integers
-    and the amplitudes are copies, so there is nothing for a tolerance to hide).
+    It shares ONE pass over the routing tensors -- :func:`routing_views` -- between
+    :func:`build_plan` and :func:`build_schedule` rather than building the view twice,
+    so it must be a pure work deletion: the plan compares equal field for field and
+    every schedule tensor compares BIT-identical (``torch.equal``, not ``allclose`` --
+    the bitmaps are integers and the amplitudes are copies, so there is nothing for a
+    tolerance to hide).
     """
     B, T, H = 1, 40, 2
     topology = _topology(widths)
@@ -1703,17 +1211,14 @@ def test_the_shared_view_changes_nothing_it_only_stops_recomputing(widths, scena
     for BC in _admissible_bcs(widths):
         for decay in (False, True):
             for norm in ("global",):
-                occ = _toy_occupancy()
-                split_plan, split_axes = select_plan(
-                    read_levels, write_levels, topology, BC, normalization=norm,
-                    decay=decay, occupancy=occ)
+                views = routing_views(read_levels, write_levels, topology)
+                split_plan = build_plan(topology, BC, normalization=norm, decay=decay)
                 split_schedule = build_schedule(
-                    read_levels, write_levels, g_read, g_write, split_plan)
-                fused_plan, fused_axes, fused_schedule = plan_and_schedule(
+                    read_levels, write_levels, g_read, g_write, split_plan, views=views)
+                fused_plan, fused_schedule = plan_and_schedule(
                     read_levels, write_levels, g_read, g_write, topology, BC,
-                    normalization=norm, decay=decay, occupancy=occ)
+                    normalization=norm, decay=decay)
                 assert fused_plan == split_plan
-                assert fused_axes == split_axes
                 for field in ("read_tile_bits", "write_tile_bits", "read_slice_union",
                               "write_slice_union", "owners", "owner_costs",
                               "g_read", "g_write"):
@@ -2144,7 +1649,7 @@ def test_the_bit_word_pass_never_materializes_an_o_of_l_times_n_object(monkeypat
 
 # ---------------------------------------------------------------------------
 # 14b. The bit-word census as its own unit (fix brief #2, 2026-08-01). These gate
-#      `rola.planner.calibration.census` DIRECTLY rather than through `select_plan`, because
+#      `rola.planner.calibration.census` DIRECTLY, because
 #      §2.7's end-state ruling relocates it to the offline bench and its contract
 #      has to survive that move.
 # ---------------------------------------------------------------------------
@@ -2343,7 +1848,7 @@ def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(mo
     # whole owner axis is built in one call) must make the guard fire at this
     # fixture -- otherwise the assertion above would be vacuous.
     monkeypatch.setattr(
-        "rola.planner.calibration.cost_model._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
+        "rola.planner.calibration.union_stats._STATS_OWNER_CHUNK_ELEMS", 1 << 62)
     mutant_guard = _AllocationGuard(bound)
     with mutant_guard:
         _tile_union_stats_multi_enumerated(views, topology, BC, (16, 32))
@@ -2355,95 +1860,13 @@ def test_the_enumerated_reference_never_materializes_an_o_of_l_times_n_object(mo
 
 
 # ---------------------------------------------------------------------------
-# §6 P3: the closed-form selector (`rola/planner/select.py`).
-#
-# The self-gate is agreement with the EIGHT MEASURED ARGMINS -- measured argmins, not
-# model outputs, which is the only right anchor for a selector that no longer runs a
-# model -- plus the dense cells and a fake-BC row (I1).
+# 10. feasible_bc / largest_feasible_bc: the alignment ladder
 # ---------------------------------------------------------------------------
 
 
-def _summaries_with(k_hat, candidate_frac, BC, *, occupancy=None, D=2):
-    """A `RoutingSummaries` carrying a chosen mean quantum and candidate fraction.
-
-    The histogram is the two-point distribution on `floor(k_hat)` and `floor(k_hat)+1`
-    whose mean is exactly `k_hat`. That is deliberate rather than convenient: the
-    recorded rows give a MEAN (`mean_ksteps_candidate`), a histogram carries strictly
-    more, and inventing a shape that is not implied by the recording would be fitting
-    the gate to the implementation. Two adjacent bins is the unique minimal-support
-    distribution with the recorded mean.
-    """
-    QPO = BC // MMA_K_QUANTUM
-    hist = [0.0] * (QPO + 1)
-    lo = min(int(k_hat), QPO)
-    frac = k_hat - lo
-    hist[lo] = 1.0 - frac
-    if frac:
-        hist[lo + 1] = frac
-    if occupancy is None:
-        occupancy = [[0.5] * D, [0.5] * D]
-    return RoutingSummaries(
-        occupancy=torch.tensor(occupancy, dtype=torch.float32),
-        quanta_hist=torch.tensor(hist, dtype=torch.float32),
-        active_owner_frac=1.0, candidate_frac=candidate_frac,
-        written_leaf_bitmap=torch.zeros((1, 1), dtype=torch.int32))
-
-
-def _static_for(cell, *, decay, dense=False):
-    widths, d_v, BC, _n_cohorts, _ = _ARGMIN_STATS[cell]
-    D = len(widths)
-    _widths, _d_v, _BC, n_cohorts, _ = _ARGMIN_STATS[cell]
-    BH = n_cohorts // (prod(widths) // BC)
-    return StaticPlanInputs(
-        topology=_topology(widths, d_v=d_v), normalization="global", decay=decay,
-        mma_precision="bf16",
-        density=StaticDensity(read=(dense,) * D, write=(False,) * D),
-        feasible_BC=(BC,), BH=BH)
-
-
-def _hw_for(cell, decay):
-    """A `HardwareFacts` whose occupancy oracle answers from the recorded table.
-
-    The driver oracle's real signature is `(BC, d_v, decay)` -- the kernel's shared
-    memory is entirely compile-time on `(BC, DV, D, decay)`, so that is the whole
-    query. `_ARGMIN_BPSM` stays keyed by `(BC, BT, decay)`, and this closure always
-    picks the `BT=16` row: `GROUP_TOKENS=16` is the one granularity
-    `select_config_with_evidence` queries.
-    """
-    _widths, _d_v, BC, _n, _ = _ARGMIN_STATS[cell]
-
-    def oracle(bc, d_v, dec):
-        return _ARGMIN_BPSM[(bc, 16, dec)]
-
-    return HardwareFacts(sm_count=DEFAULT_SM_COUNT, occupancy=oracle)
-
-
-def test_the_selector_is_BC_generic_on_a_fake_instantiation():
-    """I1's fake-BC row for the selector: `BC = 32` is not on the ladder and must work.
-
-    Every quanta-shaped quantity here -- the histogram's bin count, `ds`, the
-    atomic term's `N/BC` -- is an expression in `BC` and `MMA_K_QUANTUM`. A
-    literal keyed to 16 or 64 passes the instantiated rows and fails this one. The
-    oracle is INJECTED, which is the documented contract for planning a geometry off
-    the instantiation matrix.
-    """
-    widths = (8, 16)
-    static = StaticPlanInputs(
-        topology=_topology(widths, d_v=64), normalization="global", decay=False,
-        mma_precision="bf16",
-        density=StaticDensity(read=(False, False), write=(False, False)),
-        feasible_BC=(16, 32, 64), BH=4)
-    hw = HardwareFacts(sm_count=DEFAULT_SM_COUNT, occupancy=_toy_occupancy(3))
-    for BC in (16, 32, 64):
-        summaries = _summaries_with(0.5, 0.4, BC)
-        assert summaries.quanta_hist.numel() == BC // MMA_K_QUANTUM + 1
-        assert quanta_per_owner(BC) == BC // MMA_K_QUANTUM
-    choice = select_config(static, hw, _summaries_with(0.5, 0.4, 64))
-    assert choice.BC in (16, 32, 64)
-
-
 def test_the_feasible_set_is_alignment_intersect_instantiated_and_the_default_is_largest():
-    """§6 P6's arithmetic, gated here because P3's argmin is the thing that consumes it."""
+    """The feasible set is the ALIGNMENT-admissible subset of the instantiated ladder,
+    and the default (no pin) is its largest member."""
     assert feasible_bc((256, 256)) == (16, 64)
     assert largest_feasible_bc((256, 256)) == 64
     # (4, 3, 16), N = 192: BC = 64 spans the two inner levels (48) and would need
@@ -2465,132 +1888,6 @@ def test_the_feasible_set_is_alignment_intersect_instantiated_and_the_default_is
         feasible_bc((3, 5), instantiated=(16, 64))
 
 
-def test_select_p_routes_the_hardware_record_into_the_unchanged_6_4_policy(monkeypatch):
-    """§4.3: `select_p` is §6.4 UNCHANGED, only re-plumbed onto `HardwareFacts`.
-
-    What is gated is the PLUMBING -- that the driver residency and SM count reach the
-    policy from the one hardware record instead of being re-queried ambiently. The
-    policy's own three gates are untouched and are gated by
-    `tests/unit/test_sequence_parallel_policy.py`.
-    """
-    import rola.routing.sequence_parallel as sp
-
-    seen = {}
-
-    def fake(plan, schedule, *, policy, arena_page_bytes, blocks_per_sm, sms):
-        seen.update(blocks_per_sm=blocks_per_sm, sms=sms,
-                    arena_page_bytes=arena_page_bytes)
-        return "SP"
-
-    monkeypatch.setattr(sp, "select_sequence_parallelism", fake)
-    plan = _plan((8, 16), 16, 16, d_v=64)
-    hw = HardwareFacts(sm_count=77, occupancy=_toy_occupancy(5))
-    assert select_p(plan, object(), hw, arena_page_bytes=123) == "SP"
-    assert seen == {"blocks_per_sm": 5, "sms": 77, "arena_page_bytes": 123}
-
-
-# ---------------------------------------------------------------------------
-# §6 P4: THE AUDITOR, run on recorded fixtures. This is P4's own self-gate.
-# ---------------------------------------------------------------------------
-
-#: DOCUMENTED DISAGREEMENTS between the closed form and the exact argmin. Each row
-#: is `(cell, closed-form BT, exact-argmin BT, modelled regret)`. The gate asserts
-#: this set EXACTLY, in both directions: a NEW disagreement fails, and a
-#: silently-FIXED one fails too -- because a disagreement that vanishes without a
-#: re-fit means a constant moved underneath the rule that was derived from it.
-_SELECTOR_DISAGREEMENTS = ()
-
-
-def _audit_rows():
-    from rola.planner.calibration.auditor import audit_cell, recorded_stats
-
-    rows = []
-    for (cell, decay) in sorted(_CALIBRATION_ARGMIN):
-        widths, d_v, BC, n_cohorts, per_bt = _ARGMIN_STATS[cell]
-        static = _static_for(cell, decay=decay)
-        hw = _hw_for(cell, decay)
-        summaries_by_bt = {BT: _summaries_with(per_bt[BT][1], per_bt[BT][0], BC)
-                           for BT in (16, 32)}
-        stats_by_bt = {BT: recorded_stats(BC, BT, per_bt[BT][0], per_bt[BT][1],
-                                          per_bt[BT][2], n_cohorts)
-                       for BT in (16, 32)}
-        blocks_by_bt = {BT: _ARGMIN_BPSM[(BC, BT, decay)] for BT in (16, 32)}
-        rows.append(audit_cell(cell, static, hw, summaries_by_bt, stats_by_bt,
-                               blocks_by_bt))
-    return rows
-
-
-@pytest.mark.xfail(
-    reason="auditor.audit_cell's choice.BT AttributeError is FIXED (P26 closure session: "
-    "audit_cell/AuditRow now compare exact_BT against the fixed TOKEN_WORD=32 instead of "
-    "a nonexistent choice.BT), but running it reveals a REAL disagreement the fixed ledger "
-    "does not yet record: the exact cost-model argmin prefers BT=16 on several recorded "
-    "atscale cells (regret up to ~1.5) against the architecturally-fixed TOKEN_WORD=32. "
-    "Whether that is a live finding (the calibration cost model still has a say) or moot "
-    "(BT is now fixed by the executor's MMA_K_QUANTUM design, not chosen to minimize this "
-    "retired cost model) is a calibration-methodology judgment beyond a mechanical fix; "
-    "carded on P26/P15 for a calibration-owning follow-up.", strict=False)
-def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
-    """P4's self-gate: the auditor, run on the recorded fixtures.
-
-    The ledger is asserted EXACTLY. It is empty today, which is what says the closed
-    form and the exact argmin agree on every recorded cell; a row appearing here is
-    the closed form and the model parting ways, and it must be explained before it
-    is recorded.
-    """
-    from rola.planner.calibration.auditor import ledger
-
-    got = ledger(_audit_rows())
-    assert got == _SELECTOR_DISAGREEMENTS, (
-        "the disagreement ledger moved:\n"
-        f"  got      {got}\n  expected {_SELECTOR_DISAGREEMENTS}")
-
-
-@pytest.mark.xfail(
-    reason="same finding as test_the_auditor_reports_the_documented_disagreement_ledger_exactly: "
-    "the AttributeError is fixed, but several recorded cells now genuinely disagree "
-    "(exact argmin prefers BT=16 vs the fixed TOKEN_WORD=32) rather than agreeing as this "
-    "test asserts -- a calibration-methodology judgment, carded on P26/P15.", strict=False)
-def test_the_auditor_carries_a_margin_beside_every_verdict():
-    """§2's validity domain is stated per decision, so every row carries its margin."""
-    for row in _audit_rows():
-        assert row.agreed
-        assert row.regret is None
-        assert row.margin > 0.0 and math.isfinite(row.margin), (row.cell, row.margin)
-
-
-def test_the_relocated_names_resolve_through_a_lazy_call_proxy_not_an_import():
-    """§6 P4: the inductor dependency leaves the shipped package's import graph.
-
-    `import rola` must not reach `benchmarks/`. The relocated names survive as PROXIES
-    that resolve on CALL, so the five bench instruments and the two out-of-track test
-    suites that call them keep working while a shipped install pays nothing -- and
-    fails at the call site with a sentence, rather than at import with a traceback.
-    """
-    import subprocess
-    import sys
-
-    probe = (
-        "import sys, rola;"
-        "from rola.planner.schedule import select_plan, plan_and_schedule, TileUnionStats;"
-        "leaked = [m for m in sys.modules if 'calibration' in m];"
-        "print('LEAKED' if leaked else 'CLEAN')")
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
-                         cwd=str(pathlib.Path(__file__).resolve().parents[2]))
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip().endswith("CLEAN"), (
-        "importing `rola` pulled the bench calibration package in; the relocation's "
-        "whole point is that the shipped package no longer carries the census's "
-        f"torch.compile/inductor runtime dependency. stdout={out.stdout!r}")
-
-    # ...and the proxy really dispatches, rather than being a decorative stub.
-    from rola.planner import schedule
-    from rola.planner.calibration.cost_model import plan_waves as real
-    assert schedule.plan_waves(100, 2, 10) == real(100, 2, 10)
-    with pytest.raises(AttributeError):
-        _ = schedule.this_name_never_existed
-
-
 def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     """The release blocker this gate exists to close, gated FOREVER.
 
@@ -2598,13 +1895,17 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     `rola.planner.schedule` reached it by inserting `benchmarks/` onto `sys.path`
     RELATIVE TO ITS OWN FILE. That resolves from a source checkout and from nowhere
     else: `setup.py` packages `find_packages(include=["rola", "rola.*"])`, so an
-    installed wheel has no `benchmarks/` sibling. Measured in the merged tree, a CUDA
-    prefill loaded `planner_calibration`, `planner_calibration.census` and
-    `planner_calibration.cost_model` on the HOT PATH -- so every CUDA prefill from an
-    installed wheel raised `ModuleNotFoundError`. Two things fixed it and this gate
-    covers both: the layer cut-over removed the runtime edge (the prefill path is now
-    `produce_routing -> summarize_routing -> select_config -> Plan -> build_schedule`,
-    none of which touches calibration), and the package moved into `rola/`.
+    installed wheel has no `benchmarks/` sibling. Two things fixed it and this gate
+    covers both: the prefill path is now `produce_routing -> derive_bc -> build_plan
+    -> build_schedule`, a closed form over launch-static facts that touches no
+    calibration module at all, and the package moved into `rola/`.
+
+    **WHAT IS ASSERTED NOW.** `rola.planner.calibration` -- the census and
+    union-stats package the OFFLINE fitting instruments use -- must stay OUT of
+    `sys.modules` after `import rola` and after the whole prefill path runs. It is
+    not merely relocated into the shipped package (as it once was): the prefill hot
+    path does not import it at all, so a wheel that omitted it entirely would still
+    serve a prefill correctly.
 
     **WHY A SUBPROCESS OVER A SYNTHESIZED LAYOUT.** `tests/conftest.py` puts
     `benchmarks/` on `sys.path` for the bench packages, so an in-process import proves
@@ -2631,19 +1932,18 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             # Everything the CUDA prefill path resolves, imported by name.
             "import rola;"
             "from rola.layers.rola import RoLA;"
-            "from rola.planner.select import select_config_with_evidence, HardwareFacts;"
+            "from rola.planner.derive import MachineFacts, derive_bc, feasible_bc;"
             "from rola.routing.summaries import summarize_routing;"
-            "from rola.planner.schedule import Plan, build_schedule, routing_views,"
-            " owner_geometry, consumer_occupancy;"
-            # ...and the relocated names, which must ALSO resolve here now: they are
-            # documented public API and used to raise ModuleNotFoundError off a wheel.
-            "from rola.planner.schedule import plan_and_schedule;"
-            "import rola.planner.calibration.cost_model as cm;"
-            "assert pathlib.Path(cm.__file__).is_relative_to(pathlib.Path(rola.__file__).parent);"
-            # Nothing may have come from a `benchmarks/` tree.
+            "from rola.planner.schedule import Plan, build_plan, build_schedule,"
+            " routing_views, owner_geometry, consumer_occupancy;"
+            # The offline calibration package must stay out of the module table --
+            # not merely off a `benchmarks/` path, but unimported by the hot path.
+            "leaked = [m for m in sys.modules"
+            " if m == 'rola.planner.calibration' or m.startswith('rola.planner.calibration.')];"
+            # Nothing may have come from a `benchmarks/` tree either.
             "bad = [m.__name__ for m in list(sys.modules.values())"
             " if getattr(m, '__file__', None) and 'benchmarks' in str(m.__file__)];"
-            "print('BAD' + repr(bad) if bad else 'CLEAN')")
+            "print(('BAD' + repr(bad)) if bad else ('LEAKED' + repr(leaked)) if leaked else 'CLEAN')")
 
         env = dict(os.environ)
         env["PYTHONPATH"] = str(site)
@@ -2656,70 +1956,12 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
         "the prefill path does not import from the installed package layout -- this is "
         f"the ModuleNotFoundError class this gate exists to close.\n{out.stderr}")
     assert out.stdout.strip().endswith("CLEAN"), (
-        f"a module resolved out of `benchmarks/` under the installed layout: {out.stdout!r}")
+        f"the prefill path touched rola.planner.calibration or a `benchmarks/` module, "
+        f"which it must not: {out.stdout!r}")
 
 
 # ---------------------------------------------------------------------------
-# §6b: DECODE BYPASSES SELECTION ARCHITECTURALLY (user ruling, 2026-08-02)
-# ---------------------------------------------------------------------------
-
-
-def test_the_decode_path_issues_zero_statistics_work():
-    """§6b: at `T == 1` the dispatch touches no statistic, no oracle and no policy.
-
-    The gate is a SPY on every door the decode arm must not go through: the closed-form
-    selector, the occupancy oracle (which is where a wave term would be computed for a
-    grid decode does not vary), and `select_p`. A `RoutingSummaries` is deliberately
-    passed anyway -- if the branch were on the ARGUMENT rather than on the shape, a
-    caller that happened to have summaries would silently take the prefill path.
-    """
-    import rola.planner.select as select_module
-
-    widths = (8, 16)
-    static = StaticPlanInputs(
-        topology=_topology(widths, d_v=64), normalization="global", decay=False,
-        mma_precision="bf16",
-        density=StaticDensity(read=(True, True), write=(False, False)),
-        feasible_BC=(16, 64), BH=4)
-    calls = []
-    hw = HardwareFacts(sm_count=DEFAULT_SM_COUNT,
-                       occupancy=lambda *a, **k: calls.append("oracle") or 3)
-    summaries = _summaries_with(0.5, 0.4, 64)
-
-    choice, evidence = select_config_for_step(static, hw, 1, summaries=summaries)
-    assert calls == [], "the decode arm queried the occupancy oracle"
-    assert evidence is None, "the decode arm produced selection evidence, so it selected"
-    # Feeder flags come from the STATIC declarations only: a flag set from one token's
-    # support would be a claim about the sequence made from a single sample, and under
-    # the factored feeder a false dense flag is a correctness defect, not a mis-pricing.
-    assert choice.feeder_flags.read == (True, True)
-    assert choice.feeder_flags.write == (False, False)
-
-    # ...and the prefill arm at the same call site DOES select, so the branch is real.
-    calls.clear()
-    prefill, prefill_evidence = select_config_for_step(static, hw, 2048,
-                                                       summaries=summaries)
-    assert calls, "the prefill arm skipped the oracle"
-    assert prefill_evidence is not None
-
-    # The boundary carrier adopts the prefill's BC (the state is laid out for it and
-    # cannot be re-laid) and re-derives everything else.
-    frozen = freeze_for_decode(static, prefill=prefill)
-    assert frozen.choice.BC == prefill.BC
-    assert frozen.sequence_parallel is None, "decode must not carry a P plan"
-    assert frozen.frozen_from == prefill
-
-    # `is_decode_step` is STRUCTURAL: it is the no-tiling case, not a dimension
-    # comparison. No T above 1 takes the decode branch.
-    assert select_module.is_decode_step(1)
-    assert not any(select_module.is_decode_step(T) for T in (2, 15, 16, 17, 4096))
-
-    with pytest.raises(ValueError, match="only the T == 1 decode arm"):
-        select_config_for_step(static, hw, 2048, summaries=None)
-
-
-# ---------------------------------------------------------------------------
-# §6 P6: the construction MATRIX. Every row is a topology whose `BC` question has a
+# 11. The BC construction MATRIX. Every row is a topology whose `BC` question has a
 # different answer, and the wide-last-level row is the one `widths[-1]` got wrong.
 # ---------------------------------------------------------------------------
 
@@ -2736,13 +1978,12 @@ _BC_CONSTRUCTION_MATRIX = [
 @pytest.mark.parametrize("widths,expected,why", _BC_CONSTRUCTION_MATRIX,
                          ids=[f"w{'x'.join(map(str, w))}" for w, _, _ in _BC_CONSTRUCTION_MATRIX])
 def test_the_bc_construction_matrix_including_a_wide_last_level(widths, expected, why):
-    """§6 P6: feasible = alignment INTERSECT instantiated, and the default is the largest.
+    """Feasible = alignment INTERSECT instantiated, and the default is the largest.
 
-    The wide-last-level row is the whole reason the default moved. `widths[-1]` is
-    ALIGNED there -- the old defence is true -- but it is not INSTANTIATED, so the old
-    default produced a `BC` no kernel implements and the caller learned about it from
-    the occupancy oracle at plan time, on a value they never chose. Alignment is
-    necessary, not sufficient.
+    The wide-last-level row is the whole reason the default is not simply
+    `widths[-1]`. That value is ALIGNED there but not INSTANTIATED, so taking it as
+    the default would produce a `BC` no kernel implements -- discovered at plan time,
+    on a value the caller never chose. Alignment is necessary, not sufficient.
     """
     assert feasible_bc(widths) == expected, why
     assert largest_feasible_bc(widths) == expected[-1]
@@ -2766,7 +2007,7 @@ def test_the_bc_construction_matrix_including_a_wide_last_level(widths, expected
 
 
 def test_an_inadmissible_pin_and_an_unservable_topology_are_construction_time_errors():
-    """The point of P6: no plan-time surprises. Both diagnoses name the geometry."""
+    """No plan-time surprises: both diagnoses name the geometry, at construction time."""
     with pytest.raises(ValueError, match="no feasible BC"):
         feasible_bc((4, 3, 16), pinned=64)
     with pytest.raises(ValueError, match="no feasible BC"):

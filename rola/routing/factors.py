@@ -71,13 +71,10 @@ class RouteFactors:
     ``g_read``/``g_write``: ``[B, T, H]`` side gains; ``g_read`` is ``None`` under
     ``normalization='global'``, where architecture §4.2 fixes it to 1.
     ``support_counts()``/``touched_bits()``: the auxiliary statistics, DERIVED ON
-    DEMAND. Nothing in the library reads them -- they exist for the budget losses and
-    for diagnostics -- so computing them eagerly spent two launches per level per step
-    on numbers no consumer asked for (measured at ``L = 4096``: 3.0% of the step). A
-    producer that already knows them supplies them and no launch happens at all.
-    ``slack_history``: ``{(level, side): [B, H, chunks]}``, budgeted pairs only. It is
-    a field rather than a method because it is a byproduct of the conditioning
-    recurrence and cannot be recovered afterwards.
+    DEMAND. Nothing in the library reads them -- they exist for diagnostics -- so
+    computing them eagerly spent two launches per level per step on numbers no
+    consumer asked for (measured at ``L = 4096``: 3.0% of the step). A producer that
+    already knows them supplies them and no launch happens at all.
     ``density``: which cells are full-support by construction, for PRICING only --
     the schedule the kernel executes is built from the realized masks and never reads
     it (:class:`~rola.planner.schedule.StaticDensity`).
@@ -97,7 +94,6 @@ class RouteFactors:
     density: StaticDensity
     exposed_counts: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
     exposed_bits: dict[int, torch.Tensor] = field(default_factory=dict)
-    slack_history: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
     origin: object = None
     #: Derivations computed on demand and reused within the bundle's lifetime. A view
     #: lives inside one forward and cannot go stale.
@@ -298,8 +294,6 @@ class RouteProducer(nn.Module):
         self,
         read_stream: torch.Tensor,
         write_stream: torch.Tensor | None = None,
-        *,
-        budget: torch.Tensor | None = None,
     ) -> RouteFactors:
         """Run every producer once and derive the bundle.
 
@@ -319,14 +313,13 @@ class RouteProducer(nn.Module):
             write_stream = read_stream
         elif write_stream.shape != read_stream.shape:
             raise ValueError("write_stream must have the same shape as read_stream")
-        source = RouteSource(read=read_stream, write=write_stream, budget=budget)
+        source = RouteSource(read=read_stream, write=write_stream)
 
         D = self.topology.D
         read: list[torch.Tensor | None] = [None] * D
         write: list[torch.Tensor | None] = [None] * D
         exposed: dict[tuple[int, str], torch.Tensor] = {}
         exposed_bits: dict[int, torch.Tensor] = {}
-        slack: dict[tuple[int, str], torch.Tensor] = {}
         for producer, slots in zip(self.producers, self.slots):
             try:
                 produced = producer(source)
@@ -346,8 +339,6 @@ class RouteProducer(nn.Module):
                 exposed[(slots[local], side)] = value
             for local, value in getattr(produced, "touched_bits", {}).items():
                 exposed_bits[slots[local]] = value
-            for (local, side), value in getattr(produced, "slack_history", {}).items():
-                slack[(slots[local], side)] = value
 
         B, H = source.batch, self.num_heads
         read_levels, read_mass = _fold(tuple(read), B=B, H=H)
@@ -369,7 +360,7 @@ class RouteProducer(nn.Module):
             topology=self.topology, normalization=self.normalization,
             read=read_levels, write=write_levels, g_read=g_read, g_write=g_write,
             density=self.density, exposed_counts=exposed, exposed_bits=exposed_bits,
-            slack_history=slack, origin=_DERIVED)
+            origin=_DERIVED)
 
 
 # --- construction-time assembly ---------------------------------------------

@@ -16,18 +16,18 @@ dead tree-wide and every poison finding it would have produced is being missed.
 
 import torch
 
-from rola.routing import sequence_parallel as sp_mod
+from rola.ops import consumer as probe_mod
 
 
 def test_the_nan_poison_guard_engages_in_this_tier():
     code = compile(
         "def _poison_probe(torch):\n    return torch.empty(8, dtype=torch.float32)",
-        sp_mod.__file__, "exec")
-    exec(code, sp_mod.__dict__)
+        probe_mod.__file__, "exec")
+    exec(code, probe_mod.__dict__)
     try:
-        out = sp_mod.__dict__["_poison_probe"](torch)
+        out = probe_mod.__dict__["_poison_probe"](torch)
     finally:
-        sp_mod.__dict__.pop("_poison_probe", None)
+        probe_mod.__dict__.pop("_poison_probe", None)
     assert torch.isnan(out).all(), (
         "torch.empty called from a rola frame was NOT NaN-poisoned: the conftest "
         "guard is dead in tests/layers (it must cover tier1_semantics, "

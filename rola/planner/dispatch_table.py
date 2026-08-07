@@ -9,16 +9,16 @@ binary: one row per compiled arm, carrying the arm's structural coordinates, its
 together with that unit's ``members-sha256``. This module reads those rows and answers
 two questions the planner has to ask before it selects anything:
 
-* **which arms exist** -- so a selector's candidate set is the binary's own arm set
-  rather than a tuple written down beside it;
+* **which arms exist** -- so the derivation's candidate set is the binary's own arm
+  set rather than a tuple written down beside it;
 * **which of them this machine can run** -- the per-row ENABLE PREDICATE, which keys on
   a runtime device fact (``cudaDevAttrMaxSharedMemoryPerBlockOptin``) and never on a
   build symbol.
 
 **THE TABLE CONSUMES CHOICES; IT DOES NOT MAKE THEM.** Nothing here scores, ranks or
 prefers a row. :func:`DispatchTable.resolve` takes a fully-determined choice and returns
-the row or raises; who decided, and on what evidence, is the selector's business
-(:mod:`rola.planner.select`).
+the row or raises; what fixed the choice, and from which facts, is
+:mod:`rola.planner.derive`'s business.
 
 ---- THE STALENESS KEY, AND WHY IT IS FILTERED RATHER THAN TRUSTED ----------------
 

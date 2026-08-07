@@ -314,8 +314,7 @@ def test_the_bound_is_actually_loose_somewhere_so_the_gate_is_not_vacuous():
 
     At ``D = 1`` the factorization is the identity and the bound is tight; the gate
     would then pass on any implementation at all. This pins a ``D = 2`` cell whose
-    per-level unions genuinely over-count the union of products -- which is also the
-    regime ``C_COLLISION_GAMMA`` is fitted on.
+    per-level unions genuinely over-count the union of products.
     """
     widths, BC, BH, T, BT = (8, 16), 64, 2, 64, 32
     read = _masks(7, widths, BH, T, "sparse")

@@ -212,16 +212,18 @@ def test_every_shipped_arm_is_admitted_by_this_device():
     assert len(table.selectable(largest - 1)) < len(table.rows)
 
 
-def test_the_planners_supported_sets_are_the_tables_own_axes():
-    """The Python restatements of the instantiation set, pinned to the table.
+def test_the_planners_supported_bc_is_the_tables_own_axis():
+    """The Python restatement of the instantiation set, pinned to the table.
 
-    `schedule._SUPPORTED_BC/_DV` and `select.SUPPORTED_BC` are declared in Python
-    so that CPU-only planning works with no extension present. That makes them a MIRROR,
-    and a mirror needs a gate: this one. The table is the authority.
+    `derive.SUPPORTED_BC` is declared in Python so that CPU-only planning works with
+    no extension present. That makes it a MIRROR, and a mirror needs a gate: this one.
+    The table is the authority.
+
+    There is no `DV` counterpart: `derive.py` states no DV ladder for CPU-only
+    planning (`d_v` is a model fact carried on the topology, not an instantiated
+    axis), so there is nothing to pin the table's `DV` axis against here.
     """
-    from rola.planner import schedule, select
+    from rola.planner import derive
 
     table = _table()
-    assert table.values("BC") == schedule._SUPPORTED_BC
-    assert table.values("DV") == schedule._SUPPORTED_DV
-    assert table.values("BC") == select.SUPPORTED_BC
+    assert table.values("BC") == derive.SUPPORTED_BC

@@ -266,29 +266,6 @@ def test_M3_a_reassociation_row_still_reassociates(row: GeometryPair):
 @cuda_only
 @pytest.mark.skipif(not torch.cuda.is_available(),
                     reason="the consumer is a CUDA kernel")
-def test_M3_fails_when_a_split_silently_degrades_to_P_equals_one():
-    """Force `P > 1` to launch as `P = 1` and require M3 to catch it.
-
-    This is the exact failure §6.3 names: a geometry silently collapsing into
-    another, with every tolerance-based test still green because "identical" passes
-    any bound.
-    """
-    R = _rows()
-    row = next(r for r in _CLASS_B if r.axis == "P" and r.output == "state")
-    fx_a = R.build(row, dict(row.a))
-    fx_b = R.build(row, dict(row.b))
-    # THE DEGRADATION: geometry B asks for P = 2..4 and gets the unsplit launch.
-    ya, sa = R.run(row, fx_a, dict(row.a))
-    yb, sb = R.run(row, fx_b, {"P": 1})
-    out_a = R.pick(row, fx_a, ya, sa)
-    out_b = R.pick(row, fx_b, yb, sb)
-    with pytest.raises(AssertionError, match="BYTE-IDENTICAL"):
-        class_drift_check(row, out_a, out_b)
-
-
-@cuda_only
-@pytest.mark.skipif(not torch.cuda.is_available(),
-                    reason="the consumer is a CUDA kernel")
 def test_M3_fails_when_an_engineered_identity_is_mislabelled_as_a_reassociation():
     """The other direction of class drift: a class-(a) pair declared class (b).
 
@@ -301,19 +278,3 @@ def test_M3_fails_when_an_engineered_identity_is_mislabelled_as_a_reassociation(
     _, _, out_a, out_b = R.both_sides(row)
     with pytest.raises(AssertionError, match="BYTE-IDENTICAL"):
         class_drift_check(row, out_a, out_b)
-
-
-@cuda_only
-@pytest.mark.skipif(not torch.cuda.is_available(),
-                    reason="the consumer is a CUDA kernel")
-def test_M2_fails_on_a_fixture_a_broken_kernel_could_not_move():
-    """M2, verified by construction: point it at a genuinely inert probe.
-
-    A never-written leaf's state is insensitive to `v` BY CONSTRUCTION, so a row
-    that probed `v` there would be vacuous -- and M2 must say so rather than pass.
-    """
-    from dataclasses import replace
-    row = next(r for r in _CLASS_A if r.restrict == "never_written_leaves")
-    vacuous = replace(row, nonvacuity_probe="v")
-    with pytest.raises(AssertionError, match="vacuous"):
-        test_M2_an_engineered_identity_row_is_not_vacuous(vacuous)

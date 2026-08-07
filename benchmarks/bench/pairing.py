@@ -207,7 +207,7 @@ def _paired_one_kernel(cell, fx, arm_a, arm_b, reps, label, extra="",
 
 
 
-def arm_time(name, *, reps=31, norm="global", decay_temp=None, bt=None,
+def arm_time(name, *, reps=31, norm="global", decay_temp=None,
              instrument: str = CANONICAL_INSTRUMENT):
     """ONE arm of the new consumer, absolute times -- the CROSS-BUILD instrument.
 
@@ -229,8 +229,7 @@ def arm_time(name, *, reps=31, norm="global", decay_temp=None, bt=None,
     fx = cell.build()
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     gr = None if norm == "global" else fx["g_read"]
-    plan, sch = cell.plan(norm=norm, decay_on=decay is not None,
-                          fx=fx, bt=bt)
+    plan, sch = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     for _ in range(WARMUP_LAUNCHES):                     # warm + schedule
         _, sch = _timed(cell, fx, plan, decay, gr, sch, instrument=instrument)
     ts = []

@@ -3,18 +3,18 @@
 """The advanced surface. Nothing here is part of the contract.
 
 The public surface is the reduction theorem: linear attention, plus the one slot that
-makes it RoLA. Everything in this module is BELOW that line -- launch geometry, cost
-models, the plan objects, the seam the op is split at. They are exported because a
-serious consumer legitimately needs them (a gate that must ask for the exact numeric
-arm, a conformance test that must run a stale plan, a deployment that must cap an
-allocator) and reaching past a package into its privates is worse than a marked door.
+makes it RoLA. Everything in this module is BELOW that line -- launch geometry, the
+derivation that fixes it, the plan objects, the seam the op is split at. They are
+exported because a serious consumer legitimately needs them (a gate that must ask for
+the exact numeric arm, a conformance test that must run a stale plan, a deployment that
+must cap an allocator) and reaching past a package into its privates is worse than a
+marked door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
-these objects and pass them; do not assert on their fields. A ``Plan``'s geometry moves
-with every recalibration, by design -- it is the answer to "how should this launch
-run", and that answer is allowed to change when the cost model learns something. The
-model facts a plan carries (``topology``, ``normalization``) are the exception and are
-stable, because they are not decisions.
+these objects and pass them; do not assert on their fields. A ``Plan``'s geometry is
+the answer to "how should this launch run", and that answer moves with the machine it
+is derived for. The model facts a plan carries (``topology``, ``normalization``) are
+the exception and are stable, because they are not decisions.
 
 Importing this module is a statement that you accept that. The op never requires it.
 """
@@ -27,47 +27,28 @@ from typing import Any
 from rola.interface import Dispatch, dispatch_for, requires_backward, select_backend
 from rola.interface import _derive_plan as derive_plan
 from rola.interface import _execute as execute
+from rola.planner.derive import MachineFacts, derive_bc, feasible_bc, largest_feasible_bc
 from rola.planner.schedule import (
     Plan,
-    PlanAxes,
     Schedule,
     StaticDensity,
+    build_plan,
     build_schedule,
     plan_and_schedule,
-    select_plan,
-)
-from rola.planner.select import (
-    ConfigChoice,
-    ConfigEvidence,
-    CostModelSelector,
-    FixedChoiceSelector,
-    HardwareFacts,
-    Selector,
-    StaticPlanInputs,
-    StatisticsBundle,
-    feasible_bc,
-    largest_feasible_bc,
-    select_with,
 )
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
-    "ConfigChoice",
-    "ConfigEvidence",
-    "CostModelSelector",
     "Dispatch",
-    "FixedChoiceSelector",
     "GainConfig",
-    "HardwareFacts",
+    "MachineFacts",
     "Plan",
-    "PlanAxes",
     "PlanOverrides",
     "Schedule",
-    "Selector",
     "StaticDensity",
-    "StaticPlanInputs",
-    "StatisticsBundle",
+    "build_plan",
     "build_schedule",
+    "derive_bc",
     "derive_plan",
     "dispatch_for",
     "execute",
@@ -76,20 +57,18 @@ __all__ = [
     "plan_and_schedule",
     "requires_backward",
     "select_backend",
-    "select_plan",
-    "select_with",
 ]
 
 
 @dataclass(frozen=True, slots=True)
 class PlanOverrides:
-    """Pins over axes the planner would otherwise choose.
+    """Pins over axes the planner would otherwise derive.
 
     ``state_block`` (``BC``): the number of leafs one owner block owns -- the CTA's
-    resident state tile. An explicit value SHRINKS THE FEASIBLE SET TO ITSELF, so the
-    planner has nothing left to choose; it is still alignment-validated like any other
-    member, which is what makes it a pin over a selected axis rather than a bypass of
-    one. ``None`` takes the largest feasible value.
+    resident state tile, and THE EXPERT PIN. An explicit value REPLACES
+    :func:`~rola.planner.derive.derive_bc`'s three ceilings rather than biasing them,
+    and it is still alignment-validated like any other member, which is what makes it a
+    pin over a derived axis and not an escape from one. ``None`` derives it.
 
     ``mma_precision``: DEAD AXIS, retained as a declared restriction: ``"bf16"`` is
     the only value (bf16 storage, fp32 accumulation, fp64 reference as oracle); any
@@ -107,18 +86,12 @@ class PlanOverrides:
     provisions the dense limit, at which the ceiling can never bind. A finite value is a
     POLICY limit: a launch whose realized write footprint exceeds it is REFUSED,
     host-side, naming the demand and the arena size. It is never degraded.
-
-    ``selector``: the cost model that turns statistics into a choice. It is one
-    implementation behind an interface, and the shipped one reports ``INTERIM`` because
-    its constants are knowingly unaudited. Swapping it is an assignment; that it is an
-    assignment is the property this field exists to keep true.
     """
 
     state_block: int | None = None
     mma_precision: str = "bf16"
     paging: bool = False
     max_physical_pages: int | None = None
-    selector: Any = None
 
     def __post_init__(self) -> None:
         if self.state_block is not None and type(self.state_block) is not int:
@@ -140,5 +113,5 @@ class PlanOverrides:
             return value
         raise TypeError(
             "the `expert` argument takes a rola.expert.PlanOverrides -- the marked advanced "
-            f"surface -- got {type(value).__name__}. Its axes are ones the planner selects; "
+            f"surface -- got {type(value).__name__}. Its axes are ones the planner derives; "
             "pinning one is a deliberate act with a name.")

@@ -99,20 +99,26 @@ class ConstantDecay(DecaySource):
 
 
 class LearnedDecay(DecaySource):
-    """Rates learned through a sigmoid, at one of three resolutions.
+    """Rates learned through a sigmoid, at one of two resolutions.
 
     ``scope='state'`` learns one rate per head per digit (the finest the recurrence can
-    use), ``'level'`` one per head per level, ``'global'`` one per head. Every scope
-    emits the same ``[H, width_l]`` dials -- broadcasting is where the coarser scopes
-    differ, not the contract -- so the recurrence is identical across them and the
-    choice is purely how many degrees of freedom the model gets.
+    use), ``'global'`` one per head. Every scope emits the same ``[H, width_l]`` dials --
+    broadcasting is where the coarser scope differs, not the contract -- so the
+    recurrence is identical across them and the choice is purely how many degrees of
+    freedom the model gets.
+
+    These are the two IDENTIFIABLE resolutions: under ``keep = (1 - prod_l delta_l)**c``
+    (one write-conditioned clock per leaf, architecture §4.4), a rate only ever enters
+    the recurrence through that per-leaf product, so per-digit (``'state'``) and
+    per-head (``'global'``) are the two degrees of freedom the product structure lets
+    the recurrence actually distinguish.
 
     The dials are held in fp32 regardless of the module's dtype: the kernel reads an
     fp32 rate, and a dial rounded through bf16 would quantize the forgetting schedule
     to a handful of distinct rates.
     """
 
-    _SCOPES = ("state", "level", "global")
+    _SCOPES = ("state", "global")
 
     def __init__(
         self,
@@ -132,8 +138,6 @@ class LearnedDecay(DecaySource):
         theta = math.log(rate) - math.log1p(-rate)
         if scope == "global":
             shapes = [(self.num_heads, 1)]
-        elif scope == "level":
-            shapes = [(self.num_heads, 1) for _ in self.widths]
         else:
             shapes = [(self.num_heads, width) for width in self.widths]
         self.theta = nn.ParameterList([

@@ -86,40 +86,11 @@ from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
 from rola.expert import PlanOverrides
 from rola.ops.consumer import _consumer_forward
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from rola.planner.calibration.cost_model import plan_and_schedule, select_plan
-from rola.planner.schedule import build_schedule
-
-
-def _select_evidence(layer, x, decay_config):
-    """Reconstruct `(ConfigChoice, ConfigEvidence)` on the SAME routing bundle a
-    forward would use -- the private seam `rola.interface._derive_plan` walks
-    internally.
-
-    MIGRATED (API-contract break, 2026-08-05): `layer.last_plan_axes` (the
-    `ConfigEvidence` a forward used to retain beside its `Plan`) is GONE with no
-    layer-level replacement -- `rola.interface._derive_plan` computes it and
-    discards it now. This walks the same private seam by hand so the reporting
-    columns below (`k_hat`, `candidate_frac`, `selected_cost_per_token`,
-    `selection_provenance`) stay populated. It ALSO sidesteps a separate,
-    suspected rola/ bug (see the migration report): `layer.last_selected_plan`
-    itself reads back `None` after the ordinary (unpaged, non-decode) CUDA arm,
-    because `RoLA.forward`'s shared oracle/cuda `else` branch unconditionally
-    nulls it after calling `rola_op`, which never surfaces the `Plan` it computed
-    internally. Re-deriving here is unaffected by that bug.
-    """
-    from rola.interface import _hardware_facts, _static_inputs
-    from rola.planner.select import DEFAULT_SELECTOR, SUPPORTED_BT, StatisticsBundle, select_with
-
-    routes = layer.routes(x)
-    static = _static_inputs(routes, decay=decay_config, overrides=layer.expert)
-    hardware = _hardware_facts(routes.device)
-    summaries = routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
-    return select_with(DEFAULT_SELECTOR, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
+# `BC` is derived once, in closed form, over launch-static facts
+# (`rola.planner.derive.derive_bc`); `plan_and_schedule`/`build_plan`/`build_schedule`
+# in `rola.planner.schedule` take it as an argument rather than choosing among
+# candidates, so there is no separate selection plane to reconstruct here.
+from rola.planner.schedule import build_plan, build_schedule, plan_and_schedule
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -358,31 +329,14 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             "would be an oracle timing")
         row["BC"] = layer.state_block
         decay_config = None if layer.decay is None else layer.decay()
-        # `layer.last_selected_plan`/`layer.last_plan_axes`: see `_select_evidence`'s
-        # docstring -- both are re-derived here rather than read off the layer.
+        # `layer.last_selected_plan`/`layer.last_plan_axes` are re-derived here rather
+        # than read off the layer, since the private seam (`rola.interface._derive_plan`,
+        # exported as `rola.expert.derive_plan`) discards the `Plan` it computes.
         from rola.expert import derive_plan
 
-        _choice, evidence = _select_evidence(layer, x, decay_config)
         plan = derive_plan(
             layer.routes(x), decay=decay_config, expert=layer.expert, device=x.device)
-        # `Plan.intra_lowering` and the whole crossover it drove (`INTRA_LOWERINGS`,
-        # `select_intra_lowering`) were retired at item 6b (`schedule.py` §6 docstring,
-        # 2026-08-01): there is one topology-agnostic kernel family now, so there is
-        # nothing left on this axis to record.
-        row.update({"selected_BT": plan.BT})
-        if evidence is not None:
-            # G16 RE-POINT (terminal cycle): `last_plan_axes` carries
-            # `rola.planner.select.ConfigEvidence` since the closed-form cut-over --
-            # the pre-cut-over `PlanAxes.stats` object (mean_K / mean_K_candidate /
-            # saturated_frac) was retired with the runtime argmin. `k_hat` is the
-            # SELECTOR'S OWN collapse statistic (the quanta-histogram upper bound
-            # over the realized k-extent, spec §4.2) and `candidate_frac` survives by name;
-            # both are recorded from the evidence the decision actually used, which
-            # is stronger provenance than a re-derived statistic.
-            row["k_hat"] = round(evidence.k_hat, 4)
-            row["candidate_frac"] = round(evidence.candidate_frac, 6)
-            row["selected_cost_per_token"] = round(evidence.cost_per_token, 4)
-            row["selection_provenance"] = evidence.provenance
+        row["BC_derived"] = plan.BC
         # Old `layer.last_paging_stats` -> the arena's own `PagingResult`
         # (`layer._page_arena.last_result`), the same fields.
         stats_paging = layer._page_arena.last_result if layer._page_arena is not None else None
@@ -435,23 +389,16 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             g_read, g_write = ro.g_read, ro.g_write
             decay = decay_config
 
-            # `layer.routes.density` is the ROUTE PRODUCER's own build-time
-            # declaration (old: `layer.static_density`), passed here for the same
-            # reason `layer.topology`/`layer.state_block` are: a plane that dropped
-            # it would time a planner call the whole-layer row above does not make.
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on,
-                                            static_density=layer.routes.density)
+                                            normalization=norm, decay=decay_on)
 
-            sel_plan, _axes, sched = planner()
+            sel_plan, sched = planner()
 
             def select_only():
-                return select_plan(read_levels, write_levels, layer.topology,
-                                      layer.state_block, normalization=norm,
-                                      decay=decay_on,
-                                      static_density=layer.routes.density)
+                return build_plan(layer.topology, layer.state_block,
+                                   normalization=norm, decay=decay_on)
 
             def schedule_only():
                 return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)

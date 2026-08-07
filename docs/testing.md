@@ -86,7 +86,6 @@ Every cell of this cross-product is gated against the oracle:
 | Axis | Values |
 |---|---|
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
-| `P` (sequence-parallel split) | 1, > 1 |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
 | `(widths, BC, D, d_v)` | the planner's supported rectangles |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
@@ -341,15 +340,16 @@ are here because a document nothing checks is a document that drifts.
 tables to `tools/supported.py --check`. A hand-maintained support table is a
 claim; a generated one is a report, and this is what keeps the difference real.
 
-**`tests/unit/test_selector_interface.py`** holds THE SEAM the card marks binding:
-the typed and versioned `StatisticsBundle` (its version refusal, and `expose()`'s exact
-key set), the `Selector` protocol's `name`/`status`, `CostModelSelector` declaring
-itself `INTERIM`, `FixedChoiceSelector` reading nothing, `select_with`, and the frozen
-§4.3 entry points' keyword-only `selector=` — including that a passed selector's choice
-is the one that comes back, that cost-model kwargs beside a selector are refused rather
-than dropped, that the §6b decode bypass still precedes any selector, and that a plan
-records who decided. CPU-only with an injected oracle: selection is a pure function of
-its recorded inputs, so a row that needed a device would be testing the driver.
+**`tests/unit/test_derive.py`** gates `derive_bc` term by term: the subtree ceiling,
+the box ceiling and the fill ceiling are each exercised against an otherwise-open
+`MachineFacts` so a passing term cannot be carried by a neighbour, then the
+composition, the downward clamp onto the compiled ladder, and the expert pin
+(`PlanOverrides.state_block`, alignment-validated like any derived value) are gated
+together. `MachineFacts` is injected as a plain record, so every term runs CPU-only
+against a synthetic machine of arbitrary SM count and arm carve; one test is marked
+`cuda` and checks the box arithmetic against the *built binary's own* dispatch-table
+carve, the only place the derivation's shared-memory term is checked against real
+numbers rather than a synthetic one.
 
 **`tests/unit/test_dispatch_table.py`** is the CENSUS: it reads the dispatch table out
 of the built extension and joins it against the fatbin's device entry points, decoded
@@ -454,7 +454,7 @@ the tiers it names do, unconditionally, and the recipe says so. This is the same
 
 `tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
 `test_interface.py::test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm`,
-two in `test_sequence_parallel_policy.py`) the same way it deselects `tier1_semantics`'s
+five in `test_planner.py`) the same way it deselects `tier1_semantics`'s
 -- so the `-m cuda` line above is what makes them reachable at all. Every committed test
 must be collected by SOME line here; a test that only a `-m "not cuda"` line ever
 selects against is a test nothing runs.

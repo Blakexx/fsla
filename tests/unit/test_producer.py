@@ -1,4 +1,4 @@
-"""V3 Stage 2 producer tests (`ROLA_V3_SPEC.md` §10 Stage 2; architecture §4.5).
+"""V3 Stage 2 producer tests (`ROLA_V3_SPEC.md` §10 Stage 2).
 
 Validates `rola.routing.producer` against the ONE canonical
 ground truth this branch authorizes: the Stage 1 fp64 oracle
@@ -9,16 +9,19 @@ output through the oracle and checks numerical properties the oracle itself
 guarantees (finite output, differentiability), or (b) checks an algebraic
 identity of the producer's own contract (mass-fold correctness, simplex
 normalization) that is checkable without an independent implementation.
+
+The architecture §4.5 conditioning surface this file used to also cover
+(a temperature actuator, a budget embedding, a usage-conditioned bias) is
+DESCOPED (queue P29, 2026-08-06) -- see `docs/internals/DELETIONS.md`.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
-from conftest import _project_logits, embed_budget, produce_routing, resolved_routing_from_topology
+from conftest import produce_routing, resolved_routing_from_topology
 
 from rola.ops.naive import naive_rola
-from rola.routing.budget import BudgetConditioning, chunk_boundaries
 from rola.routing.types import (
     IndependentRouting,
     LevelConfig,
@@ -212,219 +215,3 @@ def test_producer_exact_support_counts_match_a_manual_nonzero_count(normalizatio
     assert saw_sparse
 
 
-def test_embed_budget_off_is_identity():
-    x = torch.randn(2, 3, 5)
-    embed_W = torch.randn(5)
-    assert torch.equal(embed_budget(x, None, embed_W), x)
-
-
-def test_embed_budget_adds_per_sequence_constant():
-    x = torch.zeros(2, 3, 4)
-    embed_W = torch.ones(4)
-    r = torch.tensor([0.5, 1.0])
-    out = embed_budget(x, r, embed_W)
-    assert torch.allclose(out[0], torch.full((3, 4), 0.5))
-    assert torch.allclose(out[1], torch.full((3, 4), 1.0))
-
-
-def test_fully_inert_budget_conditioning_warns_loudly():
-    """D8 regression: a `BudgetConditioning` with no budgeted pairs and
-    `usage_bias_enabled=False` does nothing (`produce_routing` always takes the
-    unconditioned baseline path for it) and must not be accepted silently -- unlike the
-    softmax-budget case (a loud `ValueError`), this is a loud warning, not an error,
-    since an inert conditioning object is not itself invalid, just useless."""
-    with pytest.warns(UserWarning, match="inert"):
-        BudgetConditioning()
-
-
-def test_budget_conditioning_rejects_softmax_level():
-    """Spec §4.5: "a budget on a softmax side is a loud config validation error, not a no-op".
-
-    `validate_against` takes a `ResolvedRouting` (the producer's own levels), not a
-    `Topology` -- see the module's `resolved_routing_from_topology` adapter."""
-    topology = Topology(
-        levels=(LevelConfig(4, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),), d_v=2)
-    budget = BudgetConditioning(budgeted_write_levels=(0,))
-    with pytest.raises(ValueError, match="zero-capable"):
-        budget.validate_against(resolved_routing_from_topology(topology))
-
-
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_conditioned_path_matches_oracle_contract_and_differentiates_all_actuators(dtype):
-    """Item 4: the FULL §4.5 conditioning surface (temperature actuator, budget
-    embedding, usage-bias head g) wired end to end, checked against the same
-    oracle contract, with gradients required to reach every actuator parameter."""
-    topology = _topology(mixed=True)
-    B, L, H, dm = 2, 17, 2, 6
-    x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
-    budget = BudgetConditioning(
-        budgeted_write_levels=(1,), budgeted_read_levels=(1,), usage_bias_enabled=True, chunk_size=5)
-    n_pairs = len(budget.budgeted_pairs)
-    temp_W = (torch.randn(H, n_pairs, 2, dtype=dtype) * 0.1).requires_grad_()
-    temp_b = torch.zeros(H, n_pairs, dtype=dtype, requires_grad=True)
-    usage_bias_W = (torch.randn(H, topology.D, 4, dtype=dtype) * 0.1).requires_grad_()
-    usage_bias_b = torch.zeros(H, topology.D, dtype=dtype, requires_grad=True)
-    budget_embed_W = (torch.randn(dm, dtype=dtype) * 0.1).requires_grad_()
-    r = torch.full((B,), 0.5, dtype=dtype)
-
-    out = produce_routing(
-        x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
-        budget=budget, r=r, budget_embed_W=budget_embed_W,
-        temp_W=temp_W, temp_b=temp_b, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
-    )
-    for level, width in enumerate(topology.widths):
-        assert torch.allclose(
-            out.read_levels[level].sum(-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
-    y, _ = naive_rola(v, out.read_levels, out.write_levels, None, out.g_write, topology, None, "global")
-    y.sum().backward()
-    for name, tensor in [
-        ("x", x), ("route_W", route_W), ("gain_W", gain_W),
-        ("temp_W", temp_W), ("temp_b", temp_b),
-        ("usage_bias_W", usage_bias_W), ("usage_bias_b", usage_bias_b),
-        ("budget_embed_W", budget_embed_W),
-    ]:
-        assert tensor.grad is not None, f"{name} received no gradient"
-        assert torch.isfinite(tensor.grad).all(), f"{name} gradient is non-finite"
-
-    assert set(out.slack_history.keys()) == set(budget.budgeted_pairs)
-    for pair, hist in out.slack_history.items():
-        assert hist.shape[:2] == (B, H)
-    assert set(out.touched_bits.keys()) == set(range(topology.D))
-    for level, width in enumerate(topology.widths):
-        assert out.touched_bits[level].shape == (B, H, width)
-    for level in range(topology.D):
-        assert out.exact_support_counts[(level, "read")].shape == (B, L, H)
-        assert out.exact_support_counts[(level, "write")].shape == (B, L, H)
-
-
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_project_logits_is_chunk_invariant(dtype):
-    """V6 regression: `_conditioned_pass` hoists `_project_logits` out of the
-    64-step chunk loop on the grounds that it is a pure per-token function of
-    `x`/`route_W`/`route_bias` -- it reads no conditioning state, unlike the
-    temperature/usage-bias actuators that genuinely depend on the previous
-    chunk's output. This pins that claim directly and bitwise: projecting once
-    over the full sequence and slicing per chunk must equal projecting
-    per-chunk on the same slices, with no tolerance, for every chunk boundary
-    the conditioned path actually uses."""
-    topology = _topology(mixed=True)
-    resolved = resolved_routing_from_topology(topology)
-    B, L, H, dm, chunk_size = 2, 17, 2, 6, 5
-    torch.manual_seed(0)
-    x = torch.randn(B, L, dm, dtype=dtype)
-    route_W = torch.randn(H, dm, resolved.packed_router_width, dtype=dtype)
-    route_bias = torch.randn(H, resolved.packed_router_width, dtype=dtype)
-
-    read_full, write_full = _project_logits(x, route_W, resolved, route_bias=route_bias, h_w=None)
-
-    for start, end in chunk_boundaries(L, chunk_size):
-        read_chunk, write_chunk = _project_logits(
-            x[:, start:end], route_W, resolved, route_bias=route_bias, h_w=None)
-        assert torch.equal(read_chunk, read_full[:, start:end]), f"read logits diverge at [{start}:{end}]"
-        assert torch.equal(write_chunk, write_full[:, start:end]), f"write logits diverge at [{start}:{end}]"
-
-
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_conditioned_path_output_unchanged_by_logit_projection_hoist(dtype):
-    """V6 regression, end to end: `produce_routing`'s conditioned path (temperature
-    actuator + usage-bias head, both live) reduces to a call sequence that composes
-    `_project_logits` once over the full sequence with the same per-chunk conditioning
-    arithmetic that reads its slices. This exercises that composed path (not just the
-    projection in isolation) against the oracle contract with a chunk size that does not
-    evenly divide `L`, so the slicing at both chunk-loop boundaries and the final ragged
-    chunk is covered."""
-    topology = _topology(mixed=True)
-    B, L, H, dm = 2, 17, 2, 6
-    x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
-    budget = BudgetConditioning(
-        budgeted_write_levels=(1,), budgeted_read_levels=(1,), usage_bias_enabled=True, chunk_size=5)
-    n_pairs = len(budget.budgeted_pairs)
-    torch.manual_seed(2)
-    temp_W = (torch.randn(H, n_pairs, 2, dtype=dtype) * 0.1)
-    temp_b = torch.zeros(H, n_pairs, dtype=dtype)
-    usage_bias_W = (torch.randn(H, topology.D, 4, dtype=dtype) * 0.1)
-    usage_bias_b = torch.zeros(H, topology.D, dtype=dtype)
-    budget_embed_W = (torch.randn(dm, dtype=dtype) * 0.1)
-    r = torch.full((B,), 0.5, dtype=dtype)
-
-    with torch.no_grad():
-        out = produce_routing(
-            x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
-            budget=budget, r=r, budget_embed_W=budget_embed_W,
-            temp_W=temp_W, temp_b=temp_b, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
-        )
-    # The oracle contract itself must still hold post-hoist (a divergence in the projection
-    # would generically break simplex normalization downstream).
-    for level, width in enumerate(topology.widths):
-        assert torch.allclose(
-            out.read_levels[level].sum(-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
-
-
-def test_usage_bias_fires_even_when_no_tier1_budget_is_supplied():
-    """D3 regression: usage conditioning (`g`) is a separate mechanism from Tier 1 with its
-    own ablation gate (architecture §4.5) and must not be silently disabled just because
-    `r` is None (the "sandwich sampling includes budget=off" branch). Before the fix,
-    `active_conditioning` required `r is not None`, so a `BudgetConditioning` with
-    `usage_bias_enabled=True` and no budgeted pairs produced output bit-identical to the
-    fully unconditioned path whenever `r=None` -- this test pins the opposite: a nonzero
-    `usage_bias_W`/`usage_bias_b` must perturb the routing output relative to the
-    unconditioned baseline even with `r=None`."""
-    topology = _topology(mixed=False)
-    B, L, H, dm = 2, 9, 2, 6
-    x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
-    budget = BudgetConditioning(usage_bias_enabled=True, chunk_size=4)
-
-    torch.manual_seed(1)
-    usage_bias_W = torch.randn(H, topology.D, 4, dtype=torch.float64) * 0.5
-    usage_bias_b = torch.randn(H, topology.D, dtype=torch.float64) * 0.5
-
-    conditioned = produce_routing(
-        x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
-        budget=budget, r=None, budget_embed_W=None,
-        temp_W=None, temp_b=None, usage_bias_W=usage_bias_W, usage_bias_b=usage_bias_b,
-    )
-    unconditioned = produce_routing(
-        x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
-        budget=None, r=None,
-    )
-
-    differs = False
-    for level in range(topology.D):
-        if not torch.allclose(conditioned.write_levels[level], unconditioned.write_levels[level]):
-            differs = True
-    assert differs, "usage-bias head g had no effect on the write routing when r=None"
-
-
-@pytest.mark.parametrize("perturbation", [1e-12, 1e-7])
-def test_conditioned_r_input_preserves_fp64_precision(perturbation):
-    """D4 regression: `r` must not be hard-cast to fp32 inside `_conditioned_pass` (the
-    same class of defect the builder already fixed for the packed-router logit
-    projection). Before the fix, `r_bh = r.to(..., dtype=torch.float32)` quantized the
-    actuator input regardless of caller dtype, so an fp64 `r` perturbed by 1e-12 (below
-    fp32 ULP at this magnitude) produced a bit-identical conditioned write allocation. At
-    fp64 throughout, even a 1e-12 perturbation must propagate to a nonzero (if tiny)
-    change; a 1e-7 perturbation must change the output by more than fp32 noise (~1e-6)."""
-    topology = _topology(mixed=False)
-    B, L, H, dm = 1, 6, 1, 4
-    x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
-    budget = BudgetConditioning(budgeted_write_levels=(1,), chunk_size=3)
-    n_pairs = len(budget.budgeted_pairs)
-
-    torch.manual_seed(2)
-    temp_W = torch.randn(H, n_pairs, 2, dtype=torch.float64) * 0.5
-    temp_b = torch.zeros(H, n_pairs, dtype=torch.float64)
-    r0 = torch.tensor([0.5], dtype=torch.float64)
-    r1 = r0 + perturbation
-
-    def _write(r):
-        out = produce_routing(
-            x, None, v, route_W, None, gain_W, gain_bias, topology, "global",
-            budget=budget, r=r, budget_embed_W=None,
-            temp_W=temp_W, temp_b=temp_b, usage_bias_W=None, usage_bias_b=None,
-        )
-        return out.write_levels[1]
-
-    w0 = _write(r0)
-    w1 = _write(r1)
-    diff = (w1 - w0).abs().max().item()
-    assert diff != 0.0, f"perturbing fp64 r by {perturbation} produced no change (fp32 quantization)"

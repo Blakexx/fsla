@@ -1,174 +1,139 @@
 # The planner
 
-> **Dispatch on what the data DOES, not on a threshold over what it IS. Model
-> with measured coefficients, never a hand-tuned constant and never a lookup
-> table.**
+> **Derive launch geometry from launch-static facts. Never score candidates,
+> never read a routing statistic to decide how to run.**
 
-Every other attention library dispatches on a key that is **enumerable and static
-per call**: shape, dtype, architecture. For such a key, hand-authored conditions
-and lookup tables are sufficient, and that is what the field ships — xformers and
-TensorRT-LLM encode "harmful here" as static conditions; nobody benchmarks at
-run time (`workflows/research/` dispatch-mechanics report, 2026-08-05).
-
-RoLA's key includes **distribution statistics**: per-level occupancy, candidate
-fraction, per-owner write counts. Those are continuous, per step, and never
-recur. A lookup table cannot key on them — bucketing destroys the signal, and a
-cache that cannot see a distribution will replay a config from the wrong regime.
-Hand conditions on them are the banned tuned-threshold antipattern. So the
-required form is the third thing: **a parametric cost model, evaluated fresh per
-step, with coefficients calibrated offline by measured sweeps, and selection by
-argmin.**
-
-The distinction in one line: *the field dispatches on what the problem is; we
-dispatch on what the data does* (user ruling, journal 2026-08-05).
-
-## 1. The branching rule
-
-**Branch on a computed structural quantity. Never on a raw dimension or value
-threshold.**
-
-- **Allowed**: `if constexpr (ND_V == 1)` — one tile or many, where the tile count
-  came from a selected block size. A structural fact, resolved at compile time.
-- **Allowed**: a template argument keyed to a *format or topology* axis the file
-  already forks on — e.g. the phase-C gate narrowing, scoped by
-  `stage_is_narrow<READ_PREC, FOLD_PREC>()`, "a precision/format axis the file
-  already forks on in four places, carrying no size or threshold term"
-  (journal, 2026-08-04, P01).
-- **Forbidden**: `if (dv == 64)`, `if (check_shared_mem(...) == X)`, or any
-  hand-coded device- or dimension-specific gate.
-
-The reason is not aesthetic. A magic threshold is a claim about hardware that was
-measured once, on one card, at one shape, and it is invisible to every later
-measurement. A structural branch is compile-time, so the untaken path costs
-nothing, and the *choice* of structure moves to one place — the planner — where
-it can be audited.
-
-The same rule sorts admissible constants from inadmissible ones inside the
-planner itself. `MMA_K_QUANTUM = 16` is fine: `rola/planner/select.py:60`
-annotates it "a SHAPE of the instruction the kernel issues, never a threshold."
-A breakeven coefficient is fine *if it is a fitted number with a named producing
-sweep*. A number chosen because it worked on the author's machine is not
-admissible at all.
-
-## 2. What the runtime planner is
-
-`rola/planner/select.py` — `select_config` chooses `(BC, BT, feeder_flags)` from
-exactly three arguments: a static configuration record, a hardware-facts record,
-and one `RoutingSummaries` from the producer epilogue. It reads no tensor, issues
-no reduction, allocates nothing, and does not touch the routing. **Nothing in it
-measures.** Every coefficient is a recorded number with a named isolating cell,
-refitted offline and recompiled into a small rule table
-(`RULE_TABLE_PROVENANCE`).
-
-Its decision order is acyclic and documented as such (`select.py` module
-docstring): feeder flags depend on nothing; the `(BC, BT)` argmin then queries the
-occupancy oracle **with the footprint that pair launches** and minimizes
-`cost_per_token · waves + atomic`. There is no back edge — the consumer
-instantiates one executor, so the arm the oracle is asked about is the arm that
-runs, and nothing downstream of the argmin feeds into it.
-
-The measured overhead of planning is `+0.15` to `+0.30 ms` on a `3.3 ms` plan
-build inside a `73.2 ms` step — `+0.2%` to `+0.4%` (journal, 2026-08-04). The
-binding costs of the approach are compile time and wave quantization, not
-planning time.
-
-## 3. The calibration machinery
-
-Because the runtime must not measure, the measuring lives beside it:
-
-| Component | Role |
-|---|---|
-| `rola/planner/calibration/census.py` | the **exact** per-`(owner, tile)` tile-union census, as packed-bit-word arithmetic. The ground truth the closed form approximates. Deliberately free of any dependency on the planner. |
-| `rola/planner/calibration/cost_model.py` | the offline cost model: `plan_cost_per_token`, its six measured constants, and the exact argmin. This is the **fit** whose compiled output ships as `select.py`'s rule table. It does not run at run time. |
-| `rola/planner/calibration/auditor.py` | runs **both** deciders — the shipped closed form and the exact argmin — on recorded cells and either asserts agreement or writes the disagreement down with its modelled regret **and its margin**. |
-| `benchmarks/calibration/` | where the sweeps that produce the coefficients belong. **Today it is a `.gitkeep`.** |
-
-Keeping the measuring machinery outside `rola/planner/select.py` is structural,
-not cosmetic, and buys three things: the shipped package carries no
-`torch.compile`/inductor dependency; **selection does not audit itself** (a
-runtime shadow would keep alive exactly the object it is meant to replace, and
-would denominate its regret in that object); and the constants are re-fittable
-without touching `rola/`.
-
-The auditor's own limits are stated in its docstring and should be quoted at
-anyone who over-reads it: **it compares two models.** It cannot tell you a model
-is right about the machine — that is the job of the measured argmin rows, which
-are recorded numbers, not model outputs. What it *can* catch is a constant that
-moved without a refit, a rule that stopped tracking the model it was derived
-from, or a placeholder doing more than it was supposed to.
-
-## 4. The honest state of the coefficients
-
-This is the part a future reader most needs and is least likely to infer from the
-code, because the code is complete and the *numbers* are not.
-
-- `C_SATURATION = 1.0` — exact-dense only. Deliberately the *only* defensible
-  value until the occupancy sweep exists: any structural zero at all breaks the
-  closed form the flag licenses, and a soft epsilon would re-introduce the
-  distributional branch this design forbids.
-- The cross-level collision correction `gamma = 1.0` — the bound uncorrected,
-  pending a census fit. Its *placement* is load-bearing and already correct: it is
-  applied per `(owner, tile)` before quantization, never to the mean, because
-  `ceil` is nonlinear and the `K = 0` mass — the candidate pairs that gather
-  nothing and skip every GEMM — is where the distribution's whole tail sits.
-
-**What closes this** is named and unambiguous: the `N/BC` atomic sweep that fills
-`C_ATOMIC_COEFF`, and the occupancy sweep that fills `C_SATURATION`. Both are
-sweeps, not point measurements, and that form is required rather than preferred:
-designing against a single benchmarked configuration is designing against a hole,
-and a selector with measured curves absorbs wherever a trained model's routing
-lands, which a point verdict does not (user ruling; journal, 2026-08-04, "no
-point-configuration verdicts").
-
-SELECTION IS A SWAPPABLE INTERFACE, and that is why the honesty above is recorded
-rather than repaired in place: the constants are known-interim, so replacing them is
-a swap rather than surgery. Three stages, with the seam between them:
+The planner's whole output is one integer: `BC`, the number of leaves one owner
+block owns — the CTA's resident state tile. Nothing else is planned. The
+consumer instantiates one executor, the token tile is the fixed `GROUP_TOKENS`
+quantum (`rola/planner/derive.py`), and every other axis is a model fact
+(`topology`, `normalization`, `decay`) rather than a decision. So `BC` is not
+chosen AMONG candidates by a cost model or an argmin; it is DERIVED, in
+`rola/planner/derive.py`, as a closed form over inputs that are fixed before the
+routing is computed:
 
 ```
-StatisticsBundle  ->  Selector  ->  ConfigChoice  ->  the dispatch table
-   typed,             name +          (BC, BT,          resolves a row;
-   versioned          status          feeder_flags)     never scores one
+ladder  = feasible_bc(widths, instantiated=box_admitted(machine, d_v, D, decay))
+ceiling = min(subtree_ceiling(widths), fill_ceiling(N, BH, sm_count))
+BC      = the largest member of `ladder` at or below `ceiling`,
+          or `ladder`'s smallest member when none is
 ```
 
-The cost model above is ONE implementation, `CostModelSelector`, and it reports
-`status = "INTERIM"` because this section's coefficients are what they are.
-`FixedChoiceSelector` sits beside it for debugging and A/B: it reads nothing and
-returns the choice it was built with. `select_with(selector, bundle)` is the
-swappable call; `select_config` and `config_for_step` keep their frozen §4.3
-signatures and take an optional keyword `selector=`.
+`derive_bc` evaluates three independent ceilings and takes the largest compiled
+block that clears all three. None of them is a threshold on a measured
+distribution — each is a property of the topology or the machine, true before
+any token is routed, which is why a plan cannot go stale within a launch and
+there is nothing left to calibrate.
 
-A plan RECORDS which selector produced it — `Plan.selector_name` and
-`Plan.selector_status`, advisory on the same contract `occupancy_blocks_per_sm` has:
-beside the decision, read by no rule. So a number taken under the interim model does
-not read as one taken under a measured one.
+## 1. The three ceilings
 
-Until those rows exist, a claim of the form "configuration X is the right default"
-is not supported by this repository, and the honest statement is the one made
-here.
+**`subtree_ceiling(widths) = widths[-1]`** — how large a block can be before it
+owns leaves from INDEPENDENT SUBTREES. Leaves are the MSB-first mixed-radix
+enumeration of the level digits, so an aligned block of `BC <= widths[-1]`
+leaves shares every digit above the innermost level: it is a slice of one
+parent's children. A block wider than that spans two or more distinct digit
+tuples above the innermost level — it unions leaves whose supports are
+unrelated, so the union's candidate bitmap is their OR and the block is
+visited whenever *either* subtree is live, paying the whole `BC` k-extent for
+whichever subset was actually routed. A property of the tree alone, evaluated
+on `widths`. It would be FALSIFIED by a measurement showing a block spanning
+independent subtrees retiring no more work than the subtree-aligned blocks it
+replaces at the same realized support.
 
-## 5. Two standing rules for any table this produces
+**`box_admitted(machine, d_v, D, decay)`** — the compiled `BC` values whose
+`constexpr` shared-memory carve fits the per-CTA budget
+(`cudaFuncAttributeMaxDynamicSharedMemorySize`). The carve is read off
+the dispatch table of the *built binary* — `MachineFacts.arm_smem_bytes`, a
+`{(BC, d_v, D, decay): bytes}` map taken from `DispatchTable.from_extension`
+after the staleness join — so the box arithmetic is the kernel's own
+arithmetic, not a model of it. This is a FEASIBILITY ceiling, not a
+preference: a `BC` it refuses is one the driver would refuse to launch, so
+there is no candidate above it to prefer. An empty result is a loud
+`ValueError` naming every carve and the device's grant, never a smaller block
+substituted silently — refusing everything is the correct answer when nothing
+fits.
 
-1. **Staleness is a key problem, not a hygiene problem.** The kernel-source hash
-   and the toolchain/architecture identity go **in the key** of any tuning or
-   breakeven table, or a rebuilt kernel silently inherits a stale winner. This is
-   solved well exactly twice in the field — Inductor's `template_hash`-vs-`src_hash`
-   filter and XLA's versioned entries — and the project's own manifest digests
-   already embody the instinct; extend it to every calibrated constant.
-2. **The selector is swappable, by construction.** The pipeline is
-   `bundle → selector → choice`; the dispatch table consumes *choices* only;
-   today's cost model is one interim-labelled implementation; provenance keys
-   mark the tolerated slop; the regret gate is selector-agnostic. The interface is
-   what makes replacing the heuristics a swap rather than a rewrite
-   (user ruling, journal 2026-08-05).
+The cooked schedule ring is ALREADY IN that number — `kSchedSlots` group
+descriptors, their per-slot row scales and the producer's cursor state are
+carved by `consumer_smem_bytes` beside the state slab. So the trade the box
+arbitrates is not modelled anywhere: a deeper `ROLA_SCHED_DEPTH` and a wider
+`BC` compete inside ONE compiled number, and the box responds to a depth change
+with no constant to keep in step with it. Rings are what replace co-residency
+as the latency-hiding mechanism, which is why residency is not a term here:
+the executor hides latency inside one CTA.
+
+**`fill_ceiling(N, BH, sm_count) = BH*N // (sm_count * WAVES_TARGET)`**, with
+`WAVES_TARGET = 2` — how large a block still leaves enough CTAs to fill the
+machine. The launch is one CTA per `(batch, head, owner)`, i.e. `BH*N/BC`
+CTAs, and `BC` is the only term that shrinks that count. `BH = batch * heads`
+is launch-static, not a routing statistic, so this term cannot drift within a
+launch. `WAVES_TARGET` is a TARGET, not a floor: a topology whose whole grid
+is smaller than the machine cannot be made to fill it by any `BC`, so the
+derivation falls back to the smallest compiled block rather than refusing —
+the guard's job is to stop a large block from starving a grid that would
+otherwise have filled the machine, not to punish a grid that structurally
+cannot.
+
+## 2. The clamp, and which constraints refuse
+
+The ceilings bound a raw integer; `derive_bc` clamps it DOWNWARD onto the
+dispatch table's own `BC` axis — the formula picks among rows the binary
+carries and never invents one.
+
+Two of the four constraints REFUSE and two SATURATE, and the split is what
+each one means. `box_admitted` and `feasible_bc` are FEASIBILITY: an arm that
+does not fit shared memory and a `BC` that names no owner rectangle cannot be
+launched at all, so an empty set is a loud `ValueError` and there is nothing
+below it to fall back to (`widths = (4, 6)` against the `{16, 64}` ladder — 16
+does not divide 24 — has no plan, and says so). `subtree_ceiling` and
+`fill_ceiling` are EFFICIENCY: the kernel runs correctly beneath them, they
+bound how wide a block SHOULD be rather than whether one exists, and the
+smallest compiled block is the closest the ladder comes to satisfying them. So
+a topology whose innermost level is narrower than one MMA quantum, or a grid
+too small to fill any machine, derives the ladder's floor — not a refusal.
+
+## 3. The expert pin
+
+`PlanOverrides.state_block` (`rola/expert.py`) REPLACES the derivation outright
+rather than biasing it: when set, `derive_bc` skips all three ceilings and
+returns the pinned value after the same alignment validation every derived
+value gets. That is what makes it a pin over a derived axis and not an escape
+from one — an inadmissible pin is an error on the line that wrote it, not a
+plan-time surprise.
+
+## 4. What the derivation reads
+
+`MachineFacts` (`rola/planner/derive.py`) is everything the formula is allowed
+to know about the machine — `sm_count`, `max_dynamic_smem_bytes`, and
+`arm_smem_bytes` — measured once per `(device, install)` via
+`MachineFacts.for_device` and carried in, never queried ambiently from inside
+`derive_bc`. That is what keeps the function pure: the same inputs give the
+same plan, and a CPU-only gate can supply a synthetic `MachineFacts` instead of
+mocking a device.
+
+`rola/planner/schedule.py` turns a derived or pinned `BC` into the launchable
+objects: `build_plan(topology, BC, *, normalization, decay, sm_shared_bytes=None)
+-> Plan` fills the plan's derived fields (the warp tile, the SMEM budget) over
+one `BC`, and `plan_and_schedule(...) -> (Plan, Schedule)` builds the plan and
+its §4 schedule from one pass over the routing tensors.
+
+## 5. What the exact statistics are for
+
+The tile-union census (`rola/planner/calibration/census.py`) and the exact
+per-`(owner, tile)` statistics (`rola/planner/calibration/union_stats.py`) are
+BENCH MEASUREMENT INSTRUMENTS: they characterize a realized routing for a
+benchmark or a calibration sweep to read, and no dispatch path reaches them.
+They answer "what did this routing do", which is a question about a step that
+already ran, not an input the planner is allowed to consult before it decides
+how to run one.
 
 ## 6. Where this sits relative to the field
 
-Recorded so a future reader does not mistake the design for a gap: a
-measured-cost-model planner is **ahead of** FlashAttention, xformers and
-TensorRT-LLM on this axis, not behind. No mainstream attention library does
-measured per-instantiation dispatch. The closest shipping prior art is CUTLASS
-4.x wiring an analytic-model heuristic into the *build* (planner output as kernel
-filter) and Inductor's lookup-table choices (mechanism shipped, table expected
-from your own offline sweep). The nearest relative in kind is
-nvMatmulHeuristics: an analytic model calibrated by measured discovery scans —
-**their model eats shapes; ours eats distributions.**
+A closed-form derivation over launch-static facts is the same category of
+answer FlashAttention, xformers and TensorRT-LLM give: they encode "which
+kernel arm" as a static condition on shape, dtype and architecture, and none
+of them read a per-step distribution to decide. RoLA's routing IS a per-step
+distribution, but `BC` — the one quantity this planner plans — does not need
+to see it: the geometry that would starve or overflow at a given topology and
+machine is a property of the topology and the machine, decided once, the same
+way it would be for a shape-keyed dispatch table.

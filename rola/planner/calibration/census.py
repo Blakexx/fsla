@@ -10,13 +10,10 @@ gather the kernel is forbidden to build), together with §5's causal-intra count
 **This module is the EXACT census and nothing else.** It is deliberately free of
 any dependency on :mod:`rola.planner.schedule` -- it takes the folded per-level
 masks, the widths and ``BC``, and returns integer counters. That is not stylistic:
-the 2026-08-01 planner end-state ruling (``FORWARD_ROADMAP.md`` §2.7) makes the
-runtime selector closed-form and RETIRES the exact census to the offline bench
-(calibration, the union/collision-correction fit, and a regression-gated auditor
-that the closed-form selector agrees with the exact argmin). It is wired as the
-interim runtime census by :func:`rola.planner.schedule._tile_union_stats_multi`
-today; it must stay relocatable tomorrow, so it does not reach back into the
-planner for geometry it can derive from ``(widths, BC)`` itself.
+``BC`` is DERIVED from launch-static facts (:mod:`rola.planner.derive`), so the exact
+census is a BENCH instrument -- the collision-correction fit and the one-time
+validation of the derivation against measured argmins -- and an instrument must not
+reach back into the planner for geometry it can derive from ``(widths, BC)`` itself.
 
 WHAT REPLACED WHAT (fix brief #2, 2026-08-01). The previous implementation
 expanded the live leaf set of every ``(bh, token)`` pair -- a mixed-radix decode of
@@ -122,9 +119,9 @@ class CensusResult:
 
     #: ``{(BT, counter_name): 0-dim int64}`` for the names in ``_PER_BT_COUNTERS``.
     per_bt: dict[tuple[int, str], torch.Tensor]
-    #: The SUMMARY scalars the closed-form selector of §2.7's end-state ruling will
-    #: read instead of the exact census. Computed from the same words in the same
-    #: pass so the follow-up batch has its inputs already measured:
+    #: The SUMMARY scalars -- the cheap statistics of a realization, computed from the
+    #: same words in the same pass as the exact counters so the two can be compared
+    #: without a second walk:
     #:
     #: * ``("occupancy", side, level)`` -- live ``(token, digit)`` pairs of that
     #:   ``(side, level)`` cell. Divided by ``denominators[("occupancy", side,
@@ -282,7 +279,7 @@ def _census_chunk(read_words: tuple[torch.Tensor, ...] | None,
 #: per elementwise step, which made the pass purely memory-bound -- 112 ms of device
 #: time at the at-scale cell, 30 % of it in ``bitwise_and`` alone. Fusing it is
 #: therefore not a tuning knob but the removal of the pass's only remaining term, and
-#: it is measured at **6-9x on whole-``select_plan`` wall, bit-identical on every
+#: it is measured at **6-9x on whole-pass wall, bit-identical on every
 #: field of every cell class** (`planner-bitword-census.md` §4).
 #:
 #: ``dynamic=True`` from the first call, so the row extent -- the one axis that varies
@@ -322,9 +319,9 @@ def tile_union_census(read_mask: tuple[torch.Tensor, ...],
     digit gather: ``K`` for every owner at once is one
     ``[rows, owners, BC] -> sum`` over the union bit.
 
-    ``summaries`` controls whether the §2.7 end-state selector's SUMMARY scalars are
-    PUBLISHED (see :class:`CensusResult`). It defaults to on because the offline
-    auditor and the calibration fit both want them; the interim runtime caller passes
+    ``summaries`` controls whether the SUMMARY scalars are PUBLISHED (see
+    :class:`CensusResult`). It defaults to on because the collision-correction fit
+    wants them; a caller that only needs the exact counters passes
     ``False``, which drops the per-level occupancy reductions -- the only part with a
     cost of its own, measured at 0.2 ms of the at-scale cell's pass. The per-owner
     active count is NOT conditional: it is one more comparison-reduction over an
@@ -352,8 +349,7 @@ def tile_union_census(read_mask: tuple[torch.Tensor, ...],
     denominators: dict[tuple, int] = {}
 
     # SUMMARY (a): per-level support occupancy per side -- a single reduction over
-    # the same masks the words are packed from, which is the input the closed-form
-    # selector of §2.7's end-state ruling reads INSTEAD of this census. It is
+    # the same masks the words are packed from. It is
     # measured on the live sides only; a side declared dense has occupancy 1 by the
     # declaration, and measuring it would contradict the declaration rather than
     # check it (the check belongs to the gate, not to the hot path).
@@ -402,8 +398,8 @@ def exact_routing_summaries(read_mask: tuple[torch.Tensor, ...],
     FACTORIZED bound ``K_hat = prod_l (owner-slice popcount)``, at
     ``O(BH * n_tiles * owners_total)``. This computes them from the exact leaf plane at
     ``O(BH * n_tiles * N)`` -- the cost the runtime pass exists to avoid -- so the two
-    can be compared field for field. That comparison is what the ``C_COLLISION_GAMMA``
-    fit regresses and what the auditor's upper-bound gate asserts:
+    can be compared field for field. That comparison is what the collision-correction
+    fit regresses, and its upper-bound property is:
     ``sum_q q * hist_bound[q] >= sum_q q * hist_exact[q]`` on every cell, because
     ``K_hat >= K`` pairwise.
 
@@ -504,7 +500,7 @@ def exact_routing_summaries(read_mask: tuple[torch.Tensor, ...],
 
 
 def summary_fractions(result: CensusResult, resolved: dict) -> dict[tuple, float]:
-    """The §2.7 closed-form selector's inputs, as fractions in ``[0, 1]``.
+    """The summary counters, as fractions in ``[0, 1]``.
 
     ``resolved`` is the output of :func:`resolve_census` over (at least)
     ``result.summaries``. Kept separate from the census itself for the same reason

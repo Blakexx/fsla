@@ -108,8 +108,9 @@ is a STRUCTURAL bound under the standing *"design for `nc ~ 65K`"* rule: at the
 parity topology (`branches = 256, 256`) `sum_l b_l = 512`, so this admits 4x that,
 with the union words derived on the fly rather than stored.
 
-`kMaxLevels`: matches `FeederFlags`' own `D <= 16` (§4.4 packs two bits per level
-into one word), so the two limits cannot drift apart.
+`kMaxLevels`: a declared ceiling on `D`, generous relative to the consumer's own
+`D <= 4` (spec §1, `consumer.cuh`'s `kMaxLevels`) — the summary pass carries no
+level-count restriction of its own to justify a tighter one.
 
 ## <a id="params"></a>6. `SummaryParams` — every argument the pass takes
 

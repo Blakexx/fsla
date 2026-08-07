@@ -35,9 +35,10 @@ equality**, and legitimate reassociations are tested against the oracle plus a
 
 **Committed measured cells, with provenance.** The benchmark results in this
 README are files in this repository, each carrying the machine, driver, toolchain,
-and the SHA of the ratification manifest the binary was built from. The planner's
-cost constants cite the cell they came from, and a gate checks that the planner's
-chosen geometry is the argmin of the measured grid.
+and the SHA of the ratification manifest the binary was built from. Regression
+thresholds are derived from each cell's own measured spread, never an invented
+percentage, and the planner's shared-memory ceiling is gated against the *built
+binary's own* dispatch-table carve rather than a modelled one.
 → [`benchmarks/cells/`](benchmarks/cells/), [`docs/build.md`](docs/build.md)
 
 **A documentation tree the code is checked against.** The engine's design reasons
@@ -176,9 +177,11 @@ interop lives behind the `[transformers]` extra.
 
 ### The planner
 
-The planner chooses the runtime geometry from a cost model whose constants are
-traceable to committed cells, inside the op, per call. It is not on the public
-surface: `rola.expert` is the marked door for a caller that must pin an axis, and a
+The planner derives the runtime geometry — `BC`, the CTA's resident state tile — as a
+closed form over launch-static facts (the topology, the built binary's own dispatch
+table, the machine), inside the op, per call. There is no cost model and nothing to
+calibrate. It is not on the public surface: `rola.expert` is the marked door for a
+caller that must pin an axis, and a
 `Plan` built by hand there can be executed straight through `rola.expert.execute` —
 the kernel's correctness does not depend on which geometry the planner picked, and
 that is what Tier 2 exists to prove.

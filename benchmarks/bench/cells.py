@@ -29,12 +29,7 @@ from pathlib import Path
 
 import torch
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from rola.planner.calibration.cost_model import tile_union_stats
+from rola.planner.calibration.union_stats import tile_union_stats
 from rola.planner.schedule import Plan, build_schedule, owner_geometry, unpack_bits
 from rola.routing.entmax.reference import entmax
 from rola.routing.types import EntmaxActivation, IndependentRouting, LevelConfig, SoftmaxActivation, Topology
@@ -278,9 +273,8 @@ class Cell:
 
     def _build_producer(self):
         """MIGRATED: `produce_routing(x, ..., route_W, ...)` -> `layer.routes(x)`,
-        the gateway call itself. No budget/temperature/usage-bias kwargs are
-        threaded through by hand any more -- the gateway owns them, and this cell
-        configures none (`SimplexProducer(..., budget=None)`, the default)."""
+        the gateway call itself. There is no conditioning surface left to thread
+        through by hand (queue P29 descoped it)."""
         layer = self._layer()
         hidden = self.H * self.d_v
         x = torch.randn(self.B, self.T, hidden, device="cuda", dtype=torch.float32)
@@ -333,49 +327,24 @@ class Cell:
                               g_read=g_read, g_write=g_write, v=v, dials=dials,
                               topology=self.topology()))
 
-    def plan(self, *, norm, decay_on, fx=None, bt=None):
-        """A producer cell's plan is PLANNER-SELECTED; a synthetic cell's is stated.
+    def plan(self, *, norm, decay_on, fx=None):
+        """A producer cell's plan is BUILT over its realized routing; a synthetic
+        cell's is stated.
 
         The distinction matters for what a measurement on the cell can claim: only
-        the planner-selected form supports a sentence beginning "the plan selects".
-        Every axis is the planner's answer: there is nothing left to override.
+        the built form carries the §4 schedule the kernel actually walks, so only it
+        supports a sentence about what the launch did.
 
-        **THE `prec` PARAMETER IS GONE.** It stamped `Plan.mma_precision`, and the
-        precision AXIS died with fp32 storage (P26: bf16 storage, fp32 accumulation,
-        fp64 reference -- one precision story). `Plan` carries no such field, so the
-        stamp raised `TypeError` and EVERY producer-cell measurement through this
-        method -- the canonical `atscale-L2048` armtime included -- was unrunnable.
-
-        **THE `lowering` PARAMETER IS GONE** (item 6b, 2026-08-01). The consumer
-        includes `intra_panel.cuh` unconditionally and does ONE intra lowering, so
-        there is nothing to force and nothing to inherit.
-
-        ``bt`` RESTRICTS THE PLANNER'S ``BT`` CANDIDATE SET rather than stamping a
-        `BT` onto a finished plan, and the difference is not cosmetic: the schedule
-        is a `BT`-keyed object (the §4 tile bitmaps, the candidate lists and the
-        clock stream are all built at a tile size), so a `dataclasses.replace` of
-        `plan.BT` would leave the kernel reading a schedule built for the other tile
-        size. Restricting the candidates re-runs selection AND the build at that
-        `BT`, which is what makes the two arms of a `BT` A/B each a plan the planner
-        could actually have emitted.
+        ``BC`` is the CELL's, not the derivation's. A bench cell exists to hold a
+        geometry fixed while something else moves, which is the same act
+        `PlanOverrides.state_block` is on the public surface; `derive_bc` is what a
+        model gets when it does not state one.
         """
         if self.is_producer and fx is not None:
-            from rola.planner.calibration.cost_model import plan_and_schedule  # G16
-            #: NO ORACLE IS INJECTED, and that is item 6b's point: the planner's
-            #: DEFAULT occupancy oracle is now the one kernel's own. This file used
-            #: to inject `consumer_occupancy()` because the default queried the OLD
-            #: consumer -- a different footprint (31680 B against 44672 at
-            #: `BT=16, BC=64, d_v=64`), reporting 2 CTAs/SM where the launched kernel
-            #: runs 3, the residency contradiction `rewrite.md` §2.33 recorded and
-            #: §2.34 resolved. With one kernel the injection would be a no-op that
-            #: hid whether the default was right.
-            kw = {}
-            if bt is not None:
-                kw["bt_candidates"] = (bt,)
-            plan, _axes, sched = plan_and_schedule(
+            from rola.planner.schedule import plan_and_schedule
+            return plan_and_schedule(
                 fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"],
-                fx["topology"], self.BC, normalization=norm, decay=decay_on, **kw)
-            return plan, sched
+                fx["topology"], self.BC, normalization=norm, decay=decay_on)
         return Plan(topology=fx["topology"] if fx else self.topology(),
                       normalization=norm, BC=self.BC,
                       warp_tile=(1, max(1, self.d_v // 32)), decay=decay_on), None

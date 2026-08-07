@@ -37,16 +37,15 @@ Four properties, and they are the four the wiring increment claims:
 `state_norm`, `paging`, `mma_precision`) are gone; a layer is now built from a
 `RouteProducer` (the feature-map slot) plus a decay SOURCE and a
 `rola.expert.PlanOverrides` (`state_block`/`mma_precision`/`max_physical_pages`).
-`layer.last_plan_axes` -- the `ConfigEvidence` (`.grid`/`.k_hat`/`.waves`/
-`.blocks_per_sm`) the layer used to retain beside its chosen `Plan` -- has NO
-replacement on the layer: the new dispatch (`rola.interface._derive_plan`) computes
-and discards it, keeping only the `Plan` itself (`last_selected_plan`). The three
-tests that read `last_plan_axes` reconstruct the evidence by hand, through
-`_select_evidence` below, walking the SAME private seam (`_static_inputs`,
-`_hardware_facts`, `rola.planner.select.select_with`) `_derive_plan` calls
-internally on the identical routing bundle -- so the evidence-level assertions
-(grid coverage, `k_hat` re-measurement) keep exactly the claims they made before,
-rather than being dropped or loosened.
+`BC` is now DERIVED, not selected: `rola.interface._derive_plan` calls
+`rola.planner.derive.derive_bc`, a closed form over the topology, the launch-static
+cohort count and `rola.interface._machine_facts(device)` (Tier H, cached per device).
+There is no plan-axes or evidence object any more -- `derive_bc` returns the `BC` int
+directly and nothing is retained beside the chosen `Plan` (`last_selected_plan`). The
+tests below that need the layer's derived `BC` independent of a forward call
+reconstruct it by hand, through `_derived_bc_for`, walking the SAME private seam
+(`_machine_facts`, `derive_bc`) `_derive_plan` calls internally on the identical
+routing bundle.
 """
 
 from __future__ import annotations
@@ -58,8 +57,7 @@ from conftest import build_layer, build_routes, produce_routing
 
 from rola import RoLA, dense_routing, sparse_routing
 from rola.expert import PlanOverrides
-from rola.planner.schedule import _SUPPORTED_BC
-from rola.planner.select import GROUP_TOKENS, largest_feasible_bc
+from rola.planner.derive import GROUP_TOKENS, SUPPORTED_BC, largest_feasible_bc
 
 #: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
 #: accepts; `SUPPORTED_BT`/the `(BC, BT)` template pair are gone). Every backend
@@ -137,19 +135,17 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     return zeros / sum(t.shape[-1] for t in out.write_levels)
 
 
-def _select_evidence(layer: RoLA, x: torch.Tensor, decay_config):
-    """Reconstruct `(ConfigChoice, ConfigEvidence)` on the SAME routing bundle a
-    forward would use -- the private seam `rola.interface._derive_plan` walks
-    internally, called by hand because the layer no longer retains the evidence
-    (see the module docstring's MIGRATED note)."""
-    from rola.interface import _hardware_facts, _static_inputs
-    from rola.planner.select import DEFAULT_SELECTOR, StatisticsBundle, select_with
+def _derived_bc_for(layer: RoLA, x: torch.Tensor, decay_config):
+    """Recompute the `BC` a forward would derive, on the SAME routing bundle -- the
+    private seam `rola.interface._derive_plan` walks internally, called by hand
+    because the layer's `Plan` is the only thing a forward retains."""
+    from rola.interface import _machine_facts
+    from rola.planner.derive import derive_bc
 
     routes = layer.routes(x)
-    static = _static_inputs(routes, decay=decay_config, overrides=layer.expert)
-    hardware = _hardware_facts(routes.device)
-    summaries = routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
-    return select_with(DEFAULT_SELECTOR, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
+    return derive_bc(routes.topology, _machine_facts(routes.device),
+                     BH=routes.batch * routes.heads, decay=decay_config is not None,
+                     pinned=layer.expert.state_block)
 
 
 def _summaries_for(layer: RoLA, x: torch.Tensor):
@@ -159,11 +155,8 @@ def _summaries_for(layer: RoLA, x: torch.Tensor):
     (`RouteFactors.summaries`), which lives inside one forward, and a layer that retained
     them would be retaining a per-step measurement past the step it describes.
     """
-    from rola.interface import _static_inputs
-
     routes = layer.routes(x)
-    static = _static_inputs(routes, decay=None, overrides=layer.expert)
-    return routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
+    return routes.summaries(BC=layer.feasible_BC[0], BT=GROUP_TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -240,17 +233,13 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
     """Property 2, asserted on the counter and on the stamped plan -- not on timing.
 
     The plan the layer ran is recorded, so this also pins that the layer went
-    through selection (the axes are a QUERY of the realized routing) rather than
-    through a hand-written plan constant: `_select_evidence` reconstructs the
-    `ConfigEvidence` the decision was priced from (see the module docstring).
+    through the derivation (`_derived_bc_for` recomputes `derive_bc`'s own answer on
+    the identical routing bundle) rather than through a hand-written plan constant.
 
-    **RE-POINTED WITH THE LAYER CUT-OVER (ledger item 2).** It used to assert
-    `plan.BC == layer.state_block == _BRANCHES[-1]` -- three things at once, and all
-    three moved. `state_block` is now the LARGEST feasible `BC` rather than the
-    innermost width (§6 P6), and `plan.BC` is chosen PER LAUNCH by the selector from
-    the feasible set, so it is not pinned to `state_block` at all any more. What
-    replaces the assertion is the property that actually has to hold: the chosen `BC`
-    is a member of the feasible set, and the evidence's grid is keyed on the choice.
+    `plan.BC` is a member of the feasible set, and it is also EXACTLY the value
+    `derive_bc` gives on this bundle -- not merely in the feasible set, since the
+    derivation is a pure function of launch-static inputs and there is nothing left
+    for a forward to have chosen differently.
     """
     torch.manual_seed(7)
     layer = _layer(decay=decay)
@@ -260,17 +249,12 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
     plan = layer.last_selected_plan
-    choice, evidence = _select_evidence(layer, x, _decay_config(layer))
-    assert plan is not None and evidence is not None
+    derived_bc = _derived_bc_for(layer, x, _decay_config(layer))
+    assert plan is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
     assert plan.normalization == "global"
-    # The evidence is keyed on the decision it explains, over the whole grid the
-    # selection actually walked -- `{BC: key}` now that `BT` is dead (§4.3).
-    assert choice.BC in evidence.grid
-    assert set(evidence.grid) == set(layer.feasible_BC)
-    assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
-    assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
+    assert derived_bc == plan.BC
 
 
 @_CUDA
@@ -283,8 +267,9 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     step's routing, which is precisely the staleness the ruling rejects.
 
     **RE-POINTED TWICE, AND THE SECOND TIME IS A CORRECTION.** `last_plan_axes` no longer
-    exists on the layer (the API contract; the evidence is reconstructed here on the same
-    bundle a forward used). The statistic also changed, and that is the correction: this
+    exists on the layer (the API contract; the §4.2 summary is reconstructed here on the
+    same bundle a forward used, via `_summaries_for`). The statistic also changed,
+    and that is the correction: this
     row used to assert on `k_hat`, the mean of `ceil(K_hat / MMA_K_QUANTUM)` over
     candidate `(owner, tile)` pairs, and at THIS cell `k_hat` cannot move. The summary
     pass is measured at the finest feasible `BC = 16`, so `QPO = 1` and every candidate
@@ -451,7 +436,7 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     """
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
-    from rola.planner.calibration.cost_model import select_plan  # G16
+    from rola.planner.schedule import plan_and_schedule
 
     torch.manual_seed(41)
     layer = _layer(decay=decay)
@@ -465,9 +450,9 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
             x, None, v, producer.route_W, producer.route_bias, layer.routes.gain_W,
             layer.routes.gain_bias, layer.topology, "global")
         decay_config = _decay_config(layer)
-        plan, _axes = select_plan(
-            ro.read_levels, ro.write_levels, layer.topology, layer.state_block,
-            normalization="global", decay=decay_config is not None)
+        plan, _schedule = plan_and_schedule(
+            ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, layer.topology,
+            layer.state_block, normalization="global", decay=decay_config is not None)
         _out, cuda_state, _sched = _consumer_forward(
             v, ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, plan,
             initial_state=None, decay=decay_config)
@@ -695,7 +680,7 @@ def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
         layer = RoLA(32, 2, routes)
         assert layer.state_block == largest_feasible_bc(tuple(branches))
         assert layer.state_block == layer.feasible_BC[-1]
-        assert set(layer.feasible_BC) <= set(_SUPPORTED_BC)
+        assert set(layer.feasible_BC) <= set(SUPPORTED_BC)
         assert layer.last_execution_backend is None
 
     # The expert pin, which is the ONLY thing that fixes `BC` for a launch now.
@@ -706,11 +691,11 @@ def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
 
 
 # ---------------------------------------------------------------------------
-# H2 (coverage-closure): the dispatch + selection properties on a topology where
+# H2 (coverage-closure): the dispatch + derivation properties on a topology where
 # BC = 64 -- the FLAGSHIP consumer instantiation -- is feasible. Every cell above
-# runs `_BRANCHES = [8, 16]`, whose feasible set is {16}, so the selection grid,
-# the evidence keying and the launch had never been exercised where the at-scale
-# default lives ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
+# runs `_BRANCHES = [8, 16]`, whose feasible set is {16}, so the derivation and the
+# launch had never been exercised where the at-scale default lives
+# ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
 # ---------------------------------------------------------------------------
 
 _BC64_BRANCHES = (4, 8, 8)  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
@@ -730,18 +715,12 @@ def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(decay):
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
     plan = layer.last_selected_plan
-    choice, evidence = _select_evidence(layer, x, _decay_config(layer))
-    assert plan is not None and evidence is not None
+    derived_bc = _derived_bc_for(layer, x, _decay_config(layer))
+    assert plan is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
     assert plan.normalization == "global"
-    assert choice.BC in evidence.grid
-    assert set(evidence.grid) == set(layer.feasible_BC)
-    assert 64 in evidence.grid, (
-        "the walked grid never priced BC=64; the feasible set is not reaching "
-        "selection")
-    assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
-    assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
+    assert derived_bc == plan.BC
 
 
 @pytest.mark.cuda
@@ -784,11 +763,11 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
 # H8 (coverage-closure): bf16 x paging. Every paging gate pins tf32x3 (so the
 # derived fp32 envelope stays the one that was derived), and every bf16 gate runs
 # unpaged. `mma_precision` is a dead axis now (bf16 is the only value
-# `PlanOverrides` accepts, P26; it never even reaches `Plan` any more -- see
-# `_static_tier0`'s hardcoded `mma_precision="bf16"`), so every gate in this file
-# is already bf16 and this row's remaining, still-live claim is paging invisibility
-# itself. The state is atomic-free and deterministic, so paged-vs-unpaged state
-# stays torch.equal; y is held to the oracle at BF16_RTOL, the bf16 family bound.
+# `PlanOverrides` accepts, P26; it never even reaches `Plan` any more), so every
+# gate in this file is already bf16 and this row's remaining, still-live claim is
+# paging invisibility itself. The state is atomic-free and deterministic, so
+# paged-vs-unpaged state stays torch.equal; y is held to the oracle at BF16_RTOL,
+# the bf16 family bound.
 # ---------------------------------------------------------------------------
 
 

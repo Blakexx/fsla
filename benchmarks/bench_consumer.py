@@ -38,13 +38,10 @@ import torch
 from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
 from rola.ops.consumer import _consumer_forward
 
-# G16 (THUNDER_RUN_SPEC.md §8b item 3): the COST MODEL moved to
-# `rola/planner/calibration/` in the Track P retirement (P4) -- `schedule.py` keeps
-# the SCHEDULE, the calibration package owns the pricing. `schedule.py`'s PEP-562 lazy
-# proxies still resolve these names, but importing them from their real home is what
-# keeps `import rola` free of the calibration package's inductor edge.
-from rola.planner.calibration.cost_model import select_plan
-from rola.planner.schedule import Plan, build_clock_stream, build_schedule
+# `BC` is a caller-pinned axis here (`--BC`), so this bench builds the plan directly
+# rather than deriving it (`rola.planner.derive.derive_bc` is what the dispatch path
+# uses instead).
+from rola.planner.schedule import build_clock_stream, build_plan, build_schedule
 
 # V2 whole-layer medians (ms) from `20260728-stage0/baseline.md` §3 at this exact
 # cell. Carried as data, not re-measured here: this script benchmarks V3, and
@@ -148,7 +145,7 @@ def _fill(read_levels, write_levels, N: int, BC: int) -> dict[str, float]:
     }
 
 
-def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
+def _compacted_rows(read_levels, write_levels, plan, BT: int) -> dict[str, float]:
     """Mean per-`(owner, tile)` support count `K` -- §3 step 2's union, exactly.
 
     `K = |{ i in [0,BC) : exists t in the tile, R[t, leaf(i)] != 0 or W[t, leaf(i)] != 0 }|`,
@@ -167,13 +164,13 @@ def _compacted_rows(read_levels, write_levels, plan) -> dict[str, float]:
     cell read `K = 15.91/16, sat 0.908` ("fully saturated") against the exact
     `11.13/16, sat 0.017`.
 
-    This function delegates to the PLANNER's `tile_union_stats`, so the number the
-    benchmark prints and the number the plan-time `BT` selection prices from are one
-    computation, not two that agree today.
+    This function delegates to the measurement instrument
+    (:func:`rola.planner.calibration.union_stats.tile_union_stats`), so the number
+    this benchmark prints is the exact enumeration, not a re-derived approximation.
     """
-    from rola.planner.calibration.cost_model import tile_union_stats  # G16
+    from rola.planner.calibration.union_stats import tile_union_stats
 
-    stats = tile_union_stats(read_levels, write_levels, plan.topology, plan.BC, plan.BT)
+    stats = tile_union_stats(read_levels, write_levels, plan.topology, plan.BC, BT)
     return {
         "compacted_rows_per_tile": round(stats.mean_K, 3),
         "compacted_rows_saturated_frac": round(stats.saturated_frac, 4),
@@ -191,6 +188,10 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
     `dense_limit_lowering`/`Plan.intra_lowering` were all retired -- there is one
     topology-agnostic kernel family now, so this used to sweep `lowerings` within
     each (decay, norm) cell and no longer does; one `Plan` per cell.
+
+    `BC` and `BT` are caller-pinned axes (`--BC`/`--BT`): this bench builds a `Plan`
+    at exactly the values it is given rather than deriving them, so the sweep stays
+    exhaustive over whatever `(BC, BT)` cell the caller asks for.
 
     `router` selects the routing ACTIVATION, which is the axis that decides FILL:
 
@@ -247,18 +248,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
             # The layer's own decay config, not a synthetic dial: this is the dial
             # distribution the model actually trains toward.
             decay = None if layer.decay is None else layer.decay()
-            # THE PLAN BUILD, run on THIS cell's realized routing. Every row below
-            # carries `plan_selected`, so "plan-selected" in a findings doc is a
-            # field of the output rather than a label a human attached afterwards
-            # (adversarial review 2026-07-30 §3.1: the doc labelled a cell
-            # plan-selected that the planner did not select). The sweep itself stays
-            # exhaustive -- the selector marks the cell, it does not replace it,
-            # because the A/B the constants are calibrated against IS the off-plan
-            # cells.
-            selected, axes = select_plan(read_levels, write_levels, topology, BC,
-                                            normalization=norm, decay=decay_on)
-            plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
-                          warp_tile=(1, d_v // 32), decay=decay_on)
+            plan = build_plan(topology, BC, normalization=norm, decay=decay_on)
             sched = build_schedule(read_levels, write_levels, g_read, g_write, plan)
 
             def consume(plan=plan, sched=sched):
@@ -270,9 +260,6 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 "router": router, "logit_gain": logit_gain,
                 "decay": "LeafMassDecay" if decay_on else "None", "norm": norm,
                 "BT": BT,
-                "plan_selected": bool(BT == selected.BT),
-                "selected_BT": selected.BT,
-                "selected_cost_per_token": round(axes.cost_per_token, 3),
                 "consumer_ms": round(_median_ms(consume, reps, warmup), 4),
                 "schedule_ms": round(_median_ms(
                     lambda: build_schedule(read_levels, write_levels, g_read,
@@ -286,7 +273,7 @@ def run(reps: int = 30, warmup: int = 4, L: int = 2048, router: str = "softmax",
                 "schedule_kib": round(sched.schedule_bytes() / 1024, 1),
                 "stream_mib": round(sched.stream_bytes() / 2 ** 20, 2),
                 **_fill(read_levels, write_levels, topology.N, BC),
-                **_compacted_rows(read_levels, write_levels, plan),
+                **_compacted_rows(read_levels, write_levels, plan, BT),
             }
             rows.append(row)
             print(json.dumps(row), flush=True)
