@@ -8,14 +8,12 @@ ledger the launch actually reserves.
 
 The kernel body's pointer carve (`consumer_kernel.cuh`) follows this ledger term for
 term, in the same order — see [`consumer_kernel.md`](consumer_kernel.md). The
-`ldmatrix` atoms that READ these layouts are [`mma_tile.md`](mma_tile.md); the
-control words `ctl` budgets for are [`pipeline.md`](pipeline.md).
+`ldmatrix` atoms that READ these layouts are [`mma_tile.md`](mma_tile.md).
 
 ## Reference conventions
 
-The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
-[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
-[`pipeline.md`](pipeline.md):
+The same in all three consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md):
 
 - **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
   at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
@@ -134,14 +132,14 @@ on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_
 every one is the formula evaluated:
 
 ```
-BC=16, DV=32, D=1, DECAY=false   smem = 6,604 B   reg_budget = 64
-  by_smem    = 102400 / (6604 + 1024)  = 13
+BC=16, DV=32, D=1, DECAY=false   smem = 6,528 B   reg_budget = 64
+  by_smem    = 102400 / (6528 + 1024)  = 13
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 64)      = 4
   ctas_for_residency = min(13, 6, 4) = 4
 
-BC=64, DV=64, D=2, DECAY=true    smem = 30,092 B  reg_budget = 80
-  by_smem    = 102400 / (30092 + 1024) = 3
+BC=64, DV=64, D=2, DECAY=true    smem = 30,016 B  reg_budget = 80
+  by_smem    = 102400 / (30016 + 1024) = 3
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 80)      = 3
   ctas_for_residency = min(3, 6, 3) = 3
@@ -177,14 +175,12 @@ body's pointer arithmetic follows this exact sequence):
 | region | extent | bytes | what it is |
 |---|---|---|---|
 | `S` | `[BC][DV+4]` fp32 | `BC*(DV+4)*4` | the STATE, resident for the owner's whole run. Pitch `SP = DV+4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)) |
-| `den` | `[kGT]` fp32 | `16*4 = 64` | the mass-column denominator accumulator (unconditional — see [below](#mass-col)) |
 | `dig` | `[D][BC]` int | `D*BC*4` | per-owner hoisted leaf digits ([`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
 | `WT` | `[BC][kWtPitch]` bf16, `align4` | `align4(BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGT+8 = 24` ([below](#stage-format)) |
 | `Vw` ∪ `clk` | the union, `align4` | `vw_union_bytes<BC,DV,DECAY>()` | the scale-folded value tile; on `DECAY` ALIASES the clock prefix ([below](#vw-clk-union)) |
 | `Rf` | `frag_a_words(BC)` u32 | `(BC/16)*128*4` | read coefficients, MMA-FRAGMENT ORDERED ([below](#frag-order)) |
-| `Gm` | `[kGT][kGT+8]` bf16 | `16*24*2 = 768` | the causal effective-score block, pitch `GMP = kGT+8 = 24` |
+| `Gm` | `[kGT][kGT+8]` bf16 | `16*24*2 = 768` | the causal effective-score block, pitch `GMP = kGT+8 = 24` — an `ldmatrix` SOURCE (GEMM 3's A and the intra mass term's), so its base carries the same 16-byte alignment `WT`/`Vw` do |
 | `log_keep`, `p_ref`, `s0` | `3 * [BC]` fp32, `DECAY` only | `DECAY ? 3*BC*4 : 0` | `DECAY`'s three per-leaf vectors |
-| `ctl` | `ctl_words(BC)` int | `3*4 = 12` | the item-stream control block, `kCtlFold0+1` — ONE fold cursor ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
 | `g_ring` | `kSchedSlots * kSchedSlotInts` int | `kSchedSlots*(kGT+4)*4` | the [cooked schedule ring](#sched-ring): `kSchedSlots` group descriptors, each the group's `kGT` ascending token indices plus `gN`/read-mask/write-mask/flags |
 | `g_up` | `kSchedSlots * 2 * kGT` fp32 | `kSchedSlots*2*16*4` | the ring's per-owner [upper-product](consumer_kernel.md#upper-product) pairs — `sr`/`sw`, cooked beside the member word |
 | producer cursor state | `(8 + 5*32)` int | `168*4 = 672` | the [producer's cursor](consumer_kernel.md#producer-state) (7 uniform scalars, 1 pad) and its 5 32-lane cook planes — rests here between cooks so no scheduler state is register-live across the visit body |
@@ -200,16 +196,16 @@ cross-checked against `consumer_smem_bytes` in Python):
 
 ```
 BC=16, DV=32, D=1, DECAY=false (kSchedDepth=1, kSchedSlots=2):
-  S=2304  den=64  dig=64  WT=768  Vw∪clk=1024
-  Rf=512  Gm=768  decay-extra=0  ctl=12
+  S=2304  dig=64  WT=768  Vw∪clk=1024
+  Rf=512  Gm=768  decay-extra=0
   g_ring=160  g_up=256  producer-state=672
-  total = 6,604 B  (~6.5 KiB)
+  total = 6,528 B  (~6.4 KiB)
 
 BC=64, DV=64, D=2, DECAY=true (kSchedDepth=1, kSchedSlots=2):
-  S=17408  den=64  dig=512  WT=3072  Vw∪clk=4352
-  Rf=2048  Gm=768  decay-extra=768  ctl=12
+  S=17408  dig=512  WT=3072  Vw∪clk=4352
+  Rf=2048  Gm=768  decay-extra=768
   g_ring=160  g_up=256  producer-state=672
-  total = 30,092 B  (~29.4 KiB)
+  total = 30,016 B  (~29.3 KiB)
 ```
 
 These are the same two shapes [the residency section](#residency) plugs into
@@ -220,9 +216,11 @@ not this prose, is the authority a future carve change must agree with.
 ### <a id="mass-col"></a>The mass column is unconditional
 
 `cols = DV + 1` on every arm: there is no `raw`/`GLOBAL` axis left to make it
-conditional, and `den` is allocated on every arm for the same reason. A run that never
-needed the mass column still pays 4 bytes/leaf-row for it and 64 B for `den` — deleting
-the axis deleted the branch, not the column.
+conditional. A run that never needed the mass column still pays 4 bytes/leaf-row for
+it — deleting the axis deleted the branch, not the column. The column's denominator
+accumulator is a register-resident MMA D fragment (`dm0..dm3`, WARP 0,
+[`consumer_kernel.md#mass-column`](consumer_kernel.md#mass-column)), not an SMEM
+array — there is nothing here to carve for it.
 
 ### <a id="sched-chunk"></a><a id="sched-ring"></a>The schedule ring's SMEM block
 
@@ -366,10 +364,10 @@ stage_offset<DV>(t, ch)`.
 
 `WT` stays PITCHED rather than swizzled, and that asymmetry is a MEASURED decline, not
 an omission: `Vw` has exactly two addressing sites (a flat store loop and one
-`ldmatrix` row address per k-step) where `WT` has more, including scalar walks along a
-row (the panel build, the mass-column fold), and a swizzle makes those walks
-non-affine — a cost the closed-form address only partly recovers. `WT` serves TWO
-operand maps and its pitch has to satisfy both:
+`ldmatrix` row address per k-step) where `WT` has more, including the scalar panel
+build's row walk, and a swizzle makes that walk non-affine — a cost the closed-form
+address only partly recovers. `WT` serves TWO operand maps and its pitch has to
+satisfy both:
 
 ```
 GEMM 2 (Gram), WT as B    B[k*ldb + n]    k = leaf steps 2 per r, n = token per g
@@ -415,7 +413,9 @@ Because the coefficients are fragment-ordered they carry NO ROW PITCH at all —
 layout is conflict-free by construction rather than by padding, so there is nothing
 to prove a `banks_distinct` predicate about here.
 
-`frag_a_slot` (the forward map, slot -> `(m, k)`) and `frag_a_get` (its inverse, used
-by the mass column's scalar matvec) are `mma_tile.cuh`'s — see
+`frag_a_slot` (the forward map, slot -> `(m, k)`) is `mma_tile.cuh`'s — see
 [`mma_tile.md`](mma_tile.md) for the reading and its `static_assert`ed cross-check
-against CuTe's own fragment maps.
+against CuTe's own fragment maps. It has no inverse in this design: the mass column
+reads the state through its own `n8` tile against a broadcast B
+([`mma_tile.md#mass-column`](mma_tile.md#mass-column)) rather than reading an element
+back out of the fragment.

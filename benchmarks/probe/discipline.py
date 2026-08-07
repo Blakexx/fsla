@@ -39,7 +39,8 @@ LOCK_PATH = os.environ.get("ROLA_GPU_LOCK", "/tmp/rola_gpu.lock")
 
 #: MEASURED REMEDY, not a guess: the fraction the two device-heavy test modules
 #: already pin (`tests/tier2_geometry/test_paging_stream_races.py`,
-#: `test_consumer_item_stream_gate.py`) after two whole-machine VRAM freezes.
+#: `tests/tier1_semantics/test_consumer_visit_barrier_gate.py`) after two
+#: whole-machine VRAM freezes.
 MEMORY_FRACTION = 0.65
 
 #: The two tiers, as data. `light` is the quick answer during a batch and is stamped

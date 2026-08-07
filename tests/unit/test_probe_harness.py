@@ -299,6 +299,26 @@ def test_every_sanitizer_skip_states_a_reason():
         assert len(reason) > 80, f"{probe}/{tool}: a bare skip is not a decision"
 
 
+def test_racecheck_covers_every_registered_probe():
+    """The racecheck arm is LIVE, and that is a property of the kernel, not of the
+    lane. racecheck orders shared memory by `__syncthreads`/`__syncwarp` and
+    cooperative-groups barriers ONLY, so a kernel that publishes a shared-memory edge
+    through anything else reads as unordered to it and every cell has to be skipped.
+    The consumer publishes both of its intra-visit edges through ONE `__syncthreads()`
+    (`docs/internals/consumer_kernel.md#visit-barrier`), so the tool sees the whole
+    ordering and both registered probes run clean. A future edge published by a
+    software protocol would put entries back in this skip-list, and that is a design
+    decision that has to be made deliberately rather than discovered in a dormant
+    lane."""
+    from probe.registry import PROBES
+    from probe.sanitize import SKIP
+
+    dormant = [p for p in PROBES if (p, "racecheck") in SKIP]
+    assert not dormant, (
+        f"racecheck is skipped for {dormant} -- the lane is dormant again. A skip here "
+        f"means a shared-memory edge is published by something racecheck cannot see.")
+
+
 def test_the_stock_section_folder_is_passed_alongside_ours():
     """`--section-folder` REPLACES the default search path. Passing only ours would
     silently delete every stock section, so the command must name both."""

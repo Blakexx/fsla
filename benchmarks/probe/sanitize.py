@@ -59,34 +59,7 @@ SANITIZED_LAUNCHES = 2
 #: bare name. A skip is preferred to a suppressions entry whenever the cause is
 #: STRUCTURAL: a per-source-location suppression for a structural cause rots the
 #: moment the code moves, and silently stops covering what it was meant to cover.
-SKIP: dict[tuple[str, str], str] = {
-    ("consumer_forward", "racecheck"):
-        "MEASURED 2026-08-05: 4 hazards, 131072 each, between the `Gm` write "
-        "(mma_tile.cuh:69, via consumer_kernel.cuh:729-748) and its read "
-        "(mma_tile.cuh:192, via consumer_kernel.cuh:853/867) -- and they are the "
-        "tool's blind spot, not the kernel's defect. racecheck orders shared memory "
-        "by __syncthreads/__syncwarp and cooperative-groups barriers ONLY. That edge "
-        "is published by the item pipeline's own release/acquire protocol instead "
-        "(`retire_item`'s __threadfence_block + atomic counter, `await_count`'s "
-        "spin-acquire; pipeline.cuh, docs/internals/pipeline.md#release-acquire), "
-        "which the kernel uses DELIBERATELY so an early warp takes another work item "
-        "rather than stalling on a rendezvous. The tool cannot be taught that "
-        "protocol, so every write/read pair across the edge reads as unordered. "
-        "THERE ARE EXACTLY TWO REGISTERED PROBES AND BOTH ARE SKIPPED HERE (see the "
-        "consumer_forward_deep entry below), so racecheck currently runs on NO "
-        "probe in this repository -- the lane's racecheck arm is dormant, not "
-        "narrowed to this cell, until a probe over a kernel WITHOUT a "
-        "pipeline-published edge registers. A kernel that publishes through a "
-        "standard barrier WOULD be checked by this lane; none is registered, and "
-        "the reason this cell is skipped is structural rather than a budget.",
-    ("consumer_forward_deep", "racecheck"):
-        "Same kernel and the same publication protocol as consumer_forward above: "
-        "the item pipeline's release/acquire edge is invisible to racecheck, which "
-        "orders shared memory by standard barriers only, so the hazards it reports "
-        "here are the tool's blind spot rather than a defect in this cell. With "
-        "consumer_forward also skipped above, racecheck covers NEITHER of the two "
-        "registered probes -- zero cells, not a reduced set.",
-}
+SKIP: dict[tuple[str, str], str] = {}
 
 
 def tool_flags(tool: str) -> list[str]:

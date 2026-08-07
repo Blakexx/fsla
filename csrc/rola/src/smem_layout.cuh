@@ -38,7 +38,6 @@
 #include <cute/tensor.hpp>
 
 #include "arch_table.cuh"
-#include "pipeline.cuh"
 #include "readout_mma.cuh"
 
 namespace rola {
@@ -396,14 +395,12 @@ constexpr size_t vw_union_bytes() {
 template <int BC, int DV, int D, bool DECAY>
 constexpr size_t consumer_smem_bytes() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);            // S (+ mass column pad)
-  b += static_cast<size_t>(kGroupTokens) * sizeof(float);                   // den
   b += static_cast<size_t>(D) * BC * sizeof(int);                           // dig
   b += align4(static_cast<size_t>(BC) * kWtPitch * sizeof(__nv_bfloat16));  // WT
   b += vw_union_bytes<BC, DV, DECAY>();                                     // Vw (+ clk)
   b += static_cast<size_t>(frag_a_words(BC)) * sizeof(unsigned);            // Rf
   b += static_cast<size_t>(kGroupTokens) * (kGroupTokens + 8) * sizeof(__nv_bfloat16);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
-  b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
   //: THE COOKED SCHEDULE RING: `kSchedSlots` group descriptors, written by the
   //: PRODUCER WARP a whole visit ahead and read by every consumer warp. It is the
   //: only schedule storage the consumers touch.
