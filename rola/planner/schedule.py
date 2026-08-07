@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from itertools import product as _iter_product
 from math import gcd, log1p, prod
 
+from functools import lru_cache as _lru_cache
+
 import torch
 
 from rola.routing.types import Topology, validate_normalization
@@ -1397,6 +1399,57 @@ CONSUMER_WINDOWS = (64, 16)
 WINDOW_MIN_FILL = 4
 
 
+@_lru_cache(maxsize=None)
+def _max_dynamic_smem_bytes() -> int:
+    from rola.ops._ext import extension
+    return int(extension().rola_max_dynamic_smem_bytes())
+
+
+@_lru_cache(maxsize=None)
+def _arm_occupancy(decay: bool, BC: int, d_v: int, gt: int) -> int:
+    from rola.ops._ext import extension
+    return int(extension().rola_consumer_occupancy(decay, BC, d_v, gt))
+
+
+@_lru_cache(maxsize=None)
+def _arm_smem_bytes(decay: bool, BC: int, d_v: int, gt: int) -> int:
+    from rola.ops._ext import extension
+    return int(extension().rola_consumer_smem_bytes(decay, BC, d_v, gt))
+
+
+def union_member_median(schedule: "Schedule") -> int:
+    """The MEDIAN OWNER'S MEMBER COUNT -- the one routing statistic the window
+    selection consults, and an upper bound on how long an owner's group stream is.
+
+    Exact at dense routing, where the fixed-level rows are all ones and an owner's
+    membership IS its coarse slice union; an over-estimate where the fixed levels
+    thin the union further. The over-estimate is on the PERFORMANCE side and never
+    the correctness side: an over-wide window computes the same answer with dead
+    tile.
+
+    Memoized on the schedule, because it is a pure function of `slice_union_tok`
+    -- which is frozen with the rest of it -- and computing it is a device-side
+    sweep of the whole union bitmap, a real cost beside a small kernel.
+    """
+    members = schedule.union_members
+    if members is not None:
+        return members
+    union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
+    if union.numel() == 0:
+        members = 0
+    else:
+        # THE SWAR POPCOUNT, six elementwise passes over the bitmap rather than
+        # the thirty-two a shift-and-test loop takes.
+        x = union.to(torch.int64) & 0xFFFFFFFF
+        x = x - ((x >> 1) & 0x5555555555555555)
+        x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+        x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F
+        per_owner = ((x * 0x0101010101010101) >> 56).sum(dim=-1).reshape(-1)
+        members = int(per_owner.median())
+    object.__setattr__(schedule, "union_members", members)
+    return members
+
+
 def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) -> int:
     """The consumer's token quantum for THIS routing -- a plan-time choice.
 
@@ -1444,8 +1497,6 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     """
     if schedule.window is not None:
         return schedule.window
-    members = schedule.union_members
-    if members is None:
         union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
         if union.numel() == 0:
             members = 0
@@ -1462,30 +1513,37 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
             per_owner = ((x * 0x0101010101010101) >> 56).sum(dim=-1).reshape(-1)
             members = int(per_owner.median())
         object.__setattr__(schedule, "union_members", members)
-    from rola.ops._ext import extension
-    ext = extension()
-    granted = int(ext.rola_max_dynamic_smem_bytes())
+        return members
+
+    # THE REFUSALS RUN CHEAPEST-FIRST, AND THAT ORDER IS LOAD-BEARING RATHER THAN
+    # TIDY. This runs on the LAUNCH path, beside kernels that take a fifth of a
+    # millisecond, so a refusal that costs a device-side sweep of the union bitmap
+    # must never be reached when a refusal costing one cached driver fact already
+    # settles it. On a machine whose SMEM budget cannot carry the wider carve at
+    # the same occupancy -- `sm_86`, every arm -- the first two refusals answer and
+    # nothing else is computed at all.
     narrow = CONSUMER_WINDOWS[-1]
-    resident = int(ext.rola_consumer_occupancy(decay is not None, BC, d_v, narrow))
+    decayed = decay is not None
+    granted = _max_dynamic_smem_bytes()
+    resident = _arm_occupancy(decayed, BC, d_v, narrow)
     for gt in CONSUMER_WINDOWS:
         if gt == narrow:
             break
-        if members < WINDOW_MIN_FILL * gt:
-            continue
         # THE SAME ADMISSION THE LAUNCH APPLIES, applied before selecting rather
         # than discovered as a hard refusal: the window Gram's storage is quadratic
         # in `gt`, so a wide window is the first arm a small-SMEM device cannot
-        # grant a block. `consumer.cuh:row_admitted` is the inequality being
-        # mirrored.
-        if int(ext.rola_consumer_smem_bytes(decay is not None, BC, d_v, gt)) > granted:
+        # grant a block. `consumer.cuh:row_admitted` is the inequality mirrored.
+        if _arm_smem_bytes(decayed, BC, d_v, gt) > granted:
             continue
         # THE RESIDENCY RULE, AND IT IS THE ONE THE MEASUREMENT WROTE. See the
         # docstring: a window bought with occupancy is a window that loses.
-        if int(ext.rola_consumer_occupancy(decay is not None, BC, d_v, gt)) < resident:
+        if _arm_occupancy(decayed, BC, d_v, gt) < resident:
             continue
-        if decay is not None and clock_amps is not None:
+        if decayed and clock_amps is not None:
             if not panel_exponent_bound(clock_amps, decay, gt) <= PANEL_MAX_EXPONENT:
                 continue
+        if union_member_median(schedule) < WINDOW_MIN_FILL * gt:
+            continue
         object.__setattr__(schedule, "window", gt)
         return gt
     object.__setattr__(schedule, "window", narrow)
@@ -1753,6 +1811,7 @@ __all__ = [
     "owner_geometry",
     "panel_exponent_bound",
     "select_window",
+    "union_member_median",
     "permuted_topology",
     "plan_and_schedule",
     "rank_spans",

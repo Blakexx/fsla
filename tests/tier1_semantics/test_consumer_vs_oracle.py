@@ -1214,7 +1214,8 @@ def test_output_charge_sees_a_drift_the_global_max_cannot():
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.25, 0.25)])
 def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     import rola.planner.schedule as schedule_mod
-    from rola.planner.schedule import CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window
+    from rola.planner.schedule import (CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window,
+                                       union_member_median)
 
     widths, BC, d_v, T = (4, 4, 4, 4), 16, 32, 521
     dials = None
@@ -1257,8 +1258,9 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
                                     initial_state=None, decay=dec)
     clock = sched.decay_stream.clock_amps if decay else None
     assert select_window(sched, dec, clock, BC, d_v) in CONSUMER_WINDOWS
-    assert sched.union_members >= WINDOW_MIN_FILL * 64, (
-        f"this cell no longer fills a wide window ({sched.union_members} member "
+    members = union_member_median(sched)
+    assert members >= WINDOW_MIN_FILL * 64, (
+        f"this cell no longer fills a wide window ({members} member "
         f"tokens against {WINDOW_MIN_FILL * 64}); it is the only oracle gate that "
         "exercises the window formulation, so it must be re-sized rather than left "
         "passing at the group quantum")

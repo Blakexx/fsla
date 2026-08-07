@@ -726,8 +726,8 @@ consumer_forward_kernel(ConsumerParams p) {
       // ---- THE WRITE PANEL -- one leaf-PAIR per thread visit. The pass-1 inclusion
       // ---- ballot rides the same 16-lane token run per leaf.
       // ---- docs/internals/consumer_kernel.md#write-panel
+      __nv_bfloat16* const WTa = WT + a * kWtSlotElems;
       if (is_write) {
-        __nv_bfloat16* const WTa = WT + a * kWtSlotElems;
         auto wt_pairs = [&](int q) {
           // 8 leaf pairs x kGroupTokens tokens = 128 slots for atom q.
           for (int idx = tid; idx < 8 * kGroupTokens; idx += kConsumerThreads) {
@@ -774,6 +774,18 @@ consumer_forward_kernel(ConsumerParams p) {
         //: self-masking, masks stay compute-only.
 #pragma unroll
         for (int q = 0; q < kQPO; ++q) wt_pairs(q);
+      } else if (w_write) {
+        //: **A SIDE-DEAD SLOT OF A WRITE-LIVE WINDOW STAGES EXACT ZEROS.** It is
+        //: the same rule a ragged group's padded token slots already run on,
+        //: extended from a slot's TAIL to a whole slot -- and it is what lets the
+        //: fold consume all `W` slots with NO PER-SLOT PREDICATE: an unstaged slot
+        //: would be a previous window's panel, a zero-staged one contributes an
+        //: exactly-zero deposit. The branch is at the SLOT, never at the element,
+        //: so the group quantum -- where a write-live window has no dead slot to
+        //: reach this at all -- pays nothing for it.
+        for (int e = tid; e < kWtSlotElems; e += kConsumerThreads) {
+          WTa[e] = __float2bfloat16(0.0f);
+        }
       }
     }
     //: HAZARD clk-dead -- docs/internals/consumer_kernel.md#clk-dead
@@ -783,11 +795,21 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- there `t` is the CONTRACTION index and the scale cannot hoist out of the
     // ---- sum; one staged object, two GEMMs.
     for (int a = 0; a < W; ++a) {
-      if (wmr[a] == 0u) continue;
+      if (!w_write) break;
+      __nv_bfloat16* const Vwa = Vw + a * kVwSlotElems;
+      if (wmr[a] == 0u) {
+        //: The value tile of a side-dead slot, staged as the exact zeros that make
+        //: the fold's slot loop predicate-free. `StageLayout` is a proven bijection
+        //: onto `[0, kVwSlotElems)`, so a linear fill covers exactly the addressed
+        //: set.
+        for (int e = tid; e < kVwSlotElems; e += kConsumerThreads) {
+          Vwa[e] = __float2bfloat16(0.0f);
+        }
+        continue;
+      }
       const int gN = gNr[a];
       const int* const T = tk_of(a);
       const float* const swa = sw_of(a);
-      __nv_bfloat16* const Vwa = Vw + a * kVwSlotElems;
       for (int idx = tid; idx < kGroupTokens * DV; idx += kConsumerThreads) {
         const int t = idx / DV;
         const int ch = idx - t * DV;
@@ -887,7 +909,7 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- varies along the contraction axis and cannot fold into one dot, ours is
     // ---- already folded into the panels at stage time, so our diagonal stays a
     // ---- masked GEMM. docs/internals/consumer_kernel.md#gemm-gram
-    {
+    if (mixed) {
       //: THE TRIANGLE IS ENUMERATED AT COMPILE TIME. `W` and `NT_GM` are template
       //: constants, so unrolling makes the item index -- and with it the
       //: item-to-warp assignment and the `a == b` diagonal test -- a CONSTANT per
@@ -896,7 +918,7 @@ consumer_forward_kernel(ConsumerParams p) {
       //: quantum always issued.
       int it = 0;
 #pragma unroll
-      for (int a = 0; a < W; ++a) {
+      for (int a = 0; a < W; ++a) {  // NOLINT -- the triangle, enumerated
 #pragma unroll
         for (int b = 0; b <= a; ++b) {
 #pragma unroll
@@ -910,7 +932,7 @@ consumer_forward_kernel(ConsumerParams p) {
             //: previous window's Gram. (`BC == kMmaKQuantum` cannot express it: one
             //: atom per side makes "both live" and "masks intersect" the same
             //: statement, which is why only the `BC = 64` sparse cells saw it.)
-            if (rmr[a] == 0u || wmr[b] == 0u) continue;
+            if (rmr[a] == 0u) continue;
             const unsigned gmask = rmr[a] & wmr[b];
             const unsigned* const Rfa = Rf + a * kRfSlotWords;
             const __nv_bfloat16* const WTb = WT + b * kWtSlotElems;
@@ -977,7 +999,7 @@ consumer_forward_kernel(ConsumerParams p) {
         const int n0 = (it - a * NT_DV) * 8;
 #pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (b > a || wmr[b] == 0u) continue;
+          if (b > a) continue;
           mma_tile_vwB<DV>(Gm + a * kGroupTokens * GMP + b * kGroupTokens, GMP,
                            Vw + b * kVwSlotElems, n0, lane, y[s][0], y[s][1], y[s][2], y[s][3]);
         }
@@ -994,7 +1016,7 @@ consumer_forward_kernel(ConsumerParams p) {
         if (a >= W || rmr[a] == 0u) continue;
 #pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (b > a || wmr[b] == 0u) continue;
+          if (b > a) continue;
           mma_tile_bcastB(Gm + a * kGroupTokens * GMP + b * kGroupTokens, GMP, sw_of(b), lane,
                           dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
         }
@@ -1082,13 +1104,15 @@ consumer_forward_kernel(ConsumerParams p) {
         float a2 = S[i1 * SP + n0];
         float a3 = S[i1 * SP + n0 + 1];
         float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-        //: The window's deposits accumulate IN THE TENSOR CORE'S D FRAGMENT, in
-        //: ascending group order. The per-slot skip is EXACT rather than an
-        //: approximation: an atom dead in group `b` has exact-zero staged
-        //: coefficients there.
+        //: **THE WINDOW'S DEPOSITS ACCUMULATE IN THE TENSOR CORE'S D FRAGMENT, WITH
+        //: NO PREDICATE AT ALL** -- in ascending group order, over every staged
+        //: slot. Every slot of a write-live window holds real coefficients or exact
+        //: zeros (the staging above guarantees it) and a dead ATOM's rows are exact
+        //: zeros by self-masking, so an unconditional `mma.sync` is EXACT, not an
+        //: approximation, and the hot loop carries no test. At `W == 1` this is the
+        //: single `mma.sync` the group quantum always issued.
 #pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (((wmr[b] >> mt) & 1u) == 0u) continue;
           //: THE TILE'S BASE COLUMN, `nt * 8` -- NOT `n0`, which carries the lane's
           //: own `2 * _r` offset for the scalar accumulator accesses above. An
           //: `ldmatrix` takes a warp-uniform 16-byte-aligned tile address.
@@ -1132,7 +1156,6 @@ consumer_forward_kernel(ConsumerParams p) {
         float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
 #pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (((wmr[b] >> mt) & 1u) == 0u) continue;
           mma_tile_bcastB(WT + b * kWtSlotElems + mt * kMmaKQuantum * BTP, BTP, sw_of(b), lane, m0,
                           m1, m2, m3);
         }
