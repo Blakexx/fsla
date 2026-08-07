@@ -13,7 +13,7 @@ once. Measured: 0 of 8 fixtures bitwise, at 1-6 fp32 ulp
 (``workflows/20260730-wiring/pincrement.md`` §1-§2). So:
 
 1. ``P > 1`` is graded against the canonical fp64 oracle ``naive_rola`` at
-   :data:`RTOL` -- **the same number ``P = 1`` is held to**, imported from the
+   :data:`BF16_RTOL` -- **the same number ``P = 1`` is held to**, imported from the
    ``P = 1`` gate file rather than restated, so it cannot drift apart from it.
 2. **The unwritten-leaf carve-out is BITWISE and is gated as such.** A leaf with no
    write in a segment has ``A = 1`` and ``B = 0`` exactly, and the scan never visits
@@ -60,9 +60,9 @@ from rola.routing.types import (
 )
 
 # The `P = 1` gate's own tolerance, IMPORTED rather than restated. §6.4's amended
-# discipline is "the same RTOL as P = 1, no tolerance widened anywhere"; importing
+# discipline is "the same BF16_RTOL as P = 1, no tolerance widened anywhere"; importing
 # it is what makes that structural instead of a promise.
-from tests.tier1_semantics.test_consumer_vs_oracle import RTOL
+from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -111,23 +111,22 @@ def _masked_simplex(shape, mask, generator, device):
 class _Fixture:
     """One routing realization plus the plan and schedule built from it."""
 
-    def __init__(self, widths, BC, d_v, B, T, H, norm, p_read, p_write, seed, *,
-                 decay_on=False, nonzero_m0=False, BT=16,
-                 mma_precision="tf32x3",
+    def __init__(self, widths, BC, d_v, B, T, H, p_read, p_write, seed, *,
+                 decay_on=False, nonzero_m0=False,
                  read_levels=None, write_levels=None, routing=_ROUTING):
         device = "cuda"
         gen = torch.Generator(device=device).manual_seed(seed)
         self.topology = _topology(widths, d_v, routing)
-        self.norm = norm
         self.d_v = d_v
-        self.cols = d_v + (1 if norm == "global" else 0)
+        # `normalization="global"` is the only value `Plan` accepts, so the mass
+        # column is unconditional: `cols = d_v + 1` always.
+        self.cols = d_v + 1
         self.read_levels = read_levels or tuple(
             _simplex((B, T, H, w), p_read, gen, device) for w in widths)
         self.write_levels = write_levels or tuple(
             _simplex((B, T, H, w), p_write, gen, device) for w in widths)
         self.g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
-        self.g_read = (None if norm == "global" else
-                       torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5)
+        self.g_read = None
         self.v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=gen)
         self.decay = None
         if decay_on:
@@ -138,12 +137,12 @@ class _Fixture:
         if nonzero_m0:
             m0 = 0.1 * torch.randn(B, H, self.topology.N, self.cols, device=device,
                                    dtype=torch.float64, generator=gen)
-            if norm == "global":
-                m0[..., d_v] = m0[..., d_v].abs()
+            # The mass column is a nonnegative accumulated write mass; a negative
+            # incoming mass is not a state the recurrence can produce.
+            m0[..., d_v] = m0[..., d_v].abs()
             self.initial_state = m0
-        self.plan = Plan(topology=self.topology, normalization=norm, BT=BT, BC=BC,
-                           warp_tile=(1, max(1, d_v // 32)), decay=decay_on,
-                           mma_precision=mma_precision)
+        self.plan = Plan(topology=self.topology, normalization="global", BC=BC,
+                           warp_tile=(1, max(1, d_v // 32)), decay=decay_on)
         self._f32 = dict(
             v=self.v.to(torch.float32),
             read_levels=tuple(t.to(torch.float32) for t in self.read_levels),
@@ -158,7 +157,7 @@ class _Fixture:
     def oracle(self):
         return naive_rola(
             self.v, self.read_levels, self.write_levels, self.g_read, self.g_write,
-            self.topology, self.decay, self.norm,
+            self.topology, self.decay, "global",
             initial_state=self.initial_state, output_final_state=True)
 
     def run(self, P=1, *, sequence_parallel=None):
@@ -185,7 +184,7 @@ class _Fixture:
         ``test_rola_v3_sequence_parallel_policy.py``.
         """
         base = self.policy_plan(policy=SequenceParallelPolicy(workspace_cap=1 << 30))
-        n_tiles = self.schedule.n_tiles
+        n_tiles = self.schedule.n_twords
         assert n_tiles >= P, (
             f"a fixture cannot be split {P} ways over {n_tiles} tiles; raise T or lower P, "
             "rather than letting the split silently degenerate to empty segments")
@@ -210,33 +209,33 @@ def _relative(actual: torch.Tensor, reference: torch.Tensor) -> float:
 
 #: Structural axes only. `P` composes with the EXISTING plan axes, which is the
 #: claim the grid exists to test rather than assume: each row names a different
-#: owner rectangle, and every row is run at both `BT`, both norms, both decay arms,
-#: sparse and dense, and with and without a carried state.
+#: owner rectangle, and every row is run at both decay arms, sparse and dense,
+#: and with and without a carried state. `BT` is gone (no template axis left to
+#: vary) and `normalization` is pinned "global" (the only value `Plan` accepts).
 _GRID = [
-    ((8, 8), 16, 64, 16),      # widths, BC, d_v, BT -- j=0, c=2, 4 owners/bh
-    ((4, 4, 4), 16, 64, 16),   # j=1, one FIXED level
-    ((2, 3, 4, 4), 16, 64, 16),  # j=2, two fixed levels, non-power-of-two widths
-    ((8, 8), 64, 64, 32),      # BC == N: span everything, and the coarse BT
-    ((16,), 16, 32, 16),       # D = 1, d_v = 32
+    ((8, 8), 16, 64),      # widths, BC, d_v -- j=0, c=2, 4 owners/bh
+    ((4, 4, 4), 16, 64),   # j=1, one FIXED level
+    ((2, 3, 4, 4), 16, 64),  # j=2, two fixed levels, non-power-of-two widths
+    ((8, 8), 64, 64),      # BC == N: span everything
+    ((16,), 16, 32),       # D = 1, d_v = 32
 ]
 
 
-@pytest.mark.parametrize("widths,BC,d_v,BT", _GRID)
+@pytest.mark.parametrize("widths,BC,d_v", _GRID)
 @pytest.mark.parametrize("P", [1, 2, 4])
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay_on", [False, True])
 def test_every_P_agrees_with_the_canonical_oracle_at_the_P_equals_one_tolerance(
-        widths, BC, d_v, BT, P, norm, decay_on):
+        widths, BC, d_v, P, decay_on):
     """§6.4 discipline 1: no tolerance is widened for `P > 1`, anywhere.
 
-    ``RTOL`` is imported from the ``P = 1`` gate, so this cannot drift from it.
+    ``BF16_RTOL`` is imported from the ``P = 1`` gate, so this cannot drift from it.
     """
-    fx = _Fixture(widths, BC, d_v, B=1, T=128, H=2, norm=norm,
-                  p_read=1.0, p_write=1.0, seed=1000 + P, decay_on=decay_on, BT=BT)
+    fx = _Fixture(widths, BC, d_v, B=1, T=128, H=2,
+                  p_read=1.0, p_write=1.0, seed=1000 + P, decay_on=decay_on)
     y_ref, state_ref = fx.oracle()
     y, state, _ = fx.run(P)
-    assert _relative(y, y_ref) < RTOL, f"y disagrees with the oracle at P={P}"
-    assert _relative(state, state_ref) < RTOL, f"state disagrees with the oracle at P={P}"
+    assert _relative(y, y_ref) < BF16_RTOL, f"y disagrees with the oracle at P={P}"
+    assert _relative(state, state_ref) < BF16_RTOL, f"state disagrees with the oracle at P={P}"
 
 
 @pytest.mark.parametrize("P", [1, 2, 4])
@@ -245,26 +244,38 @@ def test_every_P_agrees_with_the_canonical_oracle_at_the_P_equals_one_tolerance(
 def test_the_sparse_and_carried_state_arms_hold_at_every_P(P, p_read, p_write, nonzero_m0):
     """The density axis is a FIXTURE axis, never a kernel axis -- and a carried
     ``M_0`` is the case where the fold's re-association actually bites at every
-    segment boundary rather than only past the first."""
-    fx = _Fixture((8, 8), 16, 64, B=2, T=96, H=2, norm="raw",
+    segment boundary rather than only past the first.
+
+    P26: ``T=128``, not the old ``96``. The scan word is now the fixed 32-token
+    granule (``TOKEN_WORD``, no more ``BT=16``), so ``n_twords = ceil(T/32)``
+    must be at least ``P`` -- ``96`` gives only 3 words, one short of the
+    ``P=4`` cell.
+    """
+    fx = _Fixture((8, 8), 16, 64, B=2, T=128, H=2,
                   p_read=p_read, p_write=p_write, seed=2000 + P, nonzero_m0=nonzero_m0)
     y_ref, state_ref = fx.oracle()
     y, state, _ = fx.run(P)
-    assert _relative(y, y_ref) < RTOL
-    assert _relative(state, state_ref) < RTOL
+    assert _relative(y, y_ref) < BF16_RTOL
+    assert _relative(state, state_ref) < BF16_RTOL
 
 
 @pytest.mark.parametrize("P", [1, 2, 3, 4])
 def test_a_ragged_token_tail_holds_at_every_P(P):
-    """``T`` not a multiple of ``BT`` puts a partial tile at the end, and an uneven
-    ``n_tiles / P`` puts differently-sized segments in one owner. Both are the
-    off-by-one surface the tile-range mask owns."""
-    fx = _Fixture((8, 8), 16, 64, B=1, T=83, H=2, norm="global",
+    """``T`` not a multiple of the 32-token scan word puts a partial word at the
+    end, and an uneven ``n_twords / P`` puts differently-sized segments in one
+    owner. Both are the off-by-one surface the tile-range mask owns.
+
+    P26: ``T=131``, not the old ``83`` -- ``TOKEN_WORD=32`` (no more ``BT=16``)
+    means ``n_twords = ceil(T/32)``, and the `P=4` cell needs at least 4 words
+    (``83`` gave only 3); ``131`` is still ragged (not a multiple of 32) and
+    gives 5.
+    """
+    fx = _Fixture((8, 8), 16, 64, B=1, T=131, H=2,
                   p_read=0.6, p_write=0.6, seed=3000 + P)
     y_ref, state_ref = fx.oracle()
     y, state, _ = fx.run(P)
-    assert _relative(y, y_ref) < RTOL
-    assert _relative(state, state_ref) < RTOL
+    assert _relative(y, y_ref) < BF16_RTOL
+    assert _relative(state, state_ref) < BF16_RTOL
 
 
 @pytest.mark.parametrize("P", [1, 2, 3, 4])
@@ -283,22 +294,8 @@ def test_P_composes_with_a_carried_entry_state_on_both_decay_arms(P, decay_on):
     pass 2's fold sees a summary that cannot have drifted from its own ``B``. A fold
     that agreed with a token-serial walk but not with the panel would show up here and
     nowhere else."""
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw", p_read=0.5, p_write=0.5,
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, p_read=0.5, p_write=0.5,
                   seed=9000 + P, decay_on=decay_on, nonzero_m0=True)
-    y_ref, state_ref = fx.oracle()
-    y, state, _ = fx.run(P)
-    assert _relative(y, y_ref) < RTOL
-    assert _relative(state, state_ref) < RTOL
-
-
-@pytest.mark.parametrize("P", [1, 3])
-def test_P_composes_with_the_bf16_numeric_format_arm(P):
-    """The performance MMA format, at its own format tolerance -- which is
-    imported from the `P = 1` gate for the same reason `RTOL` is."""
-    from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
-
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="global", p_read=1.0, p_write=1.0,
-                  seed=9100 + P, mma_precision="bf16", nonzero_m0=True)
     y_ref, state_ref = fx.oracle()
     y, state, _ = fx.run(P)
     assert _relative(y, y_ref) < BF16_RTOL
@@ -328,7 +325,7 @@ def test_an_unsplit_plan_is_bit_identical_to_passing_no_plan_at_all():
     ``torch.equal`` on ``y`` here would be asserting a property the kernel has never
     had, and it would fail on the unmodified kernel.
     """
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                   p_read=1.0, p_write=1.0, seed=4001)
     unsplit = fx.policy_plan(policy=SequenceParallelPolicy(workspace_cap=0))
     assert not unsplit.split, "the capacity gate at cap=0 must admit no split"
@@ -341,7 +338,7 @@ def test_P_equals_one_launched_twice_is_bit_identical_on_state():
     """The NULL CONTROL for the envelope below, and a real invariant in its own
     right: the state is per-owner and published once, so it does not inherit the
     split-K epilogue's atomic non-determinism the way ``y`` does."""
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                   p_read=1.0, p_write=1.0, seed=4002)
     _, s_a, _ = fx.run(1)
     _, s_b, _ = fx.run(1)
@@ -362,7 +359,7 @@ def test_P_equals_two_from_a_zero_initial_state_is_bit_identical_on_state():
     those are asserted here too, so this test cannot pass on a kernel whose fold is
     a no-op.
     """
-    zero_m0 = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
+    zero_m0 = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                        p_read=1.0, p_write=1.0, seed=4003)
     _, s1, _ = zero_m0.run(1)
     _, s2, _ = zero_m0.run(2)
@@ -373,7 +370,7 @@ def test_P_equals_two_from_a_zero_initial_state_is_bit_identical_on_state():
         "P = 4 introduced no re-association, so the fold is not running and the "
         "bit-identity above is vacuous")
 
-    carried = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
+    carried = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                        p_read=1.0, p_write=1.0, seed=4003, nonzero_m0=True)
     _, c1, _ = carried.run(1)
     _, c2, _ = carried.run(2)
@@ -448,19 +445,21 @@ def test_the_unwritten_leaf_carve_out_is_bitwise_and_the_written_leaves_are_not(
       A refactor that keeps the arithmetic inert while losing the structure would
       therefore pass here; it must be caught in review of ``v3_scan_kernel``.
     """
-    widths, BC, d_v, T, BT, P = (8, 8), 16, 64, 128, 16, 3
+    from rola.planner.schedule import TOKEN_WORD
+
+    widths, BC, d_v, T, P = (8, 8), 16, 64, 128, 3
     # The write support must change at a SEGMENT boundary. Segment 0 of a `P`-way
-    # split over `n_tiles` covers tiles `[0, n_tiles/P)`, so its last token is
-    # `(n_tiles // P) * BT - 1`. Derived rather than hard-coded, so the fixture
-    # cannot silently stop being a carve-out fixture if `T`, `BT` or `P` move.
-    n_tiles = -(-T // BT)
-    boundary = (n_tiles // P) * BT
+    # split over `n_twords` covers words `[0, n_twords/P)`, so its last token is
+    # `(n_twords // P) * TOKEN_WORD - 1`. Derived rather than hard-coded, so the
+    # fixture cannot silently stop being a carve-out fixture if `T` or `P` move.
+    n_tiles = -(-T // TOKEN_WORD)
+    boundary = (n_tiles // P) * TOKEN_WORD
     assert 0 < boundary < T
     read_levels, write_levels = _partial_write_support_fixture(
         5001, live_first=4, live_second=2, boundary=boundary, T=T, widths=widths)
-    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, norm="raw", p_read=1.0, p_write=1.0,
-                  seed=5001, read_levels=read_levels, write_levels=write_levels, BT=BT)
-    assert fx.schedule.n_tiles == n_tiles
+    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, p_read=1.0, p_write=1.0,
+                  seed=5001, read_levels=read_levels, write_levels=write_levels)
+    assert fx.schedule.n_twords == n_tiles
 
     # `P = 3` puts an INTERIOR segment boundary in, which is what actually
     # re-associates (see the `P = 2` test above for why `P = 2` alone would not).
@@ -503,7 +502,7 @@ def test_an_owner_with_no_write_anywhere_is_bit_identical_at_every_P():
         _masked_simplex((1, T, 1, widths[1]), torch.ones(1, 1, 1, widths[1]), gen, device))
     read_levels = tuple(
         _masked_simplex((1, T, 1, w), torch.ones(1, 1, 1, w), gen, device) for w in widths)
-    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, norm="raw", p_read=1.0, p_write=1.0,
+    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, p_read=1.0, p_write=1.0,
                   seed=5002, read_levels=read_levels, write_levels=write_levels,
                   nonzero_m0=True)
     _, serial, _ = fx.run(1)
@@ -526,7 +525,7 @@ def test_an_owner_with_no_write_anywhere_is_bit_identical_at_every_P():
 #:
 #: `P > 1` re-associates the state accumulation, so it differs from `P = 1` by
 #: rounding. This bound is DERIVED, not fitted: the fold re-associates a sum of at
-#: most `n_tiles * BT` fp32 deposits per leaf, so the relative difference is bounded
+#: most `T` fp32 deposits per leaf, so the relative difference is bounded
 #: by the usual `n * eps` sequential-summation bound with `eps = 2^-24`, times a
 #: factor for the `A` product. At the fixtures below (`T <= 128`) that is
 #: `128 * 2^-24 ~ 7.6e-6`; the constant is set an order above it.
@@ -552,14 +551,14 @@ REASSOCIATION_ENVELOPE = 1e-4
 
 
 @pytest.mark.parametrize("P", [2, 3, 4])
-@pytest.mark.parametrize("norm,decay_on,nonzero_m0", [
-    ("raw", False, False),
-    ("raw", True, True),
-    ("global", False, True),
-    ("global", True, False),
+@pytest.mark.parametrize("decay_on,nonzero_m0", [
+    (False, False),
+    (True, True),
+    (False, True),
+    (True, False),
 ])
-def test_the_reassociation_envelope_holds_with_a_null_control(P, norm, decay_on, nonzero_m0):
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm=norm, p_read=1.0, p_write=1.0,
+def test_the_reassociation_envelope_holds_with_a_null_control(P, decay_on, nonzero_m0):
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, p_read=1.0, p_write=1.0,
                   seed=6000 + P, decay_on=decay_on, nonzero_m0=nonzero_m0)
     _, serial, _ = fx.run(1)
 
@@ -610,12 +609,12 @@ def test_the_reassociation_envelope_holds_with_a_null_control(P, norm, decay_on,
 # file mentioned `paging`, `page_table` or `admit` before this section.
 #
 # The discipline is the ruled one, unchanged by paging: fp64 ORACLE at the `P = 1`
-# `RTOL`, the bitwise CARVE-OUT, and the ENVELOPE. Paging adds its own §7.1 gate on
+# `BF16_RTOL`, the bitwise CARVE-OUT, and the ENVELOPE. Paging adds its own §7.1 gate on
 # top (state bit-identical paged vs unpaged), which composes here as `torch.equal`
 # at each fixed `P`: paging decides where a panel lives, never what it is.
 
 
-def _paged_fixture(seed=7301, *, T=64, BT=16, live_digits=4):
+def _paged_fixture(seed=7301, *, T=64, live_digits=4):
     """A sparse-write fixture whose arena lands PARTIALLY resident, by STRUCTURE.
 
     Partial residency is the cell the composition is actually about (a non-resident
@@ -641,8 +640,8 @@ def _paged_fixture(seed=7301, *, T=64, BT=16, live_digits=4):
         for w in widths[1:])
     read_levels = tuple(
         _masked_simplex((1, T, H, w), torch.ones(1, 1, 1, w), gen, device) for w in widths)
-    return _Fixture(widths, BC, d_v, B=1, T=T, H=H, norm="raw", p_read=1.0, p_write=1.0,
-                    seed=seed, BT=BT, routing=_SPARSE_WRITE_ROUTING,
+    return _Fixture(widths, BC, d_v, B=1, T=T, H=H, p_read=1.0, p_write=1.0,
+                    seed=seed, routing=_SPARSE_WRITE_ROUTING,
                     read_levels=read_levels, write_levels=write_levels)
 
 
@@ -665,27 +664,26 @@ def test_P_composes_with_paging_over_a_partially_resident_arena(P):
     """R4: the three-pass split, run against §7.1's page table rather than a dense
     state, at the same discipline and with paging's own bit-identity gate on top.
 
-    **THE FIXTURE IS `T = 128`, NOT THE DEFAULT 64, AND THAT IS THE `P >= 3`
+    **THE FIXTURE IS `T = 192`, NOT A SMALLER `T`, AND THAT IS THE `P >= 3`
     NON-VACUITY CONTROL'S OWN REQUIREMENT** (`rewrite.md` §2.31). A re-associated
-    boundary exists only where some SUMMARIZED segment carries two or more tiles:
-    pass 1 summarizes segments `0 .. P - 2` from ZERO, the boundaries are those
-    summaries accumulated in order, and a one-tile summary is a single deposit --
-    which sums into the boundary in exactly the serial order. At `T = 64` the owner
-    has 4 tiles, so `P = 3` splits `1 / 1 / 2` and the only two-tile segment is the
-    LAST one, which pass 1 does not summarize: the split is bit-identical to `P = 1`
-    BY CONSTRUCTION, and the control below then fires on a fixture that never had
-    teeth. MEASURED: at 4 tiles the new consumer reproduces `P = 1` exactly at
-    `P = 2, 3 AND 4`; at 6, 8 and 10 tiles `P >= 3` differs on every one of the 256
-    write-live leaves (deltas 0.98-1.3e-7, two to three orders inside the envelope)
-    while `P = 2` stays bit-identical as its pinned property requires. The old
-    consumer differed at 4 tiles for an implementation-level reason of its own, which
-    is precisely why this control passed vacuously before it was checked.
+    boundary exists only where some SUMMARIZED segment carries two or more
+    words: pass 1 summarizes segments `0 .. P - 2` from ZERO, the boundaries
+    are those summaries accumulated in order, and a one-word summary is a
+    single deposit -- which sums into the boundary in exactly the serial
+    order. P26: the scan word is now the fixed 32-token `TOKEN_WORD` (no more
+    `BT=16`), so `n_twords = ceil(T/32)`; the `P = 3` cell needs at least 6
+    words for its summarized segment to span two or more (`T=192` gives
+    exactly 6). A smaller `T` -- the old `T=128` gave only 4 words under the
+    32-token granule -- splits `1 / 1 / 2`, whose only two-word segment is the
+    LAST one, which pass 1 does not summarize: the split would be
+    bit-identical to `P = 1` BY CONSTRUCTION and the control below would fire
+    on a fixture that never had teeth.
     """
-    fx = _paged_fixture(T=128)
+    fx = _paged_fixture(T=192)
     #: The structural precondition, asserted rather than assumed -- a later `T` edit
     #: must fail here rather than silently re-vacate the control below.
-    assert fx.schedule.n_tiles >= 6, (
-        f"{fx.schedule.n_tiles} tiles cannot give `P = 3` a summarized segment of two "
+    assert fx.schedule.n_twords >= 6, (
+        f"{fx.schedule.n_twords} tiles cannot give `P = 3` a summarized segment of two "
         "or more tiles, so the non-vacuity assertion below would have no teeth")
     B, H = 1, 1
     arena = _arena_for(fx, BH=B * H)
@@ -713,8 +711,8 @@ def test_P_composes_with_paging_over_a_partially_resident_arena(P):
     # 1. The fp64 oracle, at the `P = 1` tolerance -- unchanged by paging.
     y_ref, state_ref = fx.oracle()
     N, cols = fx.topology.N, fx.cols
-    assert _relative(y_pk, y_ref) < RTOL
-    assert _relative(state_pk.reshape(B, H, N, cols), state_ref) < RTOL
+    assert _relative(y_pk, y_ref) < BF16_RTOL
+    assert _relative(state_pk.reshape(B, H, N, cols), state_ref) < BF16_RTOL
 
     # 2. The bitwise carve-out. A never-written owner has no page at all, so its rows
     # read as zeros at every `P` -- the structural end of §6.4's carve-out, composed
@@ -770,7 +768,7 @@ def test_a_dirty_workspace_changes_nothing():
     read of an unwritten slot byte shows up as a NaN in the output rather than as a
     small perturbation.
     """
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="global",
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                   p_read=0.5, p_write=0.5, seed=7001, nonzero_m0=True)
     sp = fx.forced(3)
 
@@ -828,7 +826,7 @@ def test_the_sparse_summary_is_exercised_between_its_two_degeneracies():
         _masked_simplex((1, T, 1, widths[1]), mask1, gen, device))
     read_levels = tuple(
         _masked_simplex((1, T, 1, w), torch.ones(1, 1, 1, w), gen, device) for w in widths)
-    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, norm="raw", p_read=1.0, p_write=1.0,
+    fx = _Fixture(widths, BC, d_v, B=1, T=T, H=1, p_read=1.0, p_write=1.0,
                   seed=5101, read_levels=read_levels, write_levels=write_levels,
                   nonzero_m0=True)
     sp = fx.forced(P)
@@ -862,8 +860,8 @@ def test_the_sparse_summary_is_exercised_between_its_two_degeneracies():
     assert all(0 < k < sp.BC for k in summary_counts)
 
     y_ref, state_ref = fx.oracle()
-    assert _relative(y, y_ref) < RTOL
-    assert _relative(state, state_ref) < RTOL
+    assert _relative(y, y_ref) < BF16_RTOL
+    assert _relative(state, state_ref) < BF16_RTOL
 
 
 def test_the_pass_three_work_list_order_is_not_load_bearing():
@@ -899,7 +897,11 @@ def test_the_pass_three_work_list_order_is_not_load_bearing():
     # `M_0` is equally required: at `M_0 = 0` a clobbered entry-state read is
     # indistinguishable from a correct one, so the attack would be inert for the
     # wrong reason.
-    fx = _Fixture((8, 16), 16, 64, B=2, T=128, H=8, norm="raw", p_read=1.0, p_write=1.0,
+    #
+    # P26: `T=256`, not the old `128`. `TOKEN_WORD=32` (no more `BT=16`) means
+    # `n_twords = ceil(T/32)`, and `forced(8)` needs at least 8 words to split
+    # 8 ways (`128` gave only 4).
+    fx = _Fixture((8, 16), 16, 64, B=2, T=256, H=8, p_read=1.0, p_write=1.0,
                   seed=8101, nonzero_m0=True)
     assert fx.n_owners == 128, "the attack needs more CTAs than the GPU can hold at once"
     sp = fx.forced(8)
@@ -940,10 +942,10 @@ def test_the_pass_three_work_list_order_is_not_load_bearing():
     # bitwise against the canonical order, because the §5 readout's `atomicAdd`
     # ordering is a race at every `P` including 1 -- a permuted work list legitimately
     # changes the last bits of `y` and nothing else.
-    assert _relative(y_p, y_ref) < RTOL, (
+    assert _relative(y_p, y_ref) < BF16_RTOL, (
         "the permuted pass-3 work list changed `y`; some pass-3 CTA is reading state "
         "another CTA of the same launch writes")
-    assert _relative(y_c, y_ref) < RTOL
+    assert _relative(y_c, y_ref) < BF16_RTOL
     # State is per-owner and published once, so the permutation must not move a bit
     # of it: each owner's segments perform the identical arithmetic in the identical
     # order whatever position they occupy in the list.
@@ -963,7 +965,7 @@ def test_the_three_pass_work_lists_have_the_shape_the_contract_names():
     (fix pass R1; spec §6.4's ``(P-1) * BC * d_v`` bound was amended to
     ``P * BC * d_v`` in the same pass). An unsplit owner still costs zero slots.
     """
-    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2, norm="raw",
+    fx = _Fixture((8, 8), 16, 64, B=1, T=128, H=2,
                   p_read=1.0, p_write=1.0, seed=8001)
     sp = fx.forced(3)
     t = build_sequence_parallel_tensors(sp, fx.schedule)

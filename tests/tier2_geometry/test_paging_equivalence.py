@@ -55,8 +55,15 @@ Writing a fresh reference for the paged path is exactly the
 
 Vocabulary, defined at first use: `N` = leaf count = `prod_l width_l`;
 `BC` = leaves per owner (spec §3's owner rectangle); `owners_total` = `N / BC`;
-`BH` = `batch * heads`; `BT` = the plan's token tile, a compile-time constant in
-`{16, 32}`; `cols` = `d_v` plus one mass column under `normalization='global'`.
+`BH` = `batch * heads`; `cols` = `d_v` plus one mass column (`normalization`
+is always `'global'` -- `Plan` accepts no other value).
+
+**P26 migration note.** `BT` is gone -- no template parameter is left to vary,
+so every `BT` axis and cell whose entire purpose was the `BT` coupling is
+removed (`workflows/perf/p26_endgame.md` DELETIONS). `normalization="raw"` is
+gone -- `"global"` is the only value `Plan` accepts, so the `normalization`
+parametrization collapses; the paging bit-identity claims themselves are real
+semantic properties and survive unchanged (re-anchor, not delete).
 """
 
 from __future__ import annotations
@@ -127,11 +134,10 @@ def _fixture(widths, d_v, *, B=2, T=48, H=2, p_nonzero=0.4, seed=0, device="cuda
     return read, write, g_read, g_write, v
 
 
-def _plan(widths, d_v, *, BT, BC, normalization, decay, sparse_write=True, device="cuda"):
+def _plan(widths, d_v, *, BC, decay, sparse_write=True, device="cuda"):
     topology = _topology(widths, d_v, sparse_write=sparse_write)
-    return Plan(topology=topology, normalization=normalization, BT=BT, BC=BC,
-                  warp_tile=(1, max(1, d_v // 32)), decay=decay,
-                  mma_precision="tf32x3")
+    return Plan(topology=topology, normalization="global", BC=BC,
+                  warp_tile=(1, max(1, d_v // 32)), decay=decay)
 
 
 def _decay(topology, device, H, value=0.9):
@@ -159,9 +165,17 @@ def _reordering_bound(y: torch.Tensor, plan) -> torch.Tensor:
     scale when the partials do not catastrophically cancel) gives the expression
     below. Derived arithmetic, not a tuned tolerance -- and the null control is
     asserted to fit inside it on every run, so a wrong model fails loudly.
+
+    P26: `eps` is bf16's, not fp32's. `y` is cast to bf16 AFTER the fp32 divide
+    (the accumulation stays fp32; only the returned tensor is bf16), so the
+    reassociation noise this bound has to cover is whichever is coarser --
+    measured: the fp32-eps bound is cleared by a genuine null-control draw
+    (same code path, run twice) once the readout is bf16-quantized, so bf16's
+    eps is the real budget now, the same re-derivation `test_matrix_rows.py`'s
+    `_EPS` needed.
     """
     n = plan.geometry.owners_total
-    return n * n * torch.finfo(torch.float32).eps * y.abs().max()
+    return n * n * torch.finfo(torch.bfloat16).eps * y.abs().max()
 
 
 def _arena(plan, *, BH, max_physical_pages=None):
@@ -177,18 +191,14 @@ def _arena(plan, *, BH, max_physical_pages=None):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("decay_on", [False, True], ids=["decay-none", "leaf-mass"])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
 @pytest.mark.parametrize("p_nonzero", [0.4, 1.0], ids=["sparse", "dense"])
-@pytest.mark.parametrize("BT", [16, 32])
 @pytest.mark.parametrize("BC", [16, 64], ids=["BC16-QPO1", "BC64-QPO4"])
-def test_paging_is_bitwise_invisible(decay_on, normalization, p_nonzero, BT, BC):
+def test_paging_is_bitwise_invisible(decay_on, p_nonzero, BC):
     """State exactly equal; `y` within the kernel's own reordering envelope.
 
-    Covers both decay arms, both normalizations, sparse and dense routing, BOTH
-    values of `BT` -- because §7.1's `token_tile` coupling is settled PARAMETRIC
-    (findings `paging.md` D3), so `BT = 16` is a gated configuration rather than an
-    untested one -- and BOTH instantiated `BC`. `p_nonzero = 1.0` is the dense limit,
-    where every owner is live and the mark phase takes its short-circuit.
+    Covers both decay arms and sparse and dense routing, and BOTH instantiated
+    `BC`. `p_nonzero = 1.0` is the dense limit, where every owner is live and
+    the mark phase takes its short-circuit.
 
     **`BC = 64` IS THE CELL THAT WAS MISSING, AND IT IS THE ONE THAT MATTERS.**
     Every cell of this file used to pin `BC = 16`, where `QPO = BC / MMA_K_QUANTUM`
@@ -203,7 +213,7 @@ def test_paging_is_bitwise_invisible(decay_on, normalization, p_nonzero, BT, BC)
     cell existed, no gated configuration was the one production takes.
     """
     widths, d_v = (4, 8, 8), 64
-    plan = _plan(widths, d_v, BT=BT, BC=BC, normalization=normalization, decay=decay_on,
+    plan = _plan(widths, d_v, BC=BC, decay=decay_on,
                  sparse_write=p_nonzero < 1.0)
     fixture = _fixture(widths, d_v, p_nonzero=p_nonzero, seed=11)
     B, T, H, _ = fixture[4].shape
@@ -232,8 +242,7 @@ def test_paging_is_bitwise_invisible(decay_on, normalization, p_nonzero, BT, BC)
     assert (y_dense - y_paged).abs().max() <= bound
 
 
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-def test_paging_is_bitwise_invisible_under_the_panel_lowering(normalization):
+def test_paging_is_bitwise_invisible_under_the_panel_lowering():
     """The same shipping gate, on the decay arm's DENSE-LIMIT intra lowering.
 
     `panel` changes what the kernel does with the owner's resident state inside a
@@ -245,7 +254,7 @@ def test_paging_is_bitwise_invisible_under_the_panel_lowering(normalization):
     exactly the window a non-resident (unpaged, zero) owner would be visible in if
     the residency guard were wrong."""
     widths, d_v, BC = (4, 8, 8), 64, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization=normalization, decay=True)
+    plan = _plan(widths, d_v, BC=BC, decay=True)
     fixture = _fixture(widths, d_v, p_nonzero=0.4, seed=11)
     B, T, H, _ = fixture[4].shape
     decay = _decay(plan.topology, "cuda", H)
@@ -265,8 +274,7 @@ def test_paging_is_bitwise_invisible_under_the_panel_lowering(normalization):
 
 
 @pytest.mark.parametrize("decay_on", [False, True], ids=["decay-none", "leaf-mass"])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-def test_paging_is_bitwise_invisible_on_a_carried_state(decay_on, normalization):
+def test_paging_is_bitwise_invisible_on_a_carried_state(decay_on):
     """Continuation, both decay arms: a carried state adopted into the arena.
 
     `adopt_dense` is the EXPLICIT bridge across the call boundary. What SHOULD
@@ -275,7 +283,7 @@ def test_paging_is_bitwise_invisible_on_a_carried_state(decay_on, normalization)
     than asserting a continuation contract that has not been decided.
     """
     widths, d_v, BC = (4, 8, 8), 64, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization=normalization, decay=decay_on)
+    plan = _plan(widths, d_v, BC=BC, decay=decay_on)
     first = _fixture(widths, d_v, p_nonzero=0.4, seed=3)
     second = _fixture(widths, d_v, p_nonzero=0.4, seed=4)
     B, T, H, _ = first[4].shape
@@ -300,9 +308,7 @@ def test_paging_is_bitwise_invisible_on_a_carried_state(decay_on, normalization)
 
 
 @pytest.mark.parametrize("decay_on", [False, True], ids=["decay-none", "leaf-mass"])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-@pytest.mark.parametrize("BT", [16, 32])
-def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalization, BT):
+def test_paging_is_bitwise_invisible_at_partial_residency(decay_on):
     """The one cell `test_paging_is_bitwise_invisible`'s grid never reaches.
 
     Fix pass R1 (`workflows/20260730-wiring/paging-review.md`): every cell of the
@@ -316,12 +322,10 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalizatio
     needs `T=8` at the same widths/`p_nonzero` to land away from saturation
     (measured **87.1%** resident here) -- small and sparse enough that the union
     does not saturate, so this is the same gate as `test_paging_is_bitwise_invisible`
-    run where it actually matters, over the same norm x decay x BT grid. `BT`
-    cannot move the owner set (`test_both_BT_values_commit_the_same_owner_set`), so
-    the residency fraction is identical across all 8 cells of this grid.
+    run where it actually matters, over the same decay grid.
     """
     widths, d_v, BC = (16, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=BT, BC=BC, normalization=normalization, decay=decay_on)
+    plan = _plan(widths, d_v, BC=BC, decay=decay_on)
     fixture = _fixture(widths, d_v, p_nonzero=0.1, seed=23, T=8)
     B, T, H, _ = fixture[4].shape
     decay = _decay(plan.topology, "cuda", H) if decay_on else None
@@ -351,9 +355,7 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on, normalizatio
 
 
 @pytest.mark.parametrize("decay_on", [False, True], ids=["decay-none", "leaf-mass"])
-@pytest.mark.parametrize("BT", [16, 32])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization, BT, decay_on):
+def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(decay_on):
     """The structural claim of the §4.5 re-key, asserted rather than inferred.
 
     `BC = 64` gives `QPO = 4`. The re-key's whole content is that those four atoms
@@ -367,14 +369,13 @@ def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization, BT, deca
     `test_paging_is_bitwise_invisible`'s `BC64` cell whenever the fixture saturated,
     which is exactly the way the `BC = 16` grid managed to gate nothing.
 
-    H5 (coverage-closure): promoted from a single `(BT=32, no-decay)` cell to the
-    GRID ARM -- norm x BT x decay -- because the main grid's `BC = 64` cells
+    H5 (coverage-closure): promoted from a single `(no-decay)` cell to the
+    GRID ARM -- decay -- because the main grid's `BC = 64` cells
     saturate (every owner fully resident), so split owners were exercised on
-    exactly one code-path combination while the kernel branches on all three axes.
+    exactly one code-path combination while the kernel branches on this axis.
     """
     widths, d_v, BC = (16, 8, 8), 32, 64
-    plan = _plan(widths, d_v, BT=BT, BC=BC, normalization=normalization,
-                 decay=decay_on)
+    plan = _plan(widths, d_v, BC=BC, decay=decay_on)
     fixture = _fixture(widths, d_v, p_nonzero=0.1, seed=23, T=8)
     B, T, H, _ = fixture[4].shape
     decay = _decay(plan.topology, "cuda", H) if decay_on else None
@@ -407,7 +408,7 @@ def test_at_BC64_an_owners_atoms_are_paged_INDEPENDENTLY(normalization, BT, deca
 def test_committed_pages_track_realized_owners_not_N():
     """The claim the feature exists to make, asserted rather than assumed."""
     widths, d_v, BC = (8, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture = _fixture(widths, d_v, p_nonzero=0.15, seed=7, T=32)
     B, T, H, _ = fixture[4].shape
     arena = _arena(plan, BH=B * H)
@@ -423,7 +424,7 @@ def test_committed_pages_track_realized_owners_not_N():
 def test_a_dense_write_route_commits_every_owner():
     """The dense limit is the honest ceiling: paging must not under-commit there."""
     widths, d_v, BC = (4, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False,
+    plan = _plan(widths, d_v, BC=BC, decay=False,
                  sparse_write=False)
     fixture = _fixture(widths, d_v, p_nonzero=1.0, seed=9)
     B, T, H, _ = fixture[4].shape
@@ -432,25 +433,6 @@ def test_a_dense_write_route_commits_every_owner():
     assert arena.last_result.resident_pages == arena.logical_pages
 
 
-# ---------------------------------------------------------------------------
-# The BT coupling (V14), settled parametric
-# ---------------------------------------------------------------------------
-
-def test_both_BT_values_commit_the_same_owner_set():
-    """`BT` changes the tile GRANULARITY of `first_write_tile`, never WHICH owners
-    are written. If it changed the page set, the coupling would not be a free
-    parameter and D3's settlement would be wrong."""
-    widths, d_v, BC = (4, 8, 8), 32, 16
-    fixture = _fixture(widths, d_v, p_nonzero=0.35, seed=17, T=64)
-    B, T, H, _ = fixture[4].shape
-    tables = []
-    for BT in (16, 32):
-        plan = _plan(widths, d_v, BT=BT, BC=BC, normalization="raw", decay=False)
-        arena = _arena(plan, BH=B * H)
-        _run(plan, fixture, arena=arena)
-        tables.append((arena.page_table >= 0).clone())
-    assert torch.equal(tables[0], tables[1])
-
 
 # ---------------------------------------------------------------------------
 # Contract surfaces that must stay loud
@@ -458,14 +440,14 @@ def test_both_BT_values_commit_the_same_owner_set():
 
 def test_paging_refuses_an_implicit_dense_initial_state():
     widths, d_v, BC = (4, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture = _fixture(widths, d_v, seed=2)
     B, T, H, _ = fixture[4].shape
     arena = _arena(plan, BH=B * H)
-    read, write, g_read, g_write, v = fixture
+    read, write, _g_read, g_write, v = fixture
     state = torch.zeros((B, H, plan.topology.N, d_v), device="cuda")
     with pytest.raises(ValueError, match="adopt_dense"):
-        _consumer_forward(v, read, write, g_read, g_write, plan,
+        _consumer_forward(v, read, write, None, g_write, plan,
                             initial_state=state, paging=arena)
 
 
@@ -481,7 +463,7 @@ def test_a_reused_arena_does_not_silently_continue_by_default():
     no flag. The reused-arena result must match a cold arena's (and the unpaged
     path's) result -- not a continuation of A."""
     widths, d_v, BC = (4, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture_a = _fixture(widths, d_v, p_nonzero=0.4, seed=31)
     fixture_b = _fixture(widths, d_v, p_nonzero=0.4, seed=32)
     B, T, H, _ = fixture_b[4].shape
@@ -518,7 +500,7 @@ def test_continue_paging_true_legitimately_continues_the_arena():
     # sparser shape `test_paging_is_bitwise_invisible_at_partial_residency` (R1)
     # uses to stay away from saturation (measured: 52/256 owners A-exclusive here).
     widths, d_v, BC = (16, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture_a = _fixture(widths, d_v, p_nonzero=0.1, seed=41, T=8)
     fixture_b = _fixture(widths, d_v, p_nonzero=0.1, seed=42, T=8)
     B, T, H, _ = fixture_b[4].shape
@@ -550,11 +532,11 @@ def test_continue_paging_true_legitimately_continues_the_arena():
 
 def test_continue_paging_requires_an_arena():
     widths, d_v, BC = (4, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture = _fixture(widths, d_v, seed=51)
-    read, write, g_read, g_write, v = fixture
+    read, write, _g_read, g_write, v = fixture
     with pytest.raises(ValueError, match="continue_paging=True is meaningless"):
-        _consumer_forward(v, read, write, g_read, g_write, plan,
+        _consumer_forward(v, read, write, None, g_write, plan,
                             continue_paging=True)
 
 
@@ -576,12 +558,12 @@ def test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible():
     from rola.ops.paging import atom_bitmap_from_schedule
 
     widths, d_v, BC = (16, 8, 8), 32, 64
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="raw", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture = _fixture(widths, d_v, p_nonzero=0.35, seed=67, T=16)
-    read, write, g_read, g_write, v = fixture
+    read, write, _g_read, g_write, v = fixture
     B, T, H, _ = v.shape
 
-    schedule = build_schedule(read, write, g_read, g_write, plan)
+    schedule = build_schedule(read, write, None, g_write, plan)
     arena = _arena(plan, BH=B * H)
     bitmap = atom_bitmap_from_schedule(schedule, arena.keying)
     assert int(bitmap.sum()) >= 8, "fixture too sparse to fragment anything"
@@ -638,7 +620,7 @@ def test_a_near_full_but_fitting_arena_survives_a_real_launch_at_P(P):
     )
 
     widths, d_v, BC = (16, 8, 8), 32, 16
-    plan = _plan(widths, d_v, BT=32, BC=BC, normalization="global", decay=False)
+    plan = _plan(widths, d_v, BC=BC, decay=False)
     fixture = _fixture(widths, d_v, p_nonzero=0.15, seed=91, T=16)
     read, write, g_read, g_write, v = fixture
     B, T, H, _ = v.shape

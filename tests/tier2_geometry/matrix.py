@@ -138,22 +138,15 @@ class AxisDeclaration:
 #: The template parameter list of `consumer_forward_kernel`, IN ORDER
 #: (`csrc/rola/src/consumer_kernel.cuh`):
 #:
-#:     template <int BT, int BC, int DV, int D, MmaPrec FOLD_PREC, MmaPrec READ_PREC,
-#:               bool DECAY, bool GLOBAL>
+#:     template <int BC, int DV, int D, bool DECAY>
 #:
 #: M1 decodes exactly these from every mangled name in the ratification manifest
 #: and requires the decoded axis NAMES and VALUE SETS to match the declarations
 #: below in both directions. Adding a template parameter, or a value on one,
 #: without declaring what kind of axis it is fails at collection.
-TEMPLATE_PARAMETER_ORDER: tuple[str, ...] = (
-    "BT", "BC", "DV", "D", "FOLD_PREC", "READ_PREC", "DECAY", "GLOBAL")
+TEMPLATE_PARAMETER_ORDER: tuple[str, ...] = ("BC", "DV", "D", "DECAY")
 
 AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
-    AxisDeclaration(
-        "BT", AxisKind.GEOMETRY, (16, 32), "template", census=Census.ADJACENT,
-        basis="the token tile. The same tokens, the same routing, a different "
-              "intra-tile contraction length: the planner picks it for occupancy, "
-              "so the two must compute the same function."),
     AxisDeclaration(
         "BC", AxisKind.GEOMETRY, (16, 64), "template", census=Census.ADJACENT,
         basis="the owner tile. `prod(widths)/BC` owners cover the SAME state "
@@ -171,22 +164,10 @@ AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
               "topology — a different function of different inputs, gated across "
               "the tier-1 rectangle grid rather than compared to another `D`."),
     AxisDeclaration(
-        "FOLD_PREC", AxisKind.SEMANTIC, (0, 1), "template",
-        basis="MMA precision of the fold. TIER 1 gates `tf32x3` and `bf16` as TWO "
-              "ARMS WITH TWO TOLERANCES; comparing them to each other here would "
-              "be exactly the single widened number §6.1 forbids."),
-    AxisDeclaration(
-        "READ_PREC", AxisKind.SEMANTIC, (0, 1), "template",
-        basis="MMA precision of the readout. Same reason as FOLD_PREC."),
-    AxisDeclaration(
         "DECAY", AxisKind.SEMANTIC, (0, 1), "template",
         basis="LeafMassDecay on/off is a different recurrence, not a different "
               "execution of one. Both arms are tier-1 oracle-gated, including the "
               "`1 - rate` catastrophic-cancellation arm."),
-    AxisDeclaration(
-        "GLOBAL", AxisKind.SEMANTIC, (0, 1), "template",
-        basis="`raw` vs `global` normalization is a different readout definition "
-              "(`global` carries a separate denominator column). Tier 1."),
     #: RUNTIME axes. These leave NO symbol in the binary — `P` is a host-side
     #: segmentation of the launch and paging is an allocation of the state — so
     #: the census cannot discover them, and an undeclared one would be invisible.
@@ -332,24 +313,6 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
               "there are four arriving in scheduler order.",
         bound="split_readout_n2_eps"),
 
-    # -- BT -----------------------------------------------------------------
-    GeometryPair(
-        "BT", {"BT": 16}, {"BT": 32}, "state", REASSOCIATION_EQUIVALENT,
-        fixture="multi_owner_dense",
-        precondition="T is a multiple of both BT values, so neither arm is a ragged tail",
-        basis="the intra-tile contraction is `BT` long and the inter-tile carry is "
-              "applied once per tile: doubling `BT` halves the number of carries and "
-              "doubles the length of each contraction, which is a reassociation of the "
-              "same sum.",
-        bound="carry_fold_T_eps"),
-    GeometryPair(
-        "BT", {"BT": 16}, {"BT": 32}, "y", REASSOCIATION_EQUIVALENT,
-        fixture="multi_owner_dense",
-        precondition="T is a multiple of both BT values, so neither arm is a ragged tail",
-        basis="the readout contracts over the tile's tokens, so `BT` changes the "
-              "contraction length, on top of the split-K atomicAdd over owners.",
-        bound="split_readout_n2_eps"),
-
     # -- P ------------------------------------------------------------------
     *_p_rows(),
 
@@ -379,15 +342,10 @@ GEOMETRY_MATRIX: tuple[GeometryPair, ...] = (
 # The census's right-hand side: what the shipped binary actually carries
 # ---------------------------------------------------------------------------
 
-#: `_ZN4rola8consumer23consumer_forward_kernelILi16ELi16ELi32ELi1EL{prec}0EL{prec}0ELb0ELb0EE...`
-#: Itanium mangling writes the first `MmaPrec` literal as `NS_7MmaPrecE` and every
-#: later one as a back-reference (`S2_`), hence the alternation.
-_PREC = r"(?:NS_7MmaPrecE|S[0-9A-Z_]+?)"
+#: `_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb0EE...`
 _MANGLED = re.compile(
     r"consumer_forward_kernelI"
-    r"Li(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
-    rf"L{_PREC}(\d)EL{_PREC}(\d)E"
-    r"Lb(\d)ELb(\d)E")
+    r"Li(\d+)ELi(\d+)ELi(\d+)ELb(\d+)E")
 
 #: The NON-consumer ratified families (coverage-closure item 12): the decode GEMV
 #: and the union-entmax forward/backward pair. An EXPLICIT allowlist, so that a

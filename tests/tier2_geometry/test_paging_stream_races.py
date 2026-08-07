@@ -37,9 +37,9 @@ Four cells:
     the join exists (deterministically, by observing `wait()` from inside
     `adopt_dense` while a prior publication is pending).
 
-Symbols: `BC` leaves per owner; `BT` token tile; `cols = d_v (+1 global)`;
-the fixture/plan/arena builders are `test_paging_equivalence`'s, so these cells
-gate the same configurations that file proves bit-identical.
+Symbols: `BC` leaves per owner; `cols = d_v + 1` (`normalization` is always
+`'global'`); the fixture/plan/arena builders are `test_paging_equivalence`'s,
+so these cells gate the same configurations that file proves bit-identical.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ _WIDTHS, _DV, _BC = (4, 8, 8), 32, 16
 
 
 def _cell():
-    plan = _plan(_WIDTHS, _DV, BT=32, BC=_BC, normalization="raw", decay=False)
+    plan = _plan(_WIDTHS, _DV, BC=_BC, decay=False)
     fixture = _fixture(_WIDTHS, _DV, p_nonzero=0.4, seed=61)
     B, _T, H, _ = fixture[4].shape
     return plan, fixture, B * H
