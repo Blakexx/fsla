@@ -111,7 +111,7 @@ __device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh
 #else
 #define ROLA_CONSUMER_CTAS_EXPR                                    \
   ctas_for_residency(consumer_smem_bytes<BC, DV, D, DECAY>(),      \
-                     consumer_reg_budget(BC, DECAY, DV))
+                     consumer_reg_budget(BC, DECAY, DV, D))
 #endif
 template <int BC, int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR) void
@@ -340,12 +340,12 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
     for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
   }
-  //: The scan's fixed-level row indices, hoisted out of the refill. `D` is a
-  //: template parameter and the loop below is fully unrolled, so these are
-  //: immediates -- no indexed array, no local frame.
-  int p_row[kMaxLevels];
-#pragma unroll
-  for (int l = 0; l < D; ++l) p_row[l] = p.level_row_offset[l] + base[l];
+  //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`,
+  //: formed AT THE POINT OF USE rather than hoisted into a `p_row[D]` array.
+  //: The hoist looks free and is not: `base[]` is live across the whole kernel
+  //: anyway (the panels and the upper product all index it), so `p_row` is a
+  //: SECOND live copy of the same information -- `D` extra registers, which at
+  //: `D = 4` was precisely what the `BC = 16, decay = 0` arms had left to give.
 
   //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP 0 ONLY, and EVERY LANE ENTERS --
   //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
@@ -367,15 +367,18 @@ consumer_forward_kernel(ConsumerParams p) {
     unsigned p_live = static_cast<unsigned>(p_st[2]);
     int p_word = p_st[3];
     uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
-    uint32_t p_gfr = static_cast<uint32_t>(p_st[5]);
-    uint32_t p_gfw = static_cast<uint32_t>(p_st[6]);
+    //: The selected word's fixed-level AND results are NOT carried either: its
+    //: chunk lane is `p_word - p_chunk_base`, and both of those are already live,
+    //: so the two values are recoverable from the planes at the point of use.
     //: THE CHUNK PLANES ARE NEVER LOADED INTO REGISTERS. They are read ONE SCALAR
     //: AT A TIME at word selection, by the uniform index the ballot picked -- the
     //: same value a `__shfl` of a register plane would have produced, minus THREE
     //: per-lane registers held live across the entire cook. The
     //: `BC = 16, decay = 0` key's budget is 64 and that is the margin it lacked.
-    uint32_t p_ra = static_cast<uint32_t>(p_chunk[3 * 32 + lane]);
-    uint32_t p_wa = static_cast<uint32_t>(p_chunk[4 * 32 + lane]);
+    //: NOR are the ingredient planes. Each lane reads its OWN slot at the point
+    //: of use (no cross-lane traffic, so no reconvergence needed for these), which
+    //: leaves the cook with NO per-lane register state at all -- only the seven
+    //: uniform scalars above. That is the margin the D=3/D=4 arms were missing.
     int fill = 0;
     unsigned rmask = 0u, wmask = 0u;
     bool gr = false, gw = false;
@@ -396,8 +399,9 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
             for (int l = 0; l < D; ++l) {
               if (l >= j) break;
-              fr &= p.read_tok_bits[slab + p_row[l]];
-              fw &= p.write_tok_bits[slab + p_row[l]];
+              const int row_l = p.level_row_offset[l] + base[l];
+              fr &= p.read_tok_bits[slab + row_l];
+              fw &= p.write_tok_bits[slab + row_l];
             }
             const uint32_t un =
                 p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords + w];
@@ -423,17 +427,19 @@ consumer_forward_kernel(ConsumerParams p) {
         p_live &= p_live - 1u;
         p_word = p_chunk_base + sel;
         p_rem = static_cast<uint32_t>(p_chunk[2 * 32 + sel]);
-        p_gfr = static_cast<uint32_t>(p_chunk[0 * 32 + sel]);
-        p_gfw = static_cast<uint32_t>(p_chunk[1 * 32 + sel]);
         //: Form (b)'s ingredient, ONE LANE PER ATOM -- which is what turns the
         //: base's `2 * QPO` per-warp tests into the two ballots below. Loaded
         //: ONCE PER SOURCE WORD, not once per ballot round.
-        p_ra = (lane < kQPO)
-                   ? p.read_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word]
-                   : 0u;
-        p_wa = (lane < kQPO)
-                   ? p.write_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word]
-                   : 0u;
+        p_chunk[3 * 32 + lane] =
+            (lane < kQPO)
+                ? static_cast<int>(
+                      p.read_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
+                : 0;
+        p_chunk[4 * 32 + lane] =
+            (lane < kQPO)
+                ? static_cast<int>(
+                      p.write_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
+                : 0;
       }
       const int room = kGT - fill;  // >= 1: a full group ran and reset `fill`
       uint32_t taken = p_rem;
@@ -448,10 +454,15 @@ consumer_forward_kernel(ConsumerParams p) {
       }
       //: Form (b)'s consumption, word-wise: atom `q` is live for this group iff
       //: its bitlist row intersects the taken word. ONE BALLOT PER SIDE.
-      rmask |= __ballot_sync(0xffffffffu, (lane < kQPO) && ((p_ra & taken) != 0u));
-      wmask |= __ballot_sync(0xffffffffu, (lane < kQPO) && ((p_wa & taken) != 0u));
-      gr = gr || (p_gfr & taken) != 0u;
-      gw = gw || (p_gfw & taken) != 0u;
+      rmask |= __ballot_sync(
+          0xffffffffu,
+          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[3 * 32 + lane]) & taken) != 0u));
+      wmask |= __ballot_sync(
+          0xffffffffu,
+          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[4 * 32 + lane]) & taken) != 0u));
+      const int p_sel = p_word - p_chunk_base;
+      gr = gr || (static_cast<uint32_t>(p_chunk[0 * 32 + p_sel]) & taken) != 0u;
+      gw = gw || (static_cast<uint32_t>(p_chunk[1 * 32 + p_sel]) & taken) != 0u;
       fill += __popc(taken);
       p_rem ^= taken;
     }
@@ -528,13 +539,9 @@ consumer_forward_kernel(ConsumerParams p) {
       p_st[2] = static_cast<int>(p_live);
       p_st[3] = p_word;
       p_st[4] = static_cast<int>(p_rem);
-      p_st[5] = static_cast<int>(p_gfr);
-      p_st[6] = static_cast<int>(p_gfw);
     }
-    //: Only the ingredient planes are written back: the cooked chunk's three
-    //: planes were stored at refill and never left SMEM.
-    p_chunk[3 * 32 + lane] = static_cast<int>(p_ra);
-    p_chunk[4 * 32 + lane] = static_cast<int>(p_wa);
+    //: Nothing to write back: every plane was stored where it was produced and
+    //: none of them ever left SMEM.
   };
 
   //: THE RING'S COLD START -- the producer fills `kSchedDepth` slots before the
