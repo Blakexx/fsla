@@ -314,19 +314,36 @@ consumer_forward_kernel(ConsumerParams p) {
   //: base needed an SMEM carry (`g_scan`) only because all 8 warps had to agree
   //: on it; with a single producer the carry is a register and the cross-visit
   //: register-liveness hazard it was placed in SMEM to dodge cannot arise.
-  int p_cur = w_lo;      // next word to cook into the register chunk (warp-uniform)
-  int p_chunk_base = 0;  // source-word index of chunk lane 0
-  unsigned p_live = 0u;  // chunk lanes whose member word is still unconsumed
-  //: PER-LANE chunk registers: lane `w` cooks source word `p_chunk_base + w`.
-  uint32_t p_fr = 0u, p_fw = 0u, p_mem = 0u;
-  //: PER-LANE ingredient: lane `q` holds atom `q`'s bitlist word for `p_word`.
-  uint32_t p_ra = 0u, p_wa = 0u;
-  int p_word = 0;                   // the word whose remainder is held (warp-uniform)
-  uint32_t p_rem = 0u;              // that word's unconsumed member bits
-  uint32_t p_gfr = 0u, p_gfw = 0u;  // that word's fixed-level AND results
-  //: The scan's fixed-level row indices, hoisted OUT of the refill (registers
-  //: now, not SMEM: the producer is one warp and owns them).
-  int p_row[D];
+  //: **THE CURSOR STATE RESTS IN SMEM BETWEEN GROUPS, AND THAT IS NOT A
+  //: CONCESSION -- IT IS THE BASE'S MEASURED RULE, RE-DERIVED.** The base put its
+  //: carry in SMEM "so NO scheduler state is register-live across the visit body
+  //: (the measured §7.3 stateful-walk hazard)", and that rule is about LIVENESS
+  //: ACROSS THE VISIT BODY -- it has nothing to do with how many warps agree on
+  //: the value, so making the producer a single warp does NOT retire it. Held in
+  //: registers instead, this state stays live across all four GEMMs and competes
+  //: with their working set: MEASURED as spills on every `BC = 16, decay = 0` arm
+  //: (the tightest register budget in the matrix, 64) on BOTH arches.
+  //: The chunk is still COOKED IN REGISTERS -- the contract's requirement is about
+  //: where the AND + ballot happen, not where the cursor sleeps between calls.
+  //: docs/internals/consumer_kernel.md#producer-state
+  int* p_st = g_ring + kSchedSlots * kSchedSlotInts + kSchedSlots * 2 * kGT;
+  //: [0] p_cur, [1] p_chunk_base, [2] p_live, [3] p_word, [4] p_rem, [5] p_gfr,
+  //: [6] p_gfw, then the PER-LANE chunk (fr, fw, mem) and ingredient (ra, wa)
+  //: planes, one word per lane each.
+  int* p_chunk = p_st + 8;  // [5][32]: fr, fw, mem, ra, wa
+  if (tid == 0) {
+    p_st[0] = w_lo;
+#pragma unroll
+    for (int q = 1; q < 8; ++q) p_st[q] = 0;
+  }
+  if (warp == 0) {
+#pragma unroll
+    for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
+  }
+  //: The scan's fixed-level row indices, hoisted out of the refill. `D` is a
+  //: template parameter and the loop below is fully unrolled, so these are
+  //: immediates -- no indexed array, no local frame.
+  int p_row[kMaxLevels];
 #pragma unroll
   for (int l = 0; l < D; ++l) p_row[l] = p.level_row_offset[l] + base[l];
 
@@ -334,9 +351,29 @@ consumer_forward_kernel(ConsumerParams p) {
   //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
   //: loop's control flow is warp-uniform by construction (`p_rem`, `p_live`,
   //: `p_cur`, `fill` are all warp-uniform; only the chunk and ingredient
-  //: registers are per-lane).
+  //: values are per-lane). The cursor is LOADED here and STORED at the end, so it
+  //: is register-live only for the duration of the cook.
   auto produce_group = [&](int slot) {
     int* R = g_ring + slot * kSchedSlotInts;
+    //: HAZARD producer-state-reconverge: `p_st[0..6]` is written by LANE 0 (at
+    //: the once-per-CTA init and at the end of the previous cook) and read by ALL
+    //: 32 lanes here. Independent thread scheduling makes that a race without an
+    //: explicit reconvergence -- and the cold-start loop calls this twice in a row
+    //: with no barrier between, so the end-of-cook store is not covered by the
+    //: visit barrier in that window.
+    __syncwarp();
+    int p_cur = p_st[0];
+    int p_chunk_base = p_st[1];
+    unsigned p_live = static_cast<unsigned>(p_st[2]);
+    int p_word = p_st[3];
+    uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
+    uint32_t p_gfr = static_cast<uint32_t>(p_st[5]);
+    uint32_t p_gfw = static_cast<uint32_t>(p_st[6]);
+    uint32_t p_fr = static_cast<uint32_t>(p_chunk[0 * 32 + lane]);
+    uint32_t p_fw = static_cast<uint32_t>(p_chunk[1 * 32 + lane]);
+    uint32_t p_mem = static_cast<uint32_t>(p_chunk[2 * 32 + lane]);
+    uint32_t p_ra = static_cast<uint32_t>(p_chunk[3 * 32 + lane]);
+    uint32_t p_wa = static_cast<uint32_t>(p_chunk[4 * 32 + lane]);
     int fill = 0;
     unsigned rmask = 0u, wmask = 0u;
     bool gr = false, gw = false;
@@ -475,6 +512,22 @@ consumer_forward_kernel(ConsumerParams p) {
       R[kSchedWMask] = static_cast<int>(wmask);
       R[kSchedFlags] = (gr ? 1 : 0) | (gw ? 2 : 0);
     }
+    //: THE CURSOR GOES BACK TO SLEEP IN SMEM -- nothing above stays live across
+    //: the visit body. See the state block's note for the measured reason.
+    if (lane == 0) {
+      p_st[0] = p_cur;
+      p_st[1] = p_chunk_base;
+      p_st[2] = static_cast<int>(p_live);
+      p_st[3] = p_word;
+      p_st[4] = static_cast<int>(p_rem);
+      p_st[5] = static_cast<int>(p_gfr);
+      p_st[6] = static_cast<int>(p_gfw);
+    }
+    p_chunk[0 * 32 + lane] = static_cast<int>(p_fr);
+    p_chunk[1 * 32 + lane] = static_cast<int>(p_fw);
+    p_chunk[2 * 32 + lane] = static_cast<int>(p_mem);
+    p_chunk[3 * 32 + lane] = static_cast<int>(p_ra);
+    p_chunk[4 * 32 + lane] = static_cast<int>(p_wa);
   };
 
   //: THE RING'S COLD START -- the producer fills `kSchedDepth` slots before the

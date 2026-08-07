@@ -412,6 +412,12 @@ constexpr size_t consumer_smem_bytes() {
   //: delta is `kSchedDepth` EXTRA copies of `2 * kGroupTokens` floats, not a new
   //: region.
   b += static_cast<size_t>(kSchedSlots) * 2 * kGroupTokens * sizeof(float);
+  //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
+  //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
+  //: HERE rather than in the producer warp's registers because register-liveness
+  //: across the visit body is the base's MEASURED §7.3 stateful-walk hazard --
+  //: held in registers it spilled every `BC = 16, decay = 0` arm on both arches.
+  b += (8 + 5 * 32) * sizeof(int);
   return b;
 }
 
