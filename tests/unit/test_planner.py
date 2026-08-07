@@ -2520,7 +2520,16 @@ def _audit_rows():
     return rows
 
 
-@pytest.mark.xfail(reason="rola.planner.calibration.auditor.audit_cell reads choice.BT, which ConfigChoice no longer has", strict=False)
+@pytest.mark.xfail(
+    reason="auditor.audit_cell's choice.BT AttributeError is FIXED (P26 closure session: "
+    "audit_cell/AuditRow now compare exact_BT against the fixed TOKEN_WORD=32 instead of "
+    "a nonexistent choice.BT), but running it reveals a REAL disagreement the fixed ledger "
+    "does not yet record: the exact cost-model argmin prefers BT=16 on several recorded "
+    "atscale cells (regret up to ~1.5) against the architecturally-fixed TOKEN_WORD=32. "
+    "Whether that is a live finding (the calibration cost model still has a say) or moot "
+    "(BT is now fixed by the executor's MMA_K_QUANTUM design, not chosen to minimize this "
+    "retired cost model) is a calibration-methodology judgment beyond a mechanical fix; "
+    "carded on P26/P15 for a calibration-owning follow-up.", strict=False)
 def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
     """P4's self-gate: the auditor, run on the recorded fixtures.
 
@@ -2537,7 +2546,11 @@ def test_the_auditor_reports_the_documented_disagreement_ledger_exactly():
         f"  got      {got}\n  expected {_SELECTOR_DISAGREEMENTS}")
 
 
-@pytest.mark.xfail(reason="rola.planner.calibration.auditor.audit_cell reads choice.BT, which ConfigChoice no longer has", strict=False)
+@pytest.mark.xfail(
+    reason="same finding as test_the_auditor_reports_the_documented_disagreement_ledger_exactly: "
+    "the AttributeError is fixed, but several recorded cells now genuinely disagree "
+    "(exact argmin prefers BT=16 vs the fixed TOKEN_WORD=32) rather than agreeing as this "
+    "test asserts -- a calibration-methodology judgment, carded on P26/P15.", strict=False)
 def test_the_auditor_carries_a_margin_beside_every_verdict():
     """§2's validity domain is stated per decision, so every row carries its margin."""
     for row in _audit_rows():

@@ -1223,6 +1223,15 @@ def build_schedule(
     # authority -- and CHUNKED over atoms so no [BH, T, N] leaf tensor is ever
     # materialized (the production path at scale is a producer-epilogue
     # OR-reduce; this host builder is its reference).
+    if geometry.BC % MMA_K_QUANTUM != 0:
+        raise ValueError(
+            f"BC={geometry.BC} is not a multiple of MMA_K_QUANTUM={MMA_K_QUANTUM}: the "
+            "executor's atom union has no concept of a sub-quantum owner rectangle (every "
+            "atom is MMA_K_QUANTUM consecutive leaves, QPO=BC/MMA_K_QUANTUM); a sub-aligned "
+            "BC has no atom-bits construction, not merely an inefficient one. Declared "
+            "restriction, not a fallback -- pick a BC that is a multiple of "
+            f"{MMA_K_QUANTUM} (owner_geometry's own alignment rules already require BC to "
+            "name an aligned rectangle; this adds the executor's coarser quantum on top).")
     read_atom_bits, write_atom_bits = _atom_union_bits(
         views, geometry, BH, T, level_offsets, widths)
 
