@@ -286,6 +286,8 @@ single buffer at the WINDOW's extent:
 | `g_ring` | `sched_slots(GT) * kSchedSlotInts` int | `sched_slots(GT)*(kGroupTokens+4)*4` | the [cooked schedule ring](#sched-ring): `sched_slots(GT) = W*(kSchedDepth+1)` group descriptors, each ONE GROUP's `kGroupTokens` ascending token indices plus `gN`/read-mask/write-mask/flags |
 | `g_up` | `sched_slots(GT) * 2 * kGroupTokens` fp32 | `sched_slots(GT)*2*16*4` | the ring's per-owner [upper-product](consumer_kernel.md#upper-product) pairs — `sr`/`sw`, cooked beside the member word |
 | producer cursor state | `(8 + 5*32)` int | `168*4 = 672` | the [producer's cursor](consumer_kernel.md#producer-state) (7 uniform scalars, 1 pad) and its 5 32-lane cook planes — rests here between cooks so no scheduler state is register-live across the visit body |
+| chunk descriptors | `3 * amp_slab_chunks(BC,D)` int | `3*chunks*4` | the prefetch's per-owner `ch_lvl`/`ch_src`/`ch_atoms` ([below](#prefetch-slab)) |
+| `pfR`, `pfW` | `2 * [GT][amp_slab_pitch(BC,D)]` bf16, `align16` base | `2*GT*pitch*2` | the AMPLITUDE PREFETCH SLABS — one row per window token per side, filled by `cp.async` a visit ahead ([below](#prefetch-slab)) |
 
 `cols = DV + 1` is unconditional (the mass column always exists — normalization is no
 longer a template axis), which is why `S`'s row EXTENT above is `DV + 4` regardless:
@@ -297,22 +299,25 @@ column's one extra live column within it.
 cross-checked against `consumer_smem_bytes` in Python):
 
 ```
-BC=16, DV=32, D=1, DECAY=false, GT=16 (W=1, kSchedDepth=1, sched_slots=2):
+BC=16, DV=32, D=1, DECAY=false, GT=16 (W=1, kSchedDepth=2, sched_slots=3):
   S=2304  dig=64  WT=768  Vw∪clk=1024
   Rf=512  Gm=768  decay-extra=0
-  g_ring=160  g_up=256  producer-state=672
-  total = 6,528 B  (~6.4 KiB)
+  g_ring=240  g_up=384  producer-state=672  chunk-desc=36
+  core (align16) = 6,784   slabs = 2*16*24*2 = 1,536
+  total = 8,320 B  (~8.1 KiB)
 
-BC=64, DV=64, D=2, DECAY=true, GT=16 (W=1, kSchedDepth=1, sched_slots=2):
+BC=64, DV=64, D=2, DECAY=true, GT=16 (W=1, kSchedDepth=2, sched_slots=3):
   S=17408  dig=512  WT=3072  Vw∪clk=4352
   Rf=2048  Gm=768  decay-extra=768
-  g_ring=160  g_up=256  producer-state=672
-  total = 30,016 B  (~29.3 KiB)
+  g_ring=240  g_up=384  producer-state=672  chunk-desc=120
+  core (align16) = 30,352   slabs = 2*16*80*2 = 5,120
+  total = 35,472 B  (~34.6 KiB)
 ```
 
-At `GT = 64` (`W = 4`) the same flagship shape's budget follows the closed forms in
-[`#window`](#window): `512 W^2 + 7840 W + 18592` (nodecay) and `512 W^2 + 10144 W +
-19360` (decay) bytes, landing at one CTA/SM.
+The `BC = 64` decay arm is the one whose residency the prefetch slab costs (3 CTAs/SM
+to 2); the `BC = 64` NODECAY arm keeps its three (32,400 B). At `GT = 64` (`W = 4`)
+the slab's contribution is linear in `W` where the Gram's is quadratic, and the
+`BC = 64` window arms stay at one CTA/SM.
 
 These are the same two `GT=16` shapes [the residency section](#residency) plugs into
 `ctas_for_residency`. No other shape's byte total is stated here; plug the formula
@@ -351,6 +356,50 @@ is the matching pair of `kGroupTokens`-float
 pass. The ring stays group-shaped even though the visit spans a window — a window's
 slots are the `window_groups(GT)` CONTIGUOUS slots starting at its first, since
 `window_groups(GT)` divides `sched_slots(GT)` by construction.
+
+**`kSchedDepth` is 2, and the prefetch is why.** The amplitude slab for window `w + 1`
+is issued from inside window `w`'s visit — that overlap IS the mechanism — so window
+`w + 1`'s token list must already be published while window `w` is staging. At depth 1
+it is not: the producer cooks `w + 1` DURING visit `w` and publishes it at that
+visit's end. Depth 2 costs one more window of descriptor slots (208 B at the group
+quantum) and is the null configuration from here; `ROLA_SCHED_DEPTH` survives as the
+sweep knob it always was, with 2 as its floor in practice.
+
+### <a id="prefetch-slab"></a>The amplitude prefetch slab
+
+Two slabs, `pfR` and `pfW`, one row per WINDOW TOKEN, each row holding every SPANNED
+level's contiguous digit range concatenated. They are the LAST regions of the carve so
+that `cp.async`'s 16-byte destination alignment is one `align16` rather than a
+constraint every region before them would have to carry. Both take the SAME layout: the
+digit map is side-independent, and `Plan.amplitude_pitch` gives both streams the same
+alignment quantum.
+
+Level `l` contributes `align8(lead_l + span_l)` elements, where
+`span_l = min(modulus_l, (BC-1)/stride_l + 1)` is the owner's contiguous digit range at
+that level and `lead_l = base_l & 7` is the alignment slack the 16-byte copy leaves in
+front of it. The spanned spans multiply to `BC` (the owner rectangle's invariant), and
+`sum_l align8(7 + f_l)` over `prod_l f_l == BC` is maximised by ONE span of `BC` with
+the rest at 1 — so the compile-time reservation is
+
+    amp_slab_pitch(BC, D) = align8(7 + BC) + 8 * (D - 1)      elements
+
+and `amp_slab_chunks = amp_slab_pitch / 8` is the 16-byte chunk count a row holds. The
+kernel ADDRESSES at this compile-time pitch and fills only the runtime prefix, which is
+what makes the per-token offset a constant multiply.
+
+Three per-owner descriptors accompany them, one entry per chunk: `ch_lvl` (which
+spanned level the chunk belongs to), `ch_src` (its element offset inside that level's
+amplitude row, already aligned down), and `ch_atoms` (the SET OF ATOMS whose digits it
+carries). The last is what makes the copy per-atom: a chunk is fetched iff some atom
+live on that side in that group needs it, and zero-filled otherwise
+([`consumer_kernel.md#prefetch`](consumer_kernel.md#prefetch)).
+
+**Per-atom PACKING is refused, and the derivation is short.** An owner's leaf set is
+the CARTESIAN PRODUCT of the levels' digit ranges, so giving each atom its own copy of
+its sub-range duplicates every factor an atom shares with its neighbours — at
+`<BC = 64, D = 2>` that is 4-8x the shared memory for exactly the same DRAM sectors.
+The liveness, which is what per-atom was for, is bought at chunk granularity instead
+and costs nothing.
 
 The producer's OWN cursor (word cursor, chunk base, live-word mask, selected word,
 remainder — 7 scalars, uniform across the producer warp) and its cook planes (5

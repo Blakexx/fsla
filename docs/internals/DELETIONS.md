@@ -87,6 +87,7 @@ anywhere in this tree resolves in the source repository named by
 | pre-extraction | The V2 CUDA page-plan producer and its eight pybind entries | The page table is published by the torch arena in `rola/ops/paging.py`: [`rola_api.md`](rola_api.md#deleted-page-plan) |
 
 The ledger does not reconstruct what that repository's history already holds.
+| 2026-08-07 | P39 | **The `D`-free residency/footprint query** (`kQueryD` in `consumer.cu`, and the four-argument `rola_consumer_occupancy(decay, BC, DV, GT)` / `rola_consumer_smem_bytes(decay, BC, DV, GT)` ABI) | AN ABI NARROWING, forced by measurement rather than by taste: the query answered at a fixed `D = 2` on the stated ground that "`D` moves only the `[D][BC]` digit table". The amplitude prefetch slab makes that false -- it carries one 16-byte chunk per token per side for every level beyond the first -- so a residency answer at the wrong `D` is the wrong arm's, and `select_window`'s residency rule consumes exactly that answer. Both entry points now take `D` between `DV` and `GT`; `select_window` passes `len(schedule.read_amps)`. Revival = git (this row's commit, parent). |
 
 ---
 

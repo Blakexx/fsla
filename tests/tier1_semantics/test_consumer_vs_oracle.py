@@ -1029,10 +1029,11 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
 
     The rule fired on `cheapest.blocks_per_sm == 1` -- the cliff at which a CTA has
     no latency hiding at all. "Never" is a claim about a surface, so this asks the
-    driver about the whole launchable surface: `BC(2) x d_v(2) x decay(2) x
-    group_tokens(2)` = 16 keys, which is EXHAUSTIVE for `rola_consumer_occupancy`
-    -- the only axes the occupancy query takes, because the kernel's shared memory
-    is entirely compile-time on them (`D` does not enter the query's signature).
+    driver about the whole launchable surface: `BC(2) x d_v(2) x decay(2) x D(4) x
+    group_tokens(2)` = 64 keys, which is EXHAUSTIVE for `rola_consumer_occupancy`.
+    `D` is one of its axes because the amplitude prefetch slab carries one 16-byte
+    chunk per token per side for every level beyond the first, so a residency answer
+    taken at one depth does not speak for another.
 
     THE CLAIM IS PER WINDOW, because the windows buy different things.
 
@@ -1057,18 +1058,19 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     for BC in (16, 64):
         for d_v in (32, 64):
             for decay in (False, True):
-                for gt in (16, 64):
-                    blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, gt))
-                    seen[(BC, d_v, decay, gt)] = blocks
-                    floor = 2 if (gt == 16 or BC == 16) else 1
-                    assert blocks >= floor, (
-                        f"BC={BC} d_v={d_v} decay={decay} group_tokens={gt} "
-                        f"is resident {blocks} time(s) per SM, below the {floor} this "
-                        "arm class is held to. At the group quantum that is §6's "
-                        "deleted residency rule becoming reachable again; at the wide "
-                        "window on BC=16 it is the register budget collapsing a "
-                        "residency the SMEM carve still affords.")
-    assert len(seen) == 16, f"the surface is 16 keys, queried {len(seen)}"
+                for D in (1, 2, 3, 4):
+                    for gt in (16, 64):
+                        blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, D, gt))
+                        seen[(BC, d_v, decay, D, gt)] = blocks
+                        floor = 2 if (gt == 16 or BC == 16) else 1
+                        assert blocks >= floor, (
+                            f"BC={BC} d_v={d_v} decay={decay} D={D} group_tokens={gt} "
+                            f"is resident {blocks} time(s) per SM, below the {floor} this "
+                            "arm class is held to. At the group quantum that is §6's "
+                            "deleted residency rule becoming reachable again; at the wide "
+                            "window on BC=16 it is the register budget collapsing a "
+                            "residency the SMEM carve still affords.")
+    assert len(seen) == 64, f"the surface is 64 keys, queried {len(seen)}"
 
 
 # ---------------------------------------------------------------------------

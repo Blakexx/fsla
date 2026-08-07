@@ -56,8 +56,11 @@ life, is read from HBM ONCE at entry and written ONCE at exit.
 5. load `S[BC][SP]` — zeros in pass 1 (the summary pass), from the §6.4 workspace on
    a split owner's non-entry segment, else atom-wise from `p.state` through the page
    table;
-6. warp 0 [cooks](#producer) the schedule ring's first `kSchedDepth` group
-   descriptors — the cold start — and a `__syncthreads()` publishes them.
+6. warp 0 [cooks](#producer) the schedule ring's first `W * kSchedDepth` group
+   descriptors — the cold start — a `__syncthreads()` publishes them, the CTA issues
+   window 0's [amplitude prefetch](#prefetch) and drains it, and a second
+   `__syncthreads()` publishes the slab. Those are the ONLY two barriers the entry
+   epoch pays and the only barrier the prefetch adds anywhere.
 
 **The walk**, once per VISIT of a WINDOW of `W = GT / kGroupTokens` gathered-token
 GROUPS (`kGroupTokens == 16`; every group is full except each segment's final ragged
@@ -326,11 +329,11 @@ The cook happens ONCE PER OWNER's group, not once per warp. The scan's result �
 tokens the group gathers, which atoms are live on each side — is a fact of the owner
 and the group alone; every one of the CTA's 8 warps would derive the identical
 `rmask`/`wmask`/`t_idx` from the identical inputs, so computing it 8 times is redundant
-ISSUE, not redundant latency. That distinction is the whole rationale: this kernel's
-binding constraint at scale is instruction issue (the P11 verdict — a prefetch that
-buys stall movement with instructions loses here), not memory or execution latency, so
-the win available is cutting issued instructions, and a single producer warp cuts the
-scan's ballot ALU and its `2 * QPO` atom-bitlist loads by 8x.
+ISSUE, not redundant latency. That distinction is the whole rationale: a prefetch that
+buys stall movement with instructions loses on this kernel (the standing P11 verdict,
+and the rule the [amplitude prefetch](#prefetch) was built to respect), so the win
+available is cutting issued instructions, and a single producer warp cuts the scan's
+ballot ALU and its `2 * QPO` atom-bitlist loads by 8x.
 
 **Stability is the correctness requirement.** Words ascend and each word is consumed
 LSB-first, so a descriptor's `kGroupTokens` slots are GLOBALLY ascending, and groups
@@ -497,8 +500,9 @@ Per group `a` of the window, LIVE ATOMS OF THAT GROUP ONLY:
 
 - under `DECAY`, the clock prefix and entry/exit scale, over the WHOLE WINDOW, not per
   group ([below](#decay-clock));
-- the read panel `Rf`, into slot `a` ([below](#read-panel));
-- the write panel `WT`, into slot `a` ([below](#write-panel));
+- the read panel `Rf`, into slot `a`, out of the [prefetched slab](#prefetch)
+  ([below](#read-panel));
+- the write panel `WT`, into slot `a`, likewise ([below](#write-panel));
 - `Vw_a[t, ch] = sw_a[t] * v[token, ch]`, into slot `a` — the write side folds the row
   scale into the value tile because there `t` is the CONTRACTION index and the scale
   cannot hoist out of the sum.
@@ -517,6 +521,66 @@ membership test.
 `mask == kFullMask` selects the statically-unrolled dense arm at every one of these
 loops — dense inputs pay zero mask instructions, because they self-heal to identity
 grouping rather than taking a different code path.
+
+## <a id="prefetch"></a>16.1. The amplitude prefetch — the panels' gather, one visit early
+
+Both panels' coefficients come out of a shared-memory SLAB
+([`smem_layout.md#prefetch-slab`](smem_layout.md#prefetch-slab)) filled by `cp.async`
+([`cp_async.md`](cp_async.md)) from inside the PREVIOUS window's visit. The panels
+never touch global memory.
+
+**The address, and why it is cheaper than the gather it replaces.** A slab row is a
+window token; a level's sub-range sits at `pf_off[l]`, which is a REGISTER, not a
+table, because every gather's level loop is `#pragma unroll` and `l` is a compile-time
+constant at every use. So the read becomes
+
+    pf[(t0 + t) * kPfPitch + pf_off[l] + dig[l*BC + k]]
+
+where `kPfPitch` is a compile-time constant and `dig` is the same shared load the walk
+always did. The direct form paid a 64-bit `tr * level_pitch` and a global load for the
+same element. `pf_off` can be a register only because the alignment lead is a per-LEVEL
+constant, which is a property of the padded amplitude pitch
+([`consumer.md#amp-alignment`](consumer.md#amp-alignment)) — the earlier whole-slab
+prefetch carried a per-`(level, token)` offset table instead, and that extra shared
+load is most of what made it cost more instructions than it saved.
+
+**The per-atom half is chunk-granular ZFILL.** Each 16-byte chunk carries `ch_atoms`,
+the set of atoms whose digits it holds; the copy is issued with src-size 16 iff that
+set intersects the token's group's STAGED side mask, and with src-size 0 otherwise.
+This is EXACT rather than an approximation, and the argument is the self-masking
+theorem read backwards: a leaf reading a zero-filled chunk belongs to an atom dead on
+that side, whose staged coefficient must be exactly zero, and zeroing one of its level
+factors delivers exactly that. It is STRONGER than what the direct gather relied on —
+there the zero came from the amplitude tensor's own entmax zeros; here it is
+structural. The ragged tail rides the same predicate, with the token index clamped so
+no out-of-range address is ever formed.
+
+**Where it overlaps, and the zero-barrier property.** The slab's last read is the panel
+staging, so the refill may start at the staging barrier that already exists — that
+barrier is there to publish the staged operands and equally guarantees every warp has
+finished reading the slab. The drain sits immediately before the end-of-window
+`__syncthreads()`, which is what publishes the slab cross-warp (`cp.async` completion
+is visible to the issuing thread only). The copies are therefore in flight across both
+Gram phases, the emission and the fold, and the steady state pays NO new barrier. The
+one cost is `kSchedDepth = 2`: the issue needs the next window's token list one window
+earlier than depth 1 publishes it.
+
+**The delegated sm_86 choice (P25 contract item 7), discharged.** `cp.async` commit and
+wait state is per WARP, so the question was warp-partitioned streams against
+interleaved commit order. The answer is ONE COMMIT GROUP PER WARP PER VISIT on a FLAT
+CTA-wide issue index: the visit consumes the whole slab at a single point, so there is
+exactly one drain and a partial-fill ordering has no consumer that could use it, while
+the flat stride is what makes a warp's 32 lanes take 32 CONSECUTIVE chunks — one
+contiguous byte range per warp, which is the only property the memory system rewards.
+
+**What it does and does not buy.** It removes the panel gather's latency: measured on
+`sm_86`, `long_scoreboard` falls 46% on the dense cell and 26% at scale, DRAM traffic
+falls 43% on the dense cell, and that cell's kernel duration falls 13%. It does NOT buy
+occupancy freedom — the wide window's residency penalty is unchanged, so the CTAs were
+hiding something else. And it is DISTRIBUTION-DEPENDENT: on the sparse at-scale cell
+the 16-byte chunk granularity over-fetches (DRAM +12%, L1 hit rate 31.5% -> 20.2%),
+shared-load bank conflicts rise 48%, and the cost lands on the existing barriers
+(+22%), for +18% on that kernel. Evidence: `workflows/perf/p39_prefetch.md`.
 
 ## <a id="decay-clock"></a>17. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 

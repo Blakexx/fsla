@@ -289,15 +289,16 @@ void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay, int GT
 
 namespace {
 
-//: The residency and footprint queries answer at `D = 2`, the at-scale cell's
-//: topology depth (`D` moves only the `[D][BC]` digit table).
-constexpr int kQueryD = 2;
-
-const ShardRow& query_row(bool decay, int64_t BC, int64_t DV, int64_t GT) {
-  const ShardRow* row = dispatch_row(DispatchChoice{static_cast<int>(BC), static_cast<int>(DV),
-                                                    kQueryD, decay, static_cast<int>(GT)});
+//: `D` IS A QUERY AXIS, NOT A CONSTANT. It moves the `[D][BC]` digit table and -- since
+//: the amplitude prefetch landed -- one 16-byte chunk per token per side per level
+//: beyond the first, so a residency answer taken at one depth is wrong at another.
+//: docs/internals/consumer.md#occupancy-axes
+const ShardRow& query_row(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT) {
+  const ShardRow* row =
+      dispatch_row(DispatchChoice{static_cast<int>(BC), static_cast<int>(DV), static_cast<int>(D),
+                                  decay, static_cast<int>(GT)});
   TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BC=", BC, " d_v=", DV,
-              " group_tokens=", GT,
+              " D=", D, " group_tokens=", GT,
               ": the matrix carries BC in {16, 64}, d_v in {32, 64} and a window of "
               "16 or 64 tokens");
   return *row;
@@ -308,8 +309,8 @@ const ShardRow& query_row(bool decay, int64_t BC, int64_t DV, int64_t GT) {
 //: The consumer's residency answer, from the DRIVER. It takes four axes because
 //: RESIDENCY IS PER-INSTANTIATION and a single reported number would over-promise on
 //: one arm and under-report another: docs/internals/consumer.md#occupancy-axes
-int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t GT) {
-  const int blocks = query_row(decay, BC, DV, GT).occupancy();
+int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT) {
+  const int blocks = query_row(decay, BC, DV, D, GT).occupancy();
   //: The shard's query is torch-free and reports through the CUDA runtime's error
   //: state; this is where it becomes a Python exception.
   C10_CUDA_CHECK(cudaGetLastError());
@@ -345,8 +346,8 @@ int64_t rola_max_dynamic_smem_bytes() {
   return static_cast<int64_t>(device_facts().max_dynamic_smem_bytes);
 }
 
-int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t GT) {
-  return static_cast<int64_t>(query_row(decay, BC, DV, GT).smem_bytes);
+int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT) {
+  return static_cast<int64_t>(query_row(decay, BC, DV, D, GT).smem_bytes);
 }
 
 // ---------------------------------------------------------------------------

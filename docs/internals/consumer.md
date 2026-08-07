@@ -152,6 +152,26 @@ SCHEDULE BUILDER, strictly below support selection; the host binding
 (`amp_class_ptr` in `consumer.cu`) hard-checks every bound tensor's dtype
 against the role-implied one — a mismatch is a loud error, never a silent cast.
 
+## <a id="amp-alignment"></a>A6b. Spanned amplitude rows are 16-byte aligned, and it is checked
+
+A spanned level's amplitude row is a `cp.async` SOURCE: the consumer prefetches the
+owner's digit range out of it in 16-byte chunks
+([`consumer_kernel.md#prefetch`](consumer_kernel.md#prefetch)). Every token row must
+therefore start on a 16-byte boundary, which for bf16 storage means a pitch that is a
+multiple of 8 elements.
+
+`Plan.amplitude_pitch` already pads to exactly this quantum — it has always padded a
+token-word block to a whole number of `CP_ASYNC_ROW_BYTES` — so the requirement costs
+the builder nothing. What the binding adds is the CHECK, on the pitch and on the
+storage pointer, because the kernel's addressing depends on it in a way that would
+otherwise fail silently on a stream some other builder produced.
+
+The consequence in the kernel is not merely legality. With a padded pitch, a level's
+alignment LEAD (`base_l & 7`) is the same for every token, so the slab's per-level
+offset is a compile-time-indexed REGISTER instead of a per-`(level, token)` shared
+table — and that table was most of what made the earlier whole-slab prefetch cost more
+instructions than it saved (`workflows/perf/p11_cpasync.md`).
+
 ## <a id="dials-fp32"></a>A7. `dials` — fp32, never bf16
 
 Flattened `LeafMassDecay` dials, `[H, total_rows]`, level `l` at `row_offset[l]`.
@@ -496,13 +516,14 @@ admission bound, then last the routing's member-fill statistic
 (`union_member_median`, the one refusal that costs a device-side sweep of the
 slice-union bitmap, memoized on the schedule so it is paid at most once).
 MEASURED on `sm_86`, the residency refusal is TOTAL: `select_window` returns
-the group quantum on every arm this batch measured, because widening `GT`
-costs CTA residency (`BC = 16`, 4 -> 2 CTAs; `BC = 64`, 3 -> 1) and the loss
-tracks the residency given up, not the window's own extra arithmetic — the
-kernel's panel builds gather amplitudes straight from global memory,
-unprefetched, so warps are still what hides that latency. The rule is
-ARCH-GENERAL, not a pin to this box: `architecture/planner.md#7` states it and
-its evidence.
+the group quantum on every arm measured, because widening `GT` costs CTA
+residency (`BC = 16`, 3 -> 2 CTAs; `BC = 64`, 3 -> 1) and the loss tracks the
+residency given up, not the window's own extra arithmetic. What that residency
+is buying is NOT the panel gather's memory latency: the panels are prefetched
+([`consumer_kernel.md#prefetch`](consumer_kernel.md#prefetch)), the prefetch
+cuts `long_scoreboard` by 26-46%, and the wide window's penalty does not move
+(`workflows/perf/p39_prefetch.md`). The rule is ARCH-GENERAL, not a pin to this
+box: `architecture/planner.md#7` states it and its evidence.
 
 Each remaining axis is a STRUCTURAL plan fact, fixed before launch, with few
 legal values — the standing "branch on structure, not thresholds" rule
@@ -663,9 +684,9 @@ binary does not define.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
-`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC`, `DV` and `GT`
-because a single reported number would over-promise on one arm and under-report
-another. The whole point of deriving `__launch_bounds__` from
+`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC`, `DV`, `D` and
+`GT` -- every template axis -- because a single reported number would over-promise on
+one arm and under-report another. The whole point of deriving `__launch_bounds__` from
 `consumer_smem_bytes` is that a decay instantiation which regressed the budget
 would drop its OWN bound rather than silently over-promise; this is how that is
 checked from Python rather than asserted.
@@ -678,14 +699,10 @@ Why each axis is on the query:
 | `BC` | which term BINDS: at `BC = 64` shared memory binds, at `BC = 16` the REGISTER FILE does |
 | `DV` | `DV = 32` halves the state block |
 | `GT` | the window Gram is quadratic in `GT`: `GT = 64` costs residency directly — `BC = 64, GT = 64` runs at ONE CTA/SM (SMEM-bound), `BC = 16, GT = 64` keeps two |
+| `D` | the `[D][BC]` digit table, AND one 16-byte prefetch chunk per token per side for every level beyond the first ([`smem_layout.md#prefetch-slab`](smem_layout.md#prefetch-slab)) |
 
-A residency claim about "the kernel" that quoted only one `(BC, DV, GT)` triple
-would be a claim about an eighth of the matrix.
-
-`D` is NOT a query axis: it changes only the `[D][BC]` digit table (256 B per
-level), and the query is fixed at `D = 2` (`kQueryD` in `consumer.cu`), the
-at-scale cell's topology depth, so the number is reported for the shape actually
-measured rather than for a nominal worst case.
+A residency claim about "the kernel" that quoted only one `(BC, DV, D, GT)` tuple
+would be a claim about a fraction of the matrix.
 
 Both queries resolve a `ShardRow` (B9) and read one field of it —
 `occupancy()` calls the driver through the shard's wrapper, because post-shard the

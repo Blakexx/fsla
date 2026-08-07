@@ -33,10 +33,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from itertools import product as _iter_product
 from math import gcd, log1p, prod
-
-from functools import lru_cache as _lru_cache
 
 import torch
 
@@ -74,14 +73,16 @@ def consumer_occupancy() -> Callable[..., int]:
     instantiations, byte for byte on `launch__shared_mem_per_block_dynamic`.
 
     The kernel's shared memory is entirely COMPILE-TIME
-    (`consumer::consumer_smem_bytes<BC, DV, D=2, decay>`), so the three surviving
-    axes are the whole query.
+    (`consumer::consumer_smem_bytes<BC, DV, D, decay, GT>`), so its template axes are
+    the whole query -- `D` among them, because the amplitude prefetch slab carries a
+    16-byte chunk per token per side for every level beyond the first.
     """
     from rola.ops._ext import extension
     ext = extension()
 
-    def query(BC: int, d_v: int, decay: bool, group_tokens: int = MMA_K_QUANTUM) -> int:
-        return int(ext.rola_consumer_occupancy(decay, BC, d_v, group_tokens))
+    def query(BC: int, d_v: int, decay: bool, D: int = 2,
+              group_tokens: int = MMA_K_QUANTUM) -> int:
+        return int(ext.rola_consumer_occupancy(decay, BC, d_v, D, group_tokens))
 
     return query
 
@@ -1399,25 +1400,25 @@ CONSUMER_WINDOWS = (64, 16)
 WINDOW_MIN_FILL = 4
 
 
-@_lru_cache(maxsize=None)
+@cache
 def _max_dynamic_smem_bytes() -> int:
     from rola.ops._ext import extension
     return int(extension().rola_max_dynamic_smem_bytes())
 
 
-@_lru_cache(maxsize=None)
-def _arm_occupancy(decay: bool, BC: int, d_v: int, gt: int) -> int:
+@cache
+def _arm_occupancy(decay: bool, BC: int, d_v: int, D: int, gt: int) -> int:
     from rola.ops._ext import extension
-    return int(extension().rola_consumer_occupancy(decay, BC, d_v, gt))
+    return int(extension().rola_consumer_occupancy(decay, BC, d_v, D, gt))
 
 
-@_lru_cache(maxsize=None)
-def _arm_smem_bytes(decay: bool, BC: int, d_v: int, gt: int) -> int:
+@cache
+def _arm_smem_bytes(decay: bool, BC: int, d_v: int, D: int, gt: int) -> int:
     from rola.ops._ext import extension
-    return int(extension().rola_consumer_smem_bytes(decay, BC, d_v, gt))
+    return int(extension().rola_consumer_smem_bytes(decay, BC, d_v, D, gt))
 
 
-def union_member_median(schedule: "Schedule") -> int:
+def union_member_median(schedule: Schedule) -> int:
     """The MEDIAN OWNER'S MEMBER COUNT -- the one routing statistic the window
     selection consults, and an upper bound on how long an owner's group stream is.
 
@@ -1450,7 +1451,7 @@ def union_member_median(schedule: "Schedule") -> int:
     return members
 
 
-def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) -> int:
+def select_window(schedule: Schedule, decay, clock_amps, BC: int, d_v: int) -> int:
     """The consumer's token quantum for THIS routing -- a plan-time choice.
 
     The window is a DISTRIBUTION-DEPENDENT structural axis, never a raised
@@ -1507,8 +1508,12 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     # nothing else is computed at all.
     narrow = CONSUMER_WINDOWS[-1]
     decayed = decay is not None
+    #: THE TOPOLOGY DEPTH IS A RESIDENCY AXIS. The prefetch slab carries one extra
+    #: 16-byte chunk per token per side for every level beyond the first, so an
+    #: occupancy answer taken at the wrong `D` is simply the wrong arm's.
+    levels = len(schedule.read_amps)
     granted = _max_dynamic_smem_bytes()
-    resident = _arm_occupancy(decayed, BC, d_v, narrow)
+    resident = _arm_occupancy(decayed, BC, d_v, levels, narrow)
     for gt in CONSUMER_WINDOWS:
         if gt == narrow:
             break
@@ -1516,11 +1521,11 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
         # than discovered as a hard refusal: the window Gram's storage is quadratic
         # in `gt`, so a wide window is the first arm a small-SMEM device cannot
         # grant a block. `consumer.cuh:row_admitted` is the inequality mirrored.
-        if _arm_smem_bytes(decayed, BC, d_v, gt) > granted:
+        if _arm_smem_bytes(decayed, BC, d_v, levels, gt) > granted:
             continue
         # THE RESIDENCY RULE, AND IT IS THE ONE THE MEASUREMENT WROTE. See the
         # docstring: a window bought with occupancy is a window that loses.
-        if _arm_occupancy(decayed, BC, d_v, gt) < resident:
+        if _arm_occupancy(decayed, BC, d_v, levels, gt) < resident:
             continue
         if decayed and clock_amps is not None:
             if not panel_exponent_bound(clock_amps, decay, gt) <= PANEL_MAX_EXPONENT:
@@ -1773,15 +1778,15 @@ def plan_and_schedule(read_levels: tuple[torch.Tensor, ...],
 
 
 __all__ = [
+    "CONSUMER_WINDOWS",
     "CP_ASYNC_ROW_BYTES",
     "DEFAULT_SM_COUNT",
     "DEFAULT_SM_SHARED_BYTES",
     "DEFAULT_WRITE_COST_WEIGHT",
-    "CONSUMER_WINDOWS",
     "MMA_K_QUANTUM",
     "PANEL_MAX_EXPONENT",
-    "WINDOW_MIN_FILL",
     "ROLA_SCHEDULE_ABI_VERSION",
+    "WINDOW_MIN_FILL",
     "LevelSupportStats",
     "OwnerGeometry",
     "Plan",
@@ -1793,14 +1798,14 @@ __all__ = [
     "leaf_rate_dials",
     "owner_geometry",
     "panel_exponent_bound",
-    "select_window",
-    "union_member_median",
     "permuted_topology",
     "plan_and_schedule",
     "rank_spans",
     "routing_views",
+    "select_window",
     "span_score",
     "spanned_moduli",
+    "union_member_median",
     "unpack_bits",
 ]
 

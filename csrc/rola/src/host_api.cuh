@@ -55,9 +55,9 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<at::Tensor> ws_leaf,         // [n_slots, BC] int32
     c10::optional<at::Tensor> ws_count);
 
-int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t GT);
+int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT);
 
-int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t GT);
+int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT);
 
 //: The dispatch table as data, and the device fact its rows are admitted against.
 std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>>

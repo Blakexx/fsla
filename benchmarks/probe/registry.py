@@ -48,6 +48,18 @@ PROBES = {
         arms={"global": ("global", None),
               "raw": ("raw", None)},
     ),
+    #: THE AT-SCALE CELL, AS A COUNTER PROBE. `atscale_probe.py` gives it a WALL and
+    #: nothing else, so every question about WHY that wall moved has had to be
+    #: answered on a different cell. The two cells differ on the axis that matters
+    #: most to a fetch mechanism -- real sparse producer routing against dense-both
+    #: -- so they are two instruments, not two readings of one.
+    "consumer_forward_atscale": Probe(
+        name="consumer_forward_atscale",
+        version=1,
+        cell="atscale-L2048",
+        kernel_regex="consumer_forward_kernel",
+        arms={"global": ("global", None)},
+    ),
 }
 
 

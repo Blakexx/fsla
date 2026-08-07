@@ -186,11 +186,17 @@ and costs +84% on the whole-layer dense `N = L = 4096` cell, +145% at
 `atscale-L2048`. Full session record: `workflows/perf/p36_quantum.md`.
 
 WHY residency binds here rather than the window's own arithmetic paying for
-itself: this kernel's panel builds gather amplitudes straight from global
-memory and they are NOT prefetched, so warps are still what hides that
-latency, not spare SMEM — P31 measured 66% of cycles with no eligible warp.
-Occupancy is not idle capacity for this kernel; it is the latency-hiding
-mechanism the window's own amortisation competes against.
+itself is an OPEN question, and one candidate answer has been tested and
+refused. Occupancy is not idle capacity for this kernel — P31 measured 66% of
+cycles with no eligible warp — and the obvious hypothesis was that the warps
+were hiding the panel builds' amplitude gathers. Those gathers are now
+prefetched with `cp.async`, which cuts `long_scoreboard` by 26-46% and DRAM
+traffic by 43% on the dense cell; the wide window's penalty is UNCHANGED
+(`topo-D2-w64x64-BC64` +55.8% -> +58.5%, `topo-D4-w8x8x8x16-BC16` +37.7% ->
++41.4%, `atscale-L2048` +144% -> +155%). So the residency the wide window gives
+up is buying something else — the value stream, the clock stream, the state
+load, the emission's atomics, or the barrier structure itself, which is where
+the at-scale cost lands. Evidence: `workflows/perf/p39_prefetch.md`.
 
 The rule is ARCH-GENERAL, not a pin to `sm_86`: `select_window` re-derives it
 from the driver's own occupancy query on whichever device is running, so on an
