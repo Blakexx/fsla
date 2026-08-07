@@ -18,7 +18,7 @@ import torch
 from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
 from rola.ops.paging import PageArena
-from rola.planner.schedule import Plan, build_schedule
+from rola.planner.schedule import TOKEN_WORD, Plan, build_schedule
 from rola.routing.sequence_parallel import (
     SequenceParallelPlan,
     SequenceParallelPolicy,
@@ -96,8 +96,14 @@ class Case:
         self.family = family
         self.widths, self.d_v = tuple(c["widths"]), c["d_v"]
         self.B, self.T, self.H = c["B"], c["T"], c["H"]
-        self.BT, self.BC = c["BT"], c["BC"]
-        self.norm, self.mma, self.P, self.paging = c["norm"], c["mma"], c["P"], c["paging"]
+        # P26: `BT` is not a template parameter or a config axis any more -- the
+        # scan word is the fixed `TOKEN_WORD` (32 tokens), which is what
+        # `build_schedule` itself uses internally regardless of what a caller
+        # asks for. Kept as `self.BT` so the tail/chunk-boundary geometry below
+        # (written against "one word", not literally the constant's name) needs
+        # no further edits.
+        self.BT, self.BC = TOKEN_WORD, c["BC"]
+        self.norm, self.P, self.paging = c["norm"], c["P"], c["paging"]
         self.topology = _topology(self.widths, self.d_v)
         self.N = self.topology.N
         self.cols = self.d_v + (1 if self.norm == "global" else 0)
@@ -121,9 +127,9 @@ class Case:
                 m0[..., self.d_v] = m0[..., self.d_v].abs()
             self.initial_state = m0
 
-        self.plan = Plan(topology=self.topology, normalization=self.norm, BT=self.BT,
+        self.plan = Plan(topology=self.topology, normalization=self.norm,
                          BC=self.BC, warp_tile=(1, max(1, self.d_v // 32)),
-                         decay=self.decay is not None, mma_precision=self.mma)
+                         decay=self.decay is not None)
         self._f32 = dict(
             v=self.v.to(torch.float32),
             read=tuple(t.to(torch.float32) for t in self.read_levels),
@@ -259,7 +265,7 @@ class Case:
         base = select_sequence_parallelism(
             self.plan, self.schedule, policy=SequenceParallelPolicy(workspace_cap=1 << 30))
         n_owners = int(self.schedule.owners.shape[0])
-        assert self.schedule.n_tiles >= P, "cannot split more ways than tiles"
+        assert self.schedule.n_twords >= P, "cannot split more ways than words"
         Ps = tuple([P] * n_owners)
         return SequenceParallelPlan(
             P=Ps, limiting_gate=(None,) * n_owners, binding_gate=None,

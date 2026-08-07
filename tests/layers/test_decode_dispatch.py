@@ -206,30 +206,31 @@ def test_a_paged_layer_keeps_the_tiled_path():
 
 
 # ---------------------------------------------------------------------------
-# H9 (coverage-closure): the four CUDA rows of the table, swept over the
-# (norm, decay) axes the layer default never leaves. The dispatch predicate does
-# not read either axis, so a mis-routed cell here means the PREDICATE grew an
-# accidental coupling -- and the decode/tiled kernels both branch on norm and
-# decay internally, so 'the row runs' is asserted through the counter exactly as
-# the base table does. 4 rows x 3 non-default combos = 12 cells; the default
-# (global, none) combo is the base table's.
+# H9 (coverage-closure): the four CUDA rows of the table, swept over the decay
+# axis the layer default never leaves. `normalization` is no longer a second axis
+# here -- `"raw"` is a dead axis (`rola.routing.types.validate_normalization`
+# accepts only `"global"`, P26) -- so this collapses from a (norm, decay) cross to
+# decay alone. The dispatch predicate does not read decay, so a mis-routed cell
+# here means the PREDICATE grew an accidental coupling -- and the decode/tiled
+# kernels both branch on decay internally, so 'the row runs' is asserted through
+# the counter exactly as the base table does. 4 rows x 1 non-default combo
+# (decay="leaf_mass"; decay="none" is the base table's own default combo).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.cuda
 @_CUDA
-@pytest.mark.parametrize("norm,decay", [
-    ("global", "leaf_mass"), ("raw", "none"), ("raw", "leaf_mass")])
+@pytest.mark.parametrize("decay", ["leaf_mass"])
 @pytest.mark.parametrize("L,carried,expected", [
     (1, True, 'decode'),
     (1, False, 'cuda'),
     (2, True, 'cuda'),
     (16, True, 'cuda'),
 ])
-def test_the_cuda_rows_dispatch_identically_across_norm_and_decay(
-        norm, decay, L, carried, expected):
+def test_the_cuda_rows_dispatch_identically_across_decay(
+        decay, L, carried, expected):
     device = "cuda"
-    layer = _layer(device, norm=norm, decay=decay)
+    layer = _layer(device, decay=decay)
     layer.eval()
     if carried:
         cache = _prime(layer, device)
@@ -240,7 +241,7 @@ def test_the_cuda_rows_dispatch_identically_across_norm_and_decay(
     after = layer.execution_backend_counts
     moved = {k for k in after if after[k] != before[k]}
     assert moved == {expected}, (
-        f"(norm={norm}, decay={decay}): expected the {expected!r} backend, "
+        f"(decay={decay}): expected the {expected!r} backend, "
         f"counters moved {moved} -- the dispatch predicate has grown a coupling "
         f"to an axis it must not read")
 
@@ -251,8 +252,7 @@ def test_the_cuda_rows_dispatch_identically_across_norm_and_decay(
 
 @pytest.mark.cuda
 @_CUDA
-@pytest.mark.parametrize("precision", ["bf16", "tf32x3"])
-def test_the_frozen_decode_config_carries_the_layers_precision_pin(precision):
+def test_the_frozen_decode_config_carries_the_layers_precision_pin():
     """The L == 1 fork must not drop ``mma_precision`` at the freeze boundary.
 
     Before this gate the carrier had NO ``mma_precision`` field and the layer's pin
@@ -260,14 +260,18 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin(precision):
     GEMV is scalar fp32 for every pin — the field selects nothing today — but the
     boundary must CARRY the pin so nothing downstream can disagree with the layer
     (the feeder-flags lesson in ``_resolve_decode_config``'s docstring, same class).
-    Both pins are exercised so a re-hardcoded default cannot pass: the assertion is
-    against the parametrized value, not against ``"bf16"``.
+
+    P26: ``mma_precision`` is a dead axis -- ``PlanOverrides`` and
+    ``freeze_decode_config`` both accept only ``"bf16"`` (a second, ``"tf32x3"``,
+    pin used to be exercised here to prove the carrier does not re-hardcode a
+    default; there is no second value left to try, so
+    ``test_freeze_decode_config_refuses_an_unknown_precision`` below is what proves
+    the carrier does not silently coerce an off-pin value instead).
     """
     device = "cuda"
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        normalization="global", expert=PlanOverrides(mma_precision=precision),
-        layer_idx=0,
+        normalization="global", layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()
     cache = _prime(layer, device)
@@ -277,9 +281,9 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin(precision):
     assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
     frozen = layer._decode_config
     assert frozen is not None, "the decode fork ran but froze no carrier"
-    assert frozen.value.mma_precision == precision, (
-        f"the layer pinned {precision!r} but the frozen carrier says "
-        f"{frozen.value.mma_precision!r} -- the pin was dropped at the boundary")
+    assert frozen.value.mma_precision == "bf16", (
+        f"the layer's bf16 pin was dropped at the boundary: the frozen carrier says "
+        f"{frozen.value.mma_precision!r}")
 
 
 def test_freeze_decode_config_refuses_an_unknown_precision():

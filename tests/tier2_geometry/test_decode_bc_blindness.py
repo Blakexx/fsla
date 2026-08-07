@@ -60,36 +60,36 @@ def test_no_field_of_the_frozen_carrier_names_bc():
 
 
 @pytest.mark.parametrize("widths", [(8, 16), (4, 4, 4), (64, 64)])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_decode_output_is_byte_identical_across_prefill_bc(widths, norm):
+def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     device = "cuda"
     d_v, B, H = 64, 2, 2
     N = math.prod(widths)
-    cols = d_v + (1 if norm == "global" else 0)
+    # P26: the mass column is unconditional (`"raw"` is dead, `normalization` is
+    # `"global"` everywhere), so `cols = d_v + 1` rather than a norm-conditional.
+    cols = d_v + 1
     topology = _topology(widths, d_v)
 
     generator = torch.Generator(device=device).manual_seed(20260802)
     read_levels = tuple(_simplex((B, 1, H, w), 0.5, generator, device).float() for w in widths)
     write_levels = tuple(_simplex((B, 1, H, w), 0.4, generator, device).float() for w in widths)
     g_write = (torch.rand(B, 1, H, device=device, generator=generator) + 0.5).float()
-    g_read = (None if norm == "global"
-              else (torch.rand(B, 1, H, device=device, generator=generator) + 0.5).float())
+    g_read = None
     v = torch.randn(B, 1, H, d_v, device=device, generator=generator).float()
     m0 = 0.1 * torch.randn(B, H, N, cols, device=device, generator=generator).float()
-    if norm == "global":
-        m0[..., d_v] = m0[..., d_v].abs()
+    m0[..., d_v] = m0[..., d_v].abs()
 
     results = []
     configs = []
     for BC in _BCS:
         # The plan is CONSTRUCTED at this BC and then deliberately not handed to decode:
         # the point of the gate is that there is no channel through which it could be.
-        plan = Plan(topology=topology, normalization=norm, BT=16, BC=BC,
-                    warp_tile=(1, max(1, d_v // 32)), decay=False,
-                    mma_precision="tf32x3")
+        # P26: `BT`/`mma_precision` are dead `Plan` kwargs -- dropped entirely (the
+        # scan word is the fixed `TOKEN_WORD`; bf16 is the only MMA format).
+        plan = Plan(topology=topology, normalization="global", BC=BC,
+                    warp_tile=(1, max(1, d_v // 32)), decay=False)
         assert plan.BC == BC
-        config = freeze_decode_config(topology, norm, decay=False, BH=B * H, device=device,
-                                      mma_precision="tf32x3")
+        config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
+                                      mma_precision="bf16")
         configs.append(config)
         state = m0.clone()
         y, state, _ = decode_forward(v, read_levels, write_levels, g_read, g_write,

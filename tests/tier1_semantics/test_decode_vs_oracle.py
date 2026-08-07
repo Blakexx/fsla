@@ -40,7 +40,7 @@ from rola.ops.decode import decode_forward, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.routing.types import LeafMassDecay
 from tests.tier1_semantics.test_consumer_vs_oracle import (
-    RTOL,
+    BF16_RTOL,
     _decay_dials,
     _simplex,
     _topology,
@@ -51,14 +51,16 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-#: DECODE'S TOLERANCE IS THE TILED KERNEL'S ``tf32x3`` NUMBER, ADOPTED RATHER THAN
-#: INVENTED. Both consumers accumulate the readout in fp32 over at most ``N`` leaf
-#: terms; the tiled ``tf32x3`` arm reaches that accuracy by splitting an fp32 operand
-#: into three tf32 pieces, decode by never leaving fp32 (it has no MMA). Decode's error
-#: is therefore bounded by the same fp32-accumulation analysis ``RTOL`` was derived
-#: from, and is expected to land strictly INSIDE it. A decode-specific constant would
-#: be a number with no derivation of its own, which `docs/testing.md` calls a defect.
-DECODE_RTOL = RTOL
+#: DECODE'S TOLERANCE IS THE TILED KERNEL'S bf16 NUMBER, ADOPTED RATHER THAN INVENTED.
+#: P26: `mma_precision` is a dead axis everywhere (bf16 is the only value both
+#: `PlanOverrides` and `freeze_decode_config` accept), so the tiled consumer's own
+#: exactness bound is `BF16_RTOL` now, not the tf32x3-era `RTOL` (which no longer
+#: exists -- `test_consumer_vs_oracle.py` deleted it with the tf32x3 arm, P26 phase 1).
+#: Decode has no MMA and never leaves fp32, so it is the MORE accurate of the two
+#: consumers and is expected to land strictly INSIDE the tiled kernel's bf16 band. A
+#: decode-specific constant would be a number with no derivation of its own, which
+#: `docs/testing.md` calls a defect.
+DECODE_RTOL = BF16_RTOL
 
 #: THE TOPOLOGY AXIS, and the last three rows are the reason it is written out rather
 #: than reduced. The bitmap expansion copies an ``S_{l+1}``-bit block into each live
@@ -155,7 +157,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
 
     # ---- decode ---------------------------------------------------------------
     config = freeze_decode_config(topology, norm, decay=decay is not None, BH=B * H,
-                                  device=device, n_split=n_split, mma_precision="tf32x3")
+                                  device=device, n_split=n_split, mma_precision="bf16")
     state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
              if initial_state is None else initial_state.to(torch.float32).clone())
     workspace = None
@@ -248,16 +250,14 @@ def test_g3_coarse_index_is_the_group_prefix(widths):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("widths", _TOPOLOGIES)
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
-def test_g4_matches_the_canonical_oracle(widths, norm, p_read, p_write):
-    _assert_oracle(_case(widths, 64, 2, 3, norm, p_read, p_write, seed=1234))
+def test_g4_matches_the_canonical_oracle(widths, p_read, p_write):
+    _assert_oracle(_case(widths, 64, 2, 3, "global", p_read, p_write, seed=1234))
 
 
 @pytest.mark.parametrize("d_v", [32, 64])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_g4_both_value_widths(d_v, norm):
-    _assert_oracle(_case((8, 16), d_v, 2, 2, norm, 0.5, 0.5, seed=77))
+def test_g4_both_value_widths(d_v):
+    _assert_oracle(_case((8, 16), d_v, 2, 2, "global", 0.5, 0.5, seed=77))
 
 
 def test_the_empty_support_corner_is_inert_rather_than_undefined():
@@ -285,7 +285,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
     config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
-                                  mma_precision="tf32x3")
+                                  mma_precision="bf16")
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
     y, state, workspace = decode_forward(v, zeros, zeros, None, g_write, config, state)
@@ -342,9 +342,8 @@ def test_the_global_residence_expansion_arm():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("widths", [(16,), (8, 16), (3, 5, 7), (4, 4, 4)])
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
-def test_g4_decay_matches_the_canonical_oracle(widths, norm, p_read, p_write):
+def test_g4_decay_matches_the_canonical_oracle(widths, p_read, p_write):
     """Survival is inclusive at ``j = t``: the deposit at ``t`` is read at ``t`` with
     survival exactly 1.
 
@@ -357,7 +356,7 @@ def test_g4_decay_matches_the_canonical_oracle(widths, norm, p_read, p_write):
     """
     generator = torch.Generator(device="cuda").manual_seed(4242)
     dials = _decay_dials(widths, 3, generator, "cuda")
-    _assert_oracle(_case(widths, 64, 2, 3, norm, p_read, p_write, seed=1234, decay_dials=dials))
+    _assert_oracle(_case(widths, 64, 2, 3, "global", p_read, p_write, seed=1234, decay_dials=dials))
 
 
 @pytest.mark.parametrize("widths", [(8, 16), (3, 5, 7)])
@@ -464,9 +463,8 @@ def _prefill(widths, d_v, B, T, H, norm, generator, device, BC, *, decay=None):
     g_read = (None if norm == "global"
               else torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5)
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    plan = Plan(topology=topology, normalization=norm, BT=16, BC=BC,
-                warp_tile=(1, max(1, d_v // 32)), decay=decay is not None,
-                mma_precision="tf32x3")
+    plan = Plan(topology=topology, normalization=norm, BC=BC,
+                warp_tile=(1, max(1, d_v // 32)), decay=decay is not None)
     y, state, _ = _consumer_forward(
         v.float(), tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
         None if g_read is None else g_read.float(), g_write.float(), plan, decay=decay)
@@ -475,8 +473,7 @@ def _prefill(widths, d_v, B, T, H, norm, generator, device, BC, *, decay=None):
 
 
 @pytest.mark.parametrize("widths,BC", [((8, 16), 16), ((64, 64), 64), ((4, 4, 4), 16)])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC, norm):
+def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC):
     """Both consumers, the same one-token input, the same entry state.
 
     At the oracle band and NOT at byte level — see the module docstring for the three
@@ -484,10 +481,10 @@ def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC, norm):
     """
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(4321)
-    pre = _prefill(widths, 64, 2, 1, 2, norm, generator, device, BC)
+    pre = _prefill(widths, 64, 2, 1, 2, "global", generator, device, BC)
 
-    config = freeze_decode_config(pre["topology"], norm, decay=False, BH=2 * 2, device=device,
-                                  mma_precision="tf32x3")
+    config = freeze_decode_config(pre["topology"], "global", decay=False, BH=2 * 2, device=device,
+                                  mma_precision="bf16")
     state = torch.zeros(2, 2, config.N, config.cols, device=device, dtype=torch.float32)
     y, state, _ = decode_forward(
         pre["v"].float(), tuple(t.float() for t in pre["read_levels"]),
@@ -504,8 +501,7 @@ def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC, norm):
 
 
 @pytest.mark.parametrize("widths,BC", [((8, 16), 16), ((4, 4, 4), 16)])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_g7_prefill_decode_seam(widths, BC, norm):
+def test_g7_prefill_decode_seam(widths, BC):
     """Prefill ``L`` with the tiled kernel then decode token ``L+1``, versus prefilling
     ``L+1``.
 
@@ -517,11 +513,11 @@ def test_g7_prefill_decode_seam(widths, BC, norm):
     device = "cuda"
     d_v, B, H, L = 64, 2, 2, 33
     seed = 909
-    full = _prefill(widths, d_v, B, L + 1, H, norm,
+    full = _prefill(widths, d_v, B, L + 1, H, "global",
                     torch.Generator(device=device).manual_seed(seed), device, BC)
     # the same routing, truncated: same generator, same draw order
     gen = torch.Generator(device=device).manual_seed(seed)
-    _ = _prefill(widths, d_v, B, L + 1, H, norm, gen, device, BC)  # replay to fix the draws
+    _ = _prefill(widths, d_v, B, L + 1, H, "global", gen, device, BC)  # replay to fix the draws
 
     from rola.ops.consumer import _consumer_forward
     head = {k: (tuple(t[:, :L] for t in v) if isinstance(v, tuple)
@@ -533,8 +529,8 @@ def test_g7_prefill_decode_seam(widths, BC, norm):
         None if head["g_read"] is None else head["g_read"].float(), head["g_write"].float(),
         full["plan"])
 
-    config = freeze_decode_config(full["topology"], norm, decay=False, BH=B * H, device=device,
-                                  mma_precision="tf32x3")
+    config = freeze_decode_config(full["topology"], "global", decay=False, BH=B * H, device=device,
+                                  mma_precision="bf16")
     tail = {k: (tuple(t[:, L:L + 1] for t in v) if isinstance(v, tuple)
                 else (v[:, L:L + 1] if torch.is_tensor(v) and v.dim() >= 2 else v))
             for k, v in full.items() if k in ("read_levels", "write_levels", "g_read", "g_write", "v")}

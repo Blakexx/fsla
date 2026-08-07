@@ -19,7 +19,7 @@ import torch
 
 from tests.conformance import generators as g
 from tests.conformance.families import FAMILIES, FAMILY_BY_NAME
-from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL, RTOL
+from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -30,7 +30,12 @@ _KERNEL_FAMILIES = [f for f in FAMILIES if f.source != "producer"]
 
 
 def _tolerance(family):
-    return RTOL if family.config["mma"] == "tf32x3" else BF16_RTOL
+    # P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
+    # accepts); `RTOL`, the tf32x3-exact arm's tolerance, is gone with it
+    # (`tests/tier1_semantics/test_consumer_vs_oracle.py` no longer defines it).
+    # Every family now runs bf16-vs-fp64-oracle at the bf16 family bound.
+    del family
+    return BF16_RTOL
 
 
 @pytest.mark.parametrize("family", _KERNEL_FAMILIES, ids=lambda f: f.name)
@@ -79,5 +84,5 @@ def test_the_k0_corner_actually_reaches_an_empty_summary():
     # The same launch is still the oracle's function — the corner is a regime,
     # not a dispensation.
     y_ref, state_ref = case.oracle()
-    assert g.relative(y, y_ref) < RTOL
-    assert g.relative(state, state_ref) < RTOL
+    assert g.relative(y, y_ref) < BF16_RTOL
+    assert g.relative(state, state_ref) < BF16_RTOL

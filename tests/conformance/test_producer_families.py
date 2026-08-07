@@ -27,7 +27,7 @@ import torch
 
 from tests.conformance import generators as g
 from tests.conformance.families import FAMILY_BY_NAME
-from tests.tier1_semantics.test_consumer_vs_oracle import RTOL
+from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -71,7 +71,7 @@ def _view(family, routes):
     c = family.config
     return SimpleNamespace(
         read_levels=routes.read, write_levels=routes.write, widths=tuple(c["widths"]),
-        T=c["T"], BT=c["BT"], P=c["P"], initial_state=None)
+        T=c["T"], BT=g.TOKEN_WORD, P=c["P"], initial_state=None)
 
 
 def _demonstrated_by_some_arm(family, views):
@@ -105,12 +105,12 @@ def test_the_swept_gain_family_agrees_across_both_arms(name):
         with torch.no_grad():
             routes = producer(gain * x)
             y_k, s_k = rola_op(
-                routes, v, expert=PlanOverrides(mma_precision="tf32x3"),
+                routes, v, expert=PlanOverrides(),
                 output_final_state=True)
         y_r, s_r = rola_op(routes, v, _arm="reference", output_final_state=True)
         rel_y, rel_s = g.relative(y_k, y_r), g.relative(s_k, s_r)
-        assert rel_y < RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
-        assert rel_s < RTOL, f"gain {gain}: state differs across arms by {rel_s:.3e}"
+        assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
+        assert rel_s < BF16_RTOL, f"gain {gain}: state differs across arms by {rel_s:.3e}"
         densities.append(_density(routes))
         views.append(_view(family, routes))
 
@@ -136,13 +136,12 @@ def test_the_stale_plan_family_executes_a_plan_priced_on_a_dead_distribution():
         f"the plan bundle ({d_plan:.2f}) and data bundle ({d_data:.2f}) are not "
         "4x apart in realized density; the plan is not meaningfully stale")
 
-    plan = derive_plan(routes_plan, expert=PlanOverrides(mma_precision="tf32x3"),
-                       device=v.device)
+    plan = derive_plan(routes_plan, expert=PlanOverrides(), device=v.device)
     with torch.no_grad():
         y, state, _schedule = execute(plan, routes_data, v)
     y_ref, state_ref = rola_op(routes_data, v, _arm="reference", output_final_state=True)
     rel_y, rel_s = g.relative(y, y_ref), g.relative(state, state_ref)
-    assert rel_y < RTOL, (
+    assert rel_y < BF16_RTOL, (
         f"a stale plan moved y by {rel_y:.3e}: the schedule is assembled from the "
         "REALIZED masks inside _execute, so a plan may only be slow, never wrong")
-    assert rel_s < RTOL, f"a stale plan moved the state by {rel_s:.3e}"
+    assert rel_s < BF16_RTOL, f"a stale plan moved the state by {rel_s:.3e}"

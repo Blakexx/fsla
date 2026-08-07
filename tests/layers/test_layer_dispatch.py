@@ -59,22 +59,16 @@ from conftest import build_layer, build_routes, produce_routing
 from rola import RoLA, dense_routing, sparse_routing
 from rola.expert import PlanOverrides
 from rola.planner.schedule import _SUPPORTED_BC
-from rola.planner.select import SUPPORTED_BT, largest_feasible_bc
+from rola.planner.select import GROUP_TOKENS, largest_feasible_bc
 
-#: The consumer suite's own fp32-against-fp64 tolerance
-#: (`tests/ops/test_rola_v3_consumer.py:RTOL`), quoted at its value rather than
-#: imported so that loosening it here would be a visible edit to this file. It is
-#: applied the same way that suite applies it: max absolute deviation divided by
-#: the reference's own scale. Whole-layer outputs sit behind `o_proj`, a linear map
-#: applied identically to both backends, so the relative comparison basis carries
-#: through unchanged.
-RTOL = 2e-5
-
-#: The bf16 MMA arm's own tolerance (`tests/ops/test_rola_v3_consumer.py:BF16_RTOL`),
-#: quoted at its value on the same terms as `RTOL` above. It is a FORMAT tolerance --
-#: bf16 A/B operands carry 8 mantissa bits and the readout contracts over `BC` of them
-#: -- and it is the tolerance that suite's 43 bf16 gates already run at, not a new one
-#: invented for the layer. It applies ONLY where `mma_precision="bf16"` is asked for.
+#: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
+#: accepts; `SUPPORTED_BT`/the `(BC, BT)` template pair are gone). Every backend
+#: comparison in this file therefore runs bf16-vs-fp64-oracle, and the bound is the
+#: bf16 family bound (`tests/tier1_semantics/test_consumer_vs_oracle.py:BF16_RTOL`),
+#: quoted at its value rather than imported so that loosening it here would be a
+#: visible edit to this file. Max absolute deviation divided by the reference's own
+#: scale; whole-layer outputs sit behind `o_proj`, a linear map applied identically
+#: to both backends, so the relative comparison basis carries through unchanged.
 BF16_RTOL = 1e-2
 
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the V3 consumer is a CUDA kernel")
@@ -99,24 +93,20 @@ def _routing_for(router: str):
     return dense_routing() if router == "dense" else sparse_routing(1.5)
 
 
-def _layer(*, norm: str, decay: str, router: str = "dense", device: str = "cuda",
-           logit_gain: float = 1.0, head_v_dim: int = _DV, branches=None,
-           mma_precision: str = "tf32x3") -> RoLA:
-    """The dispatch fixture, pinned to the EXACT MMA arm by default.
-
-    The layer's own default is `bf16` (the production numeric format, `harvest.md`
-    §30). Every gate in this file compares one backend against another or against
-    the fp64 oracle at the consumer suite's `RTOL`, and bf16's ~1e-2 per-product
-    error would swamp exactly the structural disagreement those gates exist to
-    detect -- the split `MMA_PRECISIONS` and `v3_readout_mma.cuh` both document. So
-    the STRUCTURAL gates pin `tf32x3` here and the default itself is asserted
-    separately, rather than the tolerance being widened.
+def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: str = "cuda",
+           logit_gain: float = 1.0, head_v_dim: int = _DV, branches=None) -> RoLA:
+    """The dispatch fixture. `norm` stays a parameter -- pinned to `"global"` by
+    every caller now that `"raw"` is a dead axis validated at construction
+    (`rola.routing.types.validate_normalization`) -- so a caller need not repeat the
+    pin. `mma_precision` is not a parameter at all: `PlanOverrides`' default is
+    `"bf16"` and it is the only value the dataclass accepts (P26, dead axis), so
+    every backend comparison in this file runs bf16-vs-fp64-oracle at `BF16_RTOL`.
     """
     branches = _BRANCHES if branches is None else tuple(branches)
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=head_v_dim, widths=branches,
         routing=_routing_for(router), normalization=norm, decay=_DECAY[decay],
-        expert=PlanOverrides(mma_precision=mma_precision), layer_idx=0,
+        layer_idx=0,
     ).to(device, torch.float32)
     if logit_gain != 1.0:
         # Sharpens an UNTRAINED exact-entmax router into a real sparse support. The
@@ -158,7 +148,7 @@ def _select_evidence(layer: RoLA, x: torch.Tensor, decay_config):
     routes = layer.routes(x)
     static = _static_inputs(routes, decay=decay_config, overrides=layer.expert)
     hardware = _hardware_facts(routes.device)
-    summaries = routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
+    summaries = routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
     return select_with(DEFAULT_SELECTOR, StatisticsBundle(static=static, hw=hardware, summaries=summaries))
 
 
@@ -173,7 +163,7 @@ def _summaries_for(layer: RoLA, x: torch.Tensor):
 
     routes = layer.routes(x)
     static = _static_inputs(routes, decay=None, overrides=layer.expert)
-    return routes.summaries(BC=static.feasible_BC[0], BT=min(SUPPORTED_BT))
+    return routes.summaries(BC=static.feasible_BC[0], BT=GROUP_TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +171,11 @@ def _summaries_for(layer: RoLA, x: torch.Tensor):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @pytest.mark.parametrize("router,gain", [("dense", 1.0), ("sparse", 8.0)])
 @_CUDA
 def test_a_grad_context_takes_the_oracle_and_every_parameter_gets_a_live_gradient(
-        norm, decay, router, gain):
+        decay, router, gain):
     """Property 1. On CUDA, with grad enabled, the forward-only consumer MUST NOT
     run -- and the proof that it did not is the counter, plus a backward that
     actually reaches every parameter.
@@ -202,7 +191,7 @@ def test_a_grad_context_takes_the_oracle_and_every_parameter_gets_a_live_gradien
     the backend counter and the per-parameter gradient, and those are the ones made.
     """
     torch.manual_seed(3)
-    layer = _layer(norm=norm, decay=decay, router=router, logit_gain=gain)
+    layer = _layer(decay=decay, router=router, logit_gain=gain)
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
 
     out, _, _ = layer(x)
@@ -245,10 +234,9 @@ def test_grad_enabled_but_nothing_requiring_grad_is_not_a_grad_context():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
+def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
     """Property 2, asserted on the counter and on the stamped plan -- not on timing.
 
     The plan the layer ran is recorded, so this also pins that the layer went
@@ -265,7 +253,7 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     is a member of the feasible set, and the evidence's grid is keyed on the choice.
     """
     torch.manual_seed(7)
-    layer = _layer(norm=norm, decay=decay)
+    layer = _layer(decay=decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     with torch.no_grad():
@@ -276,12 +264,11 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(norm, decay):
     assert plan is not None and evidence is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
-    assert plan.normalization == norm
+    assert plan.normalization == "global"
     # The evidence is keyed on the decision it explains, over the whole grid the
-    # selection actually walked.
-    assert (choice.BC, choice.BT) in evidence.grid
-    assert set(evidence.grid) == {
-        (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
+    # selection actually walked -- `{BC: key}` now that `BT` is dead (§4.3).
+    assert choice.BC in evidence.grid
+    assert set(evidence.grid) == set(layer.feasible_BC)
     assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
     assert plan.occupancy_blocks_per_sm == evidence.blocks_per_sm
 
@@ -309,7 +296,7 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     asserted beside it because it is the quantity the sharpening directly moves.
     """
     torch.manual_seed(11)
-    layer = _layer(norm="raw", decay="none", router="sparse")
+    layer = _layer(decay="none", router="sparse")
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 128, _HIDDEN, device="cuda")
     with torch.no_grad():
@@ -332,20 +319,22 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @pytest.mark.parametrize("router,gain", [("dense", 1.0), ("sparse", 8.0)])
 @_CUDA
-def test_the_two_backends_agree_on_the_same_inputs(norm, decay, router, gain):
+def test_the_two_backends_agree_on_the_same_inputs(decay, router, gain):
     """Property 3, on ONE layer instance and ONE input, so the only difference
     between the two runs is which backend executed.
 
     The grad-context path is forced by `requires_grad`, the no-grad path by
     `torch.no_grad()`; both consume the identical parameters and the identical `x`.
-    Comparison basis and tolerance are the consumer suite's, unmodified.
+    `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides` accepts,
+    P26), so this is also THE layer's default-arm numerical gate -- there is no
+    second, tighter "structural" arm left to compare against, and the comparison
+    runs at `BF16_RTOL`, the bf16 family bound.
     """
     torch.manual_seed(13)
-    layer = _layer(norm=norm, decay=decay, router=router, logit_gain=gain)
+    layer = _layer(decay=decay, router=router, logit_gain=gain)
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     if router == "sparse":
         assert _sparsity(layer, x) > 0.2, "the sparse fixture is vacuously dense"
@@ -361,80 +350,22 @@ def test_the_two_backends_agree_on_the_same_inputs(norm, decay, router, gain):
     reference = oracle_out.detach()
     scale = float(reference.abs().max())
     deviation = float((cuda_out - reference).abs().max()) / scale
-    assert deviation < RTOL, (
-        f"backends disagree at {deviation:.3e} (RTOL={RTOL:.1e}); norm={norm} decay={decay} "
-        f"router={router}")
-
-
-@_CUDA
-@pytest.mark.parametrize("decay", ["none", "leaf_mass"])
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_the_shipped_bf16_default_layer_agrees_with_the_oracle(norm, decay):
-    """The DEFAULT arm, numerically, through `RoLA.forward` -- not a plan field.
-
-    Every other numerical gate in this file and in `test_rola_v3_layer_paging.py`
-    pins `tf32x3`, because their comparison bases (the consumer suite's `RTOL`, and
-    paging's derived fp32 reassociation envelope) are bases bf16 rounding would
-    swamp. That pinning is correct and stays, but on its own it would leave the arm
-    that actually SHIPS with no layer-level number checked anywhere -- the default
-    gate next to this one asserts `last_selected_plan.mma_precision`, which a
-    bf16-only regression in the readout would sail straight past.
-
-    So this is the same property as `test_the_two_backends_agree_on_the_same_inputs`
-    -- one layer instance, one input, the oracle backend against the CUDA backend --
-    run on `mma_precision="bf16"` at that arm's OWN declared `BF16_RTOL`. Both decay
-    arms run for coverage, but only `decay=None` DISCRIMINATES here and the
-    difference is measured rather than assumed: at this cell (`branches=[8,16]`,
-    `BC=16`, `L=96`, `realized_leaf` both arms) the deviation is 2.4e-7 on tf32x3 and
-    4.5e-4 on bf16 with `decay=None`, while under LeafMassDecay both formats land on
-    the same 6.4e-7 -- the element setting the max there is fixed by the
-    token-sequential intra walk, which the MMA format does not touch. So the
-    falsifiability assertion below is made on the leg that carries it, and the decay
-    leg is a coverage gate; the axis is separately proved live under decay at the
-    CONSUMER level (`test_rola_v3_consumer.py::test_the_compiled_out_gather_is_exact_
-    under_decay` and `..._mma_precision_is_a_live_axis_on_both_decay_arms`).
-    """
-    torch.manual_seed(29)
-    layer = _layer(norm=norm, decay=decay, mma_precision="bf16")
-    assert layer.expert.mma_precision == "bf16"
-    x = torch.randn(1, 96, _HIDDEN, device="cuda")
-
-    x_grad = x.clone().requires_grad_(True)
-    oracle_out, _, _ = layer(x_grad)
-    assert layer.last_execution_backend == "oracle"
-    layer.eval()
-    with torch.no_grad():
-        cuda_out, _, _ = layer(x)
-    assert layer.last_execution_backend == "cuda"
-    assert layer.last_selected_plan.mma_precision == "bf16", (
-        "the layer did not forward its own bf16 default into the plan, so this gate "
-        "would be silently re-measuring the tf32x3 arm")
-
-    reference = oracle_out.detach()
-    deviation = float((cuda_out - reference).abs().max()) / float(reference.abs().max())
     assert deviation < BF16_RTOL, (
-        f"the shipped bf16 layer disagrees with the oracle at {deviation:.3e} "
-        f"(BF16_RTOL={BF16_RTOL:.1e}); norm={norm} decay={decay}")
-    if decay == "none":
-        # The arm is REAL, not tf32x3 under another name: on this leg bf16's format
-        # error is three orders above the exact arm's, so a deviation at `RTOL` would
-        # mean the pin leaked and this gate was re-measuring tf32x3.
-        assert deviation > RTOL, (
-            f"deviation {deviation:.3e} is at the tf32x3 arm's tolerance -- this gate "
-            "is not exercising bf16 and would pass with the format flipped back")
+        f"backends disagree at {deviation:.3e} (BF16_RTOL={BF16_RTOL:.1e}); "
+        f"decay={decay} router={router}")
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_the_two_backends_agree_on_the_carried_state_they_hand_back(norm, decay):
+def test_the_two_backends_agree_on_the_carried_state_they_hand_back(decay):
     """The cache surface, which is the one place the two backends' outputs are not
     just compared but INTERCHANGED.
 
-    Both write `[B, H, N, d_v + (norm == 'global')]` with the same meaning; only the
-    accumulation dtype differs (fp64 oracle, fp32 consumer) and both entry points
-    accept either. A continuation may therefore cross backends, which is what this
-    asserts: same shape, and the same values at `RTOL`.
+    Both write `[B, H, N, d_v + 1]` with the same meaning (the mass column is
+    unconditional now that `"raw"` is dead); only the accumulation dtype differs
+    (fp64 oracle, fp32 consumer) and both entry points accept either. A
+    continuation may therefore cross backends, which is what this asserts: same
+    shape, and the same values at `BF16_RTOL`.
 
     Fix pass item 3f (wiring-review.md §9 NOTE): this gate was `decay='none'` only;
     it is now parametrized over both decay arms, closing the narrower-than-the-claim
@@ -442,7 +373,7 @@ def test_the_two_backends_agree_on_the_carried_state_they_hand_back(norm, decay)
     here, only asserted empirically by the reviewer).
     """
     torch.manual_seed(17)
-    layer = _layer(norm=norm, decay=decay)
+    layer = _layer(decay=decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode;
     # the oracle leg below still takes 'oracle' because `x` does not require grad but
     # the (unfrozen) projection parameters do, so `v` requires grad under enable_grad.
@@ -460,13 +391,13 @@ def test_the_two_backends_agree_on_the_carried_state_they_hand_back(norm, decay)
     assert states["oracle"].shape == states["cuda"].shape
     scale = float(states["oracle"].abs().max())
     deviation = float((states["cuda"].double() - states["oracle"].double()).abs().max()) / scale
-    assert deviation < RTOL, f"carried states disagree at {deviation:.3e} (RTOL={RTOL:.1e})"
+    assert deviation < BF16_RTOL, (
+        f"carried states disagree at {deviation:.3e} (BF16_RTOL={BF16_RTOL:.1e})")
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(norm, decay):
+def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(decay):
     """Fix pass item 3f (wiring-review.md §9 NOTE): the prior gate compared two
     INDEPENDENTLY produced states; it never fed one backend's state into the other
     backend's entry point, which is the "entry points accept either dtype" half of
@@ -483,7 +414,7 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(norm, 
     reviewer checked it.
     """
     torch.manual_seed(37)
-    layer = _layer(norm=norm, decay=decay)
+    layer = _layer(decay=decay)
     layer.eval()
     from rola.state import RoLAState
     x0 = torch.randn(1, 48, _HIDDEN, device="cuda")
@@ -508,10 +439,9 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(norm, 
     assert torch.isfinite(continued_state).all()
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level(norm, decay):
+def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level(decay):
     """The other half of item 3f's cross-feed: a CUDA-produced (fp32) carried state
     consumed by a grad-context oracle step. The LAYER refuses this categorically
     (consuming any carried state under grad raises, regardless of which backend
@@ -524,7 +454,7 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     from rola.planner.calibration.cost_model import select_plan  # G16
 
     torch.manual_seed(41)
-    layer = _layer(norm=norm, decay=decay)
+    layer = _layer(decay=decay)
     layer.eval()
     producer = layer.routes.producers[0]
     x = torch.randn(1, 48, _HIDDEN, device="cuda")
@@ -533,11 +463,11 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
         v = layer.v_proj(x).view(1, 48, _H, _DV)
         ro = produce_routing(
             x, None, v, producer.route_W, producer.route_bias, layer.routes.gain_W,
-            layer.routes.gain_bias, layer.topology, norm)
+            layer.routes.gain_bias, layer.topology, "global")
         decay_config = _decay_config(layer)
         plan, _axes = select_plan(
             ro.read_levels, ro.write_levels, layer.topology, layer.state_block,
-            normalization=norm, decay=decay_config is not None)
+            normalization="global", decay=decay_config is not None)
         _out, cuda_state, _sched = _consumer_forward(
             v, ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, plan,
             initial_state=None, decay=decay_config)
@@ -549,10 +479,10 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     with torch.enable_grad():
         ro2 = produce_routing(
             x, None, v2, producer.route_W, producer.route_bias, layer.routes.gain_W,
-            layer.routes.gain_bias, layer.topology, norm)
+            layer.routes.gain_bias, layer.topology, "global")
         out2, oracle_state2 = naive_rola(
             v2, ro2.read_levels, ro2.write_levels, ro2.g_read, ro2.g_write,
-            layer.topology, _decay_config(layer), norm,
+            layer.topology, _decay_config(layer), "global",
             initial_state=cuda_state, output_final_state=True)
     assert torch.isfinite(out2).all()
     assert oracle_state2.dtype == torch.float64
@@ -574,7 +504,7 @@ def test_a_cuda_context_the_consumer_cannot_launch_raises_rather_than_using_the_
     configuration must reach the kernel and be rejected there.
     """
     torch.manual_seed(19)
-    layer = _layer(norm="raw", decay="none", head_v_dim=48)
+    layer = _layer(decay="none", head_v_dim=48)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
     with torch.no_grad(), pytest.raises(RuntimeError, match="d_v"):
@@ -774,24 +704,6 @@ def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
     assert pinned.feasible_BC == (16,)
 
 
-def test_the_layer_selects_the_production_bf16_readout_by_default():
-    """The LAYER's default is the production format, and it reaches the plan.
-
-    `_layer` pins `tf32x3` so the structural gates in this file measure structure
-    rather than bf16 rounding, which means nothing else here would notice if the
-    layer stopped forwarding its own default. This asserts both halves: the
-    constructor default is `bf16` (`PlanOverrides`' own default), and the plan the
-    forward selects carries it.
-    """
-    layer = _layer(norm="global", decay="none", mma_precision="bf16")
-    assert layer.expert.mma_precision == "bf16"
-    layer.eval()
-    with torch.no_grad():
-        layer(torch.randn(1, 96, _HIDDEN, device="cuda"))
-    assert layer.last_selected_plan.mma_precision == "bf16"
-    default_routes = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
-    assert RoLA(_HIDDEN, _H, default_routes, layer_idx=0).expert.mma_precision == "bf16"
-
 
 # ---------------------------------------------------------------------------
 # H2 (coverage-closure): the dispatch + selection properties on a topology where
@@ -804,14 +716,13 @@ def test_the_layer_selects_the_production_bf16_readout_by_default():
 _BC64_BRANCHES = (4, 8, 8)  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(norm, decay):
+def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(decay):
     """The `test_a_no_grad_cuda_context_takes_the_plan_selected_consumer`
     properties, on the topology whose feasible set contains the flagship BC."""
     torch.manual_seed(7)
-    layer = _layer(norm=norm, decay=decay, branches=_BC64_BRANCHES)
+    layer = _layer(decay=decay, branches=_BC64_BRANCHES)
     layer.eval()
     assert 64 in layer.feasible_BC, "fixture rot: this topology must admit BC=64"
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
@@ -823,11 +734,10 @@ def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(norm, decay):
     assert plan is not None and evidence is not None
     assert plan.BC in layer.feasible_BC
     assert plan.decay is (decay == "leaf_mass")
-    assert plan.normalization == norm
-    assert (choice.BC, choice.BT) in evidence.grid
-    assert set(evidence.grid) == {
-        (BC, BT) for BC in layer.feasible_BC for BT in SUPPORTED_BT}
-    assert any(BC == 64 for BC, _BT in evidence.grid), (
+    assert plan.normalization == "global"
+    assert choice.BC in evidence.grid
+    assert set(evidence.grid) == set(layer.feasible_BC)
+    assert 64 in evidence.grid, (
         "the walked grid never priced BC=64; the feasible set is not reaching "
         "selection")
     assert evidence.blocks_per_sm >= 1 and evidence.waves >= 1.0
@@ -873,26 +783,27 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
 # ---------------------------------------------------------------------------
 # H8 (coverage-closure): bf16 x paging. Every paging gate pins tf32x3 (so the
 # derived fp32 envelope stays the one that was derived), and every bf16 gate runs
-# unpaged -- the PRODUCTION precision had never launched over a page table. The
-# state is atomic-free and deterministic at any precision, so paged-vs-unpaged
-# state stays torch.equal; y is held to the oracle at BF16_RTOL, the bf16 arm's
-# own tier bound.
+# unpaged. `mma_precision` is a dead axis now (bf16 is the only value
+# `PlanOverrides` accepts, P26; it never even reaches `Plan` any more -- see
+# `_static_tier0`'s hardcoded `mma_precision="bf16"`), so every gate in this file
+# is already bf16 and this row's remaining, still-live claim is paging invisibility
+# itself. The state is atomic-free and deterministic, so paged-vs-unpaged state
+# stays torch.equal; y is held to the oracle at BF16_RTOL, the bf16 family bound.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @_CUDA
-def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance(norm):
+def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance():
     from rola.state import RoLAState
 
     torch.manual_seed(23)
-    unpaged = _layer(norm=norm, decay="none", mma_precision="bf16")
+    unpaged = _layer(decay="none")
     # Old `paging=True` -> `PlanOverrides(paging=True)`, the UNCAPPED paging arm
     # (`max_physical_pages=None` provisions the dense limit, which can never bind).
     paged = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        routing=dense_routing(), normalization=norm, decay=None,
-        expert=PlanOverrides(mma_precision="bf16", paging=True),
+        routing=dense_routing(), normalization="global", decay=None,
+        expert=PlanOverrides(paging=True),
         layer_idx=0,
     ).to("cuda", torch.float32)
     paged.load_state_dict(unpaged.state_dict())
@@ -909,8 +820,6 @@ def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance(norm):
         y_u, _, _ = unpaged(x, past_key_values=cache_u, use_cache=True)
         y_p, _, _ = paged(x, past_key_values=cache_p, use_cache=True)
 
-    assert unpaged.last_selected_plan.mma_precision == "bf16"
-    assert paged.last_selected_plan.mma_precision == "bf16"
     assert paged.last_execution_backend == "cuda"
     assert torch.equal(cache_u[0].recurrent_state, cache_p[0].recurrent_state), (
         "bf16 x paging moved the carried state; the state path has no atomic and "

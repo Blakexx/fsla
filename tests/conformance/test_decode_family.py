@@ -69,9 +69,8 @@ def _f32(d):
 # 1. The prefill -> decode handoff, across the regime arms
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("norm", ["raw", "global"])
 @pytest.mark.parametrize("decay_on", [False, True])
-def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(norm, decay_on):
+def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
     """Tiled prefill over T = 33 (a ragged tail — the seam consumes a state the
     chunked path produced through a partial tile), then four decode steps, each
     graded against the chained fp64 oracle. Sparse routing, so decode's read
@@ -82,30 +81,30 @@ def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(norm, decay_on)
     T, steps = 33, 4
     decay = (None if not decay_on else
              LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))
-    pre = _draw(gen, device, T, 0.5, 0.4, norm=norm)
-    plan = Plan(topology=g._topology(_WIDTHS, _DV), normalization=norm, BT=16, BC=16,
-                warp_tile=(1, _DV // 32), decay=decay_on, mma_precision="tf32x3")
+    pre = _draw(gen, device, T, 0.5, 0.4, norm="global")
+    plan = Plan(topology=g._topology(_WIDTHS, _DV), normalization="global", BC=16,
+                warp_tile=(1, _DV // 32), decay=decay_on)
     f = _f32(pre)
     _y_pre, state, _ = _consumer_forward(
         f["v"], f["read"], f["write"], f["g_read"], f["g_write"], plan, decay=decay)
 
     _y_ref, ref_state = naive_rola(
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
-        plan.topology, decay, norm, output_final_state=True)
+        plan.topology, decay, "global", output_final_state=True)
 
-    config = freeze_decode_config(plan.topology, norm, decay=decay_on, BH=_B * _H,
-                                  device=device, mma_precision="tf32x3")
+    config = freeze_decode_config(plan.topology, "global", decay=decay_on, BH=_B * _H,
+                                  device=device, mma_precision="bf16")
     state = state.reshape(_B, _H, config.N, config.cols).clone()
     workspace, cold_seen = None, False
     for s in range(steps):
-        step = _draw(gen, device, 1, 0.5, 0.4, norm=norm)
+        step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
         fs = _f32(step)
         y, state, workspace = decode_forward(
             fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
-            plan.topology, decay, norm, initial_state=ref_state, output_final_state=True)
+            plan.topology, decay, "global", initial_state=ref_state, output_final_state=True)
         assert g.relative(y, y_ref) < DECODE_RTOL, f"step {s}: y off the oracle"
         assert g.relative(state, ref_state) < DECODE_RTOL, f"step {s}: state off the oracle"
 
@@ -140,7 +139,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     m0[..., _DV] = m0[..., _DV].abs()
 
     config = freeze_decode_config(topology, "global", decay=True, BH=_B * _H,
-                                  device=device, mma_precision="tf32x3")
+                                  device=device, mma_precision="bf16")
     state, ref_state = m0.float().clone(), m0
     workspace, errors = None, {}
     for s in range(1, max(_CHECKPOINTS) + 1):
@@ -186,13 +185,13 @@ def test_frozen_density_declarations_are_performance_only_under_drift():
     configs = {
         "dense-declared": freeze_decode_config(
             topology, "global", decay=False, BH=_B * _H, device=device,
-            static_density=((True, True),) * D, mma_precision="tf32x3"),
+            static_density=((True, True),) * D, mma_precision="bf16"),
         "sparse-declared": freeze_decode_config(
             topology, "global", decay=False, BH=_B * _H, device=device,
-            static_density=((False, False),) * D, mma_precision="tf32x3"),
+            static_density=((False, False),) * D, mma_precision="bf16"),
         "undeclared": freeze_decode_config(
             topology, "global", decay=False, BH=_B * _H, device=device,
-            mma_precision="tf32x3"),
+            mma_precision="bf16"),
     }
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,

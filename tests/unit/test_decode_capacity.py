@@ -105,14 +105,13 @@ def test_the_two_feeder_flag_packings_are_the_same_word_bit_for_bit(widths):
         density = tuple((read[l], write[l]) for l in range(D))
 
         via_density = freeze_decode_config(
-            topology, "raw", decay=False, BH=1, device="cpu",
+            topology, "global", decay=False, BH=1, device="cpu",
             static_density=density, n_split=1, mma_precision="bf16").feeder_flags
 
         flags = FeederFlags(read=read, write=write)
-        frozen = FrozenConfig(choice=ConfigChoice(BC=16, BT=16,
-                                                  feeder_flags=flags))
+        frozen = FrozenConfig(choice=ConfigChoice(BC=16, feeder_flags=flags))
         via_canonical = freeze_decode_config(
-            topology, "raw", decay=False, BH=1, device="cpu",
+            topology, "global", decay=False, BH=1, device="cpu",
             frozen=frozen, n_split=1, mma_precision="bf16").feeder_flags
 
         assert via_density == via_canonical == flags.packed(), (
@@ -129,9 +128,8 @@ def test_supplying_both_flag_sources_is_refused_rather_than_ordered():
     from rola.planner.select import ConfigChoice, FrozenConfig
 
     topology = _topology((8, 16))
-    frozen = FrozenConfig(choice=ConfigChoice(
-        BC=16, BT=16, feeder_flags=FeederFlags.none(2)))
+    frozen = FrozenConfig(choice=ConfigChoice(BC=16, feeder_flags=FeederFlags.none(2)))
     with pytest.raises(ValueError, match="never both"):
-        freeze_decode_config(topology, "raw", decay=False, BH=1, device="cpu",
+        freeze_decode_config(topology, "global", decay=False, BH=1, device="cpu",
                              frozen=frozen, static_density=((False, False),) * 2,
                              n_split=1, mma_precision="bf16")

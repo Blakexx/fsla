@@ -53,8 +53,15 @@ _WIDTHS = (4, 8, 8)
 
 
 def _reordering_bound(y, layer, *, BC):
-    """See `tests/ops/test_rola_v3_paging.py` -- the same derived fp32
+    """See `tests/tier2_geometry/test_paging_equivalence.py` -- the same derived
     reassociation bound on the §5 readout's atomic accumulation.
+
+    P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
+    accepts), so `y` is bf16-cast after the fp32 divide on EVERY arm now (`rola/
+    layers/rola.py`'s `v`/`out` casts) -- there is no more fp32-precision arm to
+    derive an `eps_fp32`-sized envelope from, and the bound moved to
+    `torch.finfo(bfloat16).eps`, the same fix the op-level paging suite made for
+    the same reason.
 
     `owners_total = N / BC` is read off the TOPOLOGY and the caller-known pinned
     `BC`, not off `layer.last_selected_plan` (see the module docstring's BUG
@@ -62,22 +69,14 @@ def _reordering_bound(y, layer, *, BC):
     is deterministic and does not need to be read back from the plan.
     """
     n = layer.topology.N // BC
-    return n * n * torch.finfo(torch.float32).eps * y.abs().max()
+    return n * n * torch.finfo(torch.bfloat16).eps * y.abs().max()
 
 
-def _layer(*, paging, max_physical_pages=None, seed=0, state_norm="raw",
-           mma_precision="tf32x3", state_block=16, decay="none"):
-    """The paging fixture, pinned to the EXACT MMA arm.
-
-    Every gate in this file compares two decompositions of the same computation
-    against `_reordering_bound`, which is a DERIVED fp32 reassociation envelope
-    (`n^2 * eps`) on the readout's atomic accumulation. That derivation is about
-    fp32 addition order and nothing else, so it only bounds an arm whose operands
-    are fp32-precision -- under the production `bf16` default a continuation that
-    tiles the tokens differently rounds its MMA operands differently, which is
-    bf16-sized rather than eps-sized and is not what these gates are measuring. The
-    default is asserted in `test_layer_dispatch.py`; here the arm is pinned so the
-    envelope stays the one that was derived.
+def _layer(*, paging, max_physical_pages=None, seed=0, state_block=16, decay="none"):
+    """The paging fixture. `mma_precision` is not a parameter: `PlanOverrides`'
+    default is `"bf16"` and it is the only value the dataclass accepts (P26, dead
+    axis). `normalization` is pinned `"global"` for the same reason `"raw"` is
+    gone everywhere else (`rola.routing.types.validate_normalization`).
     """
     torch.manual_seed(seed)
     # `state_block = 16` default: pins the historical fixture shape (an expert pin
@@ -85,19 +84,18 @@ def _layer(*, paging, max_physical_pages=None, seed=0, state_norm="raw",
     # it was measured at); the H2 flagship cell overrides it with 64.
     return build_layer(
         hidden_size=64, num_heads=2, d_v=32, widths=_WIDTHS, routing=dense_routing(),
-        normalization=state_norm, decay=_DECAY[decay], layer_idx=0,
-        expert=PlanOverrides(state_block=state_block, mma_precision=mma_precision,
+        normalization="global", decay=_DECAY[decay], layer_idx=0,
+        expert=PlanOverrides(state_block=state_block,
                              paging=paging, max_physical_pages=max_physical_pages),
     ).cuda().eval()
 
 
-@pytest.mark.parametrize("state_norm", ["raw", "global"])
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
-def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(state_norm, decay):
+def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(decay):
     torch.manual_seed(3)
     x = torch.randn(2, 48, 64, device="cuda")
-    unpaged = _layer(paging=False, seed=5, state_norm=state_norm, decay=decay)
-    paged = _layer(paging=True, seed=5, state_norm=state_norm, decay=decay)
+    unpaged = _layer(paging=False, seed=5, decay=decay)
+    paged = _layer(paging=True, seed=5, decay=decay)
     paged.load_state_dict(unpaged.state_dict())
 
     with torch.no_grad():

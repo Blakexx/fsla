@@ -75,11 +75,14 @@ def test_every_family_realizes_declared_axis_values_only():
 # ---------------------------------------------------------------------------
 
 #: The instantiation values NOT part of the default cell the named regime
-#: families run at. (BT 16, BC 16, DV 64, D 2, tf32x3, both DECAY, both GLOBAL,
-#: P 1, unpaged is the default; DECAY/GLOBAL are fully arm-swept by variants.)
+#: families run at. (BC 16, DV 64, D 2, both DECAY, P 1, unpaged is the
+#: default; DECAY is fully arm-swept by variants.) P26: `BT`/`FOLD_PREC`/
+#: `READ_PREC` are gone from `AXIS_DECLARATIONS` entirely (no `BT` template
+#: parameter; `mma_precision` is single-valued) rather than pinned mid-cells,
+#: so they no longer appear as instantiation coordinates at all.
 _OFF_MID_INSTANTIATION: frozenset[tuple] = frozenset({
-    ("BT", 32), ("BC", 64), ("DV", 32), ("D", 1), ("D", 3), ("D", 4),
-    ("FOLD_PREC", 1), ("READ_PREC", 1), ("P", 2), ("P", 3), ("P", 4),
+    ("BC", 64), ("DV", 32), ("D", 1), ("D", 3), ("D", 4),
+    ("P", 2), ("P", 3), ("P", 4),
     ("paging", True),
 })
 
@@ -136,8 +139,8 @@ def test_the_census_join_lists_every_empty_cell():
 def test_the_join_has_the_size_its_rule_implies():
     """The rule's arithmetic, pinned so an edit to the rule pieces cannot
     silently reshape the list: |cross| - |exceptions| + |extras|."""
-    assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 120
-    assert len(EXPECTED_EMPTY) == 120 - len(_EXCEPTIONS) + len(_EXTRAS) == 117
+    assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 90
+    assert len(EXPECTED_EMPTY) == 90 - len(_EXCEPTIONS) + len(_EXTRAS) == 87
 
 
 @pytest.mark.parametrize("cell", sorted(_EXCEPTIONS | _EXTRAS, key=str), ids=str)

@@ -80,11 +80,15 @@ class Family:
     #: keys present. `__post_init__` enforces completeness so a family cannot
     #: silently opt out of an axis.
     regime: Mapping[str, str]
-    #: The instantiation the family runs at. Keys: widths, d_v, B, T, H, BT, BC,
-    #: norm, decay, mma, P, paging, seed — plus generator parameters under
-    #: `params`. The census derives the template/runtime axis values from these,
-    #: and a CUDA meta-test asserts they match the REALIZED plan, so a
-    #: declaration cannot lie (`test_family_meta.py`).
+    #: The instantiation the family runs at. Keys: widths, d_v, B, T, H, BC,
+    #: norm, decay, P, paging, seed — plus generator parameters under `params`.
+    #: The census derives the template/runtime axis values from these, and a
+    #: CUDA meta-test asserts they match the REALIZED plan, so a declaration
+    #: cannot lie (`test_family_meta.py`). P26: `BT` and `mma` are DEAD (the
+    #: scan word is the fixed 32-token `TOKEN_WORD`, no `Plan.BT` field exists;
+    #: `mma_precision` is bf16-only) and are gone from this schema entirely
+    #: rather than pinned-and-carried, since neither is read by anything that
+    #: consumes a family any more.
     config: Mapping[str, Any]
     basis: str
     #: The generator `generators.py` dispatches on; defaults to the source name.
@@ -101,7 +105,7 @@ class Family:
             assert value in REGIME_AXES[axis], (
                 f"family {self.name!r}: {value!r} is not a declared value of regime "
                 f"axis {axis!r}")
-        for key in ("widths", "d_v", "T", "BT", "BC", "norm", "decay", "mma", "P", "paging", "seed"):
+        for key in ("widths", "d_v", "T", "BC", "norm", "decay", "P", "paging", "seed"):
             assert key in self.config, f"family {self.name!r} config lacks {key!r}"
 
     @property
@@ -113,26 +117,24 @@ class Family:
 
         The names and value domains are ``tests.tier2_geometry.matrix``'s — the
         conformance census EXTENDS that census by one dimension rather than
-        keeping a parallel one. ``FOLD_PREC``/``READ_PREC`` encode the
-        ``mma_precision`` name by its index in the shipped
-        ``MMA_PRECISIONS = ("tf32x3", "bf16")`` order, which is the template
-        literal the mangled names carry.
+        keeping a parallel one. P26 collapsed `AXIS_DECLARATIONS` to
+        `(BC, DV, D, DECAY, P, paging)`: `BT` is not a template parameter,
+        `mma_precision`/`normalization` are single-valued (bf16, global) and
+        carry no axis at all any more.
         """
         c = self.config
-        prec = ("tf32x3", "bf16").index(c["mma"])
         return {
-            "BT": c["BT"], "BC": c["BC"], "DV": c["d_v"], "D": len(c["widths"]),
-            "FOLD_PREC": prec, "READ_PREC": prec,
-            "DECAY": int(bool(c["decay"])), "GLOBAL": int(c["norm"] == "global"),
+            "BC": c["BC"], "DV": c["d_v"], "D": len(c["widths"]),
+            "DECAY": int(bool(c["decay"])),
             "P": c["P"], "paging": bool(c["paging"]),
         }
 
 
-def _cfg(widths=(8, 8), d_v=64, B=1, T=128, H=2, BT=16, BC=16, norm="raw",
-         decay=False, mma="tf32x3", P=1, paging=False, seed=0, m0=False,
+def _cfg(widths=(8, 8), d_v=64, B=1, T=128, H=2, BC=16, norm="global",
+         decay=False, P=1, paging=False, seed=0, m0=False,
          p_read=1.0, p_write=1.0):
-    return dict(widths=widths, d_v=d_v, B=B, T=T, H=H, BT=BT, BC=BC, norm=norm,
-                decay=decay, mma=mma, P=P, paging=paging, seed=seed, m0=m0,
+    return dict(widths=widths, d_v=d_v, B=B, T=T, H=H, BC=BC, norm=norm,
+                decay=decay, P=P, paging=paging, seed=seed, m0=m0,
                 p_read=p_read, p_write=p_write)
 
 
@@ -224,18 +226,23 @@ _STRATIFIED: tuple[Family, ...] = (
         dict(density="sparse", coherence="iid", rw_correlation="independent",
              mass="spread", tail="ragged", support="partial"),
         _cfg(seed=109, T=83, p_read=0.6, p_write=0.6, norm="global"),
-        basis="T = 83 under BT = 16: a five-token partial tile. The stratified "
-              "twin of the adversarial ragged corner, at mid-box density."),
-    #: ARM VARIANTS. The named cells above run at one (norm, decay) arm each;
-    #: these close the near-default census holes — each variant exists because
-    #: the join listed its (DECAY/GLOBAL x regime) pair as empty and the pair is
-    #: CHEAP to cover, which the design prefers to expecting it empty.
+        basis="T = 83, not a multiple of the fixed 32-token scan word "
+              "(`TOKEN_WORD`): a partial word. The stratified twin of the "
+              "adversarial ragged corner, at mid-box density."),
+    #: ARM VARIANTS. The named cells above run at one decay arm each; these
+    #: close the near-default census holes — each variant exists because the
+    #: join listed its (DECAY x regime) pair as empty and the pair is CHEAP to
+    #: cover, which the design prefers to expecting it empty. P26: `norm` is no
+    #: longer a second axis here -- `"raw"` is dead and every family runs
+    #: `"global"` -- so these variants now cover DECAY alone (their names keep
+    #: the historical "-raw-"/"-global-" tokens for stability; they no longer
+    #: name a live arm).
     Family(
         "stratified/dense-full-raw-plain", "stratified",
         dict(density="dense", coherence="iid", rw_correlation="independent",
              mass="spread", tail="divisible", support="full"),
         _cfg(seed=111),
-        basis="the dense-full cell at the (raw, no-decay) arm."),
+        basis="the dense-full cell at the no-decay arm."),
     Family(
         "stratified/tied-global-decay", "stratified",
         dict(density="sparse", coherence="iid", rw_correlation="tied",
@@ -264,8 +271,8 @@ _STRATIFIED: tuple[Family, ...] = (
         dict(density="sparse", coherence="iid", rw_correlation="independent",
              mass="spread", tail="ragged", support="partial"),
         _cfg(seed=119, T=83, p_read=0.6, p_write=0.6, decay=True),
-        basis="the ragged cell at the (raw, decay) arm — a partial tile is "
-              "where a decay clock accumulated per full tile would slip."),
+        basis="the ragged cell at the decay arm — a partial word is where a "
+              "decay clock accumulated per full word would slip."),
 )
 
 
@@ -370,20 +377,23 @@ _ADVERSARIAL: tuple[Family, ...] = (
         dict(density="sparse", coherence="iid", rw_correlation="independent",
              mass="spread", tail="ragged", support="partial"),
         _cfg(seed=304, T=83, P=3, norm="global", p_read=0.6, p_write=0.6),
-        basis="T = 83 under BT = 16 AND a forced P = 3 over 6 tiles: a partial "
-              "last tile inside unequal segments (2/2/2 tiles but 32/32/19 "
-              "tokens). Both off-by-one surfaces at once — the tile-range mask's "
+        basis="T = 83 under the fixed 32-token scan word AND a forced P = 3 "
+              "over 3 words: one word per segment, the last genuinely partial "
+              "(32/32/19 tokens). Both off-by-one surfaces at once — the "
+              "tile-range mask's "
               "and the segment boundary's."),
     Family(
         "corner/chunk-boundary", "adversarial",
         dict(density="sparse", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),
-        _cfg(seed=305, m0=True, decay=True),
+        _cfg(seed=305, T=192, m0=True, decay=True),
         params=dict(boundary_tiles=(2, 5), live_before=4, live_after=2),
-        basis="the write support FLIPS exactly at tile boundaries (tokens 32 and "
-              "80 under BT = 16): the support-change-at-a-chunk-boundary corner, "
-              "where an inclusive/exclusive tile-range error moves which tile "
-              "last touches a leaf. Committed after the segment-boundary fixture "
+        basis="the write support FLIPS exactly at tile boundaries (tokens 64 and "
+              "160 under the fixed 32-token scan word `TOKEN_WORD`; `T = 192` so "
+              "6 words exist to hold both boundary tiles): the "
+              "support-change-at-a-chunk-boundary corner, where an "
+              "inclusive/exclusive tile-range error moves which tile last "
+              "touches a leaf. Committed after the segment-boundary fixture "
               "defect test_p_composition.py records — a support that changes "
               "mid-chunk tests a different (weaker) thing.",
         generator="chunk_boundary"),
@@ -402,24 +412,25 @@ _ADVERSARIAL: tuple[Family, ...] = (
 def _sweep() -> tuple[Family, ...]:
     rows: list[Family] = []
     seed = 500  # deterministic, order-derived — never hash(), which is salted per process
-    for BT in (16, 32):
-        for BC in (16, 64):
-            for d_v in (32, 64):
-                for norm in ("raw", "global"):
-                    for decay in (False, True):
-                        for mma in ("tf32x3", "bf16"):
-                            seed += 1
-                            rows.append(Family(
-                                f"sweep/BT{BT}-BC{BC}-dv{d_v}-{norm}-"
-                                f"{'decay' if decay else 'plain'}-{mma}",
-                                "stratified", dict(**_MID),
-                                _cfg(widths=(8, 8), d_v=d_v, T=64, BT=BT, BC=BC,
-                                     norm=norm, decay=decay, mma=mma, m0=True,
-                                     p_read=0.5, p_write=0.5,
-                                     seed=seed),
-                                basis="the template grid at the mid-box regime: the "
-                                      "same claimed cell at every shipped BT x BC x "
-                                      "d_v x norm x decay x precision."))
+    # P26: `BT`, `norm`, `mma` dropped from this grid entirely -- `BT` is not a
+    # template parameter (the scan word is the fixed `TOKEN_WORD`), and
+    # `normalization`/`mma_precision` are single-valued now (`"global"`/`"bf16"`),
+    # so BC x d_v x decay is the whole remaining template grid
+    # (`tests.tier2_geometry.matrix.AXIS_DECLARATIONS`).
+    for BC in (16, 64):
+        for d_v in (32, 64):
+            for decay in (False, True):
+                seed += 1
+                rows.append(Family(
+                    f"sweep/BC{BC}-dv{d_v}-{'decay' if decay else 'plain'}",
+                    "stratified", dict(**_MID),
+                    _cfg(widths=(8, 8), d_v=d_v, T=64, BC=BC,
+                         decay=decay, m0=True,
+                         p_read=0.5, p_write=0.5,
+                         seed=seed),
+                    basis="the template grid at the mid-box regime: the "
+                          "same claimed cell at every shipped BC x d_v x "
+                          "decay combination."))
     for widths in ((16,), (4, 4, 4), (2, 3, 4, 4)):
         rows.append(Family(
             f"sweep/D{len(widths)}-{'x'.join(map(str, widths))}",
@@ -428,16 +439,16 @@ def _sweep() -> tuple[Family, ...]:
                  seed=400 + len(widths)),
             basis="the level-count axis at the mid-box regime, including the "
                   "non-power-of-two mixed radix."))
-    for P, T in ((2, 96), (3, 96), (4, 128)):
-        # T chosen so n_tiles % P == 0: uneven segments are the RAGGED cell
-        # (corner/ragged-tail), not this one.
+    for P, T in ((2, 64), (3, 96), (4, 128)):
+        # T chosen so n_twords % P == 0 under the fixed 32-token scan word:
+        # uneven segments are the RAGGED cell (corner/ragged-tail), not this one.
         rows.append(Family(
             f"sweep/P{P}", "stratified", dict(**_MID),
             _cfg(T=T, P=P, m0=True, p_read=0.5, p_write=0.5, seed=410 + P),
             basis="the sequence-parallel runtime axis at the mid-box regime."))
     rows.append(Family(
         "sweep/paged", "stratified", dict(**_MID),
-        _cfg(widths=(4, 8, 8), d_v=64, T=48, paging=True, p_read=0.5, p_write=0.5,
+        _cfg(widths=(4, 8, 8), d_v=64, T=64, paging=True, p_read=0.5, p_write=0.5,
              seed=420),
         basis="the paging runtime axis at the mid-box regime (dense-committed "
               "arena; the partially-resident composition is tier 2's row)."))

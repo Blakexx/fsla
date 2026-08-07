@@ -52,10 +52,9 @@ def _prime_fp32(layer, device, *, prefill=4):
 
 @pytest.mark.cuda
 @_CUDA
-@pytest.mark.parametrize("norm", ["raw", "global"])
-def test_a_use_cache_false_decode_step_leaves_the_cache_untouched(norm):
+def test_a_use_cache_false_decode_step_leaves_the_cache_untouched():
     device = "cuda"
-    layer = _layer(device, norm=norm).eval()
+    layer = _layer(device).eval()
     cache = _prime_fp32(layer, device)
 
     carried = cache[0].recurrent_state
