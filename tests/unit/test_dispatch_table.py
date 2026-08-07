@@ -108,7 +108,8 @@ def test_every_table_row_names_the_shard_that_defines_it():
     import gen_shards
 
     for row in _table().rows:
-        want = gen_shards.shard_of(dict(BC=row.BC, DV=row.DV, D=row.D, DECAY=row.decay))
+        want = gen_shards.shard_of(
+            dict(BC=row.BC, DV=row.DV, D=row.D, DECAY=row.decay, GT=row.GT))
         assert row.shard == want, f"{row.key} claims shard {row.shard}, membership says {want}"
 
 

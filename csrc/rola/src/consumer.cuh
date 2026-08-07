@@ -202,10 +202,10 @@ struct ScanParams {
 // docs/internals/consumer.md#instantiation-matrix
 // ---------------------------------------------------------------------------
 
-template <int BC, int DV, int D, bool DECAY>
+template <int BC, int DV, int D, bool DECAY, int GT>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream);
 
-template <int BC, int DV, int D, bool DECAY>
+template <int BC, int DV, int D, bool DECAY, int GT>
 int query_consumer_occupancy_arm();
 
 using LaunchFn = void (*)(const ConsumerParams&, cudaStream_t);
@@ -227,6 +227,12 @@ struct DispatchChoice {
   int DV;
   int D;
   bool decay;
+  //: THE WINDOW, in tokens. A structural axis like every other field here, and the
+  //: one the PLANNER chooses from the realized routing rather than from the shape:
+  //: a wide window is free at dense gathering, wastes tile at sparse gathering, and
+  //: on the decay arm contracts the admitted routing domain in proportion to its
+  //: width. docs/internals/consumer.md#dispatch-choice
+  int GT;
 };
 
 //: THE MACHINE FACTS A ROW IS ADMITTED AGAINST. Filled from the driver once per
@@ -242,6 +248,7 @@ struct ShardRow {
   int DV;
   int D;
   bool decay;
+  int GT;
   LaunchFn launch;
   OccFn occupancy;
   size_t smem_bytes;

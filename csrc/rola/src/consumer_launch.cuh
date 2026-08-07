@@ -35,10 +35,10 @@ namespace rola {
 //: The launch, for ONE instantiation. `p.n_owners == 0` returns after the
 //: shared-memory opt-in, exactly as before -- the opt-in is a property of the
 //: kernel, not of the grid. docs/internals/consumer_launch.md#launch
-template <int BC, int DV, int D, bool DECAY>
+template <int BC, int DV, int D, bool DECAY, int GT>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
-  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
-  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY, GT>();
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY, GT>;
   if (smem > 48 * 1024) {
     //: A REFUSAL HERE IS NOT SWALLOWED: it lands in the same per-thread error
     //: state `launch_consumer` reads through `C10_CUDA_CHECK` the instant this
@@ -56,10 +56,10 @@ void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
 //: The DRIVER's residency answer for ONE instantiation. Instantiated for every arm:
 //: it is host-only code over a kernel address that already exists in the shard.
 //: docs/internals/consumer_launch.md#residency
-template <int BC, int DV, int D, bool DECAY>
+template <int BC, int DV, int D, bool DECAY, int GT>
 int query_consumer_occupancy_arm() {
-  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
-  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
+  constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY, GT>();
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY, GT>;
   if (smem > 48 * 1024) {
     if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                              static_cast<int>(smem))

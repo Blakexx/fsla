@@ -132,8 +132,8 @@ def shape_key(mangled: str) -> str | None:
     shape = ratify.parse_shape(mangled)
     if shape is None:
         return None
-    return gen_shards.canonical(dict(BC=shape["BC"], DV=shape["DV"],
-                                     D=shape["D"], DECAY=shape["decay"]))
+    return gen_shards.canonical(dict(BC=shape["BC"], DV=shape["DV"], D=shape["D"],
+                                     DECAY=shape["decay"], GT=shape["GT"]))
 
 
 def check(so: Path, arches=None) -> bool:

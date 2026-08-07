@@ -954,20 +954,31 @@ def test_the_plan_built_path_is_oracle_exact_and_bit_identical(widths, BC, decay
 
 
 def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
-    """§6's DELETED residency rule, kept as the MEASUREMENT that deleted it.
+    """§6's DELETED residency rule, kept as the MEASUREMENT that deleted it -- and
+    the WINDOW's residency purchase, pinned as the deliberate exception it is.
 
     The rule fired on `cheapest.blocks_per_sm == 1` -- the cliff at which a CTA has
-    no latency hiding at all. "Never" is a claim about the whole launchable
-    surface, so this asks the driver about the whole launchable surface:
-    `BC(2) x d_v(2) x decay(2)` = 8 keys, which is EXHAUSTIVE for
-    `rola_consumer_occupancy` -- the only axes the occupancy query takes, because
-    the kernel's shared memory is entirely compile-time on them (BT and
-    mma_precision are gone; `D` does not enter the occupancy query's signature).
+    no latency hiding at all. "Never" is a claim about a surface, so this asks the
+    driver about the whole launchable surface: `BC(2) x d_v(2) x decay(2) x
+    group_tokens(2)` = 16 keys, which is EXHAUSTIVE for `rola_consumer_occupancy`
+    -- the only axes the occupancy query takes, because the kernel's shared memory
+    is entirely compile-time on them (`D` does not enter the query's signature).
 
-    **THIS IS THE FALSIFICATION SITE.** If a future axis, budget or arch makes some
-    instantiation land at 1 CTA/SM, this fails and the rule's deletion is what has
-    to be revisited -- loudly, instead of the blind spot silently becoming
-    load-bearing again.
+    THE CLAIM IS PER WINDOW, because the windows buy different things.
+
+    * At the GROUP QUANTUM (`group_tokens == 16`) the original claim stands
+      unchanged: no launchable instantiation reaches the cliff.
+    * At the WIDE WINDOW (`group_tokens == 64`) the `BC = 64` arms land at ONE CTA
+      per SM BY DESIGN and BY SMEM: the window Gram is quadratic in the width, and
+      the register/SMEM policy's whole point is that a single CTA may spend the
+      ~99 KB it is granted because this kernel hides latency explicitly (the
+      producer ring, the resident fold accumulator) rather than by occupancy. What
+      is NOT bought is a register-side collapse: the `BC = 16` wide arms keep two
+      CTAs, which is what the window's 112-register budget was censused to hold.
+
+    **THIS IS STILL THE FALSIFICATION SITE.** A narrow arm that reaches the cliff,
+    or a wide `BC = 16` arm that loses its second CTA, fails here rather than
+    becoming a silent load-bearing blind spot.
     """
     from rola.ops._ext import extension
 
@@ -976,14 +987,18 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     for BC in (16, 64):
         for d_v in (32, 64):
             for decay in (False, True):
-                blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v))
-                seen[(BC, d_v, decay)] = blocks
-                assert blocks >= 2, (
-                    f"BC={BC} d_v={d_v} decay={decay} "
-                    f"is resident {blocks} time(s) per SM. The 1-CTA cliff is "
-                    "reachable again, and §6's residency rule was deleted on the "
-                    "measurement that it is not.")
-    assert len(seen) == 8, f"the surface is 8 keys, queried {len(seen)}"
+                for gt in (16, 64):
+                    blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, gt))
+                    seen[(BC, d_v, decay, gt)] = blocks
+                    floor = 2 if (gt == 16 or BC == 16) else 1
+                    assert blocks >= floor, (
+                        f"BC={BC} d_v={d_v} decay={decay} group_tokens={gt} "
+                        f"is resident {blocks} time(s) per SM, below the {floor} this "
+                        "arm class is held to. At the group quantum that is §6's "
+                        "deleted residency rule becoming reachable again; at the wide "
+                        "window on BC=16 it is the register budget collapsing a "
+                        "residency the SMEM carve still affords.")
+    assert len(seen) == 16, f"the surface is 16 keys, queried {len(seen)}"
 
 
 # ---------------------------------------------------------------------------

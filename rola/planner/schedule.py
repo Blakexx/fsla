@@ -78,8 +78,8 @@ def consumer_occupancy() -> Callable[..., int]:
     from rola.ops._ext import extension
     ext = extension()
 
-    def query(BC: int, d_v: int, decay: bool) -> int:
-        return int(ext.rola_consumer_occupancy(decay, BC, d_v))
+    def query(BC: int, d_v: int, decay: bool, group_tokens: int = MMA_K_QUANTUM) -> int:
+        return int(ext.rola_consumer_occupancy(decay, BC, d_v, group_tokens))
 
     return query
 
@@ -1289,7 +1289,8 @@ def build_clock_stream(
 PANEL_MAX_EXPONENT = 40.0
 
 
-def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay) -> float:
+def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay,
+                         group_tokens: int = MMA_K_QUANTUM) -> float:
     """An EXACT UPPER BOUND on ``panel``'s largest per-leaf reference exponent.
 
     ``intra_panel.cuh`` forms ``keep_i^{+(P[t,i]-P_ref[i])}`` and
@@ -1347,17 +1348,101 @@ def panel_exponent_bound(clock_amps: tuple[torch.Tensor, ...], decay) -> float:
         raise ValueError(
             f"the staged clock stream has {per_token.shape[-1]} tokens per word; the "
             f"granule is the {TOKEN_WORD}-token machine word")
-    # A GROUP is any 16 MEMBER tokens of the whole sequence (dynamic tile
-    # boundaries -- alignment gives no bound), so the per-group prefix is bounded
-    # by the sum of the 16 LARGEST per-token clock bounds. Conservative
-    # (refusal-side only), exact when the 16 largest happen to share a group.
+    # A WINDOW is any `group_tokens` MEMBER tokens of the whole sequence (dynamic
+    # boundaries -- alignment gives no bound), so the per-window prefix is bounded
+    # by the sum of the `group_tokens` LARGEST per-token clock bounds. Conservative
+    # (refusal-side only), exact when those tokens happen to share a window.
+    #
+    # **THE BOUND SCALES WITH THE WINDOW, AND THAT IS THE WINDOW'S ONE REAL PRICE
+    # ON THE DECAY ARM.** The reference frame is entered and left inside a window,
+    # so `P` restarts every window and a window four times as wide sums four times
+    # as many clocks. Widening the consumer's token quantum therefore CONTRACTS the
+    # admitted routing domain in proportion, which is why `select_window` consults
+    # this function per candidate rather than once.
     flat = per_token.reshape(per_token.shape[0], -1)  # [BH, Tpad]
     if flat.numel() == 0:
         p_hat = 0.0
     else:
-        k = min(MMA_K_QUANTUM, flat.shape[-1])
+        k = min(group_tokens, flat.shape[-1])
         p_hat = float(flat.topk(k, dim=-1).values.sum(dim=-1).max())
     return 0.5 * p_hat * g_max
+
+
+#: THE WINDOWS THIS BINARY CARRIES, widest first. A closed set, matching the `GT`
+#: axis of `tools/gen_shards.py`: selection picks from it or refuses, never
+#: interpolates. `128` is absent because the window Gram's `[GT][GT+8]` storage is
+#: QUADRATIC in `GT` and a `GT = 128` CTA does not fit `sm_86`'s 99 KB opt-in at
+#: the flagship shape.
+CONSUMER_WINDOWS = (64, 16)
+
+#: How many full windows a typical owner must have before a wide one is selected.
+#: The window's only waste is its RAGGED TAIL -- groups are always full by
+#: construction, so sparsity does not thin a window, it only shortens the owner's
+#: group stream -- and a tail of at most `W - 1` dead groups out of
+#: `WINDOW_MIN_FILL` windows is bounded by `1 / (2 * WINDOW_MIN_FILL)` of the
+#: owner's work.
+WINDOW_MIN_FILL = 4
+
+
+def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) -> int:
+    """The consumer's token quantum for THIS routing -- a plan-time choice.
+
+    The window is a DISTRIBUTION-DEPENDENT structural axis, never a raised
+    constant: a wide window amortises every per-visit term (the three barriers,
+    the fold's read-modify-write of the state, the descriptor decode) ``W``-fold
+    and pays for it with a Gram quadratic in ``W``, so which width wins is a
+    property of the routing rather than of the kernel. Widest-first over
+    :data:`CONSUMER_WINDOWS`, with three refusals.
+
+    **The tail.** Groups are always full (the executor packs ``MMA_K_QUANTUM``
+    members per group), so a wide window is not thinned by sparsity -- it is only
+    wasted when an owner's whole group stream is shorter than a few windows. That
+    stream length is bounded above by the popcount of the owner's COARSE SLICE
+    UNION, exact at dense routing (where the fixed-level rows are all ones) and an
+    over-estimate where the fixed levels thin the union further. The over-estimate
+    is on the PERFORMANCE side, never the correctness side: an over-wide window
+    computes the same answer with dead tile.
+
+    **The device.** The window Gram's storage is quadratic in the width, so a wide
+    arm is the first one a device cannot grant a block; the same inequality the
+    launch applies is applied here, before selecting.
+
+    **The panel domain**, decay only. :func:`panel_exponent_bound` grows with the
+    window, so a width whose bound clears :data:`PANEL_MAX_EXPONENT` at 16 may not
+    clear it at 64. The narrower window is then selected rather than the launch
+    refused -- the domain contraction is the window's price, and declining to pay
+    it is the right answer, not an error.
+    """
+    union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
+    if union.numel() == 0:
+        members = 0
+    else:
+        bits = union.to(torch.int32)
+        popc = torch.zeros_like(bits)
+        rest = bits
+        for _ in range(32):
+            popc += rest & 1
+            rest = (rest >> 1) & 0x7FFFFFFF
+        per_owner = popc.sum(dim=-1).reshape(-1)  # [BH * n_slices]
+        members = int(per_owner.median())
+    from rola.ops._ext import extension
+    ext = extension()
+    granted = int(ext.rola_max_dynamic_smem_bytes())
+    for gt in CONSUMER_WINDOWS:
+        if members < WINDOW_MIN_FILL * gt:
+            continue
+        # THE SAME ADMISSION THE LAUNCH APPLIES, applied before selecting rather
+        # than discovered as a hard refusal: the window Gram's storage is quadratic
+        # in `gt`, so a wide window is the first arm a small-SMEM device cannot
+        # grant a block. `consumer.cuh:row_admitted` is the inequality being
+        # mirrored.
+        if int(ext.rola_consumer_smem_bytes(decay is not None, BC, d_v, gt)) > granted:
+            continue
+        if decay is not None and clock_amps is not None:
+            if not panel_exponent_bound(clock_amps, decay, gt) <= PANEL_MAX_EXPONENT:
+                continue
+        return gt
+    return CONSUMER_WINDOWS[-1]
 
 
 def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
@@ -1604,8 +1689,10 @@ __all__ = [
     "DEFAULT_SM_COUNT",
     "DEFAULT_SM_SHARED_BYTES",
     "DEFAULT_WRITE_COST_WEIGHT",
+    "CONSUMER_WINDOWS",
     "MMA_K_QUANTUM",
     "PANEL_MAX_EXPONENT",
+    "WINDOW_MIN_FILL",
     "ROLA_SCHEDULE_ABI_VERSION",
     "LevelSupportStats",
     "OwnerGeometry",
@@ -1618,6 +1705,7 @@ __all__ = [
     "leaf_rate_dials",
     "owner_geometry",
     "panel_exponent_bound",
+    "select_window",
     "permuted_topology",
     "plan_and_schedule",
     "rank_spans",

@@ -49,8 +49,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_consumer_smem_bytes", &rola::rola_consumer_smem_bytes,
         "the consumer kernel's dynamic shared-memory footprint per CTA");
   m.def("rola_dispatch_table", &rola::rola_dispatch_table,
-        "every row of the consumer's dispatch table: (BC, d_v, D, decay, smem_bytes, "
-        "shard, src_key). Touches no device.");
+        "every row of the consumer's dispatch table: (BC, d_v, D, decay, "
+        "group_tokens, smem_bytes, shard, src_key). Touches no device.");
   m.def("rola_max_dynamic_smem_bytes", &rola::rola_max_dynamic_smem_bytes,
         "cudaDevAttrMaxSharedMemoryPerBlockOptin -- the device fact a row's footprint "
         "is admitted against");

@@ -80,7 +80,8 @@ class MachineFacts:
     recorded inputs, so the same inputs give the same plan and a CPU-only gate can
     supply a synthetic machine instead of a mock.
 
-    ``arm_smem_bytes`` is the dispatch table's own ``{(BC, d_v, D, decay): bytes}``
+    ``arm_smem_bytes`` is the dispatch table's own
+    ``{(BC, d_v, D, decay, group_tokens): bytes}``
     map: the ``constexpr`` carve of each compiled arm, read off the built binary after
     the staleness join. It is the box term's input, and taking it from the table is
     what makes the box arithmetic the KERNEL's arithmetic rather than a model of it.
@@ -88,7 +89,7 @@ class MachineFacts:
 
     sm_count: int
     max_dynamic_smem_bytes: int
-    arm_smem_bytes: Mapping[tuple[int, int, int, bool], int]
+    arm_smem_bytes: Mapping[tuple[int, int, int, bool, int], int]
 
     @classmethod
     def for_device(cls, device) -> MachineFacts:
@@ -109,8 +110,8 @@ class MachineFacts:
     def compiled_bc(self, d_v: int, D: int, decay: bool) -> tuple[int, ...]:
         """Every ``BC`` this binary carries an arm for at this ``(d_v, D, decay)``."""
         return tuple(sorted(
-            BC for (BC, dv, levels, arm) in self.arm_smem_bytes
-            if dv == d_v and levels == D and arm == bool(decay)))
+            BC for (BC, dv, levels, arm, gt) in self.arm_smem_bytes
+            if dv == d_v and levels == D and arm == bool(decay) and gt == MMA_K_QUANTUM))
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[
 
     ONE inequality, and it is the launch's own::
 
-        arm_smem_bytes[(BC, d_v, D, decay)] <= max_dynamic_smem_bytes
+        arm_smem_bytes[(BC, d_v, D, decay, MMA_K_QUANTUM)] <= max_dynamic_smem_bytes
 
     the ``cudaFuncAttributeMaxDynamicSharedMemorySize`` admission
     (:meth:`~rola.planner.dispatch_table.DispatchRow.admitted_by`). A ``BC`` this
@@ -183,9 +184,11 @@ def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[
         raise NotImplementedError(_no_instantiation(machine, d_v=d_v, D=D, decay=decay))
     budget = int(machine.max_dynamic_smem_bytes)
     admitted = tuple(BC for BC in compiled
-                     if machine.arm_smem_bytes[(BC, d_v, D, bool(decay))] <= budget)
+                     if machine.arm_smem_bytes[(BC, d_v, D, bool(decay), MMA_K_QUANTUM)]
+                     <= budget)
     if not admitted:
-        carved = {BC: machine.arm_smem_bytes[(BC, d_v, D, bool(decay))] for BC in compiled}
+        carved = {BC: machine.arm_smem_bytes[(BC, d_v, D, bool(decay), MMA_K_QUANTUM)]
+                  for BC in compiled}
         raise ValueError(
             f"no compiled arm fits shared memory at d_v={d_v}, D={D}, decay={bool(decay)}: "
             f"the carves are {carved} bytes and this device grants a block "
