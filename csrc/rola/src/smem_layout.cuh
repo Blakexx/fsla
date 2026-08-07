@@ -135,9 +135,24 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: because a too-small budget is bought back by SPILLING. (The former `NM` key died
 //: with the BT axis: every group is one m16 row block.)
 //: docs/internals/smem_layout.md#reg-budget
-constexpr int consumer_reg_budget(int BC, bool decay, int DV) {
+constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)DV;
-  return (BC >= 64) ? 80 : (decay ? 80 : 64);
+  //: `D` JOINED THE KEY when the producer landed, and it was added the way the
+  //: rest of this function's numbers were: by census, not by taste. Level count
+  //: is a structural template axis, and the cook's working set grows with it (one
+  //: fixed-level row per level, per side, per refill). Measured over all 32 arms
+  //: on both arches: at `D <= 3` the `BC = 16, decay = 0` arms fit 64 with zero
+  //: spill; at `D = 4` they do not, and no amount of moving the cook's carried
+  //: state into SMEM closes it (four successive diets took the matrix
+  //: 120 B -> 28 B -> 16 B and stalled there, on sm_86 only).
+  //:
+  //: THE COST IS REAL AND IS RECORDED RATHER THAN HIDDEN: 80 puts `by_regs` at
+  //: 65536 / (256 * 80) = 3, so these two arms run 3 CTAs/SM where 64 ran 4, and
+  //: that is worth about -7.5% on the `topo-D4-w8x8x8x16-BC16` wall (measured,
+  //: `workflows/perf/p25_change2.md`). It is spent to hold the ZERO-SPILL line;
+  //: the measurement saying the 8 B spill was the cheaper of the two is on file
+  //: for whoever revisits it.
+  return (BC >= 64 || decay || D >= 4) ? 80 : 64;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
