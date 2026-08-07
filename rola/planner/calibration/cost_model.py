@@ -45,8 +45,6 @@ import torch
 
 from rola.planner.calibration.census import resolve_census, tile_union_census
 from rola.planner.schedule import (
-    _SUPPORTED_BT,
-    COMPILED_RING_DEPTH,
     DEFAULT_SM_COUNT,
     DEFAULT_SM_SHARED_BYTES,
     MMA_K_QUANTUM,
@@ -59,9 +57,15 @@ from rola.planner.schedule import (
     owner_geometry,
     resolve_occupancy,
     routing_views,
-    spanned_moduli,
 )
 from rola.routing.types import Topology
+
+#: The BT axis is DEAD (endgame executor). The tile-union statistics keep a
+#: granularity parameter, and the ONE granularity is the group quantum
+#: (MMA_K_QUANTUM gathered tokens). Aligned-16-tile statistics are the
+#: group-shaped over-approximation of member statistics -- cost-model only,
+#: never able to mis-execute a plan.
+_SUPPORTED_BT = (16,)
 
 __all__ = [
     "COST_MODEL_PROVENANCE",
@@ -1066,7 +1070,7 @@ class PlanAxes:
     #: COMPILED depth (`ROLA_C_RING_DEPTH`, shipped 1; see
     #: `schedule.COMPILED_RING_DEPTH` and the H3 agreement gate). EVIDENCE carried
     #: alongside the candidate that was selected, not a per-candidate arbitration.
-    ring_slots: int = COMPILED_RING_DEPTH
+
     #: The launch's WAVE COUNT for the selected candidate (`plan_waves`), and the
     #: SM count it was computed against. EVIDENCE, and the evidence that matters
     #: most: the wave regime is what the §2.32 argmins partition on, so a plan that
@@ -1130,7 +1134,6 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
 
     if sm_count is None:
         sm_count = DEFAULT_SM_COUNT
-    gram_cols = sum(spanned_moduli(topology, BC))
 
     # The occupancy oracle is an INPUT (coordinator ruling 2026-07-31), resolved at
     # the call site and consulted here as data. Selection therefore stays a pure
@@ -1176,9 +1179,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
         # every PHYSICAL constant. There is no analytic mirror any more: it
         # modelled the deleted consumer, and the exhaustive probe measured it
         # inverting the bound it claimed.
-        ring_slots = COMPILED_RING_DEPTH
-        blocks = occupancy(BT, BC, topology.d_v, normalization == "global",
-                           decay, mma_precision, gram_cols, ring_slots)
+        blocks = occupancy(BC, topology.d_v, decay)
         if blocks == 0:
             raise ValueError(
                 f"the candidate BT={BT}, BC={BC} does not "
@@ -1201,7 +1202,7 @@ def select_plan_axes(read_levels: tuple[torch.Tensor, ...],
         waves = plan_waves(stats.n_cohorts, blocks, sm_count)
         candidates.append(PlanAxes(
             BT=BT, stats=stats,
-            cost_per_token=cost, blocks_per_sm=blocks, ring_slots=ring_slots,
+            cost_per_token=cost, blocks_per_sm=blocks,
             waves=waves, sm_count=sm_count,
             effective_cost_per_token=cost * waves))
 
@@ -1267,11 +1268,10 @@ def select_plan(read_levels: tuple[torch.Tensor, ...],
                             normalization=normalization, sm_count=sm_count,
                             mma_precision=mma_precision, occupancy=occupancy,
                             **cost_kwargs)
-    plan = Plan(topology=topology, normalization=normalization, BT=axes.BT, BC=BC,
-                  warp_tile=(1, max(1, topology.d_v // 32)), decay=decay,
-                  mma_precision=mma_precision, amp_dtype=amp_dtype,
-                  sm_shared_bytes=sm_shared_bytes, ring_slots=axes.ring_slots,
-                  occupancy_blocks_per_sm=axes.blocks_per_sm)
+    plan = Plan(topology=topology, normalization=normalization, BC=BC,
+                warp_tile=(1, max(1, topology.d_v // 32)), decay=decay,
+                sm_shared_bytes=sm_shared_bytes,
+                occupancy_blocks_per_sm=axes.blocks_per_sm)
     return plan, axes
 
 
