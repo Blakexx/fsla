@@ -158,11 +158,12 @@ constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
   //: what keeps two.
   if (GT > kGroupTokens) return 112;
   //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
-  //: structural template axis and the cook's working set grows with it (one
-  //: fixed-level bit row per level, per side, per refill): measured over all 32
-  //: arms on both arches, the `BC = 16, decay = 0` arms fit 64 with zero spill at
-  //: `D <= 3` and do not at `D = 4`. Its price -- 3 CTAs/SM where 64 gave 4 on
-  //: those arms -- is stated with the measurement in
+  //: structural template axis and both the cook's working set and the prefetch
+  //: slab's per-level offsets grow with it, so the `BC = 16, decay = 0` arms need
+  //: the wide budget at `D = 4`. They do NOT reach zero spill at `D <= 3`: the
+  //: prefetch slab's live state puts them over 64 by tens of bytes, which the
+  //: ratchet holds AT its measured magnitude rather than banning. The budget and
+  //: its price -- 3 CTAs/SM where 64 gave 4 -- are stated with the measurement in
   //: docs/internals/smem_layout.md#reg-budget.
   return (BC >= 64 || decay || D >= 4) ? 80 : 64;
 }

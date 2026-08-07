@@ -194,15 +194,21 @@ the two coefficient folds on top of the same GEMM and need the wide budget too, 
 the no-decay arms clear the working set at 64.
 
 `D` joined the key with the schedule-ring producer: level count is a structural
-template axis, and the producer's cook working set grows with it — one fixed-level
-bit row per level, per side, per refill. Measured over all 32 arms on both
-architectures: at `D <= 3` the `BC = 16, decay = 0` arms fit 64 with zero spill; at
-`D = 4` they do not, and moving the cook's carried state into
-[SMEM](../internals/consumer_kernel.md#producer-state) does not close it further —
-the cook is already resting there. The cost is recorded rather than hidden: 80 puts
-`by_regs` at `65536 / (256 * 80) = 3`, so the `D = 4, BC = 16, decay = 0` arms run 3
-CTAs/SM where 64 gave 4, which is worth about -7% on the `topo-D4-w8x8x8x16-BC16`
-wall.
+template axis, and both the producer's cook working set and the
+[prefetch slab](#prefetch-slab)'s per-level offsets grow with it. The `D = 4`,
+`BC = 16, decay = 0` arms need the wide budget, and moving the cook's carried state
+into [SMEM](../internals/consumer_kernel.md#producer-state) does not close it further
+— the cook is already resting there. The cost is recorded rather than hidden: 80 puts
+`by_regs` at `65536 / (256 * 80) = 3`, so those arms run 3 CTAs/SM where 64 gave 4,
+which is worth about -7% on the `topo-D4-w8x8x8x16-BC16` wall.
+
+**`D <= 3` on that key no longer reaches zero spill, and the manifest is where that
+lives.** The full per-arm census at the prefetch tip (64 consumer arms x 2 arches)
+records 8 spilling arms on `sm_80` and 5 on `sm_86`, all `nodecay, GT = 16`, against
+2 and 2 before it — the slab's live state (`pf_off[D]` and the two slab bases) over
+the matrix's tightest budgets. The manifest is a RATCHET, not a spill ban: it holds
+each arm AT its measured bytes, and this batch's magnitudes are on the record in
+`workflows/perf/p39_prefetch.md` rather than absorbed by a budget raise.
 
 Reproduce with `python tools/ratify.py --census`, which compiles the shipped
 instantiation shards and reports per structural key; if the kernel's inner loop
