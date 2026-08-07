@@ -39,11 +39,13 @@ from bench.regression import (  # noqa: E402
 )
 
 #: `(cell, norm, decay_temp)`. One small topology cell per structural axis the gate
-#: is meant to protect: both normalizations, the decay arm, and a deeper topology at
-#: the other `BC`. Each is a plan the planner could actually choose.
+#: is meant to protect: the decay arm, and a deeper topology at the other `BC`. Each
+#: is a plan the planner could actually choose -- which is why NORMALIZATION IS NOT AN
+#: AXIS HERE: `global` is the only value `Plan` accepts, so a `raw` arm is not a
+#: reduced-coverage arm, it is a `ValueError` from `validate_normalization` before any
+#: kernel runs.
 ARMS = (
     ("topo-D2-w64x64-BC64", "global", None),
-    ("topo-D2-w64x64-BC64", "raw", None),
     ("topo-D2-w64x64-BC64", "global", "warm"),
     ("topo-D4-w8x8x8x16-BC16", "global", None),
 )

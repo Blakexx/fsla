@@ -15,13 +15,6 @@
    "reps": 35,
    "source": "cuda_events"
   },
-  "topo-D2-w64x64-BC64|raw|none": {
-   "clock_settled": true,
-   "iqr_ms": 0.001024,
-   "median_ms": 0.060384,
-   "reps": 35,
-   "source": "cuda_events"
-  },
   "topo-D4-w8x8x8x16-BC16|global|none": {
    "clock_settled": true,
    "iqr_ms": 0.003744,

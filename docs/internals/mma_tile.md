@@ -1,9 +1,15 @@
 # `csrc/rola/src/mma_tile.cuh` — the consumer's MMA tile layer
 
 The fragment machinery and the four GEMMs' inner sequences: the fragment-ordered A
-operand's element maps, the `ldmatrix`-fed operand fetches, the GEMM assemblies built
-from them, and the compile-time cross-checks that keep CuTe — not this code — the
-authority on what a fragment contains.
+operand's element map, the `ldmatrix`-fed operand fetches, the GEMM assemblies built
+from them, the MASS COLUMN's broadcast-B forms, and the compile-time cross-checks that
+keep CuTe — not this code — the authority on what a fragment contains.
+
+**The mass column is a matrix column.** Its denominator terms are matvecs against a
+single column, and an `n8` tile carries a matvec by BROADCASTING that column across
+all eight of its `n` slots: every output column then holds the same value and the
+tile is read at `n = 0`. Seven eighths of the fragment is redundant and that is the
+whole price — one `mma.sync` against the scalar reduction it replaces.
 
 **bf16 is the only operand format.** One precision story: bf16 storage, fp32
 accumulation, fp64 torch reference as oracle. There is no `PREC` axis and no `tf32x3`
@@ -21,13 +27,12 @@ Where an operand LIVES is [`smem_layout.md`](smem_layout.md) (`vw_index`, `wt_in
 `stage_offset`) — every address this file's routines take comes from there, which is
 what makes it impossible for an atom fetch and a scalar walk over the same buffer to
 disagree. Which warp runs which GEMM, and in what phase order, is
-[`pipeline.md`](pipeline.md) and [`consumer_kernel.md`](consumer_kernel.md).
+[`consumer_kernel.md`](consumer_kernel.md).
 
 ## Reference conventions
 
-The same in all four consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
-[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md),
-[`pipeline.md`](pipeline.md):
+The same in all three consumer-kernel documents — [`consumer_kernel.md`](consumer_kernel.md),
+[`smem_layout.md`](smem_layout.md), [`mma_tile.md`](mma_tile.md):
 
 - **`§N` is ALWAYS a SPEC reference.** `ROLA_V3_SPEC.md` unless another spec is named
   at the site; `GLA_MASS_DECAY_SPEC.md` §12 is the decay numerics contract. It never
@@ -39,7 +44,7 @@ The same in all four consumer-kernel documents — [`consumer_kernel.md`](consum
 
 # Part III — the operand maps
 
-## <a id="frag-a-get"></a>21. `frag_a_slot` and `frag_a_get` — the fragment-ordered A operand, forward and inverse
+## <a id="frag-a-slot"></a>21. `frag_a_slot` — the fragment-ordered A operand's element map
 
 The read panel `R` (the readout's A operand, and the Gram's) is synthesized directly
 into fragment order in SMEM rather than stored row-major and indexed: word `w` of lane
@@ -56,31 +61,21 @@ k = 16 * ks + ((w >> 1) << 3) + 2 * r;
 ```
 
 (`k` names the low element of the packed `bf16x2` pair the word holds; the high
-element is `k + 1`.)
+element is `k + 1`.) `frag_a_slot` has no inverse in this file: the mass column no
+longer reads an element back out of the fragment — [below](#mass-column) — so there is
+nothing left to keep in sync with the forward map.
 
-`frag_a_get(Af, m, k)` is the hand-rolled INVERSE: given `(m, k)`, which word and which
-half of it. The mass column's denominator is a `[16 x BC] x [BC x 1]` matvec, one
-column out of `DV + 1`, and giving it its own `n8` MMA tile would waste 7/8 of a
-fragment — so it stays a scalar reduction and pays this inverse instead, ~10 integer
-ops per element, once per visit.
+## 22. Storage writes: `stage_put`
 
-**HAZARD `frag-a-get`.** Nothing checks `frag_a_slot` and `frag_a_get` against each
-other — the CuTe cross-checks in [the atom section](#ldsm-atoms) pin the library's
-maps, not this pair. They must be edited together: an inverse that disagrees with the
-forward map reads the wrong element and produces a plausible, wrong denominator with
-no diagnostic anywhere.
-
-## 22. Storage writes: `gm_put`, `stage_put`
-
-`gm_put(d, x)` stores a computed fp32 value into a bf16 buffer with `__float2bfloat16`
-rather than `static_cast`, because the torch build defines
-`__CUDA_NO_BFLOAT16_CONVERSIONS__`.
-
-`stage_put(d, x)` stores a STAGED OPERAND, and is where [`readout_mma.md`](readout_mma.md#rule-3-bf16)'s
-§12 rule 3 clamp lives: `d = __float2bfloat16(clamp_bf16_finite(x))`. It is a MOVE of
-the clamp, not a second one — `stage_put` runs at the last point the value exists as
-fp32 — and it is what makes the `ldmatrix` fetches below bit-identical to a generic
-indexed read of the same buffer.
+`stage_put(d, x)` stores a bf16 OPERAND BUFFER's element, and is where
+[`readout_mma.md`](readout_mma.md#rule-3-bf16)'s §12 rule 3 clamp lives:
+`d = __float2bfloat16(clamp_bf16_finite(x))`, via the intrinsic rather than
+`static_cast` because the torch build defines `__CUDA_NO_BFLOAT16_CONVERSIONS__`.
+THE CLAMP BELONGS AT THE WRITE: every bf16 operand buffer (`WT`, `Vw`, `Gm`) is
+written once per element per visit and read by an `ldmatrix` many times, so a
+read-side clamp would be a per-consumer repetition of a per-producer fact — and an
+`ldmatrix` has no place to put one. It is what makes the `ldmatrix` fetches below
+bit-identical to a generic indexed read of the same buffer.
 
 ## <a id="mma-tile-fraga"></a>23. `mma_tile_fragA` — a fragment-ordered A against a generic B
 
@@ -139,12 +134,17 @@ token contiguous) and the fragment wants `k`-adjacent pairs at a fixed `n`, whic
 `.trans` again. `WT16` points at the 16-row block (one atom) being contracted; the
 only difference from `Vw` is which axis is called what.
 
-### `wt_frag_a` — `WT` as GEMM 4's A, the atom's OTHER form
+### <a id="ldsm-atoms-a"></a>`ldsm_frag_a` — a `[16 m x 16 k]` bf16 A operand, one `ldmatrix.x4`, at a RUNTIME PITCH
 
-Here `WT` is `k`-adjacent, which is the layout `ldmatrix` reads WITHOUT transposing —
-so the fold's A operand is one `ldmatrix.x4` for the whole `[16 m x 16 k]` block,
-against the generic path's eight scalar loads, eight widenings, eight clamps and four
-packs per lane.
+The shared primitive behind every `ldmatrix`-fetched A in this file: A `k`-adjacent —
+the layout `ldmatrix` reads WITHOUT transposing — so a `[16 m x 16 k]` block is one
+`ldmatrix.x4`, against a generic path's eight scalar loads, eight widenings, eight
+clamps and four packs per lane. It takes the row pitch (`lda`) as an argument rather
+than assuming one, which is what lets both of its callers share it: `wt_frag_a` is a
+one-line wrapper at `kWtPitch` (`WT`'s atom block, GEMM 4's A), and [the mass column's
+tile](#mass-column) calls it directly at `GMP` (the Gram, GEMM 3's A) — `Gm` sits at a
+pitch `pitched_ldsm_banks_ok` licenses for exactly this fetch, which is what makes the
+Gram's `ldmatrix` legal at all.
 
 The addressing is the atom's own: `SM75_U32x4_LDSM_N`'s source tile is FOUR 8x8
 matrices stacked (32 rows of 8 halves), not a 16x16 block, so lane `l` addresses
@@ -153,14 +153,46 @@ CALLER's: matrix `i` is `m = 8 * (i & 1) + row`, `k = 8 * (i >> 1) + col`. That 
 is what makes the delivered registers `a0..a3` land in the same order `mma_tile_fragA`
 expects, and `ldsm_n_dst_map_matches` checks it over all 256 slots.
 
+## <a id="split-bf16x2"></a>25. `split_bf16x2` — an fp32 pair delivered as two bf16 words
+
+A fp32 pair narrowed as a ROUNDED VALUE plus its RESIDUAL, packed into two separate
+`bf16x2` words. Two `mma.sync` against the same A fragment then carry ~16 mantissa
+bits of the B operand instead of 8 — one extra instruction per k-step for a B operand
+that has nothing to cancel its rounding against, which is exactly [the mass column's
+readout term](#mass-column)'s situation. §12 rule 3's guard applies to BOTH words: the
+residual of a saturated value is itself out of range and must be narrowed the same way.
+
+## <a id="mass-column"></a>26. The mass column's tiles
+
+Two forms, both against a BROADCAST B — the column repeated across the tile's eight
+`n` slots rather than varying with it, which is what turns a `[16 x K] x [K x 1]`
+matvec into an `n8` MMA tile instead of wasting seven eighths of one:
+
+- `mma_tile_fragA_massB` — the READOUT's term, `d += Af . B[.][n0]`, for a
+  fragment-ordered A and `B` a column of the fp32 STATE, COMPENSATED: the state
+  column is the denominator of a ratio, so it rides [`split_bf16x2`](#split-bf16x2)
+  instead of a single narrowing, and the tile is two `mma.sync`.
+- `mma_tile_bcastB` — the intra term's and the fold's term, `d += A . v` for an
+  `ldmatrix`-fetched A (`Gm` or `WT`'s atom block) and `v` a register-side vector (the
+  row scale `sw`). <a id="bcast-frag-b"></a>`bcast_frag_b(v, lane, b0, b1)` packs it: the B fragment's `k` map
+  is `2r + (w & 1) + 8 * (w >> 1)` and its `n` map is `g`, so a broadcast B is
+  `g`-INDEPENDENT — four scalar loads and two packs for the whole fragment, whatever
+  the tile's `n0`. §12 rule 3's guard applies here too, at the point the fp32 row
+  scale narrows.
+
+Output column `0` (lanes with `r == 0`) carries the matvec, rows `g` and `g + 8`: the
+split-K emission reads both forms back at exactly that slot.
+
 ### The three GEMM assemblies
 
 - `mma_fold_tile` — GEMM 4, both operands `ldmatrix`-fetched: A = `WT` (`.N`), B =
   `Vw` (`.trans`). One atom's 16-row block; the contraction axis is the group's
   `kGroupTokens == 16` tokens, exactly one k-step.
-- `mma_tile_vwB` — GEMM 3, `d += A . Vw` for a generic (indexed) A and `Vw` as B. The
-  contraction is the group's 16 tokens: one k-step, packed against the caller's `A`
-  the same way `mma_tile_fragA`'s B path packs a generic operand.
+- `mma_tile_vwB` — GEMM 3, `d += A . Vw` for `A` fetched by `ldmatrix` (`Gm`, exactly
+  as the fold fetches `WT`) and `Vw` as B. The contraction is the group's 16 tokens:
+  one k-step. Legal because `Gm`'s §12 rule 3 guard is at ITS store (`stage_put`),
+  which is what makes an `ldmatrix` fetch of it bit-identical to a generic indexed
+  read.
 - `mma_tile_fragA_wtB` — GEMM 2, a fragment-ordered A (`Af16`, one atom's 128-word
   block) against `WT` fetched by `ldmatrix` (`WT16`, one atom's 16-row block). The
   only thing this adds over `wt_frag_a`/`vw_frag_b` is issuing the single `mma_m16n8k16`
