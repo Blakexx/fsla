@@ -60,16 +60,55 @@ constexpr int kGroupTokens = kMmaKQuantum;
 //: era's design item.
 constexpr int kFoldStagedGroups = 1;
 
-//: THE MEMBERSHIP SCAN'S BATCH (the frozen contract's cook-once rule): how many
-//: 32-token words one refill stages into SMEM. The scan words are CTA-uniform,
-//: so a per-thread (per-warp-redundant) global walk pays 8x the sectors and
-//: instructions the stream carries -- MEASURED as the whole of the endgame's
-//: first-cut regression (+7.6M L1 sectors, +57M inst at atscale-L2048). One
-//: thread loads each word's rows ONCE and PRECOMPUTES the member word into the
-//: batch; the assembler consumes SMEM. Two uniform barriers per kScanBatch
-//: words. 32 = one word per thread of one warp per refill, a power of two well
-//: above the split-carry horizon.
-constexpr int kScanBatch = 32;
+//: THE SCHEDULE CHUNK (the frozen contract's cook-once rule, item 2): how many
+//: 32-token words the PRODUCER WARP cooks per refill. It is exactly one word
+//: per lane, so the cooked chunk lives in REGISTERS -- the contract's "cooks the
+//: per-token schedule ONE CHUNK AHEAD in registers" -- and the chunk's live-word
+//: set is one `__ballot_sync`. A chunk in registers needs no barrier and no
+//: storage, which is why the schedule-exhausted barrier dissolves (item 6).
+//: docs/internals/smem_layout.md#sched-chunk
+constexpr int kSchedChunkWords = 32;
+static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of the producer warp");
+
+//: **THE RUN-AHEAD DEPTH -- change-2's first dial.** How many groups the producer
+//: warp runs ahead of the consumers. It is a `constexpr` (overridable at compile
+//: time for the dial sweep), NEVER a template axis: the instantiation matrix does
+//: not gain a coordinate. The ring holds `depth + 1` slots, so the ring is always
+//: at least 2 (contract item 2: the producer must never write the slot being
+//: read) and `depth = 1` is the CONFIGURATION-COLLAPSIBLE NULL -- minimal
+//: machinery, one group of run-ahead, one descriptor of extra storage.
+//: docs/internals/smem_layout.md#sched-ring
+#ifndef ROLA_SCHED_DEPTH
+#define ROLA_SCHED_DEPTH 1
+#endif
+constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
+static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
+constexpr int kSchedSlots = kSchedDepth + 1;
+
+//: **THE VALUES-SHARD COUNT -- change-2's second dial (contract item 4).** How
+//: many copies of the staged value tile the CTA's atoms consume from: `k = 1` is
+//: full sharing (one tile, the HBM/L2 dedup win, slowest-consumer pacing), `k =
+//: QPO` is full decoupling (ties the multi-CTA baseline). Atom `q` reads shard
+//: `q % k`. Chosen AT PLAN TIME from static cursor analysis (`rola.plan`'s
+//: `value_shards`); `constexpr` here for the same reason `kSchedDepth` is.
+#ifndef ROLA_VALUE_SHARDS
+#define ROLA_VALUE_SHARDS 1
+#endif
+constexpr int kValueShards = ROLA_VALUE_SHARDS;
+static_assert(kValueShards >= 1, "at least one value shard");
+
+//: ONE COOKED GROUP DESCRIPTOR, in ints: the `kGroupTokens` gathered GLOBAL token
+//: indices (ascending -- stability IS causality), then `gN` (the group's member
+//: count; `0` is the stream-end sentinel), the read atom mask, the write atom
+//: mask, and the side flags (bit 0 = the group has a read-live token, bit 1 =
+//: write-live). Consumption multiplicity is `n_atoms + 1` -- which is what earns
+//: it storage under the materialization rule, and is why the INGREDIENTS (which
+//: only the producer reads) do not get a cooked buffer of their own.
+constexpr int kSchedSlotInts = kGroupTokens + 4;
+constexpr int kSchedGN = kGroupTokens;
+constexpr int kSchedRMask = kGroupTokens + 1;
+constexpr int kSchedWMask = kGroupTokens + 2;
+constexpr int kSchedFlags = kGroupTokens + 3;
 
 //: THE SECTOR INVARIANT, UNIVERSAL: one atom's worth of bf16 digits IS one memory
 //: sector. `kMmaKQuantum` bf16 elements = 32 B = the fetch floor = the MMA k-quantum
@@ -352,14 +391,13 @@ constexpr size_t consumer_smem_bytes() {
   b += static_cast<size_t>(kGroupTokens) * (kGroupTokens + 8) * sizeof(__nv_bfloat16);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
-  //: The group scheduler's SMEM block: `t_idx` (`kGroupTokens` global token
-  //: indices, warp 0 at ballot time) + `g_scan` (the assembler's cross-visit
-  //: carry: fill, word cursor, fr, fw, member remainder, flags, plus the
-  //: scan's `D` fixed-level row indices -- SMEM so no scheduler state is
-  //: register-live across the visit body; the atom masks are CTA-uniform
-  //: registers, derived word-wise from the bitlists at ballot).
-  b += static_cast<size_t>(kGroupTokens + 6 + D) * sizeof(int);  // t_idx + g_scan
-  b += 3 * static_cast<size_t>(kScanBatch) * sizeof(int);        // the scan batch (fr, fw, member)
+  //: THE COOKED SCHEDULE RING (change 2): `kSchedSlots` group descriptors,
+  //: written by the PRODUCER WARP a whole visit ahead and read by every
+  //: consumer warp. It REPLACES the base's `t_idx` + `g_scan` cross-visit carry
+  //: and its 3 x `kSchedChunkWords` scan batch: the assembler's cursor state is
+  //: now warp-private (registers, no carry) and the cooked chunk is register-
+  //: resident, so the ring is the ONLY scheduler storage that remains.
+  b += static_cast<size_t>(kSchedSlots) * kSchedSlotInts * sizeof(int);
   return b;
 }
 
