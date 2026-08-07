@@ -70,7 +70,6 @@ struct DecodeParams {
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
   const float* dials;    // [H, total_rows] or nullptr
-  const float* g_read;   // [BH] or nullptr (global fixes g_read := 1)
   const float* g_write;  // [BH]
   const float* v;        // [BH, d_v]
 
@@ -153,7 +152,7 @@ bool decode_expand_uses_smem(int n_words, int64_t smem_budget);
 void launch_decode_expand(const DecodeParams& p, int64_t smem_budget);
 
 size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay);
-void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool decay);
+void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay);
 
 }  // namespace decode
 }  // namespace rola

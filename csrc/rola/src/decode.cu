@@ -66,11 +66,11 @@ __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bi
   out_skip = row - acc;
 }
 
-template <int DV, int D, bool DECAY, bool GLOBAL>
+template <int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParams p) {
-  //: `GLOBAL` changes the STATE'S SHAPE (the `+1` mass column), which is why it is a
+  //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
   //: template axis and not a runtime test: docs/internals/decode.md#template-axes
-  constexpr int cols = GLOBAL ? DV + 1 : DV;
+  constexpr int cols = DV + 1;
   //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's
   //: accumulators are its own output columns.
   constexpr int NC = DV / 32;
@@ -131,7 +131,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   //: remains here is exactly the per-TOKEN part -- the side gains; the per-LEVEL factors
   //: the tiled kernel hoists stay in the per-LEAF product.
   //: docs/internals/decode.md#row-scales
-  const float sr = GLOBAL ? 1.0f : ((p.g_read != nullptr) ? p.g_read[bh] : 1.0f);
+  const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
   const float sw = p.g_write[bh];
 
   const uint32_t* bits_r = p.bits_r + static_cast<int64_t>(bh) * nw;
@@ -267,7 +267,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
 #pragma unroll
         for (int k = 0; k < NC; ++k) sv[k] = row[lane + 32 * k];
         float smass = 0.0f;
-        if (GLOBAL && lane == 0) smass = row[DV];
+        if (lane == 0) smass = row[DV];
 
         //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
         //: not an optimization: §2's survival is INCLUSIVE at `j = t`, so the whole
@@ -294,7 +294,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
             row[lane + 32 * k] = sv[k];
           }
           //: The mass column is the `v := 1` column of the identical recurrence.
-          if (GLOBAL && lane == 0) {
+          if (lane == 0) {
             smass = keep * smass + wv;
             row[DV] = smass;
           }
@@ -303,7 +303,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
           const float a = o_r * sa_r[off_last];
 #pragma unroll
           for (int k = 0; k < NC; ++k) acc[k] += a * sv[k];
-          if (GLOBAL && lane == 0) acc_m += a * smass;
+          if (lane == 0) acc_m += a * smass;
         }
       }
       q += take;
@@ -326,24 +326,21 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   const int fold_pitch = cols + 3;
 #pragma unroll
   for (int k = 0; k < NC; ++k) fold[warp * fold_pitch + lane + 32 * k] = acc[k];
-  if (GLOBAL && lane == 0) fold[warp * fold_pitch + DV] = acc_m;
+  if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
   __syncthreads();
   if (tid < cols) {
     float t = 0.0f;
 #pragma unroll
     for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
-    //: `sr` is applied HERE, before the split-K store, exactly as the tiled kernel emits
-    //: `sr * y` into `num` and `sr * den_acc` into `den`: the combine below stays a plain
-    //: sum. docs/internals/decode.md#fold-and-sr
-    part[tid] = sr * t;
+    part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
   }
   __syncthreads();
 
   // ---- the deterministic split-K combine, and the fused divide ---------------
   if (p.n_split == 1) {
     if (tid < DV) {
-      const float den = GLOBAL ? part[DV] : 1.0f;
-      p.y[static_cast<int64_t>(bh) * DV + tid] = GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
+      const float den = part[DV];
+      p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
     }
     return;
   }
@@ -369,8 +366,8 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   }
   __syncthreads();
   if (tid < DV) {
-    const float den = GLOBAL ? part[DV] : 1.0f;
-    p.y[static_cast<int64_t>(bh) * DV + tid] = GLOBAL ? (part[tid] / (den + p.eps)) : part[tid];
+    const float den = part[DV];
+    p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
   }
   //: Reset for the next step: no `memset` launch between two decode steps, and the
   //: counter is safe to capture in a CUDA graph.
@@ -385,26 +382,24 @@ size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay) {
   return (amps + static_cast<size_t>(d_v) + fold) * sizeof(float);
 }
 
-void launch_decode_gemv(const DecodeParams& p, int d_v, bool global_norm, bool decay) {
-  //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) x GLOBAL(2) = 32`. What is
-  //: NOT an axis -- `BT`, `BC`, `MmaPrec` -- is the interesting part:
+void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay) {
+  //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16` (the GLOBAL axis
+  //: died with raw). What is NOT an axis -- `BT`, `BC` -- is the interesting part:
   //: docs/internals/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
-  const int cols = d_v + (global_norm ? 1 : 0);
+  const int cols = d_v + 1;
   const size_t smem = decode_gemv_smem_bytes(p.total_rows, d_v, cols, decay);
   auto stream = at::cuda::getCurrentCUDAStream();
   //: THE LAUNCH IS WRITTEN ONCE. Each axis walker hands its value back as an
-  //: `integral_constant`, so the four `::value`s below are template arguments and the
-  //: `<<<...>>>` configuration cannot drift between arms:
+  //: `integral_constant`, so the three `::value`s below are template arguments and
+  //: the `<<<...>>>` configuration cannot drift between arms:
   //: docs/internals/dispatch_switch.md#one-launch
   int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
-    bool_switch(global_norm, [&](auto GLOBAL) {
-      bool_switch(decay, [&](auto DECAY) {
-        int_switch<1, 2, 3, 4>(p.D, "D (spec §1)", [&](auto LEVELS) {
-          detail::decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value,
-                                     decltype(DECAY)::value, decltype(GLOBAL)::value>
-              <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
-        });
+    bool_switch(decay, [&](auto DECAY) {
+      int_switch<1, 2, 3, 4>(p.D, "D (spec §1)", [&](auto LEVELS) {
+        detail::decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value,
+                                   decltype(DECAY)::value>
+            <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
       });
     });
   });
@@ -441,13 +436,12 @@ int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
 at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
                                c10::optional<std::vector<at::Tensor>> amp_clock,
-                               c10::optional<at::Tensor> dials, c10::optional<at::Tensor> g_read,
-                               at::Tensor g_write, at::Tensor v, at::Tensor state, at::Tensor bits,
-                               at::Tensor pc_coarse, at::Tensor ws, at::Tensor ctr,
-                               std::vector<int64_t> level_widths,
+                               c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v,
+                               at::Tensor state, at::Tensor bits, at::Tensor pc_coarse,
+                               at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps, bool global_norm) {
+                               int64_t n_split, double eps) {
   const int D = static_cast<int>(amp_read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
   TORCH_CHECK(static_cast<int>(amp_write.size()) == D, "amp_write must have D entries");
@@ -468,9 +462,9 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   TORCH_CHECK(v.dim() == 2, "v must be [BH, d_v]");
   const int BH = static_cast<int>(v.size(0));
   const int d_v = static_cast<int>(v.size(1));
-  const int cols = d_v + (global_norm ? 1 : 0);
+  const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
   TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
-              "state must be [BH, N, d_v + is_global]");
+              "state must be [BH, N, d_v + 1]");
   const int64_t N = state.size(1);
   TORCH_CHECK(g_write.dim() == 1 && g_write.size(0) == BH, "g_write must be [BH]");
   TORCH_CHECK(heads >= 1 && BH % heads == 0, "heads must divide BH");
@@ -538,12 +532,6 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                 "dials must be [H, sum_l width_l]");
     p.dials = dials->data_ptr<float>();
   }
-  if (g_read.has_value()) {
-    detail::check_f32(*g_read, "g_read");
-    TORCH_CHECK(g_read->dim() == 1 && g_read->size(0) == BH, "g_read must be [BH]");
-    TORCH_CHECK(!global_norm, "the global arm fixes g_read := 1 and must not be handed one");
-    p.g_read = g_read->data_ptr<float>();
-  }
 
   //: `empty`, not `zeros`: every element is written, so a zero-fill is a launch the
   //: launch-latency-bound small-batch regime pays for nothing:
@@ -581,7 +569,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
               " B; sum_l width_l = ", total_rows,
               ". This is a declared capacity, refused loudly rather than taken as a "
               "slower path.");
-  launch_decode_gemv(p, d_v, global_norm, decay);
+  launch_decode_gemv(p, d_v, decay);
   return y;
 }
 

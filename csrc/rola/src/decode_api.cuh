@@ -27,13 +27,12 @@ int64_t rola_decode_producer_width_mirror();
 
 at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
                                c10::optional<std::vector<at::Tensor>> amp_clock,
-                               c10::optional<at::Tensor> dials, c10::optional<at::Tensor> g_read,
-                               at::Tensor g_write, at::Tensor v, at::Tensor state, at::Tensor bits,
-                               at::Tensor pc_coarse, at::Tensor ws, at::Tensor ctr,
-                               std::vector<int64_t> level_widths,
+                               c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v,
+                               at::Tensor state, at::Tensor bits, at::Tensor pc_coarse,
+                               at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps, bool global_norm);
+                               int64_t n_split, double eps);
 
 }  // namespace decode
 }  // namespace rola

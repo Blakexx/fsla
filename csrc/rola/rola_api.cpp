@@ -65,10 +65,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
         py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"), py::arg("dials"),
-        py::arg("g_read"), py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("bits"),
-        py::arg("pc_coarse"), py::arg("ws"), py::arg("ctr"), py::arg("level_widths"),
-        py::arg("level_strides"), py::arg("level_spans"), py::arg("level_row_offsets"),
-        py::arg("heads"), py::arg("n_split"), py::arg("eps"), py::arg("global_norm"));
+        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("bits"), py::arg("pc_coarse"),
+        py::arg("ws"), py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"),
+        py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("heads"), py::arg("n_split"),
+        py::arg("eps"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

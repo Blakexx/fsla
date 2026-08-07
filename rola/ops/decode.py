@@ -120,7 +120,6 @@ class FrozenDecodeConfig:
     n_words: int
     n_groups: int
     d_v: int
-    is_global: bool
     has_decay: bool
     eps: float
     n_split: int
@@ -149,7 +148,7 @@ class FrozenDecodeConfig:
 
     @property
     def cols(self) -> int:
-        return self.d_v + (1 if self.is_global else 0)
+        return self.d_v + 1  # the mass column is unconditional (raw is dead)
 
     @property
     def total_rows(self) -> int:
@@ -243,7 +242,7 @@ def freeze_decode_config(
     return FrozenDecodeConfig(
         D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
         level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
-        d_v=topology.d_v, is_global=(normalization == "global"), has_decay=decay,
+        d_v=topology.d_v, has_decay=decay,
         eps=eps, n_split=int(n_split), feeder_flags=flags,
         mma_precision=mma_precision)
 
@@ -331,7 +330,7 @@ def decode_forward(
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
     ``g_write`` is ``[B, 1, H]`` and ``g_read`` is the same or ``None`` under the
-    global arm. ``state`` is ``[B, H, N, d_v + is_global]`` and is UPDATED IN PLACE —
+    global arm. ``state`` is ``[B, H, N, d_v + 1]`` and is UPDATED IN PLACE —
     every touched row has exactly one owning CTA, warp and lane, so the update needs no
     atomic and is bitwise reproducible.
 
@@ -354,11 +353,9 @@ def decode_forward(
     BH = B * H
     if d_v != config.d_v:
         raise ValueError(f"v's d_v={d_v} disagrees with the frozen config's {config.d_v}")
-    if (g_read is None) != config.is_global:
+    if g_read is not None:
         raise ValueError(
-            "the global arm fixes g_read := 1 and the raw arm requires one; the frozen "
-            f"config says is_global={config.is_global} but g_read is "
-            f"{'absent' if g_read is None else 'present'}")
+            "normalization='global' fixes g_read := 1 (raw is dead); pass g_read=None")
     if (decay is not None) != config.has_decay:
         raise ValueError(
             f"the frozen config says has_decay={config.has_decay} but decay is "
@@ -366,7 +363,7 @@ def decode_forward(
             "sequence and the decay arm is part of it")
     if state.shape != (B, H, config.N, config.cols):
         raise ValueError(
-            f"state must be [B, H, N, d_v + is_global] = "
+            f"state must be [B, H, N, d_v + 1] = "
             f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
 
     if workspace is None or not workspace.matches(config, BH, v.device):
@@ -401,7 +398,6 @@ def decode_forward(
         amp_write=amp_write,
         amp_clock=amp_clock,
         dials=dials,
-        g_read=None if g_read is None else _fold_scalar(g_read).float(),
         g_write=_fold_scalar(g_write).float(),
         v=_fold(v).float(),
         state=state.reshape(BH, config.N, config.cols),
@@ -416,7 +412,6 @@ def decode_forward(
         heads=H,
         n_split=config.n_split,
         eps=config.eps,
-        global_norm=config.is_global,
     )
     return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous(), state, workspace
 
