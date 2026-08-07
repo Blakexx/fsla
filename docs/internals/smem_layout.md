@@ -77,15 +77,16 @@ upper triangle.
 as a function of `W`:
 
 ```
-nodecay:  512 W^2 + 6784 W + 19648 bytes
-decay:    512 W^2 + 9088 W + 20416 bytes
+nodecay:  512 W^2 + 7840 W + 18592 bytes
+decay:    512 W^2 + 10144 W + 19360 bytes
 ```
 
 `W = 4` (`GT = 64`) lands at ONE CTA/SM there; `W = 8` (`GT = 128`) does not fit a CTA
 on `sm_86` at all (the `512 W^2` term), which is why `128` is not in the instantiated
 set. Residency at `GT = 64` falls to one CTA/SM at `BC = 64` (SMEM-bound) and to two at
-`BC = 16`; register budget for `GT > kGroupTokens` is 112 — censused 80..107 across the
-32 window arms on both architectures, zero spill everywhere ([below](#reg-budget)).
+`BC = 16`; register budget for `GT > kGroupTokens` is 112 — censused 87..117 on `sm_86`
+(113 max on `sm_80`) across the 32 window arms, zero spill everywhere
+([below](#reg-budget)).
 Per the standing register/SMEM policy, the residency loss at `BC = 64, GT = 64` is a
 PURCHASE: occupancy buys only latency hiding, and this kernel hides latency
 explicitly (the producer ring, the resident accumulators).
@@ -178,9 +179,12 @@ now, so there is no second row-block term to key on.
 `GT` KEYS FIRST AND UNCONDITIONALLY, at 112: the window carries `ceil(W * DV/8 /
 kWarps)` readout fragments and `ceil(W / kWarps)` mass fragments live across the Gram
 phase — fp32 residency the `GT == kGroupTokens` visit does not have — plus the fold's
-accumulator resident across `W` staged groups. Measured over all 32 window arms on
-both architectures: 80..107 registers, zero spill, so 112 is the maximum-per-key the
-budget rule asks for. At `BC = 64` the window is SMEM-bound at one CTA/SM regardless
+accumulator resident across `W` staged groups. Measured over all 32 window arms:
+87..117 registers on `sm_86` (113 max on `sm_80`), zero spill; `112` is the fixed
+budget the residency arithmetic uses for the key, a margin under the true measured
+maximum rather than equal to it — the arithmetic only needs to still admit the CTA
+count `BC = 16` keeps at 117 registers, and it does (`117 * 256 threads * 2 CTAs =
+59,904 < 65,536`). At `BC = 64` the window is SMEM-bound at one CTA/SM regardless
 of the register budget; at `BC = 16` this budget is what keeps two CTAs/SM.
 
 `BC >= 64` takes the wide budget unconditionally (the `BC = 64` arms are shared-memory
@@ -307,8 +311,8 @@ BC=64, DV=64, D=2, DECAY=true, GT=16 (W=1, kSchedDepth=1, sched_slots=2):
 ```
 
 At `GT = 64` (`W = 4`) the same flagship shape's budget follows the closed forms in
-[`#window`](#window): `512 W^2 + 6784 W + 19648` (nodecay) and `512 W^2 + 9088 W +
-20416` (decay) bytes, landing at one CTA/SM.
+[`#window`](#window): `512 W^2 + 7840 W + 18592` (nodecay) and `512 W^2 + 10144 W +
+19360` (decay) bytes, landing at one CTA/SM.
 
 These are the same two `GT=16` shapes [the residency section](#residency) plugs into
 `ctas_for_residency`. No other shape's byte total is stated here; plug the formula

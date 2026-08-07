@@ -144,9 +144,13 @@ constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
   //: `ceil(W * DV/8 / kWarps)` readout fragments and `ceil(W / kWarps)` mass
   //: fragments live across the Gram phase -- fp32 the `GT == 16` visit does not
   //: have -- and the fold's accumulator is resident across `W` staged groups.
-  //: Measured over all 32 window arms on both arches: 80..107 registers, zero
-  //: spill, so 112 is the maximum-per-key the budget rule asks for. At `BC = 64`
-  //: the window is SMEM-bound at one CTA/SM regardless; at `BC = 16` this budget is
+  //: Measured over all 32 window arms on both arches: 87..117 registers (sm_86;
+  //: 113 max on sm_80), zero spill. `112` below is the FIXED budget this function
+  //: returns for the key, a margin under the measured 117 rather than equal to
+  //: it: `ctas_for_residency` only needs the residency arithmetic to still admit
+  //: the CTA count `BC = 16` keeps at the true measured maximum, and it does
+  //: (`117 regs * 256 threads * 2 CTAs = 59,904 < 65,536`). At `BC = 64` the
+  //: window is SMEM-bound at one CTA/SM regardless; at `BC = 16` this budget is
   //: what keeps two.
   if (GT > kGroupTokens) return 112;
   //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
