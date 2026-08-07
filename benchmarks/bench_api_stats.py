@@ -11,8 +11,8 @@ where the values are already in registers, or DERIVED by the gateway from the st
 tensors afterwards. Three arms, because the third is the one the API actually changed:
 
 ``stats_unused``   production only. Nothing in the library reads these statistics --
-                   they exist for the budget losses and for diagnostics -- so this is
-                   what a training step that does not use them now pays.
+                   they exist for diagnostics only -- so this is what a training step
+                   that does not use them now pays.
 ``stats_gateway``  production, then the gateway derives both statistics from the
                    tensors. The SEPARATE arm.
 ``stats_fused``    production with ``expose_stats=True``: the producer returns the

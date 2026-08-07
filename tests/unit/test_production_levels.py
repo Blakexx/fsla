@@ -52,7 +52,6 @@ import torch
 from conftest import produce_routing, resolved_routing_from_topology
 
 import rola.routing.entmax.production as producer_v3
-from rola.routing.budget import BudgetConditioning
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
@@ -71,58 +70,6 @@ _PRODUCTION_RTOL = 2e-5
 _PRODUCTION_ATOL = 2e-6
 _PRODUCTION_GRAD_RTOL = 5e-5
 _PRODUCTION_GRAD_ATOL = 5e-6
-
-#: The CONDITIONED end-to-end VJP bound, DERIVED 2026-08-03 (perf-campaign batch 2b)
-#: from a 200-run measurement, replacing a mis-applied `_PRODUCTION_GRAD_*` pair.
-#:
-#: WHAT WENT WRONG WITH THE OLD BOUND. `test_producer_conditioned_path_backward_
-#: matches_its_oracle_path` compares the fp32 production producer against the SAME
-#: producer run END-TO-END IN FP64 with the oracle solve. That comparison does NOT
-#: isolate the port: the shared conditioning arithmetic (the 4.5 seam inside a
-#: 3-chunk, 48-token feedback recurrence -- each chunk's usage statistics feed the
-#: next chunk's logits) runs at DIFFERENT precisions in the two arms, so the
-#: compared quantity includes the fp32-vs-fp64 drift of shared code, amplified by
-#: the recurrence. Applying the solve-level `5e-5 * max|oracle| + 5e-6` to that
-#: quantity was under-derived: swept over 50 fixture seeds x 4 parametrizations on
-#: the pristine tree, 37 of 200 runs FAIL it on `usage_bias_b` alone (74 leaf
-#: failures over all 6 leaves) -- the committed seed 404 passed by selection.
-#:
-#: THE MEASUREMENT (sweep + three-arm attribution, batch2.md 2b-§1):
-#: * Distribution of `max|prod - oracle| / max|oracle|` per leaf over 200 runs:
-#:   median 1e-7..6e-6, worst 5.2e-4 (temp_b, seed 409, alpha=1.5, global); the
-#:   worst ABSOLUTE deviation on a small-scale leaf is 5.4e-5 (usage_bias_b,
-#:   scale 5.0e-2). The tail is SEED-DEPENDENT AMPLIFICATION, not accumulation
-#:   length: over L in {24, 48, 96, 192} the median ratio is flat (~2e-5) and the
-#:   worst case is wherever an amplification event lands, so a sqrt(L) model is
-#:   wrong and a per-token model is wrong; the distribution itself is the bound's
-#:   only honest source.
-#: * ATTRIBUTION: a control arm running the fp64-quality BISECTION solve on fp32
-#:   params (fp32 conditioning, reference solve) deviates from the fp64 arm by the
-#:   SAME magnitude as the Triton path at every swept seed (seed 409, alpha=1.5:
-#:   control 2.7e-2 vs production 2.1e-2 on route_W), while production-vs-control
-#:   at MATCHED precision stays inside the same envelope. The tail is therefore
-#:   the shared recurrence's fp32 drift, not the port's arithmetic -- which is
-#:   what makes bounding it a tolerance DERIVATION rather than a defect masked.
-#:
-#: THE BOUND: `1e-3 * max|oracle| + 1e-4`. Against every one of the 1,200
-#: measured (run, leaf) points the worst utilization is 0.52, i.e. >= 1.9x slack
-#: over the measured worst case in both the scale-relative term (5.2e-4 -> 1e-3)
-#: and the absolute floor (5.4e-5 -> 1e-4). The gate asserts across a SEED SWEEP
-#: that includes the two worst measured amplification seeds (409, 451), so the
-#: bound is exercised against its own tail rather than at one lucky draw.
-#: Port-level precision is NOT gated here -- it is gated where it is derivable, at
-#: solve granularity (`test_the_two_lowerings_agree_directly` and the oracle
-#: gates above, all at the unchanged `_PRODUCTION_*` tolerances).
-_CONDITIONED_VJP_RTOL = 1e-3
-_CONDITIONED_VJP_ATOL = 1e-4
-
-#: The fixture seeds the conditioned-backward gate asserts at: the committed
-#: historical seed plus four from the measured distribution, two of them the worst
-#: amplification events the 50-seed sweep found (409: route_W/temp ratio 4.6e-4;
-#: 451: the small-scale usage_bias_b worst case). Chosen from the measurement, not
-#: for greenness -- every seed here passes only because the bound is derived from
-#: the same distribution they were drawn from.
-_CONDITIONED_VJP_SEEDS = (404, 409, 411, 449, 451)
 
 #: Union tie-gradient divergence bound: the measured worst case is 4.44% of
 #: elements (write side, alpha=1.5, `union`), and this carries ~1.35x headroom.
@@ -590,67 +537,34 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
     }
 
 
-def _run_producer(params, topology, normalization, *, budget=None, r=None, actuators=None):
-    kwargs = dict(actuators or {})
+def _run_producer(params, topology, normalization):
     return produce_routing(
         params["x"], None, params["v"], params["route_W"], None, params["gain_W"],
-        params["gain_bias"], topology, normalization, budget=budget, r=r, **kwargs)
+        params["gain_bias"], topology, normalization)
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize("normalization", ["raw", "global"])
-@pytest.mark.parametrize("conditioned", [False, True])
-def test_producer_production_path_matches_its_oracle_path(
-    monkeypatch, alpha, normalization, conditioned):
+def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, normalization):
     """`produce_routing` end to end: production solve vs fp64 oracle solve.
 
     Support sets must match EXACTLY on every zero-capable side (entmax support is
     discrete); amplitudes, side gains and the exact support counts carry the production
-    tolerance. ``conditioned=True`` runs the architecture 4.5 chunk-recurrent path, so
-    the usage/temperature bias seam -- which sits between the logits and the solve --
-    is covered on both paths.
+    tolerance.
     """
     topology = _producer_topology(alpha)
     resolved = resolved_routing_from_topology(topology)
-    budget = r = None
-    if conditioned:
-        budget = BudgetConditioning(
-            budgeted_write_levels=(1,), budgeted_read_levels=(0,),
-            usage_bias_enabled=True, chunk_size=16)
-
-    def _actuators(dtype):
-        if not conditioned:
-            return None
-        generator = torch.Generator(device="cuda").manual_seed(77)
-        pairs = len(budget.budgeted_pairs)
-
-        def _randn(*shape):
-            return 0.1 * torch.randn(
-                shape, device="cuda", dtype=torch.float32, generator=generator).to(dtype)
-
-        return {
-            "temp_W": _randn(2, pairs, 2),
-            "temp_b": _randn(2, pairs),
-            "usage_bias_W": _randn(2, topology.D, 4),
-            "usage_bias_b": _randn(2, topology.D),
-        }
 
     production_params = _producer_params(
         topology, dtype=torch.float32, device="cuda",
         sides=1 if normalization == "global" else 2)
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
-    if conditioned:
-        r = torch.full((production_params["x"].shape[0],), 0.5, device="cuda")
 
-    production = _run_producer(
-        production_params, topology, normalization, budget=budget,
-        r=None if r is None else r.float(), actuators=_actuators(torch.float32))
+    production = _run_producer(production_params, topology, normalization)
     monkeypatch.setattr(
         producer_v3, "production_routing_factor_levels", oracle_factor_levels)
-    oracle = _run_producer(
-        oracle_params, topology, normalization, budget=budget,
-        r=None if r is None else r.double(), actuators=_actuators(torch.float64))
+    oracle = _run_producer(oracle_params, topology, normalization)
 
     for level in range(topology.D):
         if resolved.read_level_can_zero[level]:
@@ -673,8 +587,6 @@ def test_producer_production_path_matches_its_oracle_path(
         _assert_levels_match(production.g_read, oracle.g_read)
     else:
         assert production.g_read is None and oracle.g_read is None
-    for pair, slack in production.slack_history.items():
-        _assert_levels_match(slack, oracle.slack_history[pair])
 
 
 # ---------------------------------------------------------------------------
@@ -740,134 +652,6 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
     _assert_levels_match(cuda_vjp[0].cpu(), cpu_vjp[0], gradient=True)
     _assert_levels_match(cuda_vjp[1].cpu(), cpu_vjp[1], gradient=True)
 
-
-@_CUDA
-@pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-@pytest.mark.parametrize("seed", _CONDITIONED_VJP_SEEDS)
-def test_producer_conditioned_path_backward_matches_its_oracle_path(monkeypatch, alpha,
-                                                                    normalization, seed):
-    """V9 item 1: the §4.5 conditioning seam composed with the TRITON backward.
-
-    ``test_producer_production_path_matches_its_oracle_path`` runs
-    ``conditioned=True`` FORWARD ONLY, and the CPU test that does check backward
-    (`test_rola_v3_producer.py::test_conditioned_path_matches_oracle_contract_and_
-    differentiates_all_actuators`) exercises the TORCH lowering -- so the
-    composition of the conditioning seam with the fused Triton VJP had no gate at
-    all (producer-port-review Claim 4). It has one here.
-
-    The seam is architecture §4.5's per-digit logit bias `g` and per-side
-    temperature `c`, applied BETWEEN the logits and the activation, inside a
-    sequential chunk recurrence. Two things are asserted:
-
-    1. Every actuator receives a FINITE, NONZERO gradient. This is the failure this
-       gate exists for -- [[layer-dispatch-autograd-gap]]: a path reachable from a
-       grad context that silently breaks the graph passes every forward gate.
-    2. Every gradient matches the same producer run END-TO-END IN FP64 with the
-       oracle solve, within `_CONDITIONED_VJP_RTOL/_ATOL` -- a bound DERIVED from
-       the measured distribution of that comparison (see the constant's comment).
-       This comparison does NOT isolate the port: the shared conditioning
-       recurrence runs at different precisions in the two arms, so the deviation
-       is dominated by fp32-vs-fp64 drift of shared code (measured by a
-       control arm running the oracle solve on fp32 params, which reproduces
-       the deviation without the Triton kernel anywhere in the loop). What this
-       assertion gates is the COMPOSITION: a port whose backward is detached,
-       support-broken, or grossly wrong fails it; port-level precision is gated at
-       solve granularity by the tests above, at the tight `_PRODUCTION_*` bounds.
-
-    Asserted across `_CONDITIONED_VJP_SEEDS` -- including the worst amplification
-    seeds the 50-seed derivation sweep found -- because a single-seed assertion
-    against a seed-dependent amplification distribution is selection, not a gate
-    (the pre-repair bound passed at seed 404 and failed at 19 of 25 neighbours).
-
-    The bound is applied at the TENSOR's scale, not per element: these composite
-    gradients contain near-zero entries where a per-element relative bound is
-    meaningless (measured pre-repair: per-element relative disagreement up to
-    4.5e7 on `usage_bias_b` whose absolute disagreement was 4.7e-5 at scale 59).
-
-    The support sets are asserted identical FIRST, which is what makes a tolerance
-    admissible at all: a support disagreement between the two solves would be an
-    O(1) gradient difference, not a rounding one, and no tolerance should absorb it.
-    """
-    topology = _producer_topology(alpha)
-    budget = BudgetConditioning(
-        budgeted_write_levels=(1,), budgeted_read_levels=(0,),
-        usage_bias_enabled=True, chunk_size=16)
-    pairs = len(budget.budgeted_pairs)
-
-    def _actuators(dtype):
-        generator = torch.Generator(device="cuda").manual_seed(77)
-
-        def _randn(*shape):
-            return 0.1 * torch.randn(
-                shape, device="cuda", dtype=torch.float32, generator=generator).to(dtype)
-
-        return {
-            "temp_W": _randn(2, pairs, 2),
-            "temp_b": _randn(2, pairs),
-            "usage_bias_W": _randn(2, topology.D, 4),
-            "usage_bias_b": _randn(2, topology.D),
-        }
-
-    sides = 1 if normalization == "global" else 2
-    production_params = _producer_params(
-        topology, dtype=torch.float32, device="cuda", sides=sides, seed=seed)
-    oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
-    r = torch.full((production_params["x"].shape[0],), 0.5, device="cuda")
-
-    def _run(params, actuators, r_arg):
-        leaves = {name: tensor.detach().clone().requires_grad_()
-                  for name, tensor in params.items() if name in ("route_W", "gain_W")}
-        act = {name: tensor.detach().clone().requires_grad_()
-               for name, tensor in actuators.items()}
-        out = produce_routing(
-            params["x"], None, params["v"], leaves["route_W"], None, leaves["gain_W"],
-            params["gain_bias"], topology, normalization, budget=budget, r=r_arg, **act)
-        # A cotangent that touches every level on both sides and the side gains, so
-        # no branch of the seam can be exercised by accident.
-        loss = sum(level.square().sum() for level in (*out.read_levels, *out.write_levels))
-        loss = loss + out.g_write.square().sum()
-        if out.g_read is not None:
-            loss = loss + out.g_read.square().sum()
-        names = ["route_W", "gain_W", *act]
-        tensors = [leaves["route_W"], leaves["gain_W"], *act.values()]
-        return out, names, torch.autograd.grad(loss, tensors)
-
-    production, names, production_grads = _run(
-        production_params, _actuators(torch.float32), r.float())
-    monkeypatch.setattr(
-        producer_v3, "production_routing_factor_levels", oracle_factor_levels)
-    oracle, _, oracle_grads = _run(oracle_params, _actuators(torch.float64), r.double())
-
-    resolved = resolved_routing_from_topology(topology)
-    for level in range(topology.D):
-        if resolved.read_level_can_zero[level]:
-            _assert_support_identical(
-                production.read_levels[level], oracle.read_levels[level],
-                f"conditioned read {level}")
-        if resolved.write_level_can_zero[level]:
-            _assert_support_identical(
-                production.write_levels[level], oracle.write_levels[level],
-                f"conditioned write {level}")
-
-    for name, production_grad, oracle_grad in zip(names, production_grads, oracle_grads):
-        assert production_grad is not None, f"{name} received no gradient through the seam"
-        assert torch.isfinite(production_grad).all(), f"{name} gradient is not finite"
-        assert float(production_grad.abs().max()) > 0.0, (
-            f"{name} gradient is identically zero -- the §4.5 seam is detached on the "
-            "Triton path, which a forward-only gate cannot see")
-        scale = float(oracle_grad.abs().max())
-        limit = _CONDITIONED_VJP_RTOL * scale + _CONDITIONED_VJP_ATOL
-        deviation = float((production_grad.double() - oracle_grad).abs().max())
-        assert deviation <= limit, (
-            f"{name}: the conditioned production VJP deviates from the fp64 "
-            f"oracle-path VJP by {deviation:.3e}, past {limit:.3e} "
-            f"(= {_CONDITIONED_VJP_RTOL} * {scale:.3e} + {_CONDITIONED_VJP_ATOL}). "
-            "The support sets were already asserted identical above, and the bound "
-            "carries >= 1.9x slack over the measured 200-run worst case of the "
-            "shared recurrence's fp32-vs-fp64 drift -- so this is either a real "
-            "port regression or a drift event past everything the derivation "
-            "sweep observed; re-run the batch-2b sweep before touching the bound.")
 
 
 def test_production_imports_nothing_from_the_reference_package():

@@ -92,9 +92,9 @@ never asks what a producer is, only that its output is well formed:
 | `level_routing` | no | per-level routing tag, for the pricing columns |
 
 `source` is a `RouteSource` carrying the `[B, T, hidden_size]` read and write streams
-(the same object when the model does not split them) and the optional per-sequence
-budget. `ProducedRoutes` carries one `[B, T, H, width_l]` tensor per level per side, and
-optionally any statistic the producer already knew.
+(the same object when the model does not split them). `ProducedRoutes` carries one
+`[B, T, H, width_l]` tensor per level per side, and optionally any statistic the
+producer already knew.
 
 Levels need not be unit-sum: the gateway factors each into `(mass, simplex)` and folds
 the mass into the side gain, which is where a per-level magnitude belongs.
@@ -122,7 +122,7 @@ the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 
 ```python
 SimplexProducer(widths, routing=dense_routing(), *, hidden_size, num_heads,
-                bias=False, budget=None, expose_stats=False)
+                bias=False, expose_stats=False)
 ```
 
 A learned packed per-head router projection, solved with the exact production
@@ -137,9 +137,12 @@ registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller c
 supply is metadata a caller could supply wrong, and a validator reading it would be
 checking a claim instead of a fact.
 
-`budget` carries the architecture's Tier-1 conditioning (temperature actuation over
-`(r, slack)`, the budget embedding, the usage-conditioned per-digit bias), indexed on
-the producer's own levels.
+**No conditioning surface.** An earlier revision carried architecture §4.5's
+budget-conditioning surface here (temperature actuation, a budget embedding, a
+usage-conditioned per-digit bias) — routing-coherence residual losses plus injected
+routing factors. That whole family is DESCOPED (queue P29, 2026-08-06,
+`docs/internals/DELETIONS.md`): the endgame's data-adaptive executor obsoletes the
+premise, and paper 1's thesis stands on incoherent entmax routing without it.
 
 ### 2.4 Foreign producers
 
@@ -220,9 +223,9 @@ factors.support_counts()   # {(level, side): [B, T, H]}
 factors.touched_bits()     # {level: [B, H, width_l]}
 ```
 
-Nothing in the library reads them; they exist for the budget losses and for diagnostics.
-Producing them eagerly spent launches per level per step on numbers no consumer had
-asked for — measured at 3.0 % of the step at `L = 4096`.
+Nothing in the library reads them; they exist for diagnostics only. Producing them
+eagerly spent launches per level per step on numbers no consumer had asked for —
+measured at 3.0 % of the step at `L = 4096`.
 
 A producer that already knows a statistic as a byproduct of its own solve may supply it
 (`expose_stats=True` on the shipped producer), and the gateway then measures only what is

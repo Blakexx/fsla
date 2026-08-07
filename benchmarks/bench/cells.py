@@ -278,9 +278,8 @@ class Cell:
 
     def _build_producer(self):
         """MIGRATED: `produce_routing(x, ..., route_W, ...)` -> `layer.routes(x)`,
-        the gateway call itself. No budget/temperature/usage-bias kwargs are
-        threaded through by hand any more -- the gateway owns them, and this cell
-        configures none (`SimplexProducer(..., budget=None)`, the default)."""
+        the gateway call itself. There is no conditioning surface left to thread
+        through by hand (queue P29 descoped it)."""
         layer = self._layer()
         hidden = self.H * self.d_v
         x = torch.randn(self.B, self.T, hidden, device="cuda", dtype=torch.float32)

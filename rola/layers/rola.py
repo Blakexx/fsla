@@ -237,7 +237,6 @@ class RoLA(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: RoLAState | None = None,
         use_cache: bool | None = False,
-        budget: torch.Tensor | None = None,
         **kwargs: Unpack[dict],
     ) -> tuple[torch.Tensor, None, RoLAState | None]:
         if attention_mask is not None and attention_mask.dim() != 2:
@@ -294,7 +293,7 @@ class RoLA(nn.Module):
         if recurrent_state is not None and torch.is_grad_enabled():
             raise RuntimeError("RoLA carried-state execution is inference-only")
 
-        routes = self.routes(source, budget=budget)
+        routes = self.routes(source)
         decay = None if self.decay is None else self.decay()
         backend = self.select_execution_backend(
             v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))

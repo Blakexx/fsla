@@ -501,8 +501,8 @@ class ResolvedRouting:
         """The column span level ``index`` occupies in a packed per-side logit tensor.
 
         Delegates to the module-level :func:`level_logit_slice` so the production
-        solve, the fp64 reference, telemetry and the budget-conditioning actuators
-        all read ONE definition of the packed layout.
+        solve, the fp64 reference and telemetry all read ONE definition of the
+        packed layout.
         """
         return level_logit_slice(self.branches, index)
 

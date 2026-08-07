@@ -30,7 +30,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteProducer`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `sparse_routing`, `BudgetConditioning` | STABLE |
+| feature map | `RouteProducer`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `sparse_routing` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA` | STABLE |
 | state | `RoLAState`, `LayerRecurrentState` | STABLE |
@@ -43,7 +43,6 @@ __version__ = "0.1.0.dev0"
 from rola.interface import rola_op
 from rola.layers.rola import RoLA
 from rola.ops.naive import naive_rola
-from rola.routing.budget import BudgetConditioning
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from rola.routing.factors import RouteFactors, RouteProducer
 from rola.routing.producer import (
@@ -79,7 +78,6 @@ __all__ = [
     "SimplexProducer",
     "dense_routing",
     "sparse_routing",
-    "BudgetConditioning",
     # the decay-source slot — where the recurrence's rates come from
     "DecaySource",
     "ConstantDecay",
