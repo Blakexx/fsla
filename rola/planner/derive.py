@@ -142,7 +142,7 @@ def subtree_ceiling(widths: tuple[int, ...]) -> int:
 
 
 def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[int, ...]:
-    """The compiled ``BC`` values whose carve fits shared memory, with the rings paid.
+    """The compiled ``BC`` values whose carve fits shared memory.
 
     ONE inequality, and it is the launch's own::
 
@@ -170,21 +170,41 @@ def box_admitted(machine: MachineFacts, d_v: int, D: int, decay: bool) -> tuple[
     CTA (the item stream and the producer warp's run-ahead), so a second resident CTA
     is not what the shared memory is for.
 
-    Empty is a REFUSAL, not a fallback: a machine that will not grant a block enough
-    shared memory for any compiled arm has no launch, so it has no plan.
+    **THE TWO EMPTY SETS ARE DIFFERENT REFUSALS AND SAY SO.** No arm at all for this
+    ``(d_v, D, decay)`` is an UN-INSTANTIATED GEOMETRY -- nothing was compiled, so
+    there is nothing to price -- and it raises :class:`NotImplementedError` naming the
+    coordinates and every axis the matrix does carry. Arms that exist but do not fit is
+    a MACHINE refusal, and it raises :class:`ValueError` naming each carve against the
+    device's grant. Collapsing them would report a shared-memory shortfall for a kernel
+    that was never built.
     """
+    compiled = machine.compiled_bc(d_v, D, decay)
+    if not compiled:
+        raise NotImplementedError(_no_instantiation(machine, d_v=d_v, D=D, decay=decay))
     budget = int(machine.max_dynamic_smem_bytes)
-    admitted = tuple(BC for BC in machine.compiled_bc(d_v, D, decay)
+    admitted = tuple(BC for BC in compiled
                      if machine.arm_smem_bytes[(BC, d_v, D, bool(decay))] <= budget)
     if not admitted:
-        carved = {BC: machine.arm_smem_bytes[(BC, d_v, D, bool(decay))]
-                  for BC in machine.compiled_bc(d_v, D, decay)}
+        carved = {BC: machine.arm_smem_bytes[(BC, d_v, D, bool(decay))] for BC in compiled}
         raise ValueError(
             f"no compiled arm fits shared memory at d_v={d_v}, D={D}, decay={bool(decay)}: "
             f"the carves are {carved} bytes and this device grants a block "
             f"{machine.max_dynamic_smem_bytes}. The launch would be refused by the "
             "driver, so there is no plan for this geometry on this machine.")
     return admitted
+
+
+def _no_instantiation(machine: MachineFacts, **coords) -> str:
+    """The refusal a geometry with no compiled arm gets, with the matrix beside it."""
+    axes = {name: sorted({key[i] for key in machine.arm_smem_bytes})
+            for i, name in enumerate(("BC", "d_v", "D", "decay"))}
+    stated = ", ".join(f"{name}={value}" for name, value in coords.items())
+    return (f"no consumer instantiation to query at {stated}: no arm was compiled for "
+            f"that geometry, so it has no shared-memory carve, no launch and no plan. "
+            f"The matrix this binary carries is "
+            + ", ".join(f"{name} in {values}" for name, values in axes.items())
+            + ". This is a build-matrix fact, not a runtime condition: instantiate the "
+              "arm, or use a geometry the binary implements.")
 
 
 def fill_ceiling(N: int, BH: int, sm_count: int) -> int:
@@ -312,7 +332,15 @@ def derive_bc(topology, machine: MachineFacts, *, BH: int, decay: bool,
     D = len(widths)
     admitted = box_admitted(machine, d_v, D, bool(decay))
     if pinned is not None:
-        return feasible_bc(widths, instantiated=admitted, pinned=int(pinned))[-1]
+        BC = feasible_bc(widths, instantiated=admitted, pinned=int(pinned))[-1]
+        if BC not in machine.compiled_bc(d_v, D, bool(decay)):
+            #: `feasible_bc` validates the pin's ALIGNMENT and deliberately does not
+            #: filter it against the ladder, so an off-ladder pin reaches here. It is
+            #: refused HOST-SIDE, by name, rather than launching a kernel that does not
+            #: exist -- a device-side failure would poison the context.
+            raise NotImplementedError(
+                _no_instantiation(machine, BC=BC, d_v=d_v, D=D, decay=bool(decay)))
+        return BC
     ladder = feasible_bc(widths, instantiated=admitted)
     ceiling = min(subtree_ceiling(widths),
                   fill_ceiling(prod(widths), BH, machine.sm_count))

@@ -166,32 +166,25 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
 
 
 # ---------------------------------------------------------------------------
-# 3. Frozen declarations under drifting realized routing
+# 3. The launch split under drifting realized routing
 # ---------------------------------------------------------------------------
 
-def test_frozen_density_declarations_are_performance_only_under_drift():
-    """Freeze THREE carriers — dense-declared, sparse-declared, undeclared —
-    then run the SAME drifted stream (declared-dense arm sees realized-sparse
-    routing and vice versa) through each. The declarations size the launch
-    (``n_split``) and nothing else, so the states must be BYTE-IDENTICAL
-    across carriers (decode state is n_split-invariant by design) and ``y``
-    inside the oracle band. A declaration that could move a number would make
-    the prefill's density snapshot a semantic input, which is exactly what
-    §6b's frozen boundary forbids."""
+def test_the_decode_split_is_performance_only_under_drift():
+    """Freeze THREE carriers at three ``n_split`` values, then run the SAME
+    drifted stream (sparse steps and dense steps in one sequence) through each.
+    ``n_split`` sizes the LAUNCH -- how many CTAs divide the row space -- and
+    nothing else, so the states must be BYTE-IDENTICAL across carriers and ``y``
+    inside the oracle band. A split that could move a stored number would make
+    how many CTAs ran a semantic input, and the whole reason the split can be
+    frozen once at the boundary is that it cannot."""
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = g._topology(_WIDTHS, _DV)
-    D = len(_WIDTHS)
     configs = {
-        "dense-declared": freeze_decode_config(
+        f"n_split={n}": freeze_decode_config(
             topology, "global", decay=False, BH=_B * _H, device=device,
-            static_density=((True, True),) * D, mma_precision="bf16"),
-        "sparse-declared": freeze_decode_config(
-            topology, "global", decay=False, BH=_B * _H, device=device,
-            static_density=((False, False),) * D, mma_precision="bf16"),
-        "undeclared": freeze_decode_config(
-            topology, "global", decay=False, BH=_B * _H, device=device,
-            mma_precision="bf16"),
+            n_split=n, mma_precision="bf16")
+        for n in (1, 3, 8)
     }
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
@@ -219,11 +212,11 @@ def test_frozen_density_declarations_are_performance_only_under_drift():
             topology, None, "global", initial_state=ref_state, output_final_state=True)
         ys_ref.append(y_ref)
 
-    base = outcomes["undeclared"]
+    base = outcomes["n_split=1"]
     for name, (ys, state) in outcomes.items():
         assert torch.equal(state, base[1]), (
-            f"the {name} carrier's STATE differs from the undeclared one: a "
-            "frozen density declaration moved stored numbers")
+            f"the {name} carrier's STATE differs from the single-CTA one: the "
+            "launch split moved stored numbers")
         for s, (y, y_ref) in enumerate(zip(ys, ys_ref)):
             assert g.relative(y, y_ref) < DECODE_RTOL, (
                 f"{name}, step {s}: y left the oracle band under drift")
@@ -232,7 +225,7 @@ def test_frozen_density_declarations_are_performance_only_under_drift():
     step = _f32(steps[0])
     with pytest.raises(ValueError, match="has_decay"):
         decode_forward(step["v"], step["read"], step["write"], step["g_read"],
-                       step["g_write"], configs["undeclared"],
+                       step["g_write"], configs["n_split=1"],
                        base[1].clone(),
                        decay=LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))
 
