@@ -361,6 +361,76 @@ def test_causal_inclusion_leaf_read_before_its_first_write():
               read_levels=read_levels, write_levels=write_levels)
 
 
+def test_gram_block_with_disjoint_atom_masks_still_stores_its_zero():
+    """`consumer_kernel.cuh` GEMM 2: a block whose SIDES are both live but whose
+    ATOM MASKS are disjoint (``rmr[a] & wmr[b] == 0``) must still store the exact
+    zero it is, not skip the store -- "or the intra term reads a previous window's
+    Gram" (the kernel's own comment at the site). The regression this pins moved
+    the skip condition from the side flag (`rmr[a] == 0`) to the atom-mask
+    intersection (`gmask == 0`), which is wrong exactly here.
+
+    **Why no sampled routing has ever produced this cell.** `BC == kMmaKQuantum
+    == 16` cannot express it at all: one atom per side makes "both sides live"
+    and "the atom masks intersect" the same statement. `BC = 64` (`kQPO = 4`)
+    can, but a random sparse routing almost never lands two DIFFERENT groups'
+    supports on disjoint 16-leaf atoms of the SAME 64-leaf owner slice -- and
+    even if it did, a stale Gram cell only reads back wrong if some EARLIER
+    window left real nonzero data at that exact physical offset, which the
+    per-window shared-memory tile reuses. Both properties have to be built.
+
+    **The construction.** `widths = (8, 8)`, `BC = 64`: `N = 64` is exactly one
+    owner slice of 4 atoms of 16 leaves, `leaf = digit0 * 8 + digit1` (MSB-first,
+    ``naive.py:_radix_strides``), so `digit0 in {0,1}` is atom 0 and `digit0 in
+    {2,3}` is atom 1 -- disjoint and both nonempty. `T = 128` forces the wide
+    window's shared Gram tile to be reused across TWO windows at the same
+    (a, b) physical offsets (`CONSUMER_WINDOWS` forced to the one-tuple `(64,)`,
+    the same forcing form item 1 uses, so the window is never refused). Window 0
+    (tokens `[0, 64)`) reads and writes the WHOLE level-0 support -- intersecting,
+    so every `(a, b)` Gram block gets a real, large, nonzero value written.
+    Window 1 (tokens `[64, 128)`) reads ONLY atom 0 and writes ONLY atom 1 for
+    every group -- disjoint, so the oracle's Gram contribution there is exactly
+    zero (disjoint supports make the leaf-space dot product `R_a . W_b^T`
+    identically zero) and the fixed kernel must overwrite window 0's stale value
+    with that zero. A kernel that skips the store instead leaks window 0's Gram
+    into window 1's output, which is large and easily caught -- not a tolerance
+    drift.
+    """
+    import rola.planner.schedule as schedule_mod
+
+    device = "cuda"
+    generator = torch.Generator(device=device).manual_seed(2026)
+    widths, d_v, B, T, H, BC = (8, 8), 64, 1, 128, 2, 64
+    read_mask0 = torch.ones(T, 8, device=device)
+    write_mask0 = torch.ones(T, 8, device=device)
+    read_mask0[64:, :] = 0.0
+    read_mask0[64:, 0:2] = 1.0
+    write_mask0[64:, :] = 0.0
+    write_mask0[64:, 2:4] = 1.0
+    # The fixture is only a pin if window 1's supports are genuinely disjoint and
+    # window 0's are genuinely intersecting -- assert both rather than trusting
+    # the construction above stayed correct under a future edit.
+    assert bool((read_mask0[64:] * write_mask0[64:]).sum(-1).eq(0).all()), (
+        "window 1 must have disjoint level-0 support between read and write")
+    assert bool((read_mask0[:64] * write_mask0[:64]).sum(-1).gt(0).all()), (
+        "window 0 must have intersecting level-0 support so it writes a real, "
+        "nonzero Gram at the offsets window 1 reuses")
+    read_levels = (
+        _masked_simplex((B, T, H, 8), read_mask0.view(1, T, 1, 8), generator, device),
+        _simplex((B, T, H, 8), 1.0, generator, device),
+    )
+    write_levels = (
+        _masked_simplex((B, T, H, 8), write_mask0.view(1, T, 1, 8), generator, device),
+        _simplex((B, T, H, 8), 1.0, generator, device),
+    )
+    original = schedule_mod.CONSUMER_WINDOWS
+    schedule_mod.CONSUMER_WINDOWS = (64,)
+    try:
+        _run_case(widths, BC, d_v, B, T, H, 1.0, 1.0, nonzero_m0=True, seed=2026,
+                  read_levels=read_levels, write_levels=write_levels)
+    finally:
+        schedule_mod.CONSUMER_WINDOWS = original
+
+
 @pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 4), 16), ((8, 8), 64), ((4, 4, 4, 4), 16)])
 @pytest.mark.parametrize("decay", [False, True])
 def test_extreme_sparsity_matches_canonical_oracle(widths, BC, decay):
