@@ -13,9 +13,11 @@ here together. **Part A** is the header; **Part B** is the translation unit.
 Symbols used throughout: `N` is the leaf count; `D` the number of routing levels
 (`1 <= D <= 4`); `b_l` level `l`'s width and `S_l = prod(b_{l..D-1})` its span, so
 `S_0 = N`; `BH = B * H` the flattened batch-head axis; `d_v` the value width and
-`cols = d_v + is_global`; `n_words = ceil(N/32)`; `M` the number of touched rows
-(`popcount(bits_r | bits_w)`); `n_split` the split-K degree; `BT`/`BC` are the
-tiled consumer's token and owner tiles, which appear here only to be ruled out.
+`cols = d_v + 1` (the mass column is unconditional; raw normalization is dead —
+there is no `GLOBAL` axis anywhere in this repository, decode included);
+`n_words = ceil(N/32)`; `M` the number of touched rows (`popcount(bits_r |
+bits_w)`); `n_split` the split-K degree; `BT`/`BC` are the tiled consumer's token
+and owner tiles, which appear here only to be ruled out.
 
 ---
 
@@ -162,7 +164,8 @@ entry sweep and no exit sweep in this kernel.**
 
 ## <a id="state-in-place"></a>11. `state` is read and written in place
 
-`state` is `[BH, N, cols]` with `cols = d_v + is_global`, and it is read AND
+`state` is `[BH, N, cols]` with `cols = d_v + 1` (the mass column is
+unconditional — raw is dead), and it is read AND
 written in place: a row's read contribution and its write-back are performed by
 the SAME lane in program order. The read-then-write ordering the tiled kernel
 spends a barrier on per tile costs one register here. The semantics of that order
@@ -293,12 +296,13 @@ group, then at most 32 popcounts walk to the word. This is what the coarse index
 is FOR, and it is the same array the walk consults to skip empty groups
 ([§24](#coarse-consult)).
 
-## <a id="template-axes"></a>20. `GLOBAL` and `NC` — why `GLOBAL` is a template axis
+## <a id="template-axes"></a>20. Why there is no `GLOBAL` axis, and what `NC` is
 
-`GLOBAL` changes the STATE'S SHAPE (the `+1` mass column), so it is a template
-axis for the same reason it is one in the tiled consumer: a runtime test would
-make `cols` a runtime value in every state address, and would keep the mass
-accumulator live on an arm that has no mass.
+Raw normalization is dead everywhere in this repository (revival = git;
+[`DELETIONS.md`](DELETIONS.md)): the mass column and the `num/den` divide are
+UNCONDITIONAL, so `cols = DV + 1` at every instantiation and there is nothing left
+for a `GLOBAL` template axis to select between. `decode_gemv_kernel<DV, D,
+DECAY>` takes exactly three template parameters.
 
 `NC = DV / 32` is columns per lane. The row load is `NC` fully coalesced 128 B
 transactions and the lane's accumulators are its own output columns — the whole
@@ -328,7 +332,8 @@ At `T = 1` there is no owner rectangle, so the per-LEVEL factors the tiled kerne
 hoists into `sr`/`sw` for the fixed levels `l < j` stay in the per-LEAF product
 instead. The split between `R[0,s]` and `sr` is an owner-rectangle artefact, and
 the product is the same product either way. What remains here is exactly the
-per-TOKEN part: the side gains. Under `GLOBAL` the read gain is fixed at `1`.
+per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
+`g_read := 1`; raw is dead, so there is no arm where it is anything else).
 
 ## <a id="row-range-to-words"></a>23. The CTA's row range, resolved into a word range
 
@@ -415,8 +420,8 @@ tiled kernel evaluates three.**
 `log1pf` IS the composition (never a rounded linear-domain `1 - rate`) and there
 is no epsilon floor: both of §12 rule 2's prohibitions, inherited verbatim.
 
-The mass column is the `v := 1` column of the identical recurrence, so `GLOBAL`
-adds one lane-0 statement rather than a second path.
+The mass column is the `v := 1` column of the identical recurrence, unconditional
+on every arm — one lane-0 statement, never a second path.
 
 ## <a id="fold-and-sr"></a>29. The 8-way fold, and where `sr` is applied
 
@@ -442,12 +447,14 @@ two decode steps and the counter is safe to capture in a CUDA graph.
 
 ## <a id="instantiation-matrix"></a>31. The instantiation matrix
 
-`DV(2) x D(4) x DECAY(2) x GLOBAL(2) = 32`. Note what is **not** an axis: no `BT`
-(one token), no `BC` (no owner blocking), no `MmaPrec` (there is no MMA). Every
-axis is a structural plan fact
-with few legal values, which is the standing *"branch on structure, not
-thresholds"* rule. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D`
-outside `[1, 4]` is refused in the dispatch's `default`.
+`DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one
+token), no `BC` (no owner blocking), no `MmaPrec`/precision split (there is no
+MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else — see
+[`mma.md`](mma.md)), no `GLOBAL` (raw normalization is dead; the mass column is
+unconditional — [§20](#template-axes)). Every axis is a structural plan fact with
+few legal values, which is the standing *"branch on structure, not thresholds"*
+rule. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1,
+4]` is refused in the dispatch's `default`.
 
 ## <a id="flat-bits"></a>32. The `bits` workspace is ONE flat allocation
 

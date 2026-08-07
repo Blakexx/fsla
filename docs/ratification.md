@@ -6,36 +6,48 @@ exact `ptxas`:
 
 ```
 tools/manifests/sm_86.json
-  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {...},
+  { "toolchain": { "ptxas": "<the whole --version string>", "defines": {},
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
-    "shards":   { "consumer_bf16_raw_bt32": { "members_sha256": "...",
-                                              "count": 32 }, ... },
+    "shards":   { "consumer_decay_bc16": { "members_sha256": "...",
+                                           "count": 8 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
                                             "hot_locals": 0, "local_ops": 12,
                                             "sass_sha256": "..." }, ... } }
 ```
 
-352 entries per architecture, measured on the current tree: 256 for the consumer,
-one per point of the
-`(BT, BC, DV, D, FOLD_PREC, READ_PREC, DECAY, GLOBAL)` product, plus 32
-`decode_gemv_kernel` and 32 each of `union_forward_kernel` and
-`union_backward_kernel`. The manifest is the authority on that count and no
-comment restates it. The mangled name is the key because it is exact, stable, and
-encodes every template argument — an entry cannot be silently re-pointed at a different instantiation by a
-rename or a reordering.
+112 entries per architecture, measured on the current tree: 32 for the consumer —
+one per point of the `consumer_forward_kernel<BC, DV, D, DECAY>` product (the P26
+endgame executor collapsed the matrix from 256 to 32 by deleting the `BT`, `PREC`
+and `GLOBAL` axes; [`docs/internals/DELETIONS.md`](internals/DELETIONS.md)) — plus
+16 `decode_gemv_kernel` (`DV x D x DECAY`; its own `GLOBAL` axis died with raw
+normalization the same sweep) and 32 each of `union_forward_kernel` and
+`union_backward_kernel`, whose matrix P26 did not touch. `defines` is the empty
+tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since the closed-world
+codegen surface carries no `#define` this gate has to pin. Two ratified
+architectures (`sm_80`, `sm_86`) make 224 entries total. The manifest is the
+authority on the count and no comment restates it independently. The mangled name
+is the key because it is exact, stable, and encodes every template argument — an
+entry cannot be silently re-pointed at a different instantiation by a rename or a
+reordering.
 
 ## Why it exists
 
 The kernel's `__launch_bounds__` is computed from a three-term residency formula,
-and one instantiation was **accepted with a 4-byte spill as the measured optimum**
-— the alternatives spill worse (unbounded: 20 st / 56 ld; a thread-slot cap:
-70 st / 284 ld). That acceptance was a judgement recorded in a document, and it
-lived nowhere else: **nothing failed if a later codegen change grew it.** The
-manifest makes it an asserted invariant. A property the project believes is a
-property the project checks.
+and a spill accepted as a measured optimum against worse alternatives is a
+judgement that has to live SOMEWHERE nothing else checks — a document that says so
+is not enforced, and a later codegen change can grow the spill silently. The
+manifest is what makes that judgement an asserted invariant instead: a property
+the project believes is a property the project checks. On the current tree the
+consumer's collapsed 32-arm matrix ratifies at ZERO spill everywhere (measured:
+the P26 endgame executor's SMEM carve dropped every consumer instantiation's spill
+from a nonzero working set to none, and hot-loop locals from 8,933 to 254 across
+the matrix — [`internals/DELETIONS.md`](internals/DELETIONS.md) records what was
+cut to get there); the two live spilling entries in the current manifest are both
+`union_backward_kernel` (entmax), 16 bytes stores / 16 bytes loads each, unrelated
+to the P26 sweep.
 
 ## What it compiles, and why that is the shipped source
 
@@ -47,19 +59,19 @@ neither held before:
 
 - **the numbers describe the shipped binary.** `nvcc` derives an
   anonymous-namespace kernel's mangled discriminator from the file that
-  instantiates it, so while the gate compiled a probe under `tools/`, its 96
+  instantiates it, so while the gate compiled a probe under `tools/`, its 80
   decode/entmax keys named symbols that existed in no shipped `.so`. They now name
   the entry points the binary carries, and `tools/fatbin_entries.py` checks that
   rather than asserting it.
 - **there is one enumeration of the matrix.** The shards, the dispatch table and
   this gate's source list all come out of `tools/gen_shards.py`; there is no second
-  file that could enumerate a different 256.
+  file that could enumerate a different 32.
 
-The consumer's 256 keys are unaffected by the split by construction:
+The consumer's 32 keys are unaffected by the split by construction:
 `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
 depend on which translation unit expands it.
 
-`--shard NAME` scopes the compile to one shard's 32-entry slice for triage. It is a
+`--shard NAME` scopes the compile to one shard's 8-entry slice for triage. It is a
 measurement scope only: `--write` refuses it, because a manifest written from a
 subset would silently drop every instantiation it did not compile.
 
@@ -151,7 +163,7 @@ hash per shard: the sha256 of the shard's sorted list of template tuples, not of
 its file's bytes. A comment edit does not move it; adding, dropping or moving one
 instantiation does.
 
-It enters the digest, and that is the point. "Only `consumer_bf16_raw_bt32` was
+It enters the digest, and that is the point. "Only `consumer_decay_bc16` was
 re-measured" is otherwise an unprovable sentence; with membership in the ratified
 record it is a diff. Because the block carries membership and nothing else — no
 paths, no ordering — re-filing the same measurements cannot move the digest, which
@@ -197,7 +209,7 @@ checkout:
 ```python
 >>> from rola import _build_config; _build_config.show()
 {'version': ..., 'archs': ['sm_80', 'sm_86'], 'ptxas': ...,
- 'manifest_sha256': '...', 'manifest_entries': {'sm_80': 352, 'sm_86': 352},
+ 'manifest_sha256': '...', 'manifest_entries': {'sm_80': 112, 'sm_86': 112},
  'ptx_jit_fallback': False, 'vendored': {'cutlass': {...}}}
 ```
 

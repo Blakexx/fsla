@@ -85,29 +85,42 @@ Every cell of this cross-product is gated against the oracle:
 
 | Axis | Values |
 |---|---|
-| normalization | `raw`, `global` |
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
-| MMA precision | `tf32x3`, `bf16` — **two arms, two tolerances, never one widened number** |
 | `P` (sequence-parallel split) | 1, > 1 |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
-| `(widths, BC, BT, d_v)` | the planner's supported rectangles |
+| `(widths, BC, D, d_v)` | the planner's supported rectangles |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
+
+Three axes this cross-product used to carry are gone (P26, `52a67d8`; see
+[`internals/DELETIONS.md`](internals/DELETIONS.md), revival = git). Normalization
+is no longer an axis: `raw` is dead, `global` (the mass column and the `num`/`den`
+divide, unconditional) is the only value `Plan` accepts. MMA precision is no
+longer an axis: `tf32x3` is dead, bf16 storage with fp32 accumulation is the only
+arm the kernel has, and the fp64 oracle stands in as the exactness reference a
+`tf32x3` family delta used to provide. `BT` is no longer an axis: the work unit is
+always a fixed 16-token group at the fixed `kMmaKQuantum`/word granule, with no
+runtime-sized tile left to vary. Cells whose entire purpose was one of those three
+axes (a raw-only sweep, a tf32x3-vs-bf16 family delta, a `BT`-boundary
+compile-time check) are deleted, with accounting in
+`workflows/perf/p26_endgame.md`; cells that gate a semantic property (causality,
+the read/write support union, decay pins, `P`-composition) are re-anchored at the
+single bf16 family bound below instead.
 
 The length axis is not decoration. An error that ACCUMULATES along the sequence
 grows as `sqrt(T)`, so a short fixture under-charges it by `sqrt(8192/37) = 15x` —
 the blind spot a resident-state re-quantization walk was measured to exploit.
 `test_consumer_vs_oracle.py::test_mass_column_at_sequence_length` closes it, at
-the same two tolerances.
+the same tolerance.
 
 ### Tolerance discipline
 
-1. `RTOL = 2e-5` for the `tf32x3` arm — a genuine fp32-accumulation-vs-fp64
-   tolerance. It was not loosened by a single digit when the MMA landed, which is
-   the whole point of gating a novel contraction at near-fp32 precision.
-2. `BF16_RTOL` for the `bf16` arm — an **honest format tolerance** derived from 8
-   mantissa bits, not a relaxation of the exactness gate. It applies to that arm
-   only.
-3. The **CPU-only fp64 arm** (`tests/tier1_semantics/test_algorithm_vs_oracle.py`)
+1. `BF16_RTOL = 1e-2` — the ONE tolerance the whole file holds to now that there
+   is only one storage arm: an **honest format tolerance** derived from 8 mantissa
+   bits (`u_bf16 = 2^-8 = 3.9e-3` per requantization), not a relaxation of the
+   exactness gate. There is no separate `tf32x3` tolerance to widen it against or
+   to protect — the fp64 oracle is the exactness reference this bound is measured
+   against directly.
+2. The **CPU-only fp64 arm** (`tests/tier1_semantics/test_algorithm_vs_oracle.py`)
    transcribes the kernel's *control structure* into fp64 Python at `~1e-16`. It
    separates "the algorithm is wrong" from "fp32 accumulated differently", and it
    needs no GPU.
@@ -133,6 +146,17 @@ the same two tolerances.
 `tests/tier2_geometry/matrix.py` holds the matrix as a literal table. Every pair of
 geometries carries a **declared contract class**, and the class decides the
 assertion.
+
+`tests/tier2_geometry/test_endgame_executor.py` sits alongside the matrix rather
+than inside it: it gates the P26 endgame executor's WALK itself (the streamed
+membership scan, stable-ascending group assembly, the atom masks and the
+compact-into-registers walk) rather than a pair of geometries. 44 cells against
+the fp64 oracle — dense/sparse degeneracy, cold reads, ragged tails, group
+boundaries straddling a member word, decay's ticks-ride-writes exactness, union-visit
+semantics, `P in {2, 4}` — plus 3 build-cycle mutants (dropped-token,
+permuted-group, boundary-straddle) that must each fail the suite when injected,
+proving the causality/stability assertions have teeth. The mutants are recorded in
+`workflows/perf/p26_endgame.md`, not shipped as gates.
 
 ### Class (a) — ENGINEERED IDENTITY
 
@@ -248,8 +272,8 @@ from the mangled names in the manifests, and requires every axis to be **declare
 — as a GEOMETRY (which then needs rows), a PROBLEM_SHAPE, or a SEMANTIC arm gated
 in Tier 1 — with matching value sets in both directions, and every geometry pair
 the census rule requires to have a row. It runs at **module import**, so adding
-`BT = 64` to the kernel without declaring its contract class **fails at
-collection**. It also pins the manifest it reads to `BUILD_CONFIG["manifest_sha256"]`,
+a new value to a live axis (e.g. a fifth `D`) without declaring its contract class
+**fails at collection**. It also pins the manifest it reads to `BUILD_CONFIG["manifest_sha256"]`,
 so the census cannot enumerate a product that was never built.
 
 **M2 — NON-VACUITY.** For every class-(a) row, a one-ULP perturbation of the row's
@@ -266,7 +290,7 @@ hypotheses, because the correct response differs: a kernel change is a bug, a
 fixture change is a re-derivation of the row.
 
 **Each meta-test is verified by construction.** M1 is pointed at a fabricated
-product carrying `BT = 64`. M3 is pointed at a `P > 1` launch forced to degrade to
+product carrying a new value on an existing axis (`D = 5`). M3 is pointed at a `P > 1` launch forced to degrade to
 `P = 1`, and at a genuine engineered identity mislabelled as a reassociation. M2 is
 pointed at a probe that cannot move its output. *A meta-test that cannot fail is
 not a meta-test.*

@@ -61,18 +61,30 @@ They fall into four groups:
 | the cross-segment scan | `scan_owners`, `scan_nseg`, `scan_slot` | `scan_owners` is `[n_split, 2]` int32; the rest `[n_split]` |
 | the split workspace | `ws_state`, `ws_scale`, `ws_leaf`, `ws_count` | `[n_slots, BC, cols]` fp32, `[n_slots, BC]` fp32, `[n_slots, BC]` int32, and the count |
 
-The segment a slot owns is turned into a tile mask by
-[`segment_mask.cuh`](segment_mask.md#word-mask), and that mask must agree bit for bit
-with the host partition that filled `work_seg` / `work_nseg`.
+The segment a slot owns is a WORD RANGE over the membership scan's stream
+(`w_lo`/`w_hi`, derived inline in `consumer_kernel.cuh` from `p.n_twords`), not a
+tile mask — `segment_mask.cuh` and its tile-range arithmetic are dead (the
+endgame-executor rewrite dropped tile candidacy entirely; revival = git,
+[`DELETIONS.md`](DELETIONS.md)). The word range a slot owns must agree with the
+host partition that filled `work_seg` / `work_nseg`.
 
 ## <a id="scalar-plan-args"></a>4. The scalar plan arguments are the compile-time axes, passed by value
 
-`BT`, `BC`, `global_norm` and `mma_precision` arrive as ordinary arguments
-and are dispatched inside `consumer.cu` to a template instantiation. They are
-PLAN-TIME axes, not runtime branches: the plan chooses one instantiation and the kernel
-body branches on none of them. `mma_precision` is a `std::string` at this boundary and
-becomes `MmaPrec` (see [`readout_mma.md`](readout_mma.md#precision-axis)) on the other
-side of the dispatch.
+`BC` arrives as an ordinary argument and is dispatched inside `consumer.cu`,
+alongside `p.D` (the length of the `amp_read` vector) and `decay` (`=
+dials.has_value()`), to a template instantiation `consumer_forward_kernel<BC, DV,
+D, DECAY>`. `DV` is read off `v`'s last dimension, never passed explicitly. All
+four are PLAN-TIME axes, not runtime branches: the plan chooses one instantiation
+and the kernel body branches on none of them.
+
+There is no `BT` argument and no `global_norm` or `mma_precision` argument. The
+`BT` axis is dead — the executor's work unit is always a full group of
+`kMmaKQuantum` gathered tokens, never a tile of a runtime-chosen extent. Raw
+normalization (`global_norm`) is dead — the mass column and the `num`/`den`
+divide are unconditional. The tf32x3/bf16 precision split (`mma_precision`,
+`MmaPrec`) is dead — bf16 storage and fp32 accumulation are the only precision
+story, with the fp64 torch reference as the oracle a caller needing more
+precision falls back to. All three: revival = git, [`DELETIONS.md`](DELETIONS.md).
 
 The level-geometry vectors (`level_stride`, `level_modulus`, `level_row_offset`,
 `level_width`, `owner_stride`) and the counts (`first_spanned_level`, `slice_digits`,
