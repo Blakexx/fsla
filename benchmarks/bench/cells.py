@@ -333,14 +333,18 @@ class Cell:
                               g_read=g_read, g_write=g_write, v=v, dials=dials,
                               topology=self.topology()))
 
-    def plan(self, *, norm, decay_on, prec, fx=None, bt=None):
+    def plan(self, *, norm, decay_on, fx=None, bt=None):
         """A producer cell's plan is PLANNER-SELECTED; a synthetic cell's is stated.
 
         The distinction matters for what a measurement on the cell can claim: only
         the planner-selected form supports a sentence beginning "the plan selects".
-        The selected axes are then overridden ONLY on the one arm this bench
-        crosses -- the precision point -- so that everything else (`BT`, `BC`,
-        `ring_slots`) remains the planner's answer.
+        Every axis is the planner's answer: there is nothing left to override.
+
+        **THE `prec` PARAMETER IS GONE.** It stamped `Plan.mma_precision`, and the
+        precision AXIS died with fp32 storage (P26: bf16 storage, fp32 accumulation,
+        fp64 reference -- one precision story). `Plan` carries no such field, so the
+        stamp raised `TypeError` and EVERY producer-cell measurement through this
+        method -- the canonical `atscale-L2048` armtime included -- was unrunnable.
 
         **THE `lowering` PARAMETER IS GONE** (item 6b, 2026-08-01). The consumer
         includes `intra_panel.cuh` unconditionally and does ONE intra lowering, so
@@ -356,8 +360,6 @@ class Cell:
         could actually have emitted.
         """
         if self.is_producer and fx is not None:
-            import dataclasses as _dc
-
             from rola.planner.calibration.cost_model import plan_and_schedule  # G16
             #: NO ORACLE IS INJECTED, and that is item 6b's point: the planner's
             #: DEFAULT occupancy oracle is now the one kernel's own. This file used
@@ -373,11 +375,10 @@ class Cell:
             plan, _axes, sched = plan_and_schedule(
                 fx["read_levels"], fx["write_levels"], fx["g_read"], fx["g_write"],
                 fx["topology"], self.BC, normalization=norm, decay=decay_on, **kw)
-            return _dc.replace(plan, mma_precision=prec), sched
+            return plan, sched
         return Plan(topology=fx["topology"] if fx else self.topology(),
-                      normalization=norm, BT=self.BT if bt is None else bt, BC=self.BC,
-                      warp_tile=(1, max(1, self.d_v // 32)), decay=decay_on,
-                      mma_precision=prec), None
+                      normalization=norm, BC=self.BC,
+                      warp_tile=(1, max(1, self.d_v // 32)), decay=decay_on), None
 
 
 
@@ -546,7 +547,7 @@ def skip_share(cell: Cell, fx=None):
     and would have made those gate cells vacuous.
     """
     fx = cell.build() if fx is None else fx
-    plan, sch = cell.plan(norm="global", decay_on=True, prec="bf16",
+    plan, sch = cell.plan(norm="global", decay_on=True,
                           fx=fx)
     if sch is None:
         sch = build_schedule(fx["read_f32"], fx["write_f32"],

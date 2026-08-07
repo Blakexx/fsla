@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+#: AND the repo root, AHEAD of it -- see `probe.discipline._extension_in_this_checkout`.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bench.cells import CELLS  # noqa: E402
 from bench.pairing import _timed  # noqa: E402
@@ -35,7 +37,7 @@ def main() -> int:
     fx = cell.build()
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16", fx=fx)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     for _ in range(a.launches):
         _, sched = _timed(cell, fx, plan, decay, g_read, sched)
     return 0

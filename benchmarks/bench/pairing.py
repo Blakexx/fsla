@@ -181,7 +181,7 @@ def _paired_one_kernel(cell, fx, arm_a, arm_b, reps, label, extra="",
         norm, temp = arm
         d = None if temp is None else LeafMassDecay(dials=fx["dials"][temp])
         gr = None if norm == "global" else fx["g_read"]
-        pl, sch = cell.plan(norm=norm, decay_on=d is not None, prec="bf16",
+        pl, sch = cell.plan(norm=norm, decay_on=d is not None,
                             fx=fx)
         for _ in range(WARMUP_LAUNCHES):
             _, sch = _timed(cell, fx, pl, d, gr, sch, instrument=instrument)
@@ -229,7 +229,7 @@ def arm_time(name, *, reps=31, norm="global", decay_temp=None, bt=None,
     fx = cell.build()
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     gr = None if norm == "global" else fx["g_read"]
-    plan, sch = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
+    plan, sch = cell.plan(norm=norm, decay_on=decay is not None,
                           fx=fx, bt=bt)
     for _ in range(WARMUP_LAUNCHES):                     # warm + schedule
         _, sch = _timed(cell, fx, plan, decay, gr, sch, instrument=instrument)

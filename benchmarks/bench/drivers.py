@@ -50,7 +50,7 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
     #: range in which its two panels are an exact rewrite of the recurrence, with
     #: the admission check silently skipped. Off the decay arm the axis is
     #: unreachable by this kernel and the planner's own choice stands.
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec, fx=fx)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     y, state, _ = _consumer_forward(
         fx["v_f32"], fx["read_f32"], fx["write_f32"],
         None if g_read is None else fx["g_read_f32"], fx["g_write_f32"],
@@ -186,7 +186,7 @@ def run_split(cell: Cell, *, P, norm="global", decay_temp=None, prec="bf16",
     fx = cell.build() if fx is None else fx
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec, fx=fx)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     if sched is None:
         sched = build_schedule(fx["read_f32"], fx["write_f32"],
                                   None if g_read is None else fx["g_read_f32"],
@@ -286,7 +286,6 @@ def run_p1_identity():
             fx = cell.build()
             d = None if temp is None else LeafMassDecay(dials=fx["dials"][temp])
             plan, sched = cell.plan(norm="global", decay_on=d is not None,
-                                    prec="bf16",
                                     fx=fx)
             if sched is None:
                 sched = build_schedule(fx["read_f32"], fx["write_f32"], None,
@@ -354,7 +353,7 @@ def run_btab(name, *, reps=21, norm="global", decay_temp=None):
         #: The new consumer must be stamped `panel` on the decay arm so its
         #: admission bound is checked -- the same divergence `run_atscale` makes,
         #: and it is applied to BOTH arms here, so it cannot bias the ratio.
-        pl, sch = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
+        pl, sch = cell.plan(norm=norm, decay_on=decay is not None,
                             fx=fx, bt=bt)
         _, sch = _timed(cell, fx, pl, decay, gr, sch)
         return pl, sch

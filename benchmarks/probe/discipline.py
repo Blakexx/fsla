@@ -121,6 +121,45 @@ def _git_state():
     return git_state()
 
 
+def _extension_in_this_checkout() -> str:
+    """REFUSE to measure a binary that belongs to a DIFFERENT checkout.
+
+    Every other identity this module stamps -- the sha, the dirty flag, the csrc
+    digest -- describes THIS tree. None of them describes the ``rola`` package
+    Python actually imported, and the two come apart SILENTLY: ``rola`` is
+    installed EDITABLE into the shared venv, so a probe run from a worktree
+    imports the MAIN tree's extension unless the worktree sits ahead of it on
+    ``sys.path``, and the row is then written with this tree's csrc digest
+    against another tree's kernel.
+
+    That is not hypothetical. It is a RECURRING defect with a recorded cost:
+    P11's first cp.async A/B was discarded for exactly this reason ("the first
+    worktree A/B and the wall-clock A/B were INVALID -- script-dir sys.path
+    imported the main tree on both sides"). The failure mode is invisible in the
+    output, because both arms measure the same binary and therefore simply
+    AGREE -- a flat A/B is what it looks like, which is also what a true
+    negative looks like.
+
+    So it is a REFUSAL at the identity step rather than a line in a docstring,
+    and it returns the resolved path so every row carries the binary it actually
+    measured alongside the tree it claims to describe.
+    """
+    import rola
+
+    root = Path(__file__).resolve().parents[2]
+    pkg = Path(rola.__file__).resolve()
+    try:
+        pkg.relative_to(root)
+    except ValueError:
+        raise SystemExit(
+            f"REFUSING TO MEASURE: `import rola` resolved to {pkg}, which is NOT "
+            f"inside this checkout ({root}). The row would stamp this tree's sha "
+            f"and csrc digest onto another tree's binary -- the invalid-A/B shape "
+            f"P11 discarded a whole measurement cycle to. Put this checkout ahead "
+            f"of the editable install: PYTHONPATH={root}") from None
+    return str(pkg)
+
+
 def _gpu_temp_c() -> float | None:
     out = subprocess.run(
         ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits",
@@ -145,6 +184,9 @@ class Run:
         self.started = time.time()
         self.sha, self.dirty = _git_state()
         self.csrc_sha256 = _csrc_sha256()
+        #: BEFORE the clock settles and before any row exists: an identity that
+        #: does not describe the measured binary is worse than no identity.
+        self.extension = _extension_in_this_checkout()
         self.temp_start = _gpu_temp_c()
 
         clocks = settle_clocks()
@@ -159,6 +201,7 @@ class Run:
         self.env = dict(provenance(), settled=True, sm_mhz=clocks["sm_mhz"],
                         plateau_mhz=clocks["plateau_mhz"],
                         settle_elapsed_s=clocks["elapsed_s"],
+                        extension=self.extension,
                         gpu_temp_c_start=self.temp_start)
 
     def row(self, **kwargs) -> dict:

@@ -20,6 +20,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+#: AND the repo root, AHEAD of it: `rola` is installed EDITABLE into the shared
+#: venv, so without this a worktree run imports the MAIN tree's extension while
+#: stamping this tree's sha (P11's discarded A/B). `probe.discipline` REFUSES if
+#: the two still disagree.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bench.cells import CELLS  # noqa: E402
 from bench.instruments import settle_clocks  # noqa: E402
@@ -55,7 +60,7 @@ def _prepare(name, norm, decay_temp):
     fx = cell.build()
     decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
     g_read = None if norm == "global" else fx["g_read"]
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16", fx=fx)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     for _ in range(WARMUP_LAUNCHES):
         _, sched = _timed(cell, fx, plan, decay, g_read, sched)
     return cell, fx, plan, decay, g_read, sched
