@@ -132,13 +132,8 @@ def shape_key(mangled: str) -> str | None:
     shape = ratify.parse_shape(mangled)
     if shape is None:
         return None
-    #: The kernel takes FOLD and READ separately and the dispatch has always passed
-    #: them equal; a name that disagrees is not an arm of this matrix.
-    if shape["fold"] != shape["read"]:
-        return None
-    return gen_shards.canonical(dict(BT=shape["BT"], BC=shape["BC"], DV=shape["DV"],
-                                     D=shape["D"], PREC=shape["read"], DECAY=shape["decay"],
-                                     GLOBAL=shape["glob"]))
+    return gen_shards.canonical(dict(BC=shape["BC"], DV=shape["DV"],
+                                     D=shape["D"], DECAY=shape["decay"]))
 
 
 def check(so: Path, arches=None) -> bool:

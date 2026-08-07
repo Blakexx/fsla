@@ -336,13 +336,12 @@ REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
 #: The consumer kernel's mangled template arguments, in declaration order:
-#: `<int BT, int BC, int DV, int D, MmaPrec FOLD, MmaPrec READ, bool DECAY,
-#:  bool GLOBAL>`. The mangled name is the manifest key, so this is
-#: the ONE place a key is turned back into a shape; the census's per-key grouping
-#: and the hot-loop gate's reporting both go through it.
+#: `<int BC, int DV, int D, bool DECAY>` (the endgame matrix -- BT, PREC and
+#: GLOBAL are dead). The mangled name is the manifest key, so this is the ONE
+#: place a key is turned back into a shape; the census's per-key grouping and
+#: the hot-loop gate's reporting both go through it.
 CONSUMER_TPL = re.compile(
-    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
-    r"LNS_7MmaPrecE(\d)ELS\d?_(\d)ELb(\d)ELb(\d)E")
+    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -350,11 +349,8 @@ def parse_shape(mangled: str) -> dict | None:
     m = CONSUMER_TPL.search(mangled)
     if not m:
         return None
-    #: `readout_mma.cuh`: `enum class MmaPrec { kTf32x3 = 0, kBf16 = 1 }`.
-    prec = {"0": "tf32x3", "1": "bf16"}
-    return dict(BT=int(m.group(1)), BC=int(m.group(2)), DV=int(m.group(3)),
-                D=int(m.group(4)), fold=prec[m.group(5)], read=prec[m.group(6)],
-                decay=m.group(7) == "1", glob=m.group(8) == "1")
+    return dict(BC=int(m.group(1)), DV=int(m.group(2)), D=int(m.group(3)),
+                decay=m.group(4) == "1")
 
 
 def shard_of_key(mangled: str) -> str:
@@ -372,9 +368,8 @@ def shard_of_key(mangled: str) -> str:
             if f"_{Path(tu).stem}_cu_" in mangled:
                 return Path(tu).stem
         return "?"
-    return gen_shards.shard_of(dict(BT=shape["BT"], BC=shape["BC"], DV=shape["DV"],
-                                    D=shape["D"], PREC=shape["read"],
-                                    DECAY=shape["decay"], GLOBAL=shape["glob"]))
+    return gen_shards.shard_of(dict(BC=shape["BC"], DV=shape["DV"],
+                                    D=shape["D"], DECAY=shape["decay"]))
 
 
 def shard_field(entries: dict) -> dict[str, str]:
@@ -383,14 +378,13 @@ def shard_field(entries: dict) -> dict[str, str]:
 
 
 #: The calibration macros a shipped binary compiles under (coverage-closure audit
-#: item 10). Neither `setup.py` nor this gate passes a `-D` for them, so the
-#: effective value is the header default; recording it in the manifest's toolchain
-#: blob is what makes a silent default flip (or a build that DID pass a `-D`) a
-#: checkable drift instead of an unverifiable claim, and it is what the ring-depth
-#: agreement gate (`tests/unit/test_ring_depth_agreement.py`) reads as the
-#: compiled truth. The values are read off the SAME digested source the manifest
-#: describes -- the one place they are defined.
-RATIFIED_DEFINES = ("ROLA_C_RING_DEPTH", "ROLA_C_WT_WINDOW")
+#: item 10). EMPTY since the endgame executor: the ring
+#: (`ROLA_C_RING_DEPTH`) and the write-panel window (`ROLA_C_WT_WINDOW`) died
+#: with the aligned walk -- the kernel has no compile-time calibration macros
+#: left. The mechanism stays so the NEXT macro is a one-line addition, and a
+#: manifest still records the (empty) block, keeping "what did this compile
+#: under" a checkable statement rather than an unverifiable claim.
+RATIFIED_DEFINES: tuple[str, ...] = ()
 
 
 def shipped_defines() -> dict[str, int]:
@@ -1137,10 +1131,10 @@ def census_report(entries: dict, unhonored: list[str],
         #: which translation unit would have to be recompiled to move it, which is
         #: what turns "re-ratify only these shards" from a plan into a checkable
         #: claim: csrc/rola/src/instantiations/README.md
-        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["BT"], shape["BC"],
-             shape["DV"], shape["read"], shape["decay"])
+        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["BC"],
+             shape["DV"], shape["decay"])
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':28} {'BT':>3} {'BC':>3} {'DV':>3} {'prec':7} "
+    print(f"\n{'arch':6} {'shard':28} {'BC':>3} {'DV':>3} "
           f"{'decay':5} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
           f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
@@ -1153,8 +1147,8 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:28} {k[2]:>3} {k[3]:>3} {k[4]:>3} {k[5]:7} "
-              f"{str(k[6]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
+        print(f"{k[0]:6} {k[1]:28} {k[2]:>3} {k[3]:>3} "
+              f"{str(k[4]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())
     total_ld = sum(e["spill_loads"] for e in entries.values())
