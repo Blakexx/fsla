@@ -578,6 +578,15 @@ consumer_forward_kernel(ConsumerParams p) {
     auto isw_of = [&](int a) {
       return (Rw[a * kSchedSlotInts + kSchedFlags] & 2) != 0 && wm_of(a) != 0u;
     };
+    //: **THE STAGED WRITE MASK -- the ONE mask every write-side consumer walks.**
+    //: A group's atom mask and its side flag are INDEPENDENT bitmaps (the flag is
+    //: the fixed levels' write rows, the mask is the atom bitlists), so a group can
+    //: carry live write ATOMS while being side-dead -- and a side-dead group's `WT`
+    //: and `Vw` slots are NOT STAGED. Reading the atom mask alone would therefore
+    //: send the fold into a slot holding a previous window's panels, which at
+    //: `W == 1` was impossible (the fold ran under the group's own `is_write`) and
+    //: at `W > 1` is not. Consumers walk THIS, never `wm_of`.
+    auto wmk_of = [&](int a) { return isw_of(a) ? wm_of(a) : 0u; };
     if (gN_of(0) == 0) break;  // the stream's end, as the producer saw it
 
     //: THE WINDOW'S SIDES, as the OR over its groups, and the fold's UNION write
@@ -592,7 +601,7 @@ consumer_forward_kernel(ConsumerParams p) {
       if (isr_of(a)) w_read = true;
       if (isw_of(a)) {
         w_write = true;
-        w_wmask |= wm_of(a);
+        w_wmask |= wmk_of(a);
       }
     }
     const bool mixed = w_read && w_write;
@@ -879,8 +888,8 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int b = 0; b <= a; ++b) {
           for (int nt = 0; nt < NT_GM; ++nt, ++it) {
             if (it % kWarps != warp) continue;
-            if (!isr_of(a) || !isw_of(b)) continue;
-            const unsigned gmask = rm_of(a) & wm_of(b);
+            if (!isr_of(a)) continue;
+            const unsigned gmask = rm_of(a) & wmk_of(b);
             if (gmask == 0u) continue;
             const unsigned* const Rfa = Rf + a * kRfSlotWords;
             const __nv_bfloat16* const WTb = WT + b * kWtSlotElems;
@@ -1053,7 +1062,7 @@ consumer_forward_kernel(ConsumerParams p) {
         //: approximation: an atom dead in group `b` has exact-zero staged
         //: coefficients there.
         for (int b = 0; b < W; ++b) {
-          if (((wm_of(b) >> mt) & 1u) == 0u) continue;
+          if (((wmk_of(b) >> mt) & 1u) == 0u) continue;
           //: THE TILE'S BASE COLUMN, `nt * 8` -- NOT `n0`, which carries the lane's
           //: own `2 * _r` offset for the scalar accumulator accesses above. An
           //: `ldmatrix` takes a warp-uniform 16-byte-aligned tile address.
@@ -1096,7 +1105,7 @@ consumer_forward_kernel(ConsumerParams p) {
         float a1 = (_r == 0) ? S[i1 * SP + DV] : 0.0f;
         float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
         for (int b = 0; b < W; ++b) {
-          if (((wm_of(b) >> mt) & 1u) == 0u) continue;
+          if (((wmk_of(b) >> mt) & 1u) == 0u) continue;
           mma_tile_bcastB(WT + b * kWtSlotElems + mt * kMmaKQuantum * BTP, BTP, sw_of(b), lane, m0,
                           m1, m2, m3);
         }

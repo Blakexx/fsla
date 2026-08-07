@@ -23,24 +23,40 @@
   }
  },
  "source": {
-  "csrc_sha256": "1e56d7353865e7e38b4a7ef42a70c68bde247a441d33b2ae01209139420e3f28",
+  "csrc_sha256": "7b6fb95573a665e766f7c646820cc153616f9dd77e52e57d587263fbbed16b6e",
   "date": "2026-08-07"
  },
  "shards": {
-  "consumer_decay_bc16": {
-   "members_sha256": "58e5c571472f8726382f57994bd8497c2756c0600e74fbd7425e76e070a663b9",
+  "consumer_gt16_decay_bc16": {
+   "members_sha256": "1ff553b9db790b48a00e459eb21b368f4e84b21f2e41c171403e1069e666f905",
    "count": 8
   },
-  "consumer_decay_bc64": {
-   "members_sha256": "bf822e5acf595ba5b444bb52b630dc4880b953c63742f2e5882a0e89b96212c8",
+  "consumer_gt16_decay_bc64": {
+   "members_sha256": "7fa9ef3ee9ea7d783cc01f3b20ca906bdfc2f9f86e60a7527b658021605b8fce",
    "count": 8
   },
-  "consumer_nodecay_bc16": {
-   "members_sha256": "c6b388dbc306464967b85fed97bb41c1b4fbd526122253b764abebb7e655ae02",
+  "consumer_gt16_nodecay_bc16": {
+   "members_sha256": "581f7b3b4de598e5fdc551e804447b7a11761f2d88fa642f3b09802e6a05141e",
    "count": 8
   },
-  "consumer_nodecay_bc64": {
-   "members_sha256": "fcd8bac2ef488a33811ee5622b0d126746cf693497a26c1a773af879e2b94e1f",
+  "consumer_gt16_nodecay_bc64": {
+   "members_sha256": "899d638bdbb85d50e02c9b934e48cc28237a590a68d1e6dc46a6901cfaea9132",
+   "count": 8
+  },
+  "consumer_gt64_decay_bc16": {
+   "members_sha256": "f3aeb6af7fb70088c0a87c5f608034f16267d7cd02177fe5b5acedfa83062283",
+   "count": 8
+  },
+  "consumer_gt64_decay_bc64": {
+   "members_sha256": "6bfe070cd2ed1d36be66c6a20a40825eabe8428481b9c2f157cc5506e7039947",
+   "count": 8
+  },
+  "consumer_gt64_nodecay_bc16": {
+   "members_sha256": "e860a884d77ef00218865cd84ce2a686613ce3d0fa71d6f5033676639de1b4a5",
+   "count": 8
+  },
+  "consumer_gt64_nodecay_bc64": {
+   "members_sha256": "4f76b83037a30bb59a08d61aff92f261b66f5d75be8149014983cc8e2acc3321",
    "count": 8
   }
  },
@@ -685,261 +701,517 @@
    "local_ops": 0,
    "sass_sha256": "e4da9c74650d678dab6324865d3dee1b6789d571a7d0d07ce0ed8acc261dbe48"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb0ELi16EEEvNS_14ConsumerParamsE": {
    "regs": 64,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "7a7cf5923ad75f7904cb9be2d4a4d29ede4c170a9abae050b5533394eb945f05"
+   "sass_sha256": "989de755b2ed0703ad87785ab04d011f375b6124423b747d641ae3d27c3c586e"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 105,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "d73ecbec05bef30ef5b23d0ccbb88e926f5fc6bea397e2f8f03101a0720e89fb"
+   "sass_sha256": "3c02bb972a7bd9a2dbf174f9ce8417fdf134126ebc70b0107477f52b68e3a9f5"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 61,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
    "spill_stores": 0,
    "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "56eb943a9d29b4b503f0337a9278da1554602f5ccbff418e4265c84aea9e989d"
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "23527e306b451c349f52e390b6767c609cb2fa7753b993a89633d3b838af18af"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi1ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 107,
    "spill_stores": 0,
    "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "0ece6612088ab0010fbc75fc42177f196ecdd97d1f0a95dbc8e307a76a38a1f9"
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "e4ecafb0f3dabb702e62fa439113f205649ab8885652284db3df7a4e132ededa"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "30bbe0c042c04f053efb9fa0fb6f05ccafccaee1db7c1409fd67dafbabfaa7f7"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 61,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "b93c5e6cb125baed4147b892d17ef39d17959b156743315c70180381387b54fc"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 67,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "b63c978438a11b12d00a76d475fcc8e65ad47605b122142bc63f52cba0928a21"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 66,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "c988ffc4806a7818dcf66bab070277aa5951d21f85f1dd4bcd29de668b6bcda1"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb0ELi16EEEvNS_14ConsumerParamsE": {
    "regs": 64,
    "spill_stores": 0,
    "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "86187e19f146a507244e4a0b8b5c73122266b4c5ac52812618aede1bd202bb97"
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "3fd8c9431a42fc107326222ea20ac47ef652337d4cd3fe287cd89f74aa62ec8d"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "0189243dc1fbcb4b6731d8c1ab18cd96735b57e2b8565323ff4e209f3d58f81e"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 61,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 79,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
    "local_ops": 11,
-   "sass_sha256": "73daa1966272d152e125af5a9aa1bb6c77bc9acebf64559a59121b40c19a5c75"
+   "sass_sha256": "1d980e96accb1ec6bdec549b7fc8880cf157c01fc65c2c3b5e8a40307d396d4c"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "4b475ac5368e0b510575f53086ee055bdcf2d6be4baa16c383dd9fa4d224734d"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "b0b0584fd701ce86ccfbf1aad0c98b8d42a8ef32137822754c8ece4d8e70ecbb"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 60,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "11b5e25c091f372126014a7deb734579020b50d9522963a39e9837a7627b83c4"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb1ELi16EEEvNS_14ConsumerParamsE": {
    "regs": 67,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "60f16011779c09fae8329b3c048be56fb9412871db03cb02c54f7bd50605a8d5"
+   "local_ops": 11,
+   "sass_sha256": "ee02d265e786c853cf6d1ec7a8602cfff0b6ad6e5ed0b949a4441c22e8796f05"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 66,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi2ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 83,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "304d3170870c24f9cfad77d275035d8b9d3448e7e2728d1b00418dfafd586bc4"
+   "local_ops": 11,
+   "sass_sha256": "18d4b6228f1882e328c00c5fd648d2c3dce23825f484a359ffa34ec6a210ad87"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 63,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "8a6e47df1df0317831b806fef900ee0ffe78d8ec6e685f38ca26d6ab2780e5bd"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 77,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "420692cbd723164a2888853ab8f69ab7ebc1f8d29cee66d472c8a5dcd6b4ad58"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 67,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "d043c5849abf845fe6aeafcdb033a2ead0a94caf7c93e4ae4fcd627c961736a7"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi3ELb1ELi64EEEvNS_14ConsumerParamsE": {
    "regs": 75,
    "spill_stores": 0,
    "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "6a5afaeca96fcfd7f3b7fa90b7557794d6e204e33e16d92c03fa815690140c98"
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "736d7272a03c459c51b123ca08f588da9481d171c5d9faca79b50264686218f7"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 65,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "b16f04c1df8d3d0ffca84ac1b25ffa345794b44e651fca447792ebd400567e9d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 75,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "f40286ea9c20fd7c0e27ede6a4c551d564b67865bfa54b9849f3fcb1e5f5bccb"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 71,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "abc729233dd4047fc5cfab86ef0adbff99714c98c2b02754560ae051c7254246"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi32ELi4ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 78,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "e164d56f4676a8effee26c34183b76e25342239cd9bccfd70c6f4429f32c48f9"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 64,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "b2601731c45e73f99f53968b246a5f1ffe01394348fb4b98c68b56d2124acf8b"
+   "sass_sha256": "af5ed422aa1a806b87e7448b5dcf9bbf47643948f0e24ede16595e2e06cb4327"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 93,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "53ec9e707fa8976637de211d19012f5506a95d6689d5350cd7ff2f8c16ca529d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "e4c0bd46053bb3f9f3cb2173e4d8c420a4f29098ec0575249d153eec5e8f1c6c"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi1ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 91,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "7219bbcb3bf09e1f8a82d5441f367645fa8e7f5ec3c9b27ae8ee1edd8d2fda43"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 64,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "4a9f9d5f471e6dd92d75292e422bc23ad27764633f456e02bd10785a3587ef3d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 91,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "c8c31126cc6f038c4accbae533e903c84c86d7c1be77d24a49b2fa5692ffa313"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 67,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "fb9bba01bfc4c979ba87bb7186bd96a250625f5a2769b76725137b39f6c45a43"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi2ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 91,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "3b0992755ba900b8af36c7646856d50fc461273b0cf7e031463772000d427860"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 63,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "b6f5a41972e10a956cd8393cb4c22791e4f378a9bb987fa7c3bb8724cce4734c"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 89,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "9d0b7b095ecabe9d7ed1c168c6237ed95141bb43df5c6d55d5808c7b3fa9322d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 67,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "fc22d6c36a3a7bf5e6f0d57a7341988eb372c24eaafea62ca3fc6b7474ba8e64"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi3ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 91,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "18828c7d592679a46f2ceb971051c0454c21474a0eabd4c8665e803f61bd152d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "b7cee79c452b953131b4251d132d0ba37ee32f47662cdaab425df455db58e21f"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 91,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "c2010a2bddbefeb11518eccc6b6b4a2b8869312faa31a8023ec9c8ab09239ea0"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 71,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "39f0282942226a0a167b775c33b9e36ed2ab70bd4f5a6bf965ba7d0b7dd32346"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi16ELi64ELi4ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 92,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "75a3495911a80adbf3081731e4966d884009d7cbd3ce1bec62ed0451208a98b1"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 73,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "f18ef87aa18f480e3f43a8fe2edf6134e408aa4e80e91c69ff2b75d7e61e582d"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 89,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "5583b78b77cd367e17c9d8316bb18e431e4999499708890f724f275c88e1d8f5"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 71,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "8f312086edc8ed0b431f49d9749026491ca64fa02b8cc4534630eef5dcf26346"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi1ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 83,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "e0c61be0e98a286c81c1362698700a589dccc35bcb2e491a974bf7d202aab5ea"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 75,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "3138a6a9eda5ab41d36c77e5efa7ea3751e96886cad7f714d574fe77b00f1ce8"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 82,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "0ac91ed5a14288a3b58593092219dbc4e4e0d03b37dace979159c317decff8f8"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "6649467448a3770945abaf1273ac67c42a5cf683925b781b8207d6e3ca9c301b"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 82,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "9d703242f49e3f737d4e1c58addb7cf0bfe0de48c5c2fefa37993512bf51229a"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "e9efee2766f72ff4b8af6edcec2b892d1419cc60eab989ffa0bf9aea9cadacb3"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 80,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "69b038c8524b0e481e2aebda4383702f41045eca539d1ef4f33d7b8ea7727ce2"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb1ELi16EEEvNS_14ConsumerParamsE": {
    "regs": 73,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "772c6a09a7f280aa210e2b02cae0efae424c0e7b007d9200d24824fae6a950fe"
+   "local_ops": 14,
+   "sass_sha256": "f45363a2064190c9f039f4f4080823ee27ca4644d99f10ac70cec67bf56bb648"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi2ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "eb1c594eb4a38067e712490576e6a9b1a313856a274254db724b79d1d3d6abc2"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 67,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 82,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
    "local_ops": 14,
-   "sass_sha256": "54048ca7147a790f18c48ff2f2db8b9d52cae111a3a710d2bbd76f9108ce706f"
+   "sass_sha256": "5092fe02fc06030405aa30be9c7a1ca46986d2e572dee89f533d11eb020df05c"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi3ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 64,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "5eb3333de8444d02ea3fa05776e261fec2fc2d84acbf38c94d6e47276c946f88"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 70,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "ee46141f82455e28f12c6e0671626eba3811a4ac0141a6d90189cfd0dca5f73b"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 66,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 17,
-   "sass_sha256": "c8862c8a6cbec5d34dea0cd66f3ec955199a38a90b9fe6cd4073a0ca296f3749"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 75,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "32218aad0c2d15e182df8157fecbdd412979534d0e30095fb42ebe353873652f"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 65,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "fa5a7035664b86b6d5bc0bf3e7f21b412337e2d6220b0984bdb968368b815678"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 73,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "81bfa0f63dafc357c0d5f398adb3b8bea2b36d9acdbb065fbdfc4fccacf417f8"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 62,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 11,
-   "sass_sha256": "ca7350aacc092909cedf1ac2cc3b31cddb46b53748d5d0f4a8c8eaa3ef498b4c"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb0EEEvNS_14ConsumerParamsE": {
-   "regs": 67,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "8f5be1b8e4595c18fe1396bd68958e1e1069ee7bdefa467caebe03947fabe695"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 64,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 5,
-   "local_ops": 14,
-   "sass_sha256": "5d1d4b0f22fe2ebfd518ca5ce51d0aa185ea8cef929a2df12b674ce3dd184d84"
-  },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb0EEEvNS_14ConsumerParamsE": {
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb0ELi16EEEvNS_14ConsumerParamsE": {
    "regs": 72,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
    "local_ops": 17,
-   "sass_sha256": "52bf097b5dcd2145f76c1abe42b644208b3610400c03f12046b361c4267fda09"
+   "sass_sha256": "9c2138892578144c75a2f0c573a3cb41a7ce6b28df386e54d459960649e1fa2b"
   },
-  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb1EEEvNS_14ConsumerParamsE": {
-   "regs": 67,
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 84,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 5,
    "local_ops": 17,
-   "sass_sha256": "5954e36c03b1314809f735a846bbc169720aa5854254a92d7795e3c47459d048"
+   "sass_sha256": "a669d1ec70c616790ab4c292855b12c6521af2b0cae27f996571c82d2480830e"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 75,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "2b8d2c5b5cf7dd4abd1102e54668de70ee5a97ef6a25932f0d6637709fd3a32a"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi32ELi4ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 87,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "8feb8c0b157ba5f42a2cb53c7a2f304de450bc0d2957bc448aa701966bcc15c2"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 73,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "36705bb03f7babfd373b19392888d5195d9d0416f919ead3ccca48972c9a6e82"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 96,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "456237f7960663ec1f5f7a7e22767fe7535c63f5877810ff4e56ea67f6ea833e"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 71,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "78205e984dce73735b6966c9a61845368bb3084bbace062515ba041bf1da47f4"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi1ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 101,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "942239a440de1f4efb498cb6a9517336b3a4f915c9fa7db651ab977d05b0e374"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 75,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "96af28162423dcc86e6c8b94b9b23603bc1688a4f786a89873ca0a31fc40dec0"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 96,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "e2fae09933e9689290530b7d1e3a7469c8c15afc1836bf163553bd0430ab424b"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "e12932ddb6a75f53ceae1f76e09598c028e1cd5f9d6911c6599cb53df6c646b7"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi2ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 101,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 11,
+   "sass_sha256": "c83f4f357441f9d5fb9b786ff520b54fac816fc53e14bac1b90c7a476e4e5094"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 69,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "da1d7fbc559a9f3900c3a298824eb0d5e8846654c3d1ebbee060c22ca68ccf97"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 99,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "15ef9b080ff64df70a1332617814c795dd864e437c70894c95bbfd2409e2277c"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 73,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "28e3274930b13629e2e78a2a443ba63c8657f5179157cf425afe3b28a5d355b5"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi3ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 101,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 14,
+   "sass_sha256": "64a5055c41b6cc07ca74a053062444e42009bff98f815ce176af72894611e9c5"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb0ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 73,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "ab6247fa710e113fba402eac4d8bf005bfb40bb179e2f07d0d2d6285e2c057aa"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb0ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 102,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "4b2a1e52fef863084109b8ae799fd5e2bfa499dfb0627c00fd31637b01add6f5"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb1ELi16EEEvNS_14ConsumerParamsE": {
+   "regs": 75,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "21cb3de54dcf2b6a4891a5caea7f73954029d2d16bfc21b8e5456a8eae6cb084"
+  },
+  "sm_80:_ZN4rola8consumer23consumer_forward_kernelILi64ELi64ELi4ELb1ELi64EEEvNS_14ConsumerParamsE": {
+   "regs": 104,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 5,
+   "local_ops": 17,
+   "sass_sha256": "c32ef8a3a588fffebdddc0aadaca29ba574b116303bcaa8d1ebc7b1c91c31130"
   }
  }
 }

@@ -1183,3 +1183,77 @@ def test_output_charge_sees_a_drift_the_global_max_cannot():
         f"a {p:.1e} sqrt-t drift moved the per-segment charge only to "
         f"{_output_charge(mutant, y_ref):.3e}: the replacement metric is as blind as "
         "the one it replaced")
+
+
+# ---------------------------------------------------------------------------
+# THE WIDE WINDOW AGAINST THE ORACLE
+# ---------------------------------------------------------------------------
+# `select_window` picks the consumer's token quantum from the realized routing,
+# and every cell above is short enough that it picks the GROUP quantum. That
+# would leave the wide window -- a different formulation, not a different tuning:
+# an entry state shared by `W` groups, a block-lower-triangular window Gram whose
+# off-diagonal blocks carry deposits the paced fold has not yet applied, a fold
+# accumulator resident across `W` staged slots, and a decay reference frame that
+# spans the whole window -- gated only by cells that never reach it.
+#
+# THE CLASS THIS CATCHES, MEASURED: a group's write ATOM MASK and its write SIDE
+# FLAG are independent bitmaps, so a group can carry live write atoms while being
+# side-dead and therefore unstaged. At the group quantum the fold ran under that
+# group's own `is_write` and the case could not arise; at `W > 1` the fold walks
+# the window's union and it does. The first build of this batch read the
+# unstaged slot, and the numbers were wrong by 2e-1 on the nodecay arm and by a
+# reference frame on the decay arm.
+#
+# So the cells below are the SAME oracle comparison at a sequence long enough
+# that the wide window is selected, run against BOTH the window the planner picks
+# and the group quantum, and required to agree with the fp64 oracle in both --
+# which also makes the window's own selection non-load-bearing for correctness.
+
+
+@pytest.mark.parametrize("decay", [False, True])
+@pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.25, 0.25)])
+def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
+    import rola.planner.schedule as schedule_mod
+    from rola.planner.schedule import select_window
+
+    widths, BC, d_v, T = (4, 4, 4, 4), 16, 32, 521
+    dials = None
+    if decay:
+        g = torch.Generator(device="cuda").manual_seed(8149)
+        dials = tuple(
+            0.05 + 0.85 * torch.rand(3, w, device="cuda", dtype=torch.float64, generator=g)
+            for w in widths)
+
+    original = schedule_mod.CONSUMER_WINDOWS
+    seen = {}
+    try:
+        for windows in ((64, 16), (16,)):
+            schedule_mod.CONSUMER_WINDOWS = windows
+            _run_case(widths, BC, d_v, 2, T, 3, p_read, p_write,
+                      nonzero_m0=False, seed=8149, decay_dials=dials)
+            seen[windows] = True
+    finally:
+        schedule_mod.CONSUMER_WINDOWS = original
+
+    assert seen == {(64, 16): True, (16,): True}
+    # The selection itself, so a cell that quietly stopped reaching the wide arm
+    # stops being a wide-window gate LOUDLY rather than by passing trivially.
+    from rola.ops.consumer import _consumer_forward
+    device = "cuda"
+    generator = torch.Generator(device=device).manual_seed(8149)
+    topology = _topology(widths, d_v)
+    read_levels = tuple(_simplex((2, T, 3, w), p_read, generator, device) for w in widths)
+    write_levels = tuple(_simplex((2, T, 3, w), p_write, generator, device) for w in widths)
+    g_write = torch.rand(2, T, 3, device=device, generator=generator) + 0.5
+    v = torch.randn(2, T, 3, d_v, device=device, generator=generator)
+    dec = LeafMassDecay(dials=dials) if decay else None
+    plan = Plan(topology=topology, normalization="global", BC=BC,
+                warp_tile=(1, max(1, d_v // 32)), decay=decay)
+    _, _, sched = _consumer_forward(v, read_levels, write_levels, None, g_write, plan,
+                                    initial_state=None, decay=dec)
+    clock = sched.decay_stream.clock_amps if decay else None
+    chosen = select_window(sched, dec, clock, BC, d_v)
+    assert chosen == 64, (
+        f"this cell no longer selects the wide window (got group_tokens={chosen}); it "
+        "is the only oracle gate that exercises the window formulation, so it must "
+        "be re-sized rather than left passing at the group quantum")
