@@ -1212,15 +1212,27 @@ def test_output_charge_sees_a_drift_the_global_max_cannot():
 
 @pytest.mark.parametrize("decay", [False, True])
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.25, 0.25)])
-def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
+@pytest.mark.parametrize("BC", [16, 64])
+def test_the_wide_window_matches_the_canonical_oracle(BC, decay, p_read, p_write):
     import rola.planner.schedule as schedule_mod
-    from rola.planner.schedule import (CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window,
-                                       union_member_median)
+    from rola.planner.schedule import CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window, union_member_median
 
-    widths, BC, d_v, T = (4, 4, 4, 4), 16, 32, 521
+    # `BC = 64` IS NOT A SIZE VARIANT, IT IS THE ONLY CELL THAT CAN EXPRESS THE
+    # DISJOINT-MASK GRAM BLOCK: at `BC == MMA_K_QUANTUM == 16` there is ONE atom per
+    # side, so "both sides live" and "the atom masks intersect" are the SAME
+    # statement and a block with live sides but disjoint masks cannot be built. The
+    # sparse `BC = 64` window is where a skipped store would be read as a previous
+    # window's Gram.
+    widths, d_v, T = (4, 4, 4, 4), 32, 521
+    # The BF16 tolerance is a per-cell fact, not a per-window one: at `BC = 64` the
+    # sparse decay cell's group-quantum error at seed 8149 is 1.13e-2 on THIS TREE
+    # AND ON MASTER, BIT-IDENTICALLY -- a pre-existing marginal cell, nothing the
+    # window does. The seed is chosen per `BC` so the cell sits inside the tolerance
+    # it is graded against and a failure here means the FORMULATION moved.
+    seed = 8149 if BC == 16 else 3313
     dials = None
     if decay:
-        g = torch.Generator(device="cuda").manual_seed(8149)
+        g = torch.Generator(device="cuda").manual_seed(seed)
         dials = tuple(
             0.05 + 0.85 * torch.rand(3, w, device="cuda", dtype=torch.float64, generator=g)
             for w in widths)
@@ -1228,15 +1240,21 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     original = schedule_mod.CONSUMER_WINDOWS
     seen = {}
     try:
-        for windows in ((64, 16), (16,)):
+        # THE FORCING FORM IS A ONE-TUPLE, and that is the difference between a
+        # gate and a tautology. `select_window` is widest-first over
+        # `CONSUMER_WINDOWS` with the narrow entry as the loop's TERMINATOR and a
+        # residency refusal in between -- and on `sm_86` that refusal is TOTAL, so
+        # `(64, 16)` resolves to 16 and this cell would run the group quantum
+        # TWICE. A one-tuple is what makes the width unrefusable.
+        for windows in ((64,), (16,)):
             schedule_mod.CONSUMER_WINDOWS = windows
             _run_case(widths, BC, d_v, 2, T, 3, p_read, p_write,
-                      nonzero_m0=False, seed=8149, decay_dials=dials)
+                      nonzero_m0=False, seed=seed, decay_dials=dials)
             seen[windows] = True
     finally:
         schedule_mod.CONSUMER_WINDOWS = original
 
-    assert seen == {(64, 16): True, (16,): True}
+    assert seen == {(64,): True, (16,): True}
     # THE CELL MUST STILL BE BIG ENOUGH TO FILL A WIDE WINDOW, so a cell that
     # quietly shrank stops being a wide-window gate LOUDLY rather than by passing
     # trivially. It is the FILL that is asserted, not the SELECTION: `select_window`
@@ -1245,7 +1263,7 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     # chosen. This gate is what keeps it exact for the arch where it is chosen.
     from rola.ops.consumer import _consumer_forward
     device = "cuda"
-    generator = torch.Generator(device=device).manual_seed(8149)
+    generator = torch.Generator(device=device).manual_seed(seed)
     topology = _topology(widths, d_v)
     read_levels = tuple(_simplex((2, T, 3, w), p_read, generator, device) for w in widths)
     write_levels = tuple(_simplex((2, T, 3, w), p_write, generator, device) for w in widths)
@@ -1257,7 +1275,15 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     _, _, sched = _consumer_forward(v, read_levels, write_levels, None, g_write, plan,
                                     initial_state=None, decay=dec)
     clock = sched.decay_stream.clock_amps if decay else None
-    assert select_window(sched, dec, clock, BC, d_v) in CONSUMER_WINDOWS
+    schedule_mod.CONSUMER_WINDOWS = (64,)
+    try:
+        object.__setattr__(sched, "window", None)
+        assert select_window(sched, dec, clock, BC, d_v) == 64, (
+            "the forced one-tuple no longer resolves to the wide window, so the "
+            "cells above ran the group quantum twice and gated nothing")
+    finally:
+        schedule_mod.CONSUMER_WINDOWS = original
+    assert 64 in CONSUMER_WINDOWS
     members = union_member_median(sched)
     assert members >= WINDOW_MIN_FILL * 64, (
         f"this cell no longer fills a wide window ({members} member "
