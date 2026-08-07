@@ -60,6 +60,17 @@ constexpr int kGroupTokens = kMmaKQuantum;
 //: era's design item.
 constexpr int kFoldStagedGroups = 1;
 
+//: THE MEMBERSHIP SCAN'S BATCH (the frozen contract's cook-once rule): how many
+//: 32-token words one refill stages into SMEM. The scan words are CTA-uniform,
+//: so a per-thread (per-warp-redundant) global walk pays 8x the sectors and
+//: instructions the stream carries -- MEASURED as the whole of the endgame's
+//: first-cut regression (+7.6M L1 sectors, +57M inst at atscale-L2048). One
+//: thread loads each word's rows ONCE and PRECOMPUTES the member word into the
+//: batch; the assembler consumes SMEM. Two uniform barriers per kScanBatch
+//: words. 32 = one word per thread of one warp per refill, a power of two well
+//: above the split-carry horizon.
+constexpr int kScanBatch = 32;
+
 //: THE SECTOR INVARIANT, UNIVERSAL: one atom's worth of bf16 digits IS one memory
 //: sector. `kMmaKQuantum` bf16 elements = 32 B = the fetch floor = the MMA k-quantum
 //: = the union-bitmap granule. The fetch/union/atom code assumes this
@@ -348,6 +359,7 @@ constexpr size_t consumer_smem_bytes() {
   //: register-live across the visit body; the atom masks are CTA-uniform
   //: registers, derived word-wise from the bitlists at ballot).
   b += static_cast<size_t>(kGroupTokens + 6 + D) * sizeof(int);  // t_idx + g_scan
+  b += 3 * static_cast<size_t>(kScanBatch) * sizeof(int);        // the scan batch (fr, fw, member)
   return b;
 }
 
