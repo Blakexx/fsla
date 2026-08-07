@@ -716,29 +716,6 @@ def _gram_cols(widths: tuple[int, ...], BC: int) -> int:
     return geometry.slice_digits + sum(widths[j + 1:])
 
 
-def select_p(plan, schedule, hw: HardwareFacts, *, policy=None,
-             arena_page_bytes: int = 0):
-    """§4.3's second entry point: §6.4's sequence-parallel policy, UNCHANGED.
-
-    It is a SEPARATE function from :func:`select_config` for a structural reason and
-    not an implementation one: every input §6.4's three gates read --
-    ``schedule.owner_costs``, ``stream_bytes()``, ``schedule_bytes()``, ``n_tiles``,
-    ``BH``, ``T`` -- is a ``Schedule`` field, and the ``Schedule`` is ``BT``-keyed, so
-    it cannot exist before ``BT`` is chosen. ``P`` is downstream of the schedule by
-    construction. `PLANNER_STATS_SPEC.md` §4's single-function shape is amended here
-    rather than worked around.
-
-    The gates themselves are untouched; this only routes the machine facts through
-    :class:`HardwareFacts` so the whole planner reads ONE hardware record.
-    """
-    from rola.routing.sequence_parallel import select_sequence_parallelism
-
-    blocks = hw.occupancy(plan.BC, plan.topology.d_v, plan.decay)
-    return select_sequence_parallelism(
-        plan, schedule, policy=policy, arena_page_bytes=arena_page_bytes,
-        blocks_per_sm=blocks, sms=hw.sm_count)
-
-
 # ---------------------------------------------------------------------------
 # §6b: DECODE BYPASSES SELECTION ARCHITECTURALLY (user ruling, 2026-08-02)
 # ---------------------------------------------------------------------------
@@ -783,11 +760,6 @@ class FrozenConfig:
     #: The prefill config this was frozen from, or ``None`` when decode began cold.
     frozen_from: ConfigChoice | None = None
 
-    @property
-    def sequence_parallel(self) -> None:
-        """``P = 1``, expressed as "there is no plan" rather than as a plan of ones."""
-        return None
-
 
 def is_decode_step(T: int) -> bool:
     """The STRUCTURAL predicate: is this the no-tiling case?
@@ -827,10 +799,10 @@ def config_for_step(static: StaticPlanInputs, hw: HardwareFacts, T: int, *,
                     **kwargs) -> tuple[ConfigChoice, ConfigEvidence | None]:
     """THE DISPATCH. One structural branch, and the decode arm touches no statistic.
 
-    On the decode arm this function does not call :func:`select_config`, does not call
-    the summary pass, and does not call :func:`select_p`. It reads a carrier and
-    returns. That is the whole of §6b: the bypass is architectural, so there is no path
-    on which a degenerate statistic can reach a rule.
+    On the decode arm this function does not call :func:`select_config` and does not
+    call the summary pass. It reads a carrier and returns. That is the whole of §6b:
+    the bypass is architectural, so there is no path on which a degenerate statistic
+    can reach a rule.
 
     ``summaries`` is therefore OPTIONAL, and passing ``None`` at ``T > 1`` is an error
     rather than a signal -- a caller that skipped the summary pass on a prefill step has
@@ -943,7 +915,6 @@ __all__ = [
     "quanta_per_owner",
     "select_config",
     "select_config_with_evidence",
-    "select_p",
     "select_with",
     "shadow_step",
     "waves",

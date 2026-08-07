@@ -71,7 +71,7 @@ def _view(family, routes):
     c = family.config
     return SimpleNamespace(
         read_levels=routes.read, write_levels=routes.write, widths=tuple(c["widths"]),
-        T=c["T"], BT=g.TOKEN_WORD, P=c["P"], initial_state=None)
+        T=c["T"], BT=g.TOKEN_WORD, initial_state=None)
 
 
 def _demonstrated_by_some_arm(family, views):

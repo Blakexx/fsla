@@ -67,7 +67,6 @@ from rola.planner.select import (
     largest_feasible_bc,
     quanta_per_owner,
     select_config,
-    select_p,
 )
 from rola.planner.select import (
     config_for_step as select_config_for_step,
@@ -2465,30 +2464,6 @@ def test_the_feasible_set_is_alignment_intersect_instantiated_and_the_default_is
         feasible_bc((3, 5), instantiated=(16, 64))
 
 
-def test_select_p_routes_the_hardware_record_into_the_unchanged_6_4_policy(monkeypatch):
-    """§4.3: `select_p` is §6.4 UNCHANGED, only re-plumbed onto `HardwareFacts`.
-
-    What is gated is the PLUMBING -- that the driver residency and SM count reach the
-    policy from the one hardware record instead of being re-queried ambiently. The
-    policy's own three gates are untouched and are gated by
-    `tests/unit/test_sequence_parallel_policy.py`.
-    """
-    import rola.routing.sequence_parallel as sp
-
-    seen = {}
-
-    def fake(plan, schedule, *, policy, arena_page_bytes, blocks_per_sm, sms):
-        seen.update(blocks_per_sm=blocks_per_sm, sms=sms,
-                    arena_page_bytes=arena_page_bytes)
-        return "SP"
-
-    monkeypatch.setattr(sp, "select_sequence_parallelism", fake)
-    plan = _plan((8, 16), 16, 16, d_v=64)
-    hw = HardwareFacts(sm_count=77, occupancy=_toy_occupancy(5))
-    assert select_p(plan, object(), hw, arena_page_bytes=123) == "SP"
-    assert seen == {"blocks_per_sm": 5, "sms": 77, "arena_page_bytes": 123}
-
-
 # ---------------------------------------------------------------------------
 # §6 P4: THE AUDITOR, run on recorded fixtures. This is P4's own self-gate.
 # ---------------------------------------------------------------------------
@@ -2668,10 +2643,10 @@ def test_the_decode_path_issues_zero_statistics_work():
     """§6b: at `T == 1` the dispatch touches no statistic, no oracle and no policy.
 
     The gate is a SPY on every door the decode arm must not go through: the closed-form
-    selector, the occupancy oracle (which is where a wave term would be computed for a
-    grid decode does not vary), and `select_p`. A `RoutingSummaries` is deliberately
-    passed anyway -- if the branch were on the ARGUMENT rather than on the shape, a
-    caller that happened to have summaries would silently take the prefill path.
+    selector and the occupancy oracle (which is where a wave term would be computed for
+    a grid decode does not vary). A `RoutingSummaries` is deliberately passed anyway --
+    if the branch were on the ARGUMENT rather than on the shape, a caller that happened
+    to have summaries would silently take the prefill path.
     """
     import rola.planner.select as select_module
 
@@ -2706,7 +2681,6 @@ def test_the_decode_path_issues_zero_statistics_work():
     # cannot be re-laid) and re-derives everything else.
     frozen = freeze_for_decode(static, prefill=prefill)
     assert frozen.choice.BC == prefill.BC
-    assert frozen.sequence_parallel is None, "decode must not carry a P plan"
     assert frozen.frozen_from == prefill
 
     # `is_decode_step` is STRUCTURAL: it is the no-tiling case, not a dimension

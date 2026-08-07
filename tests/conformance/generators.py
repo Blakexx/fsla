@@ -19,12 +19,6 @@ from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
 from rola.ops.paging import PageArena
 from rola.planner.schedule import TOKEN_WORD, Plan, build_schedule
-from rola.routing.sequence_parallel import (
-    SequenceParallelPlan,
-    SequenceParallelPolicy,
-    owner_slot_counts,
-    select_sequence_parallelism,
-)
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -103,7 +97,7 @@ class Case:
         # (written against "one word", not literally the constant's name) needs
         # no further edits.
         self.BT, self.BC = TOKEN_WORD, c["BC"]
-        self.norm, self.P, self.paging = c["norm"], c["P"], c["paging"]
+        self.norm, self.paging = c["norm"], c["paging"]
         self.topology = _topology(self.widths, self.d_v)
         self.N = self.topology.N
         self.cols = self.d_v + (1 if self.norm == "global" else 0)
@@ -214,21 +208,6 @@ class Case:
             _simplex((self.B, self.T, self.H, w), 1.0, gen, device) for w in self.widths[1:])
         return read, write
 
-    def _k0_fold(self, gen, device, c, p):
-        """Segment 0 (tokens [0, T/P)) writes ONLY level-0 digits {0,1} — owner 0
-        at BC = 16 over (8, 8) — so every other owner's first summary has K = 0."""
-        n_tiles = -(-self.T // self.BT)
-        boundary = (n_tiles // self.P) * self.BT
-        w0 = self.widths[0]
-        mask = torch.ones(1, self.T, 1, w0)
-        mask[:, :boundary, :, 2:] = 0.0
-        write = (_masked_simplex((self.B, self.T, self.H, w0), mask, gen, device),) + tuple(
-            _simplex((self.B, self.T, self.H, w), 1.0, gen, device) for w in self.widths[1:])
-        read = tuple(_simplex((self.B, self.T, self.H, w), c["p_read"], gen, device)
-                     for w in self.widths)
-        self._k0_boundary = boundary
-        return read, write
-
     def _chunk_boundary(self, gen, device, c, p):
         """Write support flips EXACTLY at tile boundaries, and the write draws
         are blockwise-constant per tile — the fixture is temporally coherent by
@@ -261,24 +240,9 @@ class Case:
             self.topology, self.decay, self.norm,
             initial_state=self.initial_state, output_final_state=True)
 
-    def forced(self, P):
-        base = select_sequence_parallelism(
-            self.plan, self.schedule, policy=SequenceParallelPolicy(workspace_cap=1 << 30))
-        n_owners = int(self.schedule.owners.shape[0])
-        assert self.schedule.n_twords >= P, "cannot split more ways than words"
-        Ps = tuple([P] * n_owners)
-        return SequenceParallelPlan(
-            P=Ps, limiting_gate=(None,) * n_owners, binding_gate=None,
-            sms=base.sms, blocks_per_sm=base.blocks_per_sm,
-            waves_before=base.waves_before, waves_after=0.0,
-            base_traffic_bytes=0, roundtrip_bytes=0, roundtrip_seconds=0.0,
-            base_traffic_seconds=0.0, ledger=base.ledger,
-            n_slots=sum(owner_slot_counts(Ps)), BC=base.BC, cols=base.cols)
-
-    def kernel(self, *, sequence_parallel_tensors=None):
-        """Launch at the family's declared P/paging and return ``(y, state)`` in
+    def kernel(self):
+        """Launch at the family's declared paging and return ``(y, state)`` in
         the oracle's ``[B, H, N, cols]`` state layout."""
-        sp = None if self.P == 1 else self.forced(self.P)
         arena = None
         if self.paging:
             arena = PageArena(widths=self.widths, BC=self.BC, cols=self.cols,
@@ -287,9 +251,7 @@ class Case:
         y, state, _ = _consumer_forward(
             self._f32["v"], self._f32["read"], self._f32["write"],
             self._f32["g_read"], self._f32["g_write"], self.plan,
-            schedule=self.schedule, sequence_parallel=sp,
-            sequence_parallel_tensors=sequence_parallel_tensors,
-            decay=self.decay, paging=arena,
+            schedule=self.schedule, decay=self.decay, paging=arena,
             initial_state=(None if self.initial_state is None
                            else self.initial_state.to(torch.float32)))
         if arena is not None:
@@ -435,19 +397,11 @@ def _check_cold_read(case):
 
 def _check_divisible(case):
     assert case.T % case.BT == 0, f"claimed divisible, but T={case.T} % BT={case.BT} != 0"
-    if case.P > 1:
-        n_tiles = case.T // case.BT
-        assert n_tiles % case.P == 0, (
-            f"claimed divisible, but {n_tiles} tiles split unevenly at P={case.P} — "
-            "uneven segments are the ragged cell")
 
 
 def _check_ragged(case):
-    n_tiles = -(-case.T // case.BT)
-    uneven_split = case.P > 1 and n_tiles % case.P != 0
-    assert case.T % case.BT != 0 or uneven_split, (
-        f"claimed ragged, but T={case.T} tiles evenly under BT={case.BT} "
-        f"and P={case.P}")
+    assert case.T % case.BT != 0, (
+        f"claimed ragged, but T={case.T} tiles evenly under BT={case.BT}")
 
 
 def _check_singleton(case):
@@ -510,8 +464,7 @@ def _corner_chunk_boundary(case):
     t1, t2 = case._flip_tokens
     assert t1 % case.BT == 0 and t2 % case.BT == 0, (
         f"the support flips at tokens {t1}/{t2}, which are not tile boundaries "
-        f"under BT={case.BT} — a mid-chunk flip tests a weaker thing (the "
-        "segment-boundary fixture defect, test_p_composition.py)")
+        f"under BT={case.BT} — a mid-chunk flip tests a weaker thing")
     support = (case.write_levels[0] != 0)
     for t in (t1, t2):
         assert not torch.equal(support[:, t - 1], support[:, t]), (

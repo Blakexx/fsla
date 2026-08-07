@@ -75,14 +75,13 @@ def test_every_family_realizes_declared_axis_values_only():
 # ---------------------------------------------------------------------------
 
 #: The instantiation values NOT part of the default cell the named regime
-#: families run at. (BC 16, DV 64, D 2, both DECAY, P 1, unpaged is the
-#: default; DECAY is fully arm-swept by variants.) P26: `BT`/`FOLD_PREC`/
-#: `READ_PREC` are gone from `AXIS_DECLARATIONS` entirely (no `BT` template
-#: parameter; `mma_precision` is single-valued) rather than pinned mid-cells,
-#: so they no longer appear as instantiation coordinates at all.
+#: families run at. (BC 16, DV 64, D 2, both DECAY, unpaged is the default;
+#: DECAY is fully arm-swept by variants.) P26: `BT`/`FOLD_PREC`/`READ_PREC`
+#: are gone from `AXIS_DECLARATIONS` entirely (no `BT` template parameter;
+#: `mma_precision` is single-valued) rather than pinned mid-cells, so they no
+#: longer appear as instantiation coordinates at all.
 _OFF_MID_INSTANTIATION: frozenset[tuple] = frozenset({
     ("BC", 64), ("DV", 32), ("D", 1), ("D", 3), ("D", 4),
-    ("P", 2), ("P", 3), ("P", 4),
     ("paging", True),
 })
 
@@ -95,8 +94,6 @@ _NON_MID_REGIME: frozenset[tuple] = frozenset(
 
 #: Cross terms that ARE covered, because a family pins both coordinates.
 _EXCEPTIONS: frozenset[tuple] = frozenset({
-    # corner/ragged-tail pins P = 3 with a ragged tail.
-    ("P", 3, "tail", "ragged"),
     # producer/swept-gain runs the gateway at widths (16,) and d_v = 32;
     # producer/swept-gain-raw-d2 at (8, 8) and d_v = 32. Their sweeps carry
     # `swept` density and `coherent` routing onto D = 1 and DV = 32.
@@ -139,8 +136,8 @@ def test_the_census_join_lists_every_empty_cell():
 def test_the_join_has_the_size_its_rule_implies():
     """The rule's arithmetic, pinned so an edit to the rule pieces cannot
     silently reshape the list: |cross| - |exceptions| + |extras|."""
-    assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 90
-    assert len(EXPECTED_EMPTY) == 90 - len(_EXCEPTIONS) + len(_EXTRAS) == 87
+    assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 60
+    assert len(EXPECTED_EMPTY) == 60 - len(_EXCEPTIONS) + len(_EXTRAS) == 58
 
 
 @pytest.mark.parametrize("cell", sorted(_EXCEPTIONS | _EXTRAS, key=str), ids=str)

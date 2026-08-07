@@ -200,7 +200,6 @@ def _execute(
     schedule: Schedule | None = None,
     paging=None,
     continue_paging: bool = False,
-    sequence_parallel=None,
 ) -> tuple[torch.Tensor, Any, Schedule]:
     """Run one plan over one routing bundle.
 
@@ -217,7 +216,7 @@ def _execute(
     return RoLAConsumer.apply(
         v, routes.read, routes.write, routes.g_read, routes.g_write, plan,
         dict(decay=decay, initial_state=initial_state, schedule=schedule, paging=paging,
-             continue_paging=continue_paging, sequence_parallel=sequence_parallel))
+             continue_paging=continue_paging))
 
 
 def _static_inputs(routes: RouteFactors, *, decay: DecayConfig, overrides) -> StaticPlanInputs:

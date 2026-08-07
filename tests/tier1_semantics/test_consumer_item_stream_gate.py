@@ -18,13 +18,7 @@ LIVENESS CLAIM naming the cell.
 
 Symbols: `BC` leafs per owner (one CTA = one owner); `DV` = `d_v` the value
 width; `D` level count; `NT_DV = DV/8` the readout's `n8` column blocks;
-`kWarps = 8`; `P` the sequence-parallel segment count. (P26 note: the file
-predates the endgame executor's move off a fixed `BT` token tile onto the
-32-token `TOKEN_WORD` scan word with dynamic `MMA_K_QUANTUM`-token groups; the
-starvation axis below -- more/fewer items than warps, tiles that are
-read-only/write-only/mixed within one launch, many tiles, the `P > 1`
-summary pass -- is unchanged by that move and is what every cell still
-exercises.)
+`kWarps = 8`.
 
 THE STARVATION AXIS, and every cell below is chosen ON it rather than for coverage:
 
@@ -44,8 +38,6 @@ THE STARVATION AXIS, and every cell below is chosen ON it rather than for covera
   (d) **many tiles.** `T = 521` at `BT = 16` is 33 tiles per owner, so a
       once-per-few-thousand-tiles race gets thousands of chances per cell rather
       than one.
-  (e) **the `P > 1` three-pass path**, whose summary pass forces `is_read = false`
-      on every tile -- the most one-sided phase graph the kernel has.
 
 Each cell ALSO asserts its values against the fp64 oracle in the same child
 process, so "it finished" is never the whole claim: a schedule that completes but
@@ -112,7 +104,7 @@ _CHILD = textwrap.dedent(
 
     widths, BC, d_v = {widths!r}, {BC!r}, {d_v!r}
     decay = {decay!r}
-    p_read, p_write, T, P = {p_read!r}, {p_write!r}, {T!r}, {P!r}
+    p_read, p_write, T = {p_read!r}, {p_write!r}, {T!r}
     B, H, device = 2, 3, "cuda"
 
     g = torch.Generator(device=device).manual_seed({seed!r})
@@ -140,20 +132,6 @@ _CHILD = textwrap.dedent(
             None if gr is None else gr.to(torch.float32),
             gw.to(torch.float32), plan)
     y, state, schedule = _consumer_forward(*args, initial_state=None, decay=dec)
-    if P > 1:
-        from rola.routing.sequence_parallel import (SequenceParallelPlan,
-            SequenceParallelPolicy, owner_slot_counts, select_sequence_parallelism)
-        base = select_sequence_parallelism(plan, schedule,
-                                           policy=SequenceParallelPolicy(workspace_cap=1 << 30))
-        n_owners = schedule.owners.shape[0]
-        Ps = tuple([P] * n_owners)
-        sp = SequenceParallelPlan(P=Ps, limiting_gate=(None,) * n_owners, binding_gate=None,
-            sms=base.sms, blocks_per_sm=base.blocks_per_sm, waves_before=base.waves_before,
-            waves_after=0.0, base_traffic_bytes=0, roundtrip_bytes=0, roundtrip_seconds=0.0,
-            base_traffic_seconds=0.0, ledger=base.ledger,
-            n_slots=sum(owner_slot_counts(Ps)), BC=base.BC, cols=base.cols)
-        y, state, _ = _consumer_forward(*args, schedule=schedule, sequence_parallel=sp,
-                                        initial_state=None, decay=dec)
     torch.cuda.synchronize()
 
     def rel(a, r):
@@ -215,19 +193,4 @@ def test_item_stream_is_live_and_exact_under_role_imbalance(
         widths, BC, d_v, p_read, p_write, decay):
     _run_cell(widths=widths, BC=BC, d_v=d_v, decay=decay,
               p_read=p_read, p_write=p_write,
-              T=521, P=1, seed=8100 + BC + d_v + int(decay))
-
-
-# ---------------------------------------------------------------------------
-# (e) -- the `P > 1` three-pass path. Its SUMMARY pass forces `is_read = false`
-# on every tile, so phase A is empty on every iteration and the counters carry a
-# phase graph with one side permanently absent. `normalization` is always
-# `global` now (the `raw` arm this row set used to also cover is dead -- see
-# `workflows/perf/p26_endgame.md` DELETIONS).
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize("P", [2, 3])
-@pytest.mark.parametrize("decay", [False, True])
-def test_item_stream_is_live_on_the_segmented_path(P, decay):
-    _run_cell(widths=(8, 8), BC=64, d_v=64, decay=decay,
-              p_read=1.0, p_write=0.3,
-              T=521, P=P, seed=8700 + P + int(decay))
+              T=521, seed=8100 + BC + d_v + int(decay))

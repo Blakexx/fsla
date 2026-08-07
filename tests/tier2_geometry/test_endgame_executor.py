@@ -213,39 +213,8 @@ def test_union_visit_interleaving():
 
 
 # ---------------------------------------------------------------------------
-# 6. Composition with P (word-range segments) and dv=32
+# 6. dv=32
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("P", [2, 4])
-@pytest.mark.parametrize("decay_on", [False, True])
-def test_composes_with_P(P, decay_on):
-    """P > 1 with WORD-RANGE segments: every pass rides the endgame walk (the
-    summary pass ballots the write side alone), every segment flushes ragged."""
-    from rola.routing.sequence_parallel import (
-        SequenceParallelPlan,
-        SequenceParallelPolicy,
-        owner_slot_counts,
-        select_sequence_parallelism,
-    )
-    cell = Cell((8, 8), 16, 64, 1, 96, 2, 0.4, 0.3, 71, decay_on=decay_on,
-                nonzero_m0=True)
-    y_ref, s_ref = cell.oracle()
-    _, _, schedule = cell.run()
-    base = select_sequence_parallelism(
-        cell.plan, schedule, policy=SequenceParallelPolicy(workspace_cap=1 << 30))
-    n_owners = int(schedule.owners.shape[0])
-    Ps = tuple([P] * n_owners)
-    sp = SequenceParallelPlan(
-        P=Ps, limiting_gate=(None,) * n_owners, binding_gate=None,
-        sms=base.sms, blocks_per_sm=base.blocks_per_sm,
-        waves_before=base.waves_before, waves_after=0.0,
-        base_traffic_bytes=0, roundtrip_bytes=0, roundtrip_seconds=0.0,
-        base_traffic_seconds=0.0, ledger=base.ledger,
-        n_slots=sum(owner_slot_counts(Ps)), BC=base.BC, cols=base.cols)
-    y, s, _ = cell.run(schedule=schedule, sequence_parallel=sp)
-    assert _relative(y, y_ref) < BF16_RTOL
-    assert _relative(s.view_as(s_ref), s_ref) < BF16_RTOL
-
 
 @pytest.mark.parametrize("p_read,p_write", [(0.4, 0.3), (0.12, 0.1)])
 def test_dv32(p_read, p_write):

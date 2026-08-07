@@ -86,7 +86,6 @@ Every cell of this cross-product is gated against the oracle:
 | Axis | Values |
 |---|---|
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
-| `P` (sequence-parallel split) | 1, > 1 |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
 | `(widths, BC, D, d_v)` | the planner's supported rectangles |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
@@ -454,7 +453,7 @@ the tiers it names do, unconditionally, and the recipe says so. This is the same
 
 `tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
 `test_interface.py::test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm`,
-two in `test_sequence_parallel_policy.py`) the same way it deselects `tier1_semantics`'s
+five in `test_planner.py`) the same way it deselects `tier1_semantics`'s
 -- so the `-m cuda` line above is what makes them reachable at all. Every committed test
 must be collected by SOME line here; a test that only a `-m "not cuda"` line ever
 selects against is a test nothing runs.

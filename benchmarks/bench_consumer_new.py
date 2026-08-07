@@ -73,8 +73,6 @@ from bench.drivers import (  # noqa: E402
     norm_price,
     run_btab,
     run_oracle,
-    run_p1_identity,
-    run_split_gate,
 )
 from bench.instruments import gather_stats  # noqa: E402
 from bench.pairing import arm_time  # noqa: E402
@@ -85,7 +83,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", default="oracle",
                     choices=["oracle", "skipshare", "manifest",
-                             "decayprice", "normprice", "split", "p1identity",
+                             "decayprice", "normprice",
                              "gatherstats", "armtime", "btab"])
     ap.add_argument("--cell", default="atscale-L2048")
     ap.add_argument("--norm", default="global", choices=["global", "raw"])
@@ -109,8 +107,6 @@ def main():
     if a.mode == "armtime":
         arm_time(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay, bt=a.bt)
         return
-    if a.mode == "split":
-        raise SystemExit(0 if run_split_gate() else 1)
     if a.mode == "gatherstats":
         for name in (GROUPS["topo"] + GROUPS["wk1"] + GROUPS["atscale"]):
             st = gather_stats(CELLS[name])
@@ -119,8 +115,6 @@ def main():
                   f"  m-tiles {st['mean_mtiles']:.3f}"
                   f"  ({st['owners_sampled']} owners, {st['candidate_pairs']} pairs)")
         return
-    if a.mode == "p1identity":
-        raise SystemExit(0 if run_p1_identity() else 1)
     if a.mode == "decayprice":
         #: Three cells BRACKETING the write-live share, because the structural
         #: prediction is that decay's price scales with it: a dense-write cell, the

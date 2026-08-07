@@ -21,17 +21,15 @@ import torch
 from rola.ops.consumer import _consumer_forward
 from rola.ops.paging import PageArena
 from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
+from tests.tier2_geometry.fixtures import (
+    _Fixture,
+    _relative,
+)
 from tests.tier2_geometry.matrix import (
     ENGINEERED_IDENTITY,
     GEOMETRY_MATRIX,
     REASSOCIATION_EQUIVALENT,
     GeometryPair,
-)
-from tests.tier2_geometry.test_p_composition import (
-    _SPARSE_WRITE_ROUTING,
-    _Fixture,
-    _masked_simplex,
-    _relative,
 )
 
 pytestmark = [
@@ -62,34 +60,6 @@ def _multi_owner_dense(**over):
                     p_read=1.0, p_write=1.0, seed=4242, **over)
 
 
-def _split_zero_init(**over):
-    return _Fixture((8, 8), 16, 64, B=1, T=128, H=2, p_read=1.0, p_write=1.0,
-                    seed=6001, nonzero_m0=False, **over)
-
-
-def _split_written(**over):
-    return _Fixture((8, 8), 16, 64, B=1, T=128, H=2, p_read=1.0, p_write=1.0,
-                    seed=6002, nonzero_m0=True, decay_on=True, **over)
-
-
-def _read_only_owner(**over):
-    """Level 0's write support is confined to digits {0,1}: owners over digits >= 2
-    are never written on ANY segment, which is what §6.4's carve-out is about."""
-    widths, T = (8, 8), 128
-    device = "cuda"
-    gen = torch.Generator(device=device).manual_seed(5002)
-    mask0 = torch.zeros(1, 1, 1, widths[0], dtype=torch.float64)
-    mask0[..., :2] = 1.0
-    write_levels = (
-        _masked_simplex((1, T, 1, widths[0]), mask0, gen, device),
-        _masked_simplex((1, T, 1, widths[1]), torch.ones(1, 1, 1, widths[1]), gen, device))
-    read_levels = tuple(
-        _masked_simplex((1, T, 1, w), torch.ones(1, 1, 1, w), gen, device) for w in widths)
-    return _Fixture(widths, 16, 64, B=1, T=T, H=1, p_read=1.0, p_write=1.0,
-                    seed=5002, read_levels=read_levels, write_levels=write_levels,
-                    nonzero_m0=True, routing=_SPARSE_WRITE_ROUTING, **over)
-
-
 def _paged_dense(**over):
     """widths `(4,8,8)` at `BC = 16` — 16 owners, densely written, so every page is
     admitted and the arena is fully resident (§7.1's dense short-circuit).
@@ -108,9 +78,6 @@ def _paged_dense(**over):
 
 FIXTURES = {
     "multi_owner_dense": _multi_owner_dense,
-    "split_zero_init": _split_zero_init,
-    "split_written": _split_written,
-    "read_only_owner": _read_only_owner,
     "paged_dense": _paged_dense,
 }
 
@@ -119,20 +86,7 @@ FIXTURES = {
 # Selectors — the declared restrictions
 # ---------------------------------------------------------------------------
 
-def _never_written_leaves(fx, state):
-    """The state rows of leaves with no write on any segment (§6.4's carve-out).
-
-    Returns the selected rows; the caller compares those and nothing else, because
-    the leaves NEXT to them are legitimately re-associated and the row says so.
-    """
-    widths = fx.topology.widths
-    leaf = torch.arange(fx.topology.N, device=state.device)
-    never = (leaf // widths[1]) >= 2
-    assert int(never.sum()) > 0, "the carve-out fixture has no unwritten leaf; the row is vacuous"
-    return state.reshape(-1, fx.topology.N, fx.cols)[:, never, :]
-
-
-SELECTORS = {"never_written_leaves": _never_written_leaves}
+SELECTORS: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -156,22 +110,8 @@ def _split_readout_n2_eps(fx_a, fx_b, out_a, out_b):
     return n * n * _EPS * float(out_a.abs().max())
 
 
-def _carry_fold_T_eps(fx_a, fx_b, out_a, out_b):
-    """The most a leaf's state can move under a reassociation of the token walk.
-
-    A leaf's state is a sum of at most `T` fp32 deposits (one per token). Any
-    reassociation of an `n`-term fp32 sum is bounded by `(n-1) * eps * sum|terms|`;
-    bounding `sum|terms|` by `T * max|state|` gives `T^2 * eps * max|state|`, and
-    `T` here is the sequence length the fixture actually ran. Derived, and it is an
-    ENVELOPE rather than a detector — the bitwise carve-out row is the detector.
-    """
-    T = fx_a.v.shape[1]
-    return T * T * _EPS * float(out_a.abs().max())
-
-
 BOUNDS = {
     "split_readout_n2_eps": _split_readout_n2_eps,
-    "carry_fold_T_eps": _carry_fold_T_eps,
 }
 
 
@@ -201,7 +141,7 @@ def run(row: GeometryPair, fx, geometry: dict):
             decay=fx.decay, paging=arena)
         assert returned is arena, "under paging the arena IS the carried state"
         return y, arena.materialize()
-    y, state, _ = fx.run(geometry.get("P", 1))
+    y, state, _ = fx.run()
     if "paging" in geometry:
         # The unpaged arm, reshaped into the arena's layout so the comparison is
         # between the same thing addressed two ways -- which is the whole claim.
@@ -253,20 +193,6 @@ def assert_precondition(row: GeometryPair, fx_a, fx_b):
             assert fx_a.plan.geometry.owners_total != fx_b.plan.geometry.owners_total, (
                 f"{row.id}: both arms have the same owner count, so no split-K "
                 "reassociation is being exercised")
-    elif row.axis == "P":
-        if row.contract is ENGINEERED_IDENTITY and row.restrict is None:
-            assert fx_a.initial_state is None and fx_b.initial_state is None, (
-                f"{row.id}: the zero-initial-state carve-out requires a zero initial state")
-            assert row.values[1] == 2, (
-                f"{row.id}: the zero-initial-state identity is a P = 2 claim. At "
-                "P >= 3 pass 1's intermediate summaries ARE folded into the "
-                "boundaries, which re-associates -- that is a class-(b) row.")
-        elif row.contract is REASSOCIATION_EQUIVALENT:
-            assert fx_a.initial_state is not None, (
-                f"{row.id}: without a carried state, `P = 2` has no re-associated "
-                "boundary and the row would be vacuous")
-        if row.output == "y":
-            assert fx_a.plan.geometry.owners_total > 1
     elif row.axis == "paging":
         assert fx_a.plan.geometry.owners_total > 1 or row.output == "state"
     else:

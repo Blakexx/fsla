@@ -105,7 +105,7 @@ class Family:
             assert value in REGIME_AXES[axis], (
                 f"family {self.name!r}: {value!r} is not a declared value of regime "
                 f"axis {axis!r}")
-        for key in ("widths", "d_v", "T", "BC", "norm", "decay", "P", "paging", "seed"):
+        for key in ("widths", "d_v", "T", "BC", "norm", "decay", "paging", "seed"):
             assert key in self.config, f"family {self.name!r} config lacks {key!r}"
 
     @property
@@ -117,24 +117,24 @@ class Family:
 
         The names and value domains are ``tests.tier2_geometry.matrix``'s — the
         conformance census EXTENDS that census by one dimension rather than
-        keeping a parallel one. P26 collapsed `AXIS_DECLARATIONS` to
-        `(BC, DV, D, DECAY, P, paging)`: `BT` is not a template parameter,
-        `mma_precision`/`normalization` are single-valued (bf16, global) and
-        carry no axis at all any more.
+        keeping a parallel one. `AXIS_DECLARATIONS` is `(BC, DV, D, DECAY,
+        paging)`: `BT` is not a template parameter, `mma_precision`/
+        `normalization` are single-valued (bf16, global) and carry no axis at
+        all any more.
         """
         c = self.config
         return {
             "BC": c["BC"], "DV": c["d_v"], "D": len(c["widths"]),
             "DECAY": int(bool(c["decay"])),
-            "P": c["P"], "paging": bool(c["paging"]),
+            "paging": bool(c["paging"]),
         }
 
 
 def _cfg(widths=(8, 8), d_v=64, B=1, T=128, H=2, BC=16, norm="global",
-         decay=False, P=1, paging=False, seed=0, m0=False,
+         decay=False, paging=False, seed=0, m0=False,
          p_read=1.0, p_write=1.0):
     return dict(widths=widths, d_v=d_v, B=B, T=T, H=H, BC=BC, norm=norm,
-                decay=decay, P=P, paging=paging, seed=seed, m0=m0,
+                decay=decay, paging=paging, seed=seed, m0=m0,
                 p_read=p_read, p_write=p_write)
 
 
@@ -361,28 +361,6 @@ _ADVERSARIAL: tuple[Family, ...] = (
               "must be exactly the carried state.",
         generator="all_read_only"),
     Family(
-        "corner/k0-fold", "adversarial",
-        dict(density="sparse", coherence="iid", rw_correlation="independent",
-             mass="spread", tail="divisible", support="partial"),
-        _cfg(seed=303, P=3, m0=True, T=96),
-        params=dict(),
-        basis="a P = 3 split whose FIRST summarized segment has NO write candidate "
-              "for any owner: the sparse written-leaf summary's K = 0 degeneracy, "
-              "where the compaction emits an empty list and the scan must fold "
-              "(1, 0) exactly. The complementary 0 < K < BC cell is "
-              "test_p_composition's; the K = 0 end lives here, named.",
-        generator="k0_fold"),
-    Family(
-        "corner/ragged-tail", "adversarial",
-        dict(density="sparse", coherence="iid", rw_correlation="independent",
-             mass="spread", tail="ragged", support="partial"),
-        _cfg(seed=304, T=83, P=3, norm="global", p_read=0.6, p_write=0.6),
-        basis="T = 83 under the fixed 32-token scan word AND a forced P = 3 "
-              "over 3 words: one word per segment, the last genuinely partial "
-              "(32/32/19 tokens). Both off-by-one surfaces at once — the "
-              "tile-range mask's "
-              "and the segment boundary's."),
-    Family(
         "corner/chunk-boundary", "adversarial",
         dict(density="sparse", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),
@@ -393,9 +371,8 @@ _ADVERSARIAL: tuple[Family, ...] = (
               "6 words exist to hold both boundary tiles): the "
               "support-change-at-a-chunk-boundary corner, where an "
               "inclusive/exclusive tile-range error moves which tile last "
-              "touches a leaf. Committed after the segment-boundary fixture "
-              "defect test_p_composition.py records — a support that changes "
-              "mid-chunk tests a different (weaker) thing.",
+              "touches a leaf -- a support that changes mid-chunk tests a "
+              "different (weaker) thing.",
         generator="chunk_boundary"),
 )
 
@@ -439,13 +416,6 @@ def _sweep() -> tuple[Family, ...]:
                  seed=400 + len(widths)),
             basis="the level-count axis at the mid-box regime, including the "
                   "non-power-of-two mixed radix."))
-    for P, T in ((2, 64), (3, 96), (4, 128)):
-        # T chosen so n_twords % P == 0 under the fixed 32-token scan word:
-        # uneven segments are the RAGGED cell (corner/ragged-tail), not this one.
-        rows.append(Family(
-            f"sweep/P{P}", "stratified", dict(**_MID),
-            _cfg(T=T, P=P, m0=True, p_read=0.5, p_write=0.5, seed=410 + P),
-            basis="the sequence-parallel runtime axis at the mid-box regime."))
     rows.append(Family(
         "sweep/paged", "stratified", dict(**_MID),
         _cfg(widths=(4, 8, 8), d_v=64, T=64, paging=True, p_read=0.5, p_write=0.5,
