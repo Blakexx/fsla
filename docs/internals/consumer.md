@@ -13,9 +13,9 @@ The kernel body itself is [`consumer_kernel.md`](consumer_kernel.md).
 Spec references are to `ROLA_V3_SPEC.md`: §3 topology-agnostic kernel structure,
 §4 schedule, §5 consumer, §6.4 sequence parallelism, §7.1 the arena.
 
-Symbols: `bh` = batch-head; `BC` = leafs per compute tile; `BT` = tokens per
-tile; `DV` = value width; `D` = number of levels; `j` = `first_spanned_level`;
-`P` = the sequence-parallel split factor; `M` = state.
+Symbols: `bh` = batch-head; `BC` = leafs per owner tile; `DV`/`d_v` = value
+width; `D` = number of levels; `j` = `first_spanned_level`; `P` = the
+sequence-parallel split factor; `M` = state.
 
 ---
 
@@ -52,7 +52,7 @@ with, per §3's owner rectangle:
 | boundary, `l = j` | `slice * c` | `inner` | `c` |
 | spanned, `l > j` | `0` | `prod(widths[l+1:])` | `width_l` |
 
-`row_offset` is the level's first row in the packed tile-bitmap array.
+`row_offset` is the level's first row in the packed token-bit array.
 
 `leaf_digit` is declared in the header rather than in the `.cu`'s anonymous
 namespace because `intra_panel.cuh`'s clock prefix needs it: the clock is a
@@ -60,91 +60,90 @@ product over ALL levels (it is an exponent, so a fixed level cannot hoist into
 the row scale), which is the one operand assembly that walks the leaf digits
 outside the kernel translation unit.
 
-## <a id="ring-depth"></a>A3. The staging-ring depth is compile-time
-
-`consumer_ring_depth()` in `smem_layout.cuh` resolves it per instantiation
-from `ROLA_C_RING_DEPTH` (shipped at 1; depth 2 DECLINED on measurement,
-session-9 R2(b)), and the ratification manifest records the macro
-(`tools/ratify.py`'s `RATIFIED_DEFINES`).
-
-There is no runtime depth field in `ConsumerParams`: a depth the kernel could
-read would be a second accounting of a compile-time fact. The agreement gate
-`tests/unit/test_ring_depth_agreement.py` pins planner depth == compiled depth,
-and that pin is the whole of the invariant (coverage-closure H3).
-
-## <a id="clock-stream"></a>A4. The `LeafMassDecay` clock stream
+## <a id="clock-stream"></a>A3. The `LeafMassDecay` clock stream
 
 `c[t,s] = prod_l p_write_stored[t, d_l(s)]` (spec §2), staged by
 `build_clock_stream`. That is a **separate builder from the schedule**, so the
-STORED tensor can never key a tile bitmap (P5.20.5 finding 2). `nullptr` under
-`decay = None`.
+STORED tensor can never key a support decision (P5.20.5 finding 2). `nullptr`
+under `decay = None`.
 
 The product runs over ALL levels including `l < j`: the clock is an exponent, so
 a fixed level's factor does not hoist into the row scale the way the read and
 write factors do.
 
-## <a id="support-word"></a>A5. `read_tok_bits` / `write_tok_bits` — the sole support authority
+## <a id="support-word"></a>A4. `read_tok_bits` / `write_tok_bits` — the sole support authority
 
-§4's SUPPORT WORD, materialized: `[BH, n_tiles, total_rows]`, bit `t` = token
-`tile * BT + t` (`BT <= 32`, spec §6). Same level-digit rows as `read_bits`, one
-granularity finer — `read_bits` is literally its tile reduction, built from it —
-but TILE-MAJOR, so one visit reads one contiguous slab.
+§4's SUPPORT WORD, materialized: `[BH, n_twords, total_rows]`, bit `t` = token
+`word * 32 + t` — the 32-token MACHINE WORD is the metadata granule, so a
+membership visit reads one contiguous slab. WORD-MAJOR, not tile-major: the
+executor is a streamed scan over the token axis, not a tile-candidacy filter, so
+there is no coarser structure for this array to be a reduction of.
 
-**This is the sole support authority.** §3 step 2's gather, step 1's FIXED-level
-token validity, and the staging predicate all read it, and no MEMBERSHIP decision
-is derived from an amplitude magnitude (harvest.md §23.2 ruling 1;
-conformance audit item 3 / S1 — the §3 step 2–3 inversion).
+**This is the sole support authority.** The membership scan's AND of the owner's
+fixed-level rows against the token-granular slice union, and every leaf-axis
+consumer downstream of a live group, read it, and no MEMBERSHIP decision is
+derived from an amplitude magnitude (harvest.md §23.2 ruling 1; conformance
+audit item 3 / S1 — the §3 step 2–3 inversion).
 
-Precisely (Gate D): amplitude comparisons do exist in the kernel, at its
-`if (out != 0.0f)` split-K emission sites. Those are PERFORMANCE SKIPS ON A VALUE — adding `0.0f` is the identity, so
-including the term is a no-op and the test is over-inclusion-safe in the
-direction that matters. None of them decides membership, which is what this word
-is the authority for. This is the
+Amplitude comparisons do exist in the kernel, at the split-K emission sites
+([B14](#split-k-emission)). Those are PERFORMANCE SKIPS ON A VALUE — adding
+`0.0f` is the identity, so including the term is a no-op and the guard is
+over-inclusion-safe in the direction that matters. None of them decides
+membership, which is what this word is the authority for. This is the
 [self-masking theorem](../architecture/self-masking-theorem.md) in its
 "trustless flag" form.
 
-## <a id="slice-union-tok"></a>A5c. `slice_union_tok` — the token-granular slice union (ABI v3)
+## <a id="slice-union-tok"></a>A5. `slice_union_tok` — the token-granular slice union
 
-`[BH, n_slices, n_tiles]` int32: bit `t` of `[bh, s, tile]` = "some digit of slice `s` at
-the boundary level is read- OR write-live at token `tile * BT + t`". The tile-granular
-`read_union`/`write_union` one granularity finer, sides OR'd (union-visit semantics), and
-derived from the SAME `token_bits` authority in `build_schedule`, so the two cannot
-disagree. Its one consumer is the token-gather ballot (consumer_kernel.md#token-gather):
-membership = the owner's fixed-level `tok_bits` rows AND'd per side, OR'd, AND this word.
-`p.token_gather` (launch-uniform, structural: both routing sides carry the registry's
-`exact_zeros`) selects the gathered walk; the tensor is bound and checked unconditionally.
+`[BH, n_slices, n_twords]` uint32 (schedule ABI v4, the card's two union forms,
+form (a)): bit `t` of word `[bh, slice, word]` = "some digit of the slice at the
+boundary level is read- OR write-live at token `word * 32 + t`". Derived from
+the same `read_tok_bits`/`write_tok_bits` authority in `build_schedule`, so it
+cannot disagree with it. This is the membership scan's coarse term: the fine
+terms it ANDs under are the owner's fixed-level `read_tok_bits`/`write_tok_bits`
+rows. The scan streams `(j + 1)` words per 32-token word — one per fixed level
+plus this one — at static addresses; there is no tile-candidacy question and no
+coarse pre-filter above word granularity, because an intersection does not
+survive coarsening.
 
-## <a id="amp-dtype"></a>A5b. Amplitude/value storage dtype — per level role, per arm
+## <a id="atom-union-bytes"></a>A5a. `read_atom_bytes` / `write_atom_bytes` — the per-token atom-granule union
+
+`[BH, n_slices, T]` uint8 (schedule ABI v4, form (b)): bit `q` of byte
+`[bh, slice, token]` = "some leaf of atom `q` of this slice is live at this
+token on this side" (an atom is `kMmaKQuantum` consecutive leaves; at most
+`BC / 16` bits are used). These are the walk's per-side masks: at ballot time
+the executor ORs a group's up to 16 members' bytes into per-side atom masks, and
+the compact-into-registers atom walk visits only the atoms either mask sets.
+`mask == FULL` selects the statically-unrolled dense arm, so dense pays no mask
+instructions.
+
+Derived host-side alongside `slice_union_tok`, from the same support authority
+(one summaries pass, consistency by construction). The per-(owner, word)
+pre-OR'd form is FORBIDDEN by the materialization rule — the per-visit OR is the
+kernel's job, not the schedule's.
+
+## <a id="amp-dtype"></a>A6. Amplitude/value storage dtype — per level role
 
 The `amp_read` / `amp_write` / `v` pointers are type-erased (`const void*`)
-because their HBM storage dtype is decided per LEVEL ROLE and per instantiation
-(the P09 bf16-memory family), with zero new template axes — the kernel derives
-`AmpRT` / `AmpWT` from the existing `READ_PREC` / `FOLD_PREC` / `DECAY` /
-`GLOBAL` parameters exactly the way `StageT` and `GmT` are derived:
+because their HBM storage dtype is decided per LEVEL ROLE, not per
+instantiation — there is no precision or normalization template axis left to
+carry it:
 
 | stream | dtype rule |
 |---|---|
-| SPANNED amplitude levels (`l >= j`) and `v` | bf16 on the `kBf16` + `GLOBAL` + `!DECAY` arms; fp32 everywhere else |
+| SPANNED amplitude levels (`l >= j`) and `v` | bf16, unconditionally — the one precision story |
 | FIXED amplitude levels (`l < j`) | always fp32 — they feed the per-token row scales, whose error is uniform over the whole output row and never cancels (Option B) |
-| clock (`amp_clock`) | always fp32 — an exponent (see [A6](#dials-fp32) and `consumer_kernel.md#clock-prefix-fp32`) |
+| clock (`amp_clock`) | always fp32 — an exponent (see [A7](#dials-fp32) and `consumer_kernel.md#clock-prefix-fp32`) |
 | `num` / `den` / `state` | always fp32 — accumulators ([fp32 accumulators](../architecture/fp32-accumulators.md)) |
-| `y` | the divide epilogue stores the arm's output format on the narrowed arms; the `raw` arm returns `num` uncast |
+| `y` | the divide epilogue's bf16 output; the divide itself runs fp32 over the fp32 accumulators |
 
-The narrowing rationale: on the bf16 arm these streams feed operands the MMA
-narrows to bf16 anyway, so the fp32 store carried bytes, not precision. The two
-arm carves are MEASURED, not preferred (`workflows/perf/p09_bf16_family.md`):
-the DECAY arms' clock/panel registers sit at the allocator wall (the ratchet
-found in-loop spill on every bf16+decay offender under narrowed storage), and
-the RAW arm has no `num/den` ratio to cancel the stacked roundings (its worst
-tier-1 topology measured past `BF16_RTOL` on tail seeds).
+Each kernel use site types its own pointer from its loop's level role, so a
+missed site is a compile error. The cast to storage dtype happens in the
+SCHEDULE BUILDER, strictly below support selection; the host binding
+(`amp_class_ptr` in `consumer.cu`) hard-checks every bound tensor's dtype
+against the role-implied one — a mismatch is a loud error, never a silent cast.
 
-The cast happens in the SCHEDULE BUILDER, strictly below support selection
-(`Plan.level_amp_dtype`; gate I6-B §2.B4 pins the ordering), and the host
-binding hard-checks every tensor's dtype against the precision-implied one — a
-mismatch is a loud error, never a silent cast. The oracle gate for the whole
-family is `tests/tier1_semantics/test_bf16_family_gate.py`.
-
-## <a id="dials-fp32"></a>A6. `dials` — fp32, never bf16
+## <a id="dials-fp32"></a>A7. `dials` — fp32, never bf16
 
 Flattened `LeafMassDecay` dials, `[H, total_rows]`, level `l` at `row_offset[l]`.
 `rate[s] = prod_l delta_l[d_l(s)]` — a plain product of DIALS (spec §2), not V2's
@@ -156,9 +155,10 @@ catastrophically cancelling, and `log1pf` cannot repair a cancellation that has
 already happened inside the product. See
 [fp32 accumulators](../architecture/fp32-accumulators.md).
 
-## <a id="state-layout"></a>A7. `state` — the unpaged and paged layouts, and the atom
+## <a id="state-layout"></a>A8. `state` — the unpaged and paged layouts, and the atom
 
-Unpaged: `[BH, N, DV (+1 mass column under global)]`; atom `q` of owner `o` of
+Unpaged: `[BH, N, cols]` where `cols = DV + 1` — the mass column is
+UNCONDITIONAL now, not a `global`-only shape. Atom `q` of owner `o` of
 batch-head `bh` starts at row `bh * N + o * BC + q * MMA_K_QUANTUM`.
 
 Paged (spec §4.5): `[physical_slots, MMA_K_QUANTUM, cols]`; that same atom starts
@@ -170,7 +170,7 @@ per-launch `BC` never rebuilds the arena — a `BC`-keyed page would. An
 owner is therefore `QPO = BC / MMA_K_QUANTUM` independently paged runs, and
 `atom_row_base` in `consumer_kernel.cuh` is the one place that arithmetic lives.
 
-## <a id="page-table"></a>A8. `page_table` and why paging is bitwise invisible
+## <a id="page-table"></a>A9. `page_table` and why paging is bitwise invisible
 
 `[BH, atoms_per_bh]` int32, or `nullptr` for the unpaged path. `kAbsentPage`
 (`-1`) means the atom has no committed slot, which can only happen for an atom
@@ -183,20 +183,25 @@ BITWISE INVISIBLE rather than approximately equivalent, and it is the
 [self-masking theorem](../architecture/self-masking-theorem.md)'s
 identity-store consequence used directly.
 
-## <a id="work-list"></a>A9. §6.4 sequence parallelism — the flat work list
+## <a id="work-list"></a>A10. §6.4 sequence parallelism — the flat work list
 
 The grid is a FLAT `(owner, segment)` work list: `owners` carries the
 `(bh, owner)` pair as always, and `work_seg` / `work_nseg` / `work_slot` carry
 the segment coordinates, one entry per work item, in the same order.
 
-Segment `s` of an owner split `nseg` ways owns the contiguous TILE range
-`[s*n_tiles/nseg, (s+1)*n_tiles/nseg)`. A `nullptr` here is `P = 1` everywhere:
-`seg = 0`, `nseg = 1`, the range is the whole token axis, and every expression
-collapses to the unsplit kernel WITHOUT reading memory — which is what keeps
-`P = 1` bit-identical, and `P = 1` is the primary benchmarked configuration
-(spec §6.4).
+Segment `s` of an owner split `nseg` ways owns the contiguous WORD range
+`[s*n_twords/nseg, (s+1)*n_twords/nseg)` over the scan stream — `w_lo`/`w_hi` in
+`consumer_kernel.cuh`, computed inline from `p.n_twords`. There is no separate
+segment-mask header: a segment's range is arithmetic over the same
+32-token-word axis the membership scan already streams, not a materialized
+tile bitmap.
 
-## <a id="workspace"></a>A10. The partial-state workspace, and why the stash is correctness
+A `nullptr` here is `P = 1` everywhere: `seg = 0`, `nseg = 1`, the range is the
+whole token axis, and every expression collapses to the unsplit kernel WITHOUT
+reading memory — which is what keeps `P = 1` bit-identical, and `P = 1` is the
+primary benchmarked configuration (spec §6.4).
+
+## <a id="workspace"></a>A11. The partial-state workspace, and why the stash is correctness
 
 LAUNCH-SCOPED and NOT the §7.1 arena. The arena's contract is persistent
 cross-chunk state pages only, and mixing a transient lifetime into it would put
@@ -205,7 +210,7 @@ this (a plain torch tensor, sized by the plan); what is unified is the planner's
 LEDGER, not the allocator.
 
 A split owner owns `nseg` slots starting at `slot[owner]` — §6.4's amended
-`P * BC * d_v` peak — laid out so that pass 3's segment `p` reads exactly
+`P * BC * cols` peak — laid out so that pass 3's segment `p` reads exactly
 `slot[owner] + p`:
 
 ```
@@ -229,25 +234,20 @@ That failure is the sharp edge of the schedulability payoff in
 the work list a free permutation, and a structure that is only correct under one
 permutation is therefore a bug, not a convention.
 
-## <a id="boundary-slot"></a>A11. A boundary slot carries two things in the same bytes
-
-Deliberately, at two different points of the three-pass life:
-
-| after | contents |
-|---|---|
-| pass 1 | the SPARSE written-leaf summary — `ws_count[slot]` entries, leaf ids in `ws_leaf`, per-leaf `A` in `ws_scale`, per-leaf `B` in the first `ws_count` rows of `ws_state` |
-| pass 2 | the DENSE accumulated boundary state, leaf-indexed, written in place over the summary the scan has just consumed |
-
-§6.4 states both: the summary is normatively sparse (its traffic scales with
-realized writes), and the accumulated boundary pass 3 reads is dense. The stash
-slot uses only `ws_state`; its `ws_scale` / `ws_leaf` / `ws_count` entries are
-neither written nor read (the scan's fold indexes `slot[owner] + 1 + s`).
+A boundary slot carries two things in the same bytes, at two different points of
+the three-pass life: after pass 1 it holds the SPARSE written-leaf summary
+(`ws_count[slot]` entries, leaf ids in `ws_leaf`, per-leaf `A` in `ws_scale`,
+per-leaf `B` in the first `ws_count` rows of `ws_state`); after pass 2 it holds
+the DENSE accumulated boundary state, leaf-indexed, written in place over the
+summary the scan has just consumed. The stash slot uses only `ws_state`; its
+`ws_scale` / `ws_leaf` / `ws_count` entries are neither written nor read (the
+scan's fold indexes `slot[owner] + 1 + s`).
 
 ## <a id="pass-mode"></a>A12. `pass_mode` is launch-uniform
 
 Every CTA in a launch has the same value, so the branches it drives are uniform
-and are STRUCTURE, not a distributional property — the same status as `is_write`.
-This is the branch-on-structure rule
+and are STRUCTURE, not a distributional property — the same status as
+`is_write`. This is the branch-on-structure rule
 ([planner.md](../architecture/planner.md)) applied to a kernel-internal branch.
 
 `PassMode`:
@@ -256,8 +256,8 @@ This is the branch-on-structure rule
   LAST segment publishes the owner's final state. At `P = 1` this is the whole
   kernel and is unchanged.
 - `kPassSummary = 1` — **pass 1**. Entry state ZERO, no read emitted (a read-only
-  tile cannot move the state, and a read emitted here would be double-counted by
-  pass 3), publishes the sparse `(A, B)`.
+  segment cannot move the state, and a read emitted here would be
+  double-counted by pass 3), publishes the sparse `(A, B)`.
 
 Pass 2 is `scan_kernel`, a separate launch, so only the two consumer passes appear
 in the enum. `ScanParams` composes the per-segment summaries into the accumulated
@@ -284,7 +284,7 @@ sites, not the revival of a switch that is already there. See
 - the launch dispatch `launch_consumer`, which resolves the plan's structural
   axes to ONE template instantiation of `consumer::consumer_forward_kernel`;
 - the two non-template helper kernels, `scan_kernel` (§6.4 pass 2's ordered
-  fold) and `divide_kernel` (`global`'s `num/den` epilogue);
+  fold) and `divide_kernel` (the `num`/`den` epilogue);
 - the driver-backed residency and footprint queries, and the arch-table check;
 - the pybind surface.
 
@@ -292,10 +292,28 @@ The kernel itself is [`consumer_kernel.md`](consumer_kernel.md), which is also
 where the §3/§5 algorithm lives. This file deliberately does not restate it: two
 descriptions of one kernel is one that can go stale.
 
-`rola_consumer_forward` consumes exactly the Stage 3 schedule
-(`rola/planner/schedule.py`) plus the value stream and the dense state, and
-returns `(y, final_state, num, den)`. Every argument is checked loudly; there is
-no silent shape coercion and no CPU fallback.
+`rola_consumer_forward`'s actual signature (`consumer.cu`, `rola_consumer_forward`):
+
+```
+rola_consumer_forward(
+    amp_read, amp_write, amp_clock?, dials?,
+    read_tok_bits, write_tok_bits, slice_union_tok,
+    read_atom_bytes, write_atom_bytes, owners, g_write, v, state, page_table?,
+    level_stride, level_modulus, level_row_offset, level_width, owner_stride,
+    first_spanned_level, slice_digits, n_slices, owners_total, n_heads, BC, eps,
+    # §6.4, all-or-nothing (14 tensors or none):
+    work_seg?, work_nseg?, work_slot?,
+    summary_owners?, summary_seg?, summary_nseg?, summary_slot?,
+    scan_owners?, scan_nseg?, scan_slot?,
+    ws_state?, ws_scale?, ws_leaf?, ws_count?,
+) -> (y, final_state, num, den)
+```
+
+There is no `BT` argument, no `global_norm` argument and no `mma_precision`
+argument. `decay` is inferred from `dials.has_value()`; `D` is inferred from
+`amp_read.size()`; `BC` is an explicit `int64_t`, checked against the plan
+surface ([B11](#plan-surface)) rather than derived. Every argument is checked
+loudly; there is no silent shape coercion and no CPU fallback.
 
 ## <a id="one-consumer"></a>B1. ONE consumer
 
@@ -326,7 +344,9 @@ reachable (the driver takes `P` from the plan), it is tested
 split wins — the same standing as `panel` in
 [`intra_panel.md`](intra_panel.md#measured-status). Deleting it would delete a
 measured-and-kept capability. [`DELETIONS.md`](DELETIONS.md) records it as
-dormant rather than removed.
+dormant rather than removed. The endgame executor re-keys the split onto WORD
+ranges rather than tile ranges; its shape (14 arguments, three passes, the
+stash) is otherwise unchanged by that rewrite.
 
 ## <a id="all-or-nothing"></a>B3. The §6.4 arguments are all-or-nothing
 
@@ -366,7 +386,7 @@ just supplied (A11). That is what keeps the per-boundary cost one slot rather
 than two.
 
 The owner's entry state is addressed exactly as the consumer addresses it (§4.5:
-a page is one `MMA_K_QUANTUM`-leaf ATOM, so an owner is `QPO = BC / 16`
+a page is one `MMA_K_QUANTUM`-leaf ATOM, so an owner is `QPO = BC / MMA_K_QUANTUM`
 independently paged runs), so a paged and an unpaged fold see the same numbers.
 `BC` is a runtime value here, so the per-atom base is resolved per row rather
 than in an unrolled loop; this is pass 2 of a split launch, one CTA per SPLIT
@@ -405,7 +425,7 @@ owner, and the added SPACE is the one slot that takes §6.4's bound from `(P-1)`
 to `P` per split owner. A non-resident owner stashes zeros, which is exactly what
 an unstashed segment-0 read returns, and is the
 [self-masking theorem](../architecture/self-masking-theorem.md)'s identity-store
-consequence again. See A10 for the failure this prevents.
+consequence again. See A11 for the failure this prevents.
 
 ## <a id="arch-table"></a>B7. The arch table is validated against the driver
 
@@ -438,69 +458,54 @@ fallback and is deliberately a plan field, not a hidden default.
 ## <a id="instantiation-matrix"></a>B8. The instantiation matrix, and why every axis is a template
 
 ```
-BT(2) x BC(2) x DV(2) x D(4) x PREC(2) x DECAY(2) x GLOBAL(2)
+BC(2) x DV(2) x D(4) x DECAY(2)  =  32 arms
 ```
 
-Each is a STRUCTURAL plan fact, fixed before launch, with few legal values — the
-standing "branch on structure, not thresholds" rule
-([planner.md](../architecture/planner.md)), and the same status `BT` and `BC`
-have always had. `D` is the topology's level count (spec §1: `1 <= D <= 4`);
-`DECAY` changes which terms exist; `GLOBAL` changes the STATE'S SHAPE (the `+1`
-mass column) and so cannot be a runtime test without making `cols` a runtime
-value in every state address.
+`consumer_forward_kernel<BC, DV, D, DECAY>`: `BC` in `{16, 64}`, `DV` in
+`{32, 64}`, `D` in `{1, 2, 3, 4}` (spec §1: `1 <= D <= 4`), `DECAY` in
+`{false, true}`. There is no `BT` axis, no `PREC` axis and no `GLOBAL` axis —
+those three were the plan surface's precision, tiling and normalization
+knobs and are dead; the mass column and the `num`/`den` divide are
+unconditional now (`cols = DV + 1` always), and the amplitude/value storage
+dtype is a function of level role, not a template choice ([A6](#amp-dtype)).
+Why they died, and the ratchet evidence: `DELETIONS.md`; the axes that
+remain are the ones `tools/gen_shards.py`'s own header names as the survivors.
+
+Each remaining axis is a STRUCTURAL plan fact, fixed before launch, with few
+legal values — the standing "branch on structure, not thresholds" rule
+([planner.md](../architecture/planner.md)). `D` is the topology's level count;
+`DECAY` changes which terms exist.
 
 **There is deliberately no runtime fallback on any of them.** An out-of-range
 value is a hard `TORCH_CHECK`, never a slower path: one comprehensive path ships.
 
 ### The count is measured, not asserted
 
-The number of instantiations is whatever the macro product evaluates to, and the
-authority is the ratification manifest, which carries one entry per
-instantiation keyed by mangled name. Measured on the current tree
-(`tools/manifests/sm_86.json`, identical on `sm_80.json`):
+The number of instantiations is whatever the matrix product evaluates to, and
+the authority is the ratification manifest, which carries one entry per
+instantiation keyed by mangled name. `python tools/ratify.py` recompiles the
+closure and compares; see [`docs/ratification.md`](../ratification.md). A prose
+count in a source comment is a number that rots the first time an axis moves —
+`gen_shards.py`'s `AXES` tuple is the one place the count is defined.
 
-| kernel family | entries |
-|---|---|
-| `consumer_forward_kernel` | 256 |
-| `decode_gemv_kernel` | 32 |
-| `union_forward_kernel` | 32 |
-| `union_backward_kernel` | 32 |
-| **total per architecture** | **352** |
+### The 32 arms are compiled in four shards, not one translation unit
 
-A prose count in a source comment is a number that rots the first time an axis
-moves. `python tools/ratify.py` recompiles the closure and compares; see
-[`docs/ratification.md`](../ratification.md).
-
-### The 256 arms are compiled in eight shards, not one translation unit
-
-The instantiations do not live in this file. They live in eight generated
-translation units under `csrc/rola/src/instantiations/`, partitioned on
-`PREC x GLOBAL x BT` at 32 arms each, and `consumer.cu` reaches them through host
-wrappers it can DECLARE but not define
+The instantiations do not live in this file. They live in four generated
+translation units under `csrc/rola/src/instantiations/` —
+`consumer_decay_bc16`, `consumer_decay_bc64`, `consumer_nodecay_bc16`,
+`consumer_nodecay_bc64`, eight members each — partitioned on `DECAY` then `BC`
+(`tools/gen_shards.py`'s `SHARD_AXIS_PRIORITY`, the shortest prefix of which
+reaches `TARGET_MEMBERS_PER_SHARD = 8`), and `consumer.cu` reaches them through
+host wrappers it can DECLARE but not define
 ([`consumer_launch.md`](consumer_launch.md#shard-only)).
-
-MEASURED, this development host (16 cores, 23 GB), both figures including the
-post-build ratification gate:
-
-| | one translation unit | eight shards |
-|---|---|---|
-| `nvcc` wall for the consumer's arms | 411 s (one process, `--threads=2`) | 8 x ~43 s across `MAX_JOBS` processes |
-| peak resident set per `cicc` | 4.4 GB | 0.61 GB |
-| `consumer.cu` itself | — | 37 s, zero device entries |
-
-The peak-RSS collapse is what raises `MAX_JOBS` from 2 to 7 on this host
-(`tools/build_flags.py` derives it from free RAM), and that multiplies with the
-split rather than adding to it. The full-cycle numbers are in
-[`docs/build.md`](../build.md).
 
 `consumer.cu` emits exactly two device entry points of its own — `scan_kernel` and
 `divide_kernel`, neither a template. If it ever emitted a `consumer_forward_kernel`,
-nothing would be sharded and the compile time would simply stop falling; that is
-what `tools/fatbin_entries.py` refuses.
+nothing would be sharded; that is what `tools/fatbin_entries.py` refuses.
 
 ## <a id="shard-rows"></a>B9. One table, and why the matrix is enumerated once
 
-Four hand-maintained spellings of one 256-element set — a dispatch ladder, a
+Four hand-maintained spellings of one 32-element set — a dispatch ladder, a
 residency ladder, a footprint ladder and a probe translation unit — is a shape that
 drifts without anything failing. It is REFUSED here.
 
@@ -509,7 +514,7 @@ generated from it:
 
 | consumer | what it gets |
 |---|---|
-| the eight shard translation units | 32 explicit instantiations each |
+| the four shard translation units | 8 explicit instantiations each |
 | `instantiations/dispatch_table.inc` | the row blocks, the axis key and the row index |
 | `tools/ratify.py` | the translation units to compile, and the manifest's `shards` block |
 
@@ -519,10 +524,11 @@ pair that identifies where it came from, `shard` and `src_key`.
 
 **EVERY RESOLUTION IN THE DISPATCH TRANSLATION UNIT IS ONE LOOKUP.** `dispatch_key`
 turns a [choice](#dispatch-choice) into a mixed-radix index over the axes' VALUE
-POSITIONS and `kRowByKey` turns that index into a row:
+POSITIONS, in declaration order (`BC`, `DV`, `D`, `DECAY`), and `kRowByKey` turns that
+index into a row:
 
 ```
-key = ((((((iBT * 2 + iBC) * 2 + iDV) * 4 + iD) * 2 + iPREC) * 2 + iDECAY) * 2 + iGLOBAL)
+key = ((iBC * 2 + iDV) * 4 + iD) * 2 + iDECAY
 row = kRowByKey[key]            // nullptr if the binary has no such arm
 ```
 
@@ -557,9 +563,9 @@ symbol, and the post-link gate names its tuple three ways.
 
 ## <a id="dispatch-choice"></a>B9.1. What the table consumes: a CHOICE
 
-`DispatchChoice` is one value per matrix axis and nothing else — no statistics, no
-thresholds, no device facts. Something upstream DECIDES (the planner's selector, a
-test, a debug pin) and the table RESOLVES.
+`DispatchChoice{BC, DV, D, decay}` is one value per matrix axis and nothing else — no
+statistics, no thresholds, no device facts. Something upstream DECIDES (the planner's
+selector, a test, a debug pin) and the table RESOLVES.
 
 The separation is the point rather than a tidiness: the selector is knowingly interim
 (`rola/planner/select.py` labels it so), and the table must not acquire any of its
@@ -619,9 +625,9 @@ binary does not define.
 
 ## <a id="occupancy-axes"></a>B10. Residency is per-instantiation, so the query has axes
 
-`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC`,
-`BT` and `DV` because a single reported number would over-promise on one arm and
-under-report another. The whole point of deriving `__launch_bounds__` from
+`rola_consumer_occupancy` asks the DRIVER, and it takes `decay`, `BC` and `DV`
+because a single reported number would over-promise on one arm and under-report
+another. The whole point of deriving `__launch_bounds__` from
 `consumer_smem_bytes` is that a decay instantiation which regressed the budget
 would drop its OWN bound rather than silently over-promise; this is how that is
 checked from Python rather than asserted.
@@ -632,41 +638,30 @@ Why each axis is on the query:
 |---|---|
 | `DECAY` | three extra `[BC]` vectors |
 | `BC` | which term BINDS: at `BC = 64` shared memory binds (3 CTAs), at `BC = 16` the REGISTER FILE does (4) |
-| `BT` | `BT = 32` doubles the y-fragment count (register term) and grows `WT`/`Gm` (SMEM term) |
-| `DV` | `d_v = 32` halves the state block |
+| `DV` | `DV = 32` halves the state block |
 
-A residency claim about "the kernel" that quoted only `BC = 64, BT = 16,
-d_v = 64` would be a claim about an eighth of the matrix.
+A residency claim about "the kernel" that quoted only one `(BC, DV)` pair would
+be a claim about a quarter of the matrix.
 
 `D` is NOT a query axis: it changes only the `[D][BC]` digit table (256 B per
-level), and the query is fixed at `D = 2`, the at-scale cell's topology depth, so
-the number is reported for the shape actually measured rather than for a nominal
-worst case. `GLOBAL` and `PREC` are likewise pinned to the plan point the planner
-prices: `global`, and the production precision.
+level), and the query is fixed at `D = 2` (`kQueryD` in `consumer.cu`), the
+at-scale cell's topology depth, so the number is reported for the shape actually
+measured rather than for a nominal worst case.
 
 Both queries resolve a `ShardRow` (B9) and read one field of it —
 `occupancy()` calls the driver through the shard's wrapper, because post-shard the
 kernel ADDRESS lives in the shard; `smem_bytes` is a `constexpr` the shard computed
-at compile time. The wrapper is instantiated for all 256 arms rather than the 16
+at compile time. The wrapper is instantiated for all 32 arms rather than the 4
 queried, which is why adding a query axis needs no matching change in the shards
 ([`consumer_launch.md`](consumer_launch.md#residency)).
 
 ## <a id="plan-surface"></a>B11. The supported shape surface
 
-`BT in {16, 32}`, `BC in {16, 64}`, `d_v in {32, 64}` — and these are the
-planner's own supported sets (`_SUPPORTED_BT`, `_SUPPORTED_BC`, `_SUPPORTED_DV`),
-so the kernel instantiates exactly the configurations a plan can name: **no shape
-a plan can select is refused, and no shape it cannot select is compiled.**
-`launch_consumer`'s `TORCH_CHECK` is the single authority for that surface.
-
-`mma_precision` selects BOTH GEMM sites together (RULING 1 revised): `"bf16"` is
-the production point, `"tf32x3"` the exactness-gate point against the fp64
-oracle. Both are instantiated. It is a numeric FORMAT axis stamped by the plan
-(findings D4.3) and resolved once — not a tolerance knob and not a density
-branch. Both decay arms honour it: under `LeafMassDecay` a tile reduces to the
-`decay = None` tile through the panel factorization
-([`intra_panel.md`](intra_panel.md)), so the same two GEMM sites take the same
-stamped format and no stamped field is ignored on either arm.
+`BC in {16, 64}`, `DV in {32, 64}` — and these are the planner's own supported
+sets, so the kernel instantiates exactly the configurations a plan can name:
+**no shape a plan can select is refused, and no shape it cannot select is
+compiled.** `launch_consumer`'s `TORCH_CHECK` is the single authority for that
+surface; `p.D` is checked separately against `[1, 4]`.
 
 ## <a id="state-derivation"></a>B12. Under paging, `N` is derived rather than read
 
@@ -678,21 +673,19 @@ which is the definition: `N = owners_total * BC`.
 
 ## <a id="support-shape-check"></a>B13. The support word is shape-checked into place
 
-§4's support word is TILE-MAJOR, and it is checked against the tile bitmap it is
-the refinement of (same `total_rows` level-digit rows) and against the amplitude
-stream's tile axis. A stale or mis-shaped schedule — one built at a different
-`BT` — therefore cannot reach the gather. `BT` itself is checked into `[1, 32]`
-because the support word carries one bit per token of a tile (spec §6).
+§4's support word is WORD-MAJOR, and it is checked against the schedule's row
+count (same `total_rows` level-digit rows) and against the amplitude stream's
+word axis. A stale or mis-shaped schedule cannot reach the membership scan.
 
 ## <a id="split-k-emission"></a>B14. The split-K emission sites
 
 The kernel emits its readout and its intra term as separate split-K atomics
 guarded by `if (out != 0.0f)`. Two facts about that guard, both load-bearing:
 
-1. It is a PERFORMANCE SKIP, not a membership decision (A5) — licensed by the
+1. It is a PERFORMANCE SKIP, not a membership decision (A4) — licensed by the
    [self-masking theorem](../architecture/self-masking-theorem.md).
 2. It is what makes the intra term a second atomic per (token, channel) on a
-   mixed tile, which is cause #1 in
+   mixed group, which is cause #1 in
    [`intra_panel.md`](intra_panel.md#measured-status) for `panel` measuring
    slower than the walk. Fusing the intra term into the readout epilogue is the
    standing follow-up for BOTH lowerings.
