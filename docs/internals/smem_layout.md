@@ -75,13 +75,13 @@ what keeps the closed form honest to it.
 ## <a id="reg-budget"></a>4. `consumer_reg_budget` — a MEASURED kernel fact, not an architecture fact and not a threshold
 
 ```
-consumer_reg_budget(BC, decay, DV) = BC >= 64 ? 80 : (decay ? 80 : 64)
+consumer_reg_budget(BC, decay, DV, D) = (BC >= 64 || decay || D >= 4) ? 80 : 64
 ```
 
 This is the register working set `ptxas` reports for the kernel's GEMM inner loop
-when it is given slack, keyed on the two axes the working set MEASURABLY varies with
-— `BC` and `DECAY` — with every number read off `-Xptxas -v` and the MAXIMUM per key
-taken, because a too-small budget is bought back by SPILLING (the conservative
+when it is given slack, keyed on the axes the working set MEASURABLY varies with
+— `BC`, `DECAY` and `D` — with every number read off `-Xptxas -v` and the MAXIMUM per
+key taken, because a too-small budget is bought back by SPILLING (the conservative
 direction is well defined: over-stating a budget only understates the residency the
 register file admits, under-stating it makes the allocator spill to buy the
 difference). `DV` does NOT key it — the parameter is accepted and ignored
@@ -95,6 +95,17 @@ bound at every occupancy the register term could buy, so a slack budget costs
 nothing); at `BC = 16` the decay arms carry the clock prefix, the survival panels and
 the two coefficient folds on top of the same GEMM and need the wide budget too, while
 the no-decay arms clear the working set at 64.
+
+`D` joined the key with the schedule-ring producer: level count is a structural
+template axis, and the producer's cook working set grows with it — one fixed-level
+bit row per level, per side, per refill. Measured over all 32 arms on both
+architectures: at `D <= 3` the `BC = 16, decay = 0` arms fit 64 with zero spill; at
+`D = 4` they do not, and moving the cook's carried state into
+[SMEM](../internals/consumer_kernel.md#producer-state) does not close it further —
+the cook is already resting there. The cost is recorded rather than hidden: 80 puts
+`by_regs` at `65536 / (256 * 80) = 3`, so the `D = 4, BC = 16, decay = 0` arms run 3
+CTAs/SM where 64 gave 4, which is worth about -7% on the `topo-D4-w8x8x8x16-BC16`
+wall.
 
 Reproduce with `python tools/ratify.py --census`, which compiles the shipped
 instantiation shards and reports per structural key; if the kernel's inner loop
@@ -123,14 +134,14 @@ on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_
 every one is the formula evaluated:
 
 ```
-BC=16, DV=32, D=1, DECAY=false   smem = 5,744 B   reg_budget = 64
-  by_smem    = 102400 / (5744 + 1024)  = 15
+BC=16, DV=32, D=1, DECAY=false   smem = 6,604 B   reg_budget = 64
+  by_smem    = 102400 / (6604 + 1024)  = 13
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 64)      = 4
-  ctas_for_residency = min(15, 6, 4) = 4
+  ctas_for_residency = min(13, 6, 4) = 4
 
-BC=64, DV=64, D=2, DECAY=true    smem = 29,236 B  reg_budget = 80
-  by_smem    = 102400 / (29236 + 1024) = 3
+BC=64, DV=64, D=2, DECAY=true    smem = 30,092 B  reg_budget = 80
+  by_smem    = 102400 / (30092 + 1024) = 3
   by_threads = 1536 / 256              = 6
   by_regs    = 65536 / (256 * 80)      = 3
   ctas_for_residency = min(3, 6, 3) = 3
@@ -166,7 +177,6 @@ body's pointer arithmetic follows this exact sequence):
 | region | extent | bytes | what it is |
 |---|---|---|---|
 | `S` | `[BC][DV+4]` fp32 | `BC*(DV+4)*4` | the STATE, resident for the owner's whole run. Pitch `SP = DV+4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)) |
-| `sr`, `sw` | `2 * [kGT]` fp32 | `2*16*4 = 128` | the §3 step-3 per-token read/write row scales |
 | `den` | `[kGT]` fp32 | `16*4 = 64` | the mass-column denominator accumulator (unconditional — see [below](#mass-col)) |
 | `dig` | `[D][BC]` int | `D*BC*4` | per-owner hoisted leaf digits ([`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
 | `WT` | `[BC][kWtPitch]` bf16, `align4` | `align4(BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGT+8 = 24` ([below](#stage-format)) |
@@ -175,7 +185,9 @@ body's pointer arithmetic follows this exact sequence):
 | `Gm` | `[kGT][kGT+8]` bf16 | `16*24*2 = 768` | the causal effective-score block, pitch `GMP = kGT+8 = 24` |
 | `log_keep`, `p_ref`, `s0` | `3 * [BC]` fp32, `DECAY` only | `DECAY ? 3*BC*4 : 0` | `DECAY`'s three per-leaf vectors |
 | `ctl` | `ctl_words(BC)` int | `3*4 = 12` | the item-stream control block, `kCtlFold0+1` — ONE fold cursor ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
-| `t_idx` + `g_scan` | `(kGT+8+D)` int | `(16+8+D)*4` | the group's token list plus the group assembler's cross-visit carry and per-visit atom masks — SMEM so no scheduler state is register-live across the visit body |
+| `g_ring` | `kSchedSlots * kSchedSlotInts` int | `kSchedSlots*(kGT+4)*4` | the [cooked schedule ring](#sched-ring): `kSchedSlots` group descriptors, each the group's `kGT` ascending token indices plus `gN`/read-mask/write-mask/flags |
+| `g_up` | `kSchedSlots * 2 * kGT` fp32 | `kSchedSlots*2*16*4` | the ring's per-owner [upper-product](consumer_kernel.md#upper-product) pairs — `sr`/`sw`, cooked beside the member word |
+| producer cursor state | `(8 + 5*32)` int | `168*4 = 672` | the [producer's cursor](consumer_kernel.md#producer-state) (7 uniform scalars, 1 pad) and its 5 32-lane cook planes — rests here between cooks so no scheduler state is register-live across the visit body |
 
 `cols = DV + 1` is unconditional (the mass column always exists — normalization is no
 longer a template axis), which is why `S`'s row EXTENT above is `DV + 4` regardless:
@@ -187,15 +199,17 @@ column's one extra live column within it.
 cross-checked against `consumer_smem_bytes` in Python):
 
 ```
-BC=16, DV=32, D=1, DECAY=false:
-  S=2304  sr/sw=128  den=64  dig=64  WT=768  Vw∪clk=1024
-  Rf=512  Gm=768  decay-extra=0  ctl=12  t_idx+g_scan=100
-  total = 5,744 B  (~5.6 KiB)
+BC=16, DV=32, D=1, DECAY=false (kSchedDepth=1, kSchedSlots=2):
+  S=2304  den=64  dig=64  WT=768  Vw∪clk=1024
+  Rf=512  Gm=768  decay-extra=0  ctl=12
+  g_ring=160  g_up=256  producer-state=672
+  total = 6,604 B  (~6.5 KiB)
 
-BC=64, DV=64, D=2, DECAY=true:
-  S=17408  sr/sw=128  den=64  dig=512  WT=3072  Vw∪clk=4352
-  Rf=2048  Gm=768  decay-extra=768  ctl=12  t_idx+g_scan=104
-  total = 29,236 B  (~28.6 KiB)
+BC=64, DV=64, D=2, DECAY=true (kSchedDepth=1, kSchedSlots=2):
+  S=17408  den=64  dig=512  WT=3072  Vw∪clk=4352
+  Rf=2048  Gm=768  decay-extra=768  ctl=12
+  g_ring=160  g_up=256  producer-state=672
+  total = 30,092 B  (~29.4 KiB)
 ```
 
 These are the same two shapes [the residency section](#residency) plugs into
@@ -210,23 +224,35 @@ conditional, and `den` is allocated on every arm for the same reason. A run that
 needed the mass column still pays 4 bytes/leaf-row for it and 64 B for `den` — deleting
 the axis deleted the branch, not the column.
 
-### <a id="atom-masks"></a>The group scheduler's SMEM block
+### <a id="sched-chunk"></a><a id="sched-ring"></a>The schedule ring's SMEM block
 
-`t_idx[0..kGT)` holds the group's gathered GLOBAL token indices, ascending, written by
-warp 0 at ballot time. `g_scan[0..6+D)` is the ENTIRE cross-visit state the membership
-scan and group assembler carry: `[0]` fill count, `[1]` the scan's current word,
-`[2]`/`[3]` the split word's read/write remainder (`fr`/`fw`), `[4]` the member-word
-remainder, `[5]` group flags (bit 0 = read-live, bit 1 = write-live), `[6..6+D)` the
-scan's per-level fixed-row indices (hoisted once so the per-word refill costs two SMEM
-loads per fixed level, never a `base[]` re-derivation inside the scan loop). The
-visit's read/write ATOM MASKS (`rmask`/`wmask`) are NOT carried in `g_scan` (Change 1,
-`8675f95`): every thread rebuilds them redundantly in registers each visit, word-wise
-from `read_atom_bits`/`write_atom_bits` against the ballot's `taken` word — there is
-nothing to publish across threads for them, unlike the fields above. Putting the
-cross-visit fields in SMEM rather than registers is what keeps no scheduler state
-register-live across the visit body — every thread reloads the carry after the
-previous visit's end barrier and only tid 0 stores the update, behind the group-entry
-barrier.
+Warp 0 (the [producer](consumer_kernel.md#producer)) is the ONLY warp that touches
+`read_tok_bits`/`write_tok_bits`/`read_atom_bits`/`write_atom_bits`: it cooks one
+`kSchedChunkWords`-word chunk of the membership scan at a time — one 32-token machine
+word per lane of the producer warp, `kSchedChunkWords == 32` — entirely in registers
+(the AND of the owner's fixed-level rows and the ballot that finds the chunk's live
+words), then ballots members into a group and publishes a COOKED GROUP DESCRIPTOR
+into `g_ring`, one of `kSchedSlots = kSchedDepth + 1` slots
+([`consumer_kernel.md#sched-ring`](consumer_kernel.md#sched-ring)). Every consumer
+warp reads a descriptor rather than deriving it: this SMEM block is bought by the
+consumption multiplicity that earns it, one writer against `n_atoms + 1` readers.
+
+`g_ring[slot]` is `kSchedSlotInts = kGT + 4` ints: the group's `kGT` gathered token
+indices ascending, then `gN` (member count, `0` = stream end), the read atom mask, the
+write atom mask, and the side flags. `g_up[slot]` is the matching pair of `kGT`-float
+[upper products](consumer_kernel.md#upper-product), `sr` then `sw`, cooked in the same
+pass.
+
+The producer's OWN cursor (word cursor, chunk base, live-word mask, selected word,
+remainder — 7 scalars, uniform across the producer warp) and its cook planes (5
+32-lane arrays: the cooked chunk's `fr`/`fw`/`member` words and the selected word's
+read/write atom-bitlist rows) rest in a third SMEM block between cooks
+([`consumer_kernel.md#producer-state`](consumer_kernel.md#producer-state)) rather than
+in registers, for the measured reason that governs all scheduler state here: none of
+it may be register-live across the visit body, where it would compete with the four
+GEMMs' working set. Every reload happens at the point
+of use inside the next cook, and the ring's publication rides the end-of-visit
+`__syncthreads()` that already exists — there is no separate group-entry barrier.
 
 ## <a id="vw-clk-union"></a>11. The `Vw` / `clk` union, and why it is sized in BYTES rather than elements
 

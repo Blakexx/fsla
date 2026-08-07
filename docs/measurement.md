@@ -53,8 +53,13 @@ flag that skips any of them.
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `bench.instruments.settle_clocks()`; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
+| extension identity | `import rola`, then resolve its `__file__` against this checkout's root; **an extension resolved from OUTSIDE this checkout ABORTS the run.** `rola` installs editable into a shared venv, so a probe launched from a worktree can silently import the MAIN tree's compiled extension unless the worktree leads it on `sys.path` — the row would then carry this tree's sha and csrc digest against another tree's kernel, agreeing with itself the way a true negative also would. The resolved path is stamped into every row's `env` regardless |
 | tier | `light` or `landing`, stamped into every row — a light-tier number can never be quoted as a landing one by a reader who did not see the command |
 | ledger write | automatic; there is no path that produces a number without recording where it came from |
+
+An identity that does not describe the measured binary is worse than no identity —
+which is why the extension check runs before the clock settles and before any row
+exists, alongside the tree's sha and csrc digest rather than after them.
 
 ## The record
 
@@ -69,7 +74,7 @@ survive two branches appending — every conflict is "both appended at EOF".
   "probe": "consumer_forward", "probe_version": 1,
   "arm": "topo-D2-w64x64-BC64|global|none",
   "fingerprint": "...",              // sha256(probe, probe_version, arm, gpu, sm, driver, torch, ptxas)
-  "env": { ... },                    // provenance + the settle_clocks() dict + temperatures
+  "env": { ... },                    // provenance + the settle_clocks() dict + temperatures + the resolved extension path
   "source": "cuda_events", "metric": "duration", "unit": "ms",
   "values": [0.0731, 0.0728, ...],   // RAW per-rep samples, IN RUN ORDER
   "paired_with": "...|raw|none", "round": 2,

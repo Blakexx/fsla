@@ -15,6 +15,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+#: AND the repo root, AHEAD of it: `rola` is installed EDITABLE into the shared
+#: venv, so without this a worktree run imports the MAIN tree's extension while
+#: stamping this tree's sha (P11's discarded A/B). `probe.discipline` REFUSES if
+#: the two still disagree.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from probe.cli import main  # noqa: E402
 

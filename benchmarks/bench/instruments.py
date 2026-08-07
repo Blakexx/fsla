@@ -192,7 +192,7 @@ def gather_stats(cell: Cell, fx=None, max_owners=48):
     hidden.
     """
     fx = cell.build() if fx is None else fx
-    plan, sch = cell.plan(norm="global", decay_on=False, prec="bf16", fx=fx)
+    plan, sch = cell.plan(norm="global", decay_on=False, fx=fx)
     if sch is None:
         sch = build_schedule(fx["read_f32"], fx["write_f32"], None,
                                 fx["g_write_f32"], plan)
@@ -281,7 +281,7 @@ def _decay_preamble_ms(cell, fx, decay_temp, reps=9):
     """Median cost of the decay arm's per-call preamble, on this fixture."""
     from rola.planner.schedule import build_clock_stream, leaf_rate_dials, panel_exponent_bound
     decay = LeafMassDecay(dials=fx["dials"][decay_temp])
-    plan, _ = cell.plan(norm="global", decay_on=True, prec="bf16",
+    plan, _ = cell.plan(norm="global", decay_on=True,
                         fx=fx)
     wl = fx["write_f32"]
     ts = []

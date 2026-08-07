@@ -13,11 +13,9 @@ nothing else -- never a second reference, which proves only self-consistency (sp
 """
 from __future__ import annotations
 
-import statistics
-
 from bench.cells import BF16_FOLD_STATE_RTOL, BF16_RTOL, CELLS, GROUPS, RTOL, Cell, skip_share
 from bench.instruments import _decay_preamble_ms
-from bench.pairing import _iqr, _paired_one_kernel, _timed
+from bench.pairing import _paired_one_kernel
 from rola.ops.consumer import _consumer_forward
 from rola.ops.naive import naive_rola
 from rola.routing.types import LeafMassDecay
@@ -47,7 +45,7 @@ def run_cell(cell: Cell, *, norm="global", decay_temp=None, prec="bf16",
     #: range in which its two panels are an exact rewrite of the recurrence, with
     #: the admission check silently skipped. Off the decay arm the axis is
     #: unreachable by this kernel and the planner's own choice stands.
-    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, prec=prec, fx=fx)
+    plan, sched = cell.plan(norm=norm, decay_on=decay is not None, fx=fx)
     y, state, _ = _consumer_forward(
         fx["v_f32"], fx["read_f32"], fx["write_f32"],
         None if g_read is None else fx["g_read_f32"], fx["g_write_f32"],
@@ -122,55 +120,6 @@ def run_oracle(*, decay=True, hot=False):
             passed += int(gate_cell(CELLS[name], norm=norm, decay_temp=temp, prec=prec))
     print(f"\n{passed}/{total} oracle arms PASS")
     return passed == total
-
-
-
-
-def run_btab(name, *, reps=21, norm="global", decay_temp=None):
-    """`BT = 16` against `BT = 32` ON THE NEW CONSUMER, interleaved rep by rep.
-
-    **This is the calibration instrument for the planner's `BT` axis** (§2.31,
-    §2.32). Both arms are the ONE consumer, so the only
-    difference is the tile size, and the schedule is REBUILT at each `BT` by
-    restricting the planner's candidate set (see `Cell.plan`), never stamped.
-
-    The reported statistic is the median of the per-pair ratios `t32 / t16`, so a
-    value above 1 means `BT = 32` is SLOWER. Absolute medians and IQRs are printed
-    alongside; a cell whose IQR cannot resolve the effect is reported as
-    unresolvable here and decided on `ncu` counters instead, which is stated in the
-    findings rather than hidden by quoting the ratio anyway.
-    """
-    cell = CELLS[name]
-    fx = cell.build()
-    decay = None if decay_temp is None else LeafMassDecay(dials=fx["dials"][decay_temp])
-    gr = None if norm == "global" else fx["g_read"]
-
-    def mk(bt):
-        #: The new consumer must be stamped `panel` on the decay arm so its
-        #: admission bound is checked -- the same divergence `run_atscale` makes,
-        #: and it is applied to BOTH arms here, so it cannot bias the ratio.
-        pl, sch = cell.plan(norm=norm, decay_on=decay is not None, prec="bf16",
-                            fx=fx, bt=bt)
-        _, sch = _timed(cell, fx, pl, decay, gr, sch)
-        return pl, sch
-
-    p16, s16 = mk(16)
-    p32, s32 = mk(32)
-    if (p16.BT, p32.BT) != (16, 32):
-        raise SystemExit(f"the planner returned BT={p16.BT}/{p32.BT}, not 16/32")
-    t16, t32, pair = [], [], []
-    for _ in range(reps):
-        x, _ = _timed(cell, fx, p16, decay, gr, s16)
-        y, _ = _timed(cell, fx, p32, decay, gr, s32)
-        t16.append(x)
-        t32.append(y)
-        pair.append(y / x)
-    m16, m32, mr = statistics.median(t16), statistics.median(t32), statistics.median(pair)
-    print(f"{name} norm={norm} decay={decay_temp} BC={cell.BC}")
-    print(f"  BT=16 {m16:.3f} ms (IQR {_iqr(t16):.3f})   "
-          f"BT=32 {m32:.3f} ms (IQR {_iqr(t32):.3f})")
-    print(f"  PAIRED 32/16 {mr:.4f} (IQR {_iqr(pair):.4f})   = {100 * (mr - 1):+.1f} %")
-    return dict(paired=mr, paired_iqr=_iqr(pair), ms16=m16, ms32=m32)
 
 
 

@@ -1,0 +1,39 @@
+Identifier: "RolaIssue"
+DisplayName: "RoLA Issue and Traffic Probe"
+Description: "Repo-pinned ISSUE and TRAFFIC probe: how many instructions the kernel issues and how many sectors it touches, which is the axis a stall-attribution section cannot answer. P11's verdict (an amplitude-slab cp.async prefetch that cut long_scoreboard 71-86% yet raised inst_executed +12.8% and duration +10.3%) was written in exactly these counters, and any claim that a fetch change 'cut redundant issue' has to be joined against them rather than against a stall ratio. This file IS the metric list; a probe that needs different metrics adds a section beside it rather than a flag string in a shell script."
+Order: 14
+
+Sets { Identifier: "rola" }
+
+Filter { CollectionFilter { CollectionScopes: CollectionScope_Launch } }
+
+Header {
+  Metrics { Label: "Duration"                     Name: "gpu__time_duration.sum" }
+  Metrics { Label: "Warp Instructions Executed"   Name: "smsp__inst_executed.sum" }
+  Metrics { Label: "Thread Instructions Executed" Name: "sm__sass_thread_inst_executed.sum" }
+}
+
+Body {
+  DisplayName: "RoLA Issue and Traffic Detail"
+  SetDefault: true
+  Items {
+    Table {
+      Label: "Global load path (the fetch layer's own traffic)"
+      Columns: 1
+      Metrics { Label: "Global LD Requests"  Name: "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum" }
+      Metrics { Label: "Global LD Sectors"   Name: "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum" }
+      Metrics { Label: "L2 Sectors"          Name: "lts__t_sectors.sum" }
+      Metrics { Label: "DRAM Bytes Read"     Name: "dram__bytes_read.sum" }
+    }
+  }
+  Items {
+    Table {
+      Label: "Shared-memory path (what a ring round-trip costs)"
+      Columns: 1
+      Metrics { Label: "Shared LD Instructions" Name: "smsp__inst_executed_op_shared_ld.sum" }
+      Metrics { Label: "Shared ST Instructions" Name: "smsp__inst_executed_op_shared_st.sum" }
+      Metrics { Label: "Global LD Instructions" Name: "smsp__inst_executed_op_global_ld.sum" }
+      Metrics { Label: "Barriers Executed"      Name: "smsp__inst_executed_op_bar.sum" }
+    }
+  }
+}

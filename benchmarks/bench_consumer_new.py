@@ -29,11 +29,6 @@ Modes:
                   blocks read x3.27-3.30 where interleaving read x3.33-3.35, and
                   interleaving cut the run-to-run spread by ~7x.
 
-  --mode btab     `BT = 16` against `BT = 32`, BOTH ARMS THE NEW CONSUMER, the
-                  schedule rebuilt at each `BT` by restricting the planner's
-                  candidate set. This is the planner `BT` axis's calibration
-                  instrument (§2.32); the ratio is `t32 / t16`, so > 1 means the
-                  larger tile is slower.
 
   --mode skipshare  the read-only-`(owner, tile)` share per cell -- the fraction of
                   visits on which the fold GEMM and the decay panels are skipped.
@@ -71,7 +66,6 @@ from bench.cells import (  # noqa: E402  -- after the sys.path line, deliberatel
 from bench.drivers import (  # noqa: E402
     decay_price,
     norm_price,
-    run_btab,
     run_oracle,
 )
 from bench.instruments import gather_stats  # noqa: E402
@@ -84,7 +78,7 @@ def main():
     ap.add_argument("--mode", default="oracle",
                     choices=["oracle", "skipshare", "manifest",
                              "decayprice", "normprice",
-                             "gatherstats", "armtime", "btab"])
+                             "gatherstats", "armtime"])
     ap.add_argument("--cell", default="atscale-L2048")
     ap.add_argument("--norm", default="global", choices=["global", "raw"])
     ap.add_argument("--decay", default=None, choices=[None, "warm", "hot"])
@@ -93,19 +87,13 @@ def main():
     ap.add_argument("--hot", action="store_true")
     ap.add_argument("--reps", type=int, default=11)
     ap.add_argument("--write", action="store_true", help="manifest mode: write it")
-    ap.add_argument("--bt", type=int, default=None, choices=[16, 32],
-                    help="armtime mode: RESTRICT the planner's BT candidates to this "
-                         "one value, so the arm is a plan the planner could have "
-                         "emitted at that tile size (the schedule is rebuilt with it)")
     a = ap.parse_args()
 
     if a.mode == "oracle":
         raise SystemExit(0 if run_oracle(decay=not a.no_decay_axis, hot=a.hot) else 1)
-    if a.mode == "btab":
-        run_btab(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay)
         return
     if a.mode == "armtime":
-        arm_time(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay, bt=a.bt)
+        arm_time(a.cell, reps=a.reps, norm=a.norm, decay_temp=a.decay)
         return
     if a.mode == "gatherstats":
         for name in (GROUPS["topo"] + GROUPS["wk1"] + GROUPS["atscale"]):

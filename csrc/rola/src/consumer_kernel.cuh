@@ -111,7 +111,7 @@ __device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh
 #else
 #define ROLA_CONSUMER_CTAS_EXPR                                    \
   ctas_for_residency(consumer_smem_bytes<BC, DV, D, DECAY>(),      \
-                     consumer_reg_budget(BC, DECAY, DV))
+                     consumer_reg_budget(BC, DECAY, DV, D))
 #endif
 template <int BC, int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR) void
@@ -160,9 +160,7 @@ consumer_forward_kernel(ConsumerParams p) {
   //: load-bearing fact. docs/internals/smem_layout.md#vw-clk-union
   float* clk = reinterpret_cast<float*>(carve);
   carve += kVwSlotBytes;
-  float* sr = reinterpret_cast<float*>(carve);
-  float* sw = sr + kGT;
-  float* den = sw + kGT;
+  float* den = reinterpret_cast<float*>(carve);
   int* dig = reinterpret_cast<int*>(den + kGT);  // [D][BC]
   unsigned* Rf = reinterpret_cast<unsigned*>(dig + D * BC);
   __nv_bfloat16* Gm = reinterpret_cast<__nv_bfloat16*>(Rf + kRfWords);
@@ -170,28 +168,19 @@ consumer_forward_kernel(ConsumerParams p) {
   float* p_ref = log_keep + (DECAY ? BC : 0);
   float* s0 = p_ref + (DECAY ? BC : 0);
   int* ctl = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
-  //: The group list: `t_idx[q]` = the q-th gathered GLOBAL token index, ascending
-  //: (stability IS causality). Written by warp 0 at ballot time, published by the
-  //: group-entry `__syncthreads()`, read by every staging loop of the visit.
-  int* t_idx = ctl + ctl_words(BC);
-  //: The group assembler's CROSS-VISIT CARRY, in SMEM so NO scheduler state is
-  //: register-live across the visit body (the measured §7.3 stateful-walk
-  //: hazard). Layout: [0] fill, [1] scan word, [2] fr, [3] fw,
-  //: [4] member-word remainder, [5] group flags (bit0 read, bit1 write),
-  //: [6..6+D) the scan's fixed-level row indices. Carry slots [0..5] are written
-  //: by tid 0 behind the group-entry barrier; the row indices are hoisted once
-  //: per CTA. The visit's atom masks are NOT here: since Change 1's word-wise
-  //: bitlist ballot they are CTA-uniform per-thread registers (`rmask`/`wmask`).
-  int* g_scan = t_idx + kGT;
-  //: THE SCAN BATCH (kScanBatch words): per-word fixed-AND results and the
-  //: PRECOMPUTED member word, staged by ONE thread per word per refill and
-  //: consumed CTA-uniformly from SMEM -- the schedule stream is fetched once
-  //: per CTA, never once per warp (measured: the per-warp-redundant walk WAS
-  //: the first cut's +7.6M-sector regression at atscale-L2048; the frozen
-  //: contract's cook-once rule).
-  int* scan_fr = g_scan + 6 + D;
-  int* scan_fw = scan_fr + kScanBatch;
-  int* scan_mem = scan_fw + kScanBatch;
+  //: THE COOKED SCHEDULE RING. `kSchedSlots` group descriptors
+  //: (`kSchedSlotInts` ints each; the field offsets are
+  //: `kSchedGN/RMask/WMask/Flags`), written by the PRODUCER WARP `kSchedDepth`
+  //: groups ahead and published by the end-of-visit `__syncthreads()` of the
+  //: visit that produced them. Every consumer warp READS the descriptor rather
+  //: than deriving it. docs/internals/consumer_kernel.md#sched-ring
+  int* g_ring = ctl + ctl_words(BC);
+  //: THE PER-OWNER UPPER PRODUCTS, one pair of `kGT` floats per ring slot: the
+  //: read row scale then the write row scale for each of the slot's member
+  //: tokens. Cooked by the producer beside the member word (the stream-inventory
+  //: amendment) and consumed as `sr` / `sw`.
+  //: docs/internals/consumer_kernel.md#upper-product
+  float* g_up = reinterpret_cast<float*>(g_ring + kSchedSlots * kSchedSlotInts);
   static_assert(
       !DECAY || static_cast<size_t>(kGT) * CKP * sizeof(float) <= vw_union_bytes<BC, DV, DECAY>(),
       "clk aliases the Vw region and must fit IN BYTES");
@@ -303,23 +292,237 @@ consumer_forward_kernel(ConsumerParams p) {
       sum_slot[i] = 0;    // the written-leaf FLAG until the publication rewrites it
     }
   }
-  //: The scheduler's once-per-CTA reset: the carry, the scan's fixed-level row
-  //: indices (hoisted so the per-word refill is two SMEM loads per fixed level,
-  //: never a `base[]` access inside the scan loop).
-  if (tid == 0) {
-#pragma unroll
-    for (int q = 0; q < 6; ++q) g_scan[q] = 0;
-#pragma unroll
-    for (int l = 0; l < D; ++l) g_scan[6 + l] = p.level_row_offset[l] + base[l];
-  }
-  __syncthreads();
-
   //: The token-major amplitude stream base for this `bh`: a member token's row is
   //: `tok_base + token` (whole-covered-span fetch: the span is read by position).
   const int64_t tok_base = static_cast<int64_t>(bh) * p.n_twords * 32;
   //: The slice's ATOM-MAJOR bitlist base: row `q`'s word for source word `w` is
   //: `ab_base + q * n_twords + w` -- one CONTIGUOUS token-bit row per atom.
   const int64_t ab_base = (static_cast<int64_t>(bh) * p.n_slices + slice) * kQPO * p.n_twords;
+
+  // ---- THE PRODUCER. WARP 0 ALONE runs the membership scan and the ballot, and
+  // ---- publishes COOKED GROUP DESCRIPTORS into `g_ring`. The scan's result is an
+  // ---- OWNER-LEVEL fact, identical across the owner's atoms and across the CTA's
+  // ---- warps, so it is cooked ONCE PER OWNER -- the multiplicity rule, and the
+  // ---- issue cut this kernel's measured constraint asks for.
+  // ---- docs/internals/consumer_kernel.md#producer
+  static_assert(kQPO <= 32, "one producer lane per atom: the atom mask is ONE ballot");
+  //: THE PRODUCER'S CURSOR STATE, RESTING IN SMEM BETWEEN COOKS. Scheduler state
+  //: held in registers is live across the whole visit body and competes with the
+  //: four GEMMs' working set -- measured as spills on the `BC = 16, decay = 0`
+  //: key, the tightest register budget in the matrix, on both arches. The AND and
+  //: the ballot still happen in registers; only the resting place is SMEM.
+  //: docs/internals/consumer_kernel.md#producer-state
+  int* p_st = g_ring + kSchedSlots * kSchedSlotInts + kSchedSlots * 2 * kGT;
+  //: [0] p_cur, [1] p_chunk_base, [2] p_live, [3] p_word, [4] p_rem, [5] p_gfr,
+  //: [6] p_gfw, then the PER-LANE chunk (fr, fw, mem) and ingredient (ra, wa)
+  //: planes, one word per lane each.
+  int* p_chunk = p_st + 8;  // [5][32]: fr, fw, mem, ra, wa
+  if (tid == 0) {
+    p_st[0] = w_lo;
+#pragma unroll
+    for (int q = 1; q < 8; ++q) p_st[q] = 0;
+  }
+  if (warp == 0) {
+#pragma unroll
+    for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
+  }
+  //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`, formed
+  //: AT THE POINT OF USE: `base[]` is already live across the whole kernel (the
+  //: panels and the upper product all index it), so a hoisted copy would be `D`
+  //: extra live registers on the tightest key.
+
+  //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP 0 ONLY, and EVERY LANE ENTERS --
+  //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
+  //: loop's control flow is warp-uniform by construction (`p_rem`, `p_live`,
+  //: `p_cur`, `fill` are all warp-uniform; only the chunk and ingredient
+  //: values are per-lane). The cursor is LOADED here and STORED at the end, so it
+  //: is register-live only for the duration of the cook.
+  auto produce_group = [&](int slot) {
+    int* R = g_ring + slot * kSchedSlotInts;
+    //: HAZARD producer-cursor, the LOAD's half -- docs/internals/consumer_kernel.md#producer-cursor
+    __syncwarp();
+    int p_cur = p_st[0];
+    int p_chunk_base = p_st[1];
+    unsigned p_live = static_cast<unsigned>(p_st[2]);
+    int p_word = p_st[3];
+    uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
+    //: THE COOK CARRIES NO PER-LANE REGISTER STATE -- only the uniform scalars
+    //: above, which is what keeps the tightest keys inside their budget. The chunk
+    //: planes are read ONE SCALAR AT A TIME at word selection, by the uniform index
+    //: the ballot picked (the value a `__shfl` of a register plane would have
+    //: produced); the selected word's fixed-level AND results are recovered the
+    //: same way, its chunk lane being `p_word - p_chunk_base`. Each lane reads its
+    //: OWN ingredient slot, so those carry no cross-lane traffic and need no
+    //: reconvergence.
+    int fill = 0;
+    unsigned rmask = 0u, wmask = 0u;
+    bool gr = false, gw = false;
+    while (fill < kGT) {
+      if (p_rem == 0u) {
+        //: THE CHUNK, COOKED IN REGISTERS (contract item 2): one word per lane.
+        //: Lane `w` ANDs the owner's `j` fixed-level token rows per side and the
+        //: token-granular slice-union word -- the "k+1 per-digit bit-streams,
+        //: identically indexed, one shared cursor structure" -- into its own
+        //: `(fr, fw, member)`. The chunk's LIVE-WORD SET is then one ballot, and
+        //: skipping dead words costs an `__ffs`. A refill needs no CTA barrier:
+        //: the cook is warp-local and its collectives are warp-level.
+        while (p_live == 0u && p_cur < w_hi) {
+          const int w = p_cur + lane;
+          uint32_t fr = 0xffffffffu, fw = 0xffffffffu, mem = 0u;
+          if (w < w_hi) {
+            const int64_t slab = (static_cast<int64_t>(bh) * p.n_twords + w) * p.total_rows;
+#pragma unroll
+            for (int l = 0; l < D; ++l) {
+              if (l >= j) break;
+              const int row_l = p.level_row_offset[l] + base[l];
+              fr &= p.read_tok_bits[slab + row_l];
+              fw &= p.write_tok_bits[slab + row_l];
+            }
+            const uint32_t un =
+                p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords + w];
+            //: The summary pass ballots the WRITE side alone (union-visit
+            //: semantics on one side); `summary` is LAUNCH-UNIFORM.
+            mem = (summary ? fw : (fr | fw)) & un;
+          }
+          //: The cooked chunk goes STRAIGHT to its planes. `fr`/`fw`/`mem` are
+          //: transient here and die at the end of this iteration.
+          p_chunk[0 * 32 + lane] = static_cast<int>(fr);
+          p_chunk[1 * 32 + lane] = static_cast<int>(fw);
+          p_chunk[2 * 32 + lane] = static_cast<int>(mem);
+          p_chunk_base = p_cur;
+          p_cur += kSchedChunkWords;
+          p_live = __ballot_sync(0xffffffffu, mem != 0u);
+          //: HAZARD producer-chunk -- docs/internals/consumer_kernel.md#producer-chunk
+          __syncwarp();
+        }
+        if (p_live == 0u) break;  // the segment's stream end
+        const int sel = __ffs(static_cast<int>(p_live)) - 1;
+        p_live &= p_live - 1u;
+        p_word = p_chunk_base + sel;
+        p_rem = static_cast<uint32_t>(p_chunk[2 * 32 + sel]);
+        //: Form (b)'s ingredient, ONE LANE PER ATOM -- which is what turns the
+        //: base's `2 * QPO` per-warp tests into the two ballots below. Loaded
+        //: ONCE PER SOURCE WORD, not once per ballot round.
+        p_chunk[3 * 32 + lane] =
+            (lane < kQPO)
+                ? static_cast<int>(
+                      p.read_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
+                : 0;
+        p_chunk[4 * 32 + lane] =
+            (lane < kQPO)
+                ? static_cast<int>(
+                      p.write_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
+                : 0;
+      }
+      const int room = kGT - fill;  // >= 1: a full group ran and reset `fill`
+      uint32_t taken = p_rem;
+      if (__popc(p_rem) > room) {
+        //: the (room+1)-th set bit; bits below it are exactly the lowest `room`
+        //: live tokens -- the remainder waits for the next group.
+        const unsigned cut = __fns(p_rem, 0, room + 1);
+        taken = p_rem & ((1u << cut) - 1u);
+      }
+      if (((taken >> lane) & 1u) != 0u) {
+        R[fill + __popc(taken & ((1u << lane) - 1u))] = p_word * 32 + lane;
+      }
+      //: Form (b)'s consumption, word-wise: atom `q` is live for this group iff
+      //: its bitlist row intersects the taken word. ONE BALLOT PER SIDE.
+      rmask |= __ballot_sync(
+          0xffffffffu,
+          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[3 * 32 + lane]) & taken) != 0u));
+      wmask |= __ballot_sync(
+          0xffffffffu,
+          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[4 * 32 + lane]) & taken) != 0u));
+      const int p_sel = p_word - p_chunk_base;
+      gr = gr || (static_cast<uint32_t>(p_chunk[0 * 32 + p_sel]) & taken) != 0u;
+      gw = gw || (static_cast<uint32_t>(p_chunk[1 * 32 + p_sel]) & taken) != 0u;
+      fill += __popc(taken);
+      p_rem ^= taken;
+    }
+    // ---- THE PER-OWNER UPPER PRODUCT (the stream-inventory amendment). The
+    // ---- FIXED levels' amplitudes are CONSTANT ALONG THE LEAF AXIS -- `j`
+    // ---- scalars per member token per side, common to every atom's Kronecker
+    // ---- coefficient -- so their per-token product is an OWNER-LEVEL fact and
+    // ---- obeys the same multiplicity rule membership does: computed ONCE PER
+    // ---- OWNER, never per atom. These are §3 step 3's ROW SCALES, and they ride
+    // ---- the COOKED RING SLOT: the cook already owns the member token list, so
+    // ---- they cost no extra stream and arrive PRE-MULTIPLIED a visit early,
+    // ---- which lifts `2 * j` fp32 gathers off the visit's critical path.
+    // ---- docs/internals/consumer_kernel.md#upper-product
+    //: Predicated per side, so a side-dead visit fetches nothing.
+    const bool need_r = !summary && gr && rmask != 0u;
+    const bool need_w = gw && wmask != 0u;
+    if (need_r || need_w) {
+      //: lanes below `fill` read back token indices OTHER lanes wrote above.
+      __syncwarp();
+      float* U = g_up + slot * 2 * kGT;
+      const int tok = (lane < fill) ? R[lane] : 0;
+      const int64_t tr = tok_base + tok;
+      float rs = 0.0f, ws = 0.0f;
+      //: A ragged group's padded slots take EXACT ZERO scales, which is what
+      //: makes their coefficient rows inert through every GEMM and the mass
+      //: fold's `sw[t]` term vanish.
+      if (lane < fill) {
+        rs = 1.0f;
+        ws = need_w ? p.g_write[static_cast<int64_t>(bh) * p.T + tok] : 0.0f;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          if (l >= j) break;
+          //: Fixed levels (`l < j`) are ALWAYS fp32 (Option B) -- the one place
+          //: the amplitude dtype is not the arm's storage type.
+          if (need_r) {
+            rs *= static_cast<const float*>(p.amp_read[l])[tr * p.level_pitch_read[l] + base[l]];
+          }
+          if (need_w) {
+            ws *= static_cast<const float*>(p.amp_write[l])[tr * p.level_pitch_write[l] + base[l]];
+          }
+        }
+      }
+      if (lane < kGT) {
+        if (need_r) U[lane] = rs;
+        if (need_w) U[kGT + lane] = ws;
+      }
+    }
+    //: `fill == 0` is the stream-end sentinel every consumer breaks on; the
+    //: final flush is the ragged group (`fill < kGT`).
+    if (lane == 0) {
+      R[kSchedGN] = fill;
+      R[kSchedRMask] = static_cast<int>(rmask);
+      R[kSchedWMask] = static_cast<int>(wmask);
+      R[kSchedFlags] = (gr ? 1 : 0) | (gw ? 2 : 0);
+    }
+    //: THE CURSOR GOES BACK TO SLEEP IN SMEM -- nothing above stays live across
+    //: the visit body.
+    //: HAZARD producer-cursor, the STORE's half -- docs/internals/consumer_kernel.md#producer-cursor
+    __syncwarp();
+    if (lane == 0) {
+      p_st[0] = p_cur;
+      p_st[1] = p_chunk_base;
+      p_st[2] = static_cast<int>(p_live);
+      p_st[3] = p_word;
+      p_st[4] = static_cast<int>(p_rem);
+    }
+  };
+
+  //: THE RING'S COLD START -- the producer fills `kSchedDepth` slots before the
+  //: first visit, so the steady state never waits on production. The residue the
+  //: contract admits (item 6) is exactly this ramp plus the final drain.
+  if (warp == 0) {
+#pragma unroll 1
+    for (int s = 0; s < kSchedDepth; ++s) produce_group(s);
+  }
+  __syncthreads();
+
+  //: THE VISIT'S GROUP LIST: `t_idx[q]` = the q-th gathered GLOBAL token index,
+  //: ascending (stability IS causality). It is the cooked ring slot's first
+  //: `kGT` ints -- retargeted per visit rather than copied, so every staging
+  //: loop reads the producer's published descriptor directly.
+  const int* t_idx = g_ring;
+  //: THE VISIT'S ROW SCALES, likewise retargeted per visit rather than copied:
+  //: `sr[t]` / `sw[t]` are the producer's per-token upper products for the
+  //: slot's tokens, read-only to every consumer.
+  const float* sr = g_up;
+  const float* sw = g_up + kGT;
 
   // ---- THE STAGING, AS A FUNCTION OF THE GROUP: everything the visit's COMPUTE
   // ---- consumes but does not produce. Tokens are `t_idx[0..gN)`, globally
@@ -368,41 +571,11 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int c = lane; c < cols; c += 32) S[i * SP + c] *= s;
       }
     }
-    // ---- §3 STEP 3's ROW SCALES: constant along the leaf axis, held OUT of the
-    // ---- coefficient blocks. Fixed levels (`l < j`) are ALWAYS fp32 (Option B).
-    // ---- `global` fixes g_read := 1 (raw is dead), so the read scale starts at 1.
-    // ---- docs/internals/consumer_kernel.md#row-scales
-    if (is_read) {
-      for (int t = tid; t < kGT; t += kConsumerThreads) {
-        float s = 0.0f;
-        if (t < gN) {
-          const int64_t tr = tok_base + t_idx[t];
-          s = 1.0f;
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l >= j) break;
-            s *= static_cast<const float*>(p.amp_read[l])[tr * p.level_pitch_read[l] + base[l]];
-          }
-        }
-        sr[t] = s;
-      }
-    }
-    if (is_write) {
-      for (int t = tid; t < kGT; t += kConsumerThreads) {
-        float s = 0.0f;
-        if (t < gN) {
-          const int64_t tr = tok_base + t_idx[t];
-          s = p.g_write[static_cast<int64_t>(bh) * p.T + t_idx[t]];
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l >= j) break;
-            s *= static_cast<const float*>(p.amp_write[l])[tr * p.level_pitch_write[l] + base[l]];
-          }
-        }
-        sw[t] = s;
-      }
-    }
-    if (!DECAY && is_write) __syncthreads();  // sw published to the Vw staging below
+    // ---- §3 STEP 3's ROW SCALES ARRIVE PRE-MULTIPLIED IN THE RING SLOT, cooked
+    // ---- once per owner by the producer a visit ago (the stream-inventory
+    // ---- amendment). The staging computes and publishes no row scales of its
+    // ---- own, so it needs no barrier of its own to make them visible to the `Vw`
+    // ---- staging below. docs/internals/consumer_kernel.md#upper-product
     // ---- THE READ PANEL (§3 steps 2-3). The loop walks FRAGMENT
     // ---- SLOTS (one k-step = one atom = 128 words), so the store is contiguous in
     // ---- `tid` and the buffer is atom-blocked by construction. The bf16 slot packs
@@ -512,146 +685,39 @@ consumer_forward_kernel(ConsumerParams p) {
     }
   };
 
-  // ---- THE WALK: the membership scan feeds the group assembler feeds ONE visit
-  // ---- body. Words ascend and each word is consumed LSB-first, so `t_idx` is
-  // ---- GLOBALLY ascending: the intra Gram's causal mask is order-relative, so
-  // ---- STABILITY IS THE CORRECTNESS REQUIREMENT. The word loop is bounded (a word
-  // ---- splits across at most `ceil(32/kGT) + 1` groups), never a per-token scan.
-  // ---- Every thread assembles REDUNDANTLY in registers from the SMEM carry
-  // ---- (published by the previous visit's end barrier; all loads are CTA-uniform,
-  // ---- so the boundaries are uniform); warp 0 additionally gathers the member
-  // ---- tokens' ATOM-UNION BYTES per side and lane 0 publishes the visit masks.
+  // ---- THE WALK: the PRODUCER'S COOKED RING feeds ONE visit body. Words ascend
+  // ---- and each word is consumed LSB-first, so `t_idx` is GLOBALLY ascending:
+  // ---- the intra Gram's causal mask is order-relative, so STABILITY IS THE
+  // ---- CORRECTNESS REQUIREMENT. Consumers ASSEMBLE NOTHING -- they read the
+  // ---- descriptor warp 0 published `kSchedDepth` visits ago, whose publication
+  // ---- barrier is the end-of-visit `__syncthreads()`.
   // ---- docs/internals/consumer_kernel.md#group-assembler
-  int cur = w_lo;      // next word to LOAD into the batch (uniform)
-  int batch_base = 0;  // word index of batch slot 0
-  int bnext = 0;       // next batch slot to consume
-  int bcount = 0;      // valid slots in the current batch
-  for (;;) {
-    int fill = g_scan[0];
-    int gword = g_scan[1];
-    uint32_t g_fr = static_cast<uint32_t>(g_scan[2]);
-    uint32_t g_fw = static_cast<uint32_t>(g_scan[3]);
-    uint32_t member = static_cast<uint32_t>(g_scan[4]);
-    bool gr = (g_scan[5] & 1) != 0;
-    bool gw = (g_scan[5] & 2) != 0;
-    //: The visit's per-side ATOM MASKS, accumulated word-wise from the
-    //: atom-major bitlists as the ballot takes each word -- CTA-uniform by
-    //: construction (uniform loads, uniform `taken`).
-    unsigned rmask = 0u, wmask = 0u;
-    int g_next1 = 0, g_next2 = 0, g_next3 = 0, g_next4 = 0;
-    while (fill < kGT) {
-      if (member == 0u) {
-        // ---- THE MEMBERSHIP SCAN, BATCHED (cook-once). One thread per word
-        // ---- loads the owner's fixed-level token rows (per side) and the
-        // ---- token-granular slice-union word ONCE PER CTA and PRECOMPUTES the
-        // ---- member word into the batch; the assembler consumes SMEM, skipping
-        // ---- dead words at one SMEM read each. Ballot-time exclusion of
-        // ---- slice-dead tokens is what keeps groups full; the summary pass
-        // ---- ballots the WRITE side alone (union-visit semantics on one side).
-        // ---- Every quantity steering the loop is CTA-uniform, so the two
-        // ---- refill barriers are uniform too.
-        int found = -1;
-        for (;;) {
-          while (bnext < bcount) {
-            if (scan_mem[bnext] != 0) {
-              found = bnext;
-              break;
-            }
-            ++bnext;
-          }
-          if (found >= 0 || cur >= w_hi) break;
-          __syncthreads();  // every thread is past the old batch's last read
-          for (int w = tid; w < kScanBatch; w += kConsumerThreads) {
-            if (cur + w < w_hi) {
-              uint32_t fr = 0xffffffffu;
-              uint32_t fw = 0xffffffffu;
-              const int64_t slab = (static_cast<int64_t>(bh) * p.n_twords + cur + w) * p.total_rows;
-#pragma unroll
-              for (int l = 0; l < D; ++l) {
-                if (l >= j) break;
-                fr &= p.read_tok_bits[slab + g_scan[6 + l]];
-                fw &= p.write_tok_bits[slab + g_scan[6 + l]];
-              }
-              const uint32_t un =
-                  p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords
-                                    + cur + w];
-              scan_fr[w] = static_cast<int>(fr);
-              scan_fw[w] = static_cast<int>(fw);
-              scan_mem[w] = static_cast<int>((summary ? fw : (fr | fw)) & un);
-            }
-          }
-          __syncthreads();  // the batch is published
-          batch_base = cur;
-          bcount = (w_hi - cur < kScanBatch) ? (w_hi - cur) : kScanBatch;
-          cur += bcount;
-          bnext = 0;
-        }
-        if (found < 0) break;  // the segment's stream end
-        gword = batch_base + found;
-        g_fr = static_cast<uint32_t>(scan_fr[found]);
-        g_fw = static_cast<uint32_t>(scan_fw[found]);
-        member = static_cast<uint32_t>(scan_mem[found]);
-        ++bnext;
-        continue;
-      }
-      const int room = kGT - fill;  // >= 1: a full group ran and reset `fill`
-      uint32_t taken = member;
-      if (__popc(member) > room) {
-        //: the (room+1)-th set bit; bits below it are exactly the lowest `room`
-        //: live tokens -- the remainder waits for the next group.
-        const unsigned cut = __fns(member, 0, room + 1);
-        taken = member & ((1u << cut) - 1u);
-      }
-      if (warp == 0 && ((taken >> lane) & 1u) != 0u) {
-        t_idx[fill + __popc(taken & ((1u << lane) - 1u))] = gword * 32 + lane;
-      }
-      //: Form (b)'s consumption, word-wise: atom `q` is live for this group iff
-      //: its bitlist row intersects the taken word. <= 2*QPO uniform loads per
-      //: ballot round -- the compact-into-registers walk's whole mask cost.
-#pragma unroll
-      for (int q = 0; q < kQPO; ++q) {
-        if ((p.read_atom_bits[ab_base + q * p.n_twords + gword] & taken) != 0u) rmask |= 1u << q;
-        if ((p.write_atom_bits[ab_base + q * p.n_twords + gword] & taken) != 0u) wmask |= 1u << q;
-      }
-      gr = gr || (g_fr & taken) != 0u;
-      gw = gw || (g_fw & taken) != 0u;
-      fill += __popc(taken);
-      member ^= taken;
-    }
-    //: The final flush is the ragged group (`fill < kGT`); `fill == 0` is the
-    //: stream's end.
-    if (fill == 0) break;
-    const int gN = fill;
-    //: The NEXT visit's carry: the consumed group resets to empty, the split
-    //: word's remainder persists. Registers here; stored behind the entry
-    //: barrier below (tid 0), read again only after the end-of-visit barrier.
-    g_next1 = gword;
-    g_next2 = static_cast<int>(g_fr);
-    g_next3 = static_cast<int>(g_fw);
-    g_next4 = static_cast<int>(member);
+  for (int gidx = 0;; ++gidx) {
+    const int* R = g_ring + (gidx % kSchedSlots) * kSchedSlotInts;
+    const int gN = R[kSchedGN];
+    if (gN == 0) break;  // the stream's end, as the producer saw it
+    //: The visit's per-side ATOM MASKS and side flags, cooked by the producer's
+    //: two ballots. CTA-uniform by construction: one writer, one published word.
+    const unsigned rmask = static_cast<unsigned>(R[kSchedRMask]);
+    const unsigned wmask = static_cast<unsigned>(R[kSchedWMask]);
+    const int gflags = R[kSchedFlags];
+    t_idx = R;
+    sr = g_up + (gidx % kSchedSlots) * 2 * kGT;
+    sw = sr + kGT;
 
     // ---- THE VISIT'S CONTROL BLOCK, RESET. Behind it stands the previous visit's
-    // ---- end-of-visit `__syncthreads()`, ahead of it the entry barrier below.
+    // ---- end-of-visit `__syncthreads()` (so no warp is still retiring into it);
+    // ---- ahead of it stands the post-staging `__syncthreads()` below, which is
+    // ---- what orders the reset before the visit's first `retire_item`. `t_idx`
+    // ---- needs no barrier of its own here: the ring published it a visit earlier.
     // ---- docs/internals/pipeline.md#edge-dag
     if (tid < ctl_words(BC)) ctl[tid] = 0;
-    //: Publishes warp 0's `t_idx` writes to every staging loop, AND orders
-    //: every thread's carry LOADS (in the assembler above) before tid 0's
-    //: carry STORES below.
-    __syncthreads();
-    if (tid == 0) {
-      g_scan[0] = 0;
-      g_scan[1] = g_next1;
-      g_scan[2] = g_next2;
-      g_scan[3] = g_next3;
-      g_scan[4] = g_next4;
-      g_scan[5] = 0;
-    }
     //: The visit's side flags. A side whose atom mask is empty is a side with
     //: no live coefficients anywhere in the slice this visit -- skipping it is
     //: exact (the whole-visit emptiness early-out the tile-level machinery
     //: structurally could not see).
-    const bool is_read = !summary && gr && rmask != 0u;
-    const bool is_write = gw && wmask != 0u;
+    const bool is_read = !summary && ((gflags & 1) != 0) && rmask != 0u;
+    const bool is_write = ((gflags & 2) != 0) && wmask != 0u;
     const unsigned gmask = rmask & wmask;
 
     stage_group(is_read, is_write, gN, rmask, wmask);
@@ -874,6 +940,15 @@ consumer_forward_kernel(ConsumerParams p) {
         a_state[i] *= s0[i] * s0[i];
       }
     }
+    //: THE RUN-AHEAD (contract items 2 and 6). The producer cooks group
+    //: `gidx + kSchedDepth` into the slot group `gidx - 1` vacated -- with
+    //: `kSchedSlots == kSchedDepth + 1` that slot is never the one being read,
+    //: which is the whole reason the ring is at least 2 deep. Production runs
+    //: CONCURRENTLY with this visit's compute and is published by the
+    //: end-of-visit barrier below, so NOTHING WAITS ON IT: a slot is already full
+    //: when it is read. The steady state's only remaining schedule cost is the
+    //: producer warp's own issue.
+    if (warp == 0) produce_group((gidx + kSchedDepth) % kSchedSlots);
     __syncthreads();
   }
 

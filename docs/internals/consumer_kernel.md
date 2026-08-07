@@ -1,8 +1,9 @@
 # `csrc/rola/src/consumer_kernel.cuh` — the RoLA V3 consumer kernel body
 
 THE ENDGAME EXECUTOR, and the ONLY consumer. This doc owns the kernel BODY: the
-streamed membership scan, the group assembler, the compact-into-registers atom walk,
-the four GEMMs in their phase order, and the split-K epilogue.
+schedule ring's producer (the streamed membership scan and the cooked group
+descriptor), the compact-into-registers atom walk, the four GEMMs in their phase
+order, and the split-K epilogue.
 
 **The body composes three layers and each has its own document:**
 
@@ -54,15 +55,18 @@ life, is read from HBM ONCE at entry and written ONCE at exit.
 5. load `S[BC][SP]` — zeros in pass 1 (the summary pass), from the §6.4 workspace on
    a split owner's non-entry segment, else atom-wise from `p.state` through the page
    table;
-6. reset the group scheduler's SMEM carry, `g_scan`.
+6. warp 0 [cooks](#producer) the schedule ring's first `kSchedDepth` group
+   descriptors — the cold start — and a `__syncthreads()` publishes them.
 
 **The walk**, once per GROUP of `kGroupTokens == 16` gathered tokens (every group is
 full except each segment's final ragged flush; visit count is exactly
 `ceil(gathered / 16)`):
 
-7. the streamed membership scan advances the word cursor, ANDs the owner's fixed-level
-   token-bit rows and the token-granular slice-union word, and ballots members into
-   the group ascending, ORing in the per-token atom-union bytes as it goes;
+7. the visit [reads its cooked descriptor](#group-assembler) straight off the
+   [schedule ring](#sched-ring) — `t_idx`, the read/write atom masks, the side flags,
+   the pre-multiplied row scales `sr`/`sw` — and assembles nothing; concurrently, warp
+   0 cooks the ring's NEXT descriptor (the [run-ahead](#sched-ring)), published by this
+   visit's own end-of-visit barrier;
 8. **STAGE** — under `DECAY`, the clock prefix and entry scale; the §3 step-3 row
    scales `sr`/`sw`; the fragment-ordered read panel `Rf`; the write panel `WT`; the
    scale-folded value tile `Vw` — every leaf-axis loop walking LIVE ATOMS ONLY;
@@ -96,6 +100,13 @@ Three facts a reader must not miss:
   32 arms total, see [`consumer.md`](consumer.md#instantiation-matrix). The endgame
   walk IS the path; dense (full-support) routing self-heals to identity grouping
   rather than taking a different code path.
+- **The visit pays exactly TWO unconditional `__syncthreads()`** — the post-staging
+  barrier (staging into `A`/`G`, [`pipeline.md#edge-dag`](pipeline.md#edge-dag)) and
+  the end-of-visit barrier that closes the loop and publishes the producer's run-ahead
+  cook. `DECAY` arms pay two more, both inside staging: after the clock-prefix pass
+  (before it scales `S`) and at [`clk-dead`](#clk-dead) (before `Vw` may overwrite
+  `clk`'s aliased bytes). There is no separate group-entry barrier: the ring publishes
+  a visit's descriptor a whole visit ahead of the visit that reads it.
 
 ## <a id="glossary"></a>2. Symbol glossary
 
@@ -122,12 +133,15 @@ Three facts a reader must not miss:
 | `Rf` | the read coefficients, MMA-FRAGMENT-ORDERED, `frag_a_words(BC)` words, atom-blocked |
 | `clk` | the visit's per-leaf INCLUSIVE clock prefix `[kGT][CKP]` fp32, `CKP = BC + 4`; ALIASES `Vw`'s bytes ([`smem_layout.md#vw-clk-union`](smem_layout.md#vw-clk-union)) |
 | `log_keep`, `p_ref`, `s0` | `DECAY`'s three `[BC]` vectors — per-owner log retention, §12 rule 1's reference exponent, and the entry/exit scale |
-| `sr`, `sw` | the §3 step-3 per-token read/write ROW SCALES, `[kGT]` each |
+| `sr`, `sw` | the §3 step-3 per-token read/write ROW SCALES, `[kGT]` each — retargeted every visit into `g_up`'s matching ring slot, [cooked by the producer](#upper-product) |
 | `den` | the mass-column denominator accumulator, `[kGT]` |
 | `dig` | the hoisted leaf digits, `[D][BC]` |
 | `ctl` | the item-stream control block, `kCtlFold0 + 1` ints — ONE fold cursor ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
-| `t_idx` | the group's `kGT` gathered GLOBAL token indices, ascending |
-| `g_scan` | the group assembler's SMEM cross-visit carry (`fill`/`gword`/`g_fr`/`g_fw`/`member`/`gr,gw`) plus the `D` fixed-level row offsets — `[6 + D]` ints; the visit's read/write atom masks are plain per-thread registers, not carried here ([below](#group-assembler)) |
+| `t_idx` | the visit's `kGT` gathered GLOBAL token indices, ascending — retargeted every visit onto the [schedule ring](#sched-ring)'s matching slot, never copied |
+| `kSchedDepth` / `kSchedSlots` | the producer's run-ahead depth (`ROLA_SCHED_DEPTH`, a `constexpr` dial) and the ring's slot count, `kSchedDepth + 1` ([`smem_layout.md#sched-ring`](smem_layout.md#sched-ring)) |
+| `g_ring` | the [cooked schedule ring](#sched-ring), `kSchedSlots` group descriptors, `kSchedSlotInts` ints each |
+| `g_up` | the ring's per-owner [upper-product](#upper-product) pairs, `kSchedSlots * 2 * kGT` floats |
+| `p_st`, `p_chunk` | the [producer's cursor state](#producer-state): seven uniform scalars (`p_st`) and five 32-lane planes (`p_chunk`, the cooked chunk's `fr`/`fw`/`member` and the selected word's two atom-bitlist rows) |
 | `A`, `B` | §6.4's per-segment summary: the per-leaf survival product and the accumulated deposit |
 | `w_lo`, `w_hi` | this segment's word range over the scan stream, `[w_lo, w_hi)` |
 | atom | one `kMmaKQuantum`-leaf block of the owner's leaf axis; also one 32-byte fetch sector ([`smem_layout.md#cute-pin`](smem_layout.md#cute-pin)) |
@@ -276,69 +290,166 @@ would need a barrier the digit hoist itself is cheap enough to not need.
 
 # Part IV — the walk
 
-## <a id="group-assembler"></a>11. The membership scan feeds the group assembler feeds one visit body
+## <a id="producer"></a>11. The producer — warp 0 cooks the schedule ring
 
 `w_lo`/`w_hi` bound this segment's range over the SCAN STREAM's word axis — the
-32-token machine word is the metadata granule under §6.4's P > 1 partition now, not a
-tile range. `cur`, the scan's word cursor, is a register (uniform by construction:
-every thread evaluates it identically).
+32-token machine word is the metadata granule under §6.4's P > 1 partition, not a tile
+range. WARP 0 ALONE runs the membership scan and the ballot: it ANDs the owner's
+fixed-level (`l < j`) `read_tok_bits` / `write_tok_bits` rows and the token-granular
+slice-union word, ballots members into a group ascending, ORs the per-token atom-union
+bytes into the group's read/write atom masks, and publishes the result as a COOKED
+GROUP DESCRIPTOR into [the schedule ring](#sched-ring) — once, for every consumer.
 
-**Per iteration of the outer `for (;;)` loop, the scan fills a group to `kGT` members
-(or the stream ends):**
-
-- **word refill** (when the carried `member` bitmap is exhausted): AND the owner's
-  fixed-level (`l < j`) `read_tok_bits` / `write_tok_bits` rows for this word, then
-  form `member = (summary ? fw : (fr | fw)) & slice_union_tok[bh, slice, word]` — the
-  token-granular slice-union word excludes slice-dead tokens AT BALLOT TIME, which is
-  what keeps groups full. The summary pass ballots the WRITE side alone (union-visit
-  semantics on one side);
-- **ballot**: if `member` has more live tokens than the group has room for, it is cut
-  at the `(room+1)`-th set bit (`__fns`) — the bits below the cut are exactly the
-  lowest `room` live tokens, the remainder carries to the next group. Warp 0 writes
-  `t_idx[fill + popc(taken & below-lane)] = token` for each taken bit;
-- **atom masks, word-wise** (Change 1, `8675f95`): every thread redundantly ANDs
-  `taken` against the `read_atom_bits` / `write_atom_bits` ROW for each of the
-  `kQPO = BC / kMmaKQuantum` atoms at this ballot word (`ab_base + q * n_twords +
-  gword`, `<= 2 * QPO` uniform loads) and ORs the nonzero result into `rmask` /
-  `wmask` bit `q` — CTA-uniform by construction (uniform loads, uniform `taken`),
-  no per-lane accumulator and no `__reduce_or_sync`. This is the atom-major
-  contiguous layout's payoff: an atom's whole token-liveness row is one
-  contiguous load per word, not a per-token byte gather;
-- when the group fills (or the stream ends ragged), `rmask`/`wmask` are complete
-  for the visit — plain per-thread REGISTERS, not SMEM: every thread rebuilt them
-  redundantly from the same uniform loads/`taken` this iteration, so there is
-  nothing to publish across the group-entry barrier for them (unlike `t_idx` and
-  the `g_scan` cross-visit carry, which genuinely cross threads/iterations).
+The cook happens ONCE PER OWNER's group, not once per warp. The scan's result — which
+tokens the group gathers, which atoms are live on each side — is a fact of the owner
+and the group alone; every one of the CTA's 8 warps would derive the identical
+`rmask`/`wmask`/`t_idx` from the identical inputs, so computing it 8 times is redundant
+ISSUE, not redundant latency. That distinction is the whole rationale: this kernel's
+binding constraint at scale is instruction issue (the P11 verdict — a prefetch that
+buys stall movement with instructions loses here), not memory or execution latency, so
+the win available is cutting issued instructions, and a single producer warp cuts the
+scan's ballot ALU and its `2 * QPO` atom-bitlist loads by 8x.
 
 **Stability is the correctness requirement.** Words ascend and each word is consumed
-LSB-first, so `t_idx` is GLOBALLY ascending — the intra Gram's inclusive causal mask
-is order-relative, and this ordering IS what makes it correct.
-
-**The cross-visit carry lives in `g_scan` (SMEM), not registers**, so no scheduler
-state is register-live across the visit body. Every thread reloads the carry
-redundantly from SMEM after the previous visit's `__syncthreads()`, and only `tid ==
-0` stores the update, behind the group-entry barrier — the barrier both publishes
-warp 0's `t_idx`/mask writes to every staging loop AND orders every thread's carry
-LOADS (in the scan above) before `tid 0`'s carry STORES.
+LSB-first, so a descriptor's `kGroupTokens` slots are GLOBALLY ascending — the intra
+Gram's inclusive causal mask is order-relative, and this ordering IS what makes it
+correct.
 
 A side whose visit mask is empty (`rmask == 0` or `wmask == 0`) has no live
-coefficients anywhere in the group on that side; `is_read`/`is_write` fold that
-emptiness in alongside the group-level `gr`/`gw` flags, so a whole-visit skip is
-possible even where the per-tile candidacy machinery of an earlier design could not
-see it.
+coefficients anywhere in the group on that side; the descriptor's side flags carry `gr`
+/ `gw` (whether ANY member token is read-/write-live on any FIXED level) alongside the
+masks, and `is_read`/`is_write` fold that emptiness in, so a whole-visit skip is
+possible even where the per-tile candidacy machinery of an earlier design could not see
+it.
 
-## <a id="staging"></a>12. The staging — everything the visit's compute consumes but does not produce
+## <a id="sched-ring"></a>12. The schedule ring
+
+The producer runs `kSchedDepth` groups ahead of the consumers (a `constexpr` dial,
+`ROLA_SCHED_DEPTH`, never a template axis — the instantiation matrix does not gain a
+coordinate). The ring holds `kSchedSlots = kSchedDepth + 1` descriptors: cooking group
+`gidx + kSchedDepth` writes the slot that group `gidx - 1` vacated, which is never the
+slot the current visit is reading — the ring must be AT LEAST 2 deep for that to hold,
+which is why `kSchedSlots` is `depth + 1` rather than `depth`.
+
+Publication rides the END-OF-VISIT `__syncthreads()` that already exists (every visit
+closes on one): the producer's run-ahead cook for the NEXT slot runs concurrently with
+the current visit's compute, at the bottom of the loop body, and the barrier that
+already stands between one visit and the next is what makes the cooked descriptor
+visible to every warp before the visit that consumes it starts. The ring therefore
+carries no cursor word of its own and needs no barrier beyond the one the visit loop
+already pays.
+
+One descriptor (`kSchedSlotInts` ints) is:
+
+```
+[0 .. kGroupTokens)   the group's gathered GLOBAL token indices, ascending
+[kSchedGN]            gN, the member count (0 is the stream-end sentinel)
+[kSchedRMask]         the read atom mask
+[kSchedWMask]         the write atom mask
+[kSchedFlags]         side flags: bit 0 = read-live, bit 1 = write-live
+```
+
+Consumption multiplicity is `n_atoms + 1` (every atom-major consumer plus the group
+scheduler itself), which is what earns the descriptor its own ring storage; the
+scan's raw INGREDIENTS — the per-word AND results and the atom bitlist rows — are read
+only by the producer and never materialize past its own cook.
+
+## <a id="upper-product"></a>13. The per-owner upper product — [row scales](#row-scales), cooked a visit early
+
+The fixed levels (`l < j`, `j = first_spanned_level`) contribute amplitudes that are
+CONSTANT ALONG THE LEAF AXIS: `j` scalars per member token per side, common to every
+atom's Kronecker coefficient. Their per-token product is therefore an OWNER-LEVEL fact,
+governed by the same multiplicity rule membership is — computed ONCE PER OWNER, never
+once per atom.
+
+The product rides the ring slot beside the member word: `g_up[slot]` holds one pair of
+`kGroupTokens` floats, `sr` (the read row scale) then `sw` (the write row scale), cooked
+by the producer in the same pass that ballots the group. Because it is cooked with the
+descriptor it arrives PRE-MULTIPLIED a whole visit early — the `2 * j` fp32 gathers this
+would otherwise cost on the visit's critical path move into the run-ahead instead.
+
+**A ragged group's padded slots carry EXACT ZERO row scales.** That is what makes their
+coefficient rows inert through every GEMM without a membership test, and it is what
+lets the [split-K emission](#split-k-emission)'s `out == 0` early-out skip a padded
+slot without ever reading its (undefined) token index — the zero row scale is checked
+before `t_idx` is touched.
+
+## <a id="producer-state"></a>14. The producer's cursor rests in SMEM between cooks
+
+The scan's cursor — the word cursor, the chunk base, the live-word mask, the selected
+word, the remainder — and the cook's per-lane planes (the chunk's `fr`/`fw`/`member`
+words and the selected word's two atom-bitlist rows) live in SMEM (`p_st`, `p_chunk`)
+between cooks and are read at the point of use rather than held in registers across the
+cook.
+
+This is a MEASURED constraint, not a default: scheduler state held in registers is live
+across the WHOLE visit body — the cursor is loaded once per cook and the cook runs
+before the four GEMMs that dominate the visit's register pressure — and it competes
+with their working set. Measured over all 32 arms on both architectures, holding it in
+registers spills the `BC = 16, decay = 0` key, which carries the tightest register
+budget in the matrix
+([`smem_layout.md#reg-budget`](smem_layout.md#reg-budget)).
+
+The chunk is still COOKED in registers — the fixed-level AND and the live-word ballot
+happen there, one word per lane of the producer warp
+([`smem_layout.md#sched-chunk`](smem_layout.md#sched-chunk)) — only the RESTING PLACE
+between cooks is SMEM.
+
+### <a id="producer-cursor"></a>HAZARD `producer-cursor` — the cursor crosses lanes at both ends of a cook
+
+`p_st` is written by LANE 0 and read by ALL 32 lanes, so under independent thread
+scheduling every crossing needs an explicit reconvergence; neither end can borrow the
+visit's `__syncthreads()`. The LOAD's half: the cold start calls the cook twice in a row
+with no barrier between, so the previous cook's store — and the once-per-CTA
+initialization before it — are not covered by any CTA barrier in that window. The
+STORE's half: on a stream-end cook (the scan is exhausted, the group is empty) the cook
+returns without executing a single warp collective, so nothing separates the other
+lanes' load of `p_st` from lane 0's store of it. A `__syncwarp()` stands at each end.
+
+Both halves are detectable: `compute-sanitizer --tool racecheck` reports the shared
+hazard when either `__syncwarp()` is removed and reports neither when both stand.
+
+### <a id="producer-chunk"></a>HAZARD `producer-chunk` — the chunk planes are written per lane and read by index
+
+At a refill, lane `w` writes word `w`'s `fr`/`fw`/`member` plane entries; word selection
+then reads the SELECTED lane's entries FROM EVERY LANE, by the uniform index the ballot
+picked. That is the same cross-lane crossing as the cursor and takes the same explicit
+`__syncwarp()`, placed at the end of the refill body so it also covers the selection
+that follows the refill loop. The ingredient planes need no such barrier: each lane
+reads only its OWN slot.
+
+## <a id="group-assembler"></a>15. The visit reads a cooked descriptor; it assembles nothing
+
+Before the first visit, the producer (warp 0) fills the ring's first `kSchedDepth`
+slots — the cold start — and a `__syncthreads()` publishes them. Every subsequent visit
+then does no assembly at all: `gidx`'s slot is `g_ring + (gidx % kSchedSlots) *
+kSchedSlotInts`, and `gN = R[kSchedGN] == 0` is the stream's end, as the producer saw
+it. `t_idx` retargets to the slot directly (`R`'s first `kGroupTokens` ints) rather
+than being copied, and `sr`/`sw` retarget to the matching `g_up` slot — every staging
+loop reads the producer's published descriptor in place.
+
+At the bottom of the same visit, the producer cooks the NEXT group ([the run-ahead —
+above](#sched-ring)) concurrently with this visit's GEMMs, and the visit closes on the
+same end-of-visit `__syncthreads()` that publishes it. One cooking producer against
+eight reading warps is the whole point of the arrangement: the ballot ALU and the
+atom-bitlist load issue are paid once per owner rather than once per warp.
+
+## <a id="staging"></a>16. The staging — everything the visit's compute consumes but does not produce
 
 `stage_group(is_read, is_write, gN, rmask, wmask)` runs, LIVE ATOMS ONLY, for every
 leaf-axis loop:
 
 - under `DECAY`, the clock prefix and entry/exit scale ([below](#decay-clock));
-- the §3 step-3 row scales `sr`/`sw` ([below](#row-scales));
 - the read panel `Rf` ([below](#read-panel));
 - the write panel `WT` ([below](#write-panel));
 - `Vw[t, ch] = sw[t] * v[token, ch]` — the write side folds the row scale into the
   value tile because there `t` is the CONTRACTION index and the scale cannot hoist out
   of the sum.
+
+The [row scales](#row-scales) `sr`/`sw` are NOT computed here: they arrive
+PRE-MULTIPLIED in the ring slot, [cooked by the producer](#upper-product) a whole visit
+ahead, so `stage_group` only reads them (in the `Vw` fold above and at
+[emission](#split-k-emission)).
 
 Tokens are `t_idx[0..gN)`, globally ascending; a ragged group's padded slots
 `[gN, kGT)` stage EXACT-ZERO coefficient rows and zero row scales, so they are inert
@@ -348,7 +459,7 @@ through every GEMM without any membership test.
 loops — dense inputs pay zero mask instructions, because they self-heal to identity
 grouping rather than taking a different code path.
 
-## <a id="decay-clock"></a>13. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
+## <a id="decay-clock"></a>17. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
 Guarded by `is_write` structurally: a group with no write-live members has `c == 0` on
 every leaf, so every factor this block computes is the identity and the plain path is
@@ -393,19 +504,21 @@ scan would cost more barriers than it saves steps. A ragged group's padded slots
 a FINITE zero prefix (`clk[t*CKP+i] = 0` for `t >= gN`) so both panel factors stay
 finite (`keep^0 == 1`); their coefficient rows are exact zeros anyway.
 
-## <a id="row-scales"></a>14. §3 step 3's row scales
+## <a id="row-scales"></a>18. §3 step 3's row scales
 
 `sr[t]`/`sw[t]`: the group's per-token read/write row scales — the read/write gain
 times the FIXED levels' amplitudes at the owner's own digit, constant along the leaf
 axis (which is why they are held out of the coefficient blocks entirely). They depend
 on nothing the group's leaf-axis loops compute, only on `(bh, token)` and the owner's
-`base[]`. `global` fixes the read scale's multiplicative identity at `1` (`g_read`
-does not exist as a field — raw normalization is dead), so `sr` starts at `1` and
-multiplies in only the fixed-level read amplitudes; `sw` starts at
-`p.g_write[bh, token]` and multiplies in the fixed-level write amplitudes. Padded
+`base[]` — an OWNER-LEVEL fact, cooked once per owner's group by the producer alongside
+the membership ballot and read from the ring by every consumer warp
+([`#upper-product`](#upper-product)). `global` fixes the read scale's multiplicative
+identity at `1` (`g_read` does not exist as a field — raw normalization is dead), so
+`sr` starts at `1` and multiplies in only the fixed-level read amplitudes; `sw` starts
+at `p.g_write[bh, token]` and multiplies in the fixed-level write amplitudes. Padded
 slots (`t >= gN`) take `0`.
 
-## <a id="read-panel"></a>15. The read panel `Rf` (§3 steps 2-3), live atoms only
+## <a id="read-panel"></a>19. The read panel `Rf` (§3 steps 2-3), live atoms only
 
 `rf_pair(t, k)` computes one bf16-packed coefficient PAIR (leaves `k`, `k+1`) for
 token `t`: the product of the spanned levels' (`l >= j`) bf16 amplitudes at the
@@ -421,7 +534,7 @@ contiguous in `tid` and the buffer is atom-blocked by construction:
 `rmask == kFullMask` unrolls dense over every slot; otherwise the loop walks only the
 `128`-word blocks of atoms set in `rmask` (`__fns` picks the q-th live atom).
 
-## <a id="write-panel"></a>16. The write panel `WT`, live atoms only
+## <a id="write-panel"></a>20. The write panel `WT`, live atoms only
 
 `wt_pairs(q)` fills one atom's 8 leaf-pairs x `kGT` tokens = 128 slots. Per slot:
 the spanned levels' bf16 write amplitudes at the owner's digit, times — under
@@ -438,7 +551,7 @@ the reverse direction (a value that rounds TO zero) must not silently exclude a 
 that later reads as live. The `kGT` tokens of one leaf pair are one contiguous 16-lane
 run, tested with `__any_sync` over that run.
 
-## <a id="clk-dead"></a>17. HAZARD `clk-dead` — the `clk -> Vw` lifetime barrier
+## <a id="clk-dead"></a>21. HAZARD `clk-dead` — the `clk -> Vw` lifetime barrier
 
 `if (DECAY && is_write) __syncthreads();` after the write panel and before the `Vw`
 staging marks the exact point past which `Vw` may overwrite `clk`'s aliased bytes
@@ -452,7 +565,7 @@ check can see.
 
 # Part V — the four GEMMs
 
-## <a id="gemm-readout"></a>18. GEMM 1 — the readout, `y_group = R . S`, live read atoms only
+## <a id="gemm-readout"></a>22. GEMM 1 — the readout, `y_group = R . S`, live read atoms only
 
 Runs when `is_read && warp < NT_DV`. `mask == kFullMask` unrolls the dense arm
 (`mma_tile_fragA<BC, ...>` over the whole state); otherwise the loop walks only the
@@ -460,7 +573,7 @@ live atoms of `rmask`, contracting `kMmaKQuantum` leaves per atom
 (`mma_tile_fragA<kMmaKQuantum, ...>`). The B operand (`S`) is packed out of SMEM on
 the fly; state and accumulation stay fp32 throughout.
 
-## <a id="mass-term1"></a>19. The mass column, TERM 1 — placement FORCED by phase order
+## <a id="mass-term1"></a>23. The mass column, TERM 1 — placement FORCED by phase order
 
 `den[t] = sum_k Rf[t,k] * S[k, DV]`, live read atoms only, using `frag_a_get` to read
 back an element of the fragment-ordered `Rf` (a `[kGT x BC] x [BC x 1]` matvec — an
@@ -477,7 +590,7 @@ reassignment of which thread owns which `t` — reordering either half relative 
 fold changes what `S[k, DV]` term 1 reads, which is a real numeric difference, not
 just a reassociation.
 
-## <a id="b6"></a>20. B6 — the visit's read-then-write ordering on `S`, as a counter
+## <a id="b6"></a>24. B6 — the visit's read-then-write ordering on `S`, as a counter
 
 `retire_item(&ctl[kCtlReadDone], lane)` runs UNCONDITIONALLY at the end of the readout
 phase — every warp retires once whether or not it did read work, because the counter
@@ -487,7 +600,7 @@ work rather than a rendezvous every warp must reach in lockstep.
 [`pipeline.md#item-stream`](pipeline.md#item-stream) has the release/acquire
 discipline and the deadlock argument this rests on.
 
-## <a id="gemm-gram"></a>21. GEMM 2 — the causal effective-score block, `G += R_q . W_q^T`
+## <a id="gemm-gram"></a>25. GEMM 2 — the causal effective-score block, `G += R_q . W_q^T`
 
 Runs when `mixed = is_read && is_write` and `warp < kGT / 8`, over `gmask = rmask &
 wmask` — atoms live on BOTH sides (either side dead makes the term exactly zero, and
@@ -496,7 +609,7 @@ every atom; otherwise the loop walks `gmask`'s live atoms. The completed accumul
 is written into `Gm` through §5's INCLUSIVE causal mask (`c <= _g` / `c <= _g + 8`
 zeroing the strictly-future entries) via `gm_put`.
 
-## <a id="gram-gate"></a>22. `kGramWarps` and the phase-C gate
+## <a id="gram-gate"></a>26. `kGramWarps` and the phase-C gate
 
 `kGramWarps = min(kGT / 8, kWarps) == 2` narrows both the Gram's PUBLICATION
 (`retire_item(&ctl[kCtlGramDone], lane)`, guarded `mixed && warp < kGramWarps`) and
@@ -514,7 +627,7 @@ diverged from the store guard (e.g. matching the GEMM's accumulate condition ins
 of its store condition) would let `kCtlGramDone` reach its target before every store
 that target was supposed to count has landed.
 
-## <a id="gemm-fold"></a>23. GEMM 4 — the boundary fold, `S += W^T . Vw`, live write atoms only
+## <a id="gemm-fold"></a>27. GEMM 4 — the boundary fold, `S += W^T . Vw`, live write atoms only
 
 Runs when `is_write`, after `await_count(&ctl[kCtlReadDone], kWarps)`. The visit's
 fold work is a FLUID ITEM POOL: `n_fold_items = popc(wmask) * NT_DV`, and every
@@ -562,7 +675,7 @@ column's fold term (`S[row][DV]`, live write atoms only) takes the same `gs`-nes
 epilogue: a dead atom's rows have `acc == 0` on every staged slot and `s0 == 1`, so
 the skip is the identity there too.
 
-## <a id="phase-c"></a>24. Phase C — GEMM 3, the intra term, and the mass column's term 2
+## <a id="phase-c"></a>28. Phase C — GEMM 3, the intra term, and the mass column's term 2
 
 After `await_count(&ctl[kCtlGramDone], kGramWarps)` (guarded `mixed`): `y_group +=
 G . Vw` into the SAME registers the readout used (`mma_tile_vwB`, `warp < NT_DV`) —
@@ -574,7 +687,7 @@ token-axis contraction, so no atom mask applies here. The mass column's term 2,
 
 # Part VI — the epilogue
 
-## <a id="split-k-emission"></a>25. The split-K emission
+## <a id="split-k-emission"></a>29. The split-K emission
 
 Guarded `is_read`. `emit(t, ch, val)` computes `out = sr[t] * val` and skips the
 `atomicAdd` on `out == 0.0f` — a PERFORMANCE skip on a VALUE, never a membership
@@ -583,7 +696,7 @@ decision: a ragged group's padded slots have `sr == 0` by construction and never
 real emission). The numerator scatters through `t_idx[t]` per output channel; the
 denominator emission is the same pattern over `den[t]`.
 
-## <a id="pass1-epilogue"></a>26. Pass 1's per-leaf epilogue
+## <a id="pass1-epilogue"></a>30. Pass 1's per-leaf epilogue
 
 Guarded `is_write && summary && DECAY`: `if (s0[i] != 1.0f) sum_slot[i] = 1;` catches
 the leaves the [write-panel's coefficient-side test](#summary-prequant) could not —
@@ -592,7 +705,7 @@ to be zero on this visit. `a_state[i] *= s0[i] * s0[i]` accumulates the segment'
 per-leaf survival product `A` (identity `1` under `decay = None`, since `s0` is never
 formed there).
 
-## <a id="pass1-publication"></a>27. Pass 1's publication — the sparse written-leaf summary
+## <a id="pass1-publication"></a>31. Pass 1's publication — the sparse written-leaf summary
 
 After the walk, under `summary`: warp 0 compacts `sum_slot[i] != 0` into an ascending
 dense list via one `__ballot_sync` per 32-leaf block, writing the leaf's ordinal into
@@ -602,7 +715,7 @@ dense list via one `__ballot_sync` per 32-leaf block, writing the leaf's ordinal
 `owner_slot0 + seg + 1` is one past the scan's entry stash, so pass 3's segment `q`
 reads `owner_slot0 + q` uniformly.
 
-## <a id="state-store"></a>28. The owner's state block, written to HBM once
+## <a id="state-store"></a>32. The owner's state block, written to HBM once
 
 Only on `!summary && last_seg`. Atom-wise, `#pragma unroll`ed over `kQPO <= 4`: an
 atom whose `atom_row_base` is `< 0` (unpaged, no committed slot) is never stored back

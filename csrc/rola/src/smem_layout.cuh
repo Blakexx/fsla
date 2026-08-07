@@ -60,16 +60,62 @@ constexpr int kGroupTokens = kMmaKQuantum;
 //: era's design item.
 constexpr int kFoldStagedGroups = 1;
 
-//: THE MEMBERSHIP SCAN'S BATCH (the frozen contract's cook-once rule): how many
-//: 32-token words one refill stages into SMEM. The scan words are CTA-uniform,
-//: so a per-thread (per-warp-redundant) global walk pays 8x the sectors and
-//: instructions the stream carries -- MEASURED as the whole of the endgame's
-//: first-cut regression (+7.6M L1 sectors, +57M inst at atscale-L2048). One
-//: thread loads each word's rows ONCE and PRECOMPUTES the member word into the
-//: batch; the assembler consumes SMEM. Two uniform barriers per kScanBatch
-//: words. 32 = one word per thread of one warp per refill, a power of two well
-//: above the split-carry horizon.
-constexpr int kScanBatch = 32;
+//: THE SCHEDULE CHUNK: how many 32-token words the PRODUCER WARP cooks per
+//: refill. It is exactly one word per lane, so a refill is one cooperative load
+//: and the chunk's live-word set is one `__ballot_sync`. The cook is warp-local
+//: throughout -- its collectives are warp-level -- so a refill costs no CTA
+//: barrier. docs/internals/smem_layout.md#sched-chunk
+constexpr int kSchedChunkWords = 32;
+static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of the producer warp");
+
+//: **THE RUN-AHEAD DEPTH.** How many groups the producer
+//: warp runs ahead of the consumers. It is a `constexpr` (overridable at compile
+//: time for the dial sweep), NEVER a template axis: the instantiation matrix does
+//: not gain a coordinate. The ring holds `depth + 1` slots, so the ring is always
+//: at least 2 (contract item 2: the producer must never write the slot being
+//: read) and `depth = 1` is the CONFIGURATION-COLLAPSIBLE NULL -- minimal
+//: machinery, one group of run-ahead, one descriptor of extra storage.
+//: docs/internals/smem_layout.md#sched-ring
+#ifndef ROLA_SCHED_DEPTH
+#define ROLA_SCHED_DEPTH 1
+#endif
+constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
+static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
+constexpr int kSchedSlots = kSchedDepth + 1;
+
+//: **THE VALUES-SHARD DIAL (contract item 4) IS STRUCTURALLY INERT AT
+//: `kFoldStagedGroups == 1`, AND IS THEREFORE NOT BUILT -- a derivation, not an
+//: omission.** The dial's stated selection criterion is the VALUES-RING
+//: HEAD-OF-LINE residual: with one shared value tile the slowest atom consumer
+//: paces the ring's recycling, and `k` shards buy pacing slack by giving disjoint
+//: atom sets their own copies. That residual is a function of how long an atom
+//: holds the tile. At `kFoldStagedGroups == 1` every atom consumes the staged
+//: tile INSIDE ONE VISIT, between the same two barriers, so the tile's lifetime
+//: is the visit and its recycling condition is discharged by the end-of-visit
+//: `__syncthreads()` that already exists: THE CURSOR SPREAD IS ZERO AND THERE IS
+//: NOTHING TO SHARD. `k > 1` would be `k` byte-identical copies of one tile that
+//: no code path distinguishes -- dead storage behind a dead branch.
+//: The dial becomes live exactly when the fold's staged depth deepens (an atom
+//: then holds its accumulator across several groups' tiles and the spreads open
+//: up), which is why this note lives next to the constant that gates it. Until
+//: then `k` is a PLAN-TIME quantity only, pinned at 1 by the host.
+static_assert(kFoldStagedGroups == 1,
+              "the values-shard dial's premise changed: with the fold holding more "
+              "than one staged group per atom residency the cursor spread is no "
+              "longer zero, so `k` stops being inert and has to be built and swept");
+
+//: ONE COOKED GROUP DESCRIPTOR, in ints: the `kGroupTokens` gathered GLOBAL token
+//: indices (ascending -- stability IS causality), then `gN` (the group's member
+//: count; `0` is the stream-end sentinel), the read atom mask, the write atom
+//: mask, and the side flags (bit 0 = the group has a read-live token, bit 1 =
+//: write-live). Consumption multiplicity is `n_atoms + 1` -- which is what earns
+//: it storage under the materialization rule, and is why the INGREDIENTS (which
+//: only the producer reads) do not get a cooked buffer of their own.
+constexpr int kSchedSlotInts = kGroupTokens + 4;
+constexpr int kSchedGN = kGroupTokens;
+constexpr int kSchedRMask = kGroupTokens + 1;
+constexpr int kSchedWMask = kGroupTokens + 2;
+constexpr int kSchedFlags = kGroupTokens + 3;
 
 //: THE SECTOR INVARIANT, UNIVERSAL: one atom's worth of bf16 digits IS one memory
 //: sector. `kMmaKQuantum` bf16 elements = 32 B = the fetch floor = the MMA k-quantum
@@ -87,9 +133,16 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: because a too-small budget is bought back by SPILLING. (The former `NM` key died
 //: with the BT axis: every group is one m16 row block.)
 //: docs/internals/smem_layout.md#reg-budget
-constexpr int consumer_reg_budget(int BC, bool decay, int DV) {
+constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)DV;
-  return (BC >= 64) ? 80 : (decay ? 80 : 64);
+  //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
+  //: structural template axis and the cook's working set grows with it (one
+  //: fixed-level bit row per level, per side, per refill): measured over all 32
+  //: arms on both arches, the `BC = 16, decay = 0` arms fit 64 with zero spill at
+  //: `D <= 3` and do not at `D = 4`. Its price -- 3 CTAs/SM where 64 gave 4 on
+  //: those arms -- is stated with the measurement in
+  //: docs/internals/smem_layout.md#reg-budget.
+  return (BC >= 64 || decay || D >= 4) ? 80 : 64;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
@@ -343,7 +396,6 @@ constexpr size_t vw_union_bytes() {
 template <int BC, int DV, int D, bool DECAY>
 constexpr size_t consumer_smem_bytes() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);            // S (+ mass column pad)
-  b += 2 * static_cast<size_t>(kGroupTokens) * sizeof(float);               // sr, sw
   b += static_cast<size_t>(kGroupTokens) * sizeof(float);                   // den
   b += static_cast<size_t>(D) * BC * sizeof(int);                           // dig
   b += align4(static_cast<size_t>(BC) * kWtPitch * sizeof(__nv_bfloat16));  // WT
@@ -352,14 +404,20 @@ constexpr size_t consumer_smem_bytes() {
   b += static_cast<size_t>(kGroupTokens) * (kGroupTokens + 8) * sizeof(__nv_bfloat16);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
-  //: The group scheduler's SMEM block: `t_idx` (`kGroupTokens` global token
-  //: indices, warp 0 at ballot time) + `g_scan` (the assembler's cross-visit
-  //: carry: fill, word cursor, fr, fw, member remainder, flags, plus the
-  //: scan's `D` fixed-level row indices -- SMEM so no scheduler state is
-  //: register-live across the visit body; the atom masks are CTA-uniform
-  //: registers, derived word-wise from the bitlists at ballot).
-  b += static_cast<size_t>(kGroupTokens + 6 + D) * sizeof(int);  // t_idx + g_scan
-  b += 3 * static_cast<size_t>(kScanBatch) * sizeof(int);        // the scan batch (fr, fw, member)
+  //: THE COOKED SCHEDULE RING: `kSchedSlots` group descriptors, written by the
+  //: PRODUCER WARP a whole visit ahead and read by every consumer warp. It is the
+  //: only schedule storage the consumers touch.
+  b += static_cast<size_t>(kSchedSlots) * kSchedSlotInts * sizeof(int);
+  //: The slot's PER-OWNER UPPER PRODUCTS (`sr`, `sw`) -- §3 step 3's row scales,
+  //: cooked in the ring beside the member word, one pair of `kGroupTokens` floats
+  //: per slot.
+  b += static_cast<size_t>(kSchedSlots) * 2 * kGroupTokens * sizeof(float);
+  //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
+  //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
+  //: HERE rather than in the producer warp's registers because scheduler state
+  //: held in registers is live across the visit body and spills the tightest key:
+  //: docs/internals/smem_layout.md#reg-budget.
+  b += (8 + 5 * 32) * sizeof(int);
   return b;
 }
 

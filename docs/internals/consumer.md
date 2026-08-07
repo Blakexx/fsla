@@ -118,10 +118,12 @@ contiguous — the layout the per-atom fetch era streams without a migration.
 These are the walk's per-side masks, consumed WORD-WISE, not by an OR into a
 byte: for the taken word of a ballot round, atom `q`'s bit in the group's mask
 = `(row q's word at the taken source word) & taken != 0` — one uniform load per
-`(side, atom)` per ballot round, `<= 2 * QPO` total
-(`consumer_kernel.cuh`, the `g_scan` assembler). The compact-into-registers atom
-walk then visits only the atoms either mask sets; `mask == kFullMask` selects
-the statically-unrolled dense arm, so dense pays no mask instructions.
+`(side, atom)` per ballot round, `<= 2 * QPO` total, cooked by the schedule
+ring's producer warp (`consumer_kernel.cuh`,
+[`consumer_kernel.md#producer`](consumer_kernel.md#producer)). The
+compact-into-registers atom walk then visits only the atoms either mask sets;
+`mask == kFullMask` selects the statically-unrolled dense arm, so dense pays no
+mask instructions.
 
 Derived host-side alongside `slice_union_tok`, from the same support authority
 (`rola/planner/schedule.py`'s `_atom_union_bits`, one summaries pass,
