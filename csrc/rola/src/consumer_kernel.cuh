@@ -160,9 +160,7 @@ consumer_forward_kernel(ConsumerParams p) {
   //: load-bearing fact. docs/internals/smem_layout.md#vw-clk-union
   float* clk = reinterpret_cast<float*>(carve);
   carve += kVwSlotBytes;
-  float* sr = reinterpret_cast<float*>(carve);
-  float* sw = sr + kGT;
-  float* den = sw + kGT;
+  float* den = reinterpret_cast<float*>(carve);
   int* dig = reinterpret_cast<int*>(den + kGT);  // [D][BC]
   unsigned* Rf = reinterpret_cast<unsigned*>(dig + D * BC);
   __nv_bfloat16* Gm = reinterpret_cast<__nv_bfloat16*>(Rf + kRfWords);
@@ -178,6 +176,12 @@ consumer_forward_kernel(ConsumerParams p) {
   //: of re-deriving it: the base's 8x-redundant assembler is what this deletes.
   //: docs/internals/consumer_kernel.md#sched-ring
   int* g_ring = ctl + ctl_words(BC);
+  //: THE PER-OWNER UPPER PRODUCTS, one pair of `kGT` floats per ring slot: the
+  //: read row scale then the write row scale for each of the slot's member
+  //: tokens. Cooked by the producer beside the member word (the stream-inventory
+  //: amendment) and consumed as `sr` / `sw`.
+  //: docs/internals/consumer_kernel.md#upper-product
+  float* g_up = reinterpret_cast<float*>(g_ring + kSchedSlots * kSchedSlotInts);
   static_assert(
       !DECAY || static_cast<size_t>(kGT) * CKP * sizeof(float) <= vw_union_bytes<BC, DV, DECAY>(),
       "clk aliases the Vw region and must fit IN BYTES");
@@ -406,6 +410,63 @@ consumer_forward_kernel(ConsumerParams p) {
       fill += __popc(taken);
       p_rem ^= taken;
     }
+    // ---- THE PER-OWNER UPPER PRODUCT (the stream-inventory amendment). The
+    // ---- FIXED levels' amplitudes are CONSTANT ALONG THE LEAF AXIS -- `j`
+    // ---- scalars per member token per side, common to every atom's Kronecker
+    // ---- coefficient -- so their per-token product is an OWNER-LEVEL fact and
+    // ---- obeys the same multiplicity rule membership does: computed ONCE PER
+    // ---- OWNER, never per atom. These are §3 step 3's ROW SCALES, and the base
+    // ---- already honoured the multiplicity (they were computed once per
+    // ---- (visit, token) and held OUT of the coefficient blocks); what the
+    // ---- amendment changes is their HOME.
+    // ----
+    // ---- HOME CHOSEN: THE COOKED-SCHEDULE RING (the amendment's suggested
+    // ---- home), and the reason is that it is the only one that also BUYS
+    // ---- something. The cook stage already owns the member token list, so the
+    // ---- scales ride the slot at zero extra streams and arrive PRE-MULTIPLIED a
+    // ---- visit early -- which lifts `2 * j` fp32 gathers off the visit's
+    // ---- critical path into the run-ahead, and lets the `sw`-publication
+    // ---- barrier in the staging go (it published exactly this). An
+    // ---- owner-scoped mini-ring was rejected: it would carry its own cursor for
+    // ---- data already keyed by precisely this ring's index. Per-atom
+    // ---- duplication was rejected: it multiplies the one quantity the
+    // ---- amendment exists to keep at multiplicity one.
+    // ---- docs/internals/consumer_kernel.md#upper-product
+    //: Predicated exactly as the base's two row-scale loops were, so a
+    //: side-dead visit fetches nothing it did not fetch before.
+    const bool need_r = !summary && gr && rmask != 0u;
+    const bool need_w = gw && wmask != 0u;
+    if (need_r || need_w) {
+      //: lanes below `fill` read back token indices OTHER lanes wrote above.
+      __syncwarp();
+      float* U = g_up + slot * 2 * kGT;
+      const int tok = (lane < fill) ? R[lane] : 0;
+      const int64_t tr = tok_base + tok;
+      float rs = 0.0f, ws = 0.0f;
+      //: A ragged group's padded slots take EXACT ZERO scales, which is what
+      //: makes their coefficient rows inert through every GEMM and the mass
+      //: fold's `sw[t]` term vanish.
+      if (lane < fill) {
+        rs = 1.0f;
+        ws = need_w ? p.g_write[static_cast<int64_t>(bh) * p.T + tok] : 0.0f;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          if (l >= j) break;
+          //: Fixed levels (`l < j`) are ALWAYS fp32 (Option B) -- the one place
+          //: the amplitude dtype is not the arm's storage type.
+          if (need_r) {
+            rs *= static_cast<const float*>(p.amp_read[l])[tr * p.level_pitch_read[l] + base[l]];
+          }
+          if (need_w) {
+            ws *= static_cast<const float*>(p.amp_write[l])[tr * p.level_pitch_write[l] + base[l]];
+          }
+        }
+      }
+      if (lane < kGT) {
+        if (need_r) U[lane] = rs;
+        if (need_w) U[kGT + lane] = ws;
+      }
+    }
     //: `fill == 0` is the stream-end sentinel every consumer breaks on; the
     //: final flush is the ragged group (`fill < kGT`).
     if (lane == 0) {
@@ -430,6 +491,11 @@ consumer_forward_kernel(ConsumerParams p) {
   //: `kGT` ints -- retargeted per visit rather than copied, so every staging
   //: loop reads the producer's published descriptor directly.
   const int* t_idx = g_ring;
+  //: THE VISIT'S ROW SCALES, likewise retargeted per visit rather than copied:
+  //: `sr[t]` / `sw[t]` are the producer's per-token upper products for the
+  //: slot's tokens, read-only to every consumer.
+  const float* sr = g_up;
+  const float* sw = g_up + kGT;
 
   // ---- THE STAGING, AS A FUNCTION OF THE GROUP: everything the visit's COMPUTE
   // ---- consumes but does not produce. Tokens are `t_idx[0..gN)`, globally
@@ -478,41 +544,12 @@ consumer_forward_kernel(ConsumerParams p) {
         for (int c = lane; c < cols; c += 32) S[i * SP + c] *= s;
       }
     }
-    // ---- §3 STEP 3's ROW SCALES: constant along the leaf axis, held OUT of the
-    // ---- coefficient blocks. Fixed levels (`l < j`) are ALWAYS fp32 (Option B).
-    // ---- `global` fixes g_read := 1 (raw is dead), so the read scale starts at 1.
-    // ---- docs/internals/consumer_kernel.md#row-scales
-    if (is_read) {
-      for (int t = tid; t < kGT; t += kConsumerThreads) {
-        float s = 0.0f;
-        if (t < gN) {
-          const int64_t tr = tok_base + t_idx[t];
-          s = 1.0f;
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l >= j) break;
-            s *= static_cast<const float*>(p.amp_read[l])[tr * p.level_pitch_read[l] + base[l]];
-          }
-        }
-        sr[t] = s;
-      }
-    }
-    if (is_write) {
-      for (int t = tid; t < kGT; t += kConsumerThreads) {
-        float s = 0.0f;
-        if (t < gN) {
-          const int64_t tr = tok_base + t_idx[t];
-          s = p.g_write[static_cast<int64_t>(bh) * p.T + t_idx[t]];
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l >= j) break;
-            s *= static_cast<const float*>(p.amp_write[l])[tr * p.level_pitch_write[l] + base[l]];
-          }
-        }
-        sw[t] = s;
-      }
-    }
-    if (!DECAY && is_write) __syncthreads();  // sw published to the Vw staging below
+    // ---- §3 STEP 3's ROW SCALES ARRIVE PRE-MULTIPLIED IN THE RING SLOT, cooked
+    // ---- once per owner by the producer a visit ago (the stream-inventory
+    // ---- amendment). Nothing is computed and nothing is published here, so the
+    // ---- `sw`-publication `__syncthreads()` that used to stand at this point --
+    // ---- its ONLY job was making the row scales visible to the `Vw` staging --
+    // ---- is gone with them. docs/internals/consumer_kernel.md#upper-product
     // ---- THE READ PANEL (§3 steps 2-3). The loop walks FRAGMENT
     // ---- SLOTS (one k-step = one atom = 128 words), so the store is contiguous in
     // ---- `tid` and the buffer is atom-blocked by construction. The bf16 slot packs
@@ -641,6 +678,8 @@ consumer_forward_kernel(ConsumerParams p) {
     const unsigned wmask = static_cast<unsigned>(R[kSchedWMask]);
     const int gflags = R[kSchedFlags];
     t_idx = R;
+    sr = g_up + (gidx % kSchedSlots) * 2 * kGT;
+    sw = sr + kGT;
 
     // ---- THE VISIT'S CONTROL BLOCK, RESET. Behind it stands the previous visit's
     // ---- end-of-visit `__syncthreads()` (so no warp is still retiring into it);

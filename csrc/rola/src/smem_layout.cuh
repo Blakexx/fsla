@@ -85,17 +85,26 @@ constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
 static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
 constexpr int kSchedSlots = kSchedDepth + 1;
 
-//: **THE VALUES-SHARD COUNT -- change-2's second dial (contract item 4).** How
-//: many copies of the staged value tile the CTA's atoms consume from: `k = 1` is
-//: full sharing (one tile, the HBM/L2 dedup win, slowest-consumer pacing), `k =
-//: QPO` is full decoupling (ties the multi-CTA baseline). Atom `q` reads shard
-//: `q % k`. Chosen AT PLAN TIME from static cursor analysis (`rola.plan`'s
-//: `value_shards`); `constexpr` here for the same reason `kSchedDepth` is.
-#ifndef ROLA_VALUE_SHARDS
-#define ROLA_VALUE_SHARDS 1
-#endif
-constexpr int kValueShards = ROLA_VALUE_SHARDS;
-static_assert(kValueShards >= 1, "at least one value shard");
+//: **THE VALUES-SHARD DIAL (contract item 4) IS STRUCTURALLY INERT AT
+//: `kFoldStagedGroups == 1`, AND IS THEREFORE NOT BUILT -- a derivation, not an
+//: omission.** The dial's stated selection criterion is the VALUES-RING
+//: HEAD-OF-LINE residual: with one shared value tile the slowest atom consumer
+//: paces the ring's recycling, and `k` shards buy pacing slack by giving disjoint
+//: atom sets their own copies. That residual is a function of how long an atom
+//: holds the tile. At `kFoldStagedGroups == 1` every atom consumes the staged
+//: tile INSIDE ONE VISIT, between the same two barriers, so the tile's lifetime
+//: is the visit and its recycling condition is discharged by the end-of-visit
+//: `__syncthreads()` that already exists: THE CURSOR SPREAD IS ZERO AND THERE IS
+//: NOTHING TO SHARD. `k > 1` would be `k` byte-identical copies of one tile that
+//: no code path distinguishes -- dead storage behind a dead branch.
+//: The dial becomes live exactly when the fold's staged depth deepens (an atom
+//: then holds its accumulator across several groups' tiles and the spreads open
+//: up), which is why this note lives next to the constant that gates it. Until
+//: then `k` is a PLAN-TIME quantity only, pinned at 1 by the host.
+static_assert(kFoldStagedGroups == 1,
+              "the values-shard dial's premise changed: with the fold holding more "
+              "than one staged group per atom residency the cursor spread is no "
+              "longer zero, so `k` stops being inert and has to be built and swept");
 
 //: ONE COOKED GROUP DESCRIPTOR, in ints: the `kGroupTokens` gathered GLOBAL token
 //: indices (ascending -- stability IS causality), then `gN` (the group's member
@@ -382,7 +391,6 @@ constexpr size_t vw_union_bytes() {
 template <int BC, int DV, int D, bool DECAY>
 constexpr size_t consumer_smem_bytes() {
   size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);            // S (+ mass column pad)
-  b += 2 * static_cast<size_t>(kGroupTokens) * sizeof(float);               // sr, sw
   b += static_cast<size_t>(kGroupTokens) * sizeof(float);                   // den
   b += static_cast<size_t>(D) * BC * sizeof(int);                           // dig
   b += align4(static_cast<size_t>(BC) * kWtPitch * sizeof(__nv_bfloat16));  // WT
@@ -398,6 +406,12 @@ constexpr size_t consumer_smem_bytes() {
   //: now warp-private (registers, no carry) and the cooked chunk is register-
   //: resident, so the ring is the ONLY scheduler storage that remains.
   b += static_cast<size_t>(kSchedSlots) * kSchedSlotInts * sizeof(int);
+  //: The slot's PER-OWNER UPPER PRODUCTS (`sr`, `sw`) -- §3 step 3's row scales,
+  //: cooked in the ring beside the member word (the stream-inventory amendment).
+  //: They REPLACE the standalone `sr`/`sw` pair the carve used to hold, so the
+  //: delta is `kSchedDepth` EXTRA copies of `2 * kGroupTokens` floats, not a new
+  //: region.
+  b += static_cast<size_t>(kSchedSlots) * 2 * kGroupTokens * sizeof(float);
   return b;
 }
 
