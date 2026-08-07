@@ -104,7 +104,7 @@ def _grads(operands, y, state):
 
 
 @pytest.mark.parametrize("decay_on", [False, True])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 def test_the_stored_clock_receives_no_gradient_not_a_zero_one(decay_on, normalization):
     """Claim 1. `None` is autograd's answer and the oracle states nothing else."""
     operands, stored, run = _case(decay_on=decay_on, normalization=normalization)
@@ -121,7 +121,7 @@ def test_the_stored_clock_receives_no_gradient_not_a_zero_one(decay_on, normaliz
 
 
 @pytest.mark.parametrize("decay_on", [False, True])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 def test_every_operand_the_result_depends_on_still_gets_a_real_gradient(decay_on, normalization):
     """Claim 2, with the NONZERO half that `is not None` alone would not give."""
     operands, stored, run = _case(decay_on=decay_on, normalization=normalization)
@@ -156,7 +156,7 @@ def test_the_oracle_declares_the_none_answer_in_its_docstring():
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float64])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 def test_both_outputs_are_fp64_whatever_the_inputs_were(dtype, normalization):
     """Claim 4 (audit F2): the fp64 oracle returns fp64, and the two agree."""
     operands, _stored, run = _case(decay_on=True, normalization=normalization)
@@ -182,55 +182,3 @@ def test_the_dtype_policy_is_stated_where_a_caller_reads_it():
     assert "float64" in naive_rola.__doc__
 
 
-def test_the_ones_column_is_the_mass_state_and_nothing_else():
-    """Claim 5: normalization is one recurrence, not two, and this is why.
-
-    The mass state is by definition the same recurrence run on a value vector of
-    all ones -- no gate of its own, no deposit of its own. The oracle therefore
-    does not carry a second state: `v` gains a ones column and the last column of
-    the state IS the mass.
-
-    That is checked HERE against a construction the oracle does not share, rather
-    than asserted in a comment. Run the same routing three ways:
-
-    * `global` with `d_v` value columns -> `[..., d_v + 1]`,
-    * `raw` with the same `v` -> `[..., d_v]`, which must be the first `d_v`
-      columns EXACTLY, since the state never sees the read side, and
-    * `raw` with `v = 1` and `d_v = 1` -> `[..., 1]`, which must be the last one.
-
-    Bit-identity, not a tolerance: these are the same multiplications and
-    additions in the same order, and if they were not the trick would be an
-    approximation rather than an identity.
-    """
-    g = torch.Generator().manual_seed(11)
-    d_v = 6
-
-    def simplex(width):
-        x = torch.rand(B, T, H, width, generator=g, dtype=torch.float64) + 1e-3
-        return x / x.sum(dim=-1, keepdim=True)
-
-    read = tuple(simplex(w) for w in WIDTHS)
-    write = tuple(simplex(w) for w in WIDTHS)
-    v = torch.randn(B, T, H, d_v, generator=g, dtype=torch.float64)
-    g_write = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
-    g_read = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
-    dials = tuple(torch.rand(H, w, generator=g, dtype=torch.float64) * 0.3 + 0.1 for w in WIDTHS)
-    decay = LeafMassDecay(dials=dials)
-
-    def run(values, width, normalization, gain):
-        topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in WIDTHS), d_v=width)
-        return naive_rola(values, read, write, gain, g_write, topology, decay,
-                          normalization, output_final_state=True)[1]
-
-    normalized = run(v, d_v, "global", None)
-    values_only = run(v, d_v, "raw", g_read)
-    ones = torch.ones(B, T, H, 1, dtype=torch.float64)
-    mass_only = run(ones, 1, "raw", g_read)
-
-    assert normalized.shape[-1] == d_v + 1
-    assert torch.equal(normalized[..., :d_v], values_only), (
-        "the ones column changed the value columns; it must not touch them")
-    assert torch.equal(normalized[..., d_v:], mass_only), (
-        "the last column is not the recurrence run on ones, so it is not the mass "
-        "state and the single-recurrence claim is false")
-    assert float(mass_only.abs().max()) > 0, "the mass fixture accumulated nothing"

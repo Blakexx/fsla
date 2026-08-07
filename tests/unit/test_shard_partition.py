@@ -53,18 +53,15 @@ def test_membership_is_a_function_of_the_tuple_alone():
     """
     pattern = re.compile(
         r"template void launch_consumer_arm<"
-        r"(\d+), (\d+), (\d+), (\d+), MmaPrec::(kBf16|kTf32x3), "
-        r"(true|false), (true|false)>")
+        r"(\d+), (\d+), (\d+), (true|false)>")
     seen: dict[str, str] = {}
     for path in sorted(SHARD_DIR.glob("consumer_*.cu")):
         rows = pattern.findall(path.read_text())
         assert len(rows) == gen_shards.TARGET_MEMBERS_PER_SHARD, (
             f"{path.name} carries {len(rows)} instantiations, not "
             f"{gen_shards.TARGET_MEMBERS_PER_SHARD}")
-        for BT, BC, DV, D, prec, decay, glob in rows:
-            row = dict(BT=int(BT), BC=int(BC), DV=int(DV), D=int(D),
-                       PREC="bf16" if prec == "kBf16" else "tf32x3",
-                       DECAY=decay == "true", GLOBAL=glob == "true")
+        for BC, DV, D, decay in rows:
+            row = dict(BC=int(BC), DV=int(DV), D=int(D), DECAY=decay == "true")
             key = gen_shards.canonical(row)
             assert key not in seen, f"{key} is instantiated in two shards"
             seen[key] = path.stem

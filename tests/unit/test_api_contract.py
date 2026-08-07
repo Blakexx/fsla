@@ -271,7 +271,7 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     warning sign at eye level. It now lives behind a marked door.
     """
     quarantined = {"Plan", "PlanAxes", "Schedule", "StaticDensity", "select_plan",
-                   "plan_and_schedule", "MMA_PRECISIONS", "StaticPlanInputs",
+                   "plan_and_schedule", "StaticPlanInputs",
                    "PlanOverrides", "derive_plan", "execute", "requires_backward",
                    "dispatch_for"}
     import rola.expert as expert
@@ -376,11 +376,11 @@ def test_the_selector_swaps_through_the_seam_and_the_plan_records_which_one_ran(
     factors = gateway(_x(gateway, dtype=torch.float32).cuda())
     _prime_hardware(factors.device)
 
-    pinned = ConfigChoice(BC=16, BT=32, feeder_flags=None)
+    pinned = ConfigChoice(BC=16, feeder_flags=None)
     plan = derive_plan(
         factors, expert=PlanOverrides(selector=FixedChoiceSelector(pinned)),
         device=factors.device)
-    assert (plan.BC, plan.BT) == (16, 32), "the swapped selector's choice must be obeyed"
+    assert plan.BC == 16, "the swapped selector's choice must be obeyed"
     assert (plan.selector_name, plan.selector_status) == ("fixed", "DEBUG"), (
         "the stamp must come FROM the selector object that ran")
 
@@ -425,15 +425,16 @@ def test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen():
     v = torch.randn(1, 64, 2, 64, device="cuda")
 
     chosen = derive_plan(factors, device=v.device)
-    other_BT = 32 if chosen.BT == 16 else 16
+    other_BC = 64 if chosen.BC == 16 else 16
     synthetic = Plan(topology=factors.topology, normalization=factors.normalization,
-                     BT=other_BT, BC=chosen.BC, warp_tile=chosen.warp_tile,
-                     decay=False, mma_precision="tf32x3")
+                     BC=other_BC, warp_tile=chosen.warp_tile, decay=False)
     with torch.no_grad():
         y_synthetic, _state, _schedule = execute(synthetic, factors, v)
         reference, _ = rola.naive_rola(
             v.double(), tuple(t.double() for t in factors.read),
             tuple(t.double() for t in factors.write), None,
             factors.g_write.double(), factors.topology, None, factors.normalization)
-    assert torch.allclose(y_synthetic.double(), reference, rtol=2e-3, atol=2e-3), (
+    # bf16 is the only storage format now (no tf32x3 arm), so the tolerance is the
+    # derived bf16 family bound rather than the old near-fp32 rtol.
+    assert torch.allclose(y_synthetic.double(), reference, rtol=1e-2, atol=1e-2), (
         "a plan the planner did not pick must still compute the definition")

@@ -40,7 +40,16 @@ def _table():
 
 
 def _built_so() -> Path:
-    hits = sorted(ROOT.glob("rola/_C*.so"))
+    """The extension THIS interpreter loads, not just any `_C*.so` on disk.
+
+    Multiple built extensions for different CPython ABIs can sit side by side in
+    the tree (stale ones from a prior interpreter's build included) -- an
+    alphabetically-first pick can silently census the wrong one. `rola.ops._ext`
+    already resolved which `.so` this process imports; ask it.
+    """
+    import rola.ops._ext as ext_mod
+    ext_mod.extension()  # ensure it is loaded
+    hits = sorted(ROOT.glob(f"rola/_C.{sys.implementation.cache_tag}-*.so"))
     if not hits:
         pytest.skip("no built extension to census")
     return hits[0]
@@ -80,8 +89,7 @@ def test_the_table_and_the_binary_carry_exactly_the_same_arms():
 
     table = _table()
     from_table = {gen_shards.canonical(
-        dict(BT=r.BT, BC=r.BC, DV=r.DV, D=r.D, PREC=r.prec, DECAY=r.decay,
-             GLOBAL=r.global_norm)) for r in table.rows}
+        dict(BC=r.BC, DV=r.DV, D=r.D, DECAY=r.decay)) for r in table.rows}
 
     for arch, in_binary in sorted(per_arch.items()):
         assert from_table == in_binary, (
@@ -100,9 +108,7 @@ def test_every_table_row_names_the_shard_that_defines_it():
     import gen_shards
 
     for row in _table().rows:
-        want = gen_shards.shard_of(dict(BT=row.BT, BC=row.BC, DV=row.DV, D=row.D,
-                                        PREC=row.prec, DECAY=row.decay,
-                                        GLOBAL=row.global_norm))
+        want = gen_shards.shard_of(dict(BC=row.BC, DV=row.DV, D=row.D, DECAY=row.decay))
         assert row.shard == want, f"{row.key} claims shard {row.shard}, membership says {want}"
 
 
@@ -113,9 +119,8 @@ def test_the_table_is_the_whole_matrix_and_nothing_else():
     table = _table()
     assert len(table.rows) == len(gen_shards.matrix())
     assert len({r.key for r in table.rows}) == len(table.rows), "a tuple appears twice"
-    for axis, name in (("BT", "BT"), ("BC", "BC"), ("DV", "DV"), ("D", "D")):
-        assert table.values(axis) == tuple(sorted(gen_shards.AXIS[name].values))
-    assert set(table.values("prec")) == set(gen_shards.AXIS["PREC"].values)
+    for axis in ("BC", "DV", "D"):
+        assert table.values(axis) == tuple(sorted(gen_shards.AXIS[axis].values))
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +152,7 @@ def test_a_row_whose_shard_membership_moved_is_filtered_not_used():
 
     gone = next(r for r in live.rows if r.shard == victim)
     with pytest.raises(KeyError):
-        table.resolve(gone.BT, gone.BC, gone.DV, gone.D, gone.prec, gone.decay,
-                      gone.global_norm)
+        table.resolve(gone.BC, gone.DV, gone.D, gone.decay)
 
 
 def test_an_unrecorded_shard_is_filtered_with_its_own_reason():
@@ -209,17 +213,15 @@ def test_every_shipped_arm_is_admitted_by_this_device():
 
 
 def test_the_planners_supported_sets_are_the_tables_own_axes():
-    """The four Python restatements of the instantiation set, pinned to the table.
+    """The Python restatements of the instantiation set, pinned to the table.
 
-    `schedule._SUPPORTED_BT/_BC/_DV` and `select.SUPPORTED_BT/BC` are declared in Python
+    `schedule._SUPPORTED_BC/_DV` and `select.SUPPORTED_BC` are declared in Python
     so that CPU-only planning works with no extension present. That makes them a MIRROR,
     and a mirror needs a gate: this one. The table is the authority.
     """
     from rola.planner import schedule, select
 
     table = _table()
-    assert table.values("BT") == schedule._SUPPORTED_BT
     assert table.values("BC") == schedule._SUPPORTED_BC
     assert table.values("DV") == schedule._SUPPORTED_DV
-    assert table.values("BT") == select.SUPPORTED_BT
     assert table.values("BC") == select.SUPPORTED_BC

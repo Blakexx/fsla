@@ -28,9 +28,9 @@ import torch
 from rola.planner.schedule import DEFAULT_SM_COUNT, Plan, StaticDensity
 from rola.planner.select import (
     DEFAULT_SELECTOR,
+    GROUP_TOKENS,
     MMA_K_QUANTUM,
     SELECTOR_INTERFACE_VERSION,
-    SUPPORTED_BT,
     ConfigChoice,
     ConfigEvidence,
     CostModelSelector,
@@ -126,8 +126,8 @@ def test_the_bundle_exposes_the_named_statistics_a_selector_may_read():
     assert set(got) == {
         "interface_version", "D", "N", "BH", "d_v", "decay", "normalization",
         "mma_precision", "feasible_BC", "sm_count", "atomic_coeff", "per_bt_summaries",
-    } | {f"candidate_frac@BT{BT}" for BT in SUPPORTED_BT} | {
-        f"k_hat@BT{BT}" for BT in SUPPORTED_BT}
+        f"candidate_frac@G{GROUP_TOKENS}", f"k_hat@G{GROUP_TOKENS}",
+    }
     assert got["interface_version"] == SELECTOR_INTERFACE_VERSION
     assert got["D"] == 2 and got["N"] == 64 * 64
     assert got["per_bt_summaries"] is False
@@ -137,17 +137,15 @@ def test_expose_reports_the_per_bt_statistic_when_one_was_supplied():
     """`candidate_frac` and `k_hat` are statistics OF A TILING and are not BT-invariant.
 
     FAIL-DEMONSTRABLE by construction: the two granularities carry DIFFERENT numbers,
-    so a bundle that ignored `summaries_by_bt` would report the same value at both
-    `BT` and this row would fail.
+    so a bundle that ignored `summaries_by_bt` would report the wrong one's value at
+    `GROUP_TOKENS` and this row would fail.
     """
     by_bt = {16: _summaries(k_hat=1.0, candidate_frac=0.19),
              32: _summaries(k_hat=3.0, candidate_frac=0.36)}
     bundle = _bundle(summaries=by_bt[16], summaries_by_bt=by_bt)
     got = bundle.expose()
     assert got["per_bt_summaries"] is True
-    assert got["candidate_frac@BT16"] == pytest.approx(0.19)
-    assert got["candidate_frac@BT32"] == pytest.approx(0.36)
-    assert got["k_hat@BT16"] != got["k_hat@BT32"]
+    assert got[f"candidate_frac@G{GROUP_TOKENS}"] == pytest.approx(0.19)
     assert bundle.at(16) is by_bt[16] and bundle.at(32) is by_bt[32]
 
     #: And with no per-BT mapping the SAME object answers at every granularity --
@@ -172,7 +170,7 @@ def test_the_default_selector_is_the_cost_model_and_it_declares_itself_interim()
     assert isinstance(DEFAULT_SELECTOR, CostModelSelector)
     assert (DEFAULT_SELECTOR.name, DEFAULT_SELECTOR.status) == ("cost-model", "INTERIM")
     #: Every selector shipped answers both questions -- the protocol's whole surface.
-    fixed = FixedChoiceSelector(choice=ConfigChoice(BC=64, BT=16, feeder_flags=None))
+    fixed = FixedChoiceSelector(choice=ConfigChoice(BC=64, feeder_flags=None))
     assert (fixed.name, fixed.status) == ("fixed", "DEBUG")
 
 
@@ -181,18 +179,17 @@ def test_select_with_runs_the_selector_it_is_given_and_returns_its_choice():
 
     FAIL-DEMONSTRABLE: the fixed selector is pinned to a choice the cost model does
     NOT make on this cell (asserted here, not assumed), so a `select_with` that
-    ignored its argument and ran the default would return the other `BT` and fail.
+    ignored its argument and ran the default would return the other `BC` and fail.
     """
     bundle = _bundle()
     cost_choice, cost_evidence = select_with(CostModelSelector(), bundle)
     assert isinstance(cost_evidence, ConfigEvidence)
 
-    other_BT = 32 if cost_choice.BT == 16 else 16
-    pinned = ConfigChoice(BC=cost_choice.BC, BT=other_BT,
-                          feeder_flags=cost_choice.feeder_flags)
+    other_BC = 16 if cost_choice.BC == 64 else 64
+    pinned = ConfigChoice(BC=other_BC, feeder_flags=cost_choice.feeder_flags)
     choice, evidence = select_with(FixedChoiceSelector(choice=pinned), bundle)
     assert choice is pinned
-    assert choice.BT == other_BT != cost_choice.BT
+    assert choice.BC == other_BC != cost_choice.BC
     #: NO EVIDENCE, deliberately: it weighed nothing, and an empty `ConfigEvidence`
     #: would be a claim that a decision was reasoned.
     assert evidence is None
@@ -208,7 +205,7 @@ def test_a_fixed_selector_reads_nothing_from_the_bundle():
         def __getattr__(self, name):
             raise AssertionError(f"the fixed selector read {name!r} from the summaries")
 
-    pinned = ConfigChoice(BC=64, BT=32, feeder_flags=None)
+    pinned = ConfigChoice(BC=64, feeder_flags=None)
     bundle = StatisticsBundle(static=_static(), hw=_hw(), summaries=Explodes())
     assert select_with(FixedChoiceSelector(choice=pinned), bundle)[0] is pinned
 
@@ -226,7 +223,7 @@ def test_select_config_keeps_its_frozen_positional_signature():
     """
     choice = select_config(_static(), _hw(), _summaries())
     assert isinstance(choice, ConfigChoice)
-    assert (choice.BC, choice.BT) == (64, choice.BT)
+    assert choice.BC == 64
     with pytest.raises(TypeError):
         select_config(_static(), _hw(), _summaries(), FixedChoiceSelector(choice=choice))
 
@@ -239,9 +236,8 @@ def test_a_selector_passed_to_the_frozen_entry_points_is_the_one_that_decides():
     """
     static, hw, summaries = _static(), _hw(), _summaries()
     default_choice = select_config(static, hw, summaries)
-    other_BT = 32 if default_choice.BT == 16 else 16
-    pinned = ConfigChoice(BC=default_choice.BC, BT=other_BT,
-                          feeder_flags=default_choice.feeder_flags)
+    other_BC = 16 if default_choice.BC == 64 else 64
+    pinned = ConfigChoice(BC=other_BC, feeder_flags=default_choice.feeder_flags)
     selector = FixedChoiceSelector(choice=pinned)
 
     assert select_config(static, hw, summaries, selector=selector) is pinned
@@ -249,7 +245,7 @@ def test_a_selector_passed_to_the_frozen_entry_points_is_the_one_that_decides():
                                        selector=selector)
     assert choice is pinned and evidence is None
     #: And WITHOUT the keyword the default still decides -- the swap is opt-in.
-    assert config_for_step(static, hw, T=128, summaries=summaries)[0].BT == default_choice.BT
+    assert config_for_step(static, hw, T=128, summaries=summaries)[0].BC == default_choice.BC
 
 
 def test_cost_model_kwargs_beside_a_selector_are_refused_rather_than_dropped():
@@ -259,7 +255,7 @@ def test_cost_model_kwargs_beside_a_selector_are_refused_rather_than_dropped():
     it had supplied -- the failure mode is a plan that looks reasoned and is not.
     """
     static, hw, summaries = _static(), _hw(), _summaries()
-    selector = FixedChoiceSelector(choice=ConfigChoice(BC=64, BT=16, feeder_flags=None))
+    selector = FixedChoiceSelector(choice=ConfigChoice(BC=64, feeder_flags=None))
     with pytest.raises(TypeError, match="those arguments are the cost model's"):
         config_for_step(static, hw, T=128, summaries=summaries, selector=selector,
                         summaries_by_bt={16: summaries, 32: summaries})
@@ -281,7 +277,7 @@ def test_the_decode_bypass_still_precedes_the_selector():
             raise AssertionError("a selector ran on the decode path")
 
     choice, evidence = config_for_step(_static(), _hw(), T=1, selector=Explodes())
-    assert evidence is None and SUPPORTED_BT[0] == choice.BT
+    assert evidence is None and isinstance(choice, ConfigChoice)
 
 
 # ---------------------------------------------------------------------------
@@ -300,12 +296,12 @@ def test_a_choice_the_table_has_no_arm_for_is_refused_by_the_table():
     """
     from rola.planner.dispatch_table import DispatchRow, DispatchTable
 
-    rows = [DispatchRow(BT=16, BC=64, DV=64, D=2, prec="bf16", decay=False,
-                        global_norm=True, smem_bytes=27096, shard="s", src_key="k")]
+    rows = [DispatchRow(BC=64, DV=64, D=2, decay=False,
+                        smem_bytes=27096, shard="s", src_key="k")]
     table = DispatchTable(rows)
-    assert table.resolve(16, 64, 64, 2, "bf16", False, True) is rows[0]
+    assert table.resolve(64, 64, 2, False) is rows[0]
     with pytest.raises(KeyError, match="no compiled arm"):
-        table.resolve(32, 64, 64, 2, "bf16", False, True)
+        table.resolve(32, 64, 2, False)
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +318,12 @@ def test_a_plan_carries_the_selector_name_and_status_advisorily():
     than with a plausible default.
     """
     topology = _topology((64, 64))
-    plan = Plan(topology=topology, normalization="global", BT=16, BC=64,
+    plan = Plan(topology=topology, normalization="global", BC=64,
                 warp_tile=(1, 2), selector_name=DEFAULT_SELECTOR.name,
                 selector_status=DEFAULT_SELECTOR.status)
     assert (plan.selector_name, plan.selector_status) == ("cost-model", "INTERIM")
 
-    hand_stamped = Plan(topology=topology, normalization="global", BT=16, BC=64,
+    hand_stamped = Plan(topology=topology, normalization="global", BC=64,
                         warp_tile=(1, 2))
     assert (hand_stamped.selector_name, hand_stamped.selector_status) == ("", "")
 

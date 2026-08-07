@@ -49,7 +49,7 @@ def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
     return x, route_W, gain_W, gain_bias, v
 
 
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
 def test_producer_output_satisfies_oracle_contract_and_differentiates(normalization, dtype):
     """Item 4: run the Stage 1 oracle end-to-end on the producer's output, fp64
@@ -182,7 +182,7 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
             msg=f"{side}-side mass fold is not an identity")
 
 
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 def test_producer_exact_support_counts_match_a_manual_nonzero_count(normalization):
     """Tier 1's exact measurement must be exact (architecture §4.5: the nonzero count
     per token, "O(L*b_l) and free") -- bit-identical to a manual count, on every level

@@ -101,7 +101,6 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
     read_levels = (read_l0, read_l1)
 
     v = torch.randn(B, T, H, dv, dtype=torch.float64)
-    g_read = torch.rand(B, T, H, dtype=torch.float64) + 0.5
     g_write = torch.rand(B, T, H, dtype=torch.float64) + 0.5
 
     dial0 = torch.tensor([[0.9, 0.5, 0.2]], dtype=torch.float64)  # [H, 3]
@@ -113,7 +112,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
         _, final_state = naive_rola(
             v[:, :prefix], (read_levels[0][:, :prefix], read_levels[1][:, :prefix]),
             (write_levels[0][:, :prefix], write_levels[1][:, :prefix]),
-            g_read[:, :prefix], g_write[:, :prefix], topology, decay, "raw",
+            None, g_write[:, :prefix], topology, decay, "global",
             output_final_state=True,
         )
         states.append(final_state[0, 0, 0, :].clone())  # leaf 0's value state
@@ -203,18 +202,17 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     decay = LeafMassDecay(dials=(dial,))
 
     m0 = 5.0
-    initial_state = torch.zeros(B, H, width, dv, dtype=torch.float64)
+    initial_state = torch.zeros(B, H, width, dv + 1, dtype=torch.float64)  # +1: global's mass column
     initial_state[0, 0, 0, 0] = m0
 
     write_levels = (_one_hot(width, 0).view(1, 1, 1, width),)  # leaf 0 fully written
     read_levels = (_one_hot(width, 0).view(1, 1, 1, width),)  # irrelevant to state, only to y
     v = torch.tensor([[[[2.0]]]], dtype=torch.float64)  # v1 = 2.0
-    g_read = torch.ones(B, T, H, dtype=torch.float64)
     g_write_value = 1.7
     g_write = torch.full((B, T, H), g_write_value, dtype=torch.float64)
 
     _, final_state = naive_rola(
-        v, read_levels, write_levels, g_read, g_write, topology, decay, "raw",
+        v, read_levels, write_levels, None, g_write, topology, decay, "global",
         initial_state=initial_state, output_final_state=True,
     )
     m1 = final_state[0, 0, 0, 0].item()
@@ -251,11 +249,10 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     ).view(B, T, H, width)
     read_l0 = write_l0.clone()
     v = torch.tensor([[[[3.0]], [[7.0]]]], dtype=torch.float64)
-    g_read = torch.ones(B, T, H, dtype=torch.float64)
     g_write = torch.ones(B, T, H, dtype=torch.float64)
 
     _, final_state = naive_rola(
-        v, (read_l0,), (write_l0,), g_read, g_write, topology, decay, "raw",
+        v, (read_l0,), (write_l0,), None, g_write, topology, decay, "global",
         output_final_state=True,
     )
     # With keep==1 always at digit0 (rate==0 regardless of c), the leaf-0
@@ -331,7 +328,7 @@ def _random_case(seed: int, *, B, T, H, dv, widths):
     return topology, read_levels, write_levels, v, g_read, g_write, decay
 
 
-@pytest.mark.parametrize("normalization", ["raw", "global"])
+@pytest.mark.parametrize("normalization", ["global"])
 @pytest.mark.parametrize("split_point", [1, 2, 4, 6])
 def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, split_point):
     B, T, H, dv, widths = 2, 7, 2, 3, (3, 4)

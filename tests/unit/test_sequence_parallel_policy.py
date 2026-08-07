@@ -48,8 +48,7 @@ _ROUTING = IndependentRouting(
 _WIDE_CAP = 1 << 34
 
 
-def _fixture(widths=(8, 8), BC=16, d_v=64, B=1, T=128, H=2, BT=16, norm="raw",
-             device="cpu", seed=11):
+def _fixture(widths=(8, 8), BC=16, d_v=64, B=1, T=128, H=2, device="cpu", seed=11):
     gen = torch.Generator(device=device).manual_seed(seed)
     topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
     read_levels = tuple(
@@ -57,12 +56,9 @@ def _fixture(widths=(8, 8), BC=16, d_v=64, B=1, T=128, H=2, BT=16, norm="raw",
     write_levels = tuple(
         torch.rand(B, T, H, w, generator=gen, device=device).softmax(-1) for w in widths)
     g_write = torch.rand(B, T, H, generator=gen, device=device) + 0.5
-    g_read = (None if norm == "global"
-              else torch.rand(B, T, H, generator=gen, device=device) + 0.5)
-    plan = Plan(topology=topology, normalization=norm, BT=BT, BC=BC,
-                  warp_tile=(1, max(1, d_v // 32)), decay=False,
-                  mma_precision="tf32x3")
-    schedule = build_schedule(read_levels, write_levels, g_read, g_write, plan)
+    plan = Plan(topology=topology, normalization="global", BC=BC,
+                  warp_tile=(1, max(1, d_v // 32)), decay=False)
+    schedule = build_schedule(read_levels, write_levels, None, g_write, plan)
     return plan, schedule
 
 
@@ -140,12 +136,12 @@ def test_an_owner_is_never_split_past_its_own_tile_count_or_past_max_p():
     """Both ceilings are STRUCTURAL bounds -- a tile count and a policy constant --
     not thresholds on a measured density, so they are admissible under §3's branch
     rule and belong in the planner rather than anywhere near the kernel."""
-    plan, schedule = _fixture(widths=(8, 8), T=64)      # n_tiles = 4 at BT = 16
-    assert schedule.n_tiles == 4
+    plan, schedule = _fixture(widths=(8, 8), T=64)      # n_twords = 2 at the fixed 32-token word
+    assert schedule.n_twords == 2
     sp = select_sequence_parallelism(
         plan, schedule, policy=SequenceParallelPolicy(workspace_cap=_WIDE_CAP, max_p=64),
         sms=1024, blocks_per_sm=8)
-    assert max(sp.P) <= schedule.n_tiles
+    assert max(sp.P) <= schedule.n_twords
     capped = select_sequence_parallelism(
         plan, schedule, policy=SequenceParallelPolicy(workspace_cap=_WIDE_CAP, max_p=2),
         sms=1024, blocks_per_sm=8)
@@ -246,7 +242,7 @@ def test_the_bandwidth_gate_clamps_PARTIALLY_through_its_measured_relative_form(
     """
     from math import floor
 
-    plan, schedule = _fixture(widths=(8, 16), BC=16, d_v=64, B=1, T=256, H=8, BT=16)
+    plan, schedule = _fixture(widths=(8, 16), BC=16, d_v=64, B=1, T=256, H=8)
     policy = SequenceParallelPolicy(workspace_cap=_WIDE_CAP)   # the DEFAULT margin
     sp = select_sequence_parallelism(plan, schedule, policy=policy, sms=80, blocks_per_sm=8)
 
@@ -288,7 +284,7 @@ def test_the_capacity_gate_is_the_limiting_one_under_a_tight_cap():
     assertion exact rather than approximate.
     """
     plan, schedule = _fixture(T=256)
-    cols = plan.topology.d_v
+    cols = plan.topology.d_v + 1  # normalization="global" always carries the mass column
     per_slot = slot_bytes(plan.BC, cols)
     materializations = schedule.schedule_bytes() + schedule.stream_bytes()
     cap = materializations + 2 * per_slot
@@ -450,8 +446,10 @@ def test_the_occupancy_gate_reads_the_driver_for_the_instantiation_it_will_launc
 
     Fix pass R5: this asserted only `>= 1` for three plan variants, which a stub
     returning a constant passes. What moves the answer is the geometry the plan's
-    own axes imply -- `BC` sizes the state panel and the gather buffers, `BT` sizes
-    the token panels -- so that is what is asserted, as strict inequalities.
+    own axes imply -- `BC` sizes the state panel and the gather buffers -- so
+    that is what is asserted, as a strict inequality. `BT` is gone as a `Plan`
+    field (no template axis left to size a token panel with), so the coarser-`BT`
+    variant this gate used to check is gone with it.
 
     **THE ANALYTIC-MIRROR HALF OF THIS TEST IS DELETED** (item 6b, 2026-08-01). It
     asserted `plan.smem_bytes` and `plan.predicted_blocks_per_sm` -- a
@@ -460,10 +458,8 @@ def test_the_occupancy_gate_reads_the_driver_for_the_instantiation_it_will_launc
     against driver 3 at the at-scale `BC = 64` cell). There is one accounting now,
     the driver's, so there is nothing to pin a second one against.
 
-    `global` is likewise no longer asserted as a footprint axis. It is a template
-    axis of the kernel, but the occupancy query PINS it to `global`, which costs
-    strictly more shared memory (one `[BT]` float `den` row) and therefore can only
-    under-report a raw plan -- see `schedule_v3.consumer_occupancy`.
+    `global` is likewise no longer asserted as a footprint axis: it is the only
+    normalization `Plan` accepts now, not a variable one.
     """
     from dataclasses import replace
 
@@ -471,13 +467,9 @@ def test_the_occupancy_gate_reads_the_driver_for_the_instantiation_it_will_launc
     base = consumer_blocks_per_sm(plan)
     assert base >= 1
     bigger_BC = replace(plan, BC=64, warp_tile=(1, max(1, plan.topology.d_v // 32)))
-    coarser_BT = replace(plan, BT=32)
     assert consumer_blocks_per_sm(bigger_BC) < base, (
         "a 4x larger owner rectangle did not lower CTAs/SM, so the query is not "
         "reading the SMEM size of the instantiation the plan will launch")
-    assert consumer_blocks_per_sm(coarser_BT) < base, (
-        "a 2x larger token tile did not lower CTAs/SM, so the query is insensitive to "
-        "the other axis that sizes the kernel's SMEM")
     assert consumer_blocks_per_sm(bigger_BC) >= 1
     # The DECAY arm is the query's other axis, and what a constant-returning stub
     # fails is that it cannot report MORE CTAs than the arm carrying strictly less
