@@ -94,18 +94,27 @@ PROGRAM-ORDER facts rather than hopes:
 
 ### <a id="ctl-reset"></a><a id="edge-dag"></a>Deadlock freedom, as the edge DAG and the always-runnable claim
 
-NODES (per visit): `STAGE` (membership assembly / gather / row-scale and panel
-builds), `A` (readout + mass term 1, read atoms only), `G` (Gram + `Gm` publication,
-mixed atoms only), `F` (fold items + mass fold, write atoms only), `C` (intra + mass
-term 2 + emission, mixed atoms only), `END` (split-K emission, the epilogue, the
-end-of-visit barrier).
+NODES (per visit): `STAGE` (panel/gather builds against the visit's cooked group
+descriptor — the schedule ring's producer runs membership assembly a visit ahead of
+`STAGE`, not inside it, [`consumer_kernel.md#producer`](consumer_kernel.md#producer)),
+`A` (readout + mass term 1, read atoms only), `G` (Gram + `Gm` publication, mixed
+atoms only), `F` (fold items + mass fold, write atoms only), `C` (intra + mass term 2
++ emission, mixed atoms only), `END` (split-K emission, the epilogue, the run-ahead
+cook of the NEXT descriptor, and the end-of-visit barrier).
+
+The visit pays exactly TWO unconditional `__syncthreads()` — the staging barrier and
+the end-of-visit barrier — and no more; there is no separate group-entry barrier,
+because the descriptor `STAGE` reads was published by an EARLIER visit's end-of-visit
+barrier, not by anything this visit does. `DECAY` arms pay two further barriers inside
+`STAGE` itself (the clock-prefix -> entry-scale ordering, and
+[`clk-dead`](consumer_kernel.md#clk-dead)), which do not change this DAG's shape.
 
 | edge | mechanism |
 |---|---|
 | `STAGE -> A`, `STAGE -> G` | the staging `__syncthreads()` (hardware), after the group's operands are staged |
 | `A -> F` | `kCtlReadDone` reaching `kWarps` (readout READS `S`, the fold WRITES it). Every warp retires it unconditionally, whether or not it ran `A`'s work — retirement is not gated on `is_read` |
 | `G -> C` | `kCtlGramDone` reaching `kGramWarps`. Both the retirement (`if (mixed && warp < kGramWarps) retire_item(...)`) and the wait (`if (mixed) await_count(...)`) are conditioned on the SAME CTA-uniform predicate `mixed = is_read && is_write`, so a visit either has both a Gram and an intra term or neither |
-| `F -> END`, `C -> END` | program order into the end-of-visit `__syncthreads()` |
+| `F -> END`, `C -> END` | program order into the end-of-visit `__syncthreads()`, which also publishes the producer's run-ahead cook of group `gidx + kSchedDepth` |
 
 The relation is a TOTAL ORDER on `{STAGE, {A, G}, F, C, END}` and therefore ACYCLIC.
 (`A` is unordered with respect to `G` — the Gram reads the fragment-ordered read panel

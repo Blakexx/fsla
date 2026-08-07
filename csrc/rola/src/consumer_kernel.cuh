@@ -168,13 +168,12 @@ consumer_forward_kernel(ConsumerParams p) {
   float* p_ref = log_keep + (DECAY ? BC : 0);
   float* s0 = p_ref + (DECAY ? BC : 0);
   int* ctl = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
-  //: THE COOKED SCHEDULE RING -- change 2's cooked stage. `kSchedSlots` group
-  //: descriptors (`kSchedSlotInts` ints each; the field offsets are
+  //: THE COOKED SCHEDULE RING. `kSchedSlots` group descriptors
+  //: (`kSchedSlotInts` ints each; the field offsets are
   //: `kSchedGN/RMask/WMask/Flags`), written by the PRODUCER WARP `kSchedDepth`
   //: groups ahead and published by the end-of-visit `__syncthreads()` of the
-  //: visit that produced them. Every consumer warp READS the descriptor instead
-  //: of re-deriving it: the base's 8x-redundant assembler is what this deletes.
-  //: docs/internals/consumer_kernel.md#sched-ring
+  //: visit that produced them. Every consumer warp READS the descriptor rather
+  //: than deriving it. docs/internals/consumer_kernel.md#sched-ring
   int* g_ring = ctl + ctl_words(BC);
   //: THE PER-OWNER UPPER PRODUCTS, one pair of `kGT` floats per ring slot: the
   //: read row scale then the write row scale for each of the slot's member
@@ -300,31 +299,18 @@ consumer_forward_kernel(ConsumerParams p) {
   //: `ab_base + q * n_twords + w` -- one CONTIGUOUS token-bit row per atom.
   const int64_t ab_base = (static_cast<int64_t>(bh) * p.n_slices + slice) * kQPO * p.n_twords;
 
-  // ---- THE PRODUCER (change 2, contract items 2/3/5). WARP 0 ALONE runs the
-  // ---- membership scan and the ballot, and publishes COOKED GROUP DESCRIPTORS
-  // ---- into `g_ring`. In the base every one of the 8 warps re-derived this
-  // ---- identically -- including `2 * QPO` CTA-uniform GLOBAL loads of the atom
-  // ---- bitlists PER BALLOT ROUND PER WARP. Cooking ONCE PER OWNER is the frozen
-  // ---- contract's rule, and it is an ISSUE CUT -- the only kind of win
-  // ---- available in a kernel measured ISSUE-BOUND (the P11 verdict: a prefetch
-  // ---- that buys stall movement with instructions loses here).
+  // ---- THE PRODUCER. WARP 0 ALONE runs the membership scan and the ballot, and
+  // ---- publishes COOKED GROUP DESCRIPTORS into `g_ring`. The scan's result is an
+  // ---- OWNER-LEVEL fact, identical across the owner's atoms and across the CTA's
+  // ---- warps, so it is cooked ONCE PER OWNER -- the multiplicity rule, and the
+  // ---- issue cut this kernel's measured constraint asks for.
   // ---- docs/internals/consumer_kernel.md#producer
   static_assert(kQPO <= 32, "one producer lane per atom: the atom mask is ONE ballot");
-  //: The producer's cursor state, WARP-PRIVATE and therefore IN REGISTERS. The
-  //: base needed an SMEM carry (`g_scan`) only because all 8 warps had to agree
-  //: on it; with a single producer the carry is a register and the cross-visit
-  //: register-liveness hazard it was placed in SMEM to dodge cannot arise.
-  //: **THE CURSOR STATE RESTS IN SMEM BETWEEN GROUPS, AND THAT IS NOT A
-  //: CONCESSION -- IT IS THE BASE'S MEASURED RULE, RE-DERIVED.** The base put its
-  //: carry in SMEM "so NO scheduler state is register-live across the visit body
-  //: (the measured §7.3 stateful-walk hazard)", and that rule is about LIVENESS
-  //: ACROSS THE VISIT BODY -- it has nothing to do with how many warps agree on
-  //: the value, so making the producer a single warp does NOT retire it. Held in
-  //: registers instead, this state stays live across all four GEMMs and competes
-  //: with their working set: MEASURED as spills on every `BC = 16, decay = 0` arm
-  //: (the tightest register budget in the matrix, 64) on BOTH arches.
-  //: The chunk is still COOKED IN REGISTERS -- the contract's requirement is about
-  //: where the AND + ballot happen, not where the cursor sleeps between calls.
+  //: THE PRODUCER'S CURSOR STATE, RESTING IN SMEM BETWEEN COOKS. Scheduler state
+  //: held in registers is live across the whole visit body and competes with the
+  //: four GEMMs' working set -- measured as spills on the `BC = 16, decay = 0`
+  //: key, the tightest register budget in the matrix, on both arches. The AND and
+  //: the ballot still happen in registers; only the resting place is SMEM.
   //: docs/internals/consumer_kernel.md#producer-state
   int* p_st = g_ring + kSchedSlots * kSchedSlotInts + kSchedSlots * 2 * kGT;
   //: [0] p_cur, [1] p_chunk_base, [2] p_live, [3] p_word, [4] p_rem, [5] p_gfr,
@@ -340,12 +326,10 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
     for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
   }
-  //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`,
-  //: formed AT THE POINT OF USE rather than hoisted into a `p_row[D]` array.
-  //: The hoist looks free and is not: `base[]` is live across the whole kernel
-  //: anyway (the panels and the upper product all index it), so `p_row` is a
-  //: SECOND live copy of the same information -- `D` extra registers, which at
-  //: `D = 4` was precisely what the `BC = 16, decay = 0` arms had left to give.
+  //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`, formed
+  //: AT THE POINT OF USE: `base[]` is already live across the whole kernel (the
+  //: panels and the upper product all index it), so a hoisted copy would be `D`
+  //: extra live registers on the tightest key.
 
   //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP 0 ONLY, and EVERY LANE ENTERS --
   //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
@@ -355,30 +339,21 @@ consumer_forward_kernel(ConsumerParams p) {
   //: is register-live only for the duration of the cook.
   auto produce_group = [&](int slot) {
     int* R = g_ring + slot * kSchedSlotInts;
-    //: HAZARD producer-state-reconverge: `p_st[0..6]` is written by LANE 0 (at
-    //: the once-per-CTA init and at the end of the previous cook) and read by ALL
-    //: 32 lanes here. Independent thread scheduling makes that a race without an
-    //: explicit reconvergence -- and the cold-start loop calls this twice in a row
-    //: with no barrier between, so the end-of-cook store is not covered by the
-    //: visit barrier in that window.
+    //: HAZARD producer-cursor, the LOAD's half -- docs/internals/consumer_kernel.md#producer-cursor
     __syncwarp();
     int p_cur = p_st[0];
     int p_chunk_base = p_st[1];
     unsigned p_live = static_cast<unsigned>(p_st[2]);
     int p_word = p_st[3];
     uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
-    //: The selected word's fixed-level AND results are NOT carried either: its
-    //: chunk lane is `p_word - p_chunk_base`, and both of those are already live,
-    //: so the two values are recoverable from the planes at the point of use.
-    //: THE CHUNK PLANES ARE NEVER LOADED INTO REGISTERS. They are read ONE SCALAR
-    //: AT A TIME at word selection, by the uniform index the ballot picked -- the
-    //: same value a `__shfl` of a register plane would have produced, minus THREE
-    //: per-lane registers held live across the entire cook. The
-    //: `BC = 16, decay = 0` key's budget is 64 and that is the margin it lacked.
-    //: NOR are the ingredient planes. Each lane reads its OWN slot at the point
-    //: of use (no cross-lane traffic, so no reconvergence needed for these), which
-    //: leaves the cook with NO per-lane register state at all -- only the seven
-    //: uniform scalars above. That is the margin the D=3/D=4 arms were missing.
+    //: THE COOK CARRIES NO PER-LANE REGISTER STATE -- only the uniform scalars
+    //: above, which is what keeps the tightest keys inside their budget. The chunk
+    //: planes are read ONE SCALAR AT A TIME at word selection, by the uniform index
+    //: the ballot picked (the value a `__shfl` of a register plane would have
+    //: produced); the selected word's fixed-level AND results are recovered the
+    //: same way, its chunk lane being `p_word - p_chunk_base`. Each lane reads its
+    //: OWN ingredient slot, so those carry no cross-lane traffic and need no
+    //: reconvergence.
     int fill = 0;
     unsigned rmask = 0u, wmask = 0u;
     bool gr = false, gw = false;
@@ -389,8 +364,8 @@ consumer_forward_kernel(ConsumerParams p) {
         //: token-granular slice-union word -- the "k+1 per-digit bit-streams,
         //: identically indexed, one shared cursor structure" -- into its own
         //: `(fr, fw, member)`. The chunk's LIVE-WORD SET is then one ballot, and
-        //: skipping dead words costs an `__ffs`. No SMEM, no barrier: this is
-        //: where the base's two `__syncthreads()` per refill went.
+        //: skipping dead words costs an `__ffs`. A refill needs no CTA barrier:
+        //: the cook is warp-local and its collectives are warp-level.
         while (p_live == 0u && p_cur < w_hi) {
           const int w = p_cur + lane;
           uint32_t fr = 0xffffffffu, fw = 0xffffffffu, mem = 0u;
@@ -417,9 +392,7 @@ consumer_forward_kernel(ConsumerParams p) {
           p_chunk_base = p_cur;
           p_cur += kSchedChunkWords;
           p_live = __ballot_sync(0xffffffffu, mem != 0u);
-          //: HAZARD producer-chunk-reconverge: lane `w` wrote word `w`'s plane
-          //: entries; the selection below reads the SELECTED lane's entries from
-          //: every lane. Same reconvergence requirement as `p_st`.
+          //: HAZARD producer-chunk -- docs/internals/consumer_kernel.md#producer-chunk
           __syncwarp();
         }
         if (p_live == 0u) break;  // the segment's stream end
@@ -471,25 +444,12 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- scalars per member token per side, common to every atom's Kronecker
     // ---- coefficient -- so their per-token product is an OWNER-LEVEL fact and
     // ---- obeys the same multiplicity rule membership does: computed ONCE PER
-    // ---- OWNER, never per atom. These are §3 step 3's ROW SCALES, and the base
-    // ---- already honoured the multiplicity (they were computed once per
-    // ---- (visit, token) and held OUT of the coefficient blocks); what the
-    // ---- amendment changes is their HOME.
-    // ----
-    // ---- HOME CHOSEN: THE COOKED-SCHEDULE RING (the amendment's suggested
-    // ---- home), and the reason is that it is the only one that also BUYS
-    // ---- something. The cook stage already owns the member token list, so the
-    // ---- scales ride the slot at zero extra streams and arrive PRE-MULTIPLIED a
-    // ---- visit early -- which lifts `2 * j` fp32 gathers off the visit's
-    // ---- critical path into the run-ahead, and lets the `sw`-publication
-    // ---- barrier in the staging go (it published exactly this). An
-    // ---- owner-scoped mini-ring was rejected: it would carry its own cursor for
-    // ---- data already keyed by precisely this ring's index. Per-atom
-    // ---- duplication was rejected: it multiplies the one quantity the
-    // ---- amendment exists to keep at multiplicity one.
+    // ---- OWNER, never per atom. These are §3 step 3's ROW SCALES, and they ride
+    // ---- the COOKED RING SLOT: the cook already owns the member token list, so
+    // ---- they cost no extra stream and arrive PRE-MULTIPLIED a visit early,
+    // ---- which lifts `2 * j` fp32 gathers off the visit's critical path.
     // ---- docs/internals/consumer_kernel.md#upper-product
-    //: Predicated exactly as the base's two row-scale loops were, so a
-    //: side-dead visit fetches nothing it did not fetch before.
+    //: Predicated per side, so a side-dead visit fetches nothing.
     const bool need_r = !summary && gr && rmask != 0u;
     const bool need_w = gw && wmask != 0u;
     if (need_r || need_w) {
@@ -532,7 +492,9 @@ consumer_forward_kernel(ConsumerParams p) {
       R[kSchedFlags] = (gr ? 1 : 0) | (gw ? 2 : 0);
     }
     //: THE CURSOR GOES BACK TO SLEEP IN SMEM -- nothing above stays live across
-    //: the visit body. See the state block's note for the measured reason.
+    //: the visit body.
+    //: HAZARD producer-cursor, the STORE's half -- docs/internals/consumer_kernel.md#producer-cursor
+    __syncwarp();
     if (lane == 0) {
       p_st[0] = p_cur;
       p_st[1] = p_chunk_base;
@@ -540,8 +502,6 @@ consumer_forward_kernel(ConsumerParams p) {
       p_st[3] = p_word;
       p_st[4] = static_cast<int>(p_rem);
     }
-    //: Nothing to write back: every plane was stored where it was produced and
-    //: none of them ever left SMEM.
   };
 
   //: THE RING'S COLD START -- the producer fills `kSchedDepth` slots before the
@@ -613,10 +573,9 @@ consumer_forward_kernel(ConsumerParams p) {
     }
     // ---- §3 STEP 3's ROW SCALES ARRIVE PRE-MULTIPLIED IN THE RING SLOT, cooked
     // ---- once per owner by the producer a visit ago (the stream-inventory
-    // ---- amendment). Nothing is computed and nothing is published here, so the
-    // ---- `sw`-publication `__syncthreads()` that used to stand at this point --
-    // ---- its ONLY job was making the row scales visible to the `Vw` staging --
-    // ---- is gone with them. docs/internals/consumer_kernel.md#upper-product
+    // ---- amendment). The staging computes and publishes no row scales of its
+    // ---- own, so it needs no barrier of its own to make them visible to the `Vw`
+    // ---- staging below. docs/internals/consumer_kernel.md#upper-product
     // ---- THE READ PANEL (§3 steps 2-3). The loop walks FRAGMENT
     // ---- SLOTS (one k-step = one atom = 128 words), so the store is contiguous in
     // ---- `tid` and the buffer is atom-blocked by construction. The bf16 slot packs
@@ -731,9 +690,7 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- the intra Gram's causal mask is order-relative, so STABILITY IS THE
   // ---- CORRECTNESS REQUIREMENT. Consumers ASSEMBLE NOTHING -- they read the
   // ---- descriptor warp 0 published `kSchedDepth` visits ago, whose publication
-  // ---- barrier is the end-of-visit `__syncthreads()` that already existed. The
-  // ---- base's per-warp-redundant assembler (8x the ballot ALU and 8x the
-  // ---- atom-bitlist load issue) is what this deletes.
+  // ---- barrier is the end-of-visit `__syncthreads()`.
   // ---- docs/internals/consumer_kernel.md#group-assembler
   for (int gidx = 0;; ++gidx) {
     const int* R = g_ring + (gidx % kSchedSlots) * kSchedSlotInts;
@@ -751,9 +708,8 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- THE VISIT'S CONTROL BLOCK, RESET. Behind it stands the previous visit's
     // ---- end-of-visit `__syncthreads()` (so no warp is still retiring into it);
     // ---- ahead of it stands the post-staging `__syncthreads()` below, which is
-    // ---- what orders the reset before the visit's first `retire_item`. The base's
-    // ---- separate group-ENTRY barrier existed to publish `t_idx`, and the ring
-    // ---- publishes it a visit earlier -- so that barrier is gone.
+    // ---- what orders the reset before the visit's first `retire_item`. `t_idx`
+    // ---- needs no barrier of its own here: the ring published it a visit earlier.
     // ---- docs/internals/pipeline.md#edge-dag
     if (tid < ctl_words(BC)) ctl[tid] = 0;
     //: The visit's side flags. A side whose atom mask is empty is a side with
@@ -989,10 +945,9 @@ consumer_forward_kernel(ConsumerParams p) {
     //: `kSchedSlots == kSchedDepth + 1` that slot is never the one being read,
     //: which is the whole reason the ring is at least 2 deep. Production runs
     //: CONCURRENTLY with this visit's compute and is published by the
-    //: end-of-visit barrier below, so NOTHING WAITS ON IT: the two
-    //: `__syncthreads()` the base paid per schedule refill are replaced by a
-    //: slot that is already full when it is read. The steady state's only
-    //: remaining schedule cost is the producer warp's own issue.
+    //: end-of-visit barrier below, so NOTHING WAITS ON IT: a slot is already full
+    //: when it is read. The steady state's only remaining schedule cost is the
+    //: producer warp's own issue.
     if (warp == 0) produce_group((gidx + kSchedDepth) % kSchedSlots);
     __syncthreads();
   }

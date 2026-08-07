@@ -60,17 +60,15 @@ constexpr int kGroupTokens = kMmaKQuantum;
 //: era's design item.
 constexpr int kFoldStagedGroups = 1;
 
-//: THE SCHEDULE CHUNK (the frozen contract's cook-once rule, item 2): how many
-//: 32-token words the PRODUCER WARP cooks per refill. It is exactly one word
-//: per lane, so the cooked chunk lives in REGISTERS -- the contract's "cooks the
-//: per-token schedule ONE CHUNK AHEAD in registers" -- and the chunk's live-word
-//: set is one `__ballot_sync`. A chunk in registers needs no barrier and no
-//: storage, which is why the schedule-exhausted barrier dissolves (item 6).
-//: docs/internals/smem_layout.md#sched-chunk
+//: THE SCHEDULE CHUNK: how many 32-token words the PRODUCER WARP cooks per
+//: refill. It is exactly one word per lane, so a refill is one cooperative load
+//: and the chunk's live-word set is one `__ballot_sync`. The cook is warp-local
+//: throughout -- its collectives are warp-level -- so a refill costs no CTA
+//: barrier. docs/internals/smem_layout.md#sched-chunk
 constexpr int kSchedChunkWords = 32;
 static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of the producer warp");
 
-//: **THE RUN-AHEAD DEPTH -- change-2's first dial.** How many groups the producer
+//: **THE RUN-AHEAD DEPTH.** How many groups the producer
 //: warp runs ahead of the consumers. It is a `constexpr` (overridable at compile
 //: time for the dial sweep), NEVER a template axis: the instantiation matrix does
 //: not gain a coordinate. The ring holds `depth + 1` slots, so the ring is always
@@ -137,21 +135,13 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)DV;
-  //: `D` JOINED THE KEY when the producer landed, and it was added the way the
-  //: rest of this function's numbers were: by census, not by taste. Level count
-  //: is a structural template axis, and the cook's working set grows with it (one
-  //: fixed-level row per level, per side, per refill). Measured over all 32 arms
-  //: on both arches: at `D <= 3` the `BC = 16, decay = 0` arms fit 64 with zero
-  //: spill; at `D = 4` they do not, and no amount of moving the cook's carried
-  //: state into SMEM closes it (four successive diets took the matrix
-  //: 120 B -> 28 B -> 16 B and stalled there, on sm_86 only).
-  //:
-  //: THE COST IS REAL AND IS RECORDED RATHER THAN HIDDEN: 80 puts `by_regs` at
-  //: 65536 / (256 * 80) = 3, so these two arms run 3 CTAs/SM where 64 ran 4, and
-  //: that is worth about -7.5% on the `topo-D4-w8x8x8x16-BC16` wall (measured,
-  //: `workflows/perf/p25_change2.md`). It is spent to hold the ZERO-SPILL line;
-  //: the measurement saying the 8 B spill was the cheaper of the two is on file
-  //: for whoever revisits it.
+  //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
+  //: structural template axis and the cook's working set grows with it (one
+  //: fixed-level bit row per level, per side, per refill): measured over all 32
+  //: arms on both arches, the `BC = 16, decay = 0` arms fit 64 with zero spill at
+  //: `D <= 3` and do not at `D = 4`. Its price -- 3 CTAs/SM where 64 gave 4 on
+  //: those arms -- is stated with the measurement in
+  //: docs/internals/smem_layout.md#reg-budget.
   return (BC >= 64 || decay || D >= 4) ? 80 : 64;
 }
 
@@ -414,24 +404,19 @@ constexpr size_t consumer_smem_bytes() {
   b += static_cast<size_t>(kGroupTokens) * (kGroupTokens + 8) * sizeof(__nv_bfloat16);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
   b += static_cast<size_t>(ctl_words(BC)) * sizeof(int);        // ctl
-  //: THE COOKED SCHEDULE RING (change 2): `kSchedSlots` group descriptors,
-  //: written by the PRODUCER WARP a whole visit ahead and read by every
-  //: consumer warp. It REPLACES the base's `t_idx` + `g_scan` cross-visit carry
-  //: and its 3 x `kSchedChunkWords` scan batch: the assembler's cursor state is
-  //: now warp-private (registers, no carry) and the cooked chunk is register-
-  //: resident, so the ring is the ONLY scheduler storage that remains.
+  //: THE COOKED SCHEDULE RING: `kSchedSlots` group descriptors, written by the
+  //: PRODUCER WARP a whole visit ahead and read by every consumer warp. It is the
+  //: only schedule storage the consumers touch.
   b += static_cast<size_t>(kSchedSlots) * kSchedSlotInts * sizeof(int);
   //: The slot's PER-OWNER UPPER PRODUCTS (`sr`, `sw`) -- §3 step 3's row scales,
-  //: cooked in the ring beside the member word (the stream-inventory amendment).
-  //: They REPLACE the standalone `sr`/`sw` pair the carve used to hold, so the
-  //: delta is `kSchedDepth` EXTRA copies of `2 * kGroupTokens` floats, not a new
-  //: region.
+  //: cooked in the ring beside the member word, one pair of `kGroupTokens` floats
+  //: per slot.
   b += static_cast<size_t>(kSchedSlots) * 2 * kGroupTokens * sizeof(float);
   //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
   //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
-  //: HERE rather than in the producer warp's registers because register-liveness
-  //: across the visit body is the base's MEASURED §7.3 stateful-walk hazard --
-  //: held in registers it spilled every `BC = 16, decay = 0` arm on both arches.
+  //: HERE rather than in the producer warp's registers because scheduler state
+  //: held in registers is live across the visit body and spills the tightest key:
+  //: docs/internals/smem_layout.md#reg-budget.
   b += (8 + 5 * 32) * sizeof(int);
   return b;
 }
