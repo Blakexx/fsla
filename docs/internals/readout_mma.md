@@ -1,118 +1,57 @@
-# `csrc/rola/src/readout_mma.cuh` — the tensor-core carry readout
+# `csrc/rola/src/readout_mma.cuh` — the bf16 format guard
 
-`ROLA_V3_SPEC.md` §5 ("Warp tiling") and §3 step 4 ("MMA over `ceil(K/8)` k-steps;
-row-scale; emit the partial"), lowered onto the `mma.sync.aligned` shapes wrapped in
-`mma.cuh`.
-
-Symbols: `t` is a token of the tile, `i` the owner's resident LEAF index, `ch` a value
-channel; `BT` is the token tile, `BC` the leaf tile, `DV` the value width, `SP` the
-padded SMEM row stride of the published state; `M` is the state; `lane` is the
-lane id within the warp, `g = lane >> 2` the PTX `groupID` and `r = lane & 3` its
-`threadID_in_group`.
+`GLA_MASS_DECAY_SPEC.md` §12 rule 3, lowered onto the one storage format the consumer
+kernel uses. What lives here is exactly one thing: the READ-side clamp that keeps
+every bf16 narrowing finite. It is not a GEMM, not a contraction, and not a fragment
+map — those live in [`mma_tile.md`](mma_tile.md), which imports this file's clamp
+(`using rola::clamp_bf16_finite;`) rather than reimplementing it.
 
 ---
 
-## <a id="contraction"></a>1. The contraction this file lowers
+## <a id="rule-3-bf16"></a>1. HAZARD `rule-3-bf16` — the clamp, and why it is the only precision story
 
-The CARRY readout:
+**bf16 storage, fp32 accumulation, fp64 torch reference as oracle.** There is no
+precision axis in this kernel: every MMA operand narrows to bf16 unconditionally, and
+a caller that needs more precision than that delivers runs the fp64 reference path —
+which is also the correctness truth every gate compares the kernel against, not a
+second kernel arm. (A `tf32x3` extended-precision arm and the `MmaPrec` axis that
+selected it existed through the P26 endgame rewrite and died with it:
+`git show 52a67d8^:csrc/rola/src/readout_mma.cuh` has the last version that carried
+them.)
+
+Because bf16 is the only format, every operand that reaches an MMA instruction is
+clamped to bf16's **max finite magnitude**,
 
 ```
-num[t, ch] += scale_read[t] * sum_{i < BC} panel_read[t, i] * M[i, ch]
+kBf16MaxFinite = 3.38953139e38f
 ```
 
-i.e. `[BT x BC] * [BC x d_v]` with `t` on `m`, `ch` on `n`, and the owner's resident
-leaf index `i` on `k`.
+— never to fp32 `FLT_MAX`, because the gap between the two rounds to bf16 `inf` on
+the narrowing cast. `clamp_bf16_finite` is that clamp:
 
-`scale_read[t]` is the §3 step-3 row scale (the product over the owner's FIXED
-levels, times `g_read`). It is applied AFTER the accumulation because it is constant
-along `k` and along `n` — so it can never be folded into a fragment, and moving it
-inside the k-loop would only multiply the same value in `ksteps` times.
+```cpp
+float clamp_bf16_finite(float x) {
+  return fmaxf(-kBf16MaxFinite, fminf(kBf16MaxFinite, x));
+}
+```
 
-## <a id="b-from-smem"></a>2. Why the B operand comes from SMEM
+It is branchless and NaN-preserving by construction: `fminf` / `fmaxf` return the
+non-NaN operand only when exactly one operand is NaN, so a NaN `x` propagates through
+unchanged. §12 rule 4's annihilation is the WRITE-side guard against non-finite
+content reaching state at all; this is the READ-side format guard that keeps a
+finite-but-oversized value from rounding to `inf` on the narrowing cast, and the two
+are independent — neither substitutes for the other.
 
-`M` is owner-resident in REGISTERS with one thread per channel (`M[BC]` per thread),
-which is the layout the deposit wants: it indexes `M` by (leaf, own channel). An MMA B fragment wants (leaf,
-fragment-determined channel) instead, and those two maps differ by a **cross-thread
-transpose**.
+The hazard: removing a `clamp_bf16_finite` from any of `mma_tile.cuh`'s pack sites
+changes results and compiles clean. Every site that packs a value into a bf16 MMA
+operand — `stage_put`, `mma_tile_fragA`, `mma_tile_vwB` — routes through this one
+function, so an audit of the guard is an audit of this file's one caller list, not of
+scattered inline clamps.
 
-Rather than pick one layout and pay a shuffle on the other path, the registers stay
-canonical and the readout *publishes* a copy of `M` into SMEM.
+## 2. §12 rule 1 does NOT go live here
 
-The publish is **write-conditioned**: it happens once, lazily, and is invalidated only
-by a deposit — which is §2's write-conditioned quiescence reused, not a new argument.
-Across a run of read-only tiles (the common case at `fill > 1`) the state is published
-once and read by every tile.
-
-## <a id="precision-axis"></a>3. Precision is a compile-time axis, not a tolerance knob
-
-Findings D4.3. `MmaPrec` is stamped by `Plan.mma_precision` at plan time:
-
-| arm | shape and passes | role |
-|---|---|---|
-| `kTf32x3` | three `m16n8k8` tf32 passes (Karatsuba-style split), near-fp32 | what the exactness gate against the fp64 oracle runs — bf16 A/B would contribute ~1e-2 relative error and swamp any structural disagreement |
-| `kBf16` | one `m16n8k16` bf16 pass, fp32 accumulate | the performance configuration, reported against its own honestly looser tolerance |
-
-This is a STRUCTURAL branch (a numeric format chosen once at plan time), not a density
-branch, so it is admissible under §3.
-
-## <a id="rule-3-bf16"></a>4. HAZARD — §12 rule 3 goes live here, on the bf16 arm only
-
-`GLA_MASS_DECAY_SPEC.md` §12 rule 3. On the bf16 arm the A and B operands NARROW to
-bf16, so every one of them is clamped to bf16's **max finite magnitude**,
-`kBf16MaxFinite = 3.38953139e38f` — never to fp32 `FLT_MAX`, because the gap between
-the two rounds to bf16 `inf`.
-
-The tf32 arm does not narrow the exponent range (tf32 has fp32's 8-bit exponent), so
-no clamp applies there and none is inserted: **a clamp that cannot fire is dead code,
-and one that fires on the wrong arm would alter values the format represents exactly.**
-
-`clamp_bf16_finite` is branchless and NaN-preserving by construction: `fminf` / `fmaxf`
-return the non-NaN operand only when exactly one is NaN, so a NaN `x` propagates. §12
-rule 4's annihilation is the WRITE-side guard against non-finite content; this is the
-READ-side format guard, and the two are independent — neither substitutes for the
-other.
-
-The hazard: removing a `clamp_bf16_finite` from any of the six pack sites, or applying
-one on the tf32 arm, changes results and compiles clean.
-
-## <a id="rule-1-not-here"></a>5. §12 rule 1 does NOT go live here
-
-Mid-tile clock normalization. That is a derived fact rather than an omission: rule 1
-guards the two SEPARATELY EXPONENTIATED survival panels, and this readout forms no
-panel.
-
-Under `decay = None` there is no survival at all. Rule 1 becomes live with the
-`panel` intra lowering, the one construct in this design that exponentiates
-`keep^{+P}` and `keep^{-P}` separately — and nowhere earlier. See
+Mid-tile clock normalization. Rule 1 guards the two SEPARATELY EXPONENTIATED survival
+panels, and this file forms no panel — it is a scalar clamp, not a contraction. Rule 1
+becomes live with the `panel` intra lowering, the one construct in this design that
+exponentiates `keep^{+P}` and `keep^{-P}` separately. See
 [`intra_panel.md`](intra_panel.md#rule-1).
-
-## <a id="fragment-maps"></a>6. Fragment index maps
-
-PTX ISA `mma.sync.aligned` operand layouts. For every shape here, `g = lane >> 2` and
-`r = lane & 3`. The D/C fragment is shared by both shapes:
-
-```
-d0,d1 -> (row g,     col 2r, 2r+1)
-d2,d3 -> (row g + 8, col 2r, 2r+1)
-```
-
-`m16n8k8`, tf32:
-
-```
-A: a0..a3 -> (g, r), (g+8, r), (g, r+4), (g+8, r+4)
-B: b0,b1  -> (row r, col g), (row r+4, col g)
-```
-
-`m16n8k16`, bf16 (operands are `bf16x2` packs):
-
-```
-A: a0..a3 pack (g, 2r|2r+1), (g+8, 2r|2r+1), (g, 2r+8|2r+9), (g+8, 2r+8|2r+9)
-B: b0,b1  pack (row 2r|2r+1, col g), (row 2r+8|2r+9, col g)
-```
-
-## <a id="where-it-runs"></a>7. Where this contraction is actually issued
-
-`mma_tile_fragA`, with the read panel as a FRAGMENT-ORDERED A operand and the published
-state as B. This file owns the shapes, the formats and the maps the tile is built from;
-the tile itself, its k-loop and its operand orientations are
-[`mma_tile.md`](mma_tile.md#mma-tile-fraga).
