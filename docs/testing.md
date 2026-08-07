@@ -111,6 +111,20 @@ the blind spot a resident-state re-quantization walk was measured to exploit.
 `test_consumer_vs_oracle.py::test_mass_column_at_sequence_length` closes it, at
 the same tolerance.
 
+**The window, `GT`, is NOT a fifth cell of this cross-product.** `select_window`
+picks the consumer's token quantum from the realized routing
+([`internals/smem_layout.md#window`](internals/smem_layout.md#window)), and every
+cell above is short enough that it always picks the group quantum (`GT = 16`) —
+so the main cross-product never exercises the wide window's own formulation (a
+shared entry state across `W` groups, the block-lower-triangular window Gram, the
+fold's `W`-slot-resident accumulator, the decay reference frame spanning the whole
+window) at all. That formulation is gated separately, by fixtures built long
+enough to force `GT = 64`: `test_consumer_vs_oracle.py`'s "wide window against the
+oracle" section. The class it catches is real — a group can carry live write
+atoms while being side-dead and therefore unstaged, which the group-quantum fold
+could not reach (it ran under that group's own write flag) and the window-quantum
+fold does.
+
 ### Tolerance discipline
 
 1. `BF16_RTOL = 1e-2` — the ONE tolerance the whole file holds to now that there

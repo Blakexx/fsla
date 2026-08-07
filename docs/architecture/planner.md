@@ -1,14 +1,13 @@
 # The planner
 
-> **Derive launch geometry from launch-static facts. Never score candidates,
-> never read a routing statistic to decide how to run.**
+> **Derive STATE-LAYOUT geometry from launch-static facts. Never score
+> candidates, never read a routing statistic to decide a launch-static axis.**
+> (The one deliberate exception, a pure performance selection over an
+> already-derived layout, is [§7](#7-gt----the-one-axis-this-sections-rule-does-not-govern).)
 
-The planner's whole output is one integer: `BC`, the number of leaves one owner
-block owns — the CTA's resident state tile. Nothing else is planned. The
-consumer instantiates one executor, the token tile is the fixed `GROUP_TOKENS`
-quantum (`rola/planner/derive.py`), and every other axis is a model fact
-(`topology`, `normalization`, `decay`) rather than a decision. So `BC` is not
-chosen AMONG candidates by a cost model or an argmin; it is DERIVED, in
+`BC` — the number of leaves one owner block owns, the CTA's resident state tile —
+is the one quantity this section's rule governs, and it is not chosen AMONG
+candidates by a cost model or an argmin; it is DERIVED, in
 `rola/planner/derive.py`, as a closed form over inputs that are fixed before the
 routing is computed:
 
@@ -44,11 +43,16 @@ replaces at the same realized support.
 `constexpr` shared-memory carve fits the per-CTA budget
 (`cudaFuncAttributeMaxDynamicSharedMemorySize`). The carve is read off
 the dispatch table of the *built binary* — `MachineFacts.arm_smem_bytes`, a
-`{(BC, d_v, D, decay): bytes}` map taken from `DispatchTable.from_extension`
-after the staleness join — so the box arithmetic is the kernel's own
-arithmetic, not a model of it. This is a FEASIBILITY ceiling, not a
-preference: a `BC` it refuses is one the driver would refuse to launch, so
-there is no candidate above it to prefer. An empty result is a loud
+`{(BC, d_v, D, decay, group_tokens): bytes}` map taken from
+`DispatchTable.from_extension` after the staleness join — so the box arithmetic
+is the kernel's own arithmetic, not a model of it. **It prices every `BC` at
+`group_tokens = MMA_K_QUANTUM` (the narrowest window) unconditionally** — `BC`
+derivation does not vary with the window the launch will end up choosing, so
+adding the `GT` axis to the dispatch table changed nothing about how `BC` is
+derived (`compiled_bc` and `box_admitted` both filter to `gt ==
+MMA_K_QUANTUM` before this ceiling ever sees the table). This is a FEASIBILITY
+ceiling, not a preference: a `BC` it refuses is one the driver would refuse to
+launch, so there is no candidate above it to prefer. An empty result is a loud
 `ValueError` naming every carve and the device's grant, never a smaller block
 substituted silently — refusing everything is the correct answer when nothing
 fits.
@@ -133,7 +137,29 @@ A closed-form derivation over launch-static facts is the same category of
 answer FlashAttention, xformers and TensorRT-LLM give: they encode "which
 kernel arm" as a static condition on shape, dtype and architecture, and none
 of them read a per-step distribution to decide. RoLA's routing IS a per-step
-distribution, but `BC` — the one quantity this planner plans — does not need
-to see it: the geometry that would starve or overflow at a given topology and
-machine is a property of the topology and the machine, decided once, the same
-way it would be for a shape-keyed dispatch table.
+distribution, but `BC` does not need to see it: the geometry that would starve
+or overflow at a given topology and machine is a property of the topology and
+the machine, decided once, the same way it would be for a shape-keyed dispatch
+table.
+
+## 7. `GT` — the one axis this section's rule does NOT govern
+
+The consumer's WINDOW, `GT` (the token quantum one visit consumes;
+[`smem_layout.md#window`](../internals/smem_layout.md#window)), is a SECOND
+structural axis the dispatch table carries, and it is selected differently
+from `BC` on purpose: `rola.planner.schedule.select_window` reads the realized
+routing's coarse slice-union popcount to pick the widest `CONSUMER_WINDOWS`
+member a routing's group-stream length, the device's SMEM grant, and (under
+decay) `panel_exponent_bound`'s window-scaled admission bound all clear. That
+IS reading a per-step distribution to decide how to run — the thing this
+document's opening rule forbids for `BC`.
+
+The two axes do not conflict because they answer different questions at
+different times. `BC` fixes the STATE LAYOUT — a structural fact every step of
+a sequence must agree on, so it has to be a launch-static closed form or two
+steps could derive different layouts for the same state. `GT` changes nothing
+about the state's shape or the kernel's numerics ([`smem_layout.md#window`](../internals/smem_layout.md#window)):
+it is a pure PERFORMANCE selection over a fixed, previously-derived `BC`, made
+once the routing that will actually run is available. Reading the routing to
+make it is therefore not a layout hazard, only a cost decision — which is
+exactly the category `derive_bc`'s ceilings are not.

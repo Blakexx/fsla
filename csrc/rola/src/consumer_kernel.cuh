@@ -572,36 +572,41 @@ consumer_forward_kernel(ConsumerParams p) {
     //: live coefficients anywhere in the slice for that group -- skipping it is
     //: exact. They stay PER-GROUP because the GEMMs are: GEMM 1 walks group `a`'s
     //: read mask, a Gram sub-block walks `rm(a) & wm(b)`.
-    auto isr_of = [&](int a) {
-      return !summary && (Rw[a * kSchedSlotInts + kSchedFlags] & 1) != 0 && rm_of(a) != 0u;
-    };
-    auto isw_of = [&](int a) {
-      return (Rw[a * kSchedSlotInts + kSchedFlags] & 2) != 0 && wm_of(a) != 0u;
-    };
-    //: **THE STAGED WRITE MASK -- the ONE mask every write-side consumer walks.**
-    //: A group's atom mask and its side flag are INDEPENDENT bitmaps (the flag is
-    //: the fixed levels' write rows, the mask is the atom bitlists), so a group can
-    //: carry live write ATOMS while being side-dead -- and a side-dead group's `WT`
-    //: and `Vw` slots are NOT STAGED. Reading the atom mask alone would therefore
-    //: send the fold into a slot holding a previous window's panels, which at
-    //: `W == 1` was impossible (the fold ran under the group's own `is_write`) and
-    //: at `W > 1` is not. Consumers walk THIS, never `wm_of`.
-    auto wmk_of = [&](int a) { return isw_of(a) ? wm_of(a) : 0u; };
+    //: **THE STAGED MASKS -- the ONE pair every consumer walks, held in registers
+    //: below as `rmr` / `wmr`.** A group's atom mask and its side flag are
+    //: INDEPENDENT bitmaps (the flag is the fixed levels' rows, the mask is the atom
+    //: bitlists), so a group can carry live write ATOMS while being side-dead -- and
+    //: a side-dead group's `WT` and `Vw` slots are NOT STAGED. Walking the atom mask
+    //: alone would send the fold into a slot holding a PREVIOUS WINDOW's panels,
+    //: which at `W == 1` was impossible (the fold ran under the group's own
+    //: `is_write`) and at `W > 1` is not. The masks below are therefore the side
+    //: flag ALREADY FOLDED IN: `rmr[a] != 0` IS "group `a` staged read
+    //: coefficients", and likewise `wmr[a]` for the write side.
     if (gN_of(0) == 0) break;  // the stream's end, as the producer saw it
 
-    //: THE WINDOW'S SIDES, as the OR over its groups, and the fold's UNION write
-    //: mask. An atom live in ANY group of the window is folded once, with a
-    //: per-slot predicate inside the accumulator's residency; an atom live in NONE
-    //: contributes an exactly-zero delta and (under decay) has `acc == 0` hence
-    //: `s0 == 1`, so skipping it entirely is the identity -- ticks ride writes.
+    //: **THE DESCRIPTORS COME OFF SHARED MEMORY ONCE PER WINDOW AND LIVE IN
+    //: REGISTERS FOR IT.** Every buffer in this kernel is carved out of ONE
+    //: `extern __shared__` block, so the compiler must assume the fold's stores to
+    //: `S` may alias the ring -- and a descriptor field read at its point of use is
+    //: then a real SMEM load INSIDE the fold's item loop, re-issued per item and
+    //: per slot, that no amount of `const` can hoist. Two masks and a count per
+    //: group is `3 * W` registers against that, which is the register policy's own
+    //: test: a register that deletes instructions in the hot loop is bought, not
+    //: leaked.
+    int gNr[W];
+    unsigned rmr[W], wmr[W];
     bool w_read = false, w_write = false;
     unsigned w_wmask = 0u;
 #pragma unroll
     for (int a = 0; a < W; ++a) {
-      if (isr_of(a)) w_read = true;
-      if (isw_of(a)) {
+      gNr[a] = gN_of(a);
+      const int flags = Rw[a * kSchedSlotInts + kSchedFlags];
+      rmr[a] = (!summary && (flags & 1) != 0) ? rm_of(a) : 0u;
+      wmr[a] = ((flags & 2) != 0) ? wm_of(a) : 0u;
+      if (rmr[a] != 0u) w_read = true;
+      if (wmr[a] != 0u) {
         w_write = true;
-        w_wmask |= wmk_of(a);
+        w_wmask |= wmr[a];
       }
     }
     const bool mixed = w_read && w_write;
@@ -628,7 +633,7 @@ consumer_forward_kernel(ConsumerParams p) {
         float acc = 0.0f;
         for (int a = 0; a < W; ++a) {
           const int* T = tk_of(a);
-          const int gna = T[kSchedGN];
+          const int gna = gNr[a];
           for (int t = 0; t < gna; ++t) {
             float cl = 1.0f;
 #pragma unroll
@@ -665,10 +670,10 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- so it needs no barrier of its own.
     // ---- docs/internals/consumer_kernel.md#upper-product
     for (int a = 0; a < W; ++a) {
-      const int gN = gN_of(a);
+      const int gN = gNr[a];
       const int* const T = tk_of(a);
-      const bool is_read = isr_of(a);
-      const bool is_write = isw_of(a);
+      const bool is_read = rmr[a] != 0u;
+      const bool is_write = wmr[a] != 0u;
       //: The window token index of this group's slot `t` -- the row `clk` is indexed
       //: by, and the only place the group's position in the window is visible to the
       //: panels at all.
@@ -778,8 +783,8 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- there `t` is the CONTRACTION index and the scale cannot hoist out of the
     // ---- sum; one staged object, two GEMMs.
     for (int a = 0; a < W; ++a) {
-      if (!isw_of(a)) continue;
-      const int gN = gN_of(a);
+      if (wmr[a] == 0u) continue;
+      const int gN = gNr[a];
       const int* const T = tk_of(a);
       const float* const swa = sw_of(a);
       __nv_bfloat16* const Vwa = Vw + a * kVwSlotElems;
@@ -825,9 +830,9 @@ consumer_forward_kernel(ConsumerParams p) {
       const int it = warp + s * kWarps;
       if (it >= W * NT_DV) continue;
       const int a = it / NT_DV;
-      if (!isr_of(a)) continue;
+      if (rmr[a] == 0u) continue;
       const int n0 = (it - a * NT_DV) * 8;
-      const unsigned rmask = rm_of(a);
+      const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
         mma_tile_fragA<BC, float, false>(Rfa, S, SP, BC, n0, lane, y[s][0], y[s][1], y[s][2],
@@ -855,8 +860,8 @@ consumer_forward_kernel(ConsumerParams p) {
       dm[s][2] = 0.0f;
       dm[s][3] = 0.0f;
       const int a = warp + s * kWarps;
-      if (a >= W || !isr_of(a)) continue;
-      const unsigned rmask = rm_of(a);
+      if (a >= W || rmr[a] == 0u) continue;
+      const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
         mma_tile_fragA_massB<BC>(Rfa, S, SP, BC, DV, lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
@@ -883,17 +888,35 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- already folded into the panels at stage time, so our diagonal stays a
     // ---- masked GEMM. docs/internals/consumer_kernel.md#gemm-gram
     {
+      //: THE TRIANGLE IS ENUMERATED AT COMPILE TIME. `W` and `NT_GM` are template
+      //: constants, so unrolling makes the item index -- and with it the
+      //: item-to-warp assignment and the `a == b` diagonal test -- a CONSTANT per
+      //: emitted block: no counter, no modulo, no branch on the mask's shape. It is
+      //: what keeps `W == 1` exactly the two statically-assigned n8 tiles the group
+      //: quantum always issued.
       int it = 0;
+#pragma unroll
       for (int a = 0; a < W; ++a) {
+#pragma unroll
         for (int b = 0; b <= a; ++b) {
+#pragma unroll
           for (int nt = 0; nt < NT_GM; ++nt, ++it) {
             if (it % kWarps != warp) continue;
-            if (!isr_of(a)) continue;
-            const unsigned gmask = rm_of(a) & wmk_of(b);
-            if (gmask == 0u) continue;
+            //: **THE BLOCK IS SKIPPED ON THE SIDES, AND THE MMA ON THE ATOMS.**
+            //: These are different conditions and the difference is load-bearing:
+            //: GEMM 3 reads `Gm[a][b]` whenever both sides are live, so a block
+            //: whose sides are live but whose atom masks are DISJOINT must still be
+            //: STORED -- as the exact zeros it is -- or the intra term reads a
+            //: previous window's Gram. (`BC == kMmaKQuantum` cannot express it: one
+            //: atom per side makes "both live" and "masks intersect" the same
+            //: statement, which is why only the `BC = 64` sparse cells saw it.)
+            if (rmr[a] == 0u || wmr[b] == 0u) continue;
+            const unsigned gmask = rmr[a] & wmr[b];
             const unsigned* const Rfa = Rf + a * kRfSlotWords;
             const __nv_bfloat16* const WTb = WT + b * kWtSlotElems;
             const int n0 = nt * 8;
+            //: An empty `gmask` issues no `mma.sync` and the accumulators stay the
+            //: exact zeros the block is; the stores below still run.
             float gd0 = 0.0f, gd1 = 0.0f, gd2 = 0.0f, gd3 = 0.0f;
             if (gmask == kFullMask) {
 #pragma unroll
@@ -950,10 +973,11 @@ consumer_forward_kernel(ConsumerParams p) {
         const int it = warp + s * kWarps;
         if (it >= W * NT_DV) continue;
         const int a = it / NT_DV;
-        if (!isr_of(a)) continue;
+        if (rmr[a] == 0u) continue;
         const int n0 = (it - a * NT_DV) * 8;
-        for (int b = 0; b <= a; ++b) {
-          if (!isw_of(b)) continue;
+#pragma unroll
+        for (int b = 0; b < W; ++b) {
+          if (b > a || wmr[b] == 0u) continue;
           mma_tile_vwB<DV>(Gm + a * kGroupTokens * GMP + b * kGroupTokens, GMP,
                            Vw + b * kVwSlotElems, n0, lane, y[s][0], y[s][1], y[s][2], y[s][3]);
         }
@@ -967,9 +991,10 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
       for (int s = 0; s < kDmItems; ++s) {
         const int a = warp + s * kWarps;
-        if (a >= W || !isr_of(a)) continue;
-        for (int b = 0; b <= a; ++b) {
-          if (!isw_of(b)) continue;
+        if (a >= W || rmr[a] == 0u) continue;
+#pragma unroll
+        for (int b = 0; b < W; ++b) {
+          if (b > a || wmr[b] == 0u) continue;
           mma_tile_bcastB(Gm + a * kGroupTokens * GMP + b * kGroupTokens, GMP, sw_of(b), lane,
                           dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
         }
@@ -994,7 +1019,7 @@ consumer_forward_kernel(ConsumerParams p) {
       const int it = warp + s * kWarps;
       if (it >= W * NT_DV) continue;
       const int a = it / NT_DV;
-      if (!isr_of(a)) continue;
+      if (rmr[a] == 0u) continue;
       const int n0 = (it - a * NT_DV) * 8;
       const int* const T = tk_of(a);
       const float* const sra = sr_of(a);
@@ -1018,7 +1043,7 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
     for (int s = 0; s < kDmItems; ++s) {
       const int a = warp + s * kWarps;
-      if (a >= W || !isr_of(a)) continue;
+      if (a >= W || rmr[a] == 0u) continue;
       const int* const T = tk_of(a);
       const float* const sra = sr_of(a);
       CONSUMER_D_ROWS(lane);
@@ -1061,8 +1086,9 @@ consumer_forward_kernel(ConsumerParams p) {
         //: ascending group order. The per-slot skip is EXACT rather than an
         //: approximation: an atom dead in group `b` has exact-zero staged
         //: coefficients there.
+#pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (((wmk_of(b) >> mt) & 1u) == 0u) continue;
+          if (((wmr[b] >> mt) & 1u) == 0u) continue;
           //: THE TILE'S BASE COLUMN, `nt * 8` -- NOT `n0`, which carries the lane's
           //: own `2 * _r` offset for the scalar accumulator accesses above. An
           //: `ldmatrix` takes a warp-uniform 16-byte-aligned tile address.
@@ -1104,8 +1130,9 @@ consumer_forward_kernel(ConsumerParams p) {
         float a0 = (_r == 0) ? S[i0 * SP + DV] : 0.0f;
         float a1 = (_r == 0) ? S[i1 * SP + DV] : 0.0f;
         float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
+#pragma unroll
         for (int b = 0; b < W; ++b) {
-          if (((wmk_of(b) >> mt) & 1u) == 0u) continue;
+          if (((wmr[b] >> mt) & 1u) == 0u) continue;
           mma_tile_bcastB(WT + b * kWtSlotElems + mt * kMmaKQuantum * BTP, BTP, sw_of(b), lane, m0,
                           m1, m2, m3);
         }

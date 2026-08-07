@@ -17,11 +17,19 @@ arm — both died with the P26 endgame rewrite (`git show 52a67d8^:csrc/rola/src
 has the last version that carried them); every GEMM below is the bf16 pass,
 unconditionally.
 
-**The group is the tile.** The executor's work unit is a GROUP of `kGroupTokens == 16`
-gathered tokens — the same constant as `kMmaKQuantum`, the MMA k-quantum, by
-construction. There is no `BT` axis: a group is always full except a segment's final
-flush, and every contraction below runs over one atom (`kMmaKQuantum` leaves) or one
-group (`kGroupTokens` tokens) at a time.
+**The group is the tile every GEMM atom fetches.** The PRODUCER's work unit is a GROUP
+of `kGroupTokens == 16` gathered tokens — the same constant as `kMmaKQuantum`, the MMA
+k-quantum, by construction. There is no `BT` axis: a group is always full except a
+segment's final flush, and every contraction below runs over one atom (`kMmaKQuantum`
+leaves) or one group (`kGroupTokens` tokens) at a time — that stays true even though
+the CONSUMER's own quantum, the WINDOW (`GT in {16, 64}`, [`smem_layout.md#window`](smem_layout.md#window)),
+now spans `W = GT / kGroupTokens` groups per visit: `WT`/`Vw`/`Rf` are `W`
+INDEPENDENT SLOTS of the group's own shape, so every fetch and every GEMM atom below
+still operates on one 16-token group's worth per invocation, called once per slot the
+kernel body's loop indexes ([`consumer_kernel.md`](consumer_kernel.md)). Only the
+window Gram `Gm` is addressed at the window's own pitch (`GMP = GT + 8`), and its
+`ldmatrix` atom (`ldsm_frag_a` at `GMP`, [below](#ldsm-atoms-a)) still fetches one
+group-sized `[16 x 16]` sub-block at a time.
 
 Where an operand LIVES is [`smem_layout.md`](smem_layout.md) (`vw_index`, `wt_index`,
 `stage_offset`) — every address this file's routines take comes from there, which is

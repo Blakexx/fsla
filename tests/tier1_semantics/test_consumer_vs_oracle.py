@@ -1214,7 +1214,7 @@ def test_output_charge_sees_a_drift_the_global_max_cannot():
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.25, 0.25)])
 def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     import rola.planner.schedule as schedule_mod
-    from rola.planner.schedule import select_window
+    from rola.planner.schedule import CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window
 
     widths, BC, d_v, T = (4, 4, 4, 4), 16, 32, 521
     dials = None
@@ -1236,8 +1236,12 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
         schedule_mod.CONSUMER_WINDOWS = original
 
     assert seen == {(64, 16): True, (16,): True}
-    # The selection itself, so a cell that quietly stopped reaching the wide arm
-    # stops being a wide-window gate LOUDLY rather than by passing trivially.
+    # THE CELL MUST STILL BE BIG ENOUGH TO FILL A WIDE WINDOW, so a cell that
+    # quietly shrank stops being a wide-window gate LOUDLY rather than by passing
+    # trivially. It is the FILL that is asserted, not the SELECTION: `select_window`
+    # additionally refuses a window that costs residency, and on `sm_86` that
+    # refusal is total -- the wide arm is compiled, ratified and exact, and not
+    # chosen. This gate is what keeps it exact for the arch where it is chosen.
     from rola.ops.consumer import _consumer_forward
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(8149)
@@ -1252,8 +1256,9 @@ def test_the_wide_window_matches_the_canonical_oracle(decay, p_read, p_write):
     _, _, sched = _consumer_forward(v, read_levels, write_levels, None, g_write, plan,
                                     initial_state=None, decay=dec)
     clock = sched.decay_stream.clock_amps if decay else None
-    chosen = select_window(sched, dec, clock, BC, d_v)
-    assert chosen == 64, (
-        f"this cell no longer selects the wide window (got group_tokens={chosen}); it "
-        "is the only oracle gate that exercises the window formulation, so it must "
-        "be re-sized rather than left passing at the group quantum")
+    assert select_window(sched, dec, clock, BC, d_v) in CONSUMER_WINDOWS
+    assert sched.union_members >= WINDOW_MIN_FILL * 64, (
+        f"this cell no longer fills a wide window ({sched.union_members} member "
+        f"tokens against {WINDOW_MIN_FILL * 64}); it is the only oracle gate that "
+        "exercises the window formulation, so it must be re-sized rather than left "
+        "passing at the group quantum")

@@ -891,6 +891,19 @@ class Schedule:
     #: Attached lazily by `_consumer_forward` on the decay arm; see
     #: :class:`DecayStream`. `None` on the `decay=None` arm, always.
     decay_stream: DecayStream | None = None
+    #: Attached lazily by :func:`select_window`: the MEDIAN OWNER'S MEMBER COUNT,
+    #: the one routing statistic the window selection consults. It is a pure
+    #: function of `slice_union_tok`, which is frozen with the rest of the
+    #: schedule, so caching it changes no observable value -- and computing it is
+    #: a device-side popcount over the whole union bitmap, which is a real cost
+    #: beside a small kernel and must not be paid once per LAUNCH.
+    union_members: int | None = None
+    #: Attached lazily by :func:`select_window`: the chosen token quantum. The
+    #: choice is a pure function of this schedule, the decay stream and the plan's
+    #: `(BC, d_v)`, all of which are fixed for the schedule's lifetime -- and the
+    #: driver queries it rests on are per-arm constants. A LAUNCH must not ask the
+    #: driver a question with a fixed answer.
+    window: int | None = None
 
     def decay_artifacts(self, stored, write, decay, *, build):
         """Return this schedule's decay artifacts, building them at most once.
@@ -1392,7 +1405,7 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     the fold's read-modify-write of the state, the descriptor decode) ``W``-fold
     and pays for it with a Gram quadratic in ``W``, so which width wins is a
     property of the routing rather than of the kernel. Widest-first over
-    :data:`CONSUMER_WINDOWS`, with three refusals.
+    :data:`CONSUMER_WINDOWS`, with four refusals.
 
     **The tail.** Groups are always full (the executor packs ``MMA_K_QUANTUM``
     members per group), so a wide window is not thinned by sparsity -- it is only
@@ -1407,28 +1420,56 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
     arm is the first one a device cannot grant a block; the same inequality the
     launch applies is applied here, before selecting.
 
+    **RESIDENCY, AND THIS IS THE BINDING ONE ON `sm_86`.** A wider window is taken
+    only if it costs NO CTA per SM against the group quantum. The window's whole
+    trade is per-visit overhead amortised `W`-fold against a Gram quadratic in
+    `W`; measured on this box, the amortisation is worth far less than the CTAs
+    the wider carve gives up, and the loss tracks the residency given up rather
+    than the extra arithmetic (`BC = 16`, 4 CTAs -> 2: +43% at
+    `topo-D4-w8x8x8x16-BC16`; `BC = 64`, 3 -> 1: +92% whole-layer at the dense
+    `N = L = 4096` cell). That is `sm_86`'s 100 KB/SM speaking, not the
+    formulation: the kernel's panel builds gather amplitudes straight from global
+    memory and are NOT prefetched, so warps are still what hides that latency --
+    which is also what P31 measured directly (66% of cycles with no eligible
+    warp). On an arch whose SMEM budget carries the wider carve at the same
+    occupancy the rule admits it with no code change, and the answer is re-derived
+    from the driver rather than from this paragraph.
+    Evidence: `workflows/perf/p36_quantum.md`.
+
     **The panel domain**, decay only. :func:`panel_exponent_bound` grows with the
     window, so a width whose bound clears :data:`PANEL_MAX_EXPONENT` at 16 may not
     clear it at 64. The narrower window is then selected rather than the launch
     refused -- the domain contraction is the window's price, and declining to pay
     it is the right answer, not an error.
     """
-    union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
-    if union.numel() == 0:
-        members = 0
-    else:
-        bits = union.to(torch.int32)
-        popc = torch.zeros_like(bits)
-        rest = bits
-        for _ in range(32):
-            popc += rest & 1
-            rest = (rest >> 1) & 0x7FFFFFFF
-        per_owner = popc.sum(dim=-1).reshape(-1)  # [BH * n_slices]
-        members = int(per_owner.median())
+    if schedule.window is not None:
+        return schedule.window
+    members = schedule.union_members
+    if members is None:
+        union = schedule.slice_union_tok  # [BH, n_slices, n_twords] int32
+        if union.numel() == 0:
+            members = 0
+        else:
+            # THE SWAR POPCOUNT, six elementwise passes over the bitmap rather
+            # than the thirty-two a shift-and-test loop takes. It must be cheap:
+            # it runs on a launch path beside kernels that take a fifth of a
+            # millisecond. (It is also why the answer is memoized above -- cheap
+            # is not free.)
+            x = union.to(torch.int64) & 0xFFFFFFFF
+            x = x - ((x >> 1) & 0x5555555555555555)
+            x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+            x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F
+            per_owner = ((x * 0x0101010101010101) >> 56).sum(dim=-1).reshape(-1)
+            members = int(per_owner.median())
+        object.__setattr__(schedule, "union_members", members)
     from rola.ops._ext import extension
     ext = extension()
     granted = int(ext.rola_max_dynamic_smem_bytes())
+    narrow = CONSUMER_WINDOWS[-1]
+    resident = int(ext.rola_consumer_occupancy(decay is not None, BC, d_v, narrow))
     for gt in CONSUMER_WINDOWS:
+        if gt == narrow:
+            break
         if members < WINDOW_MIN_FILL * gt:
             continue
         # THE SAME ADMISSION THE LAUNCH APPLIES, applied before selecting rather
@@ -1438,11 +1479,17 @@ def select_window(schedule: "Schedule", decay, clock_amps, BC: int, d_v: int) ->
         # mirrored.
         if int(ext.rola_consumer_smem_bytes(decay is not None, BC, d_v, gt)) > granted:
             continue
+        # THE RESIDENCY RULE, AND IT IS THE ONE THE MEASUREMENT WROTE. See the
+        # docstring: a window bought with occupancy is a window that loses.
+        if int(ext.rola_consumer_occupancy(decay is not None, BC, d_v, gt)) < resident:
+            continue
         if decay is not None and clock_amps is not None:
             if not panel_exponent_bound(clock_amps, decay, gt) <= PANEL_MAX_EXPONENT:
                 continue
+        object.__setattr__(schedule, "window", gt)
         return gt
-    return CONSUMER_WINDOWS[-1]
+    object.__setattr__(schedule, "window", narrow)
+    return narrow
 
 
 def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:

@@ -10,28 +10,29 @@ tools/manifests/sm_86.json
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
-    "shards":   { "consumer_decay_bc16": { "members_sha256": "...",
-                                           "count": 8 }, ... },
+    "shards":   { "consumer_gt16_decay_bc16": { "members_sha256": "...",
+                                                "count": 8 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
                                             "hot_locals": 0, "local_ops": 12,
                                             "sass_sha256": "..." }, ... } }
 ```
 
-112 entries per architecture, measured on the current tree: 32 for the consumer —
-one per point of the `consumer_forward_kernel<BC, DV, D, DECAY>` product (the P26
-endgame executor collapsed the matrix from 256 to 32 by deleting the `BT`, `PREC`
-and `GLOBAL` axes; [`docs/internals/DELETIONS.md`](internals/DELETIONS.md)) — plus
-16 `decode_gemv_kernel` (`DV x D x DECAY`; its own `GLOBAL` axis died with raw
-normalization the same sweep) and 32 each of `union_forward_kernel` and
-`union_backward_kernel`, whose matrix P26 did not touch. `defines` is the empty
-tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since the closed-world
-codegen surface carries no `#define` this gate has to pin. Two ratified
-architectures (`sm_80`, `sm_86`) make 224 entries total. The manifest is the
-authority on the count and no comment restates it independently. The mangled name
-is the key because it is exact, stable, and encodes every template argument — an
-entry cannot be silently re-pointed at a different instantiation by a rename or a
-reordering.
+144 entries per architecture, measured on the current tree: 64 for the consumer —
+one per point of the `consumer_forward_kernel<BC, DV, D, DECAY, GT>` product (the
+P26 endgame executor collapsed the matrix from 256 to 32 by deleting the `BT`,
+`PREC` and `GLOBAL` axes, and the window batch then widened it back to 64 by adding
+`GT`; [`docs/internals/DELETIONS.md`](internals/DELETIONS.md)) — plus 16
+`decode_gemv_kernel` (`DV x D x DECAY`; its own `GLOBAL` axis died with raw
+normalization the P26 sweep) and 32 each of `union_forward_kernel` and
+`union_backward_kernel`, whose matrix the window batch did not touch. `defines` is
+the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since the
+closed-world codegen surface carries no `#define` this gate has to pin. Two
+ratified architectures (`sm_80`, `sm_86`) make 288 entries total. The manifest is
+the authority on the count and no comment restates it independently. The mangled
+name is the key because it is exact, stable, and encodes every template argument
+— an entry cannot be silently re-pointed at a different instantiation by a rename
+or a reordering.
 
 ## Why it exists
 
@@ -41,13 +42,15 @@ judgement that has to live SOMEWHERE nothing else checks — a document that say
 is not enforced, and a later codegen change can grow the spill silently. The
 manifest is what makes that judgement an asserted invariant instead: a property
 the project believes is a property the project checks. On the current tree the
-consumer's collapsed 32-arm matrix ratifies at ZERO spill everywhere (measured:
-the P26 endgame executor's SMEM carve dropped every consumer instantiation's spill
-from a nonzero working set to none, and hot-loop locals from 8,933 to 254 across
-the matrix — [`internals/DELETIONS.md`](internals/DELETIONS.md) records what was
-cut to get there); the two live spilling entries in the current manifest are both
+consumer's 64-arm matrix ratifies at ZERO spill everywhere (measured: the P26
+endgame executor's SMEM carve dropped every consumer instantiation's spill from a
+nonzero working set to none, and hot-loop locals from 8,933 to 254 across the
+matrix; the window batch's 32 new `GT = 64` arms carry the same zero, register
+working set 80..107 against the 112-register budget the `GT` axis buys —
+[`internals/DELETIONS.md`](internals/DELETIONS.md) records what was cut to get
+there); the two live spilling entries in the current manifest are both
 `union_backward_kernel` (entmax), 16 bytes stores / 16 bytes loads each, unrelated
-to the P26 sweep.
+to either sweep.
 
 ## What it compiles, and why that is the shipped source
 
@@ -65,9 +68,9 @@ neither held before:
   rather than asserting it.
 - **there is one enumeration of the matrix.** The shards, the dispatch table and
   this gate's source list all come out of `tools/gen_shards.py`; there is no second
-  file that could enumerate a different 32.
+  file that could enumerate a different 64.
 
-The consumer's 32 keys are unaffected by the split by construction:
+The consumer's 64 keys are unaffected by the split by construction:
 `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
 depend on which translation unit expands it.
 
@@ -163,7 +166,7 @@ hash per shard: the sha256 of the shard's sorted list of template tuples, not of
 its file's bytes. A comment edit does not move it; adding, dropping or moving one
 instantiation does.
 
-It enters the digest, and that is the point. "Only `consumer_decay_bc16` was
+It enters the digest, and that is the point. "Only `consumer_gt16_decay_bc16` was
 re-measured" is otherwise an unprovable sentence; with membership in the ratified
 record it is a diff. Because the block carries membership and nothing else — no
 paths, no ordering — re-filing the same measurements cannot move the digest, which

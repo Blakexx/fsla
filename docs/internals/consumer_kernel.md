@@ -59,34 +59,43 @@ life, is read from HBM ONCE at entry and written ONCE at exit.
 6. warp 0 [cooks](#producer) the schedule ring's first `kSchedDepth` group
    descriptors — the cold start — and a `__syncthreads()` publishes them.
 
-**The walk**, once per GROUP of `kGroupTokens == 16` gathered tokens (every group is
-full except each segment's final ragged flush; visit count is exactly
-`ceil(gathered / 16)`):
+**The walk**, once per VISIT of a WINDOW of `W = GT / kGroupTokens` gathered-token
+GROUPS (`kGroupTokens == 16`; every group is full except each segment's final ragged
+flush and a window's trailing groups past stream end; visit count is exactly
+`ceil(gathered / GT)`) — [`smem_layout.md#window`](smem_layout.md#window):
 
-7. the visit [reads its cooked descriptor](#group-assembler) straight off the
-   [schedule ring](#sched-ring) — `t_idx`, the read/write atom masks, the side flags,
-   the pre-multiplied row scales `sr`/`sw` — and assembles nothing; concurrently, warp
-   0 cooks the ring's NEXT descriptor (the [run-ahead](#sched-ring)), published by this
-   visit's own end-of-visit barrier;
-8. **STAGE** — under `DECAY`, the clock prefix and entry scale; the §3 step-3 row
-   scales `sr`/`sw`; the fragment-ordered read panel `Rf`; the write panel `WT`; the
-   scale-folded value tile `Vw` — every leaf-axis loop walking LIVE ATOMS ONLY;
-9. **GEMM 1, the readout** — `y_group = R . S`, live read atoms only, accumulating
-   into each warp's own registers; the mass column's [TERM 1](#mass-term1), one more
-   `n8` tile on WARP 0, beside it;
-10. **GEMM 2, the Gram** — `G += R_q . W_q^T` over atoms live on BOTH sides, then §5's
-    inclusive causal mask and the publication of `Gm`;
+7. the visit [reads its `W` cooked descriptors](#group-assembler) straight off the
+   [schedule ring](#sched-ring), one group each — the token indices, the read/write
+   atom masks, the side flags, the pre-multiplied row scales `sr`/`sw` — and assembles
+   nothing; concurrently, warp 0 cooks the ring's NEXT window of descriptors (the
+   [run-ahead](#sched-ring)), published by this visit's own end-of-window barrier;
+8. **STAGE** — under `DECAY`, the clock prefix (over the WHOLE window, one reference
+   frame) and entry scale; the §3 step-3 row scales `sr`/`sw`; the fragment-ordered
+   read panel `Rf` and write panel `WT`, `W` SLOTS of the group's own shape; the
+   scale-folded value tile `Vw`, likewise `W` slots — every leaf-axis loop walking LIVE
+   ATOMS ONLY, per group;
+9. **GEMM 1, the readouts** — `y_a = R_a . S_entry` for every group `a` of the window,
+   live read atoms only, accumulating into each warp's own registers, against the SAME
+   entry state;
+10. **GEMM 2, the window Gram** — the block LOWER TRIANGLE `G[a][b]`, `b <= a`: `b == a`
+    is today's within-group masked block, `b < a` is a dense unmasked cross-group
+    block (every token of group `b` precedes every token of group `a`), `b > a` is
+    never formed — `W(W+1)/2` sub-blocks over `W^2`, published into the window Gram
+    `Gm`;
 11. the visit's [ONE internal barrier](#visit-barrier), guarded `mixed`, carrying both
-    the readout-before-fold edge on `S` and the Gram-before-phase-C edge on `Gm` at
+    the readouts-before-fold edge on `S` and the Gram-before-phase-C edge on `Gm` at
     once;
-12. **PHASE C**: **GEMM 3, the intra term** — `y_group += G . Vw` into the same
-    registers the readout used, plus the mass column's [TERM 2](#phase-c);
-13. **EMIT** — the split-K `atomicAdd` of `sr[t] * y` into `num`, and, out of the
-    [mass column's D fragment](#mass-column), of `sr[t] * dm` into `den`;
-14. **GEMM 4, the fold** — `S += W^T . Vw`, live write atoms only, walked as a STATIC
-    STRIDED PARTITION over `(atom, n-tile)` items, with `DECAY`'s exit scale riding its
-    read-modify-write and the mass column's [TERM 3](#gemm-fold) — one more `mma.sync`
-    per live atom, on the same tensor core as the fold itself — beside it.
+12. **PHASE C**: **GEMM 3, the intra terms** — `y_a += sum_{b<=a} Gm[a][b] . Vw_b` for
+    every group `a`, into the same registers the readouts used, plus the mass column's
+    [TERM 2](#phase-c);
+13. **EMIT** — per group, the split-K `atomicAdd` of `sr[t] * y` into `num`, and, out of
+    the [mass column's D fragment](#mass-column), of `sr[t] * dm` into `den`;
+14. **GEMM 4, the fold, ONCE PER WINDOW** — `S += sum_b W_b^T . Vw_b`, live write atoms
+    only over the UNION write mask of the window's groups, walked as a STATIC STRIDED
+    PARTITION over `(atom, n-tile)` items, the claimed atom's accumulator resident in
+    registers across all `W` staged groups it must consume, with `DECAY`'s exit scale
+    applying ONCE, after every group's delta has been summed, riding the ONE
+    read-modify-write, and the mass column's [TERM 3](#gemm-fold) beside it.
 
 **Per CTA, at exit:** under pass 1 (the summary pass), publish the sparse `(A, B)`
 written-leaf summary; otherwise, if this is the owner's last segment, store `S` back
@@ -101,21 +110,23 @@ Three facts a reader must not miss:
   kernel implements: one CTA per owner, run to completion, one HBM read and one HBM
   write of the owner's state block. There is no wave machinery anywhere.
 - **Every structural axis is a template parameter and no axis has a runtime
-  fallback.** `BC in {16, 64}`, `DV in {32, 64}`, `D in {1..4}`, `DECAY in {0, 1}` —
-  32 arms total, see [`consumer.md`](consumer.md#instantiation-matrix). The endgame
-  walk IS the path; dense (full-support) routing self-heals to identity grouping
-  rather than taking a different code path.
+  fallback.** `BC in {16, 64}`, `DV in {32, 64}`, `D in {1..4}`, `DECAY in {0, 1}`,
+  `GT in {16, 64}` — 64 arms total, see
+  [`consumer.md`](consumer.md#instantiation-matrix). The endgame walk IS the path;
+  dense (full-support) routing self-heals to identity grouping rather than taking a
+  different code path.
 - **The visit pays exactly TWO unconditional `__syncthreads()`** — the post-staging
-  barrier (staging into GEMM 1/GEMM 2) and the end-of-visit barrier that closes the
+  barrier (staging into GEMM 1/GEMM 2) and the end-of-window barrier that closes the
   loop and publishes the producer's run-ahead cook — plus the [visit barrier](#visit-barrier)
-  (readout before fold on `S`, Gram before phase C on `Gm`), which is CTA-UNIFORM but
+  (readouts before fold on `S`, Gram before phase C on `Gm`), which is CTA-UNIFORM but
   not unconditional: it is guarded `mixed`, because both of its edges are (a
-  read-only visit runs no fold, a write-only visit reads no state, and neither has a
-  Gram), so a single-sided visit pays nothing for it. `DECAY` arms pay two more, both
-  inside staging: after the clock-prefix pass (before it scales `S`) and at
+  read-only window runs no fold, a write-only window reads no state, and neither has a
+  Gram), so a single-sided window pays nothing for it. Every one of these three is
+  PER WINDOW, not per group — the amortisation `GT` buys. `DECAY` arms pay two more,
+  both inside staging: after the clock-prefix pass (before it scales `S`) and at
   [`clk-dead`](#clk-dead) (before `Vw` may overwrite `clk`'s aliased bytes). There is
   no separate group-entry barrier: the ring publishes
-  a visit's descriptor a whole visit ahead of the visit that reads it.
+  a window's descriptors a whole window ahead of the visit that reads them.
 
 ## <a id="glossary"></a>2. Symbol glossary
 
@@ -126,7 +137,9 @@ Three facts a reader must not miss:
 | `D` | level count of the topology; `1 <= D <= 4` (spec §1) |
 | `j` | `first_spanned_level`. Levels `l < j` are FIXED for this owner |
 | `kMmaKQuantum` | `16` — the hardware `mma.sync` k-extent on the sm80 bf16 path, and the sector invariant's other half ([`smem_layout.md#cute-pin`](smem_layout.md#cute-pin)). Defined once, in `arch_table.cuh` |
-| `kGroupTokens` / `kGT` | `16` — the work unit: one group of gathered tokens, == `kMmaKQuantum`. `kGT` is the kernel body's local alias |
+| `kGroupTokens` | `16` — the PRODUCER's work unit: one group of gathered tokens, == `kMmaKQuantum`. The cook, the ballot and the ring descriptor are sized by it and never by `GT` |
+| `GT` | the CONSUMER's token quantum — the WINDOW, a template axis, `{16, 64}`. `kGT` is the kernel body's local alias for it |
+| `W` | `window_groups(GT) = GT / kGroupTokens` — how many groups one VISIT consumes against one entry state ([`smem_layout.md#window`](smem_layout.md#window)) |
 | `QPO` / `kQPO` | atoms per owner, `BC / kMmaKQuantum`. An ATOM is one `kMmaKQuantum`-leaf block in canonical leaf order, and also §4.5's page granule |
 | `NT_DV` | `DV / 8` — the `n8` column tiles of a `DV`-wide output |
 | `kWarps` | `8` — `kConsumerThreads / 32` |
@@ -134,25 +147,26 @@ Three facts a reader must not miss:
 | `S` | the STATE, `[BC][SP]` fp32 SMEM, resident for the owner's whole run |
 | `SP` | `S`'s row pitch, `DV + 4` ([below](#state-pitch)) |
 | `cols` | `DV + 1`, UNCONDITIONAL — the mass column always exists |
-| `WT` | the write coefficient panel, LEAF-MAJOR, `[BC][BTP]` bf16 |
-| `BTP` | `WT`'s row pitch, `kWtPitch = kGT + 8 = 24` ([`smem_layout.md#stage-format`](smem_layout.md#stage-format)) |
-| `Vw` | the scale-folded value tile, `Vw[t,ch] = sw[t] * v[t0+t, ch]`, bf16, swizzled, no pad |
-| `Gm` | the causal effective-score block `[kGT][kGT]`, pitch `GMP = kGT + 8 = 24` |
-| `Rf` | the read coefficients, MMA-FRAGMENT-ORDERED, `frag_a_words(BC)` words, atom-blocked |
-| `clk` | the visit's per-leaf INCLUSIVE clock prefix `[kGT][CKP]` fp32, `CKP = BC + 4`; ALIASES `Vw`'s bytes ([`smem_layout.md#vw-clk-union`](smem_layout.md#vw-clk-union)) |
-| `log_keep`, `p_ref`, `s0` | `DECAY`'s three `[BC]` vectors — per-owner log retention, §12 rule 1's reference exponent, and the entry/exit scale |
-| `sr`, `sw` | the §3 step-3 per-token read/write ROW SCALES, `[kGT]` each — retargeted every visit into `g_up`'s matching ring slot, [cooked by the producer](#upper-product) |
+| `WT` | the write coefficient panel, `W` SLOTS of `[BC][BTP]` bf16, LEAF-MAJOR per slot |
+| `BTP` | `WT`'s row pitch, `kWtPitch = kGroupTokens + 8 = 24` ([`smem_layout.md#stage-format`](smem_layout.md#stage-format)) |
+| `Vw` | the scale-folded value tile, `W` slots, `Vw[t,ch] = sw[t] * v[t0+t, ch]`, bf16, swizzled, no pad |
+| `Gm` | the WINDOW Gram, ONE buffer, `[GT][GT+8]`, pitch `GMP = GT + 8`; only the block lower triangle is written or read |
+| `Rf` | the read coefficients, `W` slots, MMA-FRAGMENT-ORDERED, `frag_a_words(BC)` words each, atom-blocked |
+| `clk` | the WINDOW's per-leaf INCLUSIVE clock prefix `[GT][CKP]` fp32, `CKP = BC + 4`, ONE buffer over the whole window; ALIASES `Vw`'s bytes ([`smem_layout.md#vw-clk-union`](smem_layout.md#vw-clk-union)) |
+| `log_keep`, `p_ref`, `s0` | `DECAY`'s three `[BC]` vectors — per-owner log retention, §12 rule 1's reference exponent (now over the window), and the entry/exit scale |
+| `sr`, `sw` | the §3 step-3 per-token read/write ROW SCALES, `[kGroupTokens]` each, PER GROUP — retargeted every visit into `g_up`'s matching ring slot, [cooked by the producer](#upper-product) |
 | `dm0..dm3` | the [mass column's D fragment](#mass-column), register-resident on WARP 0 — one `[16 x 8]` accumulator, to the denominator exactly what `y0..y3` is to the numerator |
 | `dig` | the hoisted leaf digits, `[D][BC]` |
-| `t_idx` | the visit's `kGT` gathered GLOBAL token indices, ascending — retargeted every visit onto the [schedule ring](#sched-ring)'s matching slot, never copied |
-| `kSchedDepth` / `kSchedSlots` | the producer's run-ahead depth (`ROLA_SCHED_DEPTH`, a `constexpr` dial) and the ring's slot count, `kSchedDepth + 1` ([`smem_layout.md#sched-ring`](smem_layout.md#sched-ring)) |
-| `g_ring` | the [cooked schedule ring](#sched-ring), `kSchedSlots` group descriptors, `kSchedSlotInts` ints each |
-| `g_up` | the ring's per-owner [upper-product](#upper-product) pairs, `kSchedSlots * 2 * kGT` floats |
+| `tk_of(a)` | group `a`'s `kGroupTokens` gathered GLOBAL token indices, ascending — addressed in place off the [schedule ring](#sched-ring)'s matching slot, never copied |
+| `kSchedDepth` / `sched_slots(GT)` | the producer's run-ahead depth (`ROLA_SCHED_DEPTH`, a `constexpr` dial) and the ring's slot count, `window_groups(GT) * (kSchedDepth + 1)` — a WHOLE WINDOW of run-ahead ([`smem_layout.md#sched-ring`](smem_layout.md#sched-ring)) |
+| `g_ring` | the [cooked schedule ring](#sched-ring), `sched_slots(GT)` group descriptors, `kSchedSlotInts` ints each, one group per slot |
+| `g_up` | the ring's per-owner [upper-product](#upper-product) pairs, `sched_slots(GT) * 2 * kGroupTokens` floats |
 | `p_st`, `p_chunk` | the [producer's cursor state](#producer-state): seven uniform scalars (`p_st`) and five 32-lane planes (`p_chunk`, the cooked chunk's `fr`/`fw`/`member` and the selected word's two atom-bitlist rows) |
 | `A`, `B` | §6.4's per-segment summary: the per-leaf survival product and the accumulated deposit |
 | `w_lo`, `w_hi` | this segment's word range over the scan stream, `[w_lo, w_hi)` |
 | atom | one `kMmaKQuantum`-leaf block of the owner's leaf axis; also one 32-byte fetch sector ([`smem_layout.md#cute-pin`](smem_layout.md#cute-pin)) |
-| group | the work unit: `<= kGT` gathered, causally-ordered member tokens |
+| group | the PRODUCER's work unit: `<= kGroupTokens` gathered, causally-ordered member tokens |
+| window / visit | the CONSUMER's work unit: `W` groups (`<= GT` tokens), staged and consumed against one entry state and folded back in one writeback |
 
 ## <a id="one-precision-story"></a>The one precision story
 
@@ -206,12 +220,12 @@ carves it, so a future `BC`/`DV` that broke the proof fails the BUILD:
 | `banks_distinct(1, 2 * SP)` | `S` as GEMM 1's B operand |
 | `banks_distinct_u16(1, 2 * BTP)` | `WT` as GEMM 2's B operand |
 | `banks_distinct_u16(BTP, 2)` | `WT` as GEMM 4's A operand |
-| `pitched_ldsm_banks_ok<kMmaKQuantum, kGT, kWtPitch>()` | `WT`'s `ldmatrix` fetch conflict- and alignment-freedom at `kWtPitch` |
-| `pitched_ldsm_banks_ok<kGT, kGT, GMP>()` | `Gm`'s `ldmatrix` fetch conflict- and alignment-freedom at `GMP`, as GEMM 3's A operand |
-| `stage_offset_matches_cute<kGT, DV>()` | `Vw`'s closed-form address IS CuTe's layout |
-| `stage_layout_is_bijection<kGT, DV>()` | the swizzled `Vw` tiles `[0, kGT*DV)` exactly |
-| `stage_ldsm_banks_ok<kGT, DV>()` | `Vw`'s `ldmatrix.x2.trans` fetch |
-| `stage_store_banks_ok<kGT, DV>()` | `Vw`'s staging store |
+| `pitched_ldsm_banks_ok<kMmaKQuantum, kGroupTokens, kWtPitch>()` | `WT`'s `ldmatrix` fetch conflict- and alignment-freedom at `kWtPitch`, per slot |
+| `pitched_ldsm_banks_ok<kGroupTokens, kGroupTokens, GMP>()` | `Gm`'s `ldmatrix` fetch conflict- and alignment-freedom at `GMP`, as GEMM 3's A operand — a group-sized phase at the WINDOW's pitch |
+| `stage_offset_matches_cute<kGroupTokens, DV>()` | `Vw`'s closed-form address IS CuTe's layout, per slot |
+| `stage_layout_is_bijection<kGroupTokens, DV>()` | the swizzled `Vw` tiles `[0, kGroupTokens*DV)` exactly, per slot |
+| `stage_ldsm_banks_ok<kGroupTokens, DV>()` | `Vw`'s `ldmatrix.x2.trans` fetch, per slot |
+| `stage_store_banks_ok<kGroupTokens, DV>()` | `Vw`'s staging store, per slot |
 
 The predicates themselves, and the swizzle CuTe owns for `WT`/`Vw`, are
 [`smem_layout.md#bank-predicates`](smem_layout.md#bank-predicates) and
@@ -319,9 +333,12 @@ the win available is cutting issued instructions, and a single producer warp cut
 scan's ballot ALU and its `2 * QPO` atom-bitlist loads by 8x.
 
 **Stability is the correctness requirement.** Words ascend and each word is consumed
-LSB-first, so a descriptor's `kGroupTokens` slots are GLOBALLY ascending — the intra
-Gram's inclusive causal mask is order-relative, and this ordering IS what makes it
-correct.
+LSB-first, so a descriptor's `kGroupTokens` slots are GLOBALLY ascending, and groups
+cook in that same order — so a window's tokens are GLOBALLY ascending ACROSS its
+groups as well as within one. The window Gram's block-triangular causal structure
+([`smem_layout.md#window`](smem_layout.md#window)) is order-relative across groups
+exactly as the diagonal block's mask is order-relative within one, and this ordering
+IS what makes both correct.
 
 A side whose visit mask is empty (`rmask == 0` or `wmask == 0`) has no live
 coefficients anywhere in the group on that side; the descriptor's side flags carry `gr`
@@ -332,20 +349,25 @@ it.
 
 ## <a id="sched-ring"></a>12. The schedule ring
 
-The producer runs `kSchedDepth` groups ahead of the consumers (a `constexpr` dial,
+The producer runs `kSchedDepth` GROUPS ahead of the consumers (a `constexpr` dial,
 `ROLA_SCHED_DEPTH`, never a template axis — the instantiation matrix does not gain a
-coordinate). The ring holds `kSchedSlots = kSchedDepth + 1` descriptors: cooking group
-`gidx + kSchedDepth` writes the slot that group `gidx - 1` vacated, which is never the
-slot the current visit is reading — the ring must be AT LEAST 2 deep for that to hold,
-which is why `kSchedSlots` is `depth + 1` rather than `depth`.
+coordinate from it). The ring holds `sched_slots(GT) = window_groups(GT) * (kSchedDepth
++ 1)` descriptors — a WHOLE WINDOW's worth of run-ahead, because a visit reads
+`window_groups(GT)` descriptors at once and the producer must still be cooking into
+slots nobody is reading: cooking group `gidx + W * kSchedDepth` writes the slot that
+group `gidx - W` vacated, which is never a slot the current window is reading — the
+ring must be AT LEAST `2W` deep for that to hold, which is why `sched_slots` is `W *
+(depth + 1)` rather than `W * depth`. `W` divides `sched_slots(GT)`, so a window's `W`
+slots are the CONTIGUOUS run starting at `(widx * W) % sched_slots(GT)` — a group index
+within a window is a pure offset, with no per-group modulo.
 
-Publication rides the END-OF-VISIT `__syncthreads()` that already exists (every visit
-closes on one): the producer's run-ahead cook for the NEXT slot runs concurrently with
-the current visit's compute, at the bottom of the loop body, and the barrier that
-already stands between one visit and the next is what makes the cooked descriptor
-visible to every warp before the visit that consumes it starts. The ring therefore
-carries no cursor word of its own and needs no barrier beyond the one the visit loop
-already pays.
+Publication rides the END-OF-WINDOW `__syncthreads()` that already exists (every
+visit closes on one): the producer's run-ahead cook for the NEXT window's slots runs
+concurrently with the current visit's compute, at the bottom of the loop body, and the
+barrier that already stands between one visit and the next is what makes the cooked
+descriptors visible to every warp before the visit that consumes them starts. The ring
+therefore carries no cursor word of its own and needs no barrier beyond the one the
+visit loop already pays.
 
 One descriptor (`kSchedSlotInts` ints) is:
 
@@ -426,42 +448,71 @@ picked. That is the same cross-lane crossing as the cursor and takes the same ex
 that follows the refill loop. The ingredient planes need no such barrier: each lane
 reads only its OWN slot.
 
-## <a id="group-assembler"></a>15. The visit reads a cooked descriptor; it assembles nothing
+## <a id="group-assembler"></a>15. The visit reads `W` cooked descriptors; it assembles nothing
 
-Before the first visit, the producer (warp 0) fills the ring's first `kSchedDepth`
-slots — the cold start — and a `__syncthreads()` publishes them. Every subsequent visit
-then does no assembly at all: `gidx`'s slot is `g_ring + (gidx % kSchedSlots) *
-kSchedSlotInts`, and `gN = R[kSchedGN] == 0` is the stream's end, as the producer saw
-it. `t_idx` retargets to the slot directly (`R`'s first `kGroupTokens` ints) rather
-than being copied, and `sr`/`sw` retarget to the matching `g_up` slot — every staging
-loop reads the producer's published descriptor in place.
+Before the first visit, the producer (warp 0) fills the ring's first `W * kSchedDepth`
+slots — the cold start, a WHOLE WINDOW of run-ahead — and a `__syncthreads()`
+publishes them. Every subsequent visit then does no assembly at all: window `widx`'s
+groups are the `W` CONTIGUOUS slots starting at `(widx * W) % sched_slots(GT)`, and
+`tk_of(a)`, `gN_of(a)`, `rm_of(a)`, `wm_of(a)`, `sr_of(a)`, `sw_of(a)` address group
+`a`'s fields in place off that slot range rather than copying them; `gN_of(0) == 0` is
+the stream's end, as the producer saw it.
 
-At the bottom of the same visit, the producer cooks the NEXT group ([the run-ahead —
-above](#sched-ring)) concurrently with this visit's GEMMs, and the visit closes on the
-same end-of-visit `__syncthreads()` that publishes it. One cooking producer against
-eight reading warps is the whole point of the arrangement: the ballot ALU and the
-atom-bitlist load issue are paid once per owner rather than once per warp.
+At the bottom of the same visit, the producer cooks the NEXT window's `W` groups ([the
+run-ahead — above](#sched-ring)) concurrently with this visit's GEMMs, and the visit
+closes on the same end-of-window `__syncthreads()` that publishes them. One cooking
+producer against eight reading warps is the whole point of the arrangement: the
+ballot ALU and the atom-bitlist load issue are paid once per owner's group rather than
+once per warp.
+
+## <a id="staged-write-mask"></a>15.1. The window's side flags, and the staged write mask
+
+`isr_of(a)` / `isw_of(a)` are group `a`'s side flags AND its atom mask together (a
+group can carry live write ATOMS while being side-dead, since the flag is the fixed
+levels' rows and the mask is the atom bitlists — two independent bitmaps). The
+window's sides are the OR over its groups: `w_read`, `w_write`, and `w_wmask = OR_a
+wmk_of(a)`, where `wmk_of(a) = isw_of(a) ? wm_of(a) : 0` — **THE STAGED WRITE MASK,
+the one mask every write-side consumer walks, never `wm_of(a)` alone.** A side-dead
+group's `WT`/`Vw` slots are NOT STAGED, so reading its raw atom mask would send the
+fold into a slot still holding a PREVIOUS window's panels; at `W == 1` this was
+impossible (the fold ran under the group's own `is_write`), and at `W > 1` it is not,
+which is exactly what `wmk_of` closes.
+
+The window's row-scale publication is UNCONDITIONAL, not merely predicated fetch: a
+side-dead group still writes exact zeros into its `g_up` slot (`rs = need_r ? 1 : 0`,
+`ws` likewise), because a window's side flags are the OR over its groups, so a
+side-dead group's `sw` row is still READ (as the fold's mass-term broadcast B) even
+though its own `WT` rows are exact zeros — and `0 * NaN` is `NaN`, so leaving a stale
+slot from a previous window unzeroed is not inert. Publishing the zero is what keeps
+the 0-times-dead discipline exact.
+
+An atom live in ANY group of the window folds once, with a per-group predicate inside
+the accumulator's residency ([`#gemm-fold`](#gemm-fold)); an atom live in NONE
+contributes an exactly-zero delta and (under decay) has `acc == 0` hence `s0 == 1`
+([above](#decay-clock)), so skipping it entirely is the identity — ticks ride writes.
 
 ## <a id="staging"></a>16. The staging — everything the visit's compute consumes but does not produce
 
-`stage_group(is_read, is_write, gN, rmask, wmask)` runs, LIVE ATOMS ONLY, for every
-leaf-axis loop:
+Per group `a` of the window, LIVE ATOMS OF THAT GROUP ONLY:
 
-- under `DECAY`, the clock prefix and entry/exit scale ([below](#decay-clock));
-- the read panel `Rf` ([below](#read-panel));
-- the write panel `WT` ([below](#write-panel));
-- `Vw[t, ch] = sw[t] * v[token, ch]` — the write side folds the row scale into the
-  value tile because there `t` is the CONTRACTION index and the scale cannot hoist out
-  of the sum.
+- under `DECAY`, the clock prefix and entry/exit scale, over the WHOLE WINDOW, not per
+  group ([below](#decay-clock));
+- the read panel `Rf`, into slot `a` ([below](#read-panel));
+- the write panel `WT`, into slot `a` ([below](#write-panel));
+- `Vw_a[t, ch] = sw_a[t] * v[token, ch]`, into slot `a` — the write side folds the row
+  scale into the value tile because there `t` is the CONTRACTION index and the scale
+  cannot hoist out of the sum.
 
 The [row scales](#row-scales) `sr`/`sw` are NOT computed here: they arrive
-PRE-MULTIPLIED in the ring slot, [cooked by the producer](#upper-product) a whole visit
-ahead, so `stage_group` only reads them (in the `Vw` fold above and at
+PRE-MULTIPLIED in the ring slot, [cooked by the producer](#upper-product) a whole
+window early, so staging only reads them (in the `Vw` fold above and at
 [emission](#split-k-emission)).
 
-Tokens are `t_idx[0..gN)`, globally ascending; a ragged group's padded slots
-`[gN, kGT)` stage EXACT-ZERO coefficient rows and zero row scales, so they are inert
-through every GEMM without any membership test.
+Within one group, tokens are `tk_of(a)[0..gN)`, globally ascending, and ascend ACROSS
+groups too ([above](#producer)); a ragged group's padded slots `[gN, kGroupTokens)` —
+and every slot of a window's trailing dead groups past stream end — stage EXACT-ZERO
+coefficient rows and zero row scales, so they are inert through every GEMM without any
+membership test.
 
 `mask == kFullMask` selects the statically-unrolled dense arm at every one of these
 loops — dense inputs pay zero mask instructions, because they self-heal to identity
@@ -469,15 +520,23 @@ grouping rather than taking a different code path.
 
 ## <a id="decay-clock"></a>17. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
-Guarded by `is_write` structurally: a group with no write-live members has `c == 0` on
-every leaf, so every factor this block computes is the identity and the plain path is
-EXACT, not approximate.
+Guarded by `w_write` structurally (the window's OR): a group with no write-live
+members has `c == 0` on every leaf, so every factor this block computes is the
+identity and the plain path is EXACT, not approximate.
+
+**The prefix runs across the WHOLE WINDOW, not across a group** — an outer loop over
+groups `b in [0, W)`, each contributing its `gN` (or fewer, for a ragged or
+window-trailing dead group) tokens to one running `acc` per leaf, so every token of
+the window shares ONE reference frame. That is what makes the Gram's cross-group
+blocks ([`smem_layout.md#window`](smem_layout.md#window)) legal under decay: a
+cross-group term `R_t . W_u` for `t` in group `a`, `u` in group `b < a` needs `t` and
+`u` in the same frame to combine into `keep^{P[t]-P[u]}`.
 
 The lowering is §7.4.1's decay-aware panels. `keep[t,s] = (1-rate[s])^c[t,s]`, so with
-`P[t,s] = sum_{u<=t} c[u,s]` the survival from `j` to `t` is `keep^{P[t]-P[j]}`, and
-that exponent SPLITS ACROSS THE TWO OPERANDS of a Gram because it is a difference of a
-per-`t` term and a per-`j` term. With §12 rule 1's per-leaf reference
-`P_ref = P[kGT-1] / 2`:
+`P[t,s] = sum_{u<=t} c[u,s]` (the sum now over the WHOLE WINDOW's tokens) the survival
+from `j` to `t` is `keep^{P[t]-P[j]}`, and that exponent SPLITS ACROSS THE TWO
+OPERANDS of a Gram because it is a difference of a per-`t` term and a per-`j` term.
+With §12 rule 1's per-leaf reference, now over the window, `P_ref = P[GT-1] / 2`:
 
 ```
 fr[t,s] = exp((P[t,s] - P_ref[s]) * log_keep[s])      folded into Rf
@@ -506,11 +565,13 @@ is exactly 1, so skipping a dead atom's fold is the identity, not an approximati
 
 `acc` is fp32 and must STAY fp32. This is a requirement, not a default (spec §7.4): the
 prefix multiplies `log_keep` and is then exponentiated, so a lost low bit here is an
-EXPONENT error, not a mantissa one. One thread per leaf, serial over the group's `kGT`
-tokens, because the prefix IS a serial dependence in `t` and `kGT <= 32` — a parallel
-scan would cost more barriers than it saves steps. A ragged group's padded slots take
-a FINITE zero prefix (`clk[t*CKP+i] = 0` for `t >= gN`) so both panel factors stay
-finite (`keep^0 == 1`); their coefficient rows are exact zeros anyway.
+EXPONENT error, not a mantissa one. One thread per leaf, serial over the window's `GT`
+tokens (nested: `W` groups outer, each group's `<= kGroupTokens` tokens inner),
+because the prefix IS a serial dependence in `t` and `GT <= 64` — a parallel scan
+would cost more barriers than it saves steps. A ragged group's padded slots, and every
+slot of the window's trailing dead groups, take a FINITE zero prefix (`clk[t*CKP+i] =
+0`) so both panel factors stay finite (`keep^0 == 1`); their coefficient rows are
+exact zeros anyway.
 
 ## <a id="row-scales"></a>18. §3 step 3's row scales
 
@@ -544,7 +605,8 @@ contiguous in `tid` and the buffer is atom-blocked by construction:
 
 ## <a id="write-panel"></a>20. The write panel `WT`, live atoms only
 
-`wt_pairs(q)` fills one atom's 8 leaf-pairs x `kGT` tokens = 128 slots. Per slot:
+`wt_pairs(q)` fills one atom's 8 leaf-pairs x `kGroupTokens` tokens = 128 slots, per
+group slot. Per slot:
 the spanned levels' bf16 write amplitudes at the owner's digit, times — under
 `DECAY` — `panel_write_factor` (fp32 against bf16 storage, the same carve as the read
 panel). `wmask == kFullMask` unrolls dense over every atom (`#pragma unroll`); otherwise
@@ -556,12 +618,12 @@ Under `summary`, a leaf is included in the sparse written-leaf list iff SOME tok
 staged coefficient for it is nonzero — tested on the COEFFICIENT, before it narrows to
 bf16 storage, because a nonzero fp32 value can still round to a nonzero bf16 one but
 the reverse direction (a value that rounds TO zero) must not silently exclude a leaf
-that later reads as live. The `kGT` tokens of one leaf pair are one contiguous 16-lane
-run, tested with `__any_sync` over that run.
+that later reads as live. The `kGroupTokens` tokens of one leaf pair are one
+contiguous 16-lane run, tested with `__any_sync` over that run.
 
 ## <a id="clk-dead"></a>21. HAZARD `clk-dead` — the `clk -> Vw` lifetime barrier
 
-`if (DECAY && is_write) __syncthreads();` after the write panel and before the `Vw`
+`if (DECAY && w_write) __syncthreads();` after the write panel and before the `Vw`
 staging marks the exact point past which `Vw` may overwrite `clk`'s aliased bytes
 ([`smem_layout.md#vw-clk-union`](smem_layout.md#vw-clk-union)). Every reader of `clk`
 (the read panel's `panel_read_factor`, the write panel's `panel_write_factor`, the
@@ -573,11 +635,16 @@ check can see.
 
 # Part V — the four GEMMs
 
-## <a id="gemm-readout"></a>22. GEMM 1 — the readout, `y_group = R . S`, live read atoms only
+## <a id="gemm-readout"></a>22. GEMM 1 — the readouts, `y_a = R_a . S_entry` for every group of the window
 
-Runs when `is_read && warp < NT_DV`. `mask == kFullMask` unrolls the dense arm
+An ITEM is one `(group, DV column tile)` pair, `W * NT_DV` of them, claimed by a
+static strided partition over the CTA's `kWarps` warps (`kYItems =
+ceil(W * NT_DV / kWarps)` fragments per warp) — at `W == 1, DV == 32` the old
+`warp < NT_DV` predicate left half the CTA idle; the item partition keeps every warp
+carrying work at every `(W, DV)`. Every group's readout reads the SAME entry state
+`S`, never a group-local copy. `mask == kFullMask` unrolls the dense arm
 (`mma_tile_fragA<BC, ...>` over the whole state); otherwise the loop walks only the
-live atoms of `rmask`, contracting `kMmaKQuantum` leaves per atom
+live atoms of that group's `rmask`, contracting `kMmaKQuantum` leaves per atom
 (`mma_tile_fragA<kMmaKQuantum, ...>`). The B operand (`S`) is packed out of SMEM on
 the fly; state and accumulation stay fp32 throughout.
 
@@ -587,24 +654,28 @@ The mass column IS A MATRIX COLUMN, not a special case: all three of the
 denominator's terms are matvecs against one column of the state (or, for the fold's
 own term, one column being written into it), and an `n8` MMA tile carries a matvec by
 BROADCASTING that column across the tile's eight `n` slots — every output column then
-holds the same value, and the tile is read back at column 0. `dm0..dm3` is ONE
-`[16 x 8]` register D fragment, carried by WARP 0, that both of the read-side terms
+holds the same value, and the tile is read back at column 0. `dm` is now `kDmItems =
+ceil(W / kWarps)` `[16 x 8]` register D fragments, ONE PER GROUP OF THE WINDOW rather
+than one fixed to warp 0 — the item partition puts one group's fragment per warp where
+the `W == 1` visit put every group's on warp 0 — that both of the read-side terms
 (TERM 1, [below](#mass-term1), and TERM 2, [phase C](#phase-c)) accumulate into and
-that the [split-K emission](#split-k-emission) reads at the end. The fold's own term
-(TERM 3, [`#gemm-fold`](#gemm-fold)) writes directly into `S[.][DV]` instead — it has
-no reader downstream in the same visit, so it never needs a fragment of its own.
+that the [split-K emission](#split-k-emission) reads at the end, per group. The fold's
+own term (TERM 3, [`#gemm-fold`](#gemm-fold)) writes directly into `S[.][DV]` instead
+— it has no reader downstream in the same visit, so it never needs a fragment of its
+own.
 
 The scalar reduction this replaces ran on WARP 0 ALONE at half lane occupancy, a
 64-long serial FADD chain — an `n8` tile's "wastes 7/8 of a fragment" cost prices the
 fragment, not the instructions, and the instructions are what this kernel is bound on.
 
-## <a id="mass-term1"></a>24. The mass column, TERM 1 — one more `n8` tile on WARP 0
+## <a id="mass-term1"></a>24. The mass column, TERM 1 — one more `n8` tile per group
 
-`dm = R . S[.][DV]`, THE SAME GEMM AS THE READOUT: `mma_tile_fragA_massB` (WARP 0
-only, live read atoms only) with `S`'s mass column BROADCAST across the tile's eight
-`n` slots, so every output column holds the matvec and the emission reads it back at
-column 0. Its placement is FORCED: the fold (GEMM 4, later in program order) WRITES
-`S[i][DV]`, so term 1, which READS it, must already have run.
+`dm_a = R_a . S[.][DV]`, THE SAME GEMM AS THE READOUT: `mma_tile_fragA_massB`, one
+group's fragment per warp per the item partition, live read atoms only, with `S`'s
+mass column BROADCAST across the tile's eight `n` slots, so every output column holds
+the matvec and the emission reads it back at column 0. Its placement is FORCED: the
+fold (GEMM 4, later in program order) WRITES `S[i][DV]`, so term 1, which READS it,
+must already have run.
 
 The B operand is COMPENSATED: it is a column of the fp32 STATE and the DENOMINATOR OF
 A RATIO, so — unlike the numerator's columns — it has nothing to cancel a bf16
@@ -621,45 +692,57 @@ which thread owns which lane — reordering either half relative to the fold, wh
 WRITES the state column term 1 reads, is a real numeric difference, not just a
 reassociation.
 
-## <a id="gemm-gram"></a>25. GEMM 2 — the causal effective-score block, `G += R_q . W_q^T`
+## <a id="gemm-gram"></a>25. GEMM 2 — the WINDOW GRAM, `G[a][b] += R_a . W_b^T` over the block lower triangle `b <= a`
 
-Runs when `mixed = is_read && is_write` and `warp < kGT / 8`, over `gmask = rmask &
-wmask` — atoms live on BOTH sides (either side dead makes the term exactly zero, and
-the dead side's panel was never even staged). `gmask == kFullMask` unrolls dense over
-every atom; otherwise the loop walks `gmask`'s live atoms. The completed accumulator
-is written into `Gm` through §5's INCLUSIVE causal mask (`c <= _g` / `c <= _g + 8`
-zeroing the strictly-future entries) via `stage_put` — the same store the staged
-panels use, which is what licenses GEMM 3 to fetch `Gm` by `ldmatrix`
-([below](#visit-barrier)).
+An ITEM is one `(a, b, DV column tile)` triple over the block lower triangle
+(`b <= a`, `W(W+1)/2` sub-blocks over `W^2`), claimed by a static strided partition
+over the CTA's warps, and skipped where `gmask = rmask_a & wmask_b` is zero — atoms
+live on BOTH sides (either side dead makes the term exactly zero, and the dead side's
+panel was never even staged). This is FLA's sub-chunked-diagonal split
+(`fla/ops/gla/chunk.py`'s `chunk_gla_fwd_A_kernel_intra_sub_inter` /
+`..._intra_sub_intra`, transplanted with one divergence, [`smem_layout.md#window`](smem_layout.md#window)):
+`b > a` is identically zero and NEVER FORMED — no item exists for it; `b < a` is a
+fully DENSE sub-block (every token of group `b` strictly precedes every token of group
+`a`) and stores UNMASKED; only the `W` DIAGONAL sub-blocks (`a == b`) carry §5's
+INCLUSIVE causal mask (`c <= _g` / `c <= _g + 8` zeroing the strictly-future entries).
+So the Gram's storage and instruction count are `O(W^2)` and the causal MASK stays
+`O(W)`. The completed accumulator is written into `Gm`'s sub-block `(a, b)` via
+`stage_put` — the same store the staged panels use, which is what licenses GEMM 3 to
+fetch `Gm` by `ldmatrix` ([below](#visit-barrier)).
 
 ## <a id="visit-barrier"></a>26. The visit's ONE internal barrier
 
 `if (mixed) __syncthreads();`, placed after GEMM 2 and before phase C / the fold, and
-it carries BOTH of the visit's intra-CTA orderings AT ONCE: the readout's reads of `S`
-complete before the fold's writes, and the Gram's stores to `Gm` are published to
-phase C. It is a HARDWARE rendezvous rather than a counter because both edges are
-CTA-WIDE and CTA-UNIFORM, and every remaining item pool in the visit (the fold's,
-[below](#gemm-fold)) is a STATIC PARTITION — there is no work item left for an early
-warp to run instead of arriving, which is what made a counter-based rendezvous worth
-its cost in the first place.
+it carries BOTH of the visit's intra-CTA orderings AT ONCE: every group's readout
+reads of `S` complete before the fold's writes, and the Gram's stores to `Gm` are
+published to phase C. It is a HARDWARE rendezvous rather than a counter because both
+edges are CTA-WIDE and CTA-UNIFORM, and every remaining item pool in the visit (the
+fold's, [below](#gemm-fold)) is a STATIC PARTITION — there is no work item left for an
+early warp to run instead of arriving, which is what made a counter-based rendezvous
+worth its cost in the first place. **The barrier count is PER WINDOW, not per group**
+— three for `W` groups where the group-quantum (`GT == kGroupTokens`) visit paid three
+each, which is the amortisation the window buys ([`smem_layout.md#window`](smem_layout.md#window)).
 
-**The guard is `mixed`, because both edges are.** A read-only visit (`is_read &&
-!is_write`) runs no fold and needs no readout-before-fold ordering; a write-only
-visit reads no state and has no Gram, so there is no Gram-before-phase-C ordering
-either — `mixed = is_read && is_write` is exactly the CTA-uniform predicate both edges
-share, so a single-sided visit pays for the barrier not at all. This is what the
-small topologies measure: their visits are frequently one-sided, where the dense cell
-(always `mixed`) pays the barrier every visit regardless.
+**The guard is `mixed`, because both edges are.** A read-only window (`w_read &&
+!w_write`, the OR over the window's groups) runs no fold and needs no
+readout-before-fold ordering; a write-only window reads no state and has no Gram, so
+there is no Gram-before-phase-C ordering either — `mixed = w_read && w_write` is
+exactly the CTA-uniform predicate both edges share, so a single-sided window pays for
+the barrier not at all. This is what the small topologies measure: their windows are
+frequently one-sided, where the dense cell (always `mixed`) pays the barrier every
+window regardless.
 
-## <a id="phase-c"></a>27. Phase C — GEMM 3, the intra term, and the mass column's term 2
+## <a id="phase-c"></a>27. Phase C — GEMM 3, the intra terms, and the mass column's term 2
 
-`y_group += G . Vw` into the SAME registers the readout used (`mma_tile_vwB<DV>`,
-`warp < NT_DV`, `Gm` fetched by `ldmatrix` exactly as the fold fetches `WT`) — token-axis
-contraction, so no atom mask applies here. The mass column's TERM 2, `dm += G . sw`
-(`mma_tile_bcastB`, WARP 0 only), runs alongside under the same `mixed` guard (HAZARD
-`mass-split`, [above](#mass-term1)): the causal mask is already IN `Gm` (the
-strictly-future entries store zero), so the whole 16-token contraction is the `u <= t`
-sum.
+`y_a += sum_{b <= a} Gm[a][b] . Vw_b` into the SAME fragments the readouts used
+(`mma_tile_vwB<DV>`, the same item partition as GEMM 1, `Gm`'s sub-block fetched by
+`ldmatrix` exactly as the fold fetches `WT`) — token-axis contraction, so no atom mask
+applies here, and NO CAUSAL MASK EITHER: the zeros are already IN `Gm`. The mass
+column's TERM 2, `dm_a += sum_{b <= a} Gm[a][b] . sw_b` (`mma_tile_bcastB`, one
+group's fragment per warp), runs alongside under the same `mixed` guard (HAZARD
+`mass-split`, [above](#mass-term1)): the causal mask is already in `Gm` (the
+strictly-future entries of the diagonal block store zero and the strictly-future
+blocks are never read), so the whole window's contraction is exactly the `u <= t` sum.
 
 ---
 
@@ -667,64 +750,77 @@ sum.
 
 ## <a id="split-k-emission"></a>28. The split-K emission
 
-Guarded `is_read`, and IT RUNS BEFORE THE FOLD: the two are independent (the fold
-writes `S`; the emission reads `y`/`dm` and writes global), and emitting first RETIRES
-both output fragments before the fold's own accumulators go live, which is where the
-visit's register high-water mark sits.
+Guarded per group (`isr_of(a)`), and IT RUNS BEFORE THE FOLD: the two are independent
+(the fold writes `S`; the emission reads `y`/`dm` and writes global), and emitting
+first RETIRES every output fragment before the fold's own accumulators go live, which
+is where the window's register high-water mark sits.
 
-`emit(t, ch, val)` computes `out = sr[t] * val` and skips the `atomicAdd` on
+`emit(t, ch, val)` computes `out = sr_a[t] * val` and skips the `atomicAdd` on
 `out == 0.0f` — a PERFORMANCE skip on a VALUE, never a membership decision: a ragged
-group's padded slots have `sr == 0` by construction and never read `t_idx` at all
-(members are `< T` by construction, so the `!= 0` guard cannot mask a real emission).
-The numerator scatters through `t_idx[t]` per output channel, out of `y0..y3`.
+group's padded slots have `sr == 0` by construction and never read the group's token
+list at all (members are `< T` by construction, so the `!= 0` guard cannot mask a real
+emission). The numerator scatters through `tk_of(a)[t]` per output channel, out of
+`y`. **The emission CADENCE IS PER GROUP and is therefore UNCHANGED by the window**:
+`y_a` is emitted for every group `a` of the window, so the `atomicAdd` count per token
+is unmoved from the group-quantum visit.
 
-The denominator emission is OUT OF THE MASS FRAGMENT (`dm0`, `dm2`), warp 0 only: a
+The denominator emission is OUT OF THE MASS FRAGMENT, per group's warp: a
 broadcast B makes every output column of `dm` the same value, so column 0 — the lanes
 with `_r == 0` — carries tokens `_g` and `_g + 8`, and the `!= 0` guard retires a
 ragged group's padded slots on the same rule the numerator runs on.
 
-## <a id="gemm-fold"></a>29. GEMM 4 — the boundary fold, `S += W^T . Vw`, live write atoms only, and the mass column's TERM 3
+## <a id="gemm-fold"></a>29. GEMM 4 — the boundary fold, `S += sum_b W_b^T . Vw_b`, live UNION write atoms only, and the mass column's TERM 3
 
-Runs when `is_write`. The visit's fold work is a STATIC STRIDED PARTITION —
-`for (c = warp; c < n_fold_items; c += kWarps)`, `n_fold_items = popc(wmask) * NT_DV`
-— no atomic, no claim cursor: fold items are uniform-cost and `n_fold_items` is
-CTA-uniform, so a strided claim is balanced to within one item for any mask.
+Runs when `w_write` (the OR of the window's write-live groups). The visit's fold work
+is a STATIC STRIDED PARTITION — `for (c = warp; c < n_fold_items; c += kWarps)`,
+`n_fold_items = popc(w_wmask) * NT_DV` — no atomic, no claim cursor: fold items are
+uniform-cost and `n_fold_items` is CTA-uniform, so a strided claim is balanced to
+within one item for any mask. `w_wmask` is the UNION over the window's `W` groups —
+[the staged write mask](#staged-write-mask), never a group's own `wmask` — because an
+atom live in ANY group of the window must fold once.
 
-`mt = wmask == kFullMask ? mr : __fns(wmask, 0, mr+1)` maps a claimed dense index
-`mr` to the `mr`-th LIVE atom. Skipping a dead atom's read-modify-write is exact: its
-delta is zero and its exit scale is `s0 == 1` (ticks ride writes, [above](#decay-clock)).
+`mt = w_wmask == kFullMask ? mr : __fns(w_wmask, 0, mr+1)` maps a claimed dense index
+`mr` to the `mr`-th LIVE atom. Skipping an atom dead in every group of the window is
+exact: its delta is zero everywhere and its exit scale is `s0 == 1` (ticks ride
+writes, [above](#decay-clock)).
 
-**The item's RMW is ATOM-MAJOR, not per-window** (Change 1, `8675f95`): the claimed
-atom's 4-value accumulator loads to registers ONCE (`a0..a3` from `S`) and stays
-resident across an inner `#pragma unroll for (gs = 0; gs < kFoldStagedGroups;
-++gs)` that walks every staged slot the atom must consume — each iteration computes
-one `mma_fold_tile` delta and applies the exit-scale epilogue in registers — before
-the ONE writeback back to `S`. `kFoldStagedGroups` is `smem_layout.cuh`'s
-`kFoldStagedGroups`, PINNED to 1 today, so the loop is a single iteration in
-practice; the per-atom fetch era that deepens staging is expected to raise only this
-constant and its staging producer, not restructure the claim/writeback shape around
-it.
+**THIS IS WHERE THE WINDOW IS PAID FOR.** The claimed atom's 4-value accumulator
+loads to registers ONCE (`a0..a3` from `S`) and stays resident while the atom CONSUMES
+EVERY STAGED GROUP OF THE WINDOW it is live in — an inner loop over `b in [0, W)`
+skipping groups where the atom is dead, each iteration computing one `mma_fold_tile`
+delta into the tensor core's D fragment in ascending group order — before the ONE
+writeback back to `S`. The read-modify-write of `S` (four fp32 loads and four stores
+per `mma.sync` at the group quantum) is therefore amortised `W`-fold. `kFoldStagedGroups`
+— the constant this loop once counted, PINNED to 1 — is deleted; `W` is its
+replacement and the loop trip count is the window's, not a fixed 1
+([`smem_layout.md#values-shard`](smem_layout.md#values-shard)).
 
-### <a id="fold-epilogue"></a>`DECAY`'s exit scale, riding the fold's existing read-modify-write
+### <a id="fold-epilogue"></a>`DECAY`'s exit scale, riding the fold's existing read-modify-write, ONCE PER WINDOW
 
 ```
-for (gs = 0; gs < kFoldStagedGroups; ++gs) {
-  a0 = e0 * (a0 + d0);   // e0 = DECAY ? s0[i0] : 1.0f, d0 from mma_fold_tile(gs)
+for (b = 0; b < W; ++b) {
+  if atom dead in group b: continue
+  d0 += mma_fold_tile(b)   // accumulates in the D fragment, ascending group order
   ...
 }
-S[i0][n0] = a0;          // the ONE writeback, after every staged slot is folded in
+a0 = e0 * (a0 + d0);   // e0 = DECAY ? s0[i0] : 1.0f -- ONE multiply, after the sum
+S[i0][n0] = a0;        // the ONE writeback, after every staged group is folded in
 ```
 
-One extra multiply per staged slot on a value that stays in registers for the whole
-inner loop — no separate scaling pass and no intermediate write to `S`.
+The exit scale applies ONCE, after all `W` groups' deltas have been summed, not once
+per group — legal because every deposit is already in the window's ONE reference frame
+(`keep^{P_ref - P[u]}`, [above](#decay-clock)), so the deposits simply add before the
+frame is left. One multiply per window per accumulator, not one per staged group — no
+separate scaling pass and no intermediate write to `S`.
 
-**The mass column's TERM 3**, `S[.][DV] += W^T . sw`, is a SEPARATE loop after the main
-fold, ON THE SAME TENSOR CORE AS THE FOLD ITSELF: `mma_tile_bcastB` against `WT`'s atom
-block and a broadcast `sw`, one `mma.sync` per live atom, one atom per warp
-(`for (mi = warp; mi < n_live; mi += kWarps)`). It is not folded into the main loop
-above because it writes one state column (`DV`, `_r == 0` only) rather than an `n8`
-tile of `DV` columns. A dead atom's rows: `acc == 0` and `s0 == 1` — the skip is the
-identity, the same rule the main fold's atom skip runs on.
+**The mass column's TERM 3**, `S[.][DV] += sum_b W_b^T . sw_b`, is a SEPARATE loop
+after the main fold, ON THE SAME TENSOR CORE AS THE FOLD ITSELF: `mma_tile_bcastB`
+against `WT`'s atom block and a broadcast `sw`, one `mma.sync` per live atom per
+staged group it is live in, one atom per warp (`for (mi = warp; mi < n_live; mi +=
+kWarps)`). It is not folded into the main loop above because it writes one state
+column (`DV`, `_r == 0` only) rather than an `n8` tile of `DV` columns. A dead atom's
+rows: `acc == 0` and `s0 == 1` — the skip is the identity, the same rule the main
+fold's atom skip runs on.
 
 **THE RMW IS ONE LANE PER LEAF.** A broadcast-B tile's result lands in output column
 0, so the accumulator is meaningful only on `_r == 0`; the READ of `S[i0 * SP + DV]` /
