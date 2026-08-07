@@ -1,15 +1,15 @@
 # `csrc/rola/src/smem_layout.cuh` — the consumer's shared-memory layout layer
 
 What one consumer CTA's shared memory looks like, and what it costs: the address
-functions the staged operands are stored under, the `constexpr` proofs that make each
-one conflict-free, the measured register budget and residency arithmetic the launch
-bound is derived from, and the byte ledger `consumer_smem_bytes_at` computes — which
-is what the launch actually reserves.
+functions the staged operands (`WT`, `Vw`) are stored under, the `constexpr` proofs
+that make every operand conflict-free, the measured register budget and residency
+arithmetic the launch bound is derived from, and `consumer_smem_bytes` — the byte
+ledger the launch actually reserves.
 
 The kernel body's pointer carve (`consumer_kernel.cuh`) follows this ledger term for
-term, in the same order. The `ldmatrix` atoms that READ these layouts are
-[`mma_tile.md`](mma_tile.md); the control words the ledger budgets for are
-[`pipeline.md`](pipeline.md).
+term, in the same order — see [`consumer_kernel.md`](consumer_kernel.md). The
+`ldmatrix` atoms that READ these layouts are [`mma_tile.md`](mma_tile.md); the
+control words `ctl` budgets for are [`pipeline.md`](pipeline.md).
 
 ## Reference conventions
 
@@ -25,677 +25,364 @@ The same in all four consumer-kernel documents — [`consumer_kernel.md`](consum
 - Section numbers run continuously across the four documents, so a number identifies
   one section — but it is the link, not the number, that is the reference.
 
+## The group is the tile
+
+The executor's work unit is a GROUP of `kGroupTokens == kMmaKQuantum == 16` gathered
+tokens — one MMA m-quantum's worth. Groups are always full; only a segment's final
+flush is ragged. Every quantity below that would once have been `BT`-shaped is
+`kGroupTokens`-shaped instead: there is no separate tile-token axis.
+
+## The one precision story
+
+bf16 storage everywhere the staged operands and amplitude streams live, fp32
+accumulation/state/clock/row-scales, fp64 torch reference as the oracle. There is no
+precision axis — no `MmaPrec`, no `PREC` template parameter, no tf32x3 arm. Every
+layout and proof below is stated for bf16 alone.
+
+## <a id="cute-pin"></a>The sector invariant, and the vendored CuTe pin
+
+```
+static_assert(kMmaKQuantum * sizeof(__nv_bfloat16) == kSectorBytes)   // 16 * 2 == 32
+```
+
+One atom of bf16 digits — `kMmaKQuantum == 16` leaves — IS one 32-byte memory sector.
+This is THE central invariant tying together the atom (one `kMmaKQuantum`-leaf block
+of the owner's leaf axis), the MMA k-quantum (`mma.sync`'s hardware k-extent on the
+sm80 bf16 path), and the fetch/union machinery's granule: `read_atom_bytes` /
+`write_atom_bytes` carry one bit per atom because one atom is exactly one fetch
+sector. The walk assumes this unconditionally; there is no fp32-sector side path,
+because fp32 amplitude storage is dead.
+
+`csrc/third_party/cutlass`, v3.5.1, closed-world rule 5. It is a CODEGEN INPUT, not a
+packaging one — every line instantiated here is code `ptxas` assembles — which is why
+`setup.py::_gate_vendored` hashes the subtree before the compile and `tools/ratify.py`
+carries the same include path. This layer uses it for exactly ONE thing: the
+swizzled `StageLayout` both staged operands (`WT`, `Vw`) are stored under, together
+with the three proofs below that interrogate it. The `ldmatrix` copy atoms that read
+that layout are the tile layer's ([`mma_tile.md#cute-pin`](mma_tile.md#cute-pin)),
+and the split is the point — the library owns the address function in one file and
+the fetch in the other, and `stage_offset_matches_cute` ([below](#stage-offset)) is
+what keeps the closed form honest to it.
+
+---
+
 # Part I — the compile-time budget
 
 ## <a id="reg-budget"></a>4. `consumer_reg_budget` — a MEASURED kernel fact, not an architecture fact and not a threshold
 
-This is the register working set `ptxas` reports for THIS kernel's GEMM inner loop
-when it is given slack — per `mma.m16n8k16`, 4 A fragments + 2 B fragments + 4
-accumulators times the fold's warp tiles, plus the operand-pack temporaries and
-loop state. It is keyed on `BC` AND on `DECAY`, the two plan axes the working set
-actually varies with (the `BC = 64` arms carry four fold m-tiles where `BC = 16`
-carries one; the decay arms carry two survival panels, the clock prefix and the two
-coefficient folds on top of the same GEMM), and every number is READ OFF
-`-Xptxas -v`, never chosen:
-
 ```
-BC = 64             : 66 registers (decay = None), 80 (decay)
-BC = 16, decay=false: 60-64 registers, ZERO spills on all 32 entries
-BC = 16, decay=true : 80 registers, and at a 64-register budget it SPILLS
-                      (worst 66 st / 212 ld, §2.22)
+consumer_reg_budget(BC, decay, DV) = BC >= 64 ? 80 : (decay ? 80 : 64)
 ```
 
-The MAXIMUM per key is taken, because this constant DIVIDES: a budget that is too
-LARGE only understates the residency the register file admits, while one that is
-too small over-promises and the allocator buys the difference by SPILLING. The
-conservative direction is therefore well defined, and it is the one taken.
+This is the register working set `ptxas` reports for the kernel's GEMM inner loop
+when it is given slack, keyed on the two axes the working set MEASURABLY varies with
+— `BC` and `DECAY` — with every number read off `-Xptxas -v` and the MAXIMUM per key
+taken, because a too-small budget is bought back by SPILLING (the conservative
+direction is well defined: over-stating a budget only understates the residency the
+register file admits, under-stating it makes the allocator spill to buy the
+difference). `DV` does NOT key it — the parameter is accepted and ignored
+(`(void)DV;`), stated explicitly rather than silently dropped, because the working
+set the atom walk touches per visit does not scale with the value width the way it
+once did under the deleted `NM`/row-block axis: every group is one `m16` row block
+now, so there is no second row-block term to key on.
 
-### Why `DECAY` is a key and not an average — both sides of the trade are measured (§2.23)
+`BC >= 64` takes the wide budget unconditionally (the `BC = 64` arms are shared-memory
+bound at every occupancy the register term could buy, so a slack budget costs
+nothing); at `BC = 16` the decay arms carry the clock prefix, the survival panels and
+the two coefficient folds on top of the same GEMM and need the wide budget too, while
+the no-decay arms clear the working set at 64.
 
-A single `BC = 16` budget loses on one arm whichever value it takes, because the
-two arms want opposite things and the loser is not small. One `ncu` launch per arm
-at `topo-D4-w8x8x8x16-BC16` (1024 CTAs, ~3 waves), `--clock-control base`, which is
-what makes cross-BUILD durations comparable on a contended box:
-
-| arm | budget | regs | CTAs/SM | warps_active | duration | local ld sectors |
-|---|---|---|---|---|---|---|
-| `decay = None` | 64 | 64 | 4 | 63.9 % | 278-293 us | 11,262 |
-| `decay = None` | 80 | 69 | 3 | 49.5 % | 324-336 us | 11,262 |
-| `decay = warm` | 64 | 64 | 4 | 65.7 % | 626-635 us | 3,345,396 |
-| `decay = warm` | 80 | 80 | 3 | 49.7 % | 588 us | 142,330 |
-
-On the `decay = None` arm the budget of 80 buys NOTHING (the local traffic is
-identical — it is local arrays, not spills) and costs a CTA: **+12 to +16 %**. On
-the decay arm it removes 23x the local LOAD traffic and is **-6.5 %** even though it
-gives up a quarter of the occupancy. Keying the constant is therefore not a tuning
-knob, it is the two measurements written down.
-
-`BC = 64` is NOT keyed, and that is also a measurement rather than an omission:
-shared memory binds there at 3 CTAs/SM on every arm, so the register term is slack
-and both 66 and 80 produce the same bound.
-
-Reproduce the register/spill side with `python tools/ratify.py --census`, which
-compiles the shipped instantiation shards and reports per structural key, and the
-residency side with `rola_consumer_occupancy`; if the kernel's inner loop changes,
-re-run both and update these numbers rather than the formula.
-
-### <a id="reg-budget-nm"></a>The row-block term — measured over five candidate budgets, keyed on `NM` alone
-
-A `BT = 32` tile is `NM = 2` `m16` row blocks, so the readout and the intra term
-carry a second live y-fragment quad per warp wherever `DV = 64`, and a second
-A-fragment block everywhere. `d_v` is NOT a key: the measurement shows no `d_v`
-dependence, and a key nobody can point at a number for is an extrapolation.
-
-The instrument is `python tools/ratify.py --census --force-ctas N` over all 1024
-instantiations, once per candidate budget, with the ratified `BT = 16, DV = 64` matrix held at its landed
-value as an IN-RUN CONTROL (byte-identical at all five sweep points, so the numbers
-below are the new cells' own and nothing else's). Spill bytes summed over the 64
-instantiations of each key:
-
-| `(BT, DV, BC, decay)` | b=64 | b=80 | b=96 | b=128 | b=168 |
-|---|---|---|---|---|---|
-| (16, 32, 16, false) | 300 | 0 | 0 | 0 | 0 |
-| (16, 32, 16, true ) | 3938 | 352 | 872 | 872 | 0 |
-| (16, 32, 64, false) | 772 | 1056 | 728 | 728 | 0 |
-| (16, 32, 64, true ) | 4480 | 1884 | 1732 | 1732 | 0 |
-| (32, 32, 16, false) | 2528 | 1272 | 0 | 0 | 0 |
-| (32, 32, 16, true ) | 5614 | 2532 | 1612 | 1612 | 1624 |
-| (32, 32, 64, false) | 2666 | 1388 | 1276 | 1276 | 0 |
-| (32, 32, 64, true ) | 3488 | 2388 | 1860 | 1860 | 1680 |
-| (32, 64, 16, false) | 1860 | 1188 | 96 | 96 | 0 |
-| (32, 64, 16, true ) | 5566 | 2316 | 344 | 344 | 384 |
-| (32, 64, 64, false) | 568 | 568 | 416 | 416 | 0 |
-| (32, 64, 64, true ) | 1768 | 1768 | 992 | 992 | 352 |
-
-Three things the table decides, all three READINGS rather than choices:
-
-1. **`b = 128` IS `b = 96`.** `by_regs = 65536 / (256 * b)` is 2 at both, so the
-   two budgets state the SAME launch bound and `ptxas` emits the same code — every
-   row above is identical between the two columns. 128 is not a candidate, it is a
-   spelling of 96.
-2. **`b = 168` IS NOT A CANDIDATE EITHER**: it states ONE CTA/SM, which is the
-   unconstrained allocator, and it is in the table only to show what the working set
-   costs when nothing bounds it. Three keys STILL spill there, at 255 registers —
-   those are local ARRAYS, not pressure, which is §2.23's reading too.
-3. **`d_v = 32` NEEDS NO NEW KEY.** At `BT = 16` the ratified `(BC, decay)` formula
-   is already the best shipping value on three of the four `DV = 32` keys (80 at
-   `BC = 16, decay`; 80 at both `BC = 64` arms is within 300 bytes of the best and 96
-   costs a CTA there). The fourth, `(16, 32, 16, false)`, spills 300 bytes over 7 of
-   its 64 instantiations at 64 where 80 spills none — and §2.23 MEASURED that trade
-   on the same arm one `d_v` over: on a no-decay `BC = 16` arm the extra budget buys
-   a CTA's worth of nothing and costs +12 to +16 %, against a spill smaller than the
-   4 st / 8 ld §2.22 accepted as the optimum. The occupancy keeps it.
-
-What is left is `NM`, and it is not close: at `NM = 2` the ratified formula's 64 and
-80 leave 1860-5614 spill bytes on the `BC = 16` keys where 96 leaves 0-344, and 96 is
-best-or-equal on ALL EIGHT `NM = 2` keys. `NM` is the same tile-count predicate the
-warp partition forks on
-([`consumer_kernel.md#warp-partition`](consumer_kernel.md#warp-partition)), so the
-budget and the codegen state the same
-structural fact once.
-
-### <a id="reg-budget-session9"></a>The one class that clears 64, and why every other `NM = 2` key stays at 96
-
-The keying is a forcing census read back (`tools/ratify.py --census`, arms:
-shipped / `--force-ctas 4` / `--force-ctas 3`, sm_86; provenance:
-`workflows/20260802-thunder/trackK.md` session 9). The rule for lowering a key is
-strict: **a key moves ONLY where the forced arm shows ZERO spill AND a bit-identical
-in-loop local-access count on EVERY one of its 16 instantiations.**
-
-Exactly ONE structural class passes: `NM = 2`, `decay = false`, bf16 at both MMA
-sites, SINGLE y-quad per warp (`NM * NT_DV <= kWarps` — the warp partition's own tile
-count; at `NM = 2` that is `d_v = 32`). Measured at the 64-register bound, both `BC`
-arms, all 32 instantiations: **0 spill st / 0 spill ld, hot counts unchanged
-entry-for-entry**; `BC = 16` gains a CTA on 9 of 16 (D1 raw 86 -> 52 registers,
-2 -> 4 CTAs). The census clears the `BC = 64` half too; the DURATION gate declines it
-(below), so only the register-bound `BC = 16` half ships.
-
-**`BC < 64` is a DURATION verdict, not a census one (gate iii).** The `BC = 64` half
-of this class is SMEM-capped at 3 CTAs, so a lower budget can never buy residency
-there — it can only re-declare the bound 2 -> 3, which reschedules 80 -> 60 registers
-of ILP for zero occupancy gain. Measured (`ncu --clock-control base`,
-`topo-D1-w256-BC64 d_v=32 BT=32`, baseline vs forced): **+2.42 %** — declined on
-measurement; 96 stands and the declared-2-vs-realized-3 under-declaration stays
-recorded as the price. The `BC = 16` half is register-BOUND (SMEM admits 5-6) and the
-same gate read **-6.97 %** (`topo-D4-w8x8x8x16-BC16 d_v=32 BT=32`: 66 -> 62
-registers, 3 -> 4 CTAs, warps-active 49 -> 64 %), so it lands.
-
-**Every other `NM = 2` key is held at 96, on measurement, not caution:** the
-second-y-quad class (`d_v = 64`) ADDS in-loop local accesses at the 64-bound (max +7
-per entry) AND at the 80-bound (max +3); every `decay` key adds them (bf16 max +15,
-tf32x3 max +35..+63); every tf32x3 key spills at both forced bounds (140-380 B st per
-key). An in-loop spill is a round-trip per tile-loop iteration — disqualifying
-whatever the byte count, and the hot-loop ratchet in `tools/ratify.py` enforces
-exactly that as a build failure. The `BT = 16` decay keys' candidate-64 is refused by
-the same test (+3 in-loop max), which answers §2.23's duration question for them
-without a second duration run: 80 stands. Full tables:
-`workflows/20260802-thunder/trackK.md` session 9.
+Reproduce with `python tools/ratify.py --census`, which compiles the shipped
+instantiation shards and reports per structural key; if the kernel's inner loop
+changes, re-run it and update the formula, not this prose.
 
 ## <a id="residency"></a>5. `ctas_for_residency` and the launch bound
 
+```
+ctas_for_residency(smem, reg_budget) = min(by_smem, by_threads, by_regs)
+  by_smem    = kSm.smem_per_sm / (smem + kDriverSmemReservePerCta)
+  by_threads = kSm.max_threads_per_sm / kConsumerThreads     // kConsumerThreads == 256
+  by_regs    = kSm.regs_per_sm / (kConsumerThreads * reg_budget)
+```
+
 CTAs/SM to STATE IN THE LAUNCH BOUND — the smallest of what the three hardware
-resources admit (shared memory, thread slots, registers). STRUCTURAL, computed per
-instantiation rather than fixed: the decay arm carries ~4.9 KiB of panel machinery
-the `decay = None` arm does not, so a single constant would either over-promise on
-one arm or under-use the other.
+resources admit, computed per instantiation rather than fixed. All three terms are
+load-bearing: `ptxas` does not CLAMP an out-of-range `__launch_bounds__` argument, it
+DISCARDS it, so a missing thread term is silent everywhere the smem term alone would
+claim more CTAs than 256-wide blocks fit; and a missing register term buys the extra
+CTAs the other two terms admit by SPILLING rather than by residency.
 
-**The THREAD term is what keeps the bound from being discarded outright, and its
-absence is silent on every `BC = 16` instantiation — half the matrix (128 of 256).**
-At `BC = 16` the footprint is ~13 KiB, so the shared-memory term ALONE returns 7, and
-`7 x 256 = 1792 > 1536` thread slots. `ptxas` does not CLAMP an out-of-range bound,
-it DISCARDS it (`Value of threads per SM ... is out of range. .minnctapersm will be
-ignored`) — precisely the unconstrained-allocator state correction (d) exists to
-prevent, and an arithmetic gap reaches it as surely as an omitted attribute does.
-
-**And the thread term alone is not the fix**, which is why the register term is
-there. Measured per candidate bound at `BC = 16` (§2.21):
-
-| bound | regs | entries that SPILL | worst spill |
-|---|---|---|---|
-| absent | 57-64 | 1 of 6 | 20 st / 56 ld |
-| 6 | 40 | **4 of 6** | **70 st / 284 ld** |
-| 5 | 51 | 2 of 6 | 66 st |
-| **4** | 64 | 1 of 6 | **4 st / 8 ld** ← the measured optimum |
-
-Asking for the 6 CTAs the thread slots admit caps the allocator at
-`65536 / (6 * 256) = 42` registers and it buys those CTAs by SPILLING. The register
-term returns 4 at `BC = 16, decay = false`, which is both the register file's own
-answer at that working set AND what the allocator converges to when left alone — and
-`ncu` confirms the residency is 4 CTAs/SM either way, so on that arm the bound
-converts a silent hazard into a stated invariant at zero measured occupancy cost.
-
-**And on the `BC = 16` decay arm the term returns 3, by measurement** — see
-[above](#reg-budget), which
-carries both arms' `ncu` numbers. That arm's working set does not fit in 64
-registers, so a budget of 64 there does not buy the fourth CTA, it buys 66 st / 212 ld
-of SPILL; 3 CTAs at 80 registers is 6.5 % FASTER than 4 CTAs at 64 with the spill. The
-table above is the `decay = false` arm's.
-
-### Why this is stamped into `__launch_bounds__` and not left to the compiler
-
-Meeting the shared-memory budget does NOT get you the occupancy. At
-`__launch_bounds__(256, 1)` `ptxas` is free to spend up to 255 registers/thread — it
-spent 96 — and `96 x 256` caps residency at 2 CTAs even where SMEM admits 3. Told the
-real target it re-schedules to 66 registers with ZERO spills, so the constraint costs
-nothing and its absence costs a third of the occupancy. This is coordinator correction
-(d): the launch bound is a structural PLAN quantity carried through the instantiation
-matrix.
-
-## <a id="ring-depth"></a>7. §8 calibration placeholder `C_RING_DEPTH` — the staging ring's depth
-
-How many TILES' worth of the STAGING SET the CTA holds at once. `1` is today's
-structure exactly — stage tile `n`, rendezvous, compute tile `n` — so an unfilled or
-over-large placeholder degrades to today's behaviour, never to a new one ([the
-`C_WT_WINDOW` section](#wt-window)'s stated
-principle). `2` lets the staging of tile `n + 1` be issued from INSIDE tile `n`'s
-compute, at the one program point where the tile's work is finished and its warps
-would otherwise be sitting on the phase-C acquire.
-
-**`2` is the ceiling and it is STRUCTURAL, not a budget**: the run-ahead is ONE tile
-(the CTA walks its candidate list serially and the staged slot is consumed by the very
-next visit), so a third slot would have no producer. A larger value clamps.
-
-**The depth is DERIVED, by one rule, applied per instantiation:** *the deepest staging
-set the arm's headroom admits, with `Vw` excluded under `DECAY` by the alias.*
-Mechanically, depth 2 is taken iff it costs NO CTA — `ctas_for_residency` returns the
-same answer at both depths — i.e. "the ring pays exactly when it does not cost a CTA"
-stated as arithmetic instead of as a recommendation (provenance: r1 §3.7). It is the
-same derivation `__launch_bounds__` is, off the same two functions.
-
-**And the shared-memory term is checked ON ITS OWN**, which is NOT implied by that
-line. `ctas_for_residency` takes a MIN over three terms, so a `by_regs` floor can mask
-an SMEM drop entirely — and the driver, which spends fewer registers than the budget,
-then sees the drop the min hid. Measured: two shapes shipped a 3 -> 2 driver regression
-through the min alone. The SMEM term is the only part of the driver's answer a
-`constexpr` can see, so it is checked separately.
-
-### <a id="decay-ring-pin"></a>`DECAY` is pinned to depth 1, and it is CORRECTNESS rather than footprint
-
-D2.3 bars `Vw` from the ring because `clk` (the tile's clock prefix) ALIASES `Vw`'s
-bytes, so slot `s`'s `Vw` and slot `s`'s `clk` are the same storage. That exclusion
-PROPAGATES to the whole staging set rather than removing one member of it: BOTH panel
-builds READ `clk` (`panel_read_factor` / `panel_write_factor`), so staging tile
-`n + 1`'s `Rf` or `WT` requires tile `n + 1`'s CLOCK, which would have to be written
-into the one region tile `n`'s fold and intra term are still reading. **There is no
-non-empty subset of the staging set that can run ahead under `DECAY`.**
-
-Un-aliasing `clk` would dissolve it and does not fit: `clk`'s own region is
-`BT * (BC + 4) * 4` = 4,352 B at the flagship, against **2,941 B** of decay-arm
-headroom there ([`C_WT_WINDOW`](#wt-window) states that figure's arm and conditions). The trade is a
-coordinator-level one, so the pin is asserted in the kernel as a correctness
-`static_assert` and never left to the footprint arithmetic to enforce. Un-aliasing
-`clk` is the only thing that changes this.
-
-### <a id="ring-default"></a>The default is `1`, against §8's tabled `2`, and it is a measurement
-
-[`C_WT_WINDOW`](#wt-window) tables `2` on the principle that a wrong placeholder
-degrades to today's behaviour.
-At depth 2 it does not: `rola_consumer_occupancy` — the DRIVER, which is spec §6.5's
-sole residency authority — drops shapes the derivation does not, some by shared memory
-and some by registers:
+`kSm` is the arch table's per-architecture row ([`arch_table.md#sm-resources`](arch_table.md#sm-resources));
+on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_sm =
+65536}`. Two worked cells, both derived straight from `consumer_smem_bytes`
+([below](#smem-ledger)) and `consumer_reg_budget` — no number here is a measurement,
+every one is the formula evaluated:
 
 ```
-!decay BC16 BT32 DV32   4 -> 3   (registers)
-!decay BC64 BT16 DV32   4 -> 3   (registers)
+BC=16, DV=32, D=1, DECAY=false   smem = 5,744 B   reg_budget = 64
+  by_smem    = 102400 / (5744 + 1024)  = 15
+  by_threads = 1536 / 256              = 6
+  by_regs    = 65536 / (256 * 64)      = 4
+  ctas_for_residency = min(15, 6, 4) = 4
+
+BC=64, DV=64, D=2, DECAY=true    smem = 29,236 B  reg_budget = 80
+  by_smem    = 102400 / (29236 + 1024) = 3
+  by_threads = 1536 / 256              = 6
+  by_regs    = 65536 / (256 * 80)      = 3
+  ctas_for_residency = min(3, 6, 3) = 3
 ```
 
-The shared-memory drops are caught by the derivation above. **The register drops CANNOT
-BE CAUGHT AT COMPILE TIME**, and that is the load-bearing fact rather than a workaround: the
-driver reports a residency HIGHER than `ctas_for_residency` states,
-because `ptxas` spends fewer registers than `consumer_reg_budget` budgets, and the
-ring's own addressing (+3 to +7 registers at the flagship, measured) eats that
-undeclared surplus. No `constexpr` can see a `ptxas` output. Re-deriving
-`consumer_reg_budget` — D8-Q1, already open — is the thing that would let this default
-move to `2`.
+At `BC = 16` the register term is what keeps the bound honest: the thread term alone
+would claim 6 CTAs, which is more than the register file supports at the measured
+working set, and asking for 6 caps the allocator at `65536 / (6 * 256) = 42`
+registers, buying those CTAs by spilling. At `BC = 64` the shared-memory term is what
+binds — both the register term and the thread term have slack — so a slack register
+budget (`80` rather than a tighter fit) costs nothing there, which is the other half
+of [why `reg_budget` keys the way it does](#reg-budget).
 
-## <a id="wt-window"></a>8. §8 calibration placeholder `C_WT_WINDOW` — the `WT` window
+This is stamped into `__launch_bounds__` (`ROLA_CONSUMER_CTAS_EXPR` in
+`consumer_kernel.cuh`) rather than left to the compiler: meeting the shared-memory
+budget does not get you the occupancy on its own — an unconstrained `ptxas` is free to
+spend up to 255 registers/thread, which caps residency below what the register file
+would otherwise admit. Told the real target, `ptxas` re-schedules to fit it. The
+`ROLA_FORCE_CTAS` override ([`consumer_kernel.md#force-ctas`](consumer_kernel.md#force-ctas))
+replaces this whole expression with a fixed literal for exactly one purpose: censusing
+a candidate register budget over the dispatch matrix without touching the shipped
+formula.
 
-How many `kMmaKQuantum`-leaf ATOMS of the write panel `WT` the tile's second phase
-holds at once. `WT`'s whole-plane residency is inherited from the PHASE BARRIER
-STRUCTURE and not from the math: the Gram (`G += R_q . W_q`) contracts over the leaf
-axis and the fold (`S[i,:] += Sum_t WT[i,t] Vw[t,:]`) has the leaf axis as its
-OUTPUT-ROW axis, so neither ever revisits an atom and `W_q` is dead the moment both
-have seen it. The cross-atom carrier is exactly one object, the Gram `[BT x BT]`.
-
-`0` means `QPO`, **which IS the plane, i.e. today's structure exactly** — so a
-wrong/unfilled placeholder degrades to today's behaviour. The terminal cycle (§9.2)
-fills it from the producer/consumer variance measurement; the two ends of the dial are
-one parameter, not two designs (I4).
-
-**It is the ALLOCATION, not just the phase.** `consumer_smem_bytes` sizes `WT` from
-`wt_window_rows`, so at `C_WT_WINDOW < QPO` the buffer really is `kNWin` times smaller
-and the residency really moves; the rows are indexed WINDOW-LOCALLY and reused window
-by window, which is what the SLOT-READY / SLOT-FREE `__syncthreads` pair in the tile's
-second phase exists to make safe
-([`consumer_kernel.md#slot-ready-free`](consumer_kernel.md#slot-ready-free)). That pair is D8.2's `2 * QPO` sync tax, and it
-is the price of the footprint.
-
-`wt_window_rows` is THE definition — `consumer_smem_bytes` sizes the buffer from it and
-the kernel body indexes with it, so the allocation and the addressing cannot disagree
-about how many rows exist. `C_WT_WINDOW` must DIVIDE `QPO`: the window loop's trip
-count is exact, never ragged (I1 — an expression in `BC` and `kMmaKQuantum`, never a
-literal). At the plane `q_lo` and `mt_lo` are identically zero and every window-local
-index expression folds back to the pre-window one, which is what makes the default
-byte-identical for free.
-
-**Pinned to the plane on the `DECAY` arm, and it is a CORRECTNESS pin rather than a
-preference:** the windowed form moves the `WT` BUILD inside the second phase, and that
-build reads `clk` (`panel_write_factor`) while `Vw` — which the fold reads every
-window — ALIASES `clk`'s bytes by the `vw_union_bytes` lifetime argument. Windowing
-would make two tenants of one region simultaneously live. Un-aliasing costs `clk` its
-own `BT * (BC + 4) * 4` = 4,352 B, and the headroom is not there.
-
-**The decay arm's headroom is 2,941 B**, and it is arithmetic off
-`consumer_smem_bytes` rather than a measurement: at the flagship cell
-(`BT = 16, BC = 64, DV = 64, D = 2`, `DECAY`, `GLOBAL`, bf16 staging, `kRing = 1`) that function returns 30,168 B, and 3 CTAs/SM admit
-`102400 / 3 - kDriverSmemReservePerCta` = 33,109 B — a difference of 2,941 B, against
-`clk`'s 4,352. Every term of both sides is compile-time, so the figure moves only when
-the carve does.
+---
 
 # Part II — the shared-memory carve
 
-## <a id="smem-ledger"></a>10. The ledger (the §10i.14 carve, term by term)
+## <a id="smem-ledger"></a>10. The ledger — `consumer_smem_bytes`, term by term
 
-Every term of `consumer_smem_bytes_at`, at the FLAGSHIP CELL — `BT = 16, BC = 64,
-DV = 64, D = 2`, `GLOBAL`, no `DECAY`, `kRing = 1` — on both precision
-arms. The staging format is the only axis that moves a byte figure without moving a
-template parameter, so both arms are given: `stage_is_narrow` selects it and
-`wt_pitch` / `vw_elems` size it, and quoting one arm alone under-states one build
-while over-stating the other.
+Every term of `consumer_smem_bytes<BC, DV, D, DECAY>()`, in carve order (the kernel
+body's pointer arithmetic follows this exact sequence):
 
-| region | extent | bf16 (narrow) | tf32x3 | what it is |
-|---|---|---|---|---|
-| `S` | `[BC][SP]` fp32 | 17,408 | 17,408 | the STATE, resident for the owner's whole run. `SP = DV + 4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)), not `DV + 1` |
-| `sr`, `sw` | `RING * 2 * [BT]` fp32 | 128 | 128 | the §3 step-3 row scales |
-| `den` | `[BT]` fp32 | 64 | 64 | `GLOBAL` only |
-| `cand` | `2 * kMaxWords` u32 | 1,024 | 1,024 | the candidate-tile words |
-| `dig` | `[D][BC]` int | 512 | 512 | per-owner leaf digits (hoisted, [`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
-| `WT` | `[kWinRows][BTP]` | 3,072 | 5,120 | write coefficients, LEAF-MAJOR; swizzled bf16 narrow, padded fp32 on `tf32x3` |
-| `Vw` (∪ `clk`) | `RING *` the union | 2,048 | 4,608 | the scale-folded value tile; swizzled and UNPADDED narrow |
-| `Rf` | `RING * NM * frag_a_words(BC)` | 2,048 | 4,096 | read coefficients, MMA-FRAGMENT ORDERED |
-| `Gm` | `[BT][BT + 8]` bf16 / `[BT][BT + 4]` fp32 | 768 | 1,280 | the causal effective-score block |
-| `ctl` | `2 + QPO` int | 24 | 24 | the item-stream control block ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
-| **total** | | **27,096** | **34,264** | |
+| region | extent | bytes | what it is |
+|---|---|---|---|
+| `S` | `[BC][DV+4]` fp32 | `BC*(DV+4)*4` | the STATE, resident for the owner's whole run. Pitch `SP = DV+4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)) |
+| `sr`, `sw` | `2 * [kGT]` fp32 | `2*16*4 = 128` | the §3 step-3 per-token read/write row scales |
+| `den` | `[kGT]` fp32 | `16*4 = 64` | the mass-column denominator accumulator (unconditional — see [below](#mass-col)) |
+| `dig` | `[D][BC]` int | `D*BC*4` | per-owner hoisted leaf digits ([`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
+| `WT` | `[BC][kWtPitch]` bf16, `align4` | `align4(BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGT+8 = 24` ([below](#stage-format)) |
+| `Vw` ∪ `clk` | the union, `align4` | `vw_union_bytes<BC,DV,DECAY>()` | the scale-folded value tile; on `DECAY` ALIASES the clock prefix ([below](#vw-clk-union)) |
+| `Rf` | `frag_a_words(BC)` u32 | `(BC/16)*128*4` | read coefficients, MMA-FRAGMENT ORDERED ([below](#frag-order)) |
+| `Gm` | `[kGT][kGT+8]` bf16 | `16*24*2 = 768` | the causal effective-score block, pitch `GMP = kGT+8 = 24` |
+| `log_keep`, `p_ref`, `s0` | `3 * [BC]` fp32, `DECAY` only | `DECAY ? 3*BC*4 : 0` | `DECAY`'s three per-leaf vectors |
+| `ctl` | `ctl_words(BC)` int | `3*4 = 12` | the item-stream control block, `kCtlFold0+1` — ONE fold cursor ([`pipeline.md#item-stream`](pipeline.md#item-stream)) |
+| `t_idx` + `g_scan` | `(kGT+8+D)` int | `(16+8+D)*4` | the group's token list plus the group assembler's cross-visit carry and per-visit atom masks — SMEM so no scheduler state is register-live across the visit body |
 
-**This table is CHECKED, not transcribed.** `rola_consumer_smem_bytes` reports the
-compiled `consumer_smem_bytes` of a shipped instantiation, and the row arithmetic above
-reproduces it EXACTLY on all 16 driver-queryable cells (`decay` x `BC` x `BT` x `DV`,
-at `D = 2`, bf16, `GLOBAL` — the axes `query_row` pins). The flagship's 27,096 B is one
-of those 16.
+`cols = DV + 1` is unconditional (the mass column always exists — normalization is no
+longer a template axis), which is why `S`'s row EXTENT above is `DV + 4` regardless:
+the pitch derivation ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch))
+is chosen to keep the bf16 MMA B map conflict-free and already covers the mass
+column's one extra live column within it.
 
-### The two arms of the flagship cell, and what the driver says
+**Two worked totals**, computed by hand from the table above (both independently
+cross-checked against `consumer_smem_bytes` in Python):
 
-| arm | bytes | CTAs/SM (driver) |
-|---|---|---|
-| no `DECAY` | 27,096 | 3 |
-| `DECAY` | 30,168 | 3 |
+```
+BC=16, DV=32, D=1, DECAY=false:
+  S=2304  sr/sw=128  den=64  dig=64  WT=768  Vw∪clk=1024
+  Rf=512  Gm=768  decay-extra=0  ctl=12  t_idx+g_scan=100
+  total = 5,744 B  (~5.6 KiB)
 
-`DECAY` adds 3,072 B here and not 768: the three `[BC]` vectors are 768, and the other
-2,304 is `clk` RAISING the `Vw` union from 2,048 to 4,352 ([below](#vw-clk-union)).
-CTAs/SM is `rola_consumer_occupancy` — the driver, on the built binary — not the
-launch bound's own arithmetic, which is a floor rather than an answer
-([above](#residency)).
+BC=64, DV=64, D=2, DECAY=true:
+  S=17408  sr/sw=128  den=64  dig=512  WT=3072  Vw∪clk=4352
+  Rf=2048  Gm=768  decay-extra=768  ctl=12  t_idx+g_scan=104
+  total = 29,236 B  (~28.6 KiB)
+```
 
-Storing the `tf32x3` arm's `WT` and `Vw` as bf16 would save 4,608 B at the flagship and
-change no residency; it is refused because that is the arm whose fold precision must be
-recoverable.
+These are the same two shapes [the residency section](#residency) plugs into
+`ctas_for_residency`. No other shape's byte total is stated here; plug the formula
+above into `consumer_smem_bytes` for any other `(BC, DV, D, DECAY)` — that function,
+not this prose, is the authority a future carve change must agree with.
 
-The carve is BYTE arithmetic, not pointer arithmetic, from `WT` onward: the staged
-buffers' element size follows `StageT` while everything around them is fp32, so
-`p + count` would silently mis-place every buffer after them. `align4` keeps each
-subsequent fp32 buffer 4-byte aligned; every shipped `(BC, BTP)` product is already a
-multiple of 2 elements, so it never pads.
+### <a id="mass-col"></a>The mass column is unconditional
 
-The footprint is `constexpr` so the launch bound can be DERIVED from it rather than
-restated next to it — two numbers that must agree are one number too many.
+`cols = DV + 1` on every arm: there is no `raw`/`GLOBAL` axis left to make it
+conditional, and `den` is allocated on every arm for the same reason. A run that never
+needed the mass column still pays 4 bytes/leaf-row for it and 64 B for `den` — deleting
+the axis deleted the branch, not the column.
 
-### The per-arm carves
+### <a id="atom-masks"></a>The group scheduler's SMEM block
 
-- **`DECAY`** adds THREE buffers rather than four: `log_keep`, `p_ref`, `s0`, all
-  `[BC]` — 768 B. The naive ledger is those three plus `clk[BT][BC + 4]`, which is
-  4,352 B at the flagship cell and 8,704 B at `BT = 32`. It does not have to be paid,
-  and the argument is a LIFETIME rather than a saving: `clk` exists only to build `Rf`
-  and `WT`, it is DEAD before `Vw` is live, so it ALIASES `Vw`'s storage and only the
-  raise of that union is charged ([below](#vw-clk-union)) — 3,072 B in total at the
-flagship against
-  5,120 B un-aliased. **Decay ships at 3 CTAs/SM on the flagship cell, full
-  residency** (30,168 B, driver-confirmed). Un-aliasing costs a CTA on the deepest
-  `DECAY` arm in the matrix — `D = 4, BT = 16, BC = 64, DV = 64`: it would push the
-  footprint past `102,400 / 3 - 1024` per CTA. That is arithmetic off
-  `consumer_smem_bytes_at`, not a measurement: no un-aliased arm exists to ask the
-  driver about.
-- **`GLOBAL`** adds `den[BT]`. The `raw` arm has no denominator stream at all, so
-  allocating its row would be dead storage rather than a rounding. `sr`/`sw` are
-  STAGING outputs and carry the ring; `den` is not and does not.
-- **`ctl`**, K3b's item-stream control block, is `2 + QPO` `int`s on EVERY arm (12 B at
-  `BC = 16`, 24 B at `BC = 64`). It is the whole storage cost of the counter-gated
-  phase ordering and of the fold's fluid item pool (the item table itself is DERIVED,
-  never stored). It is named in the footprint function rather than folded into a
-  neighbour because the launch bound is derived from that function and a footprint that
-  is not written down is not checkable. READ OFF THE DRIVER, not asserted:
-  `rola_consumer_occupancy` returns the identical CTA count on all 16
-  `(decay, BC, BT, DV)` shapes as the pre-K3b kernel, which is the check that
-  matters — the byte count is only the reason to expect it.
-
-  The counters are PACKED rather than bank-separated. Separation would cost `32 * 4`
-  bytes PER COUNTER, on a `decay` `BC = 64` arm whose per-CTA residency margin is the
-  tightest in the kernel — so padding the counters apart would risk a CTA to
-  decorrelate a handful of `atomicAdd`s per tile. The traffic they carry is one
-  atomic per warp per phase edge plus one per claimed fold item, which is not a
-  bank-conflict-shaped problem.
-
-### <a id="staging-set"></a>The STAGING SET, and why it is exactly these objects
-
-The ring's members are the SMEM objects the tile's STAGING phase PRODUCES and the
-tile's COMPUTE phase CONSUMES — `Rf`, `Vw` and the two row scales. Two per-tile objects
-are deliberately NOT in it, and both exclusions are structural rather than budgetary:
-
-- **`Gm`** is GEMM 2's OUTPUT, produced in phase B and consumed in phase C of the SAME
-  tile. Nothing a feeder does one tile ahead can write it, so a second `Gm` slot would
-  be storage with no producer — dead memory, not a smaller saving. (D1.3's table listed
-  it because that table enumerated the per-tile SMEM objects, not the staging OUTPUTS;
-  this is that distinction landing.)
-- **`WT`** needs no slot because the run-ahead's PROGRAM POINT is already past its last
-  reader: the staging of tile `n + 1` is issued after tile `n`'s window loop, where the
-  Gram and the fold have both retired. `WT` is ringed by the SCHEDULE at depth 1, which
-  is strictly cheaper than ringing it in storage.
-
-`den` is written and read inside one tile's compute and is likewise excluded.
+`t_idx[0..kGT)` holds the group's gathered GLOBAL token indices, ascending, written by
+warp 0 at ballot time. `g_scan[0..8+D)` is the ENTIRE cross-visit state the membership
+scan and group assembler carry: `[0]` fill count, `[1]` the scan's current word,
+`[2]`/`[3]` the split word's read/write remainder (`fr`/`fw`), `[4]` the member-word
+remainder, `[5]` group flags (bit 0 = read-live, bit 1 = write-live), `[6]`/`[7]` the
+visit's read/write ATOM MASKS (published by warp 0 lane 0 at ballot end), `[8..8+D)`
+the scan's per-level fixed-row indices (hoisted once so the per-word refill costs two
+SMEM loads per fixed level, never a `base[]` re-derivation inside the scan loop).
+Putting this in SMEM rather than registers is what keeps no scheduler state
+register-live across the visit body — every thread reloads the carry after the
+previous visit's end barrier and only tid 0 stores the update, behind the group-entry
+barrier.
 
 ## <a id="vw-clk-union"></a>11. The `Vw` / `clk` union, and why it is sized in BYTES rather than elements
 
-`clk` (the tile's per-leaf inclusive clock prefix, `[BT][BC + 4]`, fp32) is DEAD before
-`Vw` (`[BT][DV + 8]` on the tf32x3 arm, `[BT][DV]` swizzled on the narrow one) is live,
-so it ALIASES `Vw`'s storage and `vw_union_bytes` sizes the region as the MAX OVER ITS
-LIVE TENANTS.
+```
+vw_union_bytes<BC,DV,DECAY>() = align4(max(vw_bytes, clk_bytes))
+  vw_bytes  = kGT * DV * sizeof(bf16)
+  clk_bytes = DECAY ? kGT * (BC+4) * sizeof(float) : 0
+```
 
-**The max is over BYTES, and that is load-bearing because the two tenants do not share
-an element size.** `Vw` is bf16 on the narrow arm and `clk` is fp32 on both, so an
-element-wise `max` would under-allocate by a factor of two, SILENTLY. The consequence
-is a REAL limit on what narrowing `Vw` can save rather than an accounting detail: on
-the DECAY arm `clk` is the larger tenant at every shipped shape
-(`BT * (BC + 4) * 4` against `BT * DV * 2`), so **narrowing `Vw` frees no shared memory
-at all there** and the decay arm's whole staging-format saving is `WT`'s. `Vw` is still
-ADDRESSED at its own pitch; only the RESERVATION is the max.
+`clk` (the visit's per-leaf inclusive clock prefix, `[kGT][BC+4]` fp32, token-major)
+is DEAD before `Vw` (the scale-folded value tile) is live within one visit — the clock
+prefix is fully consumed building `Rf` and `WT` before the value staging that fills
+`Vw` runs, and a `__syncthreads()` (HAZARD `clk-dead`,
+[`consumer_kernel.md#clk-dead`](consumer_kernel.md#clk-dead)) marks the exact point
+past which `Vw` may overwrite `clk`'s bytes. So `clk` ALIASES `Vw`'s storage rather
+than getting its own region.
 
-The swizzled narrow `Vw` carries no pad, so its tenant term is `BT * DV` elements
-rather than `BT * (DV + 8)` — `16 * BT` bytes per ring slot, on the arms where `clk` is
-absent or smaller. On the DECAY arm it frees NOTHING, for the reason above: a `max`
-does not move when its smaller argument shrinks.
+**The max is over BYTES, and that is load-bearing** because the two tenants do not
+share an element size: `Vw` is bf16, `clk` is fp32, so an element-wise max would
+under-allocate by 2x, silently. `clk` is the larger tenant at every shipped `DECAY`
+shape (`kGT*(BC+4)*4` against `kGT*DV*2`; at `BC=64,DV=64` that is 4,352 against
+2,048), so on the decay arms narrowing `Vw` frees no shared memory at all — the
+reservation is the max, whatever the smaller tenant does. `Vw` is still ADDRESSED at
+its own layout; only the RESERVATION is the max.
 
-`clk`'s row pitch is `BC + 4`, token-major (`clk[t * CKP + i]`), on the same
-bank-decorrelation argument every other pitch here uses. The alias is sound because
-`vw_union_bytes` sizes the region for whichever tenant is larger IN BYTES; the kernel
-`static_assert`s that sizing against the use rather than assuming the two agree. `clk`
-is declared AT THE CARVE rather than eighty lines later as `clk = Vw`: with two element
-types that assignment does not type-check, and the alias is the load-bearing fact. It
-names SLOT 0 and needs no ring index: `DECAY` pins `kRing == 1` ([above](#ring-depth)).
+`clk` is declared AT THE CARVE (`float* clk = reinterpret_cast<float*>(carve);`)
+rather than assigned from `Vw` later, because the two element types make that
+assignment not type-check — the alias is the load-bearing fact, stated where the
+pointer is born. The kernel body carries a `static_assert` pinning
+`kGT * CKP * sizeof(float) <= vw_union_bytes<BC,DV,DECAY>()` so the sizing is checked
+against the actual use, never assumed to agree.
 
-## <a id="bank-predicates"></a>12. The bank-conflict property, as a compile-time proof rather than a comment
+## <a id="bank-predicates"></a>12. The bank-conflict proofs, as compile-time predicates rather than comments
 
 Every MMA operand load has 32 lanes addressing SMEM as an affine function of the
 fragment's two lane coordinates, `g = lane >> 2` and `r = lane & 3`. The access is
-conflict-free exactly when those 32 addresses land on 32 DISTINCT banks. `banks_distinct`
-ENUMERATES that condition instead of asserting a modular formula, so each operand proves
-its own pitch at compile time and a future change to `BT`/`BC`/`DV` fails the build rather
-than silently costing a 4x wavefront amplification — which is what the unpadded build did
-measure (§2.2, and [the storage format](#stage-format) below).
+conflict-free exactly when those 32 addresses land on 32 DISTINCT banks.
+`banks_distinct` ENUMERATES that condition for a 32-bit (fp32) operand instead of
+asserting a modular formula, so each operand proves its own pitch at compile time and
+a future change to `BC`/`DV` fails the BUILD rather than silently costing bank-conflict
+wavefront amplification. `stride_g` / `stride_r` are the address deltas in 4-BYTE
+BANKS per unit `g` and `r`.
 
-`stride_g` / `stride_r` are the address deltas in 4-BYTE BANKS per unit `g` and `r`, which
-is why a bf16 operand read as 32-bit pairs contributes `pitch / 2`.
+`banks_distinct_u16` is the SAME question for a 16-bit (bf16) operand, and it is NOT
+the same predicate: the bank of element `e` is `(e >> 1) % 32` rather than `e % 32`,
+and two lanes landing in the SAME 32-bit word do not conflict — the SM services one
+word in one transaction — so the condition is "any two lanes sharing a bank share a
+word", which `banks_distinct` cannot express. Applying the 32-bit predicate to a
+16-bit buffer proves the wrong proposition in BOTH directions (rejects conflict-free
+layouts, accepts conflicting ones). `stride_g` / `stride_r` here are deltas in
+2-BYTE ELEMENTS.
 
-### `banks_distinct_u16` — the same proof for a 16-bit operand is NOT the same predicate
-
-And the difference is not pedantry: `banks_distinct` would REJECT layouts that are
-conflict-free and ACCEPT ones that are not, so a bf16 buffer proved with it is not proved.
-
-Two things change. (i) The addresses are 2-BYTE, so the bank of element `e` is
-`(e >> 1) % 32` rather than `e % 32`. (ii) Two lanes landing in the SAME 32-bit WORD do
-not conflict — the SM services one word in one transaction — so the condition is not "32
-distinct banks" but "any two lanes sharing a bank share a word". A 16-bit operand read by
-32 lanes typically occupies 16 words in 16 banks with two lanes per word, and that is
-conflict-FREE, which is exactly the case `banks_distinct` cannot express.
-
-`e >> 1` is well defined here because every fragment's base offset is EVEN: the bases are
-`k0 * pitch + n0` with `k0` a multiple of the MMA k-extent, `n0` a multiple of 8, and every
-16-bit pitch this kernel uses even. `stride_g` and `stride_r` are the address deltas in
-2-BYTE ELEMENTS per unit `g` and `r`.
+`pitched_ldsm_banks_ok<ROWS, COLS, PITCH>` asks the SAME `ldmatrix` phase question
+(below) of a PITCHED, unswizzled buffer: `WT` keeps its derived pad rather than a
+swizzle, so this licenses the atom at that pitch instead of assuming a pad chosen for
+a scalar fragment map also serves a matrix load. `COLS` is the column extent actually
+addressed (`kGroupTokens`), smaller than `PITCH`.
 
 ## <a id="stage-layout"></a>13. The staged operands' SMEM layout, owned by CuTe
 
-Both predicates in [the bank-conflict section](#bank-predicates) are HAND-ROLLED
-PROOFS ABOUT A PADDED PITCH, and the argument
-against leaving the staged operands on one is that the 32-bit predicate proves the wrong
-proposition about a 16-bit buffer in BOTH directions — a class of error an enumeration
-cannot warn you about, because you have to already suspect it.
+Both `WT` and `Vw` are stored under the library's own swizzled layout,
+`composition(Swizzle<B,3,3>, (ROWS,COLS):(COLS,1))`, and the pad DISAPPEARS: the
+swizzle decorrelates banks by permuting 16-byte blocks WITHIN the tile instead of by
+making it bigger, so the buffer is exactly `ROWS * COLS` elements. `B` is chosen so
+the XOR field covers the whole 128-byte bank cycle (`stage_swizzle_b<COLS>()`); `M = 3`
+keeps the 16-byte `ldmatrix` row intact; `S = 3` puts the XOR source at the row
+index's low bits.
 
-On the narrow arm BOTH staged operands are therefore stored under a SWIZZLED layout the
-library states, `composition(Swizzle<B,3,3>, (ROWS,COLS):(COLS,1))`, and the pad
-DISAPPEARS: the swizzle decorrelates the banks by permuting 16-byte blocks WITHIN the tile
-instead of by making the tile bigger, so the buffer is exactly `ROWS * COLS` elements. That
-is a FOOTPRINT change as much as an addressing one — `16 * BT` bytes per ring slot for `Vw`
-and `16 * kWinRows` bytes for `WT`.
+Nothing here is asserted — the properties are `static_assert`ed by ENUMERATING the
+library's layout:
 
-**One layout serves `WT`'s two operand maps.** Satisfying GEMM 2's B map and GEMM 4's A
-map at once with a PAD takes an enumeration (`BT + 8`, unique over
-`pad in {4, 8, 12, 16}`); the swizzle satisfies both BY CONSTRUCTION, because `ldmatrix`'s ADDRESSING is the same for `.trans` and `.N` — 8 lanes,
-8 rows, one 16-byte column block — and the transposition happens in the registers.
-`stage_ldsm_banks_ok` quantifies over every `(8-row group, 16-byte block)` pair, so it
-proves BOTH maps at once rather than one map per predicate.
-
-`B` is chosen so the swizzle's XOR field covers the whole 128-byte bank cycle: a row is
-`COLS` halves = `COLS / 8` blocks of 16 B, and `B = log2(COLS / 8)` capped at 3 (a 128 B
-row already spans all 32 banks). `M = 3` keeps the 16-byte `ldmatrix` row intact; `S = 3`
-puts the XOR source at the row index's low bits.
-
-NOTHING HERE IS ASSERTED — the three properties the layout has to have are
-`static_assert`ed by ENUMERATING THE LIBRARY'S OWN LAYOUT, which is what makes it more
-verifiable than a hand-proved pitch rather than merely shorter.
+1. **`stage_layout_is_bijection<ROWS,COLS>()`** — the layout is a BIJECTION onto
+   `[0, ROWS*COLS)`. This licenses the reservation `ROWS*COLS*sizeof(bf16)`: a swizzle
+   that overflowed its tile would alias the next buffer.
+2. **`stage_ldsm_banks_ok<ROWS,COLS>()`** — every `ldmatrix` FETCH is conflict-free.
+   The instruction is serviced 8 lanes at a time, each lane reading a 16-byte row, so
+   the phase is conflict-free exactly when its 8 rows cover all 32 banks. It also
+   checks the 16-byte ALIGNMENT `ldmatrix` requires, which no pitch predicate alone
+   could see.
+3. **`stage_store_banks_ok<ROWS,COLS>()`** — the STAGING STORE stays conflict-free.
+   Both staged buffers are filled by a flat `idx = row*COLS + col` loop at
+   `kConsumerThreads` stride, so the same-word rule from
+   [`banks_distinct_u16`](#bank-predicates) applies, asked of the swizzled addresses.
 
 ### <a id="stage-offset"></a>The address function is a closed form, and CuTe is its specification
 
-`StageLayout{}(row, col)` is the definition, but calling it at every access point is NOT
-free, and the cost is a MEASUREMENT rather than a worry: with `WT` addressed through it,
-`ptxas` spent **+15 to +18 registers** on the `BT = 32` instantiations and
-`rola_consumer_occupancy` lost a CTA on shapes that had one to spare. The 8-second probe bisected it
-exactly — a variant with the swizzled layout and NO `ldmatrix` at all carried the WHOLE
-regression, and adding the copy atoms back cost 0-1 registers on top. So the atoms are free
-and the generic layout call is not: it blocks the strength reduction the linear map
-admitted, on the scalar walks (`WT`'s panel build, the mass fold) whose inner loop is over
-a whole row.
+Calling `StageLayout{}(row, col)` at every access point measurably blocks the strength
+reduction the linear map admits on the scalar row walks `WT` has (its panel build's
+token loop, the fold's mass-column reduction). `stage_offset<COLS>(row, col)` is the
+SAME map, in the two operations the swizzle actually is:
+`row * COLS + (col ^ mask(row))`. The XOR source bits come ENTIRELY from `row`
+(`COLS >= 16`) and the target bits lie ENTIRELY inside one row (`COLS >= 8 << B`), so
+the XOR never carries between the two fields and the mask is ROW-INVARIANT — the
+compiler can hoist it out of a row walk.
 
-`stage_offset` is that same map, in the two operations the swizzle actually is.
-`offset = row * COLS + col`, and the swizzle XORs offset bits `[3, 3+B)` with bits
-`[6, 6+B)`; the source bits come ENTIRELY from `row` (because `COLS >= 16`) and the target
-bits lie ENTIRELY inside `col` (because `COLS >= 8 * 2^B`), so the XOR never carries between
-the two fields and the map factors as `row * COLS + (col ^ mask(row))` — a row-invariant
-mask the compiler CAN hoist out of a row walk.
+`stage_offset_matches_cute<ROWS,COLS>()` enumerates every `(row, col)` of the buffer
+and requires the closed form to agree with `StageLayout{}(row, col)`. That is what
+keeps the library the authority: the layout is stated in CuTe's algebra, the kernel's
+closed-form addressing is proven equal to it at every point, and a swizzle parameter
+changed in one place and not the other fails the build.
 
-`stage_offset_matches_cute` then enumerates EVERY `(row, col)` of the buffer and requires
-the two to agree. That is what keeps the library as the authority: the layout is stated in
-CuTe's algebra, the kernel's addressing is proven equal to it at every point, and a swizzle
-parameter changed in one place and not the other fails the build.
+## <a id="stage-format"></a>14. The staged-operand storage format, and `kWtPitch`
 
-### The three proofs
+`WT` (the write coefficient panel) and `Vw` (the scale-folded value tile) are the two
+per-visit staged operands, and both are bf16 UNCONDITIONALLY — there is no precision
+axis to select a format from.
 
-1. **`stage_layout_is_bijection`** — the layout is a BIJECTION onto `[0, ROWS * COLS)`.
-   This is what licenses the reservation `ROWS * COLS * sizeof(bf16)`: a swizzle that
-   overflowed its tile would alias the NEXT buffer, and one that under-covered would waste
-   the bytes the pad was removed to save.
-2. **`stage_ldsm_banks_ok`** — every `ldmatrix` FETCH is conflict-free. The instruction is
-   serviced 8 lanes at a time and each lane reads a 16-byte row (4 consecutive banks), so
-   the phase is conflict-free exactly when its 8 rows cover all 32 banks. This REPLACES
-   `banks_distinct_u16` for the staged operands — it is the same question asked of the
-   accesses the kernel actually issues, and it also checks the 16-byte ALIGNMENT
-   `ldmatrix` requires, which no pitch predicate could see.
-3. **`stage_store_banks_ok`** — the STAGING STORE stays conflict-free. Both staged buffers
-   are filled by a flat `idx = row * COLS + col` loop at `kConsumerThreads` stride, so 32
-   consecutive lanes write 32 consecutive positions, 2 bytes each, and the same-word rule
-   `banks_distinct_u16` established applies — asked here of the swizzled addresses rather
-   than of a stride.
+`Vw` is stored under `StageLayout` with NO pad — its element count is
+`vw_elems<DV>() = kGroupTokens * DV`, addressed by `vw_index<DV>(t, ch) =
+stage_offset<DV>(t, ch)`.
 
-**`pitched_ldsm_banks_ok`** is proof 2 asked of a PITCHED (unswizzled) buffer. `WT` keeps
-its derived pad, and the fetch it issues is the same instruction `Vw`'s is — 8 lanes,
-8 rows, one 16-byte column block per phase. This asks the identical question of
-`row * PITCH + col`, and it is what LICENSES the atom at that pitch rather than assuming a
-pad chosen for a scalar fragment map also serves a matrix load. `COLS` is the column extent
-actually addressed (`BT` tokens), which is smaller than `PITCH`.
-
-### <a id="cute-pin"></a>The vendored CuTe pin, as this layer uses it
-
-`csrc/third_party/cutlass`, v3.5.1, closed-world rule 5. It is a CODEGEN INPUT, not a
-packaging one — every line instantiated here is code `ptxas` assembles — which is why
-`setup.py::_gate_vendored` hashes the subtree BEFORE the compile and `tools/ratify.py`
-carries the same include path.
-
-This layer uses it for exactly ONE thing: `StageLayout`, the swizzled layout `Vw` is
-stored under, together with the three predicates above that interrogate it. The
-`ldmatrix` copy atoms that read that layout are the tile layer's
-([`mma_tile.md#cute-pin`](mma_tile.md#cute-pin)), and the split is the point — the
-library owns the address function in one file and the fetch in the other, and
-`stage_offset_matches_cute` is what keeps the closed form honest to it.
-
-## <a id="stage-format"></a>14. The staged-operand storage format, and `wt_pitch`
-
-`WT` (the write coefficients) and `Vw` (the scale-folded value tile) are the two PER-TILE
-staged operands. They are stored in the MMA's own format on the bf16 production arm and
-fp32 on the tf32x3 exactness arm. The full-mantissa requirement is the EXACTNESS arm's:
-that is the arm that exists to be exact, and it is the arm the fp32 storage is for. On
-the bf16 arm every MMA consumer of both buffers narrows at
-the fragment (`pack_bf16x2(clamp_bf16_finite(x))`, and `pack_bf16x2` is
-`__floats2bfloat162_rn` — the same round-to-nearest-even a store applies), so storing them
-narrow MOVES THE NARROWING SITE and does not change a value.
-
-`stage_is_narrow` is the CONJUNCTION of both sites, not `READ_PREC` alone, because the two
-buffers feed both: `WT` is GEMM 2's B operand (`READ_PREC`) and GEMM 4's A (`FOLD_PREC`),
-`Vw` is GEMM 3's B and GEMM 4's B. The two shipped POINTS set both sites together, so this
-is the shipped surface stated exactly, not a new axis.
-
-### `wt_pitch` — and the `+8` is the PROOF'S answer rather than a copy of `Gm`'s
-
-`WT` serves two operand maps and the narrow pitch has to satisfy BOTH:
+`WT` stays PITCHED rather than swizzled, and that asymmetry is a MEASURED decline, not
+an omission: `Vw` has exactly two addressing sites (a flat store loop and one
+`ldmatrix` row address per k-step) where `WT` has more, including scalar walks along a
+row (the panel build, the mass-column fold), and a swizzle makes those walks
+non-affine — a cost the closed-form address only partly recovers. `WT` serves TWO
+operand maps and its pitch has to satisfy both:
 
 ```
-GEMM 2 B   B[k * ldb + n]   k = leaf steps 2 per r, n = token per g
-GEMM 4 A   A[m * lda + k]   m = leaf per g,         k = token steps 2 per r
+GEMM 2 (Gram), WT as B    B[k*ldb + n]    k = leaf steps 2 per r, n = token per g
+GEMM 4 (fold), WT as A    A[m*lda + k]    m = leaf per g,         k = token steps 2 per r
 ```
 
-Enumerated over `pad in {4, 8, 12, 16}` at both `BT`, **`BT + 8` is the UNIQUE pad that
-passes both** (`BT + 4` fails the GEMM 4 A map, `BT + 16` fails the GEMM 2 B map), and it
-passes at `BT = 16` and `BT = 32` alike.
+Enumerated over `pad in {4, 8, 12, 16}`, **`kWtPitch = kGroupTokens + 8 = 24` is the
+UNIQUE pad that passes both** — pinned by `pitched_ldsm_banks_ok<kMmaKQuantum, kGT,
+kWtPitch>()` (the `ldmatrix` phase, including the 16-byte alignment `WT`'s row bytes
+give: `kWtPitch * 2 = 48`, a multiple of 16) and by the two `static_assert`s in the
+kernel body pinning `WT`'s two scalar-fragment-map readings
+([`consumer_kernel.md#pitches`](consumer_kernel.md#pitches)).
 
-**`WT` stays PITCHED where `Vw` is swizzled, and that asymmetry is a MEASURED decline
-rather than an omission.** `Vw`'s swizzle costs nothing because `Vw` has exactly two
-addressing sites — a flat store loop and one `ldmatrix` row address per k-step. `WT` has
-six, and two
-of them are SCALAR WALKS ALONG A ROW (the panel build's `t` loop and the mass fold's `t`
-reduction). A swizzle makes those walks non-affine, which costs the strength reduction the
-linear map admits: measured **+15 to +18 registers** on the `BT = 32` instantiations and a
-CTA lost on `rola_consumer_occupancy` shapes that had one to spare. The closed-form address
-recovers most of it and still leaves shapes crossing the 64-register boundary (4 CTAs -> 3),
-against a footprint saving of `16 * BC` bytes that the same instrument shows moves NO
-shape's residency at all.
-A rung that trades a real CTA for bytes nothing needs is a decline by the campaign's own
-rule.
+`wt_index(q, t) = q * kWtPitch + t` is a FUNCTION, row-major at `kWtPitch`, rather
+than an open-coded product — the `ldmatrix` fetches (`mma_tile.cuh`'s `wt_frag_a`,
+`wt_frag_b`) and the scalar walks must not be able to disagree about it.
 
-**What `WT` DOES take is the `ldmatrix` atoms**, and the same bisection is why: a variant
-with the swizzle and NO `ldmatrix` carries the whole regression, and adding both copy atoms
-back costs 0-1 registers. `ldmatrix` needs 16-byte-aligned 16-byte rows, which THIS PITCH
-GIVES (`BTP * 2` is 48 B or 80 B, both multiples of 16), and `pitched_ldsm_banks_ok` proves
-the phases conflict-free at it — the derived pitch LICENSES the atom rather than being
-displaced by it.
+`stage_put` (`mma_tile.cuh`) stores a computed fp32 value into `WT`/`Vw`'s bf16
+storage through the explicit `__float2bfloat16` intrinsic (never `static_cast`,
+because the torch build defines `__CUDA_NO_BFLOAT16_CONVERSIONS__`), and it is where
+§12 rule 3's finite-bf16 format guard (`clamp_bf16_finite`) lives — the fp32 value's
+last existence before the narrowing.
 
-`vw_elems` / `vw_index` and `wt_index` are one decision taken twice: the narrow arm stores
-both under `StageLayout` and pays NO pad, the `tf32x3` arm keeps padded row-major buffers.
-The 16-bit `ldmatrix` atoms do not apply to an fp32 buffer at all, so this is the
-`kNarrowStage` storage-format split and not a second axis. `wt_index` is
-row-major at `wt_pitch` on BOTH arms, and it is a FUNCTION rather than an open-coded
-`q * BTP + t` because the `ldmatrix` fetches and the two scalar walks must not be able to
-disagree about it.
-
-`stage_put` stores a computed fp32 value into a buffer whose element type follows the
-precision axis. It is OVERLOADED rather than a `static_cast` because the torch build defines
-`__CUDA_NO_BFLOAT16_CONVERSIONS__` — the narrowing must be the explicit intrinsic. On the
-narrow arm it is where §12 rule 3's format guard lives, because it is where the fp32 value
-last exists. There is exactly ONE clamp on that path: `mma_tile`'s fragment-side clamp is a
-no-op on an already-narrow operand (bf16 shares fp32's 8-bit exponent, so a finite bf16
-cannot exceed the bound). `gm_put` is the same discipline for `Gm`.
+---
 
 # Part III — the fragment-ordered operand
 
 ## <a id="frag-order"></a>20. Fragment-order operand synthesis
 
-The generic `mma_tile` fetches each operand element with its own indexed SMEM read, so a
-`[16 x 8]` output tile costs ~6 address computations and ~8 loads PER K-STEP, and the A
-operand is re-fetched by every warp that shares it (all 8 in the readout). The instruction
-mix says that arithmetic — not the loads and not the MMA — is the kernel's leading cost.
+The read coefficients `Rf` are SYNTHESISED in SMEM rather than fetched with a generic
+indexed read, in the exact order the MMA's A fragment wants: word `w` of lane `lane`
+at k-step `ks` lives at `[ks * 128 + lane * 4 + w]`. A warp then loads a whole
+fragment with ONE 128-bit `uint4` — 32 lanes x 16 B = 512 B, four full transactions,
+no bank conflict and no address arithmetic at all.
 
-We SYNTHESISE the read coefficients in SMEM rather than receiving them, so we can store them
-in the order the MMA's A fragment wants: word `w` of lane `lane` at k-step `ks` at
-`[ks * 128 + lane * 4 + w]`. A warp then loads a whole fragment with ONE 128-bit `uint4` —
-32 lanes x 16 B = 512 B, four full transactions, no bank conflict and no address arithmetic
-at all.
+`frag_a_words(K) = (K / kMmaKQuantum) * 128` is the 32-bit word count of a
+fragment-ordered A operand contracting over `K`. ONE k-step covers ONE ATOM
+(`kMmaKQuantum` leaves), so the buffer is atom-blocked BY CONSTRUCTION — which is what
+lets the atom walk index a live atom's 128-word block affinely (`Rf + q * 128`) instead
+of needing a second address map for "the q-th live atom".
 
-BOTH precisions are laid out, because `READ_PREC` is a real axis
-([`consumer_kernel.md#mma-precision`](consumer_kernel.md#mma-precision)) and a layout
-that only
-served bf16 would silently un-support the tf32x3 readout. They share the storage SHAPE
-(`[ksteps][32][4]` 32-bit words) and differ only in the compile-time forward map, so there is
-one path, parameterized — not a fast path with a fallback.
+Because the coefficients are fragment-ordered they carry NO ROW PITCH at all — the
+layout is conflict-free by construction rather than by padding, so there is nothing
+to prove a `banks_distinct` predicate about here.
 
-```
-bf16 m16n8k16 : a0..a3 = (g, 2r|2r+1), (g+8, 2r|2r+1), (g, 2r+8|..), (g+8, ..)
-                -> m = g + 8*(w&1),  k = 16*ks + 8*(w>>1) + 2r   (a PAIR)
-tf32 m16n8k8  : a0..a3 = (g, r), (g+8, r), (g, r+4), (g+8, r+4)
-                -> m = g + 8*(w&1),  k =  8*ks + 4*(w>>1) +  r   (a single)
-```
-
-The `m` map is identical; only the `k` step and the element count differ. `frag_a_slot` is
-the FORWARD map (slot -> `(m, k)`), and `frag_a_words(K)` is the 32-bit word count of a
-fragment-ordered A operand contracting over `K`, FOR ONE `m16` ROW BLOCK. A `BT`-token tile
-holds `NM = BT / 16` of them, laid out block-major at a FIXED stride of `frag_a_words(BC)` —
-fixed rather than packed to a realized extent, so a block's base address is a compile-time
-multiple and the MMA's `ks` offset is independent of the block count.
-
-Because the coefficients are fragment-ordered they carry NO ROW PITCH at all — the layout is
-conflict-free by construction rather than by padding, so there is no pitch to prove.
+`frag_a_slot` (the forward map, slot -> `(m, k)`) and `frag_a_get` (its inverse, used
+by the mass column's scalar matvec) are `mma_tile.cuh`'s — see
+[`mma_tile.md`](mma_tile.md) for the reading and its `static_assert`ed cross-check
+against CuTe's own fragment maps.
