@@ -164,59 +164,46 @@ what keeps the closed form honest to it.
 ## <a id="reg-budget"></a>4. `consumer_reg_budget` — a MEASURED kernel fact, not an architecture fact and not a threshold
 
 ```
-consumer_reg_budget(BC, decay, DV, D, GT) =
-  GT > kGroupTokens ? 112 : (BC >= 64 || decay || D >= 4) ? 80 : 64
+consumer_reg_budget(BC, decay, DV, D) = 128
 ```
 
-This is the register working set `ptxas` reports for the kernel's GEMM inner loop
-when it is given slack, keyed on the axes the working set MEASURABLY varies with
-— `BC`, `DECAY`, `D` and now `GT` — with every number read off `-Xptxas -v` and the
-MAXIMUM per key taken, because a too-small budget is bought back by SPILLING (the
-conservative direction is well defined: over-stating a budget only understates the
-residency the register file admits, under-stating it makes the allocator spill to buy
-the difference). `DV` does NOT key it — the parameter is accepted and ignored
-(`(void)DV;`), stated explicitly rather than silently dropped, because the working
-set the atom walk touches per visit does not scale with the value width the way it
-once did under the deleted `NM`/row-block axis: every group is one `m16` row block
-now, so there is no second row-block term to key on.
+It is ONE number for every key, and the reason it is flat is the reason it is a
+measurement rather than a dial: **the budget's only channel to codegen is the CTA count
+in `__launch_bounds__`.** `ptxas` is given `regs_per_sm / (kConsumerThreads * CTAs)`
+registers, so the reachable allocations on a 65,536-register SM at 256 threads are the
+four the divisor admits — and the spill-vs-budget curve HAS NO INTERIOR POINT. Measured
+on the flagship entry `consumer_forward_kernel<64, 64, 2, false>`, single translation
+unit, `ptxas -v`, the census instrument `-DROLA_FORCE_CTAS=N` supplying the bound:
 
-`GT` KEYS FIRST AND UNCONDITIONALLY, at 112: the window carries `ceil(W * DV/8 /
-kWarps)` readout fragments and `ceil(W / kWarps)` mass fragments live across the Gram
-phase — fp32 residency the `GT == kGroupTokens` visit does not have — plus the fold's
-accumulator resident across `W` staged groups. Measured over all 32 window arms:
-87..117 registers on `sm_86` (113 max on `sm_80`), zero spill; `112` is the fixed
-budget the residency arithmetic uses for the key, a margin under the true measured
-maximum rather than equal to it — the arithmetic only needs to still admit the CTA
-count `BC = 16` keeps at 117 registers, and it does (`117 * 256 threads * 2 CTAs =
-59,904 < 65,536`). At `BC = 64` the window is SMEM-bound at one CTA/SM regardless
-of the register budget; at `BC = 16` this budget is what keeps two CTAs/SM.
+| CTAs | the budgets that yield it | regs/thread `ptxas` takes | spill stores | spill loads |
+|---:|---|---:|---:|---:|
+| 4 | <= 64 | 64 | 144 | 336 |
+| 3 | 65..85 | 80 | 52 | 140 |
+| 2 | 86..128 | 121 | 0 | 0 |
+| 1 | >= 129 | 120 | 0 | 0 |
 
-`BC >= 64` takes the wide budget unconditionally (the `BC = 64` arms are shared-memory
-bound at every occupancy the register term could buy, so a slack budget costs
-nothing); at `BC = 16` the decay arms carry the clock prefix, the survival panels and
-the two coefficient folds on top of the same GEMM and need the wide budget too, while
-the no-decay arms clear the working set at 64.
+**The kernel's true register working set is 121.** At three CTAs the cap is 85 and the
+allocator spills 52/140 bytes to reach it; at two it spills nothing, and a fourth
+budget rung buys nothing beyond the second. `128` is the smallest clean value that
+yields the two-CTA bound, and it is what ships. Every parameter is accepted and
+ignored (`(void)BC;` and the rest), stated explicitly rather than silently dropped: no
+axis of the matrix moves the working set enough to change which rung it lands on.
 
-`D` joined the key with the schedule-ring producer: level count is a structural
-template axis, and both the producer's cook working set and the
-[prefetch slab](#prefetch-slab)'s per-level offsets grow with it. The `D = 4`,
-`BC = 16, decay = 0` arms need the wide budget, and moving the cook's carried state
-into [SMEM](../internals/consumer_kernel.md#producer-state) does not close it further
-— the cook is already resting there. The cost is recorded rather than hidden: 80 puts
-`by_regs` at `65536 / (256 * 80) = 3`, so those arms run 3 CTAs/SM where 64 gave 4,
-which is worth about -7% on the `topo-D4-w8x8x8x16-BC16` wall.
-
-**`D <= 3` on that key no longer reaches zero spill, and the manifest is where that
-lives.** The full per-arm census at the prefetch tip (64 consumer arms x 2 arches)
-records 8 spilling arms on `sm_80` and 5 on `sm_86`, all `nodecay, GT = 16`, against
-2 and 2 before it — the slab's live state (`pf_off[D]` and the two slab bases) over
-the matrix's tightest budgets. The manifest is a RATCHET, not a spill ban: it holds
-each arm AT its measured bytes, and this batch's magnitudes are on the record in
-`workflows/perf/p39_prefetch.md` rather than absorbed by a budget raise.
+**What the third CTA was costing, and what its shared memory bought.** Dropping to two
+CTAs frees roughly 20 KB of shared memory per CTA that the residency arithmetic was
+holding back. A quarter of it pays for [the visit scratch's parity pair](../internals/consumer_kernel.md#visit-parity),
+which is what deletes the end-of-visit rendezvous; the rest goes to
+[staging depth](#pf-stages), which rises on every arm in the matrix (`S = 3 -> 4` at the
+flagship, matrix minimum 3). The occupancy loss and the register/barrier/depth gain are
+one decision, and the acceptance measurement is what adjudicates it — this budget is
+not a free raise and is not recorded as one.
 
 Reproduce with `python tools/ratify.py --census`, which compiles the shipped
 instantiation shards and reports per structural key; if the kernel's inner loop
-changes, re-run it and update the formula, not this prose.
+changes, re-run it and update this table, not prose about it. The per-arm SPILL RATCHET
+lives in `tools/manifests/sm_{80,86}.json` and is a ratchet rather than a spill ban: at
+this budget every consumer arm holds zero spill bytes except
+`<64, 64, 4, true>`, the widest decay carve, which holds 4/4.
 
 ## <a id="residency"></a>5. `ctas_for_residency` and the launch bound
 
@@ -241,26 +228,27 @@ on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_
 every one is the formula evaluated:
 
 ```
-BC=16, DV=32, D=1, DECAY=false, GT=16   smem = 6,528 B   reg_budget = 64
-  by_smem    = 102400 / (6528 + 1024)  = 13
+BC=16, DV=32, D=1, DECAY=false          smem = 17,008 B  reg_budget = 128
+  by_smem    = 102400 / (17008 + 1024) = 5
   by_threads = 1536 / 256              = 6
-  by_regs    = 65536 / (256 * 64)      = 4
-  ctas_for_residency = min(13, 6, 4) = 4
+  by_regs    = 65536 / (256 * 128)     = 2
+  ctas_for_residency = min(5, 6, 2) = 2
 
-BC=64, DV=64, D=2, DECAY=true, GT=16    smem = 30,016 B  reg_budget = 80
-  by_smem    = 102400 / (30016 + 1024) = 3
+BC=64, DV=64, D=2, DECAY=true           smem = 49,920 B  reg_budget = 128
+  by_smem    = 102400 / (49920 + 1024) = 2
   by_threads = 1536 / 256              = 6
-  by_regs    = 65536 / (256 * 80)      = 3
-  ctas_for_residency = min(3, 6, 3) = 3
+  by_regs    = 65536 / (256 * 128)     = 2
+  ctas_for_residency = min(2, 6, 2) = 2
 ```
 
-At `BC = 16` the register term is what keeps the bound honest: the thread term alone
-would claim 6 CTAs, which is more than the register file supports at the measured
-working set, and asking for 6 caps the allocator at `65536 / (6 * 256) = 42`
-registers, buying those CTAs by spilling. At `BC = 64` the shared-memory term is what
-binds — both the register term and the thread term have slack — so a slack register
-budget (`80` rather than a tighter fit) costs nothing there, which is the other half
-of [why `reg_budget` keys the way it does](#reg-budget).
+At `BC = 16` the REGISTER term binds and the shared-memory term has slack; at
+`BC = 64` the two agree exactly, which is not a coincidence — the depth derivation
+spends shared memory until the carve's CTA count falls to the register term's, so the
+two rails meet by construction ([`pf_stages`](#pf-stages)). The thread term never
+binds at 256-wide blocks, and it is still load-bearing: `ptxas` DISCARDS an
+out-of-range `__launch_bounds__` rather than clamping it, so a missing thread term is
+silent everywhere the shared-memory term alone would claim more CTAs than 256-wide
+blocks fit.
 
 This is stamped into `__launch_bounds__` (`ROLA_CONSUMER_CTAS_EXPR` in
 `consumer_kernel.cuh`) rather than left to the compiler: meeting the shared-memory
@@ -420,8 +408,9 @@ read/write atom-bitlist rows) rest in a third SMEM block between cooks
 in registers, for the measured reason that governs all scheduler state here: none of
 it may be register-live across the visit body, where it would compete with the four
 GEMMs' working set. Every reload happens at the point
-of use inside the next cook, and the ring's publication rides the end-of-visit
-`__syncthreads()` that already exists — there is no separate group-entry barrier.
+of use inside the next cook, and the ring's publication is the cook's own monotone
+ready cursor ([`consumer_kernel.md#cook-cursor`](consumer_kernel.md#cook-cursor)) —
+no barrier is involved on that path, and there is no group-entry barrier.
 
 ## <a id="vw-clk-union"></a>11. The `Vw` / `clk` union, and why it is sized in BYTES rather than elements
 

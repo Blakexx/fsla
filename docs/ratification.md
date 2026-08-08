@@ -46,28 +46,20 @@ ratchet, not a spill ban** (P25's recorded adjudication): a spill is admissible
 when it is priced, recorded here, and worse than every alternative in hand — not
 when it is absent.
 
-On the current tree the consumer's 64-arm matrix ratifies at zero spill
-EXCEPT TWO arms, and those two are an accepted, priced trade rather than an
-oversight: `<BC=16, DV=32|64, D=1, nodecay, GT=16>` spill **16 bytes stores /
-48 bytes loads each on `sm_86`** (**8 bytes stores / 24 bytes loads each on
-`sm_80`**) — the tightest key in the matrix (a 64-register budget, four CTAs/SM),
-and `D = 1` specifically; the same key at `D = 2, 3` stays at 64 registers with
-zero spill. A `72`-register budget on that key removes the spill but costs a CTA
-(4 -> 3) on exactly those two arms, and residency is this kernel's own expensive
-resource (its headline result), so paying a CTA to retire 16 bytes on a
-degenerate one-level topology priced worse than carrying the spill — a trade,
-not a ban, and the successor's or a reviewer's to overturn with new evidence
-(full adjudication: `workflows/perf/p36_quantum.md`, "THE ONE RATCHET ITEM,
-RECORDED AND FLAGGED RATHER THAN LAUNDERED"). Every other consumer arm,
-including all 32 new `GT = 64` window arms, is zero-spill (measured: the P26
-endgame executor's SMEM carve dropped every consumer instantiation's spill from a
-nonzero working set to none, and hot-loop locals from 8,933 to 254 across the
-matrix; the window batch's `GT = 64` arms carry a register working set of
-87..117 on `sm_86` (113 max on `sm_80`) against the 112-register budget the `GT`
-axis buys — [`internals/DELETIONS.md`](internals/DELETIONS.md) records what was
-cut to get there). The other two live spilling entries in the current manifest
-are both `union_backward_kernel` (entmax), 16 bytes stores / 16 bytes loads each
-on `sm_86` (24/24 on `sm_80`), unrelated to either sweep.
+On the current tree the consumer's 32-arm matrix ratifies at **zero spill on every
+arm but one**: `<BC=64, DV=64, D=4, DECAY=true>` — the widest carve in the matrix —
+holds 4 bytes stores / 4 bytes loads. That is the register budget's doing rather than
+an accident of it. The budget is `128`, which puts every consumer arm at two CTAs/SM,
+and two CTAs is the first rung at which `ptxas` is given the kernel's measured
+121-register working set; at three (the previous budget's rung, a cap of 85) the
+flagship spilled 52/140 (`internals/smem_layout.md#reg-budget` carries the whole
+spill-vs-bound curve, which has no interior point). The occupancy that raise costs is
+priced against what it bought — zero spill, the visit's second CTA-wide barrier
+deleted, and staging depth up on every arm — in `workflows/perf/p50_remedy.md`; it is
+a trade, recorded, and a successor's to overturn with new evidence.
+
+The other two live spilling entries in the manifest are both `union_backward_kernel`
+(entmax), 16 bytes stores / 16 bytes loads each on `sm_86`, unrelated to the consumer.
 
 ## What it compiles, and why that is the shipped source
 

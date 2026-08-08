@@ -13,7 +13,7 @@ order, and the split-K epilogue.
 | [`mma_tile.md`](mma_tile.md) | `mma_tile.cuh` | the operand maps — fragment order, the `ldmatrix` atoms, the GEMMs' inner sequences |
 
 The kernel body's own `__syncthreads()` carries every intra-CTA phase ordering — there
-is no separate item-stream layer: [below](#visit-barrier).
+is no separate item-stream layer: [below](#one-barrier).
 
 Its sibling is [`consumer.md`](consumer.md), which owns `ConsumerParams` and the host
 side and is NOT restated here: the leaf-digit decomposition, the paged state layout
@@ -72,7 +72,8 @@ flush and a window's trailing groups past stream end; visit count is exactly
    [schedule ring](#sched-ring), one group each — the token indices, the read/write
    atom masks, the side flags, the pre-multiplied row scales `sr`/`sw` — and assembles
    nothing; concurrently, warp 0 cooks the ring's NEXT window of descriptors (the
-   [run-ahead](#sched-ring)), published by this visit's own end-of-window barrier;
+   [run-ahead](#sched-ring)), published by the [cook's ready cursor](#cook-cursor)
+   alone — no barrier is involved on that path;
 8. **STAGE** — under `DECAY`, the clock prefix (over the WHOLE window, one reference
    frame) and entry scale; the §3 step-3 row scales `sr`/`sw`; the fragment-ordered
    read panel `Rf` and write panel `WT`, `W` SLOTS of the group's own shape; the
@@ -86,7 +87,7 @@ flush and a window's trailing groups past stream end; visit count is exactly
     block (every token of group `b` precedes every token of group `a`), `b > a` is
     never formed — `W(W+1)/2` sub-blocks over `W^2`, published into the window Gram
     `Gm`;
-11. the visit's [ONE internal barrier](#visit-barrier), guarded `mixed`, carrying both
+11. the visit's [ONE CTA barrier](#one-barrier), guarded `mixed`, carrying both
     the readouts-before-fold edge on `S` and the Gram-before-phase-C edge on `Gm` at
     once;
 12. **PHASE C**: **GEMM 3, the intra terms** — `y_a += sum_{b<=a} Gm[a][b] . Vw_b` for
@@ -125,18 +126,14 @@ Three facts a reader must not miss:
   [`consumer.md`](consumer.md#instantiation-matrix). The endgame walk IS the path;
   dense (full-support) routing self-heals to identity grouping rather than taking a
   different code path.
-- **The visit pays exactly TWO unconditional `__syncthreads()`** — the post-staging
-  barrier (staging into GEMM 1/GEMM 2) and the end-of-window barrier that closes the
-  loop and publishes the producer's run-ahead cook — plus the [visit barrier](#visit-barrier)
-  (readouts before fold on `S`, Gram before phase C on `Gm`), which is CTA-UNIFORM but
-  not unconditional: it is guarded `mixed`, because both of its edges are (a
-  read-only window runs no fold, a write-only window reads no state, and neither has a
-  Gram), so a single-sided window pays nothing for it. Every one of these three is
-  PER WINDOW, not per group — the amortisation `GT` buys. `DECAY` arms pay two more,
-  both inside staging: after the clock-prefix pass (before it scales `S`) and at
-  [`clk-dead`](#clk-dead) (before `Vw` may overwrite `clk`'s aliased bytes). There is
-  no separate group-entry barrier: the ring publishes
-  a window's descriptors a whole window ahead of the visit that reads them.
+- **The visit pays exactly ONE unconditional `__syncthreads()`** — the panel barrier,
+  between the panel build and the GEMMs, carrying four edges at once
+  ([below](#one-barrier)). `DECAY` arms pay one more, after the clock-prefix pass and
+  before the panel build that reads `s0`. Everything else that crosses warps in a
+  visit is a monotone counter over a compile-time producer set: the schedule ring's
+  [cook cursor](#cook-cursor), the [Gram's](#gram-publication) and the
+  [mass column's](#mass-publication). The kernel's other two barriers are once per
+  KERNEL — the entry epoch and the exit epoch — not per visit.
 
 ## <a id="glossary"></a>2. Symbol glossary
 
@@ -419,6 +416,43 @@ scheduler itself), which is what earns the descriptor its own ring storage; the
 scan's raw INGREDIENTS — the per-word AND results and the atom bitlist rows — are read
 only by the producer and never materialize past its own cook.
 
+## <a id="cook-cursor"></a>12a. The cook's ready cursor — the schedule ring's ONLY edge
+
+`ring_ready` is a monotone count of the groups the producer warp has published. It has
+exactly one writer (the producer warp's lane 0), so a plain store carries it; a
+`__threadfence_block()` before the increment orders the group's descriptor stores
+ahead of the count that advertises them. Every consumer acquires it at the top of its
+visit, and ONE test covers BOTH descriptor reads a visit makes — this group's at the
+top, and group `gidx + S`'s inside [the stage issue](#stage-issue) — because the later
+one is the stronger.
+
+**This is the descriptor's only edge.** Nothing else in the visit orders the producer
+warp against its consumers, which is what lets the cook be SCHEDULED rather than
+sequenced: it runs wherever it overlaps best instead of sitting between the last
+common work and a barrier.
+
+**Where it runs is a load-balance choice, not a correctness one.** The producer is
+`kProdWarp = kWarps - 1`. The cook is serial warp-local work laid on top of a warp's
+share of the GEMMs, so it belongs on the warp carrying the least of everything else:
+the Gram's producers and the denominator's two term owners are the LOW warp indices,
+so the high warp carries the lightest second job — and it is the warp that would
+otherwise sit in the Gram's publication wait doing nothing at all, which is exactly
+where the cook is placed. At `kGT = kGroupTokens` this holds because `NT = 2` and
+`kQPO < kWarps`; it is a placement, and a configuration in which the high warp became
+a Gram producer would move the placement, not the correctness.
+
+**The producer's scratch is initialized by the producer warp.** The cold start cooks
+out of `p_st`/`p_chunk` before the entry epoch, with no barrier between, so the
+initializing thread must be one the cooking warp reconverges with. Initializing it on
+`tid == 0` was correct only while the producer was warp 0.
+
+**Slot aliasing.** With `kSlots = S + 2` and `kSchedDepth = S + 1`, visit `g` cooks
+into slot `(g + S + 1) % (S + 2) == (g - 1) % kSlots`. Every read of slot `g - 1` —
+visit `g - 1`'s descriptor decode, its decay clock, its emission, and visit
+`g - 1 - S`'s stage issue — lies in an interval at or before
+`(B(g - 1), B(g))`, while the cook lies in `(B(g), B(g + 1))`. The write-after-read is
+therefore carried by [the visit barrier](#one-barrier) alone, at every `S >= 2`.
+
 ## <a id="upper-product"></a>13. The per-owner upper product — [row scales](#row-scales), cooked a visit early
 
 The fixed levels (`l < j`, `j = first_spanned_level`) contribute amplitudes that are
@@ -614,6 +648,38 @@ the 16-byte chunk granularity over-fetches (DRAM +12%, L1 hit rate 31.5% -> 20.2
 shared-load bank conflicts rise 48%, and the cost lands on the existing barriers
 (+22%), for +18% on that kernel. Evidence: `workflows/perf/p39_prefetch.md`.
 
+## <a id="stage-issue"></a>16.2. The stage issue — the whole VRAM -> SMEM link, in one place
+
+`stage_issue(gnext, st)` fills stage `st` with everything visit `gnext` will
+progressively consume — both amplitude slabs, the value tile and the row-scale
+scalars — out of the descriptor the producer cooked for it. Nothing here reads what it
+copies and nothing waits.
+
+**ONE COMMIT GROUP PER WARP PER VISIT.** On sm_86 the `cp.async` commit/wait state is
+per WARP, and one stage is consumed at ONE point, so a partial-fill ordering has no
+consumer that could use it — while one group per stage is exactly what lets
+`cp_async_wait_group<S - 2>` pace the pipeline BY STAGE. Each loop is issued on a flat
+CTA-wide index so a warp's 32 lanes take 32 CONSECUTIVE chunks: each warp's share is a
+contiguous byte range, which is the only property the memory system rewards.
+
+**The streams are issued in the order the visit CONSUMES them** — the value tile
+(taken first, before the barrier), then the row-scale scalars, then the read panel and
+the write panel. One commit group covers the whole stage, so this does not move when a
+stream becomes VISIBLE; it moves when each copy STARTS, and the copy the visit needs
+first is the one the memory system is given first. The two amplitude slabs share one
+walk because their addresses share every term but the base pointer and the pitch:
+splitting them to order the panels against each other would cost more address
+arithmetic than an intra-group ordering can buy, for two streams consumed a few
+hundred instructions apart.
+
+**The predicate is the mechanism's per-atom half.** A chunk is copied iff some atom
+live on that side in that group holds a digit in it; otherwise it is issued with
+src-size zero and the hardware zero-fills it. That is EXACT: a leaf reading a
+zero-filled chunk belongs to an atom dead on that side, whose staged coefficient must
+be exactly zero, and zeroing one of its level factors delivers exactly that. The
+ragged tail rides the same predicate with the token index CLAMPED, so no out-of-range
+address is ever formed; the value tile and the scalars take the same rule.
+
 ## <a id="decay-clock"></a>17. `DECAY` steps (a) and (c) — the clock prefix, `P_ref`, `s0`, and the entry scale
 
 Guarded by `w_write` structurally (the window's OR): a group with no write-live
@@ -786,7 +852,7 @@ for one extra instruction per k-step.
 ### <a id="mass-split"></a>HAZARD `mass-split` — bit-identity of the split rests on same-thread program order
 
 Term 1 (here, right after the readout) and term 2 ([phase C](#phase-c), after the
-[visit barrier](#visit-barrier)) accumulate into the SAME `dm0..dm3` fragment, held by
+[visit barrier](#one-barrier)) accumulate into the SAME `dm0..dm3` fragment, held by
 the SAME thread (WARP 0) across two program points with no intervening reassignment of
 which thread owns which lane — reordering either half relative to the fold, which
 WRITES the state column term 1 reads, is a real numeric difference, not just a
@@ -808,29 +874,121 @@ INCLUSIVE causal mask (`c <= _g` / `c <= _g + 8` zeroing the strictly-future ent
 So the Gram's storage and instruction count are `O(W^2)` and the causal MASK stays
 `O(W)`. The completed accumulator is written into `Gm`'s sub-block `(a, b)` via
 `stage_put` — the same store the staged panels use, which is what licenses GEMM 3 to
-fetch `Gm` by `ldmatrix` ([below](#visit-barrier)).
+fetch `Gm` by `ldmatrix` ([below](#one-barrier)).
 
-## <a id="visit-barrier"></a>26. The visit's ONE internal barrier
+## <a id="one-barrier"></a>26. The visit's ONE CTA barrier, and the four cursors around it
 
-`if (mixed) __syncthreads();`, placed after GEMM 2 and before phase C / the fold, and
-it carries BOTH of the visit's intra-CTA orderings AT ONCE: every group's readout
-reads of `S` complete before the fold's writes, and the Gram's stores to `Gm` are
-published to phase C. It is a HARDWARE rendezvous rather than a counter because both
-edges are CTA-WIDE and CTA-UNIFORM, and every remaining item pool in the visit (the
-fold's, [below](#gemm-fold)) is a STATIC PARTITION — there is no work item left for an
-early warp to run instead of arriving, which is what made a counter-based rendezvous
-worth its cost in the first place. **The barrier count is PER WINDOW, not per group**
-— three for `W` groups where the group-quantum (`GT == kGroupTokens`) visit paid three
-each, which is the amortisation the window buys ([`smem_layout.md#window`](smem_layout.md#window)).
+`__syncthreads()`, once, between the panel build and the GEMMs. It is the only
+CTA-wide rendezvous the steady-state visit executes; every other cross-warp edge in
+the visit is a monotone counter over a compile-time producer set. `DECAY` arms pay a
+second one inside the clock block, publishing `clk`/`p_ref`/`s0` to the panel build
+that reads them.
 
-**The guard is `mixed`, because both edges are.** A read-only window (`w_read &&
-!w_write`, the OR over the window's groups) runs no fold and needs no
-readout-before-fold ordering; a write-only window reads no state and has no Gram, so
-there is no Gram-before-phase-C ordering either — `mixed = w_read && w_write` is
-exactly the CTA-uniform predicate both edges share, so a single-sided window pays for
-the barrier not at all. This is what the small topologies measure: their windows are
-frequently one-sided, where the dense cell (always `mixed`) pays the barrier every
-window regardless.
+**What the one barrier carries.** Write `B(g)` for visit `g`'s barrier. Barriers are
+matched in program order and `gN`, `is_write` and `mixed` are CTA-uniform, so every
+warp executes the same barrier sequence and the code of visit `g` between `B(g)` and
+`B(g+1)` is one INTERVAL. Two accesses can race exactly when they can land in the same
+interval. `B` carries four edges:
+
+1. **The panels, the row scales and the decay factors** this visit just built, to the
+   GEMMs that read them.
+2. **The next visit's STAGE.** `cp.async` completion is visible to the ISSUING THREAD
+   only, so the stage every warp is about to read needs a CTA-wide edge after the
+   wait — which is why `cp_async_wait_group<S - 2>` sits immediately before this
+   barrier rather than at the foot of the visit. In-flight depth is unchanged at
+   `S - 1`: the wait retires the group for visit `g + 1`, and the issue just after the
+   barrier puts the group for `g + S` back in its place. This is what makes `S >= 2` a
+   `static_assert` rather than a preference — the stage waited on and the stage
+   refilled must be different buffers.
+3. **The write-after-read on the stage this visit just finished reading**, which the
+   issue immediately after the barrier refills.
+4. **`Gm`'s reuse across visits**: visit `g`'s reads of the Gram precede `B(g + 1)`
+   and visit `g + 1`'s stores into it follow.
+
+**What it does NOT carry, and why nothing else has to.** A visit's SCRATCH — both
+panels, the row scales, and `s0` under decay — is written before `B(g + 1)` and read
+after `B(g)`, which is one interval, so a single buffer would need a second barrier to
+separate consecutive visits. It has [a parity pair](#visit-parity) instead. `clk` and
+`p_ref` need no pair: both are dead before the barrier they are written under, so
+their write window and their read window are already disjoint. The mass column's one
+pre-barrier reader takes [its own cursor](#mass-publication), the Gram takes
+[the Gram's](#gram-publication), and the schedule ring takes
+[the cook's](#cook-cursor).
+
+**The kernel's other two barriers are both once-per-kernel**, not per visit: the entry
+epoch, which publishes the cold-start descriptors and the chunk descriptors to the
+threads that issue the first stages; and the exit epoch after the loop, because the
+publications that follow read the mass column and the summary flags across warp
+boundaries and the loop's last barrier lies BEFORE the final visit's writes of both.
+
+## <a id="visit-parity"></a>26a. The visit scratch, held by parity
+
+`Rp`, `Wp`, `sr`, `sw` and (under `DECAY`) `s0` are allocated twice and selected by
+`gidx & 1`. That is the whole mechanism, and it is what deletes the end-of-visit
+rendezvous: consecutive visits land on disjoint storage, so a warp building visit
+`g + 1`'s panels cannot overwrite what a warp still inside visit `g`'s GEMMs is
+reading, and the ORDER of the barriers alone separates visits `g - 1` and `g + 1`
+(which do share a parity) — their access windows are two intervals apart.
+
+Each parity's base is 16-byte aligned because one panel's byte size is
+(`BC * kTokPitch * 2` and `kGroupTokens * leaf_pitch(BC) * 2` are both multiples of
+16 at every `BC` in the matrix), which is what keeps `ldmatrix` legal on both halves;
+the kernel asserts it rather than assuming it.
+
+**The price, and who paid it.** ~5.5 KB per CTA at `BC = 64`. The 3-CTA carve had no
+room for it; the register budget raise to 128 — which is what the measured 121-register
+working set costs — takes the arm to 2 CTAs and frees 20 KB of shared memory, of which
+the parity buffers spend a quarter and the [staging depth](smem_layout.md#pf-stages)
+takes the rest. The two are ONE design decision, not two.
+
+Pass 1's summary state (`a_state`, `sum_slot`, `sum_count`) aliases the EVEN parity's
+read panel. The summary pass forces `rmr == 0`, so no panel write ever reaches that
+storage on any visit.
+
+## <a id="mass-publication"></a>26b. The mass column's publication cursor
+
+The mass column's exit half is written by every warp holding one of the `BC / 8`
+output tiles and read by the next visit. Two of its three readers — the denominator's
+term 1 and the term-3 epilogue itself — run AFTER the panel barrier, so `B` already
+orders them. The third, the decay arm's entry-frame scale `Smass[i] *= s0[i]`, runs
+BEFORE it, in the same interval as the previous visit's writes, and is the one edge
+that needs a mechanism of its own.
+
+It gets a monotone counter on the [Gram's exact pattern](#gram-publication):
+`mass_flag`, never reset, one arrival per producing warp per visit
+(`kMassProd = min(BC / 8, kWarps)` — structural, dealt out `lt % kWarps` exactly as
+the Gram's items are). A producer fences its stores and one lane adds the arrival; the
+next visit waits for `gidx * kMassProd`. EVERY visit arrives, including a read-only
+one — carrying the column across is still a write.
+
+A waiter therefore waits on the mass column's producers, not on the CTA: a warp that
+is slow in the emission or the cook delays nobody here.
+
+## <a id="gram-publication"></a>26c. The Gram's publication cursor
+
+`Gm` is a pure producer-consumer between a COMPILE-TIME set of producing warps
+(`kGramProd = min(NT, kWarps)`) and everyone else, so it is paced by a counter rather
+than a rendezvous: a producer fences its `Gm` stores and one lane adds an arrival to
+`gram_flag`; a consumer spins until the count reaches `gram_epoch * kGramProd`. A warp
+that is not a producer never blocks a producer, and no warp waits for the CTA — only
+for `kGramProd` arrivals.
+
+The counter is MONOTONE for the whole kernel and is never reset, because a reset would
+itself need the rendezvous it replaces. `gram_epoch` counts `mixed` visits and `mixed`
+is a function of the descriptor every warp reads, so every warp computes the same
+target without communicating. Both sides require `mixed`: a single-sided visit has no
+Gram and pays nothing here at all.
+
+`Gm`'s reuse ACROSS visits is not the cursor's job — it is [the barrier's](#one-barrier),
+which every warp passes between one visit's reads of `Gm` and the next visit's stores
+into it.
+
+**The poll is bare, and that is a measurement rather than an oversight.** A
+shared-memory poll is issue-ACTIVE, so a backoff was expected to matter most exactly
+here — six of eight warps waiting on two producers is the largest waiter-to-producer
+ratio in the matrix. A `__nanosleep(64)` between polls measured 12.78 ms against the
+bare form's 12.81 (dense `N = L = 4096`, block-min-median of three), so the simpler
+form ships.
 
 ## <a id="phase-c"></a>27. Phase C — GEMM 3, the intra terms, and the mass column's term 2
 

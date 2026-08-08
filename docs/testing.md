@@ -399,19 +399,31 @@ Both run in the CPU line. They read files; they never touch a device.
 
 ## Running it
 
+**Invoke pytest as `python -m pytest`, always.** The bare `pytest` console script
+puts the installed entry point's directory on `sys.path` and NOT the repository root,
+so `tests/` is not an importable package and collection fails with `No module named
+'tests'` before a single test runs. `python -m` puts the current directory first,
+which is the whole difference.
+
 ```bash
-pytest tests/unit tests/tier1_semantics -m "not cuda"                       # CPU: no device, no build
-pytest tests/conformance -m "not cuda"                                       # conformance meta + census, CPU
-flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
-flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # TIER 1
-flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
-flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
-flock /tmp/rola_gpu.lock pytest tests/conformance                            # CONFORMANCE families (incl. decode + backward)
-flock /tmp/rola_gpu.lock pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
-python benchmarks/rola_probe.py duration consumer_forward --ab global:raw    # NO flock -- see below
-ROLA_FLA_CROSSCHECK=1 pytest tests/unit/test_oracle_vs_fla.py                # one-time, opt-in -- see below
-ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # one-time, opt-in -- see above
+python -m pytest tests/unit tests/tier1_semantics -m "not cuda"                       # CPU: no device, no build
+python -m pytest tests/conformance -m "not cuda"                                      # conformance meta + census, CPU
+flock /tmp/rola_gpu.lock python -m pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
+flock /tmp/rola_gpu.lock python -m pytest tests/tier1_semantics -m cuda                # TIER 1
+flock /tmp/rola_gpu.lock python -m pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
+flock /tmp/rola_gpu.lock python -m pytest tests/layers                                 # layer <-> op, at every dispatch threshold
+flock /tmp/rola_gpu.lock python -m pytest tests/conformance                            # CONFORMANCE families (incl. decode + backward)
+flock /tmp/rola_gpu.lock python -m pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
+python benchmarks/rola_probe.py duration consumer_forward --ab global:raw             # NO flock -- see below
+ROLA_FLA_CROSSCHECK=1 python -m pytest tests/unit/test_oracle_vs_fla.py                # one-time, opt-in -- see below
+ROLA_GRADCHECK_INSURANCE=1 python -m pytest tests/conformance/test_backward_family.py  # one-time, opt-in -- see above
 ```
+
+`tests/tier2_geometry` includes the CENSUS meta-test, which reads the ratified
+manifest and refuses to run against a binary that was not gated against it. A build
+carrying `ROLA_SKIP_POST_BUILD_RATIFY=1` therefore turns that line RED AT COLLECTION,
+and one collection error suppresses the whole directory's results -- so a skipped
+ratification does not merely leave the census unrun, it silently unruns tier 2.
 
 **The lane, measured** (2026-08-06, sm_86, warm build): CPU 70 s; unit-cuda
 2.5 s; tier 1 123 s; tier 2 9 s; layers 6 s; conformance 4.5 s — the WHOLE
@@ -572,7 +584,7 @@ initcheck and synccheck report 0 errors; racecheck reports 0 hazards, 0 warnings
   stream-discipline fixture above is what covers that class.
 * `racecheck` runs on both registered probes: the skip-list is empty. The `Gm`
   write/read edge that once needed the exemption is ordered by the visit's own
-  `__syncthreads()` (`docs/internals/consumer_kernel.md#visit-barrier`) — exactly the
+  `__syncthreads()` (`docs/internals/consumer_kernel.md#one-barrier`) — exactly the
   barrier class `racecheck` orders shared memory by — so there is no edge left in this
   kernel that a counter protocol publishes instead.
 * `--leak-check full` is **not** used: torch's caching allocator retains its pools by

@@ -73,7 +73,7 @@ element is `k + 1`.) `frag_a_slot` has no inverse in this file: the mass column 
 longer reads an element back out of the fragment — [below](#mass-column) — so there is
 nothing left to keep in sync with the forward map.
 
-## 22. Storage writes: `stage_put`
+## <a id="stage-put"></a>22. Storage writes: `stage_put`, `stage_put2`
 
 `stage_put(d, x)` stores a bf16 OPERAND BUFFER's element, and is where
 [`readout_mma.md`](readout_mma.md#rule-3-bf16)'s §12 rule 3 clamp lives:
@@ -84,6 +84,16 @@ written once per element per visit and read by an `ldmatrix` many times, so a
 read-side clamp would be a per-consumer repetition of a per-producer fact — and an
 `ldmatrix` has no place to put one. It is what makes the `ldmatrix` fetches below
 bit-identical to a generic indexed read of the same buffer.
+
+`stage_put2(d, x, y)` is the PAIRED form, and the panels' write sites take it wherever
+the two destinations are adjacent and the first is at an even offset — which is every
+fragment store in this file, because a D fragment's two output columns are `c0` and
+`c0 + 1` and every pitch in the carve is even (asserted, not assumed). It narrows the
+pair through
+[`pack_clamp_bf16x2`](readout_mma.md#rule-3-bf16) and issues ONE 32-bit shared store
+where the scalar form issued two 16-bit ones, at bit-identical results. The load/store
+unit is this kernel's busiest pipe; the width is where its instruction count is bought
+back.
 
 ## <a id="mma-tile-fraga"></a>23. `mma_tile_fragA_stateB` — GEMM 1's readout, the state fetched by `ldmatrix`
 

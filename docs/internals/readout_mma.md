@@ -35,12 +35,41 @@ float clamp_bf16_finite(float x) {
 }
 ```
 
-It is branchless and NaN-preserving by construction: `fminf` / `fmaxf` return the
-non-NaN operand only when exactly one operand is NaN, so a NaN `x` propagates through
-unchanged. §12 rule 4's annihilation is the WRITE-side guard against non-finite
-content reaching state at all; this is the READ-side format guard that keeps a
+It is branchless, and it is **NOT NaN-propagating**: `fminf` / `fmaxf` return the
+NON-NaN operand when exactly one operand is NaN, so a NaN `x` maps to
+`+kBf16MaxFinite` rather than passing through. That is the defined behaviour of the
+guard, not an accident of it — a non-finite value must not reach an MMA operand in any
+form. §12 rule 4's annihilation is the WRITE-side guard against non-finite content
+reaching state at all; this is the READ-side format guard that keeps a
 finite-but-oversized value from rounding to `inf` on the narrowing cast, and the two
 are independent — neither substitutes for the other.
+
+**THE SAME GUARD AT PAIR WIDTH.** `pack_clamp_bf16x2(lo, hi)` is the form every MMA
+operand word actually takes. It narrows the pair FIRST and clamps the packed
+`bf16x2` AFTER, so an operand word costs one `cvt.rn.bf16x2` and two pair-wide
+`min`/`max` where the scalar order costs four scalar `min`/`max` and a narrowing —
+5 instructions to 3 per pair, and the format guard's share of the kernel's
+instructions halves with it.
+
+```cpp
+unsigned pack_clamp_bf16x2(float lo, float hi) {   // __hmax2(-M, __hmin2(M, cvt(lo, hi)))
+```
+
+**The two orders agree BIT FOR BIT, which is what makes this a WIDTH change and not a
+precision one**, enumerated over the whole input space:
+
+| `x` | clamp-then-narrow | narrow-then-clamp |
+|---|---|---|
+| `|x| <= M` | identity, then RN narrowing | RN narrowing cannot exceed `M` (it is exactly representable), then identity |
+| `M < x <` midpoint(`M`, 2^128) | clamps to `M`, narrows to `M` | narrows to `M`, clamp is the identity |
+| `x >=` midpoint, incl. `+inf` | clamps to `M` | narrows to `+inf`, `__hmin2(M, inf) = M` |
+| NaN | `fminf(M, NaN) = M` | `__hmin2` is the NON-propagating variant (`__hmin2_nan` is the propagating one), so `M` |
+| `+/-0`, subnormals | RN `f32 -> bf16`, no `.ftz` | the same convert at pair width |
+
+`M = kBf16MaxFinite`. The claim is not left as an argument: an exhaustive device sweep
+over all 2^32 fp32 bit patterns, in both lanes, reports **0 mismatches** against the
+scalar order on sm_86 under the shipped toolchain (`workflows/perf/p50_review.md`,
+gate 2).
 
 The hazard: removing a `clamp_bf16_finite` from any of `mma_tile.cuh`'s pack sites
 changes results and compiles clean. Every site that packs a value into a bf16 MMA
