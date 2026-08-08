@@ -150,31 +150,37 @@ __device__ __forceinline__ unsigned state_pair_load(const __nv_bfloat16* __restr
 //: already issued (its B was a plain bf16 narrowing of the same value); the `lo` one
 //: is an ADDED correction, so the readout gains ~8 mantissa bits of B while shedding
 //: the packing.
-//: **THE K-LOOP IS A TWO-STAGE SOFTWARE PIPELINE**, and that is what the plane form
-//: is FOR: k-step `ks + 1`'s three fragments are issued BEFORE k-step `ks`'s two
-//: `mma.sync`, so the shared-memory latency of a fetch is covered by the multiply of
-//: its predecessor rather than by a sibling warp. `ldmatrix` -> `mma.sync` is a
-//: fixed-latency dependency (`stall_wait`) behind a shared dependency
-//: (`short_scoreboard`), the two buckets this kernel's profile pays ~30% of its issue
-//: gap to; an fp32 B could not be pipelined this way because its "fetch" was four
-//: scalar loads and six ALU instructions that the multiply had no room to hide.
+//: **THE READOUT READS THE `hi` PLANE ONLY, AND THAT IS THE SHIPPED CONTRACT, NOT A
+//: CONCESSION.** The fp32 form narrowed its B to plain bf16 at the fragment
+//: (`pack_bf16x2(clamp(x))`), so `Shi` -- which holds exactly that narrowing -- gives
+//: the numerator the SAME operand it always had. `Slo` exists to carry the STATE's own
+//: storage precision across the recurrence (the fold reads the pair, sums in fp32 and
+//: re-splits); reading it here as well would be an ADDED correction term the family
+//: budget never asked for, and it was measured at +34% `mma.sync` and +16.6%
+//: instructions on the dense cell for no wall. The denominator is the operand that
+//: genuinely needs compensation, and it gets it -- in fp32, from `Smass`.
+//:
+//: **THE K-LOOP IS A TWO-STAGE SOFTWARE PIPELINE**, and that is what the plane form is
+//: FOR: k-step `ks + 1`'s fragments are issued BEFORE k-step `ks`'s `mma.sync`, so the
+//: shared-memory latency of a fetch is covered by the multiply of its predecessor
+//: rather than by a sibling warp. `ldmatrix` -> `mma.sync` is a fixed-latency
+//: dependency (`stall_wait`) behind a shared one (`short_scoreboard`); an fp32 B could
+//: not be pipelined this way because its "fetch" was four scalar loads and six ALU
+//: instructions that the multiply had no room to hide.
 //: The trip count is COMPILE-TIME and the loop carries NO runtime bound: `KMAX` is the
-//: contraction extent at both call sites, so the fetch of stage `KS` is simply never
-//: emitted. docs/internals/mma_tile.md#mma-tile-fraga
+//: contraction extent at both call sites, so the fetch of stage `KS` is never emitted.
+//: docs/internals/mma_tile.md#mma-tile-fraga
 template <int DV, int KMAX>
 __device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict__ Af,
                                                       const __nv_bfloat16* __restrict__ Shi,
-                                                      const __nv_bfloat16* __restrict__ Slo,
                                                       int row0, int n0, int lane, float& d0,
                                                       float& d1, float& d2, float& d3) {
   constexpr int KS = KMAX / kMmaKQuantum;
   uint4 a;
-  unsigned h0, h1, l0, l1;
+  unsigned h0, h1;
   auto fetch = [&](int ks) {
     a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
-    const int k0 = row0 + ks * kMmaKQuantum;
-    stage_frag_b<DV>(Shi, k0, n0, lane, h0, h1);
-    stage_frag_b<DV>(Slo, k0, n0, lane, l0, l1);
+    stage_frag_b<DV>(Shi, row0 + ks * kMmaKQuantum, n0, lane, h0, h1);
   };
   fetch(0);
 #pragma unroll
@@ -182,10 +188,9 @@ __device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict
     //: The stage in flight is COPIED OUT before the next fetch overwrites it -- that
     //: copy IS the second buffer, and it is registers, which is what the budget is for.
     const uint4 ac = a;
-    const unsigned c0 = h0, c1 = h1, c2 = l0, c3 = l1;
+    const unsigned c0 = h0, c1 = h1;
     if (ks + 1 < KS) fetch(ks + 1);
     mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
-    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c2, c3, d0, d1, d2, d3);
   }
 }
 

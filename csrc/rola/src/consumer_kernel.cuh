@@ -1081,13 +1081,12 @@ consumer_forward_kernel(ConsumerParams p) {
       const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
-        mma_tile_fragA_stateB<DV, BC>(Rfa, Shi, Slo, 0, n0, lane, y[s][0], y[s][1], y[s][2],
-                                      y[s][3]);
+        mma_tile_fragA_stateB<DV, BC>(Rfa, Shi, 0, n0, lane, y[s][0], y[s][1], y[s][2], y[s][3]);
       } else {
         for (unsigned m = rmask; m; m &= m - 1) {
           const int q = __ffs(m) - 1;
-          mma_tile_fragA_stateB<DV, kMmaKQuantum>(Rfa + q * 128, Shi, Slo, q * kMmaKQuantum, n0,
-                                                  lane, y[s][0], y[s][1], y[s][2], y[s][3]);
+          mma_tile_fragA_stateB<DV, kMmaKQuantum>(Rfa + q * 128, Shi, q * kMmaKQuantum, n0, lane,
+                                                  y[s][0], y[s][1], y[s][2], y[s][3]);
         }
       }
     }
