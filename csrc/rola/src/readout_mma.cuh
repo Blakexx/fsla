@@ -32,4 +32,25 @@ __device__ __forceinline__ float clamp_bf16_finite(float x) {
   return fmaxf(-kBf16MaxFinite, fminf(kBf16MaxFinite, x));
 }
 
+//: **THE SAME GUARD AT PAIR WIDTH -- the format event for a whole operand word.**
+//: The clamp is applied AFTER the narrowing convert rather than before it, on the
+//: packed `bf16x2`, which costs one narrowing and two pair-wide min/max where the
+//: scalar order costs four scalar min/max and a narrowing. The two orders agree BIT
+//: FOR BIT and that is what makes this a WIDTH change rather than a precision one:
+//: `kBf16MaxFinite` is exactly representable, so an argument at or below it narrows
+//: unchanged and the clamp is the identity; an argument above it narrows either to
+//: `kBf16MaxFinite` (below the round-to-infinity midpoint) or to `inf` (at or above
+//: it), and `inf` clamps back to `kBf16MaxFinite`; and a NaN takes the finite
+//: operand under both the scalar and the pair-wide min/max definitions.
+//: docs/internals/readout_mma.md#rule-3-bf16
+__device__ __forceinline__ unsigned pack_clamp_bf16x2(float lo, float hi) {
+  union {
+    __nv_bfloat162 h;
+    unsigned u;
+  } packed;
+  packed.h = __hmax2(__float2bfloat162_rn(-kBf16MaxFinite),
+                     __hmin2(__float2bfloat162_rn(kBf16MaxFinite), __floats2bfloat162_rn(lo, hi)));
+  return packed.u;
+}
+
 }  // namespace rola

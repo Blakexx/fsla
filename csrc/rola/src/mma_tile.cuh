@@ -51,6 +51,7 @@ using rola::mma::pack_bf16x2;
 //: §12 rule 3's format guard, taken from `readout_mma.cuh` rather than reimplemented:
 //: it is the ONE clamp point.
 using rola::clamp_bf16_finite;
+using rola::pack_clamp_bf16x2;
 
 //: Store a bf16 OPERAND BUFFER's element -- where §12 rule 3's format guard lives,
 //: because it is where the fp32 value last exists. THE CLAMP BELONGS AT THE WRITE:
@@ -61,6 +62,15 @@ using rola::clamp_bf16_finite;
 //: `__CUDA_NO_BFLOAT16_CONVERSIONS__`.
 __device__ __forceinline__ void stage_put(__nv_bfloat16& d, float x) {
   d = __float2bfloat16(clamp_bf16_finite(x));
+}
+
+//: THE SAME STORE AT PAIR WIDTH -- two ADJACENT elements of a bf16 operand buffer as
+//: ONE 32-bit shared store, with the format guard taken at pair width too. Its
+//: callers are the writebacks whose two destinations are a fragment's `2r, 2r + 1`
+//: column pair, which is even and therefore 4-byte aligned at every pitch this
+//: kernel uses. docs/internals/mma_tile.md#stage-put
+__device__ __forceinline__ void stage_put2(__nv_bfloat16* d, float x0, float x1) {
+  *reinterpret_cast<unsigned*>(d) = pack_clamp_bf16x2(x0, x1);
 }
 
 //: THE `[16 x 8]` D/C fragment's element map, shared by every writeback:
@@ -96,13 +106,16 @@ __device__ __forceinline__ void pitched_frag_b(const __nv_bfloat16* __restrict__
 //: consumer is the MASS COLUMN, the denominator of a ratio, which has nothing to
 //: cancel its rounding against. docs/internals/mma_tile.md#split-bf16x2
 __device__ __forceinline__ void split_bf16x2(float x0, float x1, unsigned& hi, unsigned& lo) {
+  //: The rounded half is formed by ONE pair-wide narrowing of the already-guarded
+  //: values -- a clamped argument cannot narrow to `inf`, so the pair-wide guard is
+  //: not needed a second time here -- and the residual is what the guard is then
+  //: taken at pair width on.
   const float c0 = clamp_bf16_finite(x0);
   const float c1 = clamp_bf16_finite(x1);
-  const __nv_bfloat16 h0 = __float2bfloat16(c0);
-  const __nv_bfloat16 h1 = __float2bfloat16(c1);
-  hi = pack_bf16x2(__bfloat162float(h0), __bfloat162float(h1));
-  lo = pack_bf16x2(clamp_bf16_finite(c0 - __bfloat162float(h0)),
-                   clamp_bf16_finite(c1 - __bfloat162float(h1)));
+  hi = pack_bf16x2(c0, c1);
+  const __nv_bfloat162 h = *reinterpret_cast<const __nv_bfloat162*>(&hi);
+  lo = pack_clamp_bf16x2(c0 - __bfloat162float(__low2bfloat16(h)),
+                         c1 - __bfloat162float(__high2bfloat16(h)));
 }
 
 //: **THE STATE'S D FRAGMENTS, READ AS AN A OPERAND. THIS IS WHY THE STATE IS HELD
@@ -117,10 +130,19 @@ __device__ __forceinline__ void split_bf16x2(float x0, float x1, unsigned& hi, u
 //: docs/internals/mma_tile.md#state-frag-a
 __device__ __forceinline__ void state_frag_a(const float* __restrict__ st, unsigned& a0,
                                              unsigned& a1, unsigned& a2, unsigned& a3) {
-  a0 = pack_bf16x2(clamp_bf16_finite(st[0]), clamp_bf16_finite(st[1]));
-  a1 = pack_bf16x2(clamp_bf16_finite(st[2]), clamp_bf16_finite(st[3]));
-  a2 = pack_bf16x2(clamp_bf16_finite(st[4]), clamp_bf16_finite(st[5]));
-  a3 = pack_bf16x2(clamp_bf16_finite(st[6]), clamp_bf16_finite(st[7]));
+  a0 = pack_clamp_bf16x2(st[0], st[1]);
+  a1 = pack_clamp_bf16x2(st[2], st[3]);
+  a2 = pack_clamp_bf16x2(st[4], st[5]);
+  a3 = pack_clamp_bf16x2(st[6], st[7]);
+}
+
+//: A SHARED-MEMORY fp32 PAIR AT ONE 64-BIT LOAD. Every per-lane vector this file
+//: broadcasts is indexed at an EVEN offset into a 16-byte-aligned buffer, so the two
+//: elements a fragment word carries are one aligned `LDS.64` rather than two
+//: `LDS.32` -- the load/store unit is the kernel's busiest pipe and this is the
+//: width its instruction count is bought back at.
+__device__ __forceinline__ float2 lds_pair(const float* __restrict__ v, int i) {
+  return *reinterpret_cast<const float2*>(v + i);
 }
 
 //: A REGISTER-SIDE VECTOR BROADCAST ACROSS A FRAGMENT. The B fragment's `k` map is
@@ -133,8 +155,10 @@ __device__ __forceinline__ void state_frag_a(const float* __restrict__ st, unsig
 __device__ __forceinline__ void bcast_frag(const float* __restrict__ v, int lane, unsigned& w0,
                                            unsigned& w1) {
   const int k0 = 2 * (lane & 3);
-  w0 = pack_bf16x2(clamp_bf16_finite(v[k0]), clamp_bf16_finite(v[k0 + 1]));
-  w1 = pack_bf16x2(clamp_bf16_finite(v[k0 + 8]), clamp_bf16_finite(v[k0 + 9]));
+  const float2 p0 = lds_pair(v, k0);
+  const float2 p1 = lds_pair(v, k0 + 8);
+  w0 = pack_clamp_bf16x2(p0.x, p0.y);
+  w1 = pack_clamp_bf16x2(p1.x, p1.y);
 }
 
 //: THE SAME BROADCAST, COMPENSATED, for the MASS COLUMN: it is the denominator of a
@@ -145,8 +169,10 @@ __device__ __forceinline__ void bcast_frag_split(const float* __restrict__ v, in
                                                  unsigned& h0, unsigned& h1, unsigned& l0,
                                                  unsigned& l1) {
   const int k0 = 2 * (lane & 3);
-  split_bf16x2(v[k0], v[k0 + 1], h0, l0);
-  split_bf16x2(v[k0 + 8], v[k0 + 9], h1, l1);
+  const float2 p0 = lds_pair(v, k0);
+  const float2 p1 = lds_pair(v, k0 + 8);
+  split_bf16x2(p0.x, p0.y, h0, l0);
+  split_bf16x2(p1.x, p1.y, h1, l1);
 }
 
 //: **GEMM 1, THE READOUT: `y^T += S^T . Rp`.** A is the warp's own state registers, so
@@ -219,11 +245,9 @@ __device__ __forceinline__ void trans_frag_a(const __nv_bfloat16* __restrict__ P
 //: guard applies because this is where the product is narrowed.
 //: docs/internals/mma_tile.md#scale-frag
 __device__ __forceinline__ void scale_frag_pair(unsigned& w, float s0, float s1) {
-  w = pack_bf16x2(
-      clamp_bf16_finite(
-          s0 * __bfloat162float(__ushort_as_bfloat16(static_cast<unsigned short>(w & 0xffffu)))),
-      clamp_bf16_finite(
-          s1 * __bfloat162float(__ushort_as_bfloat16(static_cast<unsigned short>(w >> 16)))));
+  w = pack_clamp_bf16x2(
+      s0 * __bfloat162float(__ushort_as_bfloat16(static_cast<unsigned short>(w & 0xffffu))),
+      s1 * __bfloat162float(__ushort_as_bfloat16(static_cast<unsigned short>(w >> 16))));
 }
 
 //: A `[16 x 8]` TILE FROM TWO PITCHED BUFFERS -- the shape three of the four GEMMs
