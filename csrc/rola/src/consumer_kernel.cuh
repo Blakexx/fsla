@@ -167,6 +167,18 @@ consumer_forward_kernel(ConsumerParams p) {
   constexpr int kPfPitch = amp_slab_pitch(BC, D);
   constexpr int kPfChunks = amp_slab_chunks(BC, D);
   constexpr int kScPitch = scale_slab_pitch(D);
+  //: **THE PER-THREAD WALK EXTENTS, AS COMPILE-TIME COUNTS.** The two panel walks and
+  //: the stage issue are flat `idx = tid; idx += kConsumerThreads` loops over
+  //: compile-time extents, so how many elements a thread owns is a CONSTANT and the
+  //: element's identity -- its leaf, its token, its chunk -- is FIXED FOR THE WHOLE
+  //: OWNER. That is what licenses the per-owner register hoists below: a walk's
+  //: per-element shared-memory constants are read once per owner into registers
+  //: instead of once per visit out of `dig` / `log_keep` / the chunk descriptors.
+  //: docs/internals/consumer_kernel.md#walk-hoists
+  constexpr int kPanelIters = BC * kGroupTokens / kConsumerThreads;
+  static_assert(kPanelIters * kConsumerThreads == BC * kGroupTokens,
+                "a panel's elements must divide evenly among the CTA's threads");
+  constexpr int kIssueIters = (kGroupTokens * kPfChunks + kConsumerThreads - 1) / kConsumerThreads;
 
   //: **THE STATE IS NOT IN THIS CARVE.** Its numerator lives in `St` below -- the
   //: fold's own D fragments, held in registers for the whole kernel. What remains here
@@ -415,6 +427,22 @@ consumer_forward_kernel(ConsumerParams p) {
   //: than reset-per-visit because a reset would itself need the rendezvous it
   //: replaces. docs/internals/consumer_kernel.md#gram-publication
   int* const gram_flag = ch_atoms + kPfChunks;
+  //: **THE ISSUE'S PER-THREAD CHUNK, IN REGISTERS.** A thread's slot in the issue walk
+  //: is `tid + k * kConsumerThreads`, so its (token, chunk) pair -- and therefore the
+  //: chunk's LEVEL, its two source base pointers, their two row pitches, its atom set
+  //: and its destination offset -- are FIXED FOR THE WHOLE OWNER. They are read out of
+  //: the descriptors ONCE (below, at the entry epoch) and never again: the issue loop's
+  //: only per-visit inputs are the group's masks and its token list.
+  //: docs/internals/consumer_kernel.md#walk-hoists
+  const __nv_bfloat16* ch_pr[kIssueIters];
+  const __nv_bfloat16* ch_pw[kIssueIters];
+  int ch_lpr[kIssueIters], ch_lpw[kIssueIters], ch_dst[kIssueIters], ch_tok[kIssueIters];
+  unsigned ch_am[kIssueIters];
+  //: A slot past the walk's extent or past this owner's live chunk count ISSUES
+  //: NOTHING. It cannot ride the copy's own predicate: a false predicate ZERO-FILLS
+  //: its destination, so a dead slot sharing a destination offset would erase a live
+  //: chunk.
+  bool ch_live[kIssueIters];
   //: **THE STAGED REGIONS, `S` STAGES DEEP, AND THEY ARE THE WHOLE VRAM -> SMEM
   //: LINK.** Four progressively-consumed streams land here and nowhere else: the two
   //: AMPLITUDE SLABS, the VALUE TILE (in the layout its `ldmatrix` reads, so the
@@ -700,26 +728,16 @@ consumer_forward_kernel(ConsumerParams p) {
     const unsigned wmask = ((flags & 2) != 0) ? static_cast<unsigned>(Ra[kSchedWMask]) : 0u;
     __nv_bfloat16* const dR = pfR_of(dst_stage);
     __nv_bfloat16* const dW = pfW_of(dst_stage);
-    for (int idx = tid; idx < kGroupTokens * kPfChunks; idx += kConsumerThreads) {
-      const int t = idx / kPfChunks;
-      const int cg = idx - t * kPfChunks;
-      if (cg >= pf_nch) continue;
+#pragma unroll
+    for (int k = 0; k < kIssueIters; ++k) {
+      if (!ch_live[k]) continue;
+      const int t = ch_tok[k];
       const bool in_group = t < gN;
-      const unsigned atoms = static_cast<unsigned>(ch_atoms[cg]);
-      const unsigned rm = in_group ? (atoms & rmask) : 0u;
-      const unsigned wm = in_group ? (atoms & wmask) : 0u;
-      const int l = ch_lvl[cg];
+      const unsigned rm = in_group ? (ch_am[k] & rmask) : 0u;
+      const unsigned wm = in_group ? (ch_am[k] & wmask) : 0u;
       const int64_t tr = tok_base + (in_group ? Ra[t] : 0);
-      const int so = ch_src[cg];
-      const int dst = t * kPfPitch + cg * 8;
-      cp_async_16(
-          dR + dst,
-          static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l] + so,
-          rm != 0u);
-      cp_async_16(
-          dW + dst,
-          static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l] + so,
-          wm != 0u);
+      cp_async_16(dR + ch_dst[k], ch_pr[k] + tr * ch_lpr[k], rm != 0u);
+      cp_async_16(dW + ch_dst[k], ch_pw[k] + tr * ch_lpw[k], wm != 0u);
     }
     //: **THE VALUE TILE, COPIED STRAIGHT INTO THE LAYOUT ITS `ldmatrix` READS.** `DV`
     //: contiguous channels per token is what HBM holds and what the token-major tile
@@ -786,6 +804,58 @@ consumer_forward_kernel(ConsumerParams p) {
   //: descriptors to the threads that issue the first stages' copies; in the steady
   //: state the issue rides a barrier that already exists.
   __syncthreads();
+
+  // ---- **THE PER-OWNER REGISTER HOISTS.** Everything the three hot walks read out of
+  // ---- shared memory that is CONSTANT FOR THE OWNER -- the chunk descriptors, the
+  // ---- leaf digits both panels index their staged rows by, and the per-leaf log
+  // ---- retention -- is read HERE, once, into registers, and never read again. Each
+  // ---- one is written once per owner and read once per visit per element, so the
+  // ---- reads-per-write ratio is the owner's visit count; the register policy spends
+  // ---- registers exactly here. docs/internals/consumer_kernel.md#walk-hoists
+#pragma unroll
+  for (int k = 0; k < kIssueIters; ++k) {
+    const int idx = tid + k * kConsumerThreads;
+    const int t = idx / kPfChunks;
+    const int cg = idx - t * kPfChunks;
+    const bool live = (idx < kGroupTokens * kPfChunks) && (cg < pf_nch);
+    ch_live[k] = live;
+    const int l = live ? ch_lvl[cg] : 0;
+    const int so = live ? ch_src[cg] : 0;
+    ch_am[k] = live ? static_cast<unsigned>(ch_atoms[cg]) : 0u;
+    ch_tok[k] = live ? t : 0;
+    ch_dst[k] = live ? (t * kPfPitch + cg * 8) : 0;
+    ch_pr[k] = static_cast<const __nv_bfloat16*>(p.amp_read[l]) + so;
+    ch_pw[k] = static_cast<const __nv_bfloat16*>(p.amp_write[l]) + so;
+    ch_lpr[k] = p.level_pitch_read[l];
+    ch_lpw[k] = p.level_pitch_write[l];
+  }
+  //: THE READ PANEL'S WALK, PER THREAD: its `kPanelIters` elements' leaf, token,
+  //: destination index, staged-row offsets (one per level, the digit ALREADY ADDED to
+  //: the level's slab offset) and log retention.
+  int pi_r[kPanelIters], pt_r[kPanelIters], px_r[kPanelIters], po_r[kPanelIters][D];
+  int pi_w[kPanelIters], pt_w[kPanelIters], px_w[kPanelIters], po_w[kPanelIters][D];
+  float lk_r[kPanelIters], lk_w[kPanelIters];
+#pragma unroll
+  for (int k = 0; k < kPanelIters; ++k) {
+    const int idx = tid + k * kConsumerThreads;
+    const int ir = idx / kGroupTokens;
+    const int tr_ = idx - ir * kGroupTokens;
+    pi_r[k] = ir;
+    pt_r[k] = tr_;
+    px_r[k] = rp_index(ir, tr_);
+    const int tw = idx / BC;
+    const int iw = idx - tw * BC;
+    pi_w[k] = iw;
+    pt_w[k] = tw;
+    px_w[k] = wp_index(BC, tw, iw);
+#pragma unroll
+    for (int l = 0; l < D; ++l) {
+      po_r[k][l] = pf_off[l] + dig[l * BC + ir];
+      po_w[k][l] = pf_off[l] + dig[l * BC + iw];
+    }
+    lk_r[k] = DECAY ? log_keep[ir] : 0.0f;
+    lk_w[k] = DECAY ? log_keep[iw] : 0.0f;
+  }
   //: `#pragma unroll 1`: the ramp is once per kernel, and unrolling it would inline
   //: the issue `S` more times against a 64-register budget.
 #pragma unroll 1
@@ -862,12 +932,18 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- docs/internals/consumer_kernel.md#decay-clock
     if (DECAY && is_write) {
       for (int i = tid; i < BC; i += kConsumerThreads) {
+        //: THE LEAF'S CLOCK ROWS, HOISTED OUT OF THE TOKEN LOOP: the digit is a leaf
+        //: constant, so the level's clock row base is too -- one register per level
+        //: against `gN` shared reads of `dig`. docs/internals/consumer_kernel.md#walk-hoists
+        const float* ckb[D];
+#pragma unroll
+        for (int l = 0; l < D; ++l) ckb[l] = p.amp_clock[l] + dig[l * BC + i];
         float acc = 0.0f;
         for (int t = 0; t < gN; ++t) {
           float cl = 1.0f;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
-            cl *= p.amp_clock[l][(tok_base + R[t]) * p.level_pitch_clock[l] + dig[l * BC + i]];
+            cl *= ckb[l][(tok_base + R[t]) * p.level_pitch_clock[l]];
           }
           //: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
           acc += cl;
@@ -945,26 +1021,28 @@ consumer_forward_kernel(ConsumerParams p) {
       //: ~e^15+, past fp16's 65504 max -- measured NaN, not a rounding. The panels
       //: apply in fp32 against the bf16 STORAGE (the memory win survives the carve).
       //: Evidence: workflows/perf/p26_evidence/m2_fp16_breach.txt.
-      for (int idx = tid; idx < BC * kGroupTokens; idx += kConsumerThreads) {
-        const int i = idx / kGroupTokens;
-        const int t = idx - i * kGroupTokens;
+#pragma unroll
+      for (int k = 0; k < kPanelIters; ++k) {
+        const int i = pi_r[k];
+        const int t = pt_r[k];
         float ac = 0.0f;
         if (t < gN) {
-          //: THE STAGED ROW. `pf_off[l]` is a register at a compile-time `l`, so the
-          //: whole address is one 32-bit add over the digit the walk already reads --
-          //: where the direct form paid a 64-bit `tr * pitch` and a global load.
+          //: THE STAGED ROW, AT AN OFFSET THAT IS ALREADY A REGISTER: the level's slab
+          //: offset and the leaf's digit are OWNER CONSTANTS, summed once at the entry
+          //: epoch, so the walk's whole address is the staged row base plus one
+          //: register -- no shared-memory read of `dig` and no add.
           const __nv_bfloat16* const pf = pfR_of(stage) + t * kPfPitch;
           ac = 1.0f;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-            ac *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i]]);
+            ac *= __bfloat162float(pf[po_r[k][l]]);
           }
           if (DECAY && is_write) {
-            ac *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+            ac *= panel_read_factor(clk[t * CKP + i], p_ref[i], lk_r[k]);
           }
         }
-        stage_put(Rp[rp_index(i, t)], ac);
+        stage_put(Rp[px_r[k]], ac);
       }
     }
     // ---- THE WRITE PANEL, `Wp[token][leaf]` -- stored TOKEN-MAJOR because it is the
@@ -974,9 +1052,10 @@ consumer_forward_kernel(ConsumerParams p) {
     if (is_write) {
       //: BRANCHLESS, as the read panel: every atom staged, zeros ride self-masking,
       //: masks stay compute-only.
-      for (int idx = tid; idx < kGroupTokens * BC; idx += kConsumerThreads) {
-        const int t = idx / BC;
-        const int i = idx - t * BC;
+#pragma unroll
+      for (int k = 0; k < kPanelIters; ++k) {
+        const int t = pt_w[k];
+        const int i = pi_w[k];
         float ac = 0.0f;
         if (t < gN) {
           const __nv_bfloat16* const pf = pfW_of(stage) + t * kPfPitch;
@@ -984,10 +1063,10 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
           for (int l = 0; l < D; ++l) {
             if (l < j) continue;
-            ac *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i]]);
+            ac *= __bfloat162float(pf[po_w[k][l]]);
           }
           if (DECAY) {
-            ac *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
+            ac *= panel_write_factor(clk[t * CKP + i], p_ref[i], lk_w[k]);
           }
         }
         //: §6.4 PASS 1's per-leaf inclusion, COEFFICIENT HALF: a leaf is included iff
@@ -995,7 +1074,7 @@ consumer_forward_kernel(ConsumerParams p) {
         //: writer writes the same `1` -- so the token axis needs no reduction.
         //: HAZARD summary-prequant -- docs/internals/consumer_kernel.md#summary-prequant
         if (summary && ac != 0.0f) sum_slot[i] = 1;
-        stage_put(Wp[wp_index(BC, t, i)], ac);
+        stage_put(Wp[px_w[k]], ac);
       }
     }
     __syncthreads();
