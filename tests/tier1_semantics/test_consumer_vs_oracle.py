@@ -375,28 +375,24 @@ def test_gram_block_with_disjoint_atom_masks_still_stores_its_zero():
     can, but a random sparse routing almost never lands two DIFFERENT groups'
     supports on disjoint 16-leaf atoms of the SAME 64-leaf owner slice -- and
     even if it did, a stale Gram cell only reads back wrong if some EARLIER
-    window left real nonzero data at that exact physical offset, which the
-    per-window shared-memory tile reuses. Both properties have to be built.
+    visit left real nonzero data at that exact physical offset, which the
+    per-visit shared-memory tile reuses. Both properties have to be built.
 
     **The construction.** `widths = (8, 8)`, `BC = 64`: `N = 64` is exactly one
     owner slice of 4 atoms of 16 leaves, `leaf = digit0 * 8 + digit1` (MSB-first,
     ``naive.py:_radix_strides``), so `digit0 in {0,1}` is atom 0 and `digit0 in
-    {2,3}` is atom 1 -- disjoint and both nonempty. `T = 128` forces the wide
-    window's shared Gram tile to be reused across TWO windows at the same
-    (a, b) physical offsets (`CONSUMER_WINDOWS` forced to the one-tuple `(64,)`,
-    the same forcing form item 1 uses, so the window is never refused). Window 0
-    (tokens `[0, 64)`) reads and writes the WHOLE level-0 support -- intersecting,
-    so every `(a, b)` Gram block gets a real, large, nonzero value written.
-    Window 1 (tokens `[64, 128)`) reads ONLY atom 0 and writes ONLY atom 1 for
-    every group -- disjoint, so the oracle's Gram contribution there is exactly
-    zero (disjoint supports make the leaf-space dot product `R_a . W_b^T`
-    identically zero) and the fixed kernel must overwrite window 0's stale value
-    with that zero. A kernel that skips the store instead leaks window 0's Gram
-    into window 1's output, which is large and easily caught -- not a tolerance
+    {2,3}` is atom 1 -- disjoint and both nonempty. `T = 128` is eight visits, so
+    the shared Gram tile is reused across them at the same physical offsets. The
+    first half (tokens `[0, 64)`) reads and writes the WHOLE level-0 support --
+    intersecting, so every Gram entry gets a real, large, nonzero value written.
+    The second half (tokens `[64, 128)`) reads ONLY atom 0 and writes ONLY atom 1
+    for every group -- disjoint, so the oracle's Gram contribution there is exactly
+    zero (disjoint supports make the leaf-space dot product `R . W^T` identically
+    zero) and the kernel must overwrite the earlier visits' stale value with that
+    zero. A kernel that skips the store instead leaks the first half's Gram into
+    the second half's output, which is large and easily caught -- not a tolerance
     drift.
     """
-    import rola.planner.schedule as schedule_mod
-
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(2026)
     widths, d_v, B, T, H, BC = (8, 8), 64, 1, 128, 2, 64
@@ -406,14 +402,14 @@ def test_gram_block_with_disjoint_atom_masks_still_stores_its_zero():
     read_mask0[64:, 0:2] = 1.0
     write_mask0[64:, :] = 0.0
     write_mask0[64:, 2:4] = 1.0
-    # The fixture is only a pin if window 1's supports are genuinely disjoint and
-    # window 0's are genuinely intersecting -- assert both rather than trusting
+    # The fixture is only a pin if the second half's supports are genuinely disjoint
+    # and the first half's genuinely intersecting -- assert both rather than trusting
     # the construction above stayed correct under a future edit.
     assert bool((read_mask0[64:] * write_mask0[64:]).sum(-1).eq(0).all()), (
-        "window 1 must have disjoint level-0 support between read and write")
+        "the second half must have disjoint level-0 support between read and write")
     assert bool((read_mask0[:64] * write_mask0[:64]).sum(-1).gt(0).all()), (
-        "window 0 must have intersecting level-0 support so it writes a real, "
-        "nonzero Gram at the offsets window 1 reuses")
+        "the first half must have intersecting level-0 support so it writes a real, "
+        "nonzero Gram at the offsets the second half reuses")
     read_levels = (
         _masked_simplex((B, T, H, 8), read_mask0.view(1, T, 1, 8), generator, device),
         _simplex((B, T, H, 8), 1.0, generator, device),
@@ -422,13 +418,8 @@ def test_gram_block_with_disjoint_atom_masks_still_stores_its_zero():
         _masked_simplex((B, T, H, 8), write_mask0.view(1, T, 1, 8), generator, device),
         _simplex((B, T, H, 8), 1.0, generator, device),
     )
-    original = schedule_mod.CONSUMER_WINDOWS
-    schedule_mod.CONSUMER_WINDOWS = (64,)
-    try:
-        _run_case(widths, BC, d_v, B, T, H, 1.0, 1.0, nonzero_m0=True, seed=2026,
-                  read_levels=read_levels, write_levels=write_levels)
-    finally:
-        schedule_mod.CONSUMER_WINDOWS = original
+    _run_case(widths, BC, d_v, B, T, H, 1.0, 1.0, nonzero_m0=True, seed=2026,
+              read_levels=read_levels, write_levels=write_levels)
 
 
 @pytest.mark.parametrize("widths,BC", [((16,), 16), ((8, 4), 16), ((8, 8), 64), ((4, 4, 4, 4), 16)])
@@ -1024,32 +1015,22 @@ def test_the_plan_built_path_is_oracle_exact_and_bit_identical(widths, BC, decay
 
 
 def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
-    """§6's DELETED residency rule, kept as the MEASUREMENT that deleted it -- and
-    the WINDOW's residency purchase, pinned as the deliberate exception it is.
+    """§6's DELETED residency rule, kept as the MEASUREMENT that deleted it.
 
     The rule fired on `cheapest.blocks_per_sm == 1` -- the cliff at which a CTA has
     no latency hiding at all. "Never" is a claim about a surface, so this asks the
-    driver about the whole launchable surface: `BC(2) x d_v(2) x decay(2) x D(4) x
-    group_tokens(2)` = 64 keys, which is EXHAUSTIVE for `rola_consumer_occupancy`.
-    `D` is one of its axes because the amplitude prefetch slab carries one 16-byte
-    chunk per token per side for every level beyond the first, so a residency answer
-    taken at one depth does not speak for another.
+    driver about the whole launchable surface: `BC(2) x d_v(2) x decay(2) x D(4)`
+    = 32 keys, which is EXHAUSTIVE for `rola_consumer_occupancy`. `D` is one of its
+    axes because the staged regions carry one 16-byte chunk per token per side for
+    every level beyond the first -- and because the STAGE PIPELINE'S DEPTH is
+    derived from the arm's own carve, so `D` moves the depth as well as the width.
 
-    THE CLAIM IS PER WINDOW, because the windows buy different things.
-
-    * At the GROUP QUANTUM (`group_tokens == 16`) the original claim stands
-      unchanged: no launchable instantiation reaches the cliff.
-    * At the WIDE WINDOW (`group_tokens == 64`) the `BC = 64` arms land at ONE CTA
-      per SM BY DESIGN and BY SMEM: the window Gram is quadratic in the width, and
-      the register/SMEM policy's whole point is that a single CTA may spend the
-      ~99 KB it is granted because this kernel hides latency explicitly (the
-      producer ring, the resident fold accumulator) rather than by occupancy. What
-      is NOT bought is a register-side collapse: the `BC = 16` wide arms keep two
-      CTAs, which is what the window's 112-register budget was censused to hold.
-
-    **THIS IS STILL THE FALSIFICATION SITE.** A narrow arm that reaches the cliff,
-    or a wide `BC = 16` arm that loses its second CTA, fails here rather than
-    becoming a silent load-bearing blind spot.
+    **THE FLOOR IS THE REGISTER BOUND, AND THAT IS THE POINT OF THE DERIVATION.**
+    `consumer::pf_stages` takes the deepest pipeline whose carve still admits the
+    residency the arm would have had at depth 1, which on every tabulated arch is
+    the register bound of 4 CTAs. So no arm may sit below it: an arm that does means
+    the depth derivation bought runahead with occupancy, which is exactly the trade
+    it exists to refuse.
     """
     from rola.ops._ext import extension
 
@@ -1059,18 +1040,14 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
         for d_v in (32, 64):
             for decay in (False, True):
                 for D in (1, 2, 3, 4):
-                    for gt in (16, 64):
-                        blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, D, gt))
-                        seen[(BC, d_v, decay, D, gt)] = blocks
-                        floor = 2 if (gt == 16 or BC == 16) else 1
-                        assert blocks >= floor, (
-                            f"BC={BC} d_v={d_v} decay={decay} D={D} group_tokens={gt} "
-                            f"is resident {blocks} time(s) per SM, below the {floor} this "
-                            "arm class is held to. At the group quantum that is §6's "
-                            "deleted residency rule becoming reachable again; at the wide "
-                            "window on BC=16 it is the register budget collapsing a "
-                            "residency the SMEM carve still affords.")
-    assert len(seen) == 64, f"the surface is 64 keys, queried {len(seen)}"
+                    blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, D))
+                    seen[(BC, d_v, decay, D)] = blocks
+                    assert blocks >= 4, (
+                        f"BC={BC} d_v={d_v} decay={decay} D={D} is resident {blocks} "
+                        "time(s) per SM, below the register bound of 4. Either §6's "
+                        "deleted residency rule has become reachable again, or the "
+                        "stage-depth derivation bought runahead with a CTA.")
+    assert len(seen) == 32, f"the surface is 32 keys, queried {len(seen)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1257,108 +1234,3 @@ def test_output_charge_sees_a_drift_the_global_max_cannot():
         "the one it replaced")
 
 
-# ---------------------------------------------------------------------------
-# THE WIDE WINDOW AGAINST THE ORACLE
-# ---------------------------------------------------------------------------
-# `select_window` picks the consumer's token quantum from the realized routing,
-# and every cell above is short enough that it picks the GROUP quantum. That
-# would leave the wide window -- a different formulation, not a different tuning:
-# an entry state shared by `W` groups, a block-lower-triangular window Gram whose
-# off-diagonal blocks carry deposits the paced fold has not yet applied, a fold
-# accumulator resident across `W` staged slots, and a decay reference frame that
-# spans the whole window -- gated only by cells that never reach it.
-#
-# THE CLASS THIS CATCHES, MEASURED: a group's write ATOM MASK and its write SIDE
-# FLAG are independent bitmaps, so a group can carry live write atoms while being
-# side-dead and therefore unstaged. At the group quantum the fold ran under that
-# group's own `is_write` and the case could not arise; at `W > 1` the fold walks
-# the window's union and it does. The first build of this batch read the
-# unstaged slot, and the numbers were wrong by 2e-1 on the nodecay arm and by a
-# reference frame on the decay arm.
-#
-# So the cells below are the SAME oracle comparison at a sequence long enough
-# that the wide window is selected, run against BOTH the window the planner picks
-# and the group quantum, and required to agree with the fp64 oracle in both --
-# which also makes the window's own selection non-load-bearing for correctness.
-
-
-@pytest.mark.parametrize("decay", [False, True])
-@pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.25, 0.25)])
-@pytest.mark.parametrize("BC", [16, 64])
-def test_the_wide_window_matches_the_canonical_oracle(BC, decay, p_read, p_write):
-    import rola.planner.schedule as schedule_mod
-    from rola.planner.schedule import CONSUMER_WINDOWS, WINDOW_MIN_FILL, select_window, union_member_median
-
-    # `BC = 64` IS NOT A SIZE VARIANT, IT IS THE ONLY CELL THAT CAN EXPRESS THE
-    # DISJOINT-MASK GRAM BLOCK: at `BC == MMA_K_QUANTUM == 16` there is ONE atom per
-    # side, so "both sides live" and "the atom masks intersect" are the SAME
-    # statement and a block with live sides but disjoint masks cannot be built. The
-    # sparse `BC = 64` window is where a skipped store would be read as a previous
-    # window's Gram.
-    widths, d_v, T = (4, 4, 4, 4), 32, 521
-    # The BF16 tolerance is a per-cell fact, not a per-window one: at `BC = 64` the
-    # sparse decay cell's group-quantum error at seed 8149 is 1.13e-2 on THIS TREE
-    # AND ON MASTER, BIT-IDENTICALLY -- a pre-existing marginal cell, nothing the
-    # window does. The seed is chosen per `BC` so the cell sits inside the tolerance
-    # it is graded against and a failure here means the FORMULATION moved.
-    seed = 8149 if BC == 16 else 3313
-    dials = None
-    if decay:
-        g = torch.Generator(device="cuda").manual_seed(seed)
-        dials = tuple(
-            0.05 + 0.85 * torch.rand(3, w, device="cuda", dtype=torch.float64, generator=g)
-            for w in widths)
-
-    original = schedule_mod.CONSUMER_WINDOWS
-    seen = {}
-    try:
-        # THE FORCING FORM IS A ONE-TUPLE, and that is the difference between a
-        # gate and a tautology. `select_window` is widest-first over
-        # `CONSUMER_WINDOWS` with the narrow entry as the loop's TERMINATOR and a
-        # residency refusal in between -- and on `sm_86` that refusal is TOTAL, so
-        # `(64, 16)` resolves to 16 and this cell would run the group quantum
-        # TWICE. A one-tuple is what makes the width unrefusable.
-        for windows in ((64,), (16,)):
-            schedule_mod.CONSUMER_WINDOWS = windows
-            _run_case(widths, BC, d_v, 2, T, 3, p_read, p_write,
-                      nonzero_m0=False, seed=seed, decay_dials=dials)
-            seen[windows] = True
-    finally:
-        schedule_mod.CONSUMER_WINDOWS = original
-
-    assert seen == {(64,): True, (16,): True}
-    # THE CELL MUST STILL BE BIG ENOUGH TO FILL A WIDE WINDOW, so a cell that
-    # quietly shrank stops being a wide-window gate LOUDLY rather than by passing
-    # trivially. It is the FILL that is asserted, not the SELECTION: `select_window`
-    # additionally refuses a window that costs residency, and on `sm_86` that
-    # refusal is total -- the wide arm is compiled, ratified and exact, and not
-    # chosen. This gate is what keeps it exact for the arch where it is chosen.
-    from rola.ops.consumer import _consumer_forward
-    device = "cuda"
-    generator = torch.Generator(device=device).manual_seed(seed)
-    topology = _topology(widths, d_v)
-    read_levels = tuple(_simplex((2, T, 3, w), p_read, generator, device) for w in widths)
-    write_levels = tuple(_simplex((2, T, 3, w), p_write, generator, device) for w in widths)
-    g_write = torch.rand(2, T, 3, device=device, generator=generator) + 0.5
-    v = torch.randn(2, T, 3, d_v, device=device, generator=generator)
-    dec = LeafMassDecay(dials=dials) if decay else None
-    plan = Plan(topology=topology, normalization="global", BC=BC,
-                warp_tile=(1, max(1, d_v // 32)), decay=decay)
-    _, _, sched = _consumer_forward(v, read_levels, write_levels, None, g_write, plan,
-                                    initial_state=None, decay=dec)
-    clock = sched.decay_stream.clock_amps if decay else None
-    schedule_mod.CONSUMER_WINDOWS = (64,)
-    try:
-        object.__setattr__(sched, "window", None)
-        assert select_window(sched, dec, clock, BC, d_v) == 64, (
-            "the forced one-tuple no longer resolves to the wide window, so the "
-            "cells above ran the group quantum twice and gated nothing")
-    finally:
-        schedule_mod.CONSUMER_WINDOWS = original
-    assert 64 in CONSUMER_WINDOWS
-    members = union_member_median(sched)
-    assert members >= WINDOW_MIN_FILL * 64, (
-        f"this cell no longer fills a wide window ({members} member "
-        f"tokens against {WINDOW_MIN_FILL * 64}); it is the only oracle gate that "
-        "exercises the window formulation, so it must be re-sized rather than left "
-        "passing at the group quantum")
