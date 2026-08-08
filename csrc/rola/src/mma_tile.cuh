@@ -150,24 +150,42 @@ __device__ __forceinline__ unsigned state_pair_load(const __nv_bfloat16* __restr
 //: already issued (its B was a plain bf16 narrowing of the same value); the `lo` one
 //: is an ADDED correction, so the readout gains ~8 mantissa bits of B while shedding
 //: the packing.
-//: **THE K-LOOP KEEPS A COMPILE-TIME TRIP COUNT AND AN EARLY EXIT, never a runtime
-//: bound**: docs/internals/mma_tile.md#mma-tile-fraga
+//: **THE K-LOOP IS A TWO-STAGE SOFTWARE PIPELINE**, and that is what the plane form
+//: is FOR: k-step `ks + 1`'s three fragments are issued BEFORE k-step `ks`'s two
+//: `mma.sync`, so the shared-memory latency of a fetch is covered by the multiply of
+//: its predecessor rather than by a sibling warp. `ldmatrix` -> `mma.sync` is a
+//: fixed-latency dependency (`stall_wait`) behind a shared dependency
+//: (`short_scoreboard`), the two buckets this kernel's profile pays ~30% of its issue
+//: gap to; an fp32 B could not be pipelined this way because its "fetch" was four
+//: scalar loads and six ALU instructions that the multiply had no room to hide.
+//: The trip count is COMPILE-TIME and the loop carries NO runtime bound: `KMAX` is the
+//: contraction extent at both call sites, so the fetch of stage `KS` is simply never
+//: emitted. docs/internals/mma_tile.md#mma-tile-fraga
 template <int DV, int KMAX>
 __device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict__ Af,
                                                       const __nv_bfloat16* __restrict__ Shi,
                                                       const __nv_bfloat16* __restrict__ Slo,
-                                                      int row0, int K, int n0, int lane, float& d0,
+                                                      int row0, int n0, int lane, float& d0,
                                                       float& d1, float& d2, float& d3) {
-#pragma unroll
-  for (int ks = 0; ks < KMAX / kMmaKQuantum; ++ks) {
-    if (ks * kMmaKQuantum >= K) break;
-    const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
+  constexpr int KS = KMAX / kMmaKQuantum;
+  uint4 a;
+  unsigned h0, h1, l0, l1;
+  auto fetch = [&](int ks) {
+    a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
     const int k0 = row0 + ks * kMmaKQuantum;
-    unsigned h0, h1, l0, l1;
     stage_frag_b<DV>(Shi, k0, n0, lane, h0, h1);
     stage_frag_b<DV>(Slo, k0, n0, lane, l0, l1);
-    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, h0, h1, d0, d1, d2, d3);
-    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, l0, l1, d0, d1, d2, d3);
+  };
+  fetch(0);
+#pragma unroll
+  for (int ks = 0; ks < KS; ++ks) {
+    //: The stage in flight is COPIED OUT before the next fetch overwrites it -- that
+    //: copy IS the second buffer, and it is registers, which is what the budget is for.
+    const uint4 ac = a;
+    const unsigned c0 = h0, c1 = h1, c2 = l0, c3 = l1;
+    if (ks + 1 < KS) fetch(ks + 1);
+    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
+    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c2, c3, d0, d1, d2, d3);
   }
 }
 
@@ -181,21 +199,31 @@ __device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict
 //: column is CONTIGUOUS (`[BC]`, its own array), so the fetch is `bcast_frag_b`'s map
 //: with the compensation added rather than a strided walk of the state.
 //: docs/internals/mma_tile.md#mass-column
+//: Its k-loop is the SAME two-stage pipeline the numerator's is, for the same reason:
+//: the column's four scalar loads are a shared dependency the previous k-step's two
+//: multiplies can cover.
 template <int KMAX>
 __device__ __forceinline__ void mma_tile_fragA_massB(const unsigned* __restrict__ Af,
-                                                     const float* __restrict__ m, int K, int lane,
+                                                     const float* __restrict__ m, int lane,
                                                      float& d0, float& d1, float& d2, float& d3) {
+  constexpr int KS = KMAX / kMmaKQuantum;
   const int r = lane & 3;
-#pragma unroll
-  for (int ks = 0; ks < KMAX / kMmaKQuantum; ++ks) {
-    if (ks * kMmaKQuantum >= K) break;
-    const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
-    const int ca = ks * 16 + r * 2;
-    unsigned h0, l0, h1, l1;
+  uint4 a;
+  unsigned h0, h1, l0, l1;
+  auto fetch = [&](int ks) {
+    a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
+    const int ca = ks * kMmaKQuantum + r * 2;
     split_bf16x2(m[ca], m[ca + 1], h0, l0);
     split_bf16x2(m[ca + 8], m[ca + 9], h1, l1);
-    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, h0, h1, d0, d1, d2, d3);
-    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, l0, l1, d0, d1, d2, d3);
+  };
+  fetch(0);
+#pragma unroll
+  for (int ks = 0; ks < KS; ++ks) {
+    const uint4 ac = a;
+    const unsigned c0 = h0, c1 = h1, c2 = l0, c3 = l1;
+    if (ks + 1 < KS) fetch(ks + 1);
+    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
+    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c2, c3, d0, d1, d2, d3);
   }
 }
 
@@ -276,7 +304,9 @@ __device__ __forceinline__ void mma_tile_vwB(const __nv_bfloat16* __restrict__ A
 }
 
 //: GEMM 2 WITH A FRAGMENT-ORDERED A AND `WT` FETCHED BY `ldmatrix`, for ONE ATOM:
-//: `Af16` is the atom's 128-word fragment block, `WT16` its 16-row `WT` block.
+//: `Af16` is the atom's 128-word fragment block, `WT16` its 16-row `WT` block. This is
+//: the SPARSE arm's tile -- the live-atom walk is a runtime loop over set bits, so its
+//: next atom's address is not known until the current one retires.
 __device__ __forceinline__ void mma_tile_fragA_wtB(const unsigned* __restrict__ Af16,
                                                    const __nv_bfloat16* __restrict__ WT16, int n0,
                                                    int lane, float& d0, float& d1, float& d2,
@@ -285,6 +315,32 @@ __device__ __forceinline__ void mma_tile_fragA_wtB(const unsigned* __restrict__ 
   unsigned b0, b1;
   wt_frag_b(WT16, n0, lane, b0, b1);
   mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, b0, b1, d0, d1, d2, d3);
+}
+
+//: GEMM 2's DENSE ARM, AS THE SAME TWO-STAGE PIPELINE the readout's k-loop runs: every
+//: atom is live, so the whole atom sequence is known at compile time and atom `q + 1`'s
+//: fragments are issued before atom `q`'s multiply. This is the arm `mask == kFullMask`
+//: selects, and it is where `BC = 64`'s four atoms are four chained
+//: `ldmatrix` -> `mma.sync` dependencies otherwise.
+template <int QPO>
+__device__ __forceinline__ void mma_tile_fragA_wtB_atoms(const unsigned* __restrict__ Af,
+                                                         const __nv_bfloat16* __restrict__ WT,
+                                                         int n0, int lane, float& d0, float& d1,
+                                                         float& d2, float& d3) {
+  uint4 a;
+  unsigned b0, b1;
+  auto fetch = [&](int q) {
+    a = *reinterpret_cast<const uint4*>(Af + q * 128 + lane * 4);
+    wt_frag_b(WT + q * kMmaKQuantum * kWtPitch, n0, lane, b0, b1);
+  };
+  fetch(0);
+#pragma unroll
+  for (int q = 0; q < QPO; ++q) {
+    const uint4 ac = a;
+    const unsigned c0 = b0, c1 = b1;
+    if (q + 1 < QPO) fetch(q + 1);
+    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
+  }
 }
 
 //: THE LIBRARY MAPS THIS FILE DEPENDS ON, ENUMERATED AT COMPILE TIME. Both `.trans`

@@ -1081,14 +1081,13 @@ consumer_forward_kernel(ConsumerParams p) {
       const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
-        mma_tile_fragA_stateB<DV, BC>(Rfa, Shi, Slo, 0, BC, n0, lane, y[s][0], y[s][1], y[s][2],
+        mma_tile_fragA_stateB<DV, BC>(Rfa, Shi, Slo, 0, n0, lane, y[s][0], y[s][1], y[s][2],
                                       y[s][3]);
       } else {
         for (unsigned m = rmask; m; m &= m - 1) {
           const int q = __ffs(m) - 1;
-          mma_tile_fragA_stateB<DV, kMmaKQuantum>(Rfa + q * 128, Shi, Slo, q * kMmaKQuantum,
-                                                  kMmaKQuantum, n0, lane, y[s][0], y[s][1], y[s][2],
-                                                  y[s][3]);
+          mma_tile_fragA_stateB<DV, kMmaKQuantum>(Rfa + q * 128, Shi, Slo, q * kMmaKQuantum, n0,
+                                                  lane, y[s][0], y[s][1], y[s][2], y[s][3]);
         }
       }
     }
@@ -1110,12 +1109,12 @@ consumer_forward_kernel(ConsumerParams p) {
       const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
-        mma_tile_fragA_massB<BC>(Rfa, Smass, BC, lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
+        mma_tile_fragA_massB<BC>(Rfa, Smass, lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
       } else {
         for (unsigned m = rmask; m; m &= m - 1) {
           const int q = __ffs(m) - 1;
-          mma_tile_fragA_massB<kMmaKQuantum>(Rfa + q * 128, Smass + q * kMmaKQuantum, kMmaKQuantum,
-                                             lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
+          mma_tile_fragA_massB<kMmaKQuantum>(Rfa + q * 128, Smass + q * kMmaKQuantum, lane,
+                                             dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
         }
       }
     }
@@ -1164,11 +1163,7 @@ consumer_forward_kernel(ConsumerParams p) {
             //: exact zeros the block is; the stores below still run.
             float gd0 = 0.0f, gd1 = 0.0f, gd2 = 0.0f, gd3 = 0.0f;
             if (gmask == kFullMask) {
-#pragma unroll
-              for (int q = 0; q < kQPO; ++q) {
-                mma_tile_fragA_wtB(Rfa + q * 128, WTb + q * kMmaKQuantum * BTP, n0, lane, gd0, gd1,
-                                   gd2, gd3);
-              }
+              mma_tile_fragA_wtB_atoms<kQPO>(Rfa, WTb, n0, lane, gd0, gd1, gd2, gd3);
             } else {
               for (unsigned m = gmask; m; m &= m - 1) {
                 const int q = __ffs(m) - 1;
