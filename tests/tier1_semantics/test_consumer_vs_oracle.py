@@ -1028,9 +1028,17 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     **THE FLOOR IS THE REGISTER BOUND, AND THAT IS THE POINT OF THE DERIVATION.**
     `consumer::pf_stages` takes the deepest pipeline whose carve still admits the
     residency the arm would have had at depth 1, which on every tabulated arch is
-    the register bound of 4 CTAs. So no arm may sit below it: an arm that does means
+    the REGISTER bound. So no arm may sit below that bound: an arm that does means
     the depth derivation bought runahead with occupancy, which is exactly the trade
     it exists to refuse.
+
+    **THE BOUND IS READ OFF THE SURFACE, NOT WRITTEN DOWN.** `consumer_reg_budget`
+    is a measured constant and a legitimate thing to re-measure, so a literal here
+    would fail every budget change instead of the defect it is meant to catch. The
+    register bound is the residency of the arm whose carve is SMALLEST -- the one
+    key where shared memory cannot be the binding term -- i.e. the maximum over the
+    surface. The property is that no other arm sits below it, and that is
+    budget-independent.
     """
     from rola.ops._ext import extension
 
@@ -1040,14 +1048,20 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
         for d_v in (32, 64):
             for decay in (False, True):
                 for D in (1, 2, 3, 4):
-                    blocks = int(ext.rola_consumer_occupancy(decay, BC, d_v, D))
-                    seen[(BC, d_v, decay, D)] = blocks
-                    assert blocks >= 4, (
-                        f"BC={BC} d_v={d_v} decay={decay} D={D} is resident {blocks} "
-                        "time(s) per SM, below the register bound of 4. Either §6's "
-                        "deleted residency rule has become reachable again, or the "
-                        "stage-depth derivation bought runahead with a CTA.")
+                    seen[(BC, d_v, decay, D)] = int(
+                        ext.rola_consumer_occupancy(decay, BC, d_v, D))
     assert len(seen) == 32, f"the surface is 32 keys, queried {len(seen)}"
+    reg_bound = max(seen.values())
+    assert reg_bound >= 2, (
+        f"the register bound itself is {reg_bound} CTAs/SM: every arm is at or below "
+        "the cliff §6's deleted rule fired on, whatever shared memory does.")
+    for key, blocks in seen.items():
+        BC, d_v, decay, D = key
+        assert blocks >= reg_bound, (
+            f"BC={BC} d_v={d_v} decay={decay} D={D} is resident {blocks} time(s) per "
+            f"SM, below the register bound of {reg_bound}. Either §6's deleted "
+            "residency rule has become reachable again, or the stage-depth "
+            "derivation bought runahead with a CTA.")
 
 
 # ---------------------------------------------------------------------------

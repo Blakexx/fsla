@@ -130,7 +130,7 @@ constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)decay;
   (void)DV;
   (void)D;
-  return 64;
+  return 72;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
