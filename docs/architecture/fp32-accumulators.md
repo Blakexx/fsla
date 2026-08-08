@@ -15,32 +15,35 @@ that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An
 accumulator that is 1 ULP wrong **embeds** that error and carries it forward for
 the lifetime of the state.
 
-## <a id="compensated-pair"></a>A compensated pair is not a plain narrowing, and the two are governed separately
+## <a id="compensated-pair"></a>The resident state is fp32, in registers, and narrows only at the point of use
 
-The consumer kernel's resident state is two bf16 planes (`Shi`, a value's bf16
-rounding, and `Slo`, its residual) rather than one fp32 plane
-([`docs/internals/smem_layout.md#state-planes`](../internals/smem_layout.md#state-planes)).
-This is NOT the single-narrowing "bf16 resident state" the measured reason below
-refuses: that proposal halved the state's footprint (one bf16 plane at 2 bytes/element
-against fp32's 4) to buy a larger `BC`. The plane pair costs the SAME bytes per
-element as the fp32 form it replaced (two bf16 words = 4 bytes = one fp32 word) and
-was built for a different reason entirely — an `ldmatrix`-fetchable B operand for
-GEMM 1 — so it does not touch the tradeoff this document's measurement declined.
+The consumer kernel's resident state lives in REGISTERS, as the fold's own `mma.sync`
+D fragments, held transposed `[channel][leaf]`
+([`docs/internals/smem_layout.md#state-residency`](../internals/smem_layout.md#state-residency)).
+It is fp32 there — this ruling's requirement, met in the strongest available form,
+because the accumulator and the storage are now THE SAME OBJECT: there is no storage
+precision between accumulation events to govern, and no round trip through a narrower
+format at all. The fold's `mma.sync` accumulates in place, `D == C == S`.
 
-The ACCUMULATION/STORAGE split above still applies, and still governs the plane
-form: the fold's read-modify-write reads the pair, sums in fp32 registers, and splits
-back to `Shi`/`Slo` at its one writeback — the accumulator stays fp32, exactly as this
-ruling requires. The state's STORAGE precision between accumulation events is a
-compensated pair (~16 mantissa bits) where it was single fp32 (~24) — a live axis
-under this document's own table, and this page's own `sqrt(T)`-walk gate
+The one narrowing left is at the POINT OF USE: the readout's A operand is a single
+`cvt` of those fp32 registers into bf16 fragment words, four values per lane per
+`mma.sync`, discarded immediately after. That is a narrowing of an OPERAND, which the
+table above has always permitted, not of a state — the same shape FlashAttention uses
+when it feeds its fp32 softmax accumulator to the next GEMM as a bf16 operand.
+
+The MASS COLUMN is the one exception and it is measured, not stylistic: it is the
+denominator of a ratio and has nothing to cancel its rounding against, and P31
+measured a plain bf16 narrowing of it at 1.118e-2 against a 1e-2 budget. It keeps its
+compensated hi/lo split at the fragment
+([`docs/internals/mma_tile.md#mass-column`](../internals/mma_tile.md#mass-column)) and
+it alone.
+
+This page's own `sqrt(T)`-walk gate
 (`tests/tier1_semantics/test_bf16_family_gate.py::test_family_deviation_is_flat_in_T`,
-run against the real kernel's state output, both `decay` arms) HAS been run against
-it and holds: every swept `T in {512, 2048, 8192}` clears `BF16_RTOL`, and the fitted
-log-log slope clears the `< 0.25` bar against the resident-state walk's measured
-`+0.49`. That is exactly what distinguishes a compensated pair from a single
-narrowing — 16 mantissa bits leave enough headroom that the walk does not surface
-inside the swept range. A plain single-narrowing bf16 state remains refused for the
-reason measured below; the same gate is what killed it.
+run against the real kernel's state output, both `decay` arms) holds at every swept
+`T in {512, 2048, 8192}`, with the fitted log-log slope under the `< 0.25` bar against
+the resident-state walk's measured `+0.49` — which is what a state that never leaves
+fp32 should give.
 
 ## The measured reason
 
