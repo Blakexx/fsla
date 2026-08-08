@@ -3,9 +3,10 @@
 // THE CONSUMER'S SHARED-MEMORY LAYOUT LAYER -- what one CTA's shared memory looks
 // like, and what it costs. Three kinds of thing live here and they are one concern:
 //
-//   1. THE ADDRESS FUNCTIONS -- the CuTe-owned swizzle the staged operands are stored
-//      under, `WT`'s derived pitch, and the `vw_index` / `wt_index` / `stage_offset`
-//      maps every access point goes through, so no two sites can disagree;
+//   1. THE ADDRESS FUNCTIONS -- the two derived pitches every staged panel is stored
+//      at, the `rp_index` / `wp_index` / `vp_index` maps every access point goes
+//      through so no two sites can disagree, and the STATE'S OWNERSHIP RULE (the
+//      state itself is registers, not shared memory);
 //   2. THE PROOFS -- bank-conflict freedom and `ldmatrix` alignment as `constexpr`
 //      predicates, enumerated rather than asserted, so a future `BC`/`DV` fails
 //      the BUILD instead of silently costing the 4.06x wavefront amplification the
@@ -30,12 +31,6 @@
 // measured register budget: docs/internals/smem_layout.md
 
 #include <cuda_bf16.h>
-
-//: THE VENDORED CuTe PIN (`csrc/third_party/cutlass`, v3.5.1, closed-world rule 5),
-//: a CODEGEN input rather than a packaging one. This layer uses it for ONE thing:
-//: the staged operands' swizzled SMEM layout. The `ldmatrix` copy atoms that READ
-//: that layout are `mma_tile.cuh`'s. docs/internals/smem_layout.md#cute-pin
-#include <cute/tensor.hpp>
 
 #include "arch_table.cuh"
 #include "readout_mma.cuh"
@@ -135,37 +130,27 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
               "fetch floor, the MMA k-quantum and the union granule coincide BY "
               "CONSTRUCTION, and the walk assumes it");
 
-//: **A MEASURED KERNEL FACT, NOT AN ARCHITECTURE FACT AND NOT A THRESHOLD.** The
-//: register working set `ptxas` reports for this kernel's GEMM inner loop when given
-//: slack, keyed on the axes the working set MEASURABLY varies with -- `BC` and
-//: `DECAY` -- with every number read off `-Xptxas -v` and the MAXIMUM per key taken,
-//: because a too-small budget is bought back by SPILLING. (The former `NM` key died
-//: with the BT axis: every group is one m16 row block.)
+//: **THE OCCUPANCY TARGET, AS ONE MEASURED NUMBER.** With the state register-resident
+//: the kernel's residency is REGISTER-bound by design: shared memory holds only the
+//: staged panels (~15 KB at the flagship, which would admit six CTAs), and occupancy
+//: buys only latency hiding, which this kernel does explicitly with rings, prefetch and
+//: cook-ahead. So the budget is set at what the GEMM working set actually wants, and
+//: the CTA count falls out of it rather than the other way round.
+//: `128` is TWO CTAs per SM (`128 * 256 * 2 = 65,536`) and it is where the census
+//: lands: forced to two CTAs, every `GT == 16` instantiation compiles at 99..125
+//: registers with ZERO SPILL on both arches, where the pre-residency budget of 64/80
+//: spilled 4..24 B on a fifth of them. The `GT == 64` window is the one arm the budget
+//: does not fully cover -- its `W`-deep readout fragments want 150..170 with full slack
+//: and it spills 12..24 B at `BC = 16` -- and that is held AT its measured magnitude by
+//: the ratchet rather than bought back with a third of the SM's registers.
 //: docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
+  (void)BC;
+  (void)decay;
   (void)DV;
-  //: `GT` IS IN THE KEY, BY CENSUS like every other number here. The window carries
-  //: `ceil(W * DV/8 / kWarps)` readout fragments and `ceil(W / kWarps)` mass
-  //: fragments live across the Gram phase -- fp32 the `GT == 16` visit does not
-  //: have -- and the fold's accumulator is resident across `W` staged groups.
-  //: Measured over all 32 window arms on both arches: 87..117 registers (sm_86;
-  //: 113 max on sm_80), zero spill. `112` below is the FIXED budget this function
-  //: returns for the key, a margin under the measured 117 rather than equal to
-  //: it: `ctas_for_residency` only needs the residency arithmetic to still admit
-  //: the CTA count `BC = 16` keeps at the true measured maximum, and it does
-  //: (`117 regs * 256 threads * 2 CTAs = 59,904 < 65,536`). At `BC = 64` the
-  //: window is SMEM-bound at one CTA/SM regardless; at `BC = 16` this budget is
-  //: what keeps two.
-  if (GT > kGroupTokens) return 112;
-  //: `D` IS IN THE KEY BY CENSUS, like every other number here. Level count is a
-  //: structural template axis and both the cook's working set and the prefetch
-  //: slab's per-level offsets grow with it, so the `BC = 16, decay = 0` arms need
-  //: the wide budget at `D = 4`. They do NOT reach zero spill at `D <= 3`: the
-  //: prefetch slab's live state puts them over 64 by tens of bytes, which the
-  //: ratchet holds AT its measured magnitude rather than banning. The budget and
-  //: its price -- 3 CTAs/SM where 64 gave 4 -- are stated with the measurement in
-  //: docs/internals/smem_layout.md#reg-budget.
-  return (BC >= 64 || decay || D >= 4) ? 80 : 64;
+  (void)D;
+  (void)GT;
+  return 128;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
@@ -181,144 +166,14 @@ constexpr int ctas_for_residency(size_t smem, int reg_budget) {
   return m < by_regs ? m : by_regs;
 }
 
-//: **THE BANK-CONFLICT PROPERTY, AS A COMPILE-TIME PROOF RATHER THAN A COMMENT.** An
-//: MMA operand load's 32 lanes address SMEM as an affine function of the fragment's
-//: two lane coordinates, `g = lane >> 2` and `r = lane & 3`; the access is
-//: conflict-free exactly when those 32 addresses land on 32 DISTINCT banks.
-//: `stride_g` / `stride_r` are the address deltas in 4-BYTE BANKS per unit `g`/`r`.
+//: **THE BANK-CONFLICT PROPERTY, AS A COMPILE-TIME PROOF RATHER THAN A COMMENT.**
+//: Every operand this kernel stages is a PITCHED ROW-MAJOR bf16 block read by one of
+//: the two `ldmatrix` atoms, so ONE predicate licenses every fetch: the instruction is
+//: serviced 8 lanes at a time, each lane reading a 16-byte row, and the phase is
+//: conflict-free exactly when its 8 rows cover all 32 banks. It additionally checks the
+//: 16-byte ALIGNMENT `ldmatrix` requires, which no stride predicate could see. `ROWS`
+//: and `COLS` are the extents actually addressed; `PITCH` is the row stride.
 //: docs/internals/smem_layout.md#bank-predicates
-constexpr bool banks_distinct(int stride_g, int stride_r) {
-  unsigned seen = 0;
-  for (int g = 0; g < 8; ++g) {
-    for (int r = 0; r < 4; ++r) {
-      const int b = ((g * stride_g + r * stride_r) % 32 + 32) % 32;
-      if (seen & (1u << b)) return false;
-      seen |= 1u << b;
-    }
-  }
-  return true;
-}
-
-//: **THE SAME PROOF FOR A 16-BIT OPERAND IS NOT THE SAME PREDICATE**: the bank of
-//: element `e` is `(e >> 1) % 32`, and two lanes in the SAME 32-bit WORD do not
-//: conflict -- so the condition is "any two lanes sharing a bank share a word",
-//: which `banks_distinct` cannot express. `stride_g` / `stride_r` are the deltas in
-//: 2-BYTE ELEMENTS. docs/internals/smem_layout.md#bank-predicates
-constexpr bool banks_distinct_u16(int stride_g, int stride_r) {
-  int word[32] = {};
-  int bank[32] = {};
-  int n = 0;
-  for (int g = 0; g < 8; ++g) {
-    for (int r = 0; r < 4; ++r) {
-      const int e = g * stride_g + r * stride_r;
-      word[n] = e >> 1;
-      bank[n] = (e >> 1) % 32;
-      ++n;
-    }
-  }
-  for (int i = 0; i < 32; ++i) {
-    for (int k = i + 1; k < 32; ++k) {
-      if (bank[i] == bank[k] && word[i] != word[k]) return false;
-    }
-  }
-  return true;
-}
-
-//: THE STAGED OPERANDS' SMEM LAYOUT, OWNED BY CuTe: both staged operands are stored
-//: under the library's own `composition(Swizzle<B,3,3>, (ROWS,COLS):(COLS,1))` and
-//: the PAD DISAPPEARS: the swizzle decorrelates banks by permuting 16-byte blocks
-//: WITHIN the tile instead of by making it bigger, so the buffer is exactly
-//: `ROWS * COLS` elements. `B` is chosen so the XOR field covers the whole 128-byte
-//: bank cycle; `M = 3` keeps the 16-byte `ldmatrix` row intact; `S = 3` puts the XOR
-//: source at the row index's low bits. Nothing here is asserted -- the three
-//: properties are `static_assert`ed by enumerating the library's layout below:
-//: docs/internals/smem_layout.md#stage-layout
-template <int COLS>
-constexpr int stage_swizzle_b() {
-  return COLS >= 64 ? 3 : (COLS >= 32 ? 2 : 1);
-}
-
-template <int ROWS, int COLS>
-using StageLayout =
-    decltype(cute::composition(cute::Swizzle<stage_swizzle_b<COLS>(), 3, 3>{},
-                               cute::Layout<cute::Shape<cute::Int<ROWS>, cute::Int<COLS>>,
-                                            cute::Stride<cute::Int<COLS>, cute::_1>>{}));
-
-//: THE ADDRESS FUNCTION IS A CLOSED FORM, AND CuTe IS ITS SPECIFICATION. Calling
-//: `StageLayout{}(row, col)` at every access point measurably blocks the strength
-//: reduction the linear map admits on the scalar row walks; this is that same map in
-//: the two operations the swizzle actually is: `row * COLS + (col ^ mask(row))`, a
-//: row-invariant mask the compiler CAN hoist. `stage_offset_matches_cute` enumerates
-//: every `(row, col)` and requires the two to agree, which is what keeps the library
-//: the authority: docs/internals/smem_layout.md#stage-offset
-template <int COLS>
-__host__ __device__ constexpr int stage_xor_mask(int row) {
-  return static_cast<int>((static_cast<unsigned>(row * COLS) >> 6)
-                          & ((1u << stage_swizzle_b<COLS>()) - 1u))
-         << 3;
-}
-
-template <int COLS>
-__host__ __device__ __forceinline__ constexpr int stage_offset(int row, int col) {
-  return row * COLS + (col ^ stage_xor_mask<COLS>(row));
-}
-
-template <int ROWS, int COLS>
-constexpr bool stage_offset_matches_cute() {
-  static_assert(COLS >= 16, "the swizzle's XOR source must come from the row index");
-  static_assert(COLS >= 8 << stage_swizzle_b<COLS>(),
-                "the swizzle's XOR target must lie inside one row");
-  for (int r = 0; r < ROWS; ++r)
-    for (int c = 0; c < COLS; ++c)
-      if (stage_offset<COLS>(r, c) != StageLayout<ROWS, COLS>{}(r, c)) return false;
-  return true;
-}
-
-//: PROOF 1 -- the layout is a BIJECTION onto `[0, ROWS * COLS)`, which is what
-//: licenses the reservation: a swizzle that overflowed its tile would alias the NEXT
-//: buffer. docs/internals/smem_layout.md#stage-layout
-template <int ROWS, int COLS>
-constexpr bool stage_layout_is_bijection() {
-  bool seen[ROWS * COLS] = {};
-  for (int t = 0; t < ROWS; ++t) {
-    for (int c = 0; c < COLS; ++c) {
-      const int o = StageLayout<ROWS, COLS>{}(t, c);
-      if (o < 0 || o >= ROWS * COLS || seen[o]) return false;
-      seen[o] = true;
-    }
-  }
-  return true;
-}
-
-//: PROOF 2 -- every `ldmatrix` FETCH is conflict-free: the instruction is serviced 8
-//: lanes at a time, each lane reading a 16-byte row, so the phase is conflict-free
-//: exactly when its 8 rows cover all 32 banks. It REPLACES `banks_distinct_u16` for
-//: the staged operands and additionally checks the 16-byte ALIGNMENT `ldmatrix`
-//: requires, which no pitch predicate could see.
-template <int ROWS, int COLS>
-constexpr bool stage_ldsm_banks_ok() {
-  for (int r0 = 0; r0 + 8 <= ROWS; r0 += 8) {
-    for (int c0 = 0; c0 + 8 <= COLS; c0 += 8) {
-      unsigned banks = 0;
-      for (int l = 0; l < 8; ++l) {
-        const size_t byte = static_cast<size_t>(StageLayout<ROWS, COLS>{}(r0 + l, c0)) * 2;
-        if (byte % 16 != 0) return false;
-        for (int w = 0; w < 4; ++w) {
-          const unsigned b = static_cast<unsigned>((byte / 4 + w) % 32);
-          if (banks & (1u << b)) return false;
-          banks |= 1u << b;
-        }
-      }
-      if (banks != 0xffffffffu) return false;
-    }
-  }
-  return true;
-}
-
-//: THE SAME `ldmatrix` PHASE PREDICATE, ASKED OF A PITCHED (UNSWIZZLED) BUFFER. `WT`
-//: is stored at a derived pad, so this LICENSES the atom at that pitch rather than
-//: assuming a pad chosen for a scalar fragment map also serves a matrix load. `COLS`
-//: is the column extent actually addressed (`kGroupTokens`), smaller than `PITCH`.
 template <int ROWS, int COLS, int PITCH>
 constexpr bool pitched_ldsm_banks_ok() {
   for (int r0 = 0; r0 + 8 <= ROWS; r0 += 8) {
@@ -339,17 +194,18 @@ constexpr bool pitched_ldsm_banks_ok() {
   return true;
 }
 
-//: PROOF 3 -- the STAGING STORE stays conflict-free. Both staged buffers are filled by
-//: a flat `idx = row * COLS + col` loop at `kConsumerThreads` stride, so the same-word
-//: rule applies, asked of the swizzled addresses rather than of a stride.
-template <int ROWS, int COLS>
-constexpr bool stage_store_banks_ok() {
+//: THE SAME QUESTION FOR THE STAGING STORE. Every panel is filled by a flat
+//: `idx = row * COLS + col` loop at `kConsumerThreads` stride, so the 32 lanes of one
+//: window must land on 32 banks -- with the 16-bit rule that two lanes in the SAME
+//: 32-bit word do not conflict.
+template <int ROWS, int COLS, int PITCH>
+constexpr bool pitched_store_banks_ok() {
   for (int base = 0; base + 32 <= ROWS * COLS; base += 32) {
     int word[32] = {};
     int bank[32] = {};
     for (int l = 0; l < 32; ++l) {
       const int idx = base + l;
-      const int e = StageLayout<ROWS, COLS>{}(idx / COLS, idx % COLS);
+      const int e = (idx / COLS) * PITCH + idx % COLS;
       word[l] = e >> 1;
       bank[l] = (e >> 1) % 32;
     }
@@ -360,109 +216,65 @@ constexpr bool stage_store_banks_ok() {
   return true;
 }
 
-//: `WT`'s row pitch, and the `+8` IS THE PROOF'S ANSWER: `WT` serves GEMM 2's B map
-//: and GEMM 4's A map, and enumerated over `pad in {4, 8, 12, 16}`,
-//: `kGroupTokens + 8` is the UNIQUE pad that passes both. A swizzle here is DECLINED
-//: on measured evidence (`WT` has six addressing sites, two of them scalar row
-//: walks); the `ldmatrix` ATOMS stand, which this pitch admits.
-//: docs/internals/smem_layout.md#stage-format
-constexpr int kWtPitch = kGroupTokens + 8;
+//: **THE TOKEN-AXIS PITCH**, and the `+8` IS THE PROOF'S ANSWER: a `[* ][kGroupTokens]`
+//: block serves an `ldmatrix.trans` whose `k` axis is the block's ROW axis, and
+//: enumerated over `pad in {4, 8, 12, 16}`, `kGroupTokens + 8` is the unique pad that
+//: passes. The READ PANEL (`[BC leaves][16 tokens]`), the VALUE TILE
+//: (`[DV channels][16 tokens]`) and the WINDOW GRAM all take it.
+//: docs/internals/smem_layout.md#pitches
+constexpr int kTokPitch = kGroupTokens + 8;
 
-//: `Vw`'s ELEMENT COUNT and ADDRESS FUNCTION: stored under `StageLayout`, NO pad.
-template <int DV>
-constexpr int vw_elems() {
-  return kGroupTokens * DV;
+//: **THE LEAF-AXIS PITCH**, the same `+8` answer for the WRITE PANEL, which is stored
+//: `[16 tokens][BC leaves]` because it is read BOTH ways: as GEMM 2's A operand
+//: (`m = token, k = leaf`, the non-transposing atom) and as the fold's B operand
+//: (`k = token, n = leaf`, the transposing one). One buffer, two atoms, one pitch.
+__host__ __device__ constexpr int leaf_pitch(int BC) { return BC + 8; }
+
+//: The three panels' address functions. Functions rather than open-coded products
+//: because the `ldmatrix` fetches and the scalar staging walks must not be able to
+//: disagree about them.
+__host__ __device__ __forceinline__ constexpr int rp_index(int leaf, int t) {
+  return leaf * kTokPitch + t;
 }
 
-template <int DV>
-__host__ __device__ __forceinline__ constexpr int vw_index(int t, int ch) {
-  return stage_offset<DV>(t, ch);
+__host__ __device__ __forceinline__ constexpr int vp_index(int ch, int t) {
+  return ch * kTokPitch + t;
 }
 
-//: `WT`'s ADDRESS FUNCTION -- row-major (leaf-major) at `kWtPitch`. A function rather
-//: than an open-coded product because the `ldmatrix` fetches and the scalar walks
-//: must not be able to disagree about it.
-__host__ __device__ __forceinline__ constexpr int wt_index(int q, int t) {
-  return q * kWtPitch + t;
+__host__ __device__ __forceinline__ constexpr int wp_index(int BC, int t, int leaf) {
+  return t * leaf_pitch(BC) + leaf;
 }
 
-//: **THE STATE'S ADDRESS FUNCTION -- `StageLayout` AT THE STATE'S SHAPE.** The state's
-//: numerator block is stored as TWO bf16 PLANES (`Shi`, `Slo`: a value's bf16 rounding
-//: and its residual), each `[BC][DV]` under the very layout `Vw` is stored under, so
-//: GEMM 1's B operand is fetched by the `ldmatrix` atom that already serves `Vw`
-//: instead of packed from scalar shared loads at every use. No pad: the planes are
-//: exactly `BC * DV` elements, which is what makes the swizzle's XOR field legal.
-//: docs/internals/smem_layout.md#state-planes
-template <int DV>
-__host__ __device__ __forceinline__ constexpr int state_index(int i, int c) {
-  return stage_offset<DV>(i, c);
+//: **THE STATE'S OWNERSHIP RULE -- THE ONE FACT REGISTER RESIDENCY IS.** The state is
+//: held TRANSPOSED, `[DV channels][BC leaves]`, in the D fragments of the fold; the
+//: `m` axis is therefore the CHANNEL axis and its quantum is the MMA's `m16`. A warp
+//: owns one CHANNEL TILE and a contiguous ATOM RANGE of leaves, so the warp that
+//: WRITES an element is the warp that READS it, at the same lane -- which is the whole
+//: requirement. Warps beyond `kMTiles * reps` own no state: `reps` is capped by the
+//: atom count because a readout k-step is one whole atom.
+//: docs/internals/smem_layout.md#state-residency
+constexpr int state_m_tiles(int DV) { return DV / kMmaKQuantum; }
+
+constexpr int state_reps(int BC, int DV) {
+  const int by_warps = (kConsumerThreads / 32) / state_m_tiles(DV);
+  const int by_atoms = BC / kMmaKQuantum;
+  return by_warps < by_atoms ? by_warps : by_atoms;
 }
 
-//: The element count of ONE state plane. The MASS COLUMN is not in it: it stays fp32
-//: in its own `[BC]` array (it is the denominator of a ratio, its only consumers are
-//: broadcast-B matvecs that no `ldmatrix` could serve, and keeping it out is what
-//: leaves the planes pad-free).
-template <int BC, int DV>
-constexpr int state_plane_elems() {
-  return BC * DV;
+constexpr int state_atoms_per_warp(int BC, int DV) {
+  return (BC / kMmaKQuantum) / state_reps(BC, DV);
 }
 
-//: PROOF 4 -- A CHANNEL PAIR IS ONE 32-BIT WORD, AND EVERY PAIRED ACCESS IS
-//: CONFLICT-FREE. The swizzle XORs bit 3 and above of the column, so it cannot
-//: separate `(i, c)` from `(i, c + 1)` for even `c`: the two elements stay adjacent
-//: and the fold's read-modify-write moves a pair per instruction. This enumerates the
-//: two access patterns that use it -- the fold's `(g = lane >> 2, r = lane & 3)` map
-//: at every column tile, and the flat `idx` pair loops of the staging and the
-//: writeback -- and requires 32 distinct banks in each.
-template <int ROWS, int COLS>
-constexpr bool stage_pair_banks_ok() {
-  //: The fold's map: row `r0 + g` (`r0` a multiple of `kMmaKQuantum`), column
-  //: `nt * 8 + 2 * r`. Both `r0` and the `+ 8` sibling row keep `r0 % 8 == 0`, so one
-  //: enumeration over `g` covers both rows.
-  for (int nt = 0; nt * 8 < COLS; ++nt) {
-    unsigned banks = 0;
-    for (int g = 0; g < 8; ++g) {
-      for (int r = 0; r < 4; ++r) {
-        const int e = stage_offset<COLS>(g, nt * 8 + 2 * r);
-        if (e % 2 != 0) return false;  // the pair is not one word
-        const unsigned b = static_cast<unsigned>((e / 2) % 32);
-        if (banks & (1u << b)) return false;
-        banks |= 1u << b;
-      }
-    }
-    if (banks != 0xffffffffu) return false;
-  }
-  //: The flat pair loops: lane `l` of window `base` addresses pair `base + l` of the
-  //: row-major pair enumeration.
-  for (int base = 0; base + 32 <= ROWS * COLS / 2; base += 32) {
-    unsigned banks = 0;
-    for (int l = 0; l < 32; ++l) {
-      const int idx = base + l;
-      const int e = stage_offset<COLS>(idx / (COLS / 2), 2 * (idx % (COLS / 2)));
-      if (e % 2 != 0) return false;
-      const unsigned b = static_cast<unsigned>((e / 2) % 32);
-      if (banks & (1u << b)) return false;
-      banks |= 1u << b;
-    }
-  }
-  return true;
-}
+constexpr int state_owner_warps(int BC, int DV) { return state_m_tiles(DV) * state_reps(BC, DV); }
 
-constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
+//: fp32 registers PER LANE the state costs: one D fragment (4 floats) per 8-leaf tile,
+//: two tiles per atom. 16 at `BC = DV = 64`, inside an FA-like envelope by a wide
+//: margin (FA spends 255 registers per thread).
+constexpr int state_regs_per_lane(int BC, int DV) { return 8 * state_atoms_per_warp(BC, DV); }
 
-//: The prefetch slab is a `cp.async` DESTINATION, so its base carries the 16-byte
-//: requirement the instruction imposes -- which `align4` does not imply.
+//: The prefetch slab is a `cp.async` DESTINATION, and every `ldmatrix` source row is
+//: 16-byte aligned, so every region base carries the 16-byte requirement.
 constexpr size_t align16(size_t x) { return (x + 15) & ~static_cast<size_t>(15); }
-
-//: FRAGMENT-ORDER OPERAND SYNTHESIS. We SYNTHESISE the read coefficients in SMEM
-//: rather than receiving them, so we can store them in the order the MMA's A fragment
-//: wants -- word `w` of lane `lane` at k-step `ks` at `[ks * 128 + lane * 4 + w]` --
-//: and a warp loads a whole fragment with ONE 128-bit `uint4`: four full transactions,
-//: no bank conflict and no address arithmetic at all. ONE k-step covers ONE ATOM
-//: (`kMmaKQuantum` leaves), so the buffer is atom-blocked BY CONSTRUCTION -- which is
-//: what lets the atom walk index a live atom's block affinely.
-//: docs/internals/smem_layout.md#frag-order
-constexpr int frag_a_words(int K) { return (K / kMmaKQuantum) * 128; }
 
 //: **THE AMPLITUDE PREFETCH SLAB'S ROW PITCH, IN bf16 ELEMENTS.** One row per WINDOW
 //: TOKEN holds every SPANNED level's digit sub-range, concatenated: level `l`
@@ -481,23 +293,21 @@ constexpr int amp_slab_pitch(int BC, int D) { return ((7 + BC + 7) / 8) * 8 + 8 
 //: descriptors (`ch_lvl` / `ch_src` / `ch_atoms`) and of the issue loop.
 constexpr int amp_slab_chunks(int BC, int D) { return amp_slab_pitch(BC, D) / 8; }
 
-//: THE `Vw` / `clk` UNION, AND WHY IT IS SIZED IN **BYTES** RATHER THAN ELEMENTS.
-//: `clk` is DEAD before `Vw` is live, so it aliases `Vw`'s storage and the region is
-//: sized as the MAX OVER ITS LIVE TENANTS -- `Vw` is bf16 and `clk` fp32, so a
-//: pitch-max would under-allocate by 2x, SILENTLY. `Vw` is still ADDRESSED at its
-//: own layout; only the RESERVATION is the max, and on the DECAY arm `clk` is the
-//: larger tenant at every shipped shape:
-//: docs/internals/smem_layout.md#vw-clk-union
-//: The `Vw` REGION is `W` staged slots; `clk` is ONE buffer over the whole window
+//: THE `Vp` / `clk` UNION, AND WHY IT IS SIZED IN **BYTES** RATHER THAN ELEMENTS.
+//: `clk` is DEAD before `Vp` is live, so it aliases `Vp`'s storage and the region is
+//: sized as the MAX OVER ITS LIVE TENANTS -- `Vp` is bf16 and `clk` fp32, so a
+//: pitch-max would under-allocate by 2x, SILENTLY. Only the RESERVATION is the max;
+//: `Vp` is still ADDRESSED at its own pitch. docs/internals/smem_layout.md#vw-clk-union
+//: The `Vp` REGION is `W` staged slots; `clk` is ONE buffer over the whole window
 //: (the clock prefix runs across the window, not across a group), so the two tenants
 //: scale differently and the max is taken over both at the window's width.
 template <int BC, int DV, int D, bool DECAY, int GT>
 constexpr size_t vw_union_bytes() {
   (void)D;
-  const size_t vw = static_cast<size_t>(window_groups(GT)) * vw_elems<DV>() * sizeof(__nv_bfloat16);
+  const size_t vp = static_cast<size_t>(window_groups(GT)) * DV * kTokPitch * sizeof(__nv_bfloat16);
   const size_t clk =
       DECAY ? static_cast<size_t>(GT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
-  return align4(vw > clk ? vw : clk);
+  return align16(vp > clk ? vp : clk);
 }
 
 //: The carve UP TO the prefetch slab. Split out because the slab's base must be
@@ -507,24 +317,24 @@ constexpr size_t vw_union_bytes() {
 template <int BC, int DV, int D, bool DECAY, int GT>
 constexpr size_t consumer_smem_core_bytes() {
   constexpr int W = window_groups(GT);
-  //: THE STATE, AS TWO bf16 PLANES PLUS AN fp32 MASS COLUMN. The fp32 plane and its
-  //: `DV + 4` pad are gone: the pad existed to decorrelate banks for a SCALAR fragment
-  //: map, and the planes are read by `ldmatrix` under a swizzle that needs no pad. The
-  //: carve is `BC * (DV + 1) * 4` where it was `BC * (DV + 4) * 4`.
-  size_t b = 2 * static_cast<size_t>(state_plane_elems<BC, DV>()) * sizeof(__nv_bfloat16);
-  b += static_cast<size_t>(BC) * sizeof(float);    // the mass column
-  b += static_cast<size_t>(D) * BC * sizeof(int);  // dig
-  //: `WT`, `Vw` and `Rf` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
+  //: **THE STATE IS NOT HERE.** Its numerator lives in the fold's D fragments --
+  //: registers, one channel tile and one atom range per warp -- for the whole kernel;
+  //: only the MASS COLUMN keeps a shared-memory home, fp32, `[BC]` floats, because it
+  //: is the denominator of a ratio and its consumers are broadcast matvecs.
+  size_t b = static_cast<size_t>(BC) * sizeof(float);  // the mass column
+  //: `Rp`, `Wp` and `Vp` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
   //: buffer: that is what carries every one of their layout proofs across the
   //: window unchanged. Only `Gm` -- the window Gram -- takes a new shape.
-  b += align4(static_cast<size_t>(W) * BC * kWtPitch * sizeof(__nv_bfloat16));  // WT
-  b += vw_union_bytes<BC, DV, D, DECAY, GT>();                                  // Vw (+ clk)
-  b += static_cast<size_t>(W) * frag_a_words(BC) * sizeof(unsigned);            // Rf
-  //: THE WINDOW GRAM, `[GT][GT + 8]`. Square, though only the block LOWER TRIANGLE
-  //: is ever written or read: a packed triangular layout would make a block's base
-  //: a non-affine function of `(a, b)`, and one closed-form address function per
-  //: buffer is the standard every other operand here is held to. The waste is the
-  //: strict upper triangle.
+  b += static_cast<size_t>(W) * BC * kTokPitch * sizeof(__nv_bfloat16);                 // Rp
+  b += static_cast<size_t>(W) * kGroupTokens * leaf_pitch(BC) * sizeof(__nv_bfloat16);  // Wp
+  b += vw_union_bytes<BC, DV, D, DECAY, GT>();     // Vp (+ clk)
+  b += static_cast<size_t>(D) * BC * sizeof(int);  // dig
+  //: THE WINDOW GRAM, `[GT][GT + 8]`, holding `G^T` -- block `(b, a)` at row block
+  //: `b`, so the intra term reads it as a `k = token_b`-major B operand. Square,
+  //: though only the block lower triangle is ever written or read: a packed
+  //: triangular layout would make a block's base a non-affine function of `(a, b)`,
+  //: and one closed-form address function per buffer is the standard every other
+  //: operand here is held to.
   b += static_cast<size_t>(GT) * (GT + 8) * sizeof(__nv_bfloat16);  // Gm
   if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);      // log_keep, p_ref, s0
   //: THE COOKED SCHEDULE RING: `sched_slots(GT)` group descriptors, written by the

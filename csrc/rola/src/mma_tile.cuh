@@ -4,24 +4,26 @@
 // sequences, between the bare instruction wrappers of `mma.cuh` and the group walk of
 // `consumer_kernel.cuh`.
 //
-// What is here: the fragment-ordered A operand's element map (`frag_a_slot`), the
-// storage-format store (`stage_put`), the `[16 x 8]` tile against a fragment-ordered A,
-// its `ldmatrix`-fed forms, the MASS COLUMN's broadcast-B forms, and the compile-time
-// cross-checks that keep CuTe -- not this file -- the authority on what an `ldmatrix`
-// and an `mma.sync` fragment actually contain.
+// What is here: the two `ldmatrix` operand fetchers every staged panel is read
+// through, the storage-format store (`stage_put`), the STATE'S D-FRAGMENTS-AS-AN-A-
+// OPERAND narrowing (`state_frag_a`), the four GEMMs' tile forms, the MASS COLUMN's
+// broadcast forms, and the compile-time cross-checks that keep CuTe -- not this file
+// -- the authority on what an `ldmatrix` and an `mma.sync` fragment actually contain.
 //
 // THE MASS COLUMN IS A MATRIX COLUMN. Its denominator terms are matvecs against a
-// single column, and an `n8` tile carries a matvec by BROADCASTING that column across
-// all eight of its `n` slots: every output column then holds the same value and the
-// tile is read at `n = 0`. Seven eighths of the fragment is redundant and that is the
-// whole price -- one `mma.sync` against the scalar reduction it replaces.
+// single column, and a tile carries a matvec by BROADCASTING that column across the
+// A operand's sixteen `m` rows: every output row then holds the same value and the
+// tile is read at one row. The redundancy is the whole price -- one `mma.sync`
+// against the scalar reduction it replaces.
 //
 // bf16 IS THE ONLY OPERAND FORMAT (the one precision story: bf16 storage, fp32
 // accumulation, fp64 reference as oracle); the tf32x3 paths died with the PREC axis.
 //
 // What is NOT here: where an operand LIVES. Every address these routines take comes
-// from `smem_layout.cuh` (`vw_index`, `wt_index`, `stage_offset`), which is what makes
-// it impossible for an atom and a scalar walk over the same buffer to disagree.
+// from `smem_layout.cuh` (`rp_index`, `wp_index`, `vp_index` and the two pitches),
+// which is what makes it impossible for an atom and a scalar walk over the same
+// buffer to disagree. The STATE lives nowhere here at all: it is the caller's
+// registers.
 //
 // The fragment index maps, the `ldmatrix` atoms and their `(m, k)` readings, and the
 // bit-identity argument for each specialization: docs/internals/mma_tile.md
@@ -50,18 +52,6 @@ using rola::mma::pack_bf16x2;
 //: it is the ONE clamp point.
 using rola::clamp_bf16_finite;
 
-//: The (m, k) that fragment slot `s` holds. One k-step = one ATOM (`kMmaKQuantum`
-//: leaves), 128 words per step.
-__device__ __forceinline__ void frag_a_slot(int s, int& m, int& k) {
-  const int ks = s >> 7;
-  const int rem = s & 127;
-  const int lane = rem >> 2, w = rem & 3;
-  m = (lane >> 2) + ((w & 1) << 3);
-  const int r = lane & 3;
-  k = 16 * ks + ((w >> 1) << 3) + 2 * r;
-}
-
-__device__ __forceinline__ float mma_src(__nv_bfloat16 x) { return __bfloat162float(x); }
 //: Store a bf16 OPERAND BUFFER's element -- where §12 rule 3's format guard lives,
 //: because it is where the fp32 value last exists. THE CLAMP BELONGS AT THE WRITE:
 //: every bf16 operand buffer is written once per element per visit and read by an
@@ -77,36 +67,34 @@ __device__ __forceinline__ void stage_put(__nv_bfloat16& d, float x) {
 //:   `d0, d1 -> (row g,     col 2r, 2r+1)`
 //:   `d2, d3 -> (row g + 8, col 2r, 2r+1)`
 
-//: **A `StageLayout` BUFFER AS B, FETCHED BY ONE `ldmatrix`.** Three buffers are this
-//: kind of object -- `Vw` (B for GEMM 3 and GEMM 4) and the state's two bf16 planes
-//: (B for GEMM 1) -- and all three want the same 16(k) x 8(n) block per k-step, so
-//: ONE routine serves them. `.trans` is right because the buffer is stored `k`-major
-//: while the fragment wants `k`-adjacent pairs at a fixed `n`. BIT-IDENTICAL to an
-//: indexed path, not merely equivalent -- `ldmatrix` delivers the STORED patterns and
-//: `stage_put`'s clamp already guarantees they are finite bf16. The fragment
-//: correspondence is `static_assert`ed against CuTe's own maps below, never assumed.
+//: **THE TWO OPERAND FETCHERS, AND THERE ARE ONLY TWO.** Every staged buffer in this
+//: kernel is a PITCHED ROW-MAJOR bf16 block, so an operand is either read `m`-major
+//: by the non-transposing atom (A: `m` = row, `k` = column) or `k`-major by the
+//: transposing one (B: `k` = row, `n` = column). `pitched_ldsm_banks_ok` at the
+//: buffer's pitch is what licenses both; the fragment correspondence is
+//: `static_assert`ed against CuTe's own maps below, never assumed.
 //: docs/internals/mma_tile.md#ldsm-atoms
-template <int COLS>
-__device__ __forceinline__ void stage_frag_b(const __nv_bfloat16* __restrict__ P, int k0, int n0,
-                                             int lane, unsigned& b0, unsigned& b1) {
-  const __nv_bfloat16* src = P + stage_offset<COLS>(k0 + (lane & 15), n0);
-  cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
+__device__ __forceinline__ void pitched_frag_a(const __nv_bfloat16* __restrict__ P, int lda, int m0,
+                                               int k0, int lane, unsigned& a0, unsigned& a1,
+                                               unsigned& a2, unsigned& a3) {
+  const int row = m0 + 8 * ((lane >> 3) & 1) + (lane & 7);
+  const int col = k0 + 8 * (lane >> 4);
+  cute::SM75_U32x4_LDSM_N::copy(*reinterpret_cast<const cute::uint128_t*>(P + row * lda + col), a0,
+                                a1, a2, a3);
 }
 
-//: `WT` AS GEMM 2's B. The SAME atom against the SAME algebra: `WT` is stored
-//: leaf-major and the fragment wants `k`-adjacent pairs at a fixed `n`, which is
-//: `.trans` again. `WT16` points at the 16-ROW BLOCK (one atom) being contracted.
-__device__ __forceinline__ void wt_frag_b(const __nv_bfloat16* __restrict__ WT16, int n0, int lane,
-                                          unsigned& b0, unsigned& b1) {
-  const __nv_bfloat16* src = WT16 + wt_index(lane & 15, n0);
+__device__ __forceinline__ void pitched_frag_b(const __nv_bfloat16* __restrict__ P, int ldb, int k0,
+                                               int n0, int lane, unsigned& b0, unsigned& b1) {
+  const __nv_bfloat16* src = P + (k0 + (lane & 15)) * ldb + n0;
   cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
 }
 
 //: A fp32 PAIR DELIVERED AS TWO bf16 WORDS -- the rounded value and its residual.
-//: Two `mma.sync` against the same A fragment then carry ~16 mantissa bits of the B
-//: operand instead of 8. §12 rule 3's guard applies to BOTH words: the residual of a
-//: saturated value is itself out of range and must be narrowed the same way.
-//: docs/internals/mma_tile.md#split-bf16x2
+//: Two `mma.sync` against the same operand fragment then carry ~16 mantissa bits
+//: instead of 8. §12 rule 3's guard applies to BOTH words: the residual of a
+//: saturated value is itself out of range and must be narrowed the same way. Its one
+//: consumer is the MASS COLUMN, the denominator of a ratio, which has nothing to
+//: cancel its rounding against. docs/internals/mma_tile.md#split-bf16x2
 __device__ __forceinline__ void split_bf16x2(float x0, float x1, unsigned& hi, unsigned& lo) {
   const float c0 = clamp_bf16_finite(x0);
   const float c1 = clamp_bf16_finite(x1);
@@ -117,234 +105,152 @@ __device__ __forceinline__ void split_bf16x2(float x0, float x1, unsigned& hi, u
                    clamp_bf16_finite(c1 - __bfloat162float(h1)));
 }
 
-//: A COMPENSATED PAIR, RECONSTRUCTED. `split_bf16x2`'s inverse: the two planes' words
-//: read back as the fp32 pair they were split from, to ~16 mantissa bits. This is the
-//: fold's read half and the writeback's, and it is the ONE place the plane pair is
-//: read as a number rather than as an MMA operand.
-__device__ __forceinline__ void merge_bf16x2(unsigned hi, unsigned lo, float& x0, float& x1) {
-  const __nv_bfloat162 h = *reinterpret_cast<const __nv_bfloat162*>(&hi);
-  const __nv_bfloat162 l = *reinterpret_cast<const __nv_bfloat162*>(&lo);
-  x0 = __bfloat162float(h.x) + __bfloat162float(l.x);
-  x1 = __bfloat162float(h.y) + __bfloat162float(l.y);
+//: **THE STATE'S D FRAGMENTS, READ AS AN A OPERAND. THIS IS WHY THE STATE IS HELD
+//: TRANSPOSED.** `mma.sync`'s D map and its A map are the SAME map: D's
+//: `(m = g | g + 8, n = 2r, 2r + 1)` over the tiles at `n0 = 0` and `n0 = 8` is
+//: exactly A's `a0..a3` over `k = 0..15`. So the fold accumulates the state IN PLACE
+//: in its own D fragments and the readout consumes them with NO LOAD AT ALL -- the
+//: one format event left in the state's whole life is this narrowing, `4` words per
+//: 16-leaf k-step, where the shared-memory state paid a merge and a split at every
+//: element of every visit. `st` is one atom's eight floats: the 8-leaf tile at
+//: `k = 0..7` then the one at `k = 8..15`.
+//: docs/internals/mma_tile.md#state-frag-a
+__device__ __forceinline__ void state_frag_a(const float* __restrict__ st, unsigned& a0,
+                                             unsigned& a1, unsigned& a2, unsigned& a3) {
+  a0 = pack_bf16x2(clamp_bf16_finite(st[0]), clamp_bf16_finite(st[1]));
+  a1 = pack_bf16x2(clamp_bf16_finite(st[2]), clamp_bf16_finite(st[3]));
+  a2 = pack_bf16x2(clamp_bf16_finite(st[4]), clamp_bf16_finite(st[5]));
+  a3 = pack_bf16x2(clamp_bf16_finite(st[6]), clamp_bf16_finite(st[7]));
 }
 
-//: THE STATE'S CHANNEL PAIR, AS ONE 32-BIT WORD OF ONE PLANE. `stage_pair_banks_ok`
-//: is the proof that the swizzle keeps `(i, c)` and `(i, c + 1)` adjacent for even
-//: `c` and that every paired access is conflict-free.
-template <int DV>
-__device__ __forceinline__ unsigned& state_pair(__nv_bfloat16* __restrict__ P, int i, int c) {
-  return *reinterpret_cast<unsigned*>(P + state_index<DV>(i, c));
-}
-
-template <int DV>
-__device__ __forceinline__ unsigned state_pair_load(const __nv_bfloat16* __restrict__ P, int i,
-                                                    int c) {
-  return *reinterpret_cast<const unsigned*>(P + state_index<DV>(i, c));
-}
-
-//: **GEMM 1, THE READOUT: `y += Af . S`, WITH THE STATE FETCHED BY `ldmatrix`.** The
-//: state's numerator lives as two bf16 planes, so the B operand is TWO `ldmatrix`
-//: fetches and TWO `mma.sync` against the same A fragment -- where the fp32 state cost
-//: four scalar shared loads, four clamps and two packs PER `mma.sync` PER LANE, and
-//: cost them again at every use. The `hi` multiply is the instruction the fp32 form
-//: already issued (its B was a plain bf16 narrowing of the same value); the `lo` one
-//: is an ADDED correction, so the readout gains ~8 mantissa bits of B while shedding
-//: the packing.
-//: **THE READOUT READS THE `hi` PLANE ONLY, AND THAT IS THE SHIPPED CONTRACT, NOT A
-//: CONCESSION.** The fp32 form narrowed its B to plain bf16 at the fragment
-//: (`pack_bf16x2(clamp(x))`), so `Shi` -- which holds exactly that narrowing -- gives
-//: the numerator the SAME operand it always had. `Slo` exists to carry the STATE's own
-//: storage precision across the recurrence (the fold reads the pair, sums in fp32 and
-//: re-splits); reading it here as well would be an ADDED correction term the family
-//: budget never asked for, and it was measured at +34% `mma.sync` and +16.6%
-//: instructions on the dense cell for no wall. The denominator is the operand that
-//: genuinely needs compensation, and it gets it -- in fp32, from `Smass`.
-//:
-//: **THE K-LOOP IS A TWO-STAGE SOFTWARE PIPELINE**, and that is what the plane form is
-//: FOR: k-step `ks + 1`'s fragments are issued BEFORE k-step `ks`'s `mma.sync`, so the
-//: shared-memory latency of a fetch is covered by the multiply of its predecessor
-//: rather than by a sibling warp. `ldmatrix` -> `mma.sync` is a fixed-latency
-//: dependency (`stall_wait`) behind a shared one (`short_scoreboard`); an fp32 B could
-//: not be pipelined this way because its "fetch" was four scalar loads and six ALU
-//: instructions that the multiply had no room to hide.
-//: The trip count is COMPILE-TIME and the loop carries NO runtime bound: `KMAX` is the
-//: contraction extent at both call sites, so the fetch of stage `KS` is never emitted.
-//: docs/internals/mma_tile.md#mma-tile-fraga
-template <int DV, int KMAX>
-__device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict__ Af,
-                                                      const __nv_bfloat16* __restrict__ Shi,
-                                                      int row0, int n0, int lane, float& d0,
-                                                      float& d1, float& d2, float& d3) {
-  constexpr int KS = KMAX / kMmaKQuantum;
-  uint4 a;
-  unsigned h0, h1;
-  auto fetch = [&](int ks) {
-    a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
-    stage_frag_b<DV>(Shi, row0 + ks * kMmaKQuantum, n0, lane, h0, h1);
-  };
-  fetch(0);
-#pragma unroll
-  for (int ks = 0; ks < KS; ++ks) {
-    //: The stage in flight is COPIED OUT before the next fetch overwrites it -- that
-    //: copy IS the second buffer, and it is registers, which is what the budget is for.
-    const uint4 ac = a;
-    const unsigned c0 = h0, c1 = h1;
-    if (ks + 1 < KS) fetch(ks + 1);
-    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
-  }
-}
-
-//: THE MASS COLUMN's READOUT TILE, `d += Af . m`, WITH THE COLUMN COMPENSATED.
-//: The B operand is the state's fp32 MASS COLUMN and it is the DENOMINATOR OF A RATIO:
-//: unlike the numerator's columns it has nothing to cancel its rounding against, and
-//: a single bf16 narrowing of it was MEASURED to put the bf16 family gate 12% over
-//: budget at `T = 2048` on the decay arm. So it stays fp32 in storage, rides
-//: `split_bf16x2` at the fragment, and the tile is two `mma.sync` -- both broadcast
-//: across the tile's eight `n` slots, so output column 0 carries the matvec. The
-//: column is CONTIGUOUS (`[BC]`, its own array), so the fetch is `bcast_frag_b`'s map
-//: with the compensation added rather than a strided walk of the state.
-//: docs/internals/mma_tile.md#mass-column
-//: Its k-loop is the SAME two-stage pipeline the numerator's is, for the same reason:
-//: the column's four scalar loads are a shared dependency the previous k-step's two
-//: multiplies can cover.
-template <int KMAX>
-__device__ __forceinline__ void mma_tile_fragA_massB(const unsigned* __restrict__ Af,
-                                                     const float* __restrict__ m, int lane,
-                                                     float& d0, float& d1, float& d2, float& d3) {
-  constexpr int KS = KMAX / kMmaKQuantum;
-  const int r = lane & 3;
-  uint4 a;
-  unsigned h0, h1, l0, l1;
-  auto fetch = [&](int ks) {
-    a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
-    const int ca = ks * kMmaKQuantum + r * 2;
-    split_bf16x2(m[ca], m[ca + 1], h0, l0);
-    split_bf16x2(m[ca + 8], m[ca + 9], h1, l1);
-  };
-  fetch(0);
-#pragma unroll
-  for (int ks = 0; ks < KS; ++ks) {
-    const uint4 ac = a;
-    const unsigned c0 = h0, c1 = h1, c2 = l0, c3 = l1;
-    if (ks + 1 < KS) fetch(ks + 1);
-    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
-    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c2, c3, d0, d1, d2, d3);
-  }
-}
-
-//: THE MASS COLUMN's B, WHEN THE COLUMN IS A REGISTER-SIDE VECTOR: `v[k]` broadcast
-//: across the tile's eight `n` slots. The B fragment's `k` map is
-//: `2r + (w & 1) + 8 * (w >> 1)` and its `n` map is `g`, so a broadcast B is
-//: `g`-INDEPENDENT -- four scalar loads and two packs for the whole fragment,
-//: whatever the tile's `n0`. §12 rule 3's guard applies here because this is where
-//: the fp32 row scale is narrowed. docs/internals/mma_tile.md#bcast-frag-b
-__device__ __forceinline__ void bcast_frag_b(const float* __restrict__ v, int lane, unsigned& b0,
-                                             unsigned& b1) {
+//: A REGISTER-SIDE VECTOR BROADCAST ACROSS A FRAGMENT. The B fragment's `k` map is
+//: `2r + (v & 1) + 8 * (v >> 1)` and its `n` map is `g`, so a `k`-only vector is
+//: `g`-INDEPENDENT: four scalar loads and two packs for the whole fragment. THE SAME
+//: TWO WORDS SERVE AS AN A OPERAND -- A's `k` map is the same and its `m` map is `g`,
+//: so the broadcast A fragment is `(w0, w0, w1, w1)`. §12 rule 3's guard applies
+//: here because this is where the fp32 row scale is narrowed.
+//: docs/internals/mma_tile.md#bcast-frag
+__device__ __forceinline__ void bcast_frag(const float* __restrict__ v, int lane, unsigned& w0,
+                                           unsigned& w1) {
   const int k0 = 2 * (lane & 3);
-  b0 = pack_bf16x2(clamp_bf16_finite(v[k0]), clamp_bf16_finite(v[k0 + 1]));
-  b1 = pack_bf16x2(clamp_bf16_finite(v[k0 + 8]), clamp_bf16_finite(v[k0 + 9]));
+  w0 = pack_bf16x2(clamp_bf16_finite(v[k0]), clamp_bf16_finite(v[k0 + 1]));
+  w1 = pack_bf16x2(clamp_bf16_finite(v[k0 + 8]), clamp_bf16_finite(v[k0 + 9]));
 }
 
-//: A `[16 m x 16 k]` bf16 A OPERAND FETCHED BY ONE `ldmatrix.x4` out of a PITCHED,
-//: `k`-adjacent buffer -- the form `ldmatrix` reads WITHOUT transposing. THE
-//: ADDRESSING IS THE ATOM'S OWN -- `SM75_U32x4_LDSM_N`'s source tile is FOUR 8x8
-//: MATRICES STACKED, not a 16x16 block -- and the `(m, k)` reading of those four is
-//: the CALLER's, checked over all 256 slots by `ldsm_n_dst_map_matches`. Both A
-//: operands in this file are this shape: `WT`'s 16-row atom block (GEMM 4) and the
-//: Gram (GEMM 3). docs/internals/mma_tile.md#ldsm-atoms
-__device__ __forceinline__ void ldsm_frag_a(const __nv_bfloat16* __restrict__ A, int lda, int lane,
-                                            unsigned& a0, unsigned& a1, unsigned& a2,
-                                            unsigned& a3) {
-  const int row = 8 * ((lane >> 3) & 1) + (lane & 7);
-  const int col = 8 * (lane >> 4);
-  cute::SM75_U32x4_LDSM_N::copy(*reinterpret_cast<const cute::uint128_t*>(A + row * lda + col), a0,
-                                a1, a2, a3);
+//: THE SAME BROADCAST, COMPENSATED, for the MASS COLUMN: it is the denominator of a
+//: ratio and a single bf16 narrowing of it was MEASURED to put the bf16 family gate
+//: 12% over budget at `T = 2048` on the decay arm, so it rides `split_bf16x2` at the
+//: fragment and its tile is two `mma.sync`. docs/internals/mma_tile.md#mass-column
+__device__ __forceinline__ void bcast_frag_split(const float* __restrict__ v, int lane,
+                                                 unsigned& h0, unsigned& h1, unsigned& l0,
+                                                 unsigned& l1) {
+  const int k0 = 2 * (lane & 3);
+  split_bf16x2(v[k0], v[k0 + 1], h0, l0);
+  split_bf16x2(v[k0 + 8], v[k0 + 9], h1, l1);
 }
 
-__device__ __forceinline__ void wt_frag_a(const __nv_bfloat16* __restrict__ WT16, int lane,
-                                          unsigned& a0, unsigned& a1, unsigned& a2, unsigned& a3) {
-  ldsm_frag_a(WT16, kWtPitch, lane, a0, a1, a2, a3);
-}
-
-//: GEMM 4, THE FOLD, WITH BOTH OPERANDS FETCHED BY `ldmatrix`:
-//: `S += WT^T . Vw` for ONE ATOM's 16-row block of `WT` (the contraction axis is the
-//: group's `kGroupTokens == 16` tokens: exactly one k-step).
-template <int DV>
-__device__ __forceinline__ void mma_fold_tile(const __nv_bfloat16* __restrict__ WT16,
-                                              const __nv_bfloat16* __restrict__ Vw, int n0,
-                                              int lane, float& d0, float& d1, float& d2,
-                                              float& d3) {
-  unsigned a0, a1, a2, a3, b0, b1;
-  wt_frag_a(WT16, lane, a0, a1, a2, a3);
-  stage_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
-}
-
-//: THE MASS COLUMN's TILE, `d += A . v`, FOR AN `ldmatrix`-FETCHED A. ONE routine
-//: serves both mass terms that contract over the group's tokens -- the fold's
-//: (`A = WT`'s atom block, `v = sw`) and the intra term's (`A = Gm`, `v = sw`) --
-//: because they are the same matvec against different pitched blocks. Output column
-//: `0` (lanes with `r == 0`) carries rows `g` and `g + 8`.
-__device__ __forceinline__ void mma_tile_bcastB(const __nv_bfloat16* __restrict__ A, int lda,
-                                                const float* __restrict__ v, int lane, float& d0,
-                                                float& d1, float& d2, float& d3) {
-  unsigned a0, a1, a2, a3, b0, b1;
-  ldsm_frag_a(A, lda, lane, a0, a1, a2, a3);
-  bcast_frag_b(v, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
-}
-
-//: GEMM 3, `y += G . Vw`, with the Gram fetched by `ldmatrix` exactly as the fold
-//: fetches `WT`: both are pitched, `k`-adjacent bf16 blocks, and
-//: `pitched_ldsm_banks_ok` licenses the pitch. The Gram's §12 rule 3 guard is at its
-//: STORE (`stage_put`), which is what makes an `ldmatrix` fetch legal here at all.
-template <int DV>
-__device__ __forceinline__ void mma_tile_vwB(const __nv_bfloat16* __restrict__ A, int lda,
-                                             const __nv_bfloat16* __restrict__ Vw, int n0, int lane,
-                                             float& d0, float& d1, float& d2, float& d3) {
-  unsigned a0, a1, a2, a3, b0, b1;
-  ldsm_frag_a(A, lda, lane, a0, a1, a2, a3);
-  stage_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
-}
-
-//: GEMM 2 WITH A FRAGMENT-ORDERED A AND `WT` FETCHED BY `ldmatrix`, for ONE ATOM:
-//: `Af16` is the atom's 128-word fragment block, `WT16` its 16-row `WT` block. This is
-//: the SPARSE arm's tile -- the live-atom walk is a runtime loop over set bits, so its
-//: next atom's address is not known until the current one retires.
-__device__ __forceinline__ void mma_tile_fragA_wtB(const unsigned* __restrict__ Af16,
-                                                   const __nv_bfloat16* __restrict__ WT16, int n0,
-                                                   int lane, float& d0, float& d1, float& d2,
-                                                   float& d3) {
-  const uint4 a = *reinterpret_cast<const uint4*>(Af16 + lane * 4);
+//: **GEMM 1, THE READOUT: `y^T += S^T . Rp`.** A is the warp's own state registers, so
+//: the k-loop's ONLY memory traffic is the B fragment -- and it is a TWO-STAGE
+//: SOFTWARE PIPELINE: k-step `ks + 1`'s `ldmatrix` is issued before k-step `ks`'s
+//: `mma.sync`, so the shared-memory latency of a fetch is covered by the multiply of
+//: its predecessor rather than by a sibling warp. One k-step is one ATOM.
+//: docs/internals/mma_tile.md#gemm-readout
+template <int KS>
+__device__ __forceinline__ void mma_readout_tile(const float* __restrict__ st,
+                                                 const __nv_bfloat16* __restrict__ Rp, int leaf0,
+                                                 int n0, int lane, float& d0, float& d1, float& d2,
+                                                 float& d3) {
   unsigned b0, b1;
-  wt_frag_b(WT16, n0, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, b0, b1, d0, d1, d2, d3);
+  auto fetch = [&](int ks) {
+    pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, n0, lane, b0, b1);
+  };
+  fetch(0);
+#pragma unroll
+  for (int ks = 0; ks < KS; ++ks) {
+    const unsigned c0 = b0, c1 = b1;
+    unsigned a0, a1, a2, a3;
+    state_frag_a(st + ks * 8, a0, a1, a2, a3);
+    if (ks + 1 < KS) fetch(ks + 1);
+    mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, c0, c1, d0, d1, d2, d3);
+  }
 }
 
-//: GEMM 2's DENSE ARM, AS THE SAME TWO-STAGE PIPELINE the readout's k-loop runs: every
-//: atom is live, so the whole atom sequence is known at compile time and atom `q + 1`'s
-//: fragments are issued before atom `q`'s multiply. This is the arm `mask == kFullMask`
-//: selects, and it is where `BC = 64`'s four atoms are four chained
-//: `ldmatrix` -> `mma.sync` dependencies otherwise.
+//: A `[16 x 8]` TILE FROM TWO PITCHED BUFFERS -- the shape three of the four GEMMs
+//: reduce to now that every operand is pitched row-major: GEMM 2's Gram sub-block
+//: (`A = Wp`, `B = Rp`), GEMM 3's intra term (`A = Vp`, `B = Gm`) and GEMM 4's fold
+//: (`A = Vp`, `B = Wp`).
+__device__ __forceinline__ void mma_pitched_tile(const __nv_bfloat16* __restrict__ A, int lda,
+                                                 int m0, int k0,
+                                                 const __nv_bfloat16* __restrict__ B, int ldb,
+                                                 int kb0, int n0, int lane, float& d0, float& d1,
+                                                 float& d2, float& d3) {
+  unsigned a0, a1, a2, a3, b0, b1;
+  pitched_frag_a(A, lda, m0, k0, lane, a0, a1, a2, a3);
+  pitched_frag_b(B, ldb, kb0, n0, lane, b0, b1);
+  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
+}
+
+//: GEMM 2's DENSE ARM, AS A TWO-STAGE PIPELINE: every atom is live, so the whole atom
+//: sequence is known at compile time and atom `q + 1`'s fragments are issued before
+//: atom `q`'s multiply. This is the arm `mask == kFullMask` selects, and it is where
+//: `BC = 64`'s four atoms are four chained `ldmatrix` -> `mma.sync` dependencies
+//: otherwise.
 template <int QPO>
-__device__ __forceinline__ void mma_tile_fragA_wtB_atoms(const unsigned* __restrict__ Af,
-                                                         const __nv_bfloat16* __restrict__ WT,
-                                                         int n0, int lane, float& d0, float& d1,
-                                                         float& d2, float& d3) {
-  uint4 a;
-  unsigned b0, b1;
+__device__ __forceinline__ void mma_gram_atoms(const __nv_bfloat16* __restrict__ Wp, int ldw,
+                                               const __nv_bfloat16* __restrict__ Rp, int n0,
+                                               int lane, float& d0, float& d1, float& d2,
+                                               float& d3) {
+  unsigned a0, a1, a2, a3, b0, b1;
   auto fetch = [&](int q) {
-    a = *reinterpret_cast<const uint4*>(Af + q * 128 + lane * 4);
-    wt_frag_b(WT + q * kMmaKQuantum * kWtPitch, n0, lane, b0, b1);
+    pitched_frag_a(Wp, ldw, 0, q * kMmaKQuantum, lane, a0, a1, a2, a3);
+    pitched_frag_b(Rp, kTokPitch, q * kMmaKQuantum, n0, lane, b0, b1);
   };
   fetch(0);
 #pragma unroll
   for (int q = 0; q < QPO; ++q) {
-    const uint4 ac = a;
-    const unsigned c0 = b0, c1 = b1;
+    const unsigned x0 = a0, x1 = a1, x2 = a2, x3 = a3, c0 = b0, c1 = b1;
     if (q + 1 < QPO) fetch(q + 1);
-    mma_m16n8k16(d0, d1, d2, d3, ac.x, ac.y, ac.z, ac.w, c0, c1, d0, d1, d2, d3);
+    mma_m16n8k16(d0, d1, d2, d3, x0, x1, x2, x3, c0, c1, d0, d1, d2, d3);
+  }
+}
+
+//: A MATVEC TILE, `d += broadcast(v) . B`: the vector rides the A operand's `k` axis
+//: and is broadcast across the tile's sixteen `m` rows, so EVERY output row carries
+//: the same result and the tile is read at any `m`. Fifteen sixteenths of the
+//: fragment is redundant and that is the whole price -- one
+//: `mma.sync` against the scalar reduction it replaces. Both denominator terms that
+//: contract over tokens (`B = Gm` for the intra term, `B = Wp` for the fold's) are
+//: this shape.
+__device__ __forceinline__ void mma_bcastA_tile(const float* __restrict__ v,
+                                                const __nv_bfloat16* __restrict__ B, int ldb,
+                                                int k0, int n0, int lane, float& d0, float& d1,
+                                                float& d2, float& d3) {
+  unsigned w0, w1, b0, b1;
+  bcast_frag(v, lane, w0, w1);
+  pitched_frag_b(B, ldb, k0, n0, lane, b0, b1);
+  mma_m16n8k16(d0, d1, d2, d3, w0, w0, w1, w1, b0, b1, d0, d1, d2, d3);
+}
+
+//: THE MASS COLUMN'S READOUT TILE, `d += broadcast(Smass) . Rp`, WITH THE COLUMN
+//: COMPENSATED: two `mma.sync` per k-step against the hi and lo halves of the same
+//: column. Its k-loop is the SAME two-stage pipeline the numerator's is.
+template <int KS>
+__device__ __forceinline__ void mma_mass_readout(const float* __restrict__ m,
+                                                 const __nv_bfloat16* __restrict__ Rp, int leaf0,
+                                                 int n0, int lane, float& d0, float& d1, float& d2,
+                                                 float& d3) {
+  unsigned h0, h1, l0, l1, b0, b1;
+  auto fetch = [&](int ks) {
+    bcast_frag_split(m + leaf0 + ks * kMmaKQuantum, lane, h0, h1, l0, l1);
+    pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, n0, lane, b0, b1);
+  };
+  fetch(0);
+#pragma unroll
+  for (int ks = 0; ks < KS; ++ks) {
+    const unsigned x0 = h0, x1 = h1, y0 = l0, y1 = l1, c0 = b0, c1 = b1;
+    if (ks + 1 < KS) fetch(ks + 1);
+    mma_m16n8k16(d0, d1, d2, d3, x0, x0, x1, x1, c0, c1, d0, d1, d2, d3);
+    mma_m16n8k16(d0, d1, d2, d3, y0, y0, y1, y1, c0, c1, d0, d1, d2, d3);
   }
 }
 
@@ -385,8 +291,10 @@ constexpr bool ldsm_t_src_map_matches() {
 }
 
 //: THE SAME QUESTION FOR THE `.N` ATOM AND THE A FRAGMENT: under the `(m, k)`
-//: reading `wt_frag_a` implements, the destination map must equal the `a0..a3`
-//: packing and the source map must be `row = lane`.
+//: reading `pitched_frag_a` implements, the destination map must equal the `a0..a3`
+//: packing and the source map must be `row = lane`. It is also the map
+//: `state_frag_a` packs INTO, which is what makes the fold's D fragments a legal A
+//: operand.
 constexpr bool ldsm_n_dst_map_matches() {
   using Dst = typename cute::Copy_Traits<cute::SM75_U32x4_LDSM_N>::DstLayout;
   for (int lane = 0; lane < 32; ++lane) {
