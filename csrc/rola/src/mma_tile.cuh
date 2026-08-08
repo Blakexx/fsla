@@ -151,28 +151,51 @@ __device__ __forceinline__ void bcast_frag_split(const float* __restrict__ v, in
 
 //: **GEMM 1, THE READOUT: `y^T += S^T . Rp`.** A is the warp's own state registers, so
 //: the k-loop's ONLY memory traffic is the B fragment -- and it is a TWO-STAGE
-//: SOFTWARE PIPELINE: k-step `ks + 1`'s `ldmatrix` is issued before k-step `ks`'s
+//: SOFTWARE PIPELINE: k-step `ks + 1`'s `ldmatrix`s are issued before k-step `ks`'s
 //: `mma.sync`, so the shared-memory latency of a fetch is covered by the multiply of
 //: its predecessor rather than by a sibling warp. One k-step is one ATOM.
-//: docs/internals/mma_tile.md#gemm-readout
+//: **BOTH TOKEN TILES RIDE ONE A OPERAND, AND THAT IS THE ILP POINT**: the group's
+//: sixteen tokens are two `n8` tiles over the SAME sixteen state channels, so the
+//: narrowing happens once and the two `mma.sync` are INDEPENDENT -- back-to-back
+//: issue from one warp, with no dependency gap for the scheduler to cover by
+//: switching to another. docs/internals/mma_tile.md#gemm-readout
 template <int KS>
-__device__ __forceinline__ void mma_readout_tile(const float* __restrict__ st,
-                                                 const __nv_bfloat16* __restrict__ Rp, int leaf0,
-                                                 int n0, int lane, float& d0, float& d1, float& d2,
-                                                 float& d3) {
-  unsigned b0, b1;
+__device__ __forceinline__ void mma_readout_tiles(const float* __restrict__ st,
+                                                  const __nv_bfloat16* __restrict__ Rp, int leaf0,
+                                                  int lane, float (&d)[2][4]) {
+  unsigned b00, b01, b10, b11;
   auto fetch = [&](int ks) {
-    pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, n0, lane, b0, b1);
+    pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, 0, lane, b00, b01);
+    pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, 8, lane, b10, b11);
   };
   fetch(0);
 #pragma unroll
   for (int ks = 0; ks < KS; ++ks) {
-    const unsigned c0 = b0, c1 = b1;
+    const unsigned c00 = b00, c01 = b01, c10 = b10, c11 = b11;
     unsigned a0, a1, a2, a3;
     state_frag_a(st + ks * 8, a0, a1, a2, a3);
     if (ks + 1 < KS) fetch(ks + 1);
-    mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, c0, c1, d0, d1, d2, d3);
+    mma_m16n8k16(d[0][0], d[0][1], d[0][2], d[0][3], a0, a1, a2, a3, c00, c01, d[0][0], d[0][1],
+                 d[0][2], d[0][3]);
+    mma_m16n8k16(d[1][0], d[1][1], d[1][2], d[1][3], a0, a1, a2, a3, c10, c11, d[1][0], d[1][1],
+                 d[1][2], d[1][3]);
   }
+}
+
+//: **A TILE AGAINST AN A OPERAND THE CALLER ALREADY HOLDS.** GEMM 4's A is the group's
+//: VALUE TILE at the warp's channel rows -- ONE fragment for EVERY state tile the warp
+//: owns -- so the fold fetches it once per staged group and issues `2 * kAPW`
+//: INDEPENDENT `mma.sync` against it, into `2 * kAPW` independent accumulators. That
+//: is the deep unrolled form: one `ldmatrix.x4` where a per-tile routine paid one
+//: each, and no dependency chain between consecutive multiplies.
+//: docs/internals/mma_tile.md#gemm-fold
+__device__ __forceinline__ void mma_fragA_pitchedB(unsigned a0, unsigned a1, unsigned a2,
+                                                   unsigned a3, const __nv_bfloat16* __restrict__ B,
+                                                   int ldb, int k0, int n0, int lane, float& d0,
+                                                   float& d1, float& d2, float& d3) {
+  unsigned b0, b1;
+  pitched_frag_b(B, ldb, k0, n0, lane, b0, b1);
+  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
 }
 
 //: A `[16 x 8]` TILE FROM TWO PITCHED BUFFERS -- the shape three of the four GEMMs
@@ -184,10 +207,9 @@ __device__ __forceinline__ void mma_pitched_tile(const __nv_bfloat16* __restrict
                                                  const __nv_bfloat16* __restrict__ B, int ldb,
                                                  int kb0, int n0, int lane, float& d0, float& d1,
                                                  float& d2, float& d3) {
-  unsigned a0, a1, a2, a3, b0, b1;
+  unsigned a0, a1, a2, a3;
   pitched_frag_a(A, lda, m0, k0, lane, a0, a1, a2, a3);
-  pitched_frag_b(B, ldb, kb0, n0, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
+  mma_fragA_pitchedB(a0, a1, a2, a3, B, ldb, kb0, n0, lane, d0, d1, d2, d3);
 }
 
 //: GEMM 2's DENSE ARM, AS A TWO-STAGE PIPELINE: every atom is live, so the whole atom

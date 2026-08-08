@@ -1084,21 +1084,16 @@ consumer_forward_kernel(ConsumerParams p) {
       if (!owns || rmr[a] == 0u) continue;
       const __nv_bfloat16* const Rpa = Rp + a * kRpSlotElems;
       const unsigned rmask = rmr[a] & own_mask;
+      if (rmask == own_mask) {
+        mma_readout_tiles<kAPW>(St, Rpa, atom0 * kMmaKQuantum, lane, y[a]);
+      } else {
+        //: **THE SPARSE ARM WALKS THE WARP'S OWN ATOM SLOTS AT COMPILE TIME**, testing
+        //: the mask bit, rather than walking the set bits: a runtime index into `St`
+        //: would put the state in LOCAL MEMORY and undo the whole batch.
 #pragma unroll
-      for (int nt = 0; nt < 2; ++nt) {
-        if (rmask == own_mask) {
-          mma_readout_tile<kAPW>(St, Rpa, atom0 * kMmaKQuantum, nt * 8, lane, y[a][nt][0],
-                                 y[a][nt][1], y[a][nt][2], y[a][nt][3]);
-        } else {
-          //: **THE SPARSE ARM WALKS THE WARP'S OWN ATOM SLOTS AT COMPILE TIME**, testing
-          //: the mask bit, rather than walking the set bits: a runtime index into `St`
-          //: would put the state in LOCAL MEMORY and undo the whole batch.
-#pragma unroll
-          for (int ai = 0; ai < kAPW; ++ai) {
-            if (((rmask >> (atom0 + ai)) & 1u) == 0u) continue;
-            mma_readout_tile<1>(St + ai * 8, Rpa, (atom0 + ai) * kMmaKQuantum, nt * 8, lane,
-                                y[a][nt][0], y[a][nt][1], y[a][nt][2], y[a][nt][3]);
-          }
+        for (int ai = 0; ai < kAPW; ++ai) {
+          if (((rmask >> (atom0 + ai)) & 1u) == 0u) continue;
+          mma_readout_tiles<1>(St + ai * 8, Rpa, (atom0 + ai) * kMmaKQuantum, lane, y[a]);
         }
       }
     }
@@ -1336,35 +1331,48 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- range per warp -- so it is static, uniform-cost and costs no atomic.
     // ---- docs/internals/consumer_kernel.md#gemm-fold
     if (w_write && owns) {
+      //: **ONE A OPERAND FEEDS EVERY TILE THE WARP OWNS.** The value tile's fragment at
+      //: the warp's channel rows is the same for all `2 * kAPW` state tiles, so it is
+      //: fetched ONCE per staged group and the multiplies that follow are independent
+      //: back-to-back issue into independent accumulators -- the deep unrolled form the
+      //: register-resident state exists to make possible.
 #pragma unroll
-      for (int ai = 0; ai < kAPW; ++ai) {
-        const int q = atom0 + ai;
-        //: A dead atom's rows are exact zeros and its `s0` is exactly 1, so skipping
-        //: it is the identity rather than an approximation.
-        if (((w_wmask >> q) & 1u) == 0u) continue;
+      for (int b = 0; b < W; ++b) {
+        unsigned va0, va1, va2, va3;
+        pitched_frag_a(Vp + b * kVpSlotElems, kTokPitch, m0, 0, lane, va0, va1, va2, va3);
+        //: **THE WINDOW'S DEPOSITS ACCUMULATE WITH NO PREDICATE AT ALL** -- in ascending
+        //: group order, over every staged slot. Every slot of a write-live window holds
+        //: real coefficients or exact zeros (the staging above guarantees it) and a dead
+        //: ATOM's rows are exact zeros by self-masking, so an unconditional `mma.sync` is
+        //: EXACT and the hot loop carries no test.
 #pragma unroll
-        for (int half = 0; half < 2; ++half) {
-          const int n0 = q * kMmaKQuantum + 8 * half;
-          float* const st = St + ai * 8 + half * 4;
-          //: **THE WINDOW'S DEPOSITS ACCUMULATE WITH NO PREDICATE AT ALL** -- in
-          //: ascending group order, over every staged slot. Every slot of a write-live
-          //: window holds real coefficients or exact zeros (the staging above
-          //: guarantees it) and a dead ATOM's rows are exact zeros by self-masking, so
-          //: an unconditional `mma.sync` is EXACT and the hot loop carries no test.
+        for (int ai = 0; ai < kAPW; ++ai) {
+          //: A dead atom's rows are exact zeros and its `s0` is exactly 1, so skipping
+          //: it is the identity rather than an approximation.
+          if (((w_wmask >> (atom0 + ai)) & 1u) == 0u) continue;
 #pragma unroll
-          for (int b = 0; b < W; ++b) {
-            mma_pitched_tile(Vp + b * kVpSlotElems, kTokPitch, m0, 0, Wp + b * kWpSlotElems,
-                             kWpPitch, 0, n0, lane, st[0], st[1], st[2], st[3]);
+          for (int half = 0; half < 2; ++half) {
+            float* const st = St + ai * 8 + half * 4;
+            mma_fragA_pitchedB(va0, va1, va2, va3, Wp + b * kWpSlotElems, kWpPitch, 0,
+                               (atom0 + ai) * kMmaKQuantum + 8 * half, lane, st[0], st[1], st[2],
+                               st[3]);
           }
-          // ---- DECAY's EXIT SCALE RIDES THE ACCUMULATOR, ONCE PER WINDOW: one
-          // ---- multiply on a register value. It is once per window rather than once
-          // ---- per group because every deposit is already in the window's ONE
-          // ---- reference frame (`keep^{P_ref - P[u]}`), so the deposits simply add
-          // ---- before the frame is left.
-          // ---- docs/internals/consumer_kernel.md#fold-epilogue
-          if (DECAY) {
-            const int i0 = n0 + 2 * _sr;
+        }
+      }
+      // ---- DECAY's EXIT SCALE RIDES THE ACCUMULATOR, ONCE PER WINDOW: one multiply on
+      // ---- a register value. It is once per window rather than once per group because
+      // ---- every deposit is already in the window's ONE reference frame
+      // ---- (`keep^{P_ref - P[u]}`), so the deposits simply add before the frame is
+      // ---- left. docs/internals/consumer_kernel.md#fold-epilogue
+      if (DECAY) {
+#pragma unroll
+        for (int ai = 0; ai < kAPW; ++ai) {
+          if (((w_wmask >> (atom0 + ai)) & 1u) == 0u) continue;
+#pragma unroll
+          for (int half = 0; half < 2; ++half) {
+            const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
             const float sa = s0[i0], sb = s0[i0 + 1];
+            float* const st = St + ai * 8 + half * 4;
             st[0] *= sa;
             st[1] *= sb;
             st[2] *= sa;

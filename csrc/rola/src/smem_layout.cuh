@@ -130,19 +130,30 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
               "fetch floor, the MMA k-quantum and the union granule coincide BY "
               "CONSTRUCTION, and the walk assumes it");
 
-//: **THE OCCUPANCY TARGET, AS ONE MEASURED NUMBER.** With the state register-resident
-//: the kernel's residency is REGISTER-bound by design: shared memory holds only the
-//: staged panels (~15 KB at the flagship, which would admit six CTAs), and occupancy
-//: buys only latency hiding, which this kernel does explicitly with rings, prefetch and
-//: cook-ahead. So the budget is set at what the GEMM working set actually wants, and
-//: the CTA count falls out of it rather than the other way round.
-//: `128` is TWO CTAs per SM (`128 * 256 * 2 = 65,536`) and it is where the census
-//: lands: forced to two CTAs, every `GT == 16` instantiation compiles at 99..125
-//: registers with ZERO SPILL on both arches, where the pre-residency budget of 64/80
-//: spilled 4..24 B on a fifth of them. The `GT == 64` window is the one arm the budget
-//: does not fully cover -- its `W`-deep readout fragments want 150..170 with full slack
-//: and it spills 12..24 B at `BC = 16` -- and that is held AT its measured magnitude by
-//: the ratchet rather than bought back with a third of the SM's registers.
+//: **THE OCCUPANCY TARGET, AS ONE MEASURED NUMBER, AND THE MEASUREMENT REFUSED THE
+//: TLP->ILP SWITCH.** With the state register-resident the kernel's shared memory holds
+//: only the staged panels -- 16.5 KB at the flagship where the SMEM state cost 31.6 --
+//: so residency stopped being SMEM-bound and this budget became the ONLY thing setting
+//: it. The expectation was FA's shape: few warps, many registers, deep unrolled
+//: independent accumulators. The deep unroll was BUILT (one A operand feeds every state
+//: tile of the fold; both token tiles of the readout share one narrowed state
+//: fragment), and then the occupancy sweep went the other way. Dense `N = L = 4096`
+//: (`p31_evidence/whole_layer.py`, block-min-median), one build per point, all with the
+//: deep unroll in:
+//:
+//:     budget  CTAs/SM  warps/SM   wall
+//:        128     2        16      15.05 ms
+//:         85     3        24      12.63 ms
+//:         64     4        32      12.42 ms
+//:         51     5        40      13.80 ms
+//:
+//: `64` is the optimum and it is a 3.8% WIN over the SMEM-state baseline's 12.91 ms.
+//: FEWER WARPS IS MONOTONICALLY WORSE HERE, by 21% at FA's own occupancy. The reading:
+//: this kernel's explicit latency hiding (rings, prefetch, cook-ahead) covers the SMEM
+//: pipeline, and the tensor pipe is not the constraint -- it runs at ~4% of peak. What
+//: is left uncovered is DRAM: the value stream's gather and the emission's `atomicAdd`
+//: traffic, whose latency only CTA-level parallelism hides. Registers bought back below
+//: `64` start costing spill faster than the fifth CTA pays.
 //: docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
   (void)BC;
@@ -150,7 +161,7 @@ constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
   (void)DV;
   (void)D;
   (void)GT;
-  return 128;
+  return 64;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
