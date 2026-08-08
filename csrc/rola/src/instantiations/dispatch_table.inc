@@ -2,20 +2,16 @@
 // The dispatch table: every arm's row, the mixed-radix key over the
 // matrix axes, and the index that turns a key into a row. Included by
 // `csrc/rola/src/consumer.cu`.
-extern const ShardRow kShardRows_consumer_gt16_decay_bc16[8];
-extern const ShardRow kShardRows_consumer_gt16_decay_bc64[8];
-extern const ShardRow kShardRows_consumer_gt16_nodecay_bc16[8];
-extern const ShardRow kShardRows_consumer_gt16_nodecay_bc64[8];
-extern const ShardRow kShardRows_consumer_gt64_decay_bc16[8];
-extern const ShardRow kShardRows_consumer_gt64_decay_bc64[8];
-extern const ShardRow kShardRows_consumer_gt64_nodecay_bc16[8];
-extern const ShardRow kShardRows_consumer_gt64_nodecay_bc64[8];
+extern const ShardRow kShardRows_consumer_decay_bc16[8];
+extern const ShardRow kShardRows_consumer_decay_bc64[8];
+extern const ShardRow kShardRows_consumer_nodecay_bc16[8];
+extern const ShardRow kShardRows_consumer_nodecay_bc64[8];
 
 constexpr ShardRowBlock kShardRowBlocks[] = {
-    {kShardRows_consumer_gt16_decay_bc16, 8},   {kShardRows_consumer_gt16_decay_bc64, 8},
-    {kShardRows_consumer_gt16_nodecay_bc16, 8}, {kShardRows_consumer_gt16_nodecay_bc64, 8},
-    {kShardRows_consumer_gt64_decay_bc16, 8},   {kShardRows_consumer_gt64_decay_bc64, 8},
-    {kShardRows_consumer_gt64_nodecay_bc16, 8}, {kShardRows_consumer_gt64_nodecay_bc64, 8},
+    {kShardRows_consumer_decay_bc16, 8},
+    {kShardRows_consumer_decay_bc64, 8},
+    {kShardRows_consumer_nodecay_bc16, 8},
+    {kShardRows_consumer_nodecay_bc64, 8},
 };
 
 inline int dispatch_axis_BC(int v) {
@@ -54,17 +50,7 @@ inline int dispatch_axis_D(int v) {
 
 inline int dispatch_axis_DECAY(bool v) { return v ? 1 : 0; }
 
-inline int dispatch_axis_GT(int v) {
-  switch (v) {
-    case 16:
-      return 0;
-    case 64:
-      return 1;
-  }
-  return -1;
-}
-
-constexpr int kDispatchKeys = 64;
+constexpr int kDispatchKeys = 32;
 
 //: The choice's mixed-radix key, or -1 if any axis carries a value
 //: this binary has no arm for.
@@ -82,43 +68,24 @@ inline int dispatch_key(const DispatchChoice& c) {
   const int i_DECAY = dispatch_axis_DECAY(c.decay);
   if (i_DECAY < 0) return -1;
   key = key * 2 + i_DECAY;
-  const int i_GT = dispatch_axis_GT(c.GT);
-  if (i_GT < 0) return -1;
-  key = key * 2 + i_GT;
   return key;
 }
 
 const ShardRow* const kRowByKey[kDispatchKeys] = {
-    &kShardRows_consumer_gt16_nodecay_bc16[0], &kShardRows_consumer_gt64_nodecay_bc16[0],
-    &kShardRows_consumer_gt16_decay_bc16[0],   &kShardRows_consumer_gt64_decay_bc16[0],
-    &kShardRows_consumer_gt16_nodecay_bc16[1], &kShardRows_consumer_gt64_nodecay_bc16[1],
-    &kShardRows_consumer_gt16_decay_bc16[1],   &kShardRows_consumer_gt64_decay_bc16[1],
-    &kShardRows_consumer_gt16_nodecay_bc16[2], &kShardRows_consumer_gt64_nodecay_bc16[2],
-    &kShardRows_consumer_gt16_decay_bc16[2],   &kShardRows_consumer_gt64_decay_bc16[2],
-    &kShardRows_consumer_gt16_nodecay_bc16[3], &kShardRows_consumer_gt64_nodecay_bc16[3],
-    &kShardRows_consumer_gt16_decay_bc16[3],   &kShardRows_consumer_gt64_decay_bc16[3],
-    &kShardRows_consumer_gt16_nodecay_bc16[4], &kShardRows_consumer_gt64_nodecay_bc16[4],
-    &kShardRows_consumer_gt16_decay_bc16[4],   &kShardRows_consumer_gt64_decay_bc16[4],
-    &kShardRows_consumer_gt16_nodecay_bc16[5], &kShardRows_consumer_gt64_nodecay_bc16[5],
-    &kShardRows_consumer_gt16_decay_bc16[5],   &kShardRows_consumer_gt64_decay_bc16[5],
-    &kShardRows_consumer_gt16_nodecay_bc16[6], &kShardRows_consumer_gt64_nodecay_bc16[6],
-    &kShardRows_consumer_gt16_decay_bc16[6],   &kShardRows_consumer_gt64_decay_bc16[6],
-    &kShardRows_consumer_gt16_nodecay_bc16[7], &kShardRows_consumer_gt64_nodecay_bc16[7],
-    &kShardRows_consumer_gt16_decay_bc16[7],   &kShardRows_consumer_gt64_decay_bc16[7],
-    &kShardRows_consumer_gt16_nodecay_bc64[0], &kShardRows_consumer_gt64_nodecay_bc64[0],
-    &kShardRows_consumer_gt16_decay_bc64[0],   &kShardRows_consumer_gt64_decay_bc64[0],
-    &kShardRows_consumer_gt16_nodecay_bc64[1], &kShardRows_consumer_gt64_nodecay_bc64[1],
-    &kShardRows_consumer_gt16_decay_bc64[1],   &kShardRows_consumer_gt64_decay_bc64[1],
-    &kShardRows_consumer_gt16_nodecay_bc64[2], &kShardRows_consumer_gt64_nodecay_bc64[2],
-    &kShardRows_consumer_gt16_decay_bc64[2],   &kShardRows_consumer_gt64_decay_bc64[2],
-    &kShardRows_consumer_gt16_nodecay_bc64[3], &kShardRows_consumer_gt64_nodecay_bc64[3],
-    &kShardRows_consumer_gt16_decay_bc64[3],   &kShardRows_consumer_gt64_decay_bc64[3],
-    &kShardRows_consumer_gt16_nodecay_bc64[4], &kShardRows_consumer_gt64_nodecay_bc64[4],
-    &kShardRows_consumer_gt16_decay_bc64[4],   &kShardRows_consumer_gt64_decay_bc64[4],
-    &kShardRows_consumer_gt16_nodecay_bc64[5], &kShardRows_consumer_gt64_nodecay_bc64[5],
-    &kShardRows_consumer_gt16_decay_bc64[5],   &kShardRows_consumer_gt64_decay_bc64[5],
-    &kShardRows_consumer_gt16_nodecay_bc64[6], &kShardRows_consumer_gt64_nodecay_bc64[6],
-    &kShardRows_consumer_gt16_decay_bc64[6],   &kShardRows_consumer_gt64_decay_bc64[6],
-    &kShardRows_consumer_gt16_nodecay_bc64[7], &kShardRows_consumer_gt64_nodecay_bc64[7],
-    &kShardRows_consumer_gt16_decay_bc64[7],   &kShardRows_consumer_gt64_decay_bc64[7],
+    &kShardRows_consumer_nodecay_bc16[0], &kShardRows_consumer_decay_bc16[0],
+    &kShardRows_consumer_nodecay_bc16[1], &kShardRows_consumer_decay_bc16[1],
+    &kShardRows_consumer_nodecay_bc16[2], &kShardRows_consumer_decay_bc16[2],
+    &kShardRows_consumer_nodecay_bc16[3], &kShardRows_consumer_decay_bc16[3],
+    &kShardRows_consumer_nodecay_bc16[4], &kShardRows_consumer_decay_bc16[4],
+    &kShardRows_consumer_nodecay_bc16[5], &kShardRows_consumer_decay_bc16[5],
+    &kShardRows_consumer_nodecay_bc16[6], &kShardRows_consumer_decay_bc16[6],
+    &kShardRows_consumer_nodecay_bc16[7], &kShardRows_consumer_decay_bc16[7],
+    &kShardRows_consumer_nodecay_bc64[0], &kShardRows_consumer_decay_bc64[0],
+    &kShardRows_consumer_nodecay_bc64[1], &kShardRows_consumer_decay_bc64[1],
+    &kShardRows_consumer_nodecay_bc64[2], &kShardRows_consumer_decay_bc64[2],
+    &kShardRows_consumer_nodecay_bc64[3], &kShardRows_consumer_decay_bc64[3],
+    &kShardRows_consumer_nodecay_bc64[4], &kShardRows_consumer_decay_bc64[4],
+    &kShardRows_consumer_nodecay_bc64[5], &kShardRows_consumer_decay_bc64[5],
+    &kShardRows_consumer_nodecay_bc64[6], &kShardRows_consumer_decay_bc64[6],
+    &kShardRows_consumer_nodecay_bc64[7], &kShardRows_consumer_decay_bc64[7],
 };

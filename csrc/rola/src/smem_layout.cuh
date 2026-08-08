@@ -43,23 +43,11 @@ constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state f
 //: THE GROUP -- the PRODUCER's work unit: `kMmaKQuantum` gathered tokens, one MMA
 //: m-quantum. It is deliberately THE SAME constant as the k-quantum: one multiply's
 //: worth of tokens against one multiply's worth of state rows. The cook, the ballot
-//: and the ring descriptor are all sized by it and none of them varies with the
-//: window below.
+//: and the ring descriptor are all sized by it. IT IS ALSO THE CONSUMER'S QUANTUM:
+//: one VISIT stages and consumes ONE group against one entry state and folds it
+//: back in one writeback, so producer and consumer share a single token extent and
+//: the executor has no second one. docs/internals/smem_layout.md#group
 constexpr int kGroupTokens = kMmaKQuantum;
-
-//: **THE WINDOW, `GT` -- THE CONSUMER'S TOKEN QUANTUM, AND A TEMPLATE AXIS.** One
-//: VISIT stages and consumes `W = GT / kGroupTokens` groups against ONE entry state
-//: and folds them back in ONE writeback. `W > 1` is not a scheduling depth: pacing
-//: the fold `W` groups behind means those groups all read the same entry state, so
-//: their mutual deposits must arrive as Gram cross-terms and the Gram has to span
-//: the window -- the enlarged-chunk formulation, whose cost is a block LOWER
-//: TRIANGULAR `[GT x GT]` Gram (`W(W+1)/2` sub-blocks) and whose payment is that
-//: every per-visit term -- the three barriers, the fold's read-modify-write of `S`,
-//: the descriptor decode -- amortises `W`-fold.
-//: `GT` is DISTRIBUTION-DEPENDENT and therefore a PLAN-SELECTED AXIS, never a
-//: raised constant: a wide window is free at dense gathering and wastes tile at low
-//: gathered-token counts. docs/internals/smem_layout.md#window
-constexpr int window_groups(int GT) { return GT / kGroupTokens; }
 
 //: THE SCHEDULE CHUNK: how many 32-token words the PRODUCER WARP cooks per
 //: refill. It is exactly one word per lane, so a refill is one cooperative load
@@ -69,44 +57,26 @@ constexpr int window_groups(int GT) { return GT / kGroupTokens; }
 constexpr int kSchedChunkWords = 32;
 static_assert(kSchedChunkWords == 32, "the cooked chunk is one word per lane of the producer warp");
 
-//: **THE RUN-AHEAD DEPTH.** How many WINDOWS' worth of groups the producer warp runs
-//: ahead of the consumers. It is a `constexpr` (overridable at compile time for the
-//: dial sweep), NEVER a template axis: the instantiation matrix does not gain a
-//: coordinate. The ring holds `depth + 1` windows, so the producer never writes the
-//: slots being read.
-//: **TWO IS THE FLOOR, AND THE PREFETCH IS WHY.** The amplitude slab for window
-//: `w + 1` is issued from inside window `w`'s visit -- that is the entire overlap --
-//: so window `w + 1`'s TOKEN LIST must already be published when window `w` is
-//: staging. At depth 1 it is not: the producer cooks `w + 1` during visit `w` and
-//: publishes it at that visit's end. Depth 2 costs `W` descriptor slots (208 B at the
-//: group quantum) and is the null configuration from here.
+//: **THE VRAM -> SMEM LINK'S DEPTH, IN STAGES, AND IT IS DERIVED FROM THE ARM'S OWN
+//: FOOTPRINT.** Every stream the visit progressively consumes -- both amplitude
+//: slabs, the value tile and the producer's row-scale scalars -- rides ONE
+//: `cp.async` pipeline of `kPfStages` buffers, so `S` buffers is `S` visits of
+//: runahead and `S = 1` is the degenerate one-buffer form (issue for the next
+//: visit, reuse guarded by the staging barrier).
+//: THE DEPTH IS BOUNDED BY CAPACITY, NEVER BY STRUCTURE: `pf_stages` below returns
+//: the LARGEST depth whose carve still admits the arm's register-bound CTA count,
+//: so a deeper pipeline is taken wherever the shared-memory budget carries it free
+//: and nowhere else. docs/internals/smem_layout.md#pf-stages
+constexpr int kPfStagesMax = 4;
+
+//: **THE SCHEDULE RUN-AHEAD, IN GROUPS.** How far ahead of the consumers the
+//: producer warp cooks. It is DERIVED from the copy depth rather than dialed: visit
+//: `v` issues group `v + S`'s copies, so that group's TOKEN LIST must already be
+//: cooked, which takes `S + 1` groups of cook-ahead. The ring holds one slot more
+//: again, so the producer never writes the slot being issued from.
 //: docs/internals/smem_layout.md#sched-ring
-#ifndef ROLA_SCHED_DEPTH
-#define ROLA_SCHED_DEPTH 2
-#endif
-constexpr int kSchedDepth = ROLA_SCHED_DEPTH;
-static_assert(kSchedDepth >= 1, "the producer must run at least one group ahead");
-
-//: The cooked ring holds a WHOLE WINDOW plus the run-ahead: the visit reads `W`
-//: descriptors at once, so `W` slots must be simultaneously live and the producer
-//: must still be cooking into slots nobody is reading.
-constexpr int sched_slots(int GT) { return window_groups(GT) * (kSchedDepth + 1); }
-
-//: **THE VALUES-SHARD DIAL (P25 contract item 4) IS STRUCTURALLY INERT AT EVERY
-//: `GT`, AND IS THEREFORE NOT BUILT -- a derivation, not an omission.** The dial's
-//: stated selection criterion is the VALUES-RING HEAD-OF-LINE residual: with one
-//: shared value tile the slowest atom consumer paces the tile's recycling, and `k`
-//: shards buy pacing slack by giving disjoint atom sets their own copies. That
-//: residual is a function of how long an atom holds a tile RELATIVE TO ITS
-//: NEIGHBOURS. The window widened the fold's accumulator residency from one staged
-//: group to `W` -- but all `W` slots are staged in the SAME PHASE of the SAME
-//: VISIT and released by the SAME end-of-window `__syncthreads()`, so every atom
-//: holds every tile for exactly the window and THE CURSOR SPREAD IS STILL ZERO.
-//: `k > 1` would be `k` byte-identical copies of tiles that no code path
-//: distinguishes -- dead storage behind a dead branch. The dial becomes live only
-//: if the window's staging stops being one barrier-delimited phase; until then `k`
-//: is a PLAN-TIME quantity, pinned at 1 by the host.
-//: docs/internals/smem_layout.md#values-shard
+constexpr int sched_depth(int stages) { return stages + 1; }
+constexpr int sched_slots(int stages) { return sched_depth(stages) + 1; }
 
 //: ONE COOKED GROUP DESCRIPTOR, in ints: the `kGroupTokens` gathered GLOBAL token
 //: indices (ascending -- stability IS causality), then `gN` (the group's member
@@ -155,12 +125,11 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
 //: traffic, whose latency only CTA-level parallelism hides. Registers bought back below
 //: `64` start costing spill faster than the fifth CTA pays.
 //: docs/internals/smem_layout.md#reg-budget
-constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D, int GT) {
+constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)BC;
   (void)decay;
   (void)DV;
   (void)D;
-  (void)GT;
   return 64;
 }
 
@@ -230,8 +199,7 @@ constexpr bool pitched_store_banks_ok() {
 //: **THE TOKEN-AXIS PITCH**, and the `+8` IS THE PROOF'S ANSWER: a `[* ][kGroupTokens]`
 //: block serves an `ldmatrix.trans` whose `k` axis is the block's ROW axis, and
 //: enumerated over `pad in {4, 8, 12, 16}`, `kGroupTokens + 8` is the unique pad that
-//: passes. The READ PANEL (`[BC leaves][16 tokens]`), the VALUE TILE
-//: (`[DV channels][16 tokens]`) and the WINDOW GRAM all take it.
+//: passes. The READ PANEL (`[BC leaves][16 tokens]`) and the GRAM take it.
 //: docs/internals/smem_layout.md#pitches
 constexpr int kTokPitch = kGroupTokens + 8;
 
@@ -248,8 +216,21 @@ __host__ __device__ __forceinline__ constexpr int rp_index(int leaf, int t) {
   return leaf * kTokPitch + t;
 }
 
-__host__ __device__ __forceinline__ constexpr int vp_index(int ch, int t) {
-  return ch * kTokPitch + t;
+//: **THE VALUE TILE'S PITCH, AND ITS AXIS ORDER IS THE `cp.async` LANDING SITE'S.**
+//: The value stream arrives from HBM as `DV` CONTIGUOUS channels per token, so the
+//: tile is stored TOKEN-MAJOR -- that is the only order a `cp.async` can land, and
+//: landing it directly is what removes both a global gather at the point of use and
+//: the column-strided staging store that transposed it. The `+8` is the same
+//: `ldmatrix` phase proof the other pitches carry, at the value tile's own extents:
+//: `pitched_ldsm_banks_ok<kGroupTokens, DV, val_pitch(DV)>`.
+//: THE FOLD'S A OPERAND IS RECOVERED BY TWO `.trans` FETCHES rather than one `.N`:
+//: A's `(m, k)` map and B's `(n, k)` map are the same map, so a `[k = token][n =
+//: channel]` block reads as an A operand at `m = channel` when its two halves are
+//: taken at `n0` and `n0 + 8`. docs/internals/smem_layout.md#value-tile
+__host__ __device__ constexpr int val_pitch(int DV) { return DV + 8; }
+
+__host__ __device__ __forceinline__ constexpr int vp_index(int DV, int t, int ch) {
+  return t * val_pitch(DV) + ch;
 }
 
 __host__ __device__ __forceinline__ constexpr int wp_index(int BC, int t, int leaf) {
@@ -304,30 +285,19 @@ constexpr int amp_slab_pitch(int BC, int D) { return ((7 + BC + 7) / 8) * 8 + 8 
 //: descriptors (`ch_lvl` / `ch_src` / `ch_atoms`) and of the issue loop.
 constexpr int amp_slab_chunks(int BC, int D) { return amp_slab_pitch(BC, D) / 8; }
 
-//: THE `Vp` / `clk` UNION, AND WHY IT IS SIZED IN **BYTES** RATHER THAN ELEMENTS.
-//: `clk` is DEAD before `Vp` is live, so it aliases `Vp`'s storage and the region is
-//: sized as the MAX OVER ITS LIVE TENANTS -- `Vp` is bf16 and `clk` fp32, so a
-//: pitch-max would under-allocate by 2x, SILENTLY. Only the RESERVATION is the max;
-//: `Vp` is still ADDRESSED at its own pitch. docs/internals/smem_layout.md#vw-clk-union
-//: The `Vp` REGION is `W` staged slots; `clk` is ONE buffer over the whole window
-//: (the clock prefix runs across the window, not across a group), so the two tenants
-//: scale differently and the max is taken over both at the window's width.
-template <int BC, int DV, int D, bool DECAY, int GT>
-constexpr size_t vw_union_bytes() {
-  (void)D;
-  const size_t vp = static_cast<size_t>(window_groups(GT)) * DV * kTokPitch * sizeof(__nv_bfloat16);
-  const size_t clk =
-      DECAY ? static_cast<size_t>(GT) * (BC + 4) * sizeof(float) : static_cast<size_t>(0);
-  return align16(vp > clk ? vp : clk);
-}
+//: **THE ROW-SCALE SCALAR SLAB'S PITCH, IN FLOATS.** One row per staged token holds
+//: the raw HBM scalars the group's row scales are the product of: the write gate,
+//: then each FIXED level's read and write amplitude. `j`, the first spanned level,
+//: is a runtime property of the plan, so the pitch is the compile-time worst case
+//: `j = D - 1`. docs/internals/smem_layout.md#scale-slab
+constexpr int scale_slab_pitch(int D) { return 1 + 2 * (D - 1); }
 
-//: The carve UP TO the prefetch slab. Split out because the slab's base must be
-//: 16-byte aligned and the kernel forms that base as `smem_raw + align16(core)`; one
-//: expression serves the reservation and the carve.
+//: The carve UP TO the staged regions. Split out because their base must be 16-byte
+//: aligned and the kernel forms it as `smem_raw + align16(core)`; one expression
+//: serves the reservation and the carve.
 //: docs/internals/smem_layout.md#smem-ledger
-template <int BC, int DV, int D, bool DECAY, int GT>
+template <int BC, int DV, int D, bool DECAY, int S>
 constexpr size_t consumer_smem_core_bytes() {
-  constexpr int W = window_groups(GT);
   //: **THE STATE IS NOT HERE.** Its numerator lives in the fold's D fragments --
   //: registers, one channel tile and one atom range per warp -- for the whole kernel;
   //: only the MASS COLUMN keeps a shared-memory home, fp32, `[BC]` floats, because it
@@ -337,30 +307,27 @@ constexpr size_t consumer_smem_core_bytes() {
   //: separate buffers is what deletes that read-before-write edge, which was one of
   //: the two the visit's phase barrier carried. `BC` floats is the whole price.
   //: docs/internals/smem_layout.md#mass-pingpong
-  size_t b = 2 * static_cast<size_t>(BC) * sizeof(float);  // the mass column, both phases
-  //: `Rp`, `Wp` and `Vp` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
-  //: buffer: that is what carries every one of their layout proofs across the
-  //: window unchanged. Only `Gm` -- the window Gram -- takes a new shape.
-  b += static_cast<size_t>(W) * BC * kTokPitch * sizeof(__nv_bfloat16);                 // Rp
-  b += static_cast<size_t>(W) * kGroupTokens * leaf_pitch(BC) * sizeof(__nv_bfloat16);  // Wp
-  b += vw_union_bytes<BC, DV, D, DECAY, GT>();     // Vp (+ clk)
+  size_t b = 2 * static_cast<size_t>(BC) * sizeof(float);            // the mass column, both phases
+  b += static_cast<size_t>(BC) * kTokPitch * sizeof(__nv_bfloat16);  // Rp
+  b += static_cast<size_t>(kGroupTokens) * leaf_pitch(BC) * sizeof(__nv_bfloat16);  // Wp
+  //: **THE CLOCK PREFIX HAS ITS OWN HOME.** It cannot alias the value tile: the tile
+  //: for visit `v + S` is being filled by `cp.async` while visit `v`'s prefix is
+  //: live, so the two tenants are simultaneously live for every depth the pipeline
+  //: takes. docs/internals/smem_layout.md#decay-clock
+  if (DECAY) b += align16(static_cast<size_t>(kGroupTokens) * (BC + 4) * sizeof(float));
   b += static_cast<size_t>(D) * BC * sizeof(int);  // dig
-  //: THE WINDOW GRAM, `[GT][GT + 8]`, holding `G^T` -- block `(b, a)` at row block
-  //: `b`, so the intra term reads it as a `k = token_b`-major B operand. Square,
-  //: though only the block lower triangle is ever written or read: a packed
-  //: triangular layout would make a block's base a non-affine function of `(a, b)`,
-  //: and one closed-form address function per buffer is the standard every other
-  //: operand here is held to.
-  b += static_cast<size_t>(GT) * (GT + 8) * sizeof(__nv_bfloat16);  // Gm
-  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);      // log_keep, p_ref, s0
-  //: THE COOKED SCHEDULE RING: `sched_slots(GT)` group descriptors, written by the
-  //: PRODUCER WARP a whole window ahead and read by every consumer warp. It is the
-  //: only schedule storage the consumers touch.
-  b += static_cast<size_t>(sched_slots(GT)) * kSchedSlotInts * sizeof(int);
-  //: The slot's PER-OWNER UPPER PRODUCTS (`sr`, `sw`) -- §3 step 3's row scales,
-  //: cooked in the ring beside the member word, one pair of `kGroupTokens` floats
-  //: per slot.
-  b += static_cast<size_t>(sched_slots(GT)) * 2 * kGroupTokens * sizeof(float);
+  //: THE GRAM, `[16][24]`, holding `G^T` -- the group's own causal block, read by the
+  //: intra term as a `k = token`-major B operand.
+  b += static_cast<size_t>(kGroupTokens) * kTokPitch * sizeof(__nv_bfloat16);  // Gm
+  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
+  //: THE COOKED SCHEDULE RING: `sched_slots(S)` group descriptors, written by the
+  //: PRODUCER WARP `sched_depth(S)` groups ahead and read by every consumer warp. It
+  //: is the only schedule storage the consumers touch.
+  b += static_cast<size_t>(sched_slots(S)) * kSchedSlotInts * sizeof(int);
+  //: THE VISIT'S ROW SCALES (`sr`, `sw`) -- one pair of `kGroupTokens` floats,
+  //: reduced from the staged scalars at the top of the visit rather than gathered by
+  //: the producer. docs/internals/consumer_kernel.md#row-scales
+  b += 2 * static_cast<size_t>(kGroupTokens) * sizeof(float);
   //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
   //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
   //: HERE rather than in the producer warp's registers because scheduler state
@@ -373,29 +340,64 @@ constexpr size_t consumer_smem_core_bytes() {
   //: copy. docs/internals/smem_layout.md#prefetch-slab
   b += 3 * static_cast<size_t>(amp_slab_chunks(BC, D)) * sizeof(int);
   //: THE GRAM'S PUBLICATION COUNTER -- one int, incremented once per producing warp
-  //: per mixed window, spun on by the consumers of `Gm`. It replaces the visit's
+  //: per mixed visit, spun on by the consumers of `Gm`. It replaces the visit's
   //: phase barrier: docs/internals/consumer_kernel.md#gram-publication
   b += sizeof(int);
   return b;
 }
 
+//: **THE STAGED REGIONS, `S` DEEP: THE WHOLE VRAM -> SMEM LINK.** Four streams ride
+//: one `cp.async` pipeline and every one of them is `S` buffers deep -- the two
+//: amplitude slabs (`kGroupTokens` token rows of `amp_slab_pitch` bf16 each), the
+//: VALUE TILE (`kGroupTokens` token rows of `val_pitch` bf16, landed in its final
+//: layout) and the ROW-SCALE SCALARS. They are the LAST regions so that the 16-byte
+//: alignment `cp.async` needs is one align-up rather than a constraint on every
+//: region before them. docs/internals/smem_layout.md#staged-regions
+template <int BC, int DV, int D, bool DECAY>
+constexpr size_t staged_stage_bytes() {
+  (void)DECAY;
+  return 2 * static_cast<size_t>(kGroupTokens) * amp_slab_pitch(BC, D) * sizeof(__nv_bfloat16)
+         + align16(static_cast<size_t>(kGroupTokens) * val_pitch(DV) * sizeof(__nv_bfloat16))
+         + align16(static_cast<size_t>(kGroupTokens) * scale_slab_pitch(D) * sizeof(float));
+}
+
+template <int BC, int DV, int D, bool DECAY, int S>
+constexpr size_t consumer_smem_bytes_at() {
+  return align16(consumer_smem_core_bytes<BC, DV, D, DECAY, S>())
+         + static_cast<size_t>(S) * staged_stage_bytes<BC, DV, D, DECAY>();
+}
+
+//: **THE PIPELINE'S DEPTH, DERIVED FROM THIS ARM'S OWN FOOTPRINT.** The deepest
+//: pipeline whose carve still admits the residency the arm would have had at depth 1
+//: -- which on every tabulated arch is the REGISTER bound, so the depth is bought out
+//: of shared memory that was buying nothing. Depth is therefore bounded by CAPACITY
+//: and never by structure, and no arm pays a CTA for it.
+//: docs/internals/smem_layout.md#pf-stages
+template <int BC, int DV, int D, bool DECAY, int S>
+constexpr int deepest_stages() {
+  if constexpr (S <= 1) {
+    return 1;
+  } else {
+    return (ctas_for_residency(consumer_smem_bytes_at<BC, DV, D, DECAY, S>(),
+                               consumer_reg_budget(BC, DECAY, DV, D))
+            >= ctas_for_residency(consumer_smem_bytes_at<BC, DV, D, DECAY, 1>(),
+                                  consumer_reg_budget(BC, DECAY, DV, D)))
+               ? S
+               : deepest_stages<BC, DV, D, DECAY, S - 1>();
+  }
+}
+
+template <int BC, int DV, int D, bool DECAY>
+constexpr int pf_stages() {
+  return deepest_stages<BC, DV, D, DECAY, kPfStagesMax>();
+}
+
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED
 //: from it rather than restated next to it. Every term, its measured residency
 //: consequence and `DECAY`'s carve: docs/internals/smem_layout.md#smem-ledger
-template <int BC, int DV, int D, bool DECAY, int GT>
+template <int BC, int DV, int D, bool DECAY>
 constexpr size_t consumer_smem_bytes() {
-  //: THE AMPLITUDE PREFETCH SLABS, read and write: `GT` token rows of
-  //: `amp_slab_pitch` bf16 each. They are the LAST region so that the 16-byte
-  //: alignment `cp.async` needs is one align-up rather than a constraint on every
-  //: region before them. The CLOCK stream does not ride this slab -- it is fp32 and
-  //: its consumer is a per-leaf column walk, and a window-deep fp32 slab is what
-  //: would push the wide window past the per-CTA cap. THE VALUE STREAM DOES NOT RIDE
-  //: THIS SLAB EITHER, and that is a CAPACITY refusal rather than a design one --
-  //: `GT * DV` bf16 is affordable on every `GT = 16` arm and is what takes
-  //: `<BC=16, DV=64, D=4, GT=64>` from two resident CTAs to one:
-  //: docs/architecture/guarantees-choices-preferences.md#value-stream-staging
-  return align16(consumer_smem_core_bytes<BC, DV, D, DECAY, GT>())
-         + 2 * static_cast<size_t>(GT) * amp_slab_pitch(BC, D) * sizeof(__nv_bfloat16);
+  return consumer_smem_bytes_at<BC, DV, D, DECAY, pf_stages<BC, DV, D, DECAY>()>();
 }
 
 }  // namespace consumer

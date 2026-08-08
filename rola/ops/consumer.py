@@ -39,7 +39,6 @@ from rola.planner.schedule import (
     build_schedule,
     leaf_rate_dials,
     panel_exponent_bound,
-    select_window,
 )
 from rola.routing.types import Topology
 
@@ -369,12 +368,6 @@ def _consumer_forward(
         geometry.owners_total,
         H,
         plan.BC,
-        #: THE WINDOW, chosen from THIS routing rather than from the shape. The
-        #: consumer's token quantum is a structural axis with a closed instantiated
-        #: set, and the selection lives here -- beside the panel-domain check it
-        #: shares a term with -- rather than inside the extension, which resolves a
-        #: choice and never computes one.
-        select_window(schedule, decay, clock_amps, int(plan.BC), int(d_v)),
         float(eps),
         *sp_args,
     )

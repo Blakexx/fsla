@@ -9,7 +9,7 @@ bitten by once (the shared-router bug agreed with a sibling and disagreed with t
 definition). Here the matrix is DEFINED ONCE, and everything that enumerates it is
 GENERATED from that definition:
 
-* `csrc/rola/src/instantiations/consumer_*.cu` -- the eight shard translation units,
+* `csrc/rola/src/instantiations/consumer_*.cu` -- the shard translation units,
   each carrying `TARGET_MEMBERS_PER_SHARD` explicit instantiations of the host launcher
   (and with them, exactly once in the whole fatbin, that many device kernels), plus one
   `ShardRow` record each;
@@ -90,19 +90,13 @@ AXES = (
     Axis("DV", (32, 64), str, lambda v: f"dv{v}", str),
     Axis("D", (1, 2, 3, 4), str, lambda v: f"d{v}", str),
     Axis("DECAY", (False, True), _b, lambda v: "decay" if v else "nodecay", None),
-    #: THE WINDOW, in tokens: how many gathered tokens one VISIT consumes against one
-    #: entry state. `16` is one producer group; `64` is four, and pays for the wider
-    #: Gram with a `W`-fold amortisation of every per-visit term. `128` is NOT in the
-    #: set: the window Gram's `[GT][GT+8]` term is quadratic and a `GT = 128` CTA does
-    #: not fit `sm_86`'s 99 KB opt-in at the flagship shape.
-    Axis("GT", (16, 64), str, lambda v: f"gt{v}", str),
 )
 AXIS = {a.name: a for a in AXES}
 
 #: THE PARTITION, as two constants and nothing else. The prefix of this list that is
 #: long enough to reach `TARGET_MEMBERS_PER_SHARD` is the set of sharded axes; the
 #: rest of the matrix lives inside a shard.
-SHARD_AXIS_PRIORITY = ("GT", "DECAY", "BC", "DV", "D")
+SHARD_AXIS_PRIORITY = ("DECAY", "BC", "DV", "D")
 TARGET_MEMBERS_PER_SHARD = 8
 
 
@@ -175,8 +169,7 @@ def shard_manifest_block() -> dict:
 def targs(row: dict) -> str:
     """The C++ template argument list for one tuple."""
     return ", ".join([AXIS["BC"].cxx(row["BC"]), AXIS["DV"].cxx(row["DV"]),
-                      AXIS["D"].cxx(row["D"]), AXIS["DECAY"].cxx(row["DECAY"]),
-                      AXIS["GT"].cxx(row["GT"])])
+                      AXIS["D"].cxx(row["D"]), AXIS["DECAY"].cxx(row["DECAY"])])
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +222,6 @@ def shard_source(name: str, rows: list[dict]) -> str:
     for row in rows:
         body.append(
             f"    {{{row['BC']}, {row['DV']}, {row['D']}, {_b(row['DECAY'])}, "
-            f"{row['GT']}, "
             f"&launch_consumer_arm<{targs(row)}>, "
             f"&query_consumer_occupancy_arm<{targs(row)}>, "
             f"consumer::consumer_smem_bytes<{targs(row)}>(), "

@@ -33,10 +33,7 @@ std::vector<at::Tensor> rola_consumer_forward(
     std::vector<int64_t> level_stride, std::vector<int64_t> level_modulus,
     std::vector<int64_t> level_row_offset, std::vector<int64_t> level_width,
     std::vector<int64_t> owner_stride, int64_t first_spanned_level, int64_t slice_digits,
-    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BC,
-    //: THE WINDOW, in tokens -- the consumer's token quantum, chosen by the
-    //: PLANNER from the realized routing (`rola.planner.schedule.select_window`).
-    int64_t group_tokens, double eps,
+    int64_t n_slices, int64_t owners_total, int64_t n_heads, int64_t BC, double eps,
     // ---- §6.4 sequence parallelism. All-or-nothing: either every one of these is
     // present (a split plan) or none is (`P = 1`, the primary configuration, which
     // takes the single-launch path below unchanged).
@@ -55,12 +52,12 @@ std::vector<at::Tensor> rola_consumer_forward(
     c10::optional<at::Tensor> ws_leaf,         // [n_slots, BC] int32
     c10::optional<at::Tensor> ws_count);
 
-int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT);
+int64_t rola_consumer_occupancy(bool decay, int64_t BC, int64_t DV, int64_t D);
 
-int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t D, int64_t GT);
+int64_t rola_consumer_smem_bytes(bool decay, int64_t BC, int64_t DV, int64_t D);
 
 //: The dispatch table as data, and the device fact its rows are admitted against.
-std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, int64_t, std::string, std::string>>
+std::vector<std::tuple<int64_t, int64_t, int64_t, bool, int64_t, std::string, std::string>>
 rola_dispatch_table();
 
 int64_t rola_max_dynamic_smem_bytes();
