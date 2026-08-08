@@ -212,6 +212,98 @@ __device__ __forceinline__ void mma_pitched_tile(const __nv_bfloat16* __restrict
   mma_fragA_pitchedB(a0, a1, a2, a3, B, ldb, kb0, n0, lane, d0, d1, d2, d3);
 }
 
+//: **THE SMEM -> REGISTER LINK, AS A CHAIN RATHER THAN A TILE.** Every accumulation in
+//: this kernel that runs over a compile-time sequence of tiles is expressed here, and
+//: every one of them is TWO-STAGE: item `i + 1`'s `ldmatrix` is issued BEFORE item
+//: `i`'s `mma.sync`, so a fetch's shared-memory latency is covered by its
+//: predecessor's multiply instead of by a sibling warp. That property is the
+//: kernel's fundamental goal applied to link 2, and it is the reason a caller must
+//: never loop over `mma_pitched_tile` -- a per-tile routine can only fetch-then-use.
+//:
+//: The sequence is described by four strides rather than by a lambda, because both
+//: axis kinds occur: an operand advances by a SLOT (a pointer stride, `a_stride` /
+//: `b_stride`) or along its own `k` axis inside one buffer (`kb_step`). GEMM 3's
+//: intra term walks `Vp` by slot and `Gm` by `k`; GEMM 4's fold walks `Wp` by `n`
+//: against ONE `Vp` fragment (`mma_fold_tiles` below).
+//: docs/internals/mma_tile.md#mma-chains
+//: `NB` is the sequence's COMPILE-TIME BOUND and `nb` its actual length -- the intra
+//: term's length is the causal triangle's row, which is a compile-time constant at one
+//: call site and a descriptor-derived value at the other. Both fold to the same code
+//: when `nb` is known.
+template <int NB>
+__device__ __forceinline__ void mma_pitched_chain(const __nv_bfloat16* __restrict__ A, int lda,
+                                                  int a_stride, int m0,
+                                                  const __nv_bfloat16* __restrict__ B, int ldb,
+                                                  int b_stride, int kb0, int kb_step, int n0,
+                                                  int nb, int lane, float& d0, float& d1, float& d2,
+                                                  float& d3) {
+  unsigned a0, a1, a2, a3, b0, b1;
+  auto fetch = [&](int i) {
+    pitched_frag_a(A + i * a_stride, lda, m0, 0, lane, a0, a1, a2, a3);
+    pitched_frag_b(B + i * b_stride, ldb, kb0 + i * kb_step, n0, lane, b0, b1);
+  };
+  fetch(0);
+#pragma unroll
+  for (int i = 0; i < NB; ++i) {
+    if (i >= nb) break;
+    const unsigned x0 = a0, x1 = a1, x2 = a2, x3 = a3, c0 = b0, c1 = b1;
+    if (i + 1 < nb) fetch(i + 1);
+    mma_m16n8k16(d0, d1, d2, d3, x0, x1, x2, x3, c0, c1, d0, d1, d2, d3);
+  }
+}
+
+//: THE SAME CHAIN WITH A BROADCAST A -- the two denominator terms that contract over
+//: TOKENS. The vector advances by `v_stride` floats per item (`sw` of the next staged
+//: group); the B operand takes the same two strides as above.
+template <int NB>
+__device__ __forceinline__ void mma_bcastA_chain(const float* __restrict__ v, int v_stride,
+                                                 const __nv_bfloat16* __restrict__ B, int ldb,
+                                                 int b_stride, int kb0, int kb_step, int n0, int nb,
+                                                 int lane, float& d0, float& d1, float& d2,
+                                                 float& d3) {
+  unsigned w0, w1, b0, b1;
+  auto fetch = [&](int i) {
+    bcast_frag(v + i * v_stride, lane, w0, w1);
+    pitched_frag_b(B + i * b_stride, ldb, kb0 + i * kb_step, n0, lane, b0, b1);
+  };
+  fetch(0);
+#pragma unroll
+  for (int i = 0; i < NB; ++i) {
+    if (i >= nb) break;
+    const unsigned x0 = w0, x1 = w1, c0 = b0, c1 = b1;
+    if (i + 1 < nb) fetch(i + 1);
+    mma_m16n8k16(d0, d1, d2, d3, x0, x0, x1, x1, c0, c1, d0, d1, d2, d3);
+  }
+}
+
+//: **GEMM 4's FOLD SEQUENCE FOR ONE STAGED GROUP.** The `2 * APW` 8-leaf tiles the warp
+//: owns share ONE A operand (the value tile at the warp's channel rows, which the
+//: caller already holds), so the sequence is a pure B walk along `Wp`'s leaf axis --
+//: and it is the two-stage chain, which is what the register-resident state's
+//: independent accumulators exist to make possible. The ATOM SKIP rides the pipeline:
+//: a dead atom's fetch is not issued either, so the mask still costs its own tiles
+//: nothing. docs/internals/mma_tile.md#gemm-fold
+template <int APW>
+__device__ __forceinline__ void mma_fold_tiles(unsigned va0, unsigned va1, unsigned va2,
+                                               unsigned va3, const __nv_bfloat16* __restrict__ Wp,
+                                               int ldw, int atom0, unsigned live, int lane,
+                                               float* __restrict__ st) {
+  unsigned b0 = 0u, b1 = 0u;
+  auto on = [&](int s) { return ((live >> (atom0 + (s >> 1))) & 1u) != 0u; };
+  auto fetch = [&](int s) {
+    pitched_frag_b(Wp, ldw, 0, (atom0 + (s >> 1)) * kMmaKQuantum + 8 * (s & 1), lane, b0, b1);
+  };
+  if (on(0)) fetch(0);
+#pragma unroll
+  for (int s = 0; s < 2 * APW; ++s) {
+    const unsigned c0 = b0, c1 = b1;
+    if (s + 1 < 2 * APW && on(s + 1)) fetch(s + 1);
+    if (!on(s)) continue;
+    float* const d = st + (s >> 1) * 8 + (s & 1) * 4;
+    mma_m16n8k16(d[0], d[1], d[2], d[3], va0, va1, va2, va3, c0, c1, d[0], d[1], d[2], d[3]);
+  }
+}
+
 //: GEMM 2's DENSE ARM, AS A TWO-STAGE PIPELINE: every atom is live, so the whole atom
 //: sequence is known at compile time and atom `q + 1`'s fragments are issued before
 //: atom `q`'s multiply. This is the arm `mask == kFullMask` selects, and it is where
@@ -234,23 +326,6 @@ __device__ __forceinline__ void mma_gram_atoms(const __nv_bfloat16* __restrict__
     if (q + 1 < QPO) fetch(q + 1);
     mma_m16n8k16(d0, d1, d2, d3, x0, x1, x2, x3, c0, c1, d0, d1, d2, d3);
   }
-}
-
-//: A MATVEC TILE, `d += broadcast(v) . B`: the vector rides the A operand's `k` axis
-//: and is broadcast across the tile's sixteen `m` rows, so EVERY output row carries
-//: the same result and the tile is read at any `m`. Fifteen sixteenths of the
-//: fragment is redundant and that is the whole price -- one
-//: `mma.sync` against the scalar reduction it replaces. Both denominator terms that
-//: contract over tokens (`B = Gm` for the intra term, `B = Wp` for the fold's) are
-//: this shape.
-__device__ __forceinline__ void mma_bcastA_tile(const float* __restrict__ v,
-                                                const __nv_bfloat16* __restrict__ B, int ldb,
-                                                int k0, int n0, int lane, float& d0, float& d1,
-                                                float& d2, float& d3) {
-  unsigned w0, w1, b0, b1;
-  bcast_frag(v, lane, w0, w1);
-  pitched_frag_b(B, ldb, k0, n0, lane, b0, b1);
-  mma_m16n8k16(d0, d1, d2, d3, w0, w0, w1, w1, b0, b1, d0, d1, d2, d3);
 }
 
 //: THE MASS COLUMN'S READOUT TILE, `d += broadcast(Smass) . Rp`, WITH THE COLUMN

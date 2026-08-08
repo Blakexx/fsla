@@ -332,7 +332,12 @@ constexpr size_t consumer_smem_core_bytes() {
   //: registers, one channel tile and one atom range per warp -- for the whole kernel;
   //: only the MASS COLUMN keeps a shared-memory home, fp32, `[BC]` floats, because it
   //: is the denominator of a ratio and its consumers are broadcast matvecs.
-  size_t b = static_cast<size_t>(BC) * sizeof(float);  // the mass column
+  //: **TWO OF THEM: THE MASS COLUMN PING-PONGS.** Term 1 of the denominator READS the
+  //: entry column while the fold's term 3 WRITES the exit column; holding them in
+  //: separate buffers is what deletes that read-before-write edge, which was one of
+  //: the two the visit's phase barrier carried. `BC` floats is the whole price.
+  //: docs/internals/smem_layout.md#mass-pingpong
+  size_t b = 2 * static_cast<size_t>(BC) * sizeof(float);  // the mass column, both phases
   //: `Rp`, `Wp` and `Vp` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
   //: buffer: that is what carries every one of their layout proofs across the
   //: window unchanged. Only `Gm` -- the window Gram -- takes a new shape.
@@ -367,6 +372,10 @@ constexpr size_t consumer_smem_core_bytes() {
   //: OF ATOMS whose digits it carries. Built once per owner; read once per issued
   //: copy. docs/internals/smem_layout.md#prefetch-slab
   b += 3 * static_cast<size_t>(amp_slab_chunks(BC, D)) * sizeof(int);
+  //: THE GRAM'S PUBLICATION COUNTER -- one int, incremented once per producing warp
+  //: per mixed window, spun on by the consumers of `Gm`. It replaces the visit's
+  //: phase barrier: docs/internals/consumer_kernel.md#gram-publication
+  b += sizeof(int);
   return b;
 }
 
@@ -380,7 +389,11 @@ constexpr size_t consumer_smem_bytes() {
   //: alignment `cp.async` needs is one align-up rather than a constraint on every
   //: region before them. The CLOCK stream does not ride this slab -- it is fp32 and
   //: its consumer is a per-leaf column walk, and a window-deep fp32 slab is what
-  //: would push the wide window past the per-CTA cap.
+  //: would push the wide window past the per-CTA cap. THE VALUE STREAM DOES NOT RIDE
+  //: THIS SLAB EITHER, and that is a CAPACITY refusal rather than a design one --
+  //: `GT * DV` bf16 is affordable on every `GT = 16` arm and is what takes
+  //: `<BC=16, DV=64, D=4, GT=64>` from two resident CTAs to one:
+  //: docs/architecture/guarantees-choices-preferences.md#value-stream-staging
   return align16(consumer_smem_core_bytes<BC, DV, D, DECAY, GT>())
          + 2 * static_cast<size_t>(GT) * amp_slab_pitch(BC, D) * sizeof(__nv_bfloat16);
 }
