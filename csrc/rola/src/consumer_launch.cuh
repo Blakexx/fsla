@@ -32,13 +32,24 @@
 
 namespace rola {
 
+//: **THE ARM'S CARVE AND ITS CTA WIDTH, DERIVED ONCE.** The kernel is general over the
+//: `GL x GC` grid; an ARM ships the policy's point, and the CTA is exactly that carve.
+//: One alias apiece so the launch, the residency query and the kernel's own `kWarps`
+//: cannot disagree. docs/internals/smem_layout.md#carve
+template <int BC, int DV>
+constexpr int arm_gl = consumer::carve_leaf_groups(BC, DV);
+template <int BC, int DV>
+constexpr int arm_gc = consumer::carve_chan_groups(BC, DV);
+template <int BC, int DV>
+constexpr int arm_threads = consumer::consumer_threads(arm_gl<BC, DV>, arm_gc<BC, DV>);
+
 //: The launch, for ONE instantiation. `p.n_owners == 0` returns after the
 //: shared-memory opt-in, exactly as before -- the opt-in is a property of the
 //: kernel, not of the grid. docs/internals/consumer_launch.md#launch
 template <int BC, int DV, int D, bool DECAY>
 void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
   constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
-  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY, arm_gl<BC, DV>, arm_gc<BC, DV>>;
   if (smem > 48 * 1024) {
     //: A REFUSAL HERE IS NOT SWALLOWED: it lands in the same per-thread error
     //: state `launch_consumer` reads through `C10_CUDA_CHECK` the instant this
@@ -50,7 +61,7 @@ void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
     }
   }
   if (p.n_owners == 0) return;
-  kernel<<<p.n_owners, consumer::kConsumerThreads, smem, stream>>>(p);
+  kernel<<<p.n_owners, arm_threads<BC, DV>, smem, stream>>>(p);
 }
 
 //: The DRIVER's residency answer for ONE instantiation. Instantiated for every arm:
@@ -59,7 +70,7 @@ void launch_consumer_arm(const ConsumerParams& p, cudaStream_t stream) {
 template <int BC, int DV, int D, bool DECAY>
 int query_consumer_occupancy_arm() {
   constexpr size_t smem = consumer::consumer_smem_bytes<BC, DV, D, DECAY>();
-  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY>;
+  auto kernel = consumer::consumer_forward_kernel<BC, DV, D, DECAY, arm_gl<BC, DV>, arm_gc<BC, DV>>;
   if (smem > 48 * 1024) {
     if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                              static_cast<int>(smem))
@@ -68,8 +79,7 @@ int query_consumer_occupancy_arm() {
     }
   }
   int blocks = 0;
-  if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, kernel, consumer::kConsumerThreads,
-                                                    smem)
+  if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, kernel, arm_threads<BC, DV>, smem)
       != cudaSuccess) {
     return 0;
   }

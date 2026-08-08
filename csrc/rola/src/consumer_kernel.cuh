@@ -53,9 +53,11 @@
 //      `mma.sync`'s D map and its A map are the same map, so holding the state
 //      `[channel][leaf]` makes the fold's accumulator the readout's A operand
 //      for free: the fold's `mma.sync` accumulates IN PLACE (`D == C == S^T`)
-//      and the readout consumes the result with no load at all. A warp owns one
-//      16-channel tile and a contiguous atom range of leaves, which is what makes
-//      the writer and the reader of an element the same warp at the same lane.
+//      and the readout consumes the result with no load at all. THE CARVE `GL x GC`
+//      gives each warp a contiguous ATOM RANGE of leaves and a contiguous
+//      CHANNEL-TILE RANGE, which is what makes the writer and the reader of an
+//      element the same warp at the same lane; `GC` sets how many independent
+//      accumulators a warp issues into and `GL` sets its dependent chain length.
 //      Only the MASS COLUMN keeps a shared-memory home -- fp32, `[BC]` -- because
 //      it is genuinely shared between warps. Accumulation is fp32 throughout; the
 //      one narrowing is the state's bf16 A-operand fragment at the readout.
@@ -123,13 +125,19 @@ __device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh
 #ifdef ROLA_FORCE_CTAS
 #define ROLA_CONSUMER_CTAS_EXPR (ROLA_FORCE_CTAS)
 #else
-#define ROLA_CONSUMER_CTAS_EXPR                                   \
-  ctas_for_residency(consumer_smem_bytes<BC, DV, D, DECAY>(),     \
-                     consumer_reg_budget(BC, DECAY, DV, D))
+#define ROLA_CONSUMER_CTAS_EXPR                               \
+  ctas_for_residency(consumer_smem_bytes<BC, DV, D, DECAY>(),  \
+                     consumer_reg_budget(BC, DECAY, DV, D), consumer_threads(GL, GC))
 #endif
-template <int BC, int DV, int D, bool DECAY>
-__global__ __launch_bounds__(kConsumerThreads, ROLA_CONSUMER_CTAS_EXPR) void
+//: `GL` x `GC` IS THE CARVE -- leaf groups by channel groups, the grid the CTA's warps
+//: are laid out on and the kernel's third structural axis. It is a TEMPLATE PARAMETER
+//: like every other axis: nothing below assumes a corner of the space (a warp owning
+//: every channel, or every leaf). `launch_consumer_arm` instantiates the policy's
+//: point; a probe compile instantiates any other. docs/internals/consumer_kernel.md#carve
+template <int BC, int DV, int D, bool DECAY, int GL, int GC>
+__global__ __launch_bounds__(consumer_threads(GL, GC), ROLA_CONSUMER_CTAS_EXPR) void
 consumer_forward_kernel(ConsumerParams p) {
+  constexpr int kConsumerThreads = consumer_threads(GL, GC);
   //: **THE VRAM -> SMEM PIPELINE'S DEPTH**, in staged visits, derived from this arm's
   //: own carve: docs/internals/smem_layout.md#pf-stages
   constexpr int S = pf_stages<BC, DV, D, DECAY>();
@@ -153,16 +161,20 @@ consumer_forward_kernel(ConsumerParams p) {
   //: The CTA-uniform `mask == kFullMask` test is what selects the statically
   //: unrolled dense arm -- dense inputs pay zero mask instructions.
   constexpr unsigned kFullMask = (kQPO >= 32) ? 0xffffffffu : ((1u << kQPO) - 1u);
-  //: **THE STATE'S RESIDENCY GEOMETRY.** `kMT` channel tiles (the MMA `m` axis),
-  //: `kReps` leaf splits, `kAPW` atoms and `kStRegs` fp32 registers per owning warp
-  //: per lane: docs/internals/smem_layout.md#state-residency
+  //: **THE STATE'S RESIDENCY GEOMETRY -- THE CARVE, IN TILES.** `kMTW` channel tiles
+  //: (the MMA `m` axis) and `kAPW` atoms (the leaf axis) per warp, `kStRegs` fp32
+  //: registers per lane to hold them: docs/internals/smem_layout.md#state-residency
   constexpr int kMT = state_m_tiles(DV);
-  constexpr int kReps = state_reps(BC, DV);
-  constexpr int kAPW = state_atoms_per_warp(BC, DV);
-  constexpr int kOwnWarps = state_owner_warps(BC, DV);
-  constexpr int kStRegs = state_regs_per_lane(BC, DV);
-  static_assert(kOwnWarps <= kWarps && kAPW * kReps == kQPO,
-                "the state's ownership rule must tile the owner's atoms exactly");
+  constexpr int kAPW = state_atoms_per_warp(BC, GL);
+  constexpr int kMTW = state_tiles_per_warp(DV, GC);
+  constexpr int kStRegs = state_regs_per_lane(BC, DV, GL, GC);
+  static_assert(kWarps == GL * GC, "the CTA is exactly the carve: one warp per grid point");
+  static_assert(kAPW * GL == kQPO && kMTW * GC == kMT,
+                "the carve must tile the owner's atoms and the channel axis exactly");
+  static_assert(GL <= carve_leaf_groups_max(BC),
+                "a leaf group is a whole number of ATOMS: the fold's m-quantum is one atom");
+  static_assert(GC <= carve_chan_groups_max(DV),
+                "a channel group is a whole number of CHANNEL TILES: a warp holds all 16 m rows");
   constexpr int kWpPitch = leaf_pitch(BC);
   constexpr int kWpElems = kGroupTokens * kWpPitch;
   constexpr int kVpPitch = val_pitch(DV);
@@ -290,13 +302,15 @@ consumer_forward_kernel(ConsumerParams p) {
   const int tid = threadIdx.x;
   const int lane = tid & 31;
   const int warp = tid >> 5;
-  //: **THE WARP'S STATE OWNERSHIP** -- one CHANNEL TILE and one contiguous ATOM RANGE.
-  //: Everything the register-resident state does is indexed off these three values.
-  const int mch = warp % kMT;          // the warp's channel tile
-  const int hrep = warp / kMT;         // its leaf split index
-  const bool owns = warp < kOwnWarps;  // warps beyond the split own no state
-  const int atom0 = owns ? hrep * kAPW : 0;
-  const int m0 = mch * kMmaKQuantum;  // its first channel
+  //: **THE WARP'S STATE OWNERSHIP** -- its point on the `GL x GC` carve grid, as a
+  //: contiguous ATOM RANGE and a contiguous CHANNEL-TILE RANGE. Everything the
+  //: register-resident state does is indexed off these values. The channel index runs
+  //: FASTEST so that the `GL` warps sharing a channel group -- the ones whose `y`
+  //: partials the emission's `atomicAdd` sums -- are the ones far apart in warp index.
+  const int cgrp = warp % GC;  // the warp's channel group
+  const int lgrp = warp / GC;  // its leaf group
+  const int atom0 = lgrp * kAPW;
+  const int m0 = cgrp * kMTW * kMmaKQuantum;  // its first channel
   const unsigned own_mask = ((1u << kAPW) - 1u) << atom0;
   const int _sg = lane >> 2, _sr = lane & 3;
   //: **THE PRODUCER IS THE LAST WARP, AND THAT IS A LOAD-BALANCE FACT.** The cook is
@@ -352,15 +366,16 @@ consumer_forward_kernel(ConsumerParams p) {
   const float* ws_entry =
       from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols) : nullptr;
   //: **THE ENTRY STATE LANDS IN REGISTERS**, in the fold's own D-fragment map: lane
-  //: `(g, r)` of the warp owning channel tile `mch` and atom `q` holds channels
-  //: `m0 + g` and `m0 + 8 + g` at leaves `q * 16 + 8 * half + 2r` and `+ 1`. Eight
-  //: floats per atom, and the 8 lanes sharing a leaf read 8 CONSECUTIVE channels, so
-  //: the HBM read is one 32-byte segment per (leaf, half-warp).
-  //: docs/internals/consumer_kernel.md#entry-state
+  //: `(g, r)` of the warp, at its channel tile `mt` and atom `q`, holds channels
+  //: `mc + g` and `mc + 8 + g` at leaves `q * 16 + 8 * half + 2r` and `+ 1`. Eight
+  //: floats per (channel tile, atom), and the 8 lanes sharing a leaf read 8 CONSECUTIVE
+  //: channels, so the HBM read is one 32-byte segment per (leaf, half-warp).
+  //: **THE REGISTER PLANE IS `[kMTW][kAPW]`** and every walk below indexes it as one:
+  //: `St + (mt * kAPW + ai) * 8`. docs/internals/consumer_kernel.md#entry-state
   float St[kStRegs];
 #pragma unroll
   for (int v = 0; v < kStRegs; ++v) St[v] = 0.0f;
-  if (owns && !summary) {
+  if (!summary) {
 #pragma unroll
     for (int ai = 0; ai < kAPW; ++ai) {
       const int q = atom0 + ai;
@@ -371,11 +386,15 @@ consumer_forward_kernel(ConsumerParams p) {
 #pragma unroll
       for (int half = 0; half < 2; ++half) {
         const int64_t r0 = row0 + 8 * half + 2 * _sr;
-        float* const st = St + ai * 8 + half * 4;
-        st[0] = src[r0 * cols + m0 + _sg];
-        st[1] = src[(r0 + 1) * cols + m0 + _sg];
-        st[2] = src[r0 * cols + m0 + 8 + _sg];
-        st[3] = src[(r0 + 1) * cols + m0 + 8 + _sg];
+#pragma unroll
+        for (int mt = 0; mt < kMTW; ++mt) {
+          const int mc = m0 + mt * kMmaKQuantum;
+          float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
+          st[0] = src[r0 * cols + mc + _sg];
+          st[1] = src[(r0 + 1) * cols + mc + _sg];
+          st[2] = src[r0 * cols + mc + 8 + _sg];
+          st[3] = src[(r0 + 1) * cols + mc + 8 + _sg];
+        }
       }
     }
   }
@@ -926,14 +945,23 @@ consumer_forward_kernel(ConsumerParams p) {
     char* const stage = stage_at(st);
 
     //: **THE VALUE FRAGMENT IS TAKEN FIRST, AND THAT IS WHAT FREES ITS STAGE.** The
-    //: tile's whole consumption is four registers per owning warp -- one A operand
-    //: serves the fold's every state tile AND the intra term -- so lifting it here,
-    //: before the staging barrier, retires the region for the rest of the visit and
-    //: lets the same barrier that publishes the panels also license the refill. The
+    //: tile's whole consumption is four registers per CHANNEL TILE the warp owns -- one
+    //: A operand per tile serves the fold's every atom AND the intra term -- so lifting
+    //: it here, before the staging barrier, retires the region for the rest of the visit
+    //: and lets the same barrier that publishes the panels also license the refill. The
     //: ROW SCALE is applied to the fragment afterwards, in registers.
+    //: **THIS IS THE STREAM THE CARVE'S CHANNEL AXIS PARTITIONS**: a warp reads only the
+    //: `kMTW * 16` channel columns of its channel group, so the value tile is shared
+    //: along a leaf column of the grid and independent across channel groups.
     //: docs/internals/consumer_kernel.md#value-stream
-    unsigned va0 = 0u, va1 = 0u, va2 = 0u, va3 = 0u;
-    if (owns && is_write) trans_frag_a(Vp_of(stage), kVpPitch, 0, m0, lane, va0, va1, va2, va3);
+    unsigned va[kMTW][4] = {};
+    if (is_write) {
+#pragma unroll
+      for (int mt = 0; mt < kMTW; ++mt) {
+        trans_frag_a(Vp_of(stage), kVpPitch, 0, m0 + mt * kMmaKQuantum, lane, va[mt][0], va[mt][1],
+                     va[mt][2], va[mt][3]);
+      }
+    }
 
     // ---- THE STAGING, AS A FUNCTION OF THE VISIT: everything the compute consumes
     // ---- but does not produce. Slots `[gN, kGroupTokens)` of a ragged group stage
@@ -984,15 +1012,17 @@ consumer_forward_kernel(ConsumerParams p) {
       // ---- merge, a scale and a re-split at every element. The mass column rides the
       // ---- same sweep (same recurrence with `v := 1`). Dead atoms' leaves have a zero
       // ---- clock prefix, hence `s0 == 1`, so an unvisited atom is exactly unchanged.
-      if (owns) {
 #pragma unroll
-        for (int ai = 0; ai < kAPW; ++ai) {
+      for (int ai = 0; ai < kAPW; ++ai) {
 #pragma unroll
-          for (int half = 0; half < 2; ++half) {
-            const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
-            //: `i0` is even, so the tile's two leaf scales are ONE 64-bit shared load.
-            const float2 s = *reinterpret_cast<const float2*>(s0 + i0);
-            float* const stf = St + ai * 8 + half * 4;
+        for (int half = 0; half < 2; ++half) {
+          const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
+          //: `i0` is even, so the tile's two leaf scales are ONE 64-bit shared load,
+          //: and it serves every channel tile the warp owns.
+          const float2 s = *reinterpret_cast<const float2*>(s0 + i0);
+#pragma unroll
+          for (int mt = 0; mt < kMTW; ++mt) {
+            float* const stf = St + (mt * kAPW + ai) * 8 + half * 4;
             stf[0] *= s.x;
             stf[1] *= s.y;
             stf[2] *= s.x;
@@ -1117,13 +1147,16 @@ consumer_forward_kernel(ConsumerParams p) {
     //: and must ride the value operand -- but it need not ride its STORAGE. `a0`/`a1`
     //: carry tokens `2r, 2r + 1` and `a2`/`a3` tokens `2r + 8, 2r + 9`, the same
     //: rounding the staged product used to take.
-    if (owns && is_write) {
+    if (is_write) {
       const float w0 = sw[2 * _sr], w1 = sw[2 * _sr + 1];
       const float w2 = sw[2 * _sr + 8], w3 = sw[2 * _sr + 9];
-      scale_frag_pair(va0, w0, w1);
-      scale_frag_pair(va1, w0, w1);
-      scale_frag_pair(va2, w2, w3);
-      scale_frag_pair(va3, w2, w3);
+#pragma unroll
+      for (int mt = 0; mt < kMTW; ++mt) {
+        scale_frag_pair(va[mt][0], w0, w1);
+        scale_frag_pair(va[mt][1], w0, w1);
+        scale_frag_pair(va[mt][2], w2, w3);
+        scale_frag_pair(va[mt][3], w2, w3);
+      }
     }
 
     //: **THE NEXT STAGE'S ISSUE, AND IT COSTS NO BARRIER.** The barrier above is
@@ -1141,30 +1174,37 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- GEMM 1: THE READOUT, `y^T = S^T . Rp`, LIVE READ ATOMS ONLY. **THE A
     // ---- OPERAND IS THE WARP'S OWN STATE REGISTERS**, narrowed to bf16 words at the
     // ---- fragment and never loaded: the k-loop's only memory traffic is the B
-    // ---- fragment. A warp holds one CHANNEL TILE and a LEAF RANGE, so the `kReps`
-    // ---- warps of a channel tile each carry a PARTIAL over their own leaves -- and
-    // ---- they need no reduction, because the emission below is already an
-    // ---- `atomicAdd` split-K. docs/internals/consumer_kernel.md#gemm-readout
-    float y[2][4];
+    // ---- fragment, and ONE pair of B fragments feeds every channel tile the warp
+    // ---- owns. A warp holds a CHANNEL-TILE RANGE and a LEAF RANGE, so the `GL` warps
+    // ---- of a channel group each carry a PARTIAL over their own leaves -- and they
+    // ---- need no reduction, because the emission below is already an `atomicAdd`
+    // ---- split-K of fan-in `GL`. docs/internals/consumer_kernel.md#gemm-readout
+    float y[kMTW][2][4];
 #pragma unroll
-    for (int nt = 0; nt < 2; ++nt) {
-      y[nt][0] = 0.0f;
-      y[nt][1] = 0.0f;
-      y[nt][2] = 0.0f;
-      y[nt][3] = 0.0f;
+    for (int mt = 0; mt < kMTW; ++mt) {
+#pragma unroll
+      for (int nt = 0; nt < 2; ++nt) {
+        y[mt][nt][0] = 0.0f;
+        y[mt][nt][1] = 0.0f;
+        y[mt][nt][2] = 0.0f;
+        y[mt][nt][3] = 0.0f;
+      }
     }
-    if (owns && is_read) {
+    if (is_read) {
       const unsigned rmask = rmr & own_mask;
       if (rmask == own_mask) {
-        mma_readout_tiles<kAPW>(St, Rp, atom0 * kMmaKQuantum, lane, y);
+        mma_readout_tiles<kMTW, kAPW>(St, Rp, atom0 * kMmaKQuantum, lane, y);
       } else {
         //: **THE SPARSE ARM WALKS THE WARP'S OWN ATOM SLOTS AT COMPILE TIME**, testing
         //: the mask bit, rather than walking the set bits: a runtime index into `St`
-        //: would put the state in LOCAL MEMORY and undo the whole batch.
+        //: would put the state in LOCAL MEMORY and undo the whole batch. One atom of a
+        //: `[kMTW][kAPW]` register plane is a STRIDED slice, so the single-atom form
+        //: takes the stride as its `KS` -- the `[MT][KS]` map with `KS = kAPW` and one
+        //: k-step walked.
 #pragma unroll
         for (int ai = 0; ai < kAPW; ++ai) {
           if (((rmask >> (atom0 + ai)) & 1u) == 0u) continue;
-          mma_readout_tiles<1>(St + ai * 8, Rp, (atom0 + ai) * kMmaKQuantum, lane, y);
+          mma_readout_tiles<kMTW, 1, kAPW>(St + ai * 8, Rp, (atom0 + ai) * kMmaKQuantum, lane, y);
         }
       }
     }
@@ -1254,12 +1294,12 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- register state and the exit mass column, so it is independent of `Gm` --
     // ---- which makes it the work every warp does while the Gram's producers finish.
     // ---- docs/internals/consumer_kernel.md#gemm-fold
-    if (is_write && owns) {
-      //: **ONE A OPERAND FEEDS EVERY TILE THE WARP OWNS**, and the B walk is the
-      //: two-stage chain: `mma_fold_tiles` issues tile `s + 1`'s `ldmatrix` before tile
-      //: `s`'s multiply. The ATOM one is the only test left -- a dead atom's rows are
-      //: exact zeros and its `s0` is exactly 1, so the skip is the identity.
-      mma_fold_tiles<kAPW>(va0, va1, va2, va3, Wp, kWpPitch, atom0, wmr, lane, St);
+    if (is_write) {
+      //: **ONE B FRAGMENT FEEDS EVERY CHANNEL TILE THE WARP OWNS**, and the B walk is
+      //: the two-stage chain: `mma_fold_tiles` issues tile `s + 1`'s `ldmatrix` before
+      //: tile `s`'s multiplies. The ATOM one is the only test left -- a dead atom's rows
+      //: are exact zeros and its `s0` is exactly 1, so the skip is the identity.
+      mma_fold_tiles<kMTW, kAPW>(va, Wp, kWpPitch, atom0, wmr, lane, St);
       // ---- DECAY's EXIT SCALE RIDES THE ACCUMULATOR, ONCE PER VISIT: one multiply on
       // ---- a register value. docs/internals/consumer_kernel.md#fold-epilogue
       if (DECAY) {
@@ -1271,11 +1311,14 @@ consumer_forward_kernel(ConsumerParams p) {
             const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
             //: `i0` is even, so the tile's two leaf scales are ONE 64-bit shared load.
             const float2 s = *reinterpret_cast<const float2*>(s0 + i0);
-            float* const stf = St + ai * 8 + half * 4;
-            stf[0] *= s.x;
-            stf[1] *= s.y;
-            stf[2] *= s.x;
-            stf[3] *= s.y;
+#pragma unroll
+            for (int mt = 0; mt < kMTW; ++mt) {
+              float* const stf = St + (mt * kAPW + ai) * 8 + half * 4;
+              stf[0] *= s.x;
+              stf[1] *= s.y;
+              stf[2] *= s.x;
+              stf[3] *= s.y;
+            }
           }
         }
       }
@@ -1333,7 +1376,7 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- at all here. docs/internals/consumer_kernel.md#gram-publication
     //: **THE COOK-AHEAD, PLACED IN THE GRAM'S PUBLICATION WINDOW.** The producer warp
     //: cooks group `gidx + kSchedDepth` into the slot the visit `kSlots` back vacated.
-    //: At `kGramProd < kWarps` and `kQPO < kWarps` it is neither a Gram producer nor a
+    //: At `kGramProd < kWarps` and `NT < kWarps` it is neither a Gram producer nor a
     //: denominator-term owner, so this is precisely the stretch of the visit it would
     //: otherwise spend in the wait below; production runs CONCURRENTLY with every other
     //: warp's fold and is published by its own cursor, so NOTHING WAITS ON IT and it is
@@ -1361,15 +1404,21 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- SAME fragments the readout filled, against the SAME value fragment the fold
     // ---- used. There is NO MASK anywhere here, because the zeros are already IN `Gm`.
     // ---- Token-axis contraction: no atom mask applies. An item belongs to ONE of the
-    // ---- `kReps` warps holding that channel tile's `y` -- the others carry only their
-    // ---- readout partial, and the emission sums the pieces.
+    // ---- `GL` warps holding that channel tile's `y` -- the others carry only their
+    // ---- readout partial, and the emission sums the pieces. The `[kMTW][2]` item grid
+    // ---- is dealt out over the channel group's `GL` warps by flat index, which at
+    // ---- every point of the carve space gives each warp a whole number of items AND
+    // ---- groups them by token tile, so one `ldmatrix` of `Gm` serves them all.
     // ---- docs/internals/consumer_kernel.md#phase-c
-    if (mixed && owns) {
+    if (mixed) {
 #pragma unroll
       for (int nt = 0; nt < 2; ++nt) {
-        if (nt % kReps != hrep) continue;
-        mma_fragA_pitchedB(va0, va1, va2, va3, Gm, kTokPitch, 0, nt * 8, lane, y[nt][0], y[nt][1],
-                           y[nt][2], y[nt][3]);
+        unsigned own = 0u;
+#pragma unroll
+        for (int mt = 0; mt < kMTW; ++mt) {
+          if ((mt * 2 + nt) % GL == lgrp) own |= 1u << mt;
+        }
+        mma_intra_tiles<kMTW>(va, Gm, kTokPitch, 0, nt * 8, lane, own, nt, y);
       }
     }
     if (mixed && dm_owner) {
@@ -1390,11 +1439,11 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- **THE FRAGMENT IS TRANSPOSED AND THAT IMPROVES THE SCATTER**: the eight lanes
     // ---- sharing a `token` now hold eight CONSECUTIVE channels, so one `atomicAdd`
     // ---- instruction covers four 32-byte segments where the untransposed fragment
-    // ---- covered eight. The `kReps` partials per output are what the split-K was
-    // ---- already built for. docs/internals/consumer_kernel.md#split-k-emission
-    if (owns && is_read) {
+    // ---- covered eight. The `GL` partials per output are what the split-K was
+    // ---- already built for, and `GL` is exactly the atomic fan-in the carve's leaf
+    // ---- axis buys. docs/internals/consumer_kernel.md#split-k-emission
+    if (is_read) {
       CONSUMER_D_ROWS(lane);
-      const int ch0 = m0 + _g, ch1 = ch0 + 8;
       const int64_t row0 = static_cast<int64_t>(bh) * p.T;
       auto emit = [&](int tok, int ch, float scale, float val) {
         const float out = scale * val;
@@ -1414,10 +1463,14 @@ consumer_forward_kernel(ConsumerParams p) {
         const int t0e = nt * 8 + 2 * _r;
         const float2 s = *reinterpret_cast<const float2*>(sr + t0e);
         const int2 tk = *reinterpret_cast<const int2*>(R + t0e);
-        emit(tk.x, ch0, s.x, y[nt][0]);
-        emit(tk.y, ch0, s.y, y[nt][1]);
-        emit(tk.x, ch1, s.x, y[nt][2]);
-        emit(tk.y, ch1, s.y, y[nt][3]);
+#pragma unroll
+        for (int mt = 0; mt < kMTW; ++mt) {
+          const int ch0 = m0 + mt * kMmaKQuantum + _g, ch1 = ch0 + 8;
+          emit(tk.x, ch0, s.x, y[mt][nt][0]);
+          emit(tk.y, ch0, s.y, y[mt][nt][1]);
+          emit(tk.x, ch1, s.x, y[mt][nt][2]);
+          emit(tk.y, ch1, s.y, y[mt][nt][3]);
+        }
       }
     }
     //: THE DENOMINATOR, OUT OF THE MASS FRAGMENTS. A broadcast A makes every output ROW
@@ -1491,22 +1544,24 @@ consumer_forward_kernel(ConsumerParams p) {
     //: **THE STATE LEAVES ITS REGISTERS AT THE PUBLICATION**, on the ownership map it
     //: entered on -- the compaction index `sum_slot[leaf]` is the only thing the write
     //: adds over the entry read's inverse.
-    if (owns) {
 #pragma unroll
-      for (int ai = 0; ai < kAPW; ++ai) {
-        const int q = atom0 + ai;
+    for (int ai = 0; ai < kAPW; ++ai) {
+      const int q = atom0 + ai;
 #pragma unroll
-        for (int half = 0; half < 2; ++half) {
-          const int i0 = q * kMmaKQuantum + 8 * half + 2 * _sr;
-          const float* const st = St + ai * 8 + half * 4;
-          const int q0 = sum_slot[i0], q1 = sum_slot[i0 + 1];
+      for (int half = 0; half < 2; ++half) {
+        const int i0 = q * kMmaKQuantum + 8 * half + 2 * _sr;
+        const int q0 = sum_slot[i0], q1 = sum_slot[i0 + 1];
+#pragma unroll
+        for (int mt = 0; mt < kMTW; ++mt) {
+          const int mc = m0 + mt * kMmaKQuantum;
+          const float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
           if (q0 >= 0) {
-            p.ws_state[(slot * BC + q0) * cols + m0 + _sg] = st[0];
-            p.ws_state[(slot * BC + q0) * cols + m0 + 8 + _sg] = st[2];
+            p.ws_state[(slot * BC + q0) * cols + mc + _sg] = st[0];
+            p.ws_state[(slot * BC + q0) * cols + mc + 8 + _sg] = st[2];
           }
           if (q1 >= 0) {
-            p.ws_state[(slot * BC + q1) * cols + m0 + _sg] = st[1];
-            p.ws_state[(slot * BC + q1) * cols + m0 + 8 + _sg] = st[3];
+            p.ws_state[(slot * BC + q1) * cols + mc + _sg] = st[1];
+            p.ws_state[(slot * BC + q1) * cols + mc + 8 + _sg] = st[3];
           }
         }
       }
@@ -1522,20 +1577,22 @@ consumer_forward_kernel(ConsumerParams p) {
   // ---- DELIBERATE NUMERIC CHOICE, not the scan's job:
   // ---- docs/internals/consumer_kernel.md#state-store
   if (!last_seg) return;
-  if (owns) {
 #pragma unroll
-    for (int ai = 0; ai < kAPW; ++ai) {
-      const int q = atom0 + ai;
-      const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
-      if (row0 < 0) continue;
+  for (int ai = 0; ai < kAPW; ++ai) {
+    const int q = atom0 + ai;
+    const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
+    if (row0 < 0) continue;
 #pragma unroll
-      for (int half = 0; half < 2; ++half) {
-        const int64_t r0 = row0 + 8 * half + 2 * _sr;
-        const float* const st = St + ai * 8 + half * 4;
-        p.state[r0 * cols + m0 + _sg] = st[0];
-        p.state[(r0 + 1) * cols + m0 + _sg] = st[1];
-        p.state[r0 * cols + m0 + 8 + _sg] = st[2];
-        p.state[(r0 + 1) * cols + m0 + 8 + _sg] = st[3];
+    for (int half = 0; half < 2; ++half) {
+      const int64_t r0 = row0 + 8 * half + 2 * _sr;
+#pragma unroll
+      for (int mt = 0; mt < kMTW; ++mt) {
+        const int mc = m0 + mt * kMmaKQuantum;
+        const float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
+        p.state[r0 * cols + mc + _sg] = st[0];
+        p.state[(r0 + 1) * cols + mc + _sg] = st[1];
+        p.state[r0 * cols + mc + 8 + _sg] = st[2];
+        p.state[(r0 + 1) * cols + mc + 8 + _sg] = st[3];
       }
     }
   }

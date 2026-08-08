@@ -38,7 +38,12 @@
 namespace rola {
 namespace consumer {
 
-constexpr int kConsumerThreads = 256;  // 8 warps: the CTA width an SMEM state frees
+//: **THE CARVE'S TARGET WIDTH, IN WARPS.** The CTA is exactly as wide as the carve
+//: it runs (`kWarps == GL * GC`), so this is a CEILING on the partition rather than a
+//: thread count: an arm whose leaf and channel axes cannot be cut this far runs a
+//: NARROWER CTA instead of carrying warps that own no state.
+//: docs/internals/smem_layout.md#carve
+constexpr int kCarveWarps = 4;
 
 //: THE GROUP -- the PRODUCER's work unit: `kMmaKQuantum` gathered tokens, one MMA
 //: m-quantum. It is deliberately THE SAME constant as the k-quantum: one multiply's
@@ -119,13 +124,20 @@ constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
 //: load-bearing: a missing thread term makes `ptxas` DISCARD an out-of-range bound
 //: (not clamp it), and a missing register term buys the extra CTAs by spilling.
 //: docs/internals/smem_layout.md#residency
-constexpr int ctas_for_residency(size_t smem, int reg_budget) {
+constexpr int ctas_for_residency(size_t smem, int reg_budget, int threads) {
   const int by_smem = static_cast<int>(kSm.smem_per_sm / (smem + kDriverSmemReservePerCta));
-  const int by_threads = kSm.max_threads_per_sm / kConsumerThreads;
-  const int by_regs = kSm.regs_per_sm / (kConsumerThreads * reg_budget);
+  const int by_threads = kSm.max_threads_per_sm / threads;
+  const int by_regs = kSm.regs_per_sm / (threads * reg_budget);
   const int m = by_smem < by_threads ? by_smem : by_threads;
   return m < by_regs ? m : by_regs;
 }
+
+//: **THE RESIDENCY FLOOR THE PIPELINE'S DEPTH MAY NOT CROSS.** Depth and CTA count
+//: both buy latency hiding out of the same shared memory, and one CTA per SM is the
+//: point where the trade stops being one: the visit's CTA-wide barrier then has no
+//: sibling CTA to overlap with, so the whole SM idles across it. Two is therefore a
+//: STRUCTURAL floor, not a tuned one. docs/internals/smem_layout.md#pf-stages
+constexpr int kMinResidentCtas = 2;
 
 //: **THE BANK-CONFLICT PROPERTY, AS A COMPILE-TIME PROOF RATHER THAN A COMMENT.**
 //: Every operand this kernel stages is a PITCHED ROW-MAJOR bf16 block read by one of
@@ -156,7 +168,7 @@ constexpr bool pitched_ldsm_banks_ok() {
 }
 
 //: THE SAME QUESTION FOR THE STAGING STORE. Every panel is filled by a flat
-//: `idx = row * COLS + col` loop at `kConsumerThreads` stride, so the 32 lanes of one
+//: `idx = row * COLS + col` loop at a whole-warp stride, so the 32 lanes of one
 //: window must land on 32 banks -- with the 16-bit rule that two lanes in the SAME
 //: 32-bit word do not conflict.
 template <int ROWS, int COLS, int PITCH>
@@ -218,32 +230,78 @@ __host__ __device__ __forceinline__ constexpr int wp_index(int BC, int t, int le
   return t * leaf_pitch(BC) + leaf;
 }
 
-//: **THE STATE'S OWNERSHIP RULE -- THE ONE FACT REGISTER RESIDENCY IS.** The state is
-//: held TRANSPOSED, `[DV channels][BC leaves]`, in the D fragments of the fold; the
-//: `m` axis is therefore the CHANNEL axis and its quantum is the MMA's `m16`. A warp
-//: owns one CHANNEL TILE and a contiguous ATOM RANGE of leaves, so the warp that
-//: WRITES an element is the warp that READS it, at the same lane -- which is the whole
-//: requirement. Warps beyond `kMTiles * reps` own no state: `reps` is capped by the
-//: atom count because a readout k-step is one whole atom.
+//: **THE STATE'S OWNERSHIP RULE -- THE ONE FACT REGISTER RESIDENCY IS, AND IT IS A
+//: TWO-DIMENSIONAL CARVE.** The state is held TRANSPOSED, `[DV channels][BC leaves]`,
+//: in the D fragments of the fold; the `m` axis is therefore the CHANNEL axis and its
+//: quantum is the MMA's `m16`, and the `n`/`k` axis is the LEAF axis whose quantum is
+//: one ATOM (`kMmaKQuantum` leaves). The `kWarps` warps are laid out as a GRID
+//: `GL x GC` -- `GL` LEAF GROUPS by `GC` CHANNEL GROUPS -- and a warp owns the TUPLE:
+//: `BC / GL` leaves by `DV / GC` channels. The warp that WRITES an element is the warp
+//: that READS it, at the same lane, for every point of the grid.
+//:
+//: THE TWO AXES ARE NOT INTERCHANGEABLE, AND THAT IS THE WHOLE DESIGN SPACE:
+//:   * `GC` sets ILP. A warp holds `DV/(GC*16)` channel tiles and the group's 16 tokens
+//:     are 2 token tiles, so it holds `DV/(GC*8)` INDEPENDENT accumulators, all fed by
+//:     one B fragment.
+//:   * `GL` sets CHAIN LENGTH and REPLICATION. A warp's readout contracts over its own
+//:     `BC/(GL*16)` atoms -- that is the dependent k-chain -- and each of the `GL`
+//:     warps sharing a channel group holds a PARTIAL `y` over its own leaves, so the
+//:     split-K emission's `atomicAdd` fan-in is exactly `GL`.
 //: docs/internals/smem_layout.md#state-residency
 constexpr int state_m_tiles(int DV) { return DV / kMmaKQuantum; }
 
-constexpr int state_reps(int BC, int DV) {
-  const int by_warps = (kConsumerThreads / 32) / state_m_tiles(DV);
-  const int by_atoms = BC / kMmaKQuantum;
-  return by_warps < by_atoms ? by_warps : by_atoms;
+//: **THE STRUCTURAL CEILINGS, ONE PER AXIS.** A leaf group must be a whole number of
+//: ATOMS because a readout k-step and a fold n-tile pair are one atom; a channel group
+//: must be a whole number of CHANNEL TILES because a warp holds all 16 `m` rows of a D
+//: fragment across its lanes. Neither is a threshold -- both are tile counts.
+constexpr int carve_leaf_groups_max(int BC) { return BC / kMmaKQuantum; }
+constexpr int carve_chan_groups_max(int DV) { return state_m_tiles(DV); }
+
+//: **THE SHIPPED POINT OF THE CARVE SPACE: LEAF-FIRST.** The leaf axis is taken first
+//: because cutting it is what SHORTENS the dependent chain, and the channel axis takes
+//: what is left -- which maximises the channel extent per warp, hence the independent
+//: accumulator count. Both are capped by their own tile count, so an arm that cannot be
+//: cut this far runs a NARROWER CTA rather than carrying warps that own nothing.
+//: `ROLA_CARVE_GL` / `ROLA_CARVE_GC` override the policy for a probe compile, CLAMPED
+//: to the same ceilings so every arm of the matrix stays legal; they are a MEASUREMENT
+//: INSTRUMENT and never a shipping knob, on `ROLA_FORCE_CTAS`'s rule.
+//: docs/internals/smem_layout.md#carve
+constexpr int carve_leaf_groups(int BC, int DV) {
+  (void)DV;
+#ifdef ROLA_CARVE_GL
+  const int want = ROLA_CARVE_GL;
+#else
+  const int want = kCarveWarps;
+#endif
+  const int cap = carve_leaf_groups_max(BC);
+  return want < cap ? want : cap;
 }
 
-constexpr int state_atoms_per_warp(int BC, int DV) {
-  return (BC / kMmaKQuantum) / state_reps(BC, DV);
+constexpr int carve_chan_groups(int BC, int DV) {
+#ifdef ROLA_CARVE_GC
+  const int want = ROLA_CARVE_GC;
+#else
+  const int want = kCarveWarps / carve_leaf_groups(BC, DV);
+#endif
+  const int cap = carve_chan_groups_max(DV);
+  return want < cap ? want : cap;
 }
 
-constexpr int state_owner_warps(int BC, int DV) { return state_m_tiles(DV) * state_reps(BC, DV); }
+//: THE CTA IS EXACTLY THE CARVE: one warp per grid point, no warp without a tuple.
+constexpr int consumer_warps(int GL, int GC) { return GL * GC; }
+constexpr int consumer_threads(int GL, int GC) { return 32 * consumer_warps(GL, GC); }
+
+//: The warp's own tuple, in tiles: `LEAVES/GL` as atoms, `DV/GC` as channel tiles.
+constexpr int state_atoms_per_warp(int BC, int GL) { return (BC / kMmaKQuantum) / GL; }
+constexpr int state_tiles_per_warp(int DV, int GC) { return state_m_tiles(DV) / GC; }
 
 //: fp32 registers PER LANE the state costs: one D fragment (4 floats) per 8-leaf tile,
-//: two tiles per atom. 16 at `BC = DV = 64`, inside an FA-like envelope by a wide
-//: margin (FA spends 255 registers per thread).
-constexpr int state_regs_per_lane(int BC, int DV) { return 8 * state_atoms_per_warp(BC, DV); }
+//: two tiles per atom, for every channel tile the warp owns. 32 at
+//: `BC = DV = 64, GL = 4, GC = 1`, inside an FA-like envelope by a wide margin (FA
+//: spends 255 registers per thread).
+constexpr int state_regs_per_lane(int BC, int DV, int GL, int GC) {
+  return 8 * state_atoms_per_warp(BC, GL) * state_tiles_per_warp(DV, GC);
+}
 
 //: The prefetch slab is a `cp.async` DESTINATION, and every `ldmatrix` source row is
 //: 16-byte aligned, so every region base carries the 16-byte requirement.
@@ -363,28 +421,31 @@ constexpr size_t consumer_smem_bytes_at() {
 }
 
 //: **THE PIPELINE'S DEPTH, DERIVED FROM THIS ARM'S OWN FOOTPRINT.** The deepest
-//: pipeline whose carve still admits the residency the arm would have had at depth 1
-//: -- which on every tabulated arch is the REGISTER bound, so the depth is bought out
-//: of shared memory that was buying nothing. Depth is therefore bounded by CAPACITY
-//: and never by structure, and no arm pays a CTA for it.
-//: docs/internals/smem_layout.md#pf-stages
-template <int BC, int DV, int D, bool DECAY, int S>
+//: pipeline the arm's carve carries while `kMinResidentCtas` CTAs still fit. Depth is
+//: bounded by CAPACITY and never by structure, and the floor it stops at is the point
+//: where a CTA-wide barrier loses its sibling rather than an occupancy target.
+//: THE REFERENCE IS THE SHALLOWEST LEGAL DEPTH, `2`. Depth `1` is not a configuration
+//: of this kernel at all -- the one-barrier visit's `static_assert(S >= 2)` refuses it,
+//: because the stage waited on at the panel barrier and the stage refilled just after
+//: it would be the same buffer -- so it cannot be the residency a depth is compared
+//: against. docs/internals/smem_layout.md#pf-stages
+template <int BC, int DV, int D, bool DECAY, int S, int GL, int GC>
 constexpr int deepest_stages() {
-  if constexpr (S <= 1) {
-    return 1;
+  if constexpr (S <= 2) {
+    return 2;
   } else {
     return (ctas_for_residency(consumer_smem_bytes_at<BC, DV, D, DECAY, S>(),
-                               consumer_reg_budget(BC, DECAY, DV, D))
-            >= ctas_for_residency(consumer_smem_bytes_at<BC, DV, D, DECAY, 1>(),
-                                  consumer_reg_budget(BC, DECAY, DV, D)))
+                               consumer_reg_budget(BC, DECAY, DV, D), consumer_threads(GL, GC))
+            >= kMinResidentCtas)
                ? S
-               : deepest_stages<BC, DV, D, DECAY, S - 1>();
+               : deepest_stages<BC, DV, D, DECAY, S - 1, GL, GC>();
   }
 }
 
 template <int BC, int DV, int D, bool DECAY>
 constexpr int pf_stages() {
-  return deepest_stages<BC, DV, D, DECAY, kPfStagesMax>();
+  return deepest_stages<BC, DV, D, DECAY, kPfStagesMax, carve_leaf_groups(BC, DV),
+                        carve_chan_groups(BC, DV)>();
 }
 
 //: The per-CTA shared-memory footprint, `constexpr` so the launch bound is DERIVED

@@ -180,15 +180,20 @@ __device__ __forceinline__ void bcast_frag_split(const float* __restrict__ v, in
 //: SOFTWARE PIPELINE: k-step `ks + 1`'s `ldmatrix`s are issued before k-step `ks`'s
 //: `mma.sync`, so the shared-memory latency of a fetch is covered by the multiply of
 //: its predecessor rather than by a sibling warp. One k-step is one ATOM.
-//: **BOTH TOKEN TILES RIDE ONE A OPERAND, AND THAT IS THE ILP POINT**: the group's
-//: sixteen tokens are two `n8` tiles over the SAME sixteen state channels, so the
-//: narrowing happens once and the two `mma.sync` are INDEPENDENT -- back-to-back
-//: issue from one warp, with no dependency gap for the scheduler to cover by
-//: switching to another. docs/internals/mma_tile.md#gemm-readout
-template <int KS>
+//: **THE WARP'S WHOLE CHANNEL EXTENT RIDES ONE PAIR OF B FRAGMENTS, AND THAT IS THE
+//: ILP POINT.** The group's sixteen tokens are two `n8` tiles, and the warp owns `MT`
+//: channel tiles of state, so ONE k-step issues `2 * MT` `mma.sync` into `2 * MT`
+//: INDEPENDENT accumulators against the SAME two B fragments -- back-to-back issue from
+//: one warp with no dependency gap for the scheduler to cover by switching to another,
+//: and `2 * MT` multiplies per pair of `ldmatrix` rather than two. The dependent chain
+//: is the k-loop alone, `KS` long, and `KS` is the warp's atom count -- which is what
+//: the carve's leaf axis cuts. `st` is the `[MT][MSTRIDE]` register plane walked for
+//: `KS` steps; `MSTRIDE` differs from `KS` only where a caller walks ONE atom of a
+//: wider plane. docs/internals/mma_tile.md#gemm-readout
+template <int MT, int KS, int MSTRIDE = KS>
 __device__ __forceinline__ void mma_readout_tiles(const float* __restrict__ st,
                                                   const __nv_bfloat16* __restrict__ Rp, int leaf0,
-                                                  int lane, float (&d)[2][4]) {
+                                                  int lane, float (&d)[MT][2][4]) {
   unsigned b00, b01, b10, b11;
   auto fetch = [&](int ks) {
     pitched_frag_b(Rp, kTokPitch, leaf0 + ks * kMmaKQuantum, 0, lane, b00, b01);
@@ -198,13 +203,19 @@ __device__ __forceinline__ void mma_readout_tiles(const float* __restrict__ st,
 #pragma unroll
   for (int ks = 0; ks < KS; ++ks) {
     const unsigned c00 = b00, c01 = b01, c10 = b10, c11 = b11;
-    unsigned a0, a1, a2, a3;
-    state_frag_a(st + ks * 8, a0, a1, a2, a3);
+    unsigned a[MT][4];
+#pragma unroll
+    for (int mt = 0; mt < MT; ++mt) {
+      state_frag_a(st + (mt * MSTRIDE + ks) * 8, a[mt][0], a[mt][1], a[mt][2], a[mt][3]);
+    }
     if (ks + 1 < KS) fetch(ks + 1);
-    mma_m16n8k16(d[0][0], d[0][1], d[0][2], d[0][3], a0, a1, a2, a3, c00, c01, d[0][0], d[0][1],
-                 d[0][2], d[0][3]);
-    mma_m16n8k16(d[1][0], d[1][1], d[1][2], d[1][3], a0, a1, a2, a3, c10, c11, d[1][0], d[1][1],
-                 d[1][2], d[1][3]);
+#pragma unroll
+    for (int mt = 0; mt < MT; ++mt) {
+      mma_m16n8k16(d[mt][0][0], d[mt][0][1], d[mt][0][2], d[mt][0][3], a[mt][0], a[mt][1], a[mt][2],
+                   a[mt][3], c00, c01, d[mt][0][0], d[mt][0][1], d[mt][0][2], d[mt][0][3]);
+      mma_m16n8k16(d[mt][1][0], d[mt][1][1], d[mt][1][2], d[mt][1][3], a[mt][0], a[mt][1], a[mt][2],
+                   a[mt][3], c10, c11, d[mt][1][0], d[mt][1][1], d[mt][1][2], d[mt][1][3]);
+    }
   }
 }
 
@@ -265,16 +276,18 @@ __device__ __forceinline__ void mma_pitched_tile(const __nv_bfloat16* __restrict
 }
 
 //: **GEMM 4's FOLD SEQUENCE FOR ONE STAGED GROUP.** The `2 * APW` 8-leaf tiles the warp
-//: owns share ONE A operand (the value tile at the warp's channel rows, which the
-//: caller already holds), so the sequence is a pure B walk along `Wp`'s leaf axis --
-//: and it is the two-stage chain, which is what the register-resident state's
-//: independent accumulators exist to make possible. The ATOM SKIP rides the pipeline:
-//: a dead atom's fetch is not issued either, so the mask still costs its own tiles
-//: nothing. docs/internals/mma_tile.md#gemm-fold
-template <int APW>
-__device__ __forceinline__ void mma_fold_tiles(unsigned va0, unsigned va1, unsigned va2,
-                                               unsigned va3, const __nv_bfloat16* __restrict__ Wp,
-                                               int ldw, int atom0, unsigned live, int lane,
+//: owns are a pure B walk along `Wp`'s leaf axis, and every one of the warp's `MT`
+//: channel tiles multiplies against the SAME B fragment -- so one `ldmatrix` feeds `MT`
+//: INDEPENDENT `mma.sync` into `MT` independent state tiles, and the whole sequence is
+//: `2 * APW * MT` multiplies with no dependency between any two of them. `va` is the
+//: value tile's A operand PER CHANNEL TILE, which the caller already holds; `st` is
+//: `[MT][APW]` eight-float atoms. The ATOM SKIP rides the two-stage chain: a dead
+//: atom's fetch is not issued either, so the mask still costs its own tiles nothing.
+//: docs/internals/mma_tile.md#gemm-fold
+template <int MT, int APW>
+__device__ __forceinline__ void mma_fold_tiles(const unsigned (&va)[MT][4],
+                                               const __nv_bfloat16* __restrict__ Wp, int ldw,
+                                               int atom0, unsigned live, int lane,
                                                float* __restrict__ st) {
   unsigned b0 = 0u, b1 = 0u;
   auto on = [&](int s) { return ((live >> (atom0 + (s >> 1))) & 1u) != 0u; };
@@ -287,8 +300,36 @@ __device__ __forceinline__ void mma_fold_tiles(unsigned va0, unsigned va1, unsig
     const unsigned c0 = b0, c1 = b1;
     if (s + 1 < 2 * APW && on(s + 1)) fetch(s + 1);
     if (!on(s)) continue;
-    float* const d = st + (s >> 1) * 8 + (s & 1) * 4;
-    mma_m16n8k16(d[0], d[1], d[2], d[3], va0, va1, va2, va3, c0, c1, d[0], d[1], d[2], d[3]);
+#pragma unroll
+    for (int mt = 0; mt < MT; ++mt) {
+      float* const d = st + (mt * APW + (s >> 1)) * 8 + (s & 1) * 4;
+      mma_m16n8k16(d[0], d[1], d[2], d[3], va[mt][0], va[mt][1], va[mt][2], va[mt][3], c0, c1, d[0],
+                   d[1], d[2], d[3]);
+    }
+  }
+}
+
+//: **GEMM 3's INTRA TERM, FOR ONE TOKEN TILE.** The A operand is the value tile at each
+//: of the warp's channel rows and the B operand is the Gram's token tile -- ONE fragment
+//: for the whole tile, so the `own` channel tiles multiply against a single `ldmatrix`.
+//: `own` is the warp's share of the `[MT][2]` item grid at this token tile, as a bitmask
+//: over channel tiles: the intra term is contracted over TOKENS, so each item belongs to
+//: exactly ONE of the `GL` warps holding that channel tile's `y` and the others carry
+//: only their readout partial. docs/internals/mma_tile.md#gemm-intra
+template <int MT>
+__device__ __forceinline__ void mma_intra_tiles(const unsigned (&va)[MT][4],
+                                                const __nv_bfloat16* __restrict__ Gm, int ldb,
+                                                int k0, int n0, int lane, unsigned own, int nt,
+                                                float (&d)[MT][2][4]) {
+  if (own == 0u) return;
+  unsigned b0, b1;
+  pitched_frag_b(Gm, ldb, k0, n0, lane, b0, b1);
+#pragma unroll
+  for (int mt = 0; mt < MT; ++mt) {
+    if (((own >> mt) & 1u) == 0u) continue;
+    mma_m16n8k16(d[mt][nt][0], d[mt][nt][1], d[mt][nt][2], d[mt][nt][3], va[mt][0], va[mt][1],
+                 va[mt][2], va[mt][3], b0, b1, d[mt][nt][0], d[mt][nt][1], d[mt][nt][2],
+                 d[mt][nt][3]);
   }
 }
 
