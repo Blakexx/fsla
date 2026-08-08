@@ -49,10 +49,14 @@
 // survives the carve; the register cost is the ratchet's to adjudicate.)
 //
 // Three facts a reader must not miss:
-//   1. THE STATE LIVES IN SMEM (`S[BC][SP]`), not in registers. That is what
+//   1. THE STATE LIVES IN SMEM, AS TWO bf16 PLANES (`Shi`, `Slo`: a value's bf16
+//      rounding and its residual) plus an fp32 mass column. That is what
 //      decouples the thread count from the state layout, frees the CTA to 8
 //      warps, and puts every per-visit term on the tensor cores as one of four
-//      GEMMs (readout, Gram, intra, fold).
+//      GEMMs (readout, Gram, intra, fold) -- and the PLANE form is what lets the
+//      readout's B operand arrive by `ldmatrix` instead of being packed from
+//      scalar shared loads at every use. Accumulation is still fp32: the fold
+//      reads the pair, sums in registers and splits at the one writeback.
 //   2. THE ONE-COPY INVARIANT IS A PROPERTY OF THE LAUNCH SHAPE: one CTA per
 //      owner, run to completion, one HBM read and one HBM write of the owner's
 //      state block. There is no wave machinery anywhere.
@@ -130,11 +134,9 @@ consumer_forward_kernel(ConsumerParams p) {
   constexpr int W = window_groups(GT);
   constexpr int kGT = GT;
   static_assert(GT % kGroupTokens == 0 && W >= 1, "the window is a whole number of groups");
-  //: `SP = DV + 4` IS DERIVED FROM THE bf16 MMA B MAP: `k = k0 + 2r` collides up to
-  //: four ways at `DV + 1`; `DV + 4` makes the bank `(8r + g) % 32`, covering all 32
-  //: exactly once. docs/internals/consumer_kernel.md#state-pitch
-  constexpr int SP = DV + 4;
   constexpr int NT_DV = DV / 8;  // n8 column tiles of a DV-wide output
+  constexpr int NP_DV = DV / 2;  // channel PAIRS of a state row -- the plane walk's unit
+  constexpr int kStatePlane = state_plane_elems<BC, DV>();
   extern __shared__ char smem_raw[];
 
   // ---- THE SMEM CARVE. Every region, its pitch and its measured residency cost:
@@ -164,15 +166,28 @@ consumer_forward_kernel(ConsumerParams p) {
   constexpr int kPfPitch = amp_slab_pitch(BC, D);
   constexpr int kPfChunks = amp_slab_chunks(BC, D);
 
-  float* S = reinterpret_cast<float*>(smem_raw);
-  char* carve = smem_raw + align4(static_cast<size_t>(BC) * SP * sizeof(float));
+  //: **THE STATE, AS TWO bf16 PLANES AND AN fp32 MASS COLUMN.** `Shi` holds each
+  //: value's bf16 rounding and `Slo` its residual, both `[BC][DV]` under the CuTe
+  //: swizzle `Vw` already uses -- which is what lets GEMM 1 fetch its B operand with
+  //: an `ldmatrix` instead of packing it from scalar shared loads at every use. The
+  //: MASS COLUMN stays fp32 and stays OUT of the planes: it is the denominator of a
+  //: ratio (P31 measured a plain bf16 narrowing of it 12% over the family budget), its
+  //: consumers are broadcast-B matvecs no `ldmatrix` can serve, and keeping it out is
+  //: what leaves the planes pad-free at exactly `BC * DV`.
+  //: docs/internals/consumer_kernel.md#state-planes
+  __nv_bfloat16* const Shi = reinterpret_cast<__nv_bfloat16*>(smem_raw);
+  __nv_bfloat16* const Slo = Shi + kStatePlane;
+  float* const Smass = reinterpret_cast<float*>(Slo + kStatePlane);
+  constexpr size_t kStateBytes =
+      2 * static_cast<size_t>(kStatePlane) * sizeof(__nv_bfloat16) + BC * sizeof(float);
+  char* carve = smem_raw + kStateBytes;
   __nv_bfloat16* WT = reinterpret_cast<__nv_bfloat16*>(carve);
   carve += align4(static_cast<size_t>(W) * BC * BTP * sizeof(__nv_bfloat16));
   constexpr size_t kVwRegionBytes = vw_union_bytes<BC, DV, D, DECAY, GT>();
   //: `ldmatrix` TAKES A 16-BYTE-ALIGNED ROW ADDRESS, so both staged bases must be
   //: 16-byte aligned -- a requirement `align4` does NOT imply. Stated, not trusted:
   //: docs/internals/consumer_kernel.md#ldsm-alignment
-  constexpr size_t kWtOffsetBytes = align4(static_cast<size_t>(BC) * SP * sizeof(float));
+  constexpr size_t kWtOffsetBytes = kStateBytes;
   constexpr size_t kVwOffsetBytes =
       kWtOffsetBytes + align4(static_cast<size_t>(W) * BC * BTP * sizeof(__nv_bfloat16));
   static_assert(kVwOffsetBytes % 16 == 0 && kWtOffsetBytes % 16 == 0,
@@ -226,7 +241,18 @@ consumer_forward_kernel(ConsumerParams p) {
 
   // ---- EACH OPERAND'S PITCH PROVES ITS OWN CONFLICT-FREEDOM.
   // ---- docs/internals/consumer_kernel.md#pitches
-  static_assert(banks_distinct(1, 2 * SP), "S: GEMM1 B operand conflicts");
+  //: THE STATE PLANES ANSWER THE SAME FOUR QUESTIONS `Vw` DOES, at the state's shape:
+  //: the closed-form address IS CuTe's, the swizzle tiles the reservation exactly,
+  //: GEMM 1's `ldmatrix` phase is conflict-free and 16-byte aligned, and the fold's
+  //: PAIRED read-modify-write is conflict-free with the pair inside one word.
+  static_assert(stage_offset_matches_cute<BC, DV>(),
+                "S: the closed-form address is not CuTe's layout");
+  static_assert(stage_layout_is_bijection<BC, DV>(),
+                "S: the swizzled layout does not tile the plane");
+  static_assert(stage_ldsm_banks_ok<BC, DV>(),
+                "S: GEMM1's ldmatrix.x2.trans fetch conflicts or is misaligned");
+  static_assert(stage_pair_banks_ok<BC, DV>(), "S: the fold's paired read-modify-write conflicts");
+  static_assert(stage_store_banks_ok<BC, DV>(), "S: the entry-state staging store conflicts");
   static_assert(banks_distinct_u16(1, 2 * BTP), "WT: GEMM2 B operand conflicts");
   static_assert(banks_distinct_u16(BTP, 2), "WT: GEMM4 A operand conflicts");
   //: THE PROOFS ARE ABOUT ONE SLOT / ONE SUB-BLOCK, which is exactly why the window
@@ -304,20 +330,35 @@ consumer_forward_kernel(ConsumerParams p) {
   const bool from_ws = (!summary) && (nseg > 1);
   const float* ws_entry =
       from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols) : nullptr;
+  //: THE ENTRY STATE SPLITS AS IT LANDS. The numerator walks CHANNEL PAIRS -- two
+  //: adjacent fp32 elements of the HBM row become one word in each plane -- and the
+  //: mass column takes its own `BC` walk, because it is the one column that stays
+  //: fp32. `NP_DV` is a power of two, so the pair loop's row/column split is a shift.
   if (summary || from_ws) {
-    for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
-      const int i = idx / cols;
-      const int c = idx - i * cols;
-      S[i * SP + c] = summary ? 0.0f : ws_entry[i * cols + c];
+    for (int idx = tid; idx < BC * NP_DV; idx += kConsumerThreads) {
+      const int i = idx / NP_DV;
+      const int c = 2 * (idx - i * NP_DV);
+      const float v0 = summary ? 0.0f : ws_entry[i * cols + c];
+      const float v1 = summary ? 0.0f : ws_entry[i * cols + c + 1];
+      split_bf16x2(v0, v1, state_pair<DV>(Shi, i, c), state_pair<DV>(Slo, i, c));
+    }
+    for (int i = tid; i < BC; i += kConsumerThreads) {
+      Smass[i] = summary ? 0.0f : ws_entry[i * cols + DV];
     }
   } else {
 #pragma unroll
     for (int q = 0; q < kQPO; ++q) {
       const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
-      for (int idx = tid; idx < kMmaKQuantum * cols; idx += kConsumerThreads) {
-        const int r = idx / cols;
-        const int c = idx - r * cols;
-        S[(q * kMmaKQuantum + r) * SP + c] = (row0 >= 0) ? p.state[(row0 + r) * cols + c] : 0.0f;
+      for (int idx = tid; idx < kMmaKQuantum * NP_DV; idx += kConsumerThreads) {
+        const int r = idx / NP_DV;
+        const int c = 2 * (idx - r * NP_DV);
+        const float v0 = (row0 >= 0) ? p.state[(row0 + r) * cols + c] : 0.0f;
+        const float v1 = (row0 >= 0) ? p.state[(row0 + r) * cols + c + 1] : 0.0f;
+        const int i = q * kMmaKQuantum + r;
+        split_bf16x2(v0, v1, state_pair<DV>(Shi, i, c), state_pair<DV>(Slo, i, c));
+      }
+      for (int r = tid; r < kMmaKQuantum; r += kConsumerThreads) {
+        Smass[q * kMmaKQuantum + r] = (row0 >= 0) ? p.state[(row0 + r) * cols + DV] : 0.0f;
       }
     }
   }
@@ -824,12 +865,20 @@ consumer_forward_kernel(ConsumerParams p) {
       __syncthreads();
       // ---- DECAY, step (c): the entry state enters the reference frame, ONCE PER
       // ---- WINDOW. `s0` multiplies the STATE; the mass column rides the same sweep
-      // ---- (same recurrence with `v := 1`). Row-per-warp because `cols = DV + 1` is
-      // ---- not a power of two. Dead atoms' rows multiply by exactly 1.
-      for (int i = warp; i < BC; i += kWarps) {
+      // ---- (same recurrence with `v := 1`). FLAT over channel PAIRS -- `NP_DV` is a
+      // ---- power of two where the fp32 state's `cols = DV + 1` was not, so the walk
+      // ---- no longer needs a row-per-warp partition. The scale lands on the
+      // ---- RECONSTRUCTED value and the pair re-splits: a scaled bf16 is not a bf16.
+      // ---- Dead atoms' rows multiply by exactly 1.
+      for (int idx = tid; idx < BC * NP_DV; idx += kConsumerThreads) {
+        const int i = idx / NP_DV;
+        const int c = 2 * (idx - i * NP_DV);
         const float s = s0[i];
-        for (int c = lane; c < cols; c += 32) S[i * SP + c] *= s;
+        float v0, v1;
+        merge_bf16x2(state_pair_load<DV>(Shi, i, c), state_pair_load<DV>(Slo, i, c), v0, v1);
+        split_bf16x2(v0 * s, v1 * s, state_pair<DV>(Shi, i, c), state_pair<DV>(Slo, i, c));
       }
+      for (int i = tid; i < BC; i += kConsumerThreads) Smass[i] *= s0[i];
     }
 
     // ---- §3 STEP 3's ROW SCALES ARRIVE PRE-MULTIPLIED IN THE RING SLOT, cooked
@@ -1032,21 +1081,21 @@ consumer_forward_kernel(ConsumerParams p) {
       const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
-        mma_tile_fragA<BC, float, false>(Rfa, S, SP, BC, n0, lane, y[s][0], y[s][1], y[s][2],
-                                         y[s][3]);
+        mma_tile_fragA_stateB<DV, BC>(Rfa, Shi, Slo, 0, BC, n0, lane, y[s][0], y[s][1], y[s][2],
+                                      y[s][3]);
       } else {
         for (unsigned m = rmask; m; m &= m - 1) {
           const int q = __ffs(m) - 1;
-          mma_tile_fragA<kMmaKQuantum, float, false>(Rfa + q * 128, S + q * kMmaKQuantum * SP, SP,
-                                                     kMmaKQuantum, n0, lane, y[s][0], y[s][1],
-                                                     y[s][2], y[s][3]);
+          mma_tile_fragA_stateB<DV, kMmaKQuantum>(Rfa + q * 128, Shi, Slo, q * kMmaKQuantum,
+                                                  kMmaKQuantum, n0, lane, y[s][0], y[s][1], y[s][2],
+                                                  y[s][3]);
         }
       }
     }
 
-    // ---- THE MASS COLUMN, TERM 1 -- `dm_a = R_a . S[.][DV]`, THE SAME GEMM AS THE
-    // ---- READOUT, one extra `n8` tile with `S`'s mass column BROADCAST across the
-    // ---- tile. Placement FORCED by phase B: the fold WRITES `S[i][DV]`, so term 1,
+    // ---- THE MASS COLUMN, TERM 1 -- `dm_a = R_a . Smass`, THE SAME GEMM AS THE
+    // ---- READOUT, one extra `n8` tile with the mass column BROADCAST across the
+    // ---- tile. Placement FORCED by phase B: the fold WRITES `Smass`, so term 1,
     // ---- which READS it, must already have run. Live read atoms only.
     // ---- docs/internals/consumer_kernel.md#mass-term1
     //: HAZARD mass-split -- docs/internals/consumer_kernel.md#mass-split
@@ -1061,13 +1110,12 @@ consumer_forward_kernel(ConsumerParams p) {
       const unsigned rmask = rmr[a];
       const unsigned* const Rfa = Rf + a * kRfSlotWords;
       if (rmask == kFullMask) {
-        mma_tile_fragA_massB<BC>(Rfa, S, SP, BC, DV, lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
+        mma_tile_fragA_massB<BC>(Rfa, Smass, BC, lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
       } else {
         for (unsigned m = rmask; m; m &= m - 1) {
           const int q = __ffs(m) - 1;
-          mma_tile_fragA_massB<kMmaKQuantum>(Rfa + q * 128, S + q * kMmaKQuantum * SP, SP,
-                                             kMmaKQuantum, DV, lane, dm[s][0], dm[s][1], dm[s][2],
-                                             dm[s][3]);
+          mma_tile_fragA_massB<kMmaKQuantum>(Rfa + q * 128, Smass + q * kMmaKQuantum, kMmaKQuantum,
+                                             lane, dm[s][0], dm[s][1], dm[s][2], dm[s][3]);
         }
       }
     }
@@ -1273,11 +1321,13 @@ consumer_forward_kernel(ConsumerParams p) {
         const int r0 = mt * 16 + _g, n0 = nt * 8 + 2 * _r;
         const int i0 = r0, i1 = r0 + 8;
         // ---- the atom's accumulator: RESIDENT IN REGISTERS from the load to the one
-        // ---- writeback below.
-        float a0 = S[i0 * SP + n0];
-        float a1 = S[i0 * SP + n0 + 1];
-        float a2 = S[i1 * SP + n0];
-        float a3 = S[i1 * SP + n0 + 1];
+        // ---- writeback below. The fragment's two columns `n0, n0 + 1` are ONE WORD of
+        // ---- each plane (`n0 = nt * 8 + 2 * _r` is even and the swizzle cannot
+        // ---- separate an even/odd pair), so a row costs two loads, not four, and the
+        // ---- accumulation itself stays fp32.
+        float a0, a1, a2, a3;
+        merge_bf16x2(state_pair_load<DV>(Shi, i0, n0), state_pair_load<DV>(Slo, i0, n0), a0, a1);
+        merge_bf16x2(state_pair_load<DV>(Shi, i1, n0), state_pair_load<DV>(Slo, i1, n0), a2, a3);
         float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
         //: **THE WINDOW'S DEPOSITS ACCUMULATE IN THE TENSOR CORE'S D FRAGMENT, WITH
         //: NO PREDICATE AT ALL** -- in ascending group order, over every staged
@@ -1306,14 +1356,14 @@ consumer_forward_kernel(ConsumerParams p) {
         a1 = e0 * (a1 + d1);
         a2 = e1 * (a2 + d2);
         a3 = e1 * (a3 + d3);
-        // ---- the ONE writeback: the atom releases its accumulator.
-        S[i0 * SP + n0] = a0;
-        S[i0 * SP + n0 + 1] = a1;
-        S[i1 * SP + n0] = a2;
-        S[i1 * SP + n0 + 1] = a3;
+        // ---- the ONE writeback: the atom releases its accumulator, splitting as it
+        // ---- goes -- the fp32 sum's rounding to the plane pair happens HERE and
+        // ---- nowhere else.
+        split_bf16x2(a0, a1, state_pair<DV>(Shi, i0, n0), state_pair<DV>(Slo, i0, n0));
+        split_bf16x2(a2, a3, state_pair<DV>(Shi, i1, n0), state_pair<DV>(Slo, i1, n0));
       }
       // ---- THE MASS COLUMN, TERM 3 -- the fold's own term,
-      // ---- `S[.][DV] += sum_b W_b^T . sw_b`, ON THE SAME TENSOR CORE AS THE FOLD
+      // ---- `Smass += sum_b W_b^T . sw_b`, ON THE SAME TENSOR CORE AS THE FOLD
       // ---- ITSELF: one `mma.sync` per live atom per staged group against a
       // ---- broadcast `sw`, one atom per warp. A dead atom's rows: acc == 0 and
       // ---- s0 == 1 -- the skip is the identity.
@@ -1326,8 +1376,8 @@ consumer_forward_kernel(ConsumerParams p) {
         //: and the OTHER three lanes of the row must not touch `S` at all -- a
         //: read they would discard is still a shared-memory access to an address
         //: their own warp is about to write.
-        float a0 = (_r == 0) ? S[i0 * SP + DV] : 0.0f;
-        float a1 = (_r == 0) ? S[i1 * SP + DV] : 0.0f;
+        float a0 = (_r == 0) ? Smass[i0] : 0.0f;
+        float a1 = (_r == 0) ? Smass[i1] : 0.0f;
         float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
 #pragma unroll
         for (int b = 0; b < W; ++b) {
@@ -1339,8 +1389,8 @@ consumer_forward_kernel(ConsumerParams p) {
         a0 = (DECAY ? s0[i0] : 1.0f) * (a0 + m0);
         a1 = (DECAY ? s0[i1] : 1.0f) * (a1 + m2);
         if (_r == 0) {
-          S[i0 * SP + DV] = a0;
-          S[i1 * SP + DV] = a1;
+          Smass[i0] = a0;
+          Smass[i1] = a1;
         }
       }
     }
@@ -1400,11 +1450,21 @@ consumer_forward_kernel(ConsumerParams p) {
       const int q = sum_slot[i];
       if (q >= 0) p.ws_scale[slot * BC + q] = a_state[i];
     }
-    for (int idx = tid; idx < BC * cols; idx += kConsumerThreads) {
-      const int i = idx / cols;
-      const int c = idx - i * cols;
+    //: THE PLANES MERGE BACK TO fp32 AT THE PUBLICATION -- the entry split's inverse,
+    //: on the same channel-pair walk.
+    for (int idx = tid; idx < BC * NP_DV; idx += kConsumerThreads) {
+      const int i = idx / NP_DV;
+      const int c = 2 * (idx - i * NP_DV);
       const int q = sum_slot[i];
-      if (q >= 0) p.ws_state[(slot * BC + q) * cols + c] = S[i * SP + c];
+      if (q < 0) continue;
+      float v0, v1;
+      merge_bf16x2(state_pair_load<DV>(Shi, i, c), state_pair_load<DV>(Slo, i, c), v0, v1);
+      p.ws_state[(slot * BC + q) * cols + c] = v0;
+      p.ws_state[(slot * BC + q) * cols + c + 1] = v1;
+    }
+    for (int i = tid; i < BC; i += kConsumerThreads) {
+      const int q = sum_slot[i];
+      if (q >= 0) p.ws_state[(slot * BC + q) * cols + DV] = Smass[i];
     }
     return;
   }
@@ -1417,10 +1477,17 @@ consumer_forward_kernel(ConsumerParams p) {
   for (int q = 0; q < kQPO; ++q) {
     const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
     if (row0 < 0) continue;
-    for (int idx = tid; idx < kMmaKQuantum * cols; idx += kConsumerThreads) {
-      const int r = idx / cols;
-      const int c = idx - r * cols;
-      p.state[(row0 + r) * cols + c] = S[(q * kMmaKQuantum + r) * SP + c];
+    for (int idx = tid; idx < kMmaKQuantum * NP_DV; idx += kConsumerThreads) {
+      const int r = idx / NP_DV;
+      const int c = 2 * (idx - r * NP_DV);
+      float v0, v1;
+      const int i = q * kMmaKQuantum + r;
+      merge_bf16x2(state_pair_load<DV>(Shi, i, c), state_pair_load<DV>(Slo, i, c), v0, v1);
+      p.state[(row0 + r) * cols + c] = v0;
+      p.state[(row0 + r) * cols + c + 1] = v1;
+    }
+    for (int r = tid; r < kMmaKQuantum; r += kConsumerThreads) {
+      p.state[(row0 + r) * cols + DV] = Smass[q * kMmaKQuantum + r];
     }
   }
 }

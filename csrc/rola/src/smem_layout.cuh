@@ -386,6 +386,68 @@ __host__ __device__ __forceinline__ constexpr int wt_index(int q, int t) {
   return q * kWtPitch + t;
 }
 
+//: **THE STATE'S ADDRESS FUNCTION -- `StageLayout` AT THE STATE'S SHAPE.** The state's
+//: numerator block is stored as TWO bf16 PLANES (`Shi`, `Slo`: a value's bf16 rounding
+//: and its residual), each `[BC][DV]` under the very layout `Vw` is stored under, so
+//: GEMM 1's B operand is fetched by the `ldmatrix` atom that already serves `Vw`
+//: instead of packed from scalar shared loads at every use. No pad: the planes are
+//: exactly `BC * DV` elements, which is what makes the swizzle's XOR field legal.
+//: docs/internals/smem_layout.md#state-planes
+template <int DV>
+__host__ __device__ __forceinline__ constexpr int state_index(int i, int c) {
+  return stage_offset<DV>(i, c);
+}
+
+//: The element count of ONE state plane. The MASS COLUMN is not in it: it stays fp32
+//: in its own `[BC]` array (it is the denominator of a ratio, its only consumers are
+//: broadcast-B matvecs that no `ldmatrix` could serve, and keeping it out is what
+//: leaves the planes pad-free).
+template <int BC, int DV>
+constexpr int state_plane_elems() {
+  return BC * DV;
+}
+
+//: PROOF 4 -- A CHANNEL PAIR IS ONE 32-BIT WORD, AND EVERY PAIRED ACCESS IS
+//: CONFLICT-FREE. The swizzle XORs bit 3 and above of the column, so it cannot
+//: separate `(i, c)` from `(i, c + 1)` for even `c`: the two elements stay adjacent
+//: and the fold's read-modify-write moves a pair per instruction. This enumerates the
+//: two access patterns that use it -- the fold's `(g = lane >> 2, r = lane & 3)` map
+//: at every column tile, and the flat `idx` pair loops of the staging and the
+//: writeback -- and requires 32 distinct banks in each.
+template <int ROWS, int COLS>
+constexpr bool stage_pair_banks_ok() {
+  //: The fold's map: row `r0 + g` (`r0` a multiple of `kMmaKQuantum`), column
+  //: `nt * 8 + 2 * r`. Both `r0` and the `+ 8` sibling row keep `r0 % 8 == 0`, so one
+  //: enumeration over `g` covers both rows.
+  for (int nt = 0; nt * 8 < COLS; ++nt) {
+    unsigned banks = 0;
+    for (int g = 0; g < 8; ++g) {
+      for (int r = 0; r < 4; ++r) {
+        const int e = stage_offset<COLS>(g, nt * 8 + 2 * r);
+        if (e % 2 != 0) return false;  // the pair is not one word
+        const unsigned b = static_cast<unsigned>((e / 2) % 32);
+        if (banks & (1u << b)) return false;
+        banks |= 1u << b;
+      }
+    }
+    if (banks != 0xffffffffu) return false;
+  }
+  //: The flat pair loops: lane `l` of window `base` addresses pair `base + l` of the
+  //: row-major pair enumeration.
+  for (int base = 0; base + 32 <= ROWS * COLS / 2; base += 32) {
+    unsigned banks = 0;
+    for (int l = 0; l < 32; ++l) {
+      const int idx = base + l;
+      const int e = stage_offset<COLS>(idx / (COLS / 2), 2 * (idx % (COLS / 2)));
+      if (e % 2 != 0) return false;
+      const unsigned b = static_cast<unsigned>((e / 2) % 32);
+      if (banks & (1u << b)) return false;
+      banks |= 1u << b;
+    }
+  }
+  return true;
+}
+
 constexpr size_t align4(size_t x) { return (x + 3) & ~static_cast<size_t>(3); }
 
 //: The prefetch slab is a `cp.async` DESTINATION, so its base carries the 16-byte
@@ -445,8 +507,13 @@ constexpr size_t vw_union_bytes() {
 template <int BC, int DV, int D, bool DECAY, int GT>
 constexpr size_t consumer_smem_core_bytes() {
   constexpr int W = window_groups(GT);
-  size_t b = static_cast<size_t>(BC) * (DV + 4) * sizeof(float);  // S (+ mass column pad)
-  b += static_cast<size_t>(D) * BC * sizeof(int);                 // dig
+  //: THE STATE, AS TWO bf16 PLANES PLUS AN fp32 MASS COLUMN. The fp32 plane and its
+  //: `DV + 4` pad are gone: the pad existed to decorrelate banks for a SCALAR fragment
+  //: map, and the planes are read by `ldmatrix` under a swizzle that needs no pad. The
+  //: carve is `BC * (DV + 1) * 4` where it was `BC * (DV + 4) * 4`.
+  size_t b = 2 * static_cast<size_t>(state_plane_elems<BC, DV>()) * sizeof(__nv_bfloat16);
+  b += static_cast<size_t>(BC) * sizeof(float);    // the mass column
+  b += static_cast<size_t>(D) * BC * sizeof(int);  // dig
   //: `WT`, `Vw` and `Rf` are `W` SLOTS OF THE GROUP'S OWN SHAPE, never one wider
   //: buffer: that is what carries every one of their layout proofs across the
   //: window unchanged. Only `Gm` -- the window Gram -- takes a new shape.

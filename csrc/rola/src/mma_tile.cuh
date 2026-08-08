@@ -76,54 +76,20 @@ __device__ __forceinline__ void stage_put(__nv_bfloat16& d, float x) {
 //: THE `[16 x 8]` D/C fragment's element map, shared by every writeback:
 //:   `d0, d1 -> (row g,     col 2r, 2r+1)`
 //:   `d2, d3 -> (row g + 8, col 2r, 2r+1)`
-//: `d += Af . B` with A FRAGMENT-ORDERED (one `uint4` per k-step, zero address
-//: arithmetic); B keeps the generic indexed path because each warp wants a different
-//: `n`-slice (`TB` is the B buffer's storage type -- `float` when B is the fp32
-//: state, whose narrowing to the MMA operand happens HERE, at the fragment, because
-//: the fp32 state is REWRITTEN WHOLE by every visit's fold and so has no read that
-//: outlives its write).
-//: **THE K-LOOP KEEPS A COMPILE-TIME TRIP COUNT AND AN EARLY EXIT, never a runtime
-//: bound**: docs/internals/mma_tile.md#mma-tile-fraga
-template <int KMAX, typename TB, bool B_T>
-__device__ __forceinline__ void mma_tile_fragA(const unsigned* __restrict__ Af,
-                                               const TB* __restrict__ B, int ldb, int K, int n0,
-                                               int lane, float& d0, float& d1, float& d2,
-                                               float& d3) {
-  const int g = lane >> 2;
-  const int r = lane & 3;
-  const int nb = n0 + g;
-  auto b_val = [&](int k, int n) -> float {
-    if constexpr (B_T) {
-      return B[n * ldb + k];
-    } else {
-      return B[k * ldb + n];
-    }
-  };
-#pragma unroll
-  for (int ks = 0; ks < KMAX / kMmaKQuantum; ++ks) {
-    if (ks * kMmaKQuantum >= K) break;
-    const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
-    const int ca = ks * 16 + r * 2;
-    const unsigned b0 =
-        pack_bf16x2(clamp_bf16_finite(b_val(ca, nb)), clamp_bf16_finite(b_val(ca + 1, nb)));
-    const unsigned b1 =
-        pack_bf16x2(clamp_bf16_finite(b_val(ca + 8, nb)), clamp_bf16_finite(b_val(ca + 9, nb)));
-    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, b0, b1, d0, d1, d2, d3);
-  }
-}
 
-//: `Vw` AS B, FETCHED BY ONE `ldmatrix`. `Vw` is B for BOTH of its consumers
-//: (GEMM 3 and GEMM 4) and both want the same 16(k) x 8(n) block per k-step;
-//: `.trans` is right because `Vw` is stored `k`-major while the fragment wants
-//: `k`-adjacent pairs at a fixed `n`. BIT-IDENTICAL to the indexed path, not merely
-//: equivalent -- `ldmatrix` delivers the STORED patterns and `stage_put`'s clamp
-//: already guarantees they are finite bf16. The fragment correspondence is
-//: `static_assert`ed against CuTe's own maps below, never assumed.
+//: **A `StageLayout` BUFFER AS B, FETCHED BY ONE `ldmatrix`.** Three buffers are this
+//: kind of object -- `Vw` (B for GEMM 3 and GEMM 4) and the state's two bf16 planes
+//: (B for GEMM 1) -- and all three want the same 16(k) x 8(n) block per k-step, so
+//: ONE routine serves them. `.trans` is right because the buffer is stored `k`-major
+//: while the fragment wants `k`-adjacent pairs at a fixed `n`. BIT-IDENTICAL to an
+//: indexed path, not merely equivalent -- `ldmatrix` delivers the STORED patterns and
+//: `stage_put`'s clamp already guarantees they are finite bf16. The fragment
+//: correspondence is `static_assert`ed against CuTe's own maps below, never assumed.
 //: docs/internals/mma_tile.md#ldsm-atoms
-template <int DV>
-__device__ __forceinline__ void vw_frag_b(const __nv_bfloat16* __restrict__ Vw, int k0, int n0,
-                                          int lane, unsigned& b0, unsigned& b1) {
-  const __nv_bfloat16* src = Vw + vw_index<DV>(k0 + (lane & 15), n0);
+template <int COLS>
+__device__ __forceinline__ void stage_frag_b(const __nv_bfloat16* __restrict__ P, int k0, int n0,
+                                             int lane, unsigned& b0, unsigned& b1) {
+  const __nv_bfloat16* src = P + stage_offset<COLS>(k0 + (lane & 15), n0);
   cute::SM75_U16x4_LDSM_T::copy(*reinterpret_cast<const cute::uint128_t*>(src), b0, b1);
 }
 
@@ -151,19 +117,74 @@ __device__ __forceinline__ void split_bf16x2(float x0, float x1, unsigned& hi, u
                    clamp_bf16_finite(c1 - __bfloat162float(h1)));
 }
 
-//: THE MASS COLUMN's READOUT TILE, `d += Af . B[.][n0]`, WITH THE COLUMN COMPENSATED.
-//: The B operand is a column of the fp32 STATE and it is the DENOMINATOR OF A RATIO:
+//: A COMPENSATED PAIR, RECONSTRUCTED. `split_bf16x2`'s inverse: the two planes' words
+//: read back as the fp32 pair they were split from, to ~16 mantissa bits. This is the
+//: fold's read half and the writeback's, and it is the ONE place the plane pair is
+//: read as a number rather than as an MMA operand.
+__device__ __forceinline__ void merge_bf16x2(unsigned hi, unsigned lo, float& x0, float& x1) {
+  const __nv_bfloat162 h = *reinterpret_cast<const __nv_bfloat162*>(&hi);
+  const __nv_bfloat162 l = *reinterpret_cast<const __nv_bfloat162*>(&lo);
+  x0 = __bfloat162float(h.x) + __bfloat162float(l.x);
+  x1 = __bfloat162float(h.y) + __bfloat162float(l.y);
+}
+
+//: THE STATE'S CHANNEL PAIR, AS ONE 32-BIT WORD OF ONE PLANE. `stage_pair_banks_ok`
+//: is the proof that the swizzle keeps `(i, c)` and `(i, c + 1)` adjacent for even
+//: `c` and that every paired access is conflict-free.
+template <int DV>
+__device__ __forceinline__ unsigned& state_pair(__nv_bfloat16* __restrict__ P, int i, int c) {
+  return *reinterpret_cast<unsigned*>(P + state_index<DV>(i, c));
+}
+
+template <int DV>
+__device__ __forceinline__ unsigned state_pair_load(const __nv_bfloat16* __restrict__ P, int i,
+                                                    int c) {
+  return *reinterpret_cast<const unsigned*>(P + state_index<DV>(i, c));
+}
+
+//: **GEMM 1, THE READOUT: `y += Af . S`, WITH THE STATE FETCHED BY `ldmatrix`.** The
+//: state's numerator lives as two bf16 planes, so the B operand is TWO `ldmatrix`
+//: fetches and TWO `mma.sync` against the same A fragment -- where the fp32 state cost
+//: four scalar shared loads, four clamps and two packs PER `mma.sync` PER LANE, and
+//: cost them again at every use. The `hi` multiply is the instruction the fp32 form
+//: already issued (its B was a plain bf16 narrowing of the same value); the `lo` one
+//: is an ADDED correction, so the readout gains ~8 mantissa bits of B while shedding
+//: the packing.
+//: **THE K-LOOP KEEPS A COMPILE-TIME TRIP COUNT AND AN EARLY EXIT, never a runtime
+//: bound**: docs/internals/mma_tile.md#mma-tile-fraga
+template <int DV, int KMAX>
+__device__ __forceinline__ void mma_tile_fragA_stateB(const unsigned* __restrict__ Af,
+                                                      const __nv_bfloat16* __restrict__ Shi,
+                                                      const __nv_bfloat16* __restrict__ Slo,
+                                                      int row0, int K, int n0, int lane, float& d0,
+                                                      float& d1, float& d2, float& d3) {
+#pragma unroll
+  for (int ks = 0; ks < KMAX / kMmaKQuantum; ++ks) {
+    if (ks * kMmaKQuantum >= K) break;
+    const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
+    const int k0 = row0 + ks * kMmaKQuantum;
+    unsigned h0, h1, l0, l1;
+    stage_frag_b<DV>(Shi, k0, n0, lane, h0, h1);
+    stage_frag_b<DV>(Slo, k0, n0, lane, l0, l1);
+    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, h0, h1, d0, d1, d2, d3);
+    mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, l0, l1, d0, d1, d2, d3);
+  }
+}
+
+//: THE MASS COLUMN's READOUT TILE, `d += Af . m`, WITH THE COLUMN COMPENSATED.
+//: The B operand is the state's fp32 MASS COLUMN and it is the DENOMINATOR OF A RATIO:
 //: unlike the numerator's columns it has nothing to cancel its rounding against, and
 //: a single bf16 narrowing of it was MEASURED to put the bf16 family gate 12% over
-//: budget at `T = 2048` on the decay arm. So the column rides `split_bf16x2` and the
-//: tile is two `mma.sync` -- both broadcast across the tile's eight `n` slots, so
-//: output column 0 carries the matvec.
+//: budget at `T = 2048` on the decay arm. So it stays fp32 in storage, rides
+//: `split_bf16x2` at the fragment, and the tile is two `mma.sync` -- both broadcast
+//: across the tile's eight `n` slots, so output column 0 carries the matvec. The
+//: column is CONTIGUOUS (`[BC]`, its own array), so the fetch is `bcast_frag_b`'s map
+//: with the compensation added rather than a strided walk of the state.
 //: docs/internals/mma_tile.md#mass-column
 template <int KMAX>
 __device__ __forceinline__ void mma_tile_fragA_massB(const unsigned* __restrict__ Af,
-                                                     const float* __restrict__ B, int ldb, int K,
-                                                     int n0, int lane, float& d0, float& d1,
-                                                     float& d2, float& d3) {
+                                                     const float* __restrict__ m, int K, int lane,
+                                                     float& d0, float& d1, float& d2, float& d3) {
   const int r = lane & 3;
 #pragma unroll
   for (int ks = 0; ks < KMAX / kMmaKQuantum; ++ks) {
@@ -171,8 +192,8 @@ __device__ __forceinline__ void mma_tile_fragA_massB(const unsigned* __restrict_
     const uint4 a = *reinterpret_cast<const uint4*>(Af + ks * 128 + lane * 4);
     const int ca = ks * 16 + r * 2;
     unsigned h0, l0, h1, l1;
-    split_bf16x2(B[ca * ldb + n0], B[(ca + 1) * ldb + n0], h0, l0);
-    split_bf16x2(B[(ca + 8) * ldb + n0], B[(ca + 9) * ldb + n0], h1, l1);
+    split_bf16x2(m[ca], m[ca + 1], h0, l0);
+    split_bf16x2(m[ca + 8], m[ca + 9], h1, l1);
     mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, h0, h1, d0, d1, d2, d3);
     mma_m16n8k16(d0, d1, d2, d3, a.x, a.y, a.z, a.w, l0, l1, d0, d1, d2, d3);
   }
@@ -222,7 +243,7 @@ __device__ __forceinline__ void mma_fold_tile(const __nv_bfloat16* __restrict__ 
                                               float& d3) {
   unsigned a0, a1, a2, a3, b0, b1;
   wt_frag_a(WT16, lane, a0, a1, a2, a3);
-  vw_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
+  stage_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
   mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
 }
 
@@ -250,7 +271,7 @@ __device__ __forceinline__ void mma_tile_vwB(const __nv_bfloat16* __restrict__ A
                                              float& d0, float& d1, float& d2, float& d3) {
   unsigned a0, a1, a2, a3, b0, b1;
   ldsm_frag_a(A, lda, lane, a0, a1, a2, a3);
-  vw_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
+  stage_frag_b<DV>(Vw, 0, n0, lane, b0, b1);
   mma_m16n8k16(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, d0, d1, d2, d3);
 }
 
