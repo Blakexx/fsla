@@ -915,11 +915,12 @@ pre-barrier reader takes [its own cursor](#mass-publication), the Gram takes
 [the Gram's](#gram-publication), and the schedule ring takes
 [the cook's](#cook-cursor).
 
-**The kernel's other two barriers are both once-per-kernel**, not per visit: the entry
-epoch, which publishes the cold-start descriptors and the chunk descriptors to the
-threads that issue the first stages; and the exit epoch after the loop, because the
-publications that follow read the mass column and the summary flags across warp
-boundaries and the loop's last barrier lies BEFORE the final visit's writes of both.
+**Every other `__syncthreads()` in the kernel is ONCE PER KERNEL**, not per visit: the
+entry epoch's two (publishing the cold-start descriptors and the chunk descriptors to
+the threads that issue the first stages, then the first stage itself); the exit epoch
+after the loop, because the publications that follow read the mass column and the
+summary flags across warp boundaries while the loop's last barrier lies BEFORE the
+final visit's writes of both; and pass 1's own, inside the summary publication.
 
 ## <a id="visit-parity"></a>26a. The visit scratch, held by parity
 
