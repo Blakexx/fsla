@@ -15,10 +15,10 @@ that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An
 accumulator that is 1 ULP wrong **embeds** that error and carries it forward for
 the lifetime of the state.
 
-## A COMPENSATED PAIR is not a plain narrowing, and the two are governed separately
+## <a id="compensated-pair"></a>A compensated pair is not a plain narrowing, and the two are governed separately
 
-The consumer kernel's resident state is, as of P40, two bf16 planes (`Shi`, a value's
-bf16 rounding, and `Slo`, its residual) rather than one fp32 plane
+The consumer kernel's resident state is two bf16 planes (`Shi`, a value's bf16
+rounding, and `Slo`, its residual) rather than one fp32 plane
 ([`docs/internals/smem_layout.md#state-planes`](../internals/smem_layout.md#state-planes)).
 This is NOT the single-narrowing "bf16 resident state" the measured reason below
 refuses: that proposal halved the state's footprint (one bf16 plane at 2 bytes/element
@@ -30,11 +30,17 @@ GEMM 1 — so it does not touch the tradeoff this document's measurement decline
 The ACCUMULATION/STORAGE split above still applies, and still governs the plane
 form: the fold's read-modify-write reads the pair, sums in fp32 registers, and splits
 back to `Shi`/`Slo` at its one writeback — the accumulator stays fp32, exactly as this
-ruling requires. What changed is the state's STORAGE precision between accumulation
-events (fp32-equivalent ~24 mantissa bits, narrowed to a compensated pair carrying
-~16), which is a live axis under this document's own table and has not yet been run
-against the `sqrt(T)`-walk gate this page specifies. A plain single-narrowing bf16
-state remains refused for the reason measured below.
+ruling requires. The state's STORAGE precision between accumulation events is a
+compensated pair (~16 mantissa bits) where it was single fp32 (~24) — a live axis
+under this document's own table, and this page's own `sqrt(T)`-walk gate
+(`tests/tier1_semantics/test_bf16_family_gate.py::test_family_deviation_is_flat_in_T`,
+run against the real kernel's state output, both `decay` arms) HAS been run against
+it and holds: every swept `T in {512, 2048, 8192}` clears `BF16_RTOL`, and the fitted
+log-log slope clears the `< 0.25` bar against the resident-state walk's measured
+`+0.49`. That is exactly what distinguishes a compensated pair from a single
+narrowing — 16 mantissa bits leave enough headroom that the walk does not surface
+inside the swept range. A plain single-narrowing bf16 state remains refused for the
+reason measured below; the same gate is what killed it.
 
 ## The measured reason
 
