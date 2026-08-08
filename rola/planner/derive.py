@@ -85,11 +85,26 @@ class MachineFacts:
     map: the ``constexpr`` carve of each compiled arm, read off the built binary after
     the staleness join. It is the box term's input, and taking it from the table is
     what makes the box arithmetic the KERNEL's arithmetic rather than a model of it.
+
+    ``arm_ctas_per_sm`` is the same map's residency column -- the DRIVER's answer for
+    each arm, which is the only authority spec 6.5 admits. It is the fill term's second
+    input: an arm's CTA width and its carve both move with the warp partition, so how
+    many CTAs a wave holds is a per-arm fact and not a machine constant.
     """
 
     sm_count: int
     max_dynamic_smem_bytes: int
     arm_smem_bytes: Mapping[tuple[int, int, int, bool], int]
+    arm_ctas_per_sm: Mapping[tuple[int, int, int, bool], int]
+
+    def ctas_per_sm(self, BC: int, d_v: int, D: int, decay: bool) -> int:
+        """The arm's resident CTAs, or 1 when the caller supplied no residency column.
+
+        A missing entry is the CPU-only construction path, where no driver has been
+        asked; ``1`` is the value that makes the fill term the conservative bound it
+        was before the residency column existed, never an over-promise.
+        """
+        return max(1, int(self.arm_ctas_per_sm.get((int(BC), int(d_v), int(D), bool(decay)), 1)))
 
     @classmethod
     def for_device(cls, device) -> MachineFacts:
@@ -105,7 +120,11 @@ class MachineFacts:
         return cls(
             sm_count=torch.cuda.get_device_properties(torch.device(device)).multi_processor_count,
             max_dynamic_smem_bytes=int(ext.rola_max_dynamic_smem_bytes()),
-            arm_smem_bytes={row.key: int(row.smem_bytes) for row in table.rows})
+            arm_smem_bytes={row.key: int(row.smem_bytes) for row in table.rows},
+            arm_ctas_per_sm={
+                row.key: int(ext.rola_consumer_occupancy(row.key[3], row.key[0], row.key[1],
+                                                         row.key[2]))
+                for row in table.rows})
 
     def compiled_bc(self, d_v: int, D: int, decay: bool) -> tuple[int, ...]:
         """Every ``BC`` this binary carries an arm for at this ``(d_v, D, decay)``."""
@@ -210,12 +229,18 @@ def _no_instantiation(machine: MachineFacts, **coords) -> str:
               "arm, or use a geometry the binary implements.")
 
 
-def fill_ceiling(N: int, BH: int, sm_count: int) -> int:
-    """``BH * N / (sm_count * WAVES_TARGET)`` -- the block a full grid still admits.
+def fill_ceiling(N: int, BH: int, sm_count: int, ctas_per_sm: int) -> int:
+    """``BH * N / (sm_count * ctas_per_sm * WAVES_TARGET)`` -- the block a full grid
+    still admits.
 
     The launch is one CTA per ``(batch, head, owner)``, i.e. ``BH * N / BC`` CTAs, and
-    ``BC`` is the only term that shrinks it. Requiring :data:`WAVES_TARGET` waves of
-    ``sm_count`` CTAs rearranges to this bound exactly.
+    ``BC`` is the only term that shrinks it. Requiring :data:`WAVES_TARGET` waves
+    rearranges to this bound exactly -- and A WAVE IS ``sm_count * ctas_per_sm`` CTAs,
+    never ``sm_count``. The residency term is a property of the ARM and is read off the
+    built binary by the driver, exactly as the carve is: the CTA's WIDTH and its
+    shared-memory footprint are both per-arm facts, so a wave is not one number for the
+    machine. Because ``ctas_per_sm`` is keyed by ``BC``, the caller evaluates this per
+    candidate block rather than once.
 
     It is a TARGET and it saturates. A topology whose whole grid is smaller than the
     machine cannot be made to fill it by any ``BC``, and refusing to plan there would
@@ -229,7 +254,9 @@ def fill_ceiling(N: int, BH: int, sm_count: int) -> int:
     """
     if sm_count < 1:
         raise ValueError(f"sm_count must be >= 1, got {sm_count}")
-    return max(1, (int(BH) * int(N)) // (int(sm_count) * WAVES_TARGET))
+    if ctas_per_sm < 1:
+        raise ValueError(f"ctas_per_sm must be >= 1, got {ctas_per_sm}")
+    return max(1, (int(BH) * int(N)) // (int(sm_count) * int(ctas_per_sm) * WAVES_TARGET))
 
 
 # ---------------------------------------------------------------------------
@@ -345,10 +372,16 @@ def derive_bc(topology, machine: MachineFacts, *, BH: int, decay: bool,
                 _no_instantiation(machine, BC=BC, d_v=d_v, D=D, decay=bool(decay)))
         return BC
     ladder = feasible_bc(widths, instantiated=admitted)
-    ceiling = min(subtree_ceiling(widths),
-                  fill_ceiling(prod(widths), BH, machine.sm_count))
+    subtree = subtree_ceiling(widths)
+    #: THE FILL TERM IS EVALUATED PER CANDIDATE, because a wave is
+    #: `sm_count * ctas_per_sm` CTAs and the residency is the ARM's -- keyed by `BC`,
+    #: the very quantity being chosen. A single machine-wide fill ceiling would be
+    #: asking how many waves a block supplies while assuming a different block's
+    #: occupancy.
     for BC in reversed(ladder):
-        if ceiling >= BC:
+        fill = fill_ceiling(prod(widths), BH, machine.sm_count,
+                            machine.ctas_per_sm(BC, d_v, D, bool(decay)))
+        if min(subtree, fill) >= BC:
             return BC
     return ladder[0]
 

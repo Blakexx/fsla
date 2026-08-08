@@ -45,7 +45,7 @@ _OPEN_SMEM = 1 << 30
 
 def _machine(*, sm_count: int = 1, max_dynamic_smem_bytes: int = _OPEN_SMEM,
              carve: dict | None = None, bcs=(16, 64), d_v: int = 64, D: int = 2,
-             decay: bool = False) -> MachineFacts:
+             decay: bool = False, ctas_per_sm: int = 1) -> MachineFacts:
     """A synthetic machine carrying one arm per ``BC`` at a stated footprint."""
     #: The arm key carries the WINDOW as its last coordinate. `derive_bc` prices the
     #: GROUP-QUANTUM arm (the window is chosen later, from the realized routing), so
@@ -53,7 +53,8 @@ def _machine(*, sm_count: int = 1, max_dynamic_smem_bytes: int = _OPEN_SMEM,
     arms = (carve if carve is not None
             else {(BC, d_v, D, decay): 1024 for BC in bcs})
     return MachineFacts(sm_count=sm_count, max_dynamic_smem_bytes=max_dynamic_smem_bytes,
-                        arm_smem_bytes=arms)
+                        arm_smem_bytes=arms,
+                        arm_ctas_per_sm=dict.fromkeys(arms, ctas_per_sm))
 
 
 def _topology(widths, d_v=64) -> Topology:
@@ -172,14 +173,26 @@ def test_the_box_arithmetic_holds_against_the_binarys_own_carve():
 def test_the_fill_ceiling_is_the_block_that_still_supplies_the_target_waves():
     """``BH * N / BC >= sm_count * WAVES_TARGET`` rearranged, exactly."""
     N, BH, sms = 4096, 8, 80
-    ceiling = fill_ceiling(N, BH, sms)
+    ceiling = fill_ceiling(N, BH, sms, ctas_per_sm=1)
     assert ceiling == (BH * N) // (sms * WAVES_TARGET)
     assert (BH * N) / ceiling >= sms * WAVES_TARGET
     assert (BH * N) / (ceiling + 1) < sms * WAVES_TARGET
 
 
+def test_the_fill_ceiling_counts_a_wave_as_sm_count_times_the_arms_residency():
+    """A WAVE IS `sm_count * ctas_per_sm` CTAs -- the term that was missing entirely.
+
+    Two resident CTAs per SM means a wave holds twice the CTAs, so twice the grid is
+    needed before a block is admitted and the ceiling HALVES. The assertion is the
+    ratio, which is the whole content of the correction.
+    """
+    N, BH, sms = 4096, 8, 80
+    assert fill_ceiling(N, BH, sms, ctas_per_sm=2) == fill_ceiling(N, BH, sms, ctas_per_sm=1) // 2
+    assert fill_ceiling(N, BH, sms, ctas_per_sm=4) == fill_ceiling(N, BH, sms, ctas_per_sm=1) // 4
+
+
 def test_the_fill_ceiling_never_falls_below_one_however_small_the_grid():
-    assert fill_ceiling(N=16, BH=1, sm_count=80) == 1
+    assert fill_ceiling(N=16, BH=1, sm_count=80, ctas_per_sm=1) == 1
 
 
 def test_the_fill_guard_binds_a_large_block_on_a_grid_that_would_starve():
@@ -199,7 +212,7 @@ def test_the_fill_guard_saturates_at_the_smallest_block_rather_than_refusing():
     every small cell the gates run on, and no smaller alternative exists.
     """
     machine = _machine(sm_count=80)
-    assert fill_ceiling(1024, 1, 80) < 16
+    assert fill_ceiling(1024, 1, 80, ctas_per_sm=1) < 16
     assert derive_bc(_topology((16, 64)), machine, BH=1, decay=False) == 16
 
 

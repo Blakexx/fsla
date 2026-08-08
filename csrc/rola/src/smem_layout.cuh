@@ -105,12 +105,15 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
               "fetch floor, the MMA k-quantum and the union granule coincide BY "
               "CONSTRUCTION, and the walk assumes it");
 
-//: **THE KERNEL'S MEASURED REGISTER WORKING SET, AS ONE NUMBER FOR EVERY KEY.** It is
-//: what `ptxas` allocates for the visit body when it is given slack, and the budget is
-//: the value that admits it without spilling. The spill-vs-bound curve has NO INTERIOR
-//: POINT -- the bound only reaches codegen through the CTA count, so the reachable
-//: allocations are the four the register file admits -- which is why the budget is a
-//: measured constant and not a tuning dial. docs/internals/smem_layout.md#reg-budget
+//: **THE REGISTER-SIDE RESIDENCY CLAIM, AS ONE NUMBER FOR EVERY KEY.** The budget's ONLY
+//: channel to codegen is the CTA count in `__launch_bounds__`, so the spill-vs-bound
+//: curve has NO INTERIOR POINT -- the reachable allocations are the handful the register
+//: file admits -- which is why this is a measured constant and not a tuning dial. It is
+//: the ceiling the REGISTER-BOUND arms must fit inside to keep their residency (the
+//: `BC = 16` keys, which reach 4 CTAs and are held to `65536 / (threads * 4)` there);
+//: the SHARED-MEMORY-BOUND arms sit far under their own ceiling and allocate what they
+//: need. Measured allocation over the matrix: 107..194 per lane, ZERO spill on every
+//: arm. docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)BC;
   (void)decay;
