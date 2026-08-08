@@ -133,6 +133,11 @@ consumer_forward_kernel(ConsumerParams p) {
   //: **THE VRAM -> SMEM PIPELINE'S DEPTH**, in staged visits, derived from this arm's
   //: own carve: docs/internals/smem_layout.md#pf-stages
   constexpr int S = pf_stages<BC, DV, D, DECAY>();
+  //: **THE ONE VISIT BARRIER NEEDS TWO STAGES.** The panel barrier publishes the stage
+  //: the NEXT visit consumes, which means the stage waited on at that barrier and the
+  //: stage refilled just after it must be different buffers. Every arm's carve admits
+  //: at least three. docs/internals/consumer_kernel.md#one-barrier
+  static_assert(S >= 2, "the visit's single barrier requires a two-deep staging ring");
   constexpr int kSlots = sched_slots(S);
   constexpr int kSchedDepth = sched_depth(S);
   constexpr int NT = kGroupTokens / 8;  // n8 tiles of one Gram block
@@ -185,12 +190,20 @@ consumer_forward_kernel(ConsumerParams p) {
   //: `ldmatrix` TAKES A 16-BYTE-ALIGNED ROW ADDRESS, so every staged base and every
   //: staged ROW must be 16-byte aligned -- a requirement no pitch predicate implies.
   //: Stated, not trusted: docs/internals/consumer_kernel.md#ldsm-alignment
-  __nv_bfloat16* const Rp = reinterpret_cast<__nv_bfloat16*>(carve);
+  //: **THE PANELS ARE HELD BY VISIT PARITY.** A visit BUILDS its panels before the
+  //: panel barrier and READS them after it, so consecutive visits overlap on one
+  //: buffer unless a second CTA-wide barrier separates them. `Rp0`/`Wp0` are the
+  //: even-visit pair and `Rp1`/`Wp1` the odd; each parity's base is 16-byte aligned
+  //: because one panel's byte size is.
+  //: docs/internals/consumer_kernel.md#visit-parity
+  __nv_bfloat16* const Rp0 = reinterpret_cast<__nv_bfloat16*>(carve);
   constexpr size_t kRpBytes = static_cast<size_t>(BC) * kTokPitch * sizeof(__nv_bfloat16);
-  carve += kRpBytes;
-  __nv_bfloat16* const Wp = reinterpret_cast<__nv_bfloat16*>(carve);
+  carve += 2 * kRpBytes;
+  __nv_bfloat16* const Wp0 = reinterpret_cast<__nv_bfloat16*>(carve);
   constexpr size_t kWpBytes = static_cast<size_t>(kWpElems) * sizeof(__nv_bfloat16);
-  carve += kWpBytes;
+  carve += 2 * kWpBytes;
+  static_assert(kRpBytes % 16 == 0 && kWpBytes % 16 == 0,
+                "each parity's panel base must be 16-byte aligned for ldmatrix");
   //: THE CLOCK PREFIX, `[kGroupTokens][CKP]` fp32, with a home of its own: the value
   //: tile it used to alias is now filled `S` visits ahead, so the two are
   //: simultaneously live. docs/internals/consumer_kernel.md#decay-clock
@@ -206,31 +219,34 @@ consumer_forward_kernel(ConsumerParams p) {
   //: reason. It holds `G^T` at `kTokPitch`, and `pitched_ldsm_banks_ok<16, 16,
   //: kTokPitch>` below licenses that base at this pitch.
   __nv_bfloat16* const Gm = reinterpret_cast<__nv_bfloat16*>(carve);
-  constexpr size_t kGmOffsetBytes =
-      kMassBytes + kRpBytes + kWpBytes + kClkBytes + static_cast<size_t>(D) * BC * sizeof(int);
-  static_assert(kMassBytes % 16 == 0 && (kMassBytes + kRpBytes) % 16 == 0
-                    && (kMassBytes + kRpBytes + kWpBytes) % 16 == 0 && kGmOffsetBytes % 16 == 0,
+  constexpr size_t kGmOffsetBytes = kMassBytes + 2 * kRpBytes + 2 * kWpBytes + kClkBytes
+                                    + static_cast<size_t>(D) * BC * sizeof(int);
+  static_assert(kMassBytes % 16 == 0 && kGmOffsetBytes % 16 == 0,
                 "Rp, Wp and Gm must be 16-byte aligned for ldmatrix");
   carve += static_cast<size_t>(kGroupTokens) * kTokPitch * sizeof(__nv_bfloat16);
   float* const log_keep = reinterpret_cast<float*>(carve);
   float* const p_ref = log_keep + (DECAY ? BC : 0);
-  float* const s0 = p_ref + (DECAY ? BC : 0);
+  //: `s0` TAKES A PARITY PAIR: the fold's exit scale and the mass epilogue read it
+  //: after the panel barrier, which is the next visit's write window.
+  float* const s0_0 = p_ref + (DECAY ? BC : 0);
   //: THE COOKED SCHEDULE RING. `kSlots` group descriptors (`kSchedSlotInts` ints
   //: each; the field offsets are `kSchedGN/RMask/WMask/Flags`), written by the
-  //: PRODUCER WARP `kSchedDepth` groups ahead and published by the end-of-visit
-  //: `__syncthreads()` of the visit that produced them. Every consumer warp READS
-  //: the descriptor rather than deriving it. docs/internals/consumer_kernel.md#sched-ring
-  int* const g_ring = reinterpret_cast<int*>(s0 + (DECAY ? BC : 0));
+  //: PRODUCER WARP `kSchedDepth` groups ahead and published by the COOK'S READY CURSOR
+  //: alone. Every consumer warp READS the descriptor rather than deriving it.
+  //: docs/internals/consumer_kernel.md#sched-ring
+  int* const g_ring = reinterpret_cast<int*>(s0_0 + (DECAY ? 2 * BC : 0));
   //: THE VISIT'S ROW SCALES: the read scale then the write scale for each of the
   //: group's member tokens, REDUCED FROM THE STAGED SCALARS at the top of the visit.
   //: They are a per-visit quantity rather than a ring field because the scalars they
   //: multiply ride the staged pipeline, not the cook.
   //: docs/internals/consumer_kernel.md#row-scales
-  float* const sr = reinterpret_cast<float*>(g_ring + kSlots * kSchedSlotInts);
-  float* const sw = sr + kGroupTokens;
-  float* const a_state = reinterpret_cast<float*>(Rp);         // [BC], the survival product A
-  int* const sum_slot = reinterpret_cast<int*>(Rp) + BC;       // [BC]
-  int* const sum_count = reinterpret_cast<int*>(Rp) + 2 * BC;  // [1]
+  float* const sr_0 = reinterpret_cast<float*>(g_ring + kSlots * kSchedSlotInts);
+  //: PASS 1's SUMMARY STATE LIVES IN THE EVEN PARITY'S READ PANEL. The summary pass
+  //: never stages read coefficients (`summary` forces `rmr == 0`), so no panel write
+  //: reaches this storage on any visit.
+  float* const a_state = reinterpret_cast<float*>(Rp0);         // [BC], the survival product A
+  int* const sum_slot = reinterpret_cast<int*>(Rp0) + BC;       // [BC]
+  int* const sum_count = reinterpret_cast<int*>(Rp0) + 2 * BC;  // [1]
   static_assert(kRpBytes >= (2 * static_cast<size_t>(BC) + 1) * sizeof(int),
                 "pass 1's summary state must fit inside the read panel");
 
@@ -286,10 +302,10 @@ consumer_forward_kernel(ConsumerParams p) {
   //: **THE PRODUCER IS THE LAST WARP, AND THAT IS A LOAD-BALANCE FACT.** The cook is
   //: serial warp-local work laid on top of a warp's share of the GEMMs, so it belongs
   //: on the warp carrying the LEAST of everything else. The Gram's producers and the
-  //: mass column's two term owners are the LOW warp indices, so the high one is the
-  //: only warp in the CTA with no second job -- and it is the warp that would
-  //: otherwise sit in the Gram's publication wait doing nothing at all, which is
-  //: exactly where the cook is placed. docs/internals/consumer_kernel.md#cook-cursor
+  //: denominator's two term owners are the LOW warp indices, so the high one carries
+  //: the lightest second job -- and it is the warp that would otherwise sit in the
+  //: Gram's publication wait doing nothing at all, which is exactly where the cook is
+  //: placed. docs/internals/consumer_kernel.md#cook-cursor
   constexpr int kProdWarp = kWarps - 1;
 
   // ---- owner decomposition (§3's rectangle) --------------------------------
@@ -390,7 +406,7 @@ consumer_forward_kernel(ConsumerParams p) {
   //: `ab_base + q * n_twords + w` -- one CONTIGUOUS token-bit row per atom.
   const int64_t ab_base = (static_cast<int64_t>(bh) * p.n_slices + slice) * kQPO * p.n_twords;
 
-  // ---- THE PRODUCER. WARP 0 ALONE runs the membership scan and the ballot, and
+  // ---- THE PRODUCER. WARP `kProdWarp` ALONE runs the membership scan and the ballot, and
   // ---- publishes COOKED GROUP DESCRIPTORS into `g_ring`. The scan's result is an
   // ---- OWNER-LEVEL fact, identical across the owner's atoms and across the CTA's
   // ---- warps, so it is cooked ONCE PER OWNER -- the multiplicity rule, and the
@@ -403,7 +419,7 @@ consumer_forward_kernel(ConsumerParams p) {
   //: key, the tightest register budget in the matrix, on both arches. The AND and
   //: the ballot still happen in registers; only the resting place is SMEM.
   //: docs/internals/consumer_kernel.md#producer-state
-  int* const p_st = reinterpret_cast<int*>(sw + kGroupTokens);
+  int* const p_st = reinterpret_cast<int*>(sr_0 + 4 * kGroupTokens);
   //: [0] p_cur, [1] p_chunk_base, [2] p_live, [3] p_word, [4] p_rem, then the
   //: PER-LANE chunk (fr, fw, mem) and ingredient (ra, wa) planes, one word per lane
   //: each.
@@ -432,6 +448,13 @@ consumer_forward_kernel(ConsumerParams p) {
   //: than reset-per-visit because a reset would itself need the rendezvous it
   //: replaces. docs/internals/consumer_kernel.md#gram-publication
   int* const gram_flag = ch_atoms + kPfChunks;
+  //: THE MASS COLUMN'S PUBLICATION COUNTER, the same shape as the Gram's: monotone for
+  //: the whole kernel, one arrival per producing warp per visit. It carries the ONE
+  //: cross-visit read of the mass column that happens before the panel barrier -- the
+  //: decay arm's entry-frame scale -- so that edge costs a wait on `kMassProd`
+  //: arrivals instead of a CTA rendezvous.
+  //: docs/internals/consumer_kernel.md#mass-publication
+  int* const mass_flag = gram_flag + 1;
   //: **THE STAGED REGIONS, `S` STAGES DEEP, AND THEY ARE THE WHOLE VRAM -> SMEM
   //: LINK.** Four progressively-consumed streams land here and nowhere else: the two
   //: AMPLITUDE SLABS, the VALUE TILE (in the layout its `ldmatrix` reads, so the
@@ -475,7 +498,10 @@ consumer_forward_kernel(ConsumerParams p) {
     for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
     __syncwarp();
   }
-  if (tid == 0) gram_flag[0] = 0;
+  if (tid == 0) {
+    gram_flag[0] = 0;
+    mass_flag[0] = 0;
+  }
 
   // ---- THE PREFETCH SLAB'S OWNER-LEVEL GEOMETRY. A level's digits over the owner's
   // ---- `BC` leaves are the CONTIGUOUS range `[base_l, base_l + span_l)` -- the value
@@ -554,7 +580,7 @@ consumer_forward_kernel(ConsumerParams p) {
   //: panels and the upper product all index it), so a hoisted copy would be `D`
   //: extra live registers on the tightest key.
 
-  //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP 0 ONLY, and EVERY LANE ENTERS --
+  //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP `kProdWarp` ONLY, and EVERY LANE ENTERS --
   //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
   //: loop's control flow is warp-uniform by construction (`p_rem`, `p_live`,
   //: `p_cur`, `fill` are all warp-uniform; only the chunk and ingredient
@@ -846,16 +872,29 @@ consumer_forward_kernel(ConsumerParams p) {
   //: The Gram's producing warps: its `NT` items are dealt out `it % kWarps`, so warp
   //: `w` produces iff `w < min(NT, kWarps)`.
   constexpr int kGramProd = NT < kWarps ? NT : kWarps;
+  //: The mass column's producing warps, on the same rule: its `BC / 8` output tiles are
+  //: dealt out `lt % kWarps`.
+  constexpr int kMassProd = (BC / 8) < kWarps ? (BC / 8) : kWarps;
+  //: THE MASS COLUMN'S PUBLICATION EPOCH -- one arrival round per visit, unconditional
+  //: (a read-only visit CARRIES the column across, which is still a write).
+  int mass_epoch = 0;
   for (int gidx = 0;; ++gidx) {
-    const int st = (S == 1) ? 0 : (gidx % S);
+    const int st = gidx % S;
+    //: **THE VISIT'S PARITY**, the one index that selects its scratch. Consecutive
+    //: visits land on disjoint panels, row scales and survival factors, which is what
+    //: leaves the visit with a SINGLE CTA barrier.
+    const int par = gidx & 1;
+    __nv_bfloat16* const Rp = Rp0 + par * (BC * kTokPitch);
+    __nv_bfloat16* const Wp = Wp0 + par * kWpElems;
+    float* const sr = sr_0 + par * (2 * kGroupTokens);
+    float* const sw = sr + kGroupTokens;
+    float* const s0 = DECAY ? s0_0 + par * BC : s0_0;
     const int* const R = g_ring + (gidx % kSlots) * kSchedSlotInts;
     //: **THE COOK'S ACQUIRE, AND IT IS THE VISIT'S ONLY DEPENDENCE ON THE PRODUCER.**
     //: One test covers BOTH descriptor reads the visit makes -- this group's at the
     //: top and group `gidx + S`'s inside `stage_issue` -- because the later one is the
-    //: stronger. The producer's run-ahead is `kSchedDepth = S + 1` groups, so the
-    //: count already stands at `gidx + S + 1` when the visit arrives and the loop is
-    //: not entered: the cook is DECOUPLED, not waited on, and the cost of saying so is
-    //: the three instructions of a test that never spins.
+    //: stronger. It is the descriptor's ONLY edge: nothing else in the visit orders the
+    //: producer warp against its consumers. docs/internals/consumer_kernel.md#cook-cursor
     const int cook_target = gidx + S + 1;
     while (*const_cast<volatile int*>(ring_ready) < cook_target) {
     }
@@ -878,11 +917,12 @@ consumer_forward_kernel(ConsumerParams p) {
     const bool mixed = is_read && is_write;
     //: THE VISIT'S TWO HALVES OF THE MASS COLUMN. `Smass` is the entry column every
     //: reader takes; `SmOut` is the exit column the fold's term 3 alone writes, and it
-    //: becomes the next visit's entry at the bottom of the body. The end-of-visit
-    //: `__syncthreads()` is what publishes it, so the alternation adds no barrier.
+    //: becomes the next visit's entry at the bottom of the body. Its readers AFTER the
+    //: panel barrier are separated from the next visit's writers by that barrier; the
+    //: one reader BEFORE it -- the decay entry-frame scale -- takes the mass cursor.
     float* const SmOut = (Smass == Smass0) ? Smass1 : Smass0;
-    //: THIS VISIT'S STAGE. Four regions, filled `S` visits ago and waited on at the
-    //: bottom of the previous visit.
+    //: THIS VISIT'S STAGE. Four regions, filled `S` visits ago and waited on just
+    //: before the panel barrier of the previous visit.
     char* const stage = stage_at(st);
 
     //: **THE VALUE FRAGMENT IS TAKEN FIRST, AND THAT IS WHAT FREES ITS STAGE.** The
@@ -908,6 +948,15 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- every leaf's clk/p_ref/s0 FINITE for the panels -- the 0*NaN discipline).
     // ---- docs/internals/consumer_kernel.md#decay-clock
     if (DECAY && is_write) {
+      //: **THE MASS COLUMN'S ACQUIRE.** This is the ONE read of the entry column that
+      //: happens before the panel barrier, so it is the one that needs an edge of its
+      //: own against the previous visit's term-3 writers. It waits on `kMassProd`
+      //: arrivals, not on the CTA. docs/internals/consumer_kernel.md#mass-publication
+      const int mass_target = mass_epoch * kMassProd;
+      volatile int* const mf = mass_flag;
+      while (*mf < mass_target) {
+      }
+      __threadfence_block();
       for (int i = tid; i < BC; i += kConsumerThreads) {
         float acc = 0.0f;
         for (int t = 0; t < gN; ++t) {
@@ -1046,6 +1095,21 @@ consumer_forward_kernel(ConsumerParams p) {
         stage_put(Wp[wp_index(BC, t, i)], ac);
       }
     }
+    //: **THE PIPELINE'S ONE WAIT, AND IT IS FOR ONE STAGE.** `cp.async` completion is
+    //: visible to the ISSUING THREAD alone, so the stage the NEXT visit consumes needs
+    //: a CTA-wide edge after this wait -- and the barrier below is that edge, which is
+    //: why the wait sits here rather than at the foot of the visit. `S - 1` groups stay
+    //: in flight across it, unchanged: this retires the group for `gidx + 1`, and the
+    //: issue below puts the group for `gidx + S` back in its place.
+    //: docs/internals/consumer_kernel.md#one-barrier
+    cp_async_wait_group<S - 2>();
+    //: **THE VISIT'S ONE CTA BARRIER.** It carries every cross-warp edge the visit has
+    //: that a cursor does not: the panels, the row scales and the decay factors this
+    //: visit just built; the STAGE for the next visit, whose copies it makes visible;
+    //: the write-after-read on the stage this visit just finished reading, which the
+    //: issue below refills; and -- through the barrier ORDER, since the parity buffers
+    //: put consecutive visits on disjoint storage -- the write-after-read on the visit
+    //: scratch itself. docs/internals/consumer_kernel.md#one-barrier
     __syncthreads();
 
     //: **THE ROW SCALE MEETS THE VALUE FRAGMENT, IN REGISTERS.** The fold contracts
@@ -1245,6 +1309,15 @@ consumer_forward_kernel(ConsumerParams p) {
         *reinterpret_cast<float2*>(SmOut + i0) = out;
       }
     }
+    //: THE PUBLICATION HALF OF THE MASS CURSOR, on the Gram's rule: the fence orders
+    //: this warp's exit column before the count that advertises it, and one lane
+    //: carries the arrival because the unit of publication is the warp's whole share.
+    //: EVERY visit arrives -- a read-only visit CARRIES the column, which is a write.
+    ++mass_epoch;
+    if (warp < kMassProd) {
+      __threadfence_block();
+      if (lane == 0) atomicAdd(mass_flag, 1);
+    }
 
     // ---- **THE GRAM'S PUBLICATION, CURSOR-PACED RATHER THAN A PHASE BARRIER.** What
     // ---- is left of the visit's old rendezvous is a pure producer-consumer over `Gm`
@@ -1254,15 +1327,19 @@ consumer_forward_kernel(ConsumerParams p) {
     // ---- producer, and no warp waits for the CTA -- only for `kGramProd` arrivals. The
     // ---- target is MONOTONE over the kernel, so the counter is never reset and the
     // ---- reset never needs its own rendezvous. `Gm`'s reuse across visits is guarded
-    // ---- by the end-of-visit `__syncthreads()`.
+    // ---- by the panel barrier, which every warp passes between one visit's reads of
+    // ---- `Gm` and the next visit's stores into it.
     // ---- BOTH SIDES REQUIRE `mixed`: a single-sided visit has no Gram and pays nothing
     // ---- at all here. docs/internals/consumer_kernel.md#gram-publication
     //: **THE COOK-AHEAD, PLACED IN THE GRAM'S PUBLICATION WINDOW.** The producer warp
     //: cooks group `gidx + kSchedDepth` into the slot the visit `kSlots` back vacated.
-    //: It is neither a Gram producer nor a mass-term owner, so this is precisely the
-    //: stretch of the visit it would otherwise spend in the wait below; production runs
-    //: CONCURRENTLY with every other warp's fold and is published by its own cursor, so
-    //: NOTHING WAITS ON IT and it is no longer the serial tail of the rendezvous.
+    //: At `kGramProd < kWarps` and `kQPO < kWarps` it is neither a Gram producer nor a
+    //: denominator-term owner, so this is precisely the stretch of the visit it would
+    //: otherwise spend in the wait below; production runs CONCURRENTLY with every other
+    //: warp's fold and is published by its own cursor, so NOTHING WAITS ON IT and it is
+    //: no longer the serial tail of a rendezvous. The placement is a LOAD-BALANCE
+    //: choice, not a correctness one: the cursor is the descriptor's only edge wherever
+    //: the cook runs. docs/internals/consumer_kernel.md#cook-cursor
     if (warp == kProdWarp) produce_group((gidx + kSchedDepth) % kSlots);
     if (mixed) {
       ++gram_epoch;
@@ -1327,7 +1404,11 @@ consumer_forward_kernel(ConsumerParams p) {
       //: **THE FRAGMENT'S TOKEN PAIR IS ONE LOAD OF EACH.** `t0e` is even, so the two
       //: row scales and the two token indices this fragment emits at are ADJACENT and
       //: aligned in their 16-byte-aligned buffers: one `LDS.64` each where the scalar
-      //: form issued four.
+      //: form issued four. The token pair's alignment is the RING SLOT's, which is why
+      //: the slot stride is asserted even rather than assumed:
+      //: docs/internals/consumer_kernel.md#split-k-emission
+      static_assert(kSchedSlotInts % 2 == 0,
+                    "the emission's paired token load needs an even ring-slot stride");
 #pragma unroll
       for (int nt = 0; nt < 2; ++nt) {
         const int t0e = nt * 8 + 2 * _r;
@@ -1367,21 +1448,18 @@ consumer_forward_kernel(ConsumerParams p) {
         a_state[i] *= s0[i] * s0[i];
       }
     }
-    //: **THE PIPELINE'S ONLY WAIT, AND IT IS FOR ONE STAGE.** `cp.async` completion is
-    //: visible to the ISSUING THREAD only, so the cross-warp publication is the
-    //: end-of-visit rendezvous below -- which is why the wait goes here and not at the
-    //: top of the next visit, where it would need a barrier of its own. `S - 1` groups
-    //: stay in flight across it: the link runs ahead of the visit that consumes it by
-    //: the full depth its carve admits.
-    cp_async_wait_group<S - 1>();
-    //: THE MASS COLUMN'S EXIT HALF BECOMES THE NEXT VISIT'S ENTRY HALF. The rotation is
-    //: a pointer, published by the barrier below with everything else.
+    //: THE MASS COLUMN'S EXIT HALF BECOMES THE NEXT VISIT'S ENTRY HALF -- a register
+    //: rotation, ordered by the mass cursor for its one pre-barrier reader and by the
+    //: panel barrier for every other.
     Smass = SmOut;
-    __syncthreads();
   }
   //: THE FINAL DRAIN: the stages issued past the stream's end have no consumer, but a
   //: kernel does not exit with copies outstanding into memory it is about to release.
   cp_async_wait_all();
+  //: THE EXIT EPOCH, once per kernel: the publications below read the mass column and
+  //: the summary flags across warp boundaries, and the visit loop's only barrier lies
+  //: BEFORE the last visit's writes of both.
+  __syncthreads();
 
   if (summary) {
     // ---- §6.4 PASS 1's PUBLICATION: the SPARSE written-leaf summary. Slot

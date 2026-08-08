@@ -26,8 +26,9 @@ using rola::mma::pack_bf16x2;
 constexpr float kBf16MaxFinite = 3.38953139e38f;
 
 //: HAZARD rule-3-bf16 -- docs/internals/readout_mma.md#rule-3-bf16
-//: The READ-side format guard: branchless, NaN-preserving, and independent of §12
-//: rule 4's write-side annihilation.
+//: The READ-side format guard: branchless, independent of §12 rule 4's write-side
+//: annihilation, and NOT NaN-propagating -- `fminf`/`fmaxf` return the non-NaN
+//: operand, so a NaN maps to `+kBf16MaxFinite`. The pair-wide form below agrees.
 __device__ __forceinline__ float clamp_bf16_finite(float x) {
   return fmaxf(-kBf16MaxFinite, fminf(kBf16MaxFinite, x));
 }

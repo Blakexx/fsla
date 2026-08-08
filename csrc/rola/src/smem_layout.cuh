@@ -100,37 +100,18 @@ static_assert(kMmaKQuantum * static_cast<int>(sizeof(__nv_bfloat16)) == kSectorB
               "fetch floor, the MMA k-quantum and the union granule coincide BY "
               "CONSTRUCTION, and the walk assumes it");
 
-//: **THE OCCUPANCY TARGET, AS ONE MEASURED NUMBER, AND THE MEASUREMENT REFUSED THE
-//: TLP->ILP SWITCH.** With the state register-resident the kernel's shared memory holds
-//: only the staged panels -- 16.5 KB at the flagship where the SMEM state cost 31.6 --
-//: so residency stopped being SMEM-bound and this budget became the ONLY thing setting
-//: it. The expectation was FA's shape: few warps, many registers, deep unrolled
-//: independent accumulators. The deep unroll was BUILT (one A operand feeds every state
-//: tile of the fold; both token tiles of the readout share one narrowed state
-//: fragment), and then the occupancy sweep went the other way. Dense `N = L = 4096`
-//: (`p31_evidence/whole_layer.py`, block-min-median), one build per point, all with the
-//: deep unroll in:
-//:
-//:     budget  CTAs/SM  warps/SM   wall
-//:        128     2        16      15.05 ms
-//:         85     3        24      12.63 ms
-//:         64     4        32      12.42 ms
-//:         51     5        40      13.80 ms
-//:
-//: `64` is the optimum and it is a 3.8% WIN over the SMEM-state baseline's 12.91 ms.
-//: FEWER WARPS IS MONOTONICALLY WORSE HERE, by 21% at FA's own occupancy. The reading:
-//: this kernel's explicit latency hiding (rings, prefetch, cook-ahead) covers the SMEM
-//: pipeline, and the tensor pipe is not the constraint -- it runs at ~4% of peak. What
-//: is left uncovered is DRAM: the value stream's gather and the emission's `atomicAdd`
-//: traffic, whose latency only CTA-level parallelism hides. Registers bought back below
-//: `64` start costing spill faster than the fifth CTA pays.
-//: docs/internals/smem_layout.md#reg-budget
+//: **THE KERNEL'S MEASURED REGISTER WORKING SET, AS ONE NUMBER FOR EVERY KEY.** It is
+//: what `ptxas` allocates for the visit body when it is given slack, and the budget is
+//: the value that admits it without spilling. The spill-vs-bound curve has NO INTERIOR
+//: POINT -- the bound only reaches codegen through the CTA count, so the reachable
+//: allocations are the four the register file admits -- which is why the budget is a
+//: measured constant and not a tuning dial. docs/internals/smem_layout.md#reg-budget
 constexpr int consumer_reg_budget(int BC, bool decay, int DV, int D) {
   (void)BC;
   (void)decay;
   (void)DV;
   (void)D;
-  return 72;
+  return 128;
 }
 
 //: CTAs/SM to STATE IN THE LAUNCH BOUND -- the smallest of what the three hardware
@@ -307,9 +288,17 @@ constexpr size_t consumer_smem_core_bytes() {
   //: separate buffers is what deletes that read-before-write edge, which was one of
   //: the two the visit's phase barrier carried. `BC` floats is the whole price.
   //: docs/internals/smem_layout.md#mass-pingpong
-  size_t b = 2 * static_cast<size_t>(BC) * sizeof(float);            // the mass column, both phases
-  b += static_cast<size_t>(BC) * kTokPitch * sizeof(__nv_bfloat16);  // Rp
-  b += static_cast<size_t>(kGroupTokens) * leaf_pitch(BC) * sizeof(__nv_bfloat16);  // Wp
+  size_t b = 2 * static_cast<size_t>(BC) * sizeof(float);  // the mass column, both phases
+  //: **THE VISIT SCRATCH IS HELD BY VISIT PARITY, AND THAT IS WHAT DELETES THE
+  //: END-OF-VISIT RENDEZVOUS.** The panels, the row scales and the decay survival
+  //: factors are WRITTEN at the top of a visit and READ after the panel barrier, so
+  //: single buffers make consecutive visits collide on a write-after-read that only a
+  //: second CTA-wide barrier can separate. Two of each -- selected by `gidx & 1` --
+  //: put the two visits on disjoint storage, and the panel barrier alone then orders
+  //: everything. docs/internals/consumer_kernel.md#visit-parity
+  b += 2 * static_cast<size_t>(BC) * kTokPitch * sizeof(__nv_bfloat16);  // Rp, both parities
+  b += 2 * static_cast<size_t>(kGroupTokens) * leaf_pitch(BC)
+       * sizeof(__nv_bfloat16);  // Wp, both parities
   //: **THE CLOCK PREFIX HAS ITS OWN HOME.** It cannot alias the value tile: the tile
   //: for visit `v + S` is being filled by `cp.async` while visit `v`'s prefix is
   //: live, so the two tenants are simultaneously live for every depth the pipeline
@@ -319,15 +308,19 @@ constexpr size_t consumer_smem_core_bytes() {
   //: THE GRAM, `[16][24]`, holding `G^T` -- the group's own causal block, read by the
   //: intra term as a `k = token`-major B operand.
   b += static_cast<size_t>(kGroupTokens) * kTokPitch * sizeof(__nv_bfloat16);  // Gm
-  if (DECAY) b += 3 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0
+  //: `log_keep` and `p_ref` are single: both are dead before the panel barrier they are
+  //: written under. `s0` is read by the fold's exit scale and the mass epilogue AFTER
+  //: that barrier, so it takes a parity pair like the panels above.
+  if (DECAY) b += 4 * static_cast<size_t>(BC) * sizeof(float);  // log_keep, p_ref, s0 x2
   //: THE COOKED SCHEDULE RING: `sched_slots(S)` group descriptors, written by the
   //: PRODUCER WARP `sched_depth(S)` groups ahead and read by every consumer warp. It
   //: is the only schedule storage the consumers touch.
   b += static_cast<size_t>(sched_slots(S)) * kSchedSlotInts * sizeof(int);
   //: THE VISIT'S ROW SCALES (`sr`, `sw`) -- one pair of `kGroupTokens` floats,
   //: reduced from the staged scalars at the top of the visit rather than gathered by
-  //: the producer. docs/internals/consumer_kernel.md#row-scales
-  b += 2 * static_cast<size_t>(kGroupTokens) * sizeof(float);
+  //: the producer, and held by parity for the reason the panels are.
+  //: docs/internals/consumer_kernel.md#row-scales
+  b += 4 * static_cast<size_t>(kGroupTokens) * sizeof(float);
   //: THE PRODUCER'S CURSOR STATE (8 scalars + five 32-lane planes: the cooked
   //: chunk's fr/fw/member and the current word's two atom-bitlist rows). It rests
   //: HERE rather than in the producer warp's registers because scheduler state
@@ -339,10 +332,12 @@ constexpr size_t consumer_smem_core_bytes() {
   //: OF ATOMS whose digits it carries. Built once per owner; read once per issued
   //: copy. docs/internals/smem_layout.md#prefetch-slab
   b += 3 * static_cast<size_t>(amp_slab_chunks(BC, D)) * sizeof(int);
-  //: THE GRAM'S PUBLICATION COUNTER -- one int, incremented once per producing warp
-  //: per mixed visit, spun on by the consumers of `Gm`. It replaces the visit's
-  //: phase barrier: docs/internals/consumer_kernel.md#gram-publication
-  b += sizeof(int);
+  //: TWO PUBLICATION COUNTERS -- the GRAM's (one arrival per producing warp per mixed
+  //: visit, spun on by the consumers of `Gm`) and the MASS COLUMN's (one arrival per
+  //: producing warp per visit, spun on by the next visit's entry-frame scale under
+  //: decay). Each replaces a CTA-wide rendezvous with a wait on the producers alone.
+  //: docs/internals/consumer_kernel.md#gram-publication
+  b += 2 * sizeof(int);
   return b;
 }
 
