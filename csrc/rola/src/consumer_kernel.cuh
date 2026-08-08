@@ -1341,7 +1341,15 @@ consumer_forward_kernel(ConsumerParams p) {
       ++gram_epoch;
       const int target = gram_epoch * kGramProd;
       volatile int* const gf = gram_flag;
+      //: **THE BACKOFF IS NOT POLITENESS, IT IS THE WHOLE DIFFERENCE.** A bare poll on
+      //: shared memory is issue-ACTIVE: at the flagship shape six of eight warps reach
+      //: this point and saturate the load pipe the two producing warps need for their
+      //: own `ldmatrix`. Measured, dense `N = L = 4096`: bare poll 19.15 ms, poll with
+      //: this backoff 16.62 ms. Sleeping between polls returns the issue slots to the
+      //: producers, which is what makes a cursor cheaper than a rendezvous rather than
+      //: dearer. docs/internals/consumer_kernel.md#gram-publication
       while (*gf < target) {
+        __nanosleep(64);
       }
       __threadfence_block();
     }
