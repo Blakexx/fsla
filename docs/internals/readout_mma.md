@@ -44,11 +44,12 @@ are independent — neither substitutes for the other.
 
 The hazard: removing a `clamp_bf16_finite` from any of `mma_tile.cuh`'s pack sites
 changes results and compiles clean. Every site that packs a value into a bf16 MMA
-operand — `stage_put`, `mma_tile_fragA`, `split_bf16x2`, `bcast_frag_b` — routes
-through this one function, so an audit of the guard is an audit of this file's one
-caller list, not of scattered inline clamps. An `ldmatrix`-fetched operand (`WT` as
-GEMM 2/4's A, `Vw`, `Gm` as GEMM 3's A) carries no clamp of its own at the fetch —
-`stage_put` already clamped it where it was written, which is what makes the
+operand — `stage_put`, `split_bf16x2`, `bcast_frag_b` — routes through this one
+function, so an audit of the guard is an audit of this file's one caller list, not of
+scattered inline clamps. An `ldmatrix`-fetched operand (`WT` as GEMM 2/4's A, `Vw`,
+`Gm` as GEMM 3's A, the state planes `Shi`/`Slo` as GEMM 1's B) carries no clamp of
+its own at the fetch — the value was already clamped where it was written (`stage_put`
+for `WT`/`Vw`/`Gm`, `split_bf16x2` for the state planes), which is what makes the
 `ldmatrix` fetch bit-identical to a generic indexed read.
 
 ## 2. §12 rule 1 does NOT go live here

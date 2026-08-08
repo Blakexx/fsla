@@ -865,11 +865,11 @@ consumer_forward_kernel(ConsumerParams p) {
       __syncthreads();
       // ---- DECAY, step (c): the entry state enters the reference frame, ONCE PER
       // ---- WINDOW. `s0` multiplies the STATE; the mass column rides the same sweep
-      // ---- (same recurrence with `v := 1`). FLAT over channel PAIRS -- `NP_DV` is a
-      // ---- power of two where the fp32 state's `cols = DV + 1` was not, so the walk
-      // ---- no longer needs a row-per-warp partition. The scale lands on the
-      // ---- RECONSTRUCTED value and the pair re-splits: a scaled bf16 is not a bf16.
-      // ---- Dead atoms' rows multiply by exactly 1.
+      // ---- (same recurrence with `v := 1`). FLAT over channel PAIRS: `NP_DV` is a
+      // ---- power of two, so the walk's row/column split is a shift and the whole CTA
+      // ---- strides one loop. The scale lands on the RECONSTRUCTED value and the pair
+      // ---- re-splits -- a scaled bf16 is not a bf16. Dead atoms' rows multiply by
+      // ---- exactly 1.
       for (int idx = tid; idx < BC * NP_DV; idx += kConsumerThreads) {
         const int i = idx / NP_DV;
         const int c = 2 * (idx - i * NP_DV);

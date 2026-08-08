@@ -53,9 +53,10 @@ life, is read from HBM ONCE at entry and written ONCE at exit.
 3. hoist the owner's leaf digits `dig[l][i]` — `D * BC` integer divisions, once,
    instead of once per (group, token, leaf, level);
 4. under `DECAY`, form the per-leaf `log_keep[i] = log1pf(-rate[i])`;
-5. load `S[BC][SP]` — zeros in pass 1 (the summary pass), from the §6.4 workspace on
-   a split owner's non-entry segment, else atom-wise from `p.state` through the page
-   table;
+5. load the state's two bf16 planes `Shi`/`Slo` and its fp32 mass column `Smass`
+   ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) — zeros in pass 1
+   (the summary pass), from the §6.4 workspace on a split owner's non-entry segment,
+   else atom-wise from `p.state` through the page table;
 6. warp 0 [cooks](#producer) the schedule ring's first `W * kSchedDepth` group
    descriptors — the cold start — a `__syncthreads()` publishes them, the CTA issues
    window 0's [amplitude prefetch](#prefetch) and drains it, and a second
@@ -106,9 +107,15 @@ atom-wise.
 
 Three facts a reader must not miss:
 
-- **The state is SMEM-resident, not register-resident.** That is what decouples the
-  thread count from the state layout, frees the CTA to 8 warps, and puts every
-  per-visit term on the tensor cores as one of four GEMMs.
+- **The state is SMEM-resident, not register-resident, as two bf16 planes plus an
+  fp32 mass column.** `Shi`/`Slo` hold each value's bf16 rounding and its residual
+  ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)); `Smass` is the
+  denominator column and stays fp32, outside the planes. That is what decouples the
+  thread count from the state layout, frees the CTA to 8 warps, puts every per-visit
+  term on the tensor cores as one of four GEMMs, and — the reason for the plane form
+  specifically — lets GEMM 1's B operand arrive by `ldmatrix` instead of being packed
+  from scalar shared loads at every use. Accumulation is still fp32: the fold reads
+  the plane pair, sums in registers, and splits at the one writeback.
 - **The one-copy invariant is a property of the LAUNCH SHAPE**, not of a policy the
   kernel implements: one CTA per owner, run to completion, one HBM read and one HBM
   write of the owner's state block. There is no wave machinery anywhere.
@@ -147,9 +154,10 @@ Three facts a reader must not miss:
 | `NT_DV` | `DV / 8` — the `n8` column tiles of a `DV`-wide output |
 | `kWarps` | `8` — `kConsumerThreads / 32` |
 | `kFullMask` | the atom masks' FULL value, `(1u << kQPO) - 1u` (or all-ones past 32 atoms). `mask == kFullMask` selects the statically-unrolled dense arm |
-| `S` | the STATE, `[BC][SP]` fp32 SMEM, resident for the owner's whole run |
-| `SP` | `S`'s row pitch, `DV + 4` ([below](#state-pitch)) |
-| `cols` | `DV + 1`, UNCONDITIONAL — the mass column always exists |
+| `Shi`, `Slo` | the state's NUMERATOR, two bf16 SMEM planes, each `[BC][DV]`, resident for the owner's whole run — a value's bf16 rounding (`Shi`) and its residual (`Slo`) ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) |
+| `Smass` | the state's DENOMINATOR column, `[BC]` fp32 SMEM, OUT of the planes ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) |
+| `NP_DV` | `DV / 2` — channel PAIRS of a state row, the plane walk's unit |
+| `cols` | `DV + 1`, UNCONDITIONAL — the mass column always exists (the HBM row width; the SMEM state's own shape is `Shi`/`Slo`/`Smass` above) |
 | `WT` | the write coefficient panel, `W` SLOTS of `[BC][BTP]` bf16, LEAF-MAJOR per slot |
 | `BTP` | `WT`'s row pitch, `kWtPitch = kGroupTokens + 8 = 24` ([`smem_layout.md#stage-format`](smem_layout.md#stage-format)) |
 | `Vw` | the scale-folded value tile, `W` slots, `Vw[t,ch] = sw[t] * v[t0+t, ch]`, bf16, swizzled, no pad |
@@ -203,15 +211,30 @@ measurement, the footprint is not.
 
 # Part II — the carve, as the body spells it
 
-## <a id="state-pitch"></a>4. `SP = DV + 4` — the state's row pitch
+## <a id="state-planes"></a>4. The state as two bf16 planes and an fp32 mass column
 
-`SP` is DERIVED from the bf16 MMA B map: `S` as GEMM 1's B operand is read with
-`k = k0 + 2r`, so at `SP == DV` (a multiple of 32) the bank index `(2r + g) % 32`
-COLLIDES up to four ways (`2r + g = 6` is hit by `(r,g) = (0,6), (1,4), (2,2), (3,0)`).
-`DV + 4` makes the bank `(8r + g) % 32` with `r in [0,4)`, `g in [0,8)` — every one of
-the 32 combinations distinct, covering all 32 banks exactly once. This is the kernel's
-ONE state pitch; there is no separate tf32 derivation to reconcile it with, because
-there is no tf32 arm.
+`Shi`/`Slo` are `StageLayout` buffers at the state's own shape (`[BC][DV]`, no pad) —
+the SAME layout `Vw` is stored under — so GEMM 1's B operand is fetched by the
+`ldmatrix` atom that already serves `Vw` instead of packed from four scalar shared
+loads, four clamps and two packs per `mma.sync` per lane. `Shi` holds each value's
+bf16 rounding; `Slo` holds its residual, read together only where the pair is
+reconstructed as a number (the fold's read-modify-write and the entry/exit
+publication), never at the readout, whose B operand is `Shi` alone
+([`mma_tile.md#mma-tile-fraga`](mma_tile.md#mma-tile-fraga)).
+
+`Smass` stays fp32 and stays OUT of the planes: it is the denominator of a ratio, its
+consumers are broadcast-B matvecs no `ldmatrix` can serve, and keeping it out is what
+leaves the planes pad-free at exactly `BC * DV` — a swizzle's XOR field is only legal
+over an unpadded tile. This is also why the carve is `BC*(DV+1)*4` rather than the
+pre-plane `BC*(DV+4)*4`: the `+4` pad existed to decorrelate banks for a SCALAR
+fragment map (`k = k0 + 2r` collided up to four ways at `SP == DV`, a multiple of 32),
+and the planes need no such pad because they are read under a swizzle instead.
+
+Five `constexpr` proofs answer the state planes' bank-conflict question at the
+state's own shape, the same four questions [`smem_layout.md#stage-layout`](smem_layout.md#stage-layout)
+answers for `Vw`, plus one more for the fold's paired access:
+`stage_offset_matches_cute`, `stage_layout_is_bijection`, `stage_ldsm_banks_ok`,
+`stage_pair_banks_ok`, `stage_store_banks_ok` — [below](#pitches).
 
 ## <a id="pitches"></a>5. Every operand pitch proves its own conflict-freedom
 
@@ -220,7 +243,11 @@ carves it, so a future `BC`/`DV` that broke the proof fails the BUILD:
 
 | assert | what it pins |
 |---|---|
-| `banks_distinct(1, 2 * SP)` | `S` as GEMM 1's B operand |
+| `stage_offset_matches_cute<BC, DV>()` | the state planes' closed-form address is CuTe's layout |
+| `stage_layout_is_bijection<BC, DV>()` | the swizzled state planes tile `[0, BC*DV)` exactly |
+| `stage_ldsm_banks_ok<BC, DV>()` | GEMM 1's `ldmatrix.x2.trans` fetch of `Shi`/`Slo`, conflict- and alignment-free |
+| `stage_pair_banks_ok<BC, DV>()` | the fold's paired read-modify-write of a channel pair, conflict-free ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) |
+| `stage_store_banks_ok<BC, DV>()` | the entry-state staging store into `Shi`/`Slo`, conflict-free |
 | `banks_distinct_u16(1, 2 * BTP)` | `WT` as GEMM 2's B operand |
 | `banks_distinct_u16(BTP, 2)` | `WT` as GEMM 4's A operand |
 | `pitched_ldsm_banks_ok<kMmaKQuantum, kGroupTokens, kWtPitch>()` | `WT`'s `ldmatrix` fetch conflict- and alignment-freedom at `kWtPitch`, per slot |
@@ -277,12 +304,17 @@ pass 3, unsplit owner,
 
 The dense read is ATOM-WISE: the outer loop is `#pragma unroll`ed over a compile-time
 `kQPO <= 4`, each base resolved once via `atom_row_base`, and the inner walk covers
-`kMmaKQuantum * cols` contiguous elements per atom. An atom with no committed slot
+`kMmaKQuantum * cols` contiguous HBM elements per atom. An atom with no committed slot
 reads as ZEROS and is never stored back — the same arithmetic the dense path applies
 to a never-written atom, which is what makes paging BITWISE INVISIBLE rather than
 approximately equivalent.
 
 `cols = DV + 1` is unconditional; there is no `raw`/`GLOBAL` axis left to branch it on.
+This is the HBM row's own width, unrelated to the SMEM state's shape: the load SPLITS
+as it lands, one walk over `NP_DV = DV / 2` channel PAIRS per row that narrows each fp32
+pair into one `Shi`/`Slo` word via `split_bf16x2`, and a separate `[BC]` walk that
+copies the row's mass element straight into `Smass` (no narrowing — the mass column
+stays fp32 in SMEM exactly as it is in HBM).
 
 ## <a id="pass-mode"></a>9. `pass_mode` — §6.4's three passes, LAUNCH-UNIFORM
 
@@ -706,11 +738,13 @@ static strided partition over the CTA's `kWarps` warps (`kYItems =
 ceil(W * NT_DV / kWarps)` fragments per warp) — at `W == 1, DV == 32` the old
 `warp < NT_DV` predicate left half the CTA idle; the item partition keeps every warp
 carrying work at every `(W, DV)`. Every group's readout reads the SAME entry state
-`S`, never a group-local copy. `mask == kFullMask` unrolls the dense arm
-(`mma_tile_fragA<BC, ...>` over the whole state); otherwise the loop walks only the
-live atoms of that group's `rmask`, contracting `kMmaKQuantum` leaves per atom
-(`mma_tile_fragA<kMmaKQuantum, ...>`). The B operand (`S`) is packed out of SMEM on
-the fly; state and accumulation stay fp32 throughout.
+(`Shi`/`Slo`), never a group-local copy. `mask == kFullMask` unrolls the dense arm
+(`mma_tile_fragA_stateB<DV, BC>` over the whole state); otherwise the loop walks only
+the live atoms of that group's `rmask`, contracting `kMmaKQuantum` leaves per atom
+(`mma_tile_fragA_stateB<DV, kMmaKQuantum>`). The B operand is fetched by `ldmatrix`
+from `Shi` alone — [`mma_tile.md#mma-tile-fraga`](mma_tile.md#mma-tile-fraga) has the
+readout's own account of why `Slo` is not read here; accumulation stays fp32
+throughout.
 
 ## <a id="mass-column"></a>23. The mass column's D fragment — `dm` is to the denominator what `y` is to the numerator
 
@@ -724,8 +758,8 @@ than one fixed to warp 0 — the item partition puts one group's fragment per wa
 the `W == 1` visit put every group's on warp 0 — that both of the read-side terms
 (TERM 1, [below](#mass-term1), and TERM 2, [phase C](#phase-c)) accumulate into and
 that the [split-K emission](#split-k-emission) reads at the end, per group. The fold's
-own term (TERM 3, [`#gemm-fold`](#gemm-fold)) writes directly into `S[.][DV]` instead
-— it has no reader downstream in the same visit, so it never needs a fragment of its
+own term (TERM 3, [`#gemm-fold`](#gemm-fold)) writes directly into `Smass` instead —
+it has no reader downstream in the same visit, so it never needs a fragment of its
 own.
 
 The scalar reduction this replaces ran on WARP 0 ALONE at half lane occupancy, a
@@ -734,16 +768,18 @@ fragment, not the instructions, and the instructions are what this kernel is bou
 
 ## <a id="mass-term1"></a>24. The mass column, TERM 1 — one more `n8` tile per group
 
-`dm_a = R_a . S[.][DV]`, THE SAME GEMM AS THE READOUT: `mma_tile_fragA_massB`, one
-group's fragment per warp per the item partition, live read atoms only, with `S`'s
-mass column BROADCAST across the tile's eight `n` slots, so every output column holds
+`dm_a = R_a . Smass`, THE SAME GEMM AS THE READOUT: `mma_tile_fragA_massB`, one
+group's fragment per warp per the item partition, live read atoms only, with
+`Smass` BROADCAST across the tile's eight `n` slots, so every output column holds
 the matvec and the emission reads it back at column 0. Its placement is FORCED: the
-fold (GEMM 4, later in program order) WRITES `S[i][DV]`, so term 1, which READS it,
+fold (GEMM 4, later in program order) WRITES `Smass[i]`, so term 1, which READS it,
 must already have run.
 
-The B operand is COMPENSATED: it is a column of the fp32 STATE and the DENOMINATOR OF
-A RATIO, so — unlike the numerator's columns — it has nothing to cancel a bf16
-rounding against. `split_bf16x2` ([`mma_tile.md#split-bf16x2`](mma_tile.md#split-bf16x2))
+The B operand is COMPENSATED: `Smass` is the fp32 mass column and the DENOMINATOR OF
+A RATIO, so — unlike the numerator's planes — it has nothing to cancel a bf16
+rounding against, and it stays fp32 in storage rather than narrowing to a plane pair.
+Its `[BC]` array is CONTIGUOUS, so the fetch is the mass tile's own broadcast map, not
+a strided walk of a wider buffer. `split_bf16x2` ([`mma_tile.md#split-bf16x2`](mma_tile.md#split-bf16x2))
 sends it as a rounded value plus its residual across TWO `mma.sync`, ~16 mantissa bits
 for one extra instruction per k-step.
 
@@ -833,7 +869,7 @@ broadcast B makes every output column of `dm` the same value, so column 0 — th
 with `_r == 0` — carries tokens `_g` and `_g + 8`, and the `!= 0` guard retires a
 ragged group's padded slots on the same rule the numerator runs on.
 
-## <a id="gemm-fold"></a>29. GEMM 4 — the boundary fold, `S += sum_b W_b^T . Vw_b`, live UNION write atoms only, and the mass column's TERM 3
+## <a id="gemm-fold"></a>29. GEMM 4 — the boundary fold, `Shi`/`Slo` += `sum_b W_b^T . Vw_b`, live UNION write atoms only, and the mass column's TERM 3
 
 Runs when `w_write` (the OR of the window's write-live groups). The visit's fold work
 is a STATIC STRIDED PARTITION — `for (c = warp; c < n_fold_items; c += kWarps)`,
@@ -849,14 +885,20 @@ exact: its delta is zero everywhere and its exit scale is `s0 == 1` (ticks ride
 writes, [above](#decay-clock)).
 
 **THIS IS WHERE THE WINDOW IS PAID FOR.** The claimed atom's 4-value accumulator
-loads to registers ONCE (`a0..a3` from `S`) and stays resident while the atom CONSUMES
-EVERY STAGED GROUP OF THE WINDOW it is live in — an inner loop over `b in [0, W)`
-skipping groups where the atom is dead, each iteration computing one `mma_fold_tile`
-delta into the tensor core's D fragment in ascending group order — before the ONE
-writeback back to `S`. The read-modify-write of `S` (four fp32 loads and four stores
-per `mma.sync` at the group quantum) is therefore amortised `W`-fold. `kFoldStagedGroups`
-— the constant this loop once counted, PINNED to 1 — is deleted; `W` is its
-replacement and the loop trip count is the window's, not a fixed 1
+loads to registers ONCE (`a0..a3`, reconstructed by `merge_bf16x2` from the plane
+pair at rows `i0`/`i1`, columns `n0`/`n0+1`) and stays resident while the atom
+CONSUMES EVERY STAGED GROUP OF THE WINDOW it is live in — an inner loop over
+`b in [0, W)` skipping groups where the atom is dead, each iteration computing one
+`mma_fold_tile` delta into the tensor core's D fragment in ascending group order —
+before the ONE writeback, which `split_bf16x2` re-narrows back into `Shi`/`Slo`. The
+read-modify-write reads two words (`n0`, `n0+1` are one channel pair, hence one word
+of each plane — `stage_pair_banks_ok`'s PROOF 4,
+[`smem_layout.md#state-planes`](smem_layout.md#state-planes)) rather than four scalar
+fp32 loads and stores, and is therefore amortised `W`-fold on top of that. The fp32
+sum's rounding to the plane pair happens at this ONE writeback and nowhere else — the
+accumulation itself stays fp32 across the whole inner loop. `kFoldStagedGroups` — the
+constant this loop once counted, PINNED to 1 — is deleted; `W` is its replacement and
+the loop trip count is the window's, not a fixed 1
 ([`smem_layout.md#values-shard`](smem_layout.md#values-shard)).
 
 ### <a id="fold-epilogue"></a>`DECAY`'s exit scale, riding the fold's existing read-modify-write, ONCE PER WINDOW
@@ -868,27 +910,27 @@ for (b = 0; b < W; ++b) {
   ...
 }
 a0 = e0 * (a0 + d0);   // e0 = DECAY ? s0[i0] : 1.0f -- ONE multiply, after the sum
-S[i0][n0] = a0;        // the ONE writeback, after every staged group is folded in
+split_bf16x2(a0, a1, Shi[i0][n0..n0+1], Slo[i0][n0..n0+1]);  // the ONE writeback
 ```
 
 The exit scale applies ONCE, after all `W` groups' deltas have been summed, not once
 per group — legal because every deposit is already in the window's ONE reference frame
 (`keep^{P_ref - P[u]}`, [above](#decay-clock)), so the deposits simply add before the
 frame is left. One multiply per window per accumulator, not one per staged group — no
-separate scaling pass and no intermediate write to `S`.
+separate scaling pass and no intermediate write to the planes.
 
-**The mass column's TERM 3**, `S[.][DV] += sum_b W_b^T . sw_b`, is a SEPARATE loop
+**The mass column's TERM 3**, `Smass += sum_b W_b^T . sw_b`, is a SEPARATE loop
 after the main fold, ON THE SAME TENSOR CORE AS THE FOLD ITSELF: `mma_tile_bcastB`
 against `WT`'s atom block and a broadcast `sw`, one `mma.sync` per live atom per
 staged group it is live in, one atom per warp (`for (mi = warp; mi < n_live; mi +=
-kWarps)`). It is not folded into the main loop above because it writes one state
-column (`DV`, `_r == 0` only) rather than an `n8` tile of `DV` columns. A dead atom's
-rows: `acc == 0` and `s0 == 1` — the skip is the identity, the same rule the main
-fold's atom skip runs on.
+kWarps)`). It is not folded into the main loop above because it writes one fp32
+scalar per leaf (`_r == 0` only) rather than an `n8` tile of `DV` plane columns. A
+dead atom's rows: `acc == 0` and `s0 == 1` — the skip is the identity, the same rule
+the main fold's atom skip runs on.
 
 **THE RMW IS ONE LANE PER LEAF.** A broadcast-B tile's result lands in output column
-0, so the accumulator is meaningful only on `_r == 0`; the READ of `S[i0 * SP + DV]` /
-`S[i1 * SP + DV]` is therefore predicated `_r == 0` too (`0.0f` on the other three
+0, so the accumulator is meaningful only on `_r == 0`; the READ of `Smass[i0]` /
+`Smass[i1]` is therefore predicated `_r == 0` too (`0.0f` on the other three
 lanes of the row), not just the writeback. An unpredicated read is safe only because
 `mma.sync.aligned` reconverges the warp between the read and the write that follows
 it — an argument `compute-sanitizer --tool racecheck` cannot check and nothing in the
@@ -909,10 +951,12 @@ formed there).
 After the walk, under `summary`: warp 0 compacts `sum_slot[i] != 0` into an ascending
 dense list via one `__ballot_sync` per 32-leaf block, writing the leaf's ordinal into
 `p.ws_leaf[slot * BC + q]` and rewriting `sum_slot[i]` in place to its list position
-(`-1` if excluded). `p.ws_count[slot]`, `p.ws_scale[slot*BC+q] = a_state[i]`, and
-`p.ws_state[(slot*BC+q)*cols + c] = S[i*SP+c]` follow for every included leaf. Slot
-`owner_slot0 + seg + 1` is one past the scan's entry stash, so pass 3's segment `q`
-reads `owner_slot0 + q` uniformly.
+(`-1` if excluded). `p.ws_count[slot]`, `p.ws_scale[slot*BC+q] = a_state[i]`, and the
+plane pair MERGED back to fp32 — `p.ws_state[(slot*BC+q)*cols + c..c+1] =
+merge_bf16x2(Shi[i][c..c+1], Slo[i][c..c+1])` for the numerator's channel pairs, plus
+`p.ws_state[(slot*BC+q)*cols + DV] = Smass[i]` for the mass column — follow for every
+included leaf. Slot `owner_slot0 + seg + 1` is one past the scan's entry stash, so
+pass 3's segment `q` reads `owner_slot0 + q` uniformly.
 
 ## <a id="state-store"></a>32. The owner's state block, written to HBM once
 

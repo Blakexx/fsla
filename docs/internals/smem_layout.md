@@ -119,10 +119,13 @@ tripwire's premise is ever restated: git `2decba5^`.
 
 ## The one precision story
 
-bf16 storage everywhere the staged operands and amplitude streams live, fp32
-accumulation/state/clock/row-scales, fp64 torch reference as the oracle. There is no
-precision axis — no `MmaPrec`, no `PREC` template parameter, no tf32x3 arm. Every
-layout and proof below is stated for bf16 alone.
+bf16 storage everywhere — the staged operands, the amplitude streams, and, since P40,
+the state's own numerator (`Shi`/`Slo`, [below](#state-planes)) — fp32 accumulation
+throughout (the state's mass column, the clock, the row scales, and every
+`mma.sync`'s D fragment including the fold's read-modify-write of the state planes),
+fp64 torch reference as the oracle. There is no precision axis — no `MmaPrec`, no
+`PREC` template parameter, no tf32x3 arm. Every layout and proof below is stated for
+bf16 alone.
 
 ## <a id="cute-pin"></a>The sector invariant, and the vendored CuTe pin
 
@@ -146,8 +149,9 @@ dead.
 packaging one — every line instantiated here is code `ptxas` assembles — which is why
 `setup.py::_gate_vendored` hashes the subtree before the compile and `tools/ratify.py`
 carries the same include path. This layer uses it for exactly ONE thing: the
-swizzled `StageLayout` both staged operands (`WT`, `Vw`) are stored under, together
-with the three proofs below that interrogate it. The `ldmatrix` copy atoms that read
+swizzled `StageLayout` the staged operands and the state planes (`Vw`, `Shi`, `Slo` —
+`WT` stays pitched, [below](#stage-format)) are stored under, together with the
+proofs below that interrogate it. The `ldmatrix` copy atoms that read
 that layout are the tile layer's ([`mma_tile.md#cute-pin`](mma_tile.md#cute-pin)),
 and the split is the point — the library owns the address function in one file and
 the fetch in the other, and `stage_offset_matches_cute` ([below](#stage-offset)) is
@@ -282,7 +286,7 @@ single buffer at the WINDOW's extent:
 
 | region | extent | bytes | what it is |
 |---|---|---|---|
-| `S` | `[BC][DV+4]` fp32 | `BC*(DV+4)*4` | the STATE, resident for the owner's whole run. Pitch `SP = DV+4` ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch)) |
+| `Shi`, `Slo`, `Smass` | two `[BC][DV]` bf16 planes + `[BC]` fp32 | `BC*(DV+1)*4` | the STATE: `Shi`/`Slo` are the numerator (a value's bf16 rounding and its residual), `Smass` the fp32 mass column, kept out of the planes ([below](#state-planes)) |
 | `dig` | `[D][BC]` int | `D*BC*4` | per-owner hoisted leaf digits ([`consumer_kernel.md#digit-hoist`](consumer_kernel.md#digit-hoist)) |
 | `WT` | `W` slots of `[BC][kWtPitch]` bf16, `align4` | `align4(W*BC*24*2)` | write coefficients, LEAF-MAJOR, pitch `kWtPitch = kGroupTokens+8 = 24` ([below](#stage-format)) |
 | `Vw` ∪ `clk` | the union, `align4` | `vw_union_bytes<BC,DV,D,DECAY,GT>()` | `W` slots of the scale-folded value tile; on `DECAY` ALIASES the WINDOW's clock prefix ([below](#vw-clk-union)) |
@@ -296,32 +300,33 @@ single buffer at the WINDOW's extent:
 | `pfR`, `pfW` | `2 * [GT][amp_slab_pitch(BC,D)]` bf16, `align16` base | `2*GT*pitch*2` | the AMPLITUDE PREFETCH SLABS — one row per window token per side, filled by `cp.async` a visit ahead ([below](#prefetch-slab)) |
 
 `cols = DV + 1` is unconditional (the mass column always exists — normalization is no
-longer a template axis), which is why `S`'s row EXTENT above is `DV + 4` regardless:
-the pitch derivation ([`consumer_kernel.md#state-pitch`](consumer_kernel.md#state-pitch))
-is chosen to keep the bf16 MMA B map conflict-free and already covers the mass
-column's one extra live column within it.
+longer a template axis): it is the HBM row width `p.state`/`p.ws_state` carry, and the
+SMEM state's own carve (`Shi`/`Slo`/`Smass` above) is exactly `BC*(DV+1)*4` bytes —
+two pad-free bf16 planes plus one fp32 column, no bank-decorrelation pad, because the
+planes are read by `ldmatrix` under a swizzle rather than by a scalar fragment map
+([below](#state-planes)).
 
 **Two worked totals**, computed by hand from the table above (both independently
 cross-checked against `consumer_smem_bytes` in Python):
 
 ```
 BC=16, DV=32, D=1, DECAY=false, GT=16 (W=1, kSchedDepth=2, sched_slots=3):
-  S=2304  dig=64  WT=768  Vw∪clk=1024
+  Shi/Slo/Smass=2112  dig=64  WT=768  Vw∪clk=1024
   Rf=512  Gm=768  decay-extra=0
   g_ring=240  g_up=384  producer-state=672  chunk-desc=36
-  core (align16) = 6,784   slabs = 2*16*24*2 = 1,536
-  total = 8,320 B  (~8.1 KiB)
+  core (align16) = 6,592   slabs = 2*16*24*2 = 1,536
+  total = 8,128 B  (~7.9 KiB)
 
 BC=64, DV=64, D=2, DECAY=true, GT=16 (W=1, kSchedDepth=2, sched_slots=3):
-  S=17408  dig=512  WT=3072  Vw∪clk=4352
+  Shi/Slo/Smass=16640  dig=512  WT=3072  Vw∪clk=4352
   Rf=2048  Gm=768  decay-extra=768
   g_ring=240  g_up=384  producer-state=672  chunk-desc=120
-  core (align16) = 30,352   slabs = 2*16*80*2 = 5,120
-  total = 35,472 B  (~34.6 KiB)
+  core (align16) = 29,584   slabs = 2*16*80*2 = 5,120
+  total = 34,704 B  (~33.9 KiB)
 ```
 
 The `BC = 64` decay arm is the one whose residency the prefetch slab costs (3 CTAs/SM
-to 2); the `BC = 64` NODECAY arm keeps its three (32,400 B). At `GT = 64` (`W = 4`)
+to 2); the `BC = 64` NODECAY arm keeps its three (31,632 B). At `GT = 64` (`W = 4`)
 the slab's contribution is linear in `W` where the Gram's is quadratic, and the
 `BC = 64` window arms stay at one CTA/SM.
 
@@ -481,9 +486,10 @@ swizzle, so this licenses the atom at that pitch instead of assuming a pad chose
 a scalar fragment map also serves a matrix load. `COLS` is the column extent actually
 addressed (`kGroupTokens`), smaller than `PITCH`.
 
-## <a id="stage-layout"></a>13. The staged operands' SMEM layout, owned by CuTe
+## <a id="stage-layout"></a>13. The swizzled `StageLayout`, owned by CuTe
 
-Both `WT` and `Vw` are stored under the library's own swizzled layout,
+`Vw` and the state's two bf16 planes (`Shi`/`Slo`, [below](#state-planes)) are stored
+under the library's own swizzled layout,
 `composition(Swizzle<B,3,3>, (ROWS,COLS):(COLS,1))`, and the pad DISAPPEARS: the
 swizzle decorrelates banks by permuting 16-byte blocks WITHIN the tile instead of by
 making it bigger, so the buffer is exactly `ROWS * COLS` elements. `B` is chosen so
@@ -562,6 +568,77 @@ storage through the explicit `__float2bfloat16` intrinsic (never `static_cast`,
 because the torch build defines `__CUDA_NO_BFLOAT16_CONVERSIONS__`), and it is where
 §12 rule 3's finite-bf16 format guard (`clamp_bf16_finite`) lives — the fp32 value's
 last existence before the narrowing.
+
+## <a id="state-planes"></a>14.1. The state's two bf16 planes, and the fp32 mass column kept out of them
+
+The state's NUMERATOR is `Shi`/`Slo`, two `StageLayout` buffers at the state's own
+shape (`[BC][DV]`, no pad) — the SAME layout `Vw` is stored under, at `state_index<DV>(i,
+c) = stage_offset<DV>(i, c)`. `Shi` holds each value's bf16 rounding, `Slo` its
+residual: together the pair carries ~16 mantissa bits where a single bf16 narrowing
+carries ~8, and that is the precision the STATE ITSELF is stored at across the
+recurrence — the fold reads the pair, sums in fp32 registers and re-splits at its one
+writeback.
+
+**GEMM 1 READS `Shi` ALONE**, and that is the shipped contract rather than a
+concession: a fp32-resident state narrowed its B operand to plain bf16 at the fragment,
+and `Shi` holds exactly that narrowing, so the readout's numerics are unmoved and its
+`mma.sync` count is unmoved with them. `Slo` is not a readout operand — it is what
+keeps the state's own storage from decaying to 8 mantissa bits between visits, and its
+cost is the merge and split at the fold's read-modify-write, not an extra multiply. The
+plane form is what lets GEMM 1 fetch its operand with the `ldmatrix` atom that already
+serves `Vw` ([`mma_tile.md#mma-tile-fraga`](mma_tile.md#mma-tile-fraga)) instead of
+packing it from scalar shared loads at every use. The operand that genuinely needs
+compensation is the DENOMINATOR, and it gets it in fp32 — below.
+
+`state_plane_elems<BC, DV>() = BC * DV` is the element count of ONE plane — no pad,
+which is what makes the swizzle's XOR field legal.
+
+The state's DENOMINATOR, `Smass`, stays fp32 and stays OUT of the planes, in its own
+`[BC]` array: it is the denominator of a ratio, its consumers
+([`mma_tile.md#mass-column`](mma_tile.md#mass-column)) are broadcast-B matvecs no
+`ldmatrix` can serve, and keeping it out is what leaves the planes exactly `BC * DV`
+elements rather than `BC * (DV + 1)`. The carve is therefore `BC*(DV+1)*4` bytes total
+— two bf16 planes (`2 * BC * DV * 2` bytes) plus one fp32 column (`BC * 4` bytes) —
+where a single fp32-resident state with a bank-decorrelation pad cost `BC*(DV+4)*4`:
+the `+4` pad existed to decorrelate banks for a SCALAR fragment map (`k = k0 + 2r`
+collided up to four ways at a row extent of `DV`, a multiple of 32), and the planes
+need no such pad because they are read by `ldmatrix` under a swizzle instead.
+
+**The state planes answer the same four questions [`#stage-layout`](#stage-layout)
+answers for `Vw`, at the state's shape, plus one more for the fold's paired access:**
+
+1. **`stage_offset_matches_cute<BC,DV>()`** — the closed-form address IS CuTe's layout.
+2. **`stage_layout_is_bijection<BC,DV>()`** — the swizzled layout tiles `[0, BC*DV)`
+   exactly.
+3. **`stage_ldsm_banks_ok<BC,DV>()`** — GEMM 1's `ldmatrix.x2.trans` fetch is
+   conflict-free and 16-byte aligned.
+4. **`stage_pair_banks_ok<BC,DV>()`** — PROOF 4, new for the state: a CHANNEL PAIR
+   (`(i, c)` and `(i, c+1)` for even `c`) is one 32-bit word of one plane, and every
+   paired access is conflict-free. The swizzle XORs bit 3 and above of the column, so
+   it cannot separate an even/odd pair — the two elements stay adjacent under the
+   swizzle exactly as they are unswizzled. This enumerates the two access patterns
+   that read or write a pair at once — the fold's `(g = lane >> 2, r = lane & 3)` map
+   at every column tile, and the flat pair loops the entry-state staging and the
+   exit-state publication both run — and requires 32 distinct banks in each. It is
+   what keeps the fold's read-modify-write at two loads and two stores per row rather
+   than four.
+5. **`stage_store_banks_ok<BC,DV>()`** — the entry-state staging store into `Shi`/`Slo`
+   is conflict-free.
+
+`merge_bf16x2` is `split_bf16x2`'s inverse (`mma_tile.md#split-bf16x2`): the two
+planes' words read back as the fp32 pair they were split from, to ~16 mantissa bits.
+It is the ONE place a plane pair is read as a NUMBER rather than as an MMA operand —
+the fold's read half and the entry/exit publication's, never the readout, whose B
+operand is `Shi` alone
+([`consumer_kernel.md#gemm-readout`](consumer_kernel.md#gemm-readout)). `state_pair`
+/ `state_pair_load` address a channel pair as one 32-bit word (`unsigned&` / `unsigned`
+respectively) for exactly this reconstruction and for the fold's writeback.
+
+Accumulation is unmoved by any of this: the fold reads the pair, sums in fp32
+registers, and splits back to `Shi`/`Slo` at the one writeback — the semantic change
+is the state's own STORAGE precision between visits, not what it accumulates in
+([`docs/architecture/fp32-accumulators.md`](../architecture/fp32-accumulators.md)
+distinguishes the two and is the authority on which is which).
 
 ---
 

@@ -15,6 +15,27 @@ that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An
 accumulator that is 1 ULP wrong **embeds** that error and carries it forward for
 the lifetime of the state.
 
+## A COMPENSATED PAIR is not a plain narrowing, and the two are governed separately
+
+The consumer kernel's resident state is, as of P40, two bf16 planes (`Shi`, a value's
+bf16 rounding, and `Slo`, its residual) rather than one fp32 plane
+([`docs/internals/smem_layout.md#state-planes`](../internals/smem_layout.md#state-planes)).
+This is NOT the single-narrowing "bf16 resident state" the measured reason below
+refuses: that proposal halved the state's footprint (one bf16 plane at 2 bytes/element
+against fp32's 4) to buy a larger `BC`. The plane pair costs the SAME bytes per
+element as the fp32 form it replaced (two bf16 words = 4 bytes = one fp32 word) and
+was built for a different reason entirely — an `ldmatrix`-fetchable B operand for
+GEMM 1 — so it does not touch the tradeoff this document's measurement declined.
+
+The ACCUMULATION/STORAGE split above still applies, and still governs the plane
+form: the fold's read-modify-write reads the pair, sums in fp32 registers, and splits
+back to `Shi`/`Slo` at its one writeback — the accumulator stays fp32, exactly as this
+ruling requires. What changed is the state's STORAGE precision between accumulation
+events (fp32-equivalent ~24 mantissa bits, narrowed to a compensated pair carrying
+~16), which is a live axis under this document's own table and has not yet been run
+against the `sqrt(T)`-walk gate this page specifies. A plain single-narrowing bf16
+state remains refused for the reason measured below.
+
 ## The measured reason
 
 A bf16 resident state — halving the state's shared-memory footprint — is
