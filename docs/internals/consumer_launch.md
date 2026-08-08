@@ -100,7 +100,8 @@ Three steps, in this order, unchanged from the pre-shard dispatch:
    static limit — a property of the KERNEL, so it happens before the grid is looked
    at;
 2. return if the grid is empty (`p.n_owners == 0`);
-3. launch `<<<p.n_owners, kConsumerThreads, smem, stream>>>`.
+3. launch `<<<p.n_owners, arm_threads<BC, DV>, smem, stream>>>` — the CTA is the
+   arm's own carve ([`smem_layout.md#carve`](smem_layout.md#carve)).
 
 ## <a id="residency"></a>5. The residency query, instantiated for every arm
 

@@ -39,10 +39,32 @@ schedule, §5 consumer, §6.4 sequence parallelism, §7.4.1 the decay lowering.
 
 ---
 
+## <a id="carve"></a>0. The carve — the kernel's third structural axis
+
+`consumer_forward_kernel<BC, DV, D, DECAY, GL, GC>` is general over the WARP GRID.
+`GL x GC` — leaf groups by channel groups — is a template axis like every other, and
+nothing in the body assumes a corner of the space: the entry read, the decay entry
+scale, the value fragment, the readout, the fold, the intra term, the split-K emission
+and both exit publications all index the warp's TUPLE
+(`warp % GC` = channel group, `warp / GC` = leaf group).
+
+Each stream is PARTITIONED along one axis and shared along the other, and that is what
+makes the grid a partition rather than a relabelling:
+
+| stream | indexed by | partitioned across | shared within |
+|---|---|---|---|
+| state `St`, read panel `Rp`, write panel `Wp`, the schedule's atom masks | LEAVES | leaf groups | a leaf group's channel row |
+| value tile `Vp` | CHANNELS | channel groups | a channel group's leaf column |
+| Gram `Gm`, the mass column, the decay clock | TOKENS | neither — CTA-global | the CTA |
+
+The arithmetic each axis buys, the two structural ceilings and the shipped policy
+point: [`smem_layout.md#carve`](smem_layout.md#carve).
+
 ## <a id="orientation"></a>1. Orientation — what the kernel does, in the order it does it
 
-One CTA per `(owner, segment)` work item, `kConsumerThreads == 256` threads (8 warps),
-run to completion. The owner's state block lives in SHARED memory for the CTA's whole
+One CTA per `(owner, segment)` work item, `32 * GL * GC` threads — the CTA is exactly
+the warp carve ([`smem_layout.md#carve`](smem_layout.md#carve)), 4 warps at the
+flagship — run to completion. The owner's state block lives in SHARED memory for the CTA's whole
 life, is read from HBM ONCE at entry and written ONCE at exit.
 
 **Per CTA, once:**
@@ -149,7 +171,9 @@ Three facts a reader must not miss:
 | `W` | `window_groups(GT) = GT / kGroupTokens` — how many groups one VISIT consumes against one entry state ([`smem_layout.md#window`](smem_layout.md#window)) |
 | `QPO` / `kQPO` | atoms per owner, `BC / kMmaKQuantum`. An ATOM is one `kMmaKQuantum`-leaf block in canonical leaf order, and also §4.5's page granule |
 | `NT_DV` | `DV / 8` — the `n8` column tiles of a `DV`-wide output |
-| `kWarps` | `8` — `kConsumerThreads / 32` |
+| `kWarps` | `GL * GC` — the carve's own size, and the CTA's width in warps |
+| `GL`, `GC` | the CARVE: leaf groups by channel groups. A warp owns `BC/GL` leaves and `DV/GC` channels ([`smem_layout.md#carve`](smem_layout.md#carve)) |
+| `kAPW`, `kMTW` | the warp's tuple in tiles: `QPO/GL` atoms by `DV/(GC*16)` channel tiles |
 | `kFullMask` | the atom masks' FULL value, `(1u << kQPO) - 1u` (or all-ones past 32 atoms). `mask == kFullMask` selects the statically-unrolled dense arm |
 | `Shi`, `Slo` | the state's NUMERATOR, two bf16 SMEM planes, each `[BC][DV]`, resident for the owner's whole run — a value's bf16 rounding (`Shi`) and its residual (`Slo`) ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) |
 | `Smass` | the state's DENOMINATOR column, `[BC]` fp32 SMEM, OUT of the planes ([`smem_layout.md#state-planes`](smem_layout.md#state-planes)) |
@@ -328,9 +352,8 @@ drives branches that are structure, never a distributional property.
 base + (i / stride) % modulus` is a runtime integer division and modulo — hardware has
 no integer divide, so each is a multi-instruction sequence — and it depends on none of
 the group, the token or the side, only on `(level, owner, leaf)`. Computed once per
-CTA it costs `D * BC` evaluations for the owner's whole run (`D * BC <= 4 * 64 = 256 ==
-kConsumerThreads`, at most one iteration per thread) rather than once per (group,
-token, leaf, level).
+CTA it costs `D * BC` evaluations for the owner's whole run (`D * BC <= 4 * 64 = 256`,
+spread over the CTA's threads) rather than once per (group, token, leaf, level).
 
 Under `DECAY`, §12 rule 2's per-leaf log-retention runs once per owner, in log space:
 `rate[i] = prod_l dial_l[level_row_offset[l] + leaf_digit(l, base[l], i)]`,
@@ -356,8 +379,8 @@ GROUP DESCRIPTOR into [the schedule ring](#sched-ring) — once, for every consu
 
 The cook happens ONCE PER OWNER's group, not once per warp. The scan's result — which
 tokens the group gathers, which atoms are live on each side — is a fact of the owner
-and the group alone; every one of the CTA's 8 warps would derive the identical
-`rmask`/`wmask`/`t_idx` from the identical inputs, so computing it 8 times is redundant
+and the group alone; every one of the CTA's warps would derive the identical
+`rmask`/`wmask`/`t_idx` from the identical inputs, so computing it per warp is redundant
 ISSUE, not redundant latency. That distinction is the whole rationale: a prefetch that
 buys stall movement with instructions loses on this kernel (the standing P11 verdict,
 and the rule the [amplitude prefetch](#prefetch) was built to respect), so the win

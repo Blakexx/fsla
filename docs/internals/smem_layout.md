@@ -161,6 +161,66 @@ what keeps the closed form honest to it.
 
 # Part I — the compile-time budget
 
+## <a id="carve"></a>3.5. The carve — `GL x GC`, the warp grid the CTA is cut to
+
+The consumer's warps are laid out on a TWO-DIMENSIONAL GRID: `GL` LEAF GROUPS by `GC`
+CHANNEL GROUPS. A warp owns the TUPLE — `BC / GL` leaves (a whole number of ATOMS) by
+`DV / GC` channels (a whole number of 16-channel TILES) — and **the CTA is exactly the
+carve**, `kWarps == GL * GC` threads/32, so no warp carries a share of the staging
+while owning no state.
+
+Both axes are template parameters of `consumer_forward_kernel`. Neither is a corner
+case in the kernel body: the readout, the fold, the intra term, the value fragment,
+the entry read, the emission and both publications all index the tuple.
+
+### <a id="state-residency"></a>What each axis buys, and they are not the same currency
+
+| axis | what it sets | arithmetic |
+|---|---|---|
+| `GC` | **ILP** — independent accumulators per warp | `DV / (GC * 8)`: the warp holds `DV/(GC*16)` channel tiles and the group's 16 tokens are 2 `n8` tiles, and every one of those products is a separate D fragment |
+| `GC` | **operand delivery** | one B fragment feeds all `DV/(GC*8)` multiplies of a k-step, in the readout and in the fold alike |
+| `GL` | **dependent chain length** | `BC / (GL * 16)`: the readout contracts over the warp's own atoms, and that k-loop is the only dependency in it |
+| `GL` | **accumulator replication and atomic fan-in** | each of the `GL` warps of a channel group holds a PARTIAL `y` over its own leaves, and the split-K emission sums them with `atomicAdd`: fan-in is exactly `GL` |
+
+The state's register cost is INVARIANT to the factorization —
+`(BC/GL) * (DV/GC) / 32 = BC * DV / (32 * kWarps)` — but the ACCUMULATOR's is not:
+`y` costs `16 * (DV/GC) / 32` per lane and replicates `GL` times across the CTA. So
+the carve trades operand-delivery INSTRUCTIONS against accumulator REGISTERS, which is
+the whole design space.
+
+### The two structural ceilings
+
+```
+GL <= BC / kMmaKQuantum      // a leaf group is a whole number of ATOMS
+GC <= DV / kMmaKQuantum      // a channel group is a whole number of CHANNEL TILES
+```
+
+The leaf ceiling is the fold's `m`-quantum: `S += W^T . Vw` has `m` = leaves. The
+channel ceiling is the STATE's `m`-quantum — a warp holds all 16 `m` rows of a D
+fragment across its lanes, so it cannot own half a channel tile. **`GC <= DV / 8` is
+the wrong ceiling**: the `n8` quantum belongs to the readout's TOKEN axis, not to the
+channel axis, which is why `DV = 64` admits `GC <= 4` and not `GC <= 8`.
+
+### The shipped point: leaf-first
+
+`carve_leaf_groups` takes the leaf axis first, capped by the atom count, and
+`carve_chan_groups` takes what is left of `kCarveWarps`, capped by the channel-tile
+count. Leaf-first because cutting leaves is what SHORTENS the chain, and what is left
+on the channel axis is what maximises the independent accumulator count. An arm whose
+axes do not cut that far runs a NARROWER CTA rather than idle warps:
+
+| arm | `GL` | `GC` | warps | chains | chain length |
+|---|---:|---:|---:|---:|---:|
+| `BC=64, DV=64` | 4 | 1 | 4 | 8 | 1 |
+| `BC=64, DV=32` | 4 | 1 | 4 | 4 | 1 |
+| `BC=16, DV=64` | 1 | 4 | 4 | 2 | 1 |
+| `BC=16, DV=32` | 1 | 2 | 2 | 2 | 1 |
+
+`ROLA_CARVE_GL` / `ROLA_CARVE_GC` override the policy for a PROBE COMPILE, clamped to
+the same two ceilings so every arm of the matrix stays legal. They are a measurement
+instrument on `ROLA_FORCE_CTAS`'s rule ([`consumer_kernel.md#force-ctas`](consumer_kernel.md#force-ctas))
+and never a shipping knob.
+
 ## <a id="reg-budget"></a>4. `consumer_reg_budget` — a MEASURED kernel fact, not an architecture fact and not a threshold
 
 ```
@@ -169,57 +229,51 @@ consumer_reg_budget(BC, decay, DV, D) = 128
 
 It is ONE number for every key, and the reason it is flat is the reason it is a
 measurement rather than a dial: **the budget's only channel to codegen is the CTA count
-in `__launch_bounds__`.** `ptxas` is given `regs_per_sm / (kConsumerThreads * CTAs)`
-registers, so the reachable allocations on a 65,536-register SM at 256 threads are the
-four the divisor admits — and the spill-vs-budget curve HAS NO INTERIOR POINT. Measured
-on the flagship entry `consumer_forward_kernel<64, 64, 2, false>`, single translation
-unit, `ptxas -v`, the census instrument `-DROLA_FORCE_CTAS=N` supplying the bound:
+in `__launch_bounds__`.** `ptxas` is given `regs_per_sm / (threads * CTAs)` registers,
+so the reachable allocations on a 65,536-register SM are the handful the divisor
+admits — and the spill-vs-budget curve HAS NO INTERIOR POINT.
 
-| CTAs | the budgets that yield it | regs/thread `ptxas` takes | spill stores | spill loads |
-|---:|---|---:|---:|---:|
-| 4 | <= 64 | 64 | 144 | 336 |
-| 3 | 65..85 | 80 | 52 | 140 |
-| 2 | 86..128 | 121 | 0 | 0 |
-| 1 | >= 129 | 120 | 0 | 0 |
+**WHAT THE BUDGET BINDS IS THE REGISTER-BOUND ARMS.** The matrix splits in two under
+the carve, and the budget means something different on each side:
 
-**The kernel's true register working set is 121.** At three CTAs the cap is 85 and the
-allocator spills 52/140 bytes to reach it; at two it spills nothing, and a fourth
-budget rung buys nothing beyond the second. `128` is the smallest clean value that
-yields the two-CTA bound, and it is what ships. Every parameter is accepted and
-ignored (`(void)BC;` and the rest), stated explicitly rather than silently dropped: no
-axis of the matrix moves the working set enough to change which rung it lands on.
+* the `BC = 64` arms are SHARED-MEMORY bound at 2 CTAs/SM, so `ptxas` is handed
+  `65536 / (128 * 2) = 256` registers and allocates what the visit body needs;
+* the `BC = 16` arms reach 3–5 CTAs/SM, where the budget is what holds the allocation
+  to `65536 / (threads * CTAs)` — and it is the value that keeps them there without
+  spilling.
 
-**What the third CTA was costing, and what its shared memory bought.** Dropping to two
-CTAs frees roughly 20 KB of shared memory per CTA that the residency arithmetic was
-holding back. A quarter of it pays for [the visit scratch's parity pair](../internals/consumer_kernel.md#visit-parity),
-which is what deletes the end-of-visit rendezvous; the rest goes to
-[staging depth](#pf-stages), which rises on every arm in the matrix (`S = 3 -> 4` at the
-flagship, matrix minimum 3). The occupancy loss and the register/barrier/depth gain are
-one decision, and the acceptance measurement is what adjudicates it — this budget is
-not a free raise and is not recorded as one.
+Measured over all 32 instantiations, single translation unit, `ptxas -v`, at the
+shipped launch bound: **allocation 107..194 registers per lane, ZERO spill bytes on
+every arm.** Raising the budget to the largest of those would buy nothing (the
+`BC = 64` arms are not register-bound) and would cost the `BC = 16` arms their third
+and fourth CTA.
+
+Every parameter is accepted and ignored (`(void)BC;` and the rest), stated explicitly
+rather than silently dropped: no axis of the matrix moves the working set enough to
+change which rung it lands on.
 
 Reproduce with `python tools/ratify.py --census`, which compiles the shipped
 instantiation shards and reports per structural key; if the kernel's inner loop
 changes, re-run it and update this table, not prose about it. The per-arm SPILL RATCHET
-lives in `tools/manifests/sm_{80,86}.json` and is a ratchet rather than a spill ban: at
-this budget every consumer arm holds zero spill bytes except
-`<64, 64, 4, true>`, the widest decay carve, which holds 4/4.
+lives in `tools/manifests/sm_{80,86}.json` and is a ratchet rather than a spill ban.
 
 ## <a id="residency"></a>5. `ctas_for_residency` and the launch bound
 
 ```
-ctas_for_residency(smem, reg_budget) = min(by_smem, by_threads, by_regs)
+ctas_for_residency(smem, reg_budget, threads) = min(by_smem, by_threads, by_regs)
   by_smem    = kSm.smem_per_sm / (smem + kDriverSmemReservePerCta)
-  by_threads = kSm.max_threads_per_sm / kConsumerThreads     // kConsumerThreads == 256
-  by_regs    = kSm.regs_per_sm / (kConsumerThreads * reg_budget)
+  by_threads = kSm.max_threads_per_sm / threads
+  by_regs    = kSm.regs_per_sm / (threads * reg_budget)
 ```
 
 CTAs/SM to STATE IN THE LAUNCH BOUND — the smallest of what the three hardware
-resources admit, computed per instantiation rather than fixed. All three terms are
-load-bearing: `ptxas` does not CLAMP an out-of-range `__launch_bounds__` argument, it
-DISCARDS it, so a missing thread term is silent everywhere the smem term alone would
-claim more CTAs than 256-wide blocks fit; and a missing register term buys the extra
-CTAs the other two terms admit by SPILLING rather than by residency.
+resources admit, computed per instantiation rather than fixed. **`threads` is an
+ARGUMENT because the CTA's width is a per-arm fact**: it is `32 * GL * GC`, the carve's
+own size ([above](#carve)). All three terms are load-bearing: `ptxas` does not CLAMP an
+out-of-range `__launch_bounds__` argument, it DISCARDS it, so a missing thread term is
+silent everywhere the smem term alone would claim more CTAs than the block width fits;
+and a missing register term buys the extra CTAs the other two terms admit by SPILLING
+rather than by residency.
 
 `kSm` is the arch table's per-architecture row ([`arch_table.md#sm-resources`](arch_table.md#sm-resources));
 on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_sm =
@@ -228,27 +282,26 @@ on sm86/87/89 it is `{smem_per_sm = 102400, max_threads_per_sm = 1536, regs_per_
 every one is the formula evaluated:
 
 ```
-BC=16, DV=32, D=1, DECAY=false          smem = 17,008 B  reg_budget = 128
+BC=16, DV=32, D=1, DECAY=false     smem = 17,008 B  budget = 128  threads = 64
   by_smem    = 102400 / (17008 + 1024) = 5
-  by_threads = 1536 / 256              = 6
-  by_regs    = 65536 / (256 * 128)     = 2
-  ctas_for_residency = min(5, 6, 2) = 2
+  by_threads = 1536 / 64               = 24
+  by_regs    = 65536 / (64 * 128)      = 8
+  ctas_for_residency = min(5, 24, 8) = 5
 
-BC=64, DV=64, D=2, DECAY=true           smem = 49,920 B  reg_budget = 128
-  by_smem    = 102400 / (49920 + 1024) = 2
-  by_threads = 1536 / 256              = 6
-  by_regs    = 65536 / (256 * 128)     = 2
-  ctas_for_residency = min(2, 6, 2) = 2
+BC=64, DV=64, D=2, DECAY=false     smem = 44,544 B  budget = 128  threads = 128
+  by_smem    = 102400 / (44544 + 1024) = 2
+  by_threads = 1536 / 128              = 12
+  by_regs    = 65536 / (128 * 128)     = 4
+  ctas_for_residency = min(2, 12, 4) = 2
 ```
 
-At `BC = 16` the REGISTER term binds and the shared-memory term has slack; at
-`BC = 64` the two agree exactly, which is not a coincidence — the depth derivation
-spends shared memory until the carve's CTA count falls to the register term's, so the
-two rails meet by construction ([`pf_stages`](#pf-stages)). The thread term never
-binds at 256-wide blocks, and it is still load-bearing: `ptxas` DISCARDS an
-out-of-range `__launch_bounds__` rather than clamping it, so a missing thread term is
-silent everywhere the shared-memory term alone would claim more CTAs than 256-wide
-blocks fit.
+**AT `BC = 64` SHARED MEMORY BINDS, AND IT BINDS ALONE.** This is the consequence of
+the carve that a warp-count argument does not predict: per-CTA shared memory does not
+shrink when the CTA has fewer warps — the carve is per CTA — so halving the warps
+halves the per-CTA REGISTER demand and leaves the shared-memory demand untouched.
+Residency stays at 2 and resident WARPS per SM therefore halve with the warp count.
+Reaching 3 CTAs at this arm would need the footprint under 33,109 B, which is `S = 2`;
+the depth is not spent that way ([`pf_stages`](#pf-stages)).
 
 This is stamped into `__launch_bounds__` (`ROLA_CONSUMER_CTAS_EXPR` in
 `consumer_kernel.cuh`) rather than left to the compiler: meeting the shared-memory
@@ -259,6 +312,33 @@ would otherwise admit. Told the real target, `ptxas` re-schedules to fit it. The
 replaces this whole expression with a fixed literal for exactly one purpose: censusing
 a candidate register budget over the dispatch matrix without touching the shipped
 formula.
+
+## <a id="pf-stages"></a>6. `pf_stages` — the VRAM -> SMEM pipeline's depth
+
+```
+pf_stages<BC, DV, D, DECAY>() = the deepest S <= kPfStagesMax whose carve still
+                                admits kMinResidentCtas CTAs, floor 2
+```
+
+**DEPTH IS BOUNDED BY CAPACITY, NEVER BY STRUCTURE.** Every stream the visit
+progressively consumes rides one `cp.async` pipeline of `S` buffers, so `S` buffers is
+`S` visits of runahead.
+
+Two constants bound the search and each is structural:
+
+* **the floor is 2, and it is the shallowest LEGAL depth.** The one-barrier visit's
+  `static_assert(S >= 2)` refuses depth 1 outright — the stage waited on at the panel
+  barrier and the stage refilled just after it would be the same buffer — so depth 1
+  is not a configuration this kernel has, and cannot be the residency a depth is
+  compared against.
+* **`kMinResidentCtas = 2` is where the depth/occupancy trade stops being one.** Depth
+  and CTA count both buy latency hiding out of the same shared memory. At one CTA per
+  SM the visit's CTA-wide barrier has no sibling CTA to overlap with and the SM idles
+  across it, so a depth bought past that point is bought with the thing it was meant
+  to provide.
+
+At the flagship (`BC=64, DV=64, D=2, nodecay`) this yields `S = 4` at 2 CTAs/SM; the
+widest decay carves fall to `S = 3` rather than take a CTA below the floor.
 
 ---
 

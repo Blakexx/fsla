@@ -121,7 +121,7 @@ things pin it:
 
 1. at `d_v = 64` it is exactly two columns per lane, with 128 B coalesced row
    loads;
-2. it matches the tiled consumer's `kConsumerThreads`, so the two agree on a
+2. it is a whole number of the consumer's widest CTA, so the two agree on a
    block size;
 3. 6 CTAs of 256 fill sm_86's 1536-thread limit exactly.
 

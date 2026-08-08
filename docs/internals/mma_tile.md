@@ -281,6 +281,32 @@ matvec into an `n8` MMA tile instead of wasting seven eighths of one:
 Output column `0` (lanes with `r == 0`) carries the matvec, rows `g` and `g + 8`: the
 split-K emission reads both forms back at exactly that slot.
 
+### <a id="gemm-readout"></a><a id="gemm-fold"></a><a id="gemm-intra"></a>The three carve-shaped sequences
+
+The readout, the fold and the intra term all take the same shape under the carve
+([`smem_layout.md#carve`](smem_layout.md#carve)): **one B fragment, `MT` independent
+`mma.sync`.** `MT = kMTW = DV / (GC * 16)` is the channel tiles the warp owns, and the
+A operands — the state's own D fragments for the readout, the value tile for the other
+two — are per channel tile and already in registers. So the operand traffic is
+amortised over `MT` multiplies and there is NO dependency between any two of them.
+
+- `mma_readout_tiles<MT, KS, MSTRIDE>` — GEMM 1, `y^T += S^T . Rp`. A is the state,
+  narrowed at the fragment and never loaded, so the k-loop's only memory traffic is
+  the B pair (`Rp` at token tiles 0 and 8). Each k-step issues `2 * MT` multiplies into
+  `2 * MT` accumulators against that one pair. The ONLY dependent chain is the k-loop,
+  `KS = kAPW = QPO / GL` long, and it rides the
+  [two-stage pipeline](#two-stage-pipeline). `MSTRIDE` differs from `KS` only for the
+  sparse arm, which walks one atom of the wider `[MT][kAPW]` register plane.
+- `mma_fold_tiles<MT, APW>` — GEMM 4, `S^T += Vp . Wp`, accumulating IN PLACE into the
+  state's D fragments. A pure B walk along `Wp`'s leaf axis, `2 * APW` 8-leaf tiles,
+  each feeding `MT` multiplies. The atom skip rides the two-stage chain: a dead atom's
+  fetch is not issued either.
+- `mma_intra_tiles<MT>` — GEMM 3, `y^T += Vp . G^T`, for ONE token tile. `own` is the
+  warp's share of the `[MT][2]` item grid as a bitmask over channel tiles: the intra
+  term contracts over TOKENS, so each item belongs to exactly one of the `GL` warps
+  holding that channel tile's `y` and the rest carry only their readout partial. One
+  `ldmatrix` of `Gm` serves every item the warp owns at that token tile.
+
 ### <a id="gemm-assemblies"></a>The GEMM assemblies
 
 - `mma_fold_tile` — GEMM 4, both operands `ldmatrix`-fetched: A = `WT` (`.N`), B =
