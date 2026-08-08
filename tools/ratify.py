@@ -341,7 +341,7 @@ OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of ra
 #: so this is the ONE place a key is turned back into a shape; the census's
 #: per-key grouping and the hot-loop gate's reporting both go through it.
 CONSUMER_TPL = re.compile(
-    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)ELi(\d+)E")
+    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -350,7 +350,7 @@ def parse_shape(mangled: str) -> dict | None:
     if not m:
         return None
     return dict(BC=int(m.group(1)), DV=int(m.group(2)), D=int(m.group(3)),
-                decay=m.group(4) == "1", GT=int(m.group(5)))
+                decay=m.group(4) == "1")
 
 
 def shard_of_key(mangled: str) -> str:
@@ -369,7 +369,7 @@ def shard_of_key(mangled: str) -> str:
                 return Path(tu).stem
         return "?"
     return gen_shards.shard_of(dict(BC=shape["BC"], DV=shape["DV"], D=shape["D"],
-                                    DECAY=shape["decay"], GT=shape["GT"]))
+                                    DECAY=shape["decay"]))
 
 
 def shard_field(entries: dict) -> dict[str, str]:

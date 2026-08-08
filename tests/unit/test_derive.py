@@ -20,7 +20,6 @@ from __future__ import annotations
 import pytest
 
 from rola.planner.derive import (
-    MMA_K_QUANTUM,
     WAVES_TARGET,
     MachineFacts,
     box_admitted,
@@ -52,7 +51,7 @@ def _machine(*, sm_count: int = 1, max_dynamic_smem_bytes: int = _OPEN_SMEM,
     #: GROUP-QUANTUM arm (the window is chosen later, from the realized routing), so
     #: a synthetic machine states its carve at that window.
     arms = (carve if carve is not None
-            else {(BC, d_v, D, decay, MMA_K_QUANTUM): 1024 for BC in bcs})
+            else {(BC, d_v, D, decay): 1024 for BC in bcs})
     return MachineFacts(sm_count=sm_count, max_dynamic_smem_bytes=max_dynamic_smem_bytes,
                         arm_smem_bytes=arms)
 
@@ -110,7 +109,7 @@ def test_the_subtree_ceiling_saturates_at_the_smallest_block_below_the_ladder():
 
 
 def test_the_box_admits_exactly_the_arms_whose_carve_plus_rings_fit():
-    carve = {(16, 64, 2, False, MMA_K_QUANTUM): 12000, (64, 64, 2, False, MMA_K_QUANTUM): 32000}
+    carve = {(16, 64, 2, False): 12000, (64, 64, 2, False): 32000}
     assert box_admitted(_machine(carve=carve, max_dynamic_smem_bytes=32000),
                         64, 2, False) == (16, 64)
     assert box_admitted(_machine(carve=carve, max_dynamic_smem_bytes=31999),
@@ -118,13 +117,13 @@ def test_the_box_admits_exactly_the_arms_whose_carve_plus_rings_fit():
 
 
 def test_the_box_binds_the_derivation_when_the_wide_arm_does_not_fit():
-    carve = {(16, 64, 2, False, MMA_K_QUANTUM): 12000, (64, 64, 2, False, MMA_K_QUANTUM): 32000}
+    carve = {(16, 64, 2, False): 12000, (64, 64, 2, False): 32000}
     machine = _machine(carve=carve, max_dynamic_smem_bytes=20000, sm_count=1)
     assert derive_bc(_topology((64, 64)), machine, BH=1024, decay=False) == 16
 
 
 def test_a_machine_that_fits_no_arm_is_a_refusal_and_not_a_smaller_block():
-    machine = _machine(carve={(16, 64, 2, False, MMA_K_QUANTUM): 12000}, max_dynamic_smem_bytes=8000)
+    machine = _machine(carve={(16, 64, 2, False): 12000}, max_dynamic_smem_bytes=8000)
     with pytest.raises(ValueError, match="no compiled arm fits shared memory"):
         box_admitted(machine, 64, 2, False)
     with pytest.raises(ValueError, match="no compiled arm fits shared memory"):
@@ -133,8 +132,8 @@ def test_a_machine_that_fits_no_arm_is_a_refusal_and_not_a_smaller_block():
 
 def test_the_box_keys_on_the_arm_and_not_only_on_bc():
     """A decay arm's carve is its own; asking for the wrong one is not a near miss."""
-    carve = {(16, 64, 2, False, MMA_K_QUANTUM): 12000, (64, 64, 2, False, MMA_K_QUANTUM): 12000,
-             (16, 64, 2, True, MMA_K_QUANTUM): 12000}
+    carve = {(16, 64, 2, False): 12000, (64, 64, 2, False): 12000,
+             (16, 64, 2, True): 12000}
     machine = _machine(carve=carve, max_dynamic_smem_bytes=12000)
     assert box_admitted(machine, 64, 2, False) == (16, 64)
     assert box_admitted(machine, 64, 2, True) == (16,)
@@ -159,15 +158,8 @@ def test_the_box_arithmetic_holds_against_the_binarys_own_carve():
     assert machine.arm_smem_bytes, "the binary carries no arms to price"
     for row in table.rows:
         assert machine.arm_smem_bytes[row.key] == row.smem_bytes
-        #: THE BOX PRICES THE GROUP-QUANTUM ARM. `derive_bc` runs before a schedule
-        #: exists, so it cannot know the window -- the window is chosen afterwards,
-        #: from the realized routing, and `select_window` applies the SAME admission
-        #: to the wider arm before selecting it. So the box's claim is asked of the
-        #: `GT == 16` rows, and every row (wide included) is still checked against
-        #: its own per-row predicate, which is the inequality the launch enforces.
-        if row.GT == MMA_K_QUANTUM:
-            admitted = row.BC in box_admitted(machine, row.DV, row.D, row.decay)
-            assert admitted == (row.smem_bytes <= machine.max_dynamic_smem_bytes)
+        admitted = row.BC in box_admitted(machine, row.DV, row.D, row.decay)
+        assert admitted == (row.smem_bytes <= machine.max_dynamic_smem_bytes)
         assert (row.admitted_by(machine.max_dynamic_smem_bytes)
                 == (row.smem_bytes <= machine.max_dynamic_smem_bytes))
 
@@ -224,7 +216,7 @@ def test_the_derivation_takes_the_minimum_of_the_three_ceilings():
 
     narrow = _topology((64, 64, 16))                      # subtree ceiling 16
     assert derive_bc(narrow, _machine(sm_count=1, D=3), BH=1024, decay=False) == 16
-    boxed = _machine(sm_count=1, carve={(16, 64, 2, False, MMA_K_QUANTUM): 1, (64, 64, 2, False, MMA_K_QUANTUM): 1 << 20},
+    boxed = _machine(sm_count=1, carve={(16, 64, 2, False): 1, (64, 64, 2, False): 1 << 20},
                      max_dynamic_smem_bytes=1024)
     assert derive_bc(topology, boxed, BH=1024, decay=False) == 16
     assert derive_bc(topology, _machine(sm_count=80), BH=1, decay=False) == 16

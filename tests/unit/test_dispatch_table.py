@@ -89,7 +89,7 @@ def test_the_table_and_the_binary_carry_exactly_the_same_arms():
 
     table = _table()
     from_table = {gen_shards.canonical(
-        dict(BC=r.BC, DV=r.DV, D=r.D, DECAY=r.decay, GT=r.GT)) for r in table.rows}
+        dict(BC=r.BC, DV=r.DV, D=r.D, DECAY=r.decay)) for r in table.rows}
 
     for arch, in_binary in sorted(per_arch.items()):
         assert from_table == in_binary, (
@@ -109,7 +109,7 @@ def test_every_table_row_names_the_shard_that_defines_it():
 
     for row in _table().rows:
         want = gen_shards.shard_of(
-            dict(BC=row.BC, DV=row.DV, D=row.D, DECAY=row.decay, GT=row.GT))
+            dict(BC=row.BC, DV=row.DV, D=row.D, DECAY=row.decay))
         assert row.shard == want, f"{row.key} claims shard {row.shard}, membership says {want}"
 
 
@@ -153,7 +153,7 @@ def test_a_row_whose_shard_membership_moved_is_filtered_not_used():
 
     gone = next(r for r in live.rows if r.shard == victim)
     with pytest.raises(KeyError):
-        table.resolve(gone.BC, gone.DV, gone.D, gone.decay, gone.GT)
+        table.resolve(gone.BC, gone.DV, gone.D, gone.decay)
 
 
 def test_an_unrecorded_shard_is_filtered_with_its_own_reason():
