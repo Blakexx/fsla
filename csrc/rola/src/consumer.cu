@@ -249,8 +249,8 @@ void launch_consumer(const ConsumerParams& p, int BC, int DV, bool decay) {
   //: THE FULL PLAN SURFACE, and the single authority for it. These are the planner's
   //: own supported sets, so no shape a plan can select is refused and no shape it
   //: cannot select is compiled: docs/internals/consumer.md#plan-surface
-  TORCH_CHECK((BC == 16 || BC == 64) && (DV == 32 || DV == 64),
-              "the consumer instantiates BC in {16, 64}, d_v in {32, 64}; got BC=", BC,
+  TORCH_CHECK((BC == 16 || BC == 64 || BC == 128 || BC == 256) && (DV == 32 || DV == 64),
+              "the consumer instantiates BC in {16, 64, 128, 256}, d_v in {32, 64}; got BC=", BC,
               " d_v=", DV);
 
   TORCH_CHECK(p.D >= 1 && p.D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", p.D);
@@ -293,7 +293,7 @@ const ShardRow& query_row(bool decay, int64_t BC, int64_t DV, int64_t D) {
   const ShardRow* row = dispatch_row(
       DispatchChoice{static_cast<int>(BC), static_cast<int>(DV), static_cast<int>(D), decay});
   TORCH_CHECK(row != nullptr, "no consumer instantiation to query at BC=", BC, " d_v=", DV,
-              " D=", D, ": the matrix carries BC in {16, 64} and d_v in {32, 64}");
+              " D=", D, ": the matrix carries BC in {16, 64, 128, 256} and d_v in {32, 64}");
   return *row;
 }
 

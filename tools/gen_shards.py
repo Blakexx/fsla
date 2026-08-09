@@ -86,7 +86,7 @@ def _b(v):
 #: fixed MMA quantum; bf16 is the only storage format; raw normalization is
 #: deleted -- revival = git), so the matrix is exactly the four axes below.
 AXES = (
-    Axis("BC", (16, 64), str, lambda v: f"bc{v}", str),
+    Axis("BC", (16, 64, 128, 256), str, lambda v: f"bc{v}", str),
     Axis("DV", (32, 64), str, lambda v: f"dv{v}", str),
     Axis("D", (1, 2, 3, 4), str, lambda v: f"d{v}", str),
     Axis("DECAY", (False, True), _b, lambda v: "decay" if v else "nodecay", None),

@@ -51,7 +51,7 @@ GROUP_TOKENS = MMA_K_QUANTUM
 #: and a mirror needs a gate: ``tests/unit/test_dispatch_table.py`` pins this tuple to
 #: the table's own axis values, read off the built binary. The runtime derivation reads
 #: the table itself and never this tuple.
-SUPPORTED_BC = (16, 64)
+SUPPORTED_BC = (16, 64, 128, 256)
 
 #: How many waves of CTAs the grid must supply before a larger block is preferred.
 #:
@@ -117,14 +117,21 @@ class MachineFacts:
 
         ext = extension()
         table = DispatchTable.from_extension(ext=ext, ratified_keys=BUILD_CONFIG.get("shards"))
+        budget = int(ext.rola_max_dynamic_smem_bytes())
         return cls(
             sm_count=torch.cuda.get_device_properties(torch.device(device)).multi_processor_count,
-            max_dynamic_smem_bytes=int(ext.rola_max_dynamic_smem_bytes()),
+            max_dynamic_smem_bytes=budget,
             arm_smem_bytes={row.key: int(row.smem_bytes) for row in table.rows},
+            #: THE RESIDENCY COLUMN COVERS THE SELECTABLE ROWS ONLY. An arm whose carve
+            #: exceeds this device's per-block grant cannot be launched here at all --
+            #: `box_admitted` refuses it before any ceiling is evaluated -- and asking
+            #: the driver for the residency of a block it would refuse is answered with
+            #: `cudaErrorInvalidValue`. Querying every row would therefore make
+            #: CONSTRUCTING the facts fail for a geometry nothing was going to select.
             arm_ctas_per_sm={
                 row.key: int(ext.rola_consumer_occupancy(row.key[3], row.key[0], row.key[1],
                                                          row.key[2]))
-                for row in table.rows})
+                for row in table.selectable(budget)})
 
     def compiled_bc(self, d_v: int, D: int, decay: bool) -> tuple[int, ...]:
         """Every ``BC`` this binary carries an arm for at this ``(d_v, D, decay)``."""
