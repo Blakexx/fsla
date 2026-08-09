@@ -137,1473 +137,629 @@ __device__ __forceinline__ int64_t atom_row_base(const ConsumerParams& p, int bh
 template <int BC, int DV, int D, bool DECAY, int GL, int GC>
 __global__ __launch_bounds__(consumer_threads(GL, GC), ROLA_CONSUMER_CTAS_EXPR) void
 consumer_forward_kernel(ConsumerParams p) {
-  constexpr int kConsumerThreads = consumer_threads(GL, GC);
-  //: **THE VRAM -> SMEM PIPELINE'S DEPTH**, in staged visits, derived from this arm's
-  //: own carve: docs/internals/smem_layout.md#pf-stages
-  constexpr int S = pf_stages<BC, DV, D, DECAY>();
-  //: **THE ONE VISIT BARRIER NEEDS TWO STAGES.** The panel barrier publishes the stage
-  //: the NEXT visit consumes, which means the stage waited on at that barrier and the
-  //: stage refilled just after it must be different buffers. Every arm's carve admits
-  //: at least three. docs/internals/consumer_kernel.md#one-barrier
-  static_assert(S >= 2, "the visit's single barrier requires a two-deep staging ring");
-  constexpr int kSlots = sched_slots(S);
-  constexpr int kSchedDepth = sched_depth(S);
-  constexpr int NT = kGroupTokens / 8;  // n8 tiles of one Gram block
-  extern __shared__ char smem_raw[];
+  // ===========================================================================
+  // GUTTED FOR STUDY (learn/consumer-skeleton). This is the body of the ONE
+  // consumer kernel, as a staged specification instead of an implementation.
+  // Every helper above this function, every template/function parameter, and
+  // the surrounding machinery (host dispatch, oracle, launch code) are all
+  // present and untouched -- only the executable body below is gone. Real
+  // implementation: `git diff a7cb0a7 -- csrc/rola/src/consumer_kernel.cuh`.
+  // ===========================================================================
 
-  // ---- THE SMEM CARVE. Every region, its pitch and its measured residency cost:
-  // ---- docs/internals/smem_layout.md#smem-ledger
-  constexpr int CKP = BC + 4;  // clk's row pitch, token-major over the group
-  constexpr int kQPO = BC / kMmaKQuantum;
-  constexpr int kWarps = kConsumerThreads / 32;
-  static_assert(BC % kMmaKQuantum == 0, "BC must be a whole number of MMA k-quanta");
-  //: The atom masks' FULL value: every atom of the owner's slice live this group.
-  //: The CTA-uniform `mask == kFullMask` test is what selects the statically
-  //: unrolled dense arm -- dense inputs pay zero mask instructions.
-  constexpr unsigned kFullMask = (kQPO >= 32) ? 0xffffffffu : ((1u << kQPO) - 1u);
-  //: **THE STATE'S RESIDENCY GEOMETRY -- THE CARVE, IN TILES.** `kMTW` channel tiles
-  //: (the MMA `m` axis) and `kAPW` atoms (the leaf axis) per warp, `kStRegs` fp32
-  //: registers per lane to hold them: docs/internals/smem_layout.md#state-residency
-  constexpr int kMT = state_m_tiles(DV);
-  constexpr int kAPW = state_atoms_per_warp(BC, GL);
-  constexpr int kMTW = state_tiles_per_warp(DV, GC);
-  constexpr int kStRegs = state_regs_per_lane(BC, DV, GL, GC);
-  static_assert(kWarps == GL * GC, "the CTA is exactly the carve: one warp per grid point");
-  static_assert(kAPW * GL == kQPO && kMTW * GC == kMT,
-                "the carve must tile the owner's atoms and the channel axis exactly");
-  static_assert(GL <= carve_leaf_groups_max(BC),
-                "a leaf group is a whole number of ATOMS: the fold's m-quantum is one atom");
-  static_assert(GC <= carve_chan_groups_max(DV),
-                "a channel group is a whole number of CHANNEL TILES: a warp holds all 16 m rows");
-  constexpr int kWpPitch = leaf_pitch(BC);
-  constexpr int kWpElems = kGroupTokens * kWpPitch;
-  constexpr int kVpPitch = val_pitch(DV);
-  //: THE STAGED REGIONS' row pitches and the amplitude slab's 16-byte chunk count,
-  //: compile-time worst cases over the owner rectangle's factorisations:
-  //: docs/internals/smem_layout.md#staged-regions
-  constexpr int kPfPitch = amp_slab_pitch(BC, D);
-  constexpr int kPfChunks = amp_slab_chunks(BC, D);
-  constexpr int kScPitch = scale_slab_pitch(D);
+  // ---------------------------------------------------------------------------
+  // ORIENTATION
+  // ---------------------------------------------------------------------------
+  //
+  // THE RECURRENCE. RoLA's per-leaf state update is a gated linear-attention
+  // recurrence: each leaf carries a state that is written by tokens routed to
+  // it and read back by later tokens through the same routing. Because the
+  // recurrence is INPUT-AFFINE (the update at step u is S <- gate(S) + (rank-1
+  // deposit from token u), never S-dependent in a nonlinear way), the readout at
+  // step t telescopes into a closed form:
+  //
+  //     y_t = R_t . S_entry + sum_{u <= t} (R_t . W_u) . Vw_u
+  //
+  //   R_t   : token t's read-routing row over the owner's BC leaves.
+  //   W_u   : token u's write-routing row over the same BC leaves.
+  //   Vw_u  : token u's value vector, already carrying its write-gate scale.
+  //   S_entry: the state as of the start of the current chunk -- see the
+  //            invariant below.
+  //
+  // Telescoping is what turns an O(T) sequential scan into O(1) state reads
+  // plus a small dense correction: everything before the current chunk is
+  // already folded into S_entry, and only within-chunk causality needs an
+  // explicit u <= t sum.
+  //
+  // WHAT A CTA OWNS. One CTA is permanently bound to one (owner, segment) work
+  // item for its whole life: `owner` names a contiguous block of BC leaves (a
+  // node of the routing tree at a fixed depth), and the CTA's job is to produce
+  // every token's readout against that block and to fold every token's write
+  // into that block's running state. The CTA's warps are laid out on a
+  // `GL x GC` grid -- GL leaf groups by GC channel groups -- so warp (lgrp,
+  // cgrp) owns a contiguous ATOM RANGE of the owner's leaves (an "atom" is one
+  // MMA-k-quantum-sized bundle of leaves) crossed with a contiguous
+  // CHANNEL-TILE RANGE of the value/output dimension. Every stage below that
+  // touches "the state" or "the leaf axis" is implicitly scoped to a warp's own
+  // (leaf range, channel range) tuple; nothing here assumes a corner of that
+  // space (one warp owning every leaf, or every channel).
+  //
+  // THE THREE GEMMS.
+  //   readout  (m = channels, n = tokens,        k = leaves) : y = S^T . R
+  //   fold     (m = leaves,   n = channels,       k = tokens) : S += W^T . Vw
+  //   intra    (m = channels, n = tokens (a),     k = tokens (b), via a small
+  //             leaf-free Gram G[b][a] = W_b . R_a) : y += Vw^T . G
+  // The Gram itself is a fourth, cheap GEMM (leaves contracted out): G[b][a] =
+  // sum_leaves W_b[leaf] * R_a[leaf], masked to token pairs with b <= a.
+  //
+  // THE INVARIANT THAT MAKES IT CORRECT. Tokens are processed in ordered
+  // groups ("chunks" below; the code's unit is `kGroupTokens` tokens per visit
+  // of the main loop). WITHIN one chunk, S is treated as FROZEN at its value
+  // from chunk entry (S_entry) for the whole chunk's readout GEMM -- none of
+  // the chunk's own writes are visible to that GEMM. Causality among the
+  // chunk's own tokens (a write at u <= a read at t, both inside the same
+  // chunk) is instead carried by the intra/Gram term. Only AFTER the whole
+  // chunk's writes are folded does S advance to become the next chunk's
+  // S_entry. Get this backwards -- let a chunk's own writes leak into its own
+  // readout GEMM, or let the Gram cover pairs outside b <= a -- and every
+  // downstream token sees a token that comes after it.
+  //
+  // The stages below are grouped into SETUP (once per CTA), the WALK (once per
+  // chunk, looped until the owner's token range is exhausted), and EXIT (once
+  // per CTA). Each stage names its job, its inputs, what it must leave behind,
+  // and the ordering/visibility contract another stage relies on. Performance
+  // machinery that is not part of the mathematical contract -- how far ahead
+  // work is staged, what lives in registers vs. shared memory, bit-tricks for
+  // finding live lanes -- is deliberately not specified; build the simplest
+  // thing that satisfies each contract first.
 
-  //: **THE STATE IS NOT IN THIS CARVE.** Its numerator lives in `St` below -- the
-  //: fold's own D fragments, held in registers for the whole kernel. What remains here
-  //: is the MASS COLUMN: fp32, `[BC]`, the denominator of a ratio whose consumers are
-  //: broadcast matvecs, read by the readout's term 1 and written by the fold's term 3
-  //: from different warps, so it is the one part of the state that is genuinely shared.
-  //: **AND IT IS HELD TWICE.** Term 1 reads the visit's ENTRY column and the fold's
-  //: term 3 writes its EXIT column; two buffers make those disjoint, which is what
-  //: removes the read-before-write edge from the visit's barrier. The pair alternates
-  //: per visit, so a visit's exit column is the next visit's entry column with no
-  //: copy. docs/internals/consumer_kernel.md#mass-pingpong
-  float* const Smass0 = reinterpret_cast<float*>(smem_raw);
-  float* const Smass1 = Smass0 + BC;
-  constexpr size_t kMassBytes = 2 * static_cast<size_t>(BC) * sizeof(float);
-  char* carve = smem_raw + kMassBytes;
-  //: `ldmatrix` TAKES A 16-BYTE-ALIGNED ROW ADDRESS, so every staged base and every
-  //: staged ROW must be 16-byte aligned -- a requirement no pitch predicate implies.
-  //: Stated, not trusted: docs/internals/consumer_kernel.md#ldsm-alignment
-  //: **THE PANELS ARE HELD BY VISIT PARITY.** A visit BUILDS its panels before the
-  //: panel barrier and READS them after it, so consecutive visits overlap on one
-  //: buffer unless a second CTA-wide barrier separates them. `Rp0`/`Wp0` are the
-  //: even-visit pair and `Rp1`/`Wp1` the odd; each parity's base is 16-byte aligned
-  //: because one panel's byte size is.
-  //: docs/internals/consumer_kernel.md#visit-parity
-  __nv_bfloat16* const Rp0 = reinterpret_cast<__nv_bfloat16*>(carve);
-  constexpr size_t kRpBytes = static_cast<size_t>(BC) * kTokPitch * sizeof(__nv_bfloat16);
-  carve += 2 * kRpBytes;
-  __nv_bfloat16* const Wp0 = reinterpret_cast<__nv_bfloat16*>(carve);
-  constexpr size_t kWpBytes = static_cast<size_t>(kWpElems) * sizeof(__nv_bfloat16);
-  carve += 2 * kWpBytes;
-  static_assert(kRpBytes % 16 == 0 && kWpBytes % 16 == 0,
-                "each parity's panel base must be 16-byte aligned for ldmatrix");
-  //: THE CLOCK PREFIX, `[kGroupTokens][CKP]` fp32, with a home of its own: the value
-  //: tile it used to alias is now filled `S` visits ahead, so the two are
-  //: simultaneously live. docs/internals/consumer_kernel.md#decay-clock
-  constexpr size_t kClkBytes =
-      DECAY ? align16(static_cast<size_t>(kGroupTokens) * CKP * sizeof(float))
-            : static_cast<size_t>(0);
-  float* const clk = reinterpret_cast<float*>(carve);
-  carve += kClkBytes;
-  int* const dig = reinterpret_cast<int*>(carve);  // [D][BC]
-  carve += static_cast<size_t>(D) * BC * sizeof(int);
-  //: `Gm` IS AN `ldmatrix` SOURCE (the intra term's B and the intra mass term's), so
-  //: its base carries the same 16-byte requirement the panels do, and for the same
-  //: reason. It holds `G^T` at `kTokPitch`, and `pitched_ldsm_banks_ok<16, 16,
-  //: kTokPitch>` below licenses that base at this pitch.
-  __nv_bfloat16* const Gm = reinterpret_cast<__nv_bfloat16*>(carve);
-  constexpr size_t kGmOffsetBytes = kMassBytes + 2 * kRpBytes + 2 * kWpBytes + kClkBytes
-                                    + static_cast<size_t>(D) * BC * sizeof(int);
-  static_assert(kMassBytes % 16 == 0 && kGmOffsetBytes % 16 == 0,
-                "Rp, Wp and Gm must be 16-byte aligned for ldmatrix");
-  carve += static_cast<size_t>(kGroupTokens) * kTokPitch * sizeof(__nv_bfloat16);
-  float* const log_keep = reinterpret_cast<float*>(carve);
-  float* const p_ref = log_keep + (DECAY ? BC : 0);
-  //: `s0` TAKES A PARITY PAIR: the fold's exit scale and the mass epilogue read it
-  //: after the panel barrier, which is the next visit's write window.
-  float* const s0_0 = p_ref + (DECAY ? BC : 0);
-  //: THE COOKED SCHEDULE RING. `kSlots` group descriptors (`kSchedSlotInts` ints
-  //: each; the field offsets are `kSchedGN/RMask/WMask/Flags`), written by the
-  //: PRODUCER WARP `kSchedDepth` groups ahead and published by the COOK'S READY CURSOR
-  //: alone. Every consumer warp READS the descriptor rather than deriving it.
-  //: docs/internals/consumer_kernel.md#sched-ring
-  int* const g_ring = reinterpret_cast<int*>(s0_0 + (DECAY ? 2 * BC : 0));
-  //: THE VISIT'S ROW SCALES: the read scale then the write scale for each of the
-  //: group's member tokens, REDUCED FROM THE STAGED SCALARS at the top of the visit.
-  //: They are a per-visit quantity rather than a ring field because the scalars they
-  //: multiply ride the staged pipeline, not the cook.
-  //: docs/internals/consumer_kernel.md#row-scales
-  float* const sr_0 = reinterpret_cast<float*>(g_ring + kSlots * kSchedSlotInts);
-  //: PASS 1's SUMMARY STATE LIVES IN THE EVEN PARITY'S READ PANEL. The summary pass
-  //: never stages read coefficients (`summary` forces `rmr == 0`), so no panel write
-  //: reaches this storage on any visit.
-  float* const a_state = reinterpret_cast<float*>(Rp0);         // [BC], the survival product A
-  int* const sum_slot = reinterpret_cast<int*>(Rp0) + BC;       // [BC]
-  int* const sum_count = reinterpret_cast<int*>(Rp0) + 2 * BC;  // [1]
-  static_assert(kRpBytes >= (2 * static_cast<size_t>(BC) + 1) * sizeof(int),
-                "pass 1's summary state must fit inside the read panel");
+  // ---------------------------------------------------------------------------
+  // SETUP -- once per CTA, before any token is processed.
+  // ---------------------------------------------------------------------------
 
-  // ---- EACH OPERAND'S PITCH PROVES ITS OWN CONFLICT-FREEDOM.
-  // ---- docs/internals/consumer_kernel.md#pitches
-  static_assert(pitched_ldsm_banks_ok<BC, kGroupTokens, kTokPitch>(),
-                "Rp: the ldmatrix.trans fetch conflicts or is misaligned");
-  //: **THE VALUE TILE IS READ BY THE TRANSPOSING ATOM**, at its own token-major
-  //: pitch: `k` is the TOKEN axis (the block's rows) and `n` the CHANNEL axis, and
-  //: two such fetches at `n0` and `n0 + 8` reconstruct the fold's A operand.
-  static_assert(pitched_ldsm_banks_ok<kGroupTokens, DV, kVpPitch>(),
-                "Vp: the ldmatrix.trans fetch conflicts or is misaligned");
-  static_assert(pitched_ldsm_banks_ok<kGroupTokens, BC, kWpPitch>(),
-                "Wp: the ldmatrix fetches conflict or are misaligned");
-  static_assert(pitched_ldsm_banks_ok<kGroupTokens, kGroupTokens, kTokPitch>(),
-                "Gm: the intra term's ldmatrix.trans fetch conflicts or is misaligned");
-  static_assert(pitched_store_banks_ok<BC, kGroupTokens, kTokPitch>(),
-                "Rp: the staging store conflicts");
-  static_assert(pitched_store_banks_ok<kGroupTokens, BC, kWpPitch>(),
-                "Wp: the staging store conflicts");
-  //: **THE VALUE TILE HAS NO STAGING STORE AT ALL.** It is a `cp.async` DESTINATION
-  //: in the layout it is read in -- `DV` contiguous channels per token is exactly
-  //: what HBM holds and exactly what an asynchronous copy can land -- so the
-  //: column-strided, 4-way conflicted transpose the point-of-use gather used to pay
-  //: has no site. The write gate's row scale is applied at the FRAGMENT instead, on
-  //: the four registers the two `.trans` fetches deliver.
-  //: docs/internals/consumer_kernel.md#value-stream
+  // STAGE S1: WORK-ITEM RESOLUTION.
+  //   WHAT: decide which owner (leaf block) and which token range of that
+  //     owner this CTA is responsible for. A single owner's whole token range
+  //     may be split across several CTAs ("segments") when it is long; each
+  //     segment is an independent CTA that reads/writes a shared intermediate
+  //     stash instead of the owner's real state block.
+  //   INPUTS: `p.owners`, `p.work_seg`/`p.work_nseg`/`p.work_slot` (if the
+  //     launch used segmentation), `blockIdx.x`.
+  //   OUTPUTS: `bh` (which batch*head), `owner` (which leaf block), the
+  //     token-word range `[w_lo, w_hi)` this CTA scans, and whether this
+  //     segment is the owner's last one.
+  //   CONTRACT: every token in the owner's full range is claimed by exactly
+  //     one CTA/segment, segments partition the range without gaps or overlap,
+  //     and "last segment" is knowable without communicating with any other
+  //     CTA (it is a property of this CTA's own segment index).
+  //   CANDIDATE PRIMITIVES:
+  //     - `blockIdx.x` / grid-stride index math: the raw work-item index this
+  //       stage decodes.
+  //     - integer div/mod (or a precomputed reciprocal, `cutlass::FastDivmod`
+  //       (verify) if pulled in) to turn a flat CTA index into (bh, owner,
+  //       segment) coordinates cheaply.
+  //     - `__ldg` / `const __restrict__` pointers for the read-only
+  //       `p.owners`/`p.work_seg` lookup tables.
 
-  const int work = blockIdx.x;
-  const int bh = p.owners[2 * work];
-  const int owner = p.owners[2 * work + 1];
-  const int seg = (p.work_seg != nullptr) ? p.work_seg[work] : 0;
-  const int nseg = (p.work_nseg != nullptr) ? p.work_nseg[work] : 1;
-  const int owner_slot0 = (p.work_slot != nullptr) ? p.work_slot[work] : 0;
-  const bool summary = (p.pass_mode == kPassSummary);
-  const bool last_seg = (seg == nseg - 1);
-  //: §6.4's segment partition, on the SCAN STREAM's word axis (the 32-token machine
-  //: word is the metadata granule; tile ranges died with the aligned walk).
-  const int w_lo = static_cast<int>((static_cast<int64_t>(seg) * p.n_twords) / nseg);
-  const int w_hi = static_cast<int>((static_cast<int64_t>(seg + 1) * p.n_twords) / nseg);
-  const int tid = threadIdx.x;
-  const int lane = tid & 31;
-  const int warp = tid >> 5;
-  //: **THE WARP'S STATE OWNERSHIP** -- its point on the `GL x GC` carve grid, as a
-  //: contiguous ATOM RANGE and a contiguous CHANNEL-TILE RANGE. Everything the
-  //: register-resident state does is indexed off these values. The channel index runs
-  //: FASTEST so that the `GL` warps sharing a channel group -- the ones whose `y`
-  //: partials the emission's `atomicAdd` sums -- are the ones far apart in warp index.
-  const int cgrp = warp % GC;  // the warp's channel group
-  const int lgrp = warp / GC;  // its leaf group
-  const int atom0 = lgrp * kAPW;
-  const int m0 = cgrp * kMTW * kMmaKQuantum;  // its first channel
-  const unsigned own_mask = ((1u << kAPW) - 1u) << atom0;
-  const int _sg = lane >> 2, _sr = lane & 3;
-  //: **THE PRODUCER IS THE LAST WARP, AND THAT IS A LOAD-BALANCE FACT.** The cook is
-  //: serial warp-local work laid on top of a warp's share of the GEMMs, so it belongs
-  //: on the warp carrying the LEAST of everything else. The Gram's producers and the
-  //: denominator's two term owners are the LOW warp indices, so the high one carries
-  //: the lightest second job -- and it is the warp that would otherwise sit in the
-  //: Gram's publication wait doing nothing at all, which is exactly where the cook is
-  //: placed. docs/internals/consumer_kernel.md#cook-cursor
-  constexpr int kProdWarp = kWarps - 1;
+  // STAGE S2: OWNER GEOMETRY.
+  //   WHAT: decode each of the owner's BC leaves into its address at every
+  //     routing level (which digit it occupies at level 0, level 1, ...). This
+  //     is the address rectangle the routing tree assigns to `owner`.
+  //   INPUTS: `owner`, the topology's level widths/strides.
+  //   OUTPUTS: a per-(level, leaf) digit table, usable by every later stage
+  //     that needs to index a level's amplitude/decay tensors by leaf.
+  //   CONTRACT: computed once per CTA (an owner-level fact, identical for
+  //     every token and every chunk), not recomputed per token or per chunk.
+  //   CANDIDATE PRIMITIVES:
+  //     - plain integer div/mod against the topology's per-level widths
+  //       (constants known at compile time for a fixed template
+  //       instantiation, so the compiler can strength-reduce them).
+  //     - a small register/shared array indexed by level, filled once by a
+  //       handful of threads or one thread and broadcast with `__shfl_sync`.
+  //     - `constexpr`/`static_assert` topology checks (as `arch_table.cuh`
+  //       already does) to keep the address decode a compile-time fact where
+  //       possible.
 
-  // ---- owner decomposition (§3's rectangle) --------------------------------
-  const int j = p.first_spanned_level;
-  const int slice = owner % p.n_slices;
-  const int rest = owner / p.n_slices;
-  int base[D];
-#pragma unroll
-  for (int l = 0; l < D; ++l) {
-    if (l < j) {
-      base[l] = (rest / p.owner_stride[l]) % p.level_width[l];
-    } else if (l == j) {
-      base[l] = slice * p.slice_digits;
-    } else {
-      base[l] = 0;
-    }
-  }
+  // STAGE S3: DECAY-RATE LOOKUP (only when `DECAY` is set).
+  //   WHAT: for each of the owner's BC leaves, look up its per-step retention
+  //     rate from the routing dials and convert it to a log-space quantity
+  //     (log(1 - rate)) suitable for accumulating across many steps without
+  //     repeated multiplication underflow.
+  //   INPUTS: the per-leaf digit table (S2), the dial tensor.
+  //   OUTPUTS: one log-retention scalar per leaf, live for the whole CTA.
+  //   CONTRACT: an owner-level fact (leaves determine the rate, tokens do
+  //     not), computed once and reused by every chunk's decay math (V1 below).
+  //   CANDIDATE PRIMITIVES:
+  //     - `__logf` / `log1pf` (fast, approximate transcendentals -- the
+  //       accumulation is fp32 per the file header, so a fast intrinsic is in
+  //       scope where precision allows) for the `log(1 - rate)` conversion.
+  //     - `__ldg` for the read-only dial-tensor fetch.
+  //     - vectorized loads (`float2`/`float4`) if several leaves' dials are
+  //       laid out contiguously.
 
-  for (int idx = tid; idx < D * BC; idx += kConsumerThreads) {
-    const int l = idx / BC;
-    dig[idx] = leaf_digit(p, l, base[l], idx - l * BC);
-  }
+  // STAGE S4: ENTRY STATE LOAD.
+  //   WHAT: bring the owner's current state S_entry -- and its accompanying
+  //     normalizer ("mass") column -- onto the CTA, from wherever it lives:
+  //     the owner's persistent HBM state block on a first/only segment, an
+  //     intermediate per-segment stash on a later segment, or all-zeros if
+  //     this pass is building that stash for the first time.
+  //   INPUTS: `p.state` (or the segment stash), the owner/atom addressing
+  //     from S1/S2.
+  //   OUTPUTS: S_entry resident on-chip for the CTA's whole life; the entry
+  //     mass column likewise.
+  //   CONTRACT: exactly ONE read of the owner's state for the whole CTA (the
+  //     one-copy invariant) -- this is the only place the state is fetched
+  //     from off-chip. Every later stage mutates the on-chip copy in place;
+  //     nothing re-reads from HBM until the exit stages.
+  //   CANDIDATE PRIMITIVES:
+  //     - `cp.async` (`cuda_pipeline_primitives.h`'s `__pipeline_memcpy_async`,
+  //       or this file's own `cp_async_16`/`cp_async_commit`/
+  //       `cp_async_wait_all` wrappers in `cp_async.cuh`) for the
+  //       global-to-shared bulk copy of the state block, so the fetch latency
+  //       can overlap with other setup work.
+  //     - `ldmatrix` (via `mma_tile.cuh`'s existing fetchers, or `nvcuda::wmma
+  //       ::load_matrix_sync` (verify availability/fit)) once the state is
+  //       shared-memory resident and needs to reach registers as an MMA
+  //       operand.
+  //     - plain vectorized `float4`/`int4` loads for the mass column, which
+  //       the file header says stays a small fp32 `[BC]` shared array rather
+  //       than going through the tensor-core path.
+  //     - `cuda::pipeline` (`<cuda/pipeline>`, cooperative-groups-based; a
+  //       heavier-weight alternative to the raw `cp.async` wrappers -- verify
+  //       it is worth the abstraction over the hand-rolled primitives already
+  //       in `cp_async.cuh`).
 
-  // ---- §12 RULE 2: per-leaf log-retention, ONCE PER OWNER, IN LOG SPACE. The
-  // ---- re-evaluation of `leaf_digit` (instead of reading `dig`) avoids a barrier:
-  // ---- docs/internals/consumer_kernel.md#digit-hoist
-  if (DECAY) {
-    const int h = bh % p.H;
-    for (int i = tid; i < BC; i += kConsumerThreads) {
-      float rate = 1.0f;
-#pragma unroll
-      for (int l = 0; l < D; ++l) {
-        rate *= p.dials[static_cast<int64_t>(h) * p.total_rows + p.level_row_offset[l]
-                        + leaf_digit(p, l, base[l], i)];
-      }
-      log_keep[i] = log1pf(-rate);
-    }
-  }
+  // STAGE S5: MEMBERSHIP / SCHEDULING.
+  //   WHAT: walk the CTA's token-word range and decide, for each token,
+  //     whether it reads this owner, writes this owner, or both -- then
+  //     collect the resulting member tokens, IN ASCENDING ORDER, into
+  //     fixed-size chunks of `kGroupTokens` tokens each (the last chunk of the
+  //     range may be short). For each chunk, also determine which of the
+  //     owner's atoms (leaf bundles) are actually touched on the read side and
+  //     on the write side -- a chunk need not touch every atom.
+  //   INPUTS: the per-token, per-level read/write membership bits and the
+  //     per-atom bitlists that make membership testable at atom granularity.
+  //   OUTPUTS: an ordered sequence of chunk descriptors -- each one a token
+  //     list (size <= kGroupTokens), a read-atom mask, and a write-atom mask
+  //     -- that the walk below consumes one at a time.
+  //   CONTRACT: chunk order must be globally ascending in token index --
+  //     ORDER IS THE CAUSALITY REQUIREMENT the intra term (V7) and the fold's
+  //     accumulation order (V8) both depend on. A chunk's atom masks must be
+  //     exact: an atom absent from a chunk's mask must genuinely contribute
+  //     nothing to that chunk's coefficients (so later stages may skip it
+  //     without changing the result). This is a pure bookkeeping computation
+  //     with no dependency on any other stage below it; it may legally run
+  //     entirely up front, or be interleaved/overlapped with the walk for
+  //     performance -- that overlap is a performance choice, not something the
+  //     result depends on.
+  //   CANDIDATE PRIMITIVES:
+  //     - `__ballot_sync` to turn a warp's 32 per-token membership predicates
+  //       into one bitmask in a single instruction.
+  //     - `__popc` / `__popcll` to count set bits (chunk sizes, live-atom
+  //       counts) and `__ffs` / `__ffsll` to walk a mask's set bits one at a
+  //       time in ascending order.
+  //     - `cub::WarpScan`/`cub::BlockScan` (`<cub/warp/warp_scan.cuh>`,
+  //       `<cub/block/block_scan.cuh>` -- both already used elsewhere in this
+  //       project, `entmax.cu` and `decode_expand.cu` respectively) for a
+  //       prefix sum turning a membership mask into compacted destination
+  //       slots.
+  //     - bitwise AND/OR/XOR on the per-level bit rows the WHAT already
+  //       describes (`&`, `|`, `^` on `unsigned`/`unsigned long long`), which
+  //       is the actual membership test before any of the above.
 
-  constexpr int cols = DV + 1;  // the mass column is unconditional (raw is dead)
-  // ---- THE OWNER'S STATE BLOCK, READ FROM HBM ONCE (the one-copy invariant), at
-  // ---- §4.5's ATOM granularity. docs/internals/consumer_kernel.md#entry-state
-  const bool from_ws = (!summary) && (nseg > 1);
-  const float* ws_entry =
-      from_ws ? (p.ws_state + static_cast<int64_t>(owner_slot0 + seg) * BC * cols) : nullptr;
-  //: **THE ENTRY STATE LANDS IN REGISTERS**, in the fold's own D-fragment map: lane
-  //: `(g, r)` of the warp, at its channel tile `mt` and atom `q`, holds channels
-  //: `mc + g` and `mc + 8 + g` at leaves `q * 16 + 8 * half + 2r` and `+ 1`. Eight
-  //: floats per (channel tile, atom), and the 8 lanes sharing a leaf read 8 CONSECUTIVE
-  //: channels, so the HBM read is one 32-byte segment per (leaf, half-warp).
-  //: **THE REGISTER PLANE IS `[kMTW][kAPW]`** and every walk below indexes it as one:
-  //: `St + (mt * kAPW + ai) * 8`. docs/internals/consumer_kernel.md#entry-state
-  float St[kStRegs];
-#pragma unroll
-  for (int v = 0; v < kStRegs; ++v) St[v] = 0.0f;
-  if (!summary) {
-#pragma unroll
-    for (int ai = 0; ai < kAPW; ++ai) {
-      const int q = atom0 + ai;
-      const int64_t row0 =
-          from_ws ? static_cast<int64_t>(q) * kMmaKQuantum : atom_row_base<BC>(p, bh, owner, q);
-      if (row0 < 0) continue;
-      const float* const src = from_ws ? ws_entry : p.state;
-#pragma unroll
-      for (int half = 0; half < 2; ++half) {
-        const int64_t r0 = row0 + 8 * half + 2 * _sr;
-#pragma unroll
-        for (int mt = 0; mt < kMTW; ++mt) {
-          const int mc = m0 + mt * kMmaKQuantum;
-          float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
-          st[0] = src[r0 * cols + mc + _sg];
-          st[1] = src[(r0 + 1) * cols + mc + _sg];
-          st[2] = src[r0 * cols + mc + 8 + _sg];
-          st[3] = src[(r0 + 1) * cols + mc + 8 + _sg];
-        }
-      }
-    }
-  }
-  //: The entry column lands in `Smass0`; the walk below alternates from there.
-  if (summary || from_ws) {
-    for (int i = tid; i < BC; i += kConsumerThreads) {
-      Smass0[i] = summary ? 0.0f : ws_entry[i * cols + DV];
-    }
-  } else {
-#pragma unroll
-    for (int q = 0; q < kQPO; ++q) {
-      const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
-      for (int r = tid; r < kMmaKQuantum; r += kConsumerThreads) {
-        Smass0[q * kMmaKQuantum + r] = (row0 >= 0) ? p.state[(row0 + r) * cols + DV] : 0.0f;
-      }
-    }
-  }
-  if (summary) {
-    for (int i = tid; i < BC; i += kConsumerThreads) {
-      a_state[i] = 1.0f;  // `A`'s identity; `decay = None` never multiplies it
-      sum_slot[i] = 0;    // the written-leaf FLAG until the publication rewrites it
-    }
-  }
-  //: The token-major amplitude stream base for this `bh`: a member token's row is
-  //: `tok_base + token` (whole-covered-span fetch: the span is read by position).
-  const int64_t tok_base = static_cast<int64_t>(bh) * p.n_twords * 32;
-  //: The slice's ATOM-MAJOR bitlist base: row `q`'s word for source word `w` is
-  //: `ab_base + q * n_twords + w` -- one CONTIGUOUS token-bit row per atom.
-  const int64_t ab_base = (static_cast<int64_t>(bh) * p.n_slices + slice) * kQPO * p.n_twords;
+  // STAGE S6: GATHER.
+  //   WHAT: for each chunk's member tokens, fetch the raw per-level amplitude
+  //     coefficients (both read-side and write-side), the decay ingredients
+  //     needed to build this chunk's survival factors, and the value vectors
+  //     of the write-member tokens.
+  //   INPUTS: the chunk descriptors from S5, the per-level amplitude tensors,
+  //     the value tensor.
+  //   OUTPUTS: the raw per-token, per-level data each chunk's panel-build
+  //     stages (V3/V4/V5) need, staged somewhere on-chip.
+  //   CONTRACT: a chunk's gathered data must be visible before that chunk's
+  //     panel-build stages run. Whether this gather happens synchronously
+  //     right before it's needed, or is issued ahead of time and overlapped
+  //     with earlier chunks' compute, is a PERFORMANCE CHOICE ONLY -- start
+  //     with the synchronous form; only the "visible before use" contract is
+  //     required for correctness. A leaf/level not touched by a chunk (dead in
+  //     both S5 masks) contributes an exact zero coefficient, never garbage --
+  //     whatever is not fetched must be treated as zero downstream, not
+  //     skipped in a way that leaves it undefined.
+  //   CANDIDATE PRIMITIVES:
+  //     - `cp_async_16`/`cp_async_4` (this file's own `cp_async.cuh`
+  //       wrappers around `cp.async.cg`/`cp.async.ca`) or the raw
+  //       `__pipeline_memcpy_async` from `cuda_pipeline_primitives.h`, for
+  //       the async global-to-shared fetch of amplitude/value data, with the
+  //       predicated src-size-zero trick `cp_async.cuh`'s header comment
+  //       already documents for a dead lane.
+  //     - `cp_async_commit`/`cp_async_wait_all`/`cp_async_wait_group` (or
+  //       `__pipeline_commit`/`__pipeline_wait_prior`) to manage when a
+  //       staged batch becomes visible.
+  //     - vectorized `float4`/`__nv_bfloat162` loads for the value vectors if
+  //       the synchronous/non-`cp.async` path is taken first.
+  //     - `__ldg` for scalar read-only amplitude fetches.
 
-  // ---- THE PRODUCER. WARP `kProdWarp` ALONE runs the membership scan and the ballot, and
-  // ---- publishes COOKED GROUP DESCRIPTORS into `g_ring`. The scan's result is an
-  // ---- OWNER-LEVEL fact, identical across the owner's atoms and across the CTA's
-  // ---- warps, so it is cooked ONCE PER OWNER -- the multiplicity rule, and the
-  // ---- issue cut this kernel's measured constraint asks for.
-  // ---- docs/internals/consumer_kernel.md#producer
-  static_assert(kQPO <= 32, "one producer lane per atom: the atom mask is ONE ballot");
-  //: THE PRODUCER'S CURSOR STATE, RESTING IN SMEM BETWEEN COOKS. Scheduler state
-  //: held in registers is live across the whole visit body and competes with the
-  //: four GEMMs' working set -- measured as spills on the `BC = 16, decay = 0`
-  //: key, the tightest register budget in the matrix, on both arches. The AND and
-  //: the ballot still happen in registers; only the resting place is SMEM.
-  //: docs/internals/consumer_kernel.md#producer-state
-  int* const p_st = reinterpret_cast<int*>(sr_0 + 4 * kGroupTokens);
-  //: [0] p_cur, [1] p_chunk_base, [2] p_live, [3] p_word, [4] p_rem, then the
-  //: PER-LANE chunk (fr, fw, mem) and ingredient (ra, wa) planes, one word per lane
-  //: each.
-  //: **THE COOK'S READY CURSOR** -- the monotone count of groups the producer warp has
-  //: published, and the ONLY ordering the schedule ring needs. It is a single-writer
-  //: counter (the producer warp's lane 0) released by a `__threadfence_block()` and
-  //: acquired by every consumer at the top of its visit, which is what takes the
-  //: COOK OFF THE END-OF-VISIT RENDEZVOUS: the descriptor's publication is its own
-  //: edge, so the producer's serial work can be scheduled wherever it overlaps best
-  //: instead of sitting between the last common work and a barrier.
-  //: docs/internals/consumer_kernel.md#cook-cursor
-  int* const ring_ready = p_st + 5;
-  int* const p_chunk = p_st + 8;  // [5][32]: fr, fw, mem, ra, wa
-  //: THE PREFETCH'S PER-OWNER CHUNK DESCRIPTORS. One entry per 16-byte chunk of a
-  //: slab row: the SPANNED LEVEL it belongs to, its element offset inside that
-  //: level's amplitude row (already aligned down to the 16-byte boundary), and the
-  //: SET OF ATOMS whose digits it carries -- which is what makes the copy per-atom.
-  //: Built once per owner because the owner's digit rectangle is fixed for the whole
-  //: kernel; only the ATOM MASK the set is tested against varies per group.
-  int* const ch_lvl = p_chunk + 5 * 32;
-  int* const ch_src = ch_lvl + kPfChunks;
-  int* const ch_atoms = ch_src + kPfChunks;
-  //: THE GRAM'S PUBLICATION COUNTER. One int, monotone for the whole kernel: each
-  //: producing warp adds one when its Gram sub-blocks are stored and fenced, and a
-  //: consumer proceeds when the count reaches its visit's target. Monotone rather
-  //: than reset-per-visit because a reset would itself need the rendezvous it
-  //: replaces. docs/internals/consumer_kernel.md#gram-publication
-  int* const gram_flag = ch_atoms + kPfChunks;
-  //: THE MASS COLUMN'S PUBLICATION COUNTER, the same shape as the Gram's: monotone for
-  //: the whole kernel, one arrival per producing warp per visit. It carries the ONE
-  //: cross-visit read of the mass column that happens before the panel barrier -- the
-  //: decay arm's entry-frame scale -- so that edge costs a wait on `kMassProd`
-  //: arrivals instead of a CTA rendezvous.
-  //: docs/internals/consumer_kernel.md#mass-publication
-  int* const mass_flag = gram_flag + 1;
-  //: **THE STAGED REGIONS, `S` STAGES DEEP, AND THEY ARE THE WHOLE VRAM -> SMEM
-  //: LINK.** Four progressively-consumed streams land here and nowhere else: the two
-  //: AMPLITUDE SLABS, the VALUE TILE (in the layout its `ldmatrix` reads, so the
-  //: copy IS the staging) and the ROW-SCALE SCALARS (the write gate and the fixed
-  //: levels' amplitudes, one row per token). They are the LAST regions of the carve
-  //: so that `cp.async`'s 16-byte destination alignment is ONE align-up rather than
-  //: a constraint every region before them would have to carry.
-  //: docs/internals/consumer_kernel.md#staged-regions
-  constexpr size_t kStBase = align16(consumer_smem_core_bytes<BC, DV, D, DECAY, S>());
-  constexpr size_t kAmpBytes = static_cast<size_t>(kGroupTokens) * kPfPitch * sizeof(__nv_bfloat16);
-  constexpr size_t kValBytes =
-      align16(static_cast<size_t>(kGroupTokens) * kVpPitch * sizeof(__nv_bfloat16));
-  constexpr size_t kScaleBytes =
-      align16(static_cast<size_t>(kGroupTokens) * kScPitch * sizeof(float));
-  constexpr size_t kStageBytes = 2 * kAmpBytes + kValBytes + kScaleBytes;
-  static_assert(kStBase % 16 == 0 && kAmpBytes % 16 == 0,
-                "every staged region base must be 16-byte aligned for cp.async and ldmatrix");
-  static_assert(
-      kStBase + static_cast<size_t>(S) * kStageBytes == consumer_smem_bytes<BC, DV, D, DECAY>(),
-      "the kernel's carve and the launch's reservation must be one expression");
-  char* const st_base = smem_raw + kStBase;
-  //: One stage's four regions, by stage index. Addressed through lambdas because the
-  //: issue and every consumer must not be able to disagree about the stride.
-  //: ONE live pointer per visit, not four: the stage's base, with each region at a
-  //: compile-time offset from it.
-  auto stage_at = [&](int st) { return st_base + st * kStageBytes; };
-  auto pfR_of = [](char* g) { return reinterpret_cast<__nv_bfloat16*>(g); };
-  auto pfW_of = [](char* g) { return reinterpret_cast<__nv_bfloat16*>(g + kAmpBytes); };
-  auto Vp_of = [](char* g) { return reinterpret_cast<__nv_bfloat16*>(g + 2 * kAmpBytes); };
-  auto pfS_of = [](char* g) { return reinterpret_cast<float*>(g + 2 * kAmpBytes + kValBytes); };
-  //: **THE PRODUCER'S SCRATCH IS INITIALIZED BY THE PRODUCER WARP**, because the cold
-  //: start cooks out of it before the entry epoch: there is no barrier between the two,
-  //: so the initializing thread must be one the cooking warp reconverges with.
-  if (warp == kProdWarp) {
-    if (lane == 0) {
-      p_st[0] = w_lo;
-#pragma unroll
-      for (int q = 1; q < 8; ++q) p_st[q] = 0;
-    }
-#pragma unroll
-    for (int q = 0; q < 5; ++q) p_chunk[q * 32 + lane] = 0;
-    __syncwarp();
-  }
-  if (tid == 0) {
-    gram_flag[0] = 0;
-    mass_flag[0] = 0;
-  }
+  // ---------------------------------------------------------------------------
+  // THE WALK -- one iteration per chunk, in the order S5 produced them, until
+  // the owner's token range is exhausted (a chunk descriptor with zero members
+  // is the end-of-stream signal).
+  // ---------------------------------------------------------------------------
 
-  // ---- THE PREFETCH SLAB'S OWNER-LEVEL GEOMETRY. A level's digits over the owner's
-  // ---- `BC` leaves are the CONTIGUOUS range `[base_l, base_l + span_l)` -- the value
-  // ---- set of `(i / stride) % modulus` over `i < BC` is either `0 .. (BC-1)/stride`
-  // ---- or, on wrap, all of `[0, modulus)`. Each spanned level takes that range,
-  // ---- aligned down to a 16-byte boundary and rounded up to one, as a sub-row of the
-  // ---- slab; `pf_off[l]` is the one number a gather adds to its digit.
-  // ---- **`pf_off` IS A REGISTER ARRAY, NOT A TABLE**, and that is the whole reason
-  // ---- this gather is cheaper than the one it replaces: every gather's level loop is
-  // ---- `#pragma unroll`, so `l` is a compile-time constant at every use and the
-  // ---- offset never touches shared memory. `Plan.amplitude_pitch` is what licenses
-  // ---- it -- the padded pitch makes a level's per-token lead a CONSTANT rather than
-  // ---- a function of the token. docs/internals/consumer_kernel.md#prefetch
-  int pf_off[D];
-  int pf_nch = 0;
-  {
-    int at = 0;
-#pragma unroll
-    for (int l = 0; l < D; ++l) {
-      pf_off[l] = 0;
-      if (l < j) continue;
-      const int stride_l = p.level_stride[l];
-      const int mod_l = p.level_modulus[l];
-      const int span_l = min(mod_l, (BC - 1) / stride_l + 1);
-      const int lead_l = base[l] & 7;
-      pf_off[l] = at + lead_l - base[l];
-      at += ((lead_l + span_l + 7) / 8) * 8;
-    }
-    pf_nch = at >> 3;
-  }
-  //: THE CHUNK DESCRIPTORS, SERIAL ON ONE THREAD. `kPfChunks` is at most 12 and the
-  //: work is once per owner; spreading it would cost a barrier to publish `at`.
-  if (tid == 0) {
-    int at = 0;
-#pragma unroll
-    for (int l = 0; l < D; ++l) {
-      if (l < j) continue;
-      const int stride_l = p.level_stride[l];
-      const int mod_l = p.level_modulus[l];
-      const int span_l = min(mod_l, (BC - 1) / stride_l + 1);
-      const int lead_l = base[l] & 7;
-      const int nc = (lead_l + span_l + 7) / 8;
-      for (int c = 0; c < nc; ++c) {
-        //: The chunk's digit range, in offsets from `base[l]`.
-        const int c_lo = c * 8 - lead_l;
-        unsigned bits = 0u;
-        //: ATOM `q`'s digit range at this level. `(i / stride)` over the atom's 16
-        //: leaves is the contiguous `[u0, u1]`; taken modulo the level's modulus it
-        //: stays contiguous unless it wraps, and a wrap is answered with the whole
-        //: range -- a SUPERSET only ever fetches a chunk that could have been
-        //: zero-filled, which is safe in the one direction that matters.
-#pragma unroll
-        for (int q = 0; q < kQPO; ++q) {
-          const int u0 = (q * kMmaKQuantum) / stride_l;
-          const int u1 = (q * kMmaKQuantum + kMmaKQuantum - 1) / stride_l;
-          int lo = 0, hi = mod_l - 1;
-          if (u1 - u0 < mod_l - 1) {
-            const int a0 = u0 % mod_l, a1 = u1 % mod_l;
-            if (a0 <= a1) {
-              lo = a0;
-              hi = a1;
-            }
-          }
-          if (hi > span_l - 1) hi = span_l - 1;
-          if (!(hi < c_lo || lo >= c_lo + 8)) bits |= 1u << q;
-        }
-        ch_lvl[at + c] = l;
-        ch_src[at + c] = (base[l] & ~7) + c * 8;
-        ch_atoms[at + c] = static_cast<int>(bits);
-      }
-      at += nc;
-    }
-  }
-  //: The scan's fixed-level row index is `p.level_row_offset[l] + base[l]`, formed
-  //: AT THE POINT OF USE: `base[]` is already live across the whole kernel (the
-  //: panels and the upper product all index it), so a hoisted copy would be `D`
-  //: extra live registers on the tightest key.
+  // STAGE V1: DECAY CLOCK AND SURVIVAL FACTORS (only when `DECAY` and this
+  //   chunk has any write-member tokens).
+  //   WHAT: for each leaf, walk this chunk's member tokens IN ORDER and build
+  //     a running "clock" -- the cumulative decay exposure up to and including
+  //     each token. From the clock, derive: a per-leaf reference point for the
+  //     chunk (so the read-side and write-side factors below can be expressed
+  //     relative to a common frame rather than an absolute step count), and a
+  //     per-leaf "entry scale" s0 that brings S_entry into that chunk-local
+  //     reference frame.
+  //   INPUTS: the per-leaf log-retention (S3), the per-token decay ingredients
+  //     gathered in S6.
+  //   OUTPUTS: per-leaf clock values (used per-token by V3/V4 to build each
+  //     token's read/write decay factor), the reference point, and s0.
+  //   CONTRACT: must complete, and its results (s0 in particular) must be
+  //     applied to S_entry and the entry mass column, BEFORE any GEMM in this
+  //     chunk reads the state (V6, V8) -- s0 rescales the entry values into
+  //     the frame this chunk's factors are expressed in. An atom with no live
+  //     leaf this chunk must end up with s0 == 1 (identity), so that leaving
+  //     it untouched is exactly the correct answer, not an approximation of
+  //     it. This stage does not run for a chunk that writes nothing (an
+  //     entirely-read chunk needs no fresh entry scale).
+  //   CANDIDATE PRIMITIVES:
+  //     - `__expf` (fast, approximate exponential) to turn a log-space clock
+  //       back into a survival factor, and `__logf`/`log1pf` if any further
+  //       log-domain accumulation is needed within the chunk.
+  //     - `__shfl_sync`/`__shfl_up_sync`/`__shfl_xor_sync` for a warp-local
+  //       running sum/scan across the (small, <= 16-token) chunk when the
+  //       accumulation is done lane-per-token within one warp.
+  //     - `cub::WarpScan` (`<cub/warp/warp_scan.cuh>`, already used in
+  //       `entmax.cu`) as a packaged inclusive/exclusive-scan alternative to
+  //       hand-rolled shuffle butterfly steps.
+  //     - `fmaf` for the per-step clock update if it is a plain
+  //       multiply-accumulate rather than sum-then-exponentiate.
 
-  //: ONE COOKED GROUP, PUBLISHED TO `slot`. WARP `kProdWarp` ONLY, and EVERY LANE ENTERS --
-  //: the `__ballot_sync` / `__shfl_sync` below are full-warp collectives and the
-  //: loop's control flow is warp-uniform by construction (`p_rem`, `p_live`,
-  //: `p_cur`, `fill` are all warp-uniform; only the chunk and ingredient
-  //: values are per-lane). The cursor is LOADED here and STORED at the end, so it
-  //: is register-live only for the duration of the cook.
-  auto produce_group = [&](int slot) {
-    int* R = g_ring + slot * kSchedSlotInts;
-    //: HAZARD producer-cursor, the LOAD's half -- docs/internals/consumer_kernel.md#producer-cursor
-    __syncwarp();
-    int p_cur = p_st[0];
-    int p_chunk_base = p_st[1];
-    unsigned p_live = static_cast<unsigned>(p_st[2]);
-    int p_word = p_st[3];
-    uint32_t p_rem = static_cast<uint32_t>(p_st[4]);
-    //: THE COOK CARRIES NO PER-LANE REGISTER STATE -- only the uniform scalars
-    //: above, which is what keeps the tightest keys inside their budget. The chunk
-    //: planes are read ONE SCALAR AT A TIME at word selection, by the uniform index
-    //: the ballot picked (the value a `__shfl` of a register plane would have
-    //: produced); the selected word's fixed-level AND results are recovered the
-    //: same way, its chunk lane being `p_word - p_chunk_base`. Each lane reads its
-    //: OWN ingredient slot, so those carry no cross-lane traffic and need no
-    //: reconvergence.
-    int fill = 0;
-    unsigned rmask = 0u, wmask = 0u;
-    bool gr = false, gw = false;
-    while (fill < kGroupTokens) {
-      if (p_rem == 0u) {
-        //: THE CHUNK, COOKED IN REGISTERS (contract item 2): one word per lane.
-        //: Lane `w` ANDs the owner's `j` fixed-level token rows per side and the
-        //: token-granular slice-union word -- the "k+1 per-digit bit-streams,
-        //: identically indexed, one shared cursor structure" -- into its own
-        //: `(fr, fw, member)`. The chunk's LIVE-WORD SET is then one ballot, and
-        //: skipping dead words costs an `__ffs`. A refill needs no CTA barrier:
-        //: the cook is warp-local and its collectives are warp-level.
-        while (p_live == 0u && p_cur < w_hi) {
-          const int w = p_cur + lane;
-          uint32_t fr = 0xffffffffu, fw = 0xffffffffu, mem = 0u;
-          if (w < w_hi) {
-            const int64_t slab = (static_cast<int64_t>(bh) * p.n_twords + w) * p.total_rows;
-#pragma unroll
-            for (int l = 0; l < D; ++l) {
-              if (l >= j) break;
-              const int row_l = p.level_row_offset[l] + base[l];
-              fr &= p.read_tok_bits[slab + row_l];
-              fw &= p.write_tok_bits[slab + row_l];
-            }
-            const uint32_t un =
-                p.slice_union_tok[(static_cast<int64_t>(bh) * p.n_slices + slice) * p.n_twords + w];
-            //: The summary pass ballots the WRITE side alone (union-visit
-            //: semantics on one side); `summary` is LAUNCH-UNIFORM.
-            mem = (summary ? fw : (fr | fw)) & un;
-          }
-          //: The cooked chunk goes STRAIGHT to its planes. `fr`/`fw`/`mem` are
-          //: transient here and die at the end of this iteration.
-          p_chunk[0 * 32 + lane] = static_cast<int>(fr);
-          p_chunk[1 * 32 + lane] = static_cast<int>(fw);
-          p_chunk[2 * 32 + lane] = static_cast<int>(mem);
-          p_chunk_base = p_cur;
-          p_cur += kSchedChunkWords;
-          p_live = __ballot_sync(0xffffffffu, mem != 0u);
-          //: HAZARD producer-chunk -- docs/internals/consumer_kernel.md#producer-chunk
-          __syncwarp();
-        }
-        if (p_live == 0u) break;  // the segment's stream end
-        const int sel = __ffs(static_cast<int>(p_live)) - 1;
-        p_live &= p_live - 1u;
-        p_word = p_chunk_base + sel;
-        p_rem = static_cast<uint32_t>(p_chunk[2 * 32 + sel]);
-        //: Form (b)'s ingredient, ONE LANE PER ATOM -- which is what turns the
-        //: base's `2 * QPO` per-warp tests into the two ballots below. Loaded
-        //: ONCE PER SOURCE WORD, not once per ballot round.
-        p_chunk[3 * 32 + lane] =
-            (lane < kQPO)
-                ? static_cast<int>(
-                      p.read_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
-                : 0;
-        p_chunk[4 * 32 + lane] =
-            (lane < kQPO)
-                ? static_cast<int>(
-                      p.write_atom_bits[ab_base + static_cast<int64_t>(lane) * p.n_twords + p_word])
-                : 0;
-      }
-      const int room = kGroupTokens - fill;  // >= 1: a full group ran and reset `fill`
-      uint32_t taken = p_rem;
-      if (__popc(p_rem) > room) {
-        //: the (room+1)-th set bit; bits below it are exactly the lowest `room`
-        //: live tokens -- the remainder waits for the next group.
-        const unsigned cut = __fns(p_rem, 0, room + 1);
-        taken = p_rem & ((1u << cut) - 1u);
-      }
-      if (((taken >> lane) & 1u) != 0u) {
-        R[fill + __popc(taken & ((1u << lane) - 1u))] = p_word * 32 + lane;
-      }
-      //: Form (b)'s consumption, word-wise: atom `q` is live for this group iff
-      //: its bitlist row intersects the taken word. ONE BALLOT PER SIDE.
-      rmask |= __ballot_sync(
-          0xffffffffu,
-          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[3 * 32 + lane]) & taken) != 0u));
-      wmask |= __ballot_sync(
-          0xffffffffu,
-          (lane < kQPO) && ((static_cast<uint32_t>(p_chunk[4 * 32 + lane]) & taken) != 0u));
-      const int p_sel = p_word - p_chunk_base;
-      gr = gr || (static_cast<uint32_t>(p_chunk[0 * 32 + p_sel]) & taken) != 0u;
-      gw = gw || (static_cast<uint32_t>(p_chunk[1 * 32 + p_sel]) & taken) != 0u;
-      fill += __popc(taken);
-      p_rem ^= taken;
-    }
-    //: `fill == 0` is the stream-end sentinel every consumer breaks on; the
-    //: final flush is the ragged group (`fill < kGroupTokens`).
-    if (lane == 0) {
-      R[kSchedGN] = fill;
-      R[kSchedRMask] = static_cast<int>(rmask);
-      R[kSchedWMask] = static_cast<int>(wmask);
-      R[kSchedFlags] = (gr ? 1 : 0) | (gw ? 2 : 0);
-    }
-    //: THE CURSOR GOES BACK TO SLEEP IN SMEM -- nothing above stays live across
-    //: the visit body.
-    //: HAZARD producer-cursor, the STORE's half -- docs/internals/consumer_kernel.md#producer-cursor
-    __syncwarp();
-    if (lane == 0) {
-      p_st[0] = p_cur;
-      p_st[1] = p_chunk_base;
-      p_st[2] = static_cast<int>(p_live);
-      p_st[3] = p_word;
-      p_st[4] = static_cast<int>(p_rem);
-      //: THE RELEASE. The fence orders this group's descriptor stores before the count
-      //: that advertises them; a plain store carries the count because the producer
-      //: warp is its only writer.
-      __threadfence_block();
-      *const_cast<volatile int*>(ring_ready) += 1;
-    }
-  };
+  // STAGE V2: ROW-SCALE REDUCTION.
+  //   WHAT: for each member token, multiply together whatever per-token
+  //     amplitude factors are the SAME across every leaf of this owner (levels
+  //     "above" the owner's own address rectangle contribute one scalar per
+  //     token, not a per-leaf value) into one read-gate scalar and one
+  //     write-gate scalar per token.
+  //   INPUTS: the gathered per-level scalars (S6) for the levels that don't
+  //     vary across this owner's leaves.
+  //   OUTPUTS: per-token read-scale and write-scale scalars for this chunk.
+  //   CONTRACT: computed once per chunk per token, not once per (leaf, token)
+  //     pair -- these values are leaf-invariant by construction, so folding
+  //     them into the per-leaf panels below would be redundant work, not
+  //     merely slow. A token absent from a chunk's live range takes an exact
+  //     zero scale, which is what makes its row inert through every GEMM that
+  //     follows without a separate branch.
+  //   CANDIDATE PRIMITIVES:
+  //     - `fmaf`/plain `*` across a short (compile-time-bounded) unrolled
+  //       loop of per-level scalars -- this is a small per-token product, not
+  //       a reduction across lanes, so it is register-local arithmetic.
+  //     - `__shfl_sync` if a token's per-level factors are scattered across
+  //       lanes and need to be gathered onto the lane that owns that token
+  //       before multiplying.
+  //     - `#pragma unroll` on the fixed-depth level loop (the level count is
+  //       a compile-time topology constant per S2).
 
-  // ---- **THE STAGE ISSUE -- THE WHOLE VRAM -> SMEM LINK, IN ONE PLACE.** Fills stage
-  // ---- `st` with everything visit `gnext` will progressively consume, out of the
-  // ---- descriptor the producer cooked for it: both AMPLITUDE SLABS, the VALUE TILE
-  // ---- and the ROW-SCALE SCALARS. Nothing here reads what it copies and nothing
-  // ---- waits.
-  // ----
-  // ---- **THE DELEGATED CHOICE (P25 contract item 7), MADE HERE.** On sm_86 the
-  // ---- `cp.async` commit/wait state is PER WARP, so the question was warp-
-  // ---- partitioned streams against interleaved commit order. The answer is ONE
-  // ---- COMMIT GROUP PER WARP PER VISIT: one stage is consumed at one point, so a
-  // ---- partial-fill ordering has no consumer that could use it, and one group per
-  // ---- stage is exactly what lets `cp.async.wait_group S - 1` pace the pipeline by
-  // ---- STAGE. Each loop is issued on a FLAT CTA-WIDE INDEX so that a warp's 32 lanes
-  // ---- take 32 CONSECUTIVE chunks -- each warp's share is a contiguous byte range,
-  // ---- which is the only property the memory system rewards.
-  // ----
-  // ---- THE PREDICATE IS THE MECHANISM'S PER-ATOM HALF. A chunk is copied iff some
-  // ---- atom LIVE ON THAT SIDE IN THAT GROUP holds a digit in it; otherwise it is
-  // ---- issued with src-size zero and the hardware zero-fills it. That is EXACT: a
-  // ---- leaf reading a zero-filled chunk belongs to an atom dead on that side, whose
-  // ---- staged coefficient must be exactly zero, and zeroing one of its level
-  // ---- factors delivers exactly that. The ragged tail rides the same predicate,
-  // ---- with the token index CLAMPED so no out-of-range address is ever formed. The
-  // ---- value tile and the scalars take the SAME rule: a dead or padded slot is
-  // ---- zero-filled, which is the exact zero its consumers already require.
-  // ---- docs/internals/consumer_kernel.md#stage-issue
-  auto stage_issue = [&](int gnext, int st) {
-    char* const dst_stage = stage_at(st);
-    const int* const Ra = g_ring + (gnext % kSlots) * kSchedSlotInts;
-    const int gN = Ra[kSchedGN];
-    const int flags = Ra[kSchedFlags];
-    //: The STAGED masks -- the side flag already folded in, exactly as the visit
-    //: body's `rmr` / `wmr` fold it.
-    const unsigned rmask =
-        (!summary && (flags & 1) != 0) ? static_cast<unsigned>(Ra[kSchedRMask]) : 0u;
-    const unsigned wmask = ((flags & 2) != 0) ? static_cast<unsigned>(Ra[kSchedWMask]) : 0u;
-    //: **THE STREAMS ARE ISSUED IN THE ORDER THE VISIT CONSUMES THEM**: the VALUE TILE
-    //: (taken before the staging barrier, at `trans_frag_a`), then the ROW-SCALE
-    //: SCALARS (the `sr` / `sw` reduction), then the READ panel and the WRITE panel.
-    //: One commit group covers the whole stage, so this does not move when a stream
-    //: becomes VISIBLE -- it moves when each copy STARTS, and the copy the visit needs
-    //: first is the one the memory system is given first. The two amplitude slabs
-    //: share one walk because their addresses share every term but the base pointer
-    //: and the pitch; splitting them to order the panels against each other would cost
-    //: more address arithmetic than an intra-group ordering can buy.
-    //: docs/internals/consumer_kernel.md#stage-issue
-    //: **THE VALUE TILE, COPIED STRAIGHT INTO THE LAYOUT ITS `ldmatrix` READS.** `DV`
-    //: contiguous channels per token is what HBM holds and what the token-major tile
-    //: wants, so the asynchronous copy IS the staging -- there is no gather at the
-    //: point of use and no transposing store. The write gate's row scale is applied
-    //: later, at the fragment. docs/internals/consumer_kernel.md#value-stream
-    constexpr int kValChunks = DV / 8;
-    static_assert(DV % 8 == 0, "the value row must be a whole number of 16-byte chunks");
-    __nv_bfloat16* const dV = Vp_of(dst_stage);
-    for (int idx = tid; idx < kGroupTokens * kValChunks; idx += kConsumerThreads) {
-      const int t = idx / kValChunks;
-      const int c = idx - t * kValChunks;
-      const bool live = (t < gN) && (wmask != 0u);
-      const int64_t tr = static_cast<int64_t>(bh) * p.T + (live ? Ra[t] : 0);
-      cp_async_16(dV + t * kVpPitch + c * 8,
-                  static_cast<const __nv_bfloat16*>(p.v) + tr * DV + c * 8, live);
-    }
-    //: **THE ROW-SCALE SCALARS.** The write gate and the FIXED levels' amplitudes --
-    //: `1 + 2j` fp32 per token, gathered by token, so 4 bytes is the copy's width.
-    //: They are the last stream that was still fetched at the point of use, and it
-    //: was the PRODUCER warp that paid for it: the cook's own dependent global chain.
-    //: docs/internals/consumer_kernel.md#row-scales
-    float* const dS = pfS_of(dst_stage);
-    for (int idx = tid; idx < kGroupTokens * kScPitch; idx += kConsumerThreads) {
-      const int t = idx / kScPitch;
-      const int c = idx - t * kScPitch;
-      const bool in_group = t < gN;
-      const int64_t tr = tok_base + (in_group ? Ra[t] : 0);
-      //: **THE LEVEL IS RECOVERED AT COMPILE TIME**, by an unrolled ladder over the
-      //: slab's columns rather than by indexing `base[]` with `c`: a runtime index
-      //: into the owner's per-level register arrays would put them in LOCAL MEMORY
-      //: and undo the batch. docs/internals/consumer_kernel.md#row-scales
-      const float* src = p.g_write;
-      bool live = in_group && (wmask != 0u);
-#pragma unroll
-      for (int l = 0; l + 1 < D; ++l) {
-        //: Fixed levels (`l < j`) are ALWAYS fp32 (Option B) -- the one place the
-        //: amplitude dtype is not the arm's storage type.
-        if (c == 1 + 2 * l) {
-          src = static_cast<const float*>(p.amp_read[l]) + tr * p.level_pitch_read[l] + base[l];
-          live = in_group && l < j && rmask != 0u;
-        }
-        if (c == 2 + 2 * l) {
-          src = static_cast<const float*>(p.amp_write[l]) + tr * p.level_pitch_write[l] + base[l];
-          live = in_group && l < j && wmask != 0u;
-        }
-      }
-      if (c == 0) src = p.g_write + static_cast<int64_t>(bh) * p.T + (in_group ? Ra[t] : 0);
-      cp_async_4(dS + idx, src, live);
-    }
-    __nv_bfloat16* const dR = pfR_of(dst_stage);
-    __nv_bfloat16* const dW = pfW_of(dst_stage);
-    for (int idx = tid; idx < kGroupTokens * kPfChunks; idx += kConsumerThreads) {
-      const int t = idx / kPfChunks;
-      const int cg = idx - t * kPfChunks;
-      if (cg >= pf_nch) continue;
-      const bool in_group = t < gN;
-      const unsigned atoms = static_cast<unsigned>(ch_atoms[cg]);
-      const unsigned rm = in_group ? (atoms & rmask) : 0u;
-      const unsigned wm = in_group ? (atoms & wmask) : 0u;
-      const int l = ch_lvl[cg];
-      const int64_t tr = tok_base + (in_group ? Ra[t] : 0);
-      const int so = ch_src[cg];
-      const int dst = t * kPfPitch + cg * 8;
-      cp_async_16(
-          dR + dst,
-          static_cast<const __nv_bfloat16*>(p.amp_read[l]) + tr * p.level_pitch_read[l] + so,
-          rm != 0u);
-      cp_async_16(
-          dW + dst,
-          static_cast<const __nv_bfloat16*>(p.amp_write[l]) + tr * p.level_pitch_write[l] + so,
-          wm != 0u);
-    }
-    cp_async_commit();
-  };
+  // STAGE V3: READ PANEL BUILD.
+  //   WHAT: for every (leaf, member token) pair, form that token's read-routing
+  //     coefficient at that leaf -- the product of the token's per-level
+  //     routed amplitudes at the leaf's digits, times the read-side decay
+  //     factor from V1 if applicable. This materializes R_t (restricted to
+  //     this chunk's tokens and this warp's leaf range).
+  //   INPUTS: the gathered amplitude coefficients (S6), the owner's digit
+  //     table (S2), the decay clock/reference (V1).
+  //   OUTPUTS: the chunk's read panel -- one coefficient per (leaf, token) --
+  //     consumed by the readout GEMM (V6) and as one operand of the Gram
+  //     (V7).
+  //   CONTRACT: a leaf with no live read atom, or a token past the chunk's
+  //     real member count (a short trailing chunk), must produce an exact
+  //     zero, not merely a small value -- downstream stages rely on exact
+  //     zero to skip work safely. Skipped only if this chunk has no read
+  //     members at all.
+  //   CANDIDATE PRIMITIVES:
+  //     - `__float2bfloat16`/`__floats2bfloat162_rn` (this file's
+  //       `mma.cuh::pack_bf16x2` already wraps the latter) to narrow the
+  //       fp32-built coefficient into the bf16 storage the file header says
+  //       the staged operands live in.
+  //     - `ldmatrix` (through `mma_tile.cuh`'s existing fetchers) once the
+  //       panel is shared-memory resident and an `mma.sync` needs it as an
+  //       operand fragment.
+  //     - `__stcs`/`__stwt` (streaming/write-through store hints, `<cuda_
+  //       runtime.h>`'s cache-hint intrinsics) if the panel is written to
+  //       shared memory in a pattern where the normal cache policy is wrong
+  //       (verify whether shared-memory writes even take these hints, vs.
+  //       global only).
 
-  //: THE RING'S COLD START -- the producer cooks `kSchedDepth` groups of run-ahead
-  //: before the first visit, so the steady state never waits on production, and the
-  //: pipeline's `S` stages are filled behind it. The residue the contract admits
-  //: (item 6) is exactly this ramp plus the final drain.
-  if (warp == kProdWarp) {
-#pragma unroll 1
-    for (int g = 0; g < kSchedDepth; ++g) produce_group(g);
-  }
-  //: THE ENTRY EPOCH, and the ONE barrier the pipeline adds anywhere -- once per
-  //: kernel, never in the loop. It publishes the cold-start descriptors and the chunk
-  //: descriptors to the threads that issue the first stages' copies; in the steady
-  //: state the issue rides a barrier that already exists.
-  __syncthreads();
-  //: `#pragma unroll 1`: the ramp is once per kernel, and unrolling it would inline
-  //: the issue `S` more times against a 64-register budget.
-#pragma unroll 1
-  for (int st = 0; st < S; ++st) stage_issue(st, st);
-  cp_async_wait_group<S - 1>();
-  __syncthreads();
+  // STAGE V4: WRITE PANEL BUILD.
+  //   WHAT: the write-side mirror of V3: for every (leaf, member token) pair,
+  //     form the token's write-routing coefficient at that leaf, times the
+  //     write-side decay factor from V1 if applicable. This materializes W_u.
+  //   INPUTS: same as V3, write side.
+  //   OUTPUTS: the chunk's write panel, consumed by the fold GEMM (V8) and as
+  //     the other operand of the Gram (V7).
+  //   CONTRACT: same exact-zero requirement as V3. Skipped if this chunk has
+  //     no write members.
+  //   CANDIDATE PRIMITIVES: the write-side mirror of V3's list --
+  //     `__float2bfloat16`/`__floats2bfloat162_rn` for the narrowing,
+  //     `ldmatrix` for the eventual operand fetch, `#pragma unroll` on the
+  //     level loop.
 
-  // ---- THE WALK, OVER GROUPS. The producer's COOKED RING feeds one visit body per
-  // ---- group. Words ascend and each word is consumed LSB-first, so a group's tokens
-  // ---- are GLOBALLY ascending: the Gram's causal structure is order-relative, so
-  // ---- STABILITY IS THE CORRECTNESS REQUIREMENT. Consumers ASSEMBLE NOTHING -- they
-  // ---- read the descriptor the producer warp published `kSchedDepth` groups ago,
-  // ---- whose edge is the COOK'S READY CURSOR acquired at the top of the visit.
-  // ---- Group `gidx` is ring slot `gidx % kSlots` and pipeline stage `gidx % S`.
-  // ---- docs/internals/consumer_kernel.md#group-assembler
-  //: THE MASS COLUMN'S LIVE HALF, alternating per visit: the buffer the visit READS.
-  float* Smass = Smass0;
-  //: THE GRAM PUBLICATION EPOCH -- CTA-uniform (it counts `mixed` visits, and `mixed`
-  //: is a function of the descriptor every warp reads), so every warp computes the
-  //: same target for `gram_flag` without communicating.
-  int gram_epoch = 0;
-  //: The Gram's producing warps: its `NT` items are dealt out `it % kWarps`, so warp
-  //: `w` produces iff `w < min(NT, kWarps)`.
-  constexpr int kGramProd = NT < kWarps ? NT : kWarps;
-  //: The mass column's producing warps, on the same rule: its `BC / 8` output tiles are
-  //: dealt out `lt % kWarps`.
-  constexpr int kMassProd = (BC / 8) < kWarps ? (BC / 8) : kWarps;
-  //: THE MASS COLUMN'S PUBLICATION EPOCH -- one arrival round per visit, unconditional
-  //: (a read-only visit CARRIES the column across, which is still a write).
-  int mass_epoch = 0;
-  for (int gidx = 0;; ++gidx) {
-    const int st = gidx % S;
-    //: **THE VISIT'S PARITY**, the one index that selects its scratch. Consecutive
-    //: visits land on disjoint panels, row scales and survival factors, which is what
-    //: leaves the visit with a SINGLE CTA barrier.
-    const int par = gidx & 1;
-    __nv_bfloat16* const Rp = Rp0 + par * (BC * kTokPitch);
-    __nv_bfloat16* const Wp = Wp0 + par * kWpElems;
-    float* const sr = sr_0 + par * (2 * kGroupTokens);
-    float* const sw = sr + kGroupTokens;
-    float* const s0 = DECAY ? s0_0 + par * BC : s0_0;
-    const int* const R = g_ring + (gidx % kSlots) * kSchedSlotInts;
-    //: **THE COOK'S ACQUIRE, AND IT IS THE VISIT'S ONLY DEPENDENCE ON THE PRODUCER.**
-    //: One test covers BOTH descriptor reads the visit makes -- this group's at the
-    //: top and group `gidx + S`'s inside `stage_issue` -- because the later one is the
-    //: stronger. It is the descriptor's ONLY edge: nothing else in the visit orders the
-    //: producer warp against its consumers. docs/internals/consumer_kernel.md#cook-cursor
-    const int cook_target = gidx + S + 1;
-    while (*const_cast<volatile int*>(ring_ready) < cook_target) {
-    }
-    __threadfence_block();
-    //: `gN == 0` is the stream's end, as the producer saw it; the final flush is the
-    //: ragged group (`gN < kGroupTokens`).
-    const int gN = R[kSchedGN];
-    if (gN == 0) break;
-    const int flags = R[kSchedFlags];
-    //: **THE STAGED MASKS -- the ONE pair every consumer walks.** A group's atom mask
-    //: and its side flag are INDEPENDENT bitmaps (the flag is the fixed levels' rows,
-    //: the mask is the atom bitlists), so the masks below are the side flag ALREADY
-    //: FOLDED IN: `rmr != 0` IS "this visit staged read coefficients", and likewise
-    //: `wmr` for the write side.
-    const unsigned rmr =
-        (!summary && (flags & 1) != 0) ? static_cast<unsigned>(R[kSchedRMask]) : 0u;
-    const unsigned wmr = ((flags & 2) != 0) ? static_cast<unsigned>(R[kSchedWMask]) : 0u;
-    const bool is_read = rmr != 0u;
-    const bool is_write = wmr != 0u;
-    const bool mixed = is_read && is_write;
-    //: THE VISIT'S TWO HALVES OF THE MASS COLUMN. `Smass` is the entry column every
-    //: reader takes; `SmOut` is the exit column the fold's term 3 alone writes, and it
-    //: becomes the next visit's entry at the bottom of the body. Its readers AFTER the
-    //: panel barrier are separated from the next visit's writers by that barrier; the
-    //: one reader BEFORE it -- the decay entry-frame scale -- takes the mass cursor.
-    float* const SmOut = (Smass == Smass0) ? Smass1 : Smass0;
-    //: THIS VISIT'S STAGE. Four regions, filled `S` visits ago and waited on just
-    //: before the panel barrier of the previous visit.
-    char* const stage = stage_at(st);
+  // STAGE V5: VALUE OPERAND PREP.
+  //   WHAT: take the write-member tokens' value vectors (gathered in S6) and
+  //     apply the per-token write-gate scale from V2, producing Vw_u.
+  //   INPUTS: gathered value vectors (S6), write-scale (V2).
+  //   OUTPUTS: the chunk's scaled value operand, used identically by the fold
+  //     GEMM (V8) and the intra GEMM (V9) -- it is the same Vw_u in both
+  //     formulas.
+  //   CONTRACT: the scale must be applied before either consuming GEMM runs;
+  //     it may be applied to the raw fetched value at any point up to their
+  //     use, on any operand representation -- the requirement is only that
+  //     the value each GEMM contracts against already carries the write gate.
+  //   CANDIDATE PRIMITIVES:
+  //     - `fmaf`/`__fmaf_rn` for the scale-and-narrow in one step, or plain
+  //       `*` if the compiler already fuses it.
+  //     - `__float2bfloat16`/`__floats2bfloat162_rn` to land the scaled
+  //       value in the bf16 representation the fold/intra GEMMs consume.
+  //     - `ldmatrix`/`mma_tile.cuh`'s existing operand fetchers once this
+  //       value is staged and needs to become an `mma.sync` B or A fragment.
 
-    //: **THE VALUE FRAGMENT IS TAKEN FIRST, AND THAT IS WHAT FREES ITS STAGE.** The
-    //: tile's whole consumption is four registers per CHANNEL TILE the warp owns -- one
-    //: A operand per tile serves the fold's every atom AND the intra term -- so lifting
-    //: it here, before the staging barrier, retires the region for the rest of the visit
-    //: and lets the same barrier that publishes the panels also license the refill. The
-    //: ROW SCALE is applied to the fragment afterwards, in registers.
-    //: **THIS IS THE STREAM THE CARVE'S CHANNEL AXIS PARTITIONS**: a warp reads only the
-    //: `kMTW * 16` channel columns of its channel group, so the value tile is shared
-    //: along a leaf column of the grid and independent across channel groups.
-    //: docs/internals/consumer_kernel.md#value-stream
-    unsigned va[kMTW][4] = {};
-    if (is_write) {
-#pragma unroll
-      for (int mt = 0; mt < kMTW; ++mt) {
-        trans_frag_a(Vp_of(stage), kVpPitch, 0, m0 + mt * kMmaKQuantum, lane, va[mt][0], va[mt][1],
-                     va[mt][2], va[mt][3]);
-      }
-    }
+  // STAGE V6: GEMM "READOUT" -- y_partial = R_t . S_entry, and its mass
+  //   companion dm_partial = R_t . mass_entry.
+  //   WHAT: multiply this chunk's read panel (V3) against S_entry -- the
+  //     state as of the START of this chunk, per the frozen-S invariant in
+  //     ORIENTATION -- to get each read-member token's partial output. Do the
+  //     same against the entry mass column for the ratio's denominator.
+  //   INPUTS: read panel (V3), S_entry (S4, scaled by V1's s0 if decay is on),
+  //     entry mass column.
+  //   OUTPUTS: y_partial, dm_partial per read-member token -- NOT yet the
+  //     final answer; the intra term (V9) still has to add this chunk's own
+  //     within-chunk causal contribution.
+  //   CONTRACT: must read S_entry/mass_entry BEFORE V8 (the fold) overwrites
+  //     them with this chunk's own writes -- this is the frozen-S invariant
+  //     made concrete: this GEMM and V8 must not observe each other's chunk-
+  //     local effects out of order. Restricted to atoms live on the read side
+  //     this chunk (S5); a leaf outside that mask contributes zero by V3's
+  //     exact-zero guarantee, so it may be skipped rather than multiplied.
+  //   CANDIDATE PRIMITIVES:
+  //     - `mma.sync.aligned.m16n8k16` (this file's `mma.cuh::mma_m16n8k16`
+  //       wrapper already exists for exactly this bf16-in/fp32-accumulate
+  //       shape) as the tensor-core instruction the GEMM issues.
+  //     - `ldmatrix`/`ldmatrix.x4`/`ldmatrix.x4.trans` (via `mma_tile.cuh`'s
+  //       fetchers, which already document the fragment/operand maps for
+  //       this exact GEMM's A and B operands) to bring the read panel and
+  //       the state into the register layout `mma.sync` expects.
+  //     - `cute::TiledMma`/`cute::Tensor`/`cute::gemm` (available: this repo
+  //       vendors `cutlass`/`cute` and `mma_tile.cuh` already `#include`s
+  //       `<cute/tensor.hpp>`, `<cute/atom/mma_traits_sm80.hpp>` -- currently
+  //       used there as a codegen/static-assert cross-check on the hand-
+  //       rolled PTX, not to issue MMAs at runtime; using it directly is an
+  //       alternative to the hand-rolled `mma.sync` path, not something this
+  //       codebase currently does in the kernel body).
+  //     - `nvcuda::wmma::mma_sync`/`load_matrix_sync` (`<mma.h>`, the CUDA
+  //       C++ warp-matrix API) as a higher-level alternative to raw
+  //       `mma.sync` PTX -- available on this toolchain but not used
+  //       elsewhere in this project's kernels, which stay on hand-rolled PTX.
 
-    // ---- THE STAGING, AS A FUNCTION OF THE VISIT: everything the compute consumes
-    // ---- but does not produce. Slots `[gN, kGroupTokens)` of a ragged group stage
-    // ---- EXACT-ZERO coefficient rows and zero row scales, so they are inert through
-    // ---- every GEMM. STAGING IS BRANCHLESS WITHIN A LIVE GROUP (fetch consults
-    // ---- nothing -- the frozen contract): dead atoms stage the exact zeros the
-    // ---- tensors hold; the ATOM MASKS ARE COMPUTE-ONLY.
-    // ---- docs/internals/consumer_kernel.md#staging
+  // STAGE V7: GEMM "GRAM" -- G[u][t] = W_u . R_t, masked to u <= t.
+  //   WHAT: form the small (chunk-tokens x chunk-tokens) Gram matrix pairing
+  //     every write-member token u against every read-member token t in THIS
+  //     SAME chunk, contracting over the leaf axis, kept only where u <= t
+  //     (inclusive causal: a token may read a write that happened at or
+  //     before it, never after).
+  //   INPUTS: write panel (V4), read panel (V3).
+  //   OUTPUTS: the chunk's Gram matrix, feeding the intra GEMM (V9) and its
+  //     mass companion.
+  //   CONTRACT: only runs when the chunk has BOTH read and write members
+  //     (otherwise there is no within-chunk pair to form). The u <= t mask is
+  //     exact -- it is what makes V9 the correct within-chunk causal
+  //     correction that S_entry (frozen at chunk entry) structurally cannot
+  //     supply. An entry masked out must be an exact zero, since V9 sums over
+  //     the whole matrix without re-checking causality.
+  //   CANDIDATE PRIMITIVES:
+  //     - `mma.sync.aligned.m16n8k16` again (this file's `mma.cuh` wrapper):
+  //       the Gram is described as a fourth GEMM contracting over the leaf
+  //       axis, so it is the same instruction on a different operand pair.
+  //     - `__shfl_sync`/warp-local exchange, or a small shared-memory tile,
+  //       if the (<=16 x <=16) Gram result is more naturally produced/
+  //       consumed lane-per-(u,t)-pair than through the tensor core for a
+  //       matrix this small (verify which is faster; not something this
+  //       skeleton prescribes).
+  //     - a compile-time-unrolled masked accumulate (`#pragma unroll` +
+  //       ternary/`min`) for the `u <= t` triangular mask if built by hand
+  //       rather than by zeroing masked GEMM inputs.
 
-    // ---- DECAY, step (a): the clock prefix, `P_ref`, `s0`, guarded by the write side
-    // ---- STRUCTURALLY. Runs over ALL `BC` leaves (elementwise surplus-ALU work; keeps
-    // ---- every leaf's clk/p_ref/s0 FINITE for the panels -- the 0*NaN discipline).
-    // ---- docs/internals/consumer_kernel.md#decay-clock
-    if (DECAY && is_write) {
-      //: **THE MASS COLUMN'S ACQUIRE.** This is the ONE read of the entry column that
-      //: happens before the panel barrier, so it is the one that needs an edge of its
-      //: own against the previous visit's term-3 writers. It waits on `kMassProd`
-      //: arrivals, not on the CTA. docs/internals/consumer_kernel.md#mass-publication
-      const int mass_target = mass_epoch * kMassProd;
-      volatile int* const mf = mass_flag;
-      while (*mf < mass_target) {
-      }
-      __threadfence_block();
-      for (int i = tid; i < BC; i += kConsumerThreads) {
-        float acc = 0.0f;
-        for (int t = 0; t < gN; ++t) {
-          float cl = 1.0f;
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            cl *= p.amp_clock[l][(tok_base + R[t]) * p.level_pitch_clock[l] + dig[l * BC + i]];
-          }
-          //: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
-          acc += cl;
-          clk[t * CKP + i] = acc;
-        }
-        //: A ragged group's padded slots take a FINITE zero prefix so both panel
-        //: factors stay finite (`keep^0 == 1`); their coefficient rows are exact zeros
-        //: anyway.
-        for (int t = gN; t < kGroupTokens; ++t) clk[t * CKP + i] = 0.0f;
-        const float pr = 0.5f * acc;
-        p_ref[i] = pr;
-        s0[i] = expf(pr * log_keep[i]);
-      }
-      __syncthreads();
-      // ---- DECAY, step (c): the entry state enters the reference frame, ONCE PER
-      // ---- VISIT. `s0` multiplies the STATE -- in REGISTERS, two scalar `s0` loads
-      // ---- and four multiplies per 8-leaf tile, where the shared-memory state paid a
-      // ---- merge, a scale and a re-split at every element. The mass column rides the
-      // ---- same sweep (same recurrence with `v := 1`). Dead atoms' leaves have a zero
-      // ---- clock prefix, hence `s0 == 1`, so an unvisited atom is exactly unchanged.
-#pragma unroll
-      for (int ai = 0; ai < kAPW; ++ai) {
-#pragma unroll
-        for (int half = 0; half < 2; ++half) {
-          const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
-          //: `i0` is even, so the tile's two leaf scales are ONE 64-bit shared load,
-          //: and it serves every channel tile the warp owns.
-          const float2 s = *reinterpret_cast<const float2*>(s0 + i0);
-#pragma unroll
-          for (int mt = 0; mt < kMTW; ++mt) {
-            float* const stf = St + (mt * kAPW + ai) * 8 + half * 4;
-            stf[0] *= s.x;
-            stf[1] *= s.y;
-            stf[2] *= s.x;
-            stf[3] *= s.y;
-          }
-        }
-      }
-      for (int i = tid; i < BC; i += kConsumerThreads) Smass[i] *= s0[i];
-    }
+  // STAGE V8: GEMM "FOLD" -- S_entry_next = S_entry (rescaled) + sum_u W_u . Vw_u,
+  //   and its mass companion (TERM 3) mass_next = s0 * (mass_entry + sum_u
+  //   sw_u . W_u).
+  //   WHAT: accumulate this chunk's write contributions into the running
+  //     state, advancing it from this chunk's S_entry to the NEXT chunk's
+  //     S_entry. This is the step that makes the recurrence a recurrence: every
+  //     later chunk's V6 sees this chunk's writes only through this folded
+  //     state, never directly.
+  //   INPUTS: write panel (V4), scaled value operand (V5), the state storage
+  //     (S4, already read by V6), decay exit scale (V1's s0, applied once per
+  //     chunk here).
+  //   OUTPUTS: the state and mass column advanced in place, ready to be this
+  //     chunk's V6... no -- ready to be the NEXT chunk's V6 entry state.
+  //   CONTRACT: must not be visible to THIS chunk's own V6/V7 (those already
+  //     ran, or logically must be treated as having already run, against the
+  //     pre-fold state) -- this is the frozen-S invariant's write side.
+  //     Restricted to the union of atoms live on the write side this chunk;
+  //     an atom outside that mask is left bit-for-bit unchanged (decay's s0
+  //     must evaluate to exactly 1 there, per V1's contract, so "untouched"
+  //     and "multiplied by an identity decay" agree).
+  //   CANDIDATE PRIMITIVES:
+  //     - `mma.sync.aligned.m16n8k16` with `D == C` (in-place accumulation
+  //       into the same fragment the operand map is read from -- the file
+  //       header names this as the reason the state's `[channel][leaf]`
+  //       transpose was chosen) as the fold's core instruction.
+  //     - `ldmatrix` for bringing the write panel/value operand into
+  //       register operand form.
+  //     - `fmaf` for the s0 rescale (V1's decay exit scale) applied to the
+  //       pre-fold state fragment before/alongside the accumulate.
 
-    // ---- §3 STEP 3's ROW SCALES, REDUCED FROM THE STAGED SCALARS. The FIXED levels'
-    // ---- amplitudes are CONSTANT ALONG THE LEAF AXIS -- `j` scalars per member token
-    // ---- per side, common to every atom's Kronecker coefficient -- so their per-token
-    // ---- product is an OWNER-LEVEL fact and obeys the same multiplicity rule
-    // ---- membership does: formed ONCE PER GROUP, never per atom. The scalars
-    // ---- themselves rode the stage pipeline, so no thread gathers them here.
-    // ---- A ragged group's padded slots take EXACT ZERO scales -- the copy zero-filled
-    // ---- them -- which is what makes their coefficient rows inert through every GEMM
-    // ---- and the mass fold's `sw[t]` term vanish.
-    // ---- docs/internals/consumer_kernel.md#row-scales
-    for (int t = tid; t < kGroupTokens; t += kConsumerThreads) {
-      const float* const row = pfS_of(stage) + t * kScPitch;
-      float rs = (is_read && t < gN) ? 1.0f : 0.0f;
-      float ws = (is_write && t < gN) ? row[0] : 0.0f;
-#pragma unroll
-      for (int l = 0; l < D; ++l) {
-        if (l >= j) break;
-        rs *= row[1 + 2 * l];
-        ws *= row[2 + 2 * l];
-      }
-      sr[t] = rs;
-      sw[t] = ws;
-    }
+  // STAGE V9: GEMM "INTRA" -- y_partial += Vw_u . G[u][t] (accumulating into
+  //   the SAME y_partial V6 started), and mass TERM 2: dm_partial += sw_u .
+  //   G[u][t].
+  //   WHAT: add the within-chunk causal contribution that S_entry could not
+  //     carry, because those writes happen inside this very chunk: for each
+  //     read-member token t, sum over write-member tokens u with u <= t (via
+  //     the Gram, V7) the corresponding Vw_u contribution.
+  //   INPUTS: the Gram (V7), scaled value operand (V5), the running
+  //     y_partial/dm_partial from V6.
+  //   OUTPUTS: the chunk's final y/dm for its read-member tokens -- the full
+  //     R_t . S_entry + sum_{u<=t}(...) formula, now complete for this chunk.
+  //   CONTRACT: only runs when the chunk has both read and write members (same
+  //     condition as V7, whose output it consumes). Must accumulate into, not
+  //     overwrite, V6's partial -- the two terms of the telescoped formula are
+  //     additive.
+  //   CANDIDATE PRIMITIVES:
+  //     - `mma.sync.aligned.m16n8k16` with `C` seeded from V6's partial
+  //       result (accumulate-in-place, same trick V8 uses) as the intra
+  //       GEMM's instruction.
+  //     - `ldmatrix` to fetch the Gram (V7) and value operand (V5) into
+  //       register form for the multiply.
+  //     - `fmaf` if any part of this accumulation is more natural as scalar
+  //       lane arithmetic than a tensor-core pass (e.g. the mass companion
+  //       term, which is a much smaller reduction than the channel-wide `y`
+  //       term).
 
-    // ---- THE READ PANEL, `Rp[leaf][token]` (§3 steps 2-3). It is the READOUT's and
-    // ---- the Gram's B operand, `k = leaf` on the row axis and `n = token` on the
-    // ---- column axis, which is the form `ldmatrix.trans` reads.
-    // ---- docs/internals/consumer_kernel.md#read-panel
-    if (is_read) {
-      //: BRANCHLESS (fetch consults nothing -- the frozen contract): every atom's
-      //: slots are staged by the pure affine walk; a dead atom's positions hold the
-      //: exact zeros the amplitude tensor already holds (entmax), so the fetch layer
-      //: cannot be wrong -- the masks are COMPUTE-ONLY (MMA skip). A padded token slot
-      //: takes an exact zero, which is what makes its column inert.
-      //: THE fp16 APPLICATION IS CARVED OUT (U07-d built, adjudicated 2026-08-06): an
-      //: ADMITTED hot routing (panel bound 23.3 of 40) put the survival factor at
-      //: ~e^15+, past fp16's 65504 max -- measured NaN, not a rounding. The panels
-      //: apply in fp32 against the bf16 STORAGE (the memory win survives the carve).
-      //: Evidence: workflows/perf/p26_evidence/m2_fp16_breach.txt.
-      for (int idx = tid; idx < BC * kGroupTokens; idx += kConsumerThreads) {
-        const int i = idx / kGroupTokens;
-        const int t = idx - i * kGroupTokens;
-        float ac = 0.0f;
-        if (t < gN) {
-          //: THE STAGED ROW. `pf_off[l]` is a register at a compile-time `l`, so the
-          //: whole address is one 32-bit add over the digit the walk already reads --
-          //: where the direct form paid a 64-bit `tr * pitch` and a global load.
-          const __nv_bfloat16* const pf = pfR_of(stage) + t * kPfPitch;
-          ac = 1.0f;
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l < j) continue;  // fixed levels hoist into the row scale (§3 step 3)
-            ac *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i]]);
-          }
-          if (DECAY && is_write) {
-            ac *= panel_read_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
-          }
-        }
-        stage_put(Rp[rp_index(i, t)], ac);
-      }
-    }
-    // ---- THE WRITE PANEL, `Wp[token][leaf]` -- stored TOKEN-MAJOR because it is the
-    // ---- one operand read BOTH ways: the Gram's A (`m = token, k = leaf`) and the
-    // ---- fold's B (`k = token, n = leaf`). One buffer, two `ldmatrix` atoms.
-    // ---- docs/internals/consumer_kernel.md#write-panel
-    if (is_write) {
-      //: BRANCHLESS, as the read panel: every atom staged, zeros ride self-masking,
-      //: masks stay compute-only.
-      for (int idx = tid; idx < kGroupTokens * BC; idx += kConsumerThreads) {
-        const int t = idx / BC;
-        const int i = idx - t * BC;
-        float ac = 0.0f;
-        if (t < gN) {
-          const __nv_bfloat16* const pf = pfW_of(stage) + t * kPfPitch;
-          ac = 1.0f;
-#pragma unroll
-          for (int l = 0; l < D; ++l) {
-            if (l < j) continue;
-            ac *= __bfloat162float(pf[pf_off[l] + dig[l * BC + i]]);
-          }
-          if (DECAY) {
-            ac *= panel_write_factor(clk[t * CKP + i], p_ref[i], log_keep[i]);
-          }
-        }
-        //: §6.4 PASS 1's per-leaf inclusion, COEFFICIENT HALF: a leaf is included iff
-        //: some token's staged coefficient is nonzero. The store is IDEMPOTENT -- every
-        //: writer writes the same `1` -- so the token axis needs no reduction.
-        //: HAZARD summary-prequant -- docs/internals/consumer_kernel.md#summary-prequant
-        if (summary && ac != 0.0f) sum_slot[i] = 1;
-        stage_put(Wp[wp_index(BC, t, i)], ac);
-      }
-    }
-    //: **THE PIPELINE'S ONE WAIT, AND IT IS FOR ONE STAGE.** `cp.async` completion is
-    //: visible to the ISSUING THREAD alone, so the stage the NEXT visit consumes needs
-    //: a CTA-wide edge after this wait -- and the barrier below is that edge, which is
-    //: why the wait sits here rather than at the foot of the visit. `S - 1` groups stay
-    //: in flight across it, unchanged: this retires the group for `gidx + 1`, and the
-    //: issue below puts the group for `gidx + S` back in its place.
-    //: docs/internals/consumer_kernel.md#one-barrier
-    cp_async_wait_group<S - 2>();
-    //: **THE VISIT'S ONE CTA BARRIER.** It carries every cross-warp edge the visit has
-    //: that a cursor does not: the panels, the row scales and the decay factors this
-    //: visit just built; the STAGE for the next visit, whose copies it makes visible;
-    //: the write-after-read on the stage this visit just finished reading, which the
-    //: issue below refills; and -- through the barrier ORDER, since the parity buffers
-    //: put consecutive visits on disjoint storage -- the write-after-read on the visit
-    //: scratch itself. docs/internals/consumer_kernel.md#one-barrier
-    __syncthreads();
+  // STAGE V10: EMISSION.
+  //   WHAT: scatter this chunk's finished y (numerator) and dm (denominator)
+  //     contributions out to the token-indexed global accumulators, for this
+  //     chunk's read-member tokens.
+  //   INPUTS: finished y/dm (V9, or V6 alone if the chunk had no write
+  //     members and V9 was skipped), the read-scale from V2.
+  //   OUTPUTS: global `num`/`den` accumulators updated for this chunk's
+  //     read-member tokens.
+  //   CONTRACT: must use addition (not overwrite) into the global
+  //     accumulators -- a token may be a read-member of more than one owner
+  //     across the whole kernel launch (it belongs to multiple leaf blocks
+  //     across levels/segments), and its final value is the SUM of every
+  //     owner's contribution. A token with an exact-zero read-scale (a padded
+  //     slot in a short trailing chunk) contributes nothing and may be
+  //     skipped.
+  //   CANDIDATE PRIMITIVES:
+  //     - `atomicAdd` (this project already uses it for fan-in in
+  //       `summaries.cu`/`decode.cu`) for the multi-owner-per-token
+  //       accumulation into `num`/`den`, since the CTA writing a given
+  //       token's contribution is not the only writer of that token's slot.
+  //     - `red.global.add` (the PTX reduction instruction `atomicAdd`
+  //       lowers to; naming it as the underlying instruction, not a separate
+  //       API) and `__stwt`/`__stcg` write-hint intrinsics if a non-atomic
+  //       store is legal on some path.
+  //     - `fmaf`/`*` to apply V2's read-scale immediately before the
+  //       addition if it was not already folded in earlier.
 
-    //: **THE ROW SCALE MEETS THE VALUE FRAGMENT, IN REGISTERS.** The fold contracts
-    //: over TOKENS, so the write gate's per-token scale cannot hoist out of the sum
-    //: and must ride the value operand -- but it need not ride its STORAGE. `a0`/`a1`
-    //: carry tokens `2r, 2r + 1` and `a2`/`a3` tokens `2r + 8, 2r + 9`, the same
-    //: rounding the staged product used to take.
-    if (is_write) {
-      const float w0 = sw[2 * _sr], w1 = sw[2 * _sr + 1];
-      const float w2 = sw[2 * _sr + 8], w3 = sw[2 * _sr + 9];
-#pragma unroll
-      for (int mt = 0; mt < kMTW; ++mt) {
-        scale_frag_pair(va[mt][0], w0, w1);
-        scale_frag_pair(va[mt][1], w0, w1);
-        scale_frag_pair(va[mt][2], w2, w3);
-        scale_frag_pair(va[mt][3], w2, w3);
-      }
-    }
+  // STAGE V11 (auxiliary; only in the "summary" pass mode used to precompute
+  //   per-leaf write-inclusion ahead of a later, separate scan pass over a
+  //   long segmented owner -- NOT part of ordinary single-segment forward
+  //   math):
+  //   WHAT: track, per leaf, whether it received any nonzero write this
+  //     chunk, and accumulate a running survival product for later
+  //     publication.
+  //   INPUTS: this chunk's write panel (V4) and decay entry scale (V1).
+  //   OUTPUTS: per-leaf inclusion flags and a running survival product, used
+  //     only by the EXIT stage's summary publication (E2 below).
+  //   CONTRACT: only meaningful under the summary pass; ordinary forward
+  //     passes skip this entirely. Not required to understand the core
+  //     recurrence -- it exists to support splitting one very long owner's
+  //     token range across multiple CTAs/passes.
+  //   CANDIDATE PRIMITIVES:
+  //     - `__ballot_sync` to turn "did leaf L receive a nonzero write this
+  //       chunk" (one predicate per lane/leaf) into a packed word in one
+  //       instruction (`summaries.cu` already does exactly this: `__ballot_
+  //       sync` then `atomicOr` the resulting word).
+  //     - `atomicOr` to fold a newly-observed inclusion word into a running
+  //       per-leaf inclusion bitmap shared across warps.
+  //     - `__popc` to count newly-set bits if a running total is kept
+  //       alongside the bitmap (`summaries.cu`'s comment on `atomicOr`
+  //       returning the old word plus `__popc` of the delta is the same
+  //       pattern).
+  //     - `fmaf`/`*` for the running survival-product accumulation.
 
-    //: **THE NEXT STAGE'S ISSUE, AND IT COSTS NO BARRIER.** The barrier above is
-    //: already there to publish the staged operands; it equally guarantees that every
-    //: warp has finished READING this stage -- the panels above and the value fragment
-    //: before them -- which is the condition for refilling it. From here the copies for
-    //: group `gidx + S` run concurrently with this visit's entire compute AND with the
-    //: `S - 1` visits after it; only the group about to be consumed is ever waited on.
-    stage_issue(gidx + S, st);
+  // STAGE V12: CARRY.
+  //   WHAT: the state and mass column V8 just produced become the next
+  //     chunk's S_entry and mass_entry.
+  //   CONTRACT: this carry must be visible to the next loop iteration's V6
+  //     before that iteration's V6 runs; loop back to V1 for the next chunk,
+  //     or exit the walk if S5 signalled end-of-stream (a chunk descriptor
+  //     with zero member tokens).
+  //   CANDIDATE PRIMITIVES:
+  //     - none needed if the state truly stays in the same registers/shared
+  //       location across iterations (the file header says the state lives
+  //       in registers as the fold's own accumulator fragments, so V8's
+  //       output may already BE V6's next input with no separate move).
+  //     - `__syncthreads()`/`__syncwarp()` only if the carry crosses a
+  //       thread/warp boundary that the fold and the next readout don't
+  //       naturally share -- a barrier is a correctness requirement here,
+  //       never a default to reach for.
 
-    // ---- PHASE A -- the two GEMMs that read only the ENTRY state and the staged
-    // ---- panels: the readouts and the Gram. They share a phase because neither
-    // ---- writes what the other reads.
+  // ---------------------------------------------------------------------------
+  // EXIT -- once per CTA, after the walk terminates.
+  // ---------------------------------------------------------------------------
 
-    // ---- GEMM 1: THE READOUT, `y^T = S^T . Rp`, LIVE READ ATOMS ONLY. **THE A
-    // ---- OPERAND IS THE WARP'S OWN STATE REGISTERS**, narrowed to bf16 words at the
-    // ---- fragment and never loaded: the k-loop's only memory traffic is the B
-    // ---- fragment, and ONE pair of B fragments feeds every channel tile the warp
-    // ---- owns. A warp holds a CHANNEL-TILE RANGE and a LEAF RANGE, so the `GL` warps
-    // ---- of a channel group each carry a PARTIAL over their own leaves -- and they
-    // ---- need no reduction, because the emission below is already an `atomicAdd`
-    // ---- split-K of fan-in `GL`. docs/internals/consumer_kernel.md#gemm-readout
-    float y[kMTW][2][4];
-#pragma unroll
-    for (int mt = 0; mt < kMTW; ++mt) {
-#pragma unroll
-      for (int nt = 0; nt < 2; ++nt) {
-        y[mt][nt][0] = 0.0f;
-        y[mt][nt][1] = 0.0f;
-        y[mt][nt][2] = 0.0f;
-        y[mt][nt][3] = 0.0f;
-      }
-    }
-    if (is_read) {
-      const unsigned rmask = rmr & own_mask;
-      if (rmask == own_mask) {
-        mma_readout_tiles<kMTW, kAPW>(St, Rp, atom0 * kMmaKQuantum, lane, y);
-      } else {
-        //: **THE SPARSE ARM WALKS THE WARP'S OWN ATOM SLOTS AT COMPILE TIME**, testing
-        //: the mask bit, rather than walking the set bits: a runtime index into `St`
-        //: would put the state in LOCAL MEMORY and undo the whole batch. One atom of a
-        //: `[kMTW][kAPW]` register plane is a STRIDED slice, so the single-atom form
-        //: takes the stride as its `KS` -- the `[MT][KS]` map with `KS = kAPW` and one
-        //: k-step walked.
-#pragma unroll
-        for (int ai = 0; ai < kAPW; ++ai) {
-          if (((rmask >> (atom0 + ai)) & 1u) == 0u) continue;
-          mma_readout_tiles<kMTW, 1, kAPW>(St + ai * 8, Rp, (atom0 + ai) * kMmaKQuantum, lane, y);
-        }
-      }
-    }
+  // STAGE E1 (performance-only, no semantic content): if any gathers (S6) were
+  //   issued ahead of their consuming chunk and are still outstanding when the
+  //   walk ends, wait for them to land before the CTA exits -- a kernel must
+  //   not release memory it told the copy engine to keep writing into. Not
+  //   needed at all in a synchronous, no-lookahead implementation.
+  //   CANDIDATE PRIMITIVES:
+  //     - `cp_async_wait_all`/`cp_async_wait_group` (this file's own
+  //       `cp_async.cuh` wrappers around `cp.async.wait_all`/`cp.async.
+  //       wait_group`) or the raw `__pipeline_wait_prior`/`__pipeline_
+  //       wait_all` from `cuda_pipeline_primitives.h`.
+  //     - `__syncthreads()` after the drain if other threads in the CTA
+  //       depend on the drained data being visible CTA-wide, not just to the
+  //       issuing thread.
 
-    // ---- THE MASS COLUMN, TERM 1 -- `dm = broadcast(Smass) . Rp`, the SAME B OPERAND
-    // ---- the readout uses with the mass column riding the A operand's `k` axis. It
-    // ---- reads the visit's ENTRY column, which the fold's term 3 does not write --
-    // ---- term 3 writes the EXIT half -- so the two are unordered. Its items are
-    // ---- spread over the warps: the mass column is shared, so its terms carry no
-    // ---- residency constraint. Live read atoms only.
-    // ---- docs/internals/consumer_kernel.md#mass-term1
-    //: HAZARD mass-split -- docs/internals/consumer_kernel.md#mass-split
-    float dm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    const bool dm_owner = (warp < 2) && is_read;
-    const int dm_nt = warp;
-    if (dm_owner) {
-      if (rmr == kFullMask) {
-        mma_mass_readout<kQPO>(Smass, Rp, 0, dm_nt * 8, lane, dm[0], dm[1], dm[2], dm[3]);
-      } else {
-        for (unsigned m = rmr; m; m &= m - 1) {
-          const int q = __ffs(m) - 1;
-          mma_mass_readout<1>(Smass, Rp, q * kMmaKQuantum, dm_nt * 8, lane, dm[0], dm[1], dm[2],
-                              dm[3]);
-        }
-      }
-    }
+  // STAGE E2 (summary pass only): publish the per-leaf write-inclusion
+  //   summary and the accumulated survival product (V11) to the intermediate
+  //   segment stash, along with the current state, so a later pass over this
+  //   owner's next segment can pick them up as its entry state (S4).
+  //   CONTRACT: only this CTA's own segment's data is published, at a slot
+  //     keyed by this segment's identity; a later segment's S4 depends on
+  //     finding it there.
+  //   CANDIDATE PRIMITIVES:
+  //     - `cub::BlockReduce` (`<cub/cub.cuh>`, already used in `summaries.cu`
+  //       for a CTA-wide reduction) if the survival product/inclusion
+  //       summary needs a block-wide combine before the single publishing
+  //       write.
+  //     - plain non-atomic stores (this segment owns its own stash slot
+  //       exclusively, per the CONTRACT) rather than `atomicAdd` -- no
+  //       cross-CTA race to guard against here, unlike V10's emission.
+  //     - `__syncthreads()` before the publish if the summary was assembled
+  //       cooperatively across the CTA's warps and needs a CTA-wide barrier
+  //       first.
 
-    // ---- GEMM 2: THE GRAM, HELD TRANSPOSED -- `G^T += Wp . Rp^T` over atoms live on
-    // ---- BOTH sides, under §5's INCLUSIVE causal mask. THE TRANSPOSE IS FREE -- the D
-    // ---- fragment's rows become `token_b` and its columns `token_a`, which is the
-    // ---- `k`-major form the intra term's B operand wants.
-    // ---- docs/internals/consumer_kernel.md#gemm-gram
-    if (mixed) {
-#pragma unroll
-      for (int nt = 0; nt < NT; ++nt) {
-        if (nt % kWarps != warp) continue;
-        //: **THE BLOCK IS SKIPPED ON THE SIDES, AND THE MMA ON THE ATOMS.** These are
-        //: different conditions and the difference is load-bearing: GEMM 3 reads `G^T`
-        //: whenever both sides are live, so a block whose sides are live but whose atom
-        //: masks are DISJOINT must still be STORED -- as the exact zeros it is -- or the
-        //: intra term reads a previous visit's Gram.
-        const unsigned gmask = rmr & wmr;
-        const int n0 = nt * 8;
-        //: An empty `gmask` issues no `mma.sync` and the accumulators stay the exact
-        //: zeros the block is; the stores below still run.
-        float gd0 = 0.0f, gd1 = 0.0f, gd2 = 0.0f, gd3 = 0.0f;
-        if (gmask == kFullMask) {
-          mma_gram_atoms<kQPO>(Wp, kWpPitch, Rp, n0, lane, gd0, gd1, gd2, gd3);
-        } else {
-          for (unsigned m = gmask; m; m &= m - 1) {
-            const int q = __ffs(m) - 1;
-            mma_pitched_tile(Wp, kWpPitch, 0, q * kMmaKQuantum, Rp, kTokPitch, q * kMmaKQuantum, n0,
-                             lane, gd0, gd1, gd2, gd3);
-          }
-        }
-        CONSUMER_D_ROWS(lane);
-        const int c0 = n0 + 2 * _r, c1 = c0 + 1;
-        //: The causal mask, in the transposed frame: the D fragment's ROW is `token_b`
-        //: and its COLUMN is `token_a`, so §5's inclusive `u <= t` keeps the entries at
-        //: or ABOVE the diagonal.
-        //: The fragment's two columns are ADJACENT (`c0`, `c0 + 1`) and `c0` is even at
-        //: an even pitch, so each output row is ONE 32-bit shared store rather than two
-        //: 16-bit ones.
-        static_assert(kTokPitch % 2 == 0, "the Gram's paired store needs an even pitch");
-        stage_put2(Gm + _g * kTokPitch + c0, (c0 >= _g) ? gd0 : 0.0f, (c1 >= _g) ? gd1 : 0.0f);
-        stage_put2(Gm + (_g + 8) * kTokPitch + c0, (c0 >= _g + 8) ? gd2 : 0.0f,
-                   (c1 >= _g + 8) ? gd3 : 0.0f);
-      }
-      //: THE PUBLICATION HALF OF THE CURSOR. The fence orders this warp's `Gm` stores
-      //: before the count that advertises them; one lane carries the arrival because
-      //: the unit of publication is the WARP's whole share.
-      if (warp < kGramProd) {
-        __threadfence_block();
-        if (lane == 0) atomicAdd(gram_flag, 1);
-      }
-    }
+  // STAGE E3 (ordinary forward pass, not the summary pass): if -- and only if
+  //   -- this CTA covers the owner's LAST segment (S1), write the final state
+  //   and mass column back to the owner's persistent HBM state block.
+  //   CONTRACT: this is the second and last half of the one-copy invariant
+  //     (S4 was the first): exactly one HBM write per owner, and only from the
+  //     segment that has seen the owner's entire token range, never from an
+  //     intermediate segment (whose result belongs in the stash from E2, not
+  //     in the owner's real state).
+  //   CANDIDATE PRIMITIVES:
+  //     - plain (non-atomic) global stores, or vectorized `float4`/`int4`
+  //       stores, for the bulk state write -- the one-copy invariant means
+  //       this CTA is the state block's sole writer, so no atomic is needed.
+  //     - `__stcg`/`__stwt` (cache-hint store intrinsics) if a non-default
+  //       cache policy on this final, non-reread write is worth stating
+  //       explicitly (verify measured benefit before reaching for it).
+  //     - `cp_async_16`/`__pipeline_memcpy_async` are NOT applicable here --
+  //       `cp.async` is a global<-shared (load-direction) primitive; this is
+  //       a store back to HBM.
 
-    // ---- GEMM 4, THE BOUNDARY FOLD `S^T += Vp . Wp`, AND THIS IS WHERE THE
-    // ---- REGISTER-RESIDENT STATE PAYS: **the `mma.sync` ACCUMULATES DIRECTLY INTO THE
-    // ---- STATE**, `D == C == St`. There is no read-modify-write, no format boundary
-    // ---- and no shared-memory traffic of any kind on the state's numerator. The
-    // ---- partition is the OWNERSHIP RULE itself -- one channel tile and one atom range
-    // ---- per warp -- so it is static, uniform-cost and costs no atomic.
-    // ----
-    // ---- **IT RUNS BEFORE THE GRAM IS WAITED ON, AND THAT IS THE SCHEDULING POINT.**
-    // ---- The fold reads only the staged panel and the value fragment and writes only
-    // ---- register state and the exit mass column, so it is independent of `Gm` --
-    // ---- which makes it the work every warp does while the Gram's producers finish.
-    // ---- docs/internals/consumer_kernel.md#gemm-fold
-    if (is_write) {
-      //: **ONE B FRAGMENT FEEDS EVERY CHANNEL TILE THE WARP OWNS**, and the B walk is
-      //: the two-stage chain: `mma_fold_tiles` issues tile `s + 1`'s `ldmatrix` before
-      //: tile `s`'s multiplies. The ATOM one is the only test left -- a dead atom's rows
-      //: are exact zeros and its `s0` is exactly 1, so the skip is the identity.
-      mma_fold_tiles<kMTW, kAPW>(va, Wp, kWpPitch, atom0, wmr, lane, St);
-      // ---- DECAY's EXIT SCALE RIDES THE ACCUMULATOR, ONCE PER VISIT: one multiply on
-      // ---- a register value. docs/internals/consumer_kernel.md#fold-epilogue
-      if (DECAY) {
-#pragma unroll
-        for (int ai = 0; ai < kAPW; ++ai) {
-          if (((wmr >> (atom0 + ai)) & 1u) == 0u) continue;
-#pragma unroll
-          for (int half = 0; half < 2; ++half) {
-            const int i0 = (atom0 + ai) * kMmaKQuantum + 8 * half + 2 * _sr;
-            //: `i0` is even, so the tile's two leaf scales are ONE 64-bit shared load.
-            const float2 s = *reinterpret_cast<const float2*>(s0 + i0);
-#pragma unroll
-            for (int mt = 0; mt < kMTW; ++mt) {
-              float* const stf = St + (mt * kAPW + ai) * 8 + half * 4;
-              stf[0] *= s.x;
-              stf[1] *= s.y;
-              stf[2] *= s.x;
-              stf[3] *= s.y;
-            }
-          }
-        }
-      }
-    }
-    // ---- THE MASS COLUMN, TERM 3 -- the fold's own term,
-    // ---- `SmOut = s0 * (Smass + broadcast(sw) . Wp)`, ON THE SAME TENSOR CORE AS THE
-    // ---- FOLD ITSELF: one `mma.sync` per 8-leaf tile against a broadcast `sw`.
-    // ---- **IT READS THE ENTRY COLUMN AND WRITES THE EXIT ONE**, which is what lets it
-    // ---- run concurrently with the readout's term 1 instead of behind a barrier from
-    // ---- it. A tile the visit does not write -- and every tile of a read-only visit --
-    // ---- is CARRIED ACROSS, because the exit column is the next visit's entry.
-    // ---- docs/internals/consumer_kernel.md#mass-pingpong
-    for (int lt = warp; lt < BC / 8; lt += kWarps) {
-      CONSUMER_D_ROWS(lane);
-      const int n0 = lt * 8;
-      const bool live = is_write && (((wmr >> (lt / 2)) & 1u) != 0u);
-      float m0v = 0.0f, m1v = 0.0f, m2v = 0.0f, m3v = 0.0f;
-      if (live) mma_bcastA_tile(sw, Wp, kWpPitch, 0, n0, lane, m0v, m1v, m2v, m3v);
-      (void)m2v;
-      (void)m3v;
-      //: Output ROW 0 of a broadcast-A tile carries the result, so only the four lanes
-      //: with `g == 0` touch the column.
-      if (_g == 0) {
-        const int i0 = n0 + 2 * _r;
-        //: The column pair is adjacent and `i0` is even, so entry, exit and the decay
-        //: scale are one 64-bit access each.
-        const float2 me = *reinterpret_cast<const float2*>(Smass + i0);
-        const float2 sc =
-            DECAY ? *reinterpret_cast<const float2*>(s0 + i0) : make_float2(1.0f, 1.0f);
-        const float2 out = live ? make_float2(sc.x * (me.x + m0v), sc.y * (me.y + m1v)) : me;
-        *reinterpret_cast<float2*>(SmOut + i0) = out;
-      }
-    }
-    //: THE PUBLICATION HALF OF THE MASS CURSOR, on the Gram's rule: the fence orders
-    //: this warp's exit column before the count that advertises it, and one lane
-    //: carries the arrival because the unit of publication is the warp's whole share.
-    //: EVERY visit arrives -- a read-only visit CARRIES the column, which is a write.
-    ++mass_epoch;
-    if (warp < kMassProd) {
-      __threadfence_block();
-      if (lane == 0) atomicAdd(mass_flag, 1);
-    }
-
-    // ---- **THE GRAM'S PUBLICATION, CURSOR-PACED RATHER THAN A PHASE BARRIER.** What
-    // ---- is left of the visit's old rendezvous is a pure producer-consumer over `Gm`
-    // ---- between a KNOWN, COMPILE-TIME set of producing warps and everyone else, so it
-    // ---- is paced by a counter: producers fence their stores and add one, consumers
-    // ---- spin to the visit's target. A warp that is not a producer never blocks a
-    // ---- producer, and no warp waits for the CTA -- only for `kGramProd` arrivals. The
-    // ---- target is MONOTONE over the kernel, so the counter is never reset and the
-    // ---- reset never needs its own rendezvous. `Gm`'s reuse across visits is guarded
-    // ---- by the panel barrier, which every warp passes between one visit's reads of
-    // ---- `Gm` and the next visit's stores into it.
-    // ---- BOTH SIDES REQUIRE `mixed`: a single-sided visit has no Gram and pays nothing
-    // ---- at all here. docs/internals/consumer_kernel.md#gram-publication
-    //: **THE COOK-AHEAD, PLACED IN THE GRAM'S PUBLICATION WINDOW.** The producer warp
-    //: cooks group `gidx + kSchedDepth` into the slot the visit `kSlots` back vacated.
-    //: At `kGramProd < kWarps` and `NT < kWarps` it is neither a Gram producer nor a
-    //: denominator-term owner, so this is precisely the stretch of the visit it would
-    //: otherwise spend in the wait below; production runs CONCURRENTLY with every other
-    //: warp's fold and is published by its own cursor, so NOTHING WAITS ON IT and it is
-    //: no longer the serial tail of a rendezvous. The placement is a LOAD-BALANCE
-    //: choice, not a correctness one: the cursor is the descriptor's only edge wherever
-    //: the cook runs. docs/internals/consumer_kernel.md#cook-cursor
-    if (warp == kProdWarp) produce_group((gidx + kSchedDepth) % kSlots);
-    if (mixed) {
-      ++gram_epoch;
-      const int target = gram_epoch * kGramProd;
-      volatile int* const gf = gram_flag;
-      //: THE POLL IS BARE, AND THAT IS A MEASUREMENT rather than an oversight. A
-      //: shared-memory poll is issue-ACTIVE, so a backoff was expected to matter most
-      //: exactly here -- six of eight warps waiting on two producers is the largest
-      //: waiter-to-producer ratio the matrix has. A `__nanosleep(64)` between polls
-      //: measured 12.78 ms against the bare form's 12.81 (dense `N = L = 4096`,
-      //: block-min-median of three), so the simpler form is the one that ships.
-      //: docs/internals/consumer_kernel.md#gram-publication
-      while (*gf < target) {
-      }
-      __threadfence_block();
-    }
-
-    // ---- PHASE B -- GEMM 3, the intra term `y^T += Vp . G^T`, accumulating into the
-    // ---- SAME fragments the readout filled, against the SAME value fragment the fold
-    // ---- used. There is NO MASK anywhere here, because the zeros are already IN `Gm`.
-    // ---- Token-axis contraction: no atom mask applies. An item belongs to ONE of the
-    // ---- `GL` warps holding that channel tile's `y` -- the others carry only their
-    // ---- readout partial, and the emission sums the pieces. The `[kMTW][2]` item grid
-    // ---- is dealt out over the channel group's `GL` warps by flat index, which at
-    // ---- every point of the carve space gives each warp a whole number of items AND
-    // ---- groups them by token tile, so one `ldmatrix` of `Gm` serves them all.
-    // ---- docs/internals/consumer_kernel.md#phase-c
-    if (mixed) {
-#pragma unroll
-      for (int nt = 0; nt < 2; ++nt) {
-        unsigned own = 0u;
-#pragma unroll
-        for (int mt = 0; mt < kMTW; ++mt) {
-          if ((mt * 2 + nt) % GL == lgrp) own |= 1u << mt;
-        }
-        mma_intra_tiles<kMTW>(va, Gm, kTokPitch, 0, nt * 8, lane, own, nt, y);
-      }
-    }
-    if (mixed && dm_owner) {
-      //: THE MASS COLUMN, TERM 2 -- the intra term's denominator,
-      //: `dm += broadcast(sw) . G^T`. The causal mask is already IN `Gm`, so the whole
-      //: contraction is the `u <= t` sum.
-      //: HAZARD mass-split -- docs/internals/consumer_kernel.md#mass-split
-      mma_bcastA_tile(sw, Gm, kTokPitch, 0, dm_nt * 8, lane, dm[0], dm[1], dm[2], dm[3]);
-    }
-
-    // ---- SPLIT-K EMISSION of this visit's partials, straight out of the D fragments,
-    // ---- scattered through the group's token list (the P14 microbench priced exactly
-    // ---- this pattern: banded, DRAM-byte ratio 1.0009x at the measured gap). The
-    // ---- `out == 0` early-out runs FIRST so a ragged group's padded slots (`sr == 0`,
-    // ---- coefficient rows exactly zero) never read the token list at all; members are
-    // ---- `< T` by construction. The `!= 0` guard is a PERFORMANCE SKIP ON A VALUE,
-    // ---- never a membership decision.
-    // ---- **THE FRAGMENT IS TRANSPOSED AND THAT IMPROVES THE SCATTER**: the eight lanes
-    // ---- sharing a `token` now hold eight CONSECUTIVE channels, so one `atomicAdd`
-    // ---- instruction covers four 32-byte segments where the untransposed fragment
-    // ---- covered eight. The `GL` partials per output are what the split-K was
-    // ---- already built for, and `GL` is exactly the atomic fan-in the carve's leaf
-    // ---- axis buys. docs/internals/consumer_kernel.md#split-k-emission
-    if (is_read) {
-      CONSUMER_D_ROWS(lane);
-      const int64_t row0 = static_cast<int64_t>(bh) * p.T;
-      auto emit = [&](int tok, int ch, float scale, float val) {
-        const float out = scale * val;
-        if (out == 0.0f) return;
-        atomicAdd(&p.num[(row0 + tok) * DV + ch], out);
-      };
-      //: **THE FRAGMENT'S TOKEN PAIR IS ONE LOAD OF EACH.** `t0e` is even, so the two
-      //: row scales and the two token indices this fragment emits at are ADJACENT and
-      //: aligned in their 16-byte-aligned buffers: one `LDS.64` each where the scalar
-      //: form issued four. The token pair's alignment is the RING SLOT's, which is why
-      //: the slot stride is asserted even rather than assumed:
-      //: docs/internals/consumer_kernel.md#split-k-emission
-      static_assert(kSchedSlotInts % 2 == 0,
-                    "the emission's paired token load needs an even ring-slot stride");
-#pragma unroll
-      for (int nt = 0; nt < 2; ++nt) {
-        const int t0e = nt * 8 + 2 * _r;
-        const float2 s = *reinterpret_cast<const float2*>(sr + t0e);
-        const int2 tk = *reinterpret_cast<const int2*>(R + t0e);
-#pragma unroll
-        for (int mt = 0; mt < kMTW; ++mt) {
-          const int ch0 = m0 + mt * kMmaKQuantum + _g, ch1 = ch0 + 8;
-          emit(tk.x, ch0, s.x, y[mt][nt][0]);
-          emit(tk.y, ch0, s.y, y[mt][nt][1]);
-          emit(tk.x, ch1, s.x, y[mt][nt][2]);
-          emit(tk.y, ch1, s.y, y[mt][nt][3]);
-        }
-      }
-    }
-    //: THE DENOMINATOR, OUT OF THE MASS FRAGMENTS. A broadcast A makes every output ROW
-    //: of `dm` the same value, so row 0 -- the lanes with `g == 0` -- carries the tile's
-    //: eight tokens. The `!= 0` guard retires a ragged group's padded slots on the same
-    //: rule the numerator runs on: their `sr` is an exact zero, so the token list is
-    //: never read for them.
-    if (dm_owner) {
-      CONSUMER_D_ROWS(lane);
-      if (_g == 0) {
-        const int t0e = dm_nt * 8 + 2 * _r;
-        const float2 s = *reinterpret_cast<const float2*>(sr + t0e);
-        const int2 tk = *reinterpret_cast<const int2*>(R + t0e);
-        const int64_t row0 = static_cast<int64_t>(bh) * p.T;
-        const float da = s.x * dm[0];
-        if (da != 0.0f) atomicAdd(&p.den[row0 + tk.x], da);
-        const float db = s.y * dm[1];
-        if (db != 0.0f) atomicAdd(&p.den[row0 + tk.y], db);
-      }
-    }
-
-    // ---- §6.4 PASS 1's PER-LEAF EPILOGUE, once per VISIT. The COEFFICIENT half of the
-    // ---- inclusion test lives in the panel build; what is left here has no
-    // ---- pre-quantization site: docs/internals/consumer_kernel.md#pass1-epilogue
-    if (is_write && summary && DECAY) {
-      for (int i = tid; i < BC; i += kConsumerThreads) {
-        if (s0[i] != 1.0f) sum_slot[i] = 1;
-        a_state[i] *= s0[i] * s0[i];
-      }
-    }
-    //: THE MASS COLUMN'S EXIT HALF BECOMES THE NEXT VISIT'S ENTRY HALF -- a register
-    //: rotation, ordered by the mass cursor for its one pre-barrier reader and by the
-    //: panel barrier for every other.
-    Smass = SmOut;
-  }
-  //: THE FINAL DRAIN: the stages issued past the stream's end have no consumer, but a
-  //: kernel does not exit with copies outstanding into memory it is about to release.
-  cp_async_wait_all();
-  //: THE EXIT EPOCH, once per kernel: the publications below read the mass column and
-  //: the summary flags across warp boundaries, and the visit loop's only barrier lies
-  //: BEFORE the last visit's writes of both.
-  __syncthreads();
-
-  if (summary) {
-    // ---- §6.4 PASS 1's PUBLICATION: the SPARSE written-leaf summary. Slot
-    // ---- `owner_slot0` is the scan's entry stash, so this lands one past it and
-    // ---- pass 3's segment `q` reads `owner_slot0 + q` UNIFORMLY:
-    // ---- docs/internals/consumer_kernel.md#pass1-publication
-    const int64_t slot = static_cast<int64_t>(owner_slot0 + seg + 1);
-    if (warp == 0) {
-      int k = 0;
-      for (int b0 = 0; b0 < BC; b0 += 32) {
-        const int i = b0 + lane;
-        const bool in_range = i < BC;
-        const bool take = in_range && (sum_slot[i] != 0);
-        const unsigned below = (1u << lane) - 1u;
-        const unsigned mask = __ballot_sync(0xffffffffu, take);
-        const int q = k + __popc(mask & below);
-        if (in_range) sum_slot[i] = take ? q : -1;
-        if (take) p.ws_leaf[slot * BC + q] = i;
-        k += __popc(mask);
-      }
-      if (lane == 0) sum_count[0] = k;
-    }
-    __syncthreads();
-    if (tid == 0) p.ws_count[slot] = sum_count[0];
-    for (int i = tid; i < BC; i += kConsumerThreads) {
-      const int q = sum_slot[i];
-      if (q >= 0) p.ws_scale[slot * BC + q] = a_state[i];
-    }
-    //: **THE STATE LEAVES ITS REGISTERS AT THE PUBLICATION**, on the ownership map it
-    //: entered on -- the compaction index `sum_slot[leaf]` is the only thing the write
-    //: adds over the entry read's inverse.
-#pragma unroll
-    for (int ai = 0; ai < kAPW; ++ai) {
-      const int q = atom0 + ai;
-#pragma unroll
-      for (int half = 0; half < 2; ++half) {
-        const int i0 = q * kMmaKQuantum + 8 * half + 2 * _sr;
-        const int q0 = sum_slot[i0], q1 = sum_slot[i0 + 1];
-#pragma unroll
-        for (int mt = 0; mt < kMTW; ++mt) {
-          const int mc = m0 + mt * kMmaKQuantum;
-          const float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
-          if (q0 >= 0) {
-            p.ws_state[(slot * BC + q0) * cols + mc + _sg] = st[0];
-            p.ws_state[(slot * BC + q0) * cols + mc + 8 + _sg] = st[2];
-          }
-          if (q1 >= 0) {
-            p.ws_state[(slot * BC + q1) * cols + mc + _sg] = st[1];
-            p.ws_state[(slot * BC + q1) * cols + mc + 8 + _sg] = st[3];
-          }
-        }
-      }
-    }
-    for (int i = tid; i < BC; i += kConsumerThreads) {
-      const int q = sum_slot[i];
-      if (q >= 0) p.ws_state[(slot * BC + q) * cols + DV] = Smass[i];
-    }
-    return;
-  }
-  // ---- THE OWNER'S STATE BLOCK, WRITTEN TO HBM ONCE. An unpaged atom is never
-  // ---- stored back, PER ATOM. `last_seg` is §6.4's publication rule and is a
-  // ---- DELIBERATE NUMERIC CHOICE, not the scan's job:
-  // ---- docs/internals/consumer_kernel.md#state-store
-  if (!last_seg) return;
-#pragma unroll
-  for (int ai = 0; ai < kAPW; ++ai) {
-    const int q = atom0 + ai;
-    const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
-    if (row0 < 0) continue;
-#pragma unroll
-    for (int half = 0; half < 2; ++half) {
-      const int64_t r0 = row0 + 8 * half + 2 * _sr;
-#pragma unroll
-      for (int mt = 0; mt < kMTW; ++mt) {
-        const int mc = m0 + mt * kMmaKQuantum;
-        const float* const st = St + (mt * kAPW + ai) * 8 + half * 4;
-        p.state[r0 * cols + mc + _sg] = st[0];
-        p.state[(r0 + 1) * cols + mc + _sg] = st[1];
-        p.state[r0 * cols + mc + 8 + _sg] = st[2];
-        p.state[(r0 + 1) * cols + mc + 8 + _sg] = st[3];
-      }
-    }
-  }
-#pragma unroll
-  for (int q = 0; q < kQPO; ++q) {
-    const int64_t row0 = atom_row_base<BC>(p, bh, owner, q);
-    if (row0 < 0) continue;
-    for (int r = tid; r < kMmaKQuantum; r += kConsumerThreads) {
-      p.state[(row0 + r) * cols + DV] = Smass[q * kMmaKQuantum + r];
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Kept only for the translation unit to parse -- delete these two lines once
+  // you have a real body. They silence "unused parameter" on every axis that a
+  // real implementation will, in fact, use.
+  // ---------------------------------------------------------------------------
+  (void)p;
 }
 
 #undef CONSUMER_D_ROWS
