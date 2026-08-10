@@ -110,20 +110,25 @@ def cell(name, B, H, L, D=64):
     print(f"    clocks before: {clocks()}")
 
     arms = rbuild.arms()
-    base, rung = {False: {}}, {}
+    # The rung's staging depth is DERIVED and the base's is still a free axis, so
+    # there is no longer a same-STAGES base arm for every rung arm. The base is
+    # therefore timed at EVERY arm and reduced to its best per (C, SWZ), which is
+    # the comparison that survives a derived quantity: best against best.
+    base_arms = dbuild.arms()
+    base, rung = {}, {}
     # INTERLEAVED, arm by arm: this box cannot pin its clocks, so a base block
     # followed by a rung block would put the whole rung on the hotter half of a
     # 2.6% thermal drift and charge it to the feature.
-    for c, s, w, pk, _ in arms:
-        if pk not in base:
-            base[pk] = {}
-        rbuild.assert_build_identity(c, s, w, pk)
-        if (c, s, w) not in base[False]:
-            dbuild.assert_build_identity(c, s, w)
-            base[False][(c, s, w)] = stopwatch(
-                lambda c=c, s=s, w=w: dbuild.forward(q, k, v, c, s, w))
-        rung[(c, s, w, pk)] = stopwatch(
-            lambda c=c, s=s, w=w, pk=pk: rbuild.forward(pr, pw, v, c, s, w, pk))
+    for c, w, s, _, _ in arms:
+        rbuild.assert_build_identity(c, w)
+        for bc, bs_, bw, _ in base_arms:
+            if (bc, bw) != (c, w):
+                continue
+            dbuild.assert_build_identity(bc, bs_, bw)
+            t = stopwatch(lambda c=bc, s=bs_, w=bw: dbuild.forward(q, k, v, c, s, w))
+            if (c, w) not in base or t < base[(c, w)][0]:
+                base[(c, w)] = (t, bs_)
+        rung[(c, w)] = stopwatch(lambda c=c, w=w: rbuild.forward(pr, pw, v, c, w))
 
     def fa_core():
         with torch.no_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
@@ -146,22 +151,21 @@ def cell(name, B, H, L, D=64):
     if used >= VRAM_DISCARD_GIB:
         return None
 
-    print(f"\n{'arm':24s}{'base ms':>10s}{'WIDEN ms':>10s}{'PACKED ms':>10s}"
-          f"{'delta':>9s}{'ratio':>8s}{'/fa_core':>10s}")
-    for c, s, w, pk, _ in arms:
-        if pk:
-            continue
-        b = base[False][(c, s, w)]
-        r, rp = rung[(c, s, w, False)], rung[(c, s, w, True)]
-        print(f"{f'C={c} S={s} SWZ={int(w)}':24s}{b:10.4f}{r:10.4f}{rp:10.4f}"
+    print(f"\n{'arm':24s}{'base ms':>10s}{'(base S)':>10s}{'rung1 ms':>10s}"
+          f"{'(S)':>6s}{'delta':>9s}{'ratio':>8s}{'/fa_core':>10s}")
+    for c, w, s, _, _ in arms:
+        b, bs_ = base[(c, w)]
+        r = rung[(c, w)]
+        print(f"{f'C={c} SWZ={int(w)}':24s}{b:10.4f}{bs_:10d}{r:10.4f}{s:6d}"
               f"{r-b:+9.4f}{r/b:7.3f}x{r/core:9.2f}x")
     print(f"{'fa_core':22s}{core:10.4f}")
     print(f"{'fa_layer':22s}{lay:10.4f}")
-    bb = min(base[False].items(), key=lambda kv: kv[1])
-    rr = min(((k, v) for k, v in rung.items() if not k[3]), key=lambda kv: kv[1])
-    print(f"    wall-optimal base  C={bb[0][0]} S={bb[0][1]} SWZ={int(bb[0][2])}  {bb[1]:.4f} ms")
-    print(f"    wall-optimal rung1 C={rr[0][0]} S={rr[0][1]} SWZ={int(rr[0][2])}  {rr[1]:.4f} ms"
-          f"   ({100*(rr[1]-bb[1])/bb[1]:+.1f}% vs the base's best)")
+    bb = min(base.items(), key=lambda kv: kv[1][0])
+    rr = min(rung.items(), key=lambda kv: kv[1])
+    print(f"    wall-optimal base  C={bb[0][0]} S={bb[1][1]} SWZ={int(bb[0][1])}  "
+          f"{bb[1][0]:.4f} ms")
+    print(f"    wall-optimal rung1 C={rr[0][0]} SWZ={int(rr[0][1])}  {rr[1]:.4f} ms"
+          f"   ({100*(rr[1]-bb[1][0])/bb[1][0]:+.1f}% vs the base's best)")
 
     el = B * H * L
     wt = sum(widths)

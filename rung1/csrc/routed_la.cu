@@ -132,22 +132,31 @@
 
 #include <vector>
 
-#include "arch_caps.cuh"
+// The two layers a kernel reads: 2a for what the design looks like here, 2b for
+// how each step is performed.  The capability facts themselves are layer 1 and
+// this file never includes them.
+#include "design.cuh"
 #include "ops.cuh"
 
 namespace rung1 {
 
 using namespace denseref::ops;
-namespace arch = denseref::arch;
+namespace design = denseref::design;
 
-//: THIS KERNEL'S OWN OPERAND-RESIDENCY CLAUSE.  The state is the readout's A
-//: operand, so A -- and not B -- is the side that must be readable from the
-//: issuing unit's own registers.  This is the clause a warpgroup MMA satisfies.
-static_assert(arch::kCaps.mma_a_from_regs,
-              "UNSUPPORTED ARCHITECTURE FOR THIS KERNEL: the fold accumulator IS "
-              "the readout's A operand, so A must be readable from the issuing "
-              "unit's own registers or the state takes a shared-memory round "
-              "trip and this is a different algorithm.");
+//: THIS KERNEL'S OWN OPERAND-SIDE CLAUSE.  Layer 2a says WHERE the state lives
+//: -- `REGISTERS`, derived from the residency facts, and the kernel below asks
+//: nothing else about this architecture.  Which SIDE of the MMA the state is
+//: presented on is a property of THIS kernel: it is the readout's A operand, so
+//: A is the side that must be readable from the issuing unit's own registers.
+//: The clause is therefore against the BUILT operation, and it is the one a
+//: warpgroup MMA's `_RS` atom family satisfies.
+static_assert(design::kStateResidency == design::StateResidency::REGISTERS &&
+                  kMmaAcceptsRegisterA,
+              "SELECTION UNSATISFIABLE GIVEN AVAILABLE OPERATIONS: this kernel's "
+              "fold accumulator IS the readout's A operand, so it needs a state "
+              "that lives in registers and a built `mma` that reads A out of "
+              "them; otherwise the state takes a memory round trip and this is a "
+              "different algorithm.");
 
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
@@ -171,69 +180,68 @@ static constexpr int kW0 = 8, kW1 = 8;
 
 // ------------------------------------------------------------------- geometry
 
+//: THIS KERNEL'S LIVE REGISTER SET, per chunk size, and it is the number that
+//: decides how many CTAs may be asked for.  It is FALSIFIABLE rather than
+//: asserted: `build.py` fails the build on any nonzero `localSizeBytes`, so a
+//: floor set too low cannot ship quietly.  It is per chunk size because the live
+//: set is: the output accumulator alone is `C/8` tiles of four fp32, and the
+//: ptxas census reads 94-96 / 147-157 / 165-178 registers per lane at
+//: C = 16 / 32 / 64.
+//:
+//: WHY THE CAP EXISTS AT ALL.  The base sets its second launch bound from the
+//: shared-memory ceiling, on the premise that shared memory is the binding
+//: constraint.  This rung falsified that premise: producing R and W removes two
+//: of the three ring buffers, the SMEM ceiling ran PAST the register file, three
+//: C = 16 arms asked for 6 and 7 CTAs whose per-lane budgets are 84 and 72
+//: against a 94-96 live set, and they SPILLED -- 16, 32 and 64 bytes of local.
+//: A spill is a defect, not a footnote.
+constexpr int reg_floor(int C) { return C == 16 ? 96 : C == 32 ? 160 : 192; }
+
 //: Compile-time SMEM geometry, shared by the kernel and the host launcher so the
 //: two can never disagree about a byte count.  Three ring slots became one: only
-//: V is staged.
-template <int C, int STAGES, bool SWZ> struct Geom {
+//: V is staged, so the ring is `C * Ld` per slot and R, W, the Gram and the
+//: output tile are the unringed remainder.
+//:
+//: `stages` IS DERIVED, not chosen -- see `design.cuh`: the deepest ring that
+//: costs no resident CTA, and never deeper than covers one global round trip.
+//: It stopped being an axis when the sweep showed the optimum does not move.
+template <int C, bool SWZ> struct Geom {
   static constexpr int Ld = SWZ ? kN : kN + kPad;  // V/R/W/O row stride, elements
   static constexpr int CLd = C + kPad;             // Gram row stride, elements
-  static constexpr size_t bytes =
-      (size_t)((STAGES + 3) * C * Ld + C * CLd) * sizeof(__nv_bfloat16);
+  static constexpr int slot = C * Ld * (int)sizeof(__nv_bfloat16);
+  static constexpr int fixed = (3 * C * Ld + C * CLd) * (int)sizeof(__nv_bfloat16);
+  static constexpr int stages =
+      design::stages_for(slot, fixed, kThreads, reg_floor(C));
+  static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
-//: THE REGISTER BUDGET, AND THE ONE PLACE THE BASE'S RULE HAD TO GROW.
-//:
-//: The base sets the second launch bound to `ctas_by_smem` -- "the CTA count
-//: this arm's shared-memory footprint already admits, precisely the point at
-//: which registers would become the new binding constraint".  That rule has a
-//: premise: that shared memory is the binding constraint.  This rung falsifies
-//: it.  Dropping two of the three ring buffers cuts shared memory by ~45%, and
-//: the SMEM ceiling then runs PAST what the register file can serve: the C = 16
-//: arms reach 6 and 7 CTAs by shared memory, whose per-lane budgets are 84 and
-//: 72, and the kernel's live set needs 94-96.  Asking for them SPILLS -- 16, 32
-//: and 64 bytes of local on three arms.  A spill is a defect, not a footnote.
-//:
-//: So the rule is completed rather than replaced: the target is the SMEM ceiling
-//: capped by the REGISTER ceiling, and the register ceiling is derived from the
-//: table exactly as the SMEM one is -- the largest CTA count whose `reg_budget`
-//: still holds this kernel's live set.  `kRegFloor` is that live set, stated
-//: once and FALSIFIABLE: `build.py` fails the build on any nonzero
-//: `localSizeBytes`, so a floor set too low cannot ship quietly.
-constexpr int kRegFloor = 96;
-
-constexpr int cta_by_regs(int n) {
-  return n <= 1 ? 1
-                : (arch::reg_budget(arch::kCaps, kThreads, n) >= kRegFloor
-                       ? n
-                       : cta_by_regs(n - 1));
-}
-constexpr int kCtaByRegs = cta_by_regs(arch::ctas_by_threads(arch::kCaps, kThreads));
-
-template <int C, int STAGES, bool SWZ>
+template <int C, bool SWZ>
 constexpr int kCtaTarget =
-    arch::ctas_by_smem(arch::kCaps, (int)Geom<C, STAGES, SWZ>::bytes) < kCtaByRegs
-        ? arch::ctas_by_smem(arch::kCaps, (int)Geom<C, STAGES, SWZ>::bytes)
-        : kCtaByRegs;
+    design::cta_target((int)Geom<C, SWZ>::bytes, kThreads, reg_floor(C));
 
 // ------------------------------------------------------------------- kernel
 
-template <int C, int STAGES, bool SWZ, bool PACKED, int W0, int W1>
-__global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed_la_kernel(
+template <int C, bool SWZ, int W0, int W1>
+__global__ __launch_bounds__(kThreads, (kCtaTarget<C, SWZ>)) void routed_la_kernel(
     const __nv_bfloat16 *__restrict__ pread, const __nv_bfloat16 *__restrict__ pwrite,
     const __nv_bfloat16 *__restrict__ v, __nv_bfloat16 *__restrict__ o, int L) {
   static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
-  static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   static_assert(W0 * W1 == kN, "level widths must multiply to the slot count");
-  static_assert(Geom<C, STAGES, SWZ>::bytes <= (size_t)arch::kCaps.smem_per_cta_max,
-                "this (C, STAGES, SWZ) arm does not fit this architecture's "
-                "per-CTA shared-memory maximum");
-  using G = Geom<C, STAGES, SWZ>;
+  static_assert(design::smem_fits(Geom<C, SWZ>::bytes),
+                "this (C, SWZ) arm does not fit this architecture's per-CTA "
+                "shared-memory maximum");
+  using G = Geom<C, SWZ>;
+  constexpr int STAGES = G::stages;
+  static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   constexpr int Ld = G::Ld;
   constexpr int CLd = G::CLd;
-  constexpr int MTOK = C / 16;  // token m-tiles in a chunk
-  constexpr int NTOK = C / 8;   // token n-tiles in a chunk
-  constexpr int KD = kN / 16;   // 4 -- slot k-tiles
-  constexpr int NDV = kN / 8;   // 8 -- state n-tiles (slots)
+  // Tile counts, in THE OPERATION'S OWN UNITS rather than in literals: an
+  // architecture that substitutes a differently shaped member of the atom's
+  // shape family moves these with it.
+  constexpr int MTOK = C / kMmaM;  // token m-tiles in a chunk
+  constexpr int NTOK = C / kMmaN;  // token n-tiles in a chunk
+  constexpr int KD = kN / kMmaK;   // 4 -- slot k-tiles
+  constexpr int NDV = kN / kMmaN;   // 8 -- state n-tiles (slots)
   constexpr uint32_t kRowB = (uint32_t)Ld * 2;
 
   // Gram tile partition: split m first, spill the remainder onto n.
@@ -395,37 +403,26 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
       pOff[j][i] = SWZ ? (((((d0f + j) * kL1Vec + i) & 7) ^ pPh) << 4)
                        : ((j * W1 + i * 8) * 2);
 
-  //: THE PRODUCTION, IN TWO ARMS, BOTH BUILT AND BOTH GATED.
+  //: THE PRODUCTION.  The `W1` trailing amplitudes are read once as packed pairs
+  //: and reused across every leading digit this thread owns, and each
+  //: coefficient is one `mul_bf16x2` -- `ops.cuh`'s archetypal SELECTING entry,
+  //: half an instruction per two coefficients on an architecture with bf16 SIMD
+  //: arithmetic and the fp32 route (1 multiply + 1/2 pack per coefficient) on
+  //: one without it.
   //:
-  //: The `W1` trailing amplitudes are read once as packed pairs and reused
-  //: across every leading digit this thread owns.  The two arms differ only in
-  //: how the elementwise product is STATED, and the difference is which operand
-  //: pays for the bf16 -> fp32 widening:
-  //:
-  //: `PACKED`  states the product as `mul_bf16x2` on two packed pairs -- the
-  //:           table's SELECTING entry, one instruction on an architecture with
-  //:           bf16 SIMD arithmetic.  On one without it, the packed CONTRACT
-  //:           forces the widening of BOTH operands inside every product, so the
-  //:           reused amplitude is re-widened once per coefficient.
-  //: `WIDEN`   widens the reused operand ONCE per chunk with `widen_bf16x2`
-  //:           (exact: bf16 is the top half of an fp32) and multiplies in fp32.
-  //:           Per coefficient: 1 multiply + 1/2 `pack_bf16x2`, which is the
-  //:           floor for an elementwise product anywhere.
-  //:
-  //: Both compute the same function bit for bit -- the fallback arm of
-  //: `mul_bf16x2` is exactly this fp32 route -- so the choice is a pure
-  //: instruction-count question and is decided by measurement, not by taste.
+  //: THE ALTERNATIVE WAS BUILT, MEASURED AND DELETED.  Stating the product in
+  //: fp32 instead, widening the reused amplitude ONCE per chunk rather than
+  //: inside every product, saves the re-widening (`PRMT` 18/20/24 against 0/2/4
+  //: per thread per chunk) and pays it straight back in `LOP3`/`SHF`: total
+  //: `inst/mma` equal at C=16 and 0.04-0.06 HIGHER for the fp32 form at C=32/64,
+  //: wall within 0.6% on every arm of both cells, and the two bit-identical.
+  //: A wash is not an axis, and the tie goes to the form the capability table
+  //: can serve in one instruction on an architecture this box does not own.
   auto produce = [&](const __nv_bfloat16 *p0, const __nv_bfloat16 *p1, char *dst) {
     __align__(16) uint32_t amp1[kL1Vec * 4];
 #pragma unroll
     for (int i = 0; i < kL1Vec; ++i)
       *reinterpret_cast<uint4 *>(&amp1[4 * i]) = load_vec16(p1 + i * 8);
-
-    float w1[W1];
-    if constexpr (!PACKED) {
-#pragma unroll
-      for (int i = 0; i < W1 / 2; ++i) widen_bf16x2(amp1[i], w1[2 * i], w1[2 * i + 1]);
-    }
 
     __align__(8) unsigned short amp0[kD0PT];
     if constexpr (kD0PT == 1) {
@@ -439,21 +436,10 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
 #pragma unroll
     for (int j = 0; j < kD0PT; ++j) {
       __align__(16) uint32_t prod[kL1Vec * 4];
-      if constexpr (PACKED) {
-        const uint32_t a2 =
-            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16 *>(&amp0[j]));
+      const uint32_t a2 =
+          splat_bf16x2(*reinterpret_cast<const __nv_bfloat16 *>(&amp0[j]));
 #pragma unroll
-        for (int i = 0; i < kL1Vec * 4; ++i) prod[i] = mul_bf16x2(a2, amp1[i]);
-      } else {
-        // The leading amplitude sits in the LOW half of a zero-extended word, so
-        // the same exact widening delivers it in `alo` and a zero in `ahi`.
-        float alo, ahi;
-        widen_bf16x2((uint32_t)amp0[j], alo, ahi);
-        (void)ahi;
-#pragma unroll
-        for (int i = 0; i < kL1Vec * 4; ++i)
-          prod[i] = pack_bf16x2(alo * w1[2 * i], alo * w1[2 * i + 1]);
-      }
+      for (int i = 0; i < kL1Vec * 4; ++i) prod[i] = mul_bf16x2(a2, amp1[i]);
 #pragma unroll
       for (int i = 0; i < kL1Vec; ++i)
         store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4 *>(&prod[4 * i]));
@@ -634,29 +620,29 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
 
 // --------------------------------------------------------------- host side
 
-// The ratified (C, STAGES, SWZ) instantiation set -- the base's, arm for arm, so
-// every number in this rung's table has a same-arm base to be a delta against.
-#define RUNG1_SHAPES(X, P)                                                   \
-  X(16, 3, false, P) X(16, 4, false, P) X(16, 5, false, P)                   \
-  X(32, 2, false, P) X(32, 3, false, P) X(32, 4, false, P)                   \
-  X(64, 2, false, P) X(64, 3, false, P)                                      \
-  X(16, 3, true, P) X(16, 4, true, P) X(16, 6, true, P)                      \
-  X(32, 3, true, P) X(32, 4, true, P) X(32, 5, true, P)                      \
-  X(64, 3, true, P)
-#define RUNG1_ARMS(X) RUNG1_SHAPES(X, false) RUNG1_SHAPES(X, true)
+// THE ARM SET: TWO AXES, SIX ARMS.  An axis exists only if a measurement shows
+// the optimum MOVES.  `C` moves it -- the wall-optimal chunk differs by cell --
+// and `SWZ` moves it and even INVERTS, saving the dense base 0.545 inst/mma at
+// C=16 and costing this rung 1.260 at the same arm.  `STAGES` did not (<=1.5%
+// anywhere, and the same bytes buy CTAs) and is now derived per (C, SWZ) from
+// the shared-memory budget; the widen-once production arm did not (a wash) and
+// is deleted.
+#define RUNG1_ARMS(X)                                                        \
+  X(16, false) X(32, false) X(64, false)                                     \
+  X(16, true)  X(32, true)  X(64, true)
 
-template <int C, int S, bool SWZ, bool P>
+template <int C, bool SWZ>
 static void launch(const torch::Tensor &pr, const torch::Tensor &pw,
                    const torch::Tensor &v, torch::Tensor &o, int BH, int L) {
-  constexpr size_t sm = Geom<C, S, SWZ>::bytes;
+  constexpr size_t sm = Geom<C, SWZ>::bytes;
   static bool configured = false;
   if (!configured) {
-    C10_CUDA_CHECK(cudaFuncSetAttribute(routed_la_kernel<C, S, SWZ, P, kW0, kW1>,
+    C10_CUDA_CHECK(cudaFuncSetAttribute(routed_la_kernel<C, SWZ, kW0, kW1>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         (int)sm));
     configured = true;
   }
-  routed_la_kernel<C, S, SWZ, P, kW0, kW1>
+  routed_la_kernel<C, SWZ, kW0, kW1>
       <<<BH, kThreads, sm, at::cuda::getCurrentCUDAStream()>>>(
           reinterpret_cast<const __nv_bfloat16 *>(pr.data_ptr()),
           reinterpret_cast<const __nv_bfloat16 *>(pw.data_ptr()),
@@ -666,8 +652,7 @@ static void launch(const torch::Tensor &pr, const torch::Tensor &pw,
 }
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
-                      int64_t chunk, int64_t stages, bool swizzle,
-                      bool packed) {
+                      int64_t chunk, bool swizzle) {
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   TORCH_CHECK(pr.is_contiguous() && pw.is_contiguous());
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16);
@@ -679,15 +664,14 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   auto o = torch::empty_like(v);
   const int BH = B * H;
-#define RUNG1_DISPATCH(C_, S_, W_, P_)                          \
-  if (chunk == C_ && stages == S_ && swizzle == W_ && packed == P_) { \
-    launch<C_, S_, W_, P_>(pr, pw, v, o, BH, L);                \
+#define RUNG1_DISPATCH(C_, W_)                                  \
+  if (chunk == C_ && swizzle == W_) {                           \
+    launch<C_, W_>(pr, pw, v, o, BH, L);                        \
     return o;                                                   \
   }
   RUNG1_ARMS(RUNG1_DISPATCH)
 #undef RUNG1_DISPATCH
-  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " stages=", stages,
-              " swizzle=", swizzle, " packed=", packed);
+  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " swizzle=", swizzle);
 }
 
 // Device-side build identity: a magic constant WRITTEN BY A KERNEL that only
@@ -697,12 +681,11 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
 __global__ void stamp_kernel(int *out) {
   out[0] = kBuildMagic;
   out[1] = kWarps * 1000 + kN;
-  out[2] = arch::caps_digest(arch::kCaps);
+  out[2] = design::kCapsDigest;
   out[3] = kW0 * 1000 + kW1;
 }
 
-std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle,
-                                 bool packed) {
+std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle) {
   auto t = torch::zeros({4}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -710,16 +693,16 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle,
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1],
                          h.data_ptr<int>()[2], h.data_ptr<int>()[3]};
   cudaFuncAttributes a{};
-#define RUNG1_CENSUS(C_, S_, W_, P_)                                                \
-  if (chunk == C_ && stages == S_ && swizzle == W_ && packed == P_) {               \
-    C10_CUDA_CHECK(cudaFuncGetAttributes(                                           \
-        &a, routed_la_kernel<C_, S_, W_, P_, kW0, kW1>));                           \
+#define RUNG1_CENSUS(C_, W_)                                                        \
+  if (chunk == C_ && swizzle == W_) {                                               \
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&a, routed_la_kernel<C_, W_, kW0, kW1>));  \
     r.push_back(a.numRegs);                                                         \
     r.push_back((int64_t)a.sharedSizeBytes);                                        \
     r.push_back(a.binaryVersion);                                                   \
-    r.push_back((int64_t)Geom<C_, S_, W_>::bytes);                                  \
+    r.push_back((int64_t)Geom<C_, W_>::bytes);                                      \
     r.push_back((int64_t)a.maxThreadsPerBlock);                                     \
     r.push_back((int64_t)a.localSizeBytes);                                         \
+    r.push_back((int64_t)Geom<C_, W_>::stages);                                     \
     return r;                                                                       \
   }
   RUNG1_ARMS(RUNG1_CENSUS)
@@ -728,10 +711,15 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle,
   return r;
 }
 
+//: The built set, with the DERIVED staging depth of each arm reported alongside
+//: its footprint -- a derived quantity that no measurement can see is a derived
+//: quantity no measurement can falsify.
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
-#define RUNG1_LIST(C_, S_, W_, P_) \
-  out.push_back({C_, S_, (int64_t)(W_), (int64_t)(P_), (int64_t)Geom<C_, S_, W_>::bytes});
+#define RUNG1_LIST(C_, W_)                                                    \
+  out.push_back({C_, (int64_t)(W_), (int64_t)Geom<C_, W_>::stages,            \
+                 (int64_t)Geom<C_, W_>::bytes,                                \
+                 (int64_t)kCtaTarget<C_, W_>});
   RUNG1_ARMS(RUNG1_LIST)
 #undef RUNG1_LIST
   return out;
@@ -742,5 +730,5 @@ std::vector<std::vector<int64_t>> arms() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &rung1::forward, "routed-Kronecker chunked linear attention");
   m.def("build_stamp", &rung1::build_stamp, "build identity");
-  m.def("arms", &rung1::arms, "the built (C, STAGES, SWZ, smem) set");
+  m.def("arms", &rung1::arms, "the built (C, SWZ) set with derived stages, smem, cta target");
 }

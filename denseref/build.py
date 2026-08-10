@@ -27,8 +27,8 @@ TARGET_CC = 860
 #: mirrors arch_caps.cuh `Caps`, in the order `arch_row` returns.
 ARCH_ROW_FIELDS = (
     "cc",
-    "async_copy", "tile_load", "mma_bf16_f32", "mma_a_from_regs",
-    "mma_b_from_regs", "bf16_cvt_packed",
+    "async_copy", "tile_load", "mma_bf16_f32", "bf16_cvt_packed",
+    "mma_a_from_regs", "mma_b_from_regs", "accum_in_tmem", "mma_a_from_tmem",
     "bf16_simd_arith", "async_bulk_copy", "warpgroup_mma",
     "supported",
     "mma_unit_threads", "smem_per_sm", "smem_per_cta_max", "regs_per_sm",
@@ -36,12 +36,14 @@ ARCH_ROW_FIELDS = (
     "driver_smem_reserve", "tensor_f32_accum_pct",
     "digest",
 )
-REQUIRED = ("async_copy", "tile_load", "mma_bf16_f32", "mma_a_from_regs",
-            "bf16_cvt_packed")
+REQUIRED = ("async_copy", "tile_load", "mma_bf16_f32", "bf16_cvt_packed")
 SELECTING = ("bf16_simd_arith", "async_bulk_copy", "warpgroup_mma")
-#: not a baseline clause: which SIDE an accumulator-as-operand lands on is a
-#: property of a kernel, and each kernel asserts its own at its own site.
-KERNEL_LOCAL = ("mma_b_from_regs",)
+#: layer-1 instruction facts about WHERE an accumulator lives and where an
+#: operand may be sourced from. Read only by `design.cuh`, which turns them into
+#: `STATE_RESIDENCY`; no kernel reads them, and the side an accumulator lands on
+#: is a clause of that kernel against the built operation.
+RESIDENCY = ("mma_a_from_regs", "mma_b_from_regs", "accum_in_tmem",
+             "mma_a_from_tmem")
 
 #: every compute capability with a row, whether or not it is supported
 TABULATED_CC = (800, 860, 870, 890, 900)

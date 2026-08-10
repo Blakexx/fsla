@@ -1,27 +1,58 @@
 #pragma once
 
-// THE ARCHITECTURE CAPABILITY TABLE.
+// LAYER 1 -- THE ARCHITECTURE CAPABILITY FACTS.
 //
-// One BASELINE STRUCTURE, stated in `ops.cuh` as operations with contracts.
-// This file says, per architecture, WHICH IMPLEMENTATION OF EACH OPERATION IS
-// AVAILABLE, and it says it in exactly two kinds of entry:
+// THE THREE LAYERS.  This file is the first of them and it is the only one that
+// knows an architecture exists:
+//
+//   1  CAPABILITY FACTS      this file.  Objective, per architecture, no
+//                            judgment.  Does the MMA accept an operand from the
+//                            issuing unit's registers?  Does the accumulator
+//                            live in TMEM?  How many bytes of shared memory does
+//                            an SM have?  Nothing here decides anything.
+//   2a DERIVED SELECTIONS    `design.cuh`.  What the design LOOKS LIKE on this
+//                            architecture -- state residency, staging depth --
+//                            each COMPUTED from layer 1 rather than looked up
+//                            per architecture.  A per-arch table of selections
+//                            would be an architecture branch in a costume.
+//   2b BASELINE OPERATIONS   `ops.cuh`.  HOW each step is performed, as
+//                            operations with contracts, plus the statement of
+//                            which implementations are actually built.
+//   3  THE KERNEL            reads 2a for its design and calls 2b to execute.
+//                            It touches this file never and names an
+//                            architecture never.
+//
+// THIS COSTS NO SPECIALISATION.  Every fact below is a constant of the compile
+// target, so layers 1 and 2b collapse to a single arm per compilation; only the
+// FREE axes (the chunk size, the shared-memory layout) multiply the binary, and
+// those are measured rather than derived.  Nothing here is ever a template
+// parameter.
+//
+// THE KINDS OF ENTRY.  A fact is one of:
 //
 //   REQUIRED   a capability whose absence would change the STRUCTURE, not the
-//              implementation.  Never a branch: `kSupported` goes false and the
+//              implementation.  Never a branch: `supported()` goes false and the
 //              build stops with the clause that failed.
 //   SELECTING  a capability that implements a baseline operation more
 //              efficiently.  A compile-time bool.  Code branches on the FLAG,
 //              never on an architecture number.
-//
-// and one kind of non-capability entry:
-//
+//   RESIDENCY  where an accumulator can live and where an operand can be
+//              sourced from.  These are INSTRUCTION facts under their honest
+//              names, and they are NOT read by any kernel: layer 2a turns them
+//              into `StateResidency`, which is what the algorithm actually
+//              requires.  Named as instructions at the level a kernel sees, a
+//              part whose accumulator lives in TMEM would be REFUSED for having
+//              the wrong storage class while meeting the real requirement.
 //   FACT       a quantitative resource (bytes, registers, threads).  NOT a
 //              branch under any circumstances.  It is an INPUT TO DERIVATION:
 //              residency, staging depth, the register budget.
 //
-// THERE IS NO THIRD KIND, and in particular there are no fallback chains.  A
+// THERE IS NO OTHER KIND, and in particular there are no fallback chains.  A
 // capability must never silently select a slower route that then ships
 // unnoticed; that is the difference between this table and a fallback chain.
+// Where a better implementation exists and is not built, layer 2a ANNOUNCES it
+// at compile time -- a documented gap a reader sees is a stated engineering
+// decision, and a silent slower path is the forbidden thing.
 //
 // PER-SM FACTS LIVE HERE; PER-DEVICE FACTS DO NOT.  SM count is not an
 // architectural constant -- GA102 ships at 80 and 82 SMs, GA100 at 108 -- so it
@@ -43,18 +74,32 @@ struct Caps {
   bool async_copy;         // global->shared staging whose completion is a signal
   bool tile_load;          // 8x8 b16 quads landed directly in MMA register order
   bool mma_bf16_f32;       // tensor MAC, bf16 operands, fp32 accumulator
-  bool mma_a_from_regs;    // the A operand may be supplied from the unit's OWN
-                           // registers.  THE PIVOT: a fold accumulator that is
-                           // the readout's A operand never reaches shared
-                           // memory.  Warpgroup MMAs keep a register-source A
-                           // (the `_RS` atom family), so this clause holds on
-                           // every tabulated architecture.
-  bool mma_b_from_regs;    // the same for B.  A warpgroup MMA sources B ONLY
-                           // from a shared-memory descriptor, so a kernel whose
-                           // accumulator must land in B is refused there.  That
-                           // is a clause of THAT kernel, asserted at its own
-                           // site, and not of the baseline.
   bool bf16_cvt_packed;    // two fp32 -> one b32 of two bf16, one instruction
+
+  // ------------------------------------------------------------- RESIDENCY
+  // Instruction facts about WHERE an accumulator lives and where an operand may
+  // be sourced from.  `design.cuh` reads these and nothing else does: the
+  // algorithm's requirement is that the fold's accumulator be reusable as the
+  // readout's operand WITHOUT A MEMORY ROUND TRIP, which is a statement about
+  // residency and not about any one instruction.
+  bool mma_a_from_regs;    // the A operand may be supplied from the issuing
+                           // unit's OWN registers.  Warpgroup MMAs keep a
+                           // register-source A (the `_RS` atom family), so this
+                           // holds on every tabulated architecture.
+  bool mma_b_from_regs;    // the same for B.  A warpgroup MMA sources B ONLY
+                           // from a shared-memory descriptor.  Which SIDE a
+                           // given kernel's accumulator lands on is a clause of
+                           // THAT kernel, asserted against the built operation
+                           // at its own site.
+  bool accum_in_tmem;      // the MMA's accumulator lives in a dedicated tensor
+                           // memory rather than in the unit's register file
+                           // (`tcgen05`).  False on every row below; a Blackwell
+                           // row would set it, and the residency DERIVATION --
+                           // not a new refusal -- is what would then have to
+                           // hold.
+  bool mma_a_from_tmem;    // the A operand may be sourced from that same tensor
+                           // memory, which is what lets the invariant survive
+                           // with no register-resident state at all.
 
   // ------------------------------------------------------------- SELECTING
   bool bf16_simd_arith;    // elementwise bf16 arithmetic on a packed pair
@@ -99,40 +144,57 @@ constexpr bool tabulated(int cc) {
   return cc == 800 || cc == 860 || cc == 870 || cc == 890 || cc == 900;
 }
 
+// Field order, for every row below:
+//   cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed
+//      | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
+//                   mma_a_from_tmem
+//      | SELECTING: bf16_simd_arith, async_bulk_copy, warpgroup_mma
+//      |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
+//                   smem_granularity, regs_per_sm, regs_per_lane_max,
+//                   reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
+//                   driver_smem_reserve, tensor_f32_accum_pct
 constexpr Caps caps_of(int cc) {
   return cc == 800
-             ? Caps{800, true, true, true, true, true, true,
+             ? Caps{800, true, true, true, true,
+                    true, true, false, false,
                     false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 2048, 32, 1024, 100}
          : cc == 870
-             ? Caps{870, true, true, true, true, true, true,
+             ? Caps{870, true, true, true, true,
+                    true, true, false, false,
                     false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 1536, 16, 1024, 50}
          : cc == 890
-             ? Caps{890, true, true, true, true, true, true,
+             ? Caps{890, true, true, true, true,
+                    true, true, false, false,
                     false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 24, 1024, 50}
          : cc == 900
-             // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds:
-             // `wgmma` keeps a register-source A operand (the `_RS` atom
-             // family), which is the residency clause an accumulator-as-operand
-             // design needs, and only B is descriptor-only.  What is missing is
-             // an IMPLEMENTATION -- `mma`, `load_frag` and the carve are written
-             // for a 32-thread unit and a warpgroup unit is 128 -- so this row
-             // is a capability GAP, not a structural refusal.
-             ? Caps{900, true, true, true, true, false, true,
+             // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds and
+             // the residency derivation succeeds -- `wgmma` keeps a
+             // register-source A operand (the `_RS` atom family), so the state
+             // can be an operand without a round trip there too.  What is
+             // missing is an IMPLEMENTATION: the built `mma`, `load_frag` and
+             // carve are written for a 32-thread unit and a warpgroup unit is
+             // 128.  A capability GAP, not a structural refusal.
+             ? Caps{900, true, true, true, true,
+                    true, false, false, false,
                     true, true, true,
                     128, 233472, 232448, 128, 65536, 255, 256, 2048, 32, 1024, 100}
              // sm_86: the local development part (GA102).
-             : Caps{860, true, true, true, true, true, true,
+             : Caps{860, true, true, true, true,
+                    true, true, false, false,
                     false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 16, 1024, 50};
 }
 
 //: The conjunction of the REQUIRED clauses.  There is no partial support.
+//: `mma_a_from_regs` is NOT among them and must not be: whether the state can be
+//: an operand without a memory round trip is a RESIDENCY question, answered by
+//: `design.cuh` from the residency facts, and an architecture that answers it a
+//: different way is a derivation rather than a refusal.
 constexpr bool supported(const Caps &c) {
-  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.mma_a_from_regs &&
-         c.bf16_cvt_packed;
+  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.bf16_cvt_packed;
 }
 
 // ------------------------------------------------------------- DERIVATION
@@ -205,12 +267,10 @@ constexpr Caps kCaps = caps_of(kArch);
 
 static_assert(supported(kCaps), "UNSUPPORTED ARCHITECTURE: a required capability "
                                 "clause is false; see the Caps row");
-static_assert(kCaps.mma_unit_threads == 32,
-              "NOT BUILT FOR THIS ARCHITECTURE: every REQUIRED clause holds, but "
-              "`mma`, `load_frag` and the d_v carve are written for a 32-thread "
-              "unit owning a 16-row slice of the state. A 128-thread warpgroup "
-              "unit owns a 64-row slice and issues a differently shaped atom. "
-              "That is an unwritten implementation, not a refused structure.");
+
+// `mma_unit_threads` is NOT asserted here.  That the carve is written for a
+// 32-thread unit is a fact about the OPERATION THIS BASELINE BUILDS, not about
+// any architecture, so it is a 2a/2b consistency clause and lives in `ops.cuh`.
 
 //: A digest of the whole active row, written by a kernel and checked on the
 //: host.  A binary compiled against a different table cannot masquerade as this
@@ -220,7 +280,8 @@ constexpr int caps_digest(const Caps &c) {
          (int)c.mma_bf16_f32 * 4 + (int)c.mma_b_from_regs * 8 +
          (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32 +
          (int)c.async_bulk_copy * 64 + (int)c.warpgroup_mma * 128 +
-         (int)c.mma_a_from_regs * 256 + c.mma_unit_threads * 2;
+         (int)c.mma_a_from_regs * 256 + (int)c.accum_in_tmem * 512 +
+         (int)c.mma_a_from_tmem * 1024 + c.mma_unit_threads * 2;
 }
 
 }  // namespace arch

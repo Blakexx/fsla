@@ -57,19 +57,23 @@ def module():
 
 
 def arms():
-    """The (C, STAGES, SWZ, PACKED, smem_bytes) set the binary actually contains."""
-    return [(c, s, bool(w), bool(p), b) for c, s, w, p, b in module().arms()]
+    """The (C, SWZ, STAGES, smem_bytes, cta_target) set the binary contains.
+
+    TWO AXES, SIX ARMS. `STAGES` is DERIVED per (C, SWZ) from the shared-memory
+    budget and this kernel's live register set (see `design.cuh`), and is
+    reported here so a derived quantity stays visible to measurement.
+    """
+    return [(c, bool(w), s, b, t) for c, w, s, b, t in module().arms()]
 
 
-def assert_build_identity(chunk: int, stages: int, swizzle: bool = False,
-                          packed: bool = False) -> dict:
+def assert_build_identity(chunk: int, swizzle: bool = False) -> dict:
     """Device-side, not path-side. Raises unless the loaded binary IS this source
     AND was compiled against the base's capability table row for TARGET_CC."""
     from denseref import build as dbuild
 
     m = module()
     (magic, dstamp, caps_digest, widths, regs, static_smem, binver, dyn_smem,
-     maxthreads, local_bytes) = m.build_stamp(chunk, stages, swizzle, packed)
+     maxthreads, local_bytes, stages) = m.build_stamp(chunk, swizzle)
     if magic != BUILD_MAGIC:
         raise RuntimeError(f"stale binary: device magic {magic} != source {BUILD_MAGIC}")
     if dstamp != 4 * 1000 + 64:
@@ -84,32 +88,19 @@ def assert_build_identity(chunk: int, stages: int, swizzle: bool = False,
                            f"digest {caps_digest}, not {TARGET_CC}'s {want}")
     if local_bytes:
         raise RuntimeError(f"REGISTER SPILL: {local_bytes} B local for C={chunk} "
-                           f"S={stages} SWZ={swizzle} PACKED={packed}")
+                           f"SWZ={swizzle} (derived S={stages})")
     return dict(magic=magic, warps=dstamp // 1000, n=dstamp % 1000,
                 caps_digest=caps_digest, widths=(widths // 1000, widths % 1000),
                 regs_per_thread=regs, static_smem=static_smem,
                 binary_version=binver, dynamic_smem=dyn_smem,
-                max_threads=maxthreads, local_bytes=local_bytes, so=m.__file__)
+                max_threads=maxthreads, local_bytes=local_bytes, stages=stages,
+                so=m.__file__)
 
 
-#: the base's default arm per chunk, so `forward(.., c)` means the same thing on
-#: both sides of a delta
-DEFAULT_STAGES = {16: 4, 32: 4, 64: 3}
+def stages_of(chunk: int, swizzle: bool = False) -> int:
+    """The DERIVED staging depth of an arm, read off the built binary."""
+    return module().build_stamp(chunk, swizzle)[10]
 
 
-#: THE DEFAULT PRODUCTION ARM.  `packed=True` states the coefficient product as
-#: `mul_bf16x2` on two packed pairs -- the capability table's SELECTING entry.
-#: `packed=False` (WIDEN) hard-codes the fp32 route into the algorithm.  On sm_86
-#: the two are within 1% on every measure and identical in total instructions, so
-#: the tie is broken by the only asymmetry left: PACKED is the form an
-#: architecture with bf16 SIMD arithmetic can serve in one instruction per two
-#: coefficients, and WIDEN is not.  Both are built, both are gated, and they are
-#: bit-identical.
-DEFAULT_PACKED = True
-
-
-def forward(pr, pw, v, chunk: int, stages: int = None, swizzle: bool = False,
-            packed: bool = DEFAULT_PACKED):
-    if stages is None:
-        stages = DEFAULT_STAGES[chunk]
-    return module().forward(pr, pw, v, chunk, stages, swizzle, packed)
+def forward(pr, pw, v, chunk: int, swizzle: bool = False):
+    return module().forward(pr, pw, v, chunk, swizzle)

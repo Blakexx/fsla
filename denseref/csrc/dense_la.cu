@@ -22,10 +22,11 @@
 // as a B operand, i.e. (n = d_v = l/4) x (k = d_k = 2*(l%4), +1, +8, +9).  With
 // the transposed state those are the SAME registers.  The state therefore never
 // leaves registers -- no shared-memory round trip, no shuffle, no transpose
-// pass, one `pack_bf16x2` per b32.  `mma_b_from_regs` is therefore a clause of
-// THIS kernel, asserted at the kernel below rather than in the shared table: an
-// MMA that can only source B from a shared-memory descriptor computes this by a
-// different algorithm.
+// pass, one `pack_bf16x2` per b32.  THAT the state lives in registers is layer
+// 2a's `STATE_RESIDENCY`, derived; that it is presented as the readout's B
+// operand is a clause of THIS kernel, asserted below against the operation that
+// serves it: an MMA that can only source B from a shared-memory descriptor
+// computes this by a different algorithm.
 //
 // PARTITION (one MMA unit per 16 d_v rows)
 // ----------------------------------------
@@ -95,14 +96,19 @@ namespace denseref {
 
 using namespace ops;
 
-//: THIS KERNEL'S OWN OPERAND-RESIDENCY CLAUSE.  The baseline requires only that
-//: an accumulator can be an operand from registers at all (`mma_a_from_regs`);
-//: which SIDE it lands on is a property of the kernel, and this one lands in B.
-static_assert(arch::kCaps.mma_b_from_regs,
-              "UNSUPPORTED ARCHITECTURE FOR THIS KERNEL: the fold accumulator IS "
-              "the readout's B operand here, so B must be readable from the "
-              "issuing unit's own registers. A warpgroup MMA sources B only from "
-              "a shared-memory descriptor, which is a different algorithm.");
+//: THIS KERNEL'S OWN OPERAND-SIDE CLAUSE.  Layer 2a says WHERE the state lives
+//: (`REGISTERS`, derived from the residency facts); which SIDE of the MMA it is
+//: presented on is a property of THIS kernel, and this one presents it as B.  So
+//: the clause is against the BUILT operation rather than against an
+//: architecture: if the `mma` this baseline builds stopped reading B from the
+//: issuing unit's registers, this kernel's state would take a shared-memory
+//: round trip and it would be a different algorithm.
+static_assert(design::kStateResidency == design::StateResidency::REGISTERS &&
+                  kMmaAcceptsRegisterB,
+              "SELECTION UNSATISFIABLE GIVEN AVAILABLE OPERATIONS: this kernel's "
+              "fold accumulator IS the readout's B operand, so it needs a state "
+              "that lives in registers and a built `mma` that reads B out of "
+              "them.");
 
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
@@ -116,7 +122,8 @@ static constexpr int kPad = 8;  // shared-memory row padding, in elements
 // quantum, and the CTA is that many units wide.  Both terms come from the
 // operation, not from a literal: on an architecture whose MMA unit is a
 // warpgroup this would be one unit of 128 threads owning all 64 rows, which is
-// the shape `arch_caps.cuh` records as unwritten rather than served here.
+// the shape `ops.cuh`'s consistency section records as unwritten rather than
+// served here.
 static constexpr int kUnits = kD / kMmaM;
 static constexpr int kThreads = kUnits * kMmaUnitThreads;
 static constexpr int kWarps = kThreads / 32;
@@ -132,16 +139,20 @@ template <int C, int STAGES, bool SWZ> struct Geom {
       (size_t)(3 * STAGES * C * Ld + C * CLd + C * Ld) * sizeof(__nv_bfloat16);
 };
 
-//: THE REGISTER BUDGET, DERIVED PER ARCHITECTURE RATHER THAN WRITTEN DOWN.
-//: The second launch bound is the CTA count this arm's shared-memory footprint
-//: already admits on THIS architecture -- precisely the point at which
-//: registers would become the new binding constraint, so it asks ptxas for the
-//: largest register allocation that costs no residency.  Both terms come from
-//: the table; a global register literal would be tuned for whichever machine
-//: was last measured.
+//: THIS KERNEL'S LIVE REGISTER SET, and it is FALSIFIABLE: `build.py` fails the
+//: build on any nonzero `localSizeBytes`, so a floor set too low cannot ship
+//: quietly.  ptxas census across the arm set: 80-128 registers per lane.
+constexpr int kRegFloor = 128;
+
+//: THE SECOND LAUNCH BOUND, DERIVED PER ARCHITECTURE RATHER THAN WRITTEN DOWN.
+//: The CTA count this arm can actually reach -- its shared-memory footprint
+//: capped by the count whose register budget still holds the live set -- which
+//: is precisely the point at which asking for more registers would start
+//: costing residency.  Every term comes from the table; a global register
+//: literal would be tuned for whichever machine was measured last.
 template <int C, int STAGES, bool SWZ>
 constexpr int kCtaTarget =
-    arch::ctas_by_smem(arch::kCaps, (int)Geom<C, STAGES, SWZ>::bytes);
+    design::cta_target((int)Geom<C, STAGES, SWZ>::bytes, kThreads, kRegFloor);
 
 template <int C, int STAGES, bool SWZ>
 __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void dense_la_kernel(
@@ -152,16 +163,19 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void dense_
   // The one hard resource refusal, and it comes from the table rather than a
   // literal: C = 128 is designed and buildable everywhere the shared-memory
   // budget admits it, and nowhere else.  No arm is silently shrunk to fit.
-  static_assert(Geom<C, STAGES, SWZ>::bytes <= (size_t)arch::kCaps.smem_per_cta_max,
+  static_assert(design::smem_fits(Geom<C, STAGES, SWZ>::bytes),
                 "this (C, STAGES, SWZ) arm does not fit this architecture's "
                 "per-CTA shared-memory maximum");
   using G = Geom<C, STAGES, SWZ>;
   constexpr int Ld = G::Ld;
   constexpr int CLd = G::CLd;
-  constexpr int MTOK = C / 16;  // token m-tiles in a chunk
-  constexpr int NTOK = C / 8;   // token n-tiles in a chunk
-  constexpr int KD = kD / 16;   // 4 -- d_k k-tiles
-  constexpr int NDV = kD / 8;   // 8 -- state n-tiles (d_k)
+  // Tile counts, in THE OPERATION'S OWN UNITS rather than in literals: an
+  // architecture that substitutes a differently shaped member of the atom's
+  // shape family moves these with it.
+  constexpr int MTOK = C / kMmaM;  // token m-tiles in a chunk
+  constexpr int NTOK = C / kMmaN;  // token n-tiles in a chunk
+  constexpr int KD = kD / kMmaK;   // 4 -- d_k k-tiles
+  constexpr int NDV = kD / kMmaN;   // 8 -- state n-tiles (d_k)
   constexpr uint32_t kRowB = (uint32_t)Ld * 2;
 
   // Gram tile partition: split m first, spill the remainder onto n.
@@ -637,7 +651,7 @@ torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t
 __global__ void stamp_kernel(int *out) {
   out[0] = kBuildMagic;
   out[1] = kWarps * 1000 + kD;
-  out[2] = arch::caps_digest(arch::kCaps);
+  out[2] = design::kCapsDigest;
 }
 
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle) {
@@ -676,8 +690,8 @@ std::vector<int64_t> arch_row(int64_t cc) {
   TORCH_CHECK(arch::tabulated((int)cc), "untabulated compute capability ", cc);
   const arch::Caps c = arch::caps_of((int)cc);
   return {c.cc,
-          c.async_copy, c.tile_load, c.mma_bf16_f32, c.mma_a_from_regs,
-          c.mma_b_from_regs, c.bf16_cvt_packed,
+          c.async_copy, c.tile_load, c.mma_bf16_f32, c.bf16_cvt_packed,
+          c.mma_a_from_regs, c.mma_b_from_regs, c.accum_in_tmem, c.mma_a_from_tmem,
           c.bf16_simd_arith, c.async_bulk_copy, c.warpgroup_mma,
           arch::supported(c),
           c.mma_unit_threads, c.smem_per_sm, c.smem_per_cta_max, c.regs_per_sm,

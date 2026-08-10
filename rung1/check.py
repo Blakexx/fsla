@@ -16,10 +16,12 @@ The base's layers plus one that is specific to this rung:
    the kernel performs (bf16 coefficient, bf16 state, bf16 output).
 4. RING PHASE  -- lengths that are not multiples of the ring depth, so the
    staging wrap and the deferred output drain are exercised at every phase.
-5. ARM IDENTITY -- every (STAGES, SWZ) arm of a chunk size must be BIT-IDENTICAL
-   to every other. That is what proves the sweep changed no arithmetic.
+5. ARM IDENTITY -- every arm of a chunk size must be BIT-IDENTICAL to every
+   other. That is what proves the layout axis changes no arithmetic.
 
-Every arm in the binary is gated, not just the default one.
+Every arm in the binary is gated, not just the default one. The binary now holds
+SIX: two axes, `C` and `SWZ`. The staging depth is DERIVED per arm and is printed
+with the census below, so a quantity that stopped being an axis is still visible.
 """
 from __future__ import annotations
 
@@ -53,15 +55,14 @@ def run():
     ok = True
     dev = "cuda"
     arms = build.arms()
-    default = [(c, build.DEFAULT_STAGES[c], False, build.DEFAULT_PACKED)
-               for c in CHUNKS]
+    default = [(c, False) for c in CHUNKS]
 
-    print("== arms in the binary ==")
-    for c, s, w, pk, b in arms:
-        st = build.assert_build_identity(c, s, w, pk)
-        print(f"  C={c:3d} S={s} SWZ={int(w)} PACKED={int(pk)}  smem={b:7,d} B  "
-              f"regs={st['regs_per_thread']:3d}  local={st['local_bytes']}  "
-              f"caps={st['caps_digest']}")
+    print("== arms in the binary (two axes; S and the CTA target are DERIVED) ==")
+    for c, w, s, b, t in arms:
+        st = build.assert_build_identity(c, w)
+        print(f"  C={c:3d} SWZ={int(w)}  S={s} (derived)  ctas={t}  "
+              f"smem={b:7,d} B  regs={st['regs_per_thread']:3d}  "
+              f"local={st['local_bytes']}  caps={st['caps_digest']}")
 
     # ---- 0. the factored coefficient IS the mixed-radix definition ----------
     p = reference.amplitudes(1, 1, 8, WIDTHS, dev, seed=7)
@@ -90,11 +91,11 @@ def run():
         ok &= e["rel_l2"] < 1e-13
 
     # ---- 2. one chunk, state identically zero -------------------------------
-    for c, s, w, pk in default:
+    for c, w in default:
         pr = reference.amplitudes(4, 4, c, WIDTHS, dev, seed=10 + c)
         pw = reference.amplitudes(4, 4, c, WIDTHS, dev, seed=20 + c)
         vv = torch.randn(4, 4, c, 64, device=dev).bfloat16()
-        got = build.forward(pr, pw, vv, c, s, w, pk)
+        got = build.forward(pr, pw, vv, c, w)
         torch.cuda.synchronize()
         Rb, Wb = reference.kron_bf16(pr, WIDTHS), reference.kron_bf16(pw, WIDTHS)
         e = metrics(got, reference.chunked_bf16_state(Rb, Wb, vv, c).bfloat16())
@@ -111,12 +112,12 @@ def run():
     ex = {c: reference.chunked(Rx, Wx, v, c) for c in CHUNKS}
     bs = {c: reference.chunked_bf16_state(Rb, Wb, v, c) for c in CHUNKS}
     first = {}
-    for c, s, w, pk, _ in arms:
-        got = build.forward(pr, pw, v, c, s, w, pk)
+    for c, w, s, _, _ in arms:
+        got = build.forward(pr, pw, v, c, w)
         torch.cuda.synchronize()
         e1, e2 = metrics(got, ex[c]), metrics(got, bs[c].bfloat16())
         d = metrics(bs[c], ex[c])
-        tag = f"C={c:3d} S={s} SWZ={int(w)} P={int(pk)}"
+        tag = f"C={c:3d} SWZ={int(w)} S={s}"
         print(f"[3 L={L}   ] {tag}  vs exact fp64 {fmt(e1)}")
         print(f"                             vs bf16 coeff+state fp64, bf16 out "
               f"{fmt(e2)}   (design floor {d['rel_l2']:.3e})")
@@ -136,10 +137,10 @@ def run():
         vv = torch.randn(2, 2, Lx, 64, device=dev).bfloat16()
         Rb2, Wb2 = reference.kron_bf16(pr, WIDTHS), reference.kron_bf16(pw, WIDTHS)
         worst = 0.0
-        for c, s, w, pk, _ in arms:
+        for c, w, _, _, _ in arms:
             if Lx % c:
                 continue
-            got = build.forward(pr, pw, vv, c, s, w, pk)
+            got = build.forward(pr, pw, vv, c, w)
             torch.cuda.synchronize()
             worst = max(worst, metrics(
                 got, reference.chunked_bf16_state(Rb2, Wb2, vv, c).bfloat16())["rel_l2"])

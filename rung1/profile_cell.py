@@ -2,7 +2,8 @@
 
     python profile_cell.py <arm> [L] [B] [H]
 
-`arm` is `base<C>_<S>_<0|1>`, `rung<C>_<S>_<0|1 swizzle>_<0|1 packed>`, `fa_core` or `fa_layer`.
+`arm` is `base<C>_<S>_<0|1 swizzle>`, `rung<C>_<0|1 swizzle>`, `fa_core` or
+`fa_layer`. The rung's staging depth is derived, so it is not part of its name.
 The build identity is asserted DEVICE-SIDE before the profiled launch, and the
 peak VRAM is printed after it, so a row that ran near the 12 GiB cap is visible
 in its own log rather than only in the harness that launched it.
@@ -42,14 +43,13 @@ if ARM.startswith("base"):
     def fwd():
         return dbuild.forward(q, k, v, c, s, bool(w))
 elif ARM.startswith("rung"):
-    c, s, w, pk = parse("rung")
-    print("BUILD IDENTITY:", rbuild.assert_build_identity(c, s, bool(w), bool(pk)),
-          flush=True)
+    c, w = parse("rung")
+    print("BUILD IDENTITY:", rbuild.assert_build_identity(c, bool(w)), flush=True)
     pr = reference.amplitudes(B, H, L, rbuild.WIDTHS, dev, seed=2)
     pw = reference.amplitudes(B, H, L, rbuild.WIDTHS, dev, seed=3)
 
     def fwd():
-        return rbuild.forward(pr, pw, v, c, s, bool(w), bool(pk))
+        return rbuild.forward(pr, pw, v, c, bool(w))
 elif ARM == "fa_core":
     def fwd():
         with torch.no_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):

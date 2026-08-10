@@ -1,15 +1,24 @@
 #pragma once
 
-// THE BASELINE OPERATIONS.
+// LAYER 2b -- THE BASELINE OPERATIONS.
 //
-// This is the structure the kernel is written against.  Every entry is defined
-// by WHAT THE ALGORITHM NEEDS, never by what an instruction does: "stage this
-// tile and tell me when it is visible", not "issue a cp.async".  Get that level
-// wrong and the abstraction leaks on the first new architecture -- TMA cannot
-// implement "issue a cp.async", but it can implement `stage_tile`.
+// HOW EACH STEP IS PERFORMED.  Layer 2a (`design.cuh`) says what the design
+// LOOKS LIKE on this architecture; this file says how each of its steps is
+// EXECUTED, as operations with contracts.  Every entry is defined by WHAT THE
+// ALGORITHM NEEDS, never by what an instruction does: "stage this tile and tell
+// me when it is visible", not "issue a cp.async".  Get that level wrong and the
+// abstraction leaks on the first new architecture -- TMA cannot implement "issue
+// a cp.async", but it can implement `stage_tile`.
 //
-// The kernel below this header names no architecture and issues no inline PTX.
-// Which implementation of an operation it gets is decided by `arch::kCaps`.
+// The kernel above this header names no architecture and issues no inline PTX.
+// It reads layer 2a for its design and calls this file to execute it.
+//
+// This file is also where THE CONSISTENCY BETWEEN 2a AND 2b is checked (see the
+// section at the foot): a selection is invalid if no available operation can
+// serve it, and that is what the assertion says -- "selection unsatisfiable
+// given available operations", never "this architecture lacks instruction X".
+// Where the capability row offers a better implementation than the one built,
+// the gap is ANNOUNCED rather than taken silently.
 //
 // OPERATIONS AND CONTRACTS
 // ------------------------
@@ -36,17 +45,17 @@
 //                             tile serve as an operand of either handedness.
 //   mma(acc, a, b)            acc += A(16x16) . B(16x8), bf16 operands, fp32
 //                             accumulator, accumulator PRIVATE to the issuing
-//                             unit, and A READ FROM THAT UNIT'S REGISTERS.  The
-//                             last clause is the design's pivot and is a
-//                             REQUIRED capability, not a flag; which SIDE a
-//                             given kernel's accumulator lands on is that
-//                             kernel's clause, asserted at its own site.
+//                             unit, and BOTH operands read from that unit's
+//                             registers.  That last property is what serves
+//                             `STATE_RESIDENCY = REGISTERS`, which is layer 2a's
+//                             selection and not a flag; which SIDE a given
+//                             kernel's accumulator lands on is that kernel's
+//                             clause, asserted against this operation at its own
+//                             site.
 //   pack_bf16x2(lo, hi)       two fp32 -> the b32 that `mma` reads as two
 //                             consecutive k-elements of an operand.  This is
 //                             the accumulator-to-operand conversion; it is the
 //                             only reason the state never touches shared memory.
-//   widen_bf16x2(v, lo, hi)   the EXACT inverse of `pack_bf16x2`: a packed pair
-//                             back to two fp32, by bit placement.
 //   splat_bf16x2(x)           one bf16 into both halves of a packed pair, so a
 //                             scalar can be an operand of `mul_bf16x2`.
 //   mul_bf16x2(a, b)          elementwise product of two packed bf16 pairs.
@@ -89,12 +98,15 @@
 // The shared-memory layout (pad-8 against an XOR swizzle) is legal on every
 // tabulated architecture and is chosen by MEASUREMENT, not by the table.  A
 // layout knob in the capability table would make every future measurement
-// unfalsifiable.
+// unfalsifiable.  It is a free axis, and `design.cuh` says why it stays one.
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 #include "arch_caps.cuh"
+#include "design.cuh"
 
 namespace denseref {
 namespace ops {
@@ -106,7 +118,25 @@ constexpr int kStageBytes = 16;
 
 //: The MMA's shape, in the units the carve is expressed in.
 constexpr int kMmaM = 16, kMmaN = 8, kMmaK = 16;
-constexpr int kMmaUnitThreads = arch::kCaps.mma_unit_threads;
+
+//: THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly
+//: own its accumulator.  This is a property of the IMPLEMENTATION below, not of
+//: any architecture -- the capability row states what the architecture's unit
+//: is, and the consistency section at the foot of this file is where the two
+//: have to agree.
+constexpr int kMmaUnitThreads = 32;
+
+//: The operand sources the built `mma` accepts.  A kernel whose accumulator
+//: must land on a particular side asserts against THESE, at its own site: which
+//: side is a property of that kernel and not of the baseline.
+constexpr bool kMmaAcceptsRegisterA = true;
+constexpr bool kMmaAcceptsRegisterB = true;
+constexpr bool kMmaAcceptsTmemA = false;
+
+//: The built `stage_tile` moves `kStageBytes` per issue.  A bulk (TMA) form
+//: would satisfy the same contract with one descriptor issue for a whole tile;
+//: it is not built.  See the announcement in the consistency section.
+constexpr bool kStagingIsBulk = false;
 
 using SmemAddr = uint32_t;
 
@@ -116,10 +146,7 @@ __device__ __forceinline__ SmemAddr smem_addr(const void *p) {
 
 // ------------------------------------------------------------------ staging
 
-template <bool Bulk = arch::kCaps.async_bulk_copy>
 __device__ __forceinline__ void stage_tile(SmemAddr dst, const void *src) {
-  static_assert(!Bulk, "the bulk (TMA) implementation of stage_tile is not built; "
-                       "it is a SELECTING capability with no ratified arch here");
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }
 
@@ -171,18 +198,6 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
                 "the accumulator cannot become an operand in place");
   const __nv_bfloat162 p = __floats2bfloat162_rn(lo, hi);
   return *reinterpret_cast<const uint32_t *>(&p);
-}
-
-//: EXACT widening of a packed bf16 pair to two fp32.  bf16 is the top half of an
-//: fp32, so this is bit placement, not a rounding operation, and it is the
-//: inverse of `pack_bf16x2` on every architecture.  It exists as its own entry
-//: because an elementwise product whose two operands have DIFFERENT reuse
-//: lifetimes -- one amplitude reused across a whole run of coefficients -- must
-//: be able to pay for the widening once rather than once per product.  See the
-//: rung's two production arms, and which one measurement chose.
-__device__ __forceinline__ void widen_bf16x2(uint32_t v, float &lo, float &hi) {
-  lo = __int_as_float(v << 16);
-  hi = __int_as_float(v & 0xffff0000u);
 }
 
 //: One bf16 into BOTH halves of a packed pair, so that a scalar can be an
@@ -245,6 +260,58 @@ __device__ __forceinline__ void store_vec16(void *p, const uint4 &v) {
 __device__ __forceinline__ void copy_shared_to_global_16b(void *dst, const void *src) {
   store_vec16(dst, load_vec16(src));
 }
+
+// ------------------------------------------------- 2a / 2b CONSISTENCY
+// A SELECTION IS INVALID IF NO AVAILABLE OPERATION CAN SERVE IT.  That is what
+// each clause below says, and it is deliberately not "this architecture lacks
+// instruction X": the selection is the thing being checked, the operation set
+// is what it is checked against, and an architecture number appears in neither.
+
+//: `design.cuh` claims REGISTERS is a residency this baseline builds.  It is
+//: built by an `mma` that reads an operand out of the issuing unit's own
+//: registers, and by `pack_bf16x2`, which is the accumulator-to-operand
+//: conversion that keeps the state out of shared memory.  If either went away
+//: the claim would be false, and this is where that would be caught.
+static_assert(
+    !(design::kBuiltResidencies &
+      design::residency_bit(design::StateResidency::REGISTERS)) ||
+        (kMmaAcceptsRegisterA && arch::kCaps.bf16_cvt_packed),
+    "SELECTION UNSATISFIABLE GIVEN AVAILABLE OPERATIONS: state residency "
+    "REGISTERS is selected, but no built `mma` accepts an operand from the "
+    "issuing unit's registers (or no packed accumulator->operand conversion "
+    "exists to feed it). Either build one or stop claiming the residency.");
+
+static_assert(
+    !(design::kBuiltResidencies &
+      design::residency_bit(design::StateResidency::TMEM)) ||
+        kMmaAcceptsTmemA,
+    "SELECTION UNSATISFIABLE GIVEN AVAILABLE OPERATIONS: state residency TMEM "
+    "is claimed as built, but no built `mma` sources an operand from tensor "
+    "memory.");
+
+//: THE CARVE'S UNIT.  Not a capability and not an architecture clause: `mma`,
+//: `load_frag` and the d_v carve above are written for a 32-thread unit owning
+//: a 16-row slice of the state, and a 128-thread warpgroup unit owns 64 and
+//: issues a differently shaped atom.  So this is a consistency clause between
+//: the design's carve and the operations that execute it, and its failure means
+//: NOT BUILT rather than UNSUPPORTED.
+static_assert(arch::kCaps.mma_unit_threads == kMmaUnitThreads,
+              "NOT BUILT FOR THIS ARCHITECTURE: no built implementation of "
+              "`mma` and `load_frag` serves this architecture's MMA unit. The "
+              "operations here are written for a 32-thread unit owning a 16-row "
+              "slice of the state; a 128-thread warpgroup unit owns 64. Every "
+              "structural clause holds -- this is an unwritten implementation, "
+              "not a refused structure.");
+
+//: THE ANNOUNCEMENT SITES.  Each is a case where the capability row records a
+//: better implementation of a baseline operation than the one built here.  None
+//: of them is an error: the built path is correct everywhere it compiles.  What
+//: is forbidden is taking the slower path SILENTLY.
+//:
+//: `stage_tile` on a part with bulk asynchronous copy: TMA satisfies the same
+//: contract with one descriptor issue instead of one per 16 bytes.
+inline constexpr design::Announce<arch::kCaps.async_bulk_copy && !kStagingIsBulk>
+    kStagingAnnouncement{};
 
 }  // namespace ops
 }  // namespace denseref
