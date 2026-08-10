@@ -17,7 +17,7 @@ BUILD = HERE / "_build"
 BUILD.mkdir(exist_ok=True)
 
 #: must equal kBuildMagic in dense_la.cu
-BUILD_MAGIC = 580101
+BUILD_MAGIC = 580102
 
 #: the compute capability this extension is compiled for.  One arch, closed
 #: world: `arch_row` will answer for any tabulated cc, but only this one is

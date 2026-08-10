@@ -96,7 +96,7 @@ using namespace ops;
 
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
-static constexpr int kBuildMagic = 580101;
+static constexpr int kBuildMagic = 580102;
 
 static constexpr int kD = 64;   // d_k = d_v
 static constexpr int kPad = 8;  // shared-memory row padding, in elements
@@ -122,8 +122,19 @@ template <int C, int STAGES, bool SWZ> struct Geom {
       (size_t)(3 * STAGES * C * Ld + C * CLd + C * Ld) * sizeof(__nv_bfloat16);
 };
 
+//: THE REGISTER BUDGET, DERIVED PER ARCHITECTURE RATHER THAN WRITTEN DOWN.
+//: The second launch bound is the CTA count this arm's shared-memory footprint
+//: already admits on THIS architecture -- precisely the point at which
+//: registers would become the new binding constraint, so it asks ptxas for the
+//: largest register allocation that costs no residency.  Both terms come from
+//: the table; a global register literal would be tuned for whichever machine
+//: was last measured.
 template <int C, int STAGES, bool SWZ>
-__global__ __launch_bounds__(kThreads) void dense_la_kernel(
+constexpr int kCtaTarget =
+    arch::ctas_by_smem(arch::kCaps, (int)Geom<C, STAGES, SWZ>::bytes);
+
+template <int C, int STAGES, bool SWZ>
+__global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void dense_la_kernel(
     const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
     const __nv_bfloat16 *__restrict__ v, __nv_bfloat16 *__restrict__ o, int L) {
   static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
