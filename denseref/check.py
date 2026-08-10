@@ -46,10 +46,51 @@ def run():
     ok = True
     dev = "cuda"
     ARMS = build.arms()
-    print(f"[0 arms      ] {len(ARMS)} built (C, STAGES, SWZ, smem_B):")
+
+    # THE CAPABILITY TABLE, as the built binary reports it. Printed before any
+    # number, because every derived quantity below is downstream of it.
+    print("[0 caps      ] the architecture capability table")
+    for cc in build.TABULATED_CC:
+        r = build.arch_row(cc)
+        req = " ".join(f"{n}={int(r[n])}" for n in build.REQUIRED)
+        sel = " ".join(f"{n}={int(r[n])}" for n in build.SELECTING)
+        mark = "BUILT" if cc == build.TARGET_CC else ("     " if r["supported"]
+                                                      else "REFUSED")
+        print(f"               sm_{cc//10:<3d} {mark:7s} REQUIRED[{req}] "
+              f"SELECTING[{sel}]")
+        print(f"                       FACTS smem/SM={r['smem_per_sm']:,d} "
+              f"smem/CTA<={r['smem_per_cta_max']:,d} regs/SM={r['regs_per_sm']:,d} "
+              f"threads/SM={r['max_threads_per_sm']} CTAs/SM<={r['max_ctas_per_sm']} "
+              f"mma_unit={r['mma_unit_threads']}t fp32_accum={r['tensor_f32_accum_pct']}%")
+
+    print(f"[0 arms      ] {len(ARMS)} built (C, STAGES, SWZ, smem_B); residency "
+          f"DERIVED from the table, not from a literal:")
     for c, st, w, b in ARMS:
+        cells = []
+        for cc in (860, 800):
+            if not build.arch_row(cc)["supported"]:
+                continue
+            p = build.residency_plan(b, 255, cc)
+            cells.append(f"sm_{cc//10}:{p['by_smem']}")
         print(f"               C={c:3d} S={st} SWZ={int(w)}  smem={b:7,d} B  "
-              f"CTAs/SM(smem)={102400 // b}")
+              f"CTAs/SM by smem  {'  '.join(cells)}")
+    for t in (128, 256):
+        b86 = build.residency_plan(0, 255, 860, t)["reg_budget"]
+        b80 = build.residency_plan(0, 255, 800, t)["reg_budget"]
+        print(f"[0 reg budget] per-lane registers sustaining n CTAs of {t:3d} threads:"
+              f"  sm_86 {b86}   sm_80 {b80}")
+    # The production consumer kernel's shape, planned from the table alone. This
+    # box owns no A100; the row does. It is the check that the derivation is the
+    # one that answered P58's question, not a reimplementation of it.
+    for cc in (860, 800):
+        p = build.residency_plan(44544, 128, cc, 256)
+        bind = " + ".join(n for n, key in (("smem", "by_smem"), ("regs", "by_regs"),
+                                           ("threads", "by_threads"),
+                                           ("cta cap", "by_cta_cap"))
+                          if p[key] == p["ctas"])
+        print(f"[0 plan 44544] sm_{cc//10} at 256 threads / 128 regs: by_smem "
+              f"{p['by_smem']}  by_regs {p['by_regs']}  by_threads {p['by_threads']}"
+              f"  -> {p['ctas']} CTAs/SM, bound by {bind}")
 
     torch.manual_seed(0)
     q = (torch.randn(2, 3, 512, 64, device=dev) * 0.5).bfloat16()

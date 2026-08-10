@@ -1,4 +1,10 @@
-// Clean-room dense chunked linear attention, sm_80/sm_86, bf16 in / fp32 accumulate.
+// Clean-room dense chunked linear attention, bf16 in / fp32 accumulate.
+//
+// This file names NO ARCHITECTURE and issues NO INLINE PTX.  It is written
+// against the baseline operations of `ops.cuh`; which implementation of each it
+// receives is decided by the capability table in `arch_caps.cuh`, and an
+// architecture that cannot supply one of the REQUIRED capabilities fails the
+// build there rather than being served a slower route here.
 //
 // SEMANTICS (the whole of it):
 //     O[t] = sum_{s <= t} (Q[t] . K[s]) * V[s]
@@ -11,20 +17,22 @@
 // THE ONE STRUCTURAL DECISION EVERYTHING FOLLOWS FROM
 // ---------------------------------------------------
 // The state is held TRANSPOSED, S^T[d_v][d_k], as the fold's accumulator with
-// m = d_v and n = d_k.  For mma.m16n8k16 the fp32 accumulator gives lane l the
-// elements (m = l/4, l/4+8) x (n = 2*(l%4), +1); the readout needs S as a B
-// operand, i.e. (n = d_v = l/4) x (k = d_k = 2*(l%4), +1, +8, +9).  With the
-// transposed state those are the SAME registers.  The state therefore never
+// m = d_v and n = d_k.  For the MMA's m16n8k16 shape the fp32 accumulator gives
+// lane l the elements (m = l/4, l/4+8) x (n = 2*(l%4), +1); the readout needs S
+// as a B operand, i.e. (n = d_v = l/4) x (k = d_k = 2*(l%4), +1, +8, +9).  With
+// the transposed state those are the SAME registers.  The state therefore never
 // leaves registers -- no shared-memory round trip, no shuffle, no transpose
-// pass, one cvt.rn.bf16x2.f32 per b32.
+// pass, one `pack_bf16x2` per b32.  This is why `mma_b_from_regs` is a REQUIRED
+// capability and not a flag: an MMA that can only source B from a shared-memory
+// descriptor computes this by a different algorithm.
 //
-// PARTITION (4 warps, d_v = 64)
-// -----------------------------
-// Warp w owns d_v in [16w, 16w+16).  That slice of the state is PRIVATE to the
-// warp for the whole sequence.  There is no cross-warp reduction anywhere and
-// no state in shared memory.  The one thing every warp needs in full is the
+// PARTITION (one MMA unit per 16 d_v rows)
+// ----------------------------------------
+// Unit u owns d_v in [16u, 16u+16).  That slice of the state is PRIVATE to the
+// unit for the whole sequence.  There is no cross-unit reduction anywhere and
+// no state in shared memory.  The one thing every unit needs in full is the
 // Gram block G = tril(Q.K^T), whose m axis is tokens; it is computed once
-// (token-split across warps) and exchanged through shared memory in bf16.
+// (token-split across units) and exchanged through shared memory in bf16.
 //
 // SHARED-MEMORY LAYOUT: TWO ARMS, BOTH BUILT
 // ------------------------------------------
@@ -46,16 +54,16 @@
 //
 // PIPELINE ORDER (dependency depth, not source convenience)
 // ---------------------------------------------------------
-//   cp.async.wait_group<STAGES-2>   this chunk's tiles have landed
-//   __syncthreads()                 (1) tiles visible; last chunk's reads done;
+//   stage_wait<STAGES-2>()          this chunk's tiles have landed
+//   rendezvous()                    (1) tiles visible; last chunk's reads done;
 //                                       last chunk's output staged
 //   stage chunk c+STAGES-1          issued AFTER the barrier, which is what
 //                                       makes the barrier the WAR fence too
 //   readout   O = Q.S               depends on nothing but Q and registers
-//   Gram      G = tril(Q.K^T) -> sg only GWARPS warps have work here
-//   drain     previous chunk's O    the other warps' work during the Gram
+//   Gram      G = tril(Q.K^T) -> sg only GWARPS units have work here
+//   drain     previous chunk's O    the other units' work during the Gram
 //   fold      S += V^T.K            independent of G
-//   __syncthreads()                 (2) sg visible
+//   rendezvous()                    (2) sg visible
 //   intra     O += G.V
 //   stage O into sg-adjacent buffer
 // TWO barriers per chunk, which is FlashAttention-2's steady-state count
@@ -67,8 +75,8 @@
 // ---------------
 // Every mma's A/B fragments for a whole k-run are fetched BEFORE the first mma
 // of that run, not one-ahead-of-one.  This is the register-prefetch discipline
-// of FA2's `utils.h:150-159` taken one step further: FA2 issues ldmatrix(i+1)
-// before mma(i); here the entire fragment array is live, so ldmatrix(i+1..n)
+// of FA2's `utils.h:150-159` taken one step further: FA2 issues load_frag(i+1)
+// before mma(i); here the entire fragment array is live, so load_frag(i+1..n)
 // all precede mma(i).  Verified in SASS, not assumed.
 
 #include <ATen/cuda/CUDAContext.h>
@@ -79,55 +87,29 @@
 
 #include <vector>
 
+#include "arch_caps.cuh"
+#include "ops.cuh"
+
 namespace denseref {
+
+using namespace ops;
 
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
-static constexpr int kBuildMagic = 570203;
+static constexpr int kBuildMagic = 580101;
 
 static constexpr int kD = 64;   // d_k = d_v
 static constexpr int kPad = 8;  // shared-memory row padding, in elements
-static constexpr int kWarps = 4;
-static constexpr int kThreads = 32 * kWarps;
 
-// ---------------------------------------------------------------- primitives
-
-__device__ __forceinline__ uint32_t smem_addr(const void *p) {
-  return static_cast<uint32_t>(__cvta_generic_to_shared(p));
-}
-
-__device__ __forceinline__ void ldm4(uint32_t (&r)[4], uint32_t a) {
-  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
-               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-               : "r"(a));
-}
-
-__device__ __forceinline__ void ldm4t(uint32_t (&r)[4], uint32_t a) {
-  asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
-               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-               : "r"(a));
-}
-
-__device__ __forceinline__ void mma16816(float (&d)[4], const uint32_t (&a)[4],
-                                         const uint32_t *b) {
-  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
-               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
-}
-
-__device__ __forceinline__ void cp_async16(uint32_t dst, const void *src) {
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
-}
-__device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;\n"); }
-template <int N> __device__ __forceinline__ void cp_wait() {
-  asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
-}
-
-__device__ __forceinline__ uint32_t pack_bf16(float lo, float hi) {
-  const __nv_bfloat162 p = __floats2bfloat162_rn(lo, hi);
-  return *reinterpret_cast<const uint32_t *>(&p);
-}
+// THE CARVE, DERIVED RATHER THAN CHOSEN.  One MMA unit owns a private 16-row
+// slice of the transposed state, so the number of units is d_v / the MMA's m
+// quantum, and the CTA is that many units wide.  Both terms come from the
+// operation, not from a literal: on an architecture whose MMA unit is a
+// warpgroup this would be 4 units of 128 threads, which is exactly why such an
+// architecture is refused in `arch_caps.cuh` rather than served here.
+static constexpr int kUnits = kD / kMmaM;
+static constexpr int kThreads = kUnits * kMmaUnitThreads;
+static constexpr int kWarps = kThreads / 32;
 
 // ------------------------------------------------------------------- kernel
 
@@ -144,8 +126,14 @@ template <int C, int STAGES, bool SWZ>
 __global__ __launch_bounds__(kThreads) void dense_la_kernel(
     const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
     const __nv_bfloat16 *__restrict__ v, __nv_bfloat16 *__restrict__ o, int L) {
-  static_assert(C % 16 == 0, "chunk must be a multiple of the mma m quantum");
+  static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
+  // The one hard resource refusal, and it comes from the table rather than a
+  // literal: C = 128 is designed and buildable everywhere the shared-memory
+  // budget admits it, and nowhere else.  No arm is silently shrunk to fit.
+  static_assert(Geom<C, STAGES, SWZ>::bytes <= (size_t)arch::kCaps.smem_per_cta_max,
+                "this (C, STAGES, SWZ) arm does not fit this architecture's "
+                "per-CTA shared-memory maximum");
   using G = Geom<C, STAGES, SWZ>;
   constexpr int Ld = G::Ld;
   constexpr int CLd = G::CLd;
@@ -284,9 +272,9 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
     for (int p = 0; p < kPasses; ++p) {
       const uint32_t so_ = stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowB);
       const long go = (long)(p * kRowsPerPass * kD);
-      cp_async16(sqL + so_, pq + go);
-      cp_async16(skL + so_, pk + go);
-      cp_async16(svL + so_, pv + go);
+      stage_tile(sqL + so_, pq + go);
+      stage_tile(skL + so_, pk + go);
+      stage_tile(svL + so_, pv + go);
     }
     pq += kChunkElems; pk += kChunkElems; pv += kChunkElems;
     stgSlot += kSlot;
@@ -296,18 +284,18 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
 #pragma unroll 1
   for (int s = 0; s < STAGES - 1; ++s) {
     if (s < NC) stage_chunk();
-    cp_commit();
+    stage_commit();
   }
 
 #pragma unroll 1
   for (int c = 0; c < NC; ++c) {
-    cp_wait<STAGES - 2>();
-    __syncthreads();  // (1) tiles visible / last chunk's reads done / O staged
+    stage_wait<STAGES - 2>();
+    rendezvous();  // (1) tiles visible / last chunk's reads done / O staged
 
     // Issued AFTER the barrier: the barrier is this write's WAR fence against
     // the previous chunk's readers of the same ring slot.
     if (c + STAGES - 1 < NC) stage_chunk();
-    cp_commit();
+    stage_commit();
 
     const uint32_t aq = sqB + cmpSlot + rowF;
     const uint32_t bk = skB + cmpSlot + rowT;
@@ -326,10 +314,10 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
       for (int p = 0; p < 2; ++p)
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk) {
-          sb[p][kk][0] = p ? pack_bf16(st[2 * kk][2], st[2 * kk][3])
-                           : pack_bf16(st[2 * kk][0], st[2 * kk][1]);
-          sb[p][kk][1] = p ? pack_bf16(st[2 * kk + 1][2], st[2 * kk + 1][3])
-                           : pack_bf16(st[2 * kk + 1][0], st[2 * kk + 1][1]);
+          sb[p][kk][0] = p ? pack_bf16x2(st[2 * kk][2], st[2 * kk][3])
+                           : pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
+          sb[p][kk][1] = p ? pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3])
+                           : pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
         }
 #pragma unroll
       for (int m = 0; m < MTOK; ++m) {
@@ -341,11 +329,11 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
         uint32_t af[KD][4];
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk)
-          ldm4(af[kk], ADDRF(aq, m * 16, 2 * kk));
+          load_frag(af[kk], ADDRF(aq, m * 16, 2 * kk));
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk)
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], af[kk], sb[p][kk]);
+          for (int p = 0; p < 2; ++p) mma(acc[m][p], af[kk], sb[p][kk]);
       }
     }
 
@@ -356,7 +344,7 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
       for (int m = 0; m < MPW; ++m)
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk)
-          ldm4(qa[m][kk], ADDRF(aq, (gm0 + m) * 16, 2 * kk));
+          load_frag(qa[m][kk], ADDRF(aq, (gm0 + m) * 16, 2 * kk));
 
 #pragma unroll
       for (int np = 0; np < NPW / 2; np += GPAIR) {
@@ -365,7 +353,7 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
         for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
           for (int kk = 0; kk < KD; ++kk)
-            ldm4(bf[u][kk], ADDRT(bk, (gn0 + (np + u) * 2) * 8, 2 * kk));
+            load_frag(bf[u][kk], ADDRT(bk, (gn0 + (np + u) * 2) * 8, 2 * kk));
 #pragma unroll
         for (int m = 0; m < MPW; ++m) {
           // 2*GPAIR independent accumulator chains, each of depth KD.
@@ -380,8 +368,8 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
           for (int kk = 0; kk < KD; ++kk)
 #pragma unroll
             for (int u = 0; u < GPAIR; ++u) {
-              mma16816(g[u][0], qa[m][kk], &bf[u][kk][0]);
-              mma16816(g[u][1], qa[m][kk], &bf[u][kk][2]);
+              mma(g[u][0], qa[m][kk], &bf[u][kk][0]);
+              mma(g[u][1], qa[m][kk], &bf[u][kk][2]);
             }
           const int tr = (gm0 + m) * 16 + (lane >> 2);
 #pragma unroll
@@ -393,8 +381,8 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
               const float m1 = (tc + 1 <= tr) ? g[u][h][1] : 0.f;
               const float m2 = (tc + 0 <= tr + 8) ? g[u][h][2] : 0.f;
               const float m3 = (tc + 1 <= tr + 8) ? g[u][h][3] : 0.f;
-              *reinterpret_cast<uint32_t *>(&sg[tr * CLd + tc]) = pack_bf16(m0, m1);
-              *reinterpret_cast<uint32_t *>(&sg[(tr + 8) * CLd + tc]) = pack_bf16(m2, m3);
+              store_bf16x2(&sg[tr * CLd + tc], pack_bf16x2(m0, m1));
+              store_bf16x2(&sg[(tr + 8) * CLd + tc], pack_bf16x2(m2, m3));
             }
         }
       }
@@ -407,8 +395,8 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
     if (c) {
 #pragma unroll
       for (int p = 0; p < kPasses; ++p)
-        *reinterpret_cast<uint4 *>(po + (long)(p * kRowsPerPass * kD)) =
-            *reinterpret_cast<const uint4 *>(&so[soDrainE + p * kRowsPerPass * Ld]);
+        copy_shared_to_global_16b(po + (long)(p * kRowsPerPass * kD),
+                                  &so[soDrainE + p * kRowsPerPass * Ld]);
       po += kChunkElems;
     }
 
@@ -417,34 +405,34 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
 #pragma unroll
     for (int kk = 0; kk < MTOK; ++kk) {
       uint32_t a[4];
-      ldm4t(a, ADDRT_DV(atv, kk * 16));
+      load_frag_t(a, ADDRT_DV(atv, kk * 16));
       uint32_t b[KD][4];
 #pragma unroll
-      for (int nj = 0; nj < KD; ++nj) ldm4t(b[nj], ADDRF(btk, kk * 16, 2 * nj));
+      for (int nj = 0; nj < KD; ++nj) load_frag_t(b[nj], ADDRF(btk, kk * 16, 2 * nj));
 #pragma unroll
       for (int nj = 0; nj < KD; ++nj) {
-        mma16816(st[2 * nj], a, &b[nj][0]);
-        mma16816(st[2 * nj + 1], a, &b[nj][2]);
+        mma(st[2 * nj], a, &b[nj][0]);
+        mma(st[2 * nj + 1], a, &b[nj][2]);
       }
     }
 
-    __syncthreads();  // (2) the Gram is visible
+    rendezvous();  // (2) the Gram is visible
 
     // ---- 5. intra: O += G . V ----------------------------------------------
     {
       uint32_t vb[MTOK][4];
 #pragma unroll
-      for (int kk = 0; kk < MTOK; ++kk) ldm4t(vb[kk], ADDRF_DV(btv, kk * 16));
+      for (int kk = 0; kk < MTOK; ++kk) load_frag_t(vb[kk], ADDRF_DV(btv, kk * 16));
 #pragma unroll
       for (int m = 0; m < MTOK; ++m) {
         uint32_t ga[MTOK][4];
 #pragma unroll
         for (int kk = 0; kk < MTOK; ++kk)
-          ldm4(ga[kk], sgA + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
+          load_frag(ga[kk], sgA + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
 #pragma unroll
         for (int kk = 0; kk < MTOK; ++kk)
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], ga[kk], &vb[kk][2 * p]);
+          for (int p = 0; p < 2; ++p) mma(acc[m][p], ga[kk], &vb[kk][2 * p]);
       }
     }
 
@@ -454,17 +442,16 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
 #pragma unroll
       for (int p = 0; p < 2; ++p) {
         const int e0 = oBaseE + oXe[p] + m * 16 * Ld;
-        *reinterpret_cast<uint32_t *>(&so[e0]) = pack_bf16(acc[m][p][0], acc[m][p][1]);
-        *reinterpret_cast<uint32_t *>(&so[e0 + 8 * Ld]) =
-            pack_bf16(acc[m][p][2], acc[m][p][3]);
+        store_bf16x2(&so[e0], pack_bf16x2(acc[m][p][0], acc[m][p][1]));
+        store_bf16x2(&so[e0 + 8 * Ld], pack_bf16x2(acc[m][p][2], acc[m][p][3]));
       }
   }
 
-  __syncthreads();
+  rendezvous();
 #pragma unroll
   for (int p = 0; p < kPasses; ++p)
-    *reinterpret_cast<uint4 *>(po + (long)(p * kRowsPerPass * kD)) =
-        *reinterpret_cast<const uint4 *>(&so[soDrainE + p * kRowsPerPass * Ld]);
+    copy_shared_to_global_16b(po + (long)(p * kRowsPerPass * kD),
+                              &so[soDrainE + p * kRowsPerPass * Ld]);
 #undef ADDRF
 #undef ADDRT
 }
@@ -505,15 +492,15 @@ __global__ void probe_kernel(const __nv_bfloat16 *a_src, const __nv_bfloat16 *b_
   const int offT = SWZ ? (rT * kD * 2 + (((cT & 7) ^ lr) << 4)) : (rT * Ld + cT * 8) * 2;
   uint32_t af[4], bf[4];
   if (mode == 0) {
-    ldm4(af, smem_addr(sa) + offF);
-    ldm4(bf, smem_addr(sb) + offT);
+    load_frag(af, smem_addr(sa) + offF);
+    load_frag(bf, smem_addr(sb) + offT);
   } else {
-    ldm4t(af, smem_addr(sa) + offT);
-    ldm4t(bf, smem_addr(sb) + offF);
+    load_frag_t(af, smem_addr(sa) + offT);
+    load_frag_t(bf, smem_addr(sb) + offF);
   }
   float d0[4] = {0, 0, 0, 0}, d1[4] = {0, 0, 0, 0};
-  mma16816(d0, af, &bf[0]);
-  mma16816(d1, af, &bf[2]);
+  mma(d0, af, &bf[0]);
+  mma(d1, af, &bf[2]);
   const int r = lane >> 2, c = (lane & 3) * 2;
   d_out[r * 16 + c] = d0[0];
   d_out[r * 16 + c + 1] = d0[1];
@@ -523,6 +510,36 @@ __global__ void probe_kernel(const __nv_bfloat16 *a_src, const __nv_bfloat16 *b_
   d_out[r * 16 + c + 9] = d1[1];
   d_out[(r + 8) * 16 + c + 8] = d1[2];
   d_out[(r + 8) * 16 + c + 9] = d1[3];
+}
+
+// ------------------------------------------------ capability conformance probe
+// Every baseline operation with more than one possible implementation is
+// exercised HERE, in whichever implementation this architecture's row selects,
+// against a torch reference.  That is what keeps the capability table honest: a
+// flag that no test ever exercises is a claim, not a capability.  `mul_bf16x2`
+// has no caller in the dense baseline -- it is the entry that measures the
+// sm_86 fp32 detour -- so this probe is its only consumer until a rung that
+// produces elementwise coefficients arrives.
+__global__ void caps_probe_kernel(const __nv_bfloat16 *a, const __nv_bfloat16 *b,
+                                  __nv_bfloat16 *out, int pairs) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= pairs) return;
+  const uint32_t x = reinterpret_cast<const uint32_t *>(a)[i];
+  const uint32_t y = reinterpret_cast<const uint32_t *>(b)[i];
+  store_bf16x2(out + 2 * i, mul_bf16x2(x, y));
+}
+
+torch::Tensor caps_probe(torch::Tensor a, torch::Tensor b) {
+  TORCH_CHECK(a.is_cuda() && a.scalar_type() == torch::kBFloat16 && a.is_contiguous());
+  TORCH_CHECK(b.sizes() == a.sizes() && a.numel() % 2 == 0);
+  auto out = torch::empty_like(a);
+  const int pairs = (int)(a.numel() / 2);
+  caps_probe_kernel<<<(pairs + 127) / 128, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<const __nv_bfloat16 *>(a.data_ptr()),
+      reinterpret_cast<const __nv_bfloat16 *>(b.data_ptr()),
+      reinterpret_cast<__nv_bfloat16 *>(out.data_ptr()), pairs);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return out;
 }
 
 torch::Tensor probe(torch::Tensor a, torch::Tensor b, int64_t mode) {
@@ -593,17 +610,22 @@ torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t
 // path or a file hash can supply: (a) a magic constant WRITTEN BY A KERNEL that
 // only this source compiles, and (b) the register/shared-memory census that
 // ptxas produced for the very kernel entry the measurement will run.
+// (c) the digest of the capability row THE DEVICE CODE WAS COMPILED AGAINST.  A
+// binary built against a different table cannot masquerade as this one, and no
+// host-side path or file hash can establish that -- only a device-side fact can.
 __global__ void stamp_kernel(int *out) {
   out[0] = kBuildMagic;
   out[1] = kWarps * 1000 + kD;
+  out[2] = arch::caps_digest(arch::kCaps);
 }
 
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle) {
-  auto t = torch::zeros({2}, torch::dtype(torch::kInt32).device(torch::kCUDA));
+  auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
-  std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1]};
+  std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1],
+                         h.data_ptr<int>()[2]};
   cudaFuncAttributes a{};
 #define DENSEREF_CENSUS(C_, S_, W_)                                             \
   if (chunk == C_ && stages == S_ && swizzle == W_) {                           \
@@ -622,6 +644,46 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle) {
   return r;
 }
 
+// ------------------------------------------------------ the table, queryable
+// THE QUANTITATIVE HALF IS USELESS IF ONLY THE COMPILING TARGET CAN SEE IT.
+// The whole point of tabulating per-SM resources is to derive a plan for an
+// architecture that is not in the machine: these two entry points evaluate the
+// same constexpr derivations for ANY tabulated compute capability, so the A100
+// residency of an arm is a fact this box can state without owning an A100.
+
+std::vector<int64_t> arch_row(int64_t cc) {
+  TORCH_CHECK(arch::tabulated((int)cc), "untabulated compute capability ", cc);
+  const arch::Caps c = arch::caps_of((int)cc);
+  return {c.cc,
+          c.async_copy, c.tile_load, c.mma_bf16_f32, c.mma_b_from_regs,
+          c.bf16_cvt_packed,
+          c.bf16_simd_arith, c.async_bulk_copy, c.warpgroup_mma,
+          arch::supported(c),
+          c.mma_unit_threads, c.smem_per_sm, c.smem_per_cta_max, c.regs_per_sm,
+          c.reg_alloc_unit, c.max_threads_per_sm, c.max_ctas_per_sm,
+          c.driver_smem_reserve, c.tensor_f32_accum_pct,
+          arch::caps_digest(c)};
+}
+
+//: For one arm on one architecture: the three residency ceilings, the binding
+//: one, and the per-lane register budget that would sustain 1..4 CTAs.  The
+//: register budget is DERIVED here and never written as a literal anywhere --
+//: a global register number tunes for whichever machine was measured last.
+std::vector<int64_t> residency_plan(int64_t smem_bytes, int64_t regs_per_lane,
+                                    int64_t cc, int64_t threads) {
+  TORCH_CHECK(arch::tabulated((int)cc), "untabulated compute capability ", cc);
+  TORCH_CHECK(threads > 0 && threads % 32 == 0, "threads must be whole warps");
+  const arch::Caps c = arch::caps_of((int)cc);
+  const int t = (int)threads;
+  std::vector<int64_t> r{arch::ctas_by_smem(c, (int)smem_bytes),
+                         arch::ctas_by_regs(c, t, (int)regs_per_lane),
+                         arch::ctas_by_threads(c, t),
+                         c.max_ctas_per_sm,
+                         arch::residency(c, (int)smem_bytes, t, (int)regs_per_lane)};
+  for (int n = 1; n <= 4; ++n) r.push_back(arch::reg_budget(c, t, n));
+  return r;
+}
+
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
 #define DENSEREF_LIST(C_, S_, W_) \
@@ -636,6 +698,11 @@ std::vector<std::vector<int64_t>> arms() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &denseref::forward, "dense chunked linear attention");
   m.def("probe", &denseref::probe, "fragment convention probe");
+  m.def("caps_probe", &denseref::caps_probe, "capability conformance probe");
   m.def("build_stamp", &denseref::build_stamp, "build identity");
   m.def("arms", &denseref::arms, "the built (C, STAGES, SWZ, smem) set");
+  m.def("arch_row", &denseref::arch_row, "the capability table row for a cc");
+  m.def("residency_plan", &denseref::residency_plan, "derived residency for a cc",
+        pybind11::arg("smem_bytes"), pybind11::arg("regs_per_lane"), pybind11::arg("cc"),
+        pybind11::arg("threads") = denseref::kThreads);
 }
