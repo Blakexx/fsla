@@ -62,6 +62,25 @@
 //                             The archetypal SELECTING entry: sm_90 has one
 //                             instruction for it, sm_80/86/89 must go through
 //                             fp32 at 1 FMUL + 1/2 pack per element.
+//   fan_in_add(p, x)          add ONE contribution into an accumulator that
+//                             other units also contribute to.  The issuing
+//                             thread does not consume a result and must not wait
+//                             for one -- that is what makes this a reduction
+//                             rather than an atomic read-modify-write, and it is
+//                             the whole contract.  No ordering across
+//                             contributors is defined and no contributor
+//                             observes another's value, so a caller that needs a
+//                             reproducible summation order needs a different
+//                             operation.  Stated by the ladder's capacity carve,
+//                             which is its first caller: the N/BC blocks of a
+//                             slot axis each compute a complete partial output.
+//   store_f32(p, x)           one fp32, at fp32 element addressing.  The
+//                             counterpart of `store_bf16` for a buffer whose
+//                             consumer is `fan_in_add` rather than an mma
+//                             operand: a summand that will be added to N/BC
+//                             others cannot be rounded to the operand format
+//                             first without the fan-in's error exceeding the
+//                             design's own.
 //   store_bf16x2(p, v)        one packed bf16 pair, addressed as bf16 elements.
 //   store_bf16(p, x)          one fp32 -> one bf16 element, same round-to-
 //                             nearest-even as `pack_bf16x2` per element.  A
@@ -85,13 +104,12 @@
 //
 // OPERATIONS THIS KERNEL DOES NOT HAVE, AND WHY NOT
 // -------------------------------------------------
-// `warp_reduce`, `compact`, `emit_partial` and a `publish`/`acquire` pair
-// weaker than a full rendezvous are all absent, because the dense baseline
-// needs none of them: the private d_v carve removes every cross-lane reduction,
-// the workload is dense so nothing is compacted, and one CTA owning a whole
-// (b,h) removes every fan-in.  A rung that needs one states its contract here
-// first.  An operation invented before it has a caller cannot be defined by
-// what the algorithm needs, because no algorithm needs it yet.
+// `warp_reduce`, `compact` and a `publish`/`acquire` pair weaker than a full
+// rendezvous are all absent, because nothing here needs them: the private d_v
+// carve removes every cross-lane reduction, and the workload is dense so nothing
+// is compacted.  A rung that needs one states its contract above first.  An
+// operation invented before it has a caller cannot be defined by what the
+// algorithm needs, because no algorithm needs it yet.
 //
 // WHAT IS DELIBERATELY NOT A CAPABILITY
 // -------------------------------------
@@ -244,6 +262,21 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16 *p, uint32_t v) {
 __device__ __forceinline__ void store_bf16(__nv_bfloat16 *p, float v) {
   *p = __float2bfloat16(v);
 }
+
+//: One fp32 element, stored where it will later be read as a summand rather than
+//: as an mma operand.  There is no rounding here BY CONSTRUCTION: see
+//: `fan_in_add`.
+__device__ __forceinline__ void store_f32(float *p, float v) { *p = v; }
+
+//: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET.  The result is
+//: not returned, and that is the operation's substance rather than a convenience
+//: -- an implementation that hands back the previous value has to keep the
+//: issuing thread waiting for it, and the whole point of a reduction is that
+//: nothing waits.  Expressed as the intrinsic rather than as a named instruction
+//: so that an architecture whose best reduction is wider, or is performed by a
+//: different unit, is served by its own compiler; the SASS gate for this rung
+//: checks that what was emitted is in fact the non-returning form.
+__device__ __forceinline__ void fan_in_add(float *p, float x) { atomicAdd(p, x); }
 
 //: The 16-byte quantum, synchronously.  `kStageBytes` is the width of every
 //: asynchronous access this baseline issues, and these move the same width for
