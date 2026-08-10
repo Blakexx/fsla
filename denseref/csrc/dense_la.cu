@@ -692,7 +692,7 @@ std::vector<int64_t> arch_row(int64_t cc) {
   return {c.cc,
           c.async_copy, c.tile_load, c.mma_bf16_f32, c.bf16_cvt_packed,
           c.mma_a_from_regs, c.mma_b_from_regs, c.accum_in_tmem, c.mma_a_from_tmem,
-          c.bf16_simd_arith, c.async_bulk_copy, c.warpgroup_mma,
+          c.bf16_simd_arith, c.async_bulk_copy, c.warpgroup_mma, c.dyn_reg_realloc,
           arch::supported(c),
           c.mma_unit_threads, c.smem_per_sm, c.smem_per_cta_max, c.regs_per_sm,
           c.reg_alloc_unit, c.max_threads_per_sm, c.max_ctas_per_sm,

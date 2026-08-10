@@ -115,6 +115,16 @@ struct Caps {
                            // one descriptor issue instead of one per 16 B.
   bool warpgroup_mma;      // `wgmma`.  Present on sm_90 and the reason
                            // `mma_b_from_regs` is false there.
+  bool dyn_reg_realloc;    // `setmaxnreg`: a warpgroup may GIVE UP or CLAIM
+                           // registers at run time, so two groups of the same
+                           // CTA can hold different per-lane allocations.
+                           // Without it, allocation is uniform per thread across
+                           // the whole kernel and sized by the MAXIMUM live set
+                           // over the paths a thread takes -- which is why a
+                           // thread that produces and then consumes pays
+                           // `max(producer, consumer)` and reuses the registers,
+                           // and why DEDICATING a unit to production cannot be
+                           // paid for by shrinking it.
 
   // ------------------------------------------------------------------ FACT
   int mma_unit_threads;    // threads that jointly issue one MMA and jointly own
@@ -148,7 +158,8 @@ constexpr bool tabulated(int cc) {
 //   cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed
 //      | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
 //                   mma_a_from_tmem
-//      | SELECTING: bf16_simd_arith, async_bulk_copy, warpgroup_mma
+//      | SELECTING: bf16_simd_arith, async_bulk_copy, warpgroup_mma,
+//                   dyn_reg_realloc
 //      |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
 //                   smem_granularity, regs_per_sm, regs_per_lane_max,
 //                   reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
@@ -157,17 +168,17 @@ constexpr Caps caps_of(int cc) {
   return cc == 800
              ? Caps{800, true, true, true, true,
                     true, true, false, false,
-                    false, false, false,
+                    false, false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 2048, 32, 1024, 100}
          : cc == 870
              ? Caps{870, true, true, true, true,
                     true, true, false, false,
-                    false, false, false,
+                    false, false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 1536, 16, 1024, 50}
          : cc == 890
              ? Caps{890, true, true, true, true,
                     true, true, false, false,
-                    false, false, false,
+                    false, false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 24, 1024, 50}
          : cc == 900
              // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds and
@@ -179,12 +190,12 @@ constexpr Caps caps_of(int cc) {
              // 128.  A capability GAP, not a structural refusal.
              ? Caps{900, true, true, true, true,
                     true, false, false, false,
-                    true, true, true,
+                    true, true, true, true,
                     128, 233472, 232448, 128, 65536, 255, 256, 2048, 32, 1024, 100}
              // sm_86: the local development part (GA102).
              : Caps{860, true, true, true, true,
                     true, true, false, false,
-                    false, false, false,
+                    false, false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 16, 1024, 50};
 }
 

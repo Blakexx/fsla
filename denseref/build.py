@@ -29,7 +29,7 @@ ARCH_ROW_FIELDS = (
     "cc",
     "async_copy", "tile_load", "mma_bf16_f32", "bf16_cvt_packed",
     "mma_a_from_regs", "mma_b_from_regs", "accum_in_tmem", "mma_a_from_tmem",
-    "bf16_simd_arith", "async_bulk_copy", "warpgroup_mma",
+    "bf16_simd_arith", "async_bulk_copy", "warpgroup_mma", "dyn_reg_realloc",
     "supported",
     "mma_unit_threads", "smem_per_sm", "smem_per_cta_max", "regs_per_sm",
     "reg_alloc_unit", "max_threads_per_sm", "max_ctas_per_sm",
@@ -37,7 +37,8 @@ ARCH_ROW_FIELDS = (
     "digest",
 )
 REQUIRED = ("async_copy", "tile_load", "mma_bf16_f32", "bf16_cvt_packed")
-SELECTING = ("bf16_simd_arith", "async_bulk_copy", "warpgroup_mma")
+SELECTING = ("bf16_simd_arith", "async_bulk_copy", "warpgroup_mma",
+             "dyn_reg_realloc")
 #: layer-1 instruction facts about WHERE an accumulator lives and where an
 #: operand may be sourced from. Read only by `design.cuh`, which turns them into
 #: `STATE_RESIDENCY`; no kernel reads them, and the side an accumulator lands on

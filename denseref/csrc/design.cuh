@@ -154,6 +154,37 @@ constexpr bool kResidencySuboptimal =
     residency_suboptimal(kSatisfiableResidencies, kBuiltResidencies);
 inline constexpr Announce<kResidencySuboptimal> kResidencyAnnouncement{};
 
+// ------------------------------------------------- WARP SPECIALIZATION
+//: WHETHER A UNIT MAY BE DEDICATED TO PRODUCTION.  Derived, and the derivation
+//: is about REGISTERS rather than about warps.
+//:
+//: Register allocation is UNIFORM PER THREAD across a kernel and is sized by the
+//: MAXIMUM live set over the paths a thread takes, not their sum.  So a unit that
+//: produces and then consumes reuses the producer's registers once they are dead
+//: -- it pays `max(produce, consume)`, and a producer live set smaller than the
+//: consumer's is genuinely free.  DEDICATING a unit to production pays the SAME
+//: `max()`, because the allocation is still uniform: a producer unit cannot be
+//: given a small budget while a consumer unit keeps a large one.  So
+//: specialization buys nothing and costs the unit's threads, which in a
+//: latency-bound regime are the hiding mechanism.
+//:
+//: What changes that is a run-time reallocation instruction, by which one group
+//: gives up registers another claims.  THAT is the capability this reads, and it
+//: is why specialization is a DERIVATION rather than a preference.
+constexpr bool specialization_pays(const arch::Caps &c) {
+  return c.dyn_reg_realloc;
+}
+
+constexpr bool kSpecializationPays = specialization_pays(arch::kCaps);
+
+//: NOT BUILT, and announced rather than refused.  Where the reallocation exists,
+//: a specialized producer would be the better implementation and this baseline
+//: does not write one; the unspecialized path is correct everywhere it compiles,
+//: and every unit runs its own production pipelined ahead of its own consumption.
+constexpr bool kBuiltSpecialization = false;
+inline constexpr Announce<kSpecializationPays && !kBuiltSpecialization>
+    kSpecializationAnnouncement{};
+
 // ------------------------------------------------------------------ STAGES
 //: THE RING'S DEPTH, DERIVED.  One clause: TAKE THE SHALLOWEST RING THAT REACHES
 //: THIS ARM'S MAXIMUM RESIDENCY.  Depth is BOUGHT, never taken.

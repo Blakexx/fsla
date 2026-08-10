@@ -62,6 +62,40 @@
 //                             The archetypal SELECTING entry: sm_90 has one
 //                             instruction for it, sm_80/86/89 must go through
 //                             fp32 at 1 FMUL + 1/2 pack per element.
+//   gather_ptr(base, off)     the address of a row selected by an INDEX rather
+//                             than reached by an induction: a 64-bit base formed
+//                             once plus a 32-bit byte displacement, ZERO
+//                             EXTENDED.  The contract is the ARITHMETIC and not
+//                             the address -- writing `base + i` at element type
+//                             lets the compiler strength-reduce every access to a
+//                             widening multiply, which is precisely what the
+//                             addressing rule forbids, so the widening is stated
+//                             here once as an extension.  A displacement that
+//                             does not fit 32 bits is the caller's clause, and
+//                             the caller that has one states its bound.  Stated
+//                             by per-side compaction, its first caller: a gather
+//                             is an indirection and must not become per-element
+//                             64-bit arithmetic.
+//   pin_address(p)            a 64-bit address the compiler may not RE-DERIVE.
+//                             "Form the base once and afterwards only advance
+//                             it" is a rule about EMITTED code, and a compiler
+//                             under register pressure satisfies the source while
+//                             breaking the rule: it drops the live base and
+//                             recomputes it inside the loop, which is the same
+//                             widening multiply moved rather than removed.  This
+//                             is where the rule is stated to the compiler; it
+//                             costs the two registers the base occupies, which is
+//                             what keeping it live means.  Stated by per-side
+//                             compaction, whose gathered bases have no induction
+//                             to be carried by.
+//   bit_count(x)              the number of set bits.
+//   first_set(x)              the index of the lowest set bit, or `kBallotLanes`
+//                             when there is none.  With `bit_count` this is what
+//                             turns a lockstep vote into POSITIONS: the count of
+//                             set lanes below a lane is that lane's rank among
+//                             the live ones, and the first set lane of a "would
+//                             overflow" vote is where a run must be cut.  Stated
+//                             by per-side compaction's cook.
 //   lane_ballot(pred)         the predicate of every lane of the LOCKSTEP unit,
 //                             one bit per lane, in lane order.  Nothing is
 //                             written and nothing is ordered: the result is the
@@ -125,14 +159,16 @@
 //
 // OPERATIONS THIS KERNEL DOES NOT HAVE, AND WHY NOT
 // -------------------------------------------------
-// `warp_reduce`, `compact` and a `publish`/`acquire` pair weaker than a full
-// rendezvous are all absent, because nothing here needs them: the private d_v
-// carve removes every cross-lane reduction, and the one caller that skips work
-// skips a WHOLE GROUP of tokens, which is a branch over an unchanged affine
-// address rather than a compaction.  A rung that needs one states its contract
-// above first.  An
-// operation invented before it has a caller cannot be defined by what the
-// algorithm needs, because no algorithm needs it yet.
+// `warp_reduce` and a `publish`/`acquire` pair weaker than a full rendezvous are
+// absent, because nothing here needs them: the private d_v carve removes every
+// cross-lane reduction, and every buffer a producer publishes is read by the
+// whole CTA after a barrier that the ring already required.  There is no
+// `compact` either, and that is a statement about WHERE the compaction lives: a
+// caller that gathers tokens builds an INDEX LIST once and then addresses
+// through `gather_ptr`, so what it needs from this layer is the vote, the two
+// bit counts and the address -- not a data-moving primitive.  An operation
+// invented before it has a caller cannot be defined by what the algorithm needs,
+// because no algorithm needs it yet.
 //
 // WHAT IS DELIBERATELY NOT A CAPABILITY
 // -------------------------------------
@@ -185,6 +221,42 @@ __device__ __forceinline__ SmemAddr smem_addr(const void *p) {
   return static_cast<SmemAddr>(__cvta_generic_to_shared(p));
 }
 
+//: A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE
+//: offset that is zero-extended rather than multiplied out.  The extension is
+//: written here explicitly because the arithmetic is the contract: at element
+//: type the compiler is entitled to re-derive `base + index` as a widening
+//: multiply per access, and it does -- measured at 30 `IMAD.WIDE` in a loop that
+//: the form below emits none for.  The caller owns the 32-bit bound.
+//:
+//: THE BASE IS A GLOBAL ADDRESS, AND SAYING SO IS PART OF THE OPERATION.  An
+//: address the compiler cannot see through is an address whose storage class it
+//: cannot infer, and the difference is not cosmetic: a generic pointer turns the
+//: fan-in's reduction into an atomic read-modify-write and every gathered load
+//: into a generic one.  The assumption restores what the arithmetic hid.
+__device__ __forceinline__ const void *gather_ptr(const void *base, uint32_t off) {
+  const void *p;
+  asm("{ .reg .u64 t; cvt.u64.u32 t, %2; add.u64 %0, %1, t; }"
+      : "=l"(p) : "l"(base), "r"(off));
+  __builtin_assume(__isGlobal(p));
+  return p;
+}
+
+//: A BASE THE COMPILER MUST KEEP RATHER THAN RE-DERIVE.  The value is unchanged;
+//: what changes is that it becomes the result of an operation ptxas cannot see
+//: through, so rematerialising it is not available and the base stays live.
+template <class T> __device__ __forceinline__ T *pin_address(T *p) {
+  asm("" : "+l"(p));
+  return p;
+}
+
+__device__ __forceinline__ void *gather_ptr(void *base, uint32_t off) {
+  void *p;
+  asm("{ .reg .u64 t; cvt.u64.u32 t, %2; add.u64 %0, %1, t; }"
+      : "=l"(p) : "l"(base), "r"(off));
+  __builtin_assume(__isGlobal(p));
+  return p;
+}
+
 // ------------------------------------------------------------------ staging
 
 __device__ __forceinline__ void stage_tile(SmemAddr dst, const void *src) {
@@ -213,6 +285,19 @@ constexpr int kBallotLanes = 32;
 //: instruction: what the operation promises is the bit vector, not the vote.
 __device__ __forceinline__ uint32_t lane_ballot(bool pred) {
   return __ballot_sync(0xFFFFFFFFu, pred);
+}
+
+//: THE TWO READINGS OF A VOTE.  A bit vector answers "how many" and "where
+//: first"; together they turn a lockstep unit's agreement into POSITIONS, which
+//: is what a caller needs when the lanes are producing a compacted list rather
+//: than a single yes or no.
+__device__ __forceinline__ int bit_count(uint32_t x) { return __popc(x); }
+
+//: `kBallotLanes` for an empty vector, so "nowhere" compares greater than every
+//: lane and needs no separate case at the call site.
+__device__ __forceinline__ int first_set(uint32_t x) {
+  const int f = __ffs((int)x);
+  return f ? f - 1 : kBallotLanes;
 }
 
 // ----------------------------------------------------------------- operands
