@@ -20,11 +20,12 @@ k = (torch.randn(B, H, L, D, device=dev) * 0.5).bfloat16()
 v = torch.randn(B, H, L, D, device=dev).bfloat16()
 
 if ARM.startswith("denseref"):
-    c = int(ARM[len("denseref"):])
-    st = build.assert_build_identity(c)
+    # denseref<C>_<STAGES>_<0|1 swizzle>
+    c, stg, swz = (int(x) for x in ARM[len("denseref"):].split("_"))
+    st = build.assert_build_identity(c, stg, bool(swz))
     print("BUILD IDENTITY:", st, flush=True)
     def fwd():
-        return build.forward(q, k, v, c)
+        return build.forward(q, k, v, c, stg, bool(swz))
 elif ARM == "fa_core":
     def fwd():
         with torch.no_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
@@ -58,4 +59,7 @@ for _ in range(5):
 torch.cuda.synchronize()
 fwd()
 torch.cuda.synchronize()
+free, total = torch.cuda.mem_get_info()
+print(f"VRAM: peak_alloc={torch.cuda.max_memory_allocated()/(1<<30):.3f} GiB "
+      f"device_used={(total-free)/(1<<30):.3f}/{total/(1<<30):.3f} GiB", flush=True)
 print("OK", ARM, flush=True)

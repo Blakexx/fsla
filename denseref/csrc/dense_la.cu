@@ -14,36 +14,62 @@
 // m = d_v and n = d_k.  For mma.m16n8k16 the fp32 accumulator gives lane l the
 // elements (m = l/4, l/4+8) x (n = 2*(l%4), +1); the readout needs S as a B
 // operand, i.e. (n = d_v = l/4) x (k = d_k = 2*(l%4), +1, +8, +9).  With the
-// transposed state those are the SAME registers: b0 = pack(acc[2j].c0, .c1),
-// b1 = pack(acc[2j+1].c0, .c1) for d_v = l/4, and the .c2/.c3 halves for
-// d_v = l/4+8.  The state therefore never leaves registers -- no shared-memory
-// round trip, no shuffle, no transpose pass, one cvt.rn.bf16x2.f32 per b32.
-//
-// The same identity is used a second time for the Gram block: the fp32
-// accumulator of Q.K^T is, after masking and conversion, exactly the A operand
-// of G.V.  (It is not exploited here only because G is exchanged between warps;
-// see the partition note.)
+// transposed state those are the SAME registers.  The state therefore never
+// leaves registers -- no shared-memory round trip, no shuffle, no transpose
+// pass, one cvt.rn.bf16x2.f32 per b32.
 //
 // PARTITION (4 warps, d_v = 64)
 // -----------------------------
 // Warp w owns d_v in [16w, 16w+16).  That slice of the state is PRIVATE to the
-// warp for the whole sequence: the fold writes only it, the readout reads only
-// it, and the output column block O[:, 16w:16w+16] is produced only by it.
-// There is no cross-warp reduction anywhere and no state in shared memory.
-// The one thing every warp needs in full is the Gram block G = tril(Q.K^T),
-// whose m axis is tokens; it is computed once (token-split across warps) and
-// exchanged through shared memory in bf16.
+// warp for the whole sequence.  There is no cross-warp reduction anywhere and
+// no state in shared memory.  The one thing every warp needs in full is the
+// Gram block G = tril(Q.K^T), whose m axis is tokens; it is computed once
+// (token-split across warps) and exchanged through shared memory in bf16.
 //
-// FRAGMENT / ldmatrix CONVENTIONS
-// ------------------------------
-// ldmatrix.x4 delivers four 8x8 tiles, tile i addressed by lanes 8i..8i+7.
-// Non-trans, one tile puts (row = l/4, col = 2*(l%4), +1) in a lane.
-//   A operand from a row-major [m][k] source      : tile order (r,c),(r+8,c),(r,c+8),(r+8,c+8)   -> kRowFast
-//   two B operands from a row-major [n][k] source : tile order (r,c),(r+8,c... ) see below       -> kColFast
-// .trans returns the transposed tile, (col = l/4, row = 2*(l%4), +1).
-//   A^T operand from a row-major [k][m] source    : kColFast
-//   two B operands from a row-major [k][n] source : kRowFast
-// so exactly two lane-offset forms are needed, selected by `ColFast`.
+// SHARED-MEMORY LAYOUT: TWO ARMS, BOTH BUILT
+// ------------------------------------------
+// `SWZ = false`  row stride 72 elements (pad 8).  Conflict-free because row r
+//                starts 16 B further along the bank cycle than row r-1.  Costs
+//                12.5% SMEM, costs ZERO address arithmetic (every in-body
+//                ldmatrix address is a lane-invariant base plus a compile-time
+//                immediate).
+// `SWZ = true`   row stride 64 elements, XOR swizzle: the 16-B chunk index
+//                within a row is XORed with (row & 7).  This is CUTLASS's
+//                Swizzle<3,3,3>, the atom FlashAttention-2 uses for every
+//                64-wide bf16 tile (kernel_traits.h:79-83).  Costs ZERO SMEM,
+//                costs one IADD3 per ldmatrix -- the per-lane XOR table `tabF`
+//                / `tabT` is built once at entry, so the body never issues a
+//                LOP3, only an add of a loop-invariant register.
+// The Gram buffer is ALWAYS padded: its rows are C elements wide, and for
+// C < 64 a row is under 128 B, where an 8-phase XOR does not separate the
+// eight rows of an ldmatrix tile.  Padding is the correct tool there.
+//
+// PIPELINE ORDER (dependency depth, not source convenience)
+// ---------------------------------------------------------
+//   cp.async.wait_group<STAGES-2>   this chunk's tiles have landed
+//   __syncthreads()                 (1) tiles visible; last chunk's reads done;
+//                                       last chunk's output staged
+//   stage chunk c+STAGES-1          issued AFTER the barrier, which is what
+//                                       makes the barrier the WAR fence too
+//   readout   O = Q.S               depends on nothing but Q and registers
+//   Gram      G = tril(Q.K^T) -> sg only GWARPS warps have work here
+//   drain     previous chunk's O    the other warps' work during the Gram
+//   fold      S += V^T.K            independent of G
+//   __syncthreads()                 (2) sg visible
+//   intra     O += G.V
+//   stage O into sg-adjacent buffer
+// TWO barriers per chunk, which is FlashAttention-2's steady-state count
+// (flash_fwd_kernel.h:388, 401).  The previous revision had three: the output
+// staging buffer was written and re-read inside the same iteration.  Deferring
+// the global store by one chunk folds that barrier into barrier (1).
+//
+// OPERAND STAGING
+// ---------------
+// Every mma's A/B fragments for a whole k-run are fetched BEFORE the first mma
+// of that run, not one-ahead-of-one.  This is the register-prefetch discipline
+// of FA2's `utils.h:150-159` taken one step further: FA2 issues ldmatrix(i+1)
+// before mma(i); here the entire fragment array is live, so ldmatrix(i+1..n)
+// all precede mma(i).  Verified in SASS, not assumed.
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -57,11 +83,10 @@ namespace denseref {
 
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
-static constexpr int kBuildMagic = 570106;
+static constexpr int kBuildMagic = 570203;
 
-static constexpr int kD = 64;         // d_k = d_v
-static constexpr int kPad = 8;        // shared-memory row padding, in elements
-static constexpr int kLd = kD + kPad; // 72 elements = 144 B: conflict-free ldmatrix
+static constexpr int kD = 64;   // d_k = d_v
+static constexpr int kPad = 8;  // shared-memory row padding, in elements
 static constexpr int kWarps = 4;
 static constexpr int kThreads = 32 * kWarps;
 
@@ -99,15 +124,6 @@ template <int N> __device__ __forceinline__ void cp_wait() {
   asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
 }
 
-// Lane byte offset inside an ldmatrix.x4 group.  `ColFast` selects which of the
-// two source axes the tile pair index advances along; see the header note.
-template <int Ld, bool ColFast> __device__ __forceinline__ int ldm_lane_off(int lane) {
-  const int tile = lane >> 3, row = lane & 7;
-  const int r = ColFast ? (tile >> 1) * 8 + row : (tile & 1) * 8 + row;
-  const int c = ColFast ? (tile & 1) * 8 : (tile >> 1) * 8;
-  return (r * Ld + c) * 2;
-}
-
 __device__ __forceinline__ uint32_t pack_bf16(float lo, float hi) {
   const __nv_bfloat162 p = __floats2bfloat162_rn(lo, hi);
   return *reinterpret_cast<const uint32_t *>(&p);
@@ -115,16 +131,29 @@ __device__ __forceinline__ uint32_t pack_bf16(float lo, float hi) {
 
 // ------------------------------------------------------------------- kernel
 
-template <int C, int STAGES>
+// Compile-time SMEM geometry, shared by the kernel and the host launcher so the
+// two can never disagree about a byte count.
+template <int C, int STAGES, bool SWZ> struct Geom {
+  static constexpr int Ld = SWZ ? kD : kD + kPad;  // Q/K/V/O row stride, elements
+  static constexpr int CLd = C + kPad;             // Gram row stride, elements
+  static constexpr size_t bytes =
+      (size_t)(3 * STAGES * C * Ld + C * CLd + C * Ld) * sizeof(__nv_bfloat16);
+};
+
+template <int C, int STAGES, bool SWZ>
 __global__ __launch_bounds__(kThreads) void dense_la_kernel(
     const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
     const __nv_bfloat16 *__restrict__ v, __nv_bfloat16 *__restrict__ o, int L) {
   static_assert(C % 16 == 0, "chunk must be a multiple of the mma m quantum");
-  constexpr int MTOK = C / 16;   // token m-tiles in a chunk
-  constexpr int NTOK = C / 8;    // token n-tiles in a chunk
-  constexpr int KD = kD / 16;    // 4 -- d_k k-tiles
-  constexpr int NDV = kD / 8;    // 8 -- d_v n-tiles (state n-tiles are d_k, also 8)
-  constexpr int CLd = C + kPad;
+  static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
+  using G = Geom<C, STAGES, SWZ>;
+  constexpr int Ld = G::Ld;
+  constexpr int CLd = G::CLd;
+  constexpr int MTOK = C / 16;  // token m-tiles in a chunk
+  constexpr int NTOK = C / 8;   // token n-tiles in a chunk
+  constexpr int KD = kD / 16;   // 4 -- d_k k-tiles
+  constexpr int NDV = kD / 8;   // 8 -- state n-tiles (d_k)
+  constexpr uint32_t kRowB = (uint32_t)Ld * 2;
 
   // Gram tile partition: split m first, spill the remainder onto n.
   constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
@@ -134,12 +163,16 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
   constexpr int NPW = NTOK / NSPLIT;
   constexpr int GWARPS = MSPLIT * NSPLIT;
   static_assert(NPW % 2 == 0, "n-tiles are consumed in ldmatrix pairs");
+  // How many independent Gram accumulator chains a warp runs at once.  Each
+  // n-tile pair is one ldmatrix and two chains of depth KD; pairing two of them
+  // doubles the ILP at the cost of one extra B fragment set.
+  constexpr int GPAIR = (NPW / 2) >= 2 ? 2 : 1;
 
   extern __shared__ __align__(16) char smem_raw[];
   __nv_bfloat16 *sq = reinterpret_cast<__nv_bfloat16 *>(smem_raw);
-  __nv_bfloat16 *sk = sq + STAGES * C * kLd;
-  __nv_bfloat16 *sv = sk + STAGES * C * kLd;
-  __nv_bfloat16 *sg = sv + STAGES * C * kLd;
+  __nv_bfloat16 *sk = sq + STAGES * C * Ld;
+  __nv_bfloat16 *sv = sk + STAGES * C * Ld;
+  __nv_bfloat16 *sg = sv + STAGES * C * Ld;
   __nv_bfloat16 *so = sg + C * CLd;
 
   const int tid = threadIdx.x;
@@ -147,16 +180,55 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
   const long base = (long)blockIdx.x * L * kD;
   const int NC = L / C;
 
-  // Lane-invariant ldmatrix bases (one IADD3 each, then immediate offsets).
-  const int offA = ldm_lane_off<kLd, false>(lane);   // A from [m][k]
-  const int offB = ldm_lane_off<kLd, true>(lane);    // B pair from [n][k]
-  const int offAT = ldm_lane_off<kLd, true>(lane);   // A^T from [k][m], .trans
-  const int offBT = ldm_lane_off<kLd, false>(lane);  // B pair from [k][n], .trans
-  const int offAg = ldm_lane_off<CLd, false>(lane);  // A from the Gram buffer
+  // ---- lane-invariant operand addressing, built ONCE ----------------------
+  // ldmatrix.x4 addresses tile t (= lane>>3) with row lane&7.  Two lane-offset
+  // forms suffice; `F` is the (tile&1)-major form (A from [m][k], B pair from
+  // [k][n] via .trans), `T` is the (tile>>1)-major form (B pair from [n][k],
+  // A^T from [k][m] via .trans).
+  const int lr = lane & 7, tl = lane >> 3;
+  const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;  // cF/cT are 16-B chunk indices
+  const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
+  // Row component of the lane's address.  Under the swizzle the column is a
+  // pure XOR of the chunk index, so the row term carries no column at all.
+  const uint32_t rowF = SWZ ? (uint32_t)(rF * kRowB) : (uint32_t)((rF * Ld + cF * 8) * 2);
+  const uint32_t rowT = SWZ ? (uint32_t)(rT * kRowB) : (uint32_t)((rT * Ld + cT * 8) * 2);
+  // The XOR tables.  tab?[g] is the byte offset of logical 16-B chunk g of this
+  // lane's row.  Eight registers per form, filled once; the body only ever adds
+  // one of them, never computes an XOR.
+  uint32_t tabF[8], tabT[8];
+#pragma unroll
+  for (int g = 0; g < 8; ++g) {
+    tabF[g] = (uint32_t)((((g + cF) & 7) ^ lr) << 4);
+    tabT[g] = (uint32_t)((((g + cT) & 7) ^ lr) << 4);
+  }
+  // ADDR(base, R, g): tile whose top-left is logical row R (a multiple of 8,
+  // so the swizzle phase is the lane's own) and 16-B chunk g.
+#define ADDRF(b_, R_, g_) \
+  (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + tabF[(g_)]) \
+       : ((b_) + (uint32_t)(((R_) * Ld + (g_) * 8) * 2)))
+#define ADDRT(b_, R_, g_) \
+  (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + tabT[(g_)]) \
+       : ((b_) + (uint32_t)(((R_) * Ld + (g_) * 8) * 2)))
+
+  const int offAg = (rF * CLd + cF * 8) * 2;  // Gram buffer: always padded
 
   const int gm0 = (warp / NSPLIT) * MPW;  // this warp's Gram m-tile base
   const int gn0 = (warp % NSPLIT) * NPW;  // ... and n-tile base
   const int dv0 = warp * 16;              // this warp's private d_v slice
+  constexpr int DVG_STEP = 2;             // 16 d_v elements = 2 chunks of 8
+  const int dvg = warp * DVG_STEP;        // ... as a 16-B chunk index
+  // `dvg` is the ONE chunk index that is not a compile-time constant (it is the
+  // warp's own d_v slice).  Indexing the XOR tables with it would force them
+  // into local memory, so its two entries are computed directly instead; the
+  // tables themselves are then only ever indexed by literals.
+  const uint32_t dvTabF = (uint32_t)((((dvg + cF) & 7) ^ lr) << 4);
+  const uint32_t dvTabT = (uint32_t)((((dvg + cT) & 7) ^ lr) << 4);
+#define ADDRF_DV(b_, R_) \
+  (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + dvTabF) \
+       : ((b_) + (uint32_t)(((R_) * Ld + dv0) * 2)))
+#define ADDRT_DV(b_, R_) \
+  (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + dvTabT) \
+       : ((b_) + (uint32_t)(((R_) * Ld + dv0) * 2)))
 
   // The state, transposed: m = d_v (this warp's 16 rows), n = d_k (8 tiles).
   float st[NDV][4];
@@ -166,13 +238,13 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
     for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
 
   // ---- global -> shared staging: one row is 128 B = 8 lanes x 16 B ---------
-  // ADDRESSING DISCIPLINE. Every 64-bit address is formed ONCE, here, and then
+  // ADDRESSING DISCIPLINE.  Every 64-bit address is formed ONCE, here, and then
   // only advanced by a constant stride; the ring slots are induction variables
   // in 32 bits with a compare-and-reset wrap, so there is no `% STAGES` and no
-  // IMAD.WIDE anywhere inside the chunk loop. Everything below a chunk is a
-  // compile-time immediate off one of these bases.
-  constexpr int kRowsPerPass = kThreads / 8;          // 16
+  // IMAD.WIDE anywhere inside the chunk loop.
+  constexpr int kRowsPerPass = kThreads / 8;  // 16
   constexpr int kPasses = C / kRowsPerPass;
+  static_assert(kPasses >= 1, "a chunk must be at least kThreads/8 rows");
   const int ldRow = tid >> 3, ldCol = (tid & 7) * 8;
 
   constexpr long kChunkElems = (long)C * kD;
@@ -181,20 +253,36 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
   const __nv_bfloat16 *pv = v + base + (long)ldRow * kD + ldCol;
   __nv_bfloat16 *po = o + base + (long)ldRow * kD + ldCol;
 
-  constexpr uint32_t kSlot = (uint32_t)(C * kLd) * 2;   // bytes of one ring slot
+  // Row-major 128-bit lane offset, swizzled or padded.  Used by BOTH the
+  // cp.async destination and the output buffer's LDS.128 read, which is why
+  // those two agree on the layout by construction.
+  const uint32_t stgOff =
+      SWZ ? (uint32_t)(ldRow * (int)kRowB + ((((tid & 7) ^ (ldRow & 7))) << 4))
+          : (uint32_t)((ldRow * Ld + ldCol) * 2);
+
+  constexpr uint32_t kSlot = (uint32_t)(C * Ld) * 2;  // bytes of one ring slot
   constexpr uint32_t kRing = STAGES * kSlot;
-  const uint32_t sqL = smem_addr(sq) + (uint32_t)((ldRow * kLd + ldCol) * 2);
-  const uint32_t skL = smem_addr(sk) + (uint32_t)((ldRow * kLd + ldCol) * 2);
-  const uint32_t svL = smem_addr(sv) + (uint32_t)((ldRow * kLd + ldCol) * 2);
+  const uint32_t sqL = smem_addr(sq) + stgOff;
+  const uint32_t skL = smem_addr(sk) + stgOff;
+  const uint32_t svL = smem_addr(sv) + stgOff;
   const uint32_t sqB = smem_addr(sq), skB = smem_addr(sk), svB = smem_addr(sv);
   const uint32_t sgA = smem_addr(sg) + (uint32_t)offAg;
+  const int soDrainE = (int)(stgOff >> 1);  // output drain: same layout as staging
   uint32_t stgSlot = 0, cmpSlot = 0;
+
+  // Output staging write index: the mma D fragment gives lane l the rows
+  // l/4 and l/4+8 and the column pair 2*(l%4).  Under the swizzle the d_v
+  // column block is the 16-B chunk index `dvg + p`, XORed with the row phase.
+  const int oPh = (lane >> 2) & 7;
+  const int oBaseE = (lane >> 2) * Ld + (SWZ ? ((lane & 3) * 2) : (dv0 + (lane & 3) * 2));
+  int oXe[2];
+#pragma unroll
+  for (int p = 0; p < 2; ++p) oXe[p] = SWZ ? (((dvg + p) ^ oPh) << 3) : (p * 8);
 
   auto stage_chunk = [&]() {
 #pragma unroll
     for (int p = 0; p < kPasses; ++p) {
-      constexpr int dummy = 0; (void)dummy;
-      const uint32_t so_ = stgSlot + (uint32_t)(p * kRowsPerPass * kLd * 2);
+      const uint32_t so_ = stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowB);
       const long go = (long)(p * kRowsPerPass * kD);
       cp_async16(sqL + so_, pq + go);
       cp_async16(skL + so_, pk + go);
@@ -213,63 +301,24 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
 
 #pragma unroll 1
   for (int c = 0; c < NC; ++c) {
+    cp_wait<STAGES - 2>();
+    __syncthreads();  // (1) tiles visible / last chunk's reads done / O staged
+
+    // Issued AFTER the barrier: the barrier is this write's WAR fence against
+    // the previous chunk's readers of the same ring slot.
     if (c + STAGES - 1 < NC) stage_chunk();
     cp_commit();
-    cp_wait<STAGES - 1>();
-    __syncthreads();
 
-    const uint32_t aq = sqB + cmpSlot + (uint32_t)offA;
-    const uint32_t bk = skB + cmpSlot + (uint32_t)offB;
-    const uint32_t btk = skB + cmpSlot + (uint32_t)offBT;
-    const uint32_t atv = svB + cmpSlot + (uint32_t)offAT;
-    const uint32_t btv = svB + cmpSlot + (uint32_t)offBT;
+    const uint32_t aq = sqB + cmpSlot + rowF;
+    const uint32_t bk = skB + cmpSlot + rowT;
+    const uint32_t btk = skB + cmpSlot + rowF;
+    const uint32_t atv = svB + cmpSlot + rowT;
+    const uint32_t btv = svB + cmpSlot + rowF;
     cmpSlot += kSlot;
     if (cmpSlot == kRing) cmpSlot = 0;
 
-    // ---- 1. Gram: G = tril(Q.K^T), this warp's tiles, straight into shared --
-    if (warp < GWARPS) {
-      uint32_t qa[MPW][KD][4];
-#pragma unroll
-      for (int m = 0; m < MPW; ++m)
-#pragma unroll
-        for (int kk = 0; kk < KD; ++kk)
-          ldm4(reinterpret_cast<uint32_t(&)[4]>(qa[m][kk]),
-               aq + ((gm0 + m) * 16 * kLd + kk * 16) * 2);
-
-#pragma unroll
-      for (int np = 0; np < NPW / 2; ++np) {
-        const int n0 = gn0 + np * 2;
-        uint32_t bf[KD][4];
-#pragma unroll
-        for (int kk = 0; kk < KD; ++kk)
-          ldm4(reinterpret_cast<uint32_t(&)[4]>(bf[kk]),
-               bk + (n0 * 8 * kLd + kk * 16) * 2);
-#pragma unroll
-        for (int m = 0; m < MPW; ++m) {
-          float g0[4] = {0.f, 0.f, 0.f, 0.f}, g1[4] = {0.f, 0.f, 0.f, 0.f};
-#pragma unroll
-          for (int kk = 0; kk < KD; ++kk) {
-            mma16816(g0, reinterpret_cast<const uint32_t(&)[4]>(qa[m][kk]), &bf[kk][0]);
-            mma16816(g1, reinterpret_cast<const uint32_t(&)[4]>(qa[m][kk]), &bf[kk][2]);
-          }
-          const int tr = (gm0 + m) * 16 + (lane >> 2);
-#pragma unroll
-          for (int half = 0; half < 2; ++half) {
-            float *g = half ? g1 : g0;
-            const int tc = (n0 + half) * 8 + (lane & 3) * 2;
-            const float m0 = (tc + 0 <= tr) ? g[0] : 0.f;
-            const float m1 = (tc + 1 <= tr) ? g[1] : 0.f;
-            const float m2 = (tc + 0 <= tr + 8) ? g[2] : 0.f;
-            const float m3 = (tc + 1 <= tr + 8) ? g[3] : 0.f;
-            *reinterpret_cast<uint32_t *>(&sg[tr * CLd + tc]) = pack_bf16(m0, m1);
-            *reinterpret_cast<uint32_t *>(&sg[(tr + 8) * CLd + tc]) = pack_bf16(m2, m3);
-          }
-        }
-      }
-    }
-    __syncthreads();
-
-    // ---- 2. readout: O = Q . S, B operand straight out of the state regs ----
+    // ---- 1. readout: O = Q . S, B operand straight out of the state regs ----
+    // First because it depends on nothing that this chunk has to compute.
     float acc[MTOK][2][4];
     {
       uint32_t sb[2][KD][2];
@@ -288,94 +337,179 @@ __global__ __launch_bounds__(kThreads) void dense_la_kernel(
         for (int p = 0; p < 2; ++p)
 #pragma unroll
           for (int e = 0; e < 4; ++e) acc[m][p][e] = 0.f;
+        // WHOLE k-run fetched before the first mma of the run.
+        uint32_t af[KD][4];
 #pragma unroll
-        for (int kk = 0; kk < KD; ++kk) {
-          uint32_t a[4];
-          ldm4(a, aq + (m * 16 * kLd + kk * 16) * 2);
+        for (int kk = 0; kk < KD; ++kk)
+          ldm4(af[kk], ADDRF(aq, m * 16, 2 * kk));
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], a, sb[p][kk]);
+        for (int kk = 0; kk < KD; ++kk)
+#pragma unroll
+          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], af[kk], sb[p][kk]);
+      }
+    }
+
+    // ---- 2. Gram: G = tril(Q.K^T), this warp's tiles, straight into shared --
+    if (warp < GWARPS) {
+      uint32_t qa[MPW][KD][4];
+#pragma unroll
+      for (int m = 0; m < MPW; ++m)
+#pragma unroll
+        for (int kk = 0; kk < KD; ++kk)
+          ldm4(qa[m][kk], ADDRF(aq, (gm0 + m) * 16, 2 * kk));
+
+#pragma unroll
+      for (int np = 0; np < NPW / 2; np += GPAIR) {
+        uint32_t bf[GPAIR][KD][4];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int kk = 0; kk < KD; ++kk)
+            ldm4(bf[u][kk], ADDRT(bk, (gn0 + (np + u) * 2) * 8, 2 * kk));
+#pragma unroll
+        for (int m = 0; m < MPW; ++m) {
+          // 2*GPAIR independent accumulator chains, each of depth KD.
+          float g[GPAIR][2][4];
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+            for (int h = 0; h < 2; ++h)
+#pragma unroll
+              for (int e = 0; e < 4; ++e) g[u][h][e] = 0.f;
+#pragma unroll
+          for (int kk = 0; kk < KD; ++kk)
+#pragma unroll
+            for (int u = 0; u < GPAIR; ++u) {
+              mma16816(g[u][0], qa[m][kk], &bf[u][kk][0]);
+              mma16816(g[u][1], qa[m][kk], &bf[u][kk][2]);
+            }
+          const int tr = (gm0 + m) * 16 + (lane >> 2);
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+              const int tc = (gn0 + (np + u) * 2 + h) * 8 + (lane & 3) * 2;
+              const float m0 = (tc + 0 <= tr) ? g[u][h][0] : 0.f;
+              const float m1 = (tc + 1 <= tr) ? g[u][h][1] : 0.f;
+              const float m2 = (tc + 0 <= tr + 8) ? g[u][h][2] : 0.f;
+              const float m3 = (tc + 1 <= tr + 8) ? g[u][h][3] : 0.f;
+              *reinterpret_cast<uint32_t *>(&sg[tr * CLd + tc]) = pack_bf16(m0, m1);
+              *reinterpret_cast<uint32_t *>(&sg[(tr + 8) * CLd + tc]) = pack_bf16(m2, m3);
+            }
         }
       }
     }
 
-    // ---- 3. intra: O += G . V ----------------------------------------------
-    {
-      uint32_t vb[MTOK][4];
+    // ---- 3. drain the PREVIOUS chunk's output ------------------------------
+    // Placed here on purpose: at C = 16 only one warp has Gram work, and this
+    // is the other three warps' independent instruction stream.  The store also
+    // gets a full chunk of latency to retire before anything waits on it.
+    if (c) {
 #pragma unroll
-      for (int kk = 0; kk < MTOK; ++kk)
-        ldm4t(reinterpret_cast<uint32_t(&)[4]>(vb[kk]), btv + (kk * 16 * kLd + dv0) * 2);
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int kk = 0; kk < MTOK; ++kk) {
-          uint32_t a[4];
-          ldm4(a, sgA + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
-#pragma unroll
-          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], a, &vb[kk][2 * p]);
-        }
+      for (int p = 0; p < kPasses; ++p)
+        *reinterpret_cast<uint4 *>(po + (long)(p * kRowsPerPass * kD)) =
+            *reinterpret_cast<const uint4 *>(&so[soDrainE + p * kRowsPerPass * Ld]);
+      po += kChunkElems;
     }
 
     // ---- 4. fold: S^T += V^T . K -------------------------------------------
+    // Independent of the Gram, so it belongs before the second barrier.
 #pragma unroll
     for (int kk = 0; kk < MTOK; ++kk) {
       uint32_t a[4];
-      ldm4t(a, atv + (kk * 16 * kLd + dv0) * 2);
+      ldm4t(a, ADDRT_DV(atv, kk * 16));
+      uint32_t b[KD][4];
+#pragma unroll
+      for (int nj = 0; nj < KD; ++nj) ldm4t(b[nj], ADDRF(btk, kk * 16, 2 * nj));
 #pragma unroll
       for (int nj = 0; nj < KD; ++nj) {
-        uint32_t b[4];
-        ldm4t(b, btk + (kk * 16 * kLd + nj * 16) * 2);
-        mma16816(st[2 * nj], a, &b[0]);
-        mma16816(st[2 * nj + 1], a, &b[2]);
+        mma16816(st[2 * nj], a, &b[nj][0]);
+        mma16816(st[2 * nj + 1], a, &b[nj][2]);
       }
     }
 
-    // ---- 5. output: stage through shared, then 128-bit coalesced stores -----
+    __syncthreads();  // (2) the Gram is visible
+
+    // ---- 5. intra: O += G . V ----------------------------------------------
+    {
+      uint32_t vb[MTOK][4];
 #pragma unroll
-    for (int m = 0; m < MTOK; ++m) {
-      const int tr = m * 16 + (lane >> 2);
+      for (int kk = 0; kk < MTOK; ++kk) ldm4t(vb[kk], ADDRF_DV(btv, kk * 16));
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m) {
+        uint32_t ga[MTOK][4];
+#pragma unroll
+        for (int kk = 0; kk < MTOK; ++kk)
+          ldm4(ga[kk], sgA + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
+#pragma unroll
+        for (int kk = 0; kk < MTOK; ++kk)
+#pragma unroll
+          for (int p = 0; p < 2; ++p) mma16816(acc[m][p], ga[kk], &vb[kk][2 * p]);
+      }
+    }
+
+    // ---- 6. stage this chunk's output; the store happens next iteration -----
+#pragma unroll
+    for (int m = 0; m < MTOK; ++m)
 #pragma unroll
       for (int p = 0; p < 2; ++p) {
-        const int dc = dv0 + p * 8 + (lane & 3) * 2;
-        *reinterpret_cast<uint32_t *>(&so[tr * kLd + dc]) =
-            pack_bf16(acc[m][p][0], acc[m][p][1]);
-        *reinterpret_cast<uint32_t *>(&so[(tr + 8) * kLd + dc]) =
+        const int e0 = oBaseE + oXe[p] + m * 16 * Ld;
+        *reinterpret_cast<uint32_t *>(&so[e0]) = pack_bf16(acc[m][p][0], acc[m][p][1]);
+        *reinterpret_cast<uint32_t *>(&so[e0 + 8 * Ld]) =
             pack_bf16(acc[m][p][2], acc[m][p][3]);
       }
-    }
-    __syncthreads();
-#pragma unroll
-    for (int p = 0; p < kPasses; ++p) {
-      *reinterpret_cast<uint4 *>(po + (long)(p * kRowsPerPass * kD)) =
-          *reinterpret_cast<const uint4 *>(&so[(ldRow + p * kRowsPerPass) * kLd + ldCol]);
-    }
-    po += kChunkElems;
   }
+
+  __syncthreads();
+#pragma unroll
+  for (int p = 0; p < kPasses; ++p)
+    *reinterpret_cast<uint4 *>(po + (long)(p * kRowsPerPass * kD)) =
+        *reinterpret_cast<const uint4 *>(&so[soDrainE + p * kRowsPerPass * Ld]);
+#undef ADDRF
+#undef ADDRT
 }
 
-
-// ------------------------------------------------------- fragment convention probe
+// ------------------------------------------------- fragment convention probe
 // One m16n8k16 pair per mode, so the ldmatrix/mma conventions asserted in the
 // header are TESTED rather than assumed.  16x16 output = two n-tiles.
-//   mode 0: A from a row-major [m][k] source (ldm4, offA)
-//           B from a row-major [n][k] source (ldm4, offB)   -> D = A . Bsrc^T
-//   mode 1: A from a row-major [k][m] source (ldm4t, offAT)
-//           B from a row-major [k][n] source (ldm4t, offBT) -> D = Asrc^T . Bsrc
+//   mode 0/2: A from a row-major [m][k] source, B from a row-major [n][k]
+//             source -> D = A . Bsrc^T
+//   mode 1/3: A from a row-major [k][m] source (.trans), B from a row-major
+//             [k][n] source (.trans) -> D = Asrc^T . Bsrc
+// Modes 2/3 repeat 0/1 through the XOR-swizzled layout, so the swizzle's
+// address algebra is tested against torch exactly as the padded one is.
+template <bool SWZ> __device__ __forceinline__ int probe_off(int row, int col) {
+  constexpr int Ld = SWZ ? 16 : 16 + kPad;
+  // A 16-wide probe tile is one 16-B chunk per row under the swizzle, so the
+  // meaningful test is the 64-wide production geometry; the probe therefore
+  // stores its 16x16 tile inside a 64-wide swizzled row block.
+  if (SWZ) return row * kD + (((col >> 3) ^ (row & 7)) << 3) + (col & 7);
+  return row * Ld + col;
+}
+
+template <bool SWZ>
 __global__ void probe_kernel(const __nv_bfloat16 *a_src, const __nv_bfloat16 *b_src,
                              float *d_out, int mode) {
-  __shared__ __nv_bfloat16 sa[16 * kLd], sb[16 * kLd];
+  constexpr int Ld = SWZ ? kD : 16 + kPad;
+  __shared__ __nv_bfloat16 sa[16 * (SWZ ? kD : 16 + kPad)], sb[16 * (SWZ ? kD : 16 + kPad)];
   const int tid = threadIdx.x, lane = tid & 31;
   for (int i = tid; i < 16 * 16; i += 32) {
-    sa[(i / 16) * kLd + (i % 16)] = a_src[i];
-    sb[(i / 16) * kLd + (i % 16)] = b_src[i];
+    sa[probe_off<SWZ>(i / 16, i % 16)] = a_src[i];
+    sb[probe_off<SWZ>(i / 16, i % 16)] = b_src[i];
   }
   __syncwarp();
+  const int lr = lane & 7, tl = lane >> 3;
+  const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
+  const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
+  const int offF = SWZ ? (rF * kD * 2 + (((cF & 7) ^ lr) << 4)) : (rF * Ld + cF * 8) * 2;
+  const int offT = SWZ ? (rT * kD * 2 + (((cT & 7) ^ lr) << 4)) : (rT * Ld + cT * 8) * 2;
   uint32_t af[4], bf[4];
   if (mode == 0) {
-    ldm4(af, smem_addr(sa) + ldm_lane_off<kLd, false>(lane));
-    ldm4(bf, smem_addr(sb) + ldm_lane_off<kLd, true>(lane));
+    ldm4(af, smem_addr(sa) + offF);
+    ldm4(bf, smem_addr(sb) + offT);
   } else {
-    ldm4t(af, smem_addr(sa) + ldm_lane_off<kLd, true>(lane));
-    ldm4t(bf, smem_addr(sb) + ldm_lane_off<kLd, false>(lane));
+    ldm4t(af, smem_addr(sa) + offT);
+    ldm4t(bf, smem_addr(sb) + offF);
   }
   float d0[4] = {0, 0, 0, 0}, d1[4] = {0, 0, 0, 0};
   mma16816(d0, af, &bf[0]);
@@ -393,31 +527,42 @@ __global__ void probe_kernel(const __nv_bfloat16 *a_src, const __nv_bfloat16 *b_
 
 torch::Tensor probe(torch::Tensor a, torch::Tensor b, int64_t mode) {
   auto d = torch::zeros({16, 16}, torch::dtype(torch::kFloat32).device(torch::kCUDA));
-  probe_kernel<<<1, 32, 0, at::cuda::getCurrentCUDAStream()>>>(
-      reinterpret_cast<const __nv_bfloat16 *>(a.data_ptr()),
-      reinterpret_cast<const __nv_bfloat16 *>(b.data_ptr()), d.data_ptr<float>(), (int)mode);
+  const auto *ap = reinterpret_cast<const __nv_bfloat16 *>(a.data_ptr());
+  const auto *bp = reinterpret_cast<const __nv_bfloat16 *>(b.data_ptr());
+  if (mode < 2)
+    probe_kernel<false><<<1, 32, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ap, bp, d.data_ptr<float>(), (int)mode);
+  else
+    probe_kernel<true><<<1, 32, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ap, bp, d.data_ptr<float>(), (int)mode - 2);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return d;
 }
 
 // --------------------------------------------------------------- host side
 
-static size_t smem_bytes(int C, int S) {
-  return (size_t)(3 * S * C * kLd + C * (C + kPad) + C * kLd) * sizeof(__nv_bfloat16);
-}
+// The ratified (C, STAGES, SWZ) instantiation set.  Everything measurable is
+// built; nothing is chosen at run time by a heuristic.
+#define DENSEREF_ARMS(X)                                                     \
+  X(16, 3, false) X(16, 4, false) X(16, 5, false)                            \
+  X(32, 2, false) X(32, 3, false) X(32, 4, false)                            \
+  X(64, 2, false) X(64, 3, false)                                            \
+  X(16, 3, true) X(16, 4, true) X(16, 6, true)                               \
+  X(32, 3, true) X(32, 4, true) X(32, 5, true)                               \
+  X(64, 3, true)
 
-template <int C, int S>
+template <int C, int S, bool SWZ>
 static void launch(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v,
                    torch::Tensor &o, int BH, int L) {
-  const size_t sm = smem_bytes(C, S);
+  constexpr size_t sm = Geom<C, S, SWZ>::bytes;
   static bool configured = false;
   if (!configured) {
-    C10_CUDA_CHECK(cudaFuncSetAttribute(dense_la_kernel<C, S>,
+    C10_CUDA_CHECK(cudaFuncSetAttribute(dense_la_kernel<C, S, SWZ>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         (int)sm));
     configured = true;
   }
-  dense_la_kernel<C, S><<<BH, kThreads, sm, at::cuda::getCurrentCUDAStream()>>>(
+  dense_la_kernel<C, S, SWZ><<<BH, kThreads, sm, at::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<const __nv_bfloat16 *>(q.data_ptr()),
       reinterpret_cast<const __nv_bfloat16 *>(k.data_ptr()),
       reinterpret_cast<const __nv_bfloat16 *>(v.data_ptr()),
@@ -425,7 +570,8 @@ static void launch(const torch::Tensor &q, const torch::Tensor &k, const torch::
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t chunk) {
+torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t chunk,
+                      int64_t stages, bool swizzle) {
   TORCH_CHECK(q.is_cuda() && q.scalar_type() == torch::kBFloat16 && q.is_contiguous());
   TORCH_CHECK(k.sizes() == q.sizes() && v.sizes() == q.sizes());
   TORCH_CHECK(q.dim() == 4 && q.size(3) == kD, "expect [B,H,L,64]");
@@ -433,13 +579,14 @@ torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   auto o = torch::empty_like(q);
   const int BH = B * H;
-  switch (chunk) {
-    case 16: launch<16, 4>(q, k, v, o, BH, L); break;
-    case 32: launch<32, 4>(q, k, v, o, BH, L); break;
-    case 64: launch<64, 3>(q, k, v, o, BH, L); break;
-    default: TORCH_CHECK(false, "unsupported chunk");
+#define DENSEREF_DISPATCH(C_, S_, W_)                            \
+  if (chunk == C_ && stages == S_ && swizzle == W_) {            \
+    launch<C_, S_, W_>(q, k, v, o, BH, L);                       \
+    return o;                                                    \
   }
-  return o;
+  DENSEREF_ARMS(DENSEREF_DISPATCH)
+#undef DENSEREF_DISPATCH
+  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " stages=", stages, " swizzle=", swizzle);
 }
 
 // Device-side build identity.  Two independent facts, neither of which a host
@@ -448,31 +595,40 @@ torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, int64_t
 // ptxas produced for the very kernel entry the measurement will run.
 __global__ void stamp_kernel(int *out) {
   out[0] = kBuildMagic;
-  out[1] = kWarps * 1000 + kLd;
+  out[1] = kWarps * 1000 + kD;
 }
 
-template <int C, int S> static void func_census(std::vector<int64_t> &r) {
-  cudaFuncAttributes a{};
-  C10_CUDA_CHECK(cudaFuncGetAttributes(&a, dense_la_kernel<C, S>));
-  r.push_back(a.numRegs);
-  r.push_back((int64_t)a.sharedSizeBytes);
-  r.push_back(a.binaryVersion);
-  r.push_back((int64_t)smem_bytes(C, S));
-}
-
-std::vector<int64_t> build_stamp(int64_t chunk) {
+std::vector<int64_t> build_stamp(int64_t chunk, int64_t stages, bool swizzle) {
   auto t = torch::zeros({2}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1]};
-  switch (chunk) {
-    case 16: func_census<16, 4>(r); break;
-    case 32: func_census<32, 4>(r); break;
-    case 64: func_census<64, 3>(r); break;
-    default: TORCH_CHECK(false, "unsupported chunk"); break;
+  cudaFuncAttributes a{};
+#define DENSEREF_CENSUS(C_, S_, W_)                                             \
+  if (chunk == C_ && stages == S_ && swizzle == W_) {                           \
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&a, dense_la_kernel<C_, S_, W_>));     \
+    r.push_back(a.numRegs);                                                     \
+    r.push_back((int64_t)a.sharedSizeBytes);                                    \
+    r.push_back(a.binaryVersion);                                               \
+    r.push_back((int64_t)Geom<C_, S_, W_>::bytes);                              \
+    r.push_back((int64_t)a.maxThreadsPerBlock);                                 \
+    r.push_back((int64_t)a.localSizeBytes);                                     \
+    return r;                                                                   \
   }
+  DENSEREF_ARMS(DENSEREF_CENSUS)
+#undef DENSEREF_CENSUS
+  TORCH_CHECK(false, "unbuilt arm");
   return r;
+}
+
+std::vector<std::vector<int64_t>> arms() {
+  std::vector<std::vector<int64_t>> out;
+#define DENSEREF_LIST(C_, S_, W_) \
+  out.push_back({C_, S_, (int64_t)(W_), (int64_t)Geom<C_, S_, W_>::bytes});
+  DENSEREF_ARMS(DENSEREF_LIST)
+#undef DENSEREF_LIST
+  return out;
 }
 
 }  // namespace denseref
@@ -481,4 +637,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &denseref::forward, "dense chunked linear attention");
   m.def("probe", &denseref::probe, "fragment convention probe");
   m.def("build_stamp", &denseref::build_stamp, "build identity");
+  m.def("arms", &denseref::arms, "the built (C, STAGES, SWZ, smem) set");
 }

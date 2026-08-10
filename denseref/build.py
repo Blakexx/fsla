@@ -17,7 +17,7 @@ BUILD = HERE / "_build"
 BUILD.mkdir(exist_ok=True)
 
 #: must equal kBuildMagic in dense_la.cu
-BUILD_MAGIC = 570106
+BUILD_MAGIC = 570203
 
 _mod = None
 
@@ -44,20 +44,32 @@ def module():
     return _mod
 
 
-def assert_build_identity(chunk: int) -> dict:
+def arms():
+    """The (C, STAGES, SWZ, smem_bytes) set the binary actually contains."""
+    return [(c, s, bool(w), b) for c, s, w, b in module().arms()]
+
+
+def assert_build_identity(chunk: int, stages: int, swizzle: bool = False) -> dict:
     """Device-side, not path-side. Raises unless the loaded binary IS this source."""
     m = module()
-    magic, warpstamp, regs, static_smem, binver, dyn_smem = m.build_stamp(chunk)
+    (magic, dstamp, regs, static_smem, binver, dyn_smem,
+     maxthreads, local_bytes) = m.build_stamp(chunk, stages, swizzle)
     if magic != BUILD_MAGIC:
         raise RuntimeError(f"stale binary: device magic {magic} != source {BUILD_MAGIC}")
-    if warpstamp != 4 * 1000 + 72:
-        raise RuntimeError(f"stale binary: warp/ld stamp {warpstamp}")
+    if dstamp != 4 * 1000 + 64:
+        raise RuntimeError(f"stale binary: warp/d stamp {dstamp}")
     if binver < 86:
         raise RuntimeError(f"not an sm_86 binary: binaryVersion {binver}")
-    return dict(magic=magic, warps=warpstamp // 1000, smem_ld=warpstamp % 1000,
+    if local_bytes:
+        raise RuntimeError(f"REGISTER SPILL: {local_bytes} B local for C={chunk} "
+                           f"S={stages} SWZ={swizzle}")
+    return dict(magic=magic, warps=dstamp // 1000, d=dstamp % 1000,
                 regs_per_thread=regs, static_smem=static_smem,
-                binary_version=binver, dynamic_smem=dyn_smem, so=m.__file__)
+                binary_version=binver, dynamic_smem=dyn_smem,
+                max_threads=maxthreads, local_bytes=local_bytes, so=m.__file__)
 
 
-def forward(q, k, v, chunk: int):
-    return module().forward(q, k, v, chunk)
+def forward(q, k, v, chunk: int, stages: int = None, swizzle: bool = False):
+    if stages is None:
+        stages = {16: 4, 32: 4, 64: 3}[chunk]
+    return module().forward(q, k, v, chunk, stages, swizzle)
