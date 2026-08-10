@@ -26,7 +26,7 @@ gpu__time_duration.sum
 cd "$(dirname "$0")/.."
 mkdir -p "$OUT"
 for a in 16_0_128_64_64 32_0_128_64_64 64_0_128_64_64 32_0_64_64_64 64_0_64_64_64 32_0_32_64_64; do
-  for r in r4 a1 a2 a3 a4; do
+  for r in r4 a1 a2 a3 a4 a5; do
     nice ncu --metrics "$M" -k regex:'routed_normalized_kernel|compacted_kernel' \
       --launch-count 1 --csv \
       "$PY" rung5c/profile_cell.py "${r}${a}_${REG}" 4096 1 2 \

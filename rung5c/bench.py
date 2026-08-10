@@ -38,9 +38,13 @@ VRAM_DISCARD_GIB = 10.0
 CELLS = {"A": (2, 8, 4096), "B": (20, 8, 1024)}
 FLAG = (64, 64)
 LADDER_ARMS = [(16, 128), (32, 128), (64, 128), (32, 64), (64, 64), (32, 32)]
-SWEEP_ARMS = [(16, 128), (32, 128), (64, 128), (32, 64), (32, 32), (64, 32)]
+SWEEP_ARMS = [(16, 128), (32, 128), (64, 128), (32, 64), (64, 64), (32, 32)]
 REGIMES = ("dense", "lead4", "split", "d4")
-STAGE_LABEL = {1: "+1 gather", 2: "+2 staircase", 3: "+3 gates", 4: "+4 cook(5B)"}
+#: WHICH STAGE THE STOP GATE AND THE SWEEP ARE RENDERED ON. 4 is rung 5B as
+#: built; 5 is 5B with the cook's schedule loads batched ahead.
+STAGE = int(__import__("os").environ.get("RUNG5C_STAGE", "5"))
+STAGE_LABEL = {1: "+1 gather", 2: "+2 staircase", 3: "+3 gates",
+               4: "+4 cook(5B)", 5: "+5 sched window"}
 
 
 def clocks():
@@ -98,7 +102,7 @@ def ladder(name, B, H, L):
               reference.amplitudes(B, H, L, FLAG, dev, seed=3))
     for c, bc in LADDER_ARMS:
         r4build.assert_build_identity(c, False, bc, *FLAG)
-        for s in (1, 2, 3, 4):
+        for s in (1, 2, 3, 4, 5):
             acbuild.assert_build_identity(c, False, bc, *FLAG, s)
     tbl0 = acbuild.union_table(pr, pw, v, 32, 128, *FLAG)
     stopwatch(lambda: acbuild.forward_raw(pr, pw, v, tbl0, 32, False, 128, *FLAG, 4))
@@ -112,7 +116,7 @@ def ladder(name, B, H, L):
         base = _both(lambda: r4build.forward_raw(pr, pw, v, tbl, c, False, bc, *FLAG),
                      lambda: acbuild.forward_raw(pr, pw, v, tbl, c, False, bc, *FLAG, 1))
         t = {0: base[0], 1: base[1]}
-        for s in (2, 3, 4):
+        for s in (2, 3, 4, 5):
             a, b = _both(
                 lambda: acbuild.forward_raw(pr, pw, v, tbl, c, False, bc, *FLAG, s - 1),
                 lambda: acbuild.forward_raw(pr, pw, v, tbl, c, False, bc, *FLAG, s))
@@ -120,7 +124,7 @@ def ladder(name, B, H, L):
             t[s] = b
         print(f"{f'C={c} BC={bc}':16s}{'5A baseline':14s}{t[0]:10.4f}"
               f"{'':>9s}{'':>11s}")
-        for s in (1, 2, 3, 4):
+        for s in (1, 2, 3, 4, 5):
             print(f"{'':16s}{STAGE_LABEL[s]:14s}{t[s]:10.4f}"
                   f"{100*(t[s]-t[0])/t[0]:+8.1f}%{100*(t[s]-t[s-1])/t[0]:+10.1f}%")
     print(f"    clocks after: {clocks()}", flush=True)
@@ -151,13 +155,13 @@ def stopgate(name, B, H, L):
     tbl0 = acbuild.union_table(pr, pw, v, 32, 128, *FLAG)
     stopwatch(lambda: acbuild.forward_raw(pr, pw, v, tbl0, 32, False, 128, *FLAG, 4))
     print(f"    clocks before: {clocks()}", flush=True)
-    print(f"\n{'arm':30s}{'rung5A':>10s}{'stage4':>10s}{'delta':>9s}{'table':>9s}")
+    print(f"\n{'arm':30s}{'rung5A':>10s}{f'stage{STAGE}':>10s}{'delta':>9s}{'table':>9s}")
     t4, t5, tt = {}, {}, {}
     for c, w, bc, w0, w1 in arms:
         p, q = dense[(w0, w1)]
         tbl = acbuild.union_table(p, q, v, c, bc, w0, w1)
         a, b = _both(lambda: r4build.forward_raw(p, q, v, tbl, c, w, bc, w0, w1),
-                     lambda: acbuild.forward_raw(p, q, v, tbl, c, w, bc, w0, w1, 4))
+                     lambda: acbuild.forward_raw(p, q, v, tbl, c, w, bc, w0, w1, STAGE))
         k = (c, w, bc, w0, w1)
         t4[k], t5[k] = a, b
         tt[k] = stopwatch(lambda: acbuild.union_table(p, q, v, c, bc, w0, w1))
@@ -184,7 +188,7 @@ def sweep(name, B, H, L):
     stopwatch(lambda: acbuild.forward_raw(pr, pw, v, tbl0, 32, False, 128, *FLAG, 4))
     print(f"    clocks before: {clocks()}", flush=True)
     print(f"{'arm':16s}{'regime':>8s}{'grp/sc':>9s}{'rung5A ms':>11s}"
-          f"{'stage4 ms':>11s}{'kernel':>9s}", flush=True)
+          f"{f'stage{STAGE} ms':>11s}{'kernel':>9s}", flush=True)
     for c, bc in SWEEP_ARMS:
         if L % c:
             continue
@@ -196,7 +200,7 @@ def sweep(name, B, H, L):
             tbl = acbuild.union_table(p_, q_, v, c, bc, *FLAG)
             a, b = _both(
                 lambda: r4build.forward_raw(p_, q_, v, tbl, c, False, bc, *FLAG),
-                lambda: acbuild.forward_raw(p_, q_, v, tbl, c, False, bc, *FLAG, 4))
+                lambda: acbuild.forward_raw(p_, q_, v, tbl, c, False, bc, *FLAG, STAGE))
             print(f"{f'C={c} BC={bc}':16s}{rg:>8s}{grp/max(sc,1):9.2f}"
                   f"{a:11.4f}{b:11.4f}{100*(b-a)/a:+8.1f}%", flush=True)
     print(f"    clocks after: {clocks()}", flush=True)

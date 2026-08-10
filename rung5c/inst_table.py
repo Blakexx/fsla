@@ -16,7 +16,8 @@ ARMS = ["16_0_128_64_64", "32_0_128_64_64", "64_0_128_64_64",
         "32_0_64_64_64", "64_0_64_64_64", "32_0_32_64_64"]
 STAGES = [("r4", "5A  baseline"), ("a1", "+1 gathered addressing"),
           ("a2", "+2 staircase mask"), ("a3", "+3 per-side gates"),
-          ("a4", "+4 the cook  (= 5B)")]
+          ("a4", "+4 the cook  (= 5B)"),
+          ("a5", "+5 schedule window")]
 KEYS = {
     "smsp__inst_executed.sum": "inst",
     "smsp__inst_executed_pipe_tensor_op_hmma.sum": "mma",

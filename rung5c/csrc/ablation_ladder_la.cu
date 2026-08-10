@@ -21,8 +21,14 @@
 //            `split` NaN fix introduced -- read-side work, write-side work, and
 //            the intra term that needs both -- plus the staging skip.
 //   ABL = 4  + THE COOK.  The real super-chunk walk over the union table.  This
-//            stage IS rung 5B, and `check.py` gates its output bit-identical to
+//            stage IS rung 5B, and `ladder_gate.py` gates its output equal to
 //            rung 5B's so the ladder closes with no unattributed residual.
+//   ABL = 5  THE COOK'S SCHEDULE LOADS, BATCHED AHEAD.  The same walk over the
+//            same partition -- the descriptor it publishes is bit-identical --
+//            reading its words out of a REGISTER WINDOW refilled by a batch of
+//            independent loads issued a whole iteration body before they are
+//            consumed.  This is the REMEDY the ladder aims at, and the only
+//            stage above 4.
 //
 // Rung 5A is the ladder's rung 0 and is the SEPARATE `rung5` extension; nothing
 // here reimplements it.
@@ -407,6 +413,7 @@ template <int ABL> struct Stage {
   static constexpr bool stair = ABL >= 2;   // the runtime threshold byte
   static constexpr bool gates = ABL >= 3;   // the per-side region gates
   static constexpr bool cook = ABL >= 4;    // the union-table walk
+  static constexpr bool window = ABL >= 5;  // that walk's loads, batched ahead
 };
 
 template <int C, bool SWZ, int W0, int W1, int BC, int ABL>
@@ -419,7 +426,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   using P = BlockPlan<W0, W1, BC>;
   using G = Geom<C, SWZ, BC>;
   using Abl = Stage<ABL>;
-  static_assert(ABL >= 1 && ABL <= 4, "the ladder has four stages");
+  static_assert(ABL >= 1 && ABL <= 5, "the ladder has five stages");
   static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
   static_assert(BC % kMmaK == 0, "a block must be a whole number of mma k-tiles");
   static_assert(C <= 255, "a causal threshold is one byte, chunk-relative");
@@ -888,6 +895,66 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     }
   };
 
+  //: THE SCHEDULE WINDOW -- the mechanism stage 5 admits, and the whole of it.
+  //:
+  //: WHAT IS FETCHED AND WHY IT CAN BE FETCHED AHEAD.  A token's membership bit
+  //: is an AND of one word per level spanned at a SINGLE DIGIT plus one for the
+  //: PARTIALLY spanned level; a level spanned entirely contributes nothing.
+  //: EVERY ONE OF THOSE TERMS IS AFFINE IN THE TOKEN INDEX, and the AND is a
+  //: combine of independent streams rather than a chain, so the address of word
+  //: `i + 1` does not depend on word `i`.  The only data-dependent step in the
+  //: cook is the CLOSING RULE, and it sits strictly downstream of the AND.
+  //: **Nothing therefore bounds how far ahead these loads may be issued.**
+  //:
+  //: THE TERMS ARE ANDed AS THEY ARRIVE, not held and combined.  One accumulator
+  //: per side per slot, whatever the depth: holding `D` words per slot would cost
+  //: `D` times the registers AND expose the slowest arrival rather than the last
+  //: one.
+  //:
+  //: THE DEPTH IS DERIVED, NOT SWEPT: enough words that a DENSE super-chunk --
+  //: `C` tokens, `C / 32` words, plus the one the previous call stopped inside --
+  //: closes without a refill.  A sparser super-chunk spans more words and slides
+  //: the window mid-call, which costs ONE batched latency per window rather than
+  //: one per word.
+  //:
+  //: THE OVERSHOOT IS DISCARDED, NOT PREDICATED AWAY.  A slot past the end of the
+  //: table reads the LAST word -- in range, so the address needs no branch -- and
+  //: is masked to zero, which is what a token that does not exist means.
+  constexpr int kWinWords = (C + kTokBits - 1) / kTokBits + 1;
+  uint32_t winR[kWinWords], winW[kWinWords];
+  int winBase = 0;
+  //: The window's addresses are GATHERED, not inducted: a base pinned once and a
+  //: 32-bit byte displacement, because a window slot is an INDEX off that base
+  //: and `base + index` at element type is the widening multiply the addressing
+  //: rule forbids.  `tokWords <= 2048` at `L <= 65536`, so the displacement fits.
+  const uint32_t *const tR0p = pin_address(tR0);
+  const uint32_t *const tW0p = pin_address(tW0);
+  const uint32_t *const tR1p = pin_address(tR1);
+  const uint32_t *const tW1p = pin_address(tW1);
+  auto win_word = [&](const uint32_t *b, int wi) {
+    return *reinterpret_cast<const uint32_t *>(
+        gather_ptr(b, (uint32_t)wi * (uint32_t)sizeof(uint32_t)));
+  };
+  auto refill = [&](int from) {
+    winBase = from;
+#pragma unroll
+    for (int s = 0; s < kWinWords; ++s) {
+      const int wi = from + s;
+      const bool real = wi < tokWords;
+      const int c = real ? wi : lastWord;
+      if constexpr (kNoClause) {
+        winR[s] = real ? 0xFFFFFFFFu : 0u;
+        winW[s] = real ? 0xFFFFFFFFu : 0u;
+      } else if constexpr (kTailWhole) {
+        winR[s] = real ? win_word(tR0p, c) : 0u;
+        winW[s] = real ? win_word(tW0p, c) : 0u;
+      } else {
+        winR[s] = real ? (win_word(tR0p, c) & win_word(tR1p, c)) : 0u;
+        winW[s] = real ? (win_word(tW0p, c) & win_word(tW1p, c)) : 0u;
+      }
+    }
+  };
+
   auto cook = [&](int d) {
     uint16_t *lrd = iread(d);
     uint16_t *lwr = iwrite(d);
@@ -895,14 +962,13 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     const bool exists = cookWord < tokWords;
     int nr = 0, nw = 0;
     const uint32_t lt = (1u << lane) - 1u;
-#pragma unroll 1
-    while (cookWord < tokWords) {
-      const uint32_t inrange = (cookWord == lastWord ? tailMask : 0xFFFFFFFFu) &
-                               (0xFFFFFFFFu << cookBit);
-      const uint32_t rm =
-          (kNoClause ? 0xFFFFFFFFu : (kTailWhole ? *tR0 : *tR0 & *tR1)) & inrange;
-      const uint32_t wm =
-          (kNoClause ? 0xFFFFFFFFu : (kTailWhole ? *tW0 : *tW0 & *tW1)) & inrange;
+    //: ONE WORD OF THE WALK, written once and read by both forms.  `rw`/`ww` are
+    //: the side masks of word `wi`, however they were obtained.
+    auto step = [&](int wi, uint32_t rw, uint32_t ww) {
+      const uint32_t inrange =
+          (wi == lastWord ? tailMask : 0xFFFFFFFFu) & (0xFFFFFFFFu << cookBit);
+      const uint32_t rm = rw & inrange;
+      const uint32_t wm = ww & inrange;
       const int prx = bit_count(rm & lt);
       const int pwx = bit_count(wm & lt);
       const bool lvR = ((rm >> lane) & 1u) != 0u;
@@ -910,7 +976,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       const int cut = first_set(
           lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
       const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
-      const int t = cookWord * kTokBits + lane;
+      const int t = wi * kTokBits + lane;
       if (lane < cut) {
         if (lvR) {
           lrd[nr + prx] = (uint16_t)t;
@@ -922,14 +988,47 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       nw += bit_count(wm & keep);
       if (cut < kTokBits) {
         cookBit = cut;
-        break;
+        cookWord = wi;
+        return true;
       }
-      ++cookWord;
       cookBit = 0;
-      ++tR0;
-      ++tR1;
-      ++tW0;
-      ++tW1;
+      cookWord = wi + 1;
+      return false;
+    };
+    if constexpr (Abl::window) {
+      //: ON ENTRY `winBase == cookWord`, so window slot `s` IS word
+      //: `cookWord + s` and the slot index is a compile-time constant -- which
+      //: is what keeps the window in registers.  The outer loop runs once per
+      //: WINDOW, not once per word.
+      bool closed = !exists;
+#pragma unroll 1
+      while (!closed) {
+#pragma unroll
+        for (int s = 0; s < kWinWords; ++s)
+          if (!closed) {
+            const int wi = winBase + s;
+            closed = wi >= tokWords ? true : step(wi, winR[s], winW[s]);
+          }
+        if (!closed) refill(cookWord);
+      }
+      //: ISSUED HERE AND CONSUMED BY THE NEXT CALL, a whole iteration body later:
+      //: the loads are independent of everything between, so what was a
+      //: dependent global load immediately before a rendezvous becomes a load
+      //: with the readout, the Gram, the fold and the intra term to hide behind.
+      refill(cookWord);
+    } else {
+#pragma unroll 1
+      while (cookWord < tokWords) {
+        const uint32_t rw =
+            kNoClause ? 0xFFFFFFFFu : (kTailWhole ? *tR0 : *tR0 & *tR1);
+        const uint32_t ww =
+            kNoClause ? 0xFFFFFFFFu : (kTailWhole ? *tW0 : *tW0 & *tW1);
+        if (step(cookWord, rw, ww)) break;
+        ++tR0;
+        ++tR1;
+        ++tW0;
+        ++tW1;
+      }
     }
     //: THE BUFFER'S TAIL.  A slot past the gathered count names token zero, so
     //: every gather stays in range without a predicate, and carries a threshold
@@ -958,6 +1057,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: THE PROLOGUE FILLS THE SCHEDULE STREAM FIRST AND THE VALUE STREAM SECOND,
   //: which is the same ordering the steady state keeps: the cook runs `AHEAD`
   //: super-chunks out before the first value tile is issued.
+  if (warp == 0)
+    if constexpr (Abl::window) refill(0);
 #pragma unroll 1
   for (int s = 0; s < AHEAD; ++s)
     if (warp == 0) {
@@ -1315,7 +1416,8 @@ __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
 // length.
 #define RUNG5C_STAGES(X, C_, W_, BC_, W0_, W1_)                                \
   X(C_, W_, BC_, W0_, W1_, 1) X(C_, W_, BC_, W0_, W1_, 2)                      \
-  X(C_, W_, BC_, W0_, W1_, 3) X(C_, W_, BC_, W0_, W1_, 4)
+  X(C_, W_, BC_, W0_, W1_, 3) X(C_, W_, BC_, W0_, W1_, 4)                      \
+  X(C_, W_, BC_, W0_, W1_, 5)
 #define RUNG5C_ARMS(X)                                                         \
   RUNG5C_STAGES(X, 16, false, 128, 64, 64)                                     \
   RUNG5C_STAGES(X, 32, false, 128, 64, 64)                                     \
