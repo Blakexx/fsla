@@ -5,22 +5,36 @@
 # occupancy-independent counters and does not move with the grid, so the small
 # cell is the cheap one to profile and the honest one to quote.
 #
+# THE LAUNCH IS SELECTED BY KERNEL NAME, not by an index: a launch index counts
+# every kernel the process issues, torch's own initialisation included.
+#
+# A TARGETED METRIC LIST RATHER THAN `--set full`. p59's note that
+# `smsp__inst_executed.sum` comes back MULTIPLEXED is a property of the full
+# set's pass scheduling; a list this short fits one pass, so the counter is
+# exact and no SASS source page has to be summed to recover it. The tensor-pipe
+# utilisation is collected beside it because whether the arm is TENSOR-BOUND is
+# what decides how much of an instruction delta reaches the wall.
+#
 #   bash rung5/inst.sh <outdir>
 set -euo pipefail
 OUT=${1:?outdir}
 PY=/home/blake/rola311/bin/python
+M=smsp__inst_executed.sum,smsp__inst_executed_pipe_tensor_op_hmma.sum,\
+smsp__inst_executed_pipe_alu.sum,smsp__inst_executed_pipe_fma.sum,\
+smsp__inst_executed_pipe_lsu.sum,smsp__inst_executed_pipe_cbu.sum,\
+sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active,\
+smsp__issue_active.avg.pct_of_peak_sustained_active,\
+gpu__time_duration.sum
 cd "$(dirname "$0")/.."
 mkdir -p "$OUT"
-ARMS="16_0_64_64_64 32_0_64_64_64 64_0_64_64_64 32_0_32_64_64 64_0_32_64_64 32_0_128_64_64"
-for a in $ARMS; do
+for a in 32_0_64_64_64 32_0_32_64_64 16_0_128_64_64 64_0_64_64_64; do
   for r in r4 r5; do
-    rep="$OUT/${r}${a}_dense"
-    [ -f "$rep.ncu-rep" ] && continue
-    nice ncu --set full -f -o "$rep" \
-      "$PY" rung5/profile_cell.py "${r}${a}_dense" 4096 1 2 >"$rep.log" 2>&1
+    nice ncu --metrics "$M" -k regex:routed_normalized_kernel --launch-count 1 --csv \
+      "$PY" rung5/profile_cell.py "${r}${a}_dense" 4096 1 2 \
+      >"$OUT/${r}${a}.csv" 2>"$OUT/${r}${a}.err"
   done
 done
-rep="$OUT/r5t32_0_64_64_64_dense"
-[ -f "$rep.ncu-rep" ] || nice ncu --set full -f -o "$rep" \
-  "$PY" rung5/profile_cell.py "r5t32_0_64_64_64_dense" 4096 1 2 >"$rep.log" 2>&1
+nice ncu --metrics "$M" -k regex:union_table_kernel --launch-count 1 --csv \
+  "$PY" rung5/profile_cell.py "r5t32_0_64_64_64_dense" 4096 1 2 \
+  >"$OUT/r5t32_0_64_64_64.csv" 2>"$OUT/r5t32_0_64_64_64.err"
 echo "captured into $OUT"
