@@ -24,9 +24,46 @@
 // K -> W:
 //     O_c  = R_c . S ;  O_c += tril(R_c . W_c^T) . V_c ;  S += W_c^T . V_c
 // N is UNCHANGED at 64, so the state is the same N x d_v = 64 x 64 and it stays
-// where the base put it: in registers, as the fold's accumulator, never in
-// shared memory.  No schedule, no membership test, no atom mask, no decay, no
-// normalisation, no capacity split.
+// in registers, as the fold's accumulator, never in shared memory.  No
+// schedule, no membership test, no atom mask, no decay, no normalisation, no
+// capacity split.
+//
+// THE STATE IS THE READOUT'S A OPERAND
+// ------------------------------------
+// The fold accumulates S^T[d_v][slot] with m = d_v and n = slot.  For m16n8k16
+// a lane's four fp32 of an accumulator tile are
+//     (m = l/4, l/4+8) x (n = 2*(l%4), +1)
+// and the four b32 of an A fragment are
+//     (m = l/4, l/4+8) x (k = 2*(l%4), +1, +8, +9),
+// so ONE A fragment spans TWO accumulator tiles along n, and its four halves
+// are in order the (lo, hi) of tile 2k and of tile 2k+1:
+//     a0 = pack(st[2k  ][0], st[2k  ][1])   a1 = pack(st[2k  ][2], st[2k  ][3])
+//     a2 = pack(st[2k+1][0], st[2k+1][1])   a3 = pack(st[2k+1][2], st[2k+1][3])
+// That is a RELABEL of the very same four `pack_bf16x2` results a B arrangement
+// produces from the same tiles: no store, no reload, no shuffle, and the same
+// conversion count.  The readout is then O^T = S^T . R^T -- state in A, the
+// routing panel in B with n = tokens and k = slots, which is the panel's SAME
+// [token][slot] buffer read through the other ldmatrix lane-offset form -- and
+// the output accumulator transposes to (m = d_v) x (n = tokens).  The intra
+// term follows it: O^T += V^T . G^T, whose A operand is V^T, the fragment the
+// fold already loads.  The fold and the Gram are untouched.
+//
+// WHAT THE TRANSPOSE COSTS, AND IT IS THE ONLY THING IT COSTS
+// -----------------------------------------------------------
+// A transposed output tile holds two TOKEN-adjacent values of one d_v column.
+// The output buffer is [token][d_v], because the drain out of it must be a
+// fully coalesced 128-bit store, so those two are in different ROWS and the
+// epilogue publishes four b16 per tile where the untransposed one published two
+// b32: +4 instructions per accumulator tile, +C/2 per lane per chunk.  Every
+// other count -- mma, ldmatrix, cp.async, barriers, and the packs of the state
+// itself -- is unchanged.
+//
+// WHY THE SWAP IS WORTH THAT: REGISTER RESIDENCY UNDER A WARPGROUP MMA.
+// `wgmma` sources B from a shared-memory descriptor unconditionally -- there is
+// no `_SR` or `_RR` form -- so an accumulator that must land in B forces a
+// shared-memory round trip.  Register-source A, the `_RS` atom family, has no
+// such gap.  The arrangement here is the one that survives that move; building
+// it is a separate piece of work and is not done here.
 //
 // DIGIT-MAJOR PRODUCTION -- the design decision of this rung, carried over
 // ----------------------------------------------------------------------
@@ -103,9 +140,18 @@ namespace rung1 {
 using namespace denseref::ops;
 namespace arch = denseref::arch;
 
+//: THIS KERNEL'S OWN OPERAND-RESIDENCY CLAUSE.  The state is the readout's A
+//: operand, so A -- and not B -- is the side that must be readable from the
+//: issuing unit's own registers.  This is the clause a warpgroup MMA satisfies.
+static_assert(arch::kCaps.mma_a_from_regs,
+              "UNSUPPORTED ARCHITECTURE FOR THIS KERNEL: the fold accumulator IS "
+              "the readout's A operand, so A must be readable from the issuing "
+              "unit's own registers or the state takes a shared-memory round "
+              "trip and this is a different algorithm.");
+
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
-static constexpr int kBuildMagic = 590201;
+static constexpr int kBuildMagic = 590301;
 
 static constexpr int kN = 64;   // slot count; also d_k of the state
 static constexpr int kD = 64;   // d_v
@@ -241,18 +287,14 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + tabT[(g_)]) \
        : ((b_) + (uint32_t)(((R_) * Ld + (g_) * 8) * 2)))
 
-  const int offAg = (rF * CLd + cF * 8) * 2;  // Gram buffer: always padded
+  const int offBg = (rT * CLd + cT * 8) * 2;  // Gram buffer: always padded
 
   const int gm0 = (warp / NSPLIT) * MPW;
   const int gn0 = (warp % NSPLIT) * NPW;
   const int dv0 = warp * 16;
   constexpr int DVG_STEP = 2;
   const int dvg = warp * DVG_STEP;
-  const uint32_t dvTabF = (uint32_t)((((dvg + cF) & 7) ^ lr) << 4);
   const uint32_t dvTabT = (uint32_t)((((dvg + cT) & 7) ^ lr) << 4);
-#define ADDRF_DV(b_, R_) \
-  (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + dvTabF) \
-       : ((b_) + (uint32_t)(((R_) * Ld + dv0) * 2)))
 #define ADDRT_DV(b_, R_) \
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowB) + dvTabT) \
        : ((b_) + (uint32_t)(((R_) * Ld + dv0) * 2)))
@@ -286,22 +328,29 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
   constexpr uint32_t kRing = STAGES * kSlot;
   const uint32_t svL = smem_addr(sv) + stgOff;
   const uint32_t svB = smem_addr(sv);
-  const uint32_t sgA = smem_addr(sg) + (uint32_t)offAg;
+  const uint32_t sgT = smem_addr(sg) + (uint32_t)offBg;
   const int soDrainE = (int)(stgOff >> 1);
   uint32_t stgSlot = 0, cmpSlot = 0;
 
   // R and W are unringed, so their fragment bases are LOOP-INVARIANT: one
   // address each, formed here, and compile-time immediates below.
-  const uint32_t arF = smem_addr(sr) + rowF;  // R as A from [tok][slot]
-  const uint32_t bwT = smem_addr(sw) + rowT;  // W as a B pair from [slot][tok]
-  const uint32_t bwF = smem_addr(sw) + rowF;  // W as a B pair from [tok][slot], .trans
+  const uint32_t arF = smem_addr(sr) + rowF;  // R as the Gram's A, m = tokens
+  const uint32_t brT = smem_addr(sr) + rowT;  // R as the readout's B, n = tokens
+  const uint32_t bwT = smem_addr(sw) + rowT;  // W as the Gram's B, n = tokens
+  const uint32_t bwF = smem_addr(sw) + rowF;  // W as the fold's B, .trans
 
-  // Output staging write index (base's, unchanged).
-  const int oPh = (lane >> 2) & 7;
-  const int oBaseE = (lane >> 2) * Ld + (SWZ ? ((lane & 3) * 2) : (dv0 + (lane & 3) * 2));
-  int oXe[2];
+  // Output staging write index.  The accumulator is transposed, so this lane
+  // owns d_v = dv0 + (lane>>2) and that + 8, at tokens 8j + 2*(lane&3) + {0,1}:
+  // four elements in four distinct rows of the [token][d_v] buffer, whose only
+  // per-chunk variation is the compile-time 8*j row step.
+  const int oq = (lane & 3) * 2, om = lane >> 2;
+  int oE[2][2];
 #pragma unroll
-  for (int p = 0; p < 2; ++p) oXe[p] = SWZ ? (((dvg + p) ^ oPh) << 3) : (p * 8);
+  for (int e = 0; e < 2; ++e)
+#pragma unroll
+    for (int f = 0; f < 2; ++f)
+      oE[e][f] = SWZ ? ((oq + e) * Ld + (((dvg + f) ^ (oq + e)) << 3) + om)
+                     : ((oq + e) * Ld + dv0 + om + f * 8);
 
   auto stage_chunk = [&]() {
 #pragma unroll
@@ -434,36 +483,35 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
     stage_commit();
 
     const uint32_t atv = svB + cmpSlot + rowT;
-    const uint32_t btv = svB + cmpSlot + rowF;
     cmpSlot += kSlot;
     if (cmpSlot == kRing) cmpSlot = 0;
 
-    // ---- 1. readout: O = R . S, B operand straight out of the state regs ----
-    float acc[MTOK][2][4];
+    // ---- 1. readout: O^T = S^T . R^T, A operand straight out of the state ---
+    // `sa` is the relabel derived in this file's header: an A fragment's four
+    // halves are the (lo, hi) of two adjacent state tiles along the slot axis.
+    float acc[NTOK][4];
     {
-      uint32_t sb[2][KD][2];
+      uint32_t sa[KD][4];
 #pragma unroll
-      for (int p = 0; p < 2; ++p)
+      for (int kk = 0; kk < KD; ++kk) {
+        sa[kk][0] = pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
+        sa[kk][1] = pack_bf16x2(st[2 * kk][2], st[2 * kk][3]);
+        sa[kk][2] = pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
+        sa[kk][3] = pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3]);
+      }
 #pragma unroll
-        for (int kk = 0; kk < KD; ++kk) {
-          sb[p][kk][0] = p ? pack_bf16x2(st[2 * kk][2], st[2 * kk][3])
-                           : pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
-          sb[p][kk][1] = p ? pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3])
-                           : pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
-        }
+      for (int j = 0; j < NTOK; ++j)
+#pragma unroll
+        for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
 #pragma unroll
       for (int m = 0; m < MTOK; ++m) {
+        uint32_t rb[KD][4];
 #pragma unroll
-        for (int p = 0; p < 2; ++p)
-#pragma unroll
-          for (int e = 0; e < 4; ++e) acc[m][p][e] = 0.f;
-        uint32_t af[KD][4];
-#pragma unroll
-        for (int kk = 0; kk < KD; ++kk) load_frag(af[kk], ADDRF(arF, m * 16, 2 * kk));
+        for (int kk = 0; kk < KD; ++kk) load_frag(rb[kk], ADDRT(brT, m * 16, 2 * kk));
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk)
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma(acc[m][p], af[kk], sb[p][kk]);
+          for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
       }
     }
 
@@ -543,33 +591,35 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
 
     rendezvous();  // (2) the Gram is visible; R and W are dead until produce()
 
-    // ---- 5. intra: O += G . V ----------------------------------------------
+    // ---- 5. intra: O^T += V^T . G^T ----------------------------------------
+    // A is V^T -- the fold's own operand, at the same address form -- and the
+    // Gram is read as B, n = query token, k = key token.
     {
-      uint32_t vb[MTOK][4];
+      uint32_t va[MTOK][4];
 #pragma unroll
-      for (int kk = 0; kk < MTOK; ++kk) load_frag_t(vb[kk], ADDRF_DV(btv, kk * 16));
+      for (int kk = 0; kk < MTOK; ++kk) load_frag_t(va[kk], ADDRT_DV(atv, kk * 16));
 #pragma unroll
       for (int m = 0; m < MTOK; ++m) {
-        uint32_t ga[MTOK][4];
+        uint32_t gb[MTOK][4];
 #pragma unroll
         for (int kk = 0; kk < MTOK; ++kk)
-          load_frag(ga[kk], sgA + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
+          load_frag(gb[kk], sgT + (uint32_t)((m * 16 * CLd + kk * 16) * 2));
 #pragma unroll
         for (int kk = 0; kk < MTOK; ++kk)
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma(acc[m][p], ga[kk], &vb[kk][2 * p]);
+          for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], va[kk], &gb[kk][2 * p]);
       }
     }
 
     // ---- 6. stage this chunk's output; the store happens next iteration -----
 #pragma unroll
-    for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-      for (int p = 0; p < 2; ++p) {
-        const int e0 = oBaseE + oXe[p] + m * 16 * Ld;
-        store_bf16x2(&so[e0], pack_bf16x2(acc[m][p][0], acc[m][p][1]));
-        store_bf16x2(&so[e0 + 8 * Ld], pack_bf16x2(acc[m][p][2], acc[m][p][3]));
-      }
+    for (int j = 0; j < NTOK; ++j) {
+      const int jo = j * 8 * Ld;
+      store_bf16(&so[oE[0][0] + jo], acc[j][0]);
+      store_bf16(&so[oE[1][0] + jo], acc[j][1]);
+      store_bf16(&so[oE[0][1] + jo], acc[j][2]);
+      store_bf16(&so[oE[1][1] + jo], acc[j][3]);
+    }
   }
 
   rendezvous();
@@ -579,7 +629,6 @@ __global__ __launch_bounds__(kThreads, (kCtaTarget<C, STAGES, SWZ>)) void routed
                               &so[soDrainE + p * kRowsPerPass * Ld]);
 #undef ADDRF
 #undef ADDRT
-#undef ADDRF_DV
 #undef ADDRT_DV
 }
 

@@ -36,11 +36,13 @@
 //                             tile serve as an operand of either handedness.
 //   mma(acc, a, b)            acc += A(16x16) . B(16x8), bf16 operands, fp32
 //                             accumulator, accumulator PRIVATE to the issuing
-//                             unit, and B READ FROM THAT UNIT'S REGISTERS.  The
+//                             unit, and A READ FROM THAT UNIT'S REGISTERS.  The
 //                             last clause is the design's pivot and is a
-//                             REQUIRED capability, not a flag.
+//                             REQUIRED capability, not a flag; which SIDE a
+//                             given kernel's accumulator lands on is that
+//                             kernel's clause, asserted at its own site.
 //   pack_bf16x2(lo, hi)       two fp32 -> the b32 that `mma` reads as two
-//                             consecutive k-elements of a B operand.  This is
+//                             consecutive k-elements of an operand.  This is
 //                             the accumulator-to-operand conversion; it is the
 //                             only reason the state never touches shared memory.
 //   widen_bf16x2(v, lo, hi)   the EXACT inverse of `pack_bf16x2`: a packed pair
@@ -52,6 +54,12 @@
 //                             instruction for it, sm_80/86/89 must go through
 //                             fp32 at 1 FMUL + 1/2 pack per element.
 //   store_bf16x2(p, v)        one packed bf16 pair, addressed as bf16 elements.
+//   store_bf16(p, x)          one fp32 -> one bf16 element, same round-to-
+//                             nearest-even as `pack_bf16x2` per element.  A
+//                             TRANSPOSED output accumulator holds two
+//                             token-adjacent values of ONE d_v column, and in a
+//                             [token][d_v] buffer those are different rows, so
+//                             the pair cannot be published as a b32.
 //   load_vec16 / store_vec16  one naturally aligned 16-byte value, moved in a
 //                             single access.  These are the SYNCHRONOUS pair of
 //                             `stage_tile`: 16 B is `kStageBytes`, the widest
@@ -141,6 +149,12 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
                : "r"(a));
 }
 
+//: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.  `kMmaM/N/K` is the shape
+//: the carve and every fragment index are written in; an architecture whose
+//: register-source family is shaped differently (Hopper's `_RS` atoms are
+//: 64 x {8..256} x 16 with a K-major register A) substitutes its own member of
+//: the family, and the constraints that keeps -- M a multiple of 64, A K-major
+//: -- are properties of the family rather than of a hand-picked instruction.
 __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4],
                                     const uint32_t *b) {
   asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
@@ -206,6 +220,14 @@ __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
 
 __device__ __forceinline__ void store_bf16x2(__nv_bfloat16 *p, uint32_t v) {
   *reinterpret_cast<uint32_t *>(p) = v;
+}
+
+//: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
+//: its two.  The single-element form exists because a transposed accumulator's
+//: adjacent pair is adjacent in TOKEN, and a [token][d_v] buffer puts those in
+//: different rows.
+__device__ __forceinline__ void store_bf16(__nv_bfloat16 *p, float v) {
+  *p = __float2bfloat16(v);
 }
 
 //: The 16-byte quantum, synchronously.  `kStageBytes` is the width of every

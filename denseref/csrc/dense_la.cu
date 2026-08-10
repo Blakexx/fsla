@@ -22,9 +22,10 @@
 // as a B operand, i.e. (n = d_v = l/4) x (k = d_k = 2*(l%4), +1, +8, +9).  With
 // the transposed state those are the SAME registers.  The state therefore never
 // leaves registers -- no shared-memory round trip, no shuffle, no transpose
-// pass, one `pack_bf16x2` per b32.  This is why `mma_b_from_regs` is a REQUIRED
-// capability and not a flag: an MMA that can only source B from a shared-memory
-// descriptor computes this by a different algorithm.
+// pass, one `pack_bf16x2` per b32.  `mma_b_from_regs` is therefore a clause of
+// THIS kernel, asserted at the kernel below rather than in the shared table: an
+// MMA that can only source B from a shared-memory descriptor computes this by a
+// different algorithm.
 //
 // PARTITION (one MMA unit per 16 d_v rows)
 // ----------------------------------------
@@ -94,6 +95,15 @@ namespace denseref {
 
 using namespace ops;
 
+//: THIS KERNEL'S OWN OPERAND-RESIDENCY CLAUSE.  The baseline requires only that
+//: an accumulator can be an operand from registers at all (`mma_a_from_regs`);
+//: which SIDE it lands on is a property of the kernel, and this one lands in B.
+static_assert(arch::kCaps.mma_b_from_regs,
+              "UNSUPPORTED ARCHITECTURE FOR THIS KERNEL: the fold accumulator IS "
+              "the readout's B operand here, so B must be readable from the "
+              "issuing unit's own registers. A warpgroup MMA sources B only from "
+              "a shared-memory descriptor, which is a different algorithm.");
+
 // Bumped by hand whenever the source changes; read back device-side so a stale
 // binary cannot masquerade as this source.  See build_stamp().
 static constexpr int kBuildMagic = 580102;
@@ -105,8 +115,8 @@ static constexpr int kPad = 8;  // shared-memory row padding, in elements
 // slice of the transposed state, so the number of units is d_v / the MMA's m
 // quantum, and the CTA is that many units wide.  Both terms come from the
 // operation, not from a literal: on an architecture whose MMA unit is a
-// warpgroup this would be 4 units of 128 threads, which is exactly why such an
-// architecture is refused in `arch_caps.cuh` rather than served here.
+// warpgroup this would be one unit of 128 threads owning all 64 rows, which is
+// the shape `arch_caps.cuh` records as unwritten rather than served here.
 static constexpr int kUnits = kD / kMmaM;
 static constexpr int kThreads = kUnits * kMmaUnitThreads;
 static constexpr int kWarps = kThreads / 32;
@@ -666,8 +676,8 @@ std::vector<int64_t> arch_row(int64_t cc) {
   TORCH_CHECK(arch::tabulated((int)cc), "untabulated compute capability ", cc);
   const arch::Caps c = arch::caps_of((int)cc);
   return {c.cc,
-          c.async_copy, c.tile_load, c.mma_bf16_f32, c.mma_b_from_regs,
-          c.bf16_cvt_packed,
+          c.async_copy, c.tile_load, c.mma_bf16_f32, c.mma_a_from_regs,
+          c.mma_b_from_regs, c.bf16_cvt_packed,
           c.bf16_simd_arith, c.async_bulk_copy, c.warpgroup_mma,
           arch::supported(c),
           c.mma_unit_threads, c.smem_per_sm, c.smem_per_cta_max, c.regs_per_sm,

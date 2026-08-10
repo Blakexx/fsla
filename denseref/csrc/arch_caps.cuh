@@ -43,12 +43,17 @@ struct Caps {
   bool async_copy;         // global->shared staging whose completion is a signal
   bool tile_load;          // 8x8 b16 quads landed directly in MMA register order
   bool mma_bf16_f32;       // tensor MAC, bf16 operands, fp32 accumulator
-  bool mma_b_from_regs;    // the B operand may be supplied from the unit's OWN
-                           // registers.  THE PIVOT: the fold accumulator is the
-                           // readout's B operand, so the state never reaches
-                           // shared memory.  An MMA that can only take B from a
-                           // shared-memory descriptor implements a DIFFERENT
-                           // algorithm, not a slower one.
+  bool mma_a_from_regs;    // the A operand may be supplied from the unit's OWN
+                           // registers.  THE PIVOT: a fold accumulator that is
+                           // the readout's A operand never reaches shared
+                           // memory.  Warpgroup MMAs keep a register-source A
+                           // (the `_RS` atom family), so this clause holds on
+                           // every tabulated architecture.
+  bool mma_b_from_regs;    // the same for B.  A warpgroup MMA sources B ONLY
+                           // from a shared-memory descriptor, so a kernel whose
+                           // accumulator must land in B is refused there.  That
+                           // is a clause of THAT kernel, asserted at its own
+                           // site, and not of the baseline.
   bool bf16_cvt_packed;    // two fp32 -> one b32 of two bf16, one instruction
 
   // ------------------------------------------------------------- SELECTING
@@ -96,38 +101,37 @@ constexpr bool tabulated(int cc) {
 
 constexpr Caps caps_of(int cc) {
   return cc == 800
-             ? Caps{800, true, true, true, true, true,
+             ? Caps{800, true, true, true, true, true, true,
                     false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 2048, 32, 1024, 100}
          : cc == 870
-             ? Caps{870, true, true, true, true, true,
+             ? Caps{870, true, true, true, true, true, true,
                     false, false, false,
                     32, 167936, 166912, 128, 65536, 255, 256, 1536, 16, 1024, 50}
          : cc == 890
-             ? Caps{890, true, true, true, true, true,
+             ? Caps{890, true, true, true, true, true, true,
                     false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 24, 1024, 50}
          : cc == 900
-             // sm_90 is TABULATED AND REFUSED.  Every clause but one holds; the
-             // table exists so the refusal names its reason and so a future
-             // pass can see exactly what has to change.  `wgmma` sources B from
-             // a shared-memory descriptor, which is why ThunderKittens'
-             // Hopper linear-attention kernels round-trip their state through
-             // shared memory.  That is a different algorithm.  Selecting
-             // warp-scoped `mma.sync` on a part that has `wgmma` would be a
-             // fallback chain, which this table does not have.
-             ? Caps{900, true, true, true, false, true,
+             // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds:
+             // `wgmma` keeps a register-source A operand (the `_RS` atom
+             // family), which is the residency clause an accumulator-as-operand
+             // design needs, and only B is descriptor-only.  What is missing is
+             // an IMPLEMENTATION -- `mma`, `load_frag` and the carve are written
+             // for a 32-thread unit and a warpgroup unit is 128 -- so this row
+             // is a capability GAP, not a structural refusal.
+             ? Caps{900, true, true, true, true, false, true,
                     true, true, true,
                     128, 233472, 232448, 128, 65536, 255, 256, 2048, 32, 1024, 100}
              // sm_86: the local development part (GA102).
-             : Caps{860, true, true, true, true, true,
+             : Caps{860, true, true, true, true, true, true,
                     false, false, false,
                     32, 102400, 101376, 128, 65536, 255, 256, 1536, 16, 1024, 50};
 }
 
 //: The conjunction of the REQUIRED clauses.  There is no partial support.
 constexpr bool supported(const Caps &c) {
-  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.mma_b_from_regs &&
+  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.mma_a_from_regs &&
          c.bf16_cvt_packed;
 }
 
@@ -199,19 +203,14 @@ static_assert(tabulated(kArch),
 
 constexpr Caps kCaps = caps_of(kArch);
 
-static_assert(kCaps.mma_b_from_regs,
-              "UNSUPPORTED ARCHITECTURE: this kernel's structure requires an MMA "
-              "whose B operand can come from the issuing unit's own registers, "
-              "because the fold accumulator IS the readout's B operand and the "
-              "state never enters shared memory. A warpgroup MMA that sources B "
-              "from a shared-memory descriptor implements a different algorithm. "
-              "Supporting it is work, not a flag.");
 static_assert(supported(kCaps), "UNSUPPORTED ARCHITECTURE: a required capability "
                                 "clause is false; see the Caps row");
 static_assert(kCaps.mma_unit_threads == 32,
-              "UNSUPPORTED ARCHITECTURE: the d_v carve gives one MMA unit a "
-              "private 16-row slice of the state; at 128 threads per unit the "
-              "carve and the CTA shape are both different");
+              "NOT BUILT FOR THIS ARCHITECTURE: every REQUIRED clause holds, but "
+              "`mma`, `load_frag` and the d_v carve are written for a 32-thread "
+              "unit owning a 16-row slice of the state. A 128-thread warpgroup "
+              "unit owns a 64-row slice and issues a differently shaped atom. "
+              "That is an unwritten implementation, not a refused structure.");
 
 //: A digest of the whole active row, written by a kernel and checked on the
 //: host.  A binary compiled against a different table cannot masquerade as this
@@ -221,7 +220,7 @@ constexpr int caps_digest(const Caps &c) {
          (int)c.mma_bf16_f32 * 4 + (int)c.mma_b_from_regs * 8 +
          (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32 +
          (int)c.async_bulk_copy * 64 + (int)c.warpgroup_mma * 128 +
-         c.mma_unit_threads * 2;
+         (int)c.mma_a_from_regs * 256 + c.mma_unit_threads * 2;
 }
 
 }  // namespace arch

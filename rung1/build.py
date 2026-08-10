@@ -24,7 +24,7 @@ BUILD = HERE / "_build"
 BUILD.mkdir(exist_ok=True)
 
 #: must equal kBuildMagic in routed_la.cu
-BUILD_MAGIC = 590201
+BUILD_MAGIC = 590301
 #: must equal (kW0, kW1) in routed_la.cu
 WIDTHS = (8, 8)
 #: the one compute capability this extension is BUILT for

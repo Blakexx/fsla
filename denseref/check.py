@@ -54,10 +54,11 @@ def run():
         r = build.arch_row(cc)
         req = " ".join(f"{n}={int(r[n])}" for n in build.REQUIRED)
         sel = " ".join(f"{n}={int(r[n])}" for n in build.SELECTING)
+        loc = " ".join(f"{n}={int(r[n])}" for n in build.KERNEL_LOCAL)
         mark = "BUILT" if cc == build.TARGET_CC else ("     " if r["supported"]
                                                       else "REFUSED")
         print(f"               sm_{cc//10:<3d} {mark:7s} REQUIRED[{req}] "
-              f"SELECTING[{sel}]")
+              f"SELECTING[{sel}] KERNEL-LOCAL[{loc}]")
         print(f"                       FACTS smem/SM={r['smem_per_sm']:,d} "
               f"smem/CTA<={r['smem_per_cta_max']:,d} regs/SM={r['regs_per_sm']:,d} "
               f"threads/SM={r['max_threads_per_sm']} CTAs/SM<={r['max_ctas_per_sm']} "
