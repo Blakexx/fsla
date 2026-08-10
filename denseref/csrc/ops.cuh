@@ -62,6 +62,18 @@
 //                             The archetypal SELECTING entry: sm_90 has one
 //                             instruction for it, sm_80/86/89 must go through
 //                             fp32 at 1 FMUL + 1/2 pack per element.
+//   lane_ballot(pred)         the predicate of every lane of the LOCKSTEP unit,
+//                             one bit per lane, in lane order.  Nothing is
+//                             written and nothing is ordered: the result is the
+//                             unit's own agreement about a property of the data
+//                             its lanes hold.  The lockstep unit is `kBallotLanes`
+//                             wide and is NOT the MMA unit -- a warpgroup issues
+//                             one MMA and still votes in lanes of 32 -- so the
+//                             two widths are stated separately.  Stated by the
+//                             ladder's token schedule, its first caller: a group
+//                             of tokens is live for a block when ANY of the
+//                             tokens the unit holds is, and a vote is how a unit
+//                             answers that without a memory round trip.
 //   fan_in_add(p, x)          add ONE contribution into an accumulator that
 //                             other units also contribute to.  The issuing
 //                             thread does not consume a result and must not wait
@@ -81,6 +93,15 @@
 //                             others cannot be rounded to the operand format
 //                             first without the fan-in's error exceeding the
 //                             design's own.
+//   or_run<n>(p)              the bitwise OR of `n` contiguous bf16 in their
+//                             storage form, at the widest access that covers
+//                             them.  A magnitude test on the result answers "is
+//                             ANY of these nonzero" for the whole run at once,
+//                             because OR cannot clear a bit that was set.
+//                             Stated by the ladder's membership test, its first
+//                             caller: a block's span at a routing level is a
+//                             contiguous run of amplitudes and the test is
+//                             whether the run is entirely zero.
 //   store_bf16x2(p, v)        one packed bf16 pair, addressed as bf16 elements.
 //   store_bf16(p, x)          one fp32 -> one bf16 element, same round-to-
 //                             nearest-even as `pack_bf16x2` per element.  A
@@ -106,8 +127,10 @@
 // -------------------------------------------------
 // `warp_reduce`, `compact` and a `publish`/`acquire` pair weaker than a full
 // rendezvous are all absent, because nothing here needs them: the private d_v
-// carve removes every cross-lane reduction, and the workload is dense so nothing
-// is compacted.  A rung that needs one states its contract above first.  An
+// carve removes every cross-lane reduction, and the one caller that skips work
+// skips a WHOLE GROUP of tokens, which is a branch over an unchanged affine
+// address rather than a compaction.  A rung that needs one states its contract
+// above first.  An
 // operation invented before it has a caller cannot be defined by what the
 // algorithm needs, because no algorithm needs it yet.
 //
@@ -177,6 +200,20 @@ template <int KeepInFlight> __device__ __forceinline__ void stage_wait() {
 }
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
+
+//: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.  The
+//: two coincide on the architecture built here and do not in general: a
+//: warpgroup issues ONE MMA across 128 threads and still votes in lanes of 32.
+//: A caller that conflates them would silently read a quarter of a vote.
+constexpr int kBallotLanes = 32;
+
+//: ONE BIT PER LANE, IN LANE ORDER.  The unit's own agreement about a property
+//: of the data its lanes hold, reached without a memory round trip and without
+//: ordering anything.  Expressed as the intrinsic rather than as a named
+//: instruction: what the operation promises is the bit vector, not the vote.
+__device__ __forceinline__ uint32_t lane_ballot(bool pred) {
+  return __ballot_sync(0xFFFFFFFFu, pred);
+}
 
 // ----------------------------------------------------------------- operands
 
@@ -288,6 +325,38 @@ __device__ __forceinline__ uint4 load_vec16(const void *p) {
 
 __device__ __forceinline__ void store_vec16(void *p, const uint4 &v) {
   *reinterpret_cast<uint4 *>(p) = v;
+}
+
+//: The magnitude bits of a packed bf16 pair.  A run of bf16 is entirely zero
+//: exactly when the OR of its storage words has no magnitude bit set, since the
+//: only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
+constexpr uint32_t kBf16MagnitudeMask = 0x7FFF7FFFu;
+
+//: THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT.  `n` is a
+//: compile-time run length and the run is naturally aligned, so 1, 2, 4 and 8
+//: amplitudes are one access each and longer runs are a whole number of 16-byte
+//: accesses.  The reduction is bitwise because the CALLER's question is whether
+//: anything in the run is nonzero, which needs no arithmetic and no ordering.
+template <int n> __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16 *p) {
+  static_assert(n == 1 || n == 2 || n == 4 || (n >= 8 && n % 8 == 0),
+                "a run is one access of 2, 4, 8 or 16 bytes, or a whole number "
+                "of 16-byte accesses");
+  if constexpr (n == 1) {
+    return (uint32_t)*reinterpret_cast<const unsigned short *>(p);
+  } else if constexpr (n == 2) {
+    return *reinterpret_cast<const uint32_t *>(p);
+  } else if constexpr (n == 4) {
+    const uint2 x = *reinterpret_cast<const uint2 *>(p);
+    return x.x | x.y;
+  } else {
+    uint32_t acc = 0;
+#pragma unroll
+    for (int i = 0; i < n / 8; ++i) {
+      const uint4 x = *reinterpret_cast<const uint4 *>(p + i * 8);
+      acc |= x.x | x.y | x.z | x.w;
+    }
+    return acc;
+  }
 }
 
 __device__ __forceinline__ void copy_shared_to_global_16b(void *dst, const void *src) {
