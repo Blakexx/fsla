@@ -43,12 +43,28 @@
 //                             consecutive k-elements of a B operand.  This is
 //                             the accumulator-to-operand conversion; it is the
 //                             only reason the state never touches shared memory.
+//   widen_bf16x2(v, lo, hi)   the EXACT inverse of `pack_bf16x2`: a packed pair
+//                             back to two fp32, by bit placement.
+//   splat_bf16x2(x)           one bf16 into both halves of a packed pair, so a
+//                             scalar can be an operand of `mul_bf16x2`.
 //   mul_bf16x2(a, b)          elementwise product of two packed bf16 pairs.
 //                             The archetypal SELECTING entry: sm_90 has one
 //                             instruction for it, sm_80/86/89 must go through
 //                             fp32 at 1 FMUL + 1/2 pack per element.
 //   store_bf16x2(p, v)        one packed bf16 pair, addressed as bf16 elements.
+//   load_vec16 / store_vec16  one naturally aligned 16-byte value, moved in a
+//                             single access.  These are the SYNCHRONOUS pair of
+//                             `stage_tile`: 16 B is `kStageBytes`, the widest
+//                             access this baseline has anywhere, and a row that
+//                             is COMPUTED rather than staged must be published at
+//                             the same width the staged rows arrive at, or the
+//                             two would need different bank analyses of the same
+//                             buffer.  Stated by the ladder's routed coefficient
+//                             production, which is their first caller.
 //   copy_shared_to_global_16b one fully coalesced 128-bit store, shared -> global.
+//                             The composition of the two above, kept as its own
+//                             name because it is the whole of the epilogue's
+//                             contract and reads as such at the call site.
 //
 // OPERATIONS THIS KERNEL DOES NOT HAVE, AND WHY NOT
 // -------------------------------------------------
@@ -143,6 +159,28 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t *>(&p);
 }
 
+//: EXACT widening of a packed bf16 pair to two fp32.  bf16 is the top half of an
+//: fp32, so this is bit placement, not a rounding operation, and it is the
+//: inverse of `pack_bf16x2` on every architecture.  It exists as its own entry
+//: because an elementwise product whose two operands have DIFFERENT reuse
+//: lifetimes -- one amplitude reused across a whole run of coefficients -- must
+//: be able to pay for the widening once rather than once per product.  See the
+//: rung's two production arms, and which one measurement chose.
+__device__ __forceinline__ void widen_bf16x2(uint32_t v, float &lo, float &hi) {
+  lo = __int_as_float(v << 16);
+  hi = __int_as_float(v & 0xffff0000u);
+}
+
+//: One bf16 into BOTH halves of a packed pair, so that a scalar can be an
+//: operand of `mul_bf16x2`.  The ladder's coefficient production multiplies a
+//: whole run of amplitudes by a single per-digit amplitude; the packed operand
+//: is what makes that one operation rather than a scalar special case, on every
+//: architecture including the one where `mul_bf16x2` is a single instruction.
+__device__ __forceinline__ uint32_t splat_bf16x2(__nv_bfloat16 x) {
+  const __nv_bfloat162 p = __bfloat162bfloat162(x);
+  return *reinterpret_cast<const uint32_t *>(&p);
+}
+
 //: THE ARCHETYPAL SELECTING ENTRY.  Both implementations satisfy one contract:
 //: the elementwise product of two packed bf16 pairs, rounded to nearest-even in
 //: bf16.  `Simd = true` is one instruction; `Simd = false` is the fp32 route
@@ -170,8 +208,20 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16 *p, uint32_t v) {
   *reinterpret_cast<uint32_t *>(p) = v;
 }
 
+//: The 16-byte quantum, synchronously.  `kStageBytes` is the width of every
+//: asynchronous access this baseline issues, and these move the same width for
+//: data the kernel PRODUCED rather than staged, so one bank analysis covers a
+//: buffer whichever way its rows got there.
+__device__ __forceinline__ uint4 load_vec16(const void *p) {
+  return *reinterpret_cast<const uint4 *>(p);
+}
+
+__device__ __forceinline__ void store_vec16(void *p, const uint4 &v) {
+  *reinterpret_cast<uint4 *>(p) = v;
+}
+
 __device__ __forceinline__ void copy_shared_to_global_16b(void *dst, const void *src) {
-  *reinterpret_cast<uint4 *>(dst) = *reinterpret_cast<const uint4 *>(src);
+  store_vec16(dst, load_vec16(src));
 }
 
 }  // namespace ops
