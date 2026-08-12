@@ -273,6 +273,14 @@ template <int KeepInFlight> __device__ __forceinline__ void stage_wait() {
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
+//: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the
+//: SAME named barrier `id`, leaving the other warps of the CTA unwaited.  The
+//: contract is rendezvous()'s restricted to a warp-aligned subset; id 0 is the
+//: CTA barrier's and is not offered here.  sm_80/86/90 all provide sixteen.
+__device__ __forceinline__ void rendezvous_group(int id, int n) {
+  asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n));
+}
+
 //: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.  The
 //: two coincide on the architecture built here and do not in general: a
 //: warpgroup issues ONE MMA across 128 threads and still votes in lanes of 32.
