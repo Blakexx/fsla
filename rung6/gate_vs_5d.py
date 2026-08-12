@@ -31,7 +31,14 @@ def main():
     a5d = {tuple(a[:5]): a for a in b5d.module().arms()}
     m5e = b6.module()
     a5e = {tuple(a[:5]): a for a in m5e.arms()}
-    assert a5d.keys() == a5e.keys(), "arm sets differ"
+    new_arms = sorted(set(a5e) - set(a5d))
+    assert set(a5d) <= set(a5e), "rung 6 must carry every 5D arm"
+    print("NEW arms (no 5D counterpart, oracle-gated separately):", new_arms)
+    for k in new_arms:
+        st = m5e.build_stamp(k[0], bool(k[1]), k[2], k[3], k[4])
+        print(f"  {k}: regs {st[3]}, smem {st[6]}, spill {st[8]}, stages {st[9]}")
+        assert st[8] == 0, f"spill at {k}"
+    a5e = {k: v for k, v in a5e.items() if k in a5d}
     print(f"{'arm':>24s}  S ctas smem | refactor  spill")
     for k in sorted(a5d):
         d, e = a5d[k], a5e[k]

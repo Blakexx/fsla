@@ -302,6 +302,7 @@
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
+#include <type_traits>
 #include <vector>
 
 #include "design.cuh"
@@ -464,15 +465,26 @@ constexpr int kCookSlots = 4;
 //: the measured census of THIS body, which carries the cook's cursor and the
 //: staircase's thresholds on top of rung 5A's set.
 constexpr int reg_floor(int C, int BC) {
-  return C == 16 ? (BC <= 64 ? 128 : 168)
+  //: a two-group arm's PER-THREAD demand is one group's, i.e. the BC/2 row --
+  //: each thread holds its group's slice, which is the same slice a BC/2
+  //: single-group thread holds.
+  return BC >= 256 ? reg_floor(C, BC / 2)
+       : C == 16 ? (BC <= 64 ? 128 : 168)
        : C == 32 ? (BC <= 32 ? 136 : BC <= 64 ? 168 : 236)
                  : (BC <= 32 ? 176 : BC <= 64 ? 232 : 255);
 }
 
 template <int C, bool SWZ, int BC> struct Geom {
+  //: the GROUP is the unit of panel/state/output geometry: at GROUPS = 1 the
+  //: slice is the block and everything below is rung 5D's byte for byte.
+  static constexpr int GRP = groups_for(BC);
+  static constexpr int BCg = BC / GRP;
   static constexpr int LdV = SWZ ? kD : kD + kPadE;   // V ring row, bf16 elements
-  static constexpr int LdS = SWZ ? BC : BC + kPadE;   // R/W row, bf16 elements
+  static constexpr int LdS = SWZ ? BCg : BCg + kPadE; // R/W row (one group's slice)
   static constexpr int LdG = C + kPadE;               // Gram row, bf16 elements
+  //: the fp32 Gram partials, one per group, that the exchange sums -- they
+  //: exist only when there is more than one group to exchange between.
+  static constexpr int LdGf = C + kPadF;              // fp32 Gram row
   //: The output staging buffer is fp32 and ALWAYS PADDED.  The swizzle exists to
   //: serve `ldmatrix` on the operand buffers; nothing reads this one as an
   //: operand, and its two access patterns are conflict-free under the pad.
@@ -493,9 +505,13 @@ template <int C, bool SWZ, int BC> struct Geom {
   //: size is a property of the walk and not of the staging depth.
   static constexpr int form_bytes = 2 * kFormWords * (int)sizeof(uint32_t) +
                                     kCookSlots * (int)sizeof(int);
-  static constexpr int fixed = (2 * C * LdS + C * LdG) * (int)sizeof(__nv_bfloat16) +
-                               (C * LdO + kUnits * C) * (int)sizeof(float) +
-                               (1 + kAheadExtra) * idx_slot + form_bytes;
+  static constexpr int gram_xchg =
+      GRP > 1 ? GRP * C * LdGf * (int)sizeof(float) : 0;
+  static constexpr int fixed =
+      GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16) +
+      C * LdG * (int)sizeof(__nv_bfloat16) + gram_xchg +
+      GRP * (C * LdO + kUnits * C) * (int)sizeof(float) +
+      (1 + kAheadExtra) * idx_slot + form_bytes;
   static constexpr int stages =
       design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
@@ -521,12 +537,16 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);
   constexpr int kWarps = kThreads / 32;
-  static_assert(GROUPS == 1,
-                "NOT BUILT: the two-group datapath (per-group produce "
-                "rectangles, fp32 Gram exchange, group barriers) is step B of "
-                "the rung-6 build; this refactor is step A, GROUPS = 1 only");
+  constexpr int kGroupWarps = kGroupThreads / 32;
+  //: ONE GROUP'S SLOT SLICE.  Every per-warp compute constant below is the
+  //: slice's, so at GROUPS = 1 the whole body is rung 5D's byte for byte.
+  constexpr int BCg = BC / GROUPS;
+  static_assert(BC % GROUPS == 0, "the groups must halve the block exactly");
+  static_assert((C / kMmaM) % GROUPS == 0,
+                "the intra term splits by token m-tiles across the groups, so "
+                "the groups must divide them");
   static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
-  static_assert(BC % kMmaK == 0, "a block must be a whole number of mma k-tiles");
+  static_assert(BCg % kMmaK == 0, "a group's slice must be a whole number of mma k-tiles");
   static_assert(C <= 255, "a causal threshold is one byte, chunk-relative");
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory "
@@ -566,11 +586,11 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   constexpr int LdV = G::LdV, LdS = G::LdS, LdG = G::LdG, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;   // token m-tiles in a chunk
   constexpr int NTOK = C / kMmaN;   // token n-tiles in a chunk
-  constexpr int KD = BC / kMmaK;    // slot k-tiles of this block
-  constexpr int NDV = BC / kMmaN;   // state n-tiles (slots) of this block
+  constexpr int KD = BCg / kMmaK;   // slot k-tiles of THIS GROUP'S slice
+  constexpr int NDV = BCg / kMmaN;  // state n-tiles (slots) of the slice
   constexpr uint32_t kRowV = (uint32_t)LdV * 2;
   constexpr uint32_t kRowS = (uint32_t)LdS * 2;
-  constexpr int kChunkS = BC / 8;   // 16-byte chunks in one R/W row
+  constexpr int kChunkS = BCg / 8;  // 16-byte chunks in one R/W row
   constexpr int kChunkV = kD / 8;   // 16-byte chunks in one V row
 
   //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
@@ -584,8 +604,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   static_assert(KD % kMassUnits == 0 && NDV == kMassUnits * kMassTiles,
                 "the mass channel's slots must be carved across the units exactly");
 
-  constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
-  constexpr int NSPLIT_RAW = kWarps / MSPLIT;
+  constexpr int MSPLIT = MTOK >= kGroupWarps ? kGroupWarps : MTOK;
+  constexpr int NSPLIT_RAW = kGroupWarps / MSPLIT;
   constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
   constexpr int MPW = MTOK / MSPLIT;
   constexpr int NPW = NTOK / NSPLIT;
@@ -598,47 +618,69 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   // rectangle to split and two ways to cut it, and which one applies is decided
   // by the rectangle's own shape.
   constexpr int kWtot = W0 + W1;
-  constexpr int kRowThr = kThreads / C;
-  constexpr int kThrPerLead = kRowThr >= P::lead_span ? kRowThr / P::lead_span : 1;
-  constexpr int kLeadPerThr = P::lead_span >= kRowThr ? P::lead_span / kRowThr : 1;
+  //: PRODUCTION IS A GROUP AFFAIR: a group's kGroupThreads produce ITS slice's
+  //: coefficients -- `kLeadSpanG` leading digits by the whole trailing span --
+  //: which at GROUPS = 1 is the block and exactly rung 5D's mapping.
+  constexpr int kLeadSpanG = P::lead_span / GROUPS;
+  static_assert(P::lead_span % GROUPS == 0,
+                "the groups must split the leading run exactly");
+  constexpr int kRowThr = kGroupThreads / C;
+  constexpr int kThrPerLead = kRowThr >= kLeadSpanG ? kRowThr / kLeadSpanG : 1;
+  constexpr int kLeadPerThr = kLeadSpanG >= kRowThr ? kLeadSpanG / kRowThr : 1;
   constexpr int kTailPerThr = P::tail_span / kThrPerLead;
   constexpr int kTailVec = (kTailPerThr * 2) / 16;
-  static_assert(kThreads % C == 0, "one production pass must cover the chunk exactly");
-  static_assert(kRowThr >= P::lead_span ? kRowThr % P::lead_span == 0
-                                        : P::lead_span % kRowThr == 0,
-                "the block's leading digits and the row's threads must divide one "
-                "another, or a thread owns a fractional digit");
+  static_assert(kGroupThreads % C == 0,
+                "one production pass must cover the chunk exactly");
+  static_assert(kRowThr >= kLeadSpanG ? kRowThr % kLeadSpanG == 0
+                                      : kLeadSpanG % kRowThr == 0,
+                "the slice's leading digits and the row's threads must divide "
+                "one another, or a thread owns a fractional digit");
   static_assert(P::tail_span % kThrPerLead == 0,
                 "the threads sharing a leading digit must divide its trailing run");
   static_assert(kTailPerThr % 8 == 0,
                 "a thread's trailing run is published in 16-byte vectors, so it "
                 "must be a whole number of eight coefficients");
-  static_assert(kLeadPerThr * kTailPerThr * kRowThr == BC,
-                "the row's threads must cover the block exactly once");
+  static_assert(kLeadPerThr * kTailPerThr * kRowThr == BCg,
+                "the row's threads must cover the slice exactly once");
   static_assert(kLeadPerThr <= 4, "leading-digit slice is 1, 2 or 4 amplitudes");
 
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5, lane = tid & 31;
+  //: this thread's GROUP, its warp within the group, and its thread id within
+  //: the group -- the coordinates every per-group buffer and role uses.  At
+  //: GROUPS = 1 they collapse to (0, warp, tid).
+  const int grp = warp / kGroupWarps;
+  const int gwarp = warp % kGroupWarps;
+  const int gtid = tid % kGroupThreads;
+
   extern __shared__ __align__(16) char smem_raw[];
+  //: [ V ring (shared) | panels x GROUPS | summed Gram (shared) | fp32 Gram
+  //:   partials x GROUPS (only when there is an exchange) | output staging x
+  //:   GROUPS | denominators x GROUPS | index ring | formed schedule ] -- the
+  //: order is Geom::fixed's, and the per-group regions are indexed by `grp`.
+  extern __shared__ __align__(16) char smem_base[];
   __nv_bfloat16 *sv = reinterpret_cast<__nv_bfloat16 *>(smem_raw);
-  __nv_bfloat16 *sr = sv + STAGES * C * LdV;
+  __nv_bfloat16 *srAll = sv + STAGES * C * LdV;
+  __nv_bfloat16 *sr = srAll + grp * (2 * C * LdS);
   __nv_bfloat16 *sw = sr + C * LdS;
-  __nv_bfloat16 *sg = sw + C * LdS;
-  float *so = reinterpret_cast<float *>(sg + C * LdG);
+  __nv_bfloat16 *sg = srAll + GROUPS * (2 * C * LdS);
+  float *sgf = reinterpret_cast<float *>(sg + C * LdG);
+  float *soAll = sgf + (GROUPS > 1 ? GROUPS * C * G::LdGf : 0);
+  float *so = soAll + grp * (C * LdO + kUnits * C);
   float *sden = so + C * LdO;
-  char *sidx = reinterpret_cast<char *>(sden + kUnits * C);
+  char *sidx = reinterpret_cast<char *>(soAll + GROUPS * (C * LdO + kUnits * C));
   //: THE FORMED SCHEDULE, one word per thirty-two tokens per side, and the walk's
   //: published state behind it.
   uint32_t *sfR = reinterpret_cast<uint32_t *>(sidx + IRING * G::idx_slot);
   uint32_t *sfW = sfR + kFormWords;
   int *scook = reinterpret_cast<int *>(sfW + kFormWords);
-  static_assert((2 * C * LdS + C * LdG) % 8 == 0,
-                "the fp32 output buffer must start 16-byte aligned");
+  static_assert((GROUPS * 2 * C * LdS + C * LdG) % 8 == 0,
+                "the fp32 region must start 16-byte aligned");
   static_assert((C * LdO + kUnits * C) % 4 == 0,
                 "the index ring must start 16-byte aligned");
   static_assert(G::idx_slot % 16 == 0,
                 "the formed schedule follows the index ring and must stay aligned");
 
-  const int tid = threadIdx.x;
-  const int warp = tid >> 5, lane = tid & 31;
   const int blk = blockIdx.x;   // which block of BC slots this CTA owns
   const long base = (long)blockIdx.y * L * kD;
 
@@ -655,7 +697,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   };
 
   // The block's aligned digit ranges.  Compile-time divisors, formed once.
-  const int lead_off = (blk / P::tail_groups) * P::lead_span;
+  const int lead_off = (blk / P::tail_groups) * P::lead_span + grp * kLeadSpanG;
   const int tail_off = (blk % P::tail_groups) * P::tail_span;
 
   // ---- lane-invariant operand addressing -----------------------------------
@@ -681,11 +723,11 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: THE MASS CHANNEL'S OWN OPERAND ADDRESSES.  This unit's tile `q` is the
   //: value path's tile `q * kMassUnits + warp`, so its address is the value
   //: address at a compile-time `q` plus a LOOP-INVARIANT per-unit displacement.
-  const uint32_t massOff = (uint32_t)(warp * kMmaK * (int)sizeof(__nv_bfloat16));
+  const uint32_t massOff = (uint32_t)(gwarp * kMmaK * (int)sizeof(__nv_bfloat16));
   uint32_t tabMT[kMassKD], tabMF[kMassKD];
 #pragma unroll
   for (int q = 0; q < kMassKD; ++q) {
-    const int g = 2 * (q * kMassUnits + warp);
+    const int g = 2 * (q * kMassUnits + gwarp);
     tabMT[q] = (uint32_t)((((g + cT) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
     tabMF[q] = (uint32_t)((((g + cF) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
   }
@@ -698,11 +740,11 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
 
   const int offBg = (rT * LdG + cT * 8) * 2;
 
-  const int gm0 = (warp / NSPLIT) * MPW;
-  const int gn0 = (warp % NSPLIT) * NPW;
-  const int dv0 = warp * 16;
+  const int gm0 = (gwarp / NSPLIT) * MPW;
+  const int gn0 = (gwarp % NSPLIT) * NPW;
+  const int dv0 = gwarp * 16;
   constexpr int DVG_STEP = 2;
-  const int dvg = warp * DVG_STEP;
+  const int dvg = gwarp * DVG_STEP;
   const uint32_t dvTabT = (uint32_t)((((dvg + cT) & (kChunkV - 1)) ^ lr) << 4);
 #define ADDRT_DV(b_, R_) \
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowV) + dvTabT) \
@@ -772,13 +814,13 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   // then touches four times the sectors for the same bytes.
   constexpr int kFanLanes = 32;
   constexpr int kFanPerThr = kD / kFanLanes;
-  constexpr int kFanRows = kThreads / kFanLanes;
+  constexpr int kFanRows = kGroupThreads / kFanLanes;
   constexpr int kFanPasses = C / kFanRows;
-  static_assert(kD % kFanLanes == 0 && kThreads % kFanLanes == 0,
+  static_assert(kD % kFanLanes == 0 && kGroupThreads % kFanLanes == 0,
                 "a reduction's lanes must tile both an output row and the CTA");
   static_assert(kFanPasses * kFanRows == C && kFanPasses >= 1,
                 "the fan-in's passes must cover the chunk exactly");
-  const int fanRow = tid / kFanLanes, fanCol = tid % kFanLanes;
+  const int fanRow = gtid / kFanLanes, fanCol = gtid % kFanLanes;
   float *const oPlane = pin_address(o + base);
   float *const denPlane = pin_address(den + (long)blockIdx.y * L);
   const uint32_t fanColB = (uint32_t)(fanCol * (int)sizeof(float));
@@ -835,12 +877,12 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: rendezvous that already separates a chunk's staging from the next chunk's
   //: drain is the one that publishes them.
   auto drain_den = [&](int d, int nr) {
-    if (tid < C && tid < nr) {
+    if (gtid < C && gtid < nr) {
       float s = 0.f;
 #pragma unroll
-      for (int u = 0; u < kUnits; ++u) s += sden[u * C + tid];
+      for (int u = 0; u < kUnits; ++u) s += sden[u * C + gtid];
       fan_in_add(reinterpret_cast<float *>(
-                     gather_ptr(denPlane, (uint32_t)iread(d)[tid] * 4u)),
+                     gather_ptr(denPlane, (uint32_t)iread(d)[gtid] * 4u)),
                  s);
     }
   };
@@ -852,8 +894,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   // NEVER COMPUTED: they are the loop indices.  What compaction changes is only
   // WHICH TOKEN a panel row reads -- the row's own slot addressing is untouched,
   // which is why the gather costs a displacement and not a recomputation.
-  const int prow = tid / kRowThr;
-  const int rIn = tid % kRowThr;
+  const int prow = gtid / kRowThr;
+  const int rIn = gtid % kRowThr;
   const int leadLocal = (rIn / kThrPerLead) * kLeadPerThr;
   const int tailLocal = (rIn % kThrPerLead) * kTailPerThr;
   //: ONE BASE PER SIDE, AND THE TWO LEVELS ARE 32-BIT COLUMN DISPLACEMENTS.  A
@@ -1240,7 +1282,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
         for (int kk = 0; kk < KD; ++kk)
 #pragma unroll
           for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
-        if (warp < kMassUnits) {
+        if (gwarp < kMassUnits) {
           uint32_t mb[kMassKD][4];
 #pragma unroll
           for (int q = 0; q < kMassKD; ++q)
@@ -1260,14 +1302,16 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     //: keeps exactly the write entries below its threshold `J[tr]` -- one byte
     //: the cook already observed.  At dense `J[tr] = tr + 1` and this reduces to
     //: `tc <= tr` term for term.
-    if (warp < GWARPS) {
-      const uint8_t *ljt = ithr(dc);
+    if (gwarp < GWARPS) {
       int jv[MPW][2];
+      if constexpr (GROUPS == 1) {
+        const uint8_t *ljt = ithr(dc);
 #pragma unroll
-      for (int m = 0; m < MPW; ++m) {
-        const int tr = (gm0 + m) * 16 + (lane >> 2);
-        jv[m][0] = ljt[tr];
-        jv[m][1] = ljt[tr + 8];
+        for (int m = 0; m < MPW; ++m) {
+          const int tr = (gm0 + m) * 16 + (lane >> 2);
+          jv[m][0] = ljt[tr];
+          jv[m][1] = ljt[tr + 8];
+        }
       }
       uint32_t qa[MPW][KD][4];
 #pragma unroll
@@ -1301,18 +1345,32 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
               mma(g[u][1], qa[m][kk], &bf[u][kk][2]);
             }
           const int tr = (gm0 + m) * 16 + (lane >> 2);
-          const int j0 = jv[m][0], j1 = jv[m][1];
 #pragma unroll
           for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
             for (int h2 = 0; h2 < 2; ++h2) {
               const int tc = (gn0 + (np + u) * 2 + h2) * 8 + (lane & 3) * 2;
-              const float m0 = (tc + 0 < j0) ? g[u][h2][0] : 0.f;
-              const float m1 = (tc + 1 < j0) ? g[u][h2][1] : 0.f;
-              const float m2 = (tc + 0 < j1) ? g[u][h2][2] : 0.f;
-              const float m3 = (tc + 1 < j1) ? g[u][h2][3] : 0.f;
-              store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(m0, m1));
-              store_bf16x2(&sg[(tr + 8) * LdG + tc], pack_bf16x2(m2, m3));
+              if constexpr (GROUPS == 1) {
+                //: one group: the block's whole Gram -- mask and publish, as
+                //: rung 5D did.
+                const int j0 = jv[m][0], j1 = jv[m][1];
+                const float m0 = (tc + 0 < j0) ? g[u][h2][0] : 0.f;
+                const float m1 = (tc + 1 < j0) ? g[u][h2][1] : 0.f;
+                const float m2 = (tc + 0 < j1) ? g[u][h2][2] : 0.f;
+                const float m3 = (tc + 1 < j1) ? g[u][h2][3] : 0.f;
+                store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(m0, m1));
+                store_bf16x2(&sg[(tr + 8) * LdG + tc], pack_bf16x2(m2, m3));
+              } else {
+                //: two groups: this is HALF the Gram (this group's slots), so
+                //: it is published RAW in fp32; the exchange after (2) sums
+                //: the halves and applies the staircase ONCE.  The sum happens
+                //: in fp32 exactly because bf16 partials would round twice.
+                float *gp = sgf + grp * C * G::LdGf + tr * G::LdGf + tc;
+                store_f32(gp + 0, g[u][h2][0]);
+                store_f32(gp + 1, g[u][h2][1]);
+                store_f32(gp + G::LdGf * 8 + 0, g[u][h2][2]);
+                store_f32(gp + G::LdGf * 8 + 1, g[u][h2][3]);
+              }
             }
         }
       }
@@ -1339,7 +1397,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       }
       //: The d_v+1-th channel deposits through the same W panel at this unit's
       //: own slots, with the literal 1 for its A operand.
-      if (warp < kMassUnits) {
+      if (gwarp < kMassUnits) {
 #pragma unroll
         for (int q = 0; q < kMassKD; ++q) {
           uint32_t mb[4];
@@ -1357,37 +1415,87 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     //: what separates the drain from a cook one iteration later.
     rendezvous();
 
+    //: THE GRAM EXCHANGE -- the slot carve's ONE genuine cross-group sum, and
+    //: also its prize: the summed Gram is multiplied into V ONCE per block
+    //: instead of once per group.  fp32 partials in, one staircase, bf16 out;
+    //: the extra rendezvous publishes the sum to every group's intra.  The
+    //: conditions are CTA-uniform (they come off the shared header), so the
+    //: barrier is uniform too.
+    if constexpr (GROUPS > 1) {
+      if (liveR && liveW) {
+        const uint8_t *ljt = ithr(dc);
+#pragma unroll 1
+        for (int e = tid; e < C * (C / 2); e += kThreads) {
+          const int tr = e / (C / 2);
+          const int tc = (e - tr * (C / 2)) * 2;
+          const int j = ljt[tr];
+          float s0 = 0.f, s1 = 0.f;
+#pragma unroll
+          for (int g2 = 0; g2 < GROUPS; ++g2) {
+            const float *gp = sgf + g2 * C * G::LdGf + tr * G::LdGf + tc;
+            s0 += gp[0];
+            s1 += gp[1];
+          }
+          store_bf16x2(&sg[tr * LdG + tc],
+                       pack_bf16x2(tc < j ? s0 : 0.f, tc + 1 < j ? s1 : 0.f));
+        }
+        rendezvous();
+      }
+    }
+
     if (liveR) {
     if (liveW) {
     // ---- 5. intra: O^T += V^T . G^T ----------------------------------------
       uint32_t va[MTOK][4];
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) load_frag_t(va[kk], ADDRT_DV(atv, kk * 16));
+      //: the contraction runs over EVERY write token (the k axis stays whole);
+      //: what splits across the groups is the OUTPUT token axis -- each group
+      //: computes its m-tiles into its own acc and the fan-in sums the groups
+      //: exactly as it sums the blocks.  THE TILE BASE IS COMPILE-TIME: `acc`
+      //: is a register array, and a runtime index into one is a spill, so the
+      //: group takes its half through a uniform branch on its own id rather
+      //: than through arithmetic the allocator cannot see through.
+      constexpr int MI = MTOK / GROUPS;
+      auto intra_half = [&](auto base_c) {
+        constexpr int M0 = decltype(base_c)::value;
 #pragma unroll
-      for (int m = 0; m < MTOK; ++m) {
-        uint32_t gb[MTOK][4];
+        for (int mi = 0; mi < MI; ++mi) {
+          uint32_t gb[MTOK][4];
 #pragma unroll
-        for (int kk = 0; kk < MTOK; ++kk)
-          load_frag(gb[kk], sgT + (uint32_t)((m * 16 * LdG + kk * 16) * 2));
+          for (int kk = 0; kk < MTOK; ++kk)
+            load_frag(gb[kk], sgT + (uint32_t)(((M0 + mi) * 16 * LdG + kk * 16) * 2));
 #pragma unroll
-        for (int kk = 0; kk < MTOK; ++kk)
+          for (int kk = 0; kk < MTOK; ++kk)
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], va[kk], &gb[kk][2 * p]);
-      }
-      //: THE INTRA TERM'S SHARE OF THE MASS, IN ONE GUARDED REGION.  Its free
-      //: axis is the TOKENS, so it is carved over those at this unit's own base,
-      //: and it needs none of the fragments above.
-      if (warp < kIntraUnits) {
+            for (int p = 0; p < 2; ++p)
+              mma(acc[2 * (M0 + mi) + p], va[kk], &gb[kk][2 * p]);
+        }
+        //: THE INTRA TERM'S SHARE OF THE MASS, same compile-time base.
+        if (gwarp < kIntraUnits) {
 #pragma unroll
-        for (int m = 0; m < MTOK; ++m)
+          for (int mi = 0; mi < MI; ++mi)
 #pragma unroll
-          for (int q = 0; q < kIntraKD; ++q) {
-            uint32_t mg[4];
-            load_frag(mg, sgT + (uint32_t)((m * 16 * LdG + q * kIntraUnits * 16) * 2) +
-                              massOff);
+            for (int q = 0; q < kIntraKD; ++q) {
+              uint32_t mg[4];
+              load_frag(mg, sgT +
+                                (uint32_t)(((M0 + mi) * 16 * LdG +
+                                            q * kIntraUnits * 16) *
+                                           2) +
+                                massOff);
 #pragma unroll
-            for (int p = 0; p < 2; ++p) mma(macc[2 * m + p], ones_a, &mg[2 * p]);
-          }
+              for (int p = 0; p < 2; ++p)
+                mma(macc[2 * (M0 + mi) + p], ones_a, &mg[2 * p]);
+            }
+        }
+      };
+      if constexpr (GROUPS == 1) {
+        intra_half(std::integral_constant<int, 0>{});
+      } else {
+        if (grp == 0)
+          intra_half(std::integral_constant<int, 0>{});
+        else
+          intra_half(std::integral_constant<int, MI>{});
       }
     }
 
@@ -1405,8 +1513,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     if (lane < 4) {
 #pragma unroll
       for (int j = 0; j < NTOK; ++j) {
-        store_f32(&sden[warp * C + j * 8 + lane * 2], macc[j][0]);
-        store_f32(&sden[warp * C + j * 8 + lane * 2 + 1], macc[j][1]);
+        store_f32(&sden[gwarp * C + j * 8 + lane * 2], macc[j][0]);
+        store_f32(&sden[gwarp * C + j * 8 + lane * 2 + 1], macc[j][1]);
       }
     }
     }
@@ -1497,6 +1605,7 @@ __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
   X(16, true ,  64, 64, 64) X(32, true ,  64, 64, 64) X(64, true ,  64, 64, 64) \
   X(32, false,  32, 64, 64) X(64, false,  32, 64, 64)                          \
   X(16, false, 128, 64, 64) X(32, false, 128, 64, 64) X(64, false, 128, 64, 64) \
+  X(32, false, 256, 64, 64)                                                    \
   X(16, false,  64, 16, 16) X(32, false,  64, 16, 16) X(64, false,  64, 16, 16)
 
 template <int C, bool SWZ, int BC, int W0, int W1>
