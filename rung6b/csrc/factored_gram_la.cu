@@ -990,6 +990,58 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     }
   };
 
+  //: THE WHOLE PRODUCTION FOR ONE SUPER-CHUNK -- both coefficient panels and
+  //: both amp panels -- as one call, because since commit 2 it runs in TWO
+  //: places: the prologue (super-chunk 0) and BEHIND RENDEZVOUS (2) for the
+  //: NEXT super-chunk, in the intra's interval.  The co-liveness the factored
+  //: Gram broke is what makes that legal: the panels' last readers (readout,
+  //: Gram, fold) all run before (2), so (2) itself is the write-after-read
+  //: fence, and the NEXT iteration's rendezvous (1) publishes the writes to
+  //: their readers.  What this buys is the interval MIX: production is wide
+  //: throughput ALU/LSU issuing in the shadows of the intra's tensor work,
+  //: instead of monopolising the pre-(1) interval with nothing to hide under.
+  auto produce_all = [&](int d, int nrr, int nww) {
+    const uint32_t rOffP = (uint32_t)iread(d)[prow] * kPRowB;
+    const uint32_t wOffP = (uint32_t)iwrite(d)[prow] * kPRowB;
+    produce(pRead, dstR, rOffP, prow < nrr);
+    produce(pWrite, dstW, wOffP, prow < nww);
+
+    constexpr int kAChunks = G::kTailPad / 8;
+#pragma unroll 1
+    for (int i = tid; i < 2 * C * kAChunks; i += kThreads) {
+      const int rs = i / kAChunks, ch = i - rs * kAChunks;
+      const bool rd = rs < C;
+      const int r = rd ? rs : rs - C;
+      const bool have = (rd ? r < nrr : r < nww) && ch * 8 < P::tail_span;
+      uint4 val = make_uint4(0u, 0u, 0u, 0u);
+      if (have) {
+        const uint16_t tok = rd ? iread(d)[r] : iwrite(d)[r];
+        val = *reinterpret_cast<const uint4 *>(
+            gather_ptr(rd ? pRead : pWrite,
+                       (uint32_t)tok * kPRowB +
+                           (uint32_t)((W0 + tail_off + ch * 8) * 2)));
+      }
+      *reinterpret_cast<uint4 *>((rd ? saR : saW) + r * LdA + ch * 8) = val;
+    }
+    //: the BLOCK's lead run, not any group's production slice
+#pragma unroll 1
+    for (int i = tid; i < 2 * C * P::lead_span; i += kThreads) {
+      const int rs = i / P::lead_span, l = i - rs * P::lead_span;
+      const bool rd = rs < C;
+      const int r = rd ? rs : rs - C;
+      unsigned short vamp = 0;
+      if (rd ? r < nrr : r < nww) {
+        const uint16_t tok = rd ? iread(d)[r] : iwrite(d)[r];
+        vamp = *reinterpret_cast<const unsigned short *>(gather_ptr(
+            rd ? pRead : pWrite,
+            (uint32_t)tok * kPRowB +
+                (uint32_t)(((blk / P::tail_groups) * P::lead_span + l) * 2)));
+      }
+      *reinterpret_cast<unsigned short *>(
+          (rd ? saR : saW) + r * LdA + G::kTailPad + l) = vamp;
+    }
+  };
+
   // ---- the membership bits, read out of the union table --------------------
   //: THE BLOCK'S TWO ENTRY ROWS, PER SIDE.  Level 0's entry is the aligned run of
   //: digits this block spans there and level 1's is its sub-range; the trailing
@@ -1217,6 +1269,13 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     form_if_low();
     rendezvous();
   }
+  //: super-chunk 0's production happens HERE, once -- every later one is
+  //: produced behind the PREVIOUS iteration's rendezvous (2).  Its readers see
+  //: it through iteration 0's rendezvous (1).
+  {
+    const int *h0 = ihdr(0);
+    if (h0[2] && (h0[0] != 0 || h0[1] != 0)) produce_all(0, h0[0], h0[1]);
+  }
 #pragma unroll 1
   for (int s = 0; s < STAGES - 1; ++s) {
     stage_chunk(s, ihdr(s)[1] != 0);
@@ -1250,56 +1309,6 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     //: what it costs the CTA is the difference and not the whole of it.
     if (warp == 0) walk(dn);
 
-    if (live) {
-      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB;
-      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB;
-      produce(pRead, dstR, rOff, prow < nr);
-      produce(pWrite, dstW, wOff, prow < nw);
-
-      //: AMP STAGING -- the factored Gram's operand rows, gathered by the same
-      //: lists the panels use.  Synchronous stores covered by rendezvous (1):
-      //: the rows are small (sum-of-spans, not the product) and L1-hot (the
-      //: production just read them), so there is nothing to stream.  A row
-      //: past its side's count is ZEROED -- a padding token contributes
-      //: nothing to a product Gram because its panel row is zero, and it must
-      //: contribute nothing to a factored one for the same reason.
-      constexpr int kAChunks = G::kTailPad / 8;
-#pragma unroll 1
-      for (int i = tid; i < 2 * C * kAChunks; i += kThreads) {
-        const int rs = i / kAChunks, ch = i - rs * kAChunks;
-        const bool rd = rs < C;
-        const int r = rd ? rs : rs - C;
-        const bool have = (rd ? r < nr : r < nw) && ch * 8 < P::tail_span;
-        uint4 val = make_uint4(0u, 0u, 0u, 0u);
-        if (have) {
-          const uint16_t tok = rd ? iread(dc)[r] : iwrite(dc)[r];
-          val = *reinterpret_cast<const uint4 *>(
-              gather_ptr(rd ? pRead : pWrite,
-                         (uint32_t)tok * kPRowB +
-                             (uint32_t)((W0 + tail_off + ch * 8) * 2)));
-        }
-        *reinterpret_cast<uint4 *>((rd ? saR : saW) + r * LdA + ch * 8) = val;
-      }
-#pragma unroll 1
-      for (int i = tid; i < 2 * C * P::lead_span; i += kThreads) {
-        const int rs = i / P::lead_span, l = i - rs * P::lead_span;
-        const bool rd = rs < C;
-        const int r = rd ? rs : rs - C;
-        unsigned short vamp = 0;
-        if (rd ? r < nr : r < nw) {
-          const uint16_t tok = rd ? iread(dc)[r] : iwrite(dc)[r];
-          //: the BLOCK's lead run, not this group's production slice -- the
-          //: Gram is the whole rectangle's, and lead_off carries the group
-          //: offset for the coefficient panels' sake.
-          vamp = *reinterpret_cast<const unsigned short *>(gather_ptr(
-              rd ? pRead : pWrite,
-              (uint32_t)tok * kPRowB +
-                  (uint32_t)(((blk / P::tail_groups) * P::lead_span + l) * 2)));
-        }
-        *reinterpret_cast<unsigned short *>(
-            (rd ? saR : saW) + r * LdA + G::kTailPad + l) = vamp;
-      }
-    }
 
     stage_wait<STAGES - 2>();
     rendezvous();  // (1) V visible / R,W visible / last chunk's reads done / O drained
@@ -1574,6 +1583,16 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
         store_f32(&sden[gwarp * C + j * 8 + lane * 2 + 1], macc[j][1]);
       }
     }
+    }
+    //: THE NEXT SUPER-CHUNK'S PRODUCTION, in the intra's interval.  Slot
+    //: `dc+1` was cooked at least `AHEAD-1` iterations ago; rendezvous (2)
+    //: above is the panels' write-after-read fence; the next iteration's
+    //: rendezvous (1) is the publication.  A dead or absent next super-chunk
+    //: produces nothing, exactly as the old pre-(1) site did.
+    {
+      const int dnx = dc + 1 == IRING ? 0 : dc + 1;
+      const int *hx = ihdr(dnx);
+      if (hx[2] && (hx[0] != 0 || hx[1] != 0)) produce_all(dnx, hx[0], hx[1]);
     }
     prev_d = dc;
     prev_nr = nr;
