@@ -337,11 +337,14 @@ static constexpr int kPadF = 4;    // fp32 row padding, elements (16 B)
 static constexpr int kWindow = 65536;
 static_assert((kWindow & (kWindow - 1)) == 0,
               "the token -> (window, local) split is a shift and a mask");
-//: the window-base table's width: 16 windows = L up to 1,048,576 tokens --
-//: the design point.  Wider tables cost the small arms a resident CTA; going
-//: past 1M single-launch takes the per-arm derivation (the kRingExtra
-//: pattern), recorded in P63, or segmentation.
-static constexpr int kMaxWindows = 16;
+//: THE WINDOW IS A DISPLACEMENT, NOT A TABLE (the fold).  Each plane's
+//: per-window byte stride is a compile-time power of two, so a super-chunk's
+//: window number becomes one 32-bit shift added into the uniform column term
+//: a consumer already carries -- the per-index addressing keeps its exact
+//: shape, and the plane bases stay pinned kernel-wide.  What bounds L is the
+//: 32-bit gather displacement itself: the widest plane row is the fp32 output
+//: at kD*4 bytes, so L*kD*4 must sit inside the 4 GiB zero-extension window.
+static constexpr long kMaxGatherL = (1L << 32) / (kD * (long)sizeof(float));
 
 //: HOW MUCH FURTHER AHEAD THE SCHEDULE STREAM RUNS THAN THE VALUE STREAM, in
 //: super-chunks, ABOVE the minimum the pipeline requires.  It costs one index
@@ -513,14 +516,14 @@ template <int C, bool SWZ, int BC> struct Geom {
   //: The formed schedule and the walk's published state are RESIDENT rather than
   //: ringed with the stages: what they hold is a window on the token axis, whose
   //: size is a property of the walk and not of the staging depth.
-  //: the WINDOW-BASE TABLE: five planes' per-window base pointers, built
-  //: once at entry (the only place a win*stride multiply is allowed), read
-  //: branchlessly by every consumer of a local index.  Its width bounds L.
-  static constexpr int win_tbl_bytes =
-      5 * kMaxWindows * (int)sizeof(unsigned long long);
+  //: (the window-base TABLE is gone: the window is a FOLDED 32-BIT
+  //: DISPLACEMENT now -- each plane's per-window byte stride is a compile-time
+  //: power of two, so a consumer adds `wn << const` into the uniform column
+  //: term it already carries.  The plane bases stay pinned kernel-wide, the
+  //: per-chunk shared loads are deleted, and L is bounded by the 32-bit
+  //: displacement itself rather than by a table width.)
   static constexpr int form_bytes = 2 * kFormWords * (int)sizeof(uint32_t) +
-                                    kCookSlots * (int)sizeof(int) +
-                                    win_tbl_bytes;
+                                    kCookSlots * (int)sizeof(int);
   static constexpr int gram_xchg =
       GRP > 1 ? GRP * C * LdGf * (int)sizeof(float) : 0;
   static constexpr int fixed =
@@ -690,8 +693,6 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   uint32_t *sfR = reinterpret_cast<uint32_t *>(sidx + IRING * G::idx_slot);
   uint32_t *sfW = sfR + kFormWords;
   int *scook = reinterpret_cast<int *>(sfW + kFormWords);
-  unsigned long long *sWinTbl =
-      reinterpret_cast<unsigned long long *>(scook + kCookSlots);
   static_assert((GROUPS * 2 * C * LdS + C * LdG) % 8 == 0,
                 "the fp32 region must start 16-byte aligned");
   static_assert((C * LdO + kUnits * C) % 4 == 0,
@@ -857,19 +858,20 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
   //: write entry stages nothing, but the slot advances either way so that the
   //: wait/commit accounting stays rung 2's.
-  //: WINDOW BASES, READ NOT WALKED.  Each consumer takes its plane's base for
-  //: the super-chunk's window from the entry-built table: one branchless
-  //: 64-bit shared load, no loop, no reconvergence region in the steady state.
+  //: THE WINDOW IS FOLDED, NOT LOADED.  The super-chunk's window number scales
+  //: by the plane's compile-time power-of-two window stride -- one uniform
+  //: shift-and-add into the column term -- and the per-index gather keeps its
+  //: exact pre-window shape against the kernel-wide pinned base.
   auto stage_chunk = [&](int d, bool go) {
     if (go) {
       const uint16_t *lw = iwrite(d);
-      const __nv_bfloat16 *vStageP =
-          reinterpret_cast<const __nv_bfloat16 *>(sWinTbl[ihdr(d)[3]]);
+      const uint32_t winCol =
+          ldColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * 2);
 #pragma unroll
       for (int p = 0; p < kPasses; ++p) {
-        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + ldColB;
+        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol;
         stage_tile(svL + stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowV),
-                   gather_ptr(vStageP, off));
+                   gather_ptr(vPlane, off));
       }
     }
     stgSlot += kSlot;
@@ -882,14 +884,14 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: somewhere.
   auto drain = [&](int d, int nr) {
     const uint16_t *lrd = iread(d);
-    float *const oDrainP =
-        reinterpret_cast<float *>(sWinTbl[3 * kMaxWindows + ihdr(d)[3]]);
+    const uint32_t winFan =
+        fanColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * (int)sizeof(float));
 #pragma unroll
     for (int p = 0; p < kFanPasses; ++p) {
       const int row = fanRow + p * kFanRows;
       if (row < nr) {
         float *dp = reinterpret_cast<float *>(
-            gather_ptr(oDrainP, (uint32_t)lrd[row] * kORowB + fanColB));
+            gather_ptr(oPlane, (uint32_t)lrd[row] * kORowB + winFan));
         const int e0 = fanE + p * kFanRows * LdO;
 #pragma unroll
         for (int e = 0; e < kFanPerThr; ++e)
@@ -906,11 +908,11 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       float s = 0.f;
 #pragma unroll
       for (int u = 0; u < kUnits; ++u) s += sden[u * C + gtid];
-      fan_in_add(
-          reinterpret_cast<float *>(gather_ptr(
-              reinterpret_cast<float *>(sWinTbl[4 * kMaxWindows + ihdr(d)[3]]),
-              (uint32_t)iread(d)[gtid] * 4u)),
-          s);
+      fan_in_add(reinterpret_cast<float *>(gather_ptr(
+                     denPlane, (uint32_t)iread(d)[gtid] * 4u +
+                                   (uint32_t)ihdr(d)[3] *
+                                       (uint32_t)(kWindow * (int)sizeof(float)))),
+                 s);
     }
   };
 
@@ -1230,21 +1232,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     scook[kCookWord] = 0;
     scook[kCookOpen] = 0;
   }
-  //: the window-base table: the ONLY place a window multiply exists -- at
-  //: entry, STRAIGHT-LINE (kMaxWindows <= kThreads, one row per thread, no
-  //: loop for the SASS gate to patrol).
-  static_assert(kMaxWindows <= kGroupThreads, "one table row per thread");
-  if (tid < kMaxWindows) {
-    sWinTbl[tid] = (unsigned long long)(vPlane + (long)tid * kWindow * kD);
-    sWinTbl[kMaxWindows + tid] =
-        (unsigned long long)(pRead + (long)tid * kWindow * kWtot);
-    sWinTbl[2 * kMaxWindows + tid] =
-        (unsigned long long)(pWrite + (long)tid * kWindow * kWtot);
-    sWinTbl[3 * kMaxWindows + tid] =
-        (unsigned long long)(oPlane + (long)tid * kWindow * kD);
-    sWinTbl[4 * kMaxWindows + tid] =
-        (unsigned long long)(denPlane + (long)tid * kWindow);
-  }
+  //: (no window-base table to build: the window is a folded displacement, and
+  //: the host refused any L whose displacement could leave 32 bits.)
   rendezvous();
   form();
   rendezvous();
@@ -1290,15 +1279,12 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     if (warp == 0) walk(dn);
 
     if (live) {
-      const int wn = ihdr(dc)[3];
-      const __nv_bfloat16 *pReadP =
-          reinterpret_cast<const __nv_bfloat16 *>(sWinTbl[kMaxWindows + wn]);
-      const __nv_bfloat16 *pWriteP =
-          reinterpret_cast<const __nv_bfloat16 *>(sWinTbl[2 * kMaxWindows + wn]);
-      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB;
-      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB;
-      produce(pReadP, dstR, rOff, prow < nr);
-      produce(pWriteP, dstW, wOff, prow < nw);
+      const uint32_t winP =
+          (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * kWtot * 2);
+      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
+      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
+      produce(pRead, dstR, rOff, prow < nr);
+      produce(pWrite, dstW, wOff, prow < nw);
     }
 
     stage_wait<STAGES - 2>();
@@ -1774,9 +1760,11 @@ static void check_inputs(const torch::Tensor &pr, const torch::Tensor &pw,
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
-  TORCH_CHECK(L <= kWindow * kMaxWindows,
-              "the window-base table holds ", kMaxWindows,
-              " windows; this launch asks for ", (L + kWindow - 1) / kWindow);
+  //: the widest gathered rows are the fp32 output (kD*4 B) and the packed
+  //: amplitudes ((w0+w1)*2 B); every gathered displacement must zero-extend.
+  TORCH_CHECK((long)L <= kMaxGatherL && (long)L * (w0 + w1) * 2 < (1L << 32),
+              "a gathered displacement is 32 bits; this launch's would not "
+              "fit (L=", L, ")");
 }
 
 torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,

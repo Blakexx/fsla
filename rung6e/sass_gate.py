@@ -33,6 +33,8 @@ sys.path.insert(0, str(HERE.parent))
 from rung6e import build as r5dbuild  # noqa: E402
 
 #: the SHIPPED build, named by its ring depth so a stale object cannot be graded
+#: BUILD BEFORE DUMPING (the gate-binding rule; see rung6f).
+r5dbuild.module()
 SO = HERE / "_build" / f"rung6e_cuda_f{r5dbuild.FORM_WORDS}.so"
 FORBIDDEN_ANY = ("LDL", "STL", "ATOM")
 FORBIDDEN_BODY = ("IMAD.WIDE", "I2F", "F2I", "MUFU")
