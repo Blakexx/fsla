@@ -21,21 +21,29 @@ from rung6f import build as b6  # noqa: E402
 B, H, L = 1, 2, 1024
 dev = "cuda"
 
-def run(mod, pr, pw, v, c, w, bc, w0, w1):
+def run5(mod, pr, pw, v, c, w, bc, w0, w1):
     tbl = mod.union_table(pr, pw, v, c, bc, w0, w1)
     n, d = mod.forward_raw(pr, pw, v, tbl, c, w, bc, w0, w1)
+    return n, d
+
+def run6(mod, pr, pw, v, c, w, bc, widths):
+    tbl = mod.union_table(pr, pw, v, c, bc, list(widths))
+    n, d = mod.forward_raw(pr, pw, v, tbl, c, w, bc, list(widths))
     return n, d
 
 def main():
     torch.manual_seed(0)
     a5d = {tuple(a[:5]): a for a in b5d.module().arms()}
     m5e = b6.module()
-    a5e = {tuple(a[:5]): a for a in m5e.arms()}
-    new_arms = sorted(set(a5e) - set(a5d))
+    # 6F arms are (C, SWZ, BC, depth, width); a depth-2 arm's 5D key is
+    # (C, SWZ, BC, width, width).  Deeper arms have no 5D counterpart BY
+    # CONSTRUCTION -- 5D is a two-level kernel -- and are oracle-gated only.
+    a5e = {(a[0], a[1], a[2], a[4], a[4]): a for a in m5e.arms() if a[3] == 2}
+    deep = sorted((a[0], a[1], a[2], a[3], a[4]) for a in m5e.arms() if a[3] != 2)
     assert set(a5d) <= set(a5e), "rung 6 must carry every 5D arm"
-    print("NEW arms (no 5D counterpart, oracle-gated separately):", new_arms)
-    for k in new_arms:
-        st = m5e.build_stamp(k[0], bool(k[1]), k[2], k[3], k[4])
+    print("DEEP arms (no 5D counterpart possible, oracle-gated separately):", deep)
+    for k in deep:
+        st = m5e.build_stamp(k[0], bool(k[1]), k[2], [k[4]] * k[3])
         print(f"  {k}: regs {st[3]}, smem {st[6]}, spill {st[8]}, stages {st[9]}")
         assert st[8] == 0, f"spill at {k}"
     a5e = {k: v for k, v in a5e.items() if k in a5d}
@@ -44,7 +52,7 @@ def main():
         d, e = a5d[k], a5e[k]
         # G1 is a pure compile-time refactor: geometry EXACT to the byte.
         s_ok = d[8] == e[8] and d[10] == e[10] and d[9] == e[9]
-        st = m5e.build_stamp(k[0], bool(k[1]), k[2], k[3], k[4])
+        st = m5e.build_stamp(k[0], bool(k[1]), k[2], [k[3], k[4]])
         spill = st[8]
         print(f"{str(k):>24s}  {e[8]} {e[10]:>4d} {e[9]:>6d} | {'OK' if s_ok else 'FAIL'}  {spill}")
         assert s_ok, f"geometry changed at {k}: 5D (S={d[8]} ctas={d[10]} smem={d[9]}), r6 (S={e[8]} ctas={e[10]} smem={e[9]})"
@@ -58,8 +66,8 @@ def main():
             widths = (w0, w1)
             pr, pw = reference.regime_amplitudes(B, H, L, regspec(widths, regime), dev, seed=5)
             v = torch.randn(B, H, L, 64, device=dev, generator=torch.Generator(dev).manual_seed(7)).bfloat16().contiguous()
-            n5, d5 = run(m5d, pr, pw, v, c, bool(w), bc, w0, w1)
-            n6, d6 = run(m5e, pr, pw, v, c, bool(w), bc, w0, w1)
+            n5, d5 = run5(m5d, pr, pw, v, c, bool(w), bc, w0, w1)
+            n6, d6 = run6(m5e, pr, pw, v, c, bool(w), bc, [w0, w1])
             one_block = (w0, w1) == (8, 8)
             if one_block:
                 # one CTA: no fan-in order freedom, so equality is owed exactly
@@ -84,8 +92,8 @@ def main():
         for regime in ("dense", "d4"):
             pr, pw = reference.regime_amplitudes(B, H, L, regspec((w0, w1), regime), dev, seed=5)
             v = torch.randn(B, H, L, 64, device=dev, generator=torch.Generator(dev).manual_seed(7)).bfloat16().contiguous()
-            n5, d5 = run(m5d, pr, pw, v, c, bool(w), bc, w0, w1)
-            n1, d1 = run(m1, pr, pw, v, c, bool(w), bc, w0, w1)
+            n5, d5 = run5(m5d, pr, pw, v, c, bool(w), bc, w0, w1)
+            n1, d1 = run6(m1, pr, pw, v, c, bool(w), bc, [w0, w1])
             if exact:
                 assert torch.equal(n5, n1) and torch.equal(d5, d1), \
                     f"depth-1 NOT EQUAL at one block {regime} {k}"

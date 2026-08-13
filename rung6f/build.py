@@ -74,18 +74,24 @@ def module(form_words: int = FORM_WORDS):
 
 
 def arms(form_words: int = FORM_WORDS):
-    """[(C, SWZ, BC, W0, W1, blocks, lead_span, tail_span, S, smem, ctas, entries)]."""
-    return [(c, bool(w), bc, w0, w1, nb, ls, ts, s, b, t, e)
-            for c, w, bc, w0, w1, nb, ls, ts, s, b, t, e in module(form_words).arms()]
+    """[(C, SWZ, BC, depth, width, blocks, outer_span, inner_span, S, smem, ctas, entries)].
+
+    An arm's topology is (depth, width): `depth` uniform power-of-two levels of
+    `width` branches, N = width**depth.  Callers wanting a widths tuple take
+    `(width,) * depth`.
+    """
+    return [(c, bool(w), bc, d, wd, nb, os_, is_, s, b, t, e)
+            for c, w, bc, d, wd, nb, os_, is_, s, b, t, e in module(form_words).arms()]
 
 
-def assert_build_identity(chunk, swizzle, bc, w0, w1, form_words=FORM_WORDS) -> dict:
+def assert_build_identity(chunk, swizzle, bc, widths, form_words=FORM_WORDS) -> dict:
     """Device-side, not path-side -- and the formed ring's depth is one of the facts."""
     from denseref import build as dbuild
 
     m = module(form_words)
+    widths = list(widths)
     (magic, dstamp, caps_digest, regs, static_smem, binver, dyn_smem, maxthreads,
-     local_bytes, stages, blocks, entries) = m.build_stamp(chunk, swizzle, bc, w0, w1)
+     local_bytes, stages, blocks, entries) = m.build_stamp(chunk, swizzle, bc, widths)
     if magic != BUILD_MAGIC + form_words:
         raise RuntimeError(f"stale binary: device magic {magic} != source "
                            f"{BUILD_MAGIC} + form words {form_words}")
@@ -99,9 +105,12 @@ def assert_build_identity(chunk, swizzle, bc, w0, w1, form_words=FORM_WORDS) -> 
                            f"digest {caps_digest}, not {TARGET_CC}'s {want}")
     if local_bytes:
         raise RuntimeError(f"REGISTER SPILL: {local_bytes} B local for C={chunk} "
-                           f"SWZ={swizzle} BC={bc} widths=({w0},{w1})")
-    if blocks * bc != w0 * w1:
-        raise RuntimeError(f"block plan does not tile N: {blocks}*{bc} != {w0*w1}")
+                           f"SWZ={swizzle} BC={bc} widths={tuple(widths)}")
+    n_slots = 1
+    for w in widths:
+        n_slots *= w
+    if blocks * bc != n_slots:
+        raise RuntimeError(f"block plan does not tile N: {blocks}*{bc} != {n_slots}")
     return dict(magic=magic, warps=dstamp // 1000, d_v=dstamp % 1000,
                 caps_digest=caps_digest, regs_per_thread=regs,
                 static_smem=static_smem, binary_version=binver,
@@ -114,20 +123,22 @@ def assert_build_identity(chunk, swizzle, bc, w0, w1, form_words=FORM_WORDS) -> 
 from rola.ops.constants import READOUT_EPS  # noqa: E402
 
 
-def union_table(pr, pw, v, chunk, bc, w0, w1, form_words=FORM_WORDS):
+def union_table(pr, pw, v, chunk, bc, widths, form_words=FORM_WORDS):
     """[B*H, 2, entries, L/32] int32: the membership clauses, packed by token."""
-    return module(form_words).union_table(pr, pw, v, chunk, bc, w0, w1)
+    return module(form_words).union_table(pr, pw, v, chunk, bc, list(widths))
 
 
-def forward_raw(pr, pw, v, tbl, chunk, swizzle, bc, w0, w1, form_words=FORM_WORDS):
+def forward_raw(pr, pw, v, tbl, chunk, swizzle, bc, widths, form_words=FORM_WORDS):
     """(num [B,H,L,d_v], den [B,H,L]) -- the readout's d_v+1 columns, undivided."""
-    return module(form_words).forward_raw(pr, pw, v, tbl, chunk, swizzle, bc, w0, w1)
+    return module(form_words).forward_raw(pr, pw, v, tbl, chunk, swizzle, bc,
+                                          list(widths))
 
 
-def forward(pr, pw, v, chunk, swizzle, bc, w0, w1, eps=READOUT_EPS,
+def forward(pr, pw, v, chunk, swizzle, bc, widths, eps=READOUT_EPS,
             form_words=FORM_WORDS):
     """y = num / (den + eps): table pass, kernel, divide pass."""
-    return module(form_words).forward(pr, pw, v, chunk, swizzle, bc, w0, w1, float(eps))
+    return module(form_words).forward(pr, pw, v, chunk, swizzle, bc, list(widths),
+                                      float(eps))
 
 
 def divide_pass(num, den, eps=READOUT_EPS):

@@ -87,7 +87,16 @@ def direct():
              ((64, 64), 256, 1, 1, 128, (64, 4)),
              ((64, 64), 256, 1, 2, 4096, (64, 4)),
              ((16, 16), 64, 1, 2, 256, (16, 2)),
-             ((8, 8), 64, 2, 2, 128, (8, 2))]
+             ((8, 8), 64, 2, 2, 128, (8, 2)),
+             # G4's DEEP arms, at the flagship's matched N = 4096: three levels
+             # of 16, four levels of 8 -- and the BC = 32 depth-4 arm whose
+             # three-clause form and two-scalar upper chain exist to be gated.
+             ((16, 16, 16), 128, 1, 1, 256, (16, 4, 1)),
+             ((16, 16, 16), 128, 1, 1, 2048, (16, 4)),
+             ((8, 8, 8, 8), 128, 1, 1, 256, (8, 4, 1)),
+             ((8, 8, 8, 8), 128, 1, 1, 2048, (8, 4)),
+             ((8, 8, 8, 8), 32, 1, 1, 256, (8, 4, 1)),
+             ((8, 8, 8, 8), 32, 1, 1, 2048, (8, 4))]
     print(f"{'widths':>10s}{'BC':>5s}{'blk':>5s}{'B':>3s}{'H':>3s}{'L':>6s}{'C':>4s}"
           f"{'sup':>5s}{'skip':>8s}{'rel_L2 vs naive_rola':>22s}{'design floor':>14s}"
           f"{'r/bound':>8s}")
@@ -98,11 +107,12 @@ def direct():
             v = torch.randn(B, H, L, 64, device=dev).bfloat16()
             y = oracle_ratio(v, pr, pw, widths)
             built = {a[0] for a in build.arms()
-                     if not a[1] and a[2] == bc and (a[3], a[4]) == widths}
+                     if not a[1] and a[2] == bc
+                     and (a[3], a[4]) == (len(widths), widths[0])}
             for c in sorted(built):
                 if L % c:
                     continue
-                got = build.forward(pr, pw, v, c, False, bc, *widths)
+                got = build.forward(pr, pw, v, c, False, bc, widths)
                 torch.cuda.synchronize()
                 # AT THE SPARSEST SUPPORT THE ORACLE'S OWN ANSWER CAN BE ZERO --
                 # no read digit coincides with a write digit anywhere in the
@@ -117,7 +127,10 @@ def direct():
                 md = reference.ratio(
                     reference.model_compacted(pr, pw, v, widths, c, bc), READOUT_EPS)
                 r, floor = rel(got, y), rel(md, y)
-                nb = (widths[0] * widths[1]) // bc
+                nb = 1
+                for w_ in widths:
+                    nb *= w_
+                nb //= bc
                 skip = 1.0 - reference.schedule(pr, pw, widths, bc,
                                                 c).double().mean().item()
                 bound = max(floor, KERNEL_FP32_FLOOR)
@@ -153,9 +166,9 @@ def trend():
         pw = reference.support_amplitudes(1, 1, L, widths, widths[0], dev, seed=61)
         v = torch.randn(1, 1, L, 64, device=dev).bfloat16()
         y = oracle_ratio(v, pr, pw, widths)
-        got = build.forward(pr, pw, v, c, False, bc, *widths)
-        tbl = build.union_table(pr, pw, v, c, bc, *widths)
-        num, den = build.forward_raw(pr, pw, v, tbl, c, False, bc, *widths)
+        got = build.forward(pr, pw, v, c, False, bc, widths)
+        tbl = build.union_table(pr, pw, v, c, bc, widths)
+        num, den = build.forward_raw(pr, pw, v, tbl, c, False, bc, widths)
         torch.cuda.synchronize()
         mdn = reference.model_compacted(pr, pw, v, widths, c, bc)
         exn = reference.chunked_norm(reference.kron(pr, widths),

@@ -465,54 +465,10 @@ template <int D, int B, int BC> struct LevelPlan {
       singles * B + (partial_span > 1 ? B / partial_span : 0);
 };
 
-//: THE D = 2 COMPATIBILITY VIEW.  The kernel body still consumes the
-//: two-level names (lead/tail); G2 and G3 retire them level by level.  A
-//: (W0, W1) instantiation asserts uniformity and derives every legacy field
-//: from the LevelPlan, so the plan is the single source of geometry truth
-//: from this commit on.
-template <int W0, int W1, int BC> struct BlockPlan {
-  static_assert(W0 == W1, "the level plan is uniform-width (P63); jagged "
-                          "widths return via the widths policy");
-  using LP = LevelPlan<2, W1, BC>;
-  static constexpr int slots = (int)LP::slots;
-  static constexpr int lead_span = BC <= W1 ? 1 : BC / W1;
-  static constexpr int tail_span = BC <= W1 ? BC : W1;
-  static constexpr int tail_groups = W1 / tail_span;
-  static constexpr int blocks = slots / BC;
-  static_assert((long)blocks == LP::blocks, "plan/legacy block count agree");
-
-  static_assert(lead_span * tail_span == BC,
-                "BLOCK GEOMETRY: BC is not a rectangle in digit space -- it is "
-                "neither a sub-range of the trailing level nor a whole number of "
-                "trailing levels");
-  static_assert(BC <= W1 || BC % W1 == 0,
-                "BLOCK GEOMETRY: a block wider than the trailing level must span "
-                "that level ENTIRELY, so its width must be a multiple of it");
-  static_assert(W1 % tail_span == 0,
-                "BLOCK GEOMETRY: the partially spanned level's sub-range must "
-                "divide that level's width, or the sub-ranges do not tile it");
-  static_assert(W0 % lead_span == 0,
-                "BLOCK GEOMETRY: the leading level's spanned run must divide its "
-                "width, or the runs do not tile it");
-  static_assert(lead_span == 1 || tail_span == W1,
-                "BLOCK GEOMETRY: EXACTLY ONE level may be partially spanned; "
-                "every level below it must be spanned entirely");
-  static_assert(blocks * BC == slots, "BLOCK GEOMETRY: the blocks do not tile N");
-
-  //: THE UNION TABLE'S ENTRIES, WHICH ARE THIS LAW'S OWN CLAUSES.  Entry `e` of a
-  //: level is the OR over the digits of that level's `e`-th aligned run, so a
-  //: level spanned at one digit contributes its whole width and a partially
-  //: spanned level contributes `width / span`.  A level spanned ENTIRELY
-  //: contributes NOTHING: its clause is not evaluated, so there is nothing to
-  //: tabulate.  The count is a SUM over levels and never a product, which is why
-  //: the table does not grow with `N`.
-  static constexpr int lead_entries = lead_span < W0 ? W0 / lead_span : 0;
-  static constexpr int tail_entries = tail_span < W1 ? W1 / tail_span : 0;
-  static constexpr int entries = lead_entries + tail_entries;
-  static_assert(entries == LP::entries,
-                "the legacy two-level entry count must be the level plan's -- "
-                "if these disagree the generalization changed the schedule");
-};
+//: (G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED.  Its geometry
+//: law and its union-table entry accounting live in LevelPlan above, where
+//: they are stated once for every depth; nothing below this line speaks
+//: lead/tail.
 
 //: THE FORM'S BODY AS A REAL __forceinline__ FUNCTION: ptxas outlined the
 //: grown two-clause form into a CALL with an ABI frame (stack stores the
@@ -673,14 +629,14 @@ constexpr int kCtaTarget =
 
 // -------------------------------------------------------------------- kernel
 
-template <int C, bool SWZ, int W0, int W1, int BC>
+template <int C, bool SWZ, int D, int B, int BC>
 __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void
 compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
                  const __nv_bfloat16 *__restrict__ pwrite,
                  const __nv_bfloat16 *__restrict__ v,
                  const uint32_t *__restrict__ tbl,
                  float *__restrict__ o, float *__restrict__ den, int L) {
-  using P = BlockPlan<W0, W1, BC>;
+  using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, SWZ, BC>;
   //: the per-config carve, evaluated: how many slot groups, how many threads.
   constexpr int GROUPS = groups_for(BC);
@@ -766,19 +722,17 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   // A row's `kRowThr` threads split the block's BC coefficients.  There is one
   // rectangle to split and two ways to cut it, and which one applies is decided
   // by the rectangle's own shape.
-  constexpr int kWtot = W0 + W1;
+  constexpr int kWtot = LP::col_base(LP::depth);
   //: THE PRODUCE'S TWO AXES, FROM THE PLAN (G3).  The INNERMOST level is the
   //: vectorized run; every level above it flattens into ONE composite OUTER
   //: axis, mixed-radix over the plan's spans with level D-2 fastest.  At
   //: D = 2 these are exactly the legacy lead/tail names.
-  using LP = typename P::LP;
   constexpr int kDepth = LP::depth;
   static_assert(kDepth >= 2, "a depth-one topology is a single routed level "
-                             "with no outer axis; it arrives with G4 if ever");
+                             "with no outer axis; it arrives if a real arm "
+                             "ever wants N <= 256");
   constexpr int kInnerSpan = LP::span_at(kDepth - 1);
   constexpr int kOuterSpan = BC / kInnerSpan;
-  static_assert(kInnerSpan == P::tail_span && kOuterSpan == P::lead_span,
-                "the plan's inner/outer axes must be the legacy view's");
   //: PRODUCTION IS A GROUP AFFAIR: a group's kGroupThreads produce ITS slice's
   //: coefficients -- `kLeadSpanG` outer digits by the whole innermost span --
   //: which at GROUPS = 1 is the block and exactly rung 5D's mapping.
@@ -1178,8 +1132,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: RUNG 5A OR-ED THE SIDES to get a group bit; the cook keeps them APART,
   //: which is the whole of per-side compaction at the schedule's end.
   constexpr int kClauses = LP::clauses;
-  constexpr int kEntries = P::entries;
-  static_assert(kEntries == LP::entries, "plan and view agree");
+  constexpr int kEntries = LP::entries;
   const int tokWords = tok_words(L);
   const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
   const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
@@ -1747,12 +1700,12 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
 //:
 //: Its cost does not depend on `BC`: a lane reads its token's amplitude row once
 //: per level that has entries, whatever the spans partition it into.
-template <int W0, int W1, int BC>
+template <int D, int B, int BC>
 __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
                                    const __nv_bfloat16 *__restrict__ pwrite,
                                    uint32_t *__restrict__ tbl, int L) {
-  using P = BlockPlan<W0, W1, BC>;
-  constexpr int kWtot = W0 + W1;
+  using LP = LevelPlan<D, B, BC>;
+  constexpr int kWtot = LP::col_base(LP::depth);
   const int tokWords = tok_words(L);
   const int w = blockIdx.x * (blockDim.x / kBallotLanes) + (threadIdx.x >> 5);
   const int lane = threadIdx.x & 31;
@@ -1768,20 +1721,19 @@ __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: itself 64-bit -- so no `pointer + int` widening multiply reaches a body.
   const long entryStride = tokWords;
   uint32_t *const outBase[2] = {
-      tbl + ((long)(2 * blockIdx.y + 0) * P::entries) * entryStride + w,
-      tbl + ((long)(2 * blockIdx.y + 1) * P::entries) * entryStride + w};
+      tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * entryStride + w,
+      tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w};
   const __nv_bfloat16 *const ampBase[2] = {pread + off, pwrite + off};
 
   //: one stanza per level, spans from the plan -- a whole level emits
   //: nothing, exactly as its clause is not evaluated.  Amp row layout is
   //: [level 0 | level 1 | ...], each `width(l)` wide.
-  using LP = typename P::LP;
 #pragma unroll
   for (int side = 0; side < 2; ++side) {
     uint32_t *out = outBase[side];
 #define ROLA_TABLE_LEVEL(L_)                                                   \
-    if constexpr (L_ < 2 /* D of this view */) {                               \
-      const __nv_bfloat16 *p = ampBase[side] + (L_)*W0;                        \
+    if constexpr (L_ < LP::depth) {                                            \
+      const __nv_bfloat16 *p = ampBase[side] + LP::col_base(L_);               \
       constexpr int kSpan = LP::span_at(L_);                                   \
       constexpr int kEnt = LP::entries_at(L_);                                 \
       _Pragma("unroll") for (int e = 0; e < kEnt; ++e) {                       \
@@ -1809,30 +1761,37 @@ __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
 // are not axes: they are problem sizes.  (8,8) is N = 64 with ONE block, the
 // same-work control; (64,64) is the flagship N = 4096; (16,16) is N = 256, a real
 // fan-in cheap enough for an fp64 reference to gate at full length.
+//: an arm is now (C, SWZ, BC, D, B): the widths pair became DEPTH x ONE
+//: UNIFORM POW2 WIDTH (the level plan's own parameters).  The two-level arms
+//: are rung 5A's, arm for arm; the three DEEP arms are G4's -- (16,16,16) and
+//: (8,8,8,8) at the flagship's matched N = 4096, and a BC = 32 depth-4 arm
+//: whose block leaves TWO single-digit levels above a partial one, so the
+//: three-clause form and the two-scalar upper chain are both exercised.
 #define RUNG5D_ARMS(X)                                                       \
-  X(16, false,  64,  8,  8) X(32, false,  64,  8,  8) X(64, false,  64,  8,  8) \
-  X(16, true ,  64,  8,  8) X(32, true ,  64,  8,  8) X(64, true ,  64,  8,  8) \
-  X(16, false,  64, 64, 64) X(32, false,  64, 64, 64) X(64, false,  64, 64, 64) \
-  X(16, true ,  64, 64, 64) X(32, true ,  64, 64, 64) X(64, true ,  64, 64, 64) \
-  X(32, false,  32, 64, 64) X(64, false,  32, 64, 64)                          \
-  X(16, false, 128, 64, 64) X(32, false, 128, 64, 64) X(64, false, 128, 64, 64) \
-  X(32, false, 256, 64, 64)                                                    \
-  X(16, false,  64, 16, 16) X(32, false,  64, 16, 16) X(64, false,  64, 16, 16)
+  X(16, false,  64, 2,  8) X(32, false,  64, 2,  8) X(64, false,  64, 2,  8) \
+  X(16, true ,  64, 2,  8) X(32, true ,  64, 2,  8) X(64, true ,  64, 2,  8) \
+  X(16, false,  64, 2, 64) X(32, false,  64, 2, 64) X(64, false,  64, 2, 64) \
+  X(16, true ,  64, 2, 64) X(32, true ,  64, 2, 64) X(64, true ,  64, 2, 64) \
+  X(32, false,  32, 2, 64) X(64, false,  32, 2, 64)                          \
+  X(16, false, 128, 2, 64) X(32, false, 128, 2, 64) X(64, false, 128, 2, 64) \
+  X(32, false, 256, 2, 64)                                                    \
+  X(16, false,  64, 2, 16) X(32, false,  64, 2, 16) X(64, false,  64, 2, 16) \
+  X(32, false, 128, 3, 16) X(32, false, 128, 4,  8) X(32, false,  32, 4,  8)
 
-template <int C, bool SWZ, int BC, int W0, int W1>
+template <int C, bool SWZ, int BC, int D, int B>
 static void launch(const torch::Tensor &pr, const torch::Tensor &pw,
                    const torch::Tensor &v, const torch::Tensor &tbl,
                    torch::Tensor &o, torch::Tensor &den, int BH, int L) {
   constexpr size_t sm = Geom<C, SWZ, BC>::bytes;
   static bool configured = false;
   if (!configured) {
-    C10_CUDA_CHECK(cudaFuncSetAttribute(compacted_kernel<C, SWZ, W0, W1, BC>,
+    C10_CUDA_CHECK(cudaFuncSetAttribute(compacted_kernel<C, SWZ, D, B, BC>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         (int)sm));
     configured = true;
   }
-  const dim3 grid(BlockPlan<W0, W1, BC>::blocks, BH);
-  compacted_kernel<C, SWZ, W0, W1, BC>
+  const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, BH);
+  compacted_kernel<C, SWZ, D, B, BC>
       <<<grid, threads_for(BC), sm, at::cuda::getCurrentCUDAStream()>>>(
           reinterpret_cast<const __nv_bfloat16 *>(pr.data_ptr()),
           reinterpret_cast<const __nv_bfloat16 *>(pw.data_ptr()),
@@ -1845,18 +1804,18 @@ static void launch(const torch::Tensor &pr, const torch::Tensor &pw,
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
 //: because the cook wants them apart.  It is a SEPARATE ENTRY POINT so that its
 //: cost is reported on its own line and never folded into a kernel delta.
-template <int W0, int W1, int BC>
+template <int D, int B, int BC>
 static torch::Tensor build_table(const torch::Tensor &pr, const torch::Tensor &pw,
                                  int BH, int L) {
-  constexpr int E = BlockPlan<W0, W1, BC>::entries;
+  constexpr int E = LevelPlan<D, B, BC>::entries;
   const int tokWords = tok_words(L);
   auto tbl = torch::empty({BH, 2, E, tokWords},
                           pr.options().dtype(torch::kInt32));
   constexpr int kTblThreads = 128;
   constexpr int kTblWarps = kTblThreads / kBallotLanes;
   const dim3 grid((tokWords + kTblWarps - 1) / kTblWarps, BH);
-  union_table_kernel<W0, W1, BC><<<grid, kTblThreads, 0,
-                                   at::cuda::getCurrentCUDAStream()>>>(
+  union_table_kernel<D, B, BC><<<grid, kTblThreads, 0,
+                                 at::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<const __nv_bfloat16 *>(pr.data_ptr()),
       reinterpret_cast<const __nv_bfloat16 *>(pw.data_ptr()),
       reinterpret_cast<uint32_t *>(tbl.data_ptr()), L);
@@ -1902,15 +1861,27 @@ torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps) {
 
 //: THE ARGUMENT CHECKS OF A LAUNCH, SHARED BY THE TABLE AND THE KERNEL so that
 //: the two can never be asked for different problems.
+//: THE WIDTHS ARE A LIST -- the API speaks the widths policy's language even
+//: though every built arm is uniform.  A caller with a jagged topology gets
+//: the unbuilt-arm refusal, never a silent reshape.
+static bool is_arm(const std::vector<int64_t> &widths, int64_t D, int64_t B) {
+  if ((int64_t)widths.size() != D) return false;
+  for (auto w : widths)
+    if (w != B) return false;
+  return true;
+}
+
 static void check_inputs(const torch::Tensor &pr, const torch::Tensor &pw,
-                         const torch::Tensor &v, int64_t chunk, int64_t w0,
-                         int64_t w1) {
+                         const torch::Tensor &v, int64_t chunk,
+                         const std::vector<int64_t> &widths) {
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   TORCH_CHECK(pr.is_contiguous() && pw.is_contiguous());
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16);
   TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,H,L,64]");
-  TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 4 && pr.size(3) == w0 + w1,
-              "expect packed amplitudes [B,H,L,W0+W1]");
+  int64_t wsum = 0;
+  for (auto w : widths) wsum += w;
+  TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 4 && pr.size(3) == wsum,
+              "expect packed amplitudes [B,H,L,sum(widths)]");
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
@@ -1921,27 +1892,28 @@ static void check_inputs(const torch::Tensor &pr, const torch::Tensor &pw,
 }
 
 torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
-                          int64_t chunk, int64_t bc, int64_t w0, int64_t w1) {
-  check_inputs(pr, pw, v, chunk, w0, w1);
+                          int64_t chunk, int64_t bc,
+                          std::vector<int64_t> widths) {
+  check_inputs(pr, pw, v, chunk, widths);
   const int BH = v.size(0) * v.size(1), L = v.size(2);
-#define RUNG5D_TABLE(C_, W_, BC_, W0_, W1_)                                   \
-  if (chunk == C_ && bc == BC_ && w0 == W0_ && w1 == W1_)                     \
-    return build_table<W0_, W1_, BC_>(pr, pw, BH, L);
+#define RUNG5D_TABLE(C_, W_, BC_, D_, B_)                                     \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_))                     \
+    return build_table<D_, B_, BC_>(pr, pw, BH, L);
   RUNG5D_ARMS(RUNG5D_TABLE)
 #undef RUNG5D_TABLE
-  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " widths=(", w0,
-              ",", w1, ")");
+  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc,
+              " depth=", widths.size());
 }
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw,
                                        torch::Tensor v, torch::Tensor tbl,
                                        int64_t chunk, bool swizzle,
-                                       int64_t bc, int64_t w0, int64_t w1) {
+                                       int64_t bc, std::vector<int64_t> widths) {
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() &&
                   tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
-  check_inputs(pr, pw, v, chunk, w0, w1);
+  check_inputs(pr, pw, v, chunk, widths);
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   //: The accumulator is zeroed, not merely allocated: the fan-in ADDS, so the
   //: identity of the sum has to be there before the first contribution.
@@ -1949,26 +1921,26 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw,
   auto o = torch::zeros({B, H, L, (long)kD}, opts);
   auto den = torch::zeros({B, H, L}, opts);
   const int BH = B * H;
-#define RUNG5D_DISPATCH(C_, W_, BC_, W0_, W1_)                                 \
-  if (chunk == C_ && swizzle == W_ && bc == BC_ && w0 == W0_ && w1 == W1_) {   \
-    const long want = (long)BH * 2 * BlockPlan<W0_, W1_, BC_>::entries *      \
+#define RUNG5D_DISPATCH(C_, W_, BC_, D_, B_)                                   \
+  if (chunk == C_ && swizzle == W_ && bc == BC_ && is_arm(widths, D_, B_)) {   \
+    const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
                       tok_words(L);                                          \
     TORCH_CHECK(tbl.numel() == want,                                           \
                 "the union table was built for a different arm");              \
-    launch<C_, W_, BC_, W0_, W1_>(pr, pw, v, tbl, o, den, BH, L);              \
+    launch<C_, W_, BC_, D_, B_>(pr, pw, v, tbl, o, den, BH, L);                \
     return {o, den};                                                           \
   }
   RUNG5D_ARMS(RUNG5D_DISPATCH)
 #undef RUNG5D_DISPATCH
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " swizzle=", swizzle, " BC=", bc,
-              " widths=(", w0, ",", w1, ")");
+              " depth=", widths.size());
 }
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
-                      int64_t chunk, bool swizzle, int64_t bc, int64_t w0, int64_t w1,
-                      double eps) {
-  auto tbl = union_table(pr, pw, v, chunk, bc, w0, w1);
-  auto nd = forward_raw(pr, pw, v, tbl, chunk, swizzle, bc, w0, w1);
+                      int64_t chunk, bool swizzle, int64_t bc,
+                      std::vector<int64_t> widths, double eps) {
+  auto tbl = union_table(pr, pw, v, chunk, bc, widths);
+  auto nd = forward_raw(pr, pw, v, tbl, chunk, swizzle, bc, widths);
   return divide_pass(nd[0], nd[1], eps);
 }
 
@@ -1980,18 +1952,18 @@ __global__ void stamp_kernel(int *out) {
   out[2] = design::kCapsDigest;
 }
 
-std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc, int64_t w0,
-                                 int64_t w1) {
+std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc,
+                                 std::vector<int64_t> widths) {
   auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
   cudaFuncAttributes a{};
-#define RUNG5D_CENSUS(C_, W_, BC_, W0_, W1_)                                       \
-  if (chunk == C_ && swizzle == W_ && bc == BC_ && w0 == W0_ && w1 == W1_) {       \
+#define RUNG5D_CENSUS(C_, W_, BC_, D_, B_)                                         \
+  if (chunk == C_ && swizzle == W_ && bc == BC_ && is_arm(widths, D_, B_)) {       \
     C10_CUDA_CHECK(cudaFuncGetAttributes(                                          \
-        &a, compacted_kernel<C_, W_, W0_, W1_, BC_>));                             \
+        &a, compacted_kernel<C_, W_, D_, B_, BC_>));                               \
     r.push_back(a.numRegs);                                                        \
     r.push_back((int64_t)a.sharedSizeBytes);                                       \
     r.push_back(a.binaryVersion);                                                  \
@@ -1999,8 +1971,8 @@ std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc, int64_
     r.push_back((int64_t)a.maxThreadsPerBlock);                                    \
     r.push_back((int64_t)a.localSizeBytes);                                        \
     r.push_back((int64_t)Geom<C_, W_, BC_>::stages);                               \
-    r.push_back((int64_t)BlockPlan<W0_, W1_, BC_>::blocks);                        \
-    r.push_back((int64_t)BlockPlan<W0_, W1_, BC_>::entries);                       \
+    r.push_back((int64_t)LevelPlan<D_, B_, BC_>::blocks);                          \
+    r.push_back((int64_t)LevelPlan<D_, B_, BC_>::entries);                         \
     return r;                                                                      \
   }
   RUNG5D_ARMS(RUNG5D_CENSUS)
@@ -2010,18 +1982,19 @@ std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc, int64_
 }
 
 //: The built set with every DERIVED quantity of an arm reported beside it: the
-//: block plan's rectangle, the block count, the staging depth and the CTA target.
+//: plan's depth and width, the block count, the block's inner/outer axes, the
+//: staging depth and the CTA target.
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
-#define RUNG5D_LIST(C_, W_, BC_, W0_, W1_)                                    \
-  out.push_back({C_, (int64_t)(W_), BC_, W0_, W1_,                            \
-                 (int64_t)BlockPlan<W0_, W1_, BC_>::blocks,                   \
-                 (int64_t)BlockPlan<W0_, W1_, BC_>::lead_span,                \
-                 (int64_t)BlockPlan<W0_, W1_, BC_>::tail_span,                \
+#define RUNG5D_LIST(C_, W_, BC_, D_, B_)                                      \
+  out.push_back({C_, (int64_t)(W_), BC_, D_, B_,                              \
+                 (int64_t)LevelPlan<D_, B_, BC_>::blocks,                     \
+                 (int64_t)(BC_ / LevelPlan<D_, B_, BC_>::span_at(D_ - 1)),    \
+                 (int64_t)LevelPlan<D_, B_, BC_>::span_at(D_ - 1),            \
                  (int64_t)Geom<C_, W_, BC_>::stages,                          \
                  (int64_t)Geom<C_, W_, BC_>::bytes,                           \
                  (int64_t)kCtaTarget<C_, W_, BC_>,                            \
-                 (int64_t)BlockPlan<W0_, W1_, BC_>::entries});
+                 (int64_t)LevelPlan<D_, B_, BC_>::entries});
   RUNG5D_ARMS(RUNG5D_LIST)
 #undef RUNG5D_LIST
   return out;

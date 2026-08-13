@@ -42,7 +42,7 @@ from rung1.reference import (  # noqa: E402,F401
     split_levels,
     strides,
 )
-from rung2.reference import block_plan, block_slots, split  # noqa: E402,F401
+from rung2.reference import block_plan, block_slots, level_plan, split  # noqa: E402,F401
 
 
 #: THE ONES COLUMN, IN THE REFERENCE AS IN THE KERNEL. The mass state is what the
@@ -179,17 +179,20 @@ def schedule_sides(pr, pw, widths, bc: int):
     which TERMS a live visit actually needs, which is what says whether a
     per-side schedule would be worth building.
     """
-    plan, lead_span, tail_span = block_plan(widths, bc)
-    _, w1 = widths
+    offs, spans = level_plan(widths, bc)
     B, H, L, _ = pr.shape
     out = []
     for p in (pr, pw):
-        a0, a1 = (_nonzero(x) for x in split_levels(p, widths))
-        t = torch.empty(B, H, len(plan), L, dtype=torch.bool, device=pr.device)
-        for k, (lead_off, tail_off, _) in enumerate(plan):
-            live = a0[..., lead_off:lead_off + lead_span].any(-1)
-            if tail_span < w1:
-                live = live & a1[..., tail_off:tail_off + tail_span].any(-1)
+        lv = [_nonzero(x) for x in split_levels(p, widths)]
+        t = torch.empty(B, H, len(offs), L, dtype=torch.bool, device=pr.device)
+        for k, off in enumerate(offs):
+            live = None
+            for l, (o, s, w) in enumerate(zip(off, spans, widths)):
+                if s < w:  # a level spanned ENTIRELY is not tested
+                    c = lv[l][..., o:o + s].any(-1)
+                    live = c if live is None else live & c
+            if live is None:  # one block spanning the whole slot space
+                live = torch.ones(B, H, L, dtype=torch.bool, device=pr.device)
             t[:, :, k] = live
         out.append(t)
     return tuple(out)
@@ -230,12 +233,11 @@ def schedule_exact(pr, pw, widths, bc: int, chunk: int):
 #: evaluated. The two sides are separate rows.
 def union_entries(widths, bc: int):
     """[(level, digit_offset, span)] -- the table's rows, in the kernel's order."""
-    _, lead_span, tail_span = block_plan(widths, bc)
-    w0, w1 = widths
-    rows = ([] if lead_span == w0 else
-            [(0, e * lead_span, lead_span) for e in range(w0 // lead_span)])
-    if tail_span < w1:
-        rows += [(1, e * tail_span, tail_span) for e in range(w1 // tail_span)]
+    _, spans = level_plan(widths, bc)
+    rows = []
+    for l, (s, w) in enumerate(zip(spans, widths)):
+        if s < w:  # a whole level tabulates nothing; a single digit its width
+            rows += [(l, e * s, s) for e in range(w // s)]
     return rows
 
 

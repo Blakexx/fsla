@@ -35,34 +35,57 @@ from rung1.reference import (  # noqa: E402,F401
 )
 
 
-def block_plan(widths, bc: int):
-    """The law, in Python: ``[(lead_off, tail_off, slot0)]`` per block.
+def level_plan(widths, bc: int):
+    """The law at ANY depth: ``(offs, spans)`` -- the LevelPlan, in Python.
 
-    Raises unless the (widths, BC) pair is a rectangle in digit space: every
-    level above the boundary at exactly one digit, exactly one level partially
-    spanned by an aligned sub-range dividing its width, every level below spanned
-    entirely. Two levels are built, so the law reads as ``lead_span`` digits of
-    level 0 by ``tail_span`` digits of level 1.
+    ``spans[l]`` is how many digits of level ``l`` a block spans: reading
+    levels most-significant first, every level above the boundary at exactly
+    ONE digit, at most one level PARTIALLY by an aligned run dividing its
+    width, every level below spanned ENTIRELY.  ``offs[k][l]`` is block ``k``'s
+    first digit at level ``l`` -- the same mixed-radix map the kernel's
+    ``off_at`` computes.  Raises unless (widths, BC) is a rectangle in digit
+    space.
+    """
+    D = len(widths)
+    spans, rem, l = [1] * D, bc, D - 1
+    while l >= 0 and rem >= widths[l]:
+        if rem % widths[l]:
+            raise ValueError(f"BC={bc} spans level {l} partially AND wraps it "
+                             f"in {widths}")
+        spans[l] = widths[l]
+        rem //= widths[l]
+        l -= 1
+    if rem > 1:
+        if l < 0:
+            raise ValueError(f"BC={bc} exceeds the slot space of {widths}")
+        if widths[l] % rem:
+            raise ValueError(f"BC={bc}'s partial run does not tile level {l} "
+                             f"of {widths}")
+        spans[l] = rem
+    prod = 1
+    for s in spans:
+        prod *= s
+    if prod != bc:
+        raise ValueError(f"BC={bc} is not a rectangle in digit space for {widths}")
+    groups = [w // s for w, s in zip(widths, spans)]
+    sufs = [1] * (D + 1)
+    for i in range(D - 1, -1, -1):
+        sufs[i] = sufs[i + 1] * groups[i]
+    offs = [tuple(((k // sufs[i + 1]) % groups[i]) * spans[i] for i in range(D))
+            for k in range(sufs[0])]
+    return offs, spans
+
+
+def block_plan(widths, bc: int):
+    """The TWO-LEVEL VIEW of ``level_plan``: ``[(lead_off, tail_off, slot0)]``.
+
+    Kept because a body of two-level rungs consumes this exact shape; the law
+    itself lives in ``level_plan`` and this derives from it.
     """
     if len(widths) != 2:
-        raise ValueError(f"the built kernel spans two levels, got widths={widths}")
-    w0, w1 = widths
-    lead_span = 1 if bc <= w1 else bc // w1
-    tail_span = bc if bc <= w1 else w1
-    if lead_span * tail_span != bc:
-        raise ValueError(f"BC={bc} is not a rectangle in digit space for {widths}")
-    if bc > w1 and bc % w1:
-        raise ValueError(f"BC={bc} spans the trailing level partially AND wraps it")
-    if w1 % tail_span or w0 % lead_span:
-        raise ValueError(f"BC={bc}'s spans do not tile the levels of {widths}")
-    if lead_span != 1 and tail_span != w1:
-        raise ValueError(f"BC={bc} would span two levels partially in {widths}")
-    tail_groups = w1 // tail_span
-    out = []
-    for k in range(w0 * w1 // bc):
-        lead_off = (k // tail_groups) * lead_span
-        tail_off = (k % tail_groups) * tail_span
-        out.append((lead_off, tail_off, lead_off * w1 + tail_off))
+        raise ValueError(f"the two-level view spans two levels, got widths={widths}")
+    offs, (lead_span, tail_span) = level_plan(widths, bc)
+    out = [(o0, o1, o0 * widths[1] + o1) for o0, o1 in offs]
     return out, lead_span, tail_span
 
 
@@ -73,14 +96,20 @@ def block_slots(widths, bc: int, device="cuda"):
     the block's digit rectangle -- the leaf-major construction the kernel's loop
     nest deliberately never executes.
     """
-    w0, w1 = widths
-    plan, lead_span, tail_span = block_plan(widths, bc)
-    out = torch.empty(len(plan), bc, dtype=torch.long, device=device)
-    for k, (lead_off, tail_off, _) in enumerate(plan):
+    offs, spans = level_plan(widths, bc)
+    D = len(widths)
+    wsuf = [1] * (D + 1)          # slot stride of a digit at each level
+    ssuf = [1] * (D + 1)          # block-local stride of the span rectangle
+    for i in range(D - 1, -1, -1):
+        wsuf[i] = wsuf[i + 1] * widths[i]
+        ssuf[i] = ssuf[i + 1] * spans[i]
+    out = torch.empty(len(offs), bc, dtype=torch.long, device=device)
+    for k, off in enumerate(offs):
         for j in range(bc):
-            d0 = lead_off + j // tail_span
-            d1 = tail_off + j % tail_span
-            out[k, j] = d0 * w1 + d1
+            slot = 0
+            for l in range(D):
+                slot += (off[l] + (j // ssuf[l + 1]) % spans[l]) * wsuf[l + 1]
+            out[k, j] = slot
     return out
 
 
