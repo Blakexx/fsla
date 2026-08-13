@@ -321,17 +321,29 @@ static_assert(design::kStateResidency == design::StateResidency::REGISTERS &&
               "them; otherwise the state takes a memory round trip and this is a "
               "different algorithm.");
 
-static constexpr int kBuildMagic = 6600101;
+static constexpr int kBuildMagic = 6600201;
 
 static constexpr int kD = 64;      // d_v
 static constexpr int kPadE = 8;    // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;    // fp32 row padding, elements (16 B)
 
-//: THE LONGEST SEQUENCE A GATHERED ADDRESS CAN NAME.  An index list entry is one
-//: 16-bit token index and every gathered displacement is that index times a
-//: compile-time row stride, held in 32 bits.  The index is what binds; the host
-//: REFUSES a longer sequence rather than truncating one.
-static constexpr int kMaxTokens = 65536;
+//: THE K-WINDOW (6E, merged).  An index list entry is one 16-bit token index,
+//: WINDOW-RELATIVE: a super-chunk lives inside one 65536-token window (the
+//: walk forces a cut at window lines, empty stretches slide), so sixteen
+//: local bits name any of its tokens at any L.  Below one window no line is
+//: ever crossed and the partition -- and the output, bit for bit -- is
+//: exactly what it was when 65536 was a refusal.
+static constexpr int kWindow = 65536;
+static_assert((kWindow & (kWindow - 1)) == 0,
+              "the token -> (window, local) split is a shift and a mask");
+//: THE WINDOW IS A DISPLACEMENT, NOT A TABLE (the 6E fold).  Each plane's
+//: per-window byte stride is compile-time, so a super-chunk's window number
+//: is one uniform multiply-add into the column term a consumer already
+//: carries -- the per-index addressing keeps its exact shape against
+//: kernel-wide pinned bases.  What bounds L is the 32-bit gather
+//: displacement itself: the widest plane row is the fp32 output at kD*4
+//: bytes, so L*kD*4 must sit inside the 4 GiB zero-extension window.
+static constexpr long kMaxGatherL = (1L << 32) / (kD * (long)sizeof(float));
 
 //: HOW MUCH FURTHER AHEAD THE SCHEDULE STREAM RUNS THAN THE VALUE STREAM, in
 //: super-chunks, ABOVE the minimum the pipeline requires.  It costs one index
@@ -963,9 +975,12 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   auto stage_chunk = [&](int d, bool go) {
     if (go) {
       const uint16_t *lw = iwrite(d);
+      //: the window, folded (6E): one uniform multiply-add per staged chunk.
+      const uint32_t winCol =
+          ldColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * 2);
 #pragma unroll
       for (int p = 0; p < kPasses; ++p) {
-        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + ldColB;
+        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol;
         stage_tile(svL + stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowV),
                    gather_ptr(vPlane, off));
       }
@@ -980,12 +995,14 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: somewhere.
   auto drain = [&](int d, int nr) {
     const uint16_t *lrd = iread(d);
+    const uint32_t winFan =
+        fanColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * (int)sizeof(float));
 #pragma unroll
     for (int p = 0; p < kFanPasses; ++p) {
       const int row = fanRow + p * kFanRows;
       if (row < nr) {
         float *dp = reinterpret_cast<float *>(
-            gather_ptr(oPlane, (uint32_t)lrd[row] * kORowB + fanColB));
+            gather_ptr(oPlane, (uint32_t)lrd[row] * kORowB + winFan));
         const int e0 = fanE + p * kFanRows * LdO;
 #pragma unroll
         for (int e = 0; e < kFanPerThr; ++e)
@@ -1002,8 +1019,10 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       float s = 0.f;
 #pragma unroll
       for (int u = 0; u < kUnits; ++u) s += sden[u * C + gtid];
-      fan_in_add(reinterpret_cast<float *>(
-                     gather_ptr(denPlane, (uint32_t)iread(d)[gtid] * 4u)),
+      fan_in_add(reinterpret_cast<float *>(gather_ptr(
+                     denPlane, (uint32_t)iread(d)[gtid] * 4u +
+                                   (uint32_t)ihdr(d)[3] *
+                                       (uint32_t)(kWindow * (int)sizeof(float)))),
                  s);
     }
   };
@@ -1140,7 +1159,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: form is a MAP over words, not a walk, so a thread's word is an index rather
   //: than the previous address plus one; `gather_ptr` is what keeps that index a
   //: zero-extended byte displacement instead of a widening multiply.  The bound is
-  //: `kMaxTokens / 32` words, four bytes each.
+  //: `tokWords` words, four bytes each.
   //: one pinned row per SURVIVING clause per side -- the levels the block
   //: does not span entirely, in level order.  At D = 2 this is exactly the
   //: old tR0/tR1 pair; at depth it grows to at most D rows.
@@ -1231,6 +1250,13 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: path -- and it carries them by STORE ONLY.
   int cookWord = 0, cookNr = 0, cookNw = 0;
   bool cookOpen = false;
+  //: the walk's window cursor (6E): line positions in units of formed WORDS --
+  //: the words of one K-window.  A super-chunk never crosses a window line,
+  //: so its list entries share one window and sixteen LOCAL bits name any of
+  //: its tokens; the line advances by EQUALITY against a maintained register,
+  //: an affine advance, never a per-chunk multiply.
+  constexpr int kWinWords = kWindow / kTokBits;
+  int chunkWin = 0, nextLineW = kWinWords, winBaseW = 0;
   auto walk = [&](int d) {
     uint16_t *lrd = iread(d);
     uint16_t *lwr = iwrite(d);
@@ -1238,10 +1264,28 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     const bool exists = cookOpen || cookWord < tokWords;
     int nr = cookOpen ? cookNr : 0;
     int nw = cookOpen ? cookNw : 0;
+    if (!cookOpen) {
+      chunkWin = cookWord / kWinWords;
+      winBaseW = chunkWin * kWinWords;
+      nextLineW = winBaseW + kWinWords;
+    }
     bool closed = cookWord >= tokWords;
     const uint32_t lt = (1u << lane) - 1u;
 #pragma unroll 1
     while (cookWord < formEnd) {
+      //: THE WINDOW LINE, as an EQUALITY against a maintained register --
+      //: the walk advances a word at a time, so a line is never jumped.  A
+      //: super-chunk holding entries closes at the line; an empty one slides
+      //: its window forward, exactly as it crosses words.
+      if (cookWord == nextLineW) {
+        if (nr != 0 || nw != 0) {
+          closed = true;
+          break;
+        }
+        ++chunkWin;
+        winBaseW = nextLineW;
+        nextLineW += kWinWords;
+      }
       const int slot = cookWord & (kFormWords - 1);
       const uint32_t rm = sfR[slot];
       const uint32_t wm = sfW[slot];
@@ -1252,7 +1296,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       const int cut = first_set(
           lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
       const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
-      const int t = cookWord * kTokBits + lane;
+      const int t = (cookWord - winBaseW) * kTokBits + lane;
       if (lane < cut) {
         if (lvR) {
           lrd[nr + prx] = (uint16_t)t;
@@ -1308,6 +1352,7 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       h[0] = nr;
       h[1] = nw;
       h[2] = exists ? 1 : 0;
+      h[3] = chunkWin;  // whose window the LOCAL indices live in
       scook[kCookWord] = cookWord;
       if (wasOpen) scook[kCookOpen] = 0;
     }
@@ -1383,8 +1428,10 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
     if (warp == 0) walk(dn);
 
     if (live) {
-      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB;
-      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB;
+      const uint32_t winP =
+          (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * kWtot * 2);
+      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
+      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
       produce(pRead, dstR, rOff, prow < nr);
       produce(pWrite, dstW, wOff, prow < nw);
     }
@@ -1885,10 +1932,12 @@ static void check_inputs(const torch::Tensor &pr, const torch::Tensor &pw,
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
-  TORCH_CHECK(L <= kMaxTokens,
-              "a gathered token index is 16 bits, so this kernel holds ",
-              kMaxTokens, " tokens and this launch asks for ", L,
-              "; a longer sequence is REFUSED rather than truncated");
+  //: the widest gathered rows are the fp32 output (kD*4 B) and the packed
+  //: amplitudes (sum(widths)*2 B); every gathered displacement must
+  //: zero-extend from 32 bits.
+  TORCH_CHECK((long)L <= kMaxGatherL && (long)L * wsum * 2 < (1L << 32),
+              "a gathered displacement is 32 bits; this launch's would not "
+              "fit (L=", L, ")");
 }
 
 torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
