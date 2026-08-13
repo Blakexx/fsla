@@ -447,6 +447,17 @@ template <int D, int B, int BC> struct LevelPlan {
   static __device__ __forceinline__ int entry_at(int l, int blk) {
     return prefix_entries(l) + (blk / suffix_groups(l + 1)) % groups_at(l);
   }
+  static constexpr int depth = D;
+  //: a level's first amplitude column in the packed [W0+..+W_{D-1}] token row --
+  //: the widths policy summed over the preceding levels.
+  static constexpr int col_base(int l) {
+    return l == 0 ? 0 : col_base(l - 1) + width(l - 1);
+  }
+  //: the block's first digit at level l: entry_at's map scaled to digits.  A
+  //: whole level has one group, so its offset is zero without a branch.
+  static __device__ __forceinline__ int off_at(int l, int blk) {
+    return ((blk / suffix_groups(l + 1)) % groups_at(l)) * span_at(l);
+  }
   //: table entries per side: full width per single-digit level, width/run for
   //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
   //: product, which is why the table does not grow with N.
@@ -756,25 +767,43 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   // rectangle to split and two ways to cut it, and which one applies is decided
   // by the rectangle's own shape.
   constexpr int kWtot = W0 + W1;
+  //: THE PRODUCE'S TWO AXES, FROM THE PLAN (G3).  The INNERMOST level is the
+  //: vectorized run; every level above it flattens into ONE composite OUTER
+  //: axis, mixed-radix over the plan's spans with level D-2 fastest.  At
+  //: D = 2 these are exactly the legacy lead/tail names.
+  using LP = typename P::LP;
+  constexpr int kDepth = LP::depth;
+  static_assert(kDepth >= 2, "a depth-one topology is a single routed level "
+                             "with no outer axis; it arrives with G4 if ever");
+  constexpr int kInnerSpan = LP::span_at(kDepth - 1);
+  constexpr int kOuterSpan = BC / kInnerSpan;
+  static_assert(kInnerSpan == P::tail_span && kOuterSpan == P::lead_span,
+                "the plan's inner/outer axes must be the legacy view's");
   //: PRODUCTION IS A GROUP AFFAIR: a group's kGroupThreads produce ITS slice's
-  //: coefficients -- `kLeadSpanG` leading digits by the whole trailing span --
+  //: coefficients -- `kLeadSpanG` outer digits by the whole innermost span --
   //: which at GROUPS = 1 is the block and exactly rung 5D's mapping.
-  constexpr int kLeadSpanG = P::lead_span / GROUPS;
-  static_assert(P::lead_span % GROUPS == 0,
-                "the groups must split the leading run exactly");
+  constexpr int kLeadSpanG = kOuterSpan / GROUPS;
+  static_assert(kOuterSpan % GROUPS == 0,
+                "the groups must split the outer axis exactly");
   constexpr int kRowThr = kGroupThreads / C;
   constexpr int kThrPerLead = kRowThr >= kLeadSpanG ? kRowThr / kLeadSpanG : 1;
   constexpr int kLeadPerThr = kLeadSpanG >= kRowThr ? kLeadSpanG / kRowThr : 1;
-  constexpr int kTailPerThr = P::tail_span / kThrPerLead;
+  constexpr int kTailPerThr = kInnerSpan / kThrPerLead;
   constexpr int kTailVec = (kTailPerThr * 2) / 16;
   static_assert(kGroupThreads % C == 0,
                 "one production pass must cover the chunk exactly");
   static_assert(kRowThr >= kLeadSpanG ? kRowThr % kLeadSpanG == 0
                                       : kLeadSpanG % kRowThr == 0,
-                "the slice's leading digits and the row's threads must divide "
+                "the slice's outer digits and the row's threads must divide "
                 "one another, or a thread owns a fractional digit");
-  static_assert(P::tail_span % kThrPerLead == 0,
-                "the threads sharing a leading digit must divide its trailing run");
+  static_assert(kInnerSpan % kThrPerLead == 0,
+                "the threads sharing an outer digit must divide the inner run");
+  //: a thread's owned outer run must sit inside ONE row of the fastest outer
+  //: level, or its amplitudes are not a contiguous vector load and the upper
+  //: levels' digits stop being per-thread constants.
+  constexpr int kFastSpan = LP::span_at(kDepth - 2);
+  static_assert(kLeadPerThr == 1 || kFastSpan % kLeadPerThr == 0,
+                "a thread's outer run crosses a fast-level boundary");
   static_assert(kTailPerThr % 8 == 0,
                 "a thread's trailing run is published in 16-byte vectors, so it "
                 "must be a whole number of eight coefficients");
@@ -835,8 +864,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   };
 
   // The block's aligned digit ranges.  Compile-time divisors, formed once.
-  const int lead_off = (blk / P::tail_groups) * P::lead_span + grp * kLeadSpanG;
-  const int tail_off = (blk % P::tail_groups) * P::tail_span;
+  //: (G3) the per-level digit offsets come from the plan's one map below, at
+  //: the columns' construction -- the legacy lead_off/tail_off pair is gone.
 
   // ---- lane-invariant operand addressing -----------------------------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -1044,10 +1073,32 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
   const __nv_bfloat16 *const pRead = pin_address(pread + pbase);
   const __nv_bfloat16 *const pWrite = pin_address(pwrite + pbase);
-  const uint32_t colLead = (uint32_t)((lead_off + leadLocal) * 2);
-  const uint32_t colTail = (uint32_t)((W0 + tail_off + tailLocal) * 2);
+  //: (G3) THE COLUMNS, ONE PER CONTRIBUTING LEVEL, all built from the plan's
+  //: col_base/off_at map.  A thread's composite outer index `oBase` splits into
+  //: a FAST digit (level D-2, varies across its owned run) and a fixed upper
+  //: row; the upper levels' digits are per-thread CONSTANTS, so each upper
+  //: level is one named column scalar -- at D = 2 there are none and the pair
+  //: below is exactly the legacy colLead/colTail.
+  const int oBase = grp * kLeadSpanG + leadLocal;
+  const uint32_t colFast = (uint32_t)(
+      (LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan) * 2);
+  const uint32_t colInner = (uint32_t)(
+      (LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
+  constexpr int kUppers = kDepth - 2;
+  [[maybe_unused]] uint32_t colUpA = 0, colUpB = 0;  // named scalars, never an array
+  if constexpr (kUppers >= 1) {
+    constexpr int lA = kDepth - 3;
+    colUpA = (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) +
+                         (oBase / kFastSpan) % LP::span_at(lA)) * 2);
+  }
+  if constexpr (kUppers >= 2) {
+    constexpr int lB = kDepth - 4;
+    colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk) +
+                         (oBase / (kFastSpan * LP::span_at(kDepth - 3))) %
+                             LP::span_at(lB)) * 2);
+  }
 
-  const int slot0 = leadLocal * P::tail_span + tailLocal;  // local slot of this thread
+  const int slot0 = leadLocal * kInnerSpan + tailLocal;  // local slot of this thread
   char *dstR = reinterpret_cast<char *>(sr) +
                (SWZ ? prow * (int)kRowS : prow * (int)kRowS + slot0 * 2);
   char *dstW = reinterpret_cast<char *>(sw) +
@@ -1058,8 +1109,8 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   for (int j = 0; j < kLeadPerThr; ++j)
 #pragma unroll
     for (int i = 0; i < kTailVec; ++i)
-      pOff[j][i] = SWZ ? ((((slot0 + j * P::tail_span) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
-                       : ((j * P::tail_span + i * 8) * 2);
+      pOff[j][i] = SWZ ? ((((slot0 + j * kInnerSpan) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
+                       : ((j * kInnerSpan + i * 8) * 2);
 
   //: THE PRODUCTION.  One trailing 16-byte vector is held at a time and reused
   //: across every leading digit this thread owns, so the register cost does not
@@ -1073,9 +1124,9 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: drain will publish, which is what makes a partly filled buffer exact.
   auto produce = [&](const __nv_bfloat16 *bs, char *dst, uint32_t tokOff, bool have) {
     const __nv_bfloat16 *p0 =
-        reinterpret_cast<const __nv_bfloat16 *>(gather_ptr(bs, tokOff + colLead));
+        reinterpret_cast<const __nv_bfloat16 *>(gather_ptr(bs, tokOff + colFast));
     const __nv_bfloat16 *p1 =
-        reinterpret_cast<const __nv_bfloat16 *>(gather_ptr(bs, tokOff + colTail));
+        reinterpret_cast<const __nv_bfloat16 *>(gather_ptr(bs, tokOff + colInner));
     __align__(8) unsigned short amp0[kLeadPerThr];
     if constexpr (kLeadPerThr == 1) {
       amp0[0] = *reinterpret_cast<const unsigned short *>(p0);
@@ -1083,6 +1134,23 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
       *reinterpret_cast<uint32_t *>(amp0) = *reinterpret_cast<const uint32_t *>(p0);
     } else {
       *reinterpret_cast<uint2 *>(amp0) = *reinterpret_cast<const uint2 *>(p0);
+    }
+    //: THE OUTER CHAIN (G3, empty at D = 2).  Every level above the fast one
+    //: contributes ONE per-token scalar at this thread's fixed digits; the
+    //: scalars fold into the fast amplitudes here, so the hot loop below is
+    //: untouched at any depth and the zero-row select stays ONE per digit.
+    if constexpr (kUppers >= 1) {
+      uint32_t up = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16 *>(
+          gather_ptr(bs, tokOff + colUpA)));
+      if constexpr (kUppers >= 2)
+        up = mul_bf16x2(up, splat_bf16x2(*reinterpret_cast<const __nv_bfloat16 *>(
+                                gather_ptr(bs, tokOff + colUpB))));
+#pragma unroll
+      for (int j = 0; j < kLeadPerThr; ++j) {
+        const uint32_t m = mul_bf16x2(
+            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16 *>(&amp0[j])), up);
+        amp0[j] = (unsigned short)(m & 0xffffu);
+      }
     }
 
 #pragma unroll
@@ -1109,7 +1177,6 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: whole slot space, so there is exactly one of them -- has no clause at all.
   //: RUNG 5A OR-ED THE SIDES to get a group bit; the cook keeps them APART,
   //: which is the whole of per-side compaction at the schedule's end.
-  using LP = typename P::LP;
   constexpr int kClauses = LP::clauses;
   constexpr int kEntries = P::entries;
   static_assert(kEntries == LP::entries, "plan and view agree");
