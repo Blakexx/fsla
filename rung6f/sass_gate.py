@@ -33,6 +33,11 @@ sys.path.insert(0, str(HERE.parent))
 from rung6f import build as r5dbuild  # noqa: E402
 
 #: the SHIPPED build, named by its ring depth so a stale object cannot be graded
+#: BUILD BEFORE DUMPING.  This gate read whatever .so sat in _build and
+#: verdicted on it -- the extension trap's FIFTH recurrence (a bisect that
+#: edited-then-gated in separate steps disassembled the PREVIOUS build three
+#: times).  A gate that inspects an artifact must produce the artifact.
+r5dbuild.module()
 SO = HERE / "_build" / f"rung6f_cuda_f{r5dbuild.FORM_WORDS}.so"
 FORBIDDEN_ANY = ("LDL", "STL", "ATOM")
 FORBIDDEN_BODY = ("IMAD.WIDE", "I2F", "F2I", "MUFU")

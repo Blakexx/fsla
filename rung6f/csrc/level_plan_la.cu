@@ -416,6 +416,37 @@ template <int D, int B, int BC> struct LevelPlan {
                 "BLOCK GEOMETRY: more block than slot space");
   static constexpr int width(int) { return B; }  // the uniform widths policy
   static constexpr long blocks = slots / BC;
+  //: per-level spans, most-significant level first: `singles` levels at one
+  //: digit, then the partial run (if any), then the whole levels.
+  static constexpr int span_at(int l) {
+    return l < singles ? 1
+           : (partial_span > 1 && l == singles) ? partial_span
+                                                : B;
+  }
+  //: a level's table-entry count: its group count when tested, zero when whole
+  static constexpr int entries_at(int l) {
+    return span_at(l) < B ? B / span_at(l) : 0;
+  }
+  static constexpr int groups_at(int l) {
+    return span_at(l) < B ? B / span_at(l) : 1;
+  }
+  //: how many clause words the form ANDs per side
+  static constexpr int clauses = singles + (partial_span > 1 ? 1 : 0);
+  //: all-INT arithmetic: the suffix products are bounded by the block count,
+  //: and int-by-constexpr-pow2 is shifts -- the long form dragged 64-bit ops
+  //: into two knife-edge register floors and spilled them.
+  static constexpr int suffix_groups(int l) {
+    return l >= D ? 1 : groups_at(l) * suffix_groups(l + 1);
+  }
+  static_assert(blocks == (long)(int)blocks, "the block lattice fits int");
+  static constexpr int prefix_entries(int l) {
+    return l == 0 ? 0 : prefix_entries(l - 1) + entries_at(l - 1);
+  }
+  //: the block's run index at level l, and its table row -- compile-time
+  //: divisors throughout (pow2 groups), so the map is shifts and masks.
+  static __device__ __forceinline__ int entry_at(int l, int blk) {
+    return prefix_entries(l) + (blk / suffix_groups(l + 1)) % groups_at(l);
+  }
   //: table entries per side: full width per single-digit level, width/run for
   //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
   //: product, which is why the table does not grow with N.
@@ -471,6 +502,55 @@ template <int W0, int W1, int BC> struct BlockPlan {
                 "the legacy two-level entry count must be the level plan's -- "
                 "if these disagree the generalization changed the schedule");
 };
+
+//: THE FORM'S BODY AS A REAL __forceinline__ FUNCTION: ptxas outlined the
+//: grown two-clause form into a CALL with an ABI frame (stack stores the
+//: spill gate refuses), and the always_inline attribute is not honored on a
+//: lambda -- it is on a function.
+template <int kClauses, int kFormWordsT, int kThreadsT>
+__device__ __forceinline__ void form_impl(
+    int &formEnd, int limit, int tid, const uint32_t *tRa, const uint32_t *tWa,
+    const uint32_t *tRb, const uint32_t *tWb, const uint32_t *tRc,
+    const uint32_t *tWc, const uint32_t *tRd, const uint32_t *tWd,
+    uint32_t tailMask, int lastWord, uint32_t *sfR, uint32_t *sfW) {
+  for (int w = formEnd + tid; w < limit; w += kThreadsT) {
+    const uint32_t off = (uint32_t)w * (uint32_t)sizeof(uint32_t);
+    //: the low clause counts keep rung 6's exact expression shapes (no seeded
+    //: AND) -- codegen parity first, generality above two via the seed.
+    uint32_t rm, wm;
+    if constexpr (kClauses == 0) {
+      rm = 0xFFFFFFFFu;
+      wm = 0xFFFFFFFFu;
+    } else if constexpr (kClauses == 1) {
+      rm = *reinterpret_cast<const uint32_t *>(gather_ptr(tRa, off));
+      wm = *reinterpret_cast<const uint32_t *>(gather_ptr(tWa, off));
+    } else if constexpr (kClauses == 2) {
+      rm = *reinterpret_cast<const uint32_t *>(gather_ptr(tRa, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tRb, off));
+      wm = *reinterpret_cast<const uint32_t *>(gather_ptr(tWa, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tWb, off));
+    } else {
+      rm = *reinterpret_cast<const uint32_t *>(gather_ptr(tRa, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tRb, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tRc, off));
+      wm = *reinterpret_cast<const uint32_t *>(gather_ptr(tWa, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tWb, off)) &
+           *reinterpret_cast<const uint32_t *>(gather_ptr(tWc, off));
+      if constexpr (kClauses > 3) {
+        rm &= *reinterpret_cast<const uint32_t *>(gather_ptr(tRd, off));
+        wm &= *reinterpret_cast<const uint32_t *>(gather_ptr(tWd, off));
+      }
+    }
+    if (w == lastWord) {
+      rm &= tailMask;
+      wm &= tailMask;
+    }
+    const int slot = w & (kFormWordsT - 1);
+    sfR[slot] = rm;
+    sfW[slot] = wm;
+  }
+  formEnd = limit;
+}
 
 //: THE UNION TABLE'S ONE STRUCTURAL CONSTANT.  Tokens are the table's minor axis
 //: and they are packed thirty-two to a word, which is the lockstep unit's width,
@@ -1029,23 +1109,42 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: whole slot space, so there is exactly one of them -- has no clause at all.
   //: RUNG 5A OR-ED THE SIDES to get a group bit; the cook keeps them APART,
   //: which is the whole of per-side compaction at the schedule's end.
-  constexpr bool kTailWhole = P::tail_span == W1;
-  constexpr bool kNoClause = P::entries == 0;
+  using LP = typename P::LP;
+  constexpr int kClauses = LP::clauses;
   constexpr int kEntries = P::entries;
+  static_assert(kEntries == LP::entries, "plan and view agree");
   const int tokWords = tok_words(L);
   const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
   const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
-  const int e_lead = kNoClause ? 0 : blk / P::tail_groups;
-  const int e_tail = kTailWhole ? 0 : P::lead_entries + (blk % P::tail_groups);
   //: THE FORM'S FOUR TABLE ROWS ARE PINNED BASES AND A 32-BIT DISPLACEMENT.  The
   //: form is a MAP over words, not a walk, so a thread's word is an index rather
   //: than the previous address plus one; `gather_ptr` is what keeps that index a
   //: zero-extended byte displacement instead of a widening multiply.  The bound is
   //: `kMaxTokens / 32` words, four bytes each.
-  const uint32_t *const tR0 = pin_address(tbl + rowR + (long)e_lead * tokWords);
-  const uint32_t *const tW0 = pin_address(tbl + rowW + (long)e_lead * tokWords);
-  const uint32_t *const tR1 = pin_address(tbl + rowR + (long)e_tail * tokWords);
-  const uint32_t *const tW1 = pin_address(tbl + rowW + (long)e_tail * tokWords);
+  //: one pinned row per SURVIVING clause per side -- the levels the block
+  //: does not span entirely, in level order.  At D = 2 this is exactly the
+  //: old tR0/tR1 pair; at depth it grows to at most D rows.
+  //: NAMED SCALARS, never an array: the clause loop's callees carry inline
+  //: asm, which blocks unrolling, and a runtime-indexed pointer array is
+  //: demoted to a STACK FRAME -- the gate caught exactly that (STL [R1+..])
+  //: on the two-clause arms.  Unused clauses alias clause 0 and are never
+  //: read (the AND stanzas below are constexpr-gated the same way).
+  const uint32_t *tRa = tbl, *tWa = tbl, *tRb = tbl, *tWb = tbl,
+                 *tRc = tbl, *tWc = tbl, *tRd = tbl, *tWd = tbl;
+#define ROLA_CLAUSE(CL_, PR_, PW_)                                             \
+  if constexpr ((CL_) < kClauses) {                                            \
+    constexpr int kDiv = LP::suffix_groups((CL_) + 1);                         \
+    constexpr int kGrp = LP::groups_at(CL_);                                   \
+    constexpr int kPre = LP::prefix_entries(CL_);                              \
+    const int e = kPre + (blk / kDiv) % kGrp;                                  \
+    PR_ = pin_address(tbl + rowR + (long)e * tokWords);                        \
+    PW_ = pin_address(tbl + rowW + (long)e * tokWords);                        \
+  }
+  ROLA_CLAUSE(0, tRa, tWa)
+  ROLA_CLAUSE(1, tRb, tWb)
+  ROLA_CLAUSE(2, tRc, tWc)
+  ROLA_CLAUSE(3, tRd, tWd)
+#undef ROLA_CLAUSE
 
   //: THE LAST WORD'S PADDING TOKENS DO NOT EXIST.  The table leaves them zero;
   //: the clause-free block has no table to leave them zero, so the mask is
@@ -1063,33 +1162,15 @@ compacted_kernel(const __nv_bfloat16 *__restrict__ pread,
   //: its own accord when it catches its tail -- backpressure, with no test for it
   //: anywhere but the loop bound.
   int formEnd = 0;
+  //: FORCED INLINE: the two-clause arms grew this body past ptxas's
+  //: outlining threshold and it became a CALL with an ABI frame -- stack
+  //: stores the spill gate rightly refuses.  Inline it at all three sites.
   auto form = [&]() {
     const int head = scook[kCookWord] + kFormWords;
     const int limit = head < tokWords ? head : tokWords;
-    for (int w = formEnd + tid; w < limit; w += kThreads) {
-      const uint32_t off = (uint32_t)w * (uint32_t)sizeof(uint32_t);
-      uint32_t rm, wm;
-      if constexpr (kNoClause) {
-        rm = 0xFFFFFFFFu;
-        wm = 0xFFFFFFFFu;
-      } else if constexpr (kTailWhole) {
-        rm = *reinterpret_cast<const uint32_t *>(gather_ptr(tR0, off));
-        wm = *reinterpret_cast<const uint32_t *>(gather_ptr(tW0, off));
-      } else {
-        rm = *reinterpret_cast<const uint32_t *>(gather_ptr(tR0, off)) &
-             *reinterpret_cast<const uint32_t *>(gather_ptr(tR1, off));
-        wm = *reinterpret_cast<const uint32_t *>(gather_ptr(tW0, off)) &
-             *reinterpret_cast<const uint32_t *>(gather_ptr(tW1, off));
-      }
-      if (w == lastWord) {
-        rm &= tailMask;
-        wm &= tailMask;
-      }
-      const int slot = w & (kFormWords - 1);
-      sfR[slot] = rm;
-      sfW[slot] = wm;
-    }
-    formEnd = limit;
+    form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, tRa, tWa,
+                                              tRb, tWb, tRc, tWc, tRd, tWd,
+                                              tailMask, lastWord, sfR, sfW);
   };
 
   //: A PRODUCER REFILLS IN BATCHES; THAT IS WHAT THE RING IS FOR.  Forming the
@@ -1624,27 +1705,32 @@ __global__ void union_table_kernel(const __nv_bfloat16 *__restrict__ pread,
       tbl + ((long)(2 * blockIdx.y + 1) * P::entries) * entryStride + w};
   const __nv_bfloat16 *const ampBase[2] = {pread + off, pwrite + off};
 
+  //: one stanza per level, spans from the plan -- a whole level emits
+  //: nothing, exactly as its clause is not evaluated.  Amp row layout is
+  //: [level 0 | level 1 | ...], each `width(l)` wide.
+  using LP = typename P::LP;
 #pragma unroll
   for (int side = 0; side < 2; ++side) {
-    const __nv_bfloat16 *p = ampBase[side];
     uint32_t *out = outBase[side];
-#pragma unroll
-    for (int e = 0; e < P::lead_entries; ++e) {
-      const uint32_t v = or_run<P::lead_span>(p);
-      const uint32_t vote = lane_ballot(real && (v & kBf16MagnitudeMask) != 0u);
-      if (lane == 0) *out = vote;
-      p += P::lead_span;
-      out += entryStride;
+#define ROLA_TABLE_LEVEL(L_)                                                   \
+    if constexpr (L_ < 2 /* D of this view */) {                               \
+      const __nv_bfloat16 *p = ampBase[side] + (L_)*W0;                        \
+      constexpr int kSpan = LP::span_at(L_);                                   \
+      constexpr int kEnt = LP::entries_at(L_);                                 \
+      _Pragma("unroll") for (int e = 0; e < kEnt; ++e) {                       \
+        const uint32_t v = or_run<kSpan>(p);                                   \
+        const uint32_t vote =                                                  \
+            lane_ballot(real && (v & kBf16MagnitudeMask) != 0u);               \
+        if (lane == 0) *out = vote;                                            \
+        p += kSpan;                                                            \
+        out += entryStride;                                                    \
+      }                                                                        \
     }
-    p = ampBase[side] + W0;
-#pragma unroll
-    for (int e = 0; e < P::tail_entries; ++e) {
-      const uint32_t v = or_run<P::tail_span>(p);
-      const uint32_t vote = lane_ballot(real && (v & kBf16MagnitudeMask) != 0u);
-      if (lane == 0) *out = vote;
-      p += P::tail_span;
-      out += entryStride;
-    }
+    ROLA_TABLE_LEVEL(0)
+    ROLA_TABLE_LEVEL(1)
+    ROLA_TABLE_LEVEL(2)
+    ROLA_TABLE_LEVEL(3)
+#undef ROLA_TABLE_LEVEL
   }
 }
 
