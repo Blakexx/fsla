@@ -30,7 +30,7 @@ from rola.routing.types import (  # noqa: E402
     softmax,
 )
 from rung5b import reference  # noqa: E402
-from rung6 import build  # noqa: E402
+from rung6e import build  # noqa: E402
 
 #: THE SECOND FLOOR, AND WHY THERE ARE TWO. The design's bf16 floor is not the
 #: only lower bound on the disagreement: the kernel accumulates in fp32 through a
