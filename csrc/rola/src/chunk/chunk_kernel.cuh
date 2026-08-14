@@ -1233,13 +1233,13 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: super-chunks out before the first value tile is issued.  It pays the two
   //: barriers that fill the formed ring ONCE, before the first walk; the steady
   //: state pays none.
+
   //: ---- the ENTRY STATE.  A continued sequence hands its carried state in as
   //: the same plane the epilogue writes, so the load is the store read backwards
   //: through the same staging buffer: one coalesced pass per atom into `so`,
   //: then each warp takes ITS fragments out of it.  The fragments are SET rather
   //: than accumulated -- they are provably zero here -- and the whole block is
   //: skipped on a null pointer, so a fresh sequence pays one predicate.
-  //:
   if (s_in != nullptr) {
 #pragma unroll
     for (int i = 0; i < kAtoms; ++i) {
