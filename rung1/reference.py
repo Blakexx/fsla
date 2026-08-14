@@ -69,8 +69,11 @@ def kron_bf16(p, widths, gain=None):
     c = None
     for l, pl in enumerate(levels):
         sel = pl[..., dg[:, l]]
-        if gain is not None and l == len(levels) - 1 and c is not None:
-            c = (c.float() * gain[..., None].float()).bfloat16()
+        if gain is not None and l == len(levels) - 1:
+            #: D = 1 has no outer chain: the kernel's amp0 is a literal 1.0,
+            #: so the gained coefficient is bf16(g * sel) -- one rounding.
+            c = (gain[..., None].float() if c is None else
+                 (c.float() * gain[..., None].float())).bfloat16()
         c = sel if c is None else (c.float() * sel.float()).bfloat16()
     return c
 
