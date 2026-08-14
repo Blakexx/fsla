@@ -159,6 +159,49 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodePar
   if (tid == 0) p.pc_coarse[static_cast<int64_t>(bh) * (ng + 1) + ng] = running;
 }
 
+//: THE GROWTH PROBE. `expand_side` on the WRITE side alone, condensed 16-deep and ANDed
+//: against residency: `growth[bh] = 1` iff this step deposits into an atom the page
+//: table does not map. It shares the expansion with `decode_expand_kernel` -- the same
+//: device function over the same `amp_write` pointers -- so "the probe and the step's
+//: admission agree about the write support" is a property of the call graph rather than
+//: of an audit. docs/internals/decode_expand.md#growth-probe
+template <bool IN_SMEM>
+__global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(DecodeParams p) {
+  extern __shared__ char smem_raw[];
+  const int bh = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int nw = p.n_words;
+
+  uint32_t* smem = reinterpret_cast<uint32_t*>(smem_raw);
+  uint32_t* scratch = p.scratch + static_cast<int64_t>(bh) * 2 * nw;
+  uint32_t* buf0 = IN_SMEM ? smem : scratch;
+  uint32_t* buf1 = IN_SMEM ? (smem + nw) : (scratch + nw);
+  uint32_t* bits_w = p.bits_w + static_cast<int64_t>(bh) * nw;
+
+  expand_side(p, p.D, bh, p.amp_write, buf0, buf1, bits_w);
+
+  //: A bitmap WORD is exactly TWO atoms, because the atom is 16 leaves and leaf order is
+  //: the bitmap's bit order. So the condensation is a pair of half-word tests and needs
+  //: no loop over leaves: docs/internals/decode_expand.md#growth-probe
+  const int32_t* page_row = p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+  int found = 0;
+  for (int w = tid; w < nw; w += kDecodeThreads) {
+    const uint32_t word = bits_w[w];
+    if (word == 0u) continue;
+    const int atom = w << 1;
+    if ((word & 0x0000ffffu) != 0u && atom < p.atoms_per_bh && page_row[atom] < 0) found = 1;
+    if ((word & 0xffff0000u) != 0u && (atom + 1) < p.atoms_per_bh && page_row[atom + 1] < 0) {
+      found = 1;
+    }
+  }
+  __shared__ int any_new;
+  if (tid == 0) any_new = 0;
+  __syncthreads();
+  if (found) any_new = 1;
+  __syncthreads();
+  if (tid == 0) p.growth[bh] = any_new;
+}
+
 }  // namespace
 
 //: The dynamic SMEM the SMEM arm needs: the ping-pong pair and nothing else. Host-
@@ -179,6 +222,18 @@ void launch_decode_expand(const DecodeParams& p, int64_t smem_budget) {
     decode_expand_kernel<true><<<p.BH, kDecodeThreads, smem, stream>>>(p);
   } else {
     decode_expand_kernel<false><<<p.BH, kDecodeThreads, smem, stream>>>(p);
+  }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void launch_decode_growth_probe(const DecodeParams& p, int64_t smem_budget) {
+  const bool in_smem = decode_expand_uses_smem(p.n_words, smem_budget);
+  const size_t smem = in_smem ? decode_expand_smem_bytes(p.n_words) : 0;
+  auto stream = at::cuda::getCurrentCUDAStream();
+  if (in_smem) {
+    decode_growth_probe_kernel<true><<<p.BH, kDecodeThreads, smem, stream>>>(p);
+  } else {
+    decode_growth_probe_kernel<false><<<p.BH, kDecodeThreads, smem, stream>>>(p);
   }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

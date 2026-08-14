@@ -56,12 +56,6 @@ std::uint64_t VmmOwner::checked_mul(std::uint64_t lhs, std::uint64_t rhs, const 
   return lhs * rhs;
 }
 
-std::uint64_t VmmOwner::checked_add(std::uint64_t lhs, std::uint64_t rhs, const char* what) {
-  TORCH_CHECK(lhs <= std::numeric_limits<std::uint64_t>::max() - rhs, "CUDA VMM ", what,
-              " overflows uint64");
-  return lhs + rhs;
-}
-
 std::size_t VmmOwner::checked_size(std::uint64_t value, const char* what) {
   TORCH_CHECK(value <= std::numeric_limits<std::size_t>::max(), "CUDA VMM ", what,
               " exceeds host size_t");
@@ -155,116 +149,53 @@ VmmProbe VmmOwner::probe(int device) {
 }
 
 std::shared_ptr<VmmOwner> VmmOwner::create(int device, std::int64_t dense_limit_pages,
-                                           std::int64_t bp, std::int64_t dqk, std::int64_t dv,
-                                           bool global_mass, std::int64_t target_chunk_bytes) {
-  TORCH_CHECK(dense_limit_pages > 0 && bp > 0 && dqk > 0 && dv > 0,
-              "CUDA VMM cache dimensions must be positive");
+                                           std::int64_t page_rows, std::int64_t page_cols,
+                                           std::int64_t target_chunk_bytes) {
+  TORCH_CHECK(dense_limit_pages > 0 && page_rows > 0 && page_cols > 0,
+              "CUDA VMM page geometry must be positive");
   const auto normalized_device = normalize_device(device);
   const auto capability = probe(normalized_device);
-  TORCH_CHECK(capability.supported,
-              "progressive_memory=True requires CUDA virtual memory management on device ",
-              capability.device, "; ", capability.reason,
-              ". Set progressive_memory=False explicitly for fully committed backing.");
+  TORCH_CHECK(capability.supported, "the RoLA page arena's VMM backing requires CUDA virtual ",
+              "memory management on device ", capability.device, "; ", capability.reason);
   auto owner = std::shared_ptr<VmmOwner>(
-      new VmmOwner(capability.device, dense_limit_pages, bp, dqk, dv, global_mass,
+      new VmmOwner(capability.device, dense_limit_pages, page_rows, page_cols,
                    capability.allocation_granularity, target_chunk_bytes));
-  owner->reserve_planes();
+  owner->reserve_plane();
   owner->map_initial_chunk();
   return owner;
 }
 
-VmmOwner::VmmOwner(int device, std::int64_t dense_limit_pages, std::int64_t bp, std::int64_t dqk,
-                   std::int64_t dv, bool global_mass, std::uint64_t allocation_granularity,
+VmmOwner::VmmOwner(int device, std::int64_t dense_limit_pages, std::int64_t page_rows,
+                   std::int64_t page_cols, std::uint64_t allocation_granularity,
                    std::int64_t target_chunk_bytes)
     : device_(device),
       dense_limit_pages_(dense_limit_pages),
-      bp_(bp),
-      dqk_(dqk),
-      dv_(dv),
-      global_mass_(global_mass),
+      page_rows_(page_rows),
+      page_cols_(page_cols),
       allocation_granularity_(allocation_granularity),
       view_tracker_(std::make_shared<ViewTracker>()) {
   TORCH_CHECK(target_chunk_bytes > 0, "CUDA VMM target_chunk_bytes must be positive");
-  const auto bp_u = static_cast<std::uint64_t>(bp);
-  const auto dqk_u = static_cast<std::uint64_t>(dqk);
-  const auto dv_u = static_cast<std::uint64_t>(dv);
-  const auto value_elements = checked_mul(checked_mul(bp_u, dqk_u, "value page element count"),
-                                          dv_u, "value page element count");
-  const auto mass_elements = checked_mul(bp_u, dqk_u, "mass page element count");
-  const auto value_page_bytes = checked_mul(value_elements, sizeof(float), "value page byte count");
-  const auto mass_page_bytes = checked_mul(mass_elements, sizeof(float), "mass page byte count");
-  value_.page_bytes = checked_size(value_page_bytes, "value page byte count");
-  mass_.page_bytes = checked_size(mass_page_bytes, "mass page byte count");
-  const auto chunk_pages_u =
-      std::max<std::uint64_t>(1, static_cast<std::uint64_t>(target_chunk_bytes) / value_page_bytes);
+  const auto elements = checked_mul(static_cast<std::uint64_t>(page_rows),
+                                    static_cast<std::uint64_t>(page_cols), "page element count");
+  const auto bytes = checked_mul(elements, sizeof(float), "page byte count");
+  page_bytes_ = checked_size(bytes, "page byte count");
+  const auto chunk_pages =
+      std::max<std::uint64_t>(1, static_cast<std::uint64_t>(target_chunk_bytes) / bytes);
   chunk_pages_ = static_cast<std::int64_t>(
-      std::min<std::uint64_t>(static_cast<std::uint64_t>(dense_limit_pages), chunk_pages_u));
+      std::min<std::uint64_t>(static_cast<std::uint64_t>(dense_limit_pages), chunk_pages));
 }
 
-void VmmOwner::reserve_planes() {
+void VmmOwner::reserve_plane() {
   c10::cuda::CUDAGuard guard(device_);
-  const auto reserve = [this](Plane& plane) {
-    const auto payload =
-        checked_mul(static_cast<std::uint64_t>(plane.page_bytes),
-                    static_cast<std::uint64_t>(dense_limit_pages_), "virtual extent");
-    plane.virtual_bytes =
-        round_up(checked_size(payload, "virtual extent"), allocation_granularity_);
-    check(cuMemAddressReserve(&plane.address, plane.virtual_bytes, 0, 0, 0), "cuMemAddressReserve");
-    virtual_bytes_ = checked_add(virtual_bytes_, static_cast<std::uint64_t>(plane.virtual_bytes),
-                                 "total virtual extent");
-  };
-  reserve(value_);
-  if (global_mass_) reserve(mass_);
+  const auto payload =
+      checked_mul(static_cast<std::uint64_t>(page_bytes_),
+                  static_cast<std::uint64_t>(dense_limit_pages_), "virtual extent");
+  virtual_bytes_ = round_up(checked_size(payload, "virtual extent"), allocation_granularity_);
+  check(cuMemAddressReserve(&address_, virtual_bytes_, 0, 0, 0), "cuMemAddressReserve");
 }
 
 void VmmOwner::map_initial_chunk() {
   grow(std::min<std::int64_t>(dense_limit_pages_, chunk_pages_));
-}
-
-void VmmOwner::grow_plane(Plane& plane, std::size_t target_bytes,
-                          std::vector<GrowthMark>& mapped_now) {
-  if (target_bytes <= plane.mapped_bytes) return;
-  target_bytes = round_up(target_bytes, allocation_granularity_);
-  TORCH_CHECK(target_bytes <= plane.virtual_bytes,
-              "CUDA VMM growth exceeds reserved virtual extent");
-  const auto old_chunk_count = plane.chunks.size();
-  mapped_now.push_back({&plane, old_chunk_count, plane.mapped_bytes});
-  const auto bytes = target_bytes - plane.mapped_bytes;
-  auto prop = allocation_prop(device_);
-  CUmemGenericAllocationHandle handle = 0;
-  bool mapped = false;
-  check(cuMemCreate(&handle, bytes, &prop, 0), "cuMemCreate");
-  try {
-    TORCH_CHECK(plane.mapped_bytes <= std::numeric_limits<CUdeviceptr>::max() - plane.address,
-                "CUDA VMM mapped address overflows CUdeviceptr");
-    const auto address = plane.address + plane.mapped_bytes;
-    check(cuMemMap(address, bytes, 0, handle, 0), "cuMemMap");
-    mapped = true;
-    CUmemAccessDesc access{};
-    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    access.location.id = device_;
-    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    check(cuMemSetAccess(address, bytes, &access, 1), "cuMemSetAccess");
-    plane.chunks.push_back({address, bytes, handle});
-    plane.mapped_bytes = target_bytes;
-  } catch (...) {
-    if (mapped) cuMemUnmap(plane.address + plane.mapped_bytes, bytes);
-    cuMemRelease(handle);
-    throw;
-  }
-}
-
-void VmmOwner::rollback_growth(std::vector<GrowthMark>& mapped_now) noexcept {
-  for (auto it = mapped_now.rbegin(); it != mapped_now.rend(); ++it) {
-    auto* plane = it->plane;
-    while (plane->chunks.size() > it->chunk_count) {
-      auto chunk = plane->chunks.back();
-      plane->chunks.pop_back();
-      if (chunk.address != 0 && chunk.bytes != 0) cuMemUnmap(chunk.address, chunk.bytes);
-      if (chunk.handle != 0) cuMemRelease(chunk.handle);
-    }
-    plane->mapped_bytes = it->mapped_bytes;
-  }
 }
 
 void VmmOwner::grow(std::int64_t required_pages) {
@@ -274,49 +205,55 @@ void VmmOwner::grow(std::int64_t required_pages) {
   if (required_pages <= mapped_capacity_pages()) return;
   c10::cuda::CUDAGuard guard(device_);
   const auto current_pages = mapped_capacity_pages();
+  const auto max_chunks = (dense_limit_pages_ + chunk_pages_ - 1) / chunk_pages_;
   const auto required_chunks = (required_pages + chunk_pages_ - 1) / chunk_pages_;
   const auto target_chunks =
-      current_pages == 0 ? required_chunks
-      : required_chunks >= (dense_limit_pages_ + chunk_pages_ - 1) / chunk_pages_
-          ? required_chunks
-          : required_chunks + 1;
+      (current_pages == 0 || required_chunks >= max_chunks) ? required_chunks : required_chunks + 1;
   const auto target_pages =
       std::min<std::int64_t>(dense_limit_pages_, target_chunks * chunk_pages_);
-  const auto target_value_bytes =
+  auto target_bytes =
       round_up(checked_size(checked_mul(static_cast<std::uint64_t>(target_pages),
-                                        static_cast<std::uint64_t>(value_.page_bytes),
-                                        "value growth extent"),
-                            "value growth extent"),
+                                        static_cast<std::uint64_t>(page_bytes_), "growth extent"),
+                            "growth extent"),
                allocation_granularity_);
-  const auto target_mass_bytes = round_up(
-      checked_size(checked_mul(static_cast<std::uint64_t>(target_pages),
-                               static_cast<std::uint64_t>(mass_.page_bytes), "mass growth extent"),
-                   "mass growth extent"),
-      allocation_granularity_);
-  std::vector<GrowthMark> mapped_now;
-  const auto old_committed = committed_bytes_;
+  if (target_bytes <= mapped_bytes_) return;
+  TORCH_CHECK(target_bytes <= virtual_bytes_, "CUDA VMM growth exceeds reserved virtual extent");
+
+  const auto bytes = target_bytes - mapped_bytes_;
+  auto prop = allocation_prop(device_);
+  CUmemGenericAllocationHandle handle = 0;
+  bool mapped = false;
+  check(cuMemCreate(&handle, bytes, &prop, 0), "cuMemCreate");
   try {
-    grow_plane(value_, target_value_bytes, mapped_now);
-    if (global_mass_) grow_plane(mass_, target_mass_bytes, mapped_now);
-    committed_bytes_ = checked_add(
-        static_cast<std::uint64_t>(value_.mapped_bytes),
-        global_mass_ ? static_cast<std::uint64_t>(mass_.mapped_bytes) : 0, "committed extent");
+    TORCH_CHECK(mapped_bytes_ <= std::numeric_limits<CUdeviceptr>::max() - address_,
+                "CUDA VMM mapped address overflows CUdeviceptr");
+    const auto address = address_ + mapped_bytes_;
+    check(cuMemMap(address, bytes, 0, handle, 0), "cuMemMap");
+    mapped = true;
+    CUmemAccessDesc access{};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = device_;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    check(cuMemSetAccess(address, bytes, &access, 1), "cuMemSetAccess");
+    chunks_.push_back({address, bytes, handle});
+    mapped_bytes_ = target_bytes;
+    committed_bytes_ = static_cast<std::uint64_t>(mapped_bytes_);
   } catch (...) {
-    rollback_growth(mapped_now);
-    committed_bytes_ = old_committed;
+    if (mapped) cuMemUnmap(address_ + mapped_bytes_, bytes);
+    cuMemRelease(handle);
     throw;
   }
 }
 
-void VmmOwner::remove_latest_chunk(Plane& plane) {
-  TORCH_CHECK(!plane.chunks.empty(), "CUDA VMM rollback has no committed growth chunk");
-  const auto chunk = plane.chunks.back();
-  TORCH_CHECK(chunk.address + chunk.bytes == plane.address + plane.mapped_bytes,
+void VmmOwner::remove_latest_chunk() {
+  TORCH_CHECK(!chunks_.empty(), "CUDA VMM rollback has no committed growth chunk");
+  const auto chunk = chunks_.back();
+  TORCH_CHECK(chunk.address + chunk.bytes == address_ + mapped_bytes_,
               "CUDA VMM rollback chunk does not end at the mapped extent");
   check(cuMemUnmap(chunk.address, chunk.bytes), "rollback cuMemUnmap");
   check(cuMemRelease(chunk.handle), "rollback cuMemRelease");
-  plane.chunks.pop_back();
-  plane.mapped_bytes -= chunk.bytes;
+  chunks_.pop_back();
+  mapped_bytes_ -= chunk.bytes;
 }
 
 void VmmOwner::rollback_to(std::int64_t target_pages) {
@@ -328,67 +265,42 @@ void VmmOwner::rollback_to(std::int64_t target_pages) {
               "CUDA VMM rollback could not quiesce the device");
   if (target_pages == mapped_capacity_pages()) return;
 
-  auto target_bytes = [&](const Plane& plane, const char* what) {
-    return round_up(checked_size(checked_mul(static_cast<std::uint64_t>(target_pages),
-                                             static_cast<std::uint64_t>(plane.page_bytes), what),
-                                 what),
-                    allocation_granularity_);
-  };
-  const auto value_target = target_bytes(value_, "value rollback extent");
-  const auto mass_target = global_mass_ ? target_bytes(mass_, "mass rollback extent") : 0;
-
-  auto validate_boundary = [](const Plane& plane, std::size_t target, const char* what) {
-    TORCH_CHECK(target <= plane.mapped_bytes, what, " exceeds mapped extent");
-    std::size_t boundary = 0;
-    bool found = target == 0;
-    for (const auto& chunk : plane.chunks) {
-      TORCH_CHECK(boundary <= std::numeric_limits<std::size_t>::max() - chunk.bytes, what,
-                  " overflows size_t");
-      boundary += chunk.bytes;
-      found = found || boundary == target;
-    }
-    TORCH_CHECK(found, what, " is not a committed chunk boundary");
-    TORCH_CHECK(!plane.chunks.empty() && target >= plane.chunks.front().bytes,
-                "CUDA VMM rollback cannot remove the initial headroom chunk");
-  };
-  validate_boundary(value_, value_target, "value rollback target");
-  if (global_mass_) {
-    validate_boundary(mass_, mass_target, "mass rollback target");
+  const auto target =
+      round_up(checked_size(checked_mul(static_cast<std::uint64_t>(target_pages),
+                                        static_cast<std::uint64_t>(page_bytes_), "rollback extent"),
+                            "rollback extent"),
+               allocation_granularity_);
+  TORCH_CHECK(target <= mapped_bytes_, "CUDA VMM rollback target exceeds mapped extent");
+  std::size_t boundary = 0;
+  bool found = target == 0;
+  for (const auto& chunk : chunks_) {
+    TORCH_CHECK(boundary <= std::numeric_limits<std::size_t>::max() - chunk.bytes,
+                "CUDA VMM rollback boundary overflows size_t");
+    boundary += chunk.bytes;
+    found = found || boundary == target;
   }
+  TORCH_CHECK(found, "CUDA VMM rollback target is not a committed chunk boundary");
+  TORCH_CHECK(!chunks_.empty() && target >= chunks_.front().bytes,
+              "CUDA VMM rollback cannot remove the initial headroom chunk");
 
-  auto restore_plane = [&](Plane& plane, std::size_t target) {
-    while (plane.mapped_bytes > target) {
-      remove_latest_chunk(plane);
-    }
-    TORCH_CHECK(plane.mapped_bytes == target, "CUDA VMM rollback did not restore a plane exactly");
-  };
-  restore_plane(value_, value_target);
-  if (global_mass_) restore_plane(mass_, mass_target);
+  while (mapped_bytes_ > target) remove_latest_chunk();
+  TORCH_CHECK(mapped_bytes_ == target, "CUDA VMM rollback did not restore the plane exactly");
   TORCH_CHECK(mapped_capacity_pages() == target_pages,
               "CUDA VMM rollback did not restore the requested prior capacity");
-  committed_bytes_ = checked_add(static_cast<std::uint64_t>(value_.mapped_bytes),
-                                 global_mass_ ? static_cast<std::uint64_t>(mass_.mapped_bytes) : 0,
-                                 "committed rollback extent");
+  committed_bytes_ = static_cast<std::uint64_t>(mapped_bytes_);
 }
 
 std::int64_t VmmOwner::mapped_capacity_pages() const {
-  const auto value_pages = value_.page_bytes == 0 ? 0 : value_.mapped_bytes / value_.page_bytes;
-  if (!global_mass_) {
-    return static_cast<std::int64_t>(
-        std::min<std::size_t>(value_pages, static_cast<std::size_t>(dense_limit_pages_)));
-  }
-  const auto mass_pages = mass_.page_bytes == 0 ? 0 : mass_.mapped_bytes / mass_.page_bytes;
+  const auto pages = page_bytes_ == 0 ? 0 : mapped_bytes_ / page_bytes_;
   return static_cast<std::int64_t>(
-      std::min({value_pages, mass_pages, static_cast<std::size_t>(dense_limit_pages_)}));
+      std::min<std::size_t>(pages, static_cast<std::size_t>(dense_limit_pages_)));
 }
 
-torch::Tensor VmmOwner::make_view(const Plane& plane, bool mass) {
+torch::Tensor VmmOwner::base() {
   TORCH_CHECK(!closed_, "CUDA VMM owner is closed");
   view_tracker_->live_views.fetch_add(1, std::memory_order_relaxed);
   auto tracker = view_tracker_;
-  std::vector<std::int64_t> shape =
-      mass ? std::vector<std::int64_t>{dense_limit_pages_, bp_, dqk_}
-           : std::vector<std::int64_t>{dense_limit_pages_, bp_, dqk_, dv_};
+  const std::vector<std::int64_t> shape{dense_limit_pages_, page_rows_, page_cols_};
   auto options = torch::TensorOptions().device(torch::kCUDA, device_).dtype(torch::kFloat32);
   // Keep the driver allocation alive for every tensor view. This prevents a
   // caller holding a slice from outliving the native owner and observing an
@@ -396,7 +308,7 @@ torch::Tensor VmmOwner::make_view(const Plane& plane, bool mass) {
   auto owner_lifetime = shared_from_this();
   try {
     return at::from_blob(
-        reinterpret_cast<void*>(plane.address), shape,
+        reinterpret_cast<void*>(address_), shape,
         [tracker, owner_lifetime](void*) {
           tracker->live_views.fetch_sub(1, std::memory_order_relaxed);
           (void)owner_lifetime;
@@ -408,30 +320,21 @@ torch::Tensor VmmOwner::make_view(const Plane& plane, bool mass) {
   }
 }
 
-torch::Tensor VmmOwner::value_base() { return make_view(value_, false); }
-
-torch::Tensor VmmOwner::mass_base() {
-  TORCH_CHECK(global_mass_, "raw CUDA VMM backing has no mass plane");
-  return make_view(mass_, true);
-}
-
 void VmmOwner::reset() {
   TORCH_CHECK(!closed_, "CUDA VMM owner is closed");
   // Reset is intentionally logical only. Mappings and their stable addresses survive.
 }
 
-void VmmOwner::release_planes() noexcept {
-  for (Plane* plane : {&value_, &mass_}) {
-    if (plane->address == 0) continue;
-    for (auto it = plane->chunks.rbegin(); it != plane->chunks.rend(); ++it) {
-      if (it->address != 0 && it->bytes != 0) cuMemUnmap(it->address, it->bytes);
-      if (it->handle != 0) cuMemRelease(it->handle);
-    }
-    plane->chunks.clear();
-    plane->mapped_bytes = 0;
-    cuMemAddressFree(plane->address, plane->virtual_bytes);
-    plane->address = 0;
+void VmmOwner::release_plane() noexcept {
+  if (address_ == 0) return;
+  for (auto it = chunks_.rbegin(); it != chunks_.rend(); ++it) {
+    if (it->address != 0 && it->bytes != 0) cuMemUnmap(it->address, it->bytes);
+    if (it->handle != 0) cuMemRelease(it->handle);
   }
+  chunks_.clear();
+  mapped_bytes_ = 0;
+  cuMemAddressFree(address_, virtual_bytes_);
+  address_ = 0;
   committed_bytes_ = 0;
   virtual_bytes_ = 0;
 }
@@ -443,7 +346,7 @@ void VmmOwner::close() {
   c10::cuda::CUDAGuard guard(device_);
   TORCH_CHECK(cudaDeviceSynchronize() == cudaSuccess,
               "CUDA VMM close could not quiesce the device");
-  release_planes();
+  release_plane();
   closed_ = true;
 }
 
@@ -464,7 +367,7 @@ VmmOwner::~VmmOwner() noexcept {
     if (quiesce()) {
       try {
         c10::cuda::CUDAGuard guard(device_);
-        release_planes();
+        release_plane();
       } catch (...) {
         // Destructors cannot report driver failures.
       }
@@ -473,9 +376,9 @@ VmmOwner::~VmmOwner() noexcept {
 }
 
 std::shared_ptr<VmmOwner> create_vmm_owner(int device, std::int64_t dense_limit_pages,
-                                           std::int64_t bp, std::int64_t dqk, std::int64_t dv,
-                                           bool global_mass, std::int64_t target_chunk_bytes) {
-  return VmmOwner::create(device, dense_limit_pages, bp, dqk, dv, global_mass, target_chunk_bytes);
+                                           std::int64_t page_rows, std::int64_t page_cols,
+                                           std::int64_t target_chunk_bytes) {
+  return VmmOwner::create(device, dense_limit_pages, page_rows, page_cols, target_chunk_bytes);
 }
 
 }  // namespace rola::paging

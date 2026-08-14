@@ -38,6 +38,13 @@ _ATOM_ROW_MASK = MMA_K_QUANTUM - 1
 
 _ABSENT_PAGE = -1
 
+#: The driver-allocation unit the VMM backing commits in, in bytes. ``None`` resolves it
+#: to the device's own ``cuMemGetAllocationGranularity`` MINIMUM, which is the finest
+#: commitment the hardware admits: a smaller target would be rounded back up to it and a
+#: larger one would over-commit for no reason. It is a knob only so a measurement can
+#: coarsen it deliberately.
+C_VMM_CHUNK_BYTES: int | None = None
+
 #: **§8 PLACEHOLDER** ``C_EXTENT_ATOMS``. The pool is carved into runs of this many
 #: CONSECUTIVE slots, and atoms admitted together take consecutive ids inside a run.
 #: FILLED BY: the PCIe/HBM batch-efficiency curve.
@@ -48,6 +55,55 @@ _ABSENT_PAGE = -1
 #: page gave for free, so a wrong placeholder cannot be worse than the thing this
 #: replaces.
 C_EXTENT_ATOMS: int | None = None
+
+
+_VMM_PROBE: dict[int, dict] = {}
+
+
+def _vmm_probe(device: torch.device) -> dict:
+    """The driver's own capability verdict for one device, proven ONCE.
+
+    ``rola_vmm_probe`` does not query an attribute and believe it: it reserves, maps,
+    grants access to, unmaps and releases one granularity-sized allocation in this
+    context, and reports ``supported`` only if every step returned success. Caching it
+    per device index is what keeps a per-arena question off the arena's constructor.
+    """
+    from rola.ops._ext import extension
+
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    probe = _VMM_PROBE.get(index)
+    if probe is None:
+        probe = extension().rola_vmm_probe(device=index)
+        _VMM_PROBE[index] = probe
+    return probe
+
+
+def vmm_supported(device: torch.device | str) -> bool:
+    """Whether this device's driver can serve the VMM backing."""
+    device = torch.device(device)
+    return device.type == "cuda" and bool(_vmm_probe(device)["supported"])
+
+
+def _resolve_backing(backing: str, device: torch.device) -> str:
+    if backing not in ("auto", "vmm", "dense"):
+        raise ValueError(f"backing must be 'auto', 'vmm' or 'dense', got {backing!r}")
+    if backing == "dense":
+        return "dense"
+    if device.type != "cuda":
+        if backing == "vmm":
+            raise ValueError(
+                f"the VMM backing is CUDA-driver memory and this arena is on {device}; "
+                "a host arena has one backing and it is the dense allocation")
+        return "dense"
+    probe = _vmm_probe(device)
+    if not probe["supported"]:
+        raise RuntimeError(
+            f"the page arena's VMM backing is unavailable on {device}: {probe['reason']}. "
+            "Paging's physical-memory claim IS the driver commitment, so the arena "
+            "refuses rather than falling back to a dense allocation that would save "
+            "nothing and still be reported as paged. Pass backing='dense' to ask for the "
+            "unpaged footprint deliberately.")
+    return "vmm"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,28 +173,38 @@ class AtomKeying:
 class PagingResult:
     """One call's committed-state accounting (spec §7.1's reported quantities)."""
 
-    #: Atoms with a committed slot after this call's publication. Admission is TOTAL
-    #: (the capped mode is deleted), so this is exactly the set the routing realized
-    #: plus anything a continuation carried in.
-    resident_pages: int
-    #: High-water mark of :attr:`resident_pages` over the arena's lifetime.
+    #: Slots the allocator has handed out after this call's publication -- the CURSOR,
+    #: which is the residency PLUS whatever alignment gap :class:`ExtentAllocator` opened
+    #: (a placement tendency the class refuses to promise as an invariant). It is what
+    #: sizes the physical commitment, and it is a host integer. The EXACT residency is
+    #: the page table's popcount, :attr:`PageArena.resident_pages`.
+    allocated_pages: int
+    #: High-water mark of :attr:`allocated_pages` over the arena's lifetime.
     peak_pages: int
     #: Logical atoms this call's routing actually realized on the write side -- the
     #: popcount of §4.1's atom condensation, which is EXACT rather than a bound.
     realized_owners: int
     #: ``atoms_per_bh``: what a dense ``[N, cols]`` state would provision per ``bh``.
     owners_total: int
-    #: Bytes of fp32 state actually committed.
-    resident_bytes: int
+    #: Bytes of fp32 state the allocator has handed out.
+    allocated_bytes: int
     #: Bytes a dense ``[BH, N, cols]`` fp32 state would occupy -- the counterfactual the
     #: feature exists to beat.
     dense_bytes: int
-    #: Driver-committed bytes when the arena is VMM-backed; ``None`` otherwise.
-    committed_bytes: int | None
+    #: PHYSICAL bytes the CUDA driver has mapped. This is the receipt: under the VMM
+    #: backing it is :attr:`allocated_bytes` rounded up to the owner's chunk granularity
+    #: (plus its one-chunk lookahead), and under the dense bridge it is
+    #: :attr:`dense_bytes`, because the bridge's one allocation IS the dense limit.
+    committed_bytes: int
 
     @property
-    def resident_fraction(self) -> float:
-        return self.resident_bytes / self.dense_bytes if self.dense_bytes else 0.0
+    def allocated_fraction(self) -> float:
+        return self.allocated_bytes / self.dense_bytes if self.dense_bytes else 0.0
+
+    @property
+    def committed_fraction(self) -> float:
+        """The savings claim, as the driver measures it."""
+        return self.committed_bytes / self.dense_bytes if self.dense_bytes else 0.0
 
 
 class ExtentAllocator:
@@ -216,9 +282,20 @@ class PageArena:
     limit (``BH * atoms_per_bh``) and it COMMITS only what :meth:`plan_exact` admits,
     which is the routing's exact write set. A cap over a planned-exact allocator is
     either never-binding or a self-inflicted refusal, and the storage it would have
-    sized is the storage paging exists not to touch: under the VMM owner the extent is
-    reserved VIRTUALLY and physical commitment follows the plan, and under the
-    dense-tensor bridge here the pool is the one allocation the bridge costs.
+    sized is the storage paging exists not to touch.
+
+    **THE TWO BACKINGS, AND WHY NEITHER IS A FALLBACK.** ``backing='vmm'`` reserves the
+    dense limit as ADDRESS SPACE (free) and asks the CUDA driver for physical memory only
+    as the allocator hands out slots -- which is the entire physical-memory promise of
+    paging, and the reason :attr:`committed_bytes` is a receipt rather than a restatement
+    of the dense limit. ``backing='dense'`` is one ``torch.zeros`` at the dense limit: it
+    is the CPU backing (a host device has no driver VMM at all) and the instrument the
+    equivalence gates compare against, never a rescue path. ``backing='auto'`` -- the
+    default -- resolves to ``'vmm'`` on CUDA and ``'dense'`` off it, and a CUDA device
+    whose driver cannot serve VMM RAISES rather than silently degrading (the closed-world
+    rule: a measurement must not be able to quote the bridge as the feature). The
+    capability is proven once per device by :func:`vmm_supported`, which runs the
+    driver's full reserve/map/access round trip, not an attribute query.
 
     **NOTE ON ``BC``.** The arena takes it only to resolve the default
     ``extent_atoms`` (§8's ``C_EXTENT_ATOMS`` default is ``QPO``) and to report the
@@ -232,7 +309,8 @@ class PageArena:
     """
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,
-                 device: torch.device, extent_atoms: int | None = None) -> None:
+                 device: torch.device, extent_atoms: int | None = None,
+                 backing: str = "auto") -> None:
         N = prod(widths)
         self.widths = tuple(widths)
         self.BC = int(BC)
@@ -252,6 +330,8 @@ class PageArena:
         self.extent_atoms = resolved_extent
         self._allocator = ExtentAllocator(self.logical_pages, self.extent_atoms)
 
+        self.backing = _resolve_backing(backing, self.device)
+
         self.peak_pages = 0
         #: The most recent :class:`PagingResult`, or ``None``.
         self.last_result: PagingResult | None = None
@@ -259,6 +339,8 @@ class PageArena:
         self._stream = (torch.cuda.Stream(device=self.device)
                         if self.device.type == "cuda" else None)
         self._ready: torch.cuda.Event | None = None
+        self._owner = None
+        self._plane_view: torch.Tensor | None = None
         self._allocate()
 
     # -- storage ----------------------------------------------------------
@@ -268,10 +350,36 @@ class PageArena:
                                       dtype=torch.int32, device=self.device)
         #: ``[slots, MMA_K_QUANTUM, cols]`` -- exactly the shape
         #: :meth:`AtomKeying.address` indexes, so the address expression and the
-        #: allocation cannot disagree about what a slot is.
-        self._value_base = torch.zeros(
-            (self.logical_pages, MMA_K_QUANTUM, self.cols),
-            dtype=torch.float32, device=self.device)
+        #: allocation cannot disagree about what a slot is. Under the VMM backing the
+        #: view spans the whole RESERVED extent and :attr:`state` bounds it to the mapped
+        #: prefix; the base pointer is the reservation's and never moves.
+        if self.backing == "vmm":
+            from rola.ops._ext import extension
+
+            self._owner = extension().rola_vmm_create(
+                device=self.device.index if self.device.index is not None
+                else torch.cuda.current_device(),
+                dense_limit_pages=self.logical_pages,
+                page_rows=MMA_K_QUANTUM,
+                page_cols=self.cols,
+                target_chunk_bytes=(C_VMM_CHUNK_BYTES if C_VMM_CHUNK_BYTES is not None
+                                    else _vmm_probe(self.device)["allocation_granularity"]))
+            self._value_base = self._owner.base()
+        else:
+            self._value_base = torch.zeros(
+                (self.logical_pages, MMA_K_QUANTUM, self.cols),
+                dtype=torch.float32, device=self.device)
+
+    def _commit(self, pages: int) -> None:
+        """Make ``pages`` slots PHYSICALLY exist. The bridge's already do.
+
+        Called before every :meth:`_admit_pages`, because admission's zero-init is the
+        first write those slots see. The owner grows to a chunk boundary and never
+        shrinks here -- a base pointer that moved would invalidate every launch the state
+        has in flight, and the reservation is what makes never-moving free.
+        """
+        if self._owner is not None:
+            self._owner.grow(pages)
 
     # -- properties -------------------------------------------------------
 
@@ -282,19 +390,66 @@ class PageArena:
 
     @property
     def state(self) -> torch.Tensor:
-        """``[slots, MMA_K_QUANTUM, cols]`` -- what the consumer indexes."""
-        return self._value_base
+        """``[slots, MMA_K_QUANTUM, cols]`` -- what the consumer indexes.
+
+        Bounded to :attr:`mapped_pages`, which is the whole pool under the dense bridge
+        and the driver's mapped prefix under the VMM backing. The leading extent is a
+        CAPACITY and nothing addresses through it: every slot a table names is below the
+        allocator's cursor, which is below the mapped prefix by construction. Bounding it
+        is what makes reaching past the commitment an index error rather than an
+        unmapped-address fault.
+
+        The view is CACHED and rebuilt only when the commitment moves, so a caller may
+        hold it across steps and compare it by identity -- which is what "the kernel's
+        in-place update IS the state's update" means at the seam.
+        """
+        mapped = self.mapped_pages
+        if self._plane_view is None or self._plane_view.shape[0] != mapped:
+            self._plane_view = self._value_base[:mapped]
+        return self._plane_view
+
+    @property
+    def mapped_pages(self) -> int:
+        """Slots that PHYSICALLY exist. The dense bridge's are all of them."""
+        return (self.logical_pages if self._owner is None
+                else int(self._owner.mapped_capacity_pages))
+
+    @property
+    def allocated_pages(self) -> int:
+        """The allocator's CURSOR -- slots handed out, alignment gaps included.
+
+        HOST-SIDE and therefore free, which is why it and not the residency is what
+        :meth:`plan_exact` reports and what sizes the physical commitment. It is an upper
+        bound on the residency, never equal to it in general.
+        """
+        return self._allocator.allocated
 
     @property
     def resident_pages(self) -> int:
-        """Committed atoms. HOST-SIDE: the allocator counts them, so this is free."""
-        return self._allocator.allocated
+        """The EXACT residency: atoms the page table maps.
+
+        A device reduction and a host read, so this is a REPORTING surface and never
+        appears on a measured path -- :attr:`allocated_pages` is what the arena's own
+        logic runs on.
+        """
+        return int((self._page_table >= 0).sum())
 
     def dense_bytes(self) -> int:
         return self.BH * self.N * self.cols * 4
 
-    def resident_bytes(self) -> int:
-        return self.resident_pages * MMA_K_QUANTUM * self.cols * 4
+    def allocated_bytes(self) -> int:
+        return self.allocated_pages * MMA_K_QUANTUM * self.cols * 4
+
+    @property
+    def committed_bytes(self) -> int:
+        """PHYSICAL bytes the driver has mapped -- the arena's own accounting.
+
+        The receipt the savings claim rests on, taken from the owner rather than from a
+        process-wide instrument: ``nvidia-smi`` reports the caching allocator's
+        reservations too and cannot separate this arena from them.
+        """
+        return (self.dense_bytes() if self._owner is None
+                else int(self._owner.committed_bytes))
 
     # -- lifecycle --------------------------------------------------------
 
@@ -429,6 +584,9 @@ class PageArena:
         atom_ids = wanted.nonzero(as_tuple=True)[0]
         realized = int(atom_bitmap.sum())
         first_slot = self._allocator.take(int(atom_ids.numel()))
+        #: PHYSICAL COMMITMENT FOLLOWS THE PLAN, and it precedes admission because
+        #: admission's zero-init is the first write those slots see.
+        self._commit(self._allocator.allocated)
         self._admit_pages(atom_ids, first_slot)
         if self._stream is not None:
             self._ready = torch.cuda.Event()
@@ -436,11 +594,11 @@ class PageArena:
 
         self.peak_pages = max(self.peak_pages, self._allocator.allocated)
         self.last_result = PagingResult(
-            resident_pages=self._allocator.allocated, peak_pages=self.peak_pages,
+            allocated_pages=self._allocator.allocated, peak_pages=self.peak_pages,
             realized_owners=realized,
             owners_total=self.keying.atoms_per_bh,
-            resident_bytes=self.resident_bytes(), dense_bytes=self.dense_bytes(),
-            committed_bytes=None)
+            allocated_bytes=self.allocated_bytes(), dense_bytes=self.dense_bytes(),
+            committed_bytes=self.committed_bytes)
         return self.last_result
 
 
@@ -507,6 +665,7 @@ class PageArena:
         self._allocator.reset()
         first = self._allocator.take(self.logical_pages)
         assert first == 0
+        self._commit(self.logical_pages)
         table = torch.arange(self.logical_pages, dtype=torch.int32, device=self.device)
         self._page_table.copy_(table.view(self.BH, self.keying.atoms_per_bh))
         self._value_base.copy_(
@@ -580,10 +739,12 @@ class _NullContext:
 
 __all__ = [
     "C_EXTENT_ATOMS",
+    "C_VMM_CHUNK_BYTES",
     "MMA_K_QUANTUM",
     "AtomKeying",
     "ExtentAllocator",
     "PageArena",
     "PagingResult",
     "atom_bitmap_from_schedule",
+    "vmm_supported",
 ]

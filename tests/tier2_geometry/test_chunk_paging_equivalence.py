@@ -177,7 +177,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     result = arena.plan_exact(_bitmap(fixture, widths))
     y_paged, paged = _paged(fixture, widths, C, BC, arena)
 
-    assert result.resident_pages > 0 and (paged != 0).any(), (
+    assert result.allocated_pages > 0 and (paged != 0).any(), (
         "the plan committed nothing, or the pages came back empty")
     identity = torch.arange(arena.logical_pages, device="cuda",
                             dtype=torch.int32).view_as(arena.page_table)
@@ -261,7 +261,7 @@ def test_a_never_written_resident_page_moves_nothing(arm):
     over.plan_exact(extra)
     y_over, s_over = _paged(fixture, widths, C, BC, over)
 
-    assert over.resident_pages == arena.resident_pages + 1, "the injection changed nothing"
+    assert over.allocated_pages == arena.allocated_pages + 1, "the injection changed nothing"
     assert torch.equal(s_exact, s_over), "a never-written resident page moved the state"
     assert torch.equal(y_exact, y_over) or not _y_is_exact(widths, BC), (
         "a never-written resident page moved y")
@@ -275,11 +275,13 @@ def test_a_never_written_resident_page_moves_nothing(arm):
 def test_an_absent_atom_leaves_its_backing_untouched(arm):
     """A page the plan did not commit is not written -- checked, not argued.
 
-    The arena's whole backing is poisoned first; admission zeroes exactly the
-    slots it commits, so anything the kernel touched beyond them shows up as a
-    lost poison value. The page TABLE is checked too: a slot resolve that let an
-    absent atom through would address `-1 * 4160` bytes, which is off the front
-    of the backing and into whatever the allocator put there.
+    The backing BEYOND the plan's cursor is poisoned, so anything the kernel touched
+    there shows up as a lost poison value. Poisoning AFTER the plan rather than before
+    is what keeps the cell honest under the VMM backing: those pages exist physically
+    only once commitment has reached them, and admission has already zeroed everything
+    below the cursor. The page TABLE is checked too: a slot resolve that let an absent
+    atom through would address `-1 * 4160` bytes, which is off the front of the backing
+    and into whatever the allocator put there.
     """
     widths, C, BC = arm
     fixture = _fixture(widths, T=2 * C, support=0.25, seed=53)
@@ -288,15 +290,16 @@ def test_an_absent_atom_leaves_its_backing_untouched(arm):
     y_control, _ = _dense(fixture, widths, C, BC)
 
     arena = _arena(widths, BC, BH)
-    arena.state.fill_(_POISON)
     result = arena.plan_exact(_bitmap(fixture, widths))
-    assert result.resident_pages < arena.logical_pages, (
+    arena.wait()
+    assert result.allocated_pages < arena.logical_pages, (
         "every atom is resident; this cell needs a routing that leaves some absent")
+    arena.state[result.allocated_pages:].fill_(_POISON)
     table = arena.page_table.clone()
     y_paged, paged = _paged(fixture, widths, C, BC, arena)
     torch.cuda.synchronize()
 
-    untouched = arena.state[result.resident_pages:]
+    untouched = arena.state[result.allocated_pages:]
     assert torch.equal(untouched, torch.full_like(untouched, _POISON)), (
         f"{int((untouched != _POISON).sum())} floats of an uncommitted page were written")
     assert torch.equal(table, arena.page_table), "the launch wrote through the page table"

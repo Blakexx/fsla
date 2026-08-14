@@ -633,5 +633,66 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   return y;
 }
 
+void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
+                              at::Tensor bits, at::Tensor growth, std::vector<int64_t> level_widths,
+                              std::vector<int64_t> level_strides,
+                              std::vector<int64_t> level_spans) {
+  const int D = static_cast<int>(amp_write.size());
+  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
+  TORCH_CHECK(static_cast<int>(level_widths.size()) == D
+                  && static_cast<int>(level_strides.size()) == D
+                  && static_cast<int>(level_spans.size()) == D,
+              "the three per-level integer vectors must each have D entries");
+  detail::check_i32(page_table, "page_table");
+  detail::check_i32(bits, "bits");
+  detail::check_i32(growth, "growth");
+  TORCH_CHECK(page_table.dim() == 2, "page_table must be [BH, N / ", kAtomLeaves, "] int32");
+  const int BH = static_cast<int>(page_table.size(0));
+  const int atoms_per_bh = static_cast<int>(page_table.size(1));
+  const int64_t N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
+  TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
+
+  const int n_words = static_cast<int>((N + 31) / 32);
+  TORCH_CHECK(bits.dim() == 1 && bits.size(0) == 4LL * BH * n_words,
+              "bits must be the step's flat [4 * BH * ceil(N/32)] int32 workspace");
+
+  DecodeParams p{};
+  int64_t expect_n = 1;
+  for (int l = 0; l < D; ++l) {
+    const int width = static_cast<int>(level_widths[l]);
+    TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth, "level ", l, " width ", width,
+                " exceeds the decode path's capacity ", kDecodeMaxLevelWidth);
+    detail::check_f32(amp_write[l], "amp_write[l]");
+    TORCH_CHECK(
+        amp_write[l].dim() == 2 && amp_write[l].size(0) == BH && amp_write[l].size(1) == width,
+        "amp_write[", l, "] must be [BH, width] contiguous");
+    p.amp_write[l] = amp_write[l].data_ptr<float>();
+    p.level_width[l] = width;
+    p.level_stride[l] = static_cast<int>(level_strides[l]);
+    p.level_span[l] = static_cast<int>(level_spans[l]);
+    expect_n *= width;
+  }
+  TORCH_CHECK(expect_n == N, "prod(level_widths) = ", expect_n,
+              " disagrees with the page table's leaf space ", N);
+  TORCH_CHECK(p.level_span[0] == static_cast<int>(N),
+              "level_spans[0] must be N (the whole leaf space)");
+
+  auto* bits_base = reinterpret_cast<uint32_t*>(bits.data_ptr<int32_t>());
+  p.page_tbl = page_table.data_ptr<int32_t>();
+  p.growth = growth.data_ptr<int32_t>();
+  p.bits_w = bits_base + static_cast<int64_t>(BH) * n_words;
+  p.scratch = bits_base + 2 * static_cast<int64_t>(BH) * n_words;
+  p.atoms_per_bh = atoms_per_bh;
+  p.N = N;
+  p.BH = BH;
+  p.D = D;
+  p.n_words = n_words;
+
+  int smem_per_block = 0;
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(&smem_per_block, cudaDevAttrMaxSharedMemoryPerBlock,
+                                        page_table.device().index()));
+  launch_decode_growth_probe(p, smem_per_block);
+}
+
 }  // namespace decode
 }  // namespace rola

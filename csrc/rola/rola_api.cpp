@@ -101,6 +101,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
         //: backing, where the slot IS the atom and the bytes are the same.
         py::arg("page_table") = c10::optional<at::Tensor>());
+  //: The step's PRECONDITION, not a mode of it: one CTA per batch-head expands the write
+  //: side and ANDs it against residency, so the host learns whether the step needs the
+  //: exact admission preamble at all -- docs/internals/rola_api.md#growth-probe
+  m.def("rola_decode_growth_probe", &rola::decode::rola_decode_growth_probe,
+        "RoLA T=1 decode growth probe: does this step write an atom the page table does "
+        "not map?",
+        py::arg("amp_write"), py::arg("page_table"), py::arg("bits"), py::arg("growth"),
+        py::arg("level_widths"), py::arg("level_strides"), py::arg("level_spans"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");
@@ -133,8 +141,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("device"));
 
   py::class_<rola::paging::VmmOwner, std::shared_ptr<rola::paging::VmmOwner>>(m, "RoLAVmmOwner")
-      .def("value_base", &rola::paging::VmmOwner::value_base)
-      .def("mass_base", &rola::paging::VmmOwner::mass_base)
+      .def("base", &rola::paging::VmmOwner::base)
       .def("grow", &rola::paging::VmmOwner::grow, py::arg("required_pages"))
       .def("rollback_to", &rola::paging::VmmOwner::rollback_to, py::arg("mapped_capacity_pages"))
       .def("reset", &rola::paging::VmmOwner::reset)
@@ -150,7 +157,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("chunk_pages", &rola::paging::VmmOwner::chunk_pages)
       .def_property_readonly("backing_kind", &rola::paging::VmmOwner::backing_kind);
 
+  //: The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is
+  //: `MMA_K_QUANTUM x (d_v + 1)` with the mass column fused. The owner takes it as two
+  //: extents rather than naming them, because it owns no meaning for either:
+  //: docs/internals/rola_api.md#vmm-binding
   m.def("rola_vmm_create", &rola::paging::create_vmm_owner, py::arg("device"),
-        py::arg("dense_limit_pages"), py::arg("bp"), py::arg("dqk"), py::arg("dv"),
-        py::arg("global_mass"), py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);
+        py::arg("dense_limit_pages"), py::arg("page_rows"), py::arg("page_cols"),
+        py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);
 }

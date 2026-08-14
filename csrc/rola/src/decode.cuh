@@ -90,6 +90,11 @@ struct DecodeParams {
   //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
   //: slot IS the atom. ONE base translation for both: docs/internals/decode.md#paged-address
   const int32_t* page_tbl;
+  //: `[BH]` int32, the GROWTH PROBE's only output: `1` where this batch-head writes an
+  //: atom the table does not map, `0` where it does not. Every CTA writes its own entry
+  //: unconditionally, so the buffer needs no zero-fill and the probe needs no atomic:
+  //: docs/internals/decode_expand.md#growth-probe
+  int32_t* growth;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   //: §1.1's exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at
@@ -165,6 +170,7 @@ __device__ __forceinline__ uint32_t keep_low_set_bits(uint32_t word, int k) {
 size_t decode_expand_smem_bytes(int n_words);
 bool decode_expand_uses_smem(int n_words, int64_t smem_budget);
 void launch_decode_expand(const DecodeParams& p, int64_t smem_budget);
+void launch_decode_growth_probe(const DecodeParams& p, int64_t smem_budget);
 
 size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay);
 void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay);

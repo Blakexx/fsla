@@ -45,12 +45,18 @@ a null table means the slot IS the atom and the bytes are the dense path's, exac
 An atom with no slot reads as zeros and is not written, which is the same state a
 never-deposited leaf holds densely.
 
-**GROWTH IS THE STEP'S OWN NEW WORK.** A step may write an atom that is not resident.
-At ``T = 1`` the write support is a Cartesian product (the same degeneracy the whole
-module rests on), so the step's write-atom set is derived exactly and host-side from
-the live write digits -- :func:`_write_atom_bitmap` -- and ``plan_exact(...,
-fresh=False)`` admits whatever is new on the arena's side stream, before the launch
-waits on the one event. There is no discovery and nothing for the kernel to grow.
+**GROWTH IS THE STEP'S OWN NEW WORK, AND MOST STEPS HAVE NONE.** A step may write an
+atom that is not resident, and the exact admission that handles it costs far more than
+the launch it precedes (the derivation, ``plan_exact``, and the cross-stream event
+measured at 0.38-0.48 ms against a 0.04 ms kernel). So the step asks FIRST, on the
+device: :func:`_growth_probe` expands the write side with the kernel's own
+``expand_side`` and ANDs it against the page table, and the host reads one ``[BH]``
+int32 answer. A step with nothing new launches immediately -- no derivation, no plan,
+no event. A step with something new runs the exact preamble unchanged:
+:func:`_write_atom_bitmap` then ``plan_exact(..., fresh=False)`` on the arena's side
+stream, then the one event wait. Both arms answer the same question from the same
+write-support definition, which is why the probe is a kernel BESIDE the expansion
+rather than a second derivation of it (docs/internals/decode.md#growth).
 
 **THE KERNEL-LAYOUT CARRIER.** :class:`FrozenDecodeConfig` answers "what shape is the
 launch?" -- widths, mixed-radix strides, spans, row offsets, word and group counts,
@@ -210,17 +216,27 @@ class DecodeWorkspace:
     pc_coarse: torch.Tensor
     ws: torch.Tensor
     ctr: torch.Tensor
+    #: The growth probe's device answer and its PINNED landing buffer. Pinned is what
+    #: makes the read one DMA rather than a staging copy, and holding both here is what
+    #: keeps a steady step free of allocation: docs/internals/decode.md#growth-probe
+    growth: torch.Tensor
+    growth_host: torch.Tensor
+    growth_ready: object
     key: tuple = field(default=())
 
     @staticmethod
     def build(config: FrozenDecodeConfig, BH: int, device) -> DecodeWorkspace:
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
+        cuda = torch.device(device).type == "cuda"
         return DecodeWorkspace(
             bits=torch.empty(4 * BH * config.n_words, **i32),
             pc_coarse=torch.empty(BH, config.n_groups + 1, **i32),
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
             ctr=torch.zeros(BH, **i32),
+            growth=torch.empty(BH, **i32),
+            growth_host=torch.empty(BH, dtype=torch.int32, pin_memory=cuda),
+            growth_ready=torch.cuda.Event() if cuda else None,
             key=(BH, config.n_words, config.n_groups, config.n_split, config.cols,
                  torch.device(device)))
 
@@ -280,22 +296,61 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
     config = state._decode_carrier(routes, decay=decay,
                                    mma_precision=overrides.mma_precision)
-    #: THE HOST ORDER, `rola_op`'s at `L = 1` (design §A.4/§C.3/§D): the step's exact
-    #: write-atom set, then `plan_exact(..., fresh=False)` on the arena's side stream,
-    #: then the launch's one event wait. The only host synchronization is `plan_exact`'s
-    #: single size read, which also sizes the admission.
-    bitmap = _write_atom_bitmap(routes.write, config) if state.paged else None
+    BH = routes.batch * routes.heads
+    workspace = state._decode_workspace
+    if workspace is None or not workspace.matches(config, BH, routes.device):
+        workspace = DecodeWorkspace.build(config, BH, routes.device)
+    #: THE HOST ORDER, `rola_op`'s at `L = 1` (design §A.4/§C.3/§D). A paged step asks the
+    #: DEVICE whether it grows; only a step that does pays the exact preamble -- the
+    #: write-atom derivation, `plan_exact(..., fresh=False)` on the arena's side stream,
+    #: and the launch's one event wait. A steady step's only host synchronization is the
+    #: probe's `[BH]` int32 read: docs/internals/decode.md#growth
+    bitmap = None
+    if state.paged and _growth_probe(routes.write, config, state._page_table, workspace):
+        bitmap = _write_atom_bitmap(routes.write, config)
     plane, page_table, arena = state._decode_entry(routes, bitmap)
-    if arena is not None:
+    if arena is not None and bitmap is not None:
         arena.wait()
     #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
     #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
     #: re-widens here and the cast is exact, the values being bf16-rounded already.
     y, _, state._decode_workspace = _decode_step(
         v.to(torch.float32), routes.read, routes.write, routes.g_read, routes.g_write,
-        config, plane, decay=decay, workspace=state._decode_workspace,
+        config, plane, decay=decay, workspace=workspace,
         page_table=page_table)
     return y, state
+
+
+def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Tensor,
+                  workspace: DecodeWorkspace) -> bool:
+    """Does this step deposit into an atom the page table does not map?
+
+    The whole point of asking is that the answer is usually NO, and a NO costs one
+    kernel plus one pinned ``[BH]`` int32 read against a preamble measured at 0.38-0.48
+    ms (`s4_build.md` §6b). The kernel is ``rola_decode_growth_probe``, which expands the
+    write side with ``decode_expand.cu``'s OWN ``expand_side`` -- the same device
+    function over the same amplitude pointers the step itself uses -- and ANDs the
+    16-deep condensation against ``page_table >= 0``. So the probe and
+    :func:`_write_atom_bitmap` share a write-support DEFINITION by construction and not
+    by audit; ``tests/tier2_geometry/test_decode_growth_trigger.py`` sweeps the two
+    directions of the agreement.
+
+    The read is a pinned device-to-host copy plus an event synchronize, both on
+    workspace-owned objects, so a steady step allocates nothing.
+    """
+    amp_write = [_fold(t).float() for t in write_levels]
+    extension().rola_decode_growth_probe(
+        amp_write=amp_write,
+        page_table=page_table,
+        bits=workspace.bits,
+        growth=workspace.growth,
+        level_widths=list(config.widths),
+        level_strides=list(config.leaf_stride),
+        level_spans=list(config.level_span))
+    workspace.growth_host.copy_(workspace.growth, non_blocking=True)
+    workspace.growth_ready.record()
+    workspace.growth_ready.synchronize()
+    return bool(workspace.growth_host.any())
 
 
 def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:

@@ -113,6 +113,11 @@ class RoLAState:
         """Whether the CURRENT backing is an arena. Not a mode: a footprint."""
         return self._arena is not None
 
+    @property
+    def _page_table(self) -> torch.Tensor:
+        """The arena's ``[BH, N/16]`` table. Only a paged state has one."""
+        return self._arena.page_table
+
     def _wants_pages(self, paging: bool) -> bool:
         """Whether this call needs an atom bitmap -- i.e. whether it will PAGE.
 
@@ -345,11 +350,15 @@ class RoLAState:
                 "returns.")
         self._require_compatible(routes)
         if self._arena is not None:
-            #: GROWTH. The atoms this step deposits into join the resident set on the
-            #: arena's side stream; `decode_forward`'s `arena.wait()` is what puts that
-            #: admission before the launch. An atom neither resident nor written stays
-            #: ABSENT and reads inert.
-            self._arena.plan_exact(bitmap, fresh=False)
+            #: GROWTH. `bitmap` is the step's write-atom set when the device growth probe
+            #: says this step reaches an atom the table does not map, and `None` when it
+            #: says nothing is new -- in which case there is nothing to admit and the
+            #: step launches against the residency it already has. The atoms a growth
+            #: step deposits into join the resident set on the arena's side stream;
+            #: `decode_forward`'s `arena.wait()` is what puts that admission before the
+            #: launch. An atom neither resident nor written stays ABSENT and reads inert.
+            if bitmap is not None:
+                self._arena.plan_exact(bitmap, fresh=False)
             return self._arena.state, self._arena.page_table, self._arena
         if self._plane.dtype is not torch.float32:
             self._plane = self._plane.to(torch.float32)

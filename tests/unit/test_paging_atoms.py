@@ -120,7 +120,7 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
     (table_a, state_a, res_a), (table_b, state_b, res_b) = results
     assert torch.equal(table_a, table_b), "the page table moved with BC"
     assert torch.equal(state_a, state_b), "the addressed bytes moved with BC"
-    assert res_a.resident_pages == res_b.resident_pages == int(atoms.sum())
+    assert res_a.allocated_pages == res_b.allocated_pages == int(atoms.sum())
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +146,9 @@ def test_planned_exact_sizes_the_pool_to_the_popcount_and_zeroes_what_it_admits(
 
     result = arena.plan_exact(atoms)
     touched = int(atoms.sum())
-    assert result.resident_pages == touched
+    assert result.allocated_pages == touched
     assert result.realized_owners == touched
-    assert result.resident_bytes == touched * MMA_K_QUANTUM * cols * 4
+    assert result.allocated_bytes == touched * MMA_K_QUANTUM * cols * 4
     assert (arena.page_table >= 0).sum() == touched
     assert torch.equal(arena.page_table >= 0, atoms)
     assert float(arena.state[:touched].abs().max()) == 0.0, (
@@ -272,7 +272,7 @@ def test_adopt_dense_and_materialize_round_trip_through_the_atom_layout(BC):
     dense = torch.arange(BH * N * cols, dtype=torch.float32).reshape(BH, N, cols)
     arena.adopt_dense(dense)
     assert torch.equal(arena.materialize(), dense)
-    assert arena.resident_pages == arena.logical_pages
+    assert arena.allocated_pages == arena.logical_pages
 
 
 def test_materialize_leaves_unmapped_atoms_as_zeros():

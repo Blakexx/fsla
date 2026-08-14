@@ -34,5 +34,14 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                std::vector<int64_t> level_row_offsets, int64_t heads,
                                int64_t n_split, double eps, c10::optional<at::Tensor> page_table);
 
+//: THE GROWTH PROBE, bound separately because it is a different HOST ORDER and not a
+//: mode of the step: it runs BEFORE the step so the host can learn whether this step's
+//: write set is already resident WITHOUT deriving that set itself. It writes `growth`
+//: and nothing else -- no state, no `y`, no table:
+//: docs/internals/decode_api.md#growth-probe
+void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
+                              at::Tensor bits, at::Tensor growth, std::vector<int64_t> level_widths,
+                              std::vector<int64_t> level_strides, std::vector<int64_t> level_spans);
+
 }  // namespace decode
 }  // namespace rola

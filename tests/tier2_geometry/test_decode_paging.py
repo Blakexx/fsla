@@ -233,7 +233,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
                        arena.materialize()), "the two backings disagree on the state"
     # NON-VACUITY: pages were committed, they came back nonzero, and (unless the write
     # support is total) the table is NOT the identity map, so a translation ran.
-    assert arena.resident_pages > 0
+    assert arena.allocated_pages > 0
     assert float(arena.materialize().abs().max()) > 0.0
     if _SUPPORTS[support] < 1.0:
         identity = torch.arange(arena.page_table.numel(), device="cuda",
@@ -265,7 +265,7 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     arena = _arena(widths, BC, BH)
     arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
     arena.wait()
-    resident = arena.resident_pages
+    resident = arena.allocated_pages
     assert resident < arena.logical_pages, "every atom is resident; nothing is absent"
 
     #: admission zeroes only what it COMMITS, so the pages beyond the committed run are
