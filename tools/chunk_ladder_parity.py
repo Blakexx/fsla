@@ -27,9 +27,12 @@ def main():
     torch.manual_seed(0)
     B, H, L = 1, 2, 1024
     fails = 0
+    ladder_arms = {tuple(a[:5]) for a in lad.arms()}
     for arm in m.chunk_arms():
         c, w, bc, d, wid = arm[0], bool(arm[1]), arm[2], arm[3], arm[4]
         widths = (wid,) * d
+        if (c, int(w), bc, d, wid) not in ladder_arms:
+            continue  # arms born in the standalone (e.g. the flat D=1 baseline)
         for regime_sup in (wid, 2):
             pr = reference.support_amplitudes(B, H, L, widths, regime_sup, "cuda", seed=5)
             pw = reference.support_amplitudes(B, H, L, widths, regime_sup, "cuda", seed=6)

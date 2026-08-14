@@ -42,6 +42,18 @@ def test_deep_topology_through_facade():
     assert rel < 1e-2, f"deep arm off the reference: rel={rel:.3e}"
 
 
+def test_flat_routing_baseline_through_facade():
+    # D = 1: the in-kernel flat-routing control (N = B <= 256 by the
+    # manifest).  The produce's outer chain is a literal 1.0 there, so this
+    # also gates the depth guard end to end.
+    with torch.no_grad():
+        routes, v = _bundle(widths=(256,), T=256, seed=2)
+        y_ref, _ = rola_op(routes, v, _arm="reference")
+        y_ker, _ = rola_op(routes, v, _arm="kernel")
+    rel = (y_ker.double() - y_ref).norm() / y_ref.norm()
+    assert rel < 1e-2, f"flat arm off the reference: rel={rel:.3e}"
+
+
 def test_refusals_are_loud():
     with torch.no_grad():
         routes, v = _bundle(widths=(16,), d_v=32, T=256)

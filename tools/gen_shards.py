@@ -414,6 +414,9 @@ CHUNK_ARMS: tuple = (
     (32, False, 256, 2, 64),
     (16, False, 64, 2, 16), (32, False, 64, 2, 16), (64, False, 64, 2, 16),
     (32, False, 128, 3, 16), (32, False, 128, 4, 8), (32, False, 32, 4, 8),
+    # the FLAT-ROUTING baseline arms (D = 1; N = B <= 256 by the manifest --
+    # the benchmark's in-kernel flat control, P69):
+    (32, False, 64, 1, 64), (32, False, 64, 1, 256), (16, False, 64, 1, 256),
 )
 CHUNK_PER_SHARD = 8
 

@@ -444,10 +444,12 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void com
   //: axis, mixed-radix over the plan's spans with level D-2 fastest.  At
   //: D = 2 these are exactly the legacy lead/tail names.
   constexpr int kDepth = LP::depth;
-  static_assert(kDepth >= 2,
-                "a depth-one topology is a single routed level "
-                "with no outer axis; it arrives if a real arm "
-                "ever wants N <= 256");
+  //: kDepth == 1 is the FLAT-ROUTING arm (P69, Blake): no outer axis at
+  //: all -- the produce's chain gets a literal 1.0 (rn(a*1) = a, bit-exact
+  //: to a dedicated path), and the geometry law already yields outer = 1.
+  //: Flat routing caps at N = B <= 256 BY THE MANIFEST (one entmax over B
+  //: logits is the producer wall split-level exists to dodge), which makes
+  //: D = 1 the benchmark's in-kernel flat BASELINE, not a capacity config.
   constexpr int kInnerSpan = LP::span_at(kDepth - 1);
   constexpr int kOuterSpan = BC / kInnerSpan;
   //: PRODUCTION IS A GROUP AFFAIR: a group's kGroupThreads produce ITS slice's
@@ -469,7 +471,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void com
   //: a thread's owned outer run must sit inside ONE row of the fastest outer
   //: level, or its amplitudes are not a contiguous vector load and the upper
   //: levels' digits stop being per-thread constants.
-  constexpr int kFastSpan = LP::span_at(kDepth - 2);
+  constexpr int kFastSpan = kDepth >= 2 ? LP::span_at(kDepth - 2) : 1;
   static_assert(kLeadPerThr == 1 || kFastSpan % kLeadPerThr == 0,
                 "a thread's outer run crosses a fast-level boundary");
   static_assert(kTailPerThr % 8 == 0,
@@ -761,8 +763,11 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void com
   //: level is one named column scalar -- at D = 2 there are none and the pair
   //: below is exactly the legacy colLead/colTail.
   const int oBase = grp * kLeadSpanG + leadLocal;
-  const uint32_t colFast =
-      (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan) * 2);
+  [[maybe_unused]] uint32_t colFast = 0;
+  if constexpr (kDepth >= 2)
+    colFast =
+        (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
+                   * 2);
   const uint32_t colInner =
       (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
   constexpr int kUppers = kDepth - 2;
@@ -805,12 +810,14 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void com
   //: row contributes nothing to the Gram, nothing to the fold and nothing the
   //: drain will publish, which is what makes a partly filled buffer exact.
   auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have, uint32_t gsp) {
-    const __nv_bfloat16* p0 =
+    [[maybe_unused]] const __nv_bfloat16* p0 =
         reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
     const __nv_bfloat16* p1 =
         reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
     __align__(8) unsigned short amp0[kLeadPerThr];
-    if constexpr (kLeadPerThr == 1) {
+    if constexpr (kDepth == 1) {
+      amp0[0] = 0x3F80;  // bf16 1.0: the flat arm has no outer factor
+    } else if constexpr (kLeadPerThr == 1) {
       amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
     } else if constexpr (kLeadPerThr == 2) {
       *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
@@ -1532,6 +1539,10 @@ __global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
 //: (8,8,8,8) at the flagship's matched N = 4096, and a BC = 32 depth-4 arm
 //: whose block leaves TWO single-digit levels above a partial one, so the
 //: three-clause form and the two-scalar upper chain are both exercised.
+//: THIS MACRO AND tools/gen_shards.py's CHUNK_ARMS ARE ONE LIST IN TWO
+//: PLACES; emitting this macro from the generator (an .inc, like
+//: dispatch_table.inc) is the stage-D unification.  Until then an edit
+//: here and there must move in step.
 #define RUNG5D_ARMS(X)                                                       \
   X(16, false,  64, 2,  8) X(32, false,  64, 2,  8) X(64, false,  64, 2,  8) \
   X(16, true ,  64, 2,  8) X(32, true ,  64, 2,  8) X(64, true ,  64, 2,  8) \
@@ -1541,6 +1552,7 @@ __global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
   X(16, false, 128, 2, 64) X(32, false, 128, 2, 64) X(64, false, 128, 2, 64) \
   X(32, false, 256, 2, 64)                                                    \
   X(16, false,  64, 2, 16) X(32, false,  64, 2, 16) X(64, false,  64, 2, 16) \
-  X(32, false, 128, 3, 16) X(32, false, 128, 4,  8) X(32, false,  32, 4,  8)
+  X(32, false, 128, 3, 16) X(32, false, 128, 4,  8) X(32, false,  32, 4,  8) \
+  X(32, false,  64, 1, 64) X(32, false,  64, 1, 256) X(16, false, 64, 1, 256)
 
 }  // namespace rola::chunk

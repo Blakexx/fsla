@@ -69,3 +69,4 @@ and Y were re-measured" a provable claim.
 | `chunk_s0.cu` | 8 (chunk consumer, P69) |
 | `chunk_s1.cu` | 8 (chunk consumer, P69) |
 | `chunk_s2.cu` | 8 (chunk consumer, P69) |
+| `chunk_s3.cu` | 3 (chunk consumer, P69) |
