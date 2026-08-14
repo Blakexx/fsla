@@ -57,13 +57,20 @@ def kron(p, widths):
     return c
 
 
-def kron_bf16(p, widths):
-    """The kernel's coefficient: the level product rounded to bf16, then fp64."""
+def kron_bf16(p, widths, gain=None):
+    """The kernel's coefficient: the level product rounded to bf16, then fp64.
+
+    ``gain`` ([..., L] per-token scalar or None) folds AFTER the outer-level
+    chain and BEFORE the innermost level -- the kernel's exact rounding order
+    for the decoupled write gain (rung 6G).
+    """
     dg, n_slots = digits(widths, p.device)
     levels = split_levels(p, widths)
     c = None
     for l, pl in enumerate(levels):
         sel = pl[..., dg[:, l]]
+        if gain is not None and l == len(levels) - 1 and c is not None:
+            c = (c.float() * gain[..., None].float()).bfloat16()
         c = sel if c is None else (c.float() * sel.float()).bfloat16()
     return c
 

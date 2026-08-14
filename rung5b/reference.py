@@ -177,7 +177,7 @@ def plans_for(pr, pw, widths, bc: int, chunk: int, b: int = 0, h: int = 0):
     return [cook(rl[k], wl[k], chunk) for k in range(len(rl))]
 
 
-def model_compacted(pr, pw, v, widths, chunk: int, bc: int):
+def model_compacted(pr, pw, v, widths, chunk: int, bc: int, g_write=None):
     """THE KERNEL'S OWN ARITHMETIC over the whole cell, on `d_v + 1` columns.
 
     The partition is a property of each (b, h, block) separately, so this runs the
@@ -185,7 +185,7 @@ def model_compacted(pr, pw, v, widths, chunk: int, bc: int):
     counterpart of `split_norm` and it is what a floor must be measured against
     once the partition moves, since where the state is ROUNDED moves with it.
     """
-    rb, wb = kron_bf16(pr, widths), kron_bf16(pw, widths)
+    rb, wb = kron_bf16(pr, widths), kron_bf16(pw, widths, gain=g_write)
     v1 = with_ones(v)
     r, w = schedule_sides(pr, pw, widths, bc)
     B, H = pr.shape[0], pr.shape[1]
