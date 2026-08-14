@@ -815,9 +815,13 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: verbatim.  It is derived INSIDE each state block: nothing about the state
   //: I/O is live across the main loop any more, which is what the plane bases
   //: below cost before there was a slot to resolve.
+  //: ALL-INT, like the plan's own suffix products: the atom index is bounded by
+  //: the plane's page count, which the 32-bit displacement below already caps at
+  //: about a million, so a 64-bit index would be a widening multiply bought for
+  //: nothing.
+  constexpr int kAtomsPerBh = (int)(LP::slots / kAtomLeaves);
   auto atom_first = [&] {
-    return (int)(blockIdx.y * (LP::slots / kAtomLeaves)) + LP::block_base(blk) / kAtomLeaves
-           + grp * kAtoms;
+    return (int)blockIdx.y * kAtomsPerBh + LP::block_base(blk) / kAtomLeaves + grp * kAtoms;
   };
   //: THE ONE BASE TRANSLATION.  A null table is the DENSE plane, where a slot IS
   //: its atom; a table maps the atom to its page and `-1` says the atom has none.
