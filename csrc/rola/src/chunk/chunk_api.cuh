@@ -14,9 +14,14 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
                           int64_t bc, std::vector<int64_t> widths);
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
-                                       int64_t bc, std::vector<int64_t> widths);
+                                       int64_t bc, std::vector<int64_t> widths,
+                                       c10::optional<torch::Tensor> s_in,
+                                       c10::optional<torch::Tensor> s_out,
+                                       c10::optional<torch::Tensor> page_tbl);
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
-                      int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps);
+                      int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
+                      c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
+                      c10::optional<torch::Tensor> page_tbl);
 torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths);
 torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps);
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths);

@@ -162,9 +162,35 @@ torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths) {
   TORCH_CHECK(false, "unbuilt stats arm: depth=", widths.size());
 }
 
+//: THE STATE PLANE: `[BH, N/16, 16, d_v+1]` fp32 and contiguous, which is the
+//: same bytes as `[BH, N, d_v+1]` -- the atom-major view is what the kernel
+//: addresses and the leaf-major one is what a reader reads.  It is ALLOCATED BY
+//: THE CALLER: this entry launches, it does not own memory the caller carries.
+static float* state_plane(const c10::optional<torch::Tensor>& s, const char* what, int BH, long N) {
+  if (!s.has_value()) return nullptr;
+  const torch::Tensor& t = *s;
+  TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == torch::kFloat32, what,
+              " must be a contiguous fp32 CUDA tensor");
+  TORCH_CHECK(t.numel() == (long)BH * N * (kD + 1), what,
+              " must hold BH * N * (d_v + 1) floats (the [BH, N/16, 16, d_v+1] "
+              "state plane)");
+  return t.data_ptr<float>();
+}
+
+static void refuse_page_table(const c10::optional<torch::Tensor>& page_tbl) {
+  TORCH_CHECK(!page_tbl.has_value(),
+              "the chunk consumer addresses the DENSE state plane, where a "
+              "slot is its atom; resolving an atom -> slot map is the paged "
+              "backing's step and arrives with it "
+              "(docs/internals/paging/paging.md)");
+}
+
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
-                                       int64_t bc, std::vector<int64_t> widths) {
+                                       int64_t bc, std::vector<int64_t> widths,
+                                       c10::optional<torch::Tensor> s_in,
+                                       c10::optional<torch::Tensor> s_out,
+                                       c10::optional<torch::Tensor> page_tbl) {
   //: the write gain: per-token positive scalar, bf16, [B,H,L] -- spec 4.2.
   TORCH_CHECK(gw.is_cuda() && gw.is_contiguous() && gw.scalar_type() == torch::kBFloat16
                   && gw.dim() == 3 && gw.size(0) == v.size(0) && gw.size(1) == v.size(1)
@@ -174,6 +200,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   check_inputs(pr, pw, v, chunk, widths);
+  refuse_page_table(page_tbl);
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   //: The accumulator is zeroed, not merely allocated: the fan-in ADDS, so the
   //: identity of the sum has to be there before the first contribution.
@@ -181,6 +208,10 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   auto o = torch::zeros({B, H, L, (long)kD}, opts);
   auto den = torch::zeros({B, H, L}, opts);
   const int BH = B * H;
+  long N = 1;
+  for (auto w : widths) N *= w;
+  const float* const sIn = state_plane(s_in, "the entry state", BH, N);
+  float* const sOut = state_plane(s_out, "the final state", BH, N);
 #define CHUNK_DISPATCH_X(C_, BC_, D_, B_)                                   \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                    \
     const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
@@ -192,7 +223,9 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    reinterpret_cast<const __nv_bfloat16 *>(gw.data_ptr()),     \
                    reinterpret_cast<const __nv_bfloat16 *>(v.data_ptr()),      \
                    reinterpret_cast<const uint32_t *>(tbl.data_ptr()),         \
-                   o.data_ptr<float>(), den.data_ptr<float>(), BH, L};         \
+                   o.data_ptr<float>(), den.data_ptr<float>(),                 \
+                   sIn,             sOut,             nullptr,                 \
+                   BH,              L};                                        \
     C10_CUDA_CHECK((launch_chunk_arm<C_, BC_, D_, B_>(                     \
         p_, at::cuda::getCurrentCUDAStream())));                               \
     return {o, den};                                                           \
@@ -203,9 +236,11 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
 }
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
-                      int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps) {
+                      int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
+                      c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
+                      c10::optional<torch::Tensor> page_tbl) {
   auto tbl = union_table(pr, pw, v, chunk, bc, widths);
-  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths);
+  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl);
   return divide_pass(nd[0], nd[1], eps);
 }
 

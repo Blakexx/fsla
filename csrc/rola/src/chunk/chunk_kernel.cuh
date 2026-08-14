@@ -20,6 +20,14 @@ struct ChunkParams {
   const __nv_bfloat16 *pr, *pw, *gw, *v;
   const uint32_t* tbl;
   float *o, *den;
+  //: THE STATE PLANE, in and out.  Null means "no state I/O": a fresh entry
+  //: state on the way in, no handle asked for on the way out.  It is a runtime
+  //: null and not a template axis -- the branch is CTA-uniform and sits outside
+  //: every loop (docs/internals/chunk/chunk_kernel.md).
+  const float* s_in;
+  float* s_out;
+  //: the atom -> slot map; null is the DENSE plane, where the slot IS the atom.
+  const int32_t* page_tbl;
   int BH, L;
 };
 }  // namespace rola::chunk
@@ -186,6 +194,42 @@ struct LevelPlan {
   //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
   //: product, which is why the table does not grow with N.
   static constexpr int entries = singles * B + (partial_span > 1 ? B / partial_span : 0);
+  //: THE LEAF-ORDER LAW.  A block's leaves are a CONTIGUOUS, BC-ALIGNED run in
+  //: canonical leaf order, so the block is named by its FIRST leaf: the digit
+  //: offsets against the radix place values.  It is what makes the state plane
+  //: addressable per atom (docs/internals/chunk/chunk_kernel.md).
+  //: THE LEVEL IS A TEMPLATE PARAMETER, not an argument.  `off_at`'s divisor is
+  //: a recursive constexpr call, and a level passed as an ARGUMENT leaves the
+  //: recursion for the compiler to unroll at runtime -- measured: a loop and a
+  //: reciprocal division reached the SASS.  The clause resolve above states its
+  //: divisors as `constexpr` locals for exactly this reason; so does this.
+  template <int Lv>
+  static __device__ __forceinline__ int base_term(int blk) {
+    constexpr int kDiv = suffix_groups(Lv + 1);
+    constexpr int kGrp = groups_at(Lv);
+    constexpr int kPlace = (int)(span_at(Lv) * ipowl(B, D - 1 - Lv));
+    return ((blk / kDiv) % kGrp) * kPlace;
+  }
+  static __device__ __forceinline__ int block_base(int blk) {
+    int s = 0;
+    if constexpr (0 < D) s += base_term<0>(blk);
+    if constexpr (1 < D) s += base_term<1>(blk);
+    if constexpr (2 < D) s += base_term<2>(blk);
+    if constexpr (3 < D) s += base_term<3>(blk);
+    return s;
+  }
+  //: the law's STATIC piece, per level: a contributing level's offsets step by
+  //: `span_at(l)` digits at place value `B^(D-1-l)`, and every such step must be
+  //: a whole number of blocks.  A whole level contributes nothing (one group).
+  static constexpr bool base_aligned(int l) {
+    return l >= D
+           || ((groups_at(l) == 1 || (ipowl(B, D - 1 - l) * span_at(l)) % BC == 0)
+               && base_aligned(l + 1));
+  }
+  static_assert(base_aligned(0),
+                "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its "
+                "leaves are not one aligned run and the state's atom addressing "
+                "does not hold");
 };
 
 //: (G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED.  Its geometry
@@ -362,7 +406,8 @@ template <int C, int D, int B, int BC>
 __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L) {
+    const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den,
+    const float* __restrict__ s_in, float* __restrict__ s_out, int L) {
   using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, BC>;
   static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
@@ -380,6 +425,19 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
                 "the groups must divide them");
   static_assert(C % kMmaM == 0, "chunk must be a multiple of the mma m quantum");
   static_assert(BCg % kMmaK == 0, "a group's slice must be a whole number of mma k-tiles");
+  //: THE STATE PLANE'S PAGE.  One atom is `kAtomLeaves` consecutive leaves by
+  //: the leaf-order law, `cols` fp32 wide -- the value channels plus the mass
+  //: column -- and it is staged through the output buffer, which is fp32 and
+  //: padded and dead at both ends of the kernel.
+  constexpr int kCols = kD + 1;
+  constexpr int kAtoms = BCg / kAtomLeaves;
+  static_assert(BCg % kAtomLeaves == 0,
+                "a group's slice must be a whole number of page atoms, or an "
+                "atom would straddle two CTAs");
+  static_assert(kPadF >= 1 && C >= kAtomLeaves,
+                "the atom's page is 16 rows of d_v+1 floats and it is staged in "
+                "the output buffer, so that buffer needs 16 rows and one pad "
+                "column");
   static_assert(C <= 255, "a causal threshold is one byte, chunk-relative");
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory "
@@ -681,6 +739,67 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   for (int e = 0; e < 2; ++e)
 #pragma unroll
     for (int f = 0; f < 2; ++f) oE[e][f] = (oq + e) * LdO + dv0 + om + f * 8;
+
+  //: ---- the state plane's addressing and its fragment ownership map --------
+  //: WHICH THREAD OWNS WHICH ELEMENT of an atom's page, as an index into the
+  //: output staging buffer.  Element `k` of an accumulator tile sits at row
+  //: `(lane>>2) + 8*(k>>1)` and column `(lane&3)*2 + (k&1)`; for the value
+  //: state the rows are channels and the columns are leaves, and for the mass
+  //: state only row 0 is the channel, so only lanes 0..3 and `k in {0,1}` carry
+  //: it -- the same restriction the denominator store already makes.
+  auto page_value = [&](int p, int k) {
+    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + dv0 + (lane >> 2) + 8 * (k >> 1);
+  };
+  auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kD; };
+  //: ONE PASS OVER AN ATOM'S PAGE, the global side and the staged side in step.
+  //: `body` takes the staging index and the global byte displacement.
+  //:
+  //: THE SWEEP CARRIES A CURSOR RATHER THAN DIVIDING.  `cols` is `d_v + 1` and
+  //: therefore not a power of two, so recovering a row from a flat index costs a
+  //: magic-number division -- a WIDENING MULTIPLY, the one instruction shape
+  //: this kernel's bodies do not emit.  A step of `kGroupThreads` is one row
+  //: plus a remainder, so the row advances by a compare instead.
+  //:
+  //: `cols` is 260 bytes and not sixteen-byte aligned, so a page row cannot move
+  //: by a vector access; these are plain float accesses, coalesced across the
+  //: group.
+  constexpr int kPageElems = kAtomLeaves * kCols;
+  constexpr int kPageCarry = kGroupThreads - kCols;
+  static_assert(kGroupThreads > kCols && kGroupThreads < 2 * kCols,
+                "the page sweep's step must cross one row boundary, so its row "
+                "cursor advances by one or two and never by a division");
+  auto page_sweep = [&](int i, auto&& body) {
+    const uint32_t pageOff = (uint32_t)(i * kPageElems * (int)sizeof(float));
+    int e = gtid;
+    int row = gtid < kCols ? 0 : 1;
+    int col = gtid < kCols ? gtid : gtid - kCols;
+#pragma unroll 1
+    while (e < kPageElems) {
+      body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
+      e += kGroupThreads;
+      col += kPageCarry;
+      const bool wrap = col >= kCols;
+      row += wrap ? 2 : 1;
+      col -= wrap ? kCols : 0;
+    }
+  };
+  //: THIS GROUP'S FIRST ATOM AS A PLANE DISPLACEMENT, in elements.  The atom
+  //: index is the leaf-order law's -- a block's leaves are one aligned run
+  //: starting at `LevelPlan::block_base`, so the index is that base over the
+  //: quantum, which is `AtomKeying.atom_of` verbatim.
+  //:
+  //: THE WIDENING MULTIPLY HAPPENS HERE AND NOWHERE ELSE.  It is formed beside
+  //: the output plane's base and for the same reason: once per CTA, outside
+  //: every loop, and both ends of the state I/O reach their pointer from it by a
+  //: sixty-four-bit ADD.  It is PINNED on `pin_address`'s argument -- an offset
+  //: ptxas can see through is one it re-derives at the use site, and re-deriving
+  //: it puts the widening multiply back, in a loop body this time.
+  long stateOff = ((long)blockIdx.y * (LP::slots / kAtomLeaves) + LP::block_base(blk) / kAtomLeaves
+                   + grp * kAtoms)
+                  * kPageElems;
+  asm("" : "+l"(stateOff));
+  const float* const sInBase = pin_address(s_in + stateOff);
+  float* const sOutBase = pin_address(s_out + stateOff);
 
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
   //: write entry stages nothing, but the slot advances either way so that the
@@ -1114,6 +1233,34 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: super-chunks out before the first value tile is issued.  It pays the two
   //: barriers that fill the formed ring ONCE, before the first walk; the steady
   //: state pays none.
+  //: ---- the ENTRY STATE.  A continued sequence hands its carried state in as
+  //: the same plane the epilogue writes, so the load is the store read backwards
+  //: through the same staging buffer: one coalesced pass per atom into `so`,
+  //: then each warp takes ITS fragments out of it.  The fragments are SET rather
+  //: than accumulated -- they are provably zero here -- and the whole block is
+  //: skipped on a null pointer, so a fresh sequence pays one predicate.
+  //:
+  if (s_in != nullptr) {
+#pragma unroll
+    for (int i = 0; i < kAtoms; ++i) {
+      page_sweep(i, [&](int s, uint32_t off) {
+        so[s] = *reinterpret_cast<const float*>(gather_ptr(sInBase, off));
+      });
+      rendezvous();
+#pragma unroll
+      for (int p = 0; p < 2; ++p)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
+      if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+        for (int p = 0; p < 2; ++p)
+#pragma unroll
+          for (int k = 0; k < 2; ++k) mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+      }
+      rendezvous();
+    }
+  }
+
   if (tid == 0) {
     scook[kCookWord] = 0;
     scook[kCookOpen] = 0;
@@ -1470,6 +1617,33 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   if (prev_nr) {
     drain(prev_d, prev_nr);
     drain_den(prev_d, prev_nr);
+  }
+
+  //: ---- the FINAL STATE.  The mirror of the entry load, after the last drain
+  //: has consumed the staging buffer -- which is what the one extra rendezvous
+  //: below is for.  Both groups iterate the same atom count against their own
+  //: `so`, so every barrier here stays CTA-uniform.
+  if (s_out != nullptr) {
+    rendezvous();
+#pragma unroll
+    for (int i = 0; i < kAtoms; ++i) {
+#pragma unroll
+      for (int p = 0; p < 2; ++p)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
+      if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+        for (int p = 0; p < 2; ++p)
+#pragma unroll
+          for (int k = 0; k < 2; ++k)
+            store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+      }
+      rendezvous();
+      page_sweep(i, [&](int s, uint32_t off) {
+        store_f32(reinterpret_cast<float*>(gather_ptr(sOutBase, off)), so[s]);
+      });
+      rendezvous();
+    }
   }
 #undef ADDRF
 #undef ADDRT

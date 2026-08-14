@@ -17,6 +17,7 @@ import torch
 
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
+from rola.ops.paging import MMA_K_QUANTUM
 
 #: the pinned plan (measured: BC at the dense optimum, C at the flagship,
 #: swizzle off) -- generalized only by falling back to the largest built BC
@@ -69,8 +70,36 @@ def stats(routes) -> torch.Tensor:
     return extension().chunk_stats(pw, list(widths))
 
 
-def run(routes, v: torch.Tensor) -> torch.Tensor:
-    """y [B,T,H,d_v] through table pass + chunk kernel + divide."""
+def state_plane(routes, *, zeros: bool = False) -> torch.Tensor:
+    """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
+
+    The ATOM-MAJOR view of `[BH, N, d_v+1]`, byte for byte: leaves are stored in
+    canonical order, so the reshape between the two is free and the kernel's
+    per-atom addressing and a reader's per-leaf one describe the same bytes.
+
+    Allocation is the caller's, not the kernel entry's -- which is what lets a
+    carried state be handed straight back in. It is uninitialized because the
+    dense plane is written WHOLE: the owner blocks tile the leaf space exactly,
+    so every atom is stored by exactly one CTA.
+    """
+    widths = tuple(l.width for l in routes.topology.levels)
+    n = 1
+    for w in widths:
+        n *= w
+    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM,
+             routes.topology.d_v + 1)
+    build = torch.zeros if zeros else torch.empty
+    return build(shape, device=routes.device, dtype=torch.float32)
+
+
+def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
+        want_state: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
+
+    `state_in` is a plane of `state_plane`'s shape, or `None` for a fresh
+    sequence; `want_state` asks for the carried state back. Both sides are
+    independent nulls in the kernel, so a stateless call pays neither.
+    """
     m = extension()
     widths = tuple(l.width for l in routes.topology.levels)
     c, bc = _arm_for(len(widths), widths[0])
@@ -78,7 +107,8 @@ def run(routes, v: torch.Tensor) -> torch.Tensor:
     pw = torch.cat(routes.write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     gw = routes.g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
     vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    y = m.chunk_forward(pr, pw, gw, vk, c, bc, list(widths), READOUT_EPS)
+    s_out = state_plane(routes) if want_state else None
+    y = m.chunk_forward(pr, pw, gw, vk, c, bc, list(widths), READOUT_EPS, state_in, s_out, None)
     #: kernel arm hands back the operand dtype (the facade's documented
     #: contract); the fp32 accumulator is the kernel's, not the caller's.
-    return y.permute(0, 2, 1, 3).to(v.dtype)
+    return y.permute(0, 2, 1, 3).to(v.dtype), s_out

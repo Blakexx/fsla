@@ -135,7 +135,11 @@ def rola_op(
     reason = _chunk.unsupported(routes, decay, initial_state, output_final_state)
     if reason is not None:
         raise NotImplementedError(f"chunk consumer (kernel arm): {reason}")
-    return _chunk.run(routes, v), None
+    #: state I/O is the seam's, not yet the facade's: `unsupported` still refuses
+    #: a carried state here, so this call is the stateless one and both of the
+    #: kernel's state pointers are null (docs/internals/paging/paging.md).
+    y, _ = _chunk.run(routes, v)
+    return y, None
 
 
 # ---------------------------------------------------------------------------

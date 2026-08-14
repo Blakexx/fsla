@@ -37,9 +37,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // the private seam; rola_op adoption wires them at stage C.
   m.def("chunk_union_table", &rola::chunk::union_table,
         "chunk consumer: the precomputed membership union table");
+  //: the state plane is the CALLER'S, on both sides; absent on both is a fresh
+  //: sequence whose carried state nobody asked for -- what a stateless forward
+  //: passes, and the null the kernel's epilogue is skipped by.
   m.def("chunk_forward_raw", &rola::chunk::forward_raw,
-        "chunk consumer: the readout's d_v+1 columns, undivided");
-  m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass");
+        "chunk consumer: the readout's d_v+1 columns, undivided", py::arg("pr"), py::arg("pw"),
+        py::arg("gw"), py::arg("v"), py::arg("tbl"), py::arg("chunk"), py::arg("bc"),
+        py::arg("widths"), py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
+        py::arg("page_tbl") = py::none());
+  m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass",
+        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("chunk"), py::arg("bc"),
+        py::arg("widths"), py::arg("eps"), py::arg("s_in") = py::none(),
+        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none());
   m.def("chunk_stats", &rola::chunk::stats,
         "chunk consumer: the exact atom-grain write bitmap the page plan admits from");
   m.def("chunk_divide_pass", &rola::chunk::divide_pass,

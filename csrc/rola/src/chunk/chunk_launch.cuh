@@ -25,9 +25,13 @@ cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
     if (e != cudaSuccess) return e;
     configured = true;
   }
+  //: THE ATOM -> SLOT MAP IS NOT RESOLVED YET.  The kernel addresses the DENSE
+  //: plane, where the slot is the atom; a page table is the paged backing's
+  //: step and it arrives with it (docs/internals/paging/paging.md).
+  if (p.page_tbl != nullptr) return cudaErrorInvalidValue;
   const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, (unsigned)p.BH);
-  compacted_kernel<C, D, B, BC>
-      <<<grid, threads_for(BC), sm, stream>>>(p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L);
+  compacted_kernel<C, D, B, BC><<<grid, threads_for(BC), sm, stream>>>(
+      p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.s_in, p.s_out, p.L);
   return cudaGetLastError();
 }
 

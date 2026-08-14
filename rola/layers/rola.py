@@ -314,8 +314,7 @@ class RoLA(nn.Module):
                 #: the chunk consumer is the shipping kernel for the STATELESS
                 #: eval path; state chaining and paging stay on the tiled path
                 #: until the paged state I/O lands (docs/internals/chunk/).
-                out = _chunk_arm.run(routes, v)
-                final_state = None
+                out, final_state = _chunk_arm.run(routes, v)
                 self.last_selected_plan = None
             else:
                 out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
