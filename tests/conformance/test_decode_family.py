@@ -256,7 +256,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     the whole sequence, which is the layer-level statement of the seam."""
     from conftest import build_layer
 
-    from rola.state import RoLAState
+    import rola
 
     device = "cuda"
     torch.manual_seed(9300)
@@ -272,7 +272,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     layer.train()
     x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
     before = dict(layer.execution_backend_counts)
-    out1, _, _ = layer(x1)
+    out1, _ = layer(x1)
     out1.sum().backward()
     after = dict(layer.execution_backend_counts)
     assert after["oracle"] == before["oracle"] + 1
@@ -283,17 +283,17 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     # LEG 2 — eval prefill: the tiled CUDA arm, carried state out.
     layer.eval()
     x_seq = torch.randn(1, T + 1, 128, device=device)
-    cache = RoLAState()
+    carried = rola.state()
     before = dict(layer.execution_backend_counts)
     with torch.no_grad():
-        layer(x_seq[:, :T], past_key_values=cache, use_cache=True)
+        layer(x_seq[:, :T], state=carried)
     after = dict(layer.execution_backend_counts)
     assert after["cuda"] == before["cuda"] + 1, "the prefill leg did not take the tiled arm"
 
     # LEG 3 — eval decode: the decode arm, consuming the tiled state.
     before = after
     with torch.no_grad():
-        y_dec, _, _ = layer(x_seq[:, T:T + 1], past_key_values=cache, use_cache=True)
+        y_dec, _ = layer(x_seq[:, T:T + 1], state=carried)
     after = dict(layer.execution_backend_counts)
     assert after["decode"] == before["decode"] + 1, "the step did not take the decode arm"
 
@@ -303,7 +303,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
     with torch.no_grad():
-        y_full, _, _ = layer(x_seq)
+        y_full, _ = layer(x_seq)
     rel = g.relative(y_dec[:, 0], y_full[:, T])
     assert rel < BF16_RTOL, (
         f"the layer-level prefill/decode seam moved the last token by {rel:.3e}")
@@ -314,7 +314,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     layer.train()
     layer.zero_grad(set_to_none=True)
     x4 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    out4, _, _ = layer(x4)
+    out4, _ = layer(x4)
     out4.sum().backward()
     assert x4.grad is not None, "returning to training after decode severed the graph"
 

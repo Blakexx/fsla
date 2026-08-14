@@ -55,11 +55,8 @@ from rola.interface import rola_op, select_backend
 from rola.ops.decode import decode_forward, freeze_decode_config
 from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
-from rola.utils.cache import get_layer_cache, update_layer_cache
 
 if TYPE_CHECKING:
-    from transformers.processing_utils import Unpack
-
     from rola.state import RoLAState
 
 __all__ = ["RoLA"]
@@ -160,10 +157,8 @@ class RoLA(nn.Module):
         self._execution_backend_counts = {"oracle": 0, "cuda": 0, "decode": 0}
         self.last_execution_backend: str | None = None
         self.last_selected_plan = None
-        #: The paging arena, built on the first paged forward (it needs ``BH``, a
-        #: forward-time quantity), and the frozen decode carrier with its scratch. Both
-        #: are runtime state.
-        self._page_arena = None
+        #: The frozen decode carrier and its scratch: runtime state, built at the
+        #: prefill/decode boundary.
         self._decode_config = None
         self._decode_workspace = None
 
@@ -240,10 +235,17 @@ class RoLA(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        past_key_values: RoLAState | None = None,
-        use_cache: bool | None = False,
-        **kwargs: Unpack[dict],
-    ) -> tuple[torch.Tensor, None, RoLAState | None]:
+        state: RoLAState | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, RoLAState | None]:
+        """``(y, state)``, mirroring the op. THE LAYER IS A PASS-THROUGH FOR STATE.
+
+        ``state`` is a :class:`~rola.state.RoLAState` or ``None``, and the predicate is
+        the op's: ``state is not None`` engages the carried state, a stateless call
+        returns ``(y, None)``. Nothing is wrapped, stamped or checked here -- state
+        semantics are the state's (docs/internals/state.md), and a layer that
+        re-validated them would be a second contract to keep in step with the first.
+        """
         if attention_mask is not None and attention_mask.dim() != 2:
             raise ValueError(
                 "attention_mask must be a [batch, seq_len] 0-1 padding matrix; "
@@ -260,8 +262,6 @@ class RoLA(nn.Module):
         x = hidden_states
         B, L, _ = x.shape
         H = self.num_heads
-        cache_enabled = bool(use_cache)
-        last_state = get_layer_cache(self, past_key_values)
 
         # P09 matched-dtype family: on the kernel-bound bf16 arm both projections
         # run as bf16 GEMMs (weights cast per call), and `v` FLOWS bf16 straight
@@ -279,85 +279,64 @@ class RoLA(nn.Module):
                 v = v.to(x.dtype)
         else:
             v = self.v_proj(x)
-        conv_states = list(last_state.conv_state) if (
-            last_state is not None and last_state.conv_state is not None) else [None, None]
+        #: The short-convolution rings ride ALONGSIDE the routed state, on the same
+        #: object, because they are also part of the recurrence: a continuation that
+        #: dropped them would restart the causal conv from zeros and compute a
+        #: different function for the first `conv_size - 1` tokens of every step.
+        stateful = state is not None
+        conv_states = list(state.conv_state) if (
+            stateful and state.conv_state is not None) else [None, None]
         if self.value_conv is not None:
-            if not cache_enabled and conv_states[0] is not None:
-                conv_states[0] = conv_states[0].clone()
             v, conv_states[0] = self.value_conv(
-                v, cache=conv_states[0], output_final_state=cache_enabled)
+                v, cache=conv_states[0], output_final_state=stateful)
         source = x
         if self.route_conv is not None:
-            if not cache_enabled and conv_states[1] is not None:
-                conv_states[1] = conv_states[1].clone()
             source, conv_states[1] = self.route_conv(
-                x, cache=conv_states[1], output_final_state=cache_enabled)
+                x, cache=conv_states[1], output_final_state=stateful)
 
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
-        recurrent_state = last_state.recurrent_state if last_state is not None else None
-        if recurrent_state is not None and torch.is_grad_enabled():
-            raise RuntimeError("RoLA carried-state execution is inference-only")
-
         routes = self.routes(source)
         decay = None if self.decay is None else self.decay()
         backend = self.select_execution_backend(
             v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
+        #: a state that carries CONTENTS, which is what makes a step a continuation.
+        #: A bound-but-empty state is a fresh sequence, and takes the prefill arms.
+        carrying = stateful and state.carries
+        if carrying and torch.is_grad_enabled():
+            raise RuntimeError("RoLA carried-state execution is inference-only")
 
-        if backend == "cuda" and L == 1 and recurrent_state is not None and not self.paging:
-            out, final_state = self._decode(routes, v, decay, recurrent_state, B, H, cache_enabled)
+        if backend == "cuda" and L == 1 and carrying:
+            out = self._decode(routes, v, decay, state)
             backend = "decode"
         elif backend == "cuda":
             from rola.ops import chunk as _chunk_arm
 
-            if (recurrent_state is None and not cache_enabled and not self.paging
-                    and _chunk_arm.unsupported(routes, decay, None, False) is None):
-                #: the chunk consumer is the shipping kernel for the STATELESS
-                #: eval path; state chaining and paging stay on the tiled path
-                #: until the paged state I/O lands (docs/internals/chunk/).
-                out, final_state = _chunk_arm.run(routes, v)
+            if _chunk_arm.unsupported(routes, decay) is None:
+                #: the chunk consumer through the facade, which owns the state I/O:
+                #: the pages, the entry plane and the final one (docs/internals/state.md).
+                out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
+                                     _arm="kernel")
                 self.last_selected_plan = None
             else:
-                out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
+                out = self._tiled(routes, v, decay, state)
         else:
-            if self.paging:
-                # `[[layer-dispatch-autograd-gap]]`'s shape of failure, in its other
-                # direction: a feature honoured on one dispatch arm and silently dropped
-                # on the other. The reference has no page table, so a paged layer that
-                # reaches it would run unpaged -- EXACT, because paging is bitwise
-                # invisible, but it would also silently discard `max_physical_pages`,
-                # which is not invisible. A configured feature is honoured or REFUSED,
-                # never dropped.
-                raise NotImplementedError(
-                    "paging is a CUDA-backend feature; this forward dispatched to the "
-                    "differentiable reference, which has no page table. The cap would be "
-                    "silently unenforced, so this raises rather than degrading. Run under "
-                    "`torch.no_grad()` in eval mode to reach the kernel, or drop the "
-                    "paging override.")
             # The reference arm is the op, entire. `_arm` is how the layer contributes
             # its training-mode condition, which is a property of a module and has no
             # meaning for a free function.
-            out, final_state = rola_op(
-                routes, v, decay, initial_state=recurrent_state,
-                output_final_state=cache_enabled, expert=self.expert, _arm="reference")
+            out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
+                                 _arm="reference")
             self.last_selected_plan = None
-            # The reference arm is the fp64 oracle and returns fp64 for BOTH outputs
-            # whatever it was handed; casting back is the caller's business because the
-            # caller is the one who knows why. Here that reason is `o_proj`, which holds
-            # the module's working dtype. The carried state deliberately stays fp64 --
-            # the cache contract below is dtype-agnostic by design.
+            # The reference arm is the fp64 oracle and returns fp64 whatever it was
+            # handed; casting back is the caller's business because the caller is the
+            # one who knows why. Here that reason is `o_proj`, which holds the module's
+            # working dtype. The carried state deliberately stays fp64 -- the state
+            # object is dtype-agnostic by design.
             out = out.to(v.dtype)
 
         self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
-        if cache_enabled:
-            # The carried state has the SAME SHAPE and meaning on every backend; only the
-            # accumulation dtype differs (fp64 oracle, fp32 kernel) and every entry point
-            # accepts either, so a continuation may cross backends between steps.
-            update_layer_cache(
-                self, past_key_values, recurrent_state=final_state,
-                conv_state=tuple(conv_states) if (
-                    self.value_conv is not None or self.route_conv is not None) else None,
-                offset=L)
+        if stateful and (self.value_conv is not None or self.route_conv is not None):
+            state.conv_state = tuple(conv_states)
         out = out.reshape(B, L, H * self.head_v_dim)
         if bf16_proj:
             # Off the kernel arm `out`'s VALUES are already bf16-rounded (y is
@@ -368,105 +347,68 @@ class RoLA(nn.Module):
                 out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         else:
             projected = self.o_proj(out)
-        return projected, None, past_key_values
+        return projected, state
 
     # --- the two arms that need layer-owned state ----------------------------
 
-    @property
-    def paging(self) -> bool:
-        """Whether the state is committed page by page (an allocator policy, not math).
-
-        Paging is BITWISE INVISIBLE: one page is one MMA atom, pages are admitted by the
-        write-side plan, and an atom without a page reads as zeros. It lives on the
-        expert surface because it changes what the layer allocates and nothing about
-        what it computes.
-
-        A CAP IMPLIES IT: asking for `max_physical_pages` without asking for paging would
-        be asking for a ceiling on an allocator that is not running, and refusing that
-        combination would be a validation rule with no purpose. Paging without a cap is
-        the uncapped arena, provisioned to the dense limit, where the ceiling can never
-        bind.
-        """
-        return self.expert.paging or self.expert.max_physical_pages is not None
-
-    def _tiled(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
-        """The kernel arm, paged or not, through the op's own two halves.
+    def _tiled(self, routes, v, decay, state):
+        """The LEGACY tiled consumer, for topologies the chunk arm has no arm for.
 
         The layer opens the seam here rather than calling `rola_op` because it REPORTS
         the plan (`last_selected_plan` is the diagnostic a dispatch gate asserts on), and
-        a plan the op derived and discarded is a plan nothing can be asserted about. It
-        is the same two functions `rola_op` composes, in the same order, with the arm
-        already decided one frame up -- not a second implementation of anything.
+        a plan the op derived and discarded is a plan nothing can be asserted about.
+
+        This consumer takes and returns RAW TENSORS, so the state object is crossed at
+        this branch and nowhere deeper: `carried` came out of `materialize`, and the
+        final state goes back in as dense contents. Aligning it with the paged state
+        I/O is P67 S4's, not this seam's.
         """
         from rola.expert import derive_plan, execute
 
+        carried = self._dense_carry(routes, state)
         plan = derive_plan(routes, decay=decay, expert=self.expert, device=v.device)
         self.last_selected_plan = plan
-        if not self.paging:
-            out, final_state, _schedule = execute(
-                plan, routes, v, decay=decay, initial_state=recurrent_state)
-            return out, (final_state if cache_enabled else None)
+        out, final_state, _schedule = execute(
+            plan, routes, v, decay=decay, initial_state=carried)
+        if state is not None:
+            state.adopt_dense_contents(final_state)
+        return out
 
-        arena = self._resolve_page_arena(plan, B * H, v.device)
-        continue_paging = recurrent_state is not None
-        if continue_paging:
-            # An explicit bridge, not an implicit one: `adopt_dense` provisions every
-            # owner, so it must be a visible act. `reset` clears the page table before
-            # loading the dense state; `continue_paging` is what then stops the
-            # consumer's own default reset from wiping what was just committed.
-            arena.reset()
-            arena.adopt_dense(recurrent_state.reshape(arena.BH, arena.N, arena.cols)
-                              .to(torch.float32).contiguous())
-        out, _arena, _schedule = execute(
-            plan, routes, v, decay=decay, paging=arena, continue_paging=continue_paging)
-        final_state = (arena.materialize().view(B, H, arena.N, arena.cols)
-                       if cache_enabled else None)
-        return out, final_state
+    def _decode(self, routes, v, decay, state):
+        """The ``T = 1`` sibling kernel, over the frozen carrier.
 
-    def _decode(self, routes, v, decay, recurrent_state, B, H, cache_enabled):
-        """The ``T = 1`` sibling kernel, over the frozen carrier."""
+        Raw tensors again, and the same crossing: `decode_forward` updates the plane it
+        is given IN PLACE, so it is handed an fp32 contiguous copy of the state's
+        contents and the result is stored back through `adopt_dense_contents`.
+        """
+        carried = self._dense_carry(routes, state)
+        B, H = carried.shape[0], carried.shape[1]
         config = self._resolve_decode_config(B * H, v.device)
-        # `decode_forward` updates its state argument IN PLACE, and the cached state is
-        # fp32-contiguous in steady decode, so both casts below are IDENTITY and would
-        # alias the caller's cache. Under `use_cache` that aliasing IS the intended
-        # carry; without it the caller's cache must be left untouched, so the alias is
-        # severed. Only the identity case clones -- a real cast already copied.
-        state = recurrent_state.to(torch.float32).contiguous()
-        if not cache_enabled and state.data_ptr() == recurrent_state.data_ptr():
-            state = state.clone()
+        plane = carried.to(torch.float32).contiguous()
+        if plane.data_ptr() == carried.data_ptr():
+            plane = plane.clone()
         # Decode is an fp32 boundary by contract (out of the P09 bf16-memory
         # family's scope -- a [BH, width] object with no measured pressure); a
         # bf16-projected `v` re-widens here, and the cast is exact because the
         # values are bf16-rounded already. Identity for an fp32 module.
         v = v.to(torch.float32)
         out, final_state, self._decode_workspace = decode_forward(
-            v, routes.read, routes.write, routes.g_read, routes.g_write, config, state,
+            v, routes.read, routes.write, routes.g_read, routes.g_write, config, plane,
             decay=decay, workspace=self._decode_workspace)
         self.last_selected_plan = None
-        return out, (final_state if cache_enabled else None)
+        state.adopt_dense_contents(final_state)
+        return out
 
-    def _resolve_page_arena(self, plan, BH: int, device):
-        """The page arena, built once and reused across steps.
+    def _dense_carry(self, routes, state):
+        """The `[B, H, N, cols]` entry state these RAW-TENSOR arms take, or `None`.
 
-        Pooled across every ``(batch, head)`` pair of this layer, which is what makes the
-        savings math work: a per-pair arena would round each pair's tiny live fraction up
-        to its own growth chunk. Rebuilt when ``BH``, the device or the column count
-        moves -- and NOT when ``BC`` does, because a page is one MMA atom on both sides,
-        so every stored object and every address the kernel forms is ``BC``-invariant and
-        two launches at different ``BC`` address the same bytes of the same slots.
+        Also where an unbound state BINDS on these arms, which is why it is the state's
+        own seam and not a `materialize` call: the two arms below cross the state object
+        at exactly this line and nowhere deeper.
         """
-        from rola.ops.paging import PageArena
-
-        cols = self.head_v_dim + (1 if self.normalization == "global" else 0)
-        arena = self._page_arena
-        if (arena is not None and arena.BH == BH and arena.device == device
-                and arena.cols == cols):
-            return arena
-        arena = PageArena(
-            widths=self.topology.widths, BC=plan.BC, cols=cols, BH=BH, device=device,
-            max_physical_pages=self.expert.max_physical_pages)
-        self._page_arena = arena
-        return arena
+        if state is None:
+            return None
+        return state._dense_entry(routes, paging=self.expert.paging is not False)
 
     def _resolve_decode_config(self, BH: int, device):
         """The frozen decode config, built once at the prefill/decode boundary.

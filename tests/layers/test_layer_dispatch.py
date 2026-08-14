@@ -187,7 +187,7 @@ def test_a_grad_context_takes_the_oracle_and_every_parameter_gets_a_live_gradien
     layer = _layer(decay=decay, router=router, logit_gain=gain)
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
 
-    out, _, _ = layer(x)
+    out, _ = layer(x)
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "oracle"
@@ -217,7 +217,7 @@ def test_grad_enabled_but_nothing_requiring_grad_is_not_a_grad_context():
         param.requires_grad_(False)
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     assert torch.is_grad_enabled()
-    out, _, _ = layer(x)
+    out, _ = layer(x)
     assert layer.last_execution_backend == "cuda"
     assert out.grad_fn is None
 
@@ -329,11 +329,11 @@ def test_the_two_backends_agree_on_the_same_inputs(decay, router, gain):
         assert _sparsity(layer, x) > 0.2, "the sparse fixture is vacuously dense"
 
     x_grad = x.clone().requires_grad_(True)
-    oracle_out, _, _ = layer(x_grad)
+    oracle_out, _ = layer(x_grad)
     assert layer.last_execution_backend == "oracle"
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     with torch.no_grad():
-        cuda_out, _, _ = layer(x)
+        cuda_out, _ = layer(x)
     assert layer.last_execution_backend == "cuda"
 
     reference = oracle_out.detach()
@@ -368,16 +368,16 @@ def test_the_two_backends_agree_on_the_carried_state_they_hand_back(decay):
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode;
     # the oracle leg below still takes 'oracle' because `x` does not require grad but
     # the (unfrozen) projection parameters do, so `v` requires grad under enable_grad.
-    from rola.state import RoLAState
+    import rola
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
 
     states = {}
     for tag, context in (("oracle", torch.enable_grad()), ("cuda", torch.no_grad())):
-        cache = RoLAState()
+        carried = rola.state()
         with context:
-            layer(x, past_key_values=cache, use_cache=True)
+            layer(x, state=carried)
         assert layer.last_execution_backend == tag
-        states[tag] = cache[layer.layer_idx].recurrent_state
+        states[tag] = carried.materialize()
 
     assert states["oracle"].shape == states["cuda"].shape
     scale = float(states["oracle"].abs().max())
@@ -409,24 +409,26 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(decay)
     torch.manual_seed(37)
     layer = _layer(decay=decay)
     layer.eval()
-    from rola.state import RoLAState
+    import rola
     x0 = torch.randn(1, 48, _HIDDEN, device="cuda")
     x1 = torch.randn(1, 32, _HIDDEN, device="cuda")
 
     # Step 1: produce a carried state on the oracle (grad context).
-    cache = RoLAState()
+    carried = rola.state()
     with torch.enable_grad():
-        layer(x0, past_key_values=cache, use_cache=True)
+        layer(x0, state=carried)
     assert layer.last_execution_backend == "oracle"
-    oracle_state = cache[layer.layer_idx].recurrent_state
+    oracle_state = carried.materialize()
     assert oracle_state.dtype == torch.float64
+    assert not carried.paged, "the reference arm's result is dense-backed"
 
-    # Step 2: continue on the CUDA backend, consuming that oracle-produced state.
+    # Step 2: continue on the CUDA backend, consuming that oracle-produced state --
+    # which re-admits the dense contents into pages (docs/internals/state.md §5).
     with torch.no_grad():
-        out, _, _ = layer(x1, past_key_values=cache, use_cache=True)
+        out, _state = layer(x1, state=carried)
     assert layer.last_execution_backend == "cuda"
     assert torch.isfinite(out).all()
-    continued_state = cache[layer.layer_idx].recurrent_state
+    continued_state = carried.materialize()
     assert continued_state.dtype == torch.float32
     assert continued_state.shape == oracle_state.shape
     assert torch.isfinite(continued_state).all()
@@ -546,7 +548,7 @@ def test_the_decay_dials_are_a_grad_requiring_operation_input():
     x = torch.randn(1, 64, _HIDDEN, device="cuda")  # does not require grad
     assert torch.is_grad_enabled()
 
-    out, _, _ = layer(x)
+    out, _ = layer(x)
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "oracle"
@@ -593,7 +595,7 @@ def test_forcing_cuda_in_the_decay_only_grad_context_severs_the_decay_gradient(m
 
     monkeypatch.setattr(RoLA, "select_execution_backend", lambda *args, **kwargs: "cuda")
     monkeypatch.setattr(interface_module, "select_backend", lambda *args, **kwargs: "cuda")
-    out, _, _ = layer(x)
+    out, _ = layer(x)
     out.square().mean().backward()
 
     assert layer.last_execution_backend == "cuda"
@@ -628,7 +630,7 @@ def test_checkpointing_in_training_mode_never_reaches_the_cuda_consumer(use_reen
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
 
     def run(inp):
-        out, _, _ = layer(inp)
+        out, _ = layer(inp)
         return out
 
     out = torch_checkpoint.checkpoint(run, x, use_reentrant=use_reentrant)
@@ -786,34 +788,42 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
 
 @_CUDA
 def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance():
-    from rola.state import RoLAState
+    """REPOINTED (P67 S3b): the backing is the STATE's, so the two arms are two states.
+
+    Paging stopped being a layer configuration -- it is chosen when a state binds, and
+    `PlanOverrides(paging=False)` is the surviving pin -- but the claim is the one it
+    always was: the bf16 arm computes the same carried state through either backing,
+    `torch.equal`, because the state path has no atomic and no precision excuse.
+    """
+    import rola
 
     torch.manual_seed(23)
-    unpaged = _layer(decay="none")
-    # Old `paging=True` -> `PlanOverrides(paging=True)`, the UNCAPPED paging arm
-    # (`max_physical_pages=None` provisions the dense limit, which can never bind).
-    paged = build_layer(
-        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        routing=dense_routing(), normalization="global", decay=None,
-        expert=PlanOverrides(paging=True),
-        layer_idx=0,
-    ).to("cuda", torch.float32)
-    paged.load_state_dict(unpaged.state_dict())
+    #: UNIFORM widths at `d_v = 64`: the paged backing lives on the CHUNK arm, and the
+    #: legacy tiled consumer (which `_BRANCHES = (8, 16)` falls to) takes raw tensors
+    #: and hands back dense contents whatever the state prefers. A cell that wants two
+    #: backings has to run on the arm that has two.
+    kw = dict(hidden_size=_HIDDEN, num_heads=_H, d_v=64, widths=(16, 16),
+              routing=dense_routing(), normalization="global", decay=None, layer_idx=0)
+    layer = build_layer(**kw).to("cuda", torch.float32)
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
 
     x_grad = x.clone().requires_grad_(True)
-    oracle_out, _, _ = unpaged(x_grad)
-    assert unpaged.last_execution_backend == "oracle"
+    oracle_out, _ = layer(x_grad)
+    assert layer.last_execution_backend == "oracle"
 
-    unpaged.eval()
-    paged.eval()
+    layer.eval()
+    dense_pin = build_layer(expert=PlanOverrides(paging=False), **kw).to(
+        "cuda", torch.float32).eval()
+    dense_pin.load_state_dict(layer.state_dict())
     with torch.no_grad():
-        cache_u, cache_p = RoLAState(), RoLAState()
-        y_u, _, _ = unpaged(x, past_key_values=cache_u, use_cache=True)
-        y_p, _, _ = paged(x, past_key_values=cache_p, use_cache=True)
+        state_u, state_p = rola.state(), rola.state()
+        y_u, state_u = dense_pin(x, state=state_u)
+        y_p, state_p = layer(x, state=state_p)
 
-    assert paged.last_execution_backend == "cuda"
-    assert torch.equal(cache_u[0].recurrent_state, cache_p[0].recurrent_state), (
+    assert layer.last_execution_backend == "cuda"
+    assert not state_u.paged and state_p.paged, (
+        "both arms took the same backing; the cell is vacuous")
+    assert torch.equal(state_u.materialize(), state_p.materialize()), (
         "bf16 x paging moved the carried state; the state path has no atomic and "
         "no precision excuse")
     ref = oracle_out.detach()

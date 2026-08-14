@@ -33,7 +33,7 @@ and not part of the contract.
 | feature map | `RouteProducer`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `sparse_routing` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA` | STABLE |
-| state | `RoLAState`, `LayerRecurrentState` | STABLE |
+| state | `state()`, `RoLAState` | STABLE |
 | configuration | `Topology`, `LevelConfig`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `UnionRouting` | STABLE |
 | oracle | `naive_rola` | STABLE signature, EXACT semantics — it is the definition |
 """
@@ -64,7 +64,7 @@ from rola.routing.types import (
     entmax,
     softmax,
 )
-from rola.state import LayerRecurrentState, RoLAState
+from rola.state import RoLAState, state  # `state` SHADOWS the module of the same name
 
 __all__ = [
     # the op — the single autograd boundary (rola/interface.py)
@@ -86,8 +86,8 @@ __all__ = [
     # layer
     "RoLA",
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
+    "state",
     "RoLAState",
-    "LayerRecurrentState",
     # oracle — ships in the wheel; it is the definition (docs/testing.md)
     "naive_rola",
     # configuration

@@ -31,8 +31,8 @@ import pytest
 import torch
 from conftest import build_layer
 
+import rola
 from rola.expert import PlanOverrides
-from rola.state import RoLAState
 
 #: `[8, 16]` at `d_v = 64` so the TILED arm lands on an instantiated `(BC, d_v)` --
 #: `BC` defaults to the innermost width, and `BC = 8` is not in the consumer's set.
@@ -56,16 +56,16 @@ def _layer(device, *, norm="global", decay="none"):
 
 def _prime(layer, device, *, prefill=4, requires_grad=False):
     """Run a prefill so the next call has a carried state — the decode precondition."""
-    cache = RoLAState()
+    state = rola.state()
     x = torch.randn(1, prefill, _HIDDEN, device=device, requires_grad=requires_grad)
-    layer(x, past_key_values=cache, use_cache=True)
-    return cache
+    _out, state = layer(x, state=state)
+    return state
 
 
-def _step(layer, cache, device, *, L=1, requires_grad=False, grad_enabled=True):
+def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
     x = torch.randn(1, L, _HIDDEN, device=device, requires_grad=requires_grad)
     with torch.set_grad_enabled(grad_enabled):
-        out, _, _ = layer(x, past_key_values=cache, use_cache=True)
+        out, _state = layer(x, state=state)
     return x, out
 
 
@@ -111,7 +111,7 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
         cache = _prime(layer, device)
         layer.train(was_training)
     else:
-        cache = RoLAState()
+        cache = rola.state()
     before = layer.execution_backend_counts
 
     if expected == 'raises':
@@ -181,18 +181,22 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 
 @pytest.mark.cuda
 @_CUDA
-def test_a_paged_layer_keeps_the_tiled_path():
-    """Decode is unpaged only until §4.5's atom re-key lands.
+def test_a_dense_pinned_layer_still_reaches_decode():
+    """REPOINTED (P67 S3b): paging is not a layer configuration any more.
 
-    A paged layer must therefore keep the TILED path at ``T = 1`` — which is exact
-    (paging is bitwise invisible) and keeps the ``max_physical_pages`` cap enforced.
-    The alternative, letting a paged layer take an unpaged decode step, would silently
-    drop the cap: the same shape of failure the oracle arm's paging refusal names.
+    This cell used to assert that a PAGED layer kept the tiled path at ``T = 1``,
+    because decode had no page table and would have dropped the layer's cap. There is
+    no cap and no layer-level paging flag: the backing is the state's, chosen at bind,
+    and decode crosses it through `materialize`/`adopt_dense_contents` at its branch
+    (docs/internals/state.md §5). What is still worth asserting is that the expert's
+    surviving backing pin does not perturb the DISPATCH: a dense-pinned layer takes
+    the decode fork at ``T = 1`` exactly as the default one does. Aligning decode with
+    the paged backing proper is P67 S4.
     """
     device = "cuda"
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        normalization="global", expert=PlanOverrides(paging=True),
+        normalization="global", expert=PlanOverrides(paging=False),
         layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()
@@ -201,8 +205,8 @@ def test_a_paged_layer_keeps_the_tiled_path():
         before = layer.execution_backend_counts
         _step(layer, cache, device, L=1, grad_enabled=False)
     after = layer.execution_backend_counts
-    assert after['cuda'] == before['cuda'] + 1, "a paged layer must keep the tiled path"
-    assert after['decode'] == before['decode']
+    assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
+    assert after['cuda'] == before['cuda']
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +242,7 @@ def test_the_cuda_rows_dispatch_identically_across_decay(
     if carried:
         cache = _prime(layer, device)
     else:
-        cache = RoLAState()
+        cache = rola.state()
     before = layer.execution_backend_counts
     _step(layer, cache, device, L=L, grad_enabled=False)
     after = layer.execution_backend_counts
