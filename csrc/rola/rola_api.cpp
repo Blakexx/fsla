@@ -28,10 +28,25 @@
 #include "src/host_api.cuh"
 #include "src/summaries.cuh"
 #include "src/paging/vmm_owner.cuh"
+#include "src/chunk/chunk_api.cuh"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  // P69: the CHUNK consumer (the adopted ladder operator) -- raw entries at
+  // the private seam; rola_op adoption wires them at stage C.
+  m.def("chunk_union_table", &rola::chunk::union_table,
+        "chunk consumer: the precomputed membership union table");
+  m.def("chunk_forward_raw", &rola::chunk::forward_raw,
+        "chunk consumer: the readout's d_v+1 columns, undivided");
+  m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass");
+  m.def("chunk_divide_pass", &rola::chunk::divide_pass,
+        "chunk consumer: the ratio, one elementwise pass");
+  m.def("chunk_build_stamp", &rola::chunk::build_stamp,
+        "chunk consumer: device-side build identity + census");
+  m.def("chunk_arms", &rola::chunk::arms,
+        "chunk consumer: the built arms with derived plan and geometry");
+
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,
         "union entmax forward: midpoint values, read/write routes, packed support");

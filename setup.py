@@ -385,6 +385,13 @@ SOURCES = [
     "csrc/rola/src/entmax.cu",
     "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
+    # P69: the CHUNK consumer (the ladder operator, adopted).  chunk.cu is
+    # dispatch+entries only; its 24 instantiations live in the chunk_s* shards
+    # (hand-carried until the generator learns the second matrix, stage D).
+    "csrc/rola/src/chunk/chunk.cu",
+    "csrc/rola/src/chunk/chunk_s0.cu",
+    "csrc/rola/src/chunk/chunk_s1.cu",
+    "csrc/rola/src/chunk/chunk_s2.cu",
 ]
 
 
