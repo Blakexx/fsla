@@ -10,7 +10,7 @@ an identically zero gradient is refused at construction.
 
 **SCOPE NARROWED (post-merge, 2026-08-02).** Six cells built a `states_per_level=[4]`
 LAYER to read the surface off a real module. `widths = (4,)` names no BC-aligned owner
-rectangle for any instantiated `BC` (16, 64), so `THUNDER_RUN_SPEC.md` §6 P6's
+rectangle for any instantiated `BC` (16, 64), so the gain-surface contract's
 construction-time feasibility validation refuses it -- correctly, and by design: those
 cells only ever ran on the fp64 oracle path, which needs no `BC` at all. They are
 deleted rather than re-pointed onto an instantiated topology, per the ruling: the

@@ -33,8 +33,8 @@
 // Prints one CSV row per concentration-sweep arm (cuda_events median/IQR).
 // ncu counters (dram__bytes.sum, l1tex__t_sectors.sum) are taken the same
 // way, wrapped in the same lock, per docs/measurement.md's instrument
-// discipline; see rola-scratch workflows/perf/p14_evidence/ for the raw
-// captured rows and the verdict.
+// discipline; the development journal holds the captured raw rows and the
+// verdict.
 
 #include <cstdio>
 #include <cstdlib>

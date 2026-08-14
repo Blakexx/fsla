@@ -76,7 +76,7 @@ _PRODUCTION_GRAD_ATOL = 5e-6
 #: Tightening is the correct direction; loosening requires a re-measurement in
 #: `test_the_two_lowerings_agree_on_exact_ties`'s own table.
 #:
-#: RE-MEASURED AT THE THUNDER MERGE (2026-08-02), because the thing on the CUDA side of
+#: RE-MEASURED 2026-08-02 (entmax kernel merge), because the thing on the CUDA side of
 #: this comparison CHANGED. Track E replaced the union solve's fused-Triton lowering
 #: with a hand-CUDA + CUB kernel and DELETED the Triton one, so every number in the
 #: table below was a measurement of an implementation that no longer exists -- a stale

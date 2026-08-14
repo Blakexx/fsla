@@ -86,7 +86,7 @@ def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
                 warp_tile=(1, _DV // 32), decay=decay_on)
     f = _f32(pre)
     if decay_on:
-        # P66/P69 D2a: decay is not a feature of the operator; its consumer
+        # The decay retirement: decay is not a feature of the operator; its consumer
         # arms are no longer compiled and the dispatch refuses the request.
         # The refusal IS this cell's contract until the reopen conditions;
         # the oracle keeps the handoff semantics alive below regardless.
@@ -260,7 +260,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
 
     device = "cuda"
     torch.manual_seed(9300)
-    #: decay dropped from THIS layer (P66/P69 D2a): a decay-configured layer
+    #: decay dropped from THIS layer (the decay retirement): a decay-configured layer
     #: routes every arm to the oracle, which would leave this walk no
     #: boundary to cross -- the decay routing has its own test below.
     layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(8, 16),
@@ -320,7 +320,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
 
 
 def test_a_decay_configured_layer_routes_every_arm_to_the_oracle():
-    """P66/P69 D2a: decay is not implemented in the kernel arm.  A layer
+    """The decay retirement: decay is not implemented in the kernel arm.  A layer
     CONFIGURED with decay dispatches to the oracle at eval exactly as an
     unratified activation would -- counted, not silently degraded -- and the
     direct consumer entries keep the loud refusal."""

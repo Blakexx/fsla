@@ -25,7 +25,7 @@ and owner tiles, which appear here only to be ruled out.
 
 ## <a id="no-stage-2"></a>1. `T = 1` has no stage 2
 
-`THUNDER_RUN_SPEC.md` §6b ruled that at `T = 1` **every** stage-2 decision is
+The decode design ruled that at `T = 1` **every** stage-2 decision is
 degenerate:
 
 | stage-2 decision | why it is degenerate at `T = 1` |

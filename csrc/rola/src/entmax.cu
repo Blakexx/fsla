@@ -1,5 +1,5 @@
 // THE PRODUCER'S UNION ENTMAX SOLVE -- hand CUDA, CUB warp primitives.
-// Design of record: `rola-scratch/workflows/20260802-thunder/trackE.md` §3.
+// Design of record: docs/internals/entmax.md.
 // Gates: `tests/unit/test_entmax_cuda_gates.py` (fp64 oracle only; the Triton kernel is
 // a debugging diagnostic and is never asserted against -- trackE.md §4).
 //

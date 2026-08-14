@@ -1,5 +1,5 @@
 // csrc/rola/src/chunk/chunk.cu -- the chunk consumer's DISPATCH and torch
-// entries (adopted from the ladder's rung 6G at P69).  This TU never touches
+// entries (adopted from the ladder's rung 6G).  This TU never touches
 // a kernel symbol: arms arrive as extern declarations satisfied by the
 // instantiation shards, exactly the consumer family's discipline.
 #include <ATen/cuda/CUDAContext.h>
@@ -109,11 +109,11 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
                           int64_t bc, std::vector<int64_t> widths) {
   check_inputs(pr, pw, v, chunk, widths);
   const int BH = v.size(0) * v.size(1), L = v.size(2);
-#define RUNG5D_TABLE(C_, BC_, D_, B_)                                     \
+#define CHUNK_TABLE_X(C_, BC_, D_, B_)                                     \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_))                     \
     return build_table<D_, B_, BC_>(pr, pw, BH, L);
-  RUNG5D_ARMS(RUNG5D_TABLE)
-#undef RUNG5D_TABLE
+  CHUNK_ARMS_X(CHUNK_TABLE_X)
+#undef CHUNK_TABLE_X
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
 }
 
@@ -136,7 +136,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   auto o = torch::zeros({B, H, L, (long)kD}, opts);
   auto den = torch::zeros({B, H, L}, opts);
   const int BH = B * H;
-#define RUNG5D_DISPATCH(C_, BC_, D_, B_)                                   \
+#define CHUNK_DISPATCH_X(C_, BC_, D_, B_)                                   \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                    \
     const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
                       tok_words(L);                                          \
@@ -152,8 +152,8 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
         p_, at::cuda::getCurrentCUDAStream())));                               \
     return {o, den};                                                           \
   }
-  RUNG5D_ARMS(RUNG5D_DISPATCH)
-#undef RUNG5D_DISPATCH
+  CHUNK_ARMS_X(CHUNK_DISPATCH_X)
+#undef CHUNK_DISPATCH_X
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
 }
 
@@ -178,14 +178,14 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t>
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
-#define RUNG5D_CENSUS(C_, BC_, D_, B_)                                         \
+#define CHUNK_CENSUS_X(C_, BC_, D_, B_)                                         \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                        \
     const auto cs = query_chunk_census_arm<C_, BC_, D_, B_>();                 \
     for (auto x : cs) r.push_back(x);                                              \
     return r;                                                                      \
   }
-  RUNG5D_ARMS(RUNG5D_CENSUS)
-#undef RUNG5D_CENSUS
+  CHUNK_ARMS_X(CHUNK_CENSUS_X)
+#undef CHUNK_CENSUS_X
   TORCH_CHECK(false, "unbuilt arm");
   return r;
 }
@@ -195,7 +195,7 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t>
 //: staging depth and the CTA target.
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
-#define RUNG5D_LIST(C_, BC_, D_, B_)                                      \
+#define CHUNK_LIST_X(C_, BC_, D_, B_)                                      \
   out.push_back({C_, BC_, D_, B_,                              \
                  (int64_t)LevelPlan<D_, B_, BC_>::blocks,                     \
                  (int64_t)(BC_ / LevelPlan<D_, B_, BC_>::span_at(D_ - 1)),    \
@@ -204,8 +204,8 @@ std::vector<std::vector<int64_t>> arms() {
                  (int64_t)Geom<C_, BC_>::bytes,                           \
                  (int64_t)kCtaTarget<C_, BC_>,                            \
                  (int64_t)LevelPlan<D_, B_, BC_>::entries});
-  RUNG5D_ARMS(RUNG5D_LIST)
-#undef RUNG5D_LIST
+  CHUNK_ARMS_X(CHUNK_LIST_X)
+#undef CHUNK_LIST_X
   return out;
 }
 

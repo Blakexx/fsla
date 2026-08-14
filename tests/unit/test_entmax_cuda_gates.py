@@ -1,7 +1,7 @@
 """Track E gates: the hand-CUDA union entmax kernels, judged ONLY against the fp64 oracle.
 
 RATIFIED GATE PLAN (user ruling 2026-08-02, recorded in
-`rola-scratch/workflows/20260802-thunder/trackE.md` §4). The Triton kernel is NOT a
+docs/internals/entmax.md). The Triton kernel is NOT a
 reference here and is never asserted against -- "matching the old is not a virtue"; the
 baseline is the independent fp64 ground truth in `entmax/reference.py`, whose own header
 says the same thing ("never kernel-vs-kernel"). `[[matching-the-naive-antipattern]]`.

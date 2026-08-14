@@ -1,4 +1,4 @@
-"""§7.1 page commitment, RE-KEYED TO THE MMA ATOM (``THUNDER_RUN_SPEC.md`` §4.5).
+"""Page commitment, KEYED TO THE MMA ATOM (docs/internals/paging/).
 
 What this module is for, in one sentence: make the state a layer actually keeps
 resident scale with the atoms its routing REALIZES, instead of with the ``N`` its

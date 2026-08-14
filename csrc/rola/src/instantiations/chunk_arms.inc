@@ -4,7 +4,7 @@
 // built (C, BC, D, B) arm of the chunk consumer (the swizzle axis
 // is RETIRED: receipt -2.1..+2.2%, noise, no winner).
 // clang-format off
-#define RUNG5D_ARMS(X) \
+#define CHUNK_ARMS_X(X) \
   X(16, 64, 2, 8) \
   X(32, 64, 2, 8) \
   X(64, 64, 2, 8) \

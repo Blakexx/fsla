@@ -1,4 +1,4 @@
-"""The producer-epilogue ROUTING SUMMARY pass (``THUNDER_RUN_SPEC.md`` §4.1/§4.2).
+"""The producer-epilogue ROUTING SUMMARY pass (docs/internals/summaries.md).
 
 This is the ONE statistic the runtime planner reads. It replaces the exact
 per-``(owner, tile)`` census in the hot path: the census asks its question of every

@@ -1,4 +1,4 @@
-"""THE CHUNK CONSUMER'S SASS OPCODE GATE (ported from the ladder at P69).
+"""THE CHUNK CONSUMER'S SASS OPCODE GATE (ported from the ladder repo).
 
 Stricter than the ratchet manifests: the chunk kernels ship with ZERO spill
 (`LDL`/`STL`), `RED` never `ATOM`, and no `IMAD.WIDE`/`I2F`/`F2I`/`MUFU`

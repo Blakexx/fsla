@@ -1,6 +1,6 @@
 # `csrc/rola/src/consumer_kernel.cuh` — the RoLA V3 consumer kernel body
 
-THE ENDGAME EXECUTOR, and the ONLY consumer. This doc owns the kernel BODY: the
+the tiled consumer (LEGACY: the chunk consumer under docs/internals/chunk/ is the shipping kernel arm; this one serves state-chaining and paging until the paged state I/O migrates them, then it is deleted). This doc owns the kernel BODY: the
 schedule ring's producer (the streamed membership scan and the cooked group
 descriptor), the compact-into-registers atom walk, the four GEMMs in their phase
 order, and the split-K epilogue.

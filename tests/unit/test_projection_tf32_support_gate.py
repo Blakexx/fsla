@@ -1,6 +1,6 @@
 """Oracle-anchored support gate for the packed-router projection GEMM.
 
-Gate 2 (`rola-scratch/workflows/20260801-forward/gate2-invariants.md`, item 2)
+The projection-invariant gate
 found that scoping ``torch.backends.cuda.matmul.allow_tf32`` around the
 projection einsum (effd23c, reverted) flips 14-95 of the alpha=1.5 entmax
 support entries per cell on fresh seeds, against the SAME fp32 code with the

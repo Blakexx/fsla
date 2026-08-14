@@ -29,7 +29,8 @@
 // NOT here, deliberately: the SHARED-MEMORY LAYOUT (pad-8 against an XOR
 // swizzle) and the CHUNK SIZE.  Both are legal on every tabulated architecture
 // and both have a measured optimum that MOVES -- the swizzle saved the dense
-// base 0.545 inst/mma at C=16 and cost the routed rung 1.260 at the same arm, a
+// base 0.545 inst/mma at C=16 and cost the routed kernel 1.260 at the same
+// arm, a
 // genuine sign flip.  They stay FREE AXES, chosen by measurement, and a
 // selection here would make every future measurement of them unfalsifiable.
 //

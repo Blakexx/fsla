@@ -1,4 +1,4 @@
-"""Validation gate for the producer-epilogue summary pass (``THUNDER_RUN_SPEC.md`` §4.1/§4.2).
+"""Validation gate for the producer-epilogue summary pass (docs/internals/summaries.md).
 
 Ground truth is an INDEPENDENT SCALAR WALK written from the spec wording with explicit
 Python loops over ``bh``/tile/owner/level/digit/token. It shares nothing with
@@ -34,7 +34,7 @@ from rola.routing.summaries import (
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(),
                            reason="gates the summary pass's device synchronization budget")
 
-#: I1 (`THUNDER_RUN_SPEC.md` §1): every quanta-shaped quantity is an expression in `BC`
+#: I1 (the quanta invariant): every quanta-shaped quantity is an expression in `BC`
 #: and `MMA_K_QUANTUM`, so the rows sweep the INSTANTIATED `BC` (16, 64) AND one
 #: hypothetical `BC = 32` no kernel implements. A `BC`-derived literal -- a mask width,
 #: a bin count, a page-slot count -- passes the instantiated rows and fails the fake one.

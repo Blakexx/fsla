@@ -65,7 +65,7 @@ consumer's much larger signature is positional.
 
 ## <a id="summaries-contract"></a>5. The routing-summary pass's calling contract
 
-`rola_routing_summaries` (THUNDER_RUN_SPEC.md §4.1/§4.2) is **one launch, no
+`rola_routing_summaries` (docs/internals/summaries.md) is **one launch, no
 allocation, no host synchronization.** Every output is a caller-owned tensor that the
 Python side zeroes beforehand and reads back in its ONE D2H transfer.
 
@@ -114,3 +114,10 @@ through the four verbs.
 
 `rola_vmm_create` is the factory, and its `target_chunk_bytes` defaults to 64 MiB at
 this boundary.
+
+## The chunk consumer's entries (operator adoption)
+
+`chunk_union_table`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`,
+`chunk_build_stamp`, `chunk_arms` — the chunk consumer's private seam
+(declarations in `src/chunk/chunk_api.cuh`; `rola/ops/chunk.py` is the only
+intended caller, behind `rola_op`).  See docs/internals/chunk/.

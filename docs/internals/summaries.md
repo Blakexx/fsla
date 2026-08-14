@@ -1,6 +1,6 @@
 # `csrc/rola/src/summaries.cuh` + `csrc/rola/src/summaries.cu` — the producer-epilogue routing summary pass
 
-`THUNDER_RUN_SPEC.md` §4.1/§4.2's summary pass, as an ahead-of-time CUDA kernel.
+the routing summary pass, as an ahead-of-time CUDA kernel.
 This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the pass's declared bounds, the `.cu` carries the
 kernel and the pybind entry. The mirror rule is one doc per source basename, so
@@ -26,7 +26,7 @@ fallback: no runtime path reaches it, and it refuses to be called as one.
 
 Three reasons the runtime pass is hand-written:
 
-1. **No Inductor in the runtime.** `THUNDER_RUN_SPEC.md` §6 P4 exists partly to
+1. **No Inductor in the runtime.** One standing rule exists partly to
    remove `torch.compile` as a runtime dependency of the planner; a fused torch
    summary pass would put it straight back. Eager torch instead means ~30 kernel
    launches and a DRAM round trip per intermediate, on a pass whose whole

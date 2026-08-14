@@ -1,5 +1,6 @@
 // csrc/rola/src/chunk/chunk_kernel.cuh -- THE CHUNK CONSUMER (adopted from
-// the ladder's rung 6G at P69; the ladder repo holds the rung-by-rung
+// the ladder's rung 6G; the ladder repo (rola-wt-ladder) holds the
+// rung-by-rung
 // derivation and its measurement receipts).  Device world only: constants,
 // LevelPlan, Geom, the compacted kernel and the union-table kernel.
 #pragma once
@@ -86,7 +87,7 @@ static constexpr int kUnits = kD / kMmaM;
 //: the state for the GROUP'S slots.
 static constexpr int kGroupThreads = kUnits * kMmaUnitThreads;
 
-//: THE PER-CONFIG CARVE RULE (P64): warps = the stall floor inside the
+//: THE PER-CONFIG CARVE RULE : warps = the stall floor inside the
 //: register window, filled from the CHEAP axis first -- value units to their
 //: cap (`d_v/16`; token-split is forbidden for state-holding warps, it would
 //: duplicate the register-resident state), then SLOT GROUPS.  At d_v=64 the
@@ -104,7 +105,7 @@ constexpr int threads_for(int BC) { return kGroupThreads * groups_for(BC); }
 //: space.  Every clause below is the law's, and a (widths, BC) pair that breaks
 //: one does not compile.
 //: THE LEVEL PLAN -- the geometry law quantified over D levels of ONE
-//: uniform power-of-two width B (P63: the compile matrix is 8 widths x 4
+//: uniform power-of-two width B (the compile matrix is 8 widths x 4
 //: depths = 32 topologies, and N = B^D is the reachable grid).  The law is
 //: rung 2's, per level:
 //:
@@ -113,7 +114,7 @@ constexpr int threads_for(int BC) { return kGroupThreads * groups_for(BC); }
 //:   by an aligned run whose width divides B; every level BELOW is spanned
 //:   ENTIRELY.  BC = B^whole * partial_span.
 //:
-//: The WIDTHS POLICY (P63 sec 5b): every consumer reads level widths through
+//: The WIDTHS POLICY: every consumer reads level widths through
 //: `width(l)`, which this uniform policy answers with the constant B -- a
 //: jagged policy later answers from a table, and the loop nests are already
 //: written against the accessor rather than the constant.
@@ -259,10 +260,10 @@ __host__ __device__ constexpr int tok_words(int L) { return (L + kTokBits - 1) /
 //: It is overridable AT BUILD TIME because the wait is a ring's ordinary
 //: behaviour and a gate must be able to make it fire: at depth one the walk waits
 //: on almost every word, and the answer must still be bit for bit rung 5B's.
-#ifndef RUNG6_FORM_WORDS
-#define RUNG6_FORM_WORDS 128
+#ifndef CHUNK_FORM_WORDS
+#define CHUNK_FORM_WORDS 128
 #endif
-constexpr int kFormWords = RUNG6_FORM_WORDS;
+constexpr int kFormWords = CHUNK_FORM_WORDS;
 static_assert((kFormWords & (kFormWords - 1)) == 0,
               "the formed ring's index is a mask, so its depth is a power of two");
 
@@ -302,8 +303,7 @@ constexpr int reg_floor(int C, int BC) {
 
 template <int C, int BC>
 struct Geom {
-  //: the swizzle AXIS is retired (P69; receipt -2.1..+2.2%, noise, no
-  //: winner; the flagship never used it).  The padded layout is THE layout;
+  //: the swizzle AXIS is retired (receipt: noise).  The padded layout is THE layout;
   //: this constant folds every `SWZ ?` ternary to it, and the dead branches
   //: are excised at the e2e cleanup with the compiler as referee.
   static constexpr bool SWZ = false;
@@ -450,7 +450,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: axis, mixed-radix over the plan's spans with level D-2 fastest.  At
   //: D = 2 these are exactly the legacy lead/tail names.
   constexpr int kDepth = LP::depth;
-  //: kDepth == 1 is the FLAT-ROUTING arm (P69, Blake): no outer axis at
+  //: kDepth == 1 is the FLAT-ROUTING arm: no outer axis at
   //: all -- the produce's chain gets a literal 1.0 (rn(a*1) = a, bit-exact
   //: to a dedicated path), and the geometry law already yields outer = 1.
   //: Flat routing caps at N = B <= 256 BY THE MANIFEST (one entmax over B

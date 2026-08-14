@@ -89,7 +89,7 @@ AXES = (
     Axis("BC", (16, 64), str, lambda v: f"bc{v}", str),
     Axis("DV", (32, 64), str, lambda v: f"dv{v}", str),
     Axis("D", (1, 2, 3, 4), str, lambda v: f"d{v}", str),
-    #: DECAY carries ONE value since P66's verdict (decay is not a feature of
+    #: DECAY carries ONE value since the decay retirement (decay is not a feature of
     #: the operator; the semantics live in the fp64 oracle awaiting the reopen
     #: conditions).  The axis SHAPE survives so the dispatch's generated
     #: refusal (-1 at the lookup) stays the documented behavior for a decay
@@ -403,8 +403,8 @@ and Y were re-measured" a provable claim.
 
 
 # ---------------------------------------------------------------------------
-# THE CHUNK MATRIX (P69) -- an explicit ARM LIST, not an axis cross: the level
-# plan's geometry law admits only these (C, SWZ, BC, D, B) tuples as built
+# THE CHUNK MATRIX -- an explicit ARM LIST, not an axis cross: the level
+# plan's geometry law admits only these (C, BC, D, B) tuples as built
 # arms, so a cross product would name unbuildable combinations.  Same hash
 # discipline as the consumer shards; the launcher definitions live in
 # ../chunk/chunk_launch.cuh.
@@ -418,7 +418,7 @@ CHUNK_ARMS: tuple = (
     (16, 64, 2, 16), (32, 64, 2, 16), (64, 64, 2, 16),
     (32, 128, 3, 16), (32, 128, 4, 8), (32, 32, 4, 8),
     # the FLAT-ROUTING baseline arms (D = 1; N = B <= 256 by the manifest --
-    # the benchmark's in-kernel flat control, P69):
+    # the benchmark's in-kernel flat control):
     (32, 64, 1, 64), (32, 64, 1, 256), (16, 64, 1, 256),
 )
 CHUNK_PER_SHARD = 8
@@ -451,7 +451,7 @@ def chunk_arms_inc() -> str:
              "// built (C, BC, D, B) arm of the chunk consumer (the swizzle axis\n",
              "// is RETIRED: receipt -2.1..+2.2%, noise, no winner).\n",
              "// clang-format off\n",
-             "#define RUNG5D_ARMS(X) \\\n"]
+             "#define CHUNK_ARMS_X(X) \\\n"]
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
         lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
@@ -465,7 +465,7 @@ def chunk_shard_source(name: str, arms: list) -> str:
         f"// members-sha256: {chunk_members_sha256(arms)}\n",
         "//\n",
         f"// SHARD {name} -- {len(arms)} of the chunk consumer's "
-        f"{len(CHUNK_ARMS)} instantiations (P69).\n",
+        f"{len(CHUNK_ARMS)} instantiations (docs/internals/chunk/).\n",
         "// The launcher definitions live in ../chunk/chunk_launch.cuh; the\n",
         "// dispatch TU (../chunk/chunk.cu) sees declarations only.\n",
         "\n",
@@ -496,7 +496,7 @@ def readme() -> str:
     sh = shards()
     table = "\n".join(f"| `{name}.cu` | {len(rows)} |" for name, rows in sorted(sh.items()))
     table += "\n" + "\n".join(
-        f"| `{name}.cu` | {len(arms)} (chunk consumer, P69) |"
+        f"| `{name}.cu` | {len(arms)} (chunk consumer) |"
         for name, arms in sorted(chunk_shards().items()))
     return README.format(total=len(matrix()), nshards=len(sh),
                          per=TARGET_MEMBERS_PER_SHARD,

@@ -208,7 +208,7 @@ class RoLA(nn.Module):
         """
         if self.training:
             return "oracle"
-        #: P66/P69: decay is not implemented in the kernel arm; a decay-
+        #: the decay retirement: decay is not implemented in the kernel arm; a decay-
         #: configured layer routes to the oracle like an unratified
         #: activation would -- dispatch, not silent degradation (the direct
         #: consumer entries still refuse loudly).

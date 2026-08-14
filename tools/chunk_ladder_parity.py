@@ -1,4 +1,4 @@
-"""TRANSITIONAL GATE (P69 stage B->C): the adopted chunk consumer against the
+"""TRANSITIONAL GATE (operator adoption; docs/internals/chunk/): the adopted chunk consumer against the
 ladder's rung-6G module, arm for arm, same inputs, one process.
 
 Criterion is the ladder's own: ONE-BLOCK arms owe exact equality; multi-block

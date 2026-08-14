@@ -37,7 +37,9 @@ rola_op(routes: RouteFactors, v: Tensor, decay: LeafMassDecay | None = None, *,
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `v` is `[B, T, H, d_v]`. `decay` is
-the recurrence dial. `y` is `[B, T, H, d_v]`; `final_state` is
+the recurrence dial; a decay-configured call runs on the fp64 reference arm — decay is
+not a feature of the CUDA consumer (the measured mass-clock price fired the stop-gate;
+docs/internals/chunk/chunk.md records the retirement and its reopen conditions). `y` is `[B, T, H, d_v]`; `final_state` is
 `[B, H, N, d_v + (norm == 'global')]` when asked for, where `N = prod(widths)` is the
 leaf capacity.
 
@@ -257,7 +259,7 @@ the numeric arm:
 
 ```python
 from rola.expert import PlanOverrides
-layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides(mma_precision='tf32x3'))
+layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
 ```
 
 The contract for everything there is **stable construction, advisory contents**: build

@@ -400,7 +400,7 @@ __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 //: issuing thread waiting for it, and the whole point of a reduction is that
 //: nothing waits.  Expressed as the intrinsic rather than as a named instruction
 //: so that an architecture whose best reduction is wider, or is performed by a
-//: different unit, is served by its own compiler; the SASS gate for this rung
+//: different unit, is served by its own compiler; the SASS gate for this kernel
 //: checks that what was emitted is in fact the non-returning form.
 __device__ __forceinline__ void fan_in_add(float* p, float x) { atomicAdd(p, x); }
 

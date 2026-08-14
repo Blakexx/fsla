@@ -630,13 +630,11 @@ def _launch_union_fwd(
     write_output: torch.Tensor,
     alpha: float,
 ) -> None:
-    # ===== TRACK E DISPATCH EDIT (the ONLY routing-file change; Track K owns
-    # `rola/routing/**` generally and the merge coordinator reconciles) =====
     # The union entmax solve is a hand-CUDA + CUB kernel in `csrc/rola/src/entmax.cu`,
-    # not Triton: the Triton lowering was measured at 255 registers with spills and an
-    # uncontrollable `tl.sort` scratch, and it is a JIT against the closed-world AOT
-    # policy. Design + gates: `rola-scratch/workflows/20260802-thunder/trackE.md`.
-    # NO FALLBACK, by policy -- `rola.ops._ext` raises loudly if the wheel is missing.
+    # not Triton: the Triton lowering measured 255 registers with spills and an
+    # uncontrollable `tl.sort` scratch, and a JIT violates the ahead-of-time
+    # build policy (docs/internals/entmax.md).  NO FALLBACK, by policy --
+    # `rola.ops._ext` raises loudly if the wheel is missing.
     from rola.ops._ext import extension
 
     extension().entmax_union_forward(

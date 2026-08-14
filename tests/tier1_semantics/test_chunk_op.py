@@ -1,4 +1,4 @@
-"""P69 stage C: the kernel arm is the chunk consumer, proven THROUGH the facade.
+"""The kernel arm is the chunk consumer, proven THROUGH the facade.
 
 `rola_op` with the same bundle must agree between the reference arm (fp64
 oracle) and the kernel arm (chunk consumer) to the bf16 design-floor scale --
@@ -60,7 +60,7 @@ def test_refusals_are_loud():
         with pytest.raises(NotImplementedError, match="d_v"):
             rola_op(routes, v, _arm="kernel")
         routes64, v64 = _bundle(T=256)
-        with pytest.raises(NotImplementedError, match="P67"):
+        with pytest.raises(NotImplementedError, match="paged state I/O|state chaining"):
             rola_op(routes64, v64, _arm="kernel", output_final_state=True)
 
 

@@ -3,7 +3,7 @@
 
 """The T=1 decode op — the frozen-config carrier, the workspace, and the guard.
 
-THUNDER_RUN_SPEC.md §6b: **T = 1 has no stage 2.** Every stage-2 decision is
+Design ruling (docs/internals/decode.md): **T = 1 has no stage 2.** Every stage-2 decision is
 degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split;
 statistics: a population of one), so the decode path bypasses selection
 *architecturally* — the config freezes at

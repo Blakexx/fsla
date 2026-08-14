@@ -93,12 +93,12 @@ def _demonstrated_by_some_arm(family, views):
                 f"no arm of the sweep demonstrates ({axis}, {value}): {errors}")
 
 
-#: P69: the kernel arm is the chunk consumer, whose envelope is uniform
-#: D>=2, d_v=64, global, no state output yet (P67).  INSIDE the envelope the
+#: The kernel arm is the chunk consumer, whose envelope is uniform
+#: D>=2, d_v=64, global, no state output yet (pending the paged state I/O work).  INSIDE the envelope the
 #: arms must AGREE on y; OUTSIDE it the kernel arm must REFUSE LOUDLY with
 #: the card that adds the capability -- both are the documented contract, and
 #: this test asserts whichever one the cell falls in.  Final-state agreement
-#: rejoins the in-envelope family with P67.
+#: rejoins the in-envelope family when the paged state I/O lands.
 @pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-d64",
                                   "producer/swept-gain-raw-d2"])
 def test_the_swept_gain_family_agrees_across_both_arms(name):

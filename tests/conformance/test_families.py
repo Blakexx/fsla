@@ -45,7 +45,7 @@ def test_the_family_is_nonvacuous_and_matches_the_oracle(family):
     g.assert_nonvacuous(family, case)
 
     y_ref, state_ref = case.oracle()
-    # P66/P69 D2a: decay is not a feature of the operator -- its arms are no
+    # The decay retirement: decay is not a feature of the operator -- its arms are no
     # longer compiled, and the dispatch's generated -1 lookup REFUSES a decay
     # request loudly.  For decay cells the refusal IS the contract; the
     # oracle side above keeps the semantics alive for the reopen conditions.

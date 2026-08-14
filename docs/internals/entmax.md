@@ -6,7 +6,7 @@ per-leaf support bitmap. `entmax.cuh` is the host declaration pair
 (`union_forward` / `union_backward`); `entmax.cu` is the whole implementation —
 two kernels and their host dispatch.
 
-Design of record: `rola-scratch/workflows/20260802-thunder/trackE.md` §3.
+Design of record: this document.
 Gates: `tests/unit/test_entmax_cuda_gates.py`, against the **fp64 oracle only** —
 the Triton kernel is a debugging diagnostic and is never asserted against
 (trackE.md §4).
@@ -28,7 +28,7 @@ carries an uncontrollable `tl.sort` scratch layout with **75%
 bank-conflict-excessive wavefronts**. It is also a JIT against a closed-world AOT
 policy that forbids exactly that.
 
-Provenance: `rola-scratch/workflows/20260801-forward/producer-p2b.md` and
+Provenance: the producer bring-up measurements and
 `producer-p3.md`.
 
 ## <a id="one-row-per-warp"></a>2. The structural idea: one row per (logical) warp

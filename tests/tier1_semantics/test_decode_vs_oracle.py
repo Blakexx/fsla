@@ -3,7 +3,7 @@
 
 """TIER 1 — the T=1 decode path against the canonical fp64 oracle and the tiled kernel.
 
-Gates G1-G7 of the Track D design (`rola-scratch/workflows/20260802-thunder/trackD.md`).
+Gates G1-G7 of the decode design (docs/internals/decode.md).
 
 **WHY "BIT-IDENTITY VS THE TILED CONSUMER" IS NOT ONE OF THEM, and this has to be said
 before the tolerances make sense.** Three independent facts make byte-equality between

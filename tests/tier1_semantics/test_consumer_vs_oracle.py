@@ -1084,7 +1084,7 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
 
 
 # ---------------------------------------------------------------------------
-# I6 -- THE MASS COLUMN'S OWN TOLERANCE GATE (THUNDER_RUN_SPEC.md §5, rung K5)
+# I6 -- THE MASS COLUMN'S OWN TOLERANCE GATE (the mass-column tolerance contract)
 # ---------------------------------------------------------------------------
 # K5 moves the mass column out of a fp32 SCALAR side path and into the
 # `(d_v + 1)`-th n-column of the readout / intra / fold GEMMs.

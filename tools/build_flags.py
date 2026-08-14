@@ -89,7 +89,7 @@ def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
 #: rule as dirty instead of erroring. On the pinned toolchain (nvcc 12.4) with
 #: ninja 1.13 the failure it insures against DOES NOT REPRODUCE -- deleting a header
 #: rebuilds cleanly with and without it, measured four ways
-#: (`rola-scratch/workflows/refactor/p02_build_measure.md`, M1) -- so this is not the
+#: (measured during the build refactor) -- so this is not the
 #: fix for a live defect. It is a zero-risk build-graph flag with no codegen effect
 #: whatever, kept because the graph it protects is also read by older ninja and by
 #: non-ninja consumers, and because the cost of being wrong about that is a wiped

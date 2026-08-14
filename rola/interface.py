@@ -115,7 +115,7 @@ def rola_op(
     # `self.training` as well, because reentrant checkpointing's first pass runs under
     # `no_grad` with the module still training. It is private and undocumented on
     # purpose: "training mode" has no meaning for a free function, so it is not a knob.
-    #: P66/P69: decay is not implemented in the kernel arm; like an
+    #: the decay retirement: decay is not implemented in the kernel arm; like an
     #: unratified activation, it DISPATCHES to the reference arm (the fp64
     #: oracle carries the semantics).  An explicit _arm="kernel" still gets
     #: the loud refusal below -- dispatch is not a lie, override is.
@@ -126,7 +126,7 @@ def rola_op(
             v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,
             decay, routes.normalization, initial_state=initial_state,
             output_final_state=output_final_state)
-    # P69 stage C: the kernel arm IS the chunk consumer.  Opinionated and
+    # operator adoption (docs/internals/chunk/).
     # loud: what it does not support yet is REFUSED with the card that will
     # add it, never silently degraded (facade generic, implementation
     # specific -- the API ruling).

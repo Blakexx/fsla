@@ -305,7 +305,7 @@ _PRODUCER: tuple[Family, ...] = (
               "of rola_op and the OUTPUTS must agree at the exactness "
               "tolerance -- the cross-arm gate the decoupled write gain "
               "earned.  Final-state agreement joins when the paged state "
-              "I/O lands (P67).",
+              "I/O lands.",
         generator="swept_gain"),
     Family(
         "producer/swept-gain-raw-d2", "producer",

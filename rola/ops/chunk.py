@@ -1,8 +1,9 @@
-"""The CHUNK consumer's execution path (P69 stage C) -- the kernel arm.
+"""The CHUNK consumer's execution path (operator adoption; docs/internals/chunk/) -- the kernel arm.
 
 `rola_op`'s facade is untouched: this module is the private seam's kernel-arm
 implementation, opinionated about what it supports and LOUD about what it
-does not (the facade stays generic; capabilities return through P67/P65, not
+does not (the facade stays generic; capabilities return through the paging
+and backward work, not
 through silent degradation).
 
 The packing performed here (level concat + [B,T,H,*] -> [B,H,T,*] permutes)
@@ -17,7 +18,7 @@ import torch
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 
-#: the pinned plan (P63/P64: BC at the dense optimum, C at the flagship,
+#: the pinned plan (measured: BC at the dense optimum, C at the flagship,
 #: swizzle off) -- generalized only by falling back to the largest built BC
 #: when the pinned one is not in the manifest for this topology.  A fixed
 #: preference order over MEASURED arms, never a tuned heuristic.
@@ -42,9 +43,9 @@ def unsupported(routes, decay, initial_state, output_final_state) -> str | None:
     if routes.normalization != "global":
         return f"normalization={routes.normalization!r}; the chunk consumer is global-only"
     if decay is not None:
-        return "decay is not implemented in the operator (P66 verdict); use the reference arm"
+        return "decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); use the reference arm"
     if initial_state is not None or output_final_state:
-        return "state chaining arrives with the paged state I/O (P67); not yet in the chunk consumer"
+        return "state chaining arrives with the paged state I/O work (docs/internals/paging/); not yet in the chunk consumer"
     if len(set(widths)) != 1:
         return f"widths={widths}; the built manifest is uniform-width"
     if _arm_for(len(widths), widths[0]) is None:

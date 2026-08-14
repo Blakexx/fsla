@@ -1,4 +1,4 @@
-"""Gate for the §4.5 paging ATOM re-key (``THUNDER_RUN_SPEC.md`` §6 P5).
+"""Gate for the paging ATOM re-key (docs/internals/paging/).
 
 The subject is the arena's KEYING and its allocator policy, both of which are now pure
 Python over torch tensors and are therefore gateable without the built extension. What
