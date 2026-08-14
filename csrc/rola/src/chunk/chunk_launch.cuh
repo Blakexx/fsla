@@ -19,7 +19,9 @@ namespace rola::chunk {
 //: variant that carries no state I/O compiles none of it, so the null-state path
 //: is the pre-state kernel exactly.  Which variant a call wants is a property of
 //: its POINTERS and is decided by `chunk.cu`'s dispatch, on the host, where a
-//: branch costs nothing.
+//: branch costs nothing.  The BACKING is not an axis: dense and paged are one
+//: kernel and one base translation, told apart by whether the page table is null
+//: (docs/internals/paging/paging.md).
 template <int C, int BC, int D, int B, bool STATE>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
   constexpr size_t sm = Geom<C, BC>::bytes;
@@ -30,16 +32,14 @@ cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  //: THE ATOM -> SLOT MAP IS NOT RESOLVED YET.  The kernel addresses the DENSE
-  //: plane, where the slot is the atom; a page table is the paged backing's
-  //: step and it arrives with it (docs/internals/paging/paging.md).
-  if (p.page_tbl != nullptr) return cudaErrorInvalidValue;
-  //: a state pointer handed to the variant that has no state code would be read
-  //: by nothing -- the dispatch's choice and the pointers must agree.
-  if (!STATE && (p.s_in != nullptr || p.s_out != nullptr)) return cudaErrorInvalidValue;
+  //: a state pointer -- or a table to resolve one through -- handed to the
+  //: variant that has no state code would be read by nothing: the dispatch's
+  //: choice and the pointers must agree.
+  if (!STATE && (p.s_in != nullptr || p.s_out != nullptr || p.page_tbl != nullptr))
+    return cudaErrorInvalidValue;
   const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, (unsigned)p.BH);
   compacted_kernel<C, D, B, BC, STATE><<<grid, threads_for(BC), sm, stream>>>(
-      p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.s_in, p.s_out);
+      p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.s_in, p.s_out, p.page_tbl);
   return cudaGetLastError();
 }
 

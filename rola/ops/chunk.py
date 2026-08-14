@@ -93,13 +93,21 @@ def state_plane(routes, *, zeros: bool = False) -> torch.Tensor:
 
 
 def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
-        want_state: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+        want_state: bool = False, arena=None) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
 
-    `state_in` is a plane of `state_plane`'s shape, or `None` for a fresh
-    sequence; `want_state` asks for the carried state back. A call that asks for
-    neither runs the kernel variant with no state I/O compiled into it at all
+    `state_in` is a plane of the call's backing, or `None` for a fresh sequence;
+    `want_state` asks for the carried state back. A call that asks for neither
+    runs the kernel variant with no state I/O compiled into it at all
     (docs/internals/chunk/chunk_kernel.md), so it pays nothing for the feature.
+
+    `arena` is a `PageArena` already planned over this call's write set: it makes
+    the backing PAGED, so the plane is its `[slots, 16, cols]` storage and its
+    table resolves each atom to a slot. The two backings are ONE kernel and one
+    base translation -- an atom with no slot is skipped, which is exact rather
+    than defensive because the plan's bitmap is the write set exactly
+    (docs/internals/paging/paging.md). Dense is `arena=None`, where the slot IS
+    the atom.
     """
     m = extension()
     widths = tuple(l.width for l in routes.topology.levels)
@@ -108,8 +116,17 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     pw = torch.cat(routes.write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     gw = routes.g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
     vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    s_out = state_plane(routes) if want_state else None
-    y = m.chunk_forward(pr, pw, gw, vk, c, bc, list(widths), READOUT_EPS, state_in, s_out, None)
+    if arena is None:
+        page_tbl = None
+        s_out = state_plane(routes) if want_state else None
+    else:
+        #: the admission's table write and slot zeroing ran on the arena's side
+        #: stream; this is the one wait that puts them before the launch.
+        arena.wait()
+        page_tbl = arena.page_table
+        s_out = arena.state if want_state else None
+    y = m.chunk_forward(pr, pw, gw, vk, c, bc, list(widths), READOUT_EPS, state_in, s_out,
+                        page_tbl)
     #: kernel arm hands back the operand dtype (the facade's documented
     #: contract); the fp32 accumulator is the kernel's, not the caller's.
     return y.permute(0, 2, 1, 3).to(v.dtype), s_out

@@ -21,12 +21,13 @@ struct ChunkParams {
   const uint32_t* tbl;
   float *o, *den;
   //: THE STATE PLANE, in and out.  Null means "no state I/O": a fresh entry
-  //: state on the way in, no handle asked for on the way out.  It is a runtime
-  //: null and not a template axis -- the branch is CTA-uniform and sits outside
-  //: every loop (docs/internals/chunk/chunk_kernel.md).
+  //: state on the way in, no handle asked for on the way out.  Whether a launch
+  //: carries state at all is a COMPILE-TIME axis of the kernel; these nulls say
+  //: which END of it this call uses (docs/internals/chunk/chunk_kernel.md).
   const float* s_in;
   float* s_out;
-  //: the atom -> slot map; null is the DENSE plane, where the slot IS the atom.
+  //: the atom -> slot map, `[BH, N/16]` int32 with `-1` for an absent atom; null
+  //: is the DENSE plane, where the slot IS the atom.
   const int32_t* page_tbl;
   int BH, L;
 };
@@ -427,16 +428,18 @@ constexpr bool kStateRingAgrees = design::stages_for(Geom<C, BC>::slot, Geom<C, 
 //: instantiation below assembles to the same bodies as the kernel that predates
 //: the state entirely (docs/internals/chunk/chunk_kernel.md).
 //:
-//: THE STATE POINTERS ARE THE LAST TWO PARAMETERS, after `L`, so that the OFF
+//: THE STATE POINTERS ARE THE LAST PARAMETERS, after `L`, so that the OFF
 //: variant's constant-bank displacements are the pre-state kernel's -- a
 //: parameter inserted mid-list moves every later parameter's offset and with it
-//: every instruction that reads one.
+//: every instruction that reads one.  The page table joins them at the tail for
+//: the same reason.
 template <int C, int D, int B, int BC, bool STATE>
 __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L,
-    const float* __restrict__ s_in, float* __restrict__ s_out) {
+    const float* __restrict__ s_in, float* __restrict__ s_out,
+    const int32_t* __restrict__ page_tbl) {
   using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, BC>;
   static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
@@ -801,8 +804,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void c
   static_assert(kGroupThreads > kCols && kGroupThreads < 2 * kCols,
                 "the page sweep's step must cross one row boundary, so its row "
                 "cursor advances by one or two and never by a division");
-  auto page_sweep = [&](int i, auto&& body) {
-    const uint32_t pageOff = (uint32_t)(i * kPageElems * (int)sizeof(float));
+  auto page_sweep = [&](uint32_t pageOff, auto&& body) {
     int e = gtid;
     int row = gtid < kCols ? 0 : 1;
     int col = gtid < kCols ? gtid : gtid - kCols;
@@ -816,27 +818,40 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void c
       col -= wrap ? kCols : 0;
     }
   };
-  //: THIS GROUP'S FIRST ATOM AS A PLANE DISPLACEMENT, in elements.  The atom
-  //: index is the leaf-order law's -- a block's leaves are one aligned run
-  //: starting at `LevelPlan::block_base`, so the index is that base over the
-  //: quantum, which is `AtomKeying.atom_of` verbatim.
+  //: THIS GROUP'S FIRST LOGICAL ATOM.  The atom index is the leaf-order law's --
+  //: a block's leaves are one aligned run starting at `LevelPlan::block_base`,
+  //: so the index is that base over the quantum, which is `AtomKeying.atom_of`
+  //: verbatim.  It is derived INSIDE each state block: nothing about the state
+  //: I/O is live across the main loop any more, which is what the plane bases
+  //: below cost before there was a slot to resolve.
+  auto atom_first = [&] {
+    return (int)(blockIdx.y * (LP::slots / kAtomLeaves)) + LP::block_base(blk) / kAtomLeaves
+           + grp * kAtoms;
+  };
+  //: THE ONE BASE TRANSLATION.  A null table is the DENSE plane, where a slot IS
+  //: its atom; a table maps the atom to its page and `-1` says the atom has none.
+  //: The branch is on a POINTER that is uniform over the whole grid -- a fact of
+  //: the plan, not of a dimension -- and it is taken once per atom, of which a
+  //: group stores at most eight (docs/internals/paging/paging.md).
   //:
-  //: THE WIDENING MULTIPLY HAPPENS HERE AND NOWHERE ELSE, and only in the state
-  //: variant -- the stateless one forms no base.  It is formed beside
-  //: the output plane's base and for the same reason: once per CTA, outside
-  //: every loop, and both ends of the state I/O reach their pointer from it by a
-  //: sixty-four-bit ADD.  It is PINNED on `pin_address`'s argument -- an offset
-  //: ptxas can see through is one it re-derives at the use site, and re-deriving
-  //: it puts the widening multiply back, in a loop body this time.
-  long stateOff = 0;
-  if constexpr (STATE) {
-    stateOff = ((long)blockIdx.y * (LP::slots / kAtomLeaves) + LP::block_base(blk) / kAtomLeaves
-                + grp * kAtoms)
-               * kPageElems;
-    asm("" : "+l"(stateOff));
-  }
-  const float* const sInBase = STATE ? pin_address(s_in + stateOff) : nullptr;
-  float* const sOutBase = STATE ? pin_address(s_out + stateOff) : nullptr;
+  //: EVERYTHING PER ATOM IS A 32-BIT BYTE DISPLACEMENT from a base the block
+  //: pinned, and the bases themselves are the PLAIN ORIGINS of the table and the
+  //: plane -- no arithmetic at all.  The atom's table entry is `atom * 4` bytes
+  //: in and a slot's page is `slot * 4160` bytes in.  Either one formed as a
+  //: 64-bit pointer sum instead is a widening multiply that ptxas schedules
+  //: inside the main loop's span: measured at ninety of them for the plane and
+  //: one per arm for the table.  The 32-bit bound is the caller's, exactly as it
+  //: is for the gathered rows (`gather_ptr`), and `chunk.cu` states it against
+  //: the plane's own size -- which bounds the table's with room to spare, the
+  //: table being one int32 per 4160-byte page.
+  auto slot_of = [](const int32_t* tbl, int atom) {
+    return tbl != nullptr ? *reinterpret_cast<const int32_t*>(
+                                gather_ptr(tbl, (uint32_t)atom * (uint32_t)sizeof(int32_t)))
+                          : atom;
+  };
+  auto page_off = [](int slot) {
+    return (uint32_t)slot * (uint32_t)(kPageElems * (int)sizeof(float));
+  };
 
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
   //: write entry stages nothing, but the slot advances either way so that the
@@ -1278,23 +1293,38 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void c
   //: than accumulated -- they are provably zero here.  A caller with no entry
   //: state passes a null pointer to the SAME variant; the variant that carries no
   //: state at all does not compile this block.
+  //:
+  //: AN ABSENT ATOM IS SKIPPED AND ITS FRAGMENTS STAY ZERO, which is the whole
+  //: content of "reads of never-written atoms are inert".  What is skipped is the
+  //: MEMORY TRAFFIC alone: both groups iterate the same atom count and every
+  //: rendezvous sits outside the skip, so a barrier stays CTA-uniform however the
+  //: two groups' residency differs.
   if constexpr (STATE) {
     if (s_in != nullptr) {
+      const int atomFirst = atom_first();
+      const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
+      const float* const plane = pin_address(s_in);
 #pragma unroll
       for (int i = 0; i < kAtoms; ++i) {
-        page_sweep(i, [&](int s, uint32_t off) {
-          so[s] = *reinterpret_cast<const float*>(gather_ptr(sInBase, off));
-        });
+        const int slot = slot_of(tbl, atomFirst + i);
+        if (slot >= 0) {
+          page_sweep(page_off(slot), [&](int s, uint32_t off) {
+            so[s] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+          });
+        }
         rendezvous();
-#pragma unroll
-        for (int p = 0; p < 2; ++p)
-#pragma unroll
-          for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
-        if (gwarp == i % kMassUnits && lane < 4) {
+        if (slot >= 0) {
 #pragma unroll
           for (int p = 0; p < 2; ++p)
 #pragma unroll
-            for (int k = 0; k < 2; ++k) mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+            for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
+          if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+            for (int p = 0; p < 2; ++p)
+#pragma unroll
+              for (int k = 0; k < 2; ++k)
+                mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+          }
         }
         rendezvous();
       }
@@ -1665,24 +1695,32 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void c
   //: `so`, so every barrier here stays CTA-uniform.
   if constexpr (STATE) {
     if (s_out != nullptr) {
+      const int atomFirst = atom_first();
+      const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
+      float* const plane = pin_address(s_out);
       rendezvous();
 #pragma unroll
       for (int i = 0; i < kAtoms; ++i) {
-#pragma unroll
-        for (int p = 0; p < 2; ++p)
-#pragma unroll
-          for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
-        if (gwarp == i % kMassUnits && lane < 4) {
+        const int slot = slot_of(tbl, atomFirst + i);
+        if (slot >= 0) {
 #pragma unroll
           for (int p = 0; p < 2; ++p)
 #pragma unroll
-            for (int k = 0; k < 2; ++k)
-              store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+            for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
+          if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+            for (int p = 0; p < 2; ++p)
+#pragma unroll
+              for (int k = 0; k < 2; ++k)
+                store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+          }
         }
         rendezvous();
-        page_sweep(i, [&](int s, uint32_t off) {
-          store_f32(reinterpret_cast<float*>(gather_ptr(sOutBase, off)), so[s]);
-        });
+        if (slot >= 0) {
+          page_sweep(page_off(slot), [&](int s, uint32_t off) {
+            store_f32(reinterpret_cast<float*>(gather_ptr(plane, off)), so[s]);
+          });
+        }
         rendezvous();
       }
     }

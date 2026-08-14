@@ -95,6 +95,19 @@ residency an OUTPUT of the plan instead of a consequence of it. The arm list is
 `(D, B)` alone and is derived from the consumer's arm list by projection
 (`tools/gen_shards.py`), so the two cannot name different topologies.
 
+**Who reads it, and what rests on its exactness.** `PageArena.plan_exact` admits
+a slot for each of its atoms, and the chunk consumer then resolves every atom
+through the resulting table (`docs/internals/chunk/chunk_kernel.md`). An atom the
+bitmap omits gets no slot, and the kernel SKIPS it at both ends of the state I/O
+— which is sound precisely because this bitmap is the write set exactly: an
+omitted atom was never deposited into, so its fragment is zero, and storing zero
+or storing nothing are the same state. The safe direction is the SUPERSET one: a
+bitmap that overshoots costs footprint and nothing else, which
+`tests/tier2_geometry/test_chunk_paging_equivalence.py` gates by forcing a
+never-written atom resident and demanding a bit-identical answer. A bitmap that
+UNDERSHOOTS drops state silently, and nothing downstream can detect it — which is
+why exactness is gated here, at the source.
+
 The gate is `tests/tier2_geometry/test_atom_bitmap.py`: exact equality against
 `atom_bitmap_from_schedule` and against an independent fp64 recomputation from
 the routing amplitudes, including the two-token cross-product cell that is the

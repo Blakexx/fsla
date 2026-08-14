@@ -39,7 +39,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "chunk consumer: the precomputed membership union table");
   //: the state plane is the CALLER'S, on both sides; absent on both is a fresh
   //: sequence whose carried state nobody asked for -- what a stateless forward
-  //: passes, and the null the kernel's epilogue is skipped by.
+  //: passes, and the null the kernel's epilogue is skipped by.  A page table
+  //: makes that plane PAGED (`[slots, 16, d_v+1]`); without one it is the dense
+  //: `[BH, N/16, 16, d_v+1]` plane, where a slot IS its atom.
   m.def("chunk_forward_raw", &rola::chunk::forward_raw,
         "chunk consumer: the readout's d_v+1 columns, undivided", py::arg("pr"), py::arg("pw"),
         py::arg("gw"), py::arg("v"), py::arg("tbl"), py::arg("chunk"), py::arg("bc"),

@@ -24,6 +24,17 @@ emptiness-skipping quantum -- so ONE predicate serves both.
 Both shifts are DERIVED from the named constant (invariant I1) -- see
 :data:`_LOG2_ATOM_LEAVES` -- so there is no ``4`` and no ``15`` anywhere in this file.
 
+**WHO RESOLVES IT.** The chunk consumer, at the two ends of its state I/O and
+nowhere else -- that kernel touches pages only there, so the resolve is one
+``int32`` load per atom rather than a per-CTA-startup cost. It resolves
+``slot = page_tbl ? page_tbl[atom] : atom``, which makes the DENSE plane the same
+kernel with a null table (the slot IS the atom), and paging ONE base translation
+rather than a second path. ``slot < 0`` -- an atom the plan committed nothing for
+-- is skipped at both ends, exactly and not defensively, because the plan's bitmap
+is the write set exactly (``stats.md``). ``chunk_kernel.md`` carries the
+addressing, the CTA-uniformity of the barriers around that skip, and the 4 GiB
+plane bound the 32-bit displacement form owes the caller.
+
 ## Allocation: Planned-Exact-Async
 
 The pool is sized EXACTLY, not grown: the popcount of the atom condensation (the producer epilogue's canonical write bitmap) is the

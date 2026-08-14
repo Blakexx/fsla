@@ -351,23 +351,10 @@ def test_the_state_travels_through_the_host_seam():
         f"the seam's continuation differs by {(s_whole - s2).abs().max().item():.3e}")
 
 
-def test_a_page_table_is_refused():
-    """The dense plane is the only backing this kernel resolves.
-
-    A page table is accepted by the ABI and refused by the entry, loudly and by
-    name, rather than silently ignored -- the boundary the paged backing lands on.
-    """
-    widths = (16, 16)
-    fixture = _fixture(widths, T=32, p_nonzero=1.0, seed=3)
-    table = torch.zeros(4 * prod(widths) // MMA_K_QUANTUM, dtype=torch.int32, device="cuda")
-    read, write, g_write, v = fixture
-    pr = torch.cat(read, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    pw = torch.cat(write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    gw = g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
-    vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    with pytest.raises(RuntimeError, match="atom -> slot map"):
-        extension().chunk_forward(pr, pw, gw, vk, 32, 64, list(widths), 1e-6, None,
-                                  _plane(widths, 2, 2), table)
+#: THE PAGE TABLE'S REFUSAL IS GONE, and with it this file's cell for it: the
+#: table is resolved rather than refused, and the paged backing's own gates --
+#: bit identity, zero-page inertness, the absent-atom skip, and the refusals
+#: that survive -- live in `test_chunk_paging_equivalence.py`.
 
 
 def test_a_misshapen_state_plane_is_refused():

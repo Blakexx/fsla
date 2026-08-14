@@ -162,27 +162,53 @@ torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths) {
   TORCH_CHECK(false, "unbuilt stats arm: depth=", widths.size());
 }
 
-//: THE STATE PLANE: `[BH, N/16, 16, d_v+1]` fp32 and contiguous, which is the
-//: same bytes as `[BH, N, d_v+1]` -- the atom-major view is what the kernel
-//: addresses and the leaf-major one is what a reader reads.  It is ALLOCATED BY
-//: THE CALLER: this entry launches, it does not own memory the caller carries.
-static float* state_plane(const c10::optional<torch::Tensor>& s, const char* what, int BH, long N) {
+//: THE STATE PLANE, in either backing.  DENSE is `[BH, N/16, 16, d_v+1]` fp32
+//: and contiguous, the same bytes as `[BH, N, d_v+1]` -- the atom-major view is
+//: what the kernel addresses and the leaf-major one is what a reader reads.
+//: PAGED is `[slots, 16, d_v+1]`: the same page, as many of them as the plan
+//: committed, and the table says which atom is which.  It is ALLOCATED BY THE
+//: CALLER: this entry launches, it does not own memory the caller carries.
+static float* state_plane(const c10::optional<torch::Tensor>& s, const char* what, int BH, long N,
+                          bool paged) {
   if (!s.has_value()) return nullptr;
   const torch::Tensor& t = *s;
   TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == torch::kFloat32, what,
               " must be a contiguous fp32 CUDA tensor");
-  TORCH_CHECK(t.numel() == (long)BH * N * (kD + 1), what,
-              " must hold BH * N * (d_v + 1) floats (the [BH, N/16, 16, d_v+1] "
-              "state plane)");
+  //: A SLOT'S PAGE IS A 32-BIT BYTE DISPLACEMENT from the plane's origin, which
+  //: is what keeps the widening multiply out of the epilogue's loop bodies
+  //: (chunk_kernel.cuh); the plane it displaces into is therefore bounded, and
+  //: the bound is stated here rather than discovered as a wrapped address.  It
+  //: binds the DENSE backing first -- a paged plane holds the atoms the plan
+  //: realized, which is the thing that keeps this reachable at scale.
+  TORCH_CHECK(t.numel() * (long)sizeof(float) < (1L << 32), what, " is ",
+              t.numel() * (long)sizeof(float),
+              " bytes; a page's displacement into it is 32 bits, so a plane must "
+              "stay under 4 GiB (",
+              (1L << 32) / ((long)kAtomLeaves * (kD + 1) * 4), " atoms)");
+  if (paged) {
+    TORCH_CHECK(t.dim() == 3 && t.size(1) == kAtomLeaves && t.size(2) == kD + 1 && t.size(0) > 0,
+                what, " must be a [slots, ", kAtomLeaves, ", d_v + 1] paged plane; got ",
+                t.sizes());
+  } else {
+    TORCH_CHECK(t.numel() == (long)BH * N * (kD + 1), what,
+                " must hold BH * N * (d_v + 1) floats (the [BH, N/16, 16, d_v+1] "
+                "dense state plane)");
+  }
   return t.data_ptr<float>();
 }
 
-static void refuse_page_table(const c10::optional<torch::Tensor>& page_tbl) {
-  TORCH_CHECK(!page_tbl.has_value(),
-              "the chunk consumer addresses the DENSE state plane, where a "
-              "slot is its atom; resolving an atom -> slot map is the paged "
-              "backing's step and arrives with it "
-              "(docs/internals/paging/paging.md)");
+//: THE ATOM -> SLOT MAP, `[BH, N/16]` int32, `-1` where the atom has no page.
+//: Its ABSENCE is the dense backing, where a slot is its atom -- one translation
+//: for both (docs/internals/paging/paging.md).  The slots it names are NOT bounds
+//: checked here: the check is a device-side read of the table, and the plan that
+//: wrote it is the thing that owns the bound.
+static const int32_t* page_table(const c10::optional<torch::Tensor>& t, int BH, long N) {
+  if (!t.has_value()) return nullptr;
+  TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == torch::kInt32,
+              "the page table must be a contiguous int32 CUDA tensor");
+  TORCH_CHECK(t->numel() == (long)BH * (N / kAtomLeaves), "the page table must hold BH * N / ",
+              kAtomLeaves, " entries (one per atom); got ", t->numel(), " for BH=", BH, " N=", N);
+  return t->data_ptr<int32_t>();
 }
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
@@ -200,7 +226,6 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   check_inputs(pr, pw, v, chunk, widths);
-  refuse_page_table(page_tbl);
   const int B = v.size(0), H = v.size(1), L = v.size(2);
   //: The accumulator is zeroed, not merely allocated: the fan-in ADDS, so the
   //: identity of the sum has to be there before the first contribution.
@@ -210,8 +235,12 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   const int BH = B * H;
   long N = 1;
   for (auto w : widths) N *= w;
-  const float* const sIn = state_plane(s_in, "the entry state", BH, N);
-  float* const sOut = state_plane(s_out, "the final state", BH, N);
+  const int32_t* const pageTbl = page_table(page_tbl, BH, N);
+  const float* const sIn = state_plane(s_in, "the entry state", BH, N, pageTbl != nullptr);
+  float* const sOut = state_plane(s_out, "the final state", BH, N, pageTbl != nullptr);
+  TORCH_CHECK(pageTbl == nullptr || sIn != nullptr || sOut != nullptr,
+              "a page table resolves the state plane's atoms; a call that "
+              "carries no state has nothing for it to resolve");
   //: THE STATE VARIANT IS A STRUCTURAL CHOICE, taken here: a call that carries
   //: no state runs the kernel that has no state code in it at all
   //: (docs/internals/chunk/chunk_kernel.md).
@@ -227,7 +256,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    reinterpret_cast<const __nv_bfloat16 *>(v.data_ptr()),      \
                    reinterpret_cast<const uint32_t *>(tbl.data_ptr()),         \
                    o.data_ptr<float>(), den.data_ptr<float>(),                 \
-                   sIn,             sOut,             nullptr,                 \
+                   sIn,             sOut,             pageTbl,                 \
                    BH,              L};                                        \
     const auto stream_ = at::cuda::getCurrentCUDAStream();                     \
     C10_CUDA_CHECK((sIn != nullptr || sOut != nullptr)                         \
