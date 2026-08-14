@@ -54,7 +54,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_divide_pass", &rola::chunk::divide_pass,
         "chunk consumer: the ratio, one elementwise pass");
   m.def("chunk_build_stamp", &rola::chunk::build_stamp,
-        "chunk consumer: device-side build identity + census");
+        "chunk consumer: device-side build identity + the census of both state "
+        "variants, stateless first");
   m.def("chunk_arms", &rola::chunk::arms,
         "chunk consumer: the built arms with derived plan and geometry");
 

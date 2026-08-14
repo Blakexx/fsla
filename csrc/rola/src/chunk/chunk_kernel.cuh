@@ -337,18 +337,25 @@ constexpr int kCookSlots = 4;
 //: `localSizeBytes`, so a floor set too low cannot ship quietly.  The values are
 //: the measured census of THIS body, which carries the cook's cursor and the
 //: staircase's thresholds on top of rung 5A's set.
-constexpr int reg_floor(int C, int BC) {
+//:
+//: THE STATE-I/O VARIANT HAS ITS OWN ROW where its census exceeds the shared
+//: one.  The two variants are different kernels (`STATE` is a template axis),
+//: so one floor for both would be a declaration that is false of one of them:
+//: `(C = 32, BC = 128)` measures 242 with the state I/O compiled in against 236
+//: without it.  Only rows that MOVED are stated; the rest fall through.
+constexpr int reg_floor(int C, int BC, bool state = false) {
   //: a two-group arm's PER-THREAD demand is one group's, i.e. the BC/2 row --
   //: each thread holds its group's slice, which is the same slice a BC/2
   //: single-group thread holds.
-  return BC >= 256 ? reg_floor(C, BC / 2)
-         : C == 16 ? (BC <= 64 ? 128 : 168)
-         : C == 32 ? (BC <= 32   ? 136
-                      : BC <= 64 ? 168
-                                 : 236)
-                   : (BC <= 32   ? 176
-                      : BC <= 64 ? 232
-                                 : 255);
+  return BC >= 256                       ? reg_floor(C, BC / 2, state)
+         : state && C == 32 && BC >= 128 ? 242
+         : C == 16                       ? (BC <= 64 ? 128 : 168)
+         : C == 32                       ? (BC <= 32   ? 136
+                                            : BC <= 64 ? 168
+                                                       : 236)
+                                         : (BC <= 32   ? 176
+                                            : BC <= 64 ? 232
+                                                       : 255);
 }
 
 template <int C, int BC>
@@ -396,18 +403,40 @@ struct Geom {
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
-template <int C, int BC>
+//: THE RING IS SHARED BY BOTH STATE VARIANTS -- `Geom` is the launch's shared
+//: memory ABI and cannot depend on a template axis the launcher picks per call
+//: -- so the ring is chosen against the shared floor and the state variant's own
+//: floor is asserted to choose the same one (`kStateRingAgrees`, below).  The
+//: LAUNCH BOUND is per variant, because it is per kernel.
+template <int C, int BC, bool STATE = false>
 constexpr int kCtaTarget =
-    design::cta_target((int)Geom<C, BC>::bytes, threads_for(BC), reg_floor(C, BC));
+    design::cta_target((int)Geom<C, BC>::bytes, threads_for(BC), reg_floor(C, BC, STATE));
+
+template <int C, int BC>
+constexpr bool kStateRingAgrees = design::stages_for(Geom<C, BC>::slot, Geom<C, BC>::fixed,
+                                                     threads_for(BC), reg_floor(C, BC, true))
+                                  == Geom<C, BC>::stages;
 
 // -------------------------------------------------------------------- kernel
 
-template <int C, int D, int B, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
+//: `STATE` COMPILES THE CARRIED STATE'S I/O IN OR OUT.  It is a template axis and
+//: not a runtime null test: the entry load and the final store need a plane base,
+//: a base is a widening multiply, and the only place this kernel may form one is
+//: kernel scope -- so a runtime test still pays for the addressing on the path
+//: that does no state I/O at all.  Measured at +1.2% wall on two cells; the OFF
+//: instantiation below assembles to the same bodies as the kernel that predates
+//: the state entirely (docs/internals/chunk/chunk_kernel.md).
+//:
+//: THE STATE POINTERS ARE THE LAST TWO PARAMETERS, after `L`, so that the OFF
+//: variant's constant-bank displacements are the pre-state kernel's -- a
+//: parameter inserted mid-list moves every later parameter's offset and with it
+//: every instruction that reads one.
+template <int C, int D, int B, int BC, bool STATE>
+__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den,
-    const float* __restrict__ s_in, float* __restrict__ s_out, int L) {
+    const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L,
+    const float* __restrict__ s_in, float* __restrict__ s_out) {
   using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, BC>;
   static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
@@ -442,6 +471,10 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory "
                 "maximum");
+  static_assert(kStateRingAgrees<C, BC>,
+                "the ring depth is shared by both state variants, so the state "
+                "variant's register floor must select the same depth as the "
+                "shared one; it no longer does");
   constexpr int STAGES = G::stages;
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   //: THE SCHEDULE STREAM AND THE VALUE STREAM RUN AT DIFFERENT DEPTHS, and that
@@ -788,18 +821,22 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: starting at `LevelPlan::block_base`, so the index is that base over the
   //: quantum, which is `AtomKeying.atom_of` verbatim.
   //:
-  //: THE WIDENING MULTIPLY HAPPENS HERE AND NOWHERE ELSE.  It is formed beside
+  //: THE WIDENING MULTIPLY HAPPENS HERE AND NOWHERE ELSE, and only in the state
+  //: variant -- the stateless one forms no base.  It is formed beside
   //: the output plane's base and for the same reason: once per CTA, outside
   //: every loop, and both ends of the state I/O reach their pointer from it by a
   //: sixty-four-bit ADD.  It is PINNED on `pin_address`'s argument -- an offset
   //: ptxas can see through is one it re-derives at the use site, and re-deriving
   //: it puts the widening multiply back, in a loop body this time.
-  long stateOff = ((long)blockIdx.y * (LP::slots / kAtomLeaves) + LP::block_base(blk) / kAtomLeaves
-                   + grp * kAtoms)
-                  * kPageElems;
-  asm("" : "+l"(stateOff));
-  const float* const sInBase = pin_address(s_in + stateOff);
-  float* const sOutBase = pin_address(s_out + stateOff);
+  long stateOff = 0;
+  if constexpr (STATE) {
+    stateOff = ((long)blockIdx.y * (LP::slots / kAtomLeaves) + LP::block_base(blk) / kAtomLeaves
+                + grp * kAtoms)
+               * kPageElems;
+    asm("" : "+l"(stateOff));
+  }
+  const float* const sInBase = STATE ? pin_address(s_in + stateOff) : nullptr;
+  float* const sOutBase = STATE ? pin_address(s_out + stateOff) : nullptr;
 
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
   //: write entry stages nothing, but the slot advances either way so that the
@@ -1238,26 +1275,29 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: the same plane the epilogue writes, so the load is the store read backwards
   //: through the same staging buffer: one coalesced pass per atom into `so`,
   //: then each warp takes ITS fragments out of it.  The fragments are SET rather
-  //: than accumulated -- they are provably zero here -- and the whole block is
-  //: skipped on a null pointer, so a fresh sequence pays one predicate.
-  if (s_in != nullptr) {
+  //: than accumulated -- they are provably zero here.  A caller with no entry
+  //: state passes a null pointer to the SAME variant; the variant that carries no
+  //: state at all does not compile this block.
+  if constexpr (STATE) {
+    if (s_in != nullptr) {
 #pragma unroll
-    for (int i = 0; i < kAtoms; ++i) {
-      page_sweep(i, [&](int s, uint32_t off) {
-        so[s] = *reinterpret_cast<const float*>(gather_ptr(sInBase, off));
-      });
-      rendezvous();
-#pragma unroll
-      for (int p = 0; p < 2; ++p)
-#pragma unroll
-        for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
-      if (gwarp == i % kMassUnits && lane < 4) {
+      for (int i = 0; i < kAtoms; ++i) {
+        page_sweep(i, [&](int s, uint32_t off) {
+          so[s] = *reinterpret_cast<const float*>(gather_ptr(sInBase, off));
+        });
+        rendezvous();
 #pragma unroll
         for (int p = 0; p < 2; ++p)
 #pragma unroll
-          for (int k = 0; k < 2; ++k) mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+          for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
+        if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+          for (int p = 0; p < 2; ++p)
+#pragma unroll
+            for (int k = 0; k < 2; ++k) mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+        }
+        rendezvous();
       }
-      rendezvous();
     }
   }
 
@@ -1623,26 +1663,28 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: has consumed the staging buffer -- which is what the one extra rendezvous
   //: below is for.  Both groups iterate the same atom count against their own
   //: `so`, so every barrier here stays CTA-uniform.
-  if (s_out != nullptr) {
-    rendezvous();
+  if constexpr (STATE) {
+    if (s_out != nullptr) {
+      rendezvous();
 #pragma unroll
-    for (int i = 0; i < kAtoms; ++i) {
-#pragma unroll
-      for (int p = 0; p < 2; ++p)
-#pragma unroll
-        for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
-      if (gwarp == i % kMassUnits && lane < 4) {
+      for (int i = 0; i < kAtoms; ++i) {
 #pragma unroll
         for (int p = 0; p < 2; ++p)
 #pragma unroll
-          for (int k = 0; k < 2; ++k)
-            store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+          for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
+        if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+          for (int p = 0; p < 2; ++p)
+#pragma unroll
+            for (int k = 0; k < 2; ++k)
+              store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+        }
+        rendezvous();
+        page_sweep(i, [&](int s, uint32_t off) {
+          store_f32(reinterpret_cast<float*>(gather_ptr(sOutBase, off)), so[s]);
+        });
+        rendezvous();
       }
-      rendezvous();
-      page_sweep(i, [&](int s, uint32_t off) {
-        store_f32(reinterpret_cast<float*>(gather_ptr(sOutBase, off)), so[s]);
-      });
-      rendezvous();
     }
   }
 #undef ADDRF

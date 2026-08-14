@@ -24,10 +24,36 @@ arms exact).
 
 The kernel's state is register-resident for the whole launch, so a call has two
 ends to give it: `s_out`, the plane the register fragments are stored into, and
-`s_in`, the plane they are seeded from. Both are RUNTIME NULLS on `ChunkParams`,
-tested once and outside every loop — the arm matrix is generated, and doubling
-it to carry a state-I/O flag would buy nothing a CTA-uniform predicate at the
-ends of the kernel does not.
+`s_in`, the plane they are seeded from.
+
+**It is a COMPILE-TIME axis, `compacted_kernel`'s trailing `STATE`, and the
+reason is measured.** The state I/O first shipped as a pair of runtime null
+tests, on the argument that a CTA-uniform predicate at the ends of the kernel is
+free. It is not: both blocks need a plane base, a base is a widening multiply,
+and the only place this kernel may form one is kernel scope (below) — so a
+runtime test still pays for the addressing, and for the register census that
+comes with it, on the path that does no state I/O at all. The bill was **+1.2%
+wall on two of five measured cells** with both pointers null. That is the same
+placement law the decay build hit, and it gets the same answer: the variant that
+carries no state compiles none of it. `chunk.cu` picks the variant on
+`(s_in || s_out)`, on the host, where a branch costs nothing; the OFF variant
+assembles to the same bodies — arm for arm and architecture for architecture —
+as the kernel that predates the state entirely.
+
+The state pointers are the LAST two kernel parameters, after `L`, and that is
+load-bearing rather than cosmetic: a parameter inserted mid-list moves every
+later parameter's constant-bank displacement and with it every instruction that
+reads one, which would put byte identity out of reach however the code was
+guarded. Two unused trailing parameters emit nothing.
+
+`ChunkParams` carries `s_in`/`s_out` for both variants — it is one shared ABI —
+and `launch_chunk_arm` REFUSES a state pointer addressed to the OFF variant
+rather than dropping it silently. The register floor is per variant too:
+`reg_floor(C, BC, state)` states the rows that move (`C = 32, BC >= 128` measures
+242 with the state compiled in, against 236 without it). `Geom` stays state-free,
+because the ring is the launch's shared-memory ABI; `kStateRingAgrees`
+static-asserts at every instantiation that the state variant's own floor would
+have chosen the same ring.
 
 **The plane.** `[BH, N/16, 16, d_v+1]` fp32: the atom-major view of
 `[BH, N, d_v+1]`, byte for byte, with the last column the mass channel global

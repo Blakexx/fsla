@@ -423,6 +423,18 @@ CHUNK_ARMS: tuple = (
 )
 CHUNK_PER_SHARD = 8
 
+#: THE STATE AXIS, and BOTH values are built -- unlike the consumer's DECAY, which
+#: is a one-value axis today.  The carried state's I/O is compiled in or out
+#: (`compacted_kernel`'s `STATE`), so an arm is TWO kernels and the dispatch picks
+#: between them on the call's pointers; the ARM LIST is unchanged, because the
+#: state is not a geometry.
+CHUNK_STATE = (False, True)
+
+
+def chunk_rows() -> tuple:
+    """Every built chunk instantiation: an arm crossed with the state axis."""
+    return tuple((*a, s) for a in CHUNK_ARMS for s in CHUNK_STATE)
+
 
 def chunk_atom_arms() -> tuple:
     """The STATS pass' arm list: `(D, B)` and nothing else.
@@ -436,28 +448,32 @@ def chunk_atom_arms() -> tuple:
 
 
 def chunk_canonical(a) -> str:
-    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]}"
+    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]} STATE={_b(a[4])}"
 
 
-def chunk_members_sha256(arms) -> str:
-    blob = "\n".join(sorted(chunk_canonical(a) for a in arms)).encode()
+def chunk_members_sha256(rows) -> str:
+    blob = "\n".join(sorted(chunk_canonical(r) for r in rows)).encode()
     return hashlib.sha256(blob).hexdigest()
 
 
 def chunk_shards() -> dict:
-    return {f"chunk_s{i}": list(CHUNK_ARMS[i * CHUNK_PER_SHARD:(i + 1) * CHUNK_PER_SHARD])
+    """The partition, still BY ARM: both state variants of an arm ride the same
+    shard, so a shard is one slice of the geometry and not half of one."""
+    return {f"chunk_s{i}": [(*a, s) for a in CHUNK_ARMS[i * CHUNK_PER_SHARD:
+                                                        (i + 1) * CHUNK_PER_SHARD]
+                            for s in CHUNK_STATE]
             for i in range((len(CHUNK_ARMS) + CHUNK_PER_SHARD - 1) // CHUNK_PER_SHARD)}
 
 
 def chunk_targs(a) -> str:
-    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}"
+    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}, {_b(a[4])}"
 
 
 def chunk_arms_inc() -> str:
     """The kernel's arms macro, EMITTED -- one list, one owner (the debt fix:
     this macro and CHUNK_ARMS were one list in two places)."""
     lines = [BANNER,
-             f"// members-sha256: {chunk_members_sha256(CHUNK_ARMS)}\n",
+             f"// members-sha256: {chunk_members_sha256(chunk_rows())}\n",
              "// Included by ../chunk/chunk_kernel.cuh; the X-macro over every\n",
              "// built (C, BC, D, B) arm of the chunk consumer (the swizzle axis\n",
              "// is RETIRED: receipt -2.1..+2.2%, noise, no winner).\n",
@@ -477,13 +493,15 @@ def chunk_arms_inc() -> str:
     return "".join(lines)
 
 
-def chunk_shard_source(name: str, arms: list) -> str:
+def chunk_shard_source(name: str, rows: list) -> str:
+    arms = rows
     body = [
         BANNER,
-        f"// members-sha256: {chunk_members_sha256(arms)}\n",
+        f"// members-sha256: {chunk_members_sha256(rows)}\n",
         "//\n",
-        f"// SHARD {name} -- {len(arms)} of the chunk consumer's "
-        f"{len(CHUNK_ARMS)} instantiations (docs/internals/chunk/).\n",
+        f"// SHARD {name} -- {len(rows)} of the chunk consumer's "
+        f"{len(chunk_rows())} instantiations, its arms crossed with the state\n",
+        "// axis (docs/internals/chunk/).\n",
         "// The launcher definitions live in ../chunk/chunk_launch.cuh; the\n",
         "// dispatch TU (../chunk/chunk.cu) sees declarations only.\n",
         "\n",

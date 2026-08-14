@@ -97,8 +97,9 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
 
     `state_in` is a plane of `state_plane`'s shape, or `None` for a fresh
-    sequence; `want_state` asks for the carried state back. Both sides are
-    independent nulls in the kernel, so a stateless call pays neither.
+    sequence; `want_state` asks for the carried state back. A call that asks for
+    neither runs the kernel variant with no state I/O compiled into it at all
+    (docs/internals/chunk/chunk_kernel.md), so it pays nothing for the feature.
     """
     m = extension()
     widths = tuple(l.width for l in routes.topology.levels)

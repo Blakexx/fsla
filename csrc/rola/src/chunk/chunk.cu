@@ -17,7 +17,7 @@ namespace rola::chunk {
 
 //: the arm surface, DECLARED only -- definitions live in the instantiation
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
-template <int C, int BC, int D, int B>
+template <int C, int BC, int D, int B, bool STATE>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream);
 template <int D, int B, int BC>
 cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
@@ -28,7 +28,7 @@ cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, 
 template <int D, int B>
 cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
                                          cudaStream_t stream);
-template <int C, int BC, int D, int B>
+template <int C, int BC, int D, int B, bool STATE>
 std::array<int64_t, 9> query_chunk_census_arm();
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
 //: because the cook wants them apart.  It is a SEPARATE ENTRY POINT so that its
@@ -212,6 +212,9 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   for (auto w : widths) N *= w;
   const float* const sIn = state_plane(s_in, "the entry state", BH, N);
   float* const sOut = state_plane(s_out, "the final state", BH, N);
+  //: THE STATE VARIANT IS A STRUCTURAL CHOICE, taken here: a call that carries
+  //: no state runs the kernel that has no state code in it at all
+  //: (docs/internals/chunk/chunk_kernel.md).
 #define CHUNK_DISPATCH_X(C_, BC_, D_, B_)                                   \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                    \
     const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
@@ -226,8 +229,11 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    o.data_ptr<float>(), den.data_ptr<float>(),                 \
                    sIn,             sOut,             nullptr,                 \
                    BH,              L};                                        \
-    C10_CUDA_CHECK((launch_chunk_arm<C_, BC_, D_, B_>(                     \
-        p_, at::cuda::getCurrentCUDAStream())));                               \
+    const auto stream_ = at::cuda::getCurrentCUDAStream();                     \
+    C10_CUDA_CHECK((sIn != nullptr || sOut != nullptr)                         \
+                       ? (launch_chunk_arm<C_, BC_, D_, B_, true>(p_, stream_)) \
+                       : (launch_chunk_arm<C_, BC_, D_, B_, false>(p_,          \
+                                                                   stream_)));  \
     return {o, den};                                                           \
   }
   CHUNK_ARMS_X(CHUNK_DISPATCH_X)
@@ -258,10 +264,13 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t>
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
+  //: BOTH STATE VARIANTS ARE REPORTED, the stateless one first: they are two
+  //: kernels with two register censuses, and a stamp that named only one of them
+  //: would attribute a measurement to a kernel the launch may not have run.
 #define CHUNK_CENSUS_X(C_, BC_, D_, B_)                                         \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                        \
-    const auto cs = query_chunk_census_arm<C_, BC_, D_, B_>();                 \
-    for (auto x : cs) r.push_back(x);                                              \
+    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, false>()) r.push_back(x); \
+    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, true>()) r.push_back(x);  \
     return r;                                                                      \
   }
   CHUNK_ARMS_X(CHUNK_CENSUS_X)
