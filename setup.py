@@ -386,12 +386,9 @@ SOURCES = [
     "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     # P69: the CHUNK consumer (the ladder operator, adopted).  chunk.cu is
-    # dispatch+entries only; its 24 instantiations live in the chunk_s* shards
-    # (hand-carried until the generator learns the second matrix, stage D).
+    # dispatch+entries only; its instantiations are generated shards under
+    # instantiations/ exactly like the consumer's.
     "csrc/rola/src/chunk/chunk.cu",
-    "csrc/rola/src/chunk/chunk_s0.cu",
-    "csrc/rola/src/chunk/chunk_s1.cu",
-    "csrc/rola/src/chunk/chunk_s2.cu",
 ]
 
 
@@ -403,8 +400,8 @@ def shard_sources() -> list[str]:
     and one it does produce must not be able to leave the build by being deleted.
     The `--check` gate below is what makes the two agree.
     """
-    return [f"csrc/rola/src/instantiations/{name}.cu"
-            for name in sorted(gen_shards.shards())]
+    names = sorted(gen_shards.shards()) + sorted(gen_shards.chunk_shards())
+    return [f"csrc/rola/src/instantiations/{name}.cu" for name in names]
 
 
 def _gate_shards() -> None:

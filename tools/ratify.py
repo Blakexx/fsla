@@ -218,7 +218,8 @@ STANDALONE_TUS = ("decode.cu", "entmax.cu")
 
 
 def shard_paths() -> list[Path]:
-    return [SRC / "instantiations" / f"{name}.cu" for name in sorted(gen_shards.shards())]
+    names = sorted(gen_shards.shards()) + sorted(gen_shards.chunk_shards())
+    return [SRC / "instantiations" / f"{name}.cu" for name in names]
 
 
 def tu_paths(shards: tuple[str, ...] | None = None) -> list[Path]:

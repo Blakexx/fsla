@@ -168,8 +168,11 @@ def shard_manifest_block() -> dict:
     """`{shard: {members_sha256, count}}` -- what `tools/ratify.py` files in the
     per-arch manifests. Membership only: no paths and no ordering, so the digest
     stays a property of the ratification and not of its filing."""
-    return {name: {"members_sha256": members_sha256(rows), "count": len(rows)}
-            for name, rows in sorted(shards().items())}
+    block = {name: {"members_sha256": members_sha256(rows), "count": len(rows)}
+             for name, rows in sorted(shards().items())}
+    block.update({name: {"members_sha256": chunk_members_sha256(arms), "count": len(arms)}
+                  for name, arms in sorted(chunk_shards().items())})
+    return block
 
 
 def targs(row: dict) -> str:
@@ -392,9 +395,86 @@ and Y were re-measured" a provable claim.
 """
 
 
+
+
+# ---------------------------------------------------------------------------
+# THE CHUNK MATRIX (P69) -- an explicit ARM LIST, not an axis cross: the level
+# plan's geometry law admits only these (C, SWZ, BC, D, B) tuples as built
+# arms, so a cross product would name unbuildable combinations.  Same hash
+# discipline as the consumer shards; the launcher definitions live in
+# ../chunk/chunk_launch.cuh.
+# ---------------------------------------------------------------------------
+CHUNK_ARMS: tuple = (
+    (16, False, 64, 2, 8), (32, False, 64, 2, 8), (64, False, 64, 2, 8),
+    (16, True, 64, 2, 8), (32, True, 64, 2, 8), (64, True, 64, 2, 8),
+    (16, False, 64, 2, 64), (32, False, 64, 2, 64), (64, False, 64, 2, 64),
+    (16, True, 64, 2, 64), (32, True, 64, 2, 64), (64, True, 64, 2, 64),
+    (32, False, 32, 2, 64), (64, False, 32, 2, 64),
+    (16, False, 128, 2, 64), (32, False, 128, 2, 64), (64, False, 128, 2, 64),
+    (32, False, 256, 2, 64),
+    (16, False, 64, 2, 16), (32, False, 64, 2, 16), (64, False, 64, 2, 16),
+    (32, False, 128, 3, 16), (32, False, 128, 4, 8), (32, False, 32, 4, 8),
+)
+CHUNK_PER_SHARD = 8
+
+
+def chunk_canonical(a) -> str:
+    return f"C={a[0]} SWZ={int(a[1])} BC={a[2]} D={a[3]} B={a[4]}"
+
+
+def chunk_members_sha256(arms) -> str:
+    blob = "\n".join(sorted(chunk_canonical(a) for a in arms)).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+def chunk_shards() -> dict:
+    return {f"chunk_s{i}": list(CHUNK_ARMS[i * CHUNK_PER_SHARD:(i + 1) * CHUNK_PER_SHARD])
+            for i in range((len(CHUNK_ARMS) + CHUNK_PER_SHARD - 1) // CHUNK_PER_SHARD)}
+
+
+def chunk_targs(a) -> str:
+    return f"{a[0]}, {_b(a[1])}, {a[2]}, {a[3]}, {a[4]}"
+
+
+def chunk_shard_source(name: str, arms: list) -> str:
+    body = [
+        BANNER,
+        f"// members-sha256: {chunk_members_sha256(arms)}\n",
+        "//\n",
+        f"// SHARD {name} -- {len(arms)} of the chunk consumer's "
+        f"{len(CHUNK_ARMS)} instantiations (P69).\n",
+        "// The launcher definitions live in ../chunk/chunk_launch.cuh; the\n",
+        "// dispatch TU (../chunk/chunk.cu) sees declarations only.\n",
+        "\n",
+        '#include "../chunk/chunk_launch.cuh"\n',
+        "\n",
+        "namespace rola::chunk {\n",
+        "\n",
+    ]
+    for a in arms:
+        body.append(f"template cudaError_t launch_chunk_arm<{chunk_targs(a)}>("
+                    "const ChunkParams&, cudaStream_t);\n")
+    body.append("\n")
+    for a in arms:
+        body.append(
+            f"template std::array<int64_t, 9> query_chunk_census_arm<{chunk_targs(a)}>();\n")
+    if name == "chunk_s0":
+        body.append("\n//: the union-table arms (one per topology x BC) ride shard 0.\n")
+        tables = sorted({(a[3], a[4], a[2]) for a in CHUNK_ARMS})
+        for (d, b, bc) in tables:
+            body.append(f"template cudaError_t launch_chunk_table_arm<{d}, {b}, {bc}>(\n"
+                        "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
+                        "    cudaStream_t);\n")
+    body.append("\n}  // namespace rola::chunk\n")
+    return "".join(body)
+
+
 def readme() -> str:
     sh = shards()
     table = "\n".join(f"| `{name}.cu` | {len(rows)} |" for name, rows in sorted(sh.items()))
+    table += "\n" + "\n".join(
+        f"| `{name}.cu` | {len(arms)} (chunk consumer, P69) |"
+        for name, arms in sorted(chunk_shards().items()))
     return README.format(total=len(matrix()), nshards=len(sh),
                          per=TARGET_MEMBERS_PER_SHARD,
                          axes=" x ".join(shard_axes()), table=table)
@@ -403,6 +483,8 @@ def readme() -> str:
 def generated() -> dict[str, str]:
     """Every file this generator owns: relative path -> content."""
     out = {f"{name}.cu": shard_source(name, rows) for name, rows in sorted(shards().items())}
+    out.update({f"{name}.cu": chunk_shard_source(name, arms)
+                for name, arms in sorted(chunk_shards().items())})
     out["dispatch_table.inc"] = dispatch_table_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)
