@@ -29,10 +29,12 @@ def main():
     fails = 0
     ladder_arms = {tuple(a[:5]) for a in lad.arms()}
     for arm in m.chunk_arms():
-        c, w, bc, d, wid = arm[0], bool(arm[1]), arm[2], arm[3], arm[4]
+        c, bc, d, wid = arm[0], arm[1], arm[2], arm[3]
         widths = (wid,) * d
-        if (c, int(w), bc, d, wid) not in ladder_arms:
-            continue  # arms born in the standalone (e.g. the flat D=1 baseline)
+        #: the standalone retired the swizzle axis; match the ladder's
+        #: SWZ=false rows, and skip arms born here (the flat D=1 baseline).
+        if (c, 0, bc, d, wid) not in ladder_arms:
+            continue
         for regime_sup in (wid, 2):
             pr = reference.support_amplitudes(B, H, L, widths, regime_sup, "cuda", seed=5)
             pw = reference.support_amplitudes(B, H, L, widths, regime_sup, "cuda", seed=6)
@@ -40,9 +42,9 @@ def main():
             v = torch.randn(B, H, L, 64, device="cuda",
                             generator=torch.Generator("cuda").manual_seed(7)).bfloat16()
             tl = lad.union_table(pr, pw, v, c, bc, list(widths))
-            nl, dl = lad.forward_raw(pr, pw, g, v, tl, c, w, bc, list(widths))
+            nl, dl = lad.forward_raw(pr, pw, g, v, tl, c, False, bc, list(widths))
             ts = m.chunk_union_table(pr, pw, v, c, bc, list(widths))
-            ns, ds = m.chunk_forward_raw(pr, pw, g, v, ts, c, w, bc, list(widths))
+            ns, ds = m.chunk_forward_raw(pr, pw, g, v, ts, c, bc, list(widths))
             assert torch.equal(tl, ts), f"TABLE differs at {arm}"
             one_block = (wid ** d) <= bc
             if one_block:

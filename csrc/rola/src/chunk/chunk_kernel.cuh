@@ -300,8 +300,13 @@ constexpr int reg_floor(int C, int BC) {
                                  : 255);
 }
 
-template <int C, bool SWZ, int BC>
+template <int C, int BC>
 struct Geom {
+  //: the swizzle AXIS is retired (P69; receipt -2.1..+2.2%, noise, no
+  //: winner; the flagship never used it).  The padded layout is THE layout;
+  //: this constant folds every `SWZ ?` ternary to it, and the dead branches
+  //: are excised at the e2e cleanup with the compiler as referee.
+  static constexpr bool SWZ = false;
   //: the GROUP is the unit of panel/state/output geometry: at GROUPS = 1 the
   //: slice is the block and everything below is rung 5D's byte for byte.
   static constexpr int GRP = groups_for(BC);
@@ -341,19 +346,20 @@ struct Geom {
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
-template <int C, bool SWZ, int BC>
+template <int C, int BC>
 constexpr int kCtaTarget =
-    design::cta_target((int)Geom<C, SWZ, BC>::bytes, threads_for(BC), reg_floor(C, BC));
+    design::cta_target((int)Geom<C, BC>::bytes, threads_for(BC), reg_floor(C, BC));
 
 // -------------------------------------------------------------------- kernel
 
-template <int C, bool SWZ, int D, int B, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, SWZ, BC>)) void compacted_kernel(
+template <int C, int D, int B, int BC>
+__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L) {
   using LP = LevelPlan<D, B, BC>;
-  using G = Geom<C, SWZ, BC>;
+  using G = Geom<C, BC>;
+  static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
   //: the per-config carve, evaluated: how many slot groups, how many threads.
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);

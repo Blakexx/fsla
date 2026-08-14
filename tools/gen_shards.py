@@ -405,24 +405,22 @@ and Y were re-measured" a provable claim.
 # ../chunk/chunk_launch.cuh.
 # ---------------------------------------------------------------------------
 CHUNK_ARMS: tuple = (
-    (16, False, 64, 2, 8), (32, False, 64, 2, 8), (64, False, 64, 2, 8),
-    (16, True, 64, 2, 8), (32, True, 64, 2, 8), (64, True, 64, 2, 8),
-    (16, False, 64, 2, 64), (32, False, 64, 2, 64), (64, False, 64, 2, 64),
-    (16, True, 64, 2, 64), (32, True, 64, 2, 64), (64, True, 64, 2, 64),
-    (32, False, 32, 2, 64), (64, False, 32, 2, 64),
-    (16, False, 128, 2, 64), (32, False, 128, 2, 64), (64, False, 128, 2, 64),
-    (32, False, 256, 2, 64),
-    (16, False, 64, 2, 16), (32, False, 64, 2, 16), (64, False, 64, 2, 16),
-    (32, False, 128, 3, 16), (32, False, 128, 4, 8), (32, False, 32, 4, 8),
+    (16, 64, 2, 8), (32, 64, 2, 8), (64, 64, 2, 8),
+    (16, 64, 2, 64), (32, 64, 2, 64), (64, 64, 2, 64),
+    (32, 32, 2, 64), (64, 32, 2, 64),
+    (16, 128, 2, 64), (32, 128, 2, 64), (64, 128, 2, 64),
+    (32, 256, 2, 64),
+    (16, 64, 2, 16), (32, 64, 2, 16), (64, 64, 2, 16),
+    (32, 128, 3, 16), (32, 128, 4, 8), (32, 32, 4, 8),
     # the FLAT-ROUTING baseline arms (D = 1; N = B <= 256 by the manifest --
     # the benchmark's in-kernel flat control, P69):
-    (32, False, 64, 1, 64), (32, False, 64, 1, 256), (16, False, 64, 1, 256),
+    (32, 64, 1, 64), (32, 64, 1, 256), (16, 64, 1, 256),
 )
 CHUNK_PER_SHARD = 8
 
 
 def chunk_canonical(a) -> str:
-    return f"C={a[0]} SWZ={int(a[1])} BC={a[2]} D={a[3]} B={a[4]}"
+    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]}"
 
 
 def chunk_members_sha256(arms) -> str:
@@ -436,7 +434,7 @@ def chunk_shards() -> dict:
 
 
 def chunk_targs(a) -> str:
-    return f"{a[0]}, {_b(a[1])}, {a[2]}, {a[3]}, {a[4]}"
+    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}"
 
 
 def chunk_arms_inc() -> str:
@@ -445,12 +443,13 @@ def chunk_arms_inc() -> str:
     lines = [BANNER,
              f"// members-sha256: {chunk_members_sha256(CHUNK_ARMS)}\n",
              "// Included by ../chunk/chunk_kernel.cuh; the X-macro over every\n",
-             "// built (C, SWZ, BC, D, B) arm of the chunk consumer.\n",
+             "// built (C, BC, D, B) arm of the chunk consumer (the swizzle axis\n",
+             "// is RETIRED: receipt -2.1..+2.2%, noise, no winner).\n",
              "// clang-format off\n",
              "#define RUNG5D_ARMS(X) \\\n"]
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
-        lines.append(f"  X({a[0]}, {_b(a[1])}, {a[2]}, {a[3]}, {a[4]}){tail}\n")
+        lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
     lines.append("// clang-format on\n")
     return "".join(lines)
 
@@ -479,7 +478,7 @@ def chunk_shard_source(name: str, arms: list) -> str:
             f"template std::array<int64_t, 9> query_chunk_census_arm<{chunk_targs(a)}>();\n")
     if name == "chunk_s0":
         body.append("\n//: the union-table arms (one per topology x BC) ride shard 0.\n")
-        tables = sorted({(a[3], a[4], a[2]) for a in CHUNK_ARMS})
+        tables = sorted({(a[2], a[3], a[1]) for a in CHUNK_ARMS})
         for (d, b, bc) in tables:
             body.append(f"template cudaError_t launch_chunk_table_arm<{d}, {b}, {bc}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"

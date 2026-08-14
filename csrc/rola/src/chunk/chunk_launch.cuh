@@ -15,18 +15,18 @@
 
 namespace rola::chunk {
 
-template <int C, bool SWZ, int BC, int D, int B>
+template <int C, int BC, int D, int B>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
-  constexpr size_t sm = Geom<C, SWZ, BC>::bytes;
+  constexpr size_t sm = Geom<C, BC>::bytes;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e = cudaFuncSetAttribute(
-        compacted_kernel<C, SWZ, D, B, BC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
+        compacted_kernel<C, D, B, BC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
     if (e != cudaSuccess) return e;
     configured = true;
   }
   const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, (unsigned)p.BH);
-  compacted_kernel<C, SWZ, D, B, BC>
+  compacted_kernel<C, D, B, BC>
       <<<grid, threads_for(BC), sm, stream>>>(p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L);
   return cudaGetLastError();
 }
@@ -43,18 +43,18 @@ cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16*
 
 //: the census: everything build_stamp reports for an arm.  Lives HERE so the
 //: dispatch TU never touches the kernel symbol.
-template <int C, bool SWZ, int BC, int D, int B>
+template <int C, int BC, int D, int B>
 std::array<int64_t, 9> query_chunk_census_arm() {
   cudaFuncAttributes a{};
-  if (cudaFuncGetAttributes(&a, compacted_kernel<C, SWZ, D, B, BC>) != cudaSuccess)
+  if (cudaFuncGetAttributes(&a, compacted_kernel<C, D, B, BC>) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
           a.binaryVersion,
-          (int64_t)Geom<C, SWZ, BC>::bytes,
+          (int64_t)Geom<C, BC>::bytes,
           (int64_t)a.maxThreadsPerBlock,
           (int64_t)a.localSizeBytes,
-          (int64_t)Geom<C, SWZ, BC>::stages,
+          (int64_t)Geom<C, BC>::stages,
           (int64_t)LevelPlan<D, B, BC>::blocks,
           (int64_t)LevelPlan<D, B, BC>::entries};
 }

@@ -17,12 +17,12 @@ namespace rola::chunk {
 
 //: the arm surface, DECLARED only -- definitions live in the instantiation
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
-template <int C, bool SWZ, int BC, int D, int B>
+template <int C, int BC, int D, int B>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream);
 template <int D, int B, int BC>
 cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                    int BH, int L, cudaStream_t stream);
-template <int C, bool SWZ, int BC, int D, int B>
+template <int C, int BC, int D, int B>
 std::array<int64_t, 9> query_chunk_census_arm();
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
 //: because the cook wants them apart.  It is a SEPARATE ENTRY POINT so that its
@@ -109,7 +109,7 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
                           int64_t bc, std::vector<int64_t> widths) {
   check_inputs(pr, pw, v, chunk, widths);
   const int BH = v.size(0) * v.size(1), L = v.size(2);
-#define RUNG5D_TABLE(C_, W_, BC_, D_, B_)                                     \
+#define RUNG5D_TABLE(C_, BC_, D_, B_)                                     \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_))                     \
     return build_table<D_, B_, BC_>(pr, pw, BH, L);
   RUNG5D_ARMS(RUNG5D_TABLE)
@@ -119,7 +119,7 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
-                                       bool swizzle, int64_t bc, std::vector<int64_t> widths) {
+                                       int64_t bc, std::vector<int64_t> widths) {
   //: the write gain: per-token positive scalar, bf16, [B,H,L] -- spec 4.2.
   TORCH_CHECK(gw.is_cuda() && gw.is_contiguous() && gw.scalar_type() == torch::kBFloat16
                   && gw.dim() == 3 && gw.size(0) == v.size(0) && gw.size(1) == v.size(1)
@@ -136,8 +136,8 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   auto o = torch::zeros({B, H, L, (long)kD}, opts);
   auto den = torch::zeros({B, H, L}, opts);
   const int BH = B * H;
-#define RUNG5D_DISPATCH(C_, W_, BC_, D_, B_)                                   \
-  if (chunk == C_ && swizzle == W_ && bc == BC_ && is_arm(widths, D_, B_)) {   \
+#define RUNG5D_DISPATCH(C_, BC_, D_, B_)                                   \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                    \
     const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
                       tok_words(L);                                          \
     TORCH_CHECK(tbl.numel() == want,                                           \
@@ -148,21 +148,19 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    reinterpret_cast<const __nv_bfloat16 *>(v.data_ptr()),      \
                    reinterpret_cast<const uint32_t *>(tbl.data_ptr()),         \
                    o.data_ptr<float>(), den.data_ptr<float>(), BH, L};         \
-    C10_CUDA_CHECK((launch_chunk_arm<C_, W_, BC_, D_, B_>(                     \
+    C10_CUDA_CHECK((launch_chunk_arm<C_, BC_, D_, B_>(                     \
         p_, at::cuda::getCurrentCUDAStream())));                               \
     return {o, den};                                                           \
   }
   RUNG5D_ARMS(RUNG5D_DISPATCH)
 #undef RUNG5D_DISPATCH
-  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " swizzle=", swizzle, " BC=", bc,
-              " depth=", widths.size());
+  TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
 }
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
-                      int64_t chunk, bool swizzle, int64_t bc, std::vector<int64_t> widths,
-                      double eps) {
+                      int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps) {
   auto tbl = union_table(pr, pw, v, chunk, bc, widths);
-  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, swizzle, bc, widths);
+  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths);
   return divide_pass(nd[0], nd[1], eps);
 }
 
@@ -174,16 +172,15 @@ __global__ void stamp_kernel(int* out) {
   out[2] = design::kCapsDigest;
 }
 
-std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc,
-                                 std::vector<int64_t> widths) {
+std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths) {
   auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
-#define RUNG5D_CENSUS(C_, W_, BC_, D_, B_)                                         \
-  if (chunk == C_ && swizzle == W_ && bc == BC_ && is_arm(widths, D_, B_)) {       \
-    const auto cs = query_chunk_census_arm<C_, W_, BC_, D_, B_>();                 \
+#define RUNG5D_CENSUS(C_, BC_, D_, B_)                                         \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                        \
+    const auto cs = query_chunk_census_arm<C_, BC_, D_, B_>();                 \
     for (auto x : cs) r.push_back(x);                                              \
     return r;                                                                      \
   }
@@ -198,14 +195,14 @@ std::vector<int64_t> build_stamp(int64_t chunk, bool swizzle, int64_t bc,
 //: staging depth and the CTA target.
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
-#define RUNG5D_LIST(C_, W_, BC_, D_, B_)                                      \
-  out.push_back({C_, (int64_t)(W_), BC_, D_, B_,                              \
+#define RUNG5D_LIST(C_, BC_, D_, B_)                                      \
+  out.push_back({C_, BC_, D_, B_,                              \
                  (int64_t)LevelPlan<D_, B_, BC_>::blocks,                     \
                  (int64_t)(BC_ / LevelPlan<D_, B_, BC_>::span_at(D_ - 1)),    \
                  (int64_t)LevelPlan<D_, B_, BC_>::span_at(D_ - 1),            \
-                 (int64_t)Geom<C_, W_, BC_>::stages,                          \
-                 (int64_t)Geom<C_, W_, BC_>::bytes,                           \
-                 (int64_t)kCtaTarget<C_, W_, BC_>,                            \
+                 (int64_t)Geom<C_, BC_>::stages,                          \
+                 (int64_t)Geom<C_, BC_>::bytes,                           \
+                 (int64_t)kCtaTarget<C_, BC_>,                            \
                  (int64_t)LevelPlan<D_, B_, BC_>::entries});
   RUNG5D_ARMS(RUNG5D_LIST)
 #undef RUNG5D_LIST
