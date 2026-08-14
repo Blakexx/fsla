@@ -23,13 +23,11 @@ the delta does not measure paging. The isolated plane is a real number; the delt
 is reported beside it and should be read as bounded by it, not as an independent
 result.
 
-**Cold vs warm (fix pass R5, `workflows/20260730-wiring/paging-review.md`).** The
-layer resets the arena on every forward (`c469b117`; `PageArena.plan`'s own
-`fresh=True` default since the BLOCKER B1 fix pass), so the plane a real step
-pays is the COLD one: full reset, replan, republish. `plan_warm_ms` measures the
-SAME arena re-planning the SAME schedule with `fresh=False` (no reset, so after
-the first call there are zero new pages to commit) -- a real number for a
-genuinely persistent-arena regime, but not the one the shipped layer runs. An
+**Cold vs warm.** A FRESH state plans cold -- full reset, replan, republish --
+and every continuation on it plans warm (`fresh=False`: no reset, so a repeat of
+the same routing has zero new pages to commit). Both are what the shipped surface
+runs, at different points in a sequence's life: the first call of a sequence pays
+cold, every step after it pays warm. An
 earlier revision of this benchmark measured only the warm number in a no-reset
 loop and reported it as "the" paging cost; the two differ by 1.13x at the dense
 flagship cell and by **4.74x** at the wide sparse cell (measured: 6.04 ms cold
@@ -40,6 +38,15 @@ untrained exact-entmax router into a real sparse support: the support is genuine
 (exact zeros, spec §1.2), its DEGREE is not a trained quantity and is labelled as
 such wherever it is reported. Same convention, and the same caveat, as
 `benchmark_rola_v3_layer.py`.
+
+**REPOINTED (P67 S3b).** Paging is not a layer configuration any more: the backing
+belongs to the STATE (`rola.state()`), it is ON by default, and it engages when a
+call carries a state at all. The two timed cells are therefore two STATEFUL calls --
+one on a default (paged) state, one on a state pinned dense with
+`PlanOverrides(paging=False)` -- which is the comparison the old paged/unpaged layer
+pair was reaching for, with both arms now doing the same state I/O. The isolated
+plane is `PageArena.plan_exact` over the kernel's OWN exact atom bitmap
+(`rola.ops.chunk.stats`), which is what the facade plans with.
 
 Vocabulary: `N` = leaf count = `prod_l width_l`; `BC` = leaves per owner (spec §3);
 `owners_total` = `N / BC`; `BH` = `batch * heads`; `cols` = `d_v` plus one mass
@@ -56,20 +63,9 @@ import time
 import torch
 
 from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
+from rola import state as rola_state
 from rola.expert import PlanOverrides
-from rola.planner.schedule import build_schedule
-
-
-def _routing_of(layer, x):
-    """The layer's own routing allocations, on the layer's own inputs.
-
-    Reproduces the forward's gateway call rather than re-deriving it, so the
-    schedule the paging plane is timed against is the schedule the layer actually
-    hands the arena. Old: the free function `produce_routing` over the layer's own
-    parameter tensors; new: the layer's `RouteProducer` gateway itself.
-    """
-    out = layer.routes(x)
-    return out.read, out.write, out.g_read, out.g_write
+from rola.ops import chunk as chunk_arm
 
 _MiB = 1024 * 1024
 
@@ -88,7 +84,7 @@ def _median_ms(fn, *, reps: int, warmup: int) -> float:
     return statistics.median(samples)
 
 
-def _layer(*, hidden, H, d_v, branches, router, norm, decay, paging, seed=0):
+def _layer(*, hidden, H, d_v, branches, router, norm, decay, dense_pin=False, seed=0):
     from rola import LearnedDecay
 
     routing = sparse_routing(1.5) if router == "entmax" else dense_routing()
@@ -99,7 +95,7 @@ def _layer(*, hidden, H, d_v, branches, router, norm, decay, paging, seed=0):
     decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay else None
     layer = RoLA(
         hidden, H, routes, decay=decay_source, layer_idx=0,
-        expert=PlanOverrides(paging=paging),
+        expert=PlanOverrides(paging=False) if dense_pin else None,
     ).cuda().eval()
     for param in layer.parameters():
         param.requires_grad_(False)
@@ -110,73 +106,71 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
                       reps, warmup) -> dict:
     hidden = H * d_v
     layer = _layer(hidden=hidden, H=H, d_v=d_v, branches=branches, router=router,
-                   norm=norm, decay=decay, paging=True)
+                   norm=norm, decay=decay)
     if logit_gain != 1.0:
         with torch.no_grad():
             layer.routes.producers[0].route_W.mul_(logit_gain)
     x = torch.randn(B, L, hidden, device="cuda")
 
-    def step(module):
-        # `torch.no_grad()` is load-bearing, not hygiene: the layer's dispatch sends a
-        # grad-enabled forward to the fp64 oracle, which has no page table and RAISES
-        # under `paging=True`. This measures the inference path, which is the path
-        # paging exists on.
+    def step(module, carried):
+        # `torch.no_grad()` is load-bearing, not hygiene: a grad-enabled forward
+        # dispatches to the fp64 oracle, which would be an oracle timing AND would
+        # take the state's dense bridge. This measures the inference path, which is
+        # the path paging exists on.
         def run():
             with torch.no_grad():
-                module(x)
+                module(x, state=carried)
         return run
 
-    step(layer)()
+    paged_state = rola_state()
+    step(layer, paged_state)()
     assert layer.last_execution_backend == "cuda", (
         f"the paged cell took the {layer.last_execution_backend!r} backend, so this row "
         "would be an oracle timing")
-    # Old `layer.last_paging_stats` -> the arena's own `PagingResult`
-    # (`layer._page_arena.last_result`), the same fields.
-    stats = layer._page_arena.last_result
+    assert paged_state.paged, (
+        "this topology has no built chunk arm, so its state fell to the legacy tiled "
+        "consumer and is dense-backed; there is no paged cell to measure here")
+    stats = paged_state._arena.last_result
 
     # The paging plane ALONE: `prepare -> publish -> admit mask` against the exact
     # schedule this cell's routing produces. This is the number that answers "what
     # does paging cost", because the whole-layer delta at these sizes is dominated
     # by launch noise (see the module docstring).
-    arena = layer._page_arena
-    plan_obj = layer.last_selected_plan
+    arena = paged_state._arena
     with torch.no_grad():
-        routing = _routing_of(layer, x)
-        schedule = build_schedule(routing[0], routing[1], routing[2], routing[3], plan_obj)
+        bitmap = chunk_arm.stats(layer.routes(x)).bool()
 
-    # Fix pass R5 (`workflows/20260730-wiring/paging-review.md`): the layer calls
-    # `arena.plan(schedule)` with its default `fresh=True` on EVERY forward (a
-    # fresh forward resets the arena; `c469b117` fixed the defect where it did
-    # not), so the plane a real step pays is the COLD one -- full reset,
-    # replan, republish. The instrument this replaced timed a no-reset loop on
-    # one arena (`fresh=False`, i.e. WARM: after rep 1 there is nothing left to
-    # commit), which is a different, smaller number and was reported as if it
-    # were the shipped cost. Both are measured and reported, labelled, so
-    # neither is quoted alone.
+    # COLD is what the FIRST call of a sequence pays (full reset, replan, republish);
+    # WARM is what every continuation pays (`fresh=False`, so a repeat of the same
+    # routing commits nothing new). Both are shipped costs, at different points in a
+    # sequence's life, and neither is quotable alone: they differed by 4.74x at the
+    # wide sparse cell when this was measured.
     def plan_cold():
         with torch.no_grad():
-            arena.plan(schedule)                # fresh=True (default): full reset + replan
+            arena.plan_exact(bitmap)             # fresh=True (default): full reset + replan
 
     def plan_warm():
         with torch.no_grad():
-            arena.plan(schedule, fresh=False)    # explicit continuation: no reset
+            arena.plan_exact(bitmap, fresh=False)  # a continuation: no reset
 
     # `plan_warm` must start from a resident arena, or its own first call would be
     # doing the same new-page work `plan_cold` measures. One untimed cold call
     # establishes residency; every `fresh=False` call after commits nothing new.
-    arena.plan(schedule)
+    arena.plan_exact(bitmap)
     plan_warm_ms = _median_ms(plan_warm, reps=reps, warmup=warmup)
     plan_cold_ms = _median_ms(plan_cold, reps=reps, warmup=warmup)
 
-    paged_ms = _median_ms(step(layer), reps=reps, warmup=warmup)
+    paged_ms = _median_ms(step(layer, paged_state), reps=reps, warmup=warmup)
     unpaged = _layer(hidden=hidden, H=H, d_v=d_v, branches=branches, router=router,
-                     norm=norm, decay=decay, paging=False)
+                     norm=norm, decay=decay, dense_pin=True)
     # `load_state_dict` carries the scaled `route_W` across, so both cells route
-    # identically and the timing difference is paging and nothing else.
+    # identically and the timing difference is the BACKING and nothing else.
     unpaged.load_state_dict(layer.state_dict())
-    step(unpaged)()
+    dense_state = rola_state()
+    step(unpaged, dense_state)()
     assert unpaged.last_execution_backend == "cuda"
-    unpaged_ms = _median_ms(step(unpaged), reps=reps, warmup=warmup)
+    assert not dense_state.paged, "the dense pin did not reach the state"
+    unpaged_ms = _median_ms(step(unpaged, dense_state), reps=reps, warmup=warmup)
 
     N = layer.topology.N
     return {
@@ -218,13 +212,15 @@ def main() -> None:
         raise SystemExit("this benchmark requires CUDA")
 
     branches = [int(s) for s in args.branches.split(",")]
-    rows = []
-    for decay in (False, True):
-        for norm in ("raw", "global"):
-            rows.append(measure_residency(
-                B=args.batch, L=args.seq_len, H=args.heads, d_v=args.head_v_dim,
-                branches=branches, router=args.router, logit_gain=args.logit_gain,
-                norm=norm, decay=decay, reps=args.reps, warmup=args.warmup))
+    #: TWO DEAD ARMS RETIRED, both older than this benchmark's repoint and both of
+    #: which raised on their first cell: `normalization="raw"` is refused outright
+    #: (`validate_normalization`), and a decay-configured layer dispatches every arm
+    #: to the fp64 oracle (the decay retirement), which the cell below asserts against
+    #: precisely so it cannot be reported as a kernel timing.
+    rows = [measure_residency(
+        B=args.batch, L=args.seq_len, H=args.heads, d_v=args.head_v_dim,
+        branches=branches, router=args.router, logit_gain=args.logit_gain,
+        norm="global", decay=False, reps=args.reps, warmup=args.warmup)]
 
     head = rows[0]
     print(f"\n=== V3 §7.1 page commitment — branches={head['branches']} "

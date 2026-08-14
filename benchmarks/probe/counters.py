@@ -13,7 +13,7 @@ Two ncu behaviours are load-bearing and are handled here rather than remembered:
 
 The replay mode is RECORDED in every row. `kernel` (the default) restores only the
 memory the kernel wrote; a kernel that carries state across launches -- the paged and
-`use_cache` continuation arms -- needs `application` replay, and nothing in the tree
+stateful continuation arms -- needs `application` replay, and nothing in the tree
 previously said which had been used.
 """
 from __future__ import annotations

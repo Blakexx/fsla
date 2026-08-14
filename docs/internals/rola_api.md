@@ -107,7 +107,7 @@ the class is `enable_shared_from_this` and every exported tensor view captures a
 [`paging/vmm_owner.md`](paging/vmm_owner.md#view-lifetime).
 
 The mutating operations (`grow`, `rollback_to`, `reset`, `close`) are methods; every
-observable (`closed`, `mapped_capacity_pages`, `max_physical_pages`, `committed_bytes`,
+observable (`closed`, `mapped_capacity_pages`, `dense_limit_pages`, `committed_bytes`,
 `virtual_bytes`, `allocation_granularity`, `chunk_pages`, `backing_kind`) is a
 `def_property_readonly`, so nothing on the Python side can write owner state except
 through the four verbs.

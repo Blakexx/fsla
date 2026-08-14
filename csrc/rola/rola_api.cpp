@@ -139,7 +139,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("closed", &rola::paging::VmmOwner::closed)
       .def_property_readonly("mapped_capacity_pages",
                              &rola::paging::VmmOwner::mapped_capacity_pages)
-      .def_property_readonly("max_physical_pages", &rola::paging::VmmOwner::max_physical_pages)
+      .def_property_readonly("dense_limit_pages", &rola::paging::VmmOwner::dense_limit_pages)
       .def_property_readonly("committed_bytes", &rola::paging::VmmOwner::committed_bytes)
       .def_property_readonly("virtual_bytes", &rola::paging::VmmOwner::virtual_bytes)
       .def_property_readonly("allocation_granularity",
@@ -148,6 +148,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("backing_kind", &rola::paging::VmmOwner::backing_kind);
 
   m.def("rola_vmm_create", &rola::paging::create_vmm_owner, py::arg("device"),
-        py::arg("max_physical_pages"), py::arg("bp"), py::arg("dqk"), py::arg("dv"),
+        py::arg("dense_limit_pages"), py::arg("bp"), py::arg("dqk"), py::arg("dv"),
         py::arg("global_mass"), py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);
 }

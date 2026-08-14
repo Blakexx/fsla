@@ -22,7 +22,7 @@ memory exists, *reserved* means only address space does.
 
 ## <a id="two-planes"></a>1. Two planes, reserved whole, mapped in a prefix
 
-`reserve_planes()` reserves `max_physical_pages * page_bytes`, rounded up to the
+`reserve_planes()` reserves `dense_limit_pages * page_bytes`, rounded up to the
 allocation granularity, for `value_` — and for `mass_` only when `global_mass_`. The
 reservation is address space, not memory.
 
@@ -31,8 +31,8 @@ extent:
 
 | plane | view shape | dtype |
 |---|---|---|
-| value | `[max_physical_pages, bp, dqk, dv]` | fp32 |
-| mass | `[max_physical_pages, bp, dqk]` | fp32 |
+| value | `[dense_limit_pages, bp, dqk, dv]` | fp32 |
+| mass | `[dense_limit_pages, bp, dqk]` | fp32 |
 
 **Only the prefix reported by `mapped_capacity_pages()` is mapped and may be touched.**
 The tensor's own shape does not tell a caller that; the contract does. Touching past
@@ -43,7 +43,7 @@ Keeping the view over the whole extent (rather than resizing it on every growth)
 point of the design: the base pointer is stable for the process's life, so nothing
 downstream re-publishes a pointer when the cache grows.
 
-`mapped_capacity_pages()` is the MINIMUM over the live planes and `max_physical_pages_`
+`mapped_capacity_pages()` is the MINIMUM over the live planes and `dense_limit_pages_`
 — so a partially-grown pair of planes reports the capacity both can serve, never the
 larger one.
 
@@ -70,7 +70,7 @@ explicitly for fully committed backing.
 The constructor derives
 
 ```
-chunk_pages_ = min(max_physical_pages, max(1, target_chunk_bytes / value_page_bytes))
+chunk_pages_ = min(dense_limit_pages, max(1, target_chunk_bytes / value_page_bytes))
 ```
 
 so `target_chunk_bytes` (64 MiB at the binding boundary) is a target for the VALUE
@@ -80,12 +80,12 @@ plane; the mass plane inherits the same page count and is therefore smaller in b
 otherwise commits to a chunk boundary with a **one-chunk lookahead**: the target is
 `required_chunks + 1` chunks, *except* on the first growth (`current_pages == 0`) and
 except when `required_chunks` already reaches the maximum — in both of those cases it is
-exactly `required_chunks`. The result is clamped to `max_physical_pages_`.
+exactly `required_chunks`. The result is clamped to `dense_limit_pages_`.
 
 The lookahead is why a steadily growing cache does not call into the driver on every
 admission: it is always one chunk ahead of the request that would need it.
 
-`map_initial_chunk()` is just `grow(min(max_physical_pages_, chunk_pages_))`, so the
+`map_initial_chunk()` is just `grow(min(dense_limit_pages_, chunk_pages_))`, so the
 first chunk exists before any caller sees the object.
 
 ## <a id="growth-atomicity"></a>4. Growth is all-or-nothing across both planes

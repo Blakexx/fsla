@@ -172,7 +172,7 @@ rather than remembered:
 
 The **replay mode is recorded in every row**. `kernel` replay restores only the memory
 the kernel wrote, which is silently wrong for a kernel that carries state across
-launches — the paged and `use_cache` continuation arms — where `application` replay is
+launches — the paged and stateful continuation arms — where `application` replay is
 mandatory.
 
 ### SASS

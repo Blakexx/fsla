@@ -178,12 +178,11 @@ def _reordering_bound(y: torch.Tensor, plan) -> torch.Tensor:
     return n * n * torch.finfo(torch.bfloat16).eps * y.abs().max()
 
 
-def _arena(plan, *, BH, max_physical_pages=None):
+def _arena(plan, *, BH):
     d_v = plan.topology.d_v
     cols = d_v + (1 if plan.normalization == "global" else 0)
     return PageArena(widths=plan.topology.widths, BC=plan.BC, cols=cols, BH=BH,
-                       device=torch.device("cuda"),
-                       max_physical_pages=max_physical_pages)
+                     device=torch.device("cuda"))
 
 
 # ---------------------------------------------------------------------------
@@ -602,13 +601,14 @@ def test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible():
     assert (y_dense - y_paged).abs().max() <= bound
 
 
-def test_a_near_full_but_fitting_arena_survives_a_real_launch():
-    """H6 (coverage-closure): the arena at EXACTLY its demand, through a real launch.
+def test_the_arena_commits_exactly_the_schedule_s_demand_through_a_real_launch():
+    """The allocation is PLANNED-EXACT: committed pages == the schedule's demand.
 
-    `max_physical_pages` is set to the schedule's exact atom demand -- one page of
-    headroom less would raise -- so the allocator's ceiling arithmetic, the
-    planned-exact popcount and the launch's addressing are all exercised at the
-    boundary instead of in the roomy middle every other cell occupies.
+    RETIRED WITH THE CAP (P67 S3b): this cell used to set `max_physical_pages` to the
+    exact demand so the ceiling arithmetic ran at its boundary. There is no ceiling
+    any more -- the capacity IS the dense limit and the commitment follows the plan --
+    so what survives is the half that was never about the cap: the planned-exact
+    popcount and the launch's addressing, asserted at a REAL partial demand.
     """
     from rola.ops.paging import atom_bitmap_from_schedule
 
@@ -626,13 +626,12 @@ def test_a_near_full_but_fitting_arena_survives_a_real_launch():
         "partial demand")
 
     y_dense, state_dense, _ = _run(plan, fixture)
-    arena = _arena(plan, BH=B * H, max_physical_pages=demand)
+    arena = _arena(plan, BH=B * H)
     y_paged, returned, _ = _run(plan, fixture, arena=arena)
 
     assert returned is arena
-    assert arena.resident_pages == demand == arena.max_physical_pages, (
-        "the cell must run the arena AT its ceiling, or it is not the near-full "
-        "gate it claims to be")
+    assert arena.resident_pages == demand, (
+        "the arena committed something other than the schedule's exact demand")
     cols = state_dense.shape[-1]
     assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize())
     bound = _reordering_bound(y_dense, plan)

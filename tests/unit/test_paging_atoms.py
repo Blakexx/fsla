@@ -79,7 +79,7 @@ def test_every_stored_object_is_BC_invariant(BC):
     arena = _arena(widths=widths, BC=BC, cols=cols, BH=BH)
     N = prod(widths)
     assert tuple(arena.page_table.shape) == (BH, N // MMA_K_QUANTUM)
-    assert tuple(arena.state.shape) == (arena.max_physical_pages, MMA_K_QUANTUM, cols)
+    assert tuple(arena.state.shape) == (arena.logical_pages, MMA_K_QUANTUM, cols)
     assert arena.logical_pages == BH * N // MMA_K_QUANTUM
     assert arena.dense_bytes() == BH * N * cols * 4
     assert arena.atoms_per_owner == BC // MMA_K_QUANTUM
@@ -172,32 +172,24 @@ def test_a_continuation_keeps_what_it_already_holds_and_a_fresh_call_does_not():
     assert int((arena.page_table >= 0).sum()) == 2, "a fresh call carried state forward"
 
 
-def test_an_exhausted_arena_REFUSES_and_never_grants_a_prefix():
-    """The capped mode is DELETED; exhaustion is a HARD host-side refusal.
+def test_an_exhausted_allocator_REFUSES_and_never_grants_a_prefix():
+    """A demand the pool cannot serve RAISES; it never grants a prefix.
 
-    Closed-world standard: a demand the arena cannot serve names the demand and the
-    arena size and raises. It never grants a prefix, never drops a write, and never
-    computes the degraded function the old ``CAPPED`` status reported. The gate checks
-    all three: the refusal fires, its message carries both numbers, and the arena is
-    left EXACTLY as it was so a caller that catches it has not lost state.
+    RETIRED IN PART WITH THE CAP (P67 S3b): the arena has no ceiling parameter any
+    more, so exhaustion is no longer reachable through `PageArena` at all -- the
+    capacity IS the dense limit and the plan's demand is a subset of it by
+    construction. The invariant itself still has an owner, and this is it: the
+    ALLOCATOR refuses all-or-nothing, naming the demand and the pool, and leaves
+    itself exactly as it was so a caller that catches it has not lost state.
     """
-    widths, cols, BH = (8, 16), 4, 1
-    N = prod(widths)
-    atoms = torch.ones((BH, N // MMA_K_QUANTUM), dtype=torch.bool)
-
-    arena = _arena(widths=widths, cols=cols, BH=BH, max_physical_pages=4)
+    allocator = ExtentAllocator(4, 4)
     with pytest.raises(RuntimeError, match=r"8 new atoms demanded.*arena of 4 atoms"):
-        arena.plan_exact(atoms)
-    assert int((arena.page_table >= 0).sum()) == 0, (
-        "a refused plan committed atoms; refusal must be all-or-nothing")
-    assert arena.resident_pages == 0
-
-    # And the same ceiling serves a demand that FITS, so the refusal is keyed on the
-    # demand and not on the ceiling merely being finite.
-    fits = torch.zeros((BH, N // MMA_K_QUANTUM), dtype=torch.bool)
-    fits[0, :4] = True
-    result = arena.plan_exact(fits)
-    assert result.resident_pages == 4
+        allocator.take(8)
+    assert allocator.allocated == 0, (
+        "a refused grant moved the allocator; refusal must be all-or-nothing")
+    assert allocator.take(4) == 0 and allocator.allocated == 4, (
+        "the same pool must serve a demand that FITS, or the refusal is keyed on the "
+        "pool being small rather than on the demand")
 
 
 # ---------------------------------------------------------------------------

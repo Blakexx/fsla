@@ -246,8 +246,7 @@ class Case:
         arena = None
         if self.paging:
             arena = PageArena(widths=self.widths, BC=self.BC, cols=self.cols,
-                              BH=self.B * self.H, device=torch.device("cuda"),
-                              max_physical_pages=None)
+                              BH=self.B * self.H, device=torch.device("cuda"))
         y, state, _ = _consumer_forward(
             self._f32["v"], self._f32["read"], self._f32["write"],
             self._f32["g_read"], self._f32["g_write"], self.plan,

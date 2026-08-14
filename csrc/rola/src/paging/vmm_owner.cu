@@ -154,10 +154,10 @@ VmmProbe VmmOwner::probe(int device) {
   return result;
 }
 
-std::shared_ptr<VmmOwner> VmmOwner::create(int device, std::int64_t max_physical_pages,
+std::shared_ptr<VmmOwner> VmmOwner::create(int device, std::int64_t dense_limit_pages,
                                            std::int64_t bp, std::int64_t dqk, std::int64_t dv,
                                            bool global_mass, std::int64_t target_chunk_bytes) {
-  TORCH_CHECK(max_physical_pages > 0 && bp > 0 && dqk > 0 && dv > 0,
+  TORCH_CHECK(dense_limit_pages > 0 && bp > 0 && dqk > 0 && dv > 0,
               "CUDA VMM cache dimensions must be positive");
   const auto normalized_device = normalize_device(device);
   const auto capability = probe(normalized_device);
@@ -166,18 +166,18 @@ std::shared_ptr<VmmOwner> VmmOwner::create(int device, std::int64_t max_physical
               capability.device, "; ", capability.reason,
               ". Set progressive_memory=False explicitly for fully committed backing.");
   auto owner = std::shared_ptr<VmmOwner>(
-      new VmmOwner(capability.device, max_physical_pages, bp, dqk, dv, global_mass,
+      new VmmOwner(capability.device, dense_limit_pages, bp, dqk, dv, global_mass,
                    capability.allocation_granularity, target_chunk_bytes));
   owner->reserve_planes();
   owner->map_initial_chunk();
   return owner;
 }
 
-VmmOwner::VmmOwner(int device, std::int64_t max_physical_pages, std::int64_t bp, std::int64_t dqk,
+VmmOwner::VmmOwner(int device, std::int64_t dense_limit_pages, std::int64_t bp, std::int64_t dqk,
                    std::int64_t dv, bool global_mass, std::uint64_t allocation_granularity,
                    std::int64_t target_chunk_bytes)
     : device_(device),
-      max_physical_pages_(max_physical_pages),
+      dense_limit_pages_(dense_limit_pages),
       bp_(bp),
       dqk_(dqk),
       dv_(dv),
@@ -198,7 +198,7 @@ VmmOwner::VmmOwner(int device, std::int64_t max_physical_pages, std::int64_t bp,
   const auto chunk_pages_u =
       std::max<std::uint64_t>(1, static_cast<std::uint64_t>(target_chunk_bytes) / value_page_bytes);
   chunk_pages_ = static_cast<std::int64_t>(
-      std::min<std::uint64_t>(static_cast<std::uint64_t>(max_physical_pages), chunk_pages_u));
+      std::min<std::uint64_t>(static_cast<std::uint64_t>(dense_limit_pages), chunk_pages_u));
 }
 
 void VmmOwner::reserve_planes() {
@@ -206,7 +206,7 @@ void VmmOwner::reserve_planes() {
   const auto reserve = [this](Plane& plane) {
     const auto payload =
         checked_mul(static_cast<std::uint64_t>(plane.page_bytes),
-                    static_cast<std::uint64_t>(max_physical_pages_), "virtual extent");
+                    static_cast<std::uint64_t>(dense_limit_pages_), "virtual extent");
     plane.virtual_bytes =
         round_up(checked_size(payload, "virtual extent"), allocation_granularity_);
     check(cuMemAddressReserve(&plane.address, plane.virtual_bytes, 0, 0, 0), "cuMemAddressReserve");
@@ -218,7 +218,7 @@ void VmmOwner::reserve_planes() {
 }
 
 void VmmOwner::map_initial_chunk() {
-  grow(std::min<std::int64_t>(max_physical_pages_, chunk_pages_));
+  grow(std::min<std::int64_t>(dense_limit_pages_, chunk_pages_));
 }
 
 void VmmOwner::grow_plane(Plane& plane, std::size_t target_bytes,
@@ -269,7 +269,7 @@ void VmmOwner::rollback_growth(std::vector<GrowthMark>& mapped_now) noexcept {
 
 void VmmOwner::grow(std::int64_t required_pages) {
   TORCH_CHECK(!closed_, "CUDA VMM owner is closed");
-  TORCH_CHECK(required_pages >= 0 && required_pages <= max_physical_pages_,
+  TORCH_CHECK(required_pages >= 0 && required_pages <= dense_limit_pages_,
               "CUDA VMM required page count exceeds the reserved maximum");
   if (required_pages <= mapped_capacity_pages()) return;
   c10::cuda::CUDAGuard guard(device_);
@@ -277,11 +277,11 @@ void VmmOwner::grow(std::int64_t required_pages) {
   const auto required_chunks = (required_pages + chunk_pages_ - 1) / chunk_pages_;
   const auto target_chunks =
       current_pages == 0 ? required_chunks
-      : required_chunks >= (max_physical_pages_ + chunk_pages_ - 1) / chunk_pages_
+      : required_chunks >= (dense_limit_pages_ + chunk_pages_ - 1) / chunk_pages_
           ? required_chunks
           : required_chunks + 1;
   const auto target_pages =
-      std::min<std::int64_t>(max_physical_pages_, target_chunks * chunk_pages_);
+      std::min<std::int64_t>(dense_limit_pages_, target_chunks * chunk_pages_);
   const auto target_value_bytes =
       round_up(checked_size(checked_mul(static_cast<std::uint64_t>(target_pages),
                                         static_cast<std::uint64_t>(value_.page_bytes),
@@ -375,11 +375,11 @@ std::int64_t VmmOwner::mapped_capacity_pages() const {
   const auto value_pages = value_.page_bytes == 0 ? 0 : value_.mapped_bytes / value_.page_bytes;
   if (!global_mass_) {
     return static_cast<std::int64_t>(
-        std::min<std::size_t>(value_pages, static_cast<std::size_t>(max_physical_pages_)));
+        std::min<std::size_t>(value_pages, static_cast<std::size_t>(dense_limit_pages_)));
   }
   const auto mass_pages = mass_.page_bytes == 0 ? 0 : mass_.mapped_bytes / mass_.page_bytes;
   return static_cast<std::int64_t>(
-      std::min({value_pages, mass_pages, static_cast<std::size_t>(max_physical_pages_)}));
+      std::min({value_pages, mass_pages, static_cast<std::size_t>(dense_limit_pages_)}));
 }
 
 torch::Tensor VmmOwner::make_view(const Plane& plane, bool mass) {
@@ -387,8 +387,8 @@ torch::Tensor VmmOwner::make_view(const Plane& plane, bool mass) {
   view_tracker_->live_views.fetch_add(1, std::memory_order_relaxed);
   auto tracker = view_tracker_;
   std::vector<std::int64_t> shape =
-      mass ? std::vector<std::int64_t>{max_physical_pages_, bp_, dqk_}
-           : std::vector<std::int64_t>{max_physical_pages_, bp_, dqk_, dv_};
+      mass ? std::vector<std::int64_t>{dense_limit_pages_, bp_, dqk_}
+           : std::vector<std::int64_t>{dense_limit_pages_, bp_, dqk_, dv_};
   auto options = torch::TensorOptions().device(torch::kCUDA, device_).dtype(torch::kFloat32);
   // Keep the driver allocation alive for every tensor view. This prevents a
   // caller holding a slice from outliving the native owner and observing an
@@ -472,10 +472,10 @@ VmmOwner::~VmmOwner() noexcept {
   }
 }
 
-std::shared_ptr<VmmOwner> create_vmm_owner(int device, std::int64_t max_physical_pages,
+std::shared_ptr<VmmOwner> create_vmm_owner(int device, std::int64_t dense_limit_pages,
                                            std::int64_t bp, std::int64_t dqk, std::int64_t dv,
                                            bool global_mass, std::int64_t target_chunk_bytes) {
-  return VmmOwner::create(device, max_physical_pages, bp, dqk, dv, global_mass, target_chunk_bytes);
+  return VmmOwner::create(device, dense_limit_pages, bp, dqk, dv, global_mass, target_chunk_bytes);
 }
 
 }  // namespace rola::paging

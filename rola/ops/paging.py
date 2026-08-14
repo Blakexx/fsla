@@ -11,10 +11,7 @@ owner block (spec §3's owner rectangle); ``cols`` = ``d_v`` plus one mass colum
 ``QPO = BC / MMA_K_QUANTUM`` = atoms per owner.
 
 The atom re-key rationale, the address law, planned-exact-async allocation,
-extent policy and scope live in docs/internals/paging/paging.md.  NOTE: the
-``max_physical_pages`` cap described there is ruled for DELETION with the
-paged-state-I/O integration (the footprint is planned-exact, so a cap is
-either never-binding or a self-configured refusal).
+extent policy and scope live in docs/internals/paging/paging.md.
 """
 from __future__ import annotations
 
@@ -201,8 +198,8 @@ class ExtentAllocator:
                 f"the page arena cannot serve this launch: {count} new atoms demanded, "
                 f"{self.capacity - first} free in an arena of {self.capacity} atoms. "
                 "The arena grants ALL or refuses -- there is no partial grant and no "
-                "dropped write. Raise `max_physical_pages` to the launch's realized "
-                "write footprint, or shrink the launch.")
+                "dropped write. The capacity IS the dense limit, so a demand it cannot "
+                "serve was not derived from this arena's own keying.")
         self._next = first + count
         return first
 
@@ -215,11 +212,13 @@ class PageArena:
     fraction of the WHOLE layer; a per-pair arena would round each pair's tiny live
     fraction up to its own extent and cap savings at the extent-to-footprint ratio.
 
-    ``max_physical_pages`` is the allocator CEILING, in atoms. ``None`` provisions the
-    dense limit (``BH * atoms_per_bh``), i.e. the ceiling can never bind. A finite value
-    is a deliberate POLICY limit rather than a capacity guess -- the footprint is known
-    before the launch -- and a launch that exceeds it is REFUSED, loudly and host-side.
-    It is never degraded: graceful degradation was the deleted capped mode.
+    **THERE IS NO CEILING PARAMETER.** The arena's allocator capacity IS the dense
+    limit (``BH * atoms_per_bh``) and it COMMITS only what :meth:`plan_exact` admits,
+    which is the routing's exact write set. A cap over a planned-exact allocator is
+    either never-binding or a self-inflicted refusal, and the storage it would have
+    sized is the storage paging exists not to touch: under the VMM owner the extent is
+    reserved VIRTUALLY and physical commitment follows the plan, and under the
+    dense-tensor bridge here the pool is the one allocation the bridge costs.
 
     **NOTE ON ``BC``.** The arena takes it only to resolve the default
     ``extent_atoms`` (§8's ``C_EXTENT_ATOMS`` default is ``QPO``) and to report the
@@ -233,8 +232,7 @@ class PageArena:
     """
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,
-                 device: torch.device, max_physical_pages: int | None = None,
-                 extent_atoms: int | None = None) -> None:
+                 device: torch.device, extent_atoms: int | None = None) -> None:
         N = prod(widths)
         self.widths = tuple(widths)
         self.BC = int(BC)
@@ -247,20 +245,12 @@ class PageArena:
         self.device = torch.device(device)
         self.logical_pages = self.keying.logical_atoms
 
-        dense_limit = self.logical_pages
-        self.max_physical_pages = (dense_limit if max_physical_pages is None
-                                   else int(max_physical_pages))
-        if not 1 <= self.max_physical_pages <= dense_limit:
-            raise ValueError(
-                f"max_physical_pages must be in [1, {dense_limit}] (the dense limit, in "
-                f"ATOMS since the §4.5 re-key); got {self.max_physical_pages}")
-
         resolved_extent = (self.atoms_per_owner if extent_atoms is None
                            else int(extent_atoms))
         if C_EXTENT_ATOMS is not None and extent_atoms is None:
             resolved_extent = int(C_EXTENT_ATOMS)
         self.extent_atoms = resolved_extent
-        self._allocator = ExtentAllocator(self.max_physical_pages, self.extent_atoms)
+        self._allocator = ExtentAllocator(self.logical_pages, self.extent_atoms)
 
         self.peak_pages = 0
         #: The most recent :class:`PagingResult`, or ``None``.
@@ -280,7 +270,7 @@ class PageArena:
         #: :meth:`AtomKeying.address` indexes, so the address expression and the
         #: allocation cannot disagree about what a slot is.
         self._value_base = torch.zeros(
-            (self.max_physical_pages, MMA_K_QUANTUM, self.cols),
+            (self.logical_pages, MMA_K_QUANTUM, self.cols),
             dtype=torch.float32, device=self.device)
 
     # -- properties -------------------------------------------------------
@@ -314,8 +304,7 @@ class PageArena:
         The page STORAGE is deliberately not zeroed here. Dropping the table makes every
         atom unmapped, so the next admission sees each of them as NEW and
         :meth:`_admit_pages` zeroes it before any read can reach it. Blanket-zeroing
-        ``max_physical_pages`` worth of storage on every reset would touch the DENSE
-        footprint -- exactly the allocation §7.1 exists to avoid -- to redo work
+        the whole pool on every reset would touch the DENSE footprint -- exactly the allocation §7.1 exists to avoid -- to redo work
         admission already does on the realized set only.
         """
         # JOIN THE SIDE STREAM FIRST. The fills below run on the CALLER's stream, and
@@ -508,10 +497,6 @@ class PageArena:
         expected = (self.BH, self.N, self.cols)
         if tuple(state.shape) != expected:
             raise ValueError(f"dense state must be {expected}, got {tuple(state.shape)}")
-        if self.max_physical_pages < self.logical_pages:
-            raise ValueError(
-                "adopt_dense commits every atom and needs the dense limit; this arena "
-                f"caps at {self.max_physical_pages} of {self.logical_pages} atoms")
         # JOIN THE SIDE STREAM FIRST -- the same missing-wait class the postmerge
         # fix closed before the consumer launch (H4d). The copies below run on the
         # CALLER's stream, and a previous `plan_exact` may still be zeroing this

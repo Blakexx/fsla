@@ -28,7 +28,7 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
  public:
   static VmmProbe probe(int device);
 
-  static std::shared_ptr<VmmOwner> create(int device, std::int64_t max_physical_pages,
+  static std::shared_ptr<VmmOwner> create(int device, std::int64_t dense_limit_pages,
                                           std::int64_t bp, std::int64_t dqk, std::int64_t dv,
                                           bool global_mass, std::int64_t target_chunk_bytes);
 
@@ -49,7 +49,7 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
 
   bool closed() const { return closed_; }
   std::int64_t mapped_capacity_pages() const;
-  std::int64_t max_physical_pages() const { return max_physical_pages_; }
+  std::int64_t dense_limit_pages() const { return dense_limit_pages_; }
   std::uint64_t committed_bytes() const { return committed_bytes_; }
   std::uint64_t virtual_bytes() const { return virtual_bytes_; }
   std::uint64_t allocation_granularity() const { return allocation_granularity_; }
@@ -75,7 +75,7 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
     std::atomic<std::int64_t> live_views{0};
   };
 
-  VmmOwner(int device, std::int64_t max_physical_pages, std::int64_t bp, std::int64_t dqk,
+  VmmOwner(int device, std::int64_t dense_limit_pages, std::int64_t bp, std::int64_t dqk,
            std::int64_t dv, bool global_mass, std::uint64_t allocation_granularity,
            std::int64_t target_chunk_bytes);
 
@@ -104,7 +104,7 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
   void release_planes() noexcept;
 
   int device_;
-  std::int64_t max_physical_pages_;
+  std::int64_t dense_limit_pages_;
   std::int64_t bp_;
   std::int64_t dqk_;
   std::int64_t dv_;
@@ -119,7 +119,7 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
   bool closed_ = false;
 };
 
-std::shared_ptr<VmmOwner> create_vmm_owner(int device, std::int64_t max_physical_pages,
+std::shared_ptr<VmmOwner> create_vmm_owner(int device, std::int64_t dense_limit_pages,
                                            std::int64_t bp, std::int64_t dqk, std::int64_t dv,
                                            bool global_mass, std::int64_t target_chunk_bytes);
 

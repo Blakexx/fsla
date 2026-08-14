@@ -46,16 +46,17 @@ consumer launch waits on ONE event. That is the whole of the asynchrony: no poll
 second sync, and the zeroing overlaps the schedule build rather than serializing with
 it.
 
-**THE CAP IS A POLICY CEILING, AND EXHAUSTING IT IS A REFUSAL.** With the footprint
-known exactly, the allocator cannot be surprised; ``max_physical_pages`` stops being a
-capacity guess and becomes a deliberate limit. When a launch demands more atoms than
-the ceiling leaves, the arena RAISES, naming the demand and the arena size -- it never
-grants a prefix and never drops a write. The former ``CAPPED`` mode (partial grant plus
-an admit mask that annihilated the denied atoms' writes) is DELETED: it computed a
-DIFFERENT function from the one the caller asked for, and the closed-world standard is
-that a demand the binary cannot serve is refused at the host rather than silently
-degraded. With it goes the old annihilation contract, which existed only to define what
-a denied write meant.
+**THERE IS NO CAP, AND THAT IS THE POINT.** With the footprint known exactly, an
+allocator ceiling is either never-binding or a self-inflicted refusal, so the arena
+carries none: its capacity IS the dense limit and it COMMITS only what the plan
+admits. Under the VMM owner that limit is reserved VIRTUALLY (`dense_limit_pages`)
+and physical commitment follows the plan; under the dense-tensor bridge the pool is
+the one allocation the bridge costs. The former ``CAPPED`` mode (partial grant plus
+an admit mask that annihilated the denied atoms' writes) was DELETED before it: it
+computed a DIFFERENT function from the one the caller asked for, and the closed-world
+standard is that a demand the binary cannot serve is refused at the host rather than
+silently degraded. The ``max_physical_pages`` parameter that survived it is deleted
+with the paged-state-I/O integration (P67 S3b).
 
 The consequence downstream is that admission is TOTAL: every atom the routing realizes
 is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one

@@ -54,7 +54,7 @@ never inferred.
 **Memory is reported on the same rows as latency**, because the curve's second axis
 is the point: `kv_cache_bytes` for attention (analytic, `2 * B * H * L * d_head *
 itemsize`, the bytes a decoder would have to keep), against V3's `resident_bytes`
-(measured, `last_paging_stats`, §7.1 committed pages) and `dense_state_bytes`
+(measured, the state's own `PagingResult`, §7.1 committed pages) and `dense_state_bytes`
 (analytic, the provisioned `N`). `peak_alloc_gb` is torch's own peak for the whole
 forward and is a THIRD, different quantity -- it includes activations and is reported
 separately rather than conflated with either.
@@ -83,6 +83,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from bench.instruments import settle_clocks
 from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
+from rola import state as rola_state
 from rola.expert import PlanOverrides
 from rola.ops.consumer import _consumer_forward
 
@@ -310,7 +311,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay_on else None
         layer = RoLA(
             hidden, H, routes, decay=decay_source, layer_idx=0,
-            expert=PlanOverrides(paging=paging, state_block=state_block),
+            expert=PlanOverrides(state_block=state_block),
         ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
             with torch.no_grad():
@@ -337,9 +338,20 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         plan = derive_plan(
             layer.routes(x), decay=decay_config, expert=layer.expert, device=x.device)
         row["BC_derived"] = plan.BC
-        # Old `layer.last_paging_stats` -> the arena's own `PagingResult`
-        # (`layer._page_arena.last_result`), the same fields.
-        stats_paging = layer._page_arena.last_result if layer._page_arena is not None else None
+        # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
+        # engages only on a call that carries a state. The TIMED call above stays
+        # stateless -- that is the row this benchmark reports -- and residency is read
+        # off one extra stateful call on the same routing, which commits exactly the
+        # atoms that call writes.
+        stats_paging = None
+        if paging:
+            with torch.no_grad():
+                carried = rola_state()
+                layer(x, state=carried)
+            assert carried.paged, (
+                f"cell L={L}: this topology has no built chunk arm, so its state is "
+                "dense-backed and there is no residency to report")
+            stats_paging = carried._arena.last_result
         if stats_paging is not None:
             row.update({
                 "owners_total": stats_paging.owners_total,
