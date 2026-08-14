@@ -439,6 +439,22 @@ def chunk_targs(a) -> str:
     return f"{a[0]}, {_b(a[1])}, {a[2]}, {a[3]}, {a[4]}"
 
 
+def chunk_arms_inc() -> str:
+    """The kernel's arms macro, EMITTED -- one list, one owner (the debt fix:
+    this macro and CHUNK_ARMS were one list in two places)."""
+    lines = [BANNER,
+             f"// members-sha256: {chunk_members_sha256(CHUNK_ARMS)}\n",
+             "// Included by ../chunk/chunk_kernel.cuh; the X-macro over every\n",
+             "// built (C, SWZ, BC, D, B) arm of the chunk consumer.\n",
+             "// clang-format off\n",
+             "#define RUNG5D_ARMS(X) \\\n"]
+    for i, a in enumerate(CHUNK_ARMS):
+        tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
+        lines.append(f"  X({a[0]}, {_b(a[1])}, {a[2]}, {a[3]}, {a[4]}){tail}\n")
+    lines.append("// clang-format on\n")
+    return "".join(lines)
+
+
 def chunk_shard_source(name: str, arms: list) -> str:
     body = [
         BANNER,
@@ -488,6 +504,7 @@ def generated() -> dict[str, str]:
     out = {f"{name}.cu": shard_source(name, rows) for name, rows in sorted(shards().items())}
     out.update({f"{name}.cu": chunk_shard_source(name, arms)
                 for name, arms in sorted(chunk_shards().items())})
+    out["chunk_arms.inc"] = chunk_arms_inc()
     out["dispatch_table.inc"] = dispatch_table_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)

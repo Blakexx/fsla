@@ -1539,20 +1539,9 @@ __global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
 //: (8,8,8,8) at the flagship's matched N = 4096, and a BC = 32 depth-4 arm
 //: whose block leaves TWO single-digit levels above a partial one, so the
 //: three-clause form and the two-scalar upper chain are both exercised.
-//: THIS MACRO AND tools/gen_shards.py's CHUNK_ARMS ARE ONE LIST IN TWO
-//: PLACES; emitting this macro from the generator (an .inc, like
-//: dispatch_table.inc) is the stage-D unification.  Until then an edit
-//: here and there must move in step.
-#define RUNG5D_ARMS(X)                                                       \
-  X(16, false,  64, 2,  8) X(32, false,  64, 2,  8) X(64, false,  64, 2,  8) \
-  X(16, true ,  64, 2,  8) X(32, true ,  64, 2,  8) X(64, true ,  64, 2,  8) \
-  X(16, false,  64, 2, 64) X(32, false,  64, 2, 64) X(64, false,  64, 2, 64) \
-  X(16, true ,  64, 2, 64) X(32, true ,  64, 2, 64) X(64, true ,  64, 2, 64) \
-  X(32, false,  32, 2, 64) X(64, false,  32, 2, 64)                          \
-  X(16, false, 128, 2, 64) X(32, false, 128, 2, 64) X(64, false, 128, 2, 64) \
-  X(32, false, 256, 2, 64)                                                    \
-  X(16, false,  64, 2, 16) X(32, false,  64, 2, 16) X(64, false,  64, 2, 16) \
-  X(32, false, 128, 3, 16) X(32, false, 128, 4,  8) X(32, false,  32, 4,  8) \
-  X(32, false,  64, 1, 64) X(32, false,  64, 1, 256) X(16, false, 64, 1, 256)
+//: THE ARM SET, GENERATED: tools/gen_shards.py owns the one list; this
+//: include is the whole of the kernel's knowledge of it (the two-places
+//: debt, fixed the dispatch_table.inc way).
+#include "../instantiations/chunk_arms.inc"
 
 }  // namespace rola::chunk
