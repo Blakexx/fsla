@@ -108,7 +108,6 @@ _EXCEPTIONS: frozenset[tuple] = frozenset({
 #: gateway sweep across them is priced, not forgotten.
 _EXTRAS: frozenset[tuple] = frozenset({
     ("DECAY", 1, "density", "swept"),
-    ("DV", 64, "density", "swept"),
 })
 
 EXPECTED_EMPTY: frozenset[tuple] = frozenset(
@@ -137,7 +136,9 @@ def test_the_join_has_the_size_its_rule_implies():
     """The rule's arithmetic, pinned so an edit to the rule pieces cannot
     silently reshape the list: |cross| - |exceptions| + |extras|."""
     assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 60
-    assert len(EXPECTED_EMPTY) == 60 - len(_EXCEPTIONS) + len(_EXTRAS) == 58
+    # 58 -> 57 at P69: the swept-gain-d64 family filled (DV,64,density,swept),
+    # the first swept-density coverage at the chunk consumer's own d_v.
+    assert len(EXPECTED_EMPTY) == 60 - len(_EXCEPTIONS) + len(_EXTRAS) == 57
 
 
 @pytest.mark.parametrize("cell", sorted(_EXCEPTIONS | _EXTRAS, key=str), ids=str)

@@ -120,10 +120,16 @@ def rola_op(
             v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,
             decay, routes.normalization, initial_state=initial_state,
             output_final_state=output_final_state)
-    plan = _derive_plan(routes, decay=decay, expert=expert, device=v.device)
-    y, final_state, _schedule = _execute(
-        plan, routes, v, decay=decay, initial_state=initial_state)
-    return y, (final_state if output_final_state else None)
+    # P69 stage C: the kernel arm IS the chunk consumer.  Opinionated and
+    # loud: what it does not support yet is REFUSED with the card that will
+    # add it, never silently degraded (facade generic, implementation
+    # specific -- the API ruling).
+    from rola.ops import chunk as _chunk
+
+    reason = _chunk.unsupported(routes, decay, initial_state, output_final_state)
+    if reason is not None:
+        raise NotImplementedError(f"chunk consumer (kernel arm): {reason}")
+    return _chunk.run(routes, v), None
 
 
 # ---------------------------------------------------------------------------

@@ -295,6 +295,19 @@ _PRODUCER: tuple[Family, ...] = (
               "and they must agree at the exactness tolerance.",
         generator="swept_gain"),
     Family(
+        "producer/swept-gain-d64", "producer",
+        dict(density="swept", coherence="coherent", rw_correlation="independent",
+             mass="spread", tail="divisible", support="partial"),
+        _cfg(widths=(64, 64), d_v=64, T=128, H=2, seed=202, norm="global"),
+        params=dict(gains=(0.25, 1.0, 4.0, 16.0)),
+        basis="the gain sweep INSIDE the chunk consumer envelope (uniform "
+              "two-level, d_v=64, global): each gain bundle runs both arms "
+              "of rola_op and the OUTPUTS must agree at the exactness "
+              "tolerance -- the cross-arm gate the decoupled write gain "
+              "earned.  Final-state agreement joins when the paged state "
+              "I/O lands (P67).",
+        generator="swept_gain"),
+    Family(
         "producer/swept-gain-raw-d2", "producer",
         dict(density="swept", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),

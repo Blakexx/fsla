@@ -93,7 +93,14 @@ def _demonstrated_by_some_arm(family, views):
                 f"no arm of the sweep demonstrates ({axis}, {value}): {errors}")
 
 
-@pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-raw-d2"])
+#: P69: the kernel arm is the chunk consumer, whose envelope is uniform
+#: D>=2, d_v=64, global, no state output yet (P67).  INSIDE the envelope the
+#: arms must AGREE on y; OUTSIDE it the kernel arm must REFUSE LOUDLY with
+#: the card that adds the capability -- both are the documented contract, and
+#: this test asserts whichever one the cell falls in.  Final-state agreement
+#: rejoins the in-envelope family with P67.
+@pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-d64",
+                                  "producer/swept-gain-raw-d2"])
 def test_the_swept_gain_family_agrees_across_both_arms(name):
     from rola import rola_op
     from rola.expert import PlanOverrides
@@ -101,18 +108,25 @@ def test_the_swept_gain_family_agrees_across_both_arms(name):
     family = FAMILY_BY_NAME[name]
     producer, x, v = _producer_and_stream(family)
     densities, views = [], []
+    y_k = None
     for gain in family.params["gains"]:
         with torch.no_grad():
             routes = producer(gain * x)
-            y_k, s_k = rola_op(
-                routes, v, expert=PlanOverrides(),
-                output_final_state=True)
-        y_r, s_r = rola_op(routes, v, _arm="reference", output_final_state=True)
-        rel_y, rel_s = g.relative(y_k, y_r), g.relative(s_k, s_r)
-        assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
-        assert rel_s < BF16_RTOL, f"gain {gain}: state differs across arms by {rel_s:.3e}"
+            try:
+                y_k, _ = rola_op(routes, v, expert=PlanOverrides())
+            except NotImplementedError as e:
+                # the refusal is part of the contract: it names the boundary,
+                # and the reference arm still serves the cell.
+                assert "chunk consumer" in str(e)
+                y_k = None
+        y_r, _ = rola_op(routes, v, _arm="reference")
+        if y_k is not None:
+            rel_y = g.relative(y_k, y_r)
+            assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
         densities.append(_density(routes))
         views.append(_view(family, routes))
+    if name == "producer/swept-gain-d64":
+        assert y_k is not None, "the in-envelope family must actually run the kernel arm"
 
     # NON-VACUITY: the knob moved the distribution, and the cell is demonstrated.
     g.assert_swept(densities)  # ascending gain -> monotone descending density
