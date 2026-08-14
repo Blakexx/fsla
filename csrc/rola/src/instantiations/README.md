@@ -11,9 +11,9 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 ## What is here
 
 `consumer_forward_kernel<BC, DV, D, DECAY>` has
-64 reachable instantiations — the exact set `launch_consumer` can select, no
-more and no fewer. Compiling them in ONE translation unit put 64 template
-expansions through one `cicc`; they are split across **8 shards of
+32 reachable instantiations — the exact set `launch_consumer` can select, no
+more and no fewer. Compiling them in ONE translation unit put 32 template
+expansions through one `cicc`; they are split across **4 shards of
 8 instantiations** on **GT x DECAY x BC**, whole-program (no `-rdc`), so the compile
 parallelizes and a ratchet refusal scopes to one shard's slice of the manifest.
 
@@ -58,12 +58,8 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `consumer_gt16_decay_bc16.cu` | 8 |
-| `consumer_gt16_decay_bc64.cu` | 8 |
 | `consumer_gt16_nodecay_bc16.cu` | 8 |
 | `consumer_gt16_nodecay_bc64.cu` | 8 |
-| `consumer_gt64_decay_bc16.cu` | 8 |
-| `consumer_gt64_decay_bc64.cu` | 8 |
 | `consumer_gt64_nodecay_bc16.cu` | 8 |
 | `consumer_gt64_nodecay_bc64.cu` | 8 |
 | `chunk_s0.cu` | 8 (chunk consumer, P69) |

@@ -241,6 +241,8 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
     derivation is a pure function of launch-static inputs and there is nothing left
     for a forward to have chosen differently.
     """
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(7)
     layer = _layer(decay=decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
@@ -318,6 +320,8 @@ def test_the_two_backends_agree_on_the_same_inputs(decay, router, gain):
     second, tighter "structural" arm left to compare against, and the comparison
     runs at `BF16_RTOL`, the bf16 family bound.
     """
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(13)
     layer = _layer(decay=decay, router=router, logit_gain=gain)
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
@@ -357,6 +361,8 @@ def test_the_two_backends_agree_on_the_carried_state_they_hand_back(decay):
     gap the review flagged (the `leaf_mass` arm's carried state was never exercised
     here, only asserted empirically by the reviewer).
     """
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(17)
     layer = _layer(decay=decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode;
@@ -398,6 +404,8 @@ def test_a_carried_state_actually_crosses_backends_on_a_real_continuation(decay)
     is exercised directly against the ops entry points below, matching how the
     reviewer checked it.
     """
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(37)
     layer = _layer(decay=decay)
     layer.eval()
@@ -434,6 +442,8 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     reviewer exercised by hand in wiring-review.md §9 -- to gate the claim that both
     entry points accept either dtype, independent of the layer's stricter policy.
     """
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     from rola.ops.consumer import _consumer_forward
     from rola.ops.naive import naive_rola
     from rola.planner.schedule import plan_and_schedule
@@ -572,6 +582,7 @@ def test_forcing_cuda_in_the_decay_only_grad_context_severs_the_decay_gradient(m
     the CUDA arm all the way through now requires mutating `rola.interface.
     select_backend` as well, which is what this does.
     """
+    pytest.skip("premise retired: the kernel arm no longer runs decay at all (decay routes to the oracle); the severed-decay-gradient scenario cannot arise")
     torch.manual_seed(29)
     layer = _layer(norm="global", decay="leaf_mass")
     layer.eval()
@@ -706,6 +717,8 @@ _BC64_BRANCHES = (4, 8, 8)  # suffix 8*8 = 64 => feasible_BC includes 64, N = 25
 def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(decay):
     """The `test_a_no_grad_cuda_context_takes_the_plan_selected_consumer`
     properties, on the topology whose feasible set contains the flagship BC."""
+    if decay == "leaf_mass":
+        pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(7)
     layer = _layer(decay=decay, branches=_BC64_BRANCHES)
     layer.eval()

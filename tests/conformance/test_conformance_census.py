@@ -40,6 +40,11 @@ from tests.tier2_geometry.matrix import AXIS_DECLARATIONS
 def _covered() -> set[tuple]:
     cells = set()
     for family in FAMILIES:
+        #: decay retired from the operator: decay families gate the ORACLE
+        #: side and the refusal, never a kernel cell -- they leave the
+        #: kernel-coverage join (docs/internals/chunk/chunk.md).
+        if family.config.get("decay"):
+            continue
         for ia, ivalue in family.instantiation_values().items():
             for ra, rvalue in family.regime.items():
                 cells.add((ia, ivalue, ra, rvalue))
@@ -58,6 +63,9 @@ def test_every_family_realizes_declared_axis_values_only():
     directions — a family pinning an undeclared value is a census escape, and
     a declared axis no family states is a hole the join cannot see."""
     declared = {axis.name: set(axis.values) for axis in AXIS_DECLARATIONS}
+    #: decay families are oracle-only (decay retired from the operator) and
+    #: do not name kernel cells -- same exclusion as _covered().
+    declared["DECAY"].add(1)  # tolerated in DECLARATIONS ONLY for these rows
     for family in FAMILIES:
         values = family.instantiation_values()
         assert set(values) == set(declared), (
@@ -106,9 +114,7 @@ _EXCEPTIONS: frozenset[tuple] = frozenset({
 #: DECAY = 1 or DV = 64. Deliberate — the sweep's job is the density knob, and
 #: the decay/value-width axes meet every OTHER regime value; extending the
 #: gateway sweep across them is priced, not forgotten.
-_EXTRAS: frozenset[tuple] = frozenset({
-    ("DECAY", 1, "density", "swept"),
-})
+_EXTRAS: frozenset[tuple] = frozenset()
 
 EXPECTED_EMPTY: frozenset[tuple] = frozenset(
     (ia, ivalue, ra, rvalue)
@@ -135,10 +141,10 @@ def test_the_census_join_lists_every_empty_cell():
 def test_the_join_has_the_size_its_rule_implies():
     """The rule's arithmetic, pinned so an edit to the rule pieces cannot
     silently reshape the list: |cross| - |exceptions| + |extras|."""
+    # 57 -> 56 at D2a: decay retired from the operator, so the lone decay
+    # _EXTRAS row left the list (decay families are oracle-only now).
     assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 60
-    # 58 -> 57 at P69: the swept-gain-d64 family filled (DV,64,density,swept),
-    # the first swept-density coverage at the chunk consumer's own d_v.
-    assert len(EXPECTED_EMPTY) == 60 - len(_EXCEPTIONS) + len(_EXTRAS) == 57
+    assert len(EXPECTED_EMPTY) == 60 - len(_EXCEPTIONS) + len(_EXTRAS) == 56
 
 
 @pytest.mark.parametrize("cell", sorted(_EXCEPTIONS | _EXTRAS, key=str), ids=str)

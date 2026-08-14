@@ -358,7 +358,12 @@ def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_pat
     source = rola.LearnedDecay(widths=gateway.widths, num_heads=2)
 
     assert derive_plan(factors, device=factors.device).decay is False
-    assert derive_plan(factors, decay=source(), device=factors.device).decay is True
+    #: decay retired from the operator: no arm exists for decay geometry, so
+    #: the planner cannot derive a plan for it -- the refusal IS the contract
+    #: (docs/internals/chunk/chunk.md); the flag's one-path property is
+    #: covered by the False case above.
+    with pytest.raises(NotImplementedError, match="decay"):
+        derive_plan(factors, decay=source(), device=factors.device)
     assert derive_plan(factors, device=factors.device).topology is factors.topology
 
 

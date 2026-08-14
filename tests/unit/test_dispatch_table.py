@@ -185,7 +185,12 @@ def test_the_shipped_build_config_records_the_ratified_shard_keys():
     shards = BUILD_CONFIG.get("shards")
     assert shards, "_build_config.py carries no shard membership to join against"
     table = _table()
-    assert set(shards) == {r.shard for r in table.rows}
+    #: the manifest's shard block now carries TWO families; the dispatch
+    #: table here is the old consumer's, so its rows are a subset and the
+    #: remainder must be exactly the chunk family's shards.
+    table_shards = {r.shard for r in table.rows}
+    assert table_shards <= set(shards)
+    assert all(name.startswith("chunk_") for name in set(shards) - table_shards)
     for row in table.rows:
         assert shards[row.shard] == row.src_key
 

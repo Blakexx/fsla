@@ -85,6 +85,18 @@ def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
     plan = Plan(topology=g._topology(_WIDTHS, _DV), normalization="global", BC=16,
                 warp_tile=(1, _DV // 32), decay=decay_on)
     f = _f32(pre)
+    if decay_on:
+        # P66/P69 D2a: decay is not a feature of the operator; its consumer
+        # arms are no longer compiled and the dispatch refuses the request.
+        # The refusal IS this cell's contract until the reopen conditions;
+        # the oracle keeps the handoff semantics alive below regardless.
+        with pytest.raises(Exception, match="instantiation|arm|decay|unsupported|refus"):
+            _consumer_forward(f["v"], f["read"], f["write"], f["g_read"],
+                              f["g_write"], plan, decay=decay)
+        naive_rola(pre["v"], pre["read"], pre["write"], pre["g_read"],
+                   pre["g_write"], plan.topology, decay, "global",
+                   output_final_state=True)
+        return
     _y_pre, state, _ = _consumer_forward(
         f["v"], f["read"], f["write"], f["g_read"], f["g_write"], plan, decay=decay)
 
@@ -248,8 +260,11 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
 
     device = "cuda"
     torch.manual_seed(9300)
+    #: decay dropped from THIS layer (P66/P69 D2a): a decay-configured layer
+    #: routes every arm to the oracle, which would leave this walk no
+    #: boundary to cross -- the decay routing has its own test below.
     layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(8, 16),
-                        normalization="global", decay="learned",
+                        normalization="global", decay=None,
                         layer_idx=0).to(device, torch.float32)
     T = 8
 
@@ -302,3 +317,24 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     out4, _, _ = layer(x4)
     out4.sum().backward()
     assert x4.grad is not None, "returning to training after decode severed the graph"
+
+
+def test_a_decay_configured_layer_routes_every_arm_to_the_oracle():
+    """P66/P69 D2a: decay is not implemented in the kernel arm.  A layer
+    CONFIGURED with decay dispatches to the oracle at eval exactly as an
+    unratified activation would -- counted, not silently degraded -- and the
+    direct consumer entries keep the loud refusal."""
+    from conftest import build_layer
+
+    device = "cuda"
+    torch.manual_seed(9301)
+    layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(8, 16),
+                        normalization="global", decay="learned",
+                        layer_idx=0).to(device, torch.float32).eval()
+    x = torch.randn(2, 8, 128, device=device)
+    before = dict(layer.execution_backend_counts)
+    with torch.no_grad():
+        layer(x)
+    after = dict(layer.execution_backend_counts)
+    assert after["oracle"] == before["oracle"] + 1
+    assert after["cuda"] == before["cuda"]

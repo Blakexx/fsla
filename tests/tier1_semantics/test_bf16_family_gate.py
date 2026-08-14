@@ -232,6 +232,8 @@ def test_family_narrowing_holds_bf16_budget(widths, BC):
 @pytest.mark.parametrize("widths,BC", [((8, 8), 64), ((2, 2, 2, 2), 16)])
 def test_family_narrowing_holds_budget_under_decay(widths, BC):
     """Same claim on the decay arm -- with the clock EXACT, as the family pins it."""
+    pytest.skip("decay retired from the operator; retires with the old "
+                "consumer (docs/internals/chunk/chunk.md)")
     e_out, e_state = _family_errors(
         widths=widths, BC=BC, d_v=64, B=2, T=37, H=3,
         p_read=0.4, p_write=0.3, seed=555, decay=True,
@@ -276,6 +278,8 @@ def test_M2_bf16_clock_values_exceed_BF16_RTOL():
     measured `~1.25e-2` on the state is the diluted-by-owner-mixing version of
     that same amplification argument.
     """
+    pytest.skip("decay retired from the operator; retires with the old "
+                "consumer (docs/internals/chunk/chunk.md)")
     device = "cuda"
     widths, B, T, H = (8, 8), 2, 512, 3
     gen = torch.Generator(device=device).manual_seed(777)
@@ -330,6 +334,8 @@ def test_family_deviation_is_flat_in_T(decay):
     read-only rounding is flat. The fitted log-log slope over the three lengths
     must sit far below the walk's, and every point must clear the budget.
     """
+    pytest.skip("decay retired from the operator; retires with the old "
+                "consumer (docs/internals/chunk/chunk.md)")
     errs = []
     for T in _T_ARM:
         e_out, e_state = _family_errors(

@@ -115,6 +115,12 @@ def rola_op(
     # `self.training` as well, because reentrant checkpointing's first pass runs under
     # `no_grad` with the module still training. It is private and undocumented on
     # purpose: "training mode" has no meaning for a free function, so it is not a knob.
+    #: P66/P69: decay is not implemented in the kernel arm; like an
+    #: unratified activation, it DISPATCHES to the reference arm (the fp64
+    #: oracle carries the semantics).  An explicit _arm="kernel" still gets
+    #: the loud refusal below -- dispatch is not a lie, override is.
+    if decay is not None and _arm is None:
+        _arm = "reference"
     if (_arm or _backend_for(routes, *operands)) == "reference":
         return naive_rola(
             v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,

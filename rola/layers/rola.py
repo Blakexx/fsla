@@ -208,6 +208,12 @@ class RoLA(nn.Module):
         """
         if self.training:
             return "oracle"
+        #: P66/P69: decay is not implemented in the kernel arm; a decay-
+        #: configured layer routes to the oracle like an unratified
+        #: activation would -- dispatch, not silent degradation (the direct
+        #: consumer entries still refuse loudly).
+        if self.decay is not None:
+            return "oracle"
         tensors = [t for t in operation_inputs if t is not None]
         return "oracle" if select_backend(*tensors) == "reference" else "cuda"
 

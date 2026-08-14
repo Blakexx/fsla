@@ -194,6 +194,9 @@ def _run_cell(**kw):
 @pytest.mark.parametrize("decay", [False, True])
 def test_the_visit_barrier_is_live_and_exact_under_role_imbalance(
         widths, BC, d_v, p_read, p_write, decay):
+    if decay:
+        pytest.skip("decay retired from the operator; this battery retires "
+                    "with the old consumer (see docs/internals/chunk/chunk.md)")
     _run_cell(widths=widths, BC=BC, d_v=d_v, decay=decay,
               p_read=p_read, p_write=p_write,
               T=521, seed=8100 + BC + d_v + int(decay))

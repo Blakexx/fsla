@@ -89,7 +89,12 @@ AXES = (
     Axis("BC", (16, 64), str, lambda v: f"bc{v}", str),
     Axis("DV", (32, 64), str, lambda v: f"dv{v}", str),
     Axis("D", (1, 2, 3, 4), str, lambda v: f"d{v}", str),
-    Axis("DECAY", (False, True), _b, lambda v: "decay" if v else "nodecay", None),
+    #: DECAY carries ONE value since P66's verdict (decay is not a feature of
+    #: the operator; the semantics live in the fp64 oracle awaiting the reopen
+    #: conditions).  The axis SHAPE survives so the dispatch's generated
+    #: refusal (-1 at the lookup) stays the documented behavior for a decay
+    #: request, and revival is one tuple here.
+    Axis("DECAY", (False,), _b, lambda v: "decay" if v else "nodecay", None),
     #: THE WINDOW, in tokens: how many gathered tokens one VISIT consumes against one
     #: entry state. `16` is one producer group; `64` is four, and pays for the wider
     #: Gram with a `W`-fold amortisation of every per-visit term. `128` is NOT in the

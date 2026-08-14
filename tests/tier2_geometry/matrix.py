@@ -164,7 +164,10 @@ AXIS_DECLARATIONS: tuple[AxisDeclaration, ...] = (
               "topology — a different function of different inputs, gated across "
               "the tier-1 rectangle grid rather than compared to another `D`."),
     AxisDeclaration(
-        "DECAY", AxisKind.SEMANTIC, (0, 1), "template",
+        #: decay retired from the operator (its semantics live in the fp64
+        #: oracle; see docs/internals/chunk/chunk.md) -- the axis ships one
+        #: value and revival re-declares the contract here first.
+        "DECAY", AxisKind.SEMANTIC, (0,), "template",
         basis="LeafMassDecay on/off is a different recurrence, not a different "
               "execution of one. Both arms are tier-1 oracle-gated, including the "
               "`1 - rate` catastrophic-cancellation arm."),
@@ -285,7 +288,8 @@ _MANGLED = re.compile(
 #: and the union-entmax forward/backward pair. An EXPLICIT allowlist, so that a
 #: manifest entry from any kernel nobody declared still fails the census.
 _OTHER_RATIFIED_FAMILIES = re.compile(
-    r"decode_gemv_kernelI|union_forward_kernelI|union_backward_kernelI")
+    r"decode_gemv_kernelI|union_forward_kernelI|union_backward_kernelI"
+    r"|5chunk")  # rola::chunk:: family: its gates are chunk_sass_gate + the facade/parity suites
 
 
 def load_manifest(directory: Path = MANIFEST_DIR) -> dict:

@@ -222,10 +222,13 @@ def test_a_paged_layer_keeps_the_tiled_path():
 @_CUDA
 @pytest.mark.parametrize("decay", ["leaf_mass"])
 @pytest.mark.parametrize("L,carried,expected", [
-    (1, True, 'decode'),
-    (1, False, 'cuda'),
-    (2, True, 'cuda'),
-    (16, True, 'cuda'),
+    #: decay retired from the operator: a decay-configured layer routes EVERY
+    #: row to the oracle (dispatch, not degradation) -- see
+    #: docs/internals/chunk/chunk.md and the decay-routing layer test.
+    (1, True, 'oracle'),
+    (1, False, 'oracle'),
+    (2, True, 'oracle'),
+    (16, True, 'oracle'),
 ])
 def test_the_cuda_rows_dispatch_identically_across_decay(
         decay, L, carried, expected):

@@ -161,6 +161,10 @@ def _run_case(widths, BC, d_v, B, T, H, p_read, p_write, *, nonzero_m0, seed,
               mass_scale=1.0, perturb_mass=0.0, return_reference=False):
     from rola.ops.consumer import _consumer_forward
 
+    if decay_dials is not None:
+        pytest.skip("decay retired from the operator; this battery retires "
+                    "with the old consumer (see docs/internals/chunk/chunk.md)")
+
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(seed)
     topology = _topology(widths, d_v)
@@ -799,6 +803,8 @@ def test_panel_refuses_an_out_of_domain_survival_range_rather_than_clamping():
     REFUSED loudly; and nothing is silently substituted. There is no second decay
     lowering to fall back to, so the refusal is a hard wall, not a choice between
     two lowerings."""
+    pytest.skip("decay-arm geometry retired from the operator; retires "
+                "with the old consumer (docs/internals/chunk/chunk.md)")
     import math
 
     from rola.ops.consumer import _consumer_forward
@@ -879,6 +885,8 @@ def test_decay_dial_cliff_is_a_loud_error_not_a_nan():
     the dtype the kernel reads); ``dial = 1 - 1e-6``, which survives the fp32
     cast strictly below 1, must still run and be finite.
     """
+    pytest.skip("decay-arm geometry retired from the operator; retires "
+                "with the old consumer (docs/internals/chunk/chunk.md)")
     from rola.ops.consumer import _consumer_forward
 
     generator = torch.Generator(device="cuda").manual_seed(3)
@@ -1051,6 +1059,8 @@ def test_no_launchable_instantiation_reaches_the_one_cta_cliff():
     or a wide `BC = 16` arm that loses its second CTA, fails here rather than
     becoming a silent load-bearing blind spot.
     """
+    pytest.skip("decay-arm geometry retired from the operator; retires "
+                "with the old consumer (docs/internals/chunk/chunk.md)")
     from rola.ops._ext import extension
 
     ext = extension()

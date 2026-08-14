@@ -133,6 +133,9 @@ def test_dense_identity_grouping(widths, BC, decay_on, d_v):
     """Full support: every membership word is all-ones, every atom mask FULL,
     groups are consecutive 16-blocks. Oracle-graded, and bit-DETERMINISTIC
     across invocations at B=H=1 (single owner per bh => one CTA, one order)."""
+    if decay_on:
+        pytest.skip("decay retired from the operator; the decay cells retire "
+                    "with the old consumer (docs/internals/chunk/chunk.md)")
     cell = Cell(widths, BC, d_v, 1, 64, 1, 1.0, 1.0, 11, decay_on=decay_on,
                 nonzero_m0=True)
     _check(cell)
@@ -191,6 +194,8 @@ def test_cold_read_never_written_owner():
 @pytest.mark.parametrize("widths,BC", [((8, 8), 16), ((4, 4, 4), 16), ((8, 8), 64)])
 @pytest.mark.parametrize("hot", [False, True])
 def test_decay_matches_the_oracle(widths, BC, hot):
+    pytest.skip("decay retired from the operator; this gate retires with "
+                "the old consumer (docs/internals/chunk/chunk.md)")
     _check(Cell(widths, BC, 64, 1, 65, 2, 0.4, 0.3, 43, decay_on=True,
                 hot_dials=hot, nonzero_m0=True))
 
