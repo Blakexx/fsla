@@ -10,82 +10,9 @@ levels; ``b_l`` level widths; ``BC`` leaves per owner block; ``BT`` token tile; 
 = batch x heads; ``MMA_K_QUANTUM = 16``; ``QPO = BC / MMA_K_QUANTUM`` quanta per
 owner; ``K(o,t)`` the union leaf count of owner ``o`` over tile ``t``.
 
----- WHAT IS FROZEN HERE AND WHAT IS NOT --------------------------------------
-
-:class:`RoutingSummaries` is a CONTACT STRUCT: §4.2 freezes its five fields and
-neither track may edit them. Everything else in this module is implementation.
-
-**The ``u`` words are INTERNAL and never exported** (§4.2, amended 2026-08-02 on user
-review). They are the per-tile per-level union WORDS -- the OR of a tile's ``BT``
-support words at one level, carried as a bitmap over DIGITS rather than as a popcount,
-because the owner-slice restriction at the boundary level needs digit identity. They
-are the factorized stepping-stone that avoids the ``O(n_tiles * N)`` leaf-granularity
-product: the whole chain
-
-    union words -> per-owner slice popcount -> K_hat product -> ceil -> histogram bin
-
-reduces ON DEVICE inside this pass, and only the reduced histogram leaves it.
-
-**``u`` is NOT a coherence or multiplicity statistic.** It counts DISTINCTNESS, which
-is exactly what quanta cost depends on. No multiplicity statistic exists here because
-no decision consumes one.
-
----- WHY ``K_hat`` IS AN UPPER BOUND, AND WHY THAT IS THE SAFE DIRECTION -------
-
-``K_hat(o,t) = prod_l (owner-slice popcount of the level-l union word)`` is the size of
-the product of the per-level unions; the true ``K`` is the size of the union of the
-per-token products. ``union of products SUBSET product of unions``, so
-``K_hat >= K`` pairwise, hence ``ceil(K_hat/16) >= ceil(K/16)`` pairwise, hence the
-histogram's mass sits at or above the true quantum count, which is the safe
-direction: a rule reading it can only under-state how sparse a launch is, never
-over-state it. ``K_hat <= BC`` always, because the boundary level contributes at most
-``slice_digits`` and every level below it at most its full width, whose product is
-``BC`` by the owner rectangle -- so the histogram's ``QPO + 1`` bins are exhaustive
-and no clamp is needed.
-
-The residual is the cross-level COLLISION correction, passed in as the ``gamma``
-argument, whose conservative default ``1.0`` leaves the bound uncorrected. It is an
-argument rather than a constant because it has to be applied per ``(owner, tile)``
-BEFORE the quantization and this is the only place that granularity still exists. At
-the default the multiply is skipped outright, so an uncorrected run is bit-identical to
-one with no hook at all.
-
----- COST, STATED RATHER THAN DISCOVERED --------------------------------------
-
-Two terms, and they are different orders:
-
-* the histogram/candidacy pass is ``O(BH * n_tiles * owners_total)``;
-* :attr:`RoutingSummaries.written_leaf_bitmap` is ``O(BH * n_tiles * N)``, because
-  §4.1 makes the PER-LEAF write bitmap the canonical truth (nine named consumers,
-  including §4.5's exact page-pool sizing) and a per-leaf union over tokens cannot be
-  read off a per-owner statistic. It is the same order as the retired census's leaf
-  plane, and it is a bit-AND chain rather than that pass's six reductions. Both passes
-  are CHUNKED so the transient is bounded independently of ``N`` and of ``L`` -- a
-  structural bound under the standing "design for nc ~ 65K" rule, not a tuning knob.
-
----- WHERE THE PASS ACTUALLY RUNS ---------------------------------------------
-
-**THE RUNTIME PASS IS A HAND-WRITTEN AOT CUDA KERNEL**, ``csrc/rola/src/summaries.cu``
-(spec amendment, user-ruled 2026-08-02). :func:`summarize_routing` calls it and nothing
-else. The three reasons are in that file's header; the one that governs this module is
-that the planner's whole retirement (§6 P4) exists partly to remove ``torch.compile`` as
-a RUNTIME dependency, and a fused-torch summary pass would put it straight back.
-
-**THE TORCH IMPLEMENTATION SURVIVES AS THE ENUMERATED REFERENCE**
-(:func:`summarize_routing_reference`), which is a second-derivation role and NOT a
-fallback. The distinction is enforced rather than described: no runtime path calls it,
-:func:`summarize_routing` does not degrade to it when the extension is missing, and the
-gate that compares the two is the only caller. That is the same relationship
-``_tile_union_stats_multi_enumerated`` has to the bit-word census, and it is what makes
-"the kernel is right" a checkable claim instead of a self-consistency one.
-
----- SYNCHRONIZATION BUDGET ---------------------------------------------------
-
-The device work -- the kernel launch, or
-:func:`summarize_routing_reference_device` on the reference path -- completes with ZERO
-host synchronizations and leaves everything on device; the wrapper adds exactly ONE D2H
-transfer, of two scalars, to fill §4.2's two ``float`` fields. That split is what makes
-the zero-sync property gateable, and it is why the two halves are separate functions.
+The contract (frozen fields), the K_hat upper-bound argument, the cost
+statement, the kernel-vs-reference relationship and the synchronization budget
+live in docs/internals/summaries.md (Part C).
 """
 from __future__ import annotations
 

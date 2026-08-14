@@ -1,7 +1,7 @@
 """WHAT is measured: the frozen cell registry and its committed manifest.
 
 **A CELL IS ITS CONSTRUCTOR AND ITS SEED.** Split out of
-``benchmarks/bench_consumer_new.py`` unchanged, because the rule that file exists
+``benchmarks/bench_consumer.py`` unchanged, because the rule that file exists
 to enforce is a property of THIS module: every gate and bench cell is a frozen
 :class:`Cell` -- widths, ``BC``, shapes, support construction, decay dials, seed --
 and ``Cell.build()`` is deterministic from it. Documents reference cells BY NAME
