@@ -75,23 +75,18 @@ class PlanOverrides:
     other value is a hard refusal. A gate needing more precision runs the fp64
     reference path.
 
-    ``paging``: commit state pages on first write to an owner, so the resident state
-    scales with the owners the routing REALIZES rather than with the topology's
-    provisioned capacity. One page is one MMA atom, pages are admitted by the write-side
-    plan, and an atom with no page reads as zeros -- so paging is BITWISE INVISIBLE, and
-    it is here rather than on the model because it changes what is allocated and nothing
-    about what is computed. A cap implies it.
-
-    ``max_physical_pages``: the paging allocator's hard cap, in atoms. ``None``
-    provisions the dense limit, at which the ceiling can never bind. A finite value is a
-    POLICY limit: a launch whose realized write footprint exceeds it is REFUSED,
-    host-side, naming the demand and the arena size. It is never degraded.
+    ``paging``: the state's BACKING, and the expert overrides the MAPPING ONLY.
+    A stateful call pages by default -- one page is one MMA atom, pages are admitted
+    by the write-side plan's exact bitmap, and an atom with no page reads as zeros, so
+    paging is BITWISE INVISIBLE and there is nothing for a caller to turn on.
+    ``None`` (the default) is that default; ``False`` pins the DENSE plane, which is
+    what the bit-identity gate compares against; ``True`` is REFUSED, because a knob
+    whose only value is the default is a knob that lies about being a decision.
     """
 
     state_block: int | None = None
     mma_precision: str = "bf16"
-    paging: bool = False
-    max_physical_pages: int | None = None
+    paging: bool | None = None
 
     def __post_init__(self) -> None:
         if self.state_block is not None and type(self.state_block) is not int:
@@ -100,11 +95,14 @@ class PlanOverrides:
             raise ValueError(
                 "mma_precision is a dead axis: 'bf16' is the only value (the fp64 "
                 f"reference path is the precision escape), got {self.mma_precision!r}")
-        if type(self.paging) is not bool:
-            raise TypeError(f"paging must be bool, got {self.paging!r}")
-        if self.max_physical_pages is not None and type(self.max_physical_pages) is not int:
-            raise TypeError(
-                f"max_physical_pages must be None or an exact int, got {self.max_physical_pages!r}")
+        if self.paging is not None and type(self.paging) is not bool:
+            raise TypeError(f"paging must be None or a bool, got {self.paging!r}")
+        if self.paging is True:
+            raise ValueError(
+                "paging is ON by default for every stateful call, so there is nothing "
+                "to turn on: pass paging=None (or omit it) for the paged backing, or "
+                "paging=False to pin the dense plane. The expert overrides the MAPPING "
+                "only (docs/internals/state.md).")
 
     @classmethod
     def of(cls, value: Any) -> PlanOverrides:

@@ -60,16 +60,15 @@ def test_refusals_are_loud():
         with pytest.raises(NotImplementedError, match="d_v"):
             rola_op(routes, v, _arm="kernel")
         routes64, v64 = _bundle(T=256)
-        with pytest.raises(NotImplementedError, match="paged state I/O|state chaining"):
-            rola_op(routes64, v64, _arm="kernel", output_final_state=True)
+        with pytest.raises(TypeError, match="rola.RoLAState"):
+            rola_op(routes64, v64, _arm="kernel", state=torch.zeros(1))
 
 
 def test_the_layer_stateless_eval_path_runs_the_chunk_consumer():
     """The adoption's layer-level proof: a uniform-width d_v=64 layer at
     stateless eval dispatches its CUDA arm to the CHUNK consumer (counted as
     'cuda'), and the output sits at the oracle within the bf16 family bound.
-    State chaining / paging / non-manifest topologies keep the tiled path
-    until the paged state I/O lands."""
+    Non-manifest topologies keep the tiled path."""
     from tests.conftest import build_layer
 
     torch.manual_seed(11)
@@ -79,11 +78,11 @@ def test_the_layer_stateless_eval_path_runs_the_chunk_consumer():
     x = torch.randn(1, 128, 128, device="cuda")
     before = dict(layer.execution_backend_counts)
     with torch.no_grad():
-        y_cuda, _, _ = layer(x)
+        y_cuda, _ = layer(x)
     after = dict(layer.execution_backend_counts)
     assert after["cuda"] == before["cuda"] + 1
     layer.train()
     with torch.enable_grad():
-        y_ref, _, _ = layer(x)
+        y_ref, _ = layer(x)
     rel = (y_cuda.double() - y_ref.double()).norm() / y_ref.double().norm()
     assert rel < 1e-2, f"layer chunk path off the oracle: rel={rel:.3e}"

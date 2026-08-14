@@ -35,7 +35,17 @@ def _arm_for(D: int, B: int):
     return (_PIN_C, _PIN_BC if _PIN_BC in bcs else max(bcs))
 
 
-def unsupported(routes, decay, initial_state, output_final_state) -> str | None:
+def arm(routes) -> tuple[int, int]:
+    """`(C, BC)` -- the built arm this routing runs on. Refused topologies have none.
+
+    The facade needs `BC` before the launch, because the page arena's extent policy
+    is stated in owners; it is the one launch parameter that leaves this module.
+    """
+    widths = tuple(l.width for l in routes.topology.levels)
+    return _arm_for(len(widths), widths[0])
+
+
+def unsupported(routes, decay) -> str | None:
     """Why the chunk arm refuses this call, or None if it runs."""
     top = routes.topology
     widths = tuple(l.width for l in top.levels)
@@ -45,8 +55,6 @@ def unsupported(routes, decay, initial_state, output_final_state) -> str | None:
         return f"normalization={routes.normalization!r}; the chunk consumer is global-only"
     if decay is not None:
         return "decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); use the reference arm"
-    if initial_state is not None or output_final_state:
-        return "state chaining arrives with the paged state I/O work (docs/internals/paging/); not yet in the chunk consumer"
     if len(set(widths)) != 1:
         return f"widths={widths}; the built manifest is uniform-width"
     if _arm_for(len(widths), widths[0]) is None:

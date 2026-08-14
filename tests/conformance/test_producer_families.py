@@ -153,7 +153,10 @@ def test_the_stale_plan_family_executes_a_plan_priced_on_a_dead_distribution():
     plan = derive_plan(routes_plan, expert=PlanOverrides(), device=v.device)
     with torch.no_grad():
         y, state, _schedule = execute(plan, routes_data, v)
-    y_ref, state_ref = rola_op(routes_data, v, _arm="reference", output_final_state=True)
+    import rola
+
+    y_ref, state_ref = rola_op(routes_data, v, _arm="reference", state=rola.state())
+    state_ref = state_ref.materialize()
     rel_y, rel_s = g.relative(y, y_ref), g.relative(state, state_ref)
     assert rel_y < BF16_RTOL, (
         f"a stale plan moved y by {rel_y:.3e}: the schedule is assembled from the "

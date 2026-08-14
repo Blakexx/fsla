@@ -17,14 +17,14 @@ routes   = rola.RouteProducer([producer], d_v=64, num_heads=8, hidden_size=1024)
 decay    = rola.LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8)
 
 layer = rola.RoLA(1024, 8, routes, decay=decay, layer_idx=0).cuda().eval()
-y, _, cache = layer(hidden_states)
+y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
 or, without the layer:
 
 ```python
 factors = routes(hidden_states)          # the (q, k) pair, after the feature map
-y, final_state = rola.rola_op(factors, v, decay())
+y, _ = rola.rola_op(factors, v, decay())
 ```
 
 ---
@@ -33,15 +33,21 @@ y, final_state = rola.rola_op(factors, v, decay())
 
 ```python
 rola_op(routes: RouteFactors, v: Tensor, decay: LeafMassDecay | None = None, *,
-        initial_state=None, output_final_state=False, expert=None) -> (y, final_state)
+        state=None, expert=None) -> (y, state)
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `v` is `[B, T, H, d_v]`. `decay` is
 the recurrence dial; a decay-configured call runs on the fp64 reference arm — decay is
 not a feature of the CUDA consumer (the measured mass-clock price fired the stop-gate;
-docs/internals/chunk/chunk.md records the retirement and its reopen conditions). `y` is `[B, T, H, d_v]`; `final_state` is
-`[B, H, N, d_v + (norm == 'global')]` when asked for, where `N = prod(widths)` is the
-leaf capacity.
+docs/internals/chunk/chunk.md records the retirement and its reopen conditions). `y` is `[B, T, H, d_v]`.
+
+`state` is `None` (a stateless call, returning `(y, None)`) or a `rola.state()` object,
+which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
+is no second flag, because a stateless call runs a kernel variant with no state I/O
+compiled into it at all. Read the carried state with
+`state.materialize() -> [B, H, N, d_v + (norm == 'global')]`, where `N = prod(widths)` is
+the leaf capacity; that is a bridge for the oracle and for a test, never a measured
+path. See [`docs/internals/state.md`](internals/state.md).
 
 There is no plan argument, no configuration argument, and no statistics argument. Those
 are not model facts — they are how the op RUNS, and the op decides how it runs, per
@@ -193,7 +199,13 @@ rest on that property.
 ```python
 RoLA(hidden_size, num_heads, routes, *, decay=None,
      value_conv=None, route_conv=None, layer_idx=None, expert=None)
+
+y, state = layer(hidden_states, state=rola.state())    # or state=None -> (y, None)
 ```
+
+`forward(x, attention_mask=None, state=None) -> (y, state)` MIRRORS the op, and the
+layer is a PASS-THROUGH for the state: it unwraps nothing and checks nothing, because
+state semantics are the state's.
 
 Four public arguments and two module slots. `value_conv` / `route_conv` take a MODULE
 (e.g. `fla.modules.ShortConvolution`) rather than three scalars describing one: the layer
@@ -254,8 +266,8 @@ library reads them, which is why they are derived on demand and not before.
 ## 6. The expert surface
 
 `rola.expert` holds everything BELOW the contract line — plans, schedules, the
-derivation that fixes their geometry, the seam the op is split at, the allocator cap,
-the numeric arm:
+derivation that fixes their geometry, the seam the op is split at, the state's
+backing, the numeric arm:
 
 ```python
 from rola.expert import PlanOverrides

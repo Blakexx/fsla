@@ -161,7 +161,7 @@ from rola import RoLA, LearnedDecay
 layer = RoLA(512, 8, routes,
              decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
              layer_idx=0).cuda()
-y, _, state = layer(x, use_cache=True)
+y, state = layer(x, state=rola.state())
 ```
 
 Four arguments, because everything else was either a fact about the feature map (which
@@ -169,11 +169,13 @@ lives on the feature map) or a launch decision (which the planner makes).
 
 ### The state
 
-`rola.RoLAState` is a **fixed-size recurrent state, not a KV cache**: the per-layer
-slot state, the short-convolution ring buffers, and a token tally. Every
-`transformers` cache abstraction is built for the growing case, so RoLA owns its
-own object and adapts at one point (`rola.state.as_layer_state`). `transformers`
-interop lives behind the `[transformers]` extra.
+`rola.state()` builds one, and `rola.RoLAState` is a **fixed-size recurrent state,
+not a KV cache**: one sequence's slot state (paged by default, so what stays resident
+scales with the leaves the routing REALIZES), plus the short-convolution rings. The
+predicate is `state is not None` at the op and at the layer alike, and a stateless
+call returns `(y, None)`. Every `transformers` cache abstraction is built for the
+GROWING case, which this is not, so RoLA owns its object outright
+(docs/internals/state.md).
 
 ### The planner
 

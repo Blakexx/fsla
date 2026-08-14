@@ -50,6 +50,7 @@ from rola.ops.consumer import _consumer_forward, sm_shared_bytes
 from rola.ops.naive import naive_rola
 from rola.planner.derive import MachineFacts, derive_bc
 from rola.planner.schedule import Plan, build_plan, build_schedule
+from rola.state import RoLAState
 
 if TYPE_CHECKING:
     from rola.planner.schedule import Schedule
@@ -77,11 +78,10 @@ def rola_op(
     v: torch.Tensor,
     decay: DecayConfig = None,
     *,
-    initial_state: torch.Tensor | None = None,
-    output_final_state: bool = False,
+    state: RoLAState | None = None,
     expert: Any = None,
     _arm: str | None = None,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, RoLAState | None]:
     """Run RoLA over one routing bundle and one value stream.
 
     ``routes``: a :class:`~rola.routing.factors.RouteFactors` from
@@ -93,14 +93,22 @@ def rola_op(
     ``decay``: the recurrence dial, or ``None``. Build one from a decay source
     (:mod:`rola.routing.decay`), which is the slot that decides where rates come from.
 
-    Returns ``(y, final_state)`` -- ``y: [B, T, H, d_v]`` and, when
-    ``output_final_state``, ``final_state: [B, H, N, d_v + (norm == 'global')]``. The
-    differentiable arm and the kernel arm return the same shapes with the same
-    meaning; only the DTYPE differs, and it differs for BOTH returned tensors
-    together: the differentiable arm is the fp64 oracle and hands back fp64 ``y`` and
-    fp64 state whatever it was given, the kernel arm accumulates in fp32 and hands
-    back the operand dtype. Both accept either on input, so a carried state may cross
-    arms between steps. Cast if your downstream needs a particular dtype -- neither
+    ``state``: ``None`` for a stateless call, or a :class:`~rola.state.RoLAState` from
+    :func:`rola.state`. THE PREDICATE IS ``state is not None``: it is the whole
+    engagement signal for the carried state, there is no second flag, and a stateless
+    call runs the kernel variant that has no state I/O compiled into it at all. An
+    unbound state binds its keying, its device and its backing from this call; a bound
+    one is checked for MATH-COMPATIBILITY only and continued.
+
+    Returns ``(y, state)`` -- ``y: [B, T, H, d_v]``, and the SAME state object that was
+    handed in, mutated in place (``None`` when the call was stateless). Read the state
+    with ``state.materialize() -> [B, H, N, d_v + (norm == 'global')]``; that is a
+    bridge for the oracle and for a test, never a measured path.
+
+    ``y``'s dtype differs by arm: the differentiable arm is the fp64 oracle and hands
+    back fp64 whatever it was given, the kernel arm accumulates in fp32 and hands back
+    the operand dtype. A carried state may cross arms between steps -- the facade
+    bridges it -- so cast ``y`` if your downstream needs a particular dtype; neither
     arm guesses, because a reference that silently rounded its own result to an
     operand's precision would make an accuracy gate compare against a rounded
     reference.
@@ -110,6 +118,12 @@ def rola_op(
     it: every axis it pins is one the planner derives.
     """
     _validate_call(routes, v, decay)
+    if state is not None and type(state) is not RoLAState:
+        raise TypeError(
+            "rola_op's `state` argument is a rola.RoLAState from rola.state(), got "
+            f"{type(state).__name__}. A raw tensor is not one: the state owns its own "
+            "backing (dense or paged) and the keying it is bound to.")
+    paging = _paging_preference(expert)
     operands = (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
     # `_arm` is how a MODULE contributes its own condition -- `RoLA` gates the kernel on
     # `self.training` as well, because reentrant checkpointing's first pass runs under
@@ -122,24 +136,66 @@ def rola_op(
     if decay is not None and _arm is None:
         _arm = "reference"
     if (_arm or _backend_for(routes, *operands)) == "reference":
-        return naive_rola(
-            v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,
-            decay, routes.normalization, initial_state=initial_state,
-            output_final_state=output_final_state)
+        return _reference_arm(routes, v, decay, state, paging=paging)
     # operator adoption (docs/internals/chunk/).
     # loud: what it does not support yet is REFUSED with the card that will
     # add it, never silently degraded (facade generic, implementation
     # specific -- the API ruling).
     from rola.ops import chunk as _chunk
 
-    reason = _chunk.unsupported(routes, decay, initial_state, output_final_state)
+    reason = _chunk.unsupported(routes, decay)
     if reason is not None:
         raise NotImplementedError(f"chunk consumer (kernel arm): {reason}")
-    #: state I/O is the seam's, not yet the facade's: `unsupported` still refuses
-    #: a carried state here, so this call is the stateless one and both of the
-    #: kernel's state pointers are null (docs/internals/paging/paging.md).
-    y, _ = _chunk.run(routes, v)
-    return y, None
+    if state is None:
+        #: no state object, no state I/O: both of the kernel's state pointers are
+        #: null and the variant with none of it compiled in runs
+        #: (docs/internals/chunk/chunk_kernel.md).
+        y, _ = _chunk.run(routes, v)
+        return y, None
+    # THE HOST ORDER (design §A.4/§C.3), and it is the reason these four lines are
+    # not folded into `chunk.run`: the stats pass is `BC`-free and precedes the arm,
+    # its bitmap plans the arena on the arena's own side stream, and the launch's
+    # `arena.wait()` is the single join. The only host synchronization in the whole
+    # sequence is `plan_exact`'s one size read, which also sizes the allocation.
+    atom_bits = _chunk.stats(routes) if state._wants_pages(paging) else None
+    s_in, arena = state._kernel_entry(
+        routes, atom_bits, paging=paging, BC=_chunk.arm(routes)[1])
+    y, plane = _chunk.run(routes, v, state_in=s_in, want_state=True, arena=arena)
+    state._kernel_commit(plane)
+    return y, state
+
+
+def _reference_arm(routes, v, decay, state, *, paging: bool):
+    """The fp64 oracle, which keeps RAW TENSORS -- its signature is the spec.
+
+    So the facade is what crosses the boundary in both directions: an incoming state
+    materializes to ``[B, H, N, cols]`` fp64, and the result is stored back into the
+    state object as dense contents. A paged state that comes back to the kernel arm
+    afterwards re-admits from those contents' own atom occupancy.
+    """
+    initial = None if state is None else state._dense_entry(routes, paging=paging)
+    y, final = naive_rola(
+        v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,
+        decay, routes.normalization, initial_state=initial,
+        output_final_state=state is not None)
+    if state is None:
+        return y, None
+    state.adopt_dense_contents(final)
+    return y, state
+
+
+def _paging_preference(expert: Any) -> bool:
+    """Whether a state bound by this call gets a PAGED backing. Default: yes.
+
+    The expert may set ``paging=False`` and only False -- ``paging=True`` is refused
+    by :class:`rola.expert.PlanOverrides` itself, because there is nothing to turn on.
+    That is the "expert overrides the MAPPING only" ruling, made mechanical.
+    """
+    if expert is None:
+        return True
+    from rola.expert import PlanOverrides
+
+    return PlanOverrides.of(expert).paging is not False
 
 
 # ---------------------------------------------------------------------------
