@@ -54,10 +54,13 @@ the code was guarded. Unused trailing parameters emit nothing.
 
 `ChunkParams` carries `s_in`/`s_out`/`page_tbl` for both variants — it is one
 shared ABI — and `launch_chunk_arm` REFUSES any of them addressed to the OFF
-variant rather than dropping them silently. `Geom` stays state-free, because the
-ring is the launch's shared-memory ABI; `kStateRingAgrees` static-asserts at every
-instantiation that the state variant's own register floor would have chosen the
-same ring.
+variant rather than dropping them silently. `Geom` and `reg_floor` stay
+state-free: the ring is the launch's shared-memory ABI, and the register floor is
+one declaration for both kernels. It briefly was not — the ON variant declared 242
+at `C = 32, BC >= 128` against the shared 236 — and that row existed only because
+the plane bases were then pinned at kernel scope; with them moved inside the state
+blocks the ON variants measure at or under the shared floor on every arm and both
+architectures.
 
 **The plane, in either backing.** DENSE is `[BH, N/16, 16, d_v+1]` fp32: the
 atom-major view of `[BH, N, d_v+1]`, byte for byte, with the last column the mass

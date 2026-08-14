@@ -339,24 +339,25 @@ constexpr int kCookSlots = 4;
 //: the measured census of THIS body, which carries the cook's cursor and the
 //: staircase's thresholds on top of rung 5A's set.
 //:
-//: THE STATE-I/O VARIANT HAS ITS OWN ROW where its census exceeds the shared
-//: one.  The two variants are different kernels (`STATE` is a template axis),
-//: so one floor for both would be a declaration that is false of one of them:
-//: `(C = 32, BC = 128)` measures 242 with the state I/O compiled in against 236
-//: without it.  Only rows that MOVED are stated; the rest fall through.
-constexpr int reg_floor(int C, int BC, bool state = false) {
+//: ONE FLOOR FOR BOTH STATE VARIANTS.  The state-I/O variant briefly needed its
+//: own row -- `(C = 32, BC >= 128)` measured 242 against the shared 236 -- because
+//: its plane bases were pinned at kernel scope and lived across the whole body.
+//: The paged slot resolve moved those bases inside the state blocks and the row
+//: went with them: the ON variants now measure at or under the shared floor on
+//: every arm and both architectures (worst: 220), so a state row would be a
+//: declaration about nothing.
+constexpr int reg_floor(int C, int BC) {
   //: a two-group arm's PER-THREAD demand is one group's, i.e. the BC/2 row --
   //: each thread holds its group's slice, which is the same slice a BC/2
   //: single-group thread holds.
-  return BC >= 256                       ? reg_floor(C, BC / 2, state)
-         : state && C == 32 && BC >= 128 ? 242
-         : C == 16                       ? (BC <= 64 ? 128 : 168)
-         : C == 32                       ? (BC <= 32   ? 136
-                                            : BC <= 64 ? 168
-                                                       : 236)
-                                         : (BC <= 32   ? 176
-                                            : BC <= 64 ? 232
-                                                       : 255);
+  return BC >= 256 ? reg_floor(C, BC / 2)
+         : C == 16 ? (BC <= 64 ? 128 : 168)
+         : C == 32 ? (BC <= 32   ? 136
+                      : BC <= 64 ? 168
+                                 : 236)
+                   : (BC <= 32   ? 176
+                      : BC <= 64 ? 232
+                                 : 255);
 }
 
 template <int C, int BC>
@@ -404,19 +405,13 @@ struct Geom {
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
-//: THE RING IS SHARED BY BOTH STATE VARIANTS -- `Geom` is the launch's shared
-//: memory ABI and cannot depend on a template axis the launcher picks per call
-//: -- so the ring is chosen against the shared floor and the state variant's own
-//: floor is asserted to choose the same one (`kStateRingAgrees`, below).  The
-//: LAUNCH BOUND is per variant, because it is per kernel.
-template <int C, int BC, bool STATE = false>
-constexpr int kCtaTarget =
-    design::cta_target((int)Geom<C, BC>::bytes, threads_for(BC), reg_floor(C, BC, STATE));
-
+//: THE RING AND THE LAUNCH BOUND ARE SHARED BY BOTH STATE VARIANTS.  `Geom` is
+//: the launch's shared-memory ABI and cannot depend on a template axis the
+//: launcher picks per call, and the floor the bound is taken against is one
+//: declaration for both kernels (`reg_floor`, above).
 template <int C, int BC>
-constexpr bool kStateRingAgrees = design::stages_for(Geom<C, BC>::slot, Geom<C, BC>::fixed,
-                                                     threads_for(BC), reg_floor(C, BC, true))
-                                  == Geom<C, BC>::stages;
+constexpr int kCtaTarget =
+    design::cta_target((int)Geom<C, BC>::bytes, threads_for(BC), reg_floor(C, BC));
 
 // -------------------------------------------------------------------- kernel
 
@@ -434,7 +429,7 @@ constexpr bool kStateRingAgrees = design::stages_for(Geom<C, BC>::slot, Geom<C, 
 //: every instruction that reads one.  The page table joins them at the tail for
 //: the same reason.
 template <int C, int D, int B, int BC, bool STATE>
-__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void compacted_kernel(
+__global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L,
@@ -474,10 +469,6 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC, STATE>)) void c
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory "
                 "maximum");
-  static_assert(kStateRingAgrees<C, BC>,
-                "the ring depth is shared by both state variants, so the state "
-                "variant's register floor must select the same depth as the "
-                "shared one; it no longer does");
   constexpr int STAGES = G::stages;
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   //: THE SCHEDULE STREAM AND THE VALUE STREAM RUN AT DIFFERENT DEPTHS, and that
