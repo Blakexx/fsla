@@ -38,6 +38,12 @@ static_assert(design::kStateResidency == design::StateResidency::REGISTERS && kM
 
 static constexpr int kBuildMagic = 6700101;
 
+//: THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle
+//: the stats pass keys residency to.  It is the MMA's k-extent because the
+//: state's own tiling is (the host mirror is `rola.ops.paging.MMA_K_QUANTUM`;
+//: docs/internals/paging/stats.md).
+static constexpr int kAtomLeaves = kMmaK;
+
 static constexpr int kD = 64;    // d_v
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
@@ -1528,6 +1534,162 @@ __global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
     ROLA_TABLE_LEVEL(2)
     ROLA_TABLE_LEVEL(3)
 #undef ROLA_TABLE_LEVEL
+  }
+}
+
+// ------------------------------------------------------- the atom-grain stats
+//: THE STATS PASS.  Two kernels that answer ONE question: which atoms does this
+//: call's routing WRITE?  The answer keys the state's residency, so it is taken
+//: at the invariant quantum (`kAtomLeaves`) and never at `BC` -- the derivation,
+//: the exactness argument and the rejected coarser reductions are in
+//: docs/internals/paging/stats.md.
+template <int D, int B>
+__global__ void atom_table_kernel(const __nv_bfloat16* __restrict__ pwrite,
+                                  uint32_t* __restrict__ tbl, int L) {
+  using LP = LevelPlan<D, B, kAtomLeaves>;
+  constexpr int kWtot = LP::col_base(LP::depth);
+  const int tokWords = tok_words(L);
+  const int w = blockIdx.x * (blockDim.x / kBallotLanes) + (threadIdx.x >> 5);
+  const int lane = threadIdx.x & 31;
+  if (w >= tokWords) return;  // a whole lockstep unit leaves together
+  const int t = w * kTokBits + lane;
+  const bool real = t < L;
+  const long off = (long)blockIdx.y * L * kWtot + (long)(real ? t : 0) * kWtot;
+
+  const long entryStride = tokWords;
+  uint32_t* out = tbl + ((long)blockIdx.y * LP::entries) * entryStride + w;
+  const __nv_bfloat16* const ampBase = pwrite + off;
+
+#define ROLA_ATOM_TABLE_LEVEL(L_)                                              \
+  if constexpr (L_ < LP::depth) {                                              \
+    const __nv_bfloat16* p = ampBase + LP::col_base(L_);                       \
+    constexpr int kSpan = LP::span_at(L_);                                     \
+    constexpr int kEnt = LP::entries_at(L_);                                   \
+    _Pragma("unroll") for (int e = 0; e < kEnt; ++e) {                          \
+      const uint32_t v = or_run<kSpan>(p);                                     \
+      const uint32_t vote = lane_ballot(real && (v & kBf16MagnitudeMask) != 0u); \
+      if (lane == 0) *out = vote;                                              \
+      p += kSpan;                                                              \
+      out += entryStride;                                                      \
+    }                                                                          \
+  }
+  ROLA_ATOM_TABLE_LEVEL(0)
+  ROLA_ATOM_TABLE_LEVEL(1)
+  ROLA_ATOM_TABLE_LEVEL(2)
+  ROLA_ATOM_TABLE_LEVEL(3)
+#undef ROLA_ATOM_TABLE_LEVEL
+}
+
+//: how many threads and how much of the token axis one CTA of the reduction
+//: holds resident.  The tile is a RESIDENCY quantity, not an axis: it bounds the
+//: shared word stream so the CTA's footprint is independent of `L`.
+constexpr int kAtomThreads = 128;
+constexpr int kAtomTileWords = 256;
+
+//: THE REDUCTION, one CTA per (bh, upper prefix).  A prefix's atoms share every
+//: clause row but the innermost, so the shared rows are ANDed into a word stream
+//: ONCE and each innermost row is then ANDed against that stream and OR-reduced
+//: over the token axis.  An atom is live as soon as one word survives, so the CTA
+//: leaves the moment all of its atoms are live -- which makes the DENSE case the
+//: cheap one.
+template <int D, int B>
+__global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
+                                   uint8_t* __restrict__ atom_bits, int L) {
+  using LP = LevelPlan<D, B, kAtomLeaves>;
+  constexpr int kClauses = LP::clauses;
+  constexpr int kAtoms = (int)LP::blocks;
+  //: the innermost clause level's group count: the atoms of one prefix, and by
+  //: the plan's radix the LEAST significant part of the block index.
+  constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int blkBase = blockIdx.x * kInner;
+  //: THE BITMAP IS ONE BYTE PER ATOM, so `BH * atoms` is a 32-bit displacement
+  //: wherever the state those atoms address exists at all (that state is 4160
+  //: bytes an atom).  One pinned base, byte offsets after it.
+  const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kAtoms + (uint32_t)blkBase;
+
+  //: NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the
+  //: sequence has a token, which the caller's own topology guarantees.
+  if constexpr (kClauses == 0) {
+    if (tid == 0) *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff)) = 1;
+    return;
+  } else {
+    const int tokWords = tok_words(L);
+    //: ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh), formed
+    //: here and never re-derived; every row and every word after it is a 32-bit
+    //: BYTE displacement that zero-extends, so no `pointer + int` widening
+    //: multiply reaches a loop body.  The displacement's bound is one `bh`'s
+    //: slice of the table, `entries * tok_words(L) * 4` bytes.
+    const uint32_t* const base =
+        pin_address(tbl + (long)blockIdx.y * ((long)LP::entries * (long)tokWords));
+    const uint32_t rowBytes = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
+    //: NAMED SCALARS, never an array -- the consumer's rule, for the same
+    //: reason: a runtime-indexed offset array is demoted to a stack frame.
+    //: Unused upper clauses read row zero and are never consulted.
+    uint32_t offUa = 0u, offUb = 0u, offUc = 0u;
+#define ROLA_ATOM_UPPER(CL_, O_)                                               \
+  if constexpr ((CL_) + 1 < kClauses) {                                        \
+    constexpr int kDiv = LP::suffix_groups((CL_) + 1);                         \
+    constexpr int kGrp = LP::groups_at(CL_);                                   \
+    constexpr int kPre = LP::prefix_entries(CL_);                              \
+    O_ = (uint32_t)(kPre + (blkBase / kDiv) % kGrp) * rowBytes;                \
+  }
+    ROLA_ATOM_UPPER(0, offUa)
+    ROLA_ATOM_UPPER(1, offUb)
+    ROLA_ATOM_UPPER(2, offUc)
+#undef ROLA_ATOM_UPPER
+    //: the innermost rows are the CONTIGUOUS entry run at the prefix's level.
+    const uint32_t offInner = (uint32_t)LP::prefix_entries(kClauses - 1) * rowBytes;
+
+    __shared__ uint32_t sUp[kAtomTileWords];
+    __shared__ uint8_t sLive[kInner];
+    __shared__ int sAllLive;
+    for (int a = tid; a < kInner; a += kAtomThreads) sLive[a] = 0;
+    if (tid == 0) sAllLive = 0;
+    rendezvous();
+
+    for (int w0 = 0; w0 < tokWords; w0 += kAtomTileWords) {
+      const int n = min(kAtomTileWords, tokWords - w0);
+      for (int i = tid; i < n; i += kAtomThreads) {
+        const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
+        uint32_t m = 0xFFFFFFFFu;
+        if constexpr (1 < kClauses)
+          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUa + off));
+        if constexpr (2 < kClauses)
+          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUb + off));
+        if constexpr (3 < kClauses)
+          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUc + off));
+        sUp[i] = m;
+      }
+      rendezvous();
+      for (int a = tid >> 5; a < kInner; a += kAtomThreads / kBallotLanes) {
+        if (sLive[a]) continue;
+        const uint32_t rowOff = offInner + (uint32_t)a * rowBytes;
+        bool hit = false;
+        for (int i = lane; i < n; i += kBallotLanes) {
+          const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
+          hit |=
+              (sUp[i] & *reinterpret_cast<const uint32_t*>(gather_ptr(base, rowOff + off))) != 0u;
+        }
+        //: the vote is the WHOLE unit's -- every lane issues it, lane 0 files it.
+        const uint32_t any = lane_ballot(hit);
+        if (lane == 0 && any != 0u) sLive[a] = 1;
+      }
+      rendezvous();
+      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
+      //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
+      if (tid < kBallotLanes) {
+        bool all = true;
+        for (int a = tid; a < kInner; a += kBallotLanes) all &= sLive[a] != 0;
+        const uint32_t every = lane_ballot(all);
+        if (tid == 0 && every == 0xFFFFFFFFu) sAllLive = 1;
+      }
+      rendezvous();
+      if (sAllLive) break;
+    }
+    for (int a = tid; a < kInner; a += kAtomThreads)
+      *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff + (uint32_t)a)) = sLive[a];
   }
 }
 

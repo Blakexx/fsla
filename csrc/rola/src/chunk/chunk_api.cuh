@@ -17,6 +17,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                                        int64_t bc, std::vector<int64_t> widths);
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
                       int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps);
+torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths);
 torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps);
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths);
 std::vector<std::vector<int64_t>> arms();

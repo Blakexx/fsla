@@ -26,4 +26,15 @@
   X(32, 64, 1, 64) \
   X(32, 64, 1, 256) \
   X(16, 64, 1, 256)
+
+// The STATS pass' arms -- (D, B) only, the projection of the
+// list above (residency is keyed to the invariant quantum, not BC).
+#define CHUNK_ATOM_ARMS_X(X) \
+  X(1, 64) \
+  X(1, 256) \
+  X(2, 8) \
+  X(2, 16) \
+  X(2, 64) \
+  X(3, 16) \
+  X(4, 8)
 // clang-format on

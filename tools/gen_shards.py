@@ -424,6 +424,17 @@ CHUNK_ARMS: tuple = (
 CHUNK_PER_SHARD = 8
 
 
+def chunk_atom_arms() -> tuple:
+    """The STATS pass' arm list: `(D, B)` and nothing else.
+
+    Residency is keyed to the invariant 16-leaf quantum, never to `BC`, so the
+    stats pass has no `C` and no `BC` axis and its list is a projection of
+    `CHUNK_ARMS` -- DERIVED here rather than written out, so the two cannot name
+    different topologies and the chunk membership hash covers both.
+    """
+    return tuple(sorted({(a[2], a[3]) for a in CHUNK_ARMS}))
+
+
 def chunk_canonical(a) -> str:
     return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]}"
 
@@ -455,6 +466,13 @@ def chunk_arms_inc() -> str:
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
         lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
+    atoms = chunk_atom_arms()
+    lines.append("\n// The STATS pass' arms -- (D, B) only, the projection of the\n"
+                 "// list above (residency is keyed to the invariant quantum, not BC).\n"
+                 "#define CHUNK_ATOM_ARMS_X(X) \\\n")
+    for i, a in enumerate(atoms):
+        tail = "" if i == len(atoms) - 1 else " \\"
+        lines.append(f"  X({a[0]}, {a[1]}){tail}\n")
     lines.append("// clang-format on\n")
     return "".join(lines)
 
@@ -488,6 +506,13 @@ def chunk_shard_source(name: str, arms: list) -> str:
             body.append(f"template cudaError_t launch_chunk_table_arm<{d}, {b}, {bc}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
                         "    cudaStream_t);\n")
+        body.append("\n//: the STATS arms (one per topology) ride shard 0 with them.\n")
+        for (d, b) in chunk_atom_arms():
+            body.append(f"template cudaError_t launch_chunk_atom_table_arm<{d}, {b}>(\n"
+                        "    const __nv_bfloat16*, uint32_t*, int, int, cudaStream_t);\n")
+        for (d, b) in chunk_atom_arms():
+            body.append(f"template cudaError_t launch_chunk_atom_bitmap_arm<{d}, {b}>(\n"
+                        "    const uint32_t*, uint8_t*, int, int, cudaStream_t);\n")
     body.append("\n}  // namespace rola::chunk\n")
     return "".join(body)
 

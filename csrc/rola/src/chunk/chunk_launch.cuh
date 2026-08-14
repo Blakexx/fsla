@@ -41,6 +41,29 @@ cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16*
   return cudaGetLastError();
 }
 
+//: THE STATS PASS' TWO LAUNCHES, one host entry.  The arm is (D, B) alone: the
+//: atom rectangle is `kAtomLeaves` by construction, so residency is BC-free and
+//: this arm list is smaller than the consumer's (docs/internals/paging/stats.md).
+template <int D, int B>
+cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, int BH, int L,
+                                        cudaStream_t stream) {
+  constexpr int kTblThreads = 128;
+  constexpr int kTblWarps = kTblThreads / kBallotLanes;
+  const dim3 grid((unsigned)((tok_words(L) + kTblWarps - 1) / kTblWarps), (unsigned)BH);
+  atom_table_kernel<D, B><<<grid, kTblThreads, 0, stream>>>(pw, tbl, L);
+  return cudaGetLastError();
+}
+
+template <int D, int B>
+cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
+                                         cudaStream_t stream) {
+  using LP = LevelPlan<D, B, kAtomLeaves>;
+  constexpr int kInner = LP::clauses > 0 ? LP::groups_at(LP::clauses - 1) : 1;
+  const dim3 grid((unsigned)(LP::blocks / kInner), (unsigned)BH);
+  atom_bitmap_kernel<D, B><<<grid, kAtomThreads, 0, stream>>>(tbl, atom_bits, L);
+  return cudaGetLastError();
+}
+
 //: the census: everything build_stamp reports for an arm.  Lives HERE so the
 //: dispatch TU never touches the kernel symbol.
 template <int C, int BC, int D, int B>

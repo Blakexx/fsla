@@ -40,6 +40,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_forward_raw", &rola::chunk::forward_raw,
         "chunk consumer: the readout's d_v+1 columns, undivided");
   m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass");
+  m.def("chunk_stats", &rola::chunk::stats,
+        "chunk consumer: the exact atom-grain write bitmap the page plan admits from");
   m.def("chunk_divide_pass", &rola::chunk::divide_pass,
         "chunk consumer: the ratio, one elementwise pass");
   m.def("chunk_build_stamp", &rola::chunk::build_stamp,

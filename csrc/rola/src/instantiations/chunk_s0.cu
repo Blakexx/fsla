@@ -51,4 +51,34 @@ template cudaError_t launch_chunk_table_arm<4, 8, 32>(const __nv_bfloat16*, cons
 template cudaError_t launch_chunk_table_arm<4, 8, 128>(const __nv_bfloat16*, const __nv_bfloat16*,
                                                        uint32_t*, int, int, cudaStream_t);
 
+//: the STATS arms (one per topology) ride shard 0 with them.
+template cudaError_t launch_chunk_atom_table_arm<1, 64>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                        cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<1, 256>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                         cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<2, 8>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                       cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<2, 16>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                        cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<2, 64>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                        cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<3, 16>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                        cudaStream_t);
+template cudaError_t launch_chunk_atom_table_arm<4, 8>(const __nv_bfloat16*, uint32_t*, int, int,
+                                                       cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<1, 64>(const uint32_t*, uint8_t*, int, int,
+                                                         cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<1, 256>(const uint32_t*, uint8_t*, int, int,
+                                                          cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<2, 8>(const uint32_t*, uint8_t*, int, int,
+                                                        cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<2, 16>(const uint32_t*, uint8_t*, int, int,
+                                                         cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<2, 64>(const uint32_t*, uint8_t*, int, int,
+                                                         cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<3, 16>(const uint32_t*, uint8_t*, int, int,
+                                                         cudaStream_t);
+template cudaError_t launch_chunk_atom_bitmap_arm<4, 8>(const uint32_t*, uint8_t*, int, int,
+                                                        cudaStream_t);
+
 }  // namespace rola::chunk

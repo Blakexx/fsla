@@ -22,6 +22,12 @@ cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream);
 template <int D, int B, int BC>
 cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                    int BH, int L, cudaStream_t stream);
+template <int D, int B>
+cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, int BH, int L,
+                                        cudaStream_t stream);
+template <int D, int B>
+cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
+                                         cudaStream_t stream);
 template <int C, int BC, int D, int B>
 std::array<int64_t, 9> query_chunk_census_arm();
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
@@ -115,6 +121,45 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
   CHUNK_ARMS_X(CHUNK_TABLE_X)
 #undef CHUNK_TABLE_X
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
+}
+
+//: THE STATS PASS: the EXACT set of atoms this call's routing writes, as
+//: `[BH, N/16]` uint8 -- the argument the planner admits pages from.  Two
+//: launches on one stream and no host synchronization; the atom-grain table is a
+//: TRANSIENT, allocated and freed here, because nothing else asks for it.
+//:
+//: NO `C` AND NO `BC`.  The atom rectangle is the invariant quantum, so the
+//: bitmap is BC-free and may be taken BEFORE the plan picks a `BC`.  Only the
+//: WRITE side is built: reads of never-written atoms are inert
+//: (docs/internals/paging/stats.md).
+template <int D, int B>
+static torch::Tensor build_atom_bits(const torch::Tensor& pw, int BH, int L) {
+  using LP = LevelPlan<D, B, kAtomLeaves>;
+  const auto stream = at::cuda::getCurrentCUDAStream();
+  auto tbl = torch::empty({BH, (long)LP::entries, tok_words(L)}, pw.options().dtype(torch::kInt32));
+  auto bits = torch::empty({BH, (long)LP::blocks}, pw.options().dtype(torch::kUInt8));
+  C10_CUDA_CHECK((launch_chunk_atom_table_arm<D, B>(
+      reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),
+      reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, stream)));
+  C10_CUDA_CHECK((launch_chunk_atom_bitmap_arm<D, B>(
+      reinterpret_cast<const uint32_t*>(tbl.data_ptr()),
+      reinterpret_cast<uint8_t*>(bits.data_ptr()), BH, L, stream)));
+  return bits;
+}
+
+torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths) {
+  TORCH_CHECK(pw.is_cuda() && pw.is_contiguous() && pw.scalar_type() == torch::kBFloat16,
+              "the write amplitudes must be a contiguous bf16 CUDA tensor");
+  int64_t wsum = 0;
+  for (auto w : widths) wsum += w;
+  TORCH_CHECK(pw.dim() == 4 && pw.size(3) == wsum,
+              "expect packed write amplitudes [B,H,L,sum(widths)]");
+  const int BH = (int)(pw.size(0) * pw.size(1)), L = (int)pw.size(2);
+#define CHUNK_STATS_X(D_, B_)                                                      \
+  if (is_arm(widths, D_, B_)) return build_atom_bits<D_, B_>(pw, BH, L);
+  CHUNK_ATOM_ARMS_X(CHUNK_STATS_X)
+#undef CHUNK_STATS_X
+  TORCH_CHECK(false, "unbuilt stats arm: depth=", widths.size());
 }
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,

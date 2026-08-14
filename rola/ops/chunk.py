@@ -55,6 +55,20 @@ def unsupported(routes, decay, initial_state, output_final_state) -> str | None:
     return None
 
 
+def stats(routes) -> torch.Tensor:
+    """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
+
+    The page plan's input (docs/internals/paging/stats.md).  It is keyed to the
+    16-leaf quantum and not to `BC`, so it is a property of the routing alone and
+    is legitimately taken BEFORE an arm is chosen -- which is what lets residency
+    be an OUTPUT of the plan rather than a consequence of it.  Device-side: no
+    host synchronization happens here.
+    """
+    widths = tuple(l.width for l in routes.topology.levels)
+    pw = torch.cat(routes.write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
+    return extension().chunk_stats(pw, list(widths))
+
+
 def run(routes, v: torch.Tensor) -> torch.Tensor:
     """y [B,T,H,d_v] through table pass + chunk kernel + divide."""
     m = extension()
