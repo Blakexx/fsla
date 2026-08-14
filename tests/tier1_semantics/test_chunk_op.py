@@ -62,3 +62,28 @@ def test_refusals_are_loud():
         routes64, v64 = _bundle(T=256)
         with pytest.raises(NotImplementedError, match="P67"):
             rola_op(routes64, v64, _arm="kernel", output_final_state=True)
+
+
+def test_the_layer_stateless_eval_path_runs_the_chunk_consumer():
+    """The adoption's layer-level proof: a uniform-width d_v=64 layer at
+    stateless eval dispatches its CUDA arm to the CHUNK consumer (counted as
+    'cuda'), and the output sits at the oracle within the bf16 family bound.
+    State chaining / paging / non-manifest topologies keep the tiled path
+    until the paged state I/O lands."""
+    from tests.conftest import build_layer
+
+    torch.manual_seed(11)
+    layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(64, 64),
+                        normalization="global", decay=None,
+                        layer_idx=0).cuda().float().eval()
+    x = torch.randn(1, 128, 128, device="cuda")
+    before = dict(layer.execution_backend_counts)
+    with torch.no_grad():
+        y_cuda, _, _ = layer(x)
+    after = dict(layer.execution_backend_counts)
+    assert after["cuda"] == before["cuda"] + 1
+    layer.train()
+    with torch.enable_grad():
+        y_ref, _, _ = layer(x)
+    rel = (y_cuda.double() - y_ref.double()).norm() / y_ref.double().norm()
+    assert rel < 1e-2, f"layer chunk path off the oracle: rel={rel:.3e}"

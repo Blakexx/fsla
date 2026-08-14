@@ -307,7 +307,18 @@ class RoLA(nn.Module):
             out, final_state = self._decode(routes, v, decay, recurrent_state, B, H, cache_enabled)
             backend = "decode"
         elif backend == "cuda":
-            out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
+            from rola.ops import chunk as _chunk_arm
+
+            if (recurrent_state is None and not cache_enabled and not self.paging
+                    and _chunk_arm.unsupported(routes, decay, None, False) is None):
+                #: the chunk consumer is the shipping kernel for the STATELESS
+                #: eval path; state chaining and paging stay on the tiled path
+                #: until the paged state I/O lands (docs/internals/chunk/).
+                out = _chunk_arm.run(routes, v)
+                final_state = None
+                self.last_selected_plan = None
+            else:
+                out, final_state = self._tiled(routes, v, decay, recurrent_state, B, H, cache_enabled)
         else:
             if self.paging:
                 # `[[layer-dispatch-autograd-gap]]`'s shape of failure, in its other

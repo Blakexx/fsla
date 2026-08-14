@@ -92,6 +92,11 @@ def _layer(*, paging, max_physical_pages=None, seed=0, state_block=16, decay="no
 
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(decay):
+    if decay != "none":
+        pytest.skip("decay routes to the oracle now (retired from the "
+                    "operator), and paging is a CUDA-arm feature -- the "
+                    "paged-decay claim returns with the decay reopen "
+                    "conditions")
     torch.manual_seed(3)
     x = torch.randn(2, 48, 64, device="cuda")
     unpaged = _layer(paging=False, seed=5, decay=decay)
@@ -107,10 +112,6 @@ def test_a_paged_layer_is_bit_identical_to_an_unpaged_one(decay):
         y_control, _, _ = unpaged(x)
         y1, _, _ = paged(x)
 
-    if decay != "none":
-        pytest.skip("decay routes to the oracle now (retired from the "
-                    "operator); the paged-decay claim returns with the "
-                    "decay reopen conditions")
     assert unpaged.last_execution_backend == paged.last_execution_backend == "cuda"
     bound = _reordering_bound(y0, unpaged, BC=16)
     assert (y0 - y_control).abs().max() <= bound
