@@ -44,7 +44,6 @@ It never falls back to the oracle.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -52,7 +51,7 @@ import torch.nn as nn
 from einops import rearrange
 
 from rola.interface import rola_op, select_backend
-from rola.ops.decode import decode_forward, freeze_decode_config
+from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
 
@@ -60,19 +59,6 @@ if TYPE_CHECKING:
     from rola.state import RoLAState
 
 __all__ = ["RoLA"]
-
-
-@dataclass(frozen=True)
-class _DecodeConfigCache:
-    """The frozen decode carrier plus the key it is valid for.
-
-    A named type rather than a bare tuple because the validity KEY is the whole point:
-    a cache whose key a reader has to reconstruct from an unpacking site is a cache that
-    will eventually be reused across a shape it was not built for.
-    """
-
-    key: tuple
-    value: object
 
 
 class RoLA(nn.Module):
@@ -157,10 +143,6 @@ class RoLA(nn.Module):
         self._execution_backend_counts = {"oracle": 0, "cuda": 0, "decode": 0}
         self.last_execution_backend: str | None = None
         self.last_selected_plan = None
-        #: The frozen decode carrier and its scratch: runtime state, built at the
-        #: prefill/decode boundary.
-        self._decode_config = None
-        self._decode_workspace = None
 
     # --- accessors ----------------------------------------------------------
 
@@ -360,8 +342,9 @@ class RoLA(nn.Module):
 
         This consumer takes and returns RAW TENSORS, so the state object is crossed at
         this branch and nowhere deeper: `carried` came out of `materialize`, and the
-        final state goes back in as dense contents. Aligning it with the paged state
-        I/O is P67 S4's, not this seam's.
+        final state goes back in as dense contents. It is the LAST arm that does: the
+        chunk consumer and decode both own their state I/O now, and this one keeps the
+        crossing until the consumer itself is retired.
         """
         from rola.expert import derive_plan, execute
 
@@ -375,57 +358,28 @@ class RoLA(nn.Module):
         return out
 
     def _decode(self, routes, v, decay, state):
-        """The ``T = 1`` sibling kernel, over the frozen carrier.
+        """The ``T = 1`` sibling kernel, which owns its own state I/O.
 
-        Raw tensors again, and the same crossing: `decode_forward` updates the plane it
-        is given IN PLACE, so it is handed an fp32 contiguous copy of the state's
-        contents and the result is stored back through `adopt_dense_contents`.
+        The layer's only contribution is the plan overrides; the carrier, the scratch,
+        the backing and its growth all live behind ``decode_forward``
+        (``docs/internals/decode.md``), exactly as the chunk arm's tables live behind
+        ``rola_op``.
         """
-        carried = self._dense_carry(routes, state)
-        B, H = carried.shape[0], carried.shape[1]
-        config = self._resolve_decode_config(B * H, v.device)
-        plane = carried.to(torch.float32).contiguous()
-        if plane.data_ptr() == carried.data_ptr():
-            plane = plane.clone()
-        # Decode is an fp32 boundary by contract (out of the P09 bf16-memory
-        # family's scope -- a [BH, width] object with no measured pressure); a
-        # bf16-projected `v` re-widens here, and the cast is exact because the
-        # values are bf16-rounded already. Identity for an fp32 module.
-        v = v.to(torch.float32)
-        out, final_state, self._decode_workspace = decode_forward(
-            v, routes.read, routes.write, routes.g_read, routes.g_write, config, plane,
-            decay=decay, workspace=self._decode_workspace)
+        out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
         self.last_selected_plan = None
-        state.adopt_dense_contents(final_state)
         return out
 
     def _dense_carry(self, routes, state):
-        """The `[B, H, N, cols]` entry state these RAW-TENSOR arms take, or `None`.
+        """The `[B, H, N, cols]` entry state the LEGACY TILED arm takes, or `None`.
 
-        Also where an unbound state BINDS on these arms, which is why it is the state's
-        own seam and not a `materialize` call: the two arms below cross the state object
-        at exactly this line and nowhere deeper.
+        Also where an unbound state BINDS on that arm, which is why it is the state's
+        own seam and not a `materialize` call: the tiled consumer crosses the state
+        object at exactly this line and nowhere deeper. Decode used to share it and no
+        longer does -- it takes the state itself now (`rola/ops/decode.py`).
         """
         if state is None:
             return None
         return state._dense_entry(routes, paging=self.expert.paging is not False)
-
-    def _resolve_decode_config(self, BH: int, device):
-        """The frozen decode config, built once at the prefill/decode boundary.
-
-        Rebuilt only when its inputs move (``BH`` and the device; everything else is a
-        construction-time fact). It is frozen in the sense that matters: no per-step
-        statistic enters it, so a decode step never runs a selection.
-        """
-        cached = self._decode_config
-        key = (BH, torch.device(device), self.decay is not None)
-        if cached is not None and cached.key == key:
-            return cached.value
-        value = freeze_decode_config(
-            self.topology, self.normalization, decay=self.decay is not None, BH=BH, device=device,
-            mma_precision=self.expert.mma_precision)
-        self._decode_config = _DecodeConfigCache(key=key, value=value)
-        return value
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

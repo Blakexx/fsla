@@ -38,3 +38,20 @@ separate claim from the capacity is [`decode.md`
 `rola_decode_forward` is the single data-plane entry: it validates, expands the
 support, and launches the GEMV. Its argument checks and workspace contracts are
 documented with the definition, in [`decode.md`](decode.md#flat-bits).
+
+## <a id="paged-state"></a>3. `page_table` — which backing the state is
+
+The trailing `c10::optional<at::Tensor> page_table` is the whole ABI difference
+between the two backings, and it is what the entry validates differently:
+
+* **absent** — `state` is the dense `[BH, N, d_v + 1]` plane and `N` is its own middle
+  extent. This is the pre-P67 signature exactly, defaulted so a caller that never
+  pages never mentions paging.
+* **present** — `page_table` is `[BH, N / 16]` int32 and NAMES the leaf space, so `N`
+  comes from it; `state` is then the arena's `[slots, 16, d_v + 1]` plane, which holds
+  only the atoms a plan committed.
+
+Slot VALUES are not bounds-checked. That would be a device-side read of the table, and
+the plan owns the bound — the same division of labour `chunk.cu`'s `page_table()`
+states. The address the kernel builds from a slot, and what a `-1` means, are
+[`decode.md` §4](decode.md#paged-address).

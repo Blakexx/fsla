@@ -161,7 +161,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     same class of failure (two implementations behind one call) that the layer's guard
     exists to prevent, pointed the other way.
     """
-    from rola.ops.decode import decode_forward, freeze_decode_config
+    from rola.ops.decode import _decode_step, freeze_decode_config
     from rola.routing.types import IndependentRouting, LevelConfig, SoftmaxActivation, Topology
 
     device = "cuda"
@@ -176,7 +176,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     v = torch.randn(1, 1, 1, d_v, device=device)
     state = torch.zeros(1, 1, config.N, config.cols, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
-        decode_forward(v, levels, levels, None, g_write, config, state)
+        _decode_step(v, levels, levels, None, g_write, config, state)
 
 
 @pytest.mark.cuda
@@ -266,7 +266,12 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin():
     was silently dropped at ``L == 1`` (coverage-closure H9, report-only). The decode
     GEMV is scalar fp32 for every pin — the field selects nothing today — but the
     boundary must CARRY the pin so nothing downstream can disagree with the layer
-    (the feeder-flags lesson in ``_resolve_decode_config``'s docstring, same class).
+    (the feeder-flags lesson, same class).
+
+    REPOINTED (P67 S4): the carrier is cached on the STATE, not on the layer -- it is
+    per-sequence launch machinery, like the short-conv rings beside it -- so the pin is
+    read off ``state._decode_carrier_cache`` where it used to be read off
+    ``layer._decode_config``. The claim is unchanged.
 
     P26: ``mma_precision`` is a dead axis -- ``PlanOverrides`` and
     ``freeze_decode_config`` both accept only ``"bf16"`` (a second, ``"tf32x3"``,
@@ -286,11 +291,11 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin():
     _step(layer, cache, device, grad_enabled=False)
     after = layer.execution_backend_counts
     assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
-    frozen = layer._decode_config
+    frozen = cache._decode_carrier_cache
     assert frozen is not None, "the decode fork ran but froze no carrier"
-    assert frozen.value.mma_precision == "bf16", (
+    assert frozen[1].mma_precision == "bf16", (
         f"the layer's bf16 pin was dropped at the boundary: the frozen carrier says "
-        f"{frozen.value.mma_precision!r}")
+        f"{frozen[1].mma_precision!r}")
 
 
 def test_freeze_decode_config_refuses_an_unknown_precision():

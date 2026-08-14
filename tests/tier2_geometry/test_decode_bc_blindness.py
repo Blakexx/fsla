@@ -33,7 +33,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import FrozenDecodeConfig, decode_forward, freeze_decode_config
+from rola.ops.decode import FrozenDecodeConfig, _decode_step, freeze_decode_config
 from rola.planner.schedule import Plan
 from tests.tier1_semantics.test_consumer_vs_oracle import _simplex, _topology
 
@@ -92,7 +92,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
                                       mma_precision="bf16")
         configs.append(config)
         state = m0.clone()
-        y, state, _ = decode_forward(v, read_levels, write_levels, g_read, g_write,
+        y, state, _ = _decode_step(v, read_levels, write_levels, g_read, g_write,
                                      config, state)
         results.append((y, state))
 

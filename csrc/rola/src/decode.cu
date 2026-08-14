@@ -196,6 +196,21 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   const int b_last = p.level_width[D - 1];
   const int off_last_base = p.level_amp_offset[D - 1];
 
+  //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is pinned
+  //: here (a plain origin, no per-atom widening multiply); the cache is keyed on the atom
+  //: VALUE, so it is correct whatever order the walk reaches leaves in and costs at most
+  //: two int32 loads per 32-leaf bitmap word. `atom_base` is the atom's first row as an
+  //: ELEMENT offset from `p.state`: dense is `bh * N + (atom << 4)` (which is why a
+  //: topology whose `N` is not a whole number of atoms still addresses correctly -- the
+  //: two halves recombine to `bh * N + leaf`), paged is `slot << 4`.
+  //: docs/internals/decode.md#paged-address
+  const int32_t* page_row =
+      (p.page_tbl == nullptr) ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+  const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
+  int cached_atom = -1;
+  int64_t atom_base = 0;
+  bool atom_present = false;
+
   int w = w_start + warp;
   int g_cached = -1;
   bool g_empty = false;
@@ -261,13 +276,35 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
         const int off_last = off_last_base + cur + t;
         const bool in_r = ((rw_word >> bit) & 1u) != 0u;
         const bool in_w = ((ww_word >> bit) & 1u) != 0u;
-        float* row = p.state + (static_cast<int64_t>(bh) * p.N + leaf) * cols;
 
+        const int atom = leaf >> kAtomShift;
+        if (atom != cached_atom) {
+          cached_atom = atom;
+          if (page_row != nullptr) {
+            const int slot = page_row[atom];
+            atom_present = slot >= 0;
+            atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+          } else {
+            atom_present = true;
+            atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+          }
+        }
+
+        //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
+        //: plan admits the step's write set exactly, so an atom with no slot is outside
+        //: it, and a never-deposited leaf holds zeros in the dense backing too. The
+        //: self-normalizing readout then contributes exactly nothing through it.
+        //: docs/internals/decode.md#absent-atom
+        float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
         float sv[NC];
 #pragma unroll
-        for (int k = 0; k < NC; ++k) sv[k] = row[lane + 32 * k];
+        for (int k = 0; k < NC; ++k) sv[k] = 0.0f;
         float smass = 0.0f;
-        if (lane == 0) smass = row[DV];
+        if (atom_present) {
+#pragma unroll
+          for (int k = 0; k < NC; ++k) sv[k] = row[lane + 32 * k];
+          if (lane == 0) smass = row[DV];
+        }
 
         //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
         //: not an optimization: §2's survival is INCLUSIVE at `j = t`, so the whole
@@ -275,7 +312,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
         //: in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression
         //: is its readout too -- one path, no arm.
         //: HAZARD update-then-read -- docs/internals/decode.md#update-then-read
-        if (in_w) {
+        if (in_w && atom_present) {
           //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
           //: SPLIT: at `T = 1` the tiled kernel's §12 rule-1 half-mass shift is exactly
           //: the identity, so ONE `expf` replaces its three. `log1pf` IS the composition
@@ -441,7 +478,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps) {
+                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table) {
   const int D = static_cast<int>(amp_read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
   TORCH_CHECK(static_cast<int>(amp_write.size()) == D, "amp_write must have D entries");
@@ -463,9 +500,30 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   const int BH = static_cast<int>(v.size(0));
   const int d_v = static_cast<int>(v.size(1));
   const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
-  TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
-              "state must be [BH, N, d_v + 1]");
-  const int64_t N = state.size(1);
+  //: THE TWO BACKINGS, validated where they differ and nowhere else. A page table names
+  //: the leaf space (`[BH, N / kAtomLeaves]`) and the plane holds only the slots a plan
+  //: committed; without one the plane IS the leaf space. Slot VALUES are not
+  //: bounds-checked -- that would be a device-side read of the table, and the plan owns
+  //: the bound. docs/internals/decode_api.md#paged-state
+  int64_t N = 0;
+  int atoms_per_bh = 0;
+  const int32_t* page_ptr = nullptr;
+  if (page_table.has_value()) {
+    const at::Tensor& tbl = *page_table;
+    detail::check_i32(tbl, "page_table");
+    TORCH_CHECK(tbl.dim() == 2 && tbl.size(0) == BH, "page_table must be [BH, N / ", kAtomLeaves,
+                "] int32");
+    atoms_per_bh = static_cast<int>(tbl.size(1));
+    N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
+    TORCH_CHECK(state.dim() == 3 && state.size(1) == kAtomLeaves && state.size(2) == cols,
+                "under a page table the state is the arena's plane, [slots, ", kAtomLeaves,
+                ", d_v + 1]");
+    page_ptr = tbl.data_ptr<int32_t>();
+  } else {
+    TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
+                "state must be [BH, N, d_v + 1]");
+    N = state.size(1);
+  }
   TORCH_CHECK(g_write.dim() == 1 && g_write.size(0) == BH, "g_write must be [BH]");
   TORCH_CHECK(heads >= 1 && BH % heads == 0, "heads must divide BH");
 
@@ -541,6 +599,8 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   p.g_write = g_write.data_ptr<float>();
   p.v = v.data_ptr<float>();
   p.state = state.data_ptr<float>();
+  p.page_tbl = page_ptr;
+  p.atoms_per_bh = atoms_per_bh;
   p.y = y.data_ptr<float>();
   p.bits_r = bits_base;
   p.bits_w = bits_base + static_cast<int64_t>(BH) * n_words;

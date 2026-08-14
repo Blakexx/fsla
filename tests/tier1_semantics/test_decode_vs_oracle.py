@@ -36,7 +36,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import decode_forward, freeze_decode_config
+from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.routing.types import LeafMassDecay
 from tests.tier1_semantics.test_consumer_vs_oracle import (
@@ -166,7 +166,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         stored = None
         if quantize_stored:
             stored = tuple(t.to(torch.bfloat16).to(torch.float32) for t in write_levels[s])
-        y, state, workspace = decode_forward(
+        y, state, workspace = _decode_step(
             vs[s].float(), tuple(t.float() for t in read_levels[s]),
             tuple(t.float() for t in write_levels[s]),
             None if g_reads[s] is None else g_reads[s].float(), g_writes[s].float(),
@@ -288,7 +288,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
                                   mma_precision="bf16")
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
-    y, state, workspace = decode_forward(v, zeros, zeros, None, g_write, config, state)
+    y, state, workspace = _decode_step(v, zeros, zeros, None, g_write, config, state)
     assert int(workspace.pc_coarse[:, -1].max()) == 0, "the fixture did not produce M = 0"
     assert torch.equal(y, torch.zeros_like(y))
     assert torch.equal(state, m0), "an untouched state must be byte-unchanged"
@@ -486,7 +486,7 @@ def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC):
     config = freeze_decode_config(pre["topology"], "global", decay=False, BH=2 * 2, device=device,
                                   mma_precision="bf16")
     state = torch.zeros(2, 2, config.N, config.cols, device=device, dtype=torch.float32)
-    y, state, _ = decode_forward(
+    y, state, _ = _decode_step(
         pre["v"].float(), tuple(t.float() for t in pre["read_levels"]),
         tuple(t.float() for t in pre["write_levels"]),
         None if pre["g_read"] is None else pre["g_read"].float(), pre["g_write"].float(),
@@ -534,7 +534,7 @@ def test_g7_prefill_decode_seam(widths, BC):
     tail = {k: (tuple(t[:, L:L + 1] for t in v) if isinstance(v, tuple)
                 else (v[:, L:L + 1] if torch.is_tensor(v) and v.dim() >= 2 else v))
             for k, v in full.items() if k in ("read_levels", "write_levels", "g_read", "g_write", "v")}
-    y_dec, state_dec, _ = decode_forward(
+    y_dec, state_dec, _ = _decode_step(
         tail["v"].float(), tuple(t.float() for t in tail["read_levels"]),
         tuple(t.float() for t in tail["write_levels"]),
         None if tail["g_read"] is None else tail["g_read"].float(), tail["g_write"].float(),

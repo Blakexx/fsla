@@ -97,7 +97,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("bits"), py::arg("pc_coarse"),
         py::arg("ws"), py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"),
         py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("heads"), py::arg("n_split"),
-        py::arg("eps"));
+        py::arg("eps"),
+        //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
+        //: backing, where the slot IS the atom and the bytes are the same.
+        py::arg("page_table") = c10::optional<at::Tensor>());
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

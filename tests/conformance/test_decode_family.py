@@ -33,7 +33,7 @@ import pytest
 import torch
 
 from rola.ops.consumer import _consumer_forward
-from rola.ops.decode import decode_forward, freeze_decode_config
+from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.planner.schedule import Plan
 from rola.routing.types import LeafMassDecay
@@ -111,7 +111,7 @@ def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
     for s in range(steps):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
         fs = _f32(step)
-        y, state, workspace = decode_forward(
+        y, state, workspace = _decode_step(
             fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
@@ -157,7 +157,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     for s in range(1, max(_CHECKPOINTS) + 1):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
         fs = _f32(step)
-        y, state, workspace = decode_forward(
+        y, state, workspace = _decode_step(
             fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
@@ -211,7 +211,7 @@ def test_the_decode_split_is_performance_only_under_drift():
         state, workspace, ys = m0.float().clone(), None, []
         for step in steps:
             fs = _f32(step)
-            y, state, workspace = decode_forward(
+            y, state, workspace = _decode_step(
                 fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
                 config, state, workspace=workspace)
             ys.append(y)
@@ -236,7 +236,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     # The certificates half: an arm mismatch REFUSES rather than degrades.
     step = _f32(steps[0])
     with pytest.raises(ValueError, match="has_decay"):
-        decode_forward(step["v"], step["read"], step["write"], step["g_read"],
+        _decode_step(step["v"], step["read"], step["write"], step["g_read"],
                        step["g_write"], configs["n_split=1"],
                        base[1].clone(),
                        decay=LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))

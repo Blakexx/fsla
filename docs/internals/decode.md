@@ -75,20 +75,84 @@ block across many tokens; with one token there is nothing to amortize. Nothing i
 - the support is leaf-granular;
 - the work partition is over 32-leaf bitmap WORDS — a machine quantity, not a
   plan quantity;
-- the unpaged state address is `(bh * N + leaf) * cols + c`, which is leaf-major
+- the DENSE state address is `(bh * N + leaf) * cols + c`, which is leaf-major
   already: owner `o`'s leaf `i` sits at row `o * BC + i = leaf` in the tiled
-  kernel's own layout.
+  kernel's own layout;
+- the PAGED one is keyed to the 16-leaf atom ([§4](#paged-address)), which mentions
+  no `BC` either — that re-key is what buys it.
 
 `BC` is a launch-shape fact of that kernel and never a layout fact.
 
-## <a id="unpaged-only"></a>4. Unpaged only, deliberately
+## <a id="paged-address"></a>4. Paged and dense are ONE walk
 
-The paged address under §4.5's atom re-key is
-`((slot << 4 | (leaf & 15)) * cols + c)` and is likewise `BC`-free, so nothing in
-this path's `BC`-freedom depends on which granule the arena keys. It is simply
-not implemented here: decode REFUSES a page table rather than computing an
-address it does not own. That refusal is a hard `TORCH_CHECK` in
-`rola/ops/decode.py` and in the extension, never a silent fallback.
+<a id="the-atom"></a>The page granule is the **atom** — `kAtomLeaves = 16`
+consecutive leaves in canonical leaf order, spec §4.5's
+`page_states := MMA_K_QUANTUM`. It is geometry-owned and fixed across every config
+forever, which is exactly why the paged address is `BC`-free and why this path can
+carry it without acquiring a `BC` ([§3](#bc-absent)). `kAtomLeaves` is mirrored in
+`decode.cuh` rather than included, for the same reason `kMaxLevels` is
+([§5](#max-levels)): the decode TUs share no header with the tiled consumer.
+
+The walk resolves an atom's first row as an ELEMENT offset from `p.state`, and the
+two backings differ in that offset and in nothing else:
+
+| backing | `page_tbl` | atom base | slot |
+|---|---|---|---|
+| dense | `nullptr` | `bh * N + (atom << 4)` | the atom itself |
+| paged | `[BH, N/16]` int32 | `slot << 4` | `page_tbl[bh * atoms_per_bh + atom]` |
+
+so `row = state + atom_base + (leaf & 15) * cols` under both, and the dense form
+recombines to `bh * N + leaf` — today's address, bit for bit. Writing the dense arm
+through the atom rather than through the leaf costs nothing and buys the property
+that matters: a topology whose `N` is NOT a whole number of atoms (`(3, 5, 7)`,
+`(7, 9)`, `(33,)` all appear in the gates) still addresses correctly densely, and it
+simply has no paged keying at all — `AtomKeying` refuses to build one.
+
+**The resolve is once per touched ATOM, not per row.** It is a value-keyed cache
+(`if ((leaf >> 4) != cached_atom) reload`), so it costs at most two `int32` loads per
+32-leaf bitmap word and — the part worth stating — it is correct whatever order the
+walk reaches leaves in. The canonical order that makes 16 consecutive rows share a
+slot is what makes it CHEAP; nothing about its correctness depends on it.
+
+The table row is pinned as a plain origin and everything per atom is a displacement
+from it, which is the addressing discipline the chunk consumer's SASS gate forced and
+this path adopts. The widening multiply that forms `atom_base` is paid once per atom
+where the previous code paid one per ROW, so the change strictly reduces it.
+
+<a id="absent-atom"></a>**An absent atom (`slot < 0`) reads as zeros and is not
+written.** That is exact rather than defensive: a step's plan admits its write set
+EXACTLY (`rola.ops.decode._write_atom_bitmap`), so an atom with no slot is outside
+it, and a never-deposited leaf holds zeros in the dense backing too. The
+self-normalizing readout then contributes exactly nothing through it — the
+mechanical form of the dead-leaf argument, gated by
+`tests/tier2_geometry/test_decode_paging.py`.
+
+## <a id="growth"></a>4b. Growth — the step's own new work
+
+A step may deposit into an atom that is not resident. At `T = 1` the write support is
+a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is the
+per-level exact-nonzero indicators' product ORed 16-deep, and
+`rola.ops.decode._write_atom_bitmap` derives it host-side without a launch. The order
+per step is `rola_op`'s at `L = 1`:
+
+```
+_write_atom_bitmap(routes.write)   ->  the step's exact write atoms
+state._decode_entry                ->  plan_exact(..., fresh=False) on the side stream
+arena.wait()                       ->  the ONE event the launch waits on
+_decode_step                       ->  the walk, resolving through the grown table
+```
+
+The pool is reserved once, so admission never moves a base pointer and there is
+nothing for the kernel to discover. The only host synchronization is `plan_exact`'s
+single size read, which is also what sizes the admission.
+
+**What the derivation costs, stated.** `D - 1` broadcast ANDs over a `[BH, N]` bool —
+four times the page table's own bytes, transient, and nothing that scales with `T`.
+The tiled arm's `chunk_stats` kernel is not used at one token: it reduces over a
+`[BH, T, sum_l width_l]` routing stream, and at a population of one that launch would
+be pure overhead. Deriving at atom grain directly is not available in general, because
+an atom is 16 CONSECUTIVE leaves and the mixed radix does not align a level boundary
+with it.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 
@@ -164,7 +228,8 @@ entry sweep and no exit sweep in this kernel.**
 
 ## <a id="state-in-place"></a>11. `state` is read and written in place
 
-`state` is `[BH, N, cols]` with `cols = d_v + 1` (the mass column is
+`state` is the dense `[BH, N, cols]` plane or the arena's `[slots, 16, cols]` one
+([§4](#paged-address)), with `cols = d_v + 1` (the mass column is
 unconditional — raw is dead), and it is read AND
 written in place: a row's read contribution and its write-back are performed by
 the SAME lane in program order. The read-then-write ordering the tiled kernel

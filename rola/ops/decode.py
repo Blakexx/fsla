@@ -38,11 +38,19 @@ own check is defense in depth for a direct caller — and it *raises* rather tha
 silently redirecting to the oracle, because a silent redirect is the same class of
 failure (two implementations behind one call) that the guard exists to prevent.
 
-**UNPAGED ONLY, DELIBERATELY.** §4.5's page granule is the ATOM
-(``page_states := MMA_K_QUANTUM``), which makes the paged address BC-free, but this
-path does not implement it: a page table is REFUSED loudly rather than approximated,
-so that decode's BC-blindness is a property of what it accepts and not of what a
-caller happens to pass.
+**PAGED AND DENSE ARE ONE WALK.** §4.5's page granule is the ATOM
+(``page_states := MMA_K_QUANTUM`` = 16 leaves), which is what makes the paged address
+BC-free, so the whole difference is one indirection resolved once per touched atom:
+a null table means the slot IS the atom and the bytes are the dense path's, exactly.
+An atom with no slot reads as zeros and is not written, which is the same state a
+never-deposited leaf holds densely.
+
+**GROWTH IS THE STEP'S OWN NEW WORK.** A step may write an atom that is not resident.
+At ``T = 1`` the write support is a Cartesian product (the same degeneracy the whole
+module rests on), so the step's write-atom set is derived exactly and host-side from
+the live write digits -- :func:`_write_atom_bitmap` -- and ``plan_exact(...,
+fresh=False)`` admits whatever is new on the arena's side stream, before the launch
+waits on the one event. There is no discovery and nothing for the kernel to grow.
 
 **THE KERNEL-LAYOUT CARRIER.** :class:`FrozenDecodeConfig` answers "what shape is the
 launch?" -- widths, mixed-radix strides, spans, row offsets, word and group counts,
@@ -61,6 +69,7 @@ import torch
 
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
+from rola.ops.paging import MMA_K_QUANTUM
 from rola.planner.schedule import leaf_rate_dials
 from rola.routing.types import Topology
 
@@ -115,9 +124,6 @@ class FrozenDecodeConfig:
     #: carried, validated, and checkable, and so the future M-4 decode kernel (§6b)
     #: inherits it instead of re-plumbing the boundary.
     mma_precision: str = "bf16"
-    #: §4.5; ``None`` on the unpaged path, which is the only path decode implements.
-    page_states: int | None = None
-    atoms_per_bh: int | None = None
 
     @property
     def N(self) -> int:
@@ -255,7 +261,71 @@ def _guard_no_grad(operands) -> None:
             "torch.no_grad, or the differentiable oracle path.")
 
 
-def decode_forward(
+def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
+    """ONE decode step over a routing bundle and a carried state -- the whole surface.
+
+    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`; ``v`` is
+    ``[B, 1, H, d_v]``; ``state`` is a :class:`~rola.state.RoLAState` that CARRIES
+    (a step continues a sequence, so an empty state has nothing to decode from).
+    Returns ``(y, state)`` -- ``y`` shaped ``[B, 1, H, d_v]`` and the SAME state
+    object, updated in place, exactly as :func:`rola.rola_op` returns it.
+
+    The launch machinery -- the frozen carrier and the scratch -- is cached ON THE
+    STATE and never appears here, for the same reason the chunk arm's tables do not:
+    it is how the step runs, not what it computes. The backing is likewise invisible,
+    and its growth is handled below (docs/internals/decode.md#growth).
+    """
+    from rola.expert import PlanOverrides
+
+    overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+    config = state._decode_carrier(routes, decay=decay,
+                                   mma_precision=overrides.mma_precision)
+    #: THE HOST ORDER, `rola_op`'s at `L = 1` (design §A.4/§C.3/§D): the step's exact
+    #: write-atom set, then `plan_exact(..., fresh=False)` on the arena's side stream,
+    #: then the launch's one event wait. The only host synchronization is `plan_exact`'s
+    #: single size read, which also sizes the admission.
+    bitmap = _write_atom_bitmap(routes.write, config) if state.paged else None
+    plane, page_table, arena = state._decode_entry(routes, bitmap)
+    if arena is not None:
+        arena.wait()
+    #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
+    #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
+    #: re-widens here and the cast is exact, the values being bf16-rounded already.
+    y, _, state._decode_workspace = _decode_step(
+        v.to(torch.float32), routes.read, routes.write, routes.g_read, routes.g_write,
+        config, plane, decay=decay, workspace=state._decode_workspace,
+        page_table=page_table)
+    return y, state
+
+
+def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:
+    """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY.
+
+    At ``T = 1`` a leaf is written iff every level's write digit is nonzero, so the
+    write support is the Cartesian product of the per-level exact-nonzero indicators
+    (``schedule.py``'s ``write_mask`` at leaf granularity) and the atom set is that
+    product ORed 16-deep. It is the same object ``rola.ops.chunk.stats`` produces for
+    the tiled arm, derived without it: the stats pass is a kernel launch over a
+    ``[BH, T, sum_l width_l]`` routing stream, and at one token that machinery would
+    cost a launch to reduce over a population of one.
+
+    **ITS COST, STATED.** ``D - 1`` broadcast ANDs over a ``[BH, N]`` bool -- one byte
+    per leaf per batch-head, transient -- against the page table's own ``[BH, N/16]``
+    int32, i.e. four times the table's bytes and nothing that scales with ``T``.
+    Deriving it at atom grain directly is not available in general: an atom is 16
+    CONSECUTIVE leaves and the mixed radix does not align a level boundary with it.
+    """
+    device = write_levels[0].device
+    index = torch.arange(config.N, device=device)
+    live = None
+    for level, width in enumerate(config.widths):
+        digit = (index // config.leaf_stride[level]) % width
+        column = _fold(write_levels[level])[:, digit] != 0
+        live = column if live is None else (live & column)
+    return live.view(-1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
+
+
+def _decode_step(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
@@ -267,25 +337,19 @@ def decode_forward(
     decay=None,
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     workspace: DecodeWorkspace | None = None,
-    paging=None,
+    page_table: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeWorkspace]:
-    """One decode step, in place on ``state``.
+    """The RAW-TENSOR launch, in place on ``state``. The sibling of ``_consumer_forward``.
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
     ``g_write`` is ``[B, 1, H]`` and ``g_read`` is the same or ``None`` under the
-    global arm. ``state`` is ``[B, H, N, d_v + 1]`` and is UPDATED IN PLACE —
+    global arm. ``state`` is the dense ``[B, H, N, d_v + 1]`` plane, or the arena's
+    ``[slots, 16, d_v + 1]`` one under ``page_table``; either is UPDATED IN PLACE --
     every touched row has exactly one owning CTA, warp and lane, so the update needs no
     atomic and is bitwise reproducible.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
     """
-    if paging is not None:
-        raise NotImplementedError(
-            "the decode path is unpaged only. §4.5's page granule is the ATOM "
-            "(page_states := MMA_K_QUANTUM), which is what keeps a paged address "
-            "BC-free -- but this path does not implement paged addressing, so a page "
-            "table is refused rather than approximated.")
-
     _guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
                     *(write_levels_stored or ()),
                     *(decay.dials if decay is not None else ())))
@@ -304,10 +368,26 @@ def decode_forward(
             f"the frozen config says has_decay={config.has_decay} but decay is "
             f"{'absent' if decay is None else 'present'}; the config is frozen for the "
             "sequence and the decay arm is part of it")
-    if state.shape != (B, H, config.N, config.cols):
-        raise ValueError(
-            f"state must be [B, H, N, d_v + 1] = "
-            f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
+    #: The two backings, and the ONE shape rule each. Under a table the plane holds only
+    #: the slots a plan committed, so its leading extent is the arena's and not `BH`;
+    #: without one the plane IS the leaf space. Both are handed to the ABI in the shape
+    #: the kernel indexes, so the reshape below is the whole difference.
+    if page_table is None:
+        if state.shape != (B, H, config.N, config.cols):
+            raise ValueError(
+                f"state must be [B, H, N, d_v + 1] = "
+                f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
+        plane = state.reshape(BH, config.N, config.cols)
+    else:
+        if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):
+            raise ValueError(
+                f"under a page table the state is the arena's plane, "
+                f"[slots, {MMA_K_QUANTUM}, d_v + 1], got {tuple(state.shape)}")
+        if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
+            raise ValueError(
+                f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "
+                f"{(BH, config.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
+        plane = state
 
     if workspace is None or not workspace.matches(config, BH, v.device):
         workspace = DecodeWorkspace.build(config, BH, v.device)
@@ -343,7 +423,7 @@ def decode_forward(
         dials=dials,
         g_write=_fold_scalar(g_write).float(),
         v=_fold(v).float(),
-        state=state.reshape(BH, config.N, config.cols),
+        state=plane,
         bits=workspace.bits,
         pc_coarse=workspace.pc_coarse,
         ws=workspace.ws,
@@ -355,6 +435,7 @@ def decode_forward(
         heads=H,
         n_split=config.n_split,
         eps=config.eps,
+        page_table=page_table,
     )
     return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous(), state, workspace
 

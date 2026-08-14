@@ -61,7 +61,8 @@ class RoLAState:
     """
 
     __slots__ = ("strategy", "conv_state", "_keying", "_widths", "_normalization",
-                 "_batch", "_heads", "_device", "_paging", "_BC", "_arena", "_plane")
+                 "_batch", "_heads", "_device", "_paging", "_BC", "_arena", "_plane",
+                 "_decode_carrier_cache", "_decode_workspace")
 
     def __init__(self, *, strategy: str = "mutable") -> None:
         if strategy in _NAMED_UNBUILT_STRATEGIES:
@@ -76,6 +77,12 @@ class RoLAState:
         #: The layer's short-convolution rings, carried ALONGSIDE the routed state.
         #: They are the layer's lifecycle sugar and the op never reads them.
         self.conv_state: tuple[torch.Tensor | None, ...] | None = None
+        #: The `T = 1` path's LAUNCH MACHINERY -- the frozen carrier and its scratch --
+        #: cached where the sequence is, for the same reason `conv_state` is: it is
+        #: per-sequence and it is not a caller's burden. Neither is read by the chunk
+        #: arm, and a clone does not copy them (they rebuild from their own key).
+        self._decode_carrier_cache = None
+        self._decode_workspace = None
         self._keying: AtomKeying | None = None
         self._widths: tuple[int, ...] | None = None
         self._normalization: str | None = None
@@ -295,6 +302,60 @@ class RoLAState:
         """Take the kernel's final-state plane. Paged states already own theirs."""
         if self._arena is None:
             self._plane = plane
+
+    def _decode_carrier(self, routes, *, decay, mma_precision: str):
+        """The `T = 1` frozen carrier for this sequence, built once and cached HERE.
+
+        It freezes at the prefill/decode boundary and is immutable for the sequence
+        (`docs/internals/decode.md`), so it is rebuilt only when its own key moves --
+        `BH`, the device, and the decay arm, the three facts it is a function of that
+        the state does not already pin. Everything else in it is a topology fact, and
+        the topology is what this state is bound to.
+        """
+        from rola.ops.decode import freeze_decode_config
+
+        key = (routes.batch * routes.heads, routes.device, decay is not None,
+               mma_precision)
+        cached = self._decode_carrier_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        config = freeze_decode_config(
+            routes.topology, routes.normalization, decay=decay is not None,
+            BH=key[0], device=routes.device, mma_precision=mma_precision)
+        self._decode_carrier_cache = (key, config)
+        return config
+
+    def _decode_entry(self, routes, bitmap: torch.Tensor | None):
+        """`(plane, page_table, arena)` for one decode step, with its atoms committed.
+
+        A step CONTINUES a sequence, so unlike :meth:`_kernel_entry` there is no fresh
+        case to serve: the state carries, and the only question is whether this step
+        writes an atom that is not resident yet. `plan_exact(..., fresh=False)` answers
+        it -- residency becomes the UNION, admission is total, and the one size read it
+        costs is the only host synchronization in the step.
+
+        Dense states hand back a VIEW of their own plane, which is what makes the
+        kernel's in-place update the state's update.
+        """
+        if not self.carries:
+            raise RuntimeError(
+                "a decode step continues a carried state, and this one carries nothing: "
+                "at T = 1 there is no prefill to run and no entry state to read. Run the "
+                "sequence's first tokens through rola_op and step from the state it "
+                "returns.")
+        self._require_compatible(routes)
+        if self._arena is not None:
+            #: GROWTH. The atoms this step deposits into join the resident set on the
+            #: arena's side stream; `decode_forward`'s `arena.wait()` is what puts that
+            #: admission before the launch. An atom neither resident nor written stays
+            #: ABSENT and reads inert.
+            self._arena.plan_exact(bitmap, fresh=False)
+            return self._arena.state, self._arena.page_table, self._arena
+        if self._plane.dtype is not torch.float32:
+            self._plane = self._plane.to(torch.float32)
+        return (self._plane.view(self._batch, self._heads, self._keying.N,
+                                 self._keying.cols),
+                None, None)
 
     def _dense_entry(self, routes, *, paging: bool) -> torch.Tensor | None:
         """The `[B, H, N, cols]` entry state the fp64 oracle takes, or `None`.

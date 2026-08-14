@@ -113,10 +113,35 @@ zero-page inertness gate) — so this admits at most a superset of what is carri
 It is deliberately NOT `PageArena.adopt_dense`, which commits the dense limit and
 would reintroduce the footprint the arena exists to avoid.
 
-The layer's LEGACY arms (the tiled consumer for topologies the chunk arm has no built
-arm for, and the `T = 1` decode kernel) also take raw tensors. They cross the state
-object at their branch and nowhere deeper. Aligning decode with the paged state I/O
-is P67 S4.
+The layer's ONE remaining legacy arm — the tiled consumer, for topologies the chunk
+arm has no built arm for — also takes raw tensors. It crosses the state object at its
+branch (`RoLA._dense_carry`) and nowhere deeper, and it keeps that crossing until the
+consumer itself is retired.
+
+## <a id="decode-seam"></a>5b. The `T = 1` seam
+
+`rola.ops.decode.decode_forward(routes, v, state, decay=..., expert=...)` takes and
+returns the state exactly as `rola_op` does; the layer is a pass-through to it. Three
+things live behind that seam and are worth naming because they used to be the caller's:
+
+* **The frozen carrier and the scratch** (`FrozenDecodeConfig`, `DecodeWorkspace`) are
+  cached ON THE STATE (`_decode_carrier_cache`, `_decode_workspace`). They are
+  per-sequence launch machinery, exactly like `conv_state` beside them, and the carrier
+  is what "frozen at the prefill/decode boundary" means — it is rebuilt only when its
+  own key (`BH`, device, the decay arm, the precision pin) moves. `clone()` does not
+  copy them: they rebuild from that key.
+* **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
+  or a VIEW of the dense plane — the view is what makes the kernel's in-place update
+  the state's update. Dense and paged compute the same bytes
+  ([`decode.md` §4](decode.md#paged-address)).
+* **Growth.** A step may write an atom that is not resident, so `_decode_entry` plans
+  the step's exact write atoms with `plan_exact(..., fresh=False)`: residency becomes
+  the UNION and the launch waits on the one event
+  ([`decode.md` §4b](decode.md#growth)).
+
+A decode step CONTINUES, so `_decode_entry` refuses a state that carries nothing —
+there is no prefill at one token and no entry state to read. That is a computational
+impossibility and not a policy, which is the only kind of refusal this surface has.
 
 ## <a id="clone"></a>6. `clone()` is the transition
 

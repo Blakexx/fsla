@@ -13,11 +13,12 @@
 //      over-enumeration, no per-row membership test anywhere on this path.
 //   2. BC IS ABSENT AND THAT IS THE POINT (spec I1). Nothing here, in decode_expand.cu
 //      or in decode.cu is an expression in BC; work is partitioned over bitmap WORDS.
-//   3. UNPAGED ONLY, DELIBERATELY. A paged decode address would today have to know BC,
-//      so decode REFUSES a page table -- a hard TORCH_CHECK, never a silent fallback.
+//   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
+//      what keeps the address BC-free; a null page table means the slot IS the atom and
+//      the bytes are the dense path's, exactly.
 //
-// The §6b degeneracy table, the Kronecker size ledger, the BC argument and the paging
-// refusal: docs/internals/decode.md
+// The §6b degeneracy table, the Kronecker size ledger, the BC argument and the paged
+// base translation: docs/internals/decode.md
 
 #include <cstdint>
 
@@ -51,6 +52,15 @@ constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: walk skips empty groups with it. docs/internals/decode.md#coarse-group
 constexpr int kCoarseGroupWords = 32;
 
+//: THE PAGE GRANULE, spec §4.5's `page_states := MMA_K_QUANTUM`, mirrored here because
+//: the decode TUs share no header with the tiled consumer. It is geometry-owned and
+//: fixed across every config forever, which is what makes the paged address BC-free.
+//: docs/internals/decode.md#the-atom
+constexpr int kAtomLeaves = 16;
+constexpr int kAtomShift = 4;
+constexpr int kAtomMask = kAtomLeaves - 1;
+static_assert(1 << kAtomShift == kAtomLeaves, "kAtomShift must be log2(kAtomLeaves)");
+
 //: EVERY POINTER AND EXTENT ONE DECODE STEP NEEDS, and nothing the kernel could cheaply
 //: recompute. Field by field: docs/internals/decode.md#params-amps
 struct DecodeParams {
@@ -73,9 +83,13 @@ struct DecodeParams {
   const float* g_write;  // [BH]
   const float* v;        // [BH, d_v]
 
-  //: `[BH, N, cols]`, `cols = d_v + is_global`. Read AND written in place by the SAME
-  //: lane in program order: docs/internals/decode.md#state-in-place
+  //: DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + is_global`.
+  //: Read AND written in place by the SAME lane in program order:
+  //: docs/internals/decode.md#state-in-place
   float* state;
+  //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
+  //: slot IS the atom. ONE base translation for both: docs/internals/decode.md#paged-address
+  const int32_t* page_tbl;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   //: §1.1's exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at
@@ -92,6 +106,7 @@ struct DecodeParams {
   int32_t* ctr;  // [BH]
 
   int64_t N;
+  int atoms_per_bh;  // N / kAtomLeaves; the page table's row pitch. PAGED backing only.
   int BH;
   int H;
   int D;

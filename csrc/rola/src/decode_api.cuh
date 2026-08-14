@@ -32,7 +32,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps);
+                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table);
 
 }  // namespace decode
 }  // namespace rola
