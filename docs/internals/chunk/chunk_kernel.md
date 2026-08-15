@@ -424,11 +424,25 @@ already staging into. `rendezvous()` does not fence them — `__syncthreads` ord
 memory accesses, not outstanding asynchronous copies — so each item ends with
 `stage_wait<0>()` before its barrier, and only when another item follows.
 
-**An arm the loop does not fit carries no persistent variant.** `(C=64, BC=128, D=2, B=64)`
+**The regime is measured, and the plan is what respects it.** On sm_86 at
+`BH = 32`, `N = 4096`, the persistent grid beats the full one by 12–47 % of kernel
+time at `ρ ≤ 0.125` and LOSES by 13–47 % at `ρ = 1`, crossing over near
+`ρ* ≈ 0.25`. The loss at high density is not tail quantization: it is serialization
+— a CTA's work items cannot overlap each other's prologues and epilogues the way
+the hardware overlaps whole CTAs across waves, and the re-use fence drains the
+copy pipeline between every pair. So the sparse grid is a PLAN CHOICE, taken by
+handing the launch a bitmap, and there is no density test anywhere in the kernel
+or the dispatch. The full-grid path is unaffected either way, because it is a
+different compiled variant.
+
+**An arm the loop does not fit carries no persistent variant.** Five do not, for two measured reasons the generator states. `(C=64, BC=128, D=2, B=64)`
 declares `reg_floor` 255, the ISA's whole per-thread budget; a loop counter added to it
-spills inside the main loop whatever else is trimmed. The answer to a configuration a
+spills inside the main loop whatever else is trimmed. The four `C=16, BC=64` arms have the
+shortest super-chunk loop and the lowest register floor in the manifest, and `ptxas`
+answers the loop's added pressure by sinking `(bh)`-keyed widening multiplies INTO that
+loop, where the addressing discipline forbids them. The answer to a configuration a
 strategy costs too much on is a different configuration, never a special-cased path, so
-that arm runs the full grid and asking it for the sparse one is refused by name. The set is
-the generator's (`CHUNK_NO_PERSIST`), a measured declaration of the same kind as
-`reg_floor` and falsifiable the same way: the spill manifest fails if an arm listed as
-fitting does not.
+those arms run the full grid and asking one for the sparse grid is refused by name. The
+set is the generator's (`CHUNK_NO_PERSIST`), a measured declaration of the same kind as
+`reg_floor` and falsifiable the same way: the spill manifest and the SASS gate both fail
+on an arm listed as fitting that does not.

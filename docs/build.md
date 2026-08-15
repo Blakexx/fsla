@@ -50,7 +50,7 @@ mamba-ssm require the same thing for the same reason.
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. The chunk consumer's 42 kernel instantiations are spread
+5. **Compile.** `ninja`. The chunk consumer's 74 kernel instantiations are spread
    over three generated translation units (`csrc/rola/src/instantiations/`, 5
    generated files in all), so the matrix parallelizes across `MAX_JOBS` processes
    instead of serializing inside one `cicc`.

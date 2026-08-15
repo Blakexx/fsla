@@ -367,7 +367,7 @@ gate green.
 
 **`python tools/gen_shards.py --check`** regenerates the generated instantiation
 sources into memory and diffs them against the committed files — post-D2, **5
-generated files, 42 instantiations over 3 shards** (it was 10 files over 4 shards
+generated files, 74 instantiations over 3 shards** (it was 10 files over 4 shards
 plus the tiled consumer's `dispatch_table.inc`). Generated sources are
 checked in so that what is reviewed is what compiles; this is what keeps that a
 fact. `setup.py` runs it before compiling and CI runs it in the CPU lane.
