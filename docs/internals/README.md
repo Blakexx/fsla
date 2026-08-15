@@ -1,8 +1,12 @@
 # `docs/internals/` — the source mirror
 
 One markdown file here per source file under `csrc/rola/`, at the same relative
-path (`csrc/rola/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
-`csrc/rola/src/paging/vmm_owner.cu` → `docs/internals/paging/vmm_owner.md`).
+path minus the `src/` component the mirror does not repeat
+(`csrc/rola/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
+`csrc/rola/src/paging/vmm_owner.cu` → `docs/internals/paging/vmm_owner.md`). A `.cu`
+and its `.cuh` share one doc, since they are one component. The source families —
+`chunk/`, `decode/`, `entmax/`, `paging/` — therefore appear here as the same
+directories.
 
 The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc that
 no test catches. Deleting the doc with the source is therefore part of deleting
