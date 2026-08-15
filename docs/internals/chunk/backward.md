@@ -64,6 +64,25 @@ it, is `nw - above` with the chunk's own total `nw`, known at close.
 Scan A and Scan B associate their sums differently by construction, so the gate on
 this operator is ratio-to-floor and never bit-identity.
 
+## <a id="readout-window"></a>The readout window is two things in sequence
+
+`so` — the fp32 plane `dv`'s partial is staged into before the fan-in — is DEAD
+from `drain_dv` to the end of the chunk. `d gw`'s token-major reduction needs the
+entry mass column `dz` published per slot, and that is `BCg` floats against the
+window's `C · LdO`, so it costs **nothing**: the two phases are separated by a
+barrier and share the bytes. `GeomB::win_bytes` is the max of the two and a
+`static_assert` holds it there, so a future overlay cannot silently outgrow it.
+
+That is also the room the per-slot `dW` will want. Its adjoint state has to arrive
+transposed — `[slot][channel]` rather than the accumulator's `[channel][slot]` —
+because (A.18)'s `k` axis is `d_v`, which is the carve's own axis, so no unit can
+finish the contraction from its own registers. Writing each unit's 16 channels into
+a shared `[slots][d_v]` plane makes the writes DISJOINT (no cross-unit sum at all)
+and lets every unit then read all 64 channels for a quarter of the slots. Carved a
+quarter of the slots at a time — `[BCg/4][d_v + kPadE]` bf16 = 4,608 B — it fits
+inside this window beside `dz` (512 B) with room over, so the whole per-slot `dW`
+phase costs no shared memory beyond what `dv` already owns.
+
 ## <a id="two-grams"></a>Two Grams, one buffer
 
 `dv[j]` reads the adjoint state the write token `j` **leaves the chunk with** —

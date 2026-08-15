@@ -52,18 +52,24 @@ struct GeomB {
   //: ungained so `d gw` can read the level product alone, and the gain is applied
   //: once, on the readout's token axis -- docs/internals/chunk/backward.md#dw-slotsum
   static constexpr int gain_bytes = C * (int)sizeof(float);
-  //: `dz` published per slot, so a token-major reduction can reach it
+  //: THE READOUT WINDOW IS TWO THINGS IN SEQUENCE, and it is sized for the
+  //: larger: `dv`'s fp32 staging until the drain frees it, then `dz` published
+  //: per slot for `d gw`'s token-major reduction.  They never overlap, so the
+  //: mass column costs nothing.  The phase that comes next -- the per-slot dW's
+  //: transposed adjoint state -- is carved to fit here as well:
+  //: docs/internals/chunk/backward.md#readout-window
   static constexpr int dz_bytes = BCg * (int)sizeof(float);
+  static constexpr int out_bytes = C * LdO * (int)sizeof(float);
+  static constexpr int win_bytes = out_bytes > dz_bytes ? out_bytes : dz_bytes;
   //: ONE GRAM BUFFER, AND SCAN B NEEDS TWO GRAMS.  `dv`'s intra term contracts
   //: over SLOTS (the forward's own `R.W^T`) and `dW`'s contracts over `d_v`
   //: (`dnum.v^T`); two resident buffers reach `cta_target = 1` and the arm's
   //: occupancy is not negotiable, so the two share this one across disjoint
   //: phases -- docs/internals/chunk/backward.md#two-grams
   static constexpr int gram_bytes = C * LdG * (int)sizeof(__nv_bfloat16);
-  static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16)
-                               + GRP * C * LdO * (int)sizeof(float) + grad_bytes + dden_bytes
-                               + gain_bytes + dz_bytes + gram_bytes + (1 + kAheadExtra) * idx_slot
-                               + form_bytes;
+  static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16) + GRP * win_bytes
+                               + grad_bytes + dden_bytes + gain_bytes + gram_bytes
+                               + (1 + kAheadExtra) * idx_slot + form_bytes;
   static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
@@ -500,17 +506,23 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   __nv_bfloat16* sw = sr + C * LdS;
   __nv_bfloat16* sg = sw + C * LdS;
   float* so = reinterpret_cast<float*>(sg + C * G::LdG);
-  float* sgrad = so + C * LdO;
+  float* sgrad = reinterpret_cast<float*>(reinterpret_cast<char*>(so) + G::win_bytes);
   float* sdd = sgrad + kUnits * C;
   float* sgw = sdd + C;
-  float* sdz = sgw + C;
-  char* sidx = reinterpret_cast<char*>(sdz + BCg);
+  char* sidx = reinterpret_cast<char*>(sgw + C);
+  //: THE READOUT WINDOW, RE-READ.  `so` stages `dv` until the drain frees it;
+  //: `sdz` then publishes the entry mass column for `d gw` in the same bytes.
+  //: One region, two phases, a barrier between --
+  //: docs/internals/chunk/backward.md#readout-window
+  float* const sdz = so;
   uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
   static_assert((2 * C * LdS + C * G::LdG) % 8 == 0, "the fp32 region must start 16-byte aligned");
-  static_assert((C * LdO + kUnits * C + C + C + BCg) % 4 == 0,
+  static_assert((G::win_bytes / (int)sizeof(float) + kUnits * C + C + C) % 4 == 0,
                 "the index ring must start 16-byte aligned");
+  static_assert(G::win_bytes >= (int)(BCg * sizeof(float)),
+                "the readout window must cover every phase that overlays it");
   static_assert(G::idx_slot % 16 == 0,
                 "the formed schedule follows the index ring and must stay aligned");
 
@@ -854,10 +866,6 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
                             : 0.f;
       }
     }
-    //: `dz` AS THIS CHUNK ENTERS IT -- the adjoint arriving from the future, which
-    //: is what every write-side term reads.  The fold updates it at the end of the
-    //: iteration, so publishing here publishes the entry value.
-    sdz[gtid] = dz_s;
 
     stage_wait<STAGES - 2>();
     rendezvous();  // (1) panels and both staged tiles visible; the previous
@@ -1081,7 +1089,15 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       drain_dwsum(dc, nw);
     }
 
-    rendezvous();  // (2b) `sgrad` has been drained and is free for d gw's own sum
+    rendezvous();  // (2b) `so` and `sgrad` are drained; the window is free
+
+    //: `dz` AS THIS CHUNK ENTERS IT -- the adjoint arriving from the future, which
+    //: is what every write-side term reads.  The fold updates it at the end of the
+    //: iteration, so this is the entry value, and it goes into the window the
+    //: readout has just given up.
+    sdz[gtid] = dz_s;
+
+    rendezvous();  // (2b') the entry mass column is visible
 
     //: (A.11) d gw[j] = sum_s dW[j,s] * U[j,s], assembled from three partials that
     //: all land in `sgrad` and all meet at the same fan-in:
