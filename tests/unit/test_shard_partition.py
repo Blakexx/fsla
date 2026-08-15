@@ -34,9 +34,8 @@ shard, no unresolved per-arm wrapper, and every ratified name present. Two
 gates, two questions, deliberately.
 
 **P67 D2-b rewrote this file for the chunk shards** (ruling R-9). Its subject
-was the TILED consumer's 256 instantiations across eight shards, matched by
-name (``consumer_*.cu``, ``consumer_launch.cuh``, ``consumer_kernel.cuh``), and
-that consumer retires. The structural-membership STANDARD outlives it, so the
+was the retired tiled consumer's 256 instantiations across eight shards, matched
+by source-file name. The structural-membership STANDARD outlives it, so the
 file was rewritten rather than deleted. Two claims changed shape with the
 subject and are recorded here rather than silently dropped:
 

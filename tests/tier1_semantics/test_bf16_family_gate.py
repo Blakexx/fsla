@@ -35,7 +35,8 @@ RETIRED WITH THEIR SUBJECTS, both already inert before this commit:
 * **M2**, the decay-clock mutant (`write_levels_stored` at bf16 -- the §4.7
   exponent-amplification argument that makes "the clock stays fp32" a checked
   property). Decay is retired from the operator: there is no clock in the kernel
-  arm to pin, and `write_levels_stored` was a `_consumer_forward` argument. It
+  arm to pin, and `write_levels_stored` was an argument of the retired tiled
+  entry. It
   was `pytest.skip`-ed at the decay retirement, so its removal changes nothing
   that ran.
 * **the decay arm** of the family-budget and T-scaling rows, for the same

@@ -43,8 +43,8 @@ EPS_SITES = (
     ("rola/ops/decode.py", "freeze_decode_config"),
 )
 
-#: P67 D2-b dropped `("rola/ops/consumer.py", "_consumer_forward")`: the tiled
-#: consumer retires. Its replacement is NOT another row here, because the chunk arm
+#: P67 D2-b dropped the retired tiled consumer's row. Its replacement is NOT
+#: another row here, because the chunk arm
 #: takes no epsilon PARAMETER -- `rola/ops/chunk.py` passes the constant straight
 #: into the launch. Rule 3 below is what covers it: a literal epsilon anywhere in
 #: the package is refused wherever it appears, parameter or not.

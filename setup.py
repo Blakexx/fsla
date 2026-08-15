@@ -24,7 +24,7 @@ R5     a vendored codegen INPUT that does not match its recorded pin        ``_g
 ``csrc/third_party/cutlass`` vendors CUTLASS/CuTe headers. Header-only or not, every
 line of it that the kernel instantiates is code ``ptxas`` assembles, so a silent edit
 to a vendored header moves the register allocation the manifest ratified exactly as an
-edit to ``consumer_kernel.cuh`` would. ``_gate_vendored`` therefore hashes the whole
+edit to ``chunk/chunk_kernel.cuh`` would. ``_gate_vendored`` therefore hashes the whole
 vendored subtree and compares it against ``PIN.json``'s recorded digest BEFORE the
 compile, in the same pass as rules 1 and 3, and the pin (upstream, tag, commit, digest)
 is stamped into ``rola/_build_config.py`` so an installed wheel can answer "which
@@ -105,9 +105,9 @@ ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") i
 #: it from this constant, so nothing in ``csrc/`` names it; the C++ namespaces
 #: (``rola``, ``rola::mma``, ``rola::paging``) and every kernel symbol are untouched --
 #: which is why the per-arch manifests diff at ZERO value changes across this move.
-#: The manifests key on MANGLED INSTANTIATION NAMES of ``rola::consumer::
-#: consumer_forward_kernel``, and the module-init symbol they do not contain is the
-#: only thing this rename can move.
+#: The manifests key on MANGLED INSTANTIATION NAMES of
+#: ``rola::chunk::compacted_kernel``, and the module-init symbol they do not contain
+#: is the only thing this rename can move.
 MODULE_NAME = "rola._C"
 
 
@@ -327,11 +327,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
         #: THE RATIFIED SHARD MEMBERSHIP, `{shard: members_sha256}`, taken from the
         #: manifest rather than recomputed. It is what the dispatch table's rows are
         #: joined against at runtime: a row whose shard membership is not the one that
-        #: was MEASURED describes an arm nobody has register or spill numbers for, and
-        #: `rola.planner.dispatch_table` filters it rather than planning against it.
-        #: An installed wheel carries no `tools/manifests/`, so without this the join
-        #: could only be made from a repository checkout -- which is the half of the
-        #: closed world a user does not have.
+        #: was MEASURED describes an arm nobody has register or spill numbers for.
+        #: An installed wheel carries no `tools/manifests/`, so without this the
+        #: membership could only be read from a repository checkout -- which is the
+        #: half of the closed world a user does not have.
         "shards": {name: block["members_sha256"]
                    for name, block in sorted(manifest["shards"].items())},
         "ptx_jit_fallback": False,
@@ -371,23 +370,18 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 # ---------------------------------------------------------------------------
 # the extension
 # ---------------------------------------------------------------------------
-#: THE HAND-WRITTEN TRANSLATION UNITS. The consumer's 512 kernel instantiations are
-#: NOT here: they live in the generated shards under `csrc/rola/src/instantiations/`,
-#: which `shard_sources()` appends. `consumer.cu` is now the dispatch and the torch
-#: entry only, and compiles like the host file it is.
+#: THE HAND-WRITTEN TRANSLATION UNITS. The chunk consumer's kernel instantiations
+#: are NOT here: they live in the generated shards under
+#: `csrc/rola/src/instantiations/`, which `shard_sources()` appends. `chunk.cu` is
+#: the dispatch and the torch entries only, and compiles like the host file it is.
 SOURCES = [
     "csrc/rola/rola_api.cpp",
-    "csrc/rola/src/consumer.cu",
-    # TRACK D (thunder §6b): the T=1 decode path. Two TUs, purely additive -- the tiled
-    # consumer's sources are untouched and the decode kernels share no header with it.
+    # TRACK D (thunder §6b): the T=1 decode path, two TUs.
     "csrc/rola/src/decode_expand.cu",
     "csrc/rola/src/decode.cu",
     "csrc/rola/src/entmax.cu",
     "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
-    # P69: the CHUNK consumer (the ladder operator, adopted).  chunk.cu is
-    # dispatch+entries only; its instantiations are generated shards under
-    # instantiations/ exactly like the consumer's.
     "csrc/rola/src/chunk/chunk.cu",
 ]
 
@@ -395,31 +389,31 @@ SOURCES = [
 def shard_sources() -> list[str]:
     """The generated instantiation shards, TAKEN FROM THE GENERATOR.
 
-    Not globbed off the disk: a shard file that the matrix definition does not
-    produce must not be able to enter the build by being dropped in the directory,
-    and one it does produce must not be able to leave the build by being deleted.
-    The `--check` gate below is what makes the two agree.
+    Not globbed off the disk: a shard file that the arm list does not produce must
+    not be able to enter the build by being dropped in the directory, and one it does
+    produce must not be able to leave the build by being deleted. The `--check` gate
+    below is what makes the two agree.
     """
-    names = sorted(gen_shards.shards()) + sorted(gen_shards.chunk_shards())
+    names = sorted(gen_shards.chunk_shards())
     return [f"csrc/rola/src/instantiations/{name}.cu" for name in names]
 
 
 def _gate_shards() -> None:
-    """The checked-in shards are the ones the matrix definition produces.
+    """The checked-in shards are the ones the arm list produces.
 
     Runs BEFORE the compile, with the other cheap gates. Generated sources are
     committed so that what is reviewed is what compiles (closed-world); that promise
     is only worth anything if a stale generated file fails the build instead of
-    silently shipping a matrix nobody wrote.
+    silently shipping an arm list nobody wrote.
     """
     proc = subprocess.run([sys.executable, str(ROOT / "tools" / "gen_shards.py"), "--check"],
                           cwd=str(ROOT))
     if proc.returncode != 0:
         raise RuntimeError(
-            "the checked-in instantiation shards do not match the matrix definition "
+            "the checked-in instantiation shards do not match the arm list "
             "in tools/gen_shards.py. Regenerate them (`python tools/gen_shards.py "
             "--write`) and review the diff -- a generated file that disagrees with "
-            "its generator is a matrix nobody wrote."
+            "its generator is an arm list nobody wrote."
         )
 
 
@@ -498,7 +492,7 @@ class RoLABuildExtension(BuildExtension):
         it either: a `__global__` template's host stub is weak and the linker keeps
         one. The fatbin can: it carries one device entry per instantiating object.
         `tools/fatbin_entries.py` counts them, per arch, and checks each one against
-        the shard the matrix says owns it.
+        the shard the arm list says owns it.
         """
         so = next(Path(self.build_lib).rglob("_C*.so"), None) or \
             next((ROOT / "rola").glob("_C*.so"), None)
@@ -509,7 +503,7 @@ class RoLABuildExtension(BuildExtension):
         if subprocess.run(cmd, cwd=str(ROOT)).returncode != 0:
             raise RuntimeError(
                 "the built fatbin does not carry exactly one device entry per "
-                "instantiation in the shard the matrix assigns it to. The binary is "
+                "instantiation in the shard the arm list assigns it to. The binary is "
                 "NOT shippable: either the shard partition and the dispatch have "
                 "drifted apart, or the instantiations are being duplicated across "
                 "translation units and nothing is actually sharded."

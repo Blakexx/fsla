@@ -1,7 +1,7 @@
 // csrc/rola/src/chunk/chunk.cu -- the chunk consumer's DISPATCH and torch
 // entries (adopted from the ladder's rung 6G).  This TU never touches
 // a kernel symbol: arms arrive as extern declarations satisfied by the
-// instantiation shards, exactly the consumer family's discipline.
+// instantiation shards, which is what keeps one arm's codegen in one object.
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda_bf16.h>

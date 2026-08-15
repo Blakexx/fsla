@@ -17,10 +17,10 @@ check run against a planted violation, plus the CUDA-graph capture detector
 proved in both directions — are in `test_stream_discipline_fixture.py`.
 
 **P67 D2-b re-anchored the cell onto the CHUNK arm, and onto the FACADE.** The
-spies watched a `_consumer_forward` launch driven with a hand-built `Plan`; the
-arena, the side stream, `plan_exact` and `wait` are all unchanged, so the
-discipline claim survives its executor whole and only the launch it brackets
-moves. It is now driven through `rola_op(state=rola.state())` — the production
+spies used to watch the retired tiled launch, driven through a private entry with
+a hand-built launch geometry; the arena, the side stream, `plan_exact` and `wait`
+are all unchanged, so the discipline claim survives its executor whole and only the
+launch it brackets moves. It is now driven through `rola_op(state=rola.state())` — the production
 sequence — rather than through a private entry, which makes the ordering claim
 one about what SHIPS: the facade runs the stats pass, `RoLAState._kernel_entry`
 plans the arena on its side stream, and `rola.ops.chunk.run` issues the single

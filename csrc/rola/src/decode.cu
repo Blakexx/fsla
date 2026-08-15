@@ -8,13 +8,13 @@
 //   1. There is one token, so the contraction index is the LEAF and the output index is
 //      the COLUMN. Lanes map to OUTPUT COLUMNS: no MMA, and no warp reduction either --
 //      the dot never crosses a lane.
-//   2. DETERMINISM IS A SHIPPED PROPERTY HERE and it diverges from the tiled consumer
+//   2. DETERMINISM IS A SHIPPED PROPERTY HERE and it diverges from the prefill arm
 //      ON PURPOSE: `y` is combined in SLOT ORDER, never by an `atomicAdd` race, because
 //      decode's `y` picks the next token and a last-bit flip compounds
 //      autoregressively. The state needs no argument at all -- the row partition is a
 //      PARTITION and no atomic touches `state`.
 //   3. NO BARRIER PER ANYTHING: two `__syncthreads` per CTA per step (three when
-//      `n_split > 1`) against the tiled consumer's six per candidate tile.
+//      `n_split > 1`) against a tiled prefill's six per candidate tile.
 //
 // The GEMV/GEMM argument, the measured reproducibility divergence, the barrier ledger,
 // and the derivation that collapses the causal intra Gram into UPDATE-THEN-READ:

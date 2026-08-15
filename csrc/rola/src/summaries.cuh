@@ -32,7 +32,7 @@
 
 //: For `kMmaKQuantum`, §6's MMA k-extent and therefore the quantum every gathered
 //: extent rounds up to. Taken from the one home rather than restated here: this pass's
-//: bin count and the consumer's atom granularity are the SAME number, and the host
+//: bin count and the engine's atom granularity are the SAME number, and the host
 //: entry checks the derived bin count against the caller's so a drift fails loudly.
 //: docs/internals/arch_table.md#mma-quantum
 #include "arch_table.cuh"

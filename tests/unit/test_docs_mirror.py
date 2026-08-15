@@ -39,7 +39,7 @@ MIRROR = ROOT / "docs" / "internals"
 SOURCE_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
 
 #: A doc reference as it appears in a source comment, e.g.
-#: ``docs/internals/consumer_kernel.md#clock-prefix-fp32``. The anchor is optional: a
+#: ``docs/internals/chunk/chunk_kernel.md#state-epilogue``. The anchor is optional: a
 #: file-header block may point at a whole doc.
 REF = re.compile(r"docs/internals/([A-Za-z0-9_/]+\.md)(?:#([A-Za-z0-9_-]+))?")
 
@@ -74,7 +74,7 @@ def _sources() -> list[Path]:
 def _mirror_for(source: Path) -> Path:
     """The doc a source file must have.
 
-    ``csrc/rola/src/consumer_kernel.cuh`` -> ``docs/internals/consumer_kernel.md``
+    ``csrc/rola/src/decode.cuh``          -> ``docs/internals/decode.md``
     ``csrc/rola/src/paging/vmm_owner.cu`` -> ``docs/internals/paging/vmm_owner.md``
     ``csrc/rola/rola_api.cpp``            -> ``docs/internals/rola_api.md``
 

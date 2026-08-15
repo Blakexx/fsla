@@ -6,9 +6,9 @@ include that name's home first. Nothing in the build says so, the layering it cl
 in its own file header is false, and the break surfaces later — when a new caller
 includes the header first, or when the include that was carrying it is removed for an
 unrelated reason. It is the standard failure mode of splitting one file into layers,
-and this project met it the first time it did: after the R2 extraction
-`smem_layout.cuh` used `kMaxWords` from `consumer.cuh` and compiled only because
-`consumer_kernel.cuh` included `consumer.cuh` four lines earlier.
+and this project met it the first time it did: an extracted layout header used a
+constant from its caller's header and compiled only because that caller had
+included the constant's home four lines earlier.
 
 **HOW.** One generated translation unit per header, containing that header twice and
 nothing else. Twice, because the second inclusion is what proves the include guard:

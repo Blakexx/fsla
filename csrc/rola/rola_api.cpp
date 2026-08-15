@@ -5,9 +5,9 @@
 // recompiled once per `-gencode` target for no benefit. `flash_api.cpp` is the
 // convention this follows.
 //
-// ONE MODULE, NOT TWO. The consumer, the decode sibling and the §7.1 paging arena all
-// register here, because they share one contract and a split would put a cross-module
-// ABI through the middle of it.
+// ONE MODULE, NOT TWO. The chunk consumer, the decode sibling and the §7.1 paging
+// arena all register here, because they share one contract and a split would put a
+// cross-module ABI through the middle of it.
 //
 // The module name is supplied by the build (`TORCH_EXTENSION_NAME`). NOTHING in this
 // file or under `src/` spells it, so the packaging layout can move without touching a
@@ -25,7 +25,6 @@
 
 #include "src/decode_api.cuh"
 #include "src/entmax.cuh"
-#include "src/host_api.cuh"
 #include "src/summaries.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/chunk/chunk_api.cuh"
@@ -33,8 +32,7 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  // P69: the CHUNK consumer (the adopted ladder operator) -- raw entries at
-  // the private seam; rola_op adoption wires them at stage C.
+  // ---- the chunk consumer, the adopted operator ---------------------------
   m.def("chunk_union_table", &rola::chunk::union_table,
         "chunk consumer: the precomputed membership union table");
   //: the state plane is the CALLER'S, on both sides; absent on both is a fresh
@@ -67,29 +65,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("entmax_union_backward", &rola::entmax::union_backward,
         "union entmax VJP into read/write logits");
 
-  // ---- the consumer -------------------------------------------------------
-  m.def("rola_consumer_forward", &rola::rola_consumer_forward,
-        "RoLA consumer forward (spec §3/§5)");
-  m.def("rola_consumer_occupancy", &rola::rola_consumer_occupancy,
-        "the driver's CTAs/SM for the consumer kernel at its real SMEM size");
-  m.def("rola_consumer_check_arch_table", &rola::rola_consumer_check_arch_table,
-        "validate the consumer's compile-time SM-resource table against the driver "
-        "(the launch bounds in this binary were derived from it)");
-  m.def("rola_consumer_smem_bytes", &rola::rola_consumer_smem_bytes,
-        "the consumer kernel's dynamic shared-memory footprint per CTA");
-  m.def("rola_dispatch_table", &rola::rola_dispatch_table,
-        "every row of the consumer's dispatch table: (BC, d_v, D, decay, "
-        "group_tokens, smem_bytes, shard, src_key). Touches no device.");
-  m.def("rola_max_dynamic_smem_bytes", &rola::rola_max_dynamic_smem_bytes,
-        "cudaDevAttrMaxSharedMemoryPerBlockOptin -- the device fact a row's footprint "
-        "is admitted against");
-  m.def("rola_sm_shared_bytes", &rola::rola_sm_shared_bytes,
-        "cudaDevAttrMaxSharedMemoryPerMultiprocessor -- the per-SM SMEM budget the "
-        "plan records (§10 ruling)");
-
   // ---- the T=1 decode path (thunder §6b) ----------------------------------
-  //: A SIBLING of the consumer, not a specialization of it: shared produce contract,
-  //: own consumer, frozen config. Two of its three entries are capacity GATES rather
+  //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
+  //: contract, own consumer, frozen config. Two of its three entries are capacity GATES rather
   //: than operations -- docs/internals/rola_api.md#registered-entries
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",

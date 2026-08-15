@@ -244,8 +244,8 @@ def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_f
 
 
 #: RETIRED at P67 D2-b: `test_the_private_kernel_path_refuses_an_unratified_
-#: activation_rather_than_running_it`. Its subject was `_consumer_forward`'s own
-#: activation check -- a refusal at the private tiled entry, so that a caller who
+#: activation_rather_than_running_it`. Its subject was the retired tiled arm's own
+#: activation check -- a refusal at its private entry, so that a caller who
 #: bypassed the dispatch could not launch something nobody measured. The chunk arm
 #: has no such entry to bypass (`chunk.run` has exactly one caller and it is inside
 #: the autograd node, asserted structurally in `tests/unit/test_interface.py`), and

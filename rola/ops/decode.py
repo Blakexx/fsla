@@ -413,7 +413,7 @@ def _decode_step(
     workspace: DecodeWorkspace | None = None,
     page_table: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeWorkspace]:
-    """The RAW-TENSOR launch, in place on ``state``. The sibling of ``_consumer_forward``.
+    """The RAW-TENSOR launch, in place on ``state``. The prefill arm's sibling.
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
     ``g_write`` is ``[B, 1, H]`` and ``g_read`` is the same or ``None`` under the
