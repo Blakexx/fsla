@@ -39,6 +39,7 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
+from tests.tier1_semantics.tolerances import BF16_RTOL  # noqa: F401
 
 #: Every test in this file launches the V3 consumer CUDA kernel. The ``cuda``
 #: marker is what makes ``-m "not cuda"`` actually deselect them: the ``skipif``
@@ -53,10 +54,7 @@ pytestmark = [
 _ROUTING = IndependentRouting(
     tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
 
-#: The DERIVED bf16 family budget (see the module docstring). bf16 storage is
-#: the only arm the kernel has, so this is the one tolerance the whole file
-#: holds to.
-BF16_RTOL = 1e-2
+
 
 
 #: How many token segments the output charge below is taken over. Eight is the

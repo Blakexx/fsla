@@ -15,10 +15,10 @@ import math
 
 import torch
 
-from rola.ops.consumer import _consumer_forward
+from rola.ops import chunk as _chunk
+from rola.ops.chunk import CHUNK_TOKENS
 from rola.ops.naive import naive_rola
-from rola.ops.paging import PageArena
-from rola.planner.schedule import TOKEN_WORD, Plan, build_schedule
+from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -27,6 +27,15 @@ from rola.routing.types import (
     Topology,
 )
 from tests.conformance.families import Family
+
+#: The operator's token quantum, re-exported so a family fixture and the
+#: checkers that read a "word" of tokens both name ONE number. P67 D2-b
+#: re-anchored it: it used to be the tiled planner's `TOKEN_WORD` (the 32-token
+#: scan word `build_schedule` worked in), and it is now the chunk arm's chunk
+#: length -- the SAME 32, but now the quantum the shipped operator actually
+#: has, with `T % CHUNK_TOKENS != 0` refused by the dispatch rather than
+#: handled as a partial word.
+TOKEN_WORD = CHUNK_TOKENS
 
 _ROUTING = IndependentRouting(
     tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
@@ -79,8 +88,43 @@ def _leaf_product(levels, widths):
     return out
 
 
+class _Bundle:
+    """The routing bundle `rola.ops.chunk` reads, over hand-built tensors.
+
+    `RouteFactors` refuses direct construction on purpose -- a bundle whose
+    statistics did not come from the derivation code could disagree with its own
+    tensors -- and a conformance fixture is by definition not producer-derived
+    (that is what the `producer` source families are for, and they DO drive the
+    real gateway through `rola_op`). So the stratified and adversarial families
+    reach the kernel arm through this: exactly the fields
+    `chunk.unsupported`/`arm`/`stats`/`run` read, and nothing else, so it cannot
+    quietly stand in for a bundle anywhere the real one is required.
+    """
+
+    def __init__(self, topology, normalization, read, write, g_read, g_write):
+        self.topology, self.normalization = topology, normalization
+        self.read, self.write = read, write
+        self.g_read, self.g_write = g_read, g_write
+
+    @property
+    def batch(self):
+        return self.read[0].shape[0]
+
+    @property
+    def tokens(self):
+        return self.read[0].shape[1]
+
+    @property
+    def heads(self):
+        return self.read[0].shape[2]
+
+    @property
+    def device(self):
+        return self.read[0].device
+
+
 class Case:
-    """One realized family fixture: tensors, plan, schedule, and both runs."""
+    """One realized family fixture: tensors, the routing bundle, and both runs."""
 
     def __init__(self, family: Family):
         c = dict(family.config)
@@ -90,13 +134,11 @@ class Case:
         self.family = family
         self.widths, self.d_v = tuple(c["widths"]), c["d_v"]
         self.B, self.T, self.H = c["B"], c["T"], c["H"]
-        # P26: `BT` is not a template parameter or a config axis any more -- the
-        # scan word is the fixed `TOKEN_WORD` (32 tokens), which is what
-        # `build_schedule` itself uses internally regardless of what a caller
-        # asks for. Kept as `self.BT` so the tail/chunk-boundary geometry below
-        # (written against "one word", not literally the constant's name) needs
-        # no further edits.
-        self.BT, self.BC = TOKEN_WORD, c["BC"]
+        # `BT` is the token quantum the tail and chunk-boundary geometry below
+        # are written against ("one word"). It is not a config axis and never
+        # was a template parameter; post-P67-D2 it is the chunk arm's own chunk
+        # length, and a `T` that is not a multiple of it has no kernel at all.
+        self.BT = CHUNK_TOKENS
         self.norm, self.paging = c["norm"], c["paging"]
         self.topology = _topology(self.widths, self.d_v)
         self.N = self.topology.N
@@ -121,18 +163,21 @@ class Case:
                 m0[..., self.d_v] = m0[..., self.d_v].abs()
             self.initial_state = m0
 
-        self.plan = Plan(topology=self.topology, normalization=self.norm,
-                         BC=self.BC, warp_tile=(1, max(1, self.d_v // 32)),
-                         decay=self.decay is not None)
         self._f32 = dict(
             v=self.v.to(torch.float32),
             read=tuple(t.to(torch.float32) for t in self.read_levels),
             write=tuple(t.to(torch.float32) for t in self.write_levels),
             g_read=None if self.g_read is None else self.g_read.to(torch.float32),
             g_write=self.g_write.to(torch.float32))
-        self.schedule = build_schedule(
-            self._f32["read"], self._f32["write"], self._f32["g_read"],
-            self._f32["g_write"], self.plan)
+        self.bundle = _Bundle(self.topology, self.norm, self._f32["read"],
+                              self._f32["write"], self._f32["g_read"],
+                              self._f32["g_write"])
+        #: WHY the kernel arm refuses this family, or None. Read from the
+        #: PRODUCTION predicate, not from the family's pure-CPU mirror: the
+        #: mirror exists so `families.py` stays device-free, and this is the
+        #: line that makes a drift between them observable
+        #: (`test_family_meta.py` asserts the two agree for every family).
+        self.refusal = _chunk.unsupported(self.bundle, self.decay)
 
     # -- generators ---------------------------------------------------------
 
@@ -241,20 +286,30 @@ class Case:
             initial_state=self.initial_state, output_final_state=True)
 
     def kernel(self):
-        """Launch at the family's declared paging and return ``(y, state)`` in
-        the oracle's ``[B, H, N, cols]`` state layout."""
+        """Launch at the family's declared backing; ``(y, state)`` in the
+        oracle's ``[B, H, N, cols]`` state layout.
+
+        The state plane's atom-major `[BH, N/16, 16, cols]` shape is the dense
+        `[BH, N, cols]` one byte for byte (`rola.ops.chunk.state_plane`), so
+        both crossings here are reshapes and neither is a repack.
+        """
+        assert self.refusal is None, (
+            f"{self.family.name}: the kernel arm refuses this family "
+            f"({self.refusal}); its contract is the refusal, not a launch")
+        s_in = (None if self.initial_state is None else
+                self.initial_state.to(torch.float32).reshape(
+                    self.B * self.H, self.N // MMA_K_QUANTUM, MMA_K_QUANTUM, self.cols))
         arena = None
         if self.paging:
-            arena = PageArena(widths=self.widths, BC=self.BC, cols=self.cols,
-                              BH=self.B * self.H, device=torch.device("cuda"))
-        y, state, _ = _consumer_forward(
-            self._f32["v"], self._f32["read"], self._f32["write"],
-            self._f32["g_read"], self._f32["g_write"], self.plan,
-            schedule=self.schedule, decay=self.decay, paging=arena,
-            initial_state=(None if self.initial_state is None
-                           else self.initial_state.to(torch.float32)))
-        if arena is not None:
-            state = arena.materialize()
+            arena = PageArena(widths=self.widths, BC=_chunk.arm(self.bundle)[1],
+                              cols=self.cols, BH=self.B * self.H,
+                              device=torch.device("cuda"))
+            #: the arena is planned from the KERNEL's own exact write bitmap,
+            #: so residency is an output of the routing and not a guess about it.
+            arena.plan_exact(_chunk.stats(self.bundle))
+        y, plane = _chunk.run(self.bundle, self._f32["v"], state_in=s_in,
+                              want_state=True, arena=arena)
+        state = arena.materialize() if arena is not None else plane
         return y, state.reshape(self.B, self.H, self.N, self.cols)
 
 

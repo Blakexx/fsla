@@ -8,6 +8,19 @@ the decomposed fp64 oracle at the tier-1 tolerance for the family's declared
 numeric arm. The tolerances are IMPORTED from the tier-1 gate, never restated:
 no family widens a number.
 
+A family OUTSIDE the built chunk matrix has no kernel comparison to make, and
+its contract is the REFUSAL: `rola.ops.chunk` names the refusing clause, and the
+dispatch routes such a call to the fp64 oracle (`docs/api.md`, "The kernel
+envelope"). That is asserted here BY NAME rather than by catching any exception,
+so a family that started being refused for a different reason than it declares
+fails instead of passing quietly. The FACADE half of the same contract -- that
+`_arm="kernel"` overrules the dispatch and is refused loudly -- is gated where a
+real `RouteFactors` exists to pass it (`tests/layers/test_layer_dispatch.py`,
+`tests/unit/test_interface.py`); a hand-built fixture cannot reach `rola_op`,
+which refuses any bundle the gateway did not derive. The family's regime cell is still proven
+either way -- non-vacuity is a fact about the FIXTURE, and it is what the census
+join is built on.
+
 The producer-source families run in ``test_producer_families.py`` (they drive
 the real gateway and both arms of ``rola_op``).
 """
@@ -18,7 +31,8 @@ import torch
 
 from tests.conformance import generators as g
 from tests.conformance.families import FAMILIES
-from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
+from tests.conformance.instantiation import REFUSAL_CLAUSES
+from tests.tier1_semantics.tolerances import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -29,10 +43,9 @@ _KERNEL_FAMILIES = [f for f in FAMILIES if f.source != "producer"]
 
 
 def _tolerance(family):
-    # P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
-    # accepts); `RTOL`, the tf32x3-exact arm's tolerance, is gone with it
-    # (`tests/tier1_semantics/test_consumer_vs_oracle.py` no longer defines it).
-    # Every family now runs bf16-vs-fp64-oracle at the bf16 family bound.
+    # P26: `mma_precision` is a dead axis (bf16 is the only storage format the
+    # kernel arm has), so the tf32x3-exact arm's tolerance went with it. Every
+    # family runs bf16-vs-fp64-oracle at the one bf16 family bound.
     del family
     return BF16_RTOL
 
@@ -45,13 +58,17 @@ def test_the_family_is_nonvacuous_and_matches_the_oracle(family):
     g.assert_nonvacuous(family, case)
 
     y_ref, state_ref = case.oracle()
-    # The decay retirement: decay is not a feature of the operator -- its arms are no
-    # longer compiled, and the dispatch's generated -1 lookup REFUSES a decay
-    # request loudly.  For decay cells the refusal IS the contract; the
-    # oracle side above keeps the semantics alive for the reopen conditions.
-    if case.decay is not None:
-        with pytest.raises(Exception, match="instantiation|arm|decay|unsupported|refus"):
-            case.kernel()
+    # OUT OF ENVELOPE: the refusal IS the contract. Two halves, both required --
+    # the reason the family DECLARES is the reason production gives (a family
+    # refused for a different clause than it says is a stale declaration), and
+    # the oracle side above keeps the semantics alive whatever the envelope does.
+    if not family.runs_on_kernel:
+        assert case.refusal is not None, (
+            f"{family.name} declares a refusal the kernel arm does not make")
+        token = REFUSAL_CLAUSES[family.refusal]
+        assert token in case.refusal, (
+            f"{family.name} declares the {family.refusal!r} clause but production "
+            f"refuses with {case.refusal!r}")
         return
     y, state = case.kernel()
     tol = _tolerance(family)
@@ -62,5 +79,4 @@ def test_the_family_is_nonvacuous_and_matches_the_oracle(family):
     assert rel_s < tol, (
         f"{family.name}: state is {rel_s:.3e} from the oracle (tol {tol:.0e}) in "
         f"the regime cell {dict(family.regime)}")
-
 

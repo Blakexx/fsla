@@ -32,10 +32,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.consumer import _consumer_forward
+from rola.ops import chunk as _chunk
 from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
-from rola.planner.schedule import Plan
 from rola.routing.types import LeafMassDecay
 from tests.conformance import generators as g
 from tests.tier1_semantics.test_decode_vs_oracle import DECODE_RTOL
@@ -45,13 +44,30 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-_WIDTHS, _DV, _B, _H = (8, 16), 64, 2, 2
+#: P67 D2-b: the prefill leg runs on the CHUNK arm, whose built manifest is
+#: uniform-width, so the family's topology is a built `(D, B)` and its prefill
+#: length is a multiple of `rola.ops.chunk.CHUNK_TOKENS`. DECODE's own envelope
+#: is unchanged -- it is BC-blind and topology-general -- so that is a
+#: constraint the PREFILL puts on the fixture, not one decode acquired.
+_WIDTHS, _DV, _B, _H = (16, 16), 64, 2, 2
 
 
 def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV,
-          norm="global"):
+          norm="global", write_live=None):
+    """`write_live` confines level 0's WRITE support to its first `write_live`
+    digits, which makes every leaf under a higher digit provably never written.
+    The prefill uses it so the cold-read corner this family owns natively is
+    STRUCTURAL rather than a property the draw happened to have: at a built
+    uniform topology a Bernoulli write side reaches every leaf within a few
+    tokens, and the corner would be asserted and never realized."""
     read = tuple(g._simplex((B, T, H, w), p_read, gen, device) for w in widths)
-    write = tuple(g._simplex((B, T, H, w), p_write, gen, device) for w in widths)
+    if write_live is None:
+        write = tuple(g._simplex((B, T, H, w), p_write, gen, device) for w in widths)
+    else:
+        mask = torch.zeros(1, 1, 1, widths[0])
+        mask[..., :write_live] = 1.0
+        write = (g._masked_simplex((B, T, H, widths[0]), mask, gen, device),) + tuple(
+            g._simplex((B, T, H, w), p_write, gen, device) for w in widths[1:])
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     g_read = (None if norm == "global" else
               torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5)
@@ -70,41 +86,52 @@ def _f32(d):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("decay_on", [False, True])
-def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
-    """Tiled prefill over T = 33 (a ragged tail — the seam consumes a state the
-    chunked path produced through a partial tile), then four decode steps, each
-    graded against the chained fp64 oracle. Sparse routing, so decode's read
-    support lands on prefill-cold leaves — asserted, since that is the corner
-    this family owns natively."""
+def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
+    """Chunk-arm prefill, then four decode steps, each graded against the
+    chained fp64 oracle. Sparse routing, so decode's read support lands on
+    prefill-cold leaves -- asserted, since that is the corner this family owns
+    natively.
+
+    P67 D2-b: the prefill leg was the TILED consumer over a RAGGED `T = 33`.
+    The chunk arm has no ragged tail -- `T` must be a multiple of
+    `rola.ops.chunk.CHUNK_TOKENS` or the dispatch routes the call to the fp64
+    oracle -- so the handoff-through-a-partial-tile half of this claim has no
+    kernel left to be made against and does not survive. What does survive, and
+    is what the seam is about, is that the state the PRODUCTION prefill arm
+    writes is the state the recurrent arm continues. The ragged path is still
+    walked end to end at layer level further down this file, where `T + 1` is
+    deliberately not a chunk multiple and therefore runs on the oracle.
+    """
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9000 + int(decay_on))
-    T, steps = 33, 4
+    T, steps = 2 * _chunk.CHUNK_TOKENS, 4
+    topology = g._topology(_WIDTHS, _DV)
     decay = (None if not decay_on else
              LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))
-    pre = _draw(gen, device, T, 0.5, 0.4, norm="global")
-    plan = Plan(topology=g._topology(_WIDTHS, _DV), normalization="global", BC=16,
-                warp_tile=(1, _DV // 32), decay=decay_on)
+    pre = _draw(gen, device, T, 0.5, 0.4, norm="global",
+                write_live=_WIDTHS[0] // 2)
     f = _f32(pre)
+    bundle = g._Bundle(topology, "global", f["read"], f["write"], f["g_read"],
+                       f["g_write"])
     if decay_on:
-        # The decay retirement: decay is not a feature of the operator; its consumer
-        # arms are no longer compiled and the dispatch refuses the request.
-        # The refusal IS this cell's contract until the reopen conditions;
-        # the oracle keeps the handoff semantics alive below regardless.
-        with pytest.raises(Exception, match="instantiation|arm|decay|unsupported|refus"):
-            _consumer_forward(f["v"], f["read"], f["write"], f["g_read"],
-                              f["g_write"], plan, decay=decay)
+        # The decay retirement: decay is not a feature of the operator. The
+        # kernel arm names the refusal and the dispatch routes such a call to
+        # the oracle; the refusal IS this cell's contract until the reopen
+        # conditions, and the oracle below keeps the handoff semantics alive.
+        reason = _chunk.unsupported(bundle, decay)
+        assert reason is not None and "decay" in reason, reason
         naive_rola(pre["v"], pre["read"], pre["write"], pre["g_read"],
-                   pre["g_write"], plan.topology, decay, "global",
+                   pre["g_write"], topology, decay, "global",
                    output_final_state=True)
         return
-    _y_pre, state, _ = _consumer_forward(
-        f["v"], f["read"], f["write"], f["g_read"], f["g_write"], plan, decay=decay)
+    assert _chunk.unsupported(bundle, decay) is None, "the prefill fixture left the envelope"
+    _y_pre, state = _chunk.run(bundle, f["v"], want_state=True)
 
     _y_ref, ref_state = naive_rola(
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
-        plan.topology, decay, "global", output_final_state=True)
+        topology, decay, "global", output_final_state=True)
 
-    config = freeze_decode_config(plan.topology, "global", decay=decay_on, BH=_B * _H,
+    config = freeze_decode_config(topology, "global", decay=decay_on, BH=_B * _H,
                                   device=device, mma_precision="bf16")
     state = state.reshape(_B, _H, config.N, config.cols).clone()
     workspace, cold_seen = None, False
@@ -116,7 +143,7 @@ def test_the_handoff_holds_across_the_arms_from_a_ragged_prefill(decay_on):
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
-            plan.topology, decay, "global", initial_state=ref_state, output_final_state=True)
+            topology, decay, "global", initial_state=ref_state, output_final_state=True)
         assert g.relative(y, y_ref) < DECODE_RTOL, f"step {s}: y off the oracle"
         assert g.relative(state, ref_state) < DECODE_RTOL, f"step {s}: state off the oracle"
 
@@ -307,7 +334,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     # the chunk, so that whole-sequence leg runs on the oracle — which makes it an
     # INDEPENDENT reference for the seam rather than the same arm twice. The band is
     # the bf16 family's, since the two legs under test are the bf16 production arms.
-    from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
+    from tests.tier1_semantics.tolerances import BF16_RTOL
 
     with torch.no_grad():
         y_full, _ = layer(x_seq)

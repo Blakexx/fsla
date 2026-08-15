@@ -20,7 +20,7 @@ import torch
 
 from rola.ops.consumer import _consumer_forward
 from rola.ops.paging import PageArena
-from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
+from tests.tier1_semantics.tolerances import BF16_RTOL
 from tests.tier2_geometry.fixtures import (
     _Fixture,
     _relative,

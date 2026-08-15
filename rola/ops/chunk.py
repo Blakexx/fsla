@@ -19,11 +19,18 @@ from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.paging import MMA_K_QUANTUM
 
+#: THE CHUNK LENGTH -- the operator's token quantum.  `T` must be a multiple of
+#: it (`unsupported` refuses anything else) and every arm the dispatch reaches is
+#: pinned to it.  Public because it is a fact a caller has to be able to ASK for:
+#: shaping a sequence to the quantum is the caller's job, and a caller who can
+#: only read the number out of a refusal message will guess it instead.
+CHUNK_TOKENS = 32
+
 #: the pinned plan (measured: BC at the dense optimum, C at the flagship,
 #: swizzle off) -- generalized only by falling back to the largest built BC
 #: when the pinned one is not in the manifest for this topology.  A fixed
 #: preference order over MEASURED arms, never a tuned heuristic.
-_PIN_C, _PIN_BC = 32, 128
+_PIN_C, _PIN_BC = CHUNK_TOKENS, 128
 
 
 def _arm_for(D: int, B: int):

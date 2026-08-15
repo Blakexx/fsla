@@ -37,6 +37,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from tests.conformance.instantiation import (
+    BUILT_TOPOLOGIES,
+    instantiation_of,
+    kernel_refusal,
+)
+
 # ---------------------------------------------------------------------------
 # The regime axes — the census join's NEW dimension
 # ---------------------------------------------------------------------------
@@ -80,15 +86,14 @@ class Family:
     #: keys present. `__post_init__` enforces completeness so a family cannot
     #: silently opt out of an axis.
     regime: Mapping[str, str]
-    #: The instantiation the family runs at. Keys: widths, d_v, B, T, H, BC,
-    #: norm, decay, P, paging, seed — plus generator parameters under `params`.
-    #: The census derives the template/runtime axis values from these, and a
-    #: CUDA meta-test asserts they match the REALIZED plan, so a declaration
-    #: cannot lie (`test_family_meta.py`). P26: `BT` and `mma` are DEAD (the
-    #: scan word is the fixed 32-token `TOKEN_WORD`, no `Plan.BT` field exists;
-    #: `mma_precision` is bf16-only) and are gone from this schema entirely
-    #: rather than pinned-and-carried, since neither is read by anything that
-    #: consumes a family any more.
+    #: The instantiation the family runs at. Keys: widths, d_v, B, T, H,
+    #: norm, decay, paging, seed -- plus generator parameters under `params`.
+    #: The census derives the axis values from these, and a CUDA meta-row
+    #: asserts the DECLARED executor matches what `rola.ops.chunk` really says,
+    #: so a declaration cannot lie (`test_family_meta.py`). P26 dropped `BT`
+    #: and `mma`; P67 D2-b dropped `BC` -- the chunk arm's `BC` is a slot tile
+    #: inside a built arm, fixed by the manifest and not host-selectable, so it
+    #: is not a coordinate a family can pick.
     config: Mapping[str, Any]
     basis: str
     #: The generator `generators.py` dispatches on; defaults to the source name.
@@ -105,7 +110,7 @@ class Family:
             assert value in REGIME_AXES[axis], (
                 f"family {self.name!r}: {value!r} is not a declared value of regime "
                 f"axis {axis!r}")
-        for key in ("widths", "d_v", "T", "BC", "norm", "decay", "paging", "seed"):
+        for key in ("widths", "d_v", "T", "norm", "decay", "paging", "seed"):
             assert key in self.config, f"family {self.name!r} config lacks {key!r}"
 
     @property
@@ -115,25 +120,33 @@ class Family:
     def instantiation_values(self) -> dict[str, Any]:
         """This family's coordinates on the CENSUS's instantiation axes.
 
-        The names and value domains are ``tests.tier2_geometry.matrix``'s — the
-        conformance census EXTENDS that census by one dimension rather than
-        keeping a parallel one. `AXIS_DECLARATIONS` is `(BC, DV, D, DECAY,
-        paging)`: `BT` is not a template parameter, `mma_precision`/
-        `normalization` are single-valued (bf16, global) and carry no axis at
-        all any more.
+        The names and value domains are ``tests.conformance.instantiation``'s --
+        `(D, B, paging)`, the axes a caller can move on the chunk arm. That
+        module states why the tiled `(BC, DV, DECAY)` axes are not here.
         """
-        c = self.config
-        return {
-            "BC": c["BC"], "DV": c["d_v"], "D": len(c["widths"]),
-            "DECAY": int(bool(c["decay"])),
-            "paging": bool(c["paging"]),
-        }
+        return instantiation_of(self.config)
+
+    @property
+    def refusal(self) -> str | None:
+        """The CLAUSE the kernel arm refuses this family on, or None if it runs it.
+
+        One of `instantiation.REFUSAL_CLAUSES`. A family outside the built
+        chunk matrix still carries a live claim -- the refusal is named and the
+        dispatch routes the call to the fp64 oracle -- but it is not a
+        kernel-coverage cell, so the census join excludes it exactly as it
+        already excluded the decay families.
+        """
+        return kernel_refusal(self.config)
+
+    @property
+    def runs_on_kernel(self) -> bool:
+        return self.refusal is None
 
 
-def _cfg(widths=(8, 8), d_v=64, B=1, T=128, H=2, BC=16, norm="global",
+def _cfg(widths=(8, 8), d_v=64, B=1, T=128, H=2, norm="global",
          decay=False, paging=False, seed=0, m0=False,
          p_read=1.0, p_write=1.0):
-    return dict(widths=widths, d_v=d_v, B=B, T=T, H=H, BC=BC, norm=norm,
+    return dict(widths=widths, d_v=d_v, B=B, T=T, H=H, norm=norm,
                 decay=decay, paging=paging, seed=seed, m0=m0,
                 p_read=p_read, p_write=p_write)
 
@@ -285,14 +298,16 @@ _PRODUCER: tuple[Family, ...] = (
         "producer/swept-gain", "producer",
         dict(density="swept", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),
-        _cfg(widths=(16,), d_v=32, T=64, H=4, seed=201, norm="global"),
+        _cfg(widths=(64,), d_v=64, T=64, H=4, seed=201, norm="global"),
         params=dict(gains=(0.25, 1.0, 4.0, 16.0)),
         basis="the REAL entmax producer over one hidden stream at four input "
               "gains: realized routing carries correlations (token coherence from "
               "the hidden state, read-write coincidence from the shared stream) "
               "that no sampler imitates, and the gain is the knob that sweeps its "
               "density in training. Each gain's bundle runs both arms of rola_op "
-              "and they must agree at the exactness tolerance.",
+              "and they must agree at the exactness tolerance. FLAT ROUTING: "
+              "`D = 1` at the manifest\'s flat-baseline width, so this sweep is "
+              "the one family carrying realized routing onto the depth-1 arm.",
         generator="swept_gain"),
     Family(
         "producer/swept-gain-d64", "producer",
@@ -308,28 +323,16 @@ _PRODUCER: tuple[Family, ...] = (
               "I/O lands.",
         generator="swept_gain"),
     Family(
-        "producer/swept-gain-raw-d2", "producer",
+        "producer/swept-gain-d2", "producer",
         dict(density="swept", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),
-        _cfg(widths=(8, 8), d_v=32, T=64, H=4, seed=203),
+        _cfg(widths=(8, 8), d_v=64, T=64, H=4, seed=203),
         params=dict(gains=(0.25, 1.0, 4.0, 16.0)),
-        basis="the gain sweep at the raw arm over the default two-level "
-              "topology: the raw readout carries a realized g_read, so the "
-              "sweep's mass fold reaches the read channel only here.",
+        basis="the gain sweep at the DEFAULT instantiation (D = 2, B = 8): the "
+              "cell every named regime family runs at, carrying REALIZED routing "
+              "onto it rather than a sampler, so the mid-box cell is covered by "
+              "the producer as well as by generation.",
         generator="swept_gain"),
-    Family(
-        "producer/stale-plan", "producer",
-        dict(density="swept", coherence="coherent", rw_correlation="independent",
-             mass="spread", tail="divisible", support="partial"),
-        _cfg(widths=(16,), d_v=32, T=64, H=4, seed=202, norm="global"),
-        params=dict(plan_gain=0.25, data_gain=16.0),
-        basis="the adversarial-plan handle the P16 seam exists for: a Plan derived "
-              "from the DENSE end of the sweep is executed, via rola.expert, "
-              "against the SPARSE end's bundle. The plan prices a support "
-              "distribution that no longer exists; the schedule is assembled from "
-              "the REALIZED masks inside _execute, so the answer must not move — "
-              "a plan is a performance decision and never a semantic one.",
-        generator="stale_plan"),
 )
 
 
@@ -377,15 +380,18 @@ _ADVERSARIAL: tuple[Family, ...] = (
         "corner/chunk-boundary", "adversarial",
         dict(density="sparse", coherence="coherent", rw_correlation="independent",
              mass="spread", tail="divisible", support="partial"),
-        _cfg(seed=305, T=192, m0=True, decay=True),
+        _cfg(seed=305, T=192, m0=True),
         params=dict(boundary_tiles=(2, 5), live_before=4, live_after=2),
-        basis="the write support FLIPS exactly at tile boundaries (tokens 64 and "
-              "160 under the fixed 32-token scan word `TOKEN_WORD`; `T = 192` so "
-              "6 words exist to hold both boundary tiles): the "
-              "support-change-at-a-chunk-boundary corner, where an "
-              "inclusive/exclusive tile-range error moves which tile last "
+        basis="the write support FLIPS exactly at chunk boundaries (tokens 64 and "
+              "160 under the operator\'s 32-token chunk, `rola.ops.chunk."
+              "CHUNK_TOKENS`; `T = 192` so 6 chunks exist to hold both boundary "
+              "chunks): the support-change-at-a-chunk-boundary corner, where an "
+              "inclusive/exclusive chunk-range error moves which chunk last "
               "touches a leaf -- a support that changes mid-chunk tests a "
-              "different (weaker) thing.",
+              "different (weaker) thing. P67 D2-b took the DECAY off this "
+              "corner: decay is retired from the operator, so a decayed corner "
+              "could only ever assert the refusal and the boundary claim -- the "
+              "bug class the corner is frozen for -- would never reach a kernel.",
         generator="chunk_boundary"),
 )
 
@@ -394,48 +400,44 @@ _ADVERSARIAL: tuple[Family, ...] = (
 # The instantiation sweep — one mid-regime fixture across the shipped grid
 # ---------------------------------------------------------------------------
 #
-# The named families above pin the default instantiation; this sweep carries the
-# SAME mid-box regime across every shipped template value and both runtime axes,
-# so the census join's instantiation dimension is covered by measurement rather
-# than by extrapolation from one cell.
+# The named families above pin the DEFAULT instantiation (D = 2, B = 8,
+# unpaged); this sweep carries the SAME mid-box regime across every built chunk
+# arm and both backings, so the census join's instantiation dimension is covered
+# by measurement rather than by extrapolation from one cell.
 
 def _sweep() -> tuple[Family, ...]:
+    """One mid-box fixture per BUILT chunk arm, plus the paged backing.
+
+    P67 D2-b re-anchored this sweep. It used to cross the TILED consumer's
+    template grid (`BC` x `d_v` x `decay`); every one of those three axes is
+    gone -- `BC` belongs to the built arm, `d_v = 64` is the whole matrix,
+    decay is retired from the operator -- so the sweep now walks the axes that
+    remain: the manifest's `(D, B)` topologies, taken from
+    `tests.conformance.instantiation.BUILT_TOPOLOGIES` rather than written out,
+    so a widened matrix demands a family here on the day it lands.
+    """
     rows: list[Family] = []
-    seed = 500  # deterministic, order-derived — never hash(), which is salted per process
-    # P26: `BT`, `norm`, `mma` dropped from this grid entirely -- `BT` is not a
-    # template parameter (the scan word is the fixed `TOKEN_WORD`), and
-    # `normalization`/`mma_precision` are single-valued now (`"global"`/`"bf16"`),
-    # so BC x d_v x decay is the whole remaining template grid
-    # (`tests.tier2_geometry.matrix.AXIS_DECLARATIONS`).
-    for BC in (16, 64):
-        for d_v in (32, 64):
-            for decay in (False, True):
-                seed += 1
-                rows.append(Family(
-                    f"sweep/BC{BC}-dv{d_v}-{'decay' if decay else 'plain'}",
-                    "stratified", dict(**_MID),
-                    _cfg(widths=(8, 8), d_v=d_v, T=64, BC=BC,
-                         decay=decay, m0=True,
-                         p_read=0.5, p_write=0.5,
-                         seed=seed),
-                    basis="the template grid at the mid-box regime: the "
-                          "same claimed cell at every shipped BC x d_v x "
-                          "decay combination."))
-    for widths in ((16,), (4, 4, 4), (2, 3, 4, 4)):
+    # deterministic, order-derived -- never hash(), which is salted per process
+    for seed, (D, B) in enumerate(sorted(BUILT_TOPOLOGIES), start=501):
         rows.append(Family(
-            f"sweep/D{len(widths)}-{'x'.join(map(str, widths))}",
-            "stratified", dict(**_MID),
-            _cfg(widths=widths, d_v=64, T=64, m0=True, p_read=0.5, p_write=0.5,
-                 seed=400 + len(widths)),
-            basis="the level-count axis at the mid-box regime, including the "
-                  "non-power-of-two mixed radix."))
+            f"sweep/D{D}-B{B}", "stratified", dict(**_MID),
+            _cfg(widths=(B,) * D, d_v=64, T=64, m0=True,
+                 p_read=0.5, p_write=0.5, seed=seed),
+            basis="the built manifest at the mid-box regime: the same claimed "
+                  "cell at every (D, B) arm the dispatch can reach, so the "
+                  "instantiation dimension is covered by measurement rather "
+                  "than by extrapolation from one topology."))
     rows.append(Family(
         "sweep/paged", "stratified", dict(**_MID),
-        _cfg(widths=(4, 8, 8), d_v=64, T=64, paging=True, p_read=0.5, p_write=0.5,
-             seed=420),
-        basis="the paging runtime axis at the mid-box regime (dense-committed "
-              "arena; the partially-resident composition is tier 2's row)."))
+        _cfg(widths=(16, 16, 16), d_v=64, T=64, paging=True,
+             p_read=0.5, p_write=0.5, seed=420),
+        basis="the paging runtime axis at the mid-box regime, on a built arm "
+              "(D = 3, B = 16). Residency is planned from the kernel's own "
+              "exact write bitmap; the partially-resident composition and the "
+              "bit-identity claim are tier 2's rows."))
     return tuple(rows)
+
+
 
 
 FAMILIES: tuple[Family, ...] = _STRATIFIED + _PRODUCER + _ADVERSARIAL + _sweep()

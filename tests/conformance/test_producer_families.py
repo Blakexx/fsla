@@ -7,10 +7,21 @@ rather than a sampler, and the gain on the hidden stream is the knob that sweeps
 the realized density, exactly as it does in training.
 
 Both arms of ``rola_op`` run on each realized bundle and must agree at the
-tier-1 exactness tolerance. The stale-plan family is the P16 seam used as
-designed: a plan derived from one end of the sweep executed against the other
-end's bundle through ``rola.expert`` — the adversarial handle a
-derive-then-immediately-use pipeline would not have.
+tier-1 exactness tolerance. All three families sit INSIDE the built chunk
+matrix, so the kernel arm is reached on every sweep arm and the agreement is
+the whole claim; there is no refusal branch to fall into.
+
+P67 D2-b re-anchored this file. The two families pinned at ``d_v = 32`` moved
+onto built arms (``producer/swept-gain`` to the flat-routing baseline
+``D = 1, B = 64``; ``producer/swept-gain-raw-d2`` to ``d_v = 64`` and, since
+``raw`` normalization has been a dead axis since P26, to the honest name
+``producer/swept-gain-d2``) rather than being left to assert a refusal, which
+would have taken REALIZED routing off the kernel arm entirely — the one thing
+this file exists to keep on it. ``producer/stale-plan`` retired with the
+``Plan`` object it drove: its subject was executing a plan priced on a dead
+distribution through ``rola.expert.execute``, and post-D2 there is no plan left
+to be stale. That is a genuine loss of adversarial coverage, recorded as one
+rather than papered over.
 
 NON-VACUITY here is sweep-shaped: ``assert_swept`` proves the gain knob actually
 moved the realized density (>= 4x span, monotone), and the shared regime
@@ -27,7 +38,7 @@ import torch
 
 from tests.conformance import generators as g
 from tests.conformance.families import FAMILY_BY_NAME
-from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
+from tests.tier1_semantics.tolerances import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -93,72 +104,32 @@ def _demonstrated_by_some_arm(family, views):
                 f"no arm of the sweep demonstrates ({axis}, {value}): {errors}")
 
 
-#: The kernel arm is the chunk consumer, whose envelope is uniform
-#: D>=2, d_v=64, global, no state output yet (pending the paged state I/O work).  INSIDE the envelope the
-#: arms must AGREE on y; OUTSIDE it the kernel arm must REFUSE LOUDLY with
-#: the card that adds the capability -- both are the documented contract, and
-#: this test asserts whichever one the cell falls in.  Final-state agreement
-#: rejoins the in-envelope family when the paged state I/O lands.
 @pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-d64",
-                                  "producer/swept-gain-raw-d2"])
+                                  "producer/swept-gain-d2"])
 def test_the_swept_gain_family_agrees_across_both_arms(name):
     from rola import rola_op
     from rola.expert import PlanOverrides
 
     family = FAMILY_BY_NAME[name]
+    assert family.runs_on_kernel, (
+        f"{name} declares itself outside the built chunk matrix; a producer "
+        "family that cannot reach the kernel arm proves nothing about it")
     producer, x, v = _producer_and_stream(family)
     densities, views = [], []
-    y_k = None
     for gain in family.params["gains"]:
         with torch.no_grad():
             routes = producer(gain * x)
-            try:
-                y_k, _ = rola_op(routes, v, expert=PlanOverrides())
-            except NotImplementedError as e:
-                # the refusal is part of the contract: it names the boundary,
-                # and the reference arm still serves the cell.
-                assert "chunk consumer" in str(e)
-                y_k = None
+            #: `_arm="kernel"` and not the bare dispatch: the dispatch would
+            #: quietly serve the REFERENCE arm if the envelope ever moved out
+            #: from under this family, and the comparison below would then be
+            #: the oracle against itself — passing, and proving nothing.
+            y_k, _ = rola_op(routes, v, expert=PlanOverrides(), _arm="kernel")
         y_r, _ = rola_op(routes, v, _arm="reference")
-        if y_k is not None:
-            rel_y = g.relative(y_k, y_r)
-            assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
+        rel_y = g.relative(y_k, y_r)
+        assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
         densities.append(_density(routes))
         views.append(_view(family, routes))
-    if name == "producer/swept-gain-d64":
-        assert y_k is not None, "the in-envelope family must actually run the kernel arm"
 
     # NON-VACUITY: the knob moved the distribution, and the cell is demonstrated.
     g.assert_swept(densities)  # ascending gain -> monotone descending density
     _demonstrated_by_some_arm(family, views)
-
-
-def test_the_stale_plan_family_executes_a_plan_priced_on_a_dead_distribution():
-    from rola import rola_op
-    from rola.expert import PlanOverrides, derive_plan, execute
-
-    family = FAMILY_BY_NAME["producer/stale-plan"]
-    producer, x, v = _producer_and_stream(family)
-    with torch.no_grad():
-        routes_plan = producer(family.params["plan_gain"] * x)
-        routes_data = producer(family.params["data_gain"] * x)
-
-    # NON-VACUITY: the plan's bundle and the executed bundle realize genuinely
-    # different distributions — otherwise "stale" is a label, not a fact.
-    d_plan, d_data = _density(routes_plan), _density(routes_data)
-    assert d_plan / max(d_data, 1e-9) >= 4.0, (
-        f"the plan bundle ({d_plan:.2f}) and data bundle ({d_data:.2f}) are not "
-        "4x apart in realized density; the plan is not meaningfully stale")
-
-    plan = derive_plan(routes_plan, expert=PlanOverrides(), device=v.device)
-    with torch.no_grad():
-        y, state, _schedule = execute(plan, routes_data, v)
-    import rola
-
-    y_ref, state_ref = rola_op(routes_data, v, _arm="reference", state=rola.state())
-    state_ref = state_ref.materialize()
-    rel_y, rel_s = g.relative(y, y_ref), g.relative(state, state_ref)
-    assert rel_y < BF16_RTOL, (
-        f"a stale plan moved y by {rel_y:.3e}: the schedule is assembled from the "
-        "REALIZED masks inside _execute, so a plan may only be slow, never wrong")
-    assert rel_s < BF16_RTOL, f"a stale plan moved the state by {rel_s:.3e}"
