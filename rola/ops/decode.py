@@ -370,15 +370,17 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
 def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:
     """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY.
 
-    **AN ENUMERATED REFERENCE -- THE GATE IS ITS ONLY CALLER.** The shipped path derives
+    **AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES.** The shipped path derives
     this set on the device (:func:`_growth_probe` publishes it), so this function has no
     production caller and is not meant to acquire one. It survives deliberately, under
     the pattern the routing summaries already use: a SECOND, independent derivation of an
-    object the kernel computes, written from the definition rather than from the
-    kernel's structure, so that the comparison in
-    ``tests/tier2_geometry/test_decode_growth_trigger.py`` is a real check and not the
-    kernel agreeing with itself. Deleting it would delete the gate's reference; calling
-    it on a shipped path would delete the gate's independence.
+    object the kernel computes, written from the definition rather than from the kernel's
+    structure, so that the equality
+    ``tests/tier2_geometry/test_decode_growth_trigger.py`` asserts is a real check and
+    not the kernel agreeing with itself. (The decode paging and VMM gates also plan from
+    it, for the same reason: a fixture that used the kernel's own answer could not catch
+    the kernel.) Deleting it would delete the gate's reference; calling it on a shipped
+    path would delete the gate's independence.
 
     The derivation, from the definition: at ``T = 1`` a leaf is written iff every level's
     write digit is nonzero, so the write support is the Cartesian product of the

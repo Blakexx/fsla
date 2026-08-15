@@ -18,8 +18,11 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64
 
 **FOUR CLAIMS.**
 
-1. *The write-atom derivation is EXACT.* `rola.ops.decode._write_atom_bitmap` is what
-   plans a step, and it is checked against the leaf support's own definition
+1. *The write-atom derivation is EXACT.* `rola.ops.decode._write_atom_bitmap` is the
+   ENUMERATED REFERENCE for the set a step admits -- the shipped path takes that set from
+   the growth probe's device-side condensation, and this is the independent derivation it
+   is gated against (`test_decode_growth_trigger.py`). It is checked here against the leaf
+   support's own definition
    (`schedule.py`'s `write_mask = tuple(level != 0 ...)`, taken to leaf granularity and
    ORed 16-deep) rather than against a second copy of itself. A bitmap that were merely
    a superset would still be SAFE -- claim 3 is what licenses that -- but it would stop
