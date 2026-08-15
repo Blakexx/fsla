@@ -77,6 +77,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "chunk consumer, Scan B (stage 1): the inter-chunk write-side adjoint terms", py::arg("pr"),
         py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
+  //: THE SEEDS. `dm = eps * dden` is a FIFTH output and it is not zero: the
+  //: m-carry is forward-exact but not gradient-neutral
+  //: (docs/internals/chunk/backward.md#seeds). It comes back only when the mass
+  //: does -- there is no `m` to differentiate in a declared-simplex bundle.
+  m.def("chunk_backward_seeds", &rola::chunk::backward_seeds,
+        "chunk consumer, backward: dnum, dden and (with a read mass) dm, from dy", py::arg("dy"),
+        py::arg("y"), py::arg("den"), py::arg("mass"), py::arg("eps"));
   //: THE SCHEDULE, ALONE. Scan B walks its own descending partition, so the one
   //: thing no arithmetic reference can reach in general is where its chunks fall;
   //: this emits that and nothing else.

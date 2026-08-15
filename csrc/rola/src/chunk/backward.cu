@@ -117,6 +117,96 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
               ": the backward carries the pinned arm alone until the scan is whole.");
 }
 
+//: THE SEEDS, IN ONE ELEMENTWISE PASS -- the mirror of `divide_pass`, and the
+//: only place the eps floor is differentiated.  Both scans consume `dnum`/`dden`
+//: as mma operands, so both are emitted bf16; `dm` is fp32 for the reason
+//: `read_mass` is (bf16 would quantize the floor itself).
+//: The three closed forms and why `dm` is not zero: docs/internals/chunk/backward.md#seeds
+__device__ __forceinline__ float as_float(const __nv_bfloat16& x) { return __bfloat162float(x); }
+__device__ __forceinline__ float as_float(const float& x) { return x; }
+
+template <typename InT>
+__global__ void seed_kernel(const InT* __restrict__ dy, const InT* __restrict__ y,
+                            const float* __restrict__ den, const float* __restrict__ mass,
+                            __nv_bfloat16* __restrict__ dnum, __nv_bfloat16* __restrict__ dden,
+                            float* __restrict__ dm, long tokens, int L, int H, float eps) {
+  constexpr int kPerLane = kD / 32;
+  const long tok = (long)blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+  if (tok >= tokens) return;
+  const int lane = threadIdx.x & 31;
+  const long bh = tok / L, t = tok % L;
+  //: `dy` and `y` arrive in the OPERAND layout `[B, T, H, d_v]` the forward emits;
+  //: `dnum` leaves in the fold's `[BH, T, d_v]`, so the transpose is these indices.
+  const long src = (((bh / H) * L + t) * H + (bh % H)) * kD;
+  const float d = den[tok] + eps * (mass != nullptr ? mass[tok] : 1.0f);
+  float acc = 0.f;
+#pragma unroll
+  for (int e = 0; e < kPerLane; ++e) {
+    const int c = lane + e * 32;
+    const float g = as_float(dy[src + c]);
+    acc += g * as_float(y[src + c]);
+    dnum[tok * kD + c] = __float2bfloat16_rn(__fdiv_rn(g, d));
+  }
+#pragma unroll
+  for (int b = 1; b < 32; b <<= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, b);
+  //: (A.2)'s STABLE FORM: `y` is the op's own output, so the denominator is
+  //: divided by once instead of squared.
+  const float dd = -__fdiv_rn(acc, d);
+  if (lane == 0) {
+    dden[tok] = __float2bfloat16_rn(dd);
+    //: (A.3). Taken off the fp32 value rather than off the bf16 one it was just
+    //: rounded to: `dm` is the floor's own gradient and inherits its dtype.
+    if (dm != nullptr) dm[tok] = eps * dd;
+  }
+}
+
+std::vector<torch::Tensor> backward_seeds(torch::Tensor dy, torch::Tensor y, torch::Tensor den,
+                                          c10::optional<torch::Tensor> mass, double eps) {
+  check_arch_table();
+  TORCH_CHECK(dy.is_cuda() && dy.is_contiguous() && dy.dim() == 4 && dy.size(3) == kD,
+              "the output cotangent is a contiguous [B, T, H, 64] tensor in y's layout");
+  TORCH_CHECK(y.sizes() == dy.sizes() && y.scalar_type() == dy.scalar_type() && y.is_contiguous(),
+              "y must be the op's own output: same layout, same dtype as its cotangent");
+  const long B = dy.size(0), L = dy.size(1), H = dy.size(2), tokens = B * H * L;
+  TORCH_CHECK(den.is_cuda() && den.is_contiguous() && den.scalar_type() == torch::kFloat32
+                  && den.numel() == tokens,
+              "the denominator is the contiguous fp32 [B, H, T] plane the forward emitted");
+  const float* massPtr = nullptr;
+  if (mass.has_value()) {
+    TORCH_CHECK(mass->is_cuda() && mass->is_contiguous() && mass->scalar_type() == torch::kFloat32
+                    && mass->numel() == tokens,
+                "the read mass must be a contiguous fp32 [B, H, T] tensor");
+    massPtr = mass->data_ptr<float>();
+  }
+  auto opts = dy.options();
+  auto dnum = torch::empty({B, H, L, (long)kD}, opts.dtype(torch::kBFloat16));
+  auto dden = torch::empty({B, H, L}, opts.dtype(torch::kBFloat16));
+  //: THE FIFTH OUTPUT EXISTS ONLY WHEN THE MASS DOES. `m` is not an input of a
+  //: declared-simplex bundle, and returning a zero for it would be a claim.
+  auto dmass =
+      massPtr != nullptr ? torch::empty({B, H, L}, opts.dtype(torch::kFloat32)) : torch::Tensor();
+  constexpr int kThreads = 256;
+  const int blocks = (int)((tokens + (kThreads / 32) - 1) / (kThreads / 32));
+  const auto stream = at::cuda::getCurrentCUDAStream();
+#define SEED_LAUNCH(T_, cast_)                                                        \
+  seed_kernel<T_><<<blocks, kThreads, 0, stream>>>(                                   \
+      cast_(dy.data_ptr()), cast_(y.data_ptr()), den.data_ptr<float>(), massPtr,      \
+      reinterpret_cast<__nv_bfloat16*>(dnum.data_ptr()),                              \
+      reinterpret_cast<__nv_bfloat16*>(dden.data_ptr()),                              \
+      dmass.defined() ? dmass.data_ptr<float>() : nullptr, tokens, (int)L, (int)H,    \
+      (float)eps)
+  if (dy.scalar_type() == torch::kFloat32)
+    SEED_LAUNCH(float, reinterpret_cast<const float*>);
+  else if (dy.scalar_type() == torch::kBFloat16)
+    SEED_LAUNCH(__nv_bfloat16, reinterpret_cast<const __nv_bfloat16*>);
+  else
+    TORCH_CHECK(false, "the cotangent arrives in the readout's dtype: fp32 or bf16");
+#undef SEED_LAUNCH
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  if (dmass.defined()) return {dnum, dden, dmass};
+  return {dnum, dden};
+}
+
 //: THE PARTITION PROBE'S ENTRY.  It takes the table and nothing else: the walk
 //: reads no amplitude, so a probe that took one would be gating a wider surface
 //: than the schedule.  Three int32 planes `[BH, blocks, L]` come back, `-1` where

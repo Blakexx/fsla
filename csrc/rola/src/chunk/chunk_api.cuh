@@ -38,6 +38,8 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
                                         torch::Tensor v, torch::Tensor dnum, torch::Tensor dden,
                                         torch::Tensor tbl, int64_t chunk, int64_t bc,
                                         std::vector<int64_t> widths);
+std::vector<torch::Tensor> backward_seeds(torch::Tensor dy, torch::Tensor y, torch::Tensor den,
+                                          c10::optional<torch::Tensor> mass, double eps);
 std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t bc,
                                       std::vector<int64_t> widths, int64_t L);
 std::vector<std::vector<int64_t>> scan_b_census();

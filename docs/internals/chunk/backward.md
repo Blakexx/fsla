@@ -62,6 +62,44 @@ it, is `nw - above` with the chunk's own total `nw`, known at close.
 Scan A and Scan B associate their sums differently by construction, so the gate on
 this operator is ratio-to-floor and never bit-identity.
 
+## <a id="seeds"></a>The seeds, and the fifth output
+
+`backward_seeds` is the mirror of `divide_pass` and the ONE place the eps floor is
+differentiated. With `Dt = den + eps * m` — the exact quantity the divide forms —
+the readout `y = num / Dt` gives
+
+    dnum[t,:] = dy[t,:] / Dt
+    dden[t]   = -<dy[t,:], y[t,:]> / Dt
+    dm[t]     = eps * dden[t]
+
+**The floor is ADDITIVE, not a `max`** (`naive.py:223`, `chunk.cu:203`), so there
+is no kink, no subgradient and no `den`-dependent branch anywhere in the backward.
+`den >= 0` always — `R >= 0` on a simplex, `W >= 0` with `gw > 0` — so `Dt` is
+bounded below by `eps * m > 0` and the readout is smooth in every input.
+
+`dden` uses the **stable form**: `y` is the op's own output, so the denominator is
+divided by once instead of squared. That is why `y` is on the ctx at all.
+
+**`dm` IS A FIFTH OUTPUT AND IT IS NOT ZERO.** The m-carry — the producer leaving a
+per-token read mass on the read levels instead of dividing it out, with the floor
+scaled to match — is forward-exact but **not gradient-neutral**: `m` reaches `y`
+only through `Dt`, so `dy/dm = -y * eps / Dt` and the cotangent contracts to
+`eps * dden`, one FMA per token. A backward that dropped it would silently zero a
+real gradient of every producer that does not declare a simplex. Had the floor been
+`max(den, eps)` this same term would have been a subgradient with a `den < eps`
+branch; it is not.
+
+`dm` comes back only when a read mass does. There is no `m` to differentiate in a
+declared-simplex bundle, and returning a zero for one would be a claim rather than
+an absence.
+
+**Dtypes are not a convention here, they are the consumers'.** `dnum` and `dden`
+are both mma operands (the fold's `A` operand and the mass column's `A` row), so
+both are emitted bf16 — the same class of decision the forward already makes when
+it packs its fp32 state into bf16 fragments. `dm` is fp32 for the reason
+`read_mass` is: bf16 would quantize the floor itself. And `dm` is taken off the
+**fp32** `dden`, not off the bf16 one it was just rounded to.
+
 ## <a id="partition-probe"></a>The partition probe — the schedule gated as a schedule
 
 The walk above is the one piece of P65 with no forward counterpart to inherit, and
