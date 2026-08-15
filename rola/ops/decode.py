@@ -221,7 +221,6 @@ class DecodeWorkspace:
     #: keeps a steady step free of allocation: docs/internals/decode.md#growth-probe
     growth: torch.Tensor
     growth_host: torch.Tensor
-    growth_ready: object
     key: tuple = field(default=())
 
     @staticmethod
@@ -236,7 +235,6 @@ class DecodeWorkspace:
             ctr=torch.zeros(BH, **i32),
             growth=torch.empty(BH, **i32),
             growth_host=torch.empty(BH, dtype=torch.int32, pin_memory=cuda),
-            growth_ready=torch.cuda.Event() if cuda else None,
             key=(BH, config.n_words, config.n_groups, config.n_split, config.cols,
                  torch.device(device)))
 
@@ -335,8 +333,12 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
     by audit; ``tests/tier2_geometry/test_decode_growth_trigger.py`` sweeps the two
     directions of the agreement.
 
-    The read is a pinned device-to-host copy plus an event synchronize, both on
-    workspace-owned objects, so a steady step allocates nothing.
+    The read is ONE BLOCKING pinned device-to-host copy into a workspace-owned buffer, so
+    a steady step allocates nothing. Blocking is the measured choice and not the obvious
+    one: the same copy issued asynchronously and awaited on an event costs 0.152 ms
+    against 0.093 (RTX 3090, medians of 15 x 100), because the host must wait for the
+    kernel either way and the event path adds its own record and query on top of the wait
+    the copy already performs.
     """
     amp_write = [_fold(t).float() for t in write_levels]
     extension().rola_decode_growth_probe(
@@ -347,9 +349,7 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span))
-    workspace.growth_host.copy_(workspace.growth, non_blocking=True)
-    workspace.growth_ready.record()
-    workspace.growth_ready.synchronize()
+    workspace.growth_host.copy_(workspace.growth)
     return bool(workspace.growth_host.any())
 
 

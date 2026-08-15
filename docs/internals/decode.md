@@ -132,19 +132,48 @@ mechanical form of the dead-leaf argument, gated by
 A step may deposit into an atom that is not resident. At `T = 1` the write support is
 a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is the
 per-level exact-nonzero indicators' product ORed 16-deep, and
-`rola.ops.decode._write_atom_bitmap` derives it host-side without a launch. The order
-per step is `rola_op`'s at `L = 1`:
+`rola.ops.decode._write_atom_bitmap` derives it host-side without a launch.
+
+**MOST STEPS HAVE NO GROWTH, AND THE STEP FINDS THAT OUT FIRST.** The exact admission is
+dear against the launch it precedes — 0.48 to 0.56 ms of derivation, `plan_exact` and
+cross-stream event against a 0.08 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a
+sequence whose routing has settled writes atoms that are already resident. So the order per
+step is a QUESTION and then, only if the answer is yes, `rola_op`'s order at `L = 1`:
 
 ```
-_write_atom_bitmap(routes.write)   ->  the step's exact write atoms
-state._decode_entry                ->  plan_exact(..., fresh=False) on the side stream
-arena.wait()                       ->  the ONE event the launch waits on
-_decode_step                       ->  the walk, resolving through the grown table
+_growth_probe(routes.write)        ->  one kernel + one [BH] int32 read: anything new?
+  no  -> _decode_step              ->  the walk, against the residency it already has
+  yes -> _write_atom_bitmap        ->  the step's exact write atoms
+         state._decode_entry       ->  plan_exact(..., fresh=False) on the side stream
+         arena.wait()              ->  the ONE event the launch waits on
+         _decode_step              ->  the walk, resolving through the grown table
 ```
 
-The pool is reserved once, so admission never moves a base pointer and there is
-nothing for the kernel to discover. The only host synchronization is `plan_exact`'s
-single size read, which is also what sizes the admission.
+A steady step's whole host cost is the probe, 0.093 to 0.106 ms. A growth step pays the
+probe ON TOP of the preamble it would have paid anyway, moving from 0.56–0.66 ms to
+0.66–0.80 — the trade the trigger makes, and the right one at any ratio of steady steps to
+growth steps a sequence long enough to decode will have.
+
+The pool is reserved once, so admission never moves a base pointer and there is nothing for
+the kernel to discover. `plan_exact`'s single size read is the only host synchronization a
+growth step adds beyond the probe's own.
+
+<a id="growth-probe"></a>**THE PROBE, and why it is exact.** `rola_decode_growth_probe` is
+a kernel BESIDE the expansion, in `decode_expand.cu`, and it calls that TU's own
+`expand_side` over the same `amp_write` pointers the step itself expands. It condenses the
+result 16-deep — a bitmap word is exactly two atoms, because the atom is 16 leaves and leaf
+order is bit order — ANDs it against `page_table >= 0`, and writes one `[BH]` int32. So
+"the probe and the admission agree about the write support" is a property of the CALL
+GRAPH rather than of an audit; what
+`tests/tier2_geometry/test_decode_growth_trigger.py` can still catch is a condensation or
+a residency test that drifted, and it sweeps both directions of the agreement.
+
+Every CTA writes its own entry unconditionally, so the buffer needs no zero-fill and the
+reduction needs no atomic. The host read is ONE BLOCKING pinned device-to-host copy into a
+workspace-owned buffer: measured against the same copy issued asynchronously and awaited on
+an event, 0.093 ms against 0.152 (medians of 15 x 100). The host must wait for the kernel
+either way, and the event path adds a record and a query on top of the wait the copy
+already performs.
 
 **What the derivation costs, stated.** `D - 1` broadcast ANDs over a `[BH, N]` bool —
 four times the page table's own bytes, transient, and nothing that scales with `T`.

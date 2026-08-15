@@ -55,3 +55,24 @@ Slot VALUES are not bounds-checked. That would be a device-side read of the tabl
 the plan owns the bound — the same division of labour `chunk.cu`'s `page_table()`
 states. The address the kernel builds from a slot, and what a `-1` means, are
 [`decode.md` §4](decode.md#paged-address).
+
+## <a id="growth-probe"></a>4. `rola_decode_growth_probe` — a precondition, not a mode
+
+The probe is bound as its own entry because it is a different HOST ORDER, not an option on
+the step. It runs BEFORE `rola_decode_forward` so the host can learn whether this step's
+write set is already resident WITHOUT deriving that set itself, and it writes `growth` and
+nothing else — no state, no `y`, no page table.
+
+Its argument list is the subset of the step's that an expansion needs: `amp_write`, the
+three per-level integer vectors, the `page_table` it tests residency against, the step's
+own flat `bits` workspace, and the `[BH]` int32 answer. There is no `v`, no read side, no
+`n_split`, no `eps`, because none of them participates in the question.
+
+`page_table` is REQUIRED here where it is optional on the step: a dense backing has no
+absent atom to find, so an unpaged caller never asks. The table also NAMES the leaf space
+exactly as it does on the step ([§3](#paged-state)), which is what lets the entry validate
+`prod(level_widths)` against it.
+
+The kernel and the condensation are
+[`decode_expand.md` §7](decode_expand.md#growth-probe); the host order it serves and what
+it costs are [`decode.md` §4b](decode.md#growth-probe).

@@ -134,9 +134,13 @@ things live behind that seam and are worth naming because they used to be the ca
   or a VIEW of the dense plane — the view is what makes the kernel's in-place update
   the state's update. Dense and paged compute the same bytes
   ([`decode.md` §4](decode.md#paged-address)).
-* **Growth.** A step may write an atom that is not resident, so `_decode_entry` plans
-  the step's exact write atoms with `plan_exact(..., fresh=False)`: residency becomes
-  the UNION and the launch waits on the one event
+* **Growth is CONDITIONAL, and the condition arrives from the device.** `_decode_entry`
+  takes the step's write-atom bitmap or `None`. A bitmap means the device growth probe
+  found an atom this step writes that the table does not map, and the entry plans it
+  with `plan_exact(..., fresh=False)` — residency becomes the UNION and the launch waits
+  on the one event. `None` means there is nothing to admit, and the entry hands back the
+  residency the state already has without touching the arena at all. Which one it is,
+  and why the question is asked on the device, are
   ([`decode.md` §4b](decode.md#growth)).
 
 A decode step CONTINUES, so `_decode_entry` refuses a state that carries nothing —

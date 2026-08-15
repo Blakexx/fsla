@@ -121,3 +121,35 @@ The block-wide exclusive sum is `cub::BlockScan`, carried across the outer
 on a scalar fold; the digit algebra above it is semantics and is written out —
 the same standing rule `summaries.cuh` states in full
 ([`summaries.md` §2](summaries.md#hand-roll-rule)).
+
+## <a id="growth-probe"></a>7. The growth probe — the same expansion, asked one step earlier
+
+`decode_growth_probe_kernel` is the second kernel in this TU and it exists so a paged
+decode step can skip its admission preamble. It answers one question: does this step
+deposit into an atom the page table does not map?
+
+**It is here, and not in `paging.py`, for one reason.** It calls `expand_side` — the same
+device function `decode_expand_kernel` calls, over the same `amp_write` pointers — so the
+write support it tests IS the write support the step will expand. Any other placement would
+mean a second derivation of the same rule, and a residency answer derived from a support
+that could drift is worse than no answer: a missed atom is a deposit written into a `slot <
+0` row, which is silently dropped.
+
+It runs BEFORE the step rather than inside it, which is the one thing the placement cannot
+be talked out of. The expansion in the step's own launch is followed immediately by the
+GEMV, and the GEMV is what needs the corrected page table; a flag read after that launch is
+a flag read one step too late.
+
+The condensation is two half-word tests and no loop over leaves: a bitmap WORD is exactly
+TWO atoms, because an atom is 16 leaves and leaf order is the bitmap's bit order. Word `w`
+covers atoms `2w` (its low half) and `2w + 1` (its high half), each guarded against
+`atoms_per_bh` for a leaf space whose last word is half used.
+
+The reduction is a `__shared__ int` written by any thread that found something and read by
+thread 0 — no atomic, because every writer writes the same value — and every CTA writes its
+own `growth[bh]` entry unconditionally, so the buffer needs no zero-fill between steps. The
+host reduces `[BH]` to a verdict after one pinned copy; the cost ledger and the measured
+alternative are [`decode.md` §4b](decode.md#growth-probe).
+
+It shares the step's `bits_w` and `scratch` workspace. Nothing reads either between the two
+launches, and the step's own expansion overwrites both.

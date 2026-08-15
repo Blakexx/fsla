@@ -112,8 +112,22 @@ observable (`closed`, `mapped_capacity_pages`, `dense_limit_pages`, `committed_b
 `def_property_readonly`, so nothing on the Python side can write owner state except
 through the four verbs.
 
-`rola_vmm_create` is the factory, and its `target_chunk_bytes` defaults to 64 MiB at
-this boundary.
+`rola_vmm_create` is the factory. Its page geometry arrives as two extents,
+`page_rows` and `page_cols`, and the owner never learns what either counts — the arena
+passes `MMA_K_QUANTUM` and `d_v + 1`, which is the fused-mass page it addresses, and
+keeping the names dimensionless is what stops the owner acquiring an opinion about page
+meaning it has no business holding ([`paging/vmm_owner.md`](paging/vmm_owner.md)).
+`target_chunk_bytes` defaults to 64 MiB at this boundary; the arena overrides it with the
+device's own allocation granularity, which is the finest commitment the driver admits.
+
+## <a id="growth-probe"></a>7b. `rola_decode_growth_probe` — bound beside the step
+
+The probe is registered as its own entry rather than as an argument to
+`rola_decode_forward`, because it is a PRECONDITION of the step and not a mode of it: the
+host runs it first, reads one `[BH]` int32, and only then decides whether the step needs
+its admission preamble at all. Binding it separately is what keeps that ordering visible at
+the boundary instead of implied by a flag. Its contract is
+[`decode_api.md` §4](decode_api.md#growth-probe).
 
 ## The chunk consumer's entries (operator adoption)
 

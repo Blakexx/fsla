@@ -271,6 +271,15 @@ void VmmOwner::rollback_to(std::int64_t target_pages) {
                             "rollback extent"),
                allocation_granularity_);
   TORCH_CHECK(target <= mapped_bytes_, "CUDA VMM rollback target exceeds mapped extent");
+  // A target inside a chunk rounds UP to that chunk's end, which would silently keep more
+  // than was asked for. Naming it here is what makes the refusal describe the caller's
+  // mistake rather than the consistency check it would otherwise trip later.
+  TORCH_CHECK(page_bytes_ != 0
+                  && std::min<std::int64_t>(static_cast<std::int64_t>(target / page_bytes_),
+                                            dense_limit_pages_)
+                         == target_pages,
+              "CUDA VMM rollback target is not a committed chunk boundary: ", target_pages,
+              " pages rounds up to a mapping of ", target / page_bytes_, " pages");
   std::size_t boundary = 0;
   bool found = target == 0;
   for (const auto& chunk : chunks_) {

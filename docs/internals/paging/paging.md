@@ -49,9 +49,8 @@ it.
 **THERE IS NO CAP, AND THAT IS THE POINT.** With the footprint known exactly, an
 allocator ceiling is either never-binding or a self-inflicted refusal, so the arena
 carries none: its capacity IS the dense limit and it COMMITS only what the plan
-admits. Under the VMM owner that limit is reserved VIRTUALLY (`dense_limit_pages`)
-and physical commitment follows the plan; under the dense-tensor bridge the pool is
-the one allocation the bridge costs. The former ``CAPPED`` mode (partial grant plus
+admits — the limit is RESERVED virtually and committed physically per plan, which is
+[the two backings](#backings) below. The former ``CAPPED`` mode (partial grant plus
 an admit mask that annihilated the denied atoms' writes) was DELETED before it: it
 computed a DIFFERENT function from the one the caller asked for, and the closed-world
 standard is that a demand the binary cannot serve is refused at the host rather than
@@ -61,6 +60,35 @@ with the paged-state-I/O integration (P67 S3b).
 The consequence downstream is that admission is TOTAL: every atom the routing realizes
 is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one
 predicate and the arena publishes exactly one of them (the table).
+
+## <a id="backings"></a>The Two Backings, And The Receipt
+
+Paging's claim is a claim about PHYSICAL MEMORY, and a pool allocated at the dense limit
+satisfies every equivalence gate while saving none of it. So the arena's device backing is
+the CUDA driver's virtual memory manager ([`vmm_owner.md`](vmm_owner.md)): the dense limit
+is RESERVED as address space, which costs nothing, and physical memory is committed as
+:class:`ExtentAllocator` hands out slots. ``PageArena.committed_bytes`` reads that
+commitment out of the owner's own accounting rather than out of ``nvidia-smi``, which
+reports the caching allocator's reservations too and cannot attribute bytes to one arena.
+
+``backing='dense'`` is one ``torch.zeros`` over every slot the topology could need. It is
+the HOST backing — a CPU device has no driver VMM at all — and the instrument the
+equivalence gates measure the VMM arena against. It is not a fallback, and the difference
+matters: ``backing='auto'`` (the default) resolves to the VMM backing on CUDA and RAISES on
+a CUDA device whose driver cannot serve it, naming the driver's own reason. A measurement
+must not be able to quote the dense allocation as the feature.
+
+The capability is a device fact, proven once per device index by the driver round trip
+:func:`vmm_supported` runs and cached (``rola.ops.paging._VMM_PROBE``) — never re-asked per
+arena.
+
+**COMMITMENT FOLLOWS THE CURSOR, NOT THE RESIDENCY.** The two differ: the residency is the
+page table's popcount and the cursor is what :class:`ExtentAllocator` has handed out,
+including the alignment gap it opens when a batch does not fit an extent's remainder. The
+cursor is a host integer and the residency is a device reduction, so the cursor is what the
+arena's own logic runs on and what sizes the commitment; ``allocated_pages`` is that
+number, and ``resident_pages`` is the exact one, a REPORTING surface that syncs and never
+appears on a measured path.
 
 ## Extents Are Allocator Policy And Nothing Else
 

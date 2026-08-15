@@ -339,11 +339,11 @@ def test_paging_is_bitwise_invisible_at_partial_residency(decay_on):
     y_paged, returned, _ = _run(plan, fixture, arena=arena, decay=decay)
 
     result = arena.last_result
-    assert result.resident_pages < arena.logical_pages, (
+    assert result.allocated_pages < arena.logical_pages, (
         "this fixture must exercise partial residency, or it is not testing what "
         "R1 requires; if this fails the fixture saturated and needs to shrink "
         "further (paging-review.md §04)")
-    assert result.resident_fraction < 0.95
+    assert result.allocated_fraction < 0.95
 
     assert returned is arena, "under paging the arena IS the carried state"
     cols = state_dense.shape[-1]
@@ -419,10 +419,11 @@ def test_committed_pages_track_realized_owners_not_N():
     _run(plan, fixture, arena=arena)
     result = arena.last_result
 
-    assert 0 < result.resident_pages < arena.logical_pages
-    assert result.resident_bytes < result.dense_bytes
-    # The page set is exactly the WRITE-live owner set: reads never commit.
-    assert result.resident_pages == int((arena.page_table >= 0).sum().item())
+    assert 0 < result.allocated_pages < arena.logical_pages
+    assert result.allocated_bytes < result.dense_bytes
+    # The page set is exactly the WRITE-live owner set: reads never commit -- and this
+    # admission opened no alignment gap, so the allocator's cursor IS the residency.
+    assert result.allocated_pages == arena.resident_pages
 
 
 def test_a_dense_write_route_commits_every_owner():
@@ -434,7 +435,7 @@ def test_a_dense_write_route_commits_every_owner():
     B, T, H, _ = fixture[4].shape
     arena = _arena(plan, BH=B * H)
     _run(plan, fixture, arena=arena)
-    assert arena.last_result.resident_pages == arena.logical_pages
+    assert arena.last_result.allocated_pages == arena.logical_pages
 
 
 
@@ -512,7 +513,7 @@ def test_continue_paging_true_legitimately_continues_the_arena():
     arena = _arena(plan, BH=B * H)
     _run(plan, fixture_a, arena=arena)
     pages_after_a = (arena.page_table >= 0).clone()
-    resident_after_a = arena.last_result.resident_pages
+    allocated_after_a = arena.last_result.allocated_pages
 
     _, arena_out, _ = _run(plan, fixture_b, arena=arena, continue_paging=True)
     pages_after_continuation = (arena.page_table >= 0).clone()
@@ -522,7 +523,7 @@ def test_continue_paging_true_legitimately_continues_the_arena():
     pages_cold_b_only = (cold_arena.page_table >= 0)
 
     assert arena_out is arena
-    assert arena.last_result.resident_pages >= resident_after_a
+    assert arena.last_result.allocated_pages >= allocated_after_a
     a_exclusive = pages_after_a & ~pages_cold_b_only
     assert a_exclusive.any(), (
         "fixture produced no A-exclusive page; reseed so this gate means something")
@@ -630,7 +631,7 @@ def test_the_arena_commits_exactly_the_schedule_s_demand_through_a_real_launch()
     y_paged, returned, _ = _run(plan, fixture, arena=arena)
 
     assert returned is arena
-    assert arena.resident_pages == demand, (
+    assert arena.allocated_pages == demand, (
         "the arena committed something other than the schedule's exact demand")
     cols = state_dense.shape[-1]
     assert torch.equal(state_dense.reshape(B * H, -1, cols), arena.materialize())
