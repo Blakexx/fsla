@@ -308,6 +308,84 @@ def test_an_absent_atom_leaves_its_backing_untouched(arm):
 
 
 # ---------------------------------------------------------------------------
+# 4. residency is BC-FREE (the design's E.5)
+# ---------------------------------------------------------------------------
+
+#: `(widths, C, BCs)` -- the two topologies the built matrix gives MORE THAN ONE `BC`.
+#: A one-`BC` topology cannot express this claim at all, so the cell is written only
+#: where the matrix can falsify it (`extension().chunk_arms()`).
+_MULTI_BC_ARMS = (
+    ((64, 64), 32, (64, 128, 256)),
+    ((8, 8, 8, 8), 32, (32, 128)),
+)
+
+
+@pytest.mark.parametrize("arm", _MULTI_BC_ARMS,
+                         ids=lambda a: f"{'x'.join(map(str, a[0]))}-C{a[1]}")
+def test_the_same_routing_is_the_same_residency_at_every_built_BC(arm):
+    """The atom re-key's whole reason, at the KERNEL rather than at the allocator.
+
+    `BC` is a compute tile chosen PER LAUNCH; a page is a memory-residency atom. If
+    residency moved with `BC`, then continuing a sequence across a `BC` flip would
+    have to re-plan, re-map, and move bytes -- and a block-grain write bitmap, which
+    is exactly the derivation §A.0 rejected, would do that by construction. So this
+    cell runs one routing at every `BC` the matrix builds for its topology and claims
+    two things:
+
+    * **residency is EQUAL** -- the same atoms present, atom for atom;
+    * **the state is bit-identical**, not merely inside an envelope. That is stronger
+      than the design asked for and it is structural rather than lucky: a leaf's state
+      is a sum over TOKENS in chunk order, and `BC` partitions LEAVES, so changing it
+      moves which CTA owns an atom and reorders nothing that is summed.
+
+    **`y` IS DELIBERATELY NOT COMPARED HERE, and that is not an oversight.** `BC`
+    partitions the LEAVES, so two `BC`s sum a leaf's readout contributions in different
+    groups AND fan the groups in with `atomicAdd` over a different number of owner
+    blocks. This file's envelope derives the second reassociation only (it is the
+    dense-vs-paged instrument, where the leaf partition is fixed), and it measured
+    1.5e-3 against a 1.5e-3 bound across a `BC` flip -- i.e. the instrument is at its
+    limit because it is the wrong instrument, not because the kernel drifted. Inventing
+    a wider bound to cover a claim E.5 does not make would be tuning. The exact claim
+    lives on the STATE, where it is `torch.equal`, and `y`'s own `BC` blindness is
+    `tests/tier2_geometry/test_decode_bc_blindness.py`'s at `T = 1`.
+
+    `tests/unit/test_paging_atoms.py` makes the allocator-side half of this claim (the
+    table's SHAPE and the address expression are `BC`-free); this is the half that only
+    a launch can make.
+    """
+    widths, C, bcs = arm
+    fixture = _fixture(widths, T=2 * C, support=0.5, seed=53 + len(widths))
+    BH = fixture[3].shape[0] * fixture[3].shape[2]
+    bitmap = _bitmap(fixture, widths)
+
+    runs = {}
+    for BC in bcs:
+        arena = _arena(widths, BC, BH)
+        result = arena.plan_exact(bitmap)
+        y, state = _paged(fixture, widths, C, BC, arena)
+        runs[BC] = (y, state, (arena.page_table >= 0).clone(), result.allocated_pages)
+
+    base = bcs[0]
+    y_base, state_base, present_base, pages_base = runs[base]
+    assert pages_base > 0 and present_base.sum() < present_base.numel(), (
+        "a fully resident plan cannot falsify a BC-keyed residency; this cell needs a "
+        "structured write support that leaves atoms out")
+    for BC in bcs[1:]:
+        y_bc, state_bc, present_bc, pages_bc = runs[BC]
+        assert torch.equal(present_base, present_bc), (
+            f"residency moved between BC={base} and BC={BC}: "
+            f"{int((present_base ^ present_bc).sum())} atoms differ, so the write "
+            "bitmap is keyed to the compute tile")
+        assert pages_base == pages_bc, (
+            f"the same routing committed {pages_base} pages at BC={base} and "
+            f"{pages_bc} at BC={BC}")
+        assert torch.equal(state_base, state_bc), (
+            f"the carried state differs across BC={base} vs BC={BC} by "
+            f"{(state_base - state_bc).abs().max().item():.3e}")
+        assert torch.isfinite(y_bc).all(), f"BC={BC} produced a non-finite y"
+
+
+# ---------------------------------------------------------------------------
 # the seam and its refusals
 # ---------------------------------------------------------------------------
 

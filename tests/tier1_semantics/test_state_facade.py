@@ -301,3 +301,62 @@ def test_the_layer_mirrors_the_op():
         y2, returned = layer(x, state=state)
     assert y.shape == y1.shape == y2.shape
     assert layer.last_execution_backend == "cuda"
+
+
+# ---------------------------------------------------------------------------
+# 6. a BC flip over a LIVE state
+# ---------------------------------------------------------------------------
+
+def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte(monkeypatch):
+    """`BC` is chosen PER LAUNCH; residency is not. This is that claim at the facade.
+
+    The retired `tests/layers/test_layer_paging.py` made it of a layer-held arena, forcing
+    the decision through the function that made it. The arena is the STATE's now, and the
+    chunk arm's `(C, BC)` comes from `rola.ops.chunk._arm_for` -- the one function both
+    the facade (which needs `BC` for the arena's extent policy) and the launch read -- so
+    scripting THAT is the same move against the same seam, not a reach around it.
+
+    Two calls on one live state at two built `BC`s must: keep the SAME arena object (a
+    rebuild would mean residency was keyed to the tile), let the state's extent policy
+    follow the flip (it is policy, and policy may move), and compute the same bytes as a
+    DENSE-backed state driven through the identical flip. `tests/tier2_geometry/
+    test_chunk_paging_equivalence.py` makes the ABI-level version of the byte claim; this
+    one is about the object's lifecycle across the flip.
+    """
+    from rola.ops import chunk as chunk_module
+
+    widths = (64, 64)  # the topology the built matrix gives more than one BC
+    #: PINNED PER CALL, not per invocation of the seam: `_arm_for` is read several times
+    #: inside one `rola_op` (the refusal check, the facade's extent policy, the launch),
+    #: and all of those must agree or the call would plan one arm and launch another.
+    forced = {"BC": 64}
+
+    def scripted_arm_for(D, B):
+        return (32, forced["BC"])
+
+    gateway = _gateway(seed=11, widths=widths)
+    x, v = _inputs(seed=11, T=64)
+    with torch.no_grad():
+        first, second = gateway(x[:, :32]), gateway(x[:, 32:])
+
+    def chain(expert):
+        state = rola.state()
+        with torch.no_grad():
+            forced["BC"] = 64
+            rola.rola_op(first, v[:, :32], state=state, expert=expert)
+            arena, bc = state._arena, state._BC
+            forced["BC"] = 128
+            rola.rola_op(second, v[:, 32:], state=state, expert=expert)
+        return state, arena, bc
+
+    monkeypatch.setattr(chunk_module, "_arm_for", scripted_arm_for)
+    paged, arena_after_first, bc_after_first = chain(None)
+    dense, _, _ = chain(_DENSE)
+
+    assert bc_after_first == 64 and paged._BC == 128, (
+        "the script did not reach the state's extent policy, so the flip never happened")
+    assert paged._arena is arena_after_first, (
+        "the BC flip rebuilt the arena; residency is keyed to the compute tile")
+    assert paged.paged and not dense.paged, "both chains took the same backing"
+    assert torch.equal(paged.materialize(), dense.materialize()), (
+        "the paged chain across a BC flip differs from the dense one")
