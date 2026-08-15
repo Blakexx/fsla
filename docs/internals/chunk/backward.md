@@ -101,6 +101,53 @@ it, is `nw - above` with the chunk's own total `nw`, known at close.
 Scan A and Scan B associate their sums differently by construction, so the gate on
 this operator is ratio-to-floor and never bit-identity.
 
+## <a id="scan-a"></a>Scan A — the forward rebuild, and the read side
+
+Scan B walks DOWN carrying the adjoint `dS`; Scan A walks UP carrying the forward
+state `S`, rebuilt from zero over the SAVED union table, and emits the one gradient
+that needs `S` rather than `dS`:
+
+    dR[i,s]     = <dnum[i,:], S[i,s,:]> + dden[i] * z[i,s]                       (A.8)
+    d pr_l[t,d] = sum_{s: d_l(s)=d} dR[t,s] * prod_{l' != l} pr_{l'}[t,d_{l'}(s)]  (A.9)
+
+with NO gain anywhere: `g_read` does not exist, so (A.9) carries no gain factor and
+there is no `d g_read` output.
+
+**THE GRAM IS THE ONE SCAN B ALREADY FORMS.** Expanding the INCLUSIVE `S`/`z` over
+the chunk gives
+
+    dR[i,s] = <dnum[i,:], S_a[s,:]> + dden[i]*z_a[s]
+            + sum_j [j <= i] * W[j,s] * Gd'[i,j]
+
+with the same `Gd'`, ones column and all — the design's (A.14) and (A.15) collapsed
+into ONE masked contraction. So the correction, the buffer and the code path are
+inherited rather than rebuilt. Verified exact over rationals before it was written.
+
+Structurally it is Scan B with the two sides exchanged:
+
+| | Scan B | Scan A |
+|---|---|---|
+| schedule | `Descent` | `Ascent` |
+| state | `dS^T` + `dz` per slot | `S^T` + `z` per slot |
+| write panel | UNGAINED (the gain lands at the store) | **GAINED** — the fold deposits `W` and the intra contracts against it |
+| Gram | `Gu` then `Gd'` | `Gd'` alone |
+| per-slot | `dW`: `m` = write token | `dR`: `m` = READ token |
+| intra | `A = Gd'^T` (T map) | `A = Gd'` (F map, NOT transposed) |
+| fold | `dS += dnum^T·R` | `S += v^T·W` — the forward's own |
+| digit reduction | write side, gained | read side, no gain |
+
+It reuses `GeomB` unchanged: it needs strictly less of the readout window (no `dv`
+staging), and sharing the geometry keeps both halves of a training step at one
+occupancy. 236 registers, zero spill, zero stack frame.
+
+**ONE ADDRESSING RULE THIS SCAN PAID TO LEARN.** Each side's table row is formed
+FROM THE TABLE, not from the other side. Writing the write row as
+`read + entries * tok_words` makes its offset a CONSTANT times a register, which
+ptxas re-derives inside the chunk loop rather than keeping — an `IMAD.WIDE` per
+chunk, which the gate refuses. Formed independently the multiply is register times
+register and it stays put. Pinning does not substitute: `pin_address` launders a
+value, it does not make rematerialising it more expensive than keeping it.
+
 ## <a id="readout-window"></a>The readout window is two things in sequence
 
 `so` — the fp32 plane `dv`'s partial is staged into before the fan-in — is DEAD

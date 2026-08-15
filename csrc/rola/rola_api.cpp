@@ -94,6 +94,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "chunk consumer, Scan B: the descending walk's per-token chunk/position "
         "stamps and causal thresholds, both sides",
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("L"));
+  //: SCAN A: the forward rebuild and the READ side's digit gradient, `d pr`.
+  m.def("chunk_scan_a_probe", &rola::chunk::scan_a_probe, "chunk consumer, Scan A: d pr",
+        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
+        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
   m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
         "chunk consumer, Scan B: per-arm registers, spill bytes, shared bytes, "
         "staging depth, CTA target and the arm's declared register floor");

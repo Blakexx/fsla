@@ -469,8 +469,11 @@ struct Producer {
   //: `have` is the row's existence, and a row past the gathered count must be
   //: EXACTLY zero -- zeroed at the LEADING amplitude rather than at the product,
   //: so one select per digit covers the whole run.
-  __device__ __forceinline__ void emit(const __nv_bfloat16* bs, char* dst, uint32_t tokOff,
-                                       bool have, uint32_t gsp) const {
+  //: `bs` is a BYTE BASE.  Every caller pins its amplitude plane in bytes so the
+  //: one 64-bit multiply is the stride the displacements already carry; taking it
+  //: as `void*` is what lets them.
+  __device__ __forceinline__ void emit(const void* bs, char* dst, uint32_t tokOff, bool have,
+                                       uint32_t gsp) const {
     [[maybe_unused]] const __nv_bfloat16* p0 =
         reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
     const __nv_bfloat16* p1 =

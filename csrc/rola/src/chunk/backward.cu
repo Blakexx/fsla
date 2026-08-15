@@ -216,6 +216,58 @@ std::vector<torch::Tensor> backward_seeds(torch::Tensor dy, torch::Tensor y, tor
   return {dnum, dden};
 }
 
+//: SCAN A'S ENTRY.  It emits `d pr` alone: the read side's digit gradient is the
+//: only thing the forward rebuild is for, and every write-side gradient is Scan B's.
+std::vector<torch::Tensor> scan_a_probe(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
+                                        torch::Tensor v, torch::Tensor dnum, torch::Tensor dden,
+                                        torch::Tensor tbl, int64_t chunk, int64_t bc,
+                                        std::vector<int64_t> widths) {
+  check_arch_table();
+  TORCH_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == torch::kBFloat16
+                  && v.dim() == 4 && v.size(3) == kD,
+              "V must be a contiguous bf16 [B,L,H,64] tensor");
+  TORCH_CHECK(dnum.is_cuda() && dnum.is_contiguous() && dnum.scalar_type() == torch::kBFloat16
+                  && dnum.dim() == 4 && dnum.size(3) == kD,
+              "dnum must be a contiguous bf16 [B,H,L,64] tensor");
+  TORCH_CHECK(dden.is_cuda() && dden.is_contiguous() && dden.scalar_type() == torch::kBFloat16,
+              "dden must be a contiguous bf16 [B,H,L] tensor");
+  TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
+              "the union table is a contiguous int32 tensor of packed bits");
+  const int B_ = (int)v.size(0), L = (int)v.size(1), H = (int)v.size(2);
+  TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
+  const int BH = B_ * H;
+  auto opts = v.options().dtype(torch::kFloat32);
+  auto dpr = torch::zeros({B_, H, (long)L, pr.size(-1)}, opts);
+#define SCAN_A_DISPATCH_X(C_, BC_, D_, B__)                                                       \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                      \
+    const long want = (long)BH * 2 * LevelPlan<D_, B__, BC_>::entries * tok_words(L);             \
+    TORCH_CHECK(tbl.numel() == want, "the union table was built for a different arm");            \
+    constexpr size_t sm = GeomB<C_, BC_>::bytes;                                                  \
+    static bool configured = false;                                                               \
+    if (!configured) {                                                                            \
+      C10_CUDA_CHECK(cudaFuncSetAttribute(scan_a_kernel<C_, D_, B__, BC_>,                        \
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm)); \
+      configured = true;                                                                          \
+    }                                                                                             \
+    const dim3 grid((unsigned)LevelPlan<D_, B__, BC_>::blocks, (unsigned)BH);                     \
+    scan_a_kernel<C_, D_, B__, BC_><<<grid, threads_for(BC_), sm,                                 \
+                                      at::cuda::getCurrentCUDAStream()>>>(                        \
+        reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),                                    \
+        reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),                                    \
+        reinterpret_cast<const __nv_bfloat16*>(gw.data_ptr()),                                    \
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                                     \
+        reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                                  \
+        reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                                  \
+        reinterpret_cast<const uint32_t*>(tbl.data_ptr()), dpr.data_ptr<float>(), L,              \
+        H * kD * (int)sizeof(__nv_bfloat16));                                                     \
+    C10_CUDA_KERNEL_LAUNCH_CHECK();                                                               \
+    return {dpr};                                                                                 \
+  }
+  SCAN_B_ARMS_X(SCAN_A_DISPATCH_X)
+#undef SCAN_A_DISPATCH_X
+  TORCH_CHECK(false, "Scan A is not built for arm chunk=", chunk, " BC=", bc);
+}
+
 //: THE PARTITION PROBE'S ENTRY.  It takes the table and nothing else: the walk
 //: reads no amplitude, so a probe that took one would be gating a wider surface
 //: than the schedule.  Three int32 planes `[BH, blocks, L]` come back, `-1` where

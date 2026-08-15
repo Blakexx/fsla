@@ -1396,4 +1396,565 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #undef ADDR_V
 }
 
+//: SCAN A -- the forward rebuild, and the READ side's digit gradient.
+//: It is Scan B with the two sides exchanged: the ASCENDING schedule, the
+//: forward's own fold rebuilding `S` from zero over the SAVED table, and `dR`
+//: contracted against the read amplitudes instead of the write ones.  The `d_v`
+//: Gram is the SAME `Gd'` Scan B forms, ones column and all -- expanding the
+//: inclusive `S`/`z` over the chunk collapses the design's (A.14)+(A.15) into one
+//: masked contraction -- docs/internals/chunk/backward.md#scan-a
+template <int C, int D, int B, int BC>
+__global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void scan_a_kernel(
+    const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
+    const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
+    const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
+    const uint32_t* __restrict__ tbl, float* __restrict__ dpr, int L, int v_row_bytes) {
+  using LP = LevelPlan<D, B, BC>;
+  using G = GeomB<C, BC>;
+  constexpr int GROUPS = groups_for(BC);
+  constexpr int kThreads = threads_for(BC);
+  constexpr int kGroupWarps = kGroupThreads / 32;
+  constexpr int BCg = BC / GROUPS;
+  static_assert(GROUPS == 1, "Scan A is written for the one-group carve");
+  static_assert(kScanBCtaTarget<C, BC> == kCtaTarget<C, BC>,
+                "the two halves of one training step must run at one residency");
+  constexpr int STAGES = G::stages;
+  constexpr int AHEAD = STAGES - 1 + kAheadExtra;
+  constexpr int IRING = AHEAD + 2;
+  constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
+  constexpr int MTOK = C / kMmaM;
+  constexpr int NTOK = C / kMmaN;
+  constexpr int KD = BCg / kMmaK;
+  constexpr int NDV = BCg / kMmaN;
+  constexpr int kChunkV = kD / 8;
+  constexpr int KV = kD / kMmaK;
+
+  constexpr int MSPLIT = MTOK >= kGroupWarps ? kGroupWarps : MTOK;
+  constexpr int NSPLIT_RAW = kGroupWarps / MSPLIT;
+  constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
+  constexpr int MPW = MTOK / MSPLIT;
+  constexpr int NPW = NTOK / NSPLIT;
+  constexpr int GWARPS = MSPLIT * NSPLIT;
+  constexpr int GPAIR = NPW / 2;
+
+  constexpr int kWtot = LP::col_base(LP::depth);
+  constexpr int kDepth = LP::depth;
+  constexpr int kInnerSpan = LP::span_at(kDepth - 1);
+  constexpr int kOuterSpan = BC / kInnerSpan;
+  constexpr int kLeadSpanG = kOuterSpan / GROUPS;
+  constexpr int kRowThr = kGroupThreads / C;
+  constexpr int kThrPerLead = kRowThr >= kLeadSpanG ? kRowThr / kLeadSpanG : 1;
+  constexpr int kLeadPerThr = kLeadSpanG >= kRowThr ? kLeadSpanG / kRowThr : 1;
+  constexpr int kTailPerThr = kInnerSpan / kThrPerLead;
+  constexpr int kTailVec = (kTailPerThr * 2) / 16;
+  constexpr int kFastSpan = kDepth >= 2 ? LP::span_at(kDepth - 2) : 1;
+  static_assert(kDepth == 2, "the read-side digit reduction is the two-level form");
+  static_assert(kInnerSpan == 2 * (BCg / 4),
+                "a quarter of the slots must be half an inner-level span");
+
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5, lane = tid & 31;
+  const int gwarp = warp % kGroupWarps;
+  const int gtid = tid % kGroupThreads;
+  const int blk = (int)blockIdx.x;
+
+  extern __shared__ __align__(16) char smem_raw[];
+
+  const int tokWords = tok_words(L);
+  const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
+  const int heads = vRowElems / kD;
+  //: THE HEAD'S OFFSET RIDES THE 32-BIT DISPLACEMENT, not the 64-bit base.  V is
+  //: `[B, T, H, d_v]`, so a head is a fixed byte offset inside a row; folding it
+  //: into the gather's displacement leaves the base with the BATCH term alone and
+  //: removes a 64-bit multiply the compiler otherwise re-derives inside the chunk
+  //: loop -- docs/internals/chunk/backward.md#scan-a
+  const uint32_t vHeadOff = (uint32_t)(blockIdx.y % heads) * (uint32_t)(kD * 2);
+  const __nv_bfloat16* const vPlane = pin_address(v + (long)(blockIdx.y / heads) * L * vRowElems);
+  const long base = (long)blockIdx.y * L * kD;
+  const long pbase = (long)blockIdx.y * L * kWtot;
+  const __nv_bfloat16* const dnumPlane = pin_address(dnum + base);
+  const __nv_bfloat16* const ddenPlane = pin_address(dden + (long)blockIdx.y * L);
+  const __nv_bfloat16* const pRead = pin_address(pread + pbase);
+  const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
+  const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
+  //: THE DIGIT-GRADIENT PLANE IS A BYTE POINTER on the stride its displacements
+  //: already carry, so the fan-in's address is one 32-bit add off a pinned base
+  //: -- docs/internals/chunk/backward.md#scan-a
+  char* const dprPlane =
+      pin_address(reinterpret_cast<char*>(dpr) + (long)blockIdx.y * L * (kWtot * 4));
+  const uint32_t clauseStride = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
+
+  __nv_bfloat16* sv = reinterpret_cast<__nv_bfloat16*>(smem_raw);
+  __nv_bfloat16* sdn = sv + STAGES * C * LdV;
+  __nv_bfloat16* sr = sdn + STAGES * C * LdV;
+  __nv_bfloat16* sw = sr + C * LdS;
+  __nv_bfloat16* sg = sw + C * LdS;
+  float* so = reinterpret_cast<float*>(sg + C * G::LdG);
+  float* sgrad = reinterpret_cast<float*>(reinterpret_cast<char*>(so) + G::win_bytes);
+  float* sdd = sgrad + kUnits * C;
+  //: the OUTER level's READ amplitudes, per read entry -- the leave-one-out factor
+  //: the inner level's digit gradient is weighted by.  There is no gain on this
+  //: side: `g_read` does not exist.
+  float* spr0 = sdd + C + C;
+  char* sidx = reinterpret_cast<char*>(spr0 + 2 * C);
+  uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
+  uint32_t* sfW = sfR + kFormWords;
+  int* scook = reinterpret_cast<int*>(sfW + kFormWords);
+  //: the readout window is `dv`-free here, so it holds only the entry mass column
+  //: and the transposed state -- the same two phases, one fewer.
+  float* const sz = so;
+  __nv_bfloat16* const sds = reinterpret_cast<__nv_bfloat16*>(sz + BCg);
+
+  //: EACH SIDE'S TABLE ROW IS FORMED FROM THE TABLE, not from the other side.
+  //: Writing the write row as `read + entries * tok_words` makes its offset a
+  //: CONSTANT times a register, which ptxas re-derives inside the chunk loop
+  //: rather than keeping -- one `IMAD.WIDE` per chunk, which the gate refuses.
+  //: Formed independently the multiply is register times register, and it stays.
+  Ascent<C, LP::clauses, kThreads, G::idx_slot, G::hdr> aw{
+      sidx,
+      sfR,
+      sfW,
+      scook,
+      pin_address(tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * tokWords),
+      pin_address(tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * tokWords),
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0};
+  aw.tailMask = (L & (kTokBits - 1)) ? ((1u << (L & (kTokBits - 1))) - 1u) : 0xFFFFFFFFu;
+  aw.lastWord = tokWords - 1;
+  aw.tokWords = tokWords;
+#define ROLA_CLAUSE(CL_, C_)                                    \
+  if constexpr ((CL_) < LP::clauses) {                          \
+    constexpr int kDiv = LP::suffix_groups((CL_) + 1);          \
+    constexpr int kGrp = LP::groups_at(CL_);                    \
+    constexpr int kPre = LP::prefix_entries(CL_);               \
+    C_ = (uint32_t)(kPre + (blk / kDiv) % kGrp) * clauseStride; \
+  }
+  ROLA_CLAUSE(0, aw.cA)
+  ROLA_CLAUSE(1, aw.cB)
+  ROLA_CLAUSE(2, aw.cC)
+  ROLA_CLAUSE(3, aw.cD)
+#undef ROLA_CLAUSE
+  auto ihdr = [&](int d) { return aw.ihdr(d); };
+  auto iread = [&](int d) { return aw.iread(d); };
+  auto iwrite = [&](int d) { return aw.iwrite(d); };
+  auto ithr = [&](int d) { return aw.ithr(d); };
+
+  const int lr = lane & 7, tl = lane >> 3;
+  const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
+  const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
+  const uint32_t rowFs = (uint32_t)((rF * LdS + cF * 8) * 2);
+  const uint32_t rowTs = (uint32_t)((rT * LdS + cT * 8) * 2);
+  const uint32_t rowFv = (uint32_t)((rF * LdV + cF * 8) * 2);
+  const uint32_t rowTv = (uint32_t)((rT * LdV + cT * 8) * 2);
+#define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
+#define ADDR_VG(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdV + (g_) * 8) * 2))
+#define ADDR_G(b_, R_, g_) ((b_) + (uint32_t)(((R_) * (int)G::LdG + (g_) * 8) * 2))
+#define ADDR_DS(b_, R_, g_) ((b_) + (uint32_t)(((R_) * (int)G::LdDs + (g_) * 8) * 2))
+  const int dv0 = gwarp * 16;
+#define ADDR_V(b_, R_) ((b_) + (uint32_t)(((R_) * LdV + dv0) * 2))
+  const int gm0 = (gwarp / NSPLIT) * MPW;
+  const int gn0 = (gwarp % NSPLIT) * NPW;
+
+  //: THE FORWARD STATE, transposed exactly as the forward carries it, and its mass
+  //: column as ONE SLOT PER THREAD for the same reason Scan B's adjoint is:
+  //: docs/internals/chunk/backward.md#mass-column
+  static_assert(BCg == kGroupThreads, "one slot per thread");
+  float st[NDV][4];
+#pragma unroll
+  for (int j = 0; j < NDV; ++j)
+#pragma unroll
+    for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
+  float z_s = 0.f;
+
+  constexpr int kRowsPerPass = kThreads / kChunkV;
+  constexpr int kPasses = C / kRowsPerPass;
+  const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
+  const uint32_t ldColB = (uint32_t)(ldCol * 2);
+  const uint32_t kVRowB = (uint32_t)v_row_bytes;
+  constexpr uint32_t kDnRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
+  const uint32_t stgOff = (uint32_t)((ldRow * LdV + ldCol) * 2);
+  constexpr uint32_t kSlot = (uint32_t)(C * LdV) * 2;
+  constexpr uint32_t kRing = STAGES * kSlot;
+  const uint32_t svL = smem_addr(sv) + stgOff;
+  const uint32_t sdnL = smem_addr(sdn) + stgOff;
+  const uint32_t svB = smem_addr(sv);
+  const uint32_t sdnB = smem_addr(sdn);
+  uint32_t stgSlot = 0, cmpSlot = 0;
+  const uint32_t brF = smem_addr(sr) + rowFs;
+  const uint32_t bwF = smem_addr(sw) + rowFs;
+  const uint32_t bwT = smem_addr(sw) + rowTs;
+  const uint32_t bgF = smem_addr(sg) + (uint32_t)((rF * (int)G::LdG + cF * 8) * 2);
+  const uint32_t bdsT = smem_addr(sds) + (uint32_t)((rT * (int)G::LdDs + cT * 8) * 2);
+
+  auto stage_chunk = [&](int d, bool goW, bool goR) {
+    const uint32_t win = (uint32_t)ihdr(d)[3];
+    if (goW) {
+      const uint16_t* lw = iwrite(d);
+      const uint32_t winCol = ldColB + win * (kWindow * kVRowB);
+#pragma unroll
+      for (int p = 0; p < kPasses; ++p) {
+        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol + vHeadOff;
+        stage_tile(svL + stgSlot + (uint32_t)(p * kRowsPerPass * LdV * 2), gather_ptr(vPlane, off));
+      }
+    }
+    if (goR) {
+      const uint16_t* lrd = iread(d);
+      const uint32_t winCol = ldColB + win * (kWindow * kDnRowB);
+#pragma unroll
+      for (int p = 0; p < kPasses; ++p) {
+        const uint32_t off = (uint32_t)lrd[ldRow + p * kRowsPerPass] * kDnRowB + winCol;
+        //: THE GATHERED ROW IS PINNED.  `dnum`'s row stride is a compile-time
+        //: constant, so ptxas will otherwise fold `token * stride` into the 64-bit
+        //: add and issue an `IMAD.WIDE` per staged row -- inside the chunk loop,
+        //: which the gate refuses.  V's gather does not need this because its
+        //: stride is a runtime argument and there is nothing to fold.
+        stage_tile(sdnL + stgSlot + (uint32_t)(p * kRowsPerPass * LdV * 2),
+                   pin_address(gather_ptr(dnumPlane, off)));
+      }
+    }
+    stgSlot += kSlot;
+    if (stgSlot == kRing) stgSlot = 0;
+  };
+
+  const int prow = gtid / kRowThr;
+  const int rIn = gtid % kRowThr;
+  const int leadLocal = (rIn / kThrPerLead) * kLeadPerThr;
+  const int tailLocal = (rIn % kThrPerLead) * kTailPerThr;
+  constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
+  constexpr uint32_t kPRowW = (uint32_t)(kWtot * (int)sizeof(float));
+  constexpr uint32_t kOneSplat = 0x3F803F80u;
+  const int oBase = leadLocal;
+  [[maybe_unused]] uint32_t colFast = 0;
+  if constexpr (kDepth >= 2)
+    colFast =
+        (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
+                   * 2);
+  const uint32_t colInner =
+      (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
+  constexpr int kUppers = kDepth - 2;
+  [[maybe_unused]] uint32_t colUpA = 0, colUpB = 0;
+  if constexpr (kUppers >= 1) {
+    constexpr int lA = kDepth - 3;
+    colUpA =
+        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + (oBase / kFastSpan) % LP::span_at(lA))
+                   * 2);
+  }
+  if constexpr (kUppers >= 2) {
+    constexpr int lB = kDepth - 4;
+    colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk)
+                         + (oBase / (kFastSpan * LP::span_at(kDepth - 3))) % LP::span_at(lB))
+                        * 2);
+  }
+  const int slot0 = leadLocal * kInnerSpan + tailLocal;
+  char* dstR = reinterpret_cast<char*>(sr) + prow * (int)(LdS * 2) + slot0 * 2;
+  char* dstW = reinterpret_cast<char*>(sw) + prow * (int)(LdS * 2) + slot0 * 2;
+  Producer<kDepth, kLeadPerThr, kTailVec, kUppers> prod{colFast, colInner, colUpA, colUpB, {}};
+#pragma unroll
+  for (int j = 0; j < kLeadPerThr; ++j)
+#pragma unroll
+    for (int i = 0; i < kTailVec; ++i) prod.pOff[j][i] = (j * kInnerSpan + i * 8) * 2;
+
+  aw.begin_form();
+  aw.begin_walk();
+  if (tid == 0) {
+    scook[kCookWord] = 0;
+    scook[kCookOpen] = 0;
+  }
+  rendezvous();
+  aw.form(tid);
+  rendezvous();
+#pragma unroll 1
+  for (int s = 0; s < AHEAD; ++s) {
+    if (warp == 0) aw.walk(s, lane);
+    rendezvous();
+    aw.walk_wait(s, tid, warp, lane);
+    aw.form_if_low(tid);
+    rendezvous();
+  }
+#pragma unroll 1
+  for (int s = 0; s < STAGES - 1; ++s) {
+    stage_chunk(s, ihdr(s)[1] != 0, ihdr(s)[0] != 0);
+    stage_commit();
+  }
+
+  int dc = 0, ds = STAGES - 1, dn = AHEAD;
+#pragma unroll 1
+  for (;;) {
+    const int* h = ihdr(dc);
+    const int nr = h[0], nw = h[1];
+    if (!h[2]) break;
+    const bool liveR = nr != 0, liveW = nw != 0;
+    const bool live = liveR || liveW;
+    const uint32_t winPc = (uint32_t)h[3] * (uint32_t)(kWindow * kWtot * 2);
+    const uint32_t winPw = (uint32_t)h[3] * (uint32_t)(kWindow * kWtot * 4);
+
+    if (warp == 0) aw.walk(dn, lane);
+
+    if (live) {
+      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winPc;
+      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winPc;
+      const uint32_t winG = (uint32_t)h[3] * (uint32_t)(kWindow * 2);
+      //: THE WRITE PANEL IS GAINED HERE, unlike Scan B's: the fold deposits `W`
+      //: itself and the intra term contracts against it, and no read-side gradient
+      //: reads the level product alone.
+      const uint32_t gsp = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
+          gather_ptr(gWrite, (uint32_t)iwrite(dc)[prow] * 2u + winG)));
+      prod.emit(pRead, dstR, rOff, prow < nr, kOneSplat);
+      prod.emit(pWrite, dstW, wOff, prow < nw, gsp);
+      if (tid < C) {
+        sdd[tid] = tid < nr ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                                  gather_ptr(ddenPlane, (uint32_t)iread(dc)[tid] * 2u + winG)))
+                            : 0.f;
+#pragma unroll
+        for (int o = 0; o < kOuterSpan; ++o) {
+          const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winPc;
+          spr0[o * C + tid] = tid < nr
+                                  ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                                        gather_ptr(pRead, (uint32_t)iread(dc)[tid] * kPRowB + col)))
+                                  : 0.f;
+        }
+      }
+    }
+    //: `z` AS THIS CHUNK ENTERS IT: the fold updates it at the end, so this is the
+    //: mass every read entry of this chunk sees before its own writes land.
+    sz[gtid] = z_s;
+
+    stage_wait<STAGES - 2>();
+    rendezvous();
+
+    aw.walk_wait(dn, tid, warp, lane);
+    aw.form_if_low(tid);
+    stage_chunk(ds, ihdr(ds)[1] != 0, ihdr(ds)[0] != 0);
+    stage_commit();
+
+    //: ONE V BASE, TWO ROLES: the Gram's B operand and the fold's A operand want
+    //: the same lane map, so there is one address to keep.
+    const uint32_t avT = svB + cmpSlot + rowTv;
+    const uint32_t adnF = sdnB + cmpSlot + rowFv;
+    cmpSlot += kSlot;
+    if (cmpSlot == kRing) cmpSlot = 0;
+
+    // ---- the d_v GRAM, with the R-b ONES COLUMN -- the SAME Gd' Scan B forms ---
+    if (liveR && liveW && gwarp < GWARPS) {
+      const uint8_t* ljt = ithr(dc);
+#pragma unroll
+      for (int m = 0; m < MPW; ++m) {
+        float g[GPAIR][2][4];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) g[u][h2][e] = 0.f;
+#pragma unroll
+        for (int kk = 0; kk < KV; ++kk) {
+          uint32_t qa[4];
+          load_frag(qa, ADDR_VG(adnF, (gm0 + m) * 16, 2 * kk));
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u) {
+            uint32_t bf[4];
+            load_frag(bf, ADDR_VG(avT, (gn0 + u * 2) * 8, 2 * kk));
+            mma(g[u][0], qa, &bf[0]);
+            mma(g[u][1], qa, &bf[2]);
+          }
+        }
+        const int tr = (gm0 + m) * 16 + (lane >> 2);
+        const int j0 = ljt[tr], j1 = ljt[tr + 8];
+        const float m0 = sdd[tr], m1 = sdd[tr + 8];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2) {
+            const int tc = (gn0 + u * 2 + h2) * 8 + (lane & 3) * 2;
+            store_bf16x2(&sg[tr * G::LdG + tc], pack_bf16x2(tc + 0 < j0 ? g[u][h2][0] + m0 : 0.f,
+                                                            tc + 1 < j0 ? g[u][h2][1] + m0 : 0.f));
+            store_bf16x2(&sg[(tr + 8) * G::LdG + tc],
+                         pack_bf16x2(tc + 0 < j1 ? g[u][h2][2] + m1 : 0.f,
+                                     tc + 1 < j1 ? g[u][h2][3] + m1 : 0.f));
+          }
+      }
+    }
+
+    rendezvous();
+
+    // ---- THE PER-SLOT dR, A QUARTER OF THE SLOTS AT A TIME --------------------
+    float u1[2][MTOK][4];
+    float u0[kOuterSpan][MTOK][2];
+#pragma unroll
+    for (int c = 0; c < 2; ++c)
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
+#pragma unroll
+    for (int o = 0; o < kOuterSpan; ++o)
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+
+    if (liveR) {
+#pragma unroll
+      for (int pq = 0; pq < 4; ++pq) {
+#pragma unroll
+        for (int q = 0; q < BCg / 4 / kMmaN; ++q) {
+          const int nq = pq * (BCg / 4 / kMmaN) + q;
+          const int row = q * kMmaN + (lane & 3) * 2;
+          const int col = dv0 + (lane >> 2);
+          sds[row * G::LdDs + col] = __float2bfloat16_rn(st[nq][0]);
+          sds[(row + 1) * G::LdDs + col] = __float2bfloat16_rn(st[nq][1]);
+          sds[row * G::LdDs + col + 8] = __float2bfloat16_rn(st[nq][2]);
+          sds[(row + 1) * G::LdDs + col + 8] = __float2bfloat16_rn(st[nq][3]);
+        }
+        rendezvous();
+
+        float acc[MTOK][4];
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
+        //: the INTER half: `<dnum[i,:], S_a[s,:]>` with the WHOLE `d_v` contracted,
+        //: because the state arrived through shared instead of through registers.
+#pragma unroll
+        for (int kk = 0; kk < KV; ++kk) {
+          uint32_t bs[4];
+          load_frag(bs, ADDR_DS(bdsT, gwarp * 8, 2 * kk));
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m) {
+            uint32_t ad[4];
+            load_frag(ad, ADDR_VG(adnF, m * 16, 2 * kk));
+            mma(acc[m], ad, &bs[0]);
+          }
+        }
+        //: the INTRA half: `A = Gd'` -- NOT transposed, because this scan's output
+        //: axis IS the Gram's row -- and `B` = the W panel over the write tokens.
+        if (liveW) {
+#pragma unroll
+          for (int kk = 0; kk < MTOK; ++kk) {
+            uint32_t bwv[4];
+            load_frag_t(bwv, ADDR_S(bwF, kk * 16, (pq * (BCg / 4) + gwarp * 8) / 8));
+#pragma unroll
+            for (int m = 0; m < MTOK; ++m) {
+              uint32_t ag[4];
+              load_frag(ag, ADDR_G(bgF, m * 16, 2 * kk));
+              mma(acc[m], ag, &bwv[0]);
+            }
+          }
+        }
+        //: the ENTRY mass: `dden[i] * z_a[s]`, an OUTER product of a per-read-token
+        //: value and a per-slot one, which is why it is not a broadcast.
+        const int s0 = pq * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          const int t0 = m * 16 + (lane >> 2);
+          acc[m][0] += sdd[t0] * sz[s0];
+          acc[m][1] += sdd[t0] * sz[s0 + 1];
+          acc[m][2] += sdd[t0 + 8] * sz[s0];
+          acc[m][3] += sdd[t0 + 8] * sz[s0 + 1];
+        }
+
+        // ---- the digit reduction, in lane, and with NO gain --------------------
+        const int cls = pq & 1, od = pq >> 1;
+        const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          const int t0 = m * 16 + (lane >> 2);
+          const float w0 = spr0[od * C + t0], w1 = spr0[od * C + t0 + 8];
+          u1[cls][m][0] += acc[m][0] * w0;
+          u1[cls][m][1] += acc[m][1] * w0;
+          u1[cls][m][2] += acc[m][2] * w1;
+          u1[cls][m][3] += acc[m][3] * w1;
+          const uint32_t pcol = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 2) + winPc;
+          const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
+              gather_ptr(pRead, (uint32_t)iread(dc)[t0] * kPRowB + pcol));
+          const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
+              gather_ptr(pRead, (uint32_t)iread(dc)[t0 + 8] * kPRowB + pcol));
+          u0[od][m][0] +=
+              acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
+              + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
+          u0[od][m][1] +=
+              acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
+              + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+        }
+        rendezvous();
+      }
+
+      // ---- the read side's digit gradients leave here -------------------------
+#pragma unroll
+      for (int cls = 0; cls < 2; ++cls)
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+          const uint32_t col = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 4) + winPw;
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
+            if (tk < nr)
+              fan_in_add(
+                  reinterpret_cast<float*>(gather_ptr(
+                      dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
+                  u1[cls][m][e]);
+          }
+        }
+#pragma unroll
+      for (int o = 0; o < kOuterSpan; ++o)
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int hh = 0; hh < 2; ++hh) {
+#pragma unroll
+            for (int b2 = 1; b2 < 4; b2 <<= 1)
+              u0[o][m][hh] += __shfl_xor_sync(0xFFFFFFFFu, u0[o][m][hh], b2);
+            const int tk = m * 16 + (lane >> 2) + hh * 8;
+            if ((lane & 3) == 0 && tk < nr) {
+              const uint32_t col =
+                  (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 4) + winPw;
+              fan_in_add(reinterpret_cast<float*>(
+                             gather_ptr(dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col)),
+                         u0[o][m][hh]);
+            }
+          }
+    }
+
+    rendezvous();
+
+    if (liveW) {
+      // ---- THE FORWARD FOLD, verbatim: S^T += V^T . W, z += 1^T . W -----------
+#pragma unroll
+      for (int kk = 0; kk < MTOK; ++kk) {
+        uint32_t a[4];
+        load_frag_t(a, ADDR_V(avT, kk * 16));
+#pragma unroll
+        for (int nj = 0; nj < KD; ++nj) {
+          uint32_t b[4];
+          load_frag_t(b, ADDR_S(bwF, kk * 16, 2 * nj));
+          mma(st[2 * nj], a, &b[0]);
+          mma(st[2 * nj + 1], a, &b[2]);
+        }
+      }
+      //: the mass column's fold, one slot per thread: the literal one against this
+      //: thread's column of the W panel.  Rows past `nw` are identically zero.
+      const __nv_bfloat16* wcol = sw + gtid;
+#pragma unroll
+      for (int i = 0; i < C; ++i) z_s += __bfloat162float(wcol[i * LdS]);
+    }
+
+    rendezvous();
+
+    if (++dc == IRING) dc = 0;
+    if (++ds == IRING) ds = 0;
+    if (++dn == IRING) dn = 0;
+  }
+#undef ADDR_S
+#undef ADDR_VG
+#undef ADDR_G
+#undef ADDR_DS
+#undef ADDR_V
+}
+
 }  // namespace rola::chunk
