@@ -2,7 +2,7 @@
 
 **The reference backward IS autograd through the decomposed oracle**, in fp64,
 with the detachments as LITERAL SPEC: ``naive_rola`` writes ``.detach()`` at
-the clock because spec §2 says ``stop_gradient`` there, so the reference VJP
+the clock because the recurrence puts ``stop_gradient`` there, so the reference VJP
 is readable intent, not a derivation to trust. ``None`` is the correct answer
 for the clock's input, and gradcheck — which cannot express detachment and
 would disagree BY DESIGN — is demoted to one-time finite-difference insurance
@@ -128,7 +128,7 @@ def test_the_oracle_vjp_is_live_on_every_differentiable_input(name):
         for level, dial in enumerate(leaves["dials"]):
             _assert_live(f"decay dial[{level}]", dial)
         # THE DETACHMENT AS LITERAL SPEC: the clock reads the STORED allocation
-        # under stop_gradient (spec §2), so its input gets autograd's ordinary
+        # under stop_gradient, so its input gets autograd's ordinary
         # answer for an unused-by-the-graph tensor — None, never a zero filled
         # in to look busy.
         for level, tensor in enumerate(stored):
@@ -232,7 +232,7 @@ def test_gradcheck_insurance_on_the_glue():
     w0_init, w1_init = leaf(B, T, H, 3), leaf(B, T, H, 2)
     #: THE CLOCK IS HELD CONSTANT, EXPLICITLY. Left to default, the stored
     #: allocation IS the live write, and finite differences would move the
-    #: clock while the analytic path (spec §2's stop_gradient) does not —
+    #: clock while the analytic path (whose clock is stop-gradient) does not —
     #: gradcheck then reports a mismatch that is the DETACHMENT, not a bug.
     #: This is the concrete demonstration of why gradcheck is demoted: it
     #: cannot express the spec, so the harness has to route around it.

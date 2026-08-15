@@ -53,7 +53,7 @@ def _symmetric_rate(target_leaf_rate: float, depth: int) -> float:
 
     The leaf rate is the product over levels, so the symmetric split is the one
     initialization that reproduces the requested ``rho`` exactly at ``D`` levels
-    without preferring a level (architecture §4.4).
+    without preferring a level.
     """
     if not 0.0 < target_leaf_rate < 1.0:
         raise ValueError(
@@ -108,7 +108,7 @@ class LearnedDecay(DecaySource):
     freedom the model gets.
 
     These are the two IDENTIFIABLE resolutions: under ``keep = (1 - prod_l delta_l)**c``
-    (one write-conditioned clock per leaf, architecture §4.4), a rate only ever enters
+    (one write-conditioned clock per leaf), a rate only ever enters
     the recurrence through that per-leaf product, so per-digit (``'state'``) and
     per-head (``'global'``) are the two degrees of freedom the product structure lets
     the recurrence actually distinguish.

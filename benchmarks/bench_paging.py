@@ -1,4 +1,4 @@
-"""Spec §7.1 page commitment: the measurement that justifies the feature.
+"""Page commitment: the measurement that justifies the feature.
 
 Two questions, and they are different questions.
 
@@ -35,7 +35,7 @@ vs 1.28 ms warm). Both are reported here, labelled, and neither is quoted alone.
 
 The sparse level is a SYNTHETIC stand-in for training. `--logit-gain` sharpens an
 untrained exact-entmax router into a real sparse support: the support is genuine
-(exact zeros, spec §1.2), its DEGREE is not a trained quantity and is labelled as
+(exact zeros), its DEGREE is not a trained quantity and is labelled as
 such wherever it is reported. Same convention, and the same caveat, as
 `benchmark_rola_v3_layer.py`.
 
@@ -48,7 +48,7 @@ pair was reaching for, with both arms now doing the same state I/O. The isolated
 plane is `PageArena.plan_exact` over the kernel's OWN exact atom bitmap
 (`rola.ops.chunk.stats`), which is what the facade plans with.
 
-Vocabulary: `N` = leaf count = `prod_l width_l`; `BC` = leaves per owner (spec §3);
+Vocabulary: `N` = leaf count = `prod_l width_l`; `BC` = leaves per owner;
 `owners_total` = `N / BC`; `BH` = `batch * heads`; `cols` = `d_v` plus one mass
 column under `state_norm='global'`.
 """
@@ -232,7 +232,7 @@ def main() -> None:
         norm="global", decay=False, reps=args.reps, warmup=args.warmup)]
 
     head = rows[0]
-    print(f"\n=== V3 §7.1 page commitment — branches={head['branches']} "
+    print(f"\n=== page commitment — branches={head['branches']} "
           f"N={head['N']} BC={head['BC']} BH={head['BH']} L={head['L']} "
           f"router={args.router} logit_gain={args.logit_gain} ===")
     for r in rows:

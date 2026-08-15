@@ -100,7 +100,7 @@ def _simplex(shape, p_nonzero, generator, device):
 
 
 def _decay_dials(widths, H, generator, device, *, hot=False):
-    """``delta in [0, 1)``, strict (spec §1). ``hot`` drives the leaf rate product
+    """``delta in [0, 1)``, strict. ``hot`` drives the leaf rate product
     toward 1, where ``1 - rate`` cancels -- the regime the kernel's fp32
     accumulation requirement exists for."""
     lo, span = (0.90, 0.099) if hot else (0.05, 0.85)

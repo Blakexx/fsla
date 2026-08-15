@@ -107,7 +107,7 @@ class ProducedRoutes:
 
     ``read``/``write``: one ``[B, T, H, width_l]`` tensor per covered level. They need
     not be unit-sum -- the gateway factors each level into ``(mass, simplex)`` and
-    folds the mass into the side gain, which is where architecture §4.2 puts a
+    folds the mass into the side gain, which is where the architecture puts a
     per-level magnitude.
     """
 

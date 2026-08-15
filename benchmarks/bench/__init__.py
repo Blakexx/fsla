@@ -1,4 +1,4 @@
-"""The measurement RECORD and the judgement over it (design §6.9).
+"""The measurement RECORD and the judgement over it.
 
 Three modules, because measuring has three jobs and only one of them is a fixture:
 

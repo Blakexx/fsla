@@ -328,7 +328,7 @@ def test_the_same_routing_is_the_same_residency_at_every_built_BC(arm):
     `BC` is a compute tile chosen PER LAUNCH; a page is a memory-residency atom. If
     residency moved with `BC`, then continuing a sequence across a `BC` flip would
     have to re-plan, re-map, and move bytes -- and a block-grain write bitmap, which
-    is exactly the derivation §A.0 rejected, would do that by construction. So this
+    is exactly the rejected derivation, would do that by construction. So this
     cell runs one routing at every `BC` the matrix builds for its topology and claims
     two things:
 

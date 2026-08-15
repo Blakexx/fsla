@@ -6,7 +6,7 @@
 // what makes register demand O(items-per-lane), the warp count a free occupancy knob,
 // and the shared-memory need zero.
 //
-// THE SUPPORT WORD LAYOUT IS FROZEN (§4.1's per-leaf write bitmap, nine downstream
+// THE SUPPORT WORD LAYOUT IS FROZEN (the per-leaf write bitmap has nine downstream
 // consumers): one CTA owns exactly the 32 tokens of one support word.
 //
 // Why this is CUDA and not Triton, the measured occupancy history, and the whole

@@ -122,7 +122,7 @@ class Case:
                       if c["decay"] else None)
         self.initial_state = None
         if c.get("m0"):
-            assert not self.paging, "§7.1 forbids an implicit dense initial state under paging"
+            assert not self.paging, "an implicit dense initial state is forbidden under paging"
             m0 = 0.1 * torch.randn(self.B, self.H, self.N, self.cols, device=device,
                                    dtype=torch.float64, generator=gen)
             if self.norm == "global":

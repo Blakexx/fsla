@@ -6,7 +6,7 @@ reference here and is never asserted against -- "matching the old is not a virtu
 baseline is the independent fp64 ground truth in `entmax/reference.py`, whose own header
 says the same thing ("never kernel-vs-kernel"). the matching-the-naive antipattern.
 
-FOUR GATES, split at the seam the measurement in §4.1 identified:
+FOUR GATES, split at the seam the fold-vs-solve measurement identified:
 
 * **A1 (the fold)** -- `midpoint = 0.5*read + 0.5*write`, its row-max shift, and the
   overflow-free `delta`, vs a plain fp32 torch expression, at ``rtol=0``. These are pure
@@ -15,14 +15,14 @@ FOUR GATES, split at the seam the measurement in §4.1 identified:
 * **A2 (the solve)** -- the SUPPORT SET vs the fp64 oracle *consuming A1's fp32
   midpoint*, at ``rtol=0``. Splitting here is not a convenience: measured on 528 hostile
   cells, an fp64-folded oracle disagrees on exactly ONE element, and that element was
-  attributed to the fold's 6-ulp fp32 rounding, NOT to the solve (trackE.md §4.1). Given
+  attributed to the fold's 6-ulp fp32 rounding, NOT to the solve. Given
   the kernel's own fp32 midpoint the oracle agrees exactly, 0/528, both fixture classes.
   Support is the product invariant (sparsity comes from entmax, not from a floor).
 * **B (values)** -- `midpoint_values`/`read`/`write` vs the fp64 oracle at the repo's
   ratified production tolerance.
 * **C (gradients)** -- vs the fp64 oracle's autograd at the ratified gradient tolerance,
   PLUS the dead-directions assertion at ``rtol=0``: off-support logit gradients are
-  EXACTLY zero. Per trackE.md §3.8 that is structural (multiplication by ``s`` /
+  EXACTLY zero. That is structural (multiplication by ``s`` /
   ``read_values`` / ``write_values``, each exactly zero off support), so it asserts the
   FORM of the VJP, not a magnitude.
 
@@ -51,7 +51,7 @@ _PRODUCTION_GRAD_ATOL = 5e-6
 
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA entmax kernels")
 
-#: Every width class boundary of trackE.md §3.2 (2,4,8,16,32,64,128,256) AND
+#: Every width class boundary (2,4,8,16,32,64,128,256) AND
 #: non-power-of-2 padding inside them (3,7,17,96,129,255). Widths 2-17 are the
 #: sub-warp-packed classes, which nothing else in the suite exercises.
 _WIDTHS = (2, 3, 4, 7, 8, 16, 17, 32, 64, 96, 128, 129, 255, 256)
@@ -111,7 +111,7 @@ def assert_fold_bit_identical(got_midpoint, got_delta, read_logits, write_logits
 
 
 # ---------------------------------------------------------------------------
-# The fp64 oracle, consuming the kernel's own fp32 midpoint (trackE.md §4.1)
+# The fp64 oracle, consuming the kernel's own fp32 midpoint
 # ---------------------------------------------------------------------------
 def oracle_solve(midpoint_fp32, alpha):
     """``(support, values)`` in fp64 from the independent reference.

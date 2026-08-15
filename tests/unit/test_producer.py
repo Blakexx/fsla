@@ -1,4 +1,4 @@
-"""V3 Stage 2 producer tests (`ROLA_V3_SPEC.md` §10 Stage 2).
+"""Producer tests -- the feature map's own stage.
 
 Validates `rola.routing.producer` against the ONE canonical
 ground truth this branch authorizes: the Stage 1 fp64 oracle
@@ -10,7 +10,7 @@ guarantees (finite output, differentiability), or (b) checks an algebraic
 identity of the producer's own contract (mass-fold correctness, simplex
 normalization) that is checkable without an independent implementation.
 
-The architecture §4.5 conditioning surface this file used to also cover
+The conditioning surface this file used to also cover
 (a temperature actuator, a budget embedding, a usage-conditioned bias) is
 DESCOPED (queue P29, 2026-08-06) -- see `docs/internals/DELETIONS.md`.
 """
@@ -97,7 +97,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(normalizat
 
 
 def test_softmax_level_mass_is_identically_one():
-    """`IndependentRouting`/softmax levels are unit-sum by construction (spec §4.1);
+    """`IndependentRouting`/softmax levels are unit-sum by construction;
     the producer's mass-fold (`_split_level_mass`) must be a no-op for them, so
     an all-softmax topology's g_write must equal its raw projected gain exactly
     (up to floating point), not scaled by any level mass."""
@@ -112,7 +112,7 @@ def test_softmax_level_mass_is_identically_one():
 
 
 def test_union_mass_fold_is_an_exact_identity_at_fp64():
-    """The fold must MOVE the per-level mass, not approximate it (architecture §4.2:
+    """The fold must MOVE the per-level mass, not approximate it (
     "multiplicative per-level masses collapse into one side-wide product").
 
     Required identity for every leaf `s`, on the write side -- the side that carries

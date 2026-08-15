@@ -17,7 +17,7 @@ state through content-addressed `Q`/`K` at `d_qk = 16` on top of the same routed
 hierarchy; V3 has no `Q`, no `K` and no feature map anywhere. This script reports
 OPERATIONAL COST at matched `(B, H, L, d_v, state size)` shapes and prints, in its
 own output, the columns that say what is and is not comparable -- including the
-addressing-entropy columns architecture doc §5.2 makes normative for any
+addressing-entropy columns the architecture makes normative for any
 cross-architecture cell. A single V3/V2 ratio is not a quality ratio and is not a
 matched-capacity ratio; it is a cost ratio at matched shape.
 
@@ -101,7 +101,7 @@ def _measure(fn, reps: int, warmup: int) -> dict[str, float]:
 
 
 #: Attribute names a Q/K-era or any future content-addressed V3 layer would carry.
-#: Fix pass note (wiring-review.md §8 NOTE a): `content_addressing_width` used to be
+#: `content_addressing_width` used to be
 #: a hardcoded literal `0`, which would keep reporting 0 even if the layer grew a
 #: content-addressing path back. `_content_addressing_width` below derives the
 #: column from the layer's own attribute surface instead, so it FAILS loudly the
@@ -114,7 +114,7 @@ _CONTENT_ADDRESSING_ATTRS = (
 
 def _content_addressing_width(layer) -> int:
     """Derive V3's `content_addressing_width` from the layer instead of hardcoding
-    it. V3 has no `Q`, no `K` and no feature map (spec §1.2 deletion inventory), so
+    it. There is no `Q`, no `K` and no dot-product feature map, so
     today this is always 0 -- but it is computed by asserting NONE of the
     content-addressing attribute names are present, so a future content-addressed
     component (a revived `head_k_dim`/`q_proj`/... ) makes this raise instead of
@@ -124,14 +124,14 @@ def _content_addressing_width(layer) -> int:
         raise NotImplementedError(
             f"V3 layer grew content-addressed attribute(s) {present!r}; "
             "content_addressing_width must be derived from them, not left at the "
-            "structural 0 (wiring-review.md §8 NOTE a)")
+            "structural 0")
     return 0
 
 
 def _addressing(layer, branches, d_v, H, norm, read_levels, write_levels) -> dict:
-    """Architecture §5.2's addressing columns, plus the realized support.
+    """The architecture's addressing columns, plus the realized support.
 
-    §5.2 defines addressing entropy STRUCTURALLY and makes matching on it normative:
+    Addressing entropy is defined STRUCTURALLY and matching on it is normative:
     attention's analogue is `d_qk` (the `Theta(log L)` width that buys per-sequence
     exact pointer retrieval), RoLA's is `sum_l b_l` (`~ D * N^(1/D)` at balanced
     widths). Both are logarithmic-class addressing for an exponential space; they
@@ -145,7 +145,7 @@ def _addressing(layer, branches, d_v, H, norm, read_levels, write_levels) -> dic
     * `realized_read_address_bits = log2(A_r)` -- how much of that space one token's
       READ actually resolves, from the realized router. `A_r` is computed as
       `prod_l mean(nnz at level l)`, a PRODUCT OF PER-LEVEL MEANS, not
-      `mean(prod_l nnz)` (fix pass note, wiring-review.md §8 NOTE b) -- those differ
+      `mean(prod_l nnz)` -- those differ
       whenever the levels' supports are correlated, which sparse routing generally
       makes them. It is exact at the dense operating point (every level fully
       active, so the product-of-means and the mean-of-products coincide) and only
@@ -200,7 +200,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             layer = RoLA(
                 routes, d_v=d_v, decay=decay_source, layer_idx=0,
             ).to("cuda", dtype)
-            # Fix pass item 2 (wiring-review.md §3): the CUDA path now additionally
+            # The CUDA path additionally
             # requires eval mode. This script measures inference-path cost, so eval
             # is correct here, not incidental.
             layer.eval()
@@ -305,7 +305,7 @@ def main() -> None:
           "through content-addressed Q/K at d_qk=16 on top of the same routed hierarchy,\n"
           "V3 has no Q, no K and no feature map. What is matched here is (B, H, L, d_v,\n"
           "state size) and the routing topology, i.e. OPERATIONAL COST AT MATCHED SHAPE.\n"
-          "Per architecture §5.2 the addressing-entropy columns are reported so the cell is\n"
+          "The addressing-entropy columns are reported so the cell is\n"
           "admissible at all: address_space_bits and routing_addressing_width are IDENTICAL\n"
           "on both sides, content_addressing_width is 0 here against V2's d_qk=16, so the\n"
           "cells are NOT addressing-entropy matched and the mismatch favours V2.")

@@ -17,12 +17,12 @@ all ones, so it is not a separate object: ``v`` gains a column of ones under
 one IS the mass. One recurrence, one state, one readout -- and the state's
 layout is then literally the ``[B,H,N,d_v+1]`` cache both backends exchange.
 
-Implements ``ROLA_V3_SPEC.md`` §2 exactly. There is no Q/K, no feature map, and
+Implements the recurrence exactly. There is no Q/K, no feature map, and
 no privileged routing level here -- every level is an ordinary mixed-radix
 routing level, and the oracle consumes already-materialized per-level, per-side
 routing allocations (``p_read``, ``p_write``) plus one positive side gain per
-side (``g_read``, ``g_write``; spec §1.1). Computing those allocations from a
-projected hidden state is producer scope (``ROLA_V3_SPEC.md`` §10 stage 2) and
+side (``g_read``, ``g_write``). Computing those allocations from a
+projected hidden state is PRODUCER scope and
 is out of scope here.
 
 This module intentionally does not import or reuse anything from the Q/K-era
@@ -93,7 +93,7 @@ def _leaf_product(
     ``levels[l]`` has shape ``[..., width_l]``. Returns ``[..., N]`` where leaf
     ``s``'s entry is ``prod_l levels[l][..., d_l(s)]`` under the MSB-first
     mixed-radix digit decomposition ``d_l(s) = (s // radix_strides[l]) % width_l``
-    (``ROLA_V3_SPEC.md`` §2). This is the oracle's one leaf-materializing step;
+    This is the oracle's one leaf-materializing step;
     it is deliberately simple and auditable rather than fast.
     """
     device = levels[0].device
@@ -122,21 +122,21 @@ def naive_rola(
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Run the canonical routing-native RoLA reference in fp64 (``ROLA_V3_SPEC.md`` §2).
+    """Run the canonical routing-native RoLA reference in fp64 -- the executable spec.
 
     There is no ``q``, no ``k``, and no feature map anywhere in this function.
     Inputs are per-level per-side routing allocations (already normalized
     simplices, one tensor per level, shape ``[B,T,H,width_l]``), one positive
     side gain per side (``g_read``/``g_write``, shape ``[B,T,H]``; ``g_read``
-    must be ``None`` under ``normalization="global"`` -- spec §4.2 fixes
+    must be ``None`` under ``normalization="global"``: the readout is a ratio, which fixes
     ``g_read := 1`` there and production has no read-gain projection to supply
     one), a ``Topology``, and a ``DecayConfig`` (``None`` or ``LeafMassDecay``).
 
     ``write_levels`` feeds the deposit ``W`` and trains normally. ``write_levels_stored``
     is the (optionally separately quantized) representation the ``LeafMassDecay``
-    clock reads (spec §2: ``c[t,s] = stop_gradient(prod_l p_write_stored[...])``);
+    clock reads (``c[t,s] = stop_gradient(prod_l p_write_stored[...])``);
     it defaults to ``write_levels`` itself, i.e. no separate storage boundary,
-    since the bf16 storage/quantization numerics audit is explicit `TODO` (spec §7
+    since the bf16 storage/quantization numerics audit is explicit `TODO`
     item 4) and out of scope for this oracle. Passing a distinct, separately
     quantized tensor here is how a caller exercises that boundary once it exists.
 
@@ -180,7 +180,7 @@ def naive_rola(
     validate_simplex("write_levels", write64)
 
     g_write64 = g_write.to(torch.float64)
-    #: Spec §4.2 fixes `g_read := 1` under global normalization, so the literal
+    #: The readout is a ratio, so `g_read := 1` under global normalization and the literal
     #: statement of that is a tensor of ones and the recurrence has no second form.
     g_read64 = (torch.ones((B, T, H), device=v.device, dtype=torch.float64)
                 if normalized else g_read.to(torch.float64))
@@ -198,7 +198,7 @@ def naive_rola(
 
     #: The gate. `keep[t,s] = (1 - rate[s]) ** c[t,s]` -- a DIAGONAL gate, which is
     #: what makes this the gated-LA recurrence and not something new. `rate` trains
-    #: through the dials; `c`, the clock, is stop-gradient by spec §2.
+    #: through the dials; `c`, the clock, is stop-gradient by definition.
     if decay is None:
         keep = torch.ones((B, T, H, N), device=v.device, dtype=torch.float64)
     else:
@@ -215,9 +215,9 @@ def naive_rola(
 
     outputs = []
     for t in range(T):
-        # S[t,s,:] = keep[t,s] * S[t-1,s,:] + W[t,s] * v[t,:]   (spec §2)
+        # S[t,s,:] = keep[t,s] * S[t-1,s,:] + W[t,s] * v[t,:]
         state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]
-        # o[t,:] = sum_s R[t,s] * S[t,s,:], inclusive read-after-write (spec §2)
+        # o[t,:] = sum_s R[t,s] * S[t,s,:], inclusive read-after-write
         readout = torch.einsum("bhn,bhnv->bhv", R[:, t], state)
         outputs.append(
             readout[..., :d_v] / (readout[..., d_v:] + eps) if normalized else readout)

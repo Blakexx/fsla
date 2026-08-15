@@ -186,7 +186,7 @@ class RoLAState:
                       paging: bool, BC: int):
         """`(s_in, arena)` for the kernel arm, with this call's pages committed.
 
-        The host order the design fixes (§A.4/§C.3): the caller has already run the
+        The host order (docs/internals/state.md#host-order): the caller has already run the
         stats pass, so the only thing that happens here before the launch is
         `plan_exact` on the arena's side stream -- one device-to-host size read, no
         other synchronization. The launch's `arena.wait()` (in `rola.ops.chunk.run`)

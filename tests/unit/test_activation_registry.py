@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The activation registry (design §4.6, as amended 2026-08-01).
+"""The activation registry.
 
 The point of the registry is that activation properties live in ONE table and every
 rule reads columns from it. So most of what is gated here is not "does softmax have
@@ -42,7 +42,7 @@ from rola.routing.types import (
 # --- the table itself --------------------------------------------------------
 
 def test_v0_1_ratifies_exactly_the_two_declared_activation_families():
-    """§4.6: v0.1 ships exactly two ratified families, plus the opaque row.
+    """v0.1 ships exactly two ratified families, plus the opaque row.
 
     A fourth row appearing without a version bump and a docs change is the thing this
     catches. ``("opaque", None)`` is the row a level filled by a FOREIGN producer reads,
@@ -122,7 +122,7 @@ def test_a_registry_row_added_at_runtime_is_immediately_constructible():
 # --- users never write property metadata -------------------------------------
 
 def test_the_public_constructors_take_no_property_metadata():
-    """§4.6 (1): plain tagged constructors only. A caller that could supply
+    """Plain tagged constructors only. A caller that could supply
     `normalized=` could supply it wrong, and every validator downstream would then be
     checking a claim instead of a fact."""
     assert [f.name for f in SoftmaxActivation.__dataclass_fields__.values()] == []
@@ -141,7 +141,7 @@ def _topology(read, write, *, width=4, tied=True):
 
 
 def test_per_level_and_per_duty_configuration_is_addressable_as_a_grid():
-    """§4.6: per-level AND per-duty configuration is what makes level-split pure
+    """Per-level AND per-duty configuration is what makes level-split pure
     CONFIGURATION (M-3) rather than a code path."""
     topology = _topology(softmax(), entmax(1.5), tied=False)
     assert topology.duty_cells() == ((0, "read"), (0, "write"))
@@ -224,7 +224,7 @@ class _StubBundle:
 
 
 def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
-    """§4.6: nobody measured a kernel for it, so there is no arm and the envelope says
+    """Nobody measured a kernel for it, so there is no arm and the envelope says
     so BY NAME. The flag is a property of the configuration, so the answer is
     available before the call and without a device -- and it wins over every clause
     that would otherwise admit the call."""
@@ -278,20 +278,13 @@ _ALLOWED_TO_NAME_ACTIVATIONS = {
     "routing/reference.py",
     "routing/entmax/production.py",
     "routing/entmax/reference.py",
-    # The layer translates the PUBLIC 'dense'/'sparse' vocabulary into activations.
+    # The layer names activations where it validates the decay source against them.
     "layer.py",
-    # The calibration AUDITOR constructs fixture topologies to price cells with. It is
-    # not a runtime rule -- nothing under `rola/` imports it at module scope and it is
-    # reached only by the bench and the planner gates -- and it names ONE activation
-    # for every level of every fixture because the pricing is invariant in the routing
-    # tag (its own docstring says so). It moved under `rola/` for PACKAGING (an
-    # installed wheel has no `benchmarks/` sibling), not because it became runtime.
-    "planner/calibration/auditor.py",
 }
 
 
 def test_no_module_outside_the_registry_branches_on_an_activation_type():
-    """§4.6 (3): rules state preconditions against COLUMNS, never against tag lists.
+    """Rules state preconditions against COLUMNS, never against tag lists.
     A module that does `isinstance(a, EntmaxActivation)` to decide a POLICY is a
     second, invisible copy of the table.
 

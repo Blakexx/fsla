@@ -13,7 +13,7 @@ anywhere in this file's ground truth.
 **THE DEVICE LOWERING IS NOT ONE KERNEL, and this file's wording used to say "fused
 Triton" as though it were** (corrected at the thunder merge, 2026-08-02). Independent
 levels are still fused Triton; the UNION solve is a hand-CUDA + CUB kernel
-(`csrc/rola/src/entmax/entmax.cu`, Track E), and the Triton union kernel was deleted when it
+(`csrc/rola/src/entmax/entmax.cu`), and the Triton union kernel was deleted when it
 landed -- it was measured at 255 registers with spills and an uncontrollable `tl.sort`
 scratch, and a JIT is against the closed-world AOT policy. Everything below that says
 "the two lowerings" still means exactly what it meant, device against torch; what
@@ -393,7 +393,7 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
         #    SAME predicate on the subset that predicate defines.
         #    `|a-b| <= atol + rtol*|b|` holds by construction on every element of
         #    `close`, so it could not fail for ANY input (adversarial review
-        #    2026-07-29 §8). It read as "and the complement agrees" while gating
+        #    2026-07-29). It read as "and the complement agrees" while gating
         #    nothing.
         # 2. Selecting at a COARSE tolerance and asserting at the production one --
         #    i.e. claiming the divergence is BIMODAL. That is a genuinely different
@@ -410,9 +410,9 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
         # elements deviate by >= 4.86e-6 of scale; agreeing ones by <= 2.67e-6.
         #
         # THE BOUND IS A MARGIN, NOT A CONTAINMENT (corrected 2026-07-30,
-        # adversarial review §6). `_TIE_COMPLEMENT_SCALE_BOUND` is 1e-5, which is
+        # adversarial review). `_TIE_COMPLEMENT_SCALE_BOUND` is 1e-5, which is
         # 2.06x ABOVE the top of that gap (4.86e-6) -- it does not sit inside it,
-        # and the commit message, `compaction2.md` §A2 and this comment all said it
+        # and the commit message and this comment all said it
         # did. What IS true: it sits 3.7x above the worst MEASURED complement
         # (2.67e-6), so it is a regression bound with headroom, and the injection
         # below is what says it still catches the drift that matters. Tightening to

@@ -64,7 +64,7 @@ def _validated_alpha(alpha: float, owner: str) -> float:
 
 @dataclass(frozen=True, slots=True)
 class SoftmaxActivation:
-    """The dense routing activation. A plain tagged constructor, per §4.6.
+    """The dense routing activation. A plain tagged constructor.
 
     Carries NO property metadata -- properties come from
     `rola.routing.activations.ACTIVATION_REGISTRY`, keyed on :attr:`tag`. Metadata a
@@ -124,7 +124,7 @@ def softmax() -> SoftmaxActivation:
 
 RoutingActivation: TypeAlias = SoftmaxActivation | EntmaxActivation
 
-# ROLA_V3_SPEC.md §1 names this union ``Activation``. Same type, spec-facing alias.
+# ``Activation`` is the spec-facing alias for this union. Same type.
 Activation: TypeAlias = RoutingActivation
 
 
@@ -252,7 +252,7 @@ class IndependentRouting:
             # list would be a second closed world, and a variant with a ratified row
             # would still be unconfigurable until someone remembered to widen it --
             # which is precisely the "one row and it participates in everything"
-            # property §4.6 is built to give.
+            # property the per-duty surface is built to give.
             activation_properties(activation, owner=f"IndependentRouting.{name}")
         if (
             activation_properties(self.read_activation).exact_zeros
@@ -267,7 +267,7 @@ class IndependentRouting:
                 "moment its row exists")
 
     def activation(self, duty: str):
-        """This level's activation for one DUTY, `'read'` or `'write'` (§4.6).
+        """This level's activation for one DUTY, `'read'` or `'write'`.
 
         Per-level AND per-duty configuration is what makes level-split
         (`docs/open-work.md` M-3) pure configuration rather than a code path, so the
@@ -573,11 +573,11 @@ class ResolvedRouting:
 
 
 # ---------------------------------------------------------------------------
-# ROLA_V3_SPEC.md §1 config contract additions.
+# The config contract's routing types.
 #
 # ``Activation`` (above), ``LevelRouting`` (below, already ``Independent |
 # Union``), ``IndependentRouting``, and ``UnionRouting`` are reused verbatim --
-# they already satisfy the V3 §1 shapes. Only the topology/decay/normalization
+# they already satisfy the contract's shapes. Only the topology/decay/normalization
 # wrappers are new. These are producer-agnostic: they describe the routing
 # contract the V3 naive oracle (``fla_rola/ops/rola/naive.py``) consumes, not a
 # projection ABI. They deliberately do not reuse ``ResolvedRouting`` /
@@ -629,7 +629,7 @@ LevelRouting: TypeAlias = IndependentRouting | UnionRouting | OpaqueRouting
 
 @dataclass(frozen=True, slots=True)
 class LevelConfig:
-    """One routing level: its branch width and routing tag (``ROLA_V3_SPEC.md`` §1)."""
+    """One routing level: its branch width and routing tag."""
 
     width: int
     routing: LevelRouting
@@ -638,7 +638,7 @@ class LevelConfig:
         if type(self.width) is not int:
             raise TypeError(f"LevelConfig.width must be an exact int, got {self.width!r}")
         if self.width < 1:
-            # Spec §1 states only the upper bound (``width <= 256``); a width < 1
+            # The contract states only the upper bound (``width <= 256``); a width < 1
             # is not a modeling choice, it makes N/radix_strides ill-defined
             # (division by zero), so it is rejected as a structural invariant.
             raise ValueError(f"LevelConfig.width must be >= 1, got {self.width}")
@@ -650,7 +650,7 @@ class LevelConfig:
 
 @dataclass(frozen=True, slots=True)
 class Topology:
-    """The routing topology, and ONLY routing (``ROLA_V3_SPEC.md`` §1).
+    """The routing topology, and ONLY routing.
 
     ``D = len(levels)`` is validated in ``[1, 4]`` and every level's width in
     ``[1, 256]`` by ``validate_routing_shape`` -- the same validator ``V2``'s
@@ -684,7 +684,7 @@ class Topology:
 
     @property
     def N(self) -> int:
-        """Leaf capacity: ``N = prod_l width_l`` (spec §1, derived, never configured)."""
+        """Leaf capacity: ``N = prod_l width_l`` -- derived, never configured."""
         return prod(self.widths)
 
     @property
@@ -693,7 +693,7 @@ class Topology:
         widths = self.widths
         return tuple(prod(widths[index + 1:]) for index in range(len(widths)))
 
-    # --- §4.6: the per-level per-duty activation surface, read generically ----
+    # --- the per-level per-duty activation surface, read generically ----------
 
     def activation(self, level: int, duty: str):
         """The activation configured for one `(level, duty)` cell."""
@@ -713,7 +713,7 @@ class Topology:
     def unratified_activations(self) -> tuple[tuple[int, str, ActivationTag], ...]:
         """The cells whose registry row says `kerneled=False`.
 
-        §4.6: a config naming one of these is a LABELED RESEARCH SURFACE -- it runs
+        A config naming one of these is a LABELED RESEARCH SURFACE -- it runs
         on the reference path carrying an explicit `not_kerneled` flag. It is not a
         kernel fallback, because the kernel is never asked and never declines;
         `launch_consumer` remains the single authority on supported shapes.
@@ -732,12 +732,12 @@ class Topology:
 
 @dataclass(frozen=True, slots=True)
 class LeafMassDecay:
-    """Complete-leaf write-conditioned decay dials (``ROLA_V3_SPEC.md`` §1, §2).
+    """Complete-leaf write-conditioned decay dials.
 
     ``dials[l]`` has shape ``[H, width_l]`` with entries ``delta_l[d] in [0, 1)``.
     The upper bound is strict and load-bearing: it keeps
     ``rate_leaf[s] = prod_l delta_l[d_l(s)] < 1`` for every leaf ``s``, so
-    ``keep = (1 - rate_leaf) ** c = 0`` is unreachable by construction (spec §1).
+    ``keep = (1 - rate_leaf) ** c = 0`` is unreachable by construction.
 
     **This check is necessary but NOT sufficient (review B1).** It runs in
     ``dial``'s own dtype, which may be fp64; the kernel only ever reads an fp32
@@ -772,13 +772,13 @@ class LeafMassDecay:
                 raise ValueError(
                     f"LeafMassDecay.dials[{level}] entries must satisfy the strict invariant "
                     "0 <= delta < 1 (upper bound strict; keeps rate_leaf < 1 so keep=0 is "
-                    "unreachable -- see ROLA_V3_SPEC.md §1)")
+                    "unreachable by construction)")
         object.__setattr__(self, "dials", dials)
 
     def validate_against(self, topology: Topology) -> None:
         """Check level count, per-level width, and the WRITE-side mass precondition.
 
-        §4.6: **mass decay requires a `normalized` write side.** The clock is
+        **Mass decay requires a `normalized` write side.** The clock is
         `c[t,s] = prod_l p_write_stored[t, d_l(s)]` and the survival factor is
         `(1 - rate_leaf)**c` -- an expression that prices a decay per unit of MASS
         DEPOSITED. If the write side does not land on the simplex, `c` is no longer
@@ -813,8 +813,8 @@ class LeafMassDecay:
                     f"Topology.levels[{level}].width, got {dial.shape[-1]}")
 
 
-# ``kind: None | LeafMassDecay`` (spec §1). ``FactorizedMassDecay`` is removed in
-# V3 (spec §1 rationale) and must not be reintroduced here.
+# ``kind: None | LeafMassDecay``. ``FactorizedMassDecay`` was removed and must not be
+# reintroduced here.
 DecayConfig: TypeAlias = None | LeafMassDecay
 
 #: RAW IS DEAD (ruling 2026-08-06): the self-normalizing ratio IS the design, so

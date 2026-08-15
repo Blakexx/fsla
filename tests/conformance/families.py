@@ -64,7 +64,7 @@ REGIME_AXES: Mapping[str, tuple[str, ...]] = {
     "rw_correlation": ("tied", "independent", "anti"),
     #: Mass concentration. ``concentrated`` puts most of a level's amplitude on
     #: one digit; ``cold_read`` names the regime where read mass sits on leaves
-    #: no write ever touched (the §6.4 carve-out's data-side twin).
+    #: no write ever touched (the carve-out's data-side twin).
     "mass": ("spread", "concentrated", "cold_read"),
     #: The token tail. ``ragged`` is T not a multiple of BT (and, under a split,
     #: segments of unequal tile count) — the off-by-one surface.
@@ -270,7 +270,7 @@ _STRATIFIED: tuple[Family, ...] = (
         params=dict(anti=True),
         basis="the anti cell at the (global, decay) arm — decayed state under "
               "cold reads is where a clock that wrongly ticks on READS would "
-              "show (the clock is the STORED WRITE product, spec §2)."),
+              "show (the clock is the STORED WRITE product)."),
     Family(
         "stratified/singleton-global-decay", "stratified",
         dict(density="sparse", coherence="iid", rw_correlation="independent",
@@ -350,7 +350,7 @@ _ADVERSARIAL: tuple[Family, ...] = (
         _cfg(seed=301, m0=True),
         params=dict(write_live_digits=2),
         basis="level 0's write support confined to 2 of 8 digits while reads are "
-              "dense: 48 of 64 leaves are read but never written. The §6.4 "
+              "dense: 48 of 64 leaves are read but never written. The "
               "carve-out's data regime, and the self-normalizing-readout fact "
               "(the self-normalizing readout's dead-leaf ruling) made checkable: "
               "reading never-written state must be exact, not approximately dead."),

@@ -1,7 +1,7 @@
-"""The routing vocabulary's own gate (`ROLA_V3_SPEC.md` §1; architecture §1.2, §8, §9.4).
+"""The routing vocabulary's own gate.
 
 **MIGRATED (API-contract break, 2026-08-05).** The subject this file gated used to be
-one public dataclass, `rola.layers.LevelRoutingConfig`, resolved by a free function
+one public dataclass, `rola.layer.LevelRoutingConfig`, resolved by a free function
 `resolve_level_routing_configs`. The break DELETES both: "the routing vocabulary is
 the tag vocabulary directly" -- `IndependentRouting(tied=..., read_activation=...,
 write_activation=...)` and `UnionRouting(alpha)` (`rola.routing.types`), with

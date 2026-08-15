@@ -1,7 +1,6 @@
 """The latency-vs-`L` curve: V3 whole layer against flash attention at matched shape.
 
-OPERATIONS.md §3 (FLASH-ATTENTION BASELINE, LARGE-REGIME TESTING) makes this the
-decisive artifact: attention is quadratic in `L` and RoLA is linear in `L` against a
+The flash-attention baseline at large `L` is the decisive artifact: attention is quadratic in `L` and RoLA is linear in `L` against a
 FIXED state, so the comparison is a CURVE and a single cell is not a result. At small
 `L` attention wins and that is expected; the number that matters is the crossover and
 the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do not).
@@ -9,8 +8,8 @@ the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do 
 **What is measured.** One forward under `torch.no_grad()` on CUDA per arm per `L`:
 
 * `v3`   -- `RoLA.forward`, plan-selected per step, paging optional, `P = 1`
-           (spec §6.4's primary number: no sequence-parallel split is requested,
-           so the consumer runs one block per owner). **THE READ SIDE IS DENSE AND
+           (the primary number: no sequence-parallel split is requested, so the
+           consumer runs one block per owner). **THE READ SIDE IS DENSE AND
            THE WRITE SIDE IS ENTMAX-SPARSE by default** (ruling 2026-08-01):
            `candidate_frac ~ 0.2` sparse-both (item 0's cell) is the easy case and
            is not what the freeze criterion is stated at; a
@@ -30,13 +29,13 @@ the memory axis (attention's KV cache grows with `L`, RoLA's committed pages do 
 **Local budget note on the dense-read arm.** A dense read walks every `(owner, tile)`
 pair instead of the sparse-both cell's ~20%, so `v3` costs roughly 5x `v3_sparse_both`'s
 consumer time at the same `L` -- and, at the planner's dense-degenerate path, can cost
-far more than 5x in PLAN time (`rewrite.md` §2.28 measured 39.03 s of plan time at
+far more than 5x in PLAN time (39.03 s of plan time was measured at
 `candidate_frac = 1`, `N = L = 65,536`). Local runs of `v3` are therefore sized to
 `L <= 16,384` under this task's 8 GiB budget, footprint printed before allocation; the
-`L = 65,536` dense-read parity cell is a RENTAL cell (A100-class), same as item 0's
-§1.8 ruling for the whole-layer call at that `L`. If even `L = 16,384` turns out
+`L = 65,536` dense-read parity cell is a RENTAL cell (A100-class), as the whole-layer
+call at that `L` has always been. If even `L = 16,384` turns out
 pathological on the dense-degenerate planner path locally, that number is reported as
-measured and stands as the dense-saturation lever's motivation (§2.x of the roadmap) --
+measured and stands as the dense-saturation lever's motivation --
 it is not worked around.
 
 The V3 forward is additionally decomposed into PLANES (producer / planner / consumer)
@@ -104,7 +103,7 @@ def _quartiles(samples: list[float]) -> tuple[float, float]:
 
 
 def _measure(fn, reps: int, warmup: int) -> dict[str, float]:
-    """Both instruments, per `wiring.md` §3.1.
+    """Both instruments.
 
     `event_ms` is the `cuda.Event` median -- right for a GPU-bound region.
     `wall_ms` is the synchronized wall-clock median -- the honest one for a
@@ -141,7 +140,7 @@ class MatchedAttention(nn.Module):
     """The attention arm, built to be the SAME LAYER SHAPE as the RoLA layer.
 
     `v_proj` + `o_proj` exist on both sides; attention additionally carries `q_proj`
-    and `k_proj`, which is precisely architecture §5.2's `content_addressing_width =
+    and `k_proj`, which is precisely the architecture's `content_addressing_width =
     d_qk` showing up as parameters. Causal, no positional embedding (RoLA has none
     either), no dropout, no mask tensor -- `is_causal=True` so the FLASH backend takes
     its fused path rather than materializing an `L x L` mask, which would make the
@@ -212,7 +211,7 @@ def run_fa_cell(*, L, B, H, d_head, hidden, dtype, backend: str, reps, warmup) -
             "event_iqr_ms": round(stats["event_iqr"], 4),
             "peak_alloc_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 4),
             "oom": False,
-            # §5.2's addressing columns for the attention side: attention's addressing
+            # The addressing columns for the attention side: attention's addressing
             # is DATA-located and its width is `d_qk`; it has no routing hierarchy, so
             # the grid-located columns are structurally absent (None), not zero.
             "content_addressing_width": d_head,
@@ -231,7 +230,7 @@ def run_fa_cell(*, L, B, H, d_head, hidden, dtype, backend: str, reps, warmup) -
 
 
 def _addressing(branches, d_v, read_levels, write_levels) -> dict:
-    """§5.2's addressing columns; same definitions as `benchmark_rola_v3_layer.py`.
+    """The addressing columns; same definitions as the layer bench's.
 
     `A_r` is a PRODUCT OF PER-LEVEL MEANS, exact at a dense operating point and an
     approximation at a sparse one (the levels' supports are correlated under sparse
@@ -296,7 +295,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            #: first cell. The columns stay in the row, as the CONSTANTS they are, so a
            #: reader of an old JSON beside a new one is comparing the same arm.
            "norm": "global", "decay": "None",
-           "paging": paging, "P": 1, "P_role": "PRIMARY (spec §6.4)",
+           "paging": paging, "P": 1, "P_role": "PRIMARY",
            "dtype": "float32", "reps": reps, "warmup": warmup}
     try:
         torch.manual_seed(0)
@@ -512,7 +511,7 @@ def main() -> None:
     print("\nNOT A MATCHED-CAPACITY RATIO. Attention and RoLA are different architectures:\n"
           "attention's addressing is DATA-located over a token space that GROWS with L\n"
           "(content_addressing_width = d_head); RoLA's is GRID-located over a FIXED leaf\n"
-          "space N (routing_addressing_width = sum_l b_l, content width 0). §5.2's columns\n"
+          "space N (routing_addressing_width = sum_l b_l, content width 0). The columns\n"
           "are on every row so the cell is admissible as what it is: operational cost and\n"
           "committed state at matched (B, H, L, d_model).\n"
           "DTYPE IS NOT MATCHED AND THE MISMATCH FAVOURS ATTENTION: the SDPA FLASH backend\n"

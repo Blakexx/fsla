@@ -229,12 +229,12 @@ def _validate_call(routes, v, decay) -> None:
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
             "build one with RouteGateway, or construct a RouteFactors directly -- its "
             "invariants are checked either way.")
-    #: THE GAIN LAYOUT AGAINST THE ARM, structurally: architecture §4.2 fixes
+    #: THE GAIN LAYOUT AGAINST THE ARM, structurally: the readout is a ratio, which fixes
     #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
     #: than trusted from the gateway because the bundle is hand-constructible.
     if routes.g_read is not None:
         raise ValueError(
-            "this bundle carries a g_read tensor: architecture §4.2 fixes g_read := 1 "
+            "this bundle carries a g_read tensor: the readout is a ratio, so g_read := 1 "
             "under the self-normalizing readout, and there is no read-gain column")
     topology = routes.topology
     if not isinstance(v, torch.Tensor) or v.ndim != 4:

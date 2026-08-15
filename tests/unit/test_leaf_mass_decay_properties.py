@@ -1,11 +1,11 @@
-"""Property-based validation of the ``LeafMassDecay`` contract (``ROLA_V3_SPEC.md`` §2).
+"""Property-based validation of the ``LeafMassDecay`` contract.
 
 The migration-equivalence suite (``test_rola_v3_migration_equivalence.py``) only
 exercises ``decay=None`` positively; its sole ``LeafMassDecay`` test is negative
 (records that V3's clock cannot reproduce V2's matrix-level decay law -- spec
-§2.1). As of that suite, the decay path has **no positive validation** at all.
+). As of that suite, the decay path has **no positive validation** at all.
 
-This file closes that gap by testing the §2 invariants directly against
+This file closes that gap by testing the recurrence's invariants directly against
 ``naive_rola`` (and, where noted, its own leaf-materializing primitive
 ``_leaf_product``) -- never against a second, independently written reference
 implementation of the recurrence. A second reference would only prove
@@ -26,12 +26,12 @@ Covered:
     - c == 1 (complete unit write) gives keep == 1 - rate exactly;
     - rate == 0 gives keep == 1 for any c;
     - monotonicity of keep in c and in rate;
-    - affine composability (spec §6.4): splitting a sequence and continuing
+    - affine composability: splitting a sequence and continuing
       the recurrence from the boundary state reproduces the unsplit result,
       exactly, across several split points -- this is the practical form of
       ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1 + B2)`` since the oracle's own
       state-continuation *is* that composition (the recurrence is affine in
-      ``M``, spec §2's "no delta correction" consequence);
+      ``M``, the "no delta correction" consequence);
     - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
       consumes: ``rola.ops.decay.leaf_rate_dials`` casts to fp32, where a
       value strictly below 1 in fp64 can round to exactly ``1.0f``.
@@ -74,7 +74,7 @@ def _simplex(width: int, *, seed: int, dtype=torch.float64) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # 1. Write-conditioned quiescence: state bit-identical across a write-free
 #    interval, which is only possible if keep == 1 exactly throughout it
-#    (spec §2: "Survival within a write-free interval is identically 1").
+#    ("Survival within a write-free interval is identically 1").
 # ---------------------------------------------------------------------------
 
 
@@ -179,7 +179,7 @@ def test_keep_is_strictly_positive_near_the_delta_to_one_edge(delta_value):
 
 @pytest.mark.parametrize("bad_delta", [1.0, 1.0 + 1e-9, 1.5, -1e-9])
 def test_leaf_mass_decay_rejects_delta_outside_the_strict_open_interval(bad_delta):
-    """``0 <= delta < 1`` is strict and load-bearing (spec §1): confirms the
+    """``0 <= delta < 1`` is strict and load-bearing: confirms the
     config contract raises loudly rather than clamping ``delta == 1`` (which
     would make ``rate == 1`` reachable and ``keep == 0`` reachable, breaking
     the "keep=0 unreachable by construction" invariant the kernel design
@@ -307,7 +307,7 @@ def test_keep_is_nonincreasing_in_rate():
 
 
 # ---------------------------------------------------------------------------
-# 6. Affine composability (spec §6.4): split-then-continue reproduces the
+# 6. Affine composability: split-then-continue reproduces the
 #    unsplit result exactly. Load-bearing for sequence parallelism.
 # ---------------------------------------------------------------------------
 
@@ -379,7 +379,7 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, sp
 
 def test_affine_composition_algebra_matches_direct_recurrence():
     """Pure-arithmetic check of ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1+B2)``
-    (spec §6.4) for a single scalar leaf, independent of the oracle: builds a
+    for a single scalar leaf, independent of the oracle: builds a
     known ``keep``/``W*v`` sequence, computes the direct recurrence, then
     computes it via per-chunk ``(A,B)`` summaries composed with the stated
     rule, and checks they agree exactly (associativity holds regardless of

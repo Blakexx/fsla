@@ -2,30 +2,30 @@
 
 // THE T=1 DECODE PATH -- the parameter block and the objects both decode TUs share.
 //
-// THUNDER_RUN_SPEC.md §6b ruled that T = 1 HAS NO STAGE 2: every stage-2 decision is
-// degenerate, so this path bypasses selection ARCHITECTURALLY and its config freezes at
-// the prefill->decode boundary. What is left per step is data plane only, in the shape
-// §6b ratified: a TOKEN-STATIONARY, STATE-STREAMING gather-GEMV.
+// T = 1 HAS NO STAGE 2: every stage-2 decision is degenerate, so this path bypasses
+// selection ARCHITECTURALLY and its config freezes at the prefill->decode boundary.
+// What is left per step is data plane only, in the ratified shape: a
+// TOKEN-STATIONARY, STATE-STREAMING gather-GEMV.
 //
 // Three facts a reader must not miss:
 //   1. supp(R) = prod_l supp_l(R) at T = 1, so the exact support is an N-bit Kronecker
 //      object and it is MATERIALIZED, not bounded: no candidate list, no
 //      over-enumeration, no per-row membership test anywhere on this path.
-//   2. BC IS ABSENT AND THAT IS THE POINT (spec I1). Nothing here, in decode_expand.cu
+//   2. BC IS ABSENT AND THAT IS THE POINT. Nothing here, in decode_expand.cu
 //      or in decode.cu is an expression in BC; work is partitioned over bitmap WORDS.
 //   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
 //      what keeps the address BC-free; a null page table means the slot IS the atom and
 //      the bytes are the dense path's, exactly.
 //
-// The §6b degeneracy table, the Kronecker size ledger, the BC argument and the paged
-// base translation: docs/internals/decode/decode.md
+// The degeneracy table, the Kronecker size ledger, the BC argument and the paged base
+// translation: docs/internals/decode/decode.md
 
 #include <cstdint>
 
 namespace rola {
 namespace decode {
 
-//: Spec §1: `1 <= D <= 4`. The same bound the consumer's `kMaxLevels` states, restated
+//: `1 <= D <= 4`. The same bound the consumer's `kMaxLevels` states, restated
 //: rather than included -- the decode TUs share no other object with the tiled
 //: consumer. docs/internals/decode/decode.md#max-levels
 constexpr int kMaxLevels = 4;
@@ -52,7 +52,7 @@ constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: walk skips empty groups with it. docs/internals/decode/decode.md#coarse-group
 constexpr int kCoarseGroupWords = 32;
 
-//: THE PAGE GRANULE, spec §4.5's `page_states := MMA_K_QUANTUM`, mirrored here because
+//: THE PAGE GRANULE, `page_states := MMA_K_QUANTUM`, mirrored here because
 //: the decode TUs share no header with the tiled consumer. It is geometry-owned and
 //: fixed across every config forever, which is what makes the paged address BC-free.
 //: docs/internals/decode/decode.md#the-atom
@@ -102,7 +102,7 @@ struct DecodeParams {
   bool* atom_bits;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
-  //: §1.1's exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at
+  //: The exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at
   //: walk time and never stored: docs/internals/decode/decode.md#bitmap-fields
   uint32_t* bits_r;    // [BH, n_words]
   uint32_t* bits_w;    // [BH, n_words]

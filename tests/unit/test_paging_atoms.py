@@ -38,12 +38,12 @@ def _arena(widths=(8, 16), BC=64, cols=4, BH=2, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# 1. The keying arithmetic (§4.5 verbatim)
+# 1. The keying arithmetic
 # ---------------------------------------------------------------------------
 
 
 def test_the_atom_keying_is_the_spec_expression_with_no_derived_literals():
-    """§4.5: atom id, row, and the shifted address, checked against the ARITHMETIC form.
+    """Atom id, row, and the shifted address, checked against the ARITHMETIC form.
 
     The kernel-side expression uses shifts; the definition uses division. Asserting one
     against the other is what pins that the shift constants are derived from
@@ -70,7 +70,7 @@ def test_the_atom_keying_is_the_spec_expression_with_no_derived_literals():
 def test_every_stored_object_is_BC_invariant(BC):
     """THE property the re-key exists for, asserted directly.
 
-    §1b: ``BC`` is a re-derivable COMPUTE tile, a page is a MEMORY-RESIDENCY atom. After
+    ``BC`` is a re-derivable COMPUTE tile, a page is a MEMORY-RESIDENCY atom. After
     the re-key the table's shape, the pool's shape and the address expression mention
     only ``N``, ``cols`` and ``MMA_K_QUANTUM``. A single
     ``BC``-keyed survivor would show up here as a shape that moved with ``BC``.
@@ -86,9 +86,9 @@ def test_every_stored_object_is_BC_invariant(BC):
 
 
 def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
-    """§6 P5's alternating-``BC`` gate: a ``BC`` flip is a no-op for residency.
+    """The alternating-``BC`` gate: a ``BC`` flip is a no-op for residency.
 
-    ``BC`` is PER LAUNCH under §4.3, so this is not a hypothetical: the planner may hand
+    ``BC`` is PER LAUNCH, so this is not a hypothetical: the caller may hand
     consecutive launches different tiles over the same live state. The re-key's whole
     claim is that those launches address the SAME bytes of the SAME slots. Here the same
     write support is admitted twice, at ``BC = 16`` and at ``BC = 64``, and the page
@@ -130,7 +130,7 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
 
 @pytest.mark.parametrize("BC", _BCS, ids=_BC_IDS)
 def test_planned_exact_sizes_the_pool_to_the_popcount_and_zeroes_what_it_admits(BC):
-    """§4.5: the popcount of §4.1's atom condensation IS the footprint.
+    """The popcount of the atom condensation IS the footprint.
 
     Not a bound, not a growth target -- the exact number, known before the launch. And
     an admitted slot must read as ZERO whatever was in it before, because a fresh atom
@@ -198,7 +198,7 @@ def test_an_exhausted_allocator_REFUSES_and_never_grants_a_prefix():
 
 
 def test_the_extent_allocator_keeps_a_batch_contiguous_and_is_invisible_otherwise():
-    """§4.5: runs of ``C_EXTENT_ATOMS``, and a batch that does not fit opens a new one.
+    """Runs of ``C_EXTENT_ATOMS``, and a batch that does not fit opens a new one.
 
     Both branches are STRUCTURAL -- a count against a remainder, never a size against a
     threshold -- and neither is observable in the table FORMAT, which is why the gate
@@ -225,11 +225,11 @@ def test_the_extent_allocator_keeps_a_batch_contiguous_and_is_invisible_otherwis
 
 @pytest.mark.parametrize("BC", _BCS, ids=_BC_IDS)
 def test_the_default_extent_is_one_owners_worth_of_atoms(BC):
-    """§8's ``C_EXTENT_ATOMS`` default = ``QPO``, i.e. today's behaviour exactly.
+    """``C_EXTENT_ATOMS`` defaults to ``QPO``, i.e. today's behaviour exactly.
 
     A ``BC``-keyed page gave an owner's leaves contiguously for free. The default extent
     reproduces that and no more, so a WRONG placeholder cannot be worse than the thing
-    the re-key replaces -- which is §8's own rule for choosing a default.
+    the re-key replaces -- which is the rule for choosing a placeholder default.
     """
     arena = _arena(BC=BC)
     assert arena.extent_atoms == BC // MMA_K_QUANTUM
@@ -260,7 +260,7 @@ def test_an_owners_atoms_land_contiguous_in_the_common_case():
 
 @pytest.mark.parametrize("BC", _BCS, ids=_BC_IDS)
 def test_a_fully_resident_arena_materializes_the_canonical_leaf_order(BC):
-    """The §7.3 bridge OUT is LOSSLESS across the re-key, at every ``BC``.
+    """The dense bridge OUT is LOSSLESS across the re-key, at every ``BC``.
 
     Admit every atom, write a dense state through the slots the table names, and
     ``materialize`` must return it unchanged: the atom layout is a RESHAPE of the

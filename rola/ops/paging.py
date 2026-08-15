@@ -5,7 +5,7 @@ resident scale with the atoms its routing REALIZES, instead of with the ``N`` it
 topology PROVISIONS.
 
 Vocabulary, defined here and used unqualified: ``N`` = leaf count; ``BC`` = leaves per
-owner block (spec §3's owner rectangle); ``cols`` = ``d_v`` plus one mass column under
+owner block (the owner rectangle); ``cols`` = ``d_v`` plus one mass column under
 ``normalization='global'``; ``BH`` = ``batch * heads``; ``MMA_K_QUANTUM = 16``;
 **atom** = one ``MMA_K_QUANTUM``-leaf block in canonical leaf order;
 ``QPO = BC / MMA_K_QUANTUM`` = atoms per owner.
@@ -20,7 +20,7 @@ from math import prod
 
 import torch
 
-#: §6's MMA k-extent, and §1b's page granule. The Python mirror of
+#: the MMA k-extent, and the page granule. The Python mirror of
 #: ``arch_table.cuh``'s ``kMmaKQuantum`` (docs/internals/arch_table.md), which a C++
 #: ``constexpr`` cannot supply here; :meth:`PageArena.__init__` checks it against the
 #: atom geometry it addresses.
@@ -46,11 +46,11 @@ _ABSENT_PAGE = -1
 #: coarsen it deliberately.
 C_VMM_CHUNK_BYTES: int | None = None
 
-#: **§8 PLACEHOLDER** ``C_EXTENT_ATOMS``. The pool is carved into runs of this many
+#: ``C_EXTENT_ATOMS``, a CALIBRATION PLACEHOLDER. The pool is carved into runs of this many
 #: CONSECUTIVE slots, and atoms admitted together take consecutive ids inside a run.
 #: FILLED BY: the PCIe/HBM batch-efficiency curve.
 #:
-#: DEFAULT: ``None``, resolved per-arena to ``QPO`` -- one owner's worth of atoms. §8's
+#: DEFAULT: ``None``, resolved per-arena to ``QPO`` -- one owner's worth of atoms. The
 #: stated default, and it is the value at which the policy degrades to today's
 #: behaviour exactly: an owner's atoms land contiguous, which is what a ``BC``-keyed
 #: page gave for free, so a wrong placeholder cannot be worse than the thing this
@@ -109,7 +109,7 @@ def _resolve_backing(backing: str, device: torch.device) -> str:
 
 @dataclass(frozen=True, slots=True)
 class AtomKeying:
-    """§4.5's addressing arithmetic, as ONE object so it has ONE derivation.
+    """The paged addressing arithmetic, as ONE object so it has ONE derivation.
 
     Every consumer of the page table -- this module, the admission bitmap, the residency
     report, and (once it lands) the CTA's startup slot resolution -- computes the same
@@ -132,7 +132,7 @@ class AtomKeying:
         if self.N % MMA_K_QUANTUM:
             raise ValueError(
                 f"N={self.N} must be a whole number of {MMA_K_QUANTUM}-leaf atoms "
-                "(spec §1b: the page granule is geometry-owned and fixed across every "
+                "(the page granule is geometry-owned and fixed across every "
                 "config forever, so a topology whose leaf count is not a multiple of it "
                 "has no page keying at all)")
 
@@ -145,7 +145,7 @@ class AtomKeying:
         return self.BH * self.atoms_per_bh
 
     def atom_of(self, bh: int, leaf: int) -> int:
-        """``bh * (N / MMA_K_QUANTUM) + leaf // MMA_K_QUANTUM`` -- §4.5 verbatim."""
+        """``bh * (N / MMA_K_QUANTUM) + leaf // MMA_K_QUANTUM`` -- the atom key."""
         return bh * self.atoms_per_bh + (leaf >> _LOG2_ATOM_LEAVES)
 
     def row_of(self, leaf: int) -> int:
@@ -153,7 +153,7 @@ class AtomKeying:
         return leaf & _ATOM_ROW_MASK
 
     def address(self, slot: int, leaf: int, v: int) -> int:
-        """``((slot << LOG2_ATOM | row) * cols + v)`` -- §4.5's value address.
+        """``((slot << LOG2_ATOM | row) * cols + v)`` -- the value address.
 
         The ``|`` is an OR and not an ADD because ``row < MMA_K_QUANTUM`` by
         construction, so the low bits of the shifted slot are provably clear; writing it
@@ -166,13 +166,13 @@ class AtomKeying:
         if BC % MMA_K_QUANTUM:
             raise ValueError(
                 f"BC={BC} must be a whole number of {MMA_K_QUANTUM}-leaf atoms; every "
-                "legal BC is by construction (spec §1b)")
+                "legal BC is by construction")
         return BC // MMA_K_QUANTUM
 
 
 @dataclass(frozen=True, slots=True)
 class PagingResult:
-    """One call's committed-state accounting (spec §7.1's reported quantities)."""
+    """One call's committed-state accounting -- the reported page-commitment quantities."""
 
     #: Slots the allocator has handed out after this call's publication -- the CURSOR,
     #: which is the residency PLUS whatever alignment gap :class:`ExtentAllocator` opened
@@ -183,7 +183,7 @@ class PagingResult:
     #: High-water mark of :attr:`allocated_pages` over the arena's lifetime.
     peak_pages: int
     #: Logical atoms this call's routing actually realized on the write side -- the
-    #: popcount of §4.1's atom condensation, which is EXACT rather than a bound.
+    #: popcount of the atom condensation, which is EXACT rather than a bound.
     realized_owners: int
     #: ``atoms_per_bh``: what a dense ``[N, cols]`` state would provision per ``bh``.
     owners_total: int
@@ -209,7 +209,7 @@ class PagingResult:
 
 
 class ExtentAllocator:
-    """§4.5's slot policy: consecutive runs, and NOTHING the table or kernel can see.
+    """The slot policy: consecutive runs, and NOTHING the table or kernel can see.
 
     The pool is a sequence of EXTENTS of ``extent_atoms`` consecutive slots. A batch of
     atoms admitted together is placed into as few extents as possible, in ascending
@@ -275,7 +275,7 @@ class PageArena:
     """A pooled, per-layer arena over V3 value panels, keyed by the MMA ATOM.
 
     **Pooled, not per-(batch, head)** -- V2's shape, and the reason the savings math
-    works (§7.1). One arena backs every ``(batch, head)`` pair, so it tracks the live
+    works (docs/internals/paging/paging.md). One arena backs every ``(batch, head)`` pair, so it tracks the live
     fraction of the WHOLE layer; a per-pair arena would round each pair's tiny live
     fraction up to its own extent and cap savings at the extent-to-footprint ratio.
 
@@ -299,7 +299,7 @@ class PageArena:
     driver's full reserve/map/access round trip, not an attribute query.
 
     **NOTE ON ``BC``.** The arena takes it only to resolve the default
-    ``extent_atoms`` (§8's ``C_EXTENT_ATOMS`` default is ``QPO``) and to report the
+    ``extent_atoms`` (``C_EXTENT_ATOMS`` defaults to ``QPO``) and to report the
     owner geometry a caller reasons about. Nothing it STORES and nothing the KERNEL
     ADDRESSES is ``BC``-keyed after the paired re-key, so two calls at different ``BC``
     share slots byte for byte and an arena is never rebuilt on a ``BC`` flip. That is
@@ -336,7 +336,7 @@ class PageArena:
         self.peak_pages = 0
         #: The most recent :class:`PagingResult`, or ``None``.
         self.last_result: PagingResult | None = None
-        #: §4.5's side stream and the ONE event the consumer launch waits on.
+        #: The arena's side stream and the ONE event the consumer launch waits on.
         self._stream = (torch.cuda.Stream(device=self.device)
                         if self.device.type == "cuda" else None)
         self._ready: torch.cuda.Event | None = None
@@ -460,7 +460,7 @@ class PageArena:
         The page STORAGE is deliberately not zeroed here. Dropping the table makes every
         atom unmapped, so the next admission sees each of them as NEW and
         :meth:`_admit_pages` zeroes it before any read can reach it. Blanket-zeroing
-        the whole pool on every reset would touch the DENSE footprint -- exactly the allocation §7.1 exists to avoid -- to redo work
+        the whole pool on every reset would touch the DENSE footprint -- exactly the allocation paging exists to avoid -- to redo work
         admission already does on the realized set only.
         """
         # JOIN THE SIDE STREAM FIRST. The fills below run on the CALLER's stream, and
@@ -550,7 +550,7 @@ class PageArena:
 
     def plan_exact(self, atom_bitmap: torch.Tensor, *,
                    fresh: bool = True) -> PagingResult:
-        """§4.5's PLANNED-EXACT-ASYNC admission, from §4.1's atom condensation.
+        """The PLANNED-EXACT-ASYNC admission, from the atom condensation.
 
         ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- the per-leaf write set
         condensed to the atom quantum, as :func:`rola.ops.chunk.stats` publishes it. It
@@ -574,7 +574,7 @@ class PageArena:
         expected = (self.BH, self.keying.atoms_per_bh)
         if tuple(atom_bitmap.shape) != expected:
             raise ValueError(
-                f"the atom condensation must be {expected} (spec §4.1's derived atom "
+                f"the atom condensation must be {expected} (the derived atom "
                 f"granularity); got {tuple(atom_bitmap.shape)}")
 
         # The atoms that are touched and not already resident. `nonzero` costs one
@@ -602,7 +602,7 @@ class PageArena:
         return self.last_result
 
     def wait(self) -> None:
-        """The ONE event-wait §4.5 puts before the consumer launch.
+        """The ONE event-wait before the consumer launch.
 
         Allocation and zero-init ran on the side stream while the launch's operands
         were being assembled; this is where the consumer's stream joins them. It is a stream-to-stream
@@ -612,7 +612,7 @@ class PageArena:
         if self._ready is not None:
             torch.cuda.current_stream(self.device).wait_event(self._ready)
 
-    # -- the dense bridge OUT (the §7.3 boundary, crossed explicitly) ------
+    # -- the dense bridge OUT, crossed explicitly (docs/internals/paging/paging.md#backings) ------------
 
     def materialize(self) -> torch.Tensor:
         """Gather the committed atoms back into a dense ``[BH, N, cols]`` state.

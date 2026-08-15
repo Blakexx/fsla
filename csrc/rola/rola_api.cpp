@@ -5,7 +5,7 @@
 // recompiled once per `-gencode` target for no benefit. `flash_api.cpp` is the
 // convention this follows.
 //
-// ONE MODULE, NOT TWO. The chunk consumer, the decode sibling and the §7.1 paging
+// ONE MODULE, NOT TWO. The chunk consumer, the decode sibling and the paging
 // arena all register here, because they share one contract and a split would put a
 // cross-module ABI through the middle of it.
 //
@@ -64,7 +64,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("entmax_union_backward", &rola::entmax::union_backward,
         "union entmax VJP into read/write logits");
 
-  // ---- the T=1 decode path (thunder §6b) ----------------------------------
+  // ---- the T=1 decode path -------------------------------------------------
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
   //: contract, own consumer, frozen config. Two of its three entries are capacity GATES rather
   //: than operations -- docs/internals/rola_api.md#registered-entries

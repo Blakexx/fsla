@@ -204,11 +204,11 @@ def batch_compact_log_gamma(
 def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
     """Flatten ``LeafMassDecay.dials`` to ``[H, sum_l width_l]``, rows at ``level_offsets``.
 
-    The leaf rate is ``rate[s] = prod_l delta_l[d_l(s)]`` (spec §2) -- a plain
+    The leaf rate is ``rate[s] = prod_l delta_l[d_l(s)]`` -- a plain
     product of **dials**, not an AND over per-branch retentions as in V2. It is
     accumulated by the kernel in fp32 and never in bf16: ``rate`` near 1 makes
     ``1 - rate`` catastrophically cancelling, and ``log1p(-rate)`` cannot repair a
-    cancellation that already happened in the product (§7.4, this workflow's
+    cancellation that already happened in the product (this workflow's
     numerics audit).
 
     **Cast-boundary re-validation (fix pass, review B1).**

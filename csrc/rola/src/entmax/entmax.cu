@@ -1,7 +1,7 @@
 // THE PRODUCER'S UNION ENTMAX SOLVE -- hand CUDA, CUB warp primitives.
 // Design of record: docs/internals/entmax/entmax.md.
 // Gates: `tests/unit/test_entmax_cuda_gates.py` (fp64 oracle only; the Triton kernel is
-// a debugging diagnostic and is never asserted against -- trackE.md §4).
+// a debugging diagnostic and is never asserted against).
 //
 // ONE ROW PER LOGICAL WARP: every collective runs along one token's row, so all of them
 // are warp-scope and shuffle-based. Three facts follow, and each is load-bearing rather
@@ -28,7 +28,7 @@ namespace rola {
 namespace entmax {
 namespace detail {
 
-//: FROZEN (§4.1, nine downstream consumers): one CTA owns exactly the 32 tokens of one
+//: FROZEN (nine downstream consumers): one CTA owns exactly the 32 tokens of one
 //: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass
 //: -- docs/internals/entmax/entmax.md#frozen-support-word
 constexpr int WORD_TOKENS = 32;

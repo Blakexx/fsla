@@ -34,7 +34,7 @@ _HIDDEN = _H * _DV
 
 def test_the_public_flag_maps_onto_the_one_internal_boolean():
     """`gain` enables the WRITE gain, and there is no second side to enable:
-    architecture §4.2 fixes `g_read := 1` under the self-normalizing readout."""
+    the readout is a ratio, which fixes `g_read := 1`."""
     assert GainConfig.from_public(True) == GainConfig(write_gain=True)
     assert GainConfig.from_public(False) == GainConfig(write_gain=False)
 

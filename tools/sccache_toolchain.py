@@ -23,8 +23,8 @@ full `nvcc --dryrun` decomposition of the invoked compiler
 (https://github.com/mozilla/sccache/blob/main/src/compiler/nvcc.rs), and the
 invoked compiler is always the one `ptxas`-gated path.
 
-**THE DEPFILE QUESTION, MEASURED ON THIS TREE (2026-08-06).** `research/cuda-build-
-mechanics.md` §1.6 could not determine, from source alone, whether torch's forced
+**THE DEPFILE QUESTION, MEASURED ON THIS TREE (2026-08-06).** Reading the sources
+alone could not determine whether torch's forced
 `--generate-dependencies-with-compile --dependency-output $out.d` (always added by
 `torch.utils.cpp_extension._write_ninja_file` to every nvcc invocation) breaks
 sccache's cache key, and recommended treating a 0% `.cu` hit rate as the expected

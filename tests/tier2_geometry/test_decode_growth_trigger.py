@@ -5,7 +5,7 @@
 
 A paged decode step's exact admission preamble -- the write-atom derivation,
 `plan_exact`, the cross-stream event -- costs roughly ten times the kernel it precedes
-(`workflows/p67-paging/s4_build.md` §6b). It is also usually unnecessary: a sequence
+against the launch it precedes. It is also usually unnecessary: a sequence
 whose routing has settled writes atoms that are already resident, and there is nothing
 to admit. The trigger is what lets the step find that out for one kernel and one
 four-byte read, and the whole of its correctness is one claim:

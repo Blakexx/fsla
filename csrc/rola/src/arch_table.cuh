@@ -10,14 +10,14 @@
 // `check_arch_table()` (`chunk/chunk.cu`, against `chunk/arch_caps.cuh`'s row) fails
 // the FIRST LAUNCH on a device the tables disagree with.
 //
-// Why it is its own file, the §6.5 hint-generator ruling, and the measured driver
+// Why it is its own file, the hint-generator ruling, and the measured driver
 // SMEM reserve: docs/internals/arch_table.md
 
 namespace rola {
 
 //: THE SM's RESOURCES, PER ARCHITECTURE -- A TABLE, NEVER A BARE LITERAL, because
 //: `__launch_bounds__` cannot read `cudaDeviceProp` at the point of use. A HINT
-//: GENERATOR ONLY: spec §6.5 keeps the driver's occupancy API the sole planning
+//: GENERATOR ONLY: the driver's occupancy API stays the sole planning
 //: authority -- docs/internals/arch_table.md#sm-resources
 struct SmResources {
   int smem_per_sm;         // `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
@@ -52,9 +52,9 @@ constexpr SmResources kSm = sm_resources(kConsumerArch);
 
 //: `MMA_K_QUANTUM` -- the hardware `mma.sync` k-extent on the sm80-class bf16 path,
 //: and THE named constant every quanta-shaped quantity in this engine is an expression
-//: in (spec §1 I1: no `BC`-derived literals). `QPO = BC / kMmaKQuantum` is "quanta per
+//: in (no `BC`-derived literals). `QPO = BC / kMmaKQuantum` is "quanta per
 //: owner"; an ATOM is one `kMmaKQuantum`-leaf block in canonical leaf order, which is
-//: also §4.5's page granule. It lives HERE, with the other compile-time hardware facts,
+//: also the page granule. It lives HERE, with the other compile-time hardware facts,
 //: because it is one number for the chunk consumer, the decode sibling and the
 //: routing summary pass alike -- three readers that share no other header.
 //: docs/internals/arch_table.md#mma-quantum

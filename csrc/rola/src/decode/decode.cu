@@ -1,7 +1,7 @@
 // THE T=1 DECODE GEMV -- token-stationary, state-streaming, bitmap-walked. Owns the
 // GEMV kernel, its 32-way instantiation matrix and the decode path's host entry.
 //
-// §6b's ratified shape, literally: the token's routing weights and value are RESIDENT
+// The ratified shape, literally: the token's routing weights and value are RESIDENT
 // (SMEM/registers), the STATE streams past, and the grid partitions the support.
 //
 // Three facts a reader must not miss:
@@ -307,16 +307,16 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
         }
 
         //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
-        //: not an optimization: §2's survival is INCLUSIVE at `j = t`, so the whole
+        //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole
         //: causal intra Gram collapses into reading the row after it is written. A row
         //: in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression
         //: is its readout too -- one path, no arm.
         //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
         if (in_w && atom_present) {
           //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
-          //: SPLIT: at `T = 1` the tiled kernel's §12 rule-1 half-mass shift is exactly
+          //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly
           //: the identity, so ONE `expf` replaces its three. `log1pf` IS the composition
-          //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of §12
+          //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that rule's
           //: rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
           float keep = 1.0f;
           if (DECAY) {
@@ -433,7 +433,7 @@ void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay) {
   //: docs/internals/dispatch_switch.md#one-launch
   int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
     bool_switch(decay, [&](auto DECAY) {
-      int_switch<1, 2, 3, 4>(p.D, "D (spec §1)", [&](auto LEVELS) {
+      int_switch<1, 2, 3, 4>(p.D, "D", [&](auto LEVELS) {
         detail::decode_gemv_kernel<decltype(DV)::value, decltype(LEVELS)::value,
                                    decltype(DECAY)::value>
             <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
@@ -480,7 +480,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                std::vector<int64_t> level_row_offsets, int64_t heads,
                                int64_t n_split, double eps, c10::optional<at::Tensor> page_table) {
   const int D = static_cast<int>(amp_read.size());
-  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
+  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
   TORCH_CHECK(static_cast<int>(amp_write.size()) == D, "amp_write must have D entries");
   TORCH_CHECK(static_cast<int>(level_widths.size()) == D
                   && static_cast<int>(level_strides.size()) == D
@@ -638,7 +638,7 @@ void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page
                               std::vector<int64_t> level_widths, std::vector<int64_t> level_strides,
                               std::vector<int64_t> level_spans) {
   const int D = static_cast<int>(amp_write.size());
-  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
+  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
   TORCH_CHECK(static_cast<int>(level_widths.size()) == D
                   && static_cast<int>(level_strides.size()) == D
                   && static_cast<int>(level_spans.size()) == D,

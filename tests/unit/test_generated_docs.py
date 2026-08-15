@@ -1,6 +1,6 @@
 """The README's GENERATED tables are gated, so "generated" is a fact and not a label.
 
-Design §7.2: *a hand-maintained support table is a claim; a generated one is a
+The rule: *a hand-maintained support table is a claim; a generated one is a
 report.* That distinction only survives if something fails when the table is edited
 by hand, or when the artifacts it is derived from move and the table does not. This
 is that something, and it runs in the CPU job — it reads files, not a device.

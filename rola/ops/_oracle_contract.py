@@ -44,11 +44,11 @@ def validate_simplex(
     """Each level is nonnegative and sums to 1 over its width (spec section 4.1)."""
     for level, factors in enumerate(levels):
         if torch.any(factors < -atol):
-            raise ValueError(f"{name}[{level}] must be nonnegative (spec §4.1: p >= 0)")
+            raise ValueError(f"{name}[{level}] must be nonnegative (p >= 0)")
         mass = factors.sum(dim=-1)
         if not torch.allclose(mass, torch.ones_like(mass), atol=atol):
             raise ValueError(
-                f"{name}[{level}] must sum to 1 over its width (spec §4.1: sum_d p = 1); "
+                f"{name}[{level}] must sum to 1 over its width (sum_d p = 1); "
                 f"max deviation {float((mass - 1).abs().max())}"
             )
 
@@ -96,11 +96,11 @@ def validate_inputs(
     if tuple(g_write.shape) != (B, T, H):
         raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
     if torch.any(g_write <= 0):
-        raise ValueError("g_write must be strictly positive (spec §4.2: g_write[t] > 0)")
+        raise ValueError("g_write must be strictly positive: g_write[t] > 0")
     if normalization == "global":
         if g_read is not None:
             raise ValueError(
-                "normalization='global' fixes g_read := 1 (spec §4.2); production has no "
+                "normalization='global' fixes g_read := 1; production has no "
                 "read-gain projection in global cells, so a supplied g_read would be silently "
                 "ignored -- pass g_read=None"
             )
@@ -110,7 +110,7 @@ def validate_inputs(
         if tuple(g_read.shape) != (B, T, H):
             raise ValueError(f"g_read must have shape [B,T,H]={(B, T, H)}, got {tuple(g_read.shape)}")
         if torch.any(g_read <= 0):
-            raise ValueError("g_read must be strictly positive (spec §4.2: g_read[t] > 0)")
+            raise ValueError("g_read must be strictly positive: g_read[t] > 0")
     if decay is not None:
         if not isinstance(decay, LeafMassDecay):
             raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")

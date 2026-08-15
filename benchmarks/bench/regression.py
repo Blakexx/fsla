@@ -25,7 +25,7 @@ so ``ALARM_SIGMA = 3.0`` is the only free choice, it is stated as a false-alarm
 rate (~0.1 % one-sided per cell per run) rather than as a percentage of anything,
 and the per-cell number falls out of that cell's own spread. A cell too noisy to
 discriminate the effect it is asked about says so by having a wide threshold --
-which is the honest outcome, and the same rule §6.9 states for reporting.
+which is the honest outcome, and it is the rule for reporting too.
 
 **PROVENANCE IS NORMALIZED (O-11).** GPU model, driver, CUDA runtime, torch,
 assembler, and the ratification digest the binary was gated against. **No hostname,

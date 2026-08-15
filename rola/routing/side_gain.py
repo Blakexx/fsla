@@ -1,12 +1,12 @@
 """Side-gain projection and positive parameterization.
 
-``ROLA_V3_SPEC.md`` §1.1 and architecture §4.2: routing allocations are
+Routing allocations are
 normalized per level per side, so without a magnitude the model can only ever
 write total mass 1 per token. The learned WRITE magnitude supplies it:
 
     hidden -> [value, packed route logits, write gain logit]     # g_read := 1
 
-There is no read gain: architecture §4.2 fixes ``g_read := 1`` under the
+There is no read gain: the readout is a ratio, so ``g_read := 1`` under the
 self-normalizing readout, where a per-token uniform read scale cancels identically
 in the ratio. This module owns only the gain half of that contract (value/route-logit
 projection is unchanged packed-router machinery in ``projection.py``).
@@ -24,9 +24,9 @@ WRITE_GAIN = 0
 
 
 def softplus_side_gain(logit: torch.Tensor, bias: torch.Tensor | float = 0.0) -> torch.Tensor:
-    """Baseline positive parameterization: ``softplus(logit + bias)`` (spec §1.1).
+    """Baseline positive parameterization: ``softplus(logit + bias)``.
 
-    **Flagged model decision** (spec §1.1, architecture §4.2): unit gain at
+    **Flagged model decision**: unit gain at
     zero logits/bias is *not* migration-equivalent -- the exact ``ELU+1``
     decomposition gives ``g_read = sqrt(K)``, ``g_write = K`` for the historical
     width-``K`` feature map. This function supplies only the positive
@@ -118,7 +118,7 @@ def project_side_gains(
     """Project per-head write-gain logits and apply the positive parameterization.
 
     ``h``: ``[B, L, hidden_size]`` (shared source stream, matching the packed
-    router's projection convention -- architecture §8 does not require a
+    router's projection convention -- the architecture does not require a
     separate per-head hidden stream for gains).
     ``gain_W``: ``[H, sides, hidden_size]``, ``sides`` = 1 (write only).
 

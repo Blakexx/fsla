@@ -1,6 +1,6 @@
 """Generate the README's "Supported configurations" table. **A REPORT, NOT A CLAIM.**
 
-Design §7.2. A hand-maintained support table says what someone hoped was true when
+A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
 answer, and CI fails on drift:
 
@@ -9,11 +9,11 @@ answer, and CI fails on drift:
   and the chunk dispatch's first-launch check a refusal at run time, so an arch
   missing from it cannot execute whatever the table says.
 * ``tools/manifests/sm_XX.json`` -- the architectures that have been MEASURED.
-  One file per arch (§3.7), so "is it ratified?" is a file-existence question.
+  One file per arch, so "is it ratified?" is a file-existence question.
 
 The two are not the same set, and **the difference is the product statement**. An
 arch that is tabulated but not ratified is listed with an empty toolchain column
-and the status *not ratified -- will refuse to load*. §7.1's first claim is worth
+and the status *not ratified -- will refuse to load*. A support claim is worth
 nothing if the table quietly implies coverage nobody measured.
 
     python tools/supported.py            # print the table

@@ -32,7 +32,7 @@ the staging in a way worth stating, because it changes what a pass means:
 
 RETIRED WITH THEIR SUBJECTS, both already inert before this commit:
 
-* **M2**, the decay-clock mutant (`write_levels_stored` at bf16 -- the §4.7
+* **M2**, the decay-clock mutant (`write_levels_stored` at bf16 -- the
   exponent-amplification argument that makes "the clock stays fp32" a checked
   property). Decay is retired from the operator: there is no clock in the kernel
   arm to pin, and `write_levels_stored` was an argument of the retired tiled
@@ -55,7 +55,7 @@ decision for the cast to sit above. What survives, and is kept below, is the
 half that is still checkable and is why the claim mattered: a live leaf whose
 stored amplitude flushed to zero is INERT.
 
-The two arms `PARITY_BATCH_DESIGN.md` §2.B3/§2.B4 demand are both here:
+The two arms the parity design demands are both here:
 
 * **the T-scaling arm** -- the narrowing at `T in {512, 2048, 8192}`, asserting
   the deviation is FLAT in `T` (fitted log-log slope well below the `sqrt(T)`
@@ -170,7 +170,7 @@ def _family_errors(*a, **k) -> tuple[float, float]:
 
 
 #: The topology rows the family gate runs, all BUILT arms of the chunk manifest:
-#: the flagship-shaped `D = 2` cell, a `D = 3` cell, and the §4.4 WORST CASE
+#: the flagship-shaped `D = 2` cell, a `D = 3` cell, and the WORST CASE
 #: `D = 4` (four routed factors multiplied into every leaf coefficient, with no
 #: margin argued -- measured here). Pre-D2 these were `(8,8)`, `(4,4,4)` and
 #: `(2,2,2,2)`: the DEPTH axis is what the row set is for, and it is preserved;
@@ -223,7 +223,7 @@ def test_M3_four_mantissa_bit_amps_exceed_BF16_RTOL(widths):
         "the change under test, so it gates nothing")
 
 
-# --- the T-scaling arm (§2.B3): flat in T, or the family halts --------------
+# --- the T-scaling arm: flat in T, or the family halts ---------------------
 
 
 _T_ARM = (512, 2048, 8192)
@@ -257,7 +257,7 @@ def test_family_deviation_is_flat_in_T():
         "standing scale target -- the family halts pending re-derivation (batch-1 rule)")
 
 
-# --- the flush arm (§2.B4): a flushed live amplitude is INERT ---------------
+# --- the flush arm: a flushed live amplitude is INERT ----------------------
 
 
 def test_a_sub_subnormal_amplitude_flushes_and_is_inert():

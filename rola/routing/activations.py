@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The activation registry: one table, and every rule reads it.
 
-Design §4.6 as amended 2026-08-01. A routing activation used to be a class whose
+A routing activation used to be a class whose
 properties were prose in a docstring and a hand-written `can_zero`. Now it is a TAG
 with a ROW, and the row is the only place the properties live.
 
@@ -35,14 +35,14 @@ with a ROW, and the row is the only place the properties live.
 
 `kerneled` is the kernel-dispatch column and it is a statement about EVIDENCE, not
 about capability: `launch_consumer` remains the single authority on supported shapes
-(§4.6), and a `False` here means "nobody measured it", which is why a config naming
+and a `False` here means "nobody measured it", which is why a config naming
 such an activation runs on the reference path carrying an explicit `not_kerneled`
 flag. That is a LABELED RESEARCH SURFACE, and it is a different thing from a kernel
 fallback -- the kernel engineering standard's no-fallbacks rule is about the kernel
 declining work it was asked to do, which never happens here.
 
 **Extending it** is one row plus one constructor, and it is a MINOR version bump
-(§4.5 as amended). The docs' capability matrix is GENERATED from this table by
+The docs' capability matrix is GENERATED from this table by
 :func:`capability_table`, so it cannot describe a table that does not exist.
 """
 
@@ -166,7 +166,7 @@ def validate_alpha(alpha: Any, *, owner: str) -> float:
 def capability_table() -> str:
     """The docs' capability matrix, GENERATED from the registry.
 
-    §4.6's amendment: generated, not maintained. A hand-written matrix is a second
+    Generated, not maintained. A hand-written matrix is a second
     copy of the table that goes stale the first time a row changes and nobody
     notices, because nothing checks prose.
     """

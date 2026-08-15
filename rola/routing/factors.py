@@ -22,8 +22,8 @@ and nobody has measured it to matter.
 
 **The mass fold, and the one modelling consequence it carries.** A producer's levels
 need not be unit-sum. The gateway factors each level into ``(mass, simplex)``, stores
-the simplex, and folds the mass product into that side's gain -- architecture §4.2's
-"multiplicative per-level masses collapse into one side-wide product". The identity is
+the simplex, and folds the mass product into that side's gain: multiplicative per-level
+masses collapse into one side-wide product. The identity is
 loss-free for the readout. It is not neutral for the recurrence: the decay clock is
 defined on the STORED (normalized) level, so a producer whose write-side mass differs
 from 1 has moved magnitude out of the clock and into ``g_write``. That is the defined
@@ -55,7 +55,7 @@ class RouteFactors:
 
     ``read``/``write``: one ``[B, T, H, width_l]`` simplex per topology level.
     ``g_read``/``g_write``: ``[B, T, H]`` side gains; ``g_read`` is ``None`` under
-    ``normalization='global'``, where architecture §4.2 fixes it to 1.
+    ``normalization='global'``, where the readout's ratio form fixes it to 1.
 
     Direct construction is legal; ``__post_init__`` holds it to the same invariants a
     derived bundle satisfies (``docs/api.md`` §2.1).
@@ -110,7 +110,7 @@ class RouteFactors:
                         f"{tensor.dtype} against {self.read[0].dtype}")
         if self.g_read is not None:
             raise ValueError(
-                "RouteFactors.g_read must be None: architecture §4.2 fixes g_read := 1 "
+                "RouteFactors.g_read must be None: the readout is a ratio, so g_read := 1 "
                 "under the self-normalizing readout, so there is no read-gain column "
                 "and a supplied one would be silently ignored")
         for name, gain in (("g_read", self.g_read), ("g_write", self.g_write)):
@@ -256,7 +256,7 @@ class RouteGateway(nn.Module):
         B, H = source.batch, self.num_heads
         #: THE READ MASS IS DROPPED, and that is the self-normalizing readout's own
         #: statement: `R` enters as num/den, so a per-token scale common to every leaf
-        #: cancels exactly (architecture §4.2). The WRITE mass rides the write channel,
+        #: cancels exactly. The WRITE mass rides the write channel,
         #: where it scales the deposit.
         read_levels, _read_mass = _fold(tuple(read), B=B, H=H)
         write_levels, write_mass = _fold(tuple(write), B=B, H=H)

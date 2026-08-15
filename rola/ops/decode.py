@@ -49,7 +49,7 @@ __all__ = [
 ]
 
 
-#: §8-class calibration placeholders. Both defaults are chosen so that a WRONG value
+#: CALIBRATION PLACEHOLDERS. Both defaults are chosen so that a WRONG value
 #: degrades to today's behaviour and never to a new behaviour: they only move how many
 #: CTAs share a step's rows, and a CTA with no rows exits after one L2 read while a CTA
 #: with too many merely serializes. The terminal cycle fills them from a rows-per-CTA
@@ -87,7 +87,7 @@ class FrozenDecodeConfig:
     #: formats' contracts (fp32 accumulate is what the tiled consumer's tf32x3 and
     #: bf16 arms share; only their OPERAND format differs, and a GEMV has no operand
     #: tile to format). So the field selects nothing today; it exists so the pin is
-    #: carried, validated, and checkable, and so the future M-4 decode kernel (§6b)
+    #: carried, validated, and checkable, and so a future decode kernel
     #: inherits it instead of re-plumbing the boundary.
     mma_precision: str = "bf16"
 
@@ -118,7 +118,7 @@ def freeze_decode_config(
     """Build the carrier once, at the boundary.
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
-    reintroduce exactly the per-step selection §6b dissolves. CTAs whose row range starts
+    reintroduce exactly the per-step selection the design dissolves. CTAs whose row range starts
     beyond the realized touched-row count read one L2 word and exit; that
     over-launching is the price of never reading a device value back to the host, which
     is the one thing a decode step must not do.
@@ -429,7 +429,7 @@ def _decode_step(
                     f"write_levels_stored[{level}] is nonzero where write_levels[{level}] is "
                     "zero; quantization may only flush toward zero, never manufacture a "
                     "nonzero, and the clock's write-conditioned quiescence depends on it")
-        # The clock is `c[t, s] = prod_l p_write_stored[t, d_l(s)]` (spec §2) — a pure
+        # The clock is `c[t, s] = prod_l p_write_stored[t, d_l(s)]` — a pure
         # product of the STORED allocations with no side gain: `g_write` scales the
         # deposit, not the clock.
         amp_clock = [_fold(t).float() for t in stored]

@@ -29,8 +29,7 @@ SIX OUTCOMES, and the difference between them is deliberate:
   entry. Spills are the thing being bounded; growth is a regression whatever caused it.
 * **FAIL -- an unhonored bound.** Any `Value of threads per SM ... is out of range`
   warning. That entry compiled with NO launch bound, so `ptxas` was free to spend
-  registers as it liked -- correction (d)'s failure mode, and the defect §2.21 exists
-  to have fixed. It is a hard failure even at zero spills.
+  registers as it liked. It is a hard failure even at zero spills.
 * **FAIL -- source drift (session 9).** The tree's `csrc/rola/src` digest differs
   from the one the manifest was ratified against. The manifest's numbers -- and the
   register-budget derivation they justify -- describe a kernel that no longer
@@ -81,7 +80,7 @@ count (plus the hot-loop parser proving it counts an in-loop `LDL` and clears a 
 one on synthetic SASS). That is what makes a green run mean something: a gate that
 cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
-MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH (§3.7), each
+MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH, each
 `{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version, sccache}, "source":
 {...}, "shards": {...},
 "entries": {<mangled name>:
@@ -248,7 +247,7 @@ DEFAULT_ARCHES = ("80", "86")
 
 
 def manifest_path(arch: str) -> Path:
-    """ONE FILE PER ARCH (§3.7).
+    """ONE FILE PER ARCH.
 
     *"Does arch X have a ratified manifest?"* is then a FILE-EXISTENCE question --
     which is what `setup.py`'s rule-3 gate needs to ask before it compiles anything,
@@ -313,7 +312,7 @@ def manifest_digest(manifest: dict) -> str:
 
     Canonical JSON of `{toolchain, entries, shards}` with sorted keys -- NOT the
     bytes of any file -- so the digest is a property of the RATIFICATION and not of
-    its filing. That is what makes §3.7's split provably non-semantic: the same 1216
+    its filing. That is what makes the per-arch split provably non-semantic: the same 1216
     measurements in two files hash to what they hashed to in one.
 
     THE SHARD BLOCK PARTICIPATES because "only shards X and Y were re-measured" is
@@ -802,13 +801,13 @@ def check(entries: dict, unhonored: list[str], want: dict) -> bool:
 #: A spill's COST is where it lands, not how much of it there is: the `base[D]`
 #: prologue array spilling once per CTA is free, the same bytes inside the
 #: 2,000-3,000-instruction tile loop are a memory round-trip per iteration. The
-#: register-rung scoping (REGISTER_RUNG_SCOPE.md §2.3) mechanized that as "no
+#: register-rung scoping mechanized that as "no
 #: `LDL`/`STL` at loop depth >= 1", and this gate is that test as a BUILD FAILURE.
 #:
 #: **IT IS A RATCHET, NOT AN ABSOLUTE, and the difference was MEASURED before the
 #: gate landed (session 9).** The decay arms execute dynamically-indexed LOCAL
 #: ARRAYS (`LDL.64 R28, [R26]` -- computed addresses, `ptxas` spill bytes ZERO)
-#: inside their loops; that is §2.23's "local ARRAYS, not pressure" class,
+#: inside their loops; that is the "local ARRAYS, not pressure" class,
 #: structural to the arm's indexing and unfixable by any register budget (three
 #: keys still carry it at 255 registers). An absolute in-loop ban would therefore
 #: fail every baseline forever on traffic that is not the defect. At SASS level
@@ -1345,7 +1344,7 @@ def main() -> int:
         print("\nSELF-TEST PASSED: the gate rejects an assembler it was not ratified "
               "under")
 
-        #: NON-VACUITY OF THE PER-ARCH SPLIT (§3.7). Rule 3 is now a FILE-EXISTENCE
+        #: NON-VACUITY OF THE PER-ARCH SPLIT. Rule 3 is now a FILE-EXISTENCE
         #: question, and a question whose answer is always yes is not a gate: an arch
         #: nobody ratified must RAISE, not merge into an empty entry set that then
         #: passes every comparison below it vacuously.
