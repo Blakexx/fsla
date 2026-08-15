@@ -117,6 +117,43 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
               ": the backward carries the pinned arm alone until the scan is whole.");
 }
 
+//: THE PARTITION PROBE'S ENTRY.  It takes the table and nothing else: the walk
+//: reads no amplitude, so a probe that took one would be gating a wider surface
+//: than the schedule.  Three int32 planes `[BH, blocks, L]` come back, `-1` where
+//: no chunk gathered the token.
+std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t bc,
+                                      std::vector<int64_t> widths, int64_t L) {
+  check_arch_table();
+  TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
+              "the union table is a contiguous int32 tensor of packed bits");
+  TORCH_CHECK(L > 0 && L % chunk == 0, "L must be a positive multiple of the chunk");
+  auto opts = torch::TensorOptions().dtype(torch::kInt32).device(tbl.device());
+#define WALK_PROBE_DISPATCH_X(C_, BC_, D_, B__)                                             \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                \
+    using LP = LevelPlan<D_, B__, BC_>;                                                     \
+    const long per = 2L * LP::entries * tok_words((int)L);                                  \
+    TORCH_CHECK(tbl.numel() % per == 0, "the union table was built for a different arm");   \
+    const long BH = tbl.numel() / per;                                                      \
+    auto stampR = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                   \
+    auto stampW = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                   \
+    auto jout = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                     \
+    auto nchunk = torch::zeros({BH, (long)LP::blocks}, opts);                               \
+    constexpr size_t sm = (size_t)GeomB<C_, BC_>::idx_slot                                  \
+                          + 2 * kFormWords * sizeof(uint32_t) + kCookSlots * sizeof(int);   \
+    const dim3 grid((unsigned)LP::blocks, (unsigned)BH);                                    \
+    walk_probe_kernel<C_, D_, B__, BC_><<<grid, threads_for(BC_), sm,                       \
+                                          at::cuda::getCurrentCUDAStream()>>>(              \
+        reinterpret_cast<const uint32_t*>(tbl.data_ptr()), stampR.data_ptr<int>(),          \
+        stampW.data_ptr<int>(), jout.data_ptr<int>(), nchunk.data_ptr<int>(), (int)L);      \
+    C10_CUDA_CHECK(cudaGetLastError());                                                     \
+    return {stampR, stampW, jout, nchunk};                                                  \
+  }
+  SCAN_B_ARMS_X(WALK_PROBE_DISPATCH_X)
+#undef WALK_PROBE_DISPATCH_X
+  TORCH_CHECK(false, "the descending walk is not built for arm chunk=", chunk, " BC=", bc,
+              " depth=", widths.size());
+}
+
 std::vector<std::vector<int64_t>> scan_b_census() {
   check_arch_table();
   std::vector<std::vector<int64_t>> out;

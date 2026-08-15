@@ -62,6 +62,29 @@ it, is `nw - above` with the chunk's own total `nw`, known at close.
 Scan A and Scan B associate their sums differently by construction, so the gate on
 this operator is ratio-to-floor and never bit-identity.
 
+## <a id="partition-probe"></a>The partition probe — the schedule gated as a schedule
+
+The walk above is the one piece of P65 with no forward counterpart to inherit, and
+its correctness is a **schedule** fact. An arithmetic gate can only reach a schedule
+through a reference that replays the partition, and that reference stops being
+writable the moment two blocks of one head are live on different tokens: each block
+then closes its chunks at different tokens, so "the" partition does not exist. The
+stage-1 numeric rows dodge this by making every token fully live or fully dead on a
+side, which makes every block's partition the same one — a real cell, and not the
+general case.
+
+`walk_probe_kernel` runs the walk **alone** and emits what it published: per
+`(bh, block, token)`, the ordinal of the chunk that gathered the token and its
+position in that chunk's list, one plane per side, plus the causal threshold each
+read entry carries. The sentinel is `-1`, so *"gathered exactly once"* is a
+checkable claim rather than a covering one. It takes the union table and nothing
+else, because the walk reads no amplitude — a probe that took one would be gating a
+wider surface than the schedule it is named for.
+
+The walk itself is a **component**, `Descent`, not a closure inside Scan B: a probe
+that re-implemented the closing rule would be gating its own copy. Both kernels
+drive the same object, which is what makes the probe's verdict Scan B's verdict.
+
 ## <a id="channel-contraction"></a>The one new primitive
 
 Exactly one arithmetic primitive is new in the whole backward: a contraction whose

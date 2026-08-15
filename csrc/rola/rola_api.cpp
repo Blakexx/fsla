@@ -77,6 +77,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "chunk consumer, Scan B (stage 1): the inter-chunk write-side adjoint terms", py::arg("pr"),
         py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
+  //: THE SCHEDULE, ALONE. Scan B walks its own descending partition, so the one
+  //: thing no arithmetic reference can reach in general is where its chunks fall;
+  //: this emits that and nothing else.
+  m.def("chunk_walk_probe", &rola::chunk::walk_probe,
+        "chunk consumer, Scan B: the descending walk's per-token chunk/position "
+        "stamps and causal thresholds, both sides",
+        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("L"));
   m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
         "chunk consumer, Scan B: per-arm registers, spill bytes, shared bytes, "
         "staging depth, CTA target and the arm's declared register floor");

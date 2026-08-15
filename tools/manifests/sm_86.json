@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "d6a5aa4e4c18ab852ae4503b9f6c95c8eb5f6d66d1c7a2e62194810df11e7f9f",
+  "csrc_sha256": "d55643cb51cc9b3c8f9d0a730c899cbde73adaecf6739aa44ef51d9d7eecf687",
   "date": "2026-08-15"
  },
  "shards": {
@@ -47,7 +47,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "ff1d3464beec317354d359315ac5c41401c18eb5e4c07c0bee315a6e5a878ad6"
+   "sass_sha256": "cd7f26f2a07862473d6d2db406f56881b7300d9c87ac9e53d9851095366a4302"
   },
   "sm_86:_ZN4rola5chunk16compacted_kernelILi16ELi1ELi256ELi64ELb0ELb0EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiPKfS7_PKiPKhj": {
    "regs": 116,
@@ -696,6 +696,14 @@
    "hot_locals": 0,
    "local_ops": 0,
    "sass_sha256": "5b39424e1202c9ab61efe790cdd22f5d6fcb45d4ba826e6e2e7e5caef829a1b2"
+  },
+  "sm_86:_ZN4rola5chunk17walk_probe_kernelILi32ELi2ELi64ELi128EEEvPKjPiS4_S4_S4_i": {
+   "regs": 40,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "da5e84f37bf2e90509c1cacc582941f40d6e98e19906b000b9abd4feacb05a24"
   },
   "sm_86:_ZN4rola5chunk18atom_bitmap_kernelILi1ELi256EEEvPKjPhi": {
    "regs": 40,
