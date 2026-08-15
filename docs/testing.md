@@ -71,6 +71,14 @@ asserted in its own test, `--reassociated` holds a reordered sum to
 defect that the run MUST fail on -- a protocol that cannot fail is not a
 protocol.
 
+**THE RUN MUST PROVE IT COMPARED.** Every verdict is gated on a per-surface floor
+(`MINIMUM_COMPARISONS`: `oracle` 640, `producer` 162) and a run below it fails RED
+rather than reporting PASS over whatever survived. This is not hypothetical
+bookkeeping: the `oracle` surface was UNRUNNABLE for a window after `raw` died --
+the matrix emitted a `raw` row, `naive_rola` refused it, and the run aborted in emit
+-- and a shrinking matrix is the same defect wearing a green face. A matrix that
+legitimately shrinks moves the floor in the same commit, with the reason.
+
 **`flock /tmp/rola_ram.lock`, and the grid runs in slices.** The backward
 retains one autograd graph per token per cell; run whole, the protocol peaked
 near 18 GB and froze the host twice. One grid at a time, host-wide.

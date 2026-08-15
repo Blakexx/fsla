@@ -47,6 +47,10 @@ deposit it trains through, it cannot be observed at all.
 **P5, NON-VACUITY.** `--mutate` injects a known defect into the NEW side and the run
 must FAIL. A protocol that cannot fail is not a protocol, and this one is the gate
 that stands between a quiet oracle change and every Tier 1 claim in the repository.
+
+**P7, THE COUNT.** Every run asserts it compared at least `MINIMUM_COMPARISONS`
+quantities and fails RED otherwise: a gate that cannot run must say so, not report a
+verdict over whatever survived.
 """
 from __future__ import annotations
 
@@ -129,6 +133,16 @@ SEED = 20260805
 #: skipped, and it is checked rather than argued -- the union over `chunks=4` and the
 #: union over `chunks=8` are the same 1328 quantities, bit-identical, 0 mismatches.
 DEFAULT_CHUNKS = 16
+
+#: THE FLOOR ON WHAT A RUN MUST HAVE COMPARED, per surface, and a run that produces
+#: fewer quantities FAILS RED. Measured at P71-B (`oracle` 640, `producer` 162) and
+#: raised whenever the matrix grows: a gate must prove it COMPARED, because a matrix
+#: that quietly stopped emitting rows -- an axis that raises in the generator, a cell
+#: that returns nothing -- reports PASS over whatever survived, and this protocol is
+#: what stands between a quiet oracle change and every Tier 1 claim in the tree. The
+#: precedent is real: the `oracle` surface was UNRUNNABLE for a window after `raw`
+#: died and nothing said so.
+MINIMUM_COMPARISONS = {"oracle": 640, "producer": 162}
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +606,8 @@ def report(surface: str, tallies: list, exceptions: set,
     failures = [item for t in tallies for item in t["failures"]]
     rule = ("BIT-IDENTITY" if surface == "oracle"
             else f"producer contract (atol {PRODUCER_ATOL:.0e}, support sets exact)")
-    print(f"\n{count} quantities compared under {rule}")
+    floor = MINIMUM_COMPARISONS[surface]
+    print(f"\n{count} quantities compared under {rule} (floor {floor})")
     print(f"worst continuous difference: {worst['value']:.3e}"
           + (f"  at {worst['key']}" if worst["key"] else ""))
     if exceptions:
@@ -600,6 +615,12 @@ def report(surface: str, tallies: list, exceptions: set,
     if reassociated:
         print(f"declared reassociations ({len(reassociated)}, held to "
               f"{REASSOCIATION_RTOL:.0e} relative): {sorted(reassociated)}")
+    if count < floor:
+        print(f"\nFAIL  the run compared {count} quantities, below the {surface} "
+              f"surface's floor of {floor}: this gate did not gate. Either the matrix "
+              "lost rows (find them) or it legitimately shrank (move the floor, in the "
+              "same commit, with the reason).")
+        return False
     if failures:
         print(f"\nFAIL  {len(failures)} quantit(ies) disagree:")
         for key, why in failures[:12]:
