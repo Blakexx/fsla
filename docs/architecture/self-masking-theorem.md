@@ -194,15 +194,11 @@ Two live uses:
 ### (3) TRUSTLESS CAPABILITY FLAGS
 
 A capability flag may be **conservatively wrong in the inclusive direction
-without changing a result**. `StaticDensity` — one boolean per level per side,
-declaring "this cell's activation cannot emit an exact structural zero"
-(`rola/routing/density.py`, exported through `rola.expert`) — is *trusted
-outright*, with no verification, on
-exactly this argument: a false "dense" declaration over-approximates the support,
-which is inert. It costs the declaring caller performance and nobody else
-correctness. `workflows/research/api-contract-audit.md` §3.4 records the
-in-tree verification, including the measured case where the declaration goes
-false at high logit gain **with the plan unchanged**.
+without changing a result**, so such a flag can be *trusted outright*, with no
+verification: an over-approximated support costs the declaring caller performance and
+nobody else correctness. That licence is what makes a declared-density column a
+legitimate pricing input for any future cost model, and it is exactly the argument the
+membership-authority rule below turns on.
 
 The same reasoning licenses the emission-side `if (out != 0.0f)` skips: adding
 `0.0f` is the identity, so including the term is a no-op and the test is

@@ -13,9 +13,8 @@ itself.
 
 **The interface, in full.**
 
-``widths``      one branch width per level the producer covers, in its own order.
-``forward``     one call producing EVERY level the producer covers.
-``dense_sides`` optional structural declaration, per covered level (see below).
+``widths``   one branch width per level the producer covers, in its own order.
+``forward``  one call producing EVERY level the producer covers.
 
 **One call per producer.** The gateway calls each producer once, with every level
 that producer covers, and places the results in the slots the list assigned them. A
@@ -30,15 +29,8 @@ this span records the design that was worked out and set down.
 
 **The gateway owns packing.** A producer returns amplitudes in the plain documented
 layout, one ``[B, T, H, width_l]`` tensor per level, and knows nothing about how the
-kernel wants them arranged. Turning those into the folded, masked view the schedule and
-the summary pass consume is the gateway's job and lives in one place.
-
-**Stat-expose is optional and never load-bearing.** A producer that already knows a
-summary statistic as a byproduct of its solve may return it on
-:class:`ProducedRoutes`; the gateway measures whatever is missing. A supplied statistic
-feeds PRICING only -- membership and support bits are always recomputed from the
-tensors -- so a wrong one costs its author performance and can never cost anyone
-correctness.
+kernel wants them arranged. Turning those into the folded view the op consumes is the
+gateway's job and lives in one place.
 
 **The shipped producer.** :class:`SimplexProducer` learns a packed per-head router
 projection and solves it with the exact production entmax/softmax closed form
@@ -48,12 +40,11 @@ and gets no privileged path.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
-from rola.routing.budget import exact_support_count
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.projection import _packed_router_logits
 from rola.routing.types import (
@@ -118,16 +109,10 @@ class ProducedRoutes:
     not be unit-sum -- the gateway factors each level into ``(mass, simplex)`` and
     folds the mass into the side gain, which is where architecture §4.2 puts a
     per-level magnitude.
-
-    ``support_counts``/``touched_bits``: OPTIONAL stat-expose, keyed by the producer's
-    own level index. Anything absent the gateway measures from the tensors; anything
-    present is used for PRICING only.
     """
 
     read: tuple[torch.Tensor, ...]
     write: tuple[torch.Tensor, ...]
-    support_counts: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
-    touched_bits: dict[int, torch.Tensor] = field(default_factory=dict)
 
 
 class LevelProducer(nn.Module):
@@ -165,10 +150,6 @@ class SimplexProducer(LevelProducer):
             (``rola/routing/activations.py``); users never supply property metadata.
         hidden_size / num_heads: the source stream's width and the head count.
         bias: a learned bias on the routing projection.
-        expose_stats: return exact support counts as a solve byproduct instead of
-            leaving the gateway to measure them (the fused-vs-separate arm; both arms
-            produce identical numbers -- see ``docs/api.md`` for which one is faster
-            and by how much).
     """
 
     def __init__(
@@ -179,7 +160,6 @@ class SimplexProducer(LevelProducer):
         hidden_size: int,
         num_heads: int,
         bias: bool = False,
-        expose_stats: bool = False,
     ) -> None:
         super().__init__()
         _widths = (widths,) if type(widths) is int else tuple(widths)
@@ -200,7 +180,6 @@ class SimplexProducer(LevelProducer):
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.bias = bool(bias)
-        self.expose_stats = bool(expose_stats)
         self.levels = tuple(_levels)
         self.widths = tuple(_widths)
         self.routing = ResolvedRouting(levels=self.levels, branches=self.widths)
@@ -214,11 +193,11 @@ class SimplexProducer(LevelProducer):
         else:
             self.register_parameter("route_bias", None)
 
-    # --- pricing columns -----------------------------------------------------
+    # --- the activation tags the topology answers from ------------------------
 
     @property
     def level_routing(self) -> tuple[LevelRouting, ...]:
-        """The routing tag of each level this producer covers, for the pricing columns."""
+        """The routing tag of each level this producer covers."""
         return self.levels
 
     # --- production ----------------------------------------------------------
@@ -236,17 +215,7 @@ class SimplexProducer(LevelProducer):
 
         read = tuple(_unfold_bth(level, B, H) for level in read_bh)
         write = tuple(_unfold_bth(level, B, H) for level in write_bh)
-        counts: dict[tuple[int, str], torch.Tensor] = {}
-        if self.expose_stats:
-            # THE FUSED ARM. The counts ride the solve's own output while it is still
-            # in the producer's hands, in the layout the solve produced. The gateway's
-            # arm measures the same thing from the unfolded tensors; both are exact
-            # nonzero counts of the same values, so this is a placement decision and
-            # never a numerical one.
-            for index in range(len(self.widths)):
-                counts[(index, "read")] = _unfold_count(exact_support_count(read_bh[index]), B, H)
-                counts[(index, "write")] = _unfold_count(exact_support_count(write_bh[index]), B, H)
-        return ProducedRoutes(read=read, write=write, support_counts=counts)
+        return ProducedRoutes(read=read, write=write)
 
     def _project(self, x: torch.Tensor, x_w: torch.Tensor | None):
         """Packed router logits in the domain the caller's dtype selects.
@@ -297,7 +266,3 @@ def _unfold_bth(tensor: torch.Tensor, B: int, H: int) -> torch.Tensor:
     T, width = tensor.shape[1], tensor.shape[2]
     return tensor.reshape(B, H, T, width).permute(0, 2, 1, 3)
 
-
-def _unfold_count(counts: torch.Tensor, B: int, H: int) -> torch.Tensor:
-    """``[B*H, T] -> [B, T, H]``, matching the public statistic layout."""
-    return counts.reshape(B, H, -1).permute(0, 2, 1).contiguous()

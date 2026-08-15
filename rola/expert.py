@@ -4,11 +4,11 @@
 
 The public surface is the reduction theorem: linear attention, plus the one slot that
 makes it RoLA. Everything in this module is BELOW that line -- the dispatch's own
-answer, the pins over axes the op otherwise decides, the producer-side statistics a
-measurement reads. They are exported because a serious consumer legitimately needs
-them (a gate that must ask for the exact numeric arm, a deployment that must pin the
-state's backing) and reaching past a package into its privates is worse than a marked
-door.
+answer, the pins over axes the op otherwise decides, the fine-grained gain layout
+behind the layer's one public flag. They are exported because a serious consumer
+legitimately needs them (a gate that must ask for the exact numeric arm, a deployment
+that must pin the state's backing) and reaching past a package into its privates is
+worse than a marked door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
 these objects and pass them; do not assert on their fields. What a :class:`Dispatch`
@@ -25,14 +25,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from rola.interface import Dispatch, dispatch_for, requires_backward, select_backend
-from rola.routing.density import StaticDensity
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
     "Dispatch",
     "GainConfig",
     "PlanOverrides",
-    "StaticDensity",
     "dispatch_for",
     "requires_backward",
     "select_backend",

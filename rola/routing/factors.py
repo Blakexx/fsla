@@ -4,24 +4,26 @@
 
 Linear attention's op takes ``(q, k, v)``. RoLA's takes ``(routes, v)``, where
 ``routes`` is the ``(q, k)`` pair AFTER the feature map -- the read-side and write-side
-simplices, their side gains, and the summary statistics a measurement prices with. That
-bundle is :class:`RouteFactors`, and the only way to obtain one is to call
-:class:`RouteProducer`.
+simplices and their side gains. That bundle is :class:`RouteFactors`;
+:class:`RouteProducer` is the module that assembles one out of producers.
 
-**Why the gateway is mandatory.** Every field of a ``RouteFactors`` is computed by the
-derivation code in this module: the mass fold, the side gains, the support statistics,
-the touched bits, the declared density. A caller therefore cannot hand the op a bundle
-whose statistics disagree with its tensors, because a caller never authors the bundle
--- they choose producers, and producers return tensors. That is what makes the whole
-surface trustless rather than merely documented: correctness is derived, never
-declared. Construction validates shapes, layout and dtype and fails hard with the
-public argument names in the message; :func:`rola.rola_op` type-gates on the result, so
-no well-formed bundle means no call.
+**The bundle carries tensors and nothing else, which is why it is constructible.**
+Every field is a tensor or the topology those tensors are shaped by, and
+:meth:`RouteFactors.__post_init__` checks the STRUCTURE they must have -- one level per
+topology level at that level's width, one shared ``(B, T, H)`` prefix, one device, one
+dtype, a gain layout matching the normalization arm. There is no declaration on the
+bundle that could disagree with its own tensors, so there is nothing for a gateway
+monopoly to protect: a test may assemble a bundle by hand and it is held to exactly
+the same invariants. Unit-sum-ness is deliberately NOT among them -- it is a device
+reduction per level per call, it is the gateway's own output contract
+(:func:`_fold`), and fixtures legitimately plant non-canonical amplitudes.
+:func:`rola.rola_op` still type-gates on the class, so handing the op bare tensors is
+still a clean refusal.
 
 **One call per producer, and the gateway owns packing.** Each producer is called once
 with every level it covers and returns amplitudes in the plain documented layout; the
 gateway places them in the slots the list assigned and derives everything downstream --
-the fold into the kernel's view, the masks, the statistics. Batching across levels is a
+the fold into the kernel's view and the side gains. Batching across levels is a
 PRODUCER's business: :class:`~rola.routing.producer.SimplexProducer` covers as many
 levels as it is given and runs them through one projection and one solve. Batching
 across two DIFFERENT producers is not built; the prize is launch overhead at ``D <= 4``
@@ -40,13 +42,11 @@ unnormalized write map is choosing it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
-from rola.routing.budget import exact_support_count, touched_bitset_update
-from rola.routing.density import StaticDensity
 from rola.routing.producer import RouteSource
 from rola.routing.side_gain import GainConfig, SideGain
 from rola.routing.types import (
@@ -58,31 +58,18 @@ from rola.routing.types import (
 
 __all__ = ["RouteFactors", "RouteProducer"]
 
-#: Handed to :class:`RouteFactors` by the derivation code below and by nothing else.
-#: The bundle is not a struct users fill in; it is the record of what our code derived.
-_DERIVED = object()
-
-
 @dataclass(frozen=True, slots=True)
 class RouteFactors:
-    """The feature-mapped routing sides, and everything derived from them.
+    """The feature-mapped routing sides and their side gains. Tensors, and nothing else.
 
-    ``read``/``write``: one ``[B, T, H, width_l]`` unit-sum simplex per level.
+    ``read``/``write``: one ``[B, T, H, width_l]`` simplex per topology level.
     ``g_read``/``g_write``: ``[B, T, H]`` side gains; ``g_read`` is ``None`` under
     ``normalization='global'``, where architecture §4.2 fixes it to 1.
-    ``support_counts()``/``touched_bits()``: the auxiliary statistics, DERIVED ON
-    DEMAND. Nothing in the library reads them -- they exist for diagnostics -- so
-    computing them eagerly spent two launches per level per step on numbers no
-    consumer asked for (measured at ``L = 4096``: 3.0% of the step). A producer that
-    already knows them supplies them and no launch happens at all.
-    ``density``: which cells are full-support by construction, for PRICING only --
-    the schedule the kernel executes is built from the realized masks and never reads
-    it (:class:`~rola.routing.density.StaticDensity`).
 
-    Obtain one from :class:`RouteProducer`. Constructing it directly is refused: a
-    bundle whose fields did not come from the derivation code is a bundle whose
-    statistics can disagree with its tensors, and every trustless property on this
-    surface rests on that not being possible.
+    :class:`RouteProducer` derives one from producers, and that is how a model gets
+    one. Constructing one directly is legal and is how a fixture plants a specific
+    routing pattern: the invariants below hold for either, because there is nothing on
+    this record but the tensors and the shape facts they must satisfy.
     """
 
     topology: Topology
@@ -91,21 +78,69 @@ class RouteFactors:
     write: tuple[torch.Tensor, ...]
     g_read: torch.Tensor | None
     g_write: torch.Tensor
-    density: StaticDensity
-    exposed_counts: dict[tuple[int, str], torch.Tensor] = field(default_factory=dict)
-    exposed_bits: dict[int, torch.Tensor] = field(default_factory=dict)
-    origin: object = None
-    #: Derivations computed on demand and reused within the bundle's lifetime. A view
-    #: lives inside one forward and cannot go stale.
-    resident: dict = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.origin is not _DERIVED:
+        """The STRUCTURE, checked; the arithmetic, not.
+
+        Every check here is a shape, a device, a dtype or a ``None``-ness -- host-side
+        facts that cost nothing per call. Unit-sum-ness is the one contract
+        deliberately left out: it is an ``O(BTH * width)`` device reduction per level
+        per call, it is :func:`_fold`'s own output guarantee for a produced bundle, and
+        conformance fixtures plant non-canonical amplitudes on purpose.
+        """
+        object.__setattr__(self, "normalization", validate_normalization(self.normalization))
+        object.__setattr__(self, "read", tuple(self.read))
+        object.__setattr__(self, "write", tuple(self.write))
+        if type(self.topology) is not Topology:
             raise TypeError(
-                "RouteFactors is built by RouteProducer, not by a caller. Its fields are "
-                "derivations of the producers' tensors -- support bits, statistics and the "
-                "mass fold -- and a hand-built bundle could carry statistics that do not "
-                "describe its own tensors. Call `RouteProducer(...)(x)` to get one.")
+                f"RouteFactors.topology must be a Topology, got {type(self.topology).__name__}")
+        D, widths = self.topology.D, self.topology.widths
+        for name, levels in (("read", self.read), ("write", self.write)):
+            if len(levels) != D:
+                raise ValueError(
+                    f"RouteFactors.{name} must hold one tensor per routing level "
+                    f"(D={D}), got {len(levels)}")
+        prefix = None
+        for name, levels in (("read", self.read), ("write", self.write)):
+            for level, tensor in enumerate(levels):
+                if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
+                    shape = getattr(tensor, "shape", type(tensor).__name__)
+                    raise TypeError(
+                        f"RouteFactors.{name}[{level}] must be a [B, T, H, width_l] "
+                        f"tensor, got {shape}")
+                if tensor.shape[-1] != widths[level]:
+                    raise ValueError(
+                        f"RouteFactors.{name}[{level}] is {tensor.shape[-1]} wide but the "
+                        f"topology's level {level} is {widths[level]}")
+                if prefix is None:
+                    prefix = tuple(tensor.shape[:3])
+                elif tuple(tensor.shape[:3]) != prefix:
+                    raise ValueError(
+                        f"every routing level shares one [B, T, H] prefix; "
+                        f"{name}[{level}] is {tuple(tensor.shape[:3])} against {prefix}")
+                if tensor.device != self.read[0].device:
+                    raise ValueError(
+                        f"every routing level lives on one device; {name}[{level}] is on "
+                        f"{tensor.device} against {self.read[0].device}")
+                if tensor.dtype != self.read[0].dtype:
+                    raise ValueError(
+                        f"every routing level shares one dtype; {name}[{level}] is "
+                        f"{tensor.dtype} against {self.read[0].dtype}")
+        #: THE GAIN LAYOUT IS A FUNCTION OF THE ARM. Under ``global`` the readout is a
+        #: ratio, so a per-token read scale cancels identically and there is no read
+        #: gain to carry; under ``raw`` the read channel is real and needs one.
+        if (self.g_read is None) != (self.normalization == "global"):
+            raise ValueError(
+                f"RouteFactors(normalization={self.normalization!r}) with g_read="
+                f"{'None' if self.g_read is None else 'a tensor'}: g_read is None under "
+                "'global' (architecture §4.2 fixes it to 1) and a tensor under 'raw'")
+        for name, gain in (("g_read", self.g_read), ("g_write", self.g_write)):
+            if gain is None:
+                continue
+            if not isinstance(gain, torch.Tensor) or tuple(gain.shape) != prefix:
+                shape = getattr(gain, "shape", type(gain).__name__)
+                raise ValueError(
+                    f"RouteFactors.{name} must be a [B, T, H]={prefix} tensor, got {shape}")
 
     @property
     def batch(self) -> int:
@@ -128,42 +163,9 @@ class RouteFactors:
         gains = (self.g_write,) if self.g_read is None else (self.g_read, self.g_write)
         return (*self.read, *self.write, *gains)
 
-    def support_counts(self) -> dict[tuple[int, str], torch.Tensor]:
-        """``{(level, side): [B, T, H]}`` exact per-token nonzero counts.
-
-        Producer-supplied where a producer knew them as a byproduct of its own solve,
-        measured from the stored tensors otherwise. Both are exact counts of the same
-        values: which one a cell takes is a placement decision, never a numerical one.
-        """
-        counts = self.resident.get("support_counts")
-        if counts is None:
-            counts = {}
-            for level in range(len(self.read)):
-                for side, levels in (("read", self.read), ("write", self.write)):
-                    supplied = self.exposed_counts.get((level, side))
-                    counts[(level, side)] = (supplied if supplied is not None
-                                             else exact_support_count(levels[level]))
-            self.resident["support_counts"] = counts
-        return counts
-
-    def touched_bits(self) -> dict[int, torch.Tensor]:
-        """``{level: [B, H, width_l]}`` digits any write touched, over the sequence."""
-        bits = self.resident.get("touched_bits")
-        if bits is None:
-            B, H = self.batch, self.heads
-            bits = {
-                level: self.exposed_bits.get(level) if level in self.exposed_bits else
-                touched_bitset_update(
-                    torch.zeros(B, H, self.topology.widths[level], dtype=torch.bool,
-                                device=self.device),
-                    self.write[level].permute(0, 2, 1, 3))
-                for level in range(len(self.write))}
-            self.resident["touched_bits"] = bits
-        return bits
-
 
 class RouteProducer(nn.Module):
-    """The mandatory gateway from producers to :class:`RouteFactors`.
+    """The gateway from producers to :class:`RouteFactors`.
 
     Args:
         producers: one :class:`~rola.routing.producer.LevelProducer` per routing
@@ -222,8 +224,6 @@ class RouteProducer(nn.Module):
             levels=tuple(LevelConfig(width, routing)
                          for width, routing in zip(widths, _scattered_tags(producers, self.slots))),
             d_v=int(d_v))
-        self.density = _declared_density(self.topology, producers, self.slots)
-
         self.side_gain = SideGain(
             num_heads=self.num_heads, hidden_size=self.hidden_size,
             normalization=self.normalization,
@@ -267,8 +267,6 @@ class RouteProducer(nn.Module):
         D = self.topology.D
         read: list[torch.Tensor | None] = [None] * D
         write: list[torch.Tensor | None] = [None] * D
-        exposed: dict[tuple[int, str], torch.Tensor] = {}
-        exposed_bits: dict[int, torch.Tensor] = {}
         for producer, slots in zip(self.producers, self.slots):
             try:
                 produced = producer(source)
@@ -284,10 +282,6 @@ class RouteProducer(nn.Module):
             for local, level in enumerate(slots):
                 read[level] = produced.read[local]
                 write[level] = produced.write[local]
-            for (local, side), value in getattr(produced, "support_counts", {}).items():
-                exposed[(slots[local], side)] = value
-            for local, value in getattr(produced, "touched_bits", {}).items():
-                exposed_bits[slots[local]] = value
 
         B, H = source.batch, self.num_heads
         read_levels, read_mass = _fold(tuple(read), B=B, H=H)
@@ -303,9 +297,7 @@ class RouteProducer(nn.Module):
 
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,
-            read=read_levels, write=write_levels, g_read=g_read, g_write=g_write,
-            density=self.density, exposed_counts=exposed, exposed_bits=exposed_bits,
-            origin=_DERIVED)
+            read=read_levels, write=write_levels, g_read=g_read, g_write=g_write)
 
 
 # --- construction-time assembly ---------------------------------------------
@@ -337,10 +329,9 @@ def _scattered_tags(producers, slots) -> tuple:
     """The routing tag each level is produced under, or an opaque one.
 
     A producer that names activations from the closed registry may expose them as
-    ``level_routing``; the gateway reads them for the PRICING columns only (declared
-    density, kernel ratification). A producer that does not is opaque, which costs it
-    the closed-form density substitution and nothing else -- its levels are measured
-    like any other unknown-provenance tensor.
+    ``level_routing``; the gateway reads them so the topology can answer the
+    activation questions the dispatch asks (``unratified_activations``). A producer
+    that does not is opaque, which costs it nothing but that answer.
     """
     tags: dict[int, object] = {}
     for group, span in zip(producers, slots):
@@ -360,28 +351,6 @@ def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
     """
     return tensor.permute(0, 2, 1, 3).reshape(
         tensor.shape[0] * tensor.shape[2], tensor.shape[1], *tensor.shape[3:])
-
-
-def _declared_density(topology: Topology, producers, slots) -> StaticDensity:
-    """Registry-derived density, with a producer's own declaration where it has one.
-
-    An opaque level defaults to MEASURED, bit for bit. A producer may override its own
-    levels with ``dense_sides`` -- ``(read, write)`` per covered level -- which is
-    trusted outright: over-approximating support is inert in the kernel (dead routes
-    are exact zeros and zeros are inert in every accumulator, in the mass channel and
-    in the clock), so a false declaration costs its author a plan's price and can never
-    cost anyone a result.
-    """
-    read = list(StaticDensity.from_topology(topology).read)
-    write = list(StaticDensity.from_topology(topology).write)
-    for group, span in zip(producers, slots):
-        declared = getattr(group, "dense_sides", None)
-        if declared is None:
-            continue
-        for local, level in enumerate(span):
-            cell = declared[local]
-            read[level], write[level] = bool(cell[0]), bool(cell[1])
-    return StaticDensity(read=tuple(read), write=tuple(write))
 
 
 # --- per-call derivation ------------------------------------------------------

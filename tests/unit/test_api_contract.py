@@ -1,11 +1,11 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE CONTRACT: one op, one slot, and a bundle nobody but us can build.
+"""THE CONTRACT: one op, one slot, and a bundle that is tensors all the way down.
 
 The reduction theorem says the public surface is linear attention's contract plus ONE
 new concept. That is a claim about a SHAPE, and a shape claim rots quietly -- a knob
-creeps back onto a constructor, a plan type reappears at the top level, a struct users
-were never meant to author acquires a friendly constructor -- with nothing failing.
+creeps back onto a constructor, a plan type reappears at the top level, a declaration
+users could disagree with reappears on a record of tensors -- with nothing failing.
 
 This is what fails. Each row holds one property of the contract and is
 FAIL-DEMONSTRABLE in the way this tree requires: plant the violation, observe the
@@ -39,27 +39,67 @@ def _x(gateway, *, B=2, T=6, dtype=torch.float64):
 
 
 # ---------------------------------------------------------------------------
-# The bundle is OURS
+# The bundle is a record of tensors, and its invariants are structural
 # ---------------------------------------------------------------------------
 
 
-def test_a_hand_built_routing_bundle_is_refused():
-    """The gateway's monopoly on construction is the whole trustless argument.
+def test_a_well_formed_hand_built_bundle_is_legal():
+    """The bundle carries no DECLARATION, so there is nothing to protect from a caller.
 
-    Every field of a bundle is a DERIVATION of the producers' tensors. If a caller could
-    author one, they could pair statistics with tensors those statistics do not
-    describe -- and the op would believe them, because believing them is the point of
-    passing them.
-
-    PLANTED VIOLATION: assemble a bundle by hand from perfectly good tensors.
+    It once carried statistics and a declared density, which a hand-built bundle could
+    have paired with tensors they did not describe -- and the op would have believed
+    them, because believing them was the point of passing them. Those are gone: what is
+    left is the tensors and the topology they are shaped by, so authoring one is a
+    legitimate thing to do and a fixture that plants a specific routing pattern does
+    exactly that.
     """
     gateway = _routes()
     factors = gateway(_x(gateway))
-    with pytest.raises(TypeError, match="RouteProducer"):
-        RouteFactors(
-            topology=factors.topology, normalization=factors.normalization,
-            read=factors.read, write=factors.write, g_read=factors.g_read,
-            g_write=factors.g_write, density=factors.density)
+    hand_built = RouteFactors(
+        topology=factors.topology, normalization=factors.normalization,
+        read=factors.read, write=factors.write, g_read=factors.g_read,
+        g_write=factors.g_write)
+    y, _ = rola.rola_op(hand_built, torch.randn(2, 6, 2, 8, dtype=torch.float64))
+    assert torch.isfinite(y).all()
+
+
+@pytest.mark.parametrize("break_it,message", [
+    ("width", "wide but the topology"),
+    ("levels", "one tensor per routing level"),
+    ("prefix", r"one \[B, T, H\] prefix"),
+    ("dtype", "one dtype"),
+    ("gain_shape", r"g_write must be a \[B, T, H\]"),
+    ("read_gain", "g_read is None under"),
+])
+def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
+    """Unsealing removed the ORIGIN check, not the invariants. Each row plants one
+    structural violation the derivation code could never have produced, and the
+    refusal is the observation.
+
+    Deliberately NOT among them: unit-sum-ness. It is a device reduction per level per
+    call, it is the gateway's own output contract, and conformance fixtures plant
+    non-canonical amplitudes on purpose.
+    """
+    gateway = _routes()
+    f = gateway(_x(gateway))
+    fields = dict(topology=f.topology, normalization=f.normalization,
+                  read=list(f.read), write=list(f.write), g_read=f.g_read,
+                  g_write=f.g_write)
+    if break_it == "width":
+        fields["read"][0] = fields["read"][0][..., :2]
+    elif break_it == "levels":
+        fields["read"] = fields["read"][:1]
+    elif break_it == "prefix":
+        fields["write"][1] = fields["write"][1][:1]
+    elif break_it == "dtype":
+        fields["write"][0] = fields["write"][0].to(torch.float32)
+    elif break_it == "gain_shape":
+        fields["g_write"] = fields["g_write"][..., :1]
+    elif break_it == "read_gain":
+        fields["g_read"] = fields["g_write"].clone()
+    with pytest.raises((ValueError, TypeError), match=message):
+        RouteFactors(**{k: (tuple(v) if isinstance(v, list) else v)
+                        for k, v in fields.items()})
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -92,8 +132,8 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
 
     The duck below shares no base class, no tag and no metadata with the shipped
     producer -- it is a plain module returning simplices. It must produce a bundle the
-    op accepts, and its levels must be OPAQUE: measured density rather than a
-    substituted closed form, which is the only thing being foreign costs it.
+    op accepts, and its levels must be OPAQUE: the topology reads the opaque registry
+    row for them, which is the only thing being foreign costs it.
     """
     class Uniform(torch.nn.Module):
         widths = (4,)
@@ -106,8 +146,8 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
     gateway = rola.RouteProducer(
         [Uniform()], d_v=8, num_heads=2, hidden_size=32)
     factors = gateway(_x(gateway))
-    assert factors.density.read == (False,) and factors.density.write == (False,), (
-        "an opaque level must fall to the measured pass, not to a declared density")
+    assert type(gateway.topology.levels[0].routing).__name__ == "OpaqueRouting", (
+        "a producer that names no activation must take the opaque registry row")
     y, _ = rola.rola_op(factors, torch.randn(2, 6, 2, 8, dtype=torch.float64))
     assert torch.isfinite(y).all()
 
@@ -146,45 +186,6 @@ def test_one_producer_covers_many_levels_and_the_gateway_keeps_their_order():
     assert gateway.topology.widths == (4, 6)
     factors = gateway(_x(gateway))
     assert [tuple(level.shape[-1:]) for level in factors.read] == [(4,), (6,)]
-
-
-# ---------------------------------------------------------------------------
-# Statistics: placement, never numbers
-# ---------------------------------------------------------------------------
-
-
-def test_producer_supplied_statistics_equal_the_measured_ones_exactly():
-    """The fused and separate arms are a PLACEMENT decision, so they must not be a
-    numerical one. Bit-identical, not close: both are exact nonzero counts of the same
-    stored values.
-    """
-    torch.manual_seed(0)
-    plain = _routes(routing=rola.sparse_routing(1.5))
-    torch.manual_seed(0)
-    fused = _routes(routing=rola.sparse_routing(1.5), expose_stats=True)
-    fused.producers[0].route_W.data.copy_(plain.producers[0].route_W.data)
-
-    x = _x(plain)
-    measured = plain(x).support_counts()
-    supplied = fused(x).support_counts()
-    assert set(measured) == set(supplied)
-    for cell, counts in measured.items():
-        assert torch.equal(counts, supplied[cell]), f"{cell} disagrees across the arms"
-
-
-def test_the_statistics_are_derived_on_demand_and_not_before():
-    """Nothing in the library reads them; a step that does not ask must not pay.
-
-    Observed structurally rather than by timing: the bundle's derivation cache is empty
-    until the accessor is called, and the accessor is what fills it.
-    """
-    gateway = _routes()
-    factors = gateway(_x(gateway))
-    assert "support_counts" not in factors.resident
-    assert "touched_bits" not in factors.resident
-    factors.support_counts()
-    assert "support_counts" in factors.resident
-    assert "touched_bits" not in factors.resident, "one accessor must not force the other"
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +277,9 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     the top level, one shelf below the model types, and the tier label on it was a
     warning sign at eye level. It now lives behind a marked door.
     """
-    #: P67 D2-b (R-2/R-6): `Plan`, `Schedule`, `StaticDensity`, `plan_and_schedule`,
-    #: `derive_plan` and `execute` left this set because they leave `rola.expert`
-    #: entirely -- the planner they belong to retires with the tiled consumer. The
-    #: RULE is unchanged and is what this row states: launch geometry is behind the
-    #: marked door, never at the top level.
+    #: The set names what is BEHIND the door today; the RULE is what this row states
+    #: and it does not move when the set does: launch geometry is behind the marked
+    #: door, never at the top level.
     quarantined = {"PlanOverrides", "requires_backward", "dispatch_for"}
     import rola.expert as expert
 

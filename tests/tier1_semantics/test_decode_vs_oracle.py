@@ -51,8 +51,8 @@ import torch
 
 from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
+from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
-from tests.conftest import RawRoutes
 from tests.tier1_semantics.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.tier1_semantics.tolerances import BF16_RTOL
 
@@ -470,11 +470,10 @@ def test_g6_sixty_four_chained_steps(widths, decay):
 def _chunk_prefill(widths, d_v, B, T, H, generator, device):
     """Run the PRODUCTION prefill arm over ``T`` tokens; return what decode needs.
 
-    `RawRoutes` and not the gateway: the fixture plants a specific density on
-    each side, which a producer cannot be asked for. Every field
-    `rola.ops.chunk` reads is present and no other, and the envelope is asserted
-    rather than assumed -- a fixture that drifted out of the built matrix would
-    otherwise be silently served by nothing at all.
+    A hand-built bundle and not the gateway: the fixture plants a specific density on
+    each side, which a producer cannot be asked for. The envelope is asserted rather
+    than assumed -- a fixture that drifted out of the built matrix would otherwise be
+    silently served by nothing at all.
     """
     from rola.ops import chunk as _chunk
 
@@ -483,10 +482,11 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    routes = RawRoutes(
-        topology, "global",
-        tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
-        None, g_write.float())
+    routes = RouteFactors(
+        topology=topology, normalization="global",
+        read=tuple(t.float() for t in read_levels),
+        write=tuple(t.float() for t in write_levels),
+        g_read=None, g_write=g_write.float())
     refusal = _chunk.unsupported(routes, None)
     assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
     y, plane = _chunk.run(routes, v.float(), want_state=True)

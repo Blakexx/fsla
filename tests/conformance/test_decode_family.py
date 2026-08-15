@@ -35,9 +35,9 @@ import torch
 from rola.ops import chunk as _chunk
 from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
+from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
 from tests.conformance import generators as g
-from tests.conftest import RawRoutes
 from tests.tier1_semantics.test_decode_vs_oracle import DECODE_RTOL
 
 pytestmark = [
@@ -112,8 +112,9 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
     pre = _draw(gen, device, T, 0.5, 0.4, norm="global",
                 write_live=_WIDTHS[0] // 2)
     f = _f32(pre)
-    bundle = RawRoutes(topology, "global", f["read"], f["write"], f["g_read"],
-                       f["g_write"])
+    bundle = RouteFactors(
+        topology=topology, normalization="global", read=f["read"], write=f["write"],
+        g_read=f["g_read"], g_write=f["g_write"])
     if decay_on:
         # The decay retirement: decay is not a feature of the operator. The
         # kernel arm names the refusal and the dispatch routes such a call to

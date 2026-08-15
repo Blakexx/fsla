@@ -161,35 +161,3 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
         torch.testing.assert_close(
             leaf_out, leaf_raw, rtol=1e-13, atol=1e-13,
             msg=f"{side}-side mass fold is not an identity")
-
-
-@pytest.mark.parametrize("normalization", ["global"])
-def test_producer_exact_support_counts_match_a_manual_nonzero_count(normalization):
-    """Tier 1's exact measurement must be exact (architecture §4.5: the nonzero count
-    per token, "O(L*b_l) and free") -- bit-identical to a manual count, on every level
-    and side, including the zero-capable union level."""
-    topology = Topology(
-        levels=(
-            LevelConfig(4, UnionRouting(1.5)),
-            LevelConfig(5, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
-        ),
-        d_v=3,
-    )
-    B, L, H, dm = 2, 6, 3, 7
-    sides = 1 if normalization == "global" else 2
-    x, route_W, gain_W, gain_bias, v = _params(
-        topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=sides)
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
-
-    saw_sparse = False
-    for level, width in enumerate(topology.widths):
-        for side, levels in (("read", out.read_levels), ("write", out.write_levels)):
-            manual = (levels[level] != 0).sum(dim=-1).to(levels[level].dtype)
-            assert torch.equal(out.exact_support_counts[(level, side)], manual), (
-                f"exact_support_counts[({level},{side!r})] is not the exact nonzero count")
-            assert float(manual.max()) <= width
-            saw_sparse |= bool((manual < width).any())
-    # a genuinely sparse (zero-capable) level must be present, or the test is vacuous
-    assert saw_sparse
-
-

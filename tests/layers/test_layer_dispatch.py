@@ -433,24 +433,18 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
         pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     from rola.ops import chunk as _chunk
     from rola.ops.naive import naive_rola
-    from tests.conftest import RawRoutes
 
     torch.manual_seed(41)
     layer = _layer(decay=decay)
     layer.eval()
-    producer = layer.routes.producers[0]
-    #: `T` is a multiple of the operator's chunk (P67 D2-b: it was 48, which the
-    #: chunk arm refuses); the topology is the file's, a built arm.
+    #: `T` is a multiple of the operator's chunk; the topology is the file's, a
+    #: built arm.
     T = 2 * _chunk.CHUNK_TOKENS
     x = torch.randn(1, T, _HIDDEN, device="cuda")
 
     with torch.no_grad():
         v = layer.v_proj(x).view(1, T, _H, _DV)
-        ro = produce_routing(
-            x, None, v, producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W,
-            layer.routes.side_gain.gain_bias, layer.topology, "global")
-        routes = RawRoutes(layer.topology, "global", ro.read_levels, ro.write_levels,
-                           ro.g_read, ro.g_write)
+        routes = layer.routes(x)
         refusal = _chunk.unsupported(routes, None)
         assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
         _out, plane = _chunk.run(routes, v, want_state=True)
@@ -463,11 +457,9 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     # oracle step -- the direction the layer forbids, exercised at the ops level.
     v2 = layer.v_proj(x).view(1, T, _H, _DV)
     with torch.enable_grad():
-        ro2 = produce_routing(
-            x, None, v2, producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W,
-            layer.routes.side_gain.gain_bias, layer.topology, "global")
+        routes2 = layer.routes(x)
         out2, oracle_state2 = naive_rola(
-            v2, ro2.read_levels, ro2.write_levels, ro2.g_read, ro2.g_write,
+            v2, routes2.read, routes2.write, routes2.g_read, routes2.g_write,
             layer.topology, _decay_config(layer), "global",
             initial_state=cuda_state, output_final_state=True)
     assert torch.isfinite(out2).all()

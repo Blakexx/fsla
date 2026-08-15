@@ -19,6 +19,7 @@ from rola.ops import chunk as _chunk
 from rola.ops.chunk import CHUNK_TOKENS
 from rola.ops.naive import naive_rola
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
+from rola.routing.factors import RouteFactors
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -27,7 +28,6 @@ from rola.routing.types import (
     Topology,
 )
 from tests.conformance.families import Family
-from tests.conftest import RawRoutes
 
 #: The operator's token quantum, re-exported so a family fixture and the
 #: checkers that read a "word" of tokens both name ONE number. P67 D2-b
@@ -135,9 +135,10 @@ class Case:
             write=tuple(t.to(torch.float32) for t in self.write_levels),
             g_read=None if self.g_read is None else self.g_read.to(torch.float32),
             g_write=self.g_write.to(torch.float32))
-        self.bundle = RawRoutes(self.topology, self.norm, self._f32["read"],
-                              self._f32["write"], self._f32["g_read"],
-                              self._f32["g_write"])
+        self.bundle = RouteFactors(
+            topology=self.topology, normalization=self.norm, read=self._f32["read"],
+            write=self._f32["write"], g_read=self._f32["g_read"],
+            g_write=self._f32["g_write"])
         #: WHY the kernel arm refuses this family, or None. Read from the
         #: PRODUCTION predicate, not from the family's pure-CPU mirror: the
         #: mirror exists so `families.py` stays device-free, and this is the

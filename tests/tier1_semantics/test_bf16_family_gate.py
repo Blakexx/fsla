@@ -76,7 +76,7 @@ import torch
 
 from rola.ops import chunk as _chunk
 from rola.ops.naive import naive_rola
-from tests.conftest import RawRoutes
+from rola.routing.factors import RouteFactors
 from tests.tier1_semantics.oracle_fixtures import _output_charge, _simplex, _topology
 from tests.tier1_semantics.tolerances import BF16_RTOL
 
@@ -141,11 +141,11 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
             out.append(qt)
         return tuple(out)
 
-    routes = RawRoutes(
-        topology, "global",
-        tuple(t.to(torch.float32) for t in quantized(read_levels)),
-        tuple(t.to(torch.float32) for t in quantized(write_levels)),
-        None, g_write.to(torch.float32))
+    routes = RouteFactors(
+        topology=topology, normalization="global",
+        read=tuple(t.to(torch.float32) for t in quantized(read_levels)),
+        write=tuple(t.to(torch.float32) for t in quantized(write_levels)),
+        g_read=None, g_write=g_write.to(torch.float32))
     refusal = _chunk.unsupported(routes, None)
     assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
     y, state = _chunk.run(

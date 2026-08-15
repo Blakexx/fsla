@@ -166,14 +166,13 @@ def poison_torch_memory(request):
 
 def build_routes(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                  normalization="global", gain=True, bias=False,
-                 expose_stats=False, gain_bias_init=None, gain_config=None):
+                 gain_bias_init=None, gain_config=None):
     """One :class:`rola.RouteProducer` over one simplex producer covering every level."""
     from rola import RouteProducer, SimplexProducer, dense_routing
 
     producer = SimplexProducer(
         tuple(widths), dense_routing() if routing is None else routing,
-        hidden_size=hidden_size, num_heads=num_heads, bias=bias,
-        expose_stats=expose_stats)
+        hidden_size=hidden_size, num_heads=num_heads, bias=bias)
     return RouteProducer(
         [producer], d_v=d_v, num_heads=num_heads, hidden_size=hidden_size,
         normalization=normalization, gain=gain, gain_bias_init=gain_bias_init,
@@ -231,8 +230,7 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
 
     ``v`` is accepted (matching the call sites) and unused: callers need it only
     afterwards, to run the oracle. The return carries the field names those gates
-    read (`read_levels`/`write_levels`/`g_read`/`g_write`/`exact_support_counts`/
-    `touched_bits`).
+    read (`read_levels`/`write_levels`/`g_read`/`g_write`).
     """
     from types import SimpleNamespace
 
@@ -257,49 +255,4 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
 
     return SimpleNamespace(
         read_levels=routes.read, write_levels=routes.write,
-        g_read=routes.g_read, g_write=routes.g_write,
-        exact_support_counts=routes.support_counts(), touched_bits=routes.touched_bits())
-
-
-# -----------------------------------------------------------------------------
-# A routing bundle over HAND-BUILT tensors (P67 D2-b)
-# -----------------------------------------------------------------------------
-
-
-class RawRoutes:
-    """The routing bundle `rola.ops.chunk` reads, over hand-built tensors.
-
-    `RouteFactors` refuses direct construction on purpose -- a bundle whose
-    statistics did not come from the derivation code could disagree with its own
-    tensors -- and a gate that plants a specific routing pattern (a conformance
-    regime cell, a sub-subnormal amplitude, a confined write support) is by
-    definition not producer-derived. So those gates reach the kernel arm through
-    this: EXACTLY the fields `rola.ops.chunk`'s `unsupported`/`arm`/`stats`/`run`
-    read, and nothing else, so it cannot quietly stand in for a real bundle
-    anywhere one is required -- `rola_op` refuses it, which is the point.
-
-    It lives here rather than in one of its callers for the reason `build_routes`
-    does: every gate that drives the kernel arm over planted tensors needs the
-    same six fields, and a per-file copy is how they drift.
-    """
-
-    def __init__(self, topology, normalization, read, write, g_read, g_write):
-        self.topology, self.normalization = topology, normalization
-        self.read, self.write = read, write
-        self.g_read, self.g_write = g_read, g_write
-
-    @property
-    def batch(self):
-        return self.read[0].shape[0]
-
-    @property
-    def tokens(self):
-        return self.read[0].shape[1]
-
-    @property
-    def heads(self):
-        return self.read[0].shape[2]
-
-    @property
-    def device(self):
-        return self.read[0].device
+        g_read=routes.g_read, g_write=routes.g_write)

@@ -549,8 +549,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
     """`produce_routing` end to end: production solve vs fp64 oracle solve.
 
     Support sets must match EXACTLY on every zero-capable side (entmax support is
-    discrete); amplitudes, side gains and the exact support counts carry the production
-    tolerance.
+    discrete); amplitudes and side gains carry the production tolerance.
     """
     topology = _producer_topology(alpha)
     resolved = resolved_routing_from_topology(topology)
@@ -575,12 +574,6 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
                 production.write_levels[level], oracle.write_levels[level], f"write {level}")
         _assert_levels_match(production.read_levels[level], oracle.read_levels[level])
         _assert_levels_match(production.write_levels[level], oracle.write_levels[level])
-        for side in ("read", "write"):
-            torch.testing.assert_close(
-                production.exact_support_counts[(level, side)],
-                oracle.exact_support_counts[(level, side)], rtol=0, atol=0, check_dtype=False)
-        assert torch.equal(
-            production.touched_bits[level], oracle.touched_bits[level])
 
     _assert_levels_match(production.g_write, oracle.g_write)
     assert production.g_read is None and oracle.g_read is None

@@ -99,18 +99,23 @@ RouteProducer(producers, *, d_v, num_heads, hidden_size, normalization='global',
               gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
 ```
 
-`RouteProducer` is the **only** way to obtain a `RouteFactors`, and that is the point.
-Every field of the bundle — the stored simplices, the side gains, the support
-statistics, the declared density — is computed by the gateway's own derivation code from
-the tensors the producers returned. A caller therefore cannot hand the op a bundle whose
-statistics disagree with its tensors, because a caller never authors the bundle: they
-choose producers, and producers return tensors.
+`RouteProducer` is how a MODEL obtains a `RouteFactors`: it runs each producer once,
+places its levels in the slots the list assigned, folds each level into
+`(mass, simplex)`, and hands the mass to the side gain. Construction validates the
+whole assembly — widths in range, a buildable topology, a gain layout consistent with
+the normalization arm — so an unbuildable model fails on the line that built it.
 
-That is what makes this surface trustless rather than merely documented. Correctness is
-derived, never declared. Construction validates the whole assembly — widths in range, a
-buildable topology, a gain layout consistent with the normalization arm — so an
-unbuildable model fails on the line that built it, and the op type-gates on the result,
-so no well-formed bundle means no call.
+**The bundle is a record of tensors, and it is constructible.** Its fields are the
+stored simplices, the side gains and the topology they are shaped by — nothing else,
+and in particular no declaration a caller could pair with tensors that do not describe
+it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the
+provenance: one level per topology level at that level's width, one shared `[B, T, H]`
+prefix, one device, one dtype, `g_read` present iff the arm is `raw`, `g_write` shaped
+`[B, T, H]`. A test that plants a specific routing pattern builds one directly and is
+held to exactly those invariants. Unit-sum-ness is deliberately not among them: it is a
+device reduction per level per call, it is the gateway's own output guarantee, and
+conformance fixtures plant non-canonical amplitudes on purpose. The op still type-gates
+on the class, so handing it bare tensors is still a clean refusal.
 
 The gateway also owns the topology (`routes.topology`, `routes.widths`), the value width
 `d_v`, and the normalization arm, because all three are facts about the map rather than
@@ -125,13 +130,11 @@ never asks what a producer is, only that its output is well formed:
 |---|---|---|
 | `widths` | yes | one branch width per level it covers, in its own order |
 | `forward(source) -> ProducedRoutes` | yes | ONE call producing every level it covers |
-| `dense_sides` | no | per-level `(read, write)` structural declaration |
-| `level_routing` | no | per-level routing tag, for the pricing columns |
+| `level_routing` | no | per-level routing tag, so the topology can answer the activation questions the dispatch asks |
 
 `source` is a `RouteSource` carrying the `[B, T, hidden_size]` read and write streams
 (the same object when the model does not split them). `ProducedRoutes` carries one
-`[B, T, H, width_l]` tensor per level per side, and optionally any statistic the
-producer already knew.
+`[B, T, H, width_l]` tensor per level per side.
 
 Levels need not be unit-sum: the gateway factors each into `(mass, simplex)` and folds
 the mass into the side gain, which is where a per-level magnitude belongs.
@@ -159,7 +162,7 @@ the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 
 ```python
 SimplexProducer(widths, routing=dense_routing(), *, hidden_size, num_heads,
-                bias=False, expose_stats=False)
+                bias=False)
 ```
 
 A learned packed per-head router projection, solved with the exact production
@@ -184,9 +187,8 @@ about correctness. Its only cost is inside its own module.
 
 A level filled by a producer that does not name one of our activations is *opaque*: it
 reads the `("opaque", None)` registry row, whose columns are argued in
-`rola/routing/activations.py`. In practice that means its density is MEASURED rather
-than substituted from a closed form — bit for bit the same result, one summary slice
-more work — unless the producer declares `dense_sides`.
+`rola/routing/activations.py`. What that costs it is the activation questions the
+topology can answer about it — ratification, in particular — and nothing else.
 
 ### 2.5 The one modelling consequence to know
 
@@ -251,56 +253,11 @@ implementations agreeing only to a tolerance.
 `layer.execution_backend_counts` reports which of `oracle` / `cuda` / `decode` ran, which
 is a fact about the branch rather than an inference from a timing.
 
-## 5. Statistics
-
-The auxiliary statistics — exact per-token support counts, end-of-sequence touched
-bits — are derived ON DEMAND:
-
-```python
-factors.support_counts()   # {(level, side): [B, T, H]}
-factors.touched_bits()     # {level: [B, H, width_l]}
-```
-
-Nothing in the library reads them; they exist for diagnostics only. Producing them
-eagerly spent launches per level per step on numbers no consumer had asked for —
-measured at 3.0 % of the step at `L = 4096`.
-
-A producer that already knows a statistic as a byproduct of its own solve may supply it
-(`expose_stats=True` on the shipped producer), and the gateway then measures only what is
-left. **Supplied statistics feed pricing only.** Membership and support bits are always
-recomputed from the tensors, so a wrong declaration costs its author performance and can
-never cost anyone correctness.
-
-Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` was the harness
-(retired with the tiled measurement apparatus in P67 D2; revival
-`git show c7eaeb9:benchmarks/bench_api_stats.py`);
-median per-call duration over 21 rounds, CUDA events, on `B=2, hidden=1024, H=8,
-widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger (rows
-recorded at `1338854` on a then-dirty tree — immaterial to the claims, which are
-relative comparisons among five arms sharing one `run_id` on one tree, as the rows
-themselves record):
-
-| arm | `L = 4096` | `L = 1024` |
-|---|---|---|
-| `stats_unused` — production alone | 2.599 ms | 0.794 ms |
-| `stats_gateway` — derived from the stored tensors | 3.221 ms (+23.9 %) | 1.008 ms (+27.0 %) |
-| `stats_fused` — supplied by the producer | 3.277 ms (+26.1 %) | 1.041 ms (+31.2 %) |
-
-**The fused arm loses, at both lengths, and the reason is instructive.** "Fused" at this
-seam means the producer computes the counts on its own solve output — still a separate
-reduction, and one that then has to be laid out in the public statistic layout, which is
-a transpose the gateway's arm gets for free from tensors it is already reading. A fused
-arm that WON would have to fall out of the solve kernel itself, where the support is
-already known; the entmax kernel emits a support bitmap, so that door is open, but it is
-a kernel change and not an API one. What the measurement actually settles is the third
-row: the statistics cost roughly a quarter of the production call, and nothing in the
-library reads them, which is why they are derived on demand and not before.
-
-## 6. The expert surface
+## 5. The expert surface
 
 `rola.expert` holds everything BELOW the contract line — the dispatch's own answer,
-the pins over axes the op otherwise decides, the producer-side statistics a
-measurement reads:
+the pins over axes the op otherwise decides, and the fine-grained gain layout behind
+the layer's one public flag:
 
 ```python
 from rola.expert import PlanOverrides, dispatch_for
@@ -312,7 +269,7 @@ layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
 | `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
 | `Dispatch` / `dispatch_for` | how a call WILL run, asked before making it — including `no_kernel_arm`, the refusing clause |
 | `select_backend`, `requires_backward` | the two predicates the dispatch is built from |
-| `StaticDensity`, `GainConfig` | producer-side declarations a measurement reads |
+| `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 
 The contract for everything there is **stable construction, advisory contents**:
 build these objects and pass them; do not assert on their fields. What a `Dispatch`
@@ -339,7 +296,7 @@ replaces the adversarial use they enabled: a conformance family drives
 `rola.ops.chunk` directly and declares the refusal clause it expects, and
 `dispatch_for` answers the same question a synthetic plan used to be built to probe.
 
-## 7. What is deliberately not here
+## 6. What is deliberately not here
 
 - **No dict or JSON configuration surface.** Raw configuration belongs to consumers. The
   library type-checks structured objects and parses nothing.
