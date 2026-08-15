@@ -363,3 +363,91 @@ def test_the_seam_reaches_the_sparse_grid():
     y_sparse, _ = chunk.run(chunk.pack(routes), v, sparse_grid=True)
     scale = float(y_full.abs().max())
     assert float((y_sparse - y_full).abs().max()) <= _SIGMA_FLOOR_REL * max(scale, 1.0)
+
+
+def _sparse_bundle(B, T, H, live_d0, seed=11):
+    """A `RouteFactors` whose level-0 support is `live_d0` digits wide.
+
+    Direct construction, which the bundle's contract permits: the point is a cell
+    with a KNOWN dead-block count, and a producer would only reach one by accident.
+    """
+    from rola.routing.factors import RouteFactors
+    from rola.routing.producer import union_routing
+    from rola.routing.types import LevelConfig, Topology
+
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    topology = Topology(levels=tuple(
+        LevelConfig(width, union_routing(1.5)) for width in _WIDTHS))
+
+    def side():
+        level0 = torch.zeros(B, T, H, _WIDTHS[0], device="cuda")
+        a = torch.rand(B, T, H, live_d0, device="cuda", generator=g) + 0.5
+        level0[..., :live_d0] = a / a.sum(-1, keepdim=True)
+        b = torch.rand(B, T, H, _WIDTHS[1], device="cuda", generator=g) + 0.5
+        return (level0, b / b.sum(-1, keepdim=True))
+
+    return RouteFactors(
+        topology=topology, normalization="global", read=side(), write=side(),
+        g_read=None, g_write=torch.rand(B, T, H, device="cuda", generator=g) + 0.5)
+
+
+@pytest.mark.parametrize("paging", [False, True])
+def test_the_facade_reaches_the_sparse_grid_and_the_state_is_bit_identical(paging):
+    """R5: `PlanOverrides(sparse_grid=True)` is the persistent grid, THROUGH `rola_op`.
+
+    P68 measured the win and left it unreachable -- `sparse_grid` existed only on
+    `rola.ops.chunk.run`, which the facade never set. This row is the reachability
+    claim and the correctness claim in one: the same call, expert-pinned both ways,
+    must agree on `s_out` BYTE FOR BYTE (the module docstring's real gate -- each
+    atom has exactly one storing CTA, so there is no ordering freedom to hide in),
+    on the dense plane and on the paged one alike.
+    """
+    import rola
+    from rola.expert import PlanOverrides
+
+    B, T, H, live = 1, 64, 2, 4
+    routes = _sparse_bundle(B, T, H, live)
+    v = torch.randn(B, T, H, _DV, device="cuda")
+    #: NON-VACUITY: the cell must actually have dead blocks, or the gate is a tautology.
+    touched = int((routes.write[0].abs().amax(dim=(0, 1, 2)) > 0).sum())
+    assert touched == live, f"the fixture's level-0 support is {touched}, not {live}"
+    assert touched * _WIDTHS[1] < _N, "every block is live; there is nothing to skip"
+
+    planes = []
+    for sparse_grid in (False, True):
+        state = rola.state()
+        with torch.no_grad():
+            rola.rola_op(routes, v, state=state,
+                         expert=PlanOverrides(paging=None if paging else False,
+                                              sparse_grid=sparse_grid))
+        planes.append(state.materialize().clone())
+    assert torch.equal(*planes), (
+        "the facade's sparse grid and its full grid disagree on the carried state")
+
+
+def test_the_expert_pin_is_what_the_launch_actually_receives():
+    """THE TOOTH under the row above: a bit-identity gate on `s_out` passes just as
+    well if the flag never left the facade. This one watches the value arrive.
+    """
+    import rola
+    from rola.expert import PlanOverrides
+    from rola.ops import chunk
+
+    routes = _sparse_bundle(1, 64, 2, 4)
+    v = torch.randn(1, 64, 2, _DV, device="cuda")
+    seen, run = [], chunk.run
+
+    def spy(packed, value, **kwargs):
+        seen.append(kwargs.get("sparse_grid"))
+        return run(packed, value, **kwargs)
+
+    chunk.run = spy
+    try:
+        with torch.no_grad():
+            for pin in (None, False, True):
+                rola.rola_op(routes, v, expert=PlanOverrides(sparse_grid=pin))
+            rola.rola_op(routes, v)
+    finally:
+        chunk.run = run
+    assert seen == [False, False, True, False], (
+        f"the expert's sparse_grid pin did not arrive at the launch: {seen}")

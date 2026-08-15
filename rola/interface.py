@@ -63,6 +63,7 @@ class _ChunkCall:
     want_state: bool
     arena: Any
     plane: torch.Tensor | None
+    sparse_grid: bool
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,8 @@ def rola_op(
 
     ``expert``: :class:`rola.expert.PlanOverrides`, the quarantined advanced surface.
     It is a keyword argument with a default of ``None`` because the op does not need
-    it: every axis it pins is one the op decides for itself.
+    it: every axis it pins is one the op decides for itself, except ``sparse_grid``,
+    which is off until a plan rule exists to decide it.
 
     A call outside the built envelope -- a gradient anywhere in it, a CPU operand, an
     unratified activation, decay, a jagged topology, ``d_v != 64``, an unbuilt
@@ -129,20 +131,22 @@ def rola_op(
             "TILED consumer's owner block. The chunk arm's BC belongs to the built arm "
             "the manifest carries for this topology and is not host-selectable; pass "
             "state_block=None.")
+    sparse_grid = _sparse_grid_preference(expert)
     #: ONE packing per call, and every entry below reads it: the stats pass and the
     #: launch want the same bytes in the same layout.
     packed = _chunk.pack(routes)
     if state is None:
         #: No state object, no state I/O: the variant with none of it compiled in
         #: runs (docs/internals/chunk/chunk_kernel.md#state-axis).
-        y, _ = ChunkConsumer.run(packed, v)
+        y, _ = ChunkConsumer.run(packed, v, sparse_grid=sparse_grid)
         return y, None
     # THE HOST ORDER is why these four lines are not folded into `chunk.run`
     # (docs/internals/state.md#host-order).
     atom_bits = _chunk.stats(packed) if state._wants_pages(paging) else None
     s_in, arena = state._kernel_entry(
         routes, atom_bits, d_v=v.shape[-1], paging=paging, BC=_chunk.arm(routes)[1])
-    y, plane = ChunkConsumer.run(packed, v, state_in=s_in, want_state=True, arena=arena)
+    y, plane = ChunkConsumer.run(packed, v, state_in=s_in, want_state=True, arena=arena,
+                                 sparse_grid=sparse_grid)
     state._kernel_commit(plane)
     return y, state
 
@@ -159,6 +163,19 @@ def _paging_preference(expert: Any) -> bool:
     from rola.expert import PlanOverrides
 
     return PlanOverrides.of(expert).paging is not False
+
+
+def _sparse_grid_preference(expert: Any) -> bool:
+    """Whether this call's launch runs the persistent LIVE-BLOCK grid. Default: no.
+
+    ``None`` is off until the plan rule that would decide it from a density input
+    exists; an expert who has measured their own density says so explicitly.
+    """
+    if expert is None:
+        return False
+    from rola.expert import PlanOverrides
+
+    return PlanOverrides.of(expert).sparse_grid is True
 
 
 # ---------------------------------------------------------------------------
@@ -282,10 +299,10 @@ class ChunkConsumer(torch.autograd.Function):
     """
 
     @staticmethod
-    def run(packed, v, *, state_in=None, want_state=False, arena=None):
+    def run(packed, v, *, state_in=None, want_state=False, arena=None, sparse_grid=False):
         """``(y, final state or None)`` -- ``rola.ops.chunk.run`` through the node."""
         call = _ChunkCall(packed=packed, state_in=state_in, want_state=want_state,
-                          arena=arena, plane=None)
+                          arena=arena, plane=None, sparse_grid=sparse_grid)
         y = ChunkConsumer.apply(call, v, *packed.routes.tensors())
         return y, call.plane
 
@@ -297,7 +314,7 @@ class ChunkConsumer(torch.autograd.Function):
 
         y, call.plane = _chunk.run(
             call.packed, v, state_in=call.state_in, want_state=call.want_state,
-            arena=call.arena)
+            arena=call.arena, sparse_grid=call.sparse_grid)
         #: The state plane leaves through the payload rather than as a second output:
         #: it is the CALLER's allocation (the arena's, when paged), and an autograd
         #: node that returned it would stamp graph metadata onto storage the state

@@ -348,7 +348,7 @@ layer = rola.RoLA(routes, expert=PlanOverrides())
 
 | name | what it is |
 |---|---|
-| `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
+| `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging`, `sparse_grid` |
 | `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | whether a call has an arm, asked before making it — the refusing clause in its own words, or `None`. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
@@ -359,7 +359,7 @@ reports is the answer to "how will this call run", and that answer moves with th
 machine and with the built matrix. The model facts it carries are the exception,
 because they are not decisions.
 
-**Two of the three pins are declared restrictions rather than dials, and each
+**Three of the four pins are declared restrictions rather than dials, and each
 refuses by name rather than being ignored.** `state_block` (`BC`) is not
 host-selectable: the chunk arm's `BC` belongs to the built arm the manifest carries
 for a topology, so any value but `None` is refused at the call — a knob that
@@ -368,6 +368,16 @@ never was. `mma_precision` has one legal value, `"bf16"`; the precision escape i
 the fp64 reference path. `paging` overrides the MAPPING only: `None` is the paged
 default, `False` pins the dense plane the bit-identity gate compares against, and
 `True` is refused because paging is on by default and bitwise invisible.
+
+**`sparse_grid` is the one that is a real dial**, and it is here because nothing else
+decides it yet. It runs the chunk launch over LIVE BLOCKS ONLY — a block-grain
+liveness reduction over the call's union table, then a persistent grid whose work loop
+skips the dead ones. The reduction costs a launch of its own, so it pays where the
+dead-block count is large and loses where it is not, and the automatic rule (a liveness
+popcount against a per-arm density knee) is not built. `None` (the default) is OFF,
+`True` is the explicit expert choice to pay for it, `False` pins it off. It is
+BITWISE INVISIBLE where it applies: the same launch over a smaller grid, gated in
+`tests/integration/test_persistent_grid.py`.
 
 **There is no plan object and no derive/execute seam.** `Plan`, `Schedule`,
 `derive_plan` and `execute` were the tiled consumer's, and went with it in P67 D2
