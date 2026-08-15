@@ -1,68 +1,28 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""The T=1 decode op — the frozen-config carrier, the workspace, and the guard.
+"""The T=1 decode op -- the frozen-config carrier, the workspace, and the guard.
 
-Design ruling (docs/internals/decode/decode.md): **T = 1 has no stage 2.** Every stage-2 decision is
-degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split;
-statistics: a population of one), so the decode path bypasses selection
-*architecturally* — the config freezes at
-the prefill→decode boundary and per-step work is data plane only. Nothing here builds
-a launch geometry or a set of tile bitmaps, and that is the point rather than an
-omission.
+    decode_forward(routes, v, state, decay=..., expert=...) -> (y, state)
 
-**WHY THERE IS NO SCHEDULE.** At ``T = 1`` a leaf is in the read support iff every
-level's digit has a nonzero read amplitude, so the support is a Cartesian product and
-its bitmap is a Kronecker product of the per-level indicators. The kernel expands that
-exactly (``rola_decode_expand``) and walks it (``rola_decode_gemv``). The membership
-predicate it uses — ``amp != 0`` — is not a threshold standing in for the schedule's
-bitmap; it is that bitmap's *defining expression* (``schedule.py``'s
-``read_mask = tuple(level != 0 ...)``), evaluated one step earlier so the object never
-has to be materialized at tile granularity. ``tests/tier1_semantics/
-test_decode_expand.py`` gates the two bit for bit.
+The `T = 1` sibling of `rola_op`: one token, no schedule, no selection. The bypass is
+architectural rather than a cheap default (docs/internals/decode/decode.md#no-stage-2),
+the support is a Kronecker product the kernel expands exactly
+(docs/internals/decode/decode.md#kronecker-support), decode's decay domain is strictly
+larger than the chunk arm's as a CONSEQUENCE
+(docs/internals/decode/decode.md#decay-domain), and the carrier and the workspace are
+Part C of the same page.
 
-**DECODE'S DECAY DOMAIN IS STRICTLY LARGER THAN THE TILED KERNEL'S, and that is a
-consequence rather than a design goal.** The tiled consumer refuses a routing whose
-per-leaf reference exponent exceeds ``PANEL_MAX_EXPONENT``, because its §12 rule-1
-lowering exponentiates ``keep^{+P}`` and ``keep^{-P}`` separately and their product is
-wrong (not merely rounded) once one saturates while the other underflows. At ``T = 1``
-that rule-1 half-mass shift is *exactly the identity* — the readout's ``fr * s0``
-collapses to ``keep^c`` and the fold's ``s0 * (s0 M + W fw Vw)`` to
-``keep^c M + W Vw`` — so decode forms **one** exponential, never a quotient of two,
-and has no admissibility precondition to check. It therefore does not import one.
+FORWARD ONLY. The decode kernels have no backward; the guard below is defence in depth
+behind the layer's own envelope check (docs/internals/decode/decode.md#forward-only).
 
-**FORWARD ONLY, AND THE GUARD RAISES.** The decode kernels have no backward. The
-layer's ``validate_execution_envelope`` already refuses training mode and gradient
-reachability before the decode fork is reached, so this module's own check is defense
-in depth for a direct caller.
+PAGED AND DENSE ARE ONE WALK: the page granule is the ATOM, which is what makes the
+paged address BC-free, so the whole difference is one indirection resolved once per
+touched atom (docs/internals/decode/decode.md#the-atom).
 
-**PAGED AND DENSE ARE ONE WALK.** §4.5's page granule is the ATOM
-(``page_states := MMA_K_QUANTUM`` = 16 leaves), which is what makes the paged address
-BC-free, so the whole difference is one indirection resolved once per touched atom:
-a null table means the slot IS the atom and the bytes are the dense path's, exactly.
-An atom with no slot reads as zeros and is not written, which is the same state a
-never-deposited leaf holds densely.
-
-**GROWTH IS THE STEP'S OWN NEW WORK, AND MOST STEPS HAVE NONE.** A step may write an
-atom that is not resident, and the admission that handles it costs far more than the
-launch it precedes (``plan_exact`` plus the cross-stream event, 0.38-0.40 ms against a
-0.09-0.10 ms kernel). So the step asks FIRST, on the
-device: :func:`_growth_probe` expands the write side with the kernel's own
-``expand_side``, condenses it 16-deep, and ANDs that against the page table; the host
-reads one ``[BH]`` int32 answer. A step with nothing new launches immediately -- no
-derivation, no plan, no event. A step with something new admits from the condensation
-the probe ALREADY PUBLISHED (``plan_exact(..., fresh=False)`` on the arena's side
-stream, then the one event wait), so even a growth step derives its write set once, on
-the device. There is one expansion behind both arms, which is why the probe is a kernel
-BESIDE the step's own rather than a second derivation of it
+GROWTH IS THE STEP'S OWN NEW WORK, and most steps have none -- the step asks on the
+DEVICE first, because the admission costs several times the launch it precedes
 (docs/internals/decode/decode.md#growth).
-
-**THE KERNEL-LAYOUT CARRIER.** :class:`FrozenDecodeConfig` answers "what shape is the
-launch?" -- widths, mixed-radix strides, spans, row offsets, word and group counts,
-``d_v``, the normalization and decay arms, ``eps``, ``n_split``. None of that is a
-derived axis. ``BC`` is deliberately NOT a field: owner blocking is a property of how
-the tiled consumer amortizes a ``[BC, cols]`` block across many tokens, and with one
-token there is nothing to amortize, so the decode kernels are BC-blind by construction.
 """
 
 from __future__ import annotations
@@ -283,11 +243,9 @@ def _guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-#: THE LAUNCH MACHINERY'S MEMOS, module-internal because that is what they are facts
-#: about: a carrier is a function of its KEY (it is frozen and immutable for the
-#: sequence), and a workspace is scratch belonging to one live state. The workspace map
-#: holds its states weakly, so a dropped sequence drops its scratch and two concurrent
-#: sequences never share a buffer (docs/internals/decode/decode.md).
+#: The workspace map holds its states WEAKLY: a dropped sequence must drop its scratch,
+#: and two concurrent sequences must never share a buffer
+#: (docs/internals/decode/decode.md#host-carrier).
 _CARRIERS: dict[tuple, FrozenDecodeConfig] = {}
 _WORKSPACES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -327,12 +285,9 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     workspace = _WORKSPACES.get(state)
     if workspace is None or not workspace.matches(config, BH, routes.device):
         workspace = DecodeWorkspace.build(config, BH, routes.device)
-    #: THE HOST ORDER, `rola_op`'s at `L = 1` (design §A.4/§C.3/§D). A paged step asks the
-    #: DEVICE whether it grows; only a step that does pays the admission -- `plan_exact(
-    #: ..., fresh=False)` on the arena's side stream over the set the PROBE published, and
-    #: the launch's one event wait. Nothing is derived on the host on either arm, and a
-    #: steady step's only host synchronization is the probe's `[BH]` int32 read:
-    #: docs/internals/decode/decode.md#growth
+    #: THE HOST ORDER, `rola_op`'s at `L = 1`: a paged step asks the DEVICE whether it
+    #: grows, and only a step that does pays the admission
+    #: (docs/internals/decode/decode.md#growth).
     bitmap = None
     if state.paged and _growth_probe(routes.write, config, state.page_table, workspace):
         bitmap = workspace.atom_bits
@@ -353,27 +308,10 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
                   workspace: DecodeWorkspace) -> bool:
     """Does this step deposit into an atom the page table does not map?
 
-    The whole point of asking is that the answer is usually NO, and a NO costs one
-    kernel plus one pinned ``[BH]`` int32 read against a preamble measured at 0.38-0.48
-    ms (`s4_build.md` §6b). The kernel is ``rola_decode_growth_probe``, which expands the
-    write side with ``decode_expand.cu``'s OWN ``expand_side`` -- the same device
-    function over the same amplitude pointers the step itself uses -- and ANDs the
-    16-deep condensation against ``page_table >= 0``.
-
-    **THE CONDENSATION IS THE OUTPUT, not an internal.** It lands in
-    ``workspace.atom_bits`` and IS what a growth step admits, so the write-atom set is
-    derived exactly once per step and on the device. That is what makes a growth step
-    cheaper than the host-derived preamble it replaced, and it leaves
-    :func:`_write_atom_bitmap` as the gate's independent second derivation.
-    ``tests/tier2_geometry/test_decode_growth_trigger.py`` sweeps both directions of the
-    verdict and the equality of the two derivations.
-
-    The read is ONE BLOCKING pinned device-to-host copy into a workspace-owned buffer, so
-    a steady step allocates nothing. Blocking is the measured choice and not the obvious
-    one: the same copy issued asynchronously and awaited on an event costs 0.152 ms
-    against 0.093 (RTX 3090, medians of 15 x 100), because the host must wait for the
-    kernel either way and the event path adds its own record and query on top of the wait
-    the copy already performs.
+    THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``workspace.atom_bits``
+    and IS what a growth step admits, so the write-atom set is derived exactly once per
+    step, on the device. The read is BLOCKING by measurement
+    (docs/internals/decode/decode.md#probe-blocking-read).
     """
     amp_write = [_fold(t).float() for t in write_levels]
     extension().rola_decode_growth_probe(
@@ -392,23 +330,9 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
 def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:
     """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY.
 
-    **AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES.** The shipped path derives
-    this set on the device (:func:`_growth_probe` publishes it), so this function has no
-    production caller and is not meant to acquire one. It survives deliberately as a
-    SECOND, independent derivation of an object the kernel computes, written from the
-    definition rather than from the kernel's structure, so that the equality
-    ``tests/tier2_geometry/test_decode_growth_trigger.py`` asserts is a real check and
-    not the kernel agreeing with itself. (The decode paging and VMM gates also plan from
-    it, for the same reason: a fixture that used the kernel's own answer could not catch
-    the kernel.) Deleting it would delete the gate's reference; calling it on a shipped
-    path would delete the gate's independence.
-
-    The derivation, from the definition: at ``T = 1`` a leaf is written iff every level's
-    write digit is nonzero, so the write support is the Cartesian product of the
-    per-level exact-nonzero indicators (``schedule.py``'s ``write_mask`` at leaf
-    granularity) and the atom set is that product ORed 16-deep. It is the same object
-    ``rola.ops.chunk.stats`` produces for the tiled arm and the same one the probe
-    condenses, reached by neither's route.
+    AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
+    gate's reference; calling it on a shipped path would delete the gate's independence
+    (docs/internals/decode/decode.md#second-derivation).
     """
     device = write_levels[0].device
     index = torch.arange(config.N, device=device)

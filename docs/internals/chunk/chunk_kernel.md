@@ -20,6 +20,7 @@ is deliberately deferred to the e2e cleanup step, so the adoption stayed a
 verbatim behavioral port (ladder parity gate: tables bit-equal, one-block
 arms exact).
 
+<a id="state-axis"></a>
 ## The carried state: the store epilogue and the entry load
 
 The kernel's state is register-resident for the whole launch, so a call has two
@@ -71,7 +72,7 @@ state is the caller's object. `d_v + 1 = 65` is 260 bytes and not sixteen-byte
 aligned, so nothing here vectorizes; the accesses are plain floats, coalesced
 across the group.
 
-**The leaf-order law.** A block's `BC` leaves are a contiguous, `BC`-aligned run
+<a id="leaf-order-law"></a>**The leaf-order law.** A block's `BC` leaves are a contiguous, `BC`-aligned run
 in canonical leaf order, so the block is named by its first leaf and an atom
 index is that leaf over sixteen — `rola.ops.paging.AtomKeying.atom_of`. Levels
 below the partial one are spanned whole and least significant, the partial run is
@@ -98,7 +99,7 @@ changes. The store runs after the final drain has consumed that buffer, behind
 one extra rendezvous; both groups iterate the same atom count against their own
 copy, so every barrier stays CTA-uniform.
 
-**Addressing: NO widening multiply, anywhere in the state I/O.** Each block pins
+<a id="state-addressing"></a>**Addressing: NO widening multiply, anywhere in the state I/O.** Each block pins
 two PLAIN ORIGINS — the plane's and the table's, neither of them displaced — and
 everything per atom is a 32-bit byte offset from one of them: the atom's table
 entry is `atom * 4` bytes in, and its page is `slot * 4160` bytes in. That is the
@@ -134,13 +135,13 @@ TEMPLATE parameter, because `off_at`'s recursive constexpr divisor does not fold
 when the level arrives as an argument — it reached the SASS as a loop and a
 reciprocal.
 
-**Exactness of the seeding.** With no decay in the operator the recurrence is
+<a id="entry-state"></a>**Exactness of the seeding.** With no decay in the operator the recurrence is
 affine in the state and the readout is inclusive-after-write, so setting the
 fragments to the entry state is precisely the oracle's `initial_cache` seeding
 and no other term changes. The fragments are SET, never accumulated: they are
 provably zero at that point in the prologue.
 
-**The base translation: dense and paged are ONE kernel.** Per atom the kernel
+<a id="base-translation"></a>**The base translation: dense and paged are ONE kernel.** Per atom the kernel
 resolves `slot = page_tbl ? page_tbl[atom] : atom` and addresses
 `plane + slot * 16 * cols`. A null table is the dense plane, where a slot IS its
 atom; a table is the paged one. The branch is on a POINTER uniform over the whole
@@ -159,3 +160,199 @@ bitmap, since a superset never omits a written atom, and
 MEMORY TRAFFIC only: both groups iterate the same atom count and every rendezvous
 sits outside it, so a barrier stays CTA-uniform however the two groups' residency
 differs.
+
+## The device world's constants, and why each one is the number it is
+
+<a id="k-window"></a>**The K-window, and what actually bounds `L`.** An index-list
+entry is one 16-bit token index, WINDOW-RELATIVE: a super-chunk lives inside one
+65536-token window, because the walk forces a cut at every window line and empty
+stretches slide, so sixteen local bits name any of its tokens at any `L`. Below one
+window no line is ever crossed, and the partition — and the output, bit for bit — is
+exactly what it was when 65536 was a refusal.
+
+The window is a DISPLACEMENT, not a table. Each plane's per-window byte stride is
+compile-time, so a super-chunk's window number is one uniform multiply-add into a
+column term the consumer already carries, and the per-index addressing keeps its exact
+shape against kernel-wide pinned bases. What bounds `L` is therefore the 32-bit gather
+displacement itself: the widest plane row is the fp32 output at `kD * 4` bytes, so
+`L * kD * 4` must sit inside the 4 GiB zero-extension window. That is `kMaxGatherL`.
+
+<a id="the-carve"></a>**The carve is derived, not chosen.** One MMA unit owns a
+private 16-row slice of the transposed state's `m` axis, which is `d_v`, so the unit
+count is `d_v` over the MMA's `m` quantum. Carving the SLOT axis across units instead
+would give every unit a partial output over the whole of `d_v`, and therefore a
+cross-unit reduction of the output accumulator — the very thing a private accumulator
+exists to avoid. A GROUP is the rung-5D CTA: four units of sixteen `d_v` rows, each
+holding its slice of the state for the group's slots.
+
+The per-config rule is: warps = the stall floor inside the register window, filled from
+the CHEAP axis first. Value units go to their cap (`d_v/16`; a token split is forbidden
+for state-holding warps, since it would duplicate the register-resident state), then
+slot groups. At `d_v = 64` the value axis gives four warps, and a second slot group is
+added exactly when the block is wide enough that one group's k-run would exceed the
+measured `KD = 8` shape — `BC >= 256`, which is also where the register window narrows
+to the 8-warp point.
+
+<a id="geometry-law"></a>**The geometry law.** `LevelPlan` quantifies it over `D`
+levels of one uniform power-of-two width `B` (the compile matrix is 8 widths × 4 depths
+= 32 topologies, and `N = B^D` is the reachable grid). Reading levels
+most-significant first: every level ABOVE the boundary is spanned at EXACTLY ONE digit;
+AT MOST ONE level is spanned PARTIALLY, by an aligned run whose width divides `B`; every
+level BELOW is spanned ENTIRELY; and `BC = B^whole * partial_span`. A `(widths, BC)`
+pair that breaks a clause does not compile — every clause is a `static_assert` on the
+plan.
+
+The WIDTHS POLICY is an accessor, not a constant: every consumer reads level widths
+through `width(l)`, which the uniform policy answers with `B`. A jagged policy answers
+from a table later, and the loop nests are already written against the accessor.
+
+<a id="template-level"></a>**A level is a TEMPLATE parameter, never an argument.**
+`off_at`'s divisor is a recursive `constexpr` call, and a level passed as an argument
+leaves the recursion for the compiler to unroll at run time — measured: a loop and a
+reciprocal division reached the SASS. `base_term` and the clause resolve both state
+their divisors as `constexpr` locals for that reason.
+
+<a id="form-ring"></a>**The formed ring's depth is a residency quantity, not an axis.**
+What depth buys is distance between the parallel former and the serial walk, and the
+walk consumes `C/32` words per super-chunk against a former that produces `kThreads` of
+them in one step — so any depth at all puts the producer orders of magnitude ahead.
+What depth must NOT do is cost a CTA, and that is what pins it: `2 * kFormWords * 4`
+bytes must leave every arm's staging depth and CTA target where rung 5B had them, and
+`arms()` reports both, so it is CHECKED rather than asserted. It is a power of two
+because the ring index is a mask, and a remainder by anything else would put a
+reciprocal in the walk's only loop. The shipped depth is `kThreads`, so one parallel
+step refills the ring whole; it is overridable AT BUILD TIME because the wait is a
+ring's ordinary behaviour and a gate must be able to make it fire — at depth one the
+walk waits on almost every word, and the answer must still be bit for bit rung 5B's.
+
+<a id="reg-floor"></a>**The register floor is a DECLARATION, not a derivation.**
+ptxas's allocation for this body does not follow from the operand counts, and the
+number's only job is to stop the shared-memory ceiling from asking for more CTAs than
+the register file holds. It is FALSIFIABLE rather than asserted: the build fails on any
+nonzero `localSizeBytes`, so a floor set too low cannot ship quietly. The values are the
+measured census of this body, which carries the cook's cursor and the staircase's
+thresholds on top of rung 5A's set. ONE floor serves both state variants — see the
+carried-state section for the row that briefly existed and why it went.
+
+## The two streams: cook, form, walk
+
+<a id="cook-distance"></a>**The schedule stream and the value stream run at different
+depths**, and that is the whole reason the index ring is separate from the value ring.
+
+Compaction creates a chain. Without it every address is affine and the only global round
+trip in flight is the value stage. With it the chain is schedule word → cook → index →
+gather issue → gather lands → mma, which is TWO round trips in series, and in a
+latency-bound arm that is the wrong shape. Running the cook further ahead than the value
+ring collapses it back to one: by the time a super-chunk is staged its indices have been
+ready for `kAheadExtra` iterations, so only the gather is outstanding.
+
+The schedule is NOT staged asynchronously. A super-chunk's schedule is one word per side
+per thirty-two tokens — eight bytes at `C = 64` — against a value tile of `C × d_v`.
+There is nothing to stream: what the cook needs is DISTANCE, not bandwidth, and distance
+is free here because the cook's carried state is a cursor and four induction pointers.
+It also keeps the staging FIFO single-stream, so `stage_wait` still means what it means:
+one implicit group, retired in issue order, with nothing behind it that a later consumer
+needs first.
+
+`kAheadExtra` is ZERO, and that is a measurement rather than a default. Swept at 0 and 2
+on the flagship arms, the two agree within two points and the sign flips across arms.
+What the cook actually costs is the latency of its OWN dependent loads, which sits inside
+one call immediately before the rendezvous that follows it, and no amount of distance to
+its CONSUMER moves that. So the depth is the pipeline's minimum, derived: the cook must
+be exactly as far ahead as the stage it feeds. The index ring then holds every
+super-chunk in flight — the one being drained, the one computing, and the `AHEAD` cooked
+but not yet consumed — which is also what fences it: the slot the cook overwrites belongs
+to the super-chunk drained a whole iteration earlier, across the rendezvous.
+
+<a id="clause-rows"></a>**The block's entry rows, per side.** Level 0's entry is the
+aligned run of digits the block spans there, and level 1's is its sub-range; the trailing
+row DISAPPEARS when the block spans that level entirely, exactly as the clause does, and
+a block spanning BOTH levels entirely — the whole slot space, so there is exactly one of
+them — has no clause at all. Rung 5A OR-ed the sides to get a group bit; the cook keeps
+them APART, which is the whole of per-side compaction at the schedule's end.
+
+There is one pinned row per SURVIVING clause per side, in level order — at `D = 2`
+exactly the old `tR0`/`tR1` pair, at depth at most `D` rows. They are NAMED SCALARS,
+never an array: the clause loop's callees carry inline asm, which blocks unrolling, and a
+runtime-indexed pointer array is demoted to a STACK FRAME. The gate caught exactly that
+(`STL [R1+..]`) on the two-clause arms. Unused clauses alias clause 0 and are never read.
+The form is a MAP over words rather than a walk, so a thread's word is an index rather
+than the previous address plus one, and `gather_ptr` is what keeps that index a
+zero-extended byte displacement instead of a widening multiply.
+
+<a id="the-form"></a>**The form is the membership AND and nothing else.** Every thread
+takes whole words of the token axis, ANDs the block's surviving clauses on each side, and
+publishes one word per side into the resident ring — affine, dependency-free, over the
+whole CTA. The ring's head is the walk's cursor plus its depth, so the former stops of its
+own accord when it catches its tail: backpressure, with no test for it anywhere but the
+loop bound.
+
+<a id="the-walk"></a>**The walk.** One lockstep unit consumes the formed bitmap a word at
+a time, keeps a running count on each side, and closes the super-chunk at the FIRST TOKEN
+that would push either count past its buffer.
+
+The closing rule is TOKEN-granular, not word-granular, and the difference is not cosmetic:
+a chunk whose read list is full keeps ABSORBING write-live tokens until a read-live one
+arrives, and a stretch dead on both sides is swallowed however many words it spans.
+Stopping at the word boundary where a count happened to fill would put those write tokens
+in the next chunk and make the partition depend on the packing — an implementation detail
+the sizing model does not have. So the loop runs on the CUT, and the counts appear only in
+the per-lane test that produces it.
+
+It CLEARS WHAT IT TOOK: on a mid-word close the remainder is written back, so re-entry
+reads what is left and its prefix counts ARE the counts of what is left, which is why
+there is no `inrange` and no mask on any access. It stops at the FORMED REGION's edge, not
+the token axis's: running out of formed words leaves the super-chunk OPEN, the CTA forms
+more and calls again, and the partition is unchanged. Its state is register-resident,
+exactly as rung 5B's cursor was; shared memory carries only what another warp needs — the
+cursor, so the former knows how far it may run, and the open flag, so the whole CTA takes
+the same path — and it carries them by STORE ONLY. The slot count is four rather than two
+so the buffer behind it stays sixteen-byte aligned.
+
+<a id="side-liveness"></a>**Per-side liveness gates per-side work**, and that is not an
+optimisation bolted on: it is what having two lists MEANS. The readout, the Gram, the
+output and its drain are read-side work; the value staging and the fold are write-side
+work; the intra term is the one that needs both, and it needs both to be PRESENT rather
+than merely nonzero — a super-chunk with no write entry stages no value tile, so a term
+that reads one must not run. On a routing whose sides are separated (`split`) this is
+where the mma and the staging the union schedule could not skip actually go away.
+
+## Production and the state plane's addressing
+
+<a id="produce"></a>**The production.** One trailing 16-byte vector is held at a time and
+reused across every leading digit a thread owns, so the register cost does not grow with
+the block width; each coefficient is one `mul_bf16x2`. A panel row past the gathered count
+is exactly zero, and it is zeroed at the LEADING amplitude rather than at the product —
+one select per leading digit instead of one per coefficient — and the zero propagates
+through a multiplication whose other operand is a finite simplex amplitude. A zero row
+contributes nothing to the Gram, nothing to the fold and nothing the drain will publish,
+which is what makes a partly filled buffer exact.
+
+<a id="page-sweep"></a>**The page sweep carries a cursor rather than dividing.** `cols` is
+`d_v + 1` and therefore not a power of two, so recovering a row from a flat index costs a
+magic-number division — a WIDENING MULTIPLY, the one instruction shape this kernel's
+bodies do not emit. A step of `kGroupThreads` is one row plus a remainder, so the row
+advances by a compare instead. `cols` is 260 bytes and not sixteen-byte aligned, so a page
+row cannot move by a vector access either; these are plain float accesses, coalesced
+across the group.
+
+<a id="atom-index"></a>**A group's first logical atom** is the leaf-order law's: a block's
+leaves are one aligned run starting at `LevelPlan::block_base`, so the index is that base
+over the quantum, which is `AtomKeying.atom_of` verbatim. It is derived INSIDE each state
+block, so nothing about the state I/O is live across the main loop — which is what the
+plane bases cost before there was a slot to resolve. It is ALL-INT, like the plan's own
+suffix products: the atom index is bounded by the plane's page count, which the 32-bit
+displacement already caps at about a million, so a 64-bit index would be a widening
+multiply bought for nothing.
+
+<a id="arm-set"></a>**The arm set.** An arm is `(C, SWZ, BC, D, B)`. `C` and `SWZ` are the
+two measured axes; `BC` carries rung 2's measured optimum and is not a tuned axis; the
+width configurations are not axes at all but problem sizes — `(8,8)` is `N = 64` with ONE
+block, the same-work control; `(64,64)` is the flagship `N = 4096`; `(16,16)` is
+`N = 256`, a real fan-in cheap enough for an fp64 reference to gate at full length. The
+two-level arms are rung 5A's, arm for arm, so every delta this rung reports is a same-arm
+delta; the deep arms are G4's — `(16,16,16)` and `(8,8,8,8)` at the flagship's matched
+`N = 4096`, and a `BC = 32` depth-4 arm whose block leaves TWO single-digit levels above a
+partial one, so the three-clause form and the two-scalar upper chain are both exercised.
+The list itself is GENERATED: `tools/gen_shards.py` owns it, and the `.inc` include is the
+whole of the kernel's knowledge of it.

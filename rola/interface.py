@@ -121,11 +121,8 @@ def rola_op(
     from rola.ops import chunk as _chunk
 
     paging = _paging_preference(expert)
-    #: THE EXPERT'S `BC` PIN IS AN AXIS THIS ARM DOES NOT HAVE. The chunk consumer's
-    #: `BC` is a slot tile INSIDE a built arm, fixed by the manifest and not
-    #: host-selectable, so a pin over it is refused by name rather than accepted and
-    #: ignored: a knob that silently does nothing is how a caller comes to believe a
-    #: launch was shaped a way it never was.
+    #: The chunk arm's `BC` is fixed by the manifest, not host-selectable, so an
+    #: expert pin over it is refused BY NAME rather than accepted and ignored.
     if expert is not None and PlanOverrides.of(expert).state_block is not None:
         raise NotImplementedError(
             "chunk consumer (kernel arm): PlanOverrides(state_block=...) pins the "
@@ -133,16 +130,12 @@ def rola_op(
             "the manifest carries for this topology and is not host-selectable; pass "
             "state_block=None.")
     if state is None:
-        #: no state object, no state I/O: both of the kernel's state pointers are
-        #: null and the variant with none of it compiled in runs
-        #: (docs/internals/chunk/chunk_kernel.md).
+        #: No state object, no state I/O: the variant with none of it compiled in
+        #: runs (docs/internals/chunk/chunk_kernel.md#state-axis).
         y, _ = ChunkConsumer.run(routes, v)
         return y, None
-    # THE HOST ORDER (design §A.4/§C.3), and it is the reason these four lines are
-    # not folded into `chunk.run`: the stats pass is `BC`-free and precedes the arm,
-    # its bitmap plans the arena on the arena's own side stream, and the launch's
-    # `arena.wait()` is the single join. The only host synchronization in the whole
-    # sequence is `plan_exact`'s one size read, which also sizes the allocation.
+    # THE HOST ORDER is why these four lines are not folded into `chunk.run`
+    # (docs/internals/state.md#host-order).
     atom_bits = _chunk.stats(routes) if state._wants_pages(paging) else None
     s_in, arena = state._kernel_entry(
         routes, atom_bits, d_v=v.shape[-1], paging=paging, BC=_chunk.arm(routes)[1])

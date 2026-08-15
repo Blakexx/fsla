@@ -57,82 +57,35 @@ static constexpr int kD = 64;    // d_v
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
 
-//: THE K-WINDOW (6E, merged).  An index list entry is one 16-bit token index,
-//: WINDOW-RELATIVE: a super-chunk lives inside one 65536-token window (the
-//: walk forces a cut at window lines, empty stretches slide), so sixteen
-//: local bits name any of its tokens at any L.  Below one window no line is
-//: ever crossed and the partition -- and the output, bit for bit -- is
-//: exactly what it was when 65536 was a refusal.
+//: An index-list entry is 16 bits, so a super-chunk must lie inside one window;
+//: the walk forces a cut at every window line -- docs/internals/chunk/chunk_kernel.md#k-window
 static constexpr int kWindow = 65536;
 static_assert((kWindow & (kWindow - 1)) == 0,
               "the token -> (window, local) split is a shift and a mask");
-//: THE WINDOW IS A DISPLACEMENT, NOT A TABLE (the 6E fold).  Each plane's
-//: per-window byte stride is compile-time, so a super-chunk's window number
-//: is one uniform multiply-add into the column term a consumer already
-//: carries -- the per-index addressing keeps its exact shape against
-//: kernel-wide pinned bases.  What bounds L is the 32-bit gather
-//: displacement itself: the widest plane row is the fp32 output at kD*4
-//: bytes, so L*kD*4 must sit inside the 4 GiB zero-extension window.
+//: THE BOUND ON L is the 32-bit gather displacement: the widest plane row is the
+//: fp32 output at kD*4 bytes -- docs/internals/chunk/chunk_kernel.md#k-window
 static constexpr long kMaxGatherL = (1L << 32) / (kD * (long)sizeof(float));
 
-//: HOW MUCH FURTHER AHEAD THE SCHEDULE STREAM RUNS THAN THE VALUE STREAM, in
-//: super-chunks, ABOVE the minimum the pipeline requires.  It costs one index
-//: slot of shared memory per super-chunk of distance and NO registers, because
-//: the cook's carried state is a cursor and four induction pointers whatever the
-//: distance is.
-//:
-//: IT IS ZERO BECAUSE THE MEASUREMENT SAYS DISTANCE IS NOT WHAT THE COOK COSTS.
-//: Swept at 0 and 2 on the flagship arms, the two agree to within two points and
-//: the sign flips across arms.  What the cook actually costs is the latency of
-//: its OWN dependent loads, which sits inside one call and immediately before the
-//: rendezvous that follows it -- and no amount of distance to its CONSUMER moves
-//: that.  So the depth is the pipeline's minimum, derived rather than swept: the
-//: cook must be exactly as far ahead as the stage it feeds.
+//: Schedule-ahead distance ABOVE the pipeline minimum. Zero by measurement, not by
+//: default -- docs/internals/chunk/chunk_kernel.md#cook-distance
 static constexpr int kAheadExtra = 0;
 
-// THE CARVE, and it is DERIVED rather than chosen.  One MMA unit owns a private
-// 16-row slice of the transposed state's m axis, which is d_v, so the unit count
-// is d_v / the MMA's m quantum.  Carving the SLOT axis across units instead
-// would give every unit a partial output over the whole of d_v and therefore a
-// cross-unit reduction of the output accumulator -- the very thing the private
-// accumulator exists to avoid.
+// The carve is derived: one MMA unit owns a private 16-row slice of the
+// transposed state's m axis -- docs/internals/chunk/chunk_kernel.md#the-carve
 static constexpr int kUnits = kD / kMmaM;
-//: ONE GROUP'S carve: the value axis to its cap.  A group is exactly the
-//: rung-5D CTA -- four units of sixteen d_v rows, each holding its slice of
-//: the state for the GROUP'S slots.
 static constexpr int kGroupThreads = kUnits * kMmaUnitThreads;
 
-//: THE PER-CONFIG CARVE RULE : warps = the stall floor inside the
-//: register window, filled from the CHEAP axis first -- value units to their
-//: cap (`d_v/16`; token-split is forbidden for state-holding warps, it would
-//: duplicate the register-resident state), then SLOT GROUPS.  At d_v=64 the
-//: value axis gives four warps; a second slot group is added exactly when the
-//: block is wide enough that one group's k-run would exceed the measured
-//: KD = 8 shape -- i.e. BC >= 256 -- which is also where the register window
-//: narrows to the 8-warp point.
+//: A second slot group is added exactly where one group's k-run would exceed the
+//: measured KD = 8 shape -- docs/internals/chunk/chunk_kernel.md#the-carve
 constexpr int groups_for(int BC) { return BC >= 256 ? 2 : 1; }
 constexpr int threads_for(int BC) { return kGroupThreads * groups_for(BC); }
 
 // --------------------------------------------------------------- block plan
 
-//: THE GEOMETRY LAW, stated once and checked at build time.  `lead_span` digits
-//: of level 0 by `tail_span` digits of level 1; `blocks` of them tile the slot
-//: space.  Every clause below is the law's, and a (widths, BC) pair that breaks
-//: one does not compile.
-//: THE LEVEL PLAN -- the geometry law quantified over D levels of ONE
-//: uniform power-of-two width B (the compile matrix is 8 widths x 4
-//: depths = 32 topologies, and N = B^D is the reachable grid).  The law is
-//: rung 2's, per level:
-//:
-//:   reading levels most-significant first, every level ABOVE the boundary
-//:   is spanned at EXACTLY ONE digit; AT MOST ONE level is spanned PARTIALLY,
-//:   by an aligned run whose width divides B; every level BELOW is spanned
-//:   ENTIRELY.  BC = B^whole * partial_span.
-//:
-//: The WIDTHS POLICY: every consumer reads level widths through
-//: `width(l)`, which this uniform policy answers with the constant B -- a
-//: jagged policy later answers from a table, and the loop nests are already
-//: written against the accessor rather than the constant.
+//: THE GEOMETRY LAW over D levels of one uniform power-of-two width B. Every
+//: clause below is the law's, and a (widths, BC) pair breaking one does not
+//: compile. Widths are read through `width(l)` so a jagged policy can answer from
+//: a table without touching a loop nest -- docs/internals/chunk/chunk_kernel.md#geometry-law
 constexpr long ipowl(int b, int e) { return e == 0 ? 1 : b * ipowl(b, e - 1); }
 
 template <int D, int B, int BC>
@@ -195,15 +148,10 @@ struct LevelPlan {
   //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
   //: product, which is why the table does not grow with N.
   static constexpr int entries = singles * B + (partial_span > 1 ? B / partial_span : 0);
-  //: THE LEAF-ORDER LAW.  A block's leaves are a CONTIGUOUS, BC-ALIGNED run in
-  //: canonical leaf order, so the block is named by its FIRST leaf: the digit
-  //: offsets against the radix place values.  It is what makes the state plane
-  //: addressable per atom (docs/internals/chunk/chunk_kernel.md).
-  //: THE LEVEL IS A TEMPLATE PARAMETER, not an argument.  `off_at`'s divisor is
-  //: a recursive constexpr call, and a level passed as an ARGUMENT leaves the
-  //: recursion for the compiler to unroll at runtime -- measured: a loop and a
-  //: reciprocal division reached the SASS.  The clause resolve above states its
-  //: divisors as `constexpr` locals for exactly this reason; so does this.
+  //: A block's leaves are a CONTIGUOUS, BC-ALIGNED run in canonical leaf order, so
+  //: the block is named by its first leaf -- docs/internals/chunk/chunk_kernel.md#leaf-order-law
+  //: THE LEVEL IS A TEMPLATE PARAMETER, not an argument: `off_at`'s recursive
+  //: constexpr divisor does not fold otherwise -- docs/internals/chunk/chunk_kernel.md#template-level
   template <int Lv>
   static __device__ __forceinline__ int base_term(int blk) {
     constexpr int kDiv = suffix_groups(Lv + 1);
@@ -295,22 +243,10 @@ __device__ __forceinline__ void form_impl(int& formEnd, int limit, int tid, cons
 constexpr int kTokBits = 32;
 __host__ __device__ constexpr int tok_words(int L) { return (L + kTokBits - 1) / kTokBits; }
 
-//: THE FORMED RING'S DEPTH, IN WORDS PER SIDE.  It is a RESIDENCY quantity and
-//: not an axis: what it buys is distance between the parallel former and the
-//: serial walk, and the walk consumes `C/32` words per super-chunk against a
-//: former that produces `kThreads` of them in one step, so any depth at all puts
-//: the producer orders of magnitude ahead.  What it must NOT do is cost a CTA,
-//: which is what pins it: `2 * kFormWords * 4` bytes must leave every arm's
-//: staging depth and CTA target where rung 5B had them, and `arms()` reports both
-//: so that is CHECKED rather than asserted.
-//:
-//: IT IS A POWER OF TWO because the ring index is `word & (kFormWords - 1)`, and
-//: a remainder by anything else would put a reciprocal in the walk's only loop.
-//:
-//: THE SHIPPED DEPTH IS `kThreads`, so ONE parallel step refills the ring whole.
-//: It is overridable AT BUILD TIME because the wait is a ring's ordinary
-//: behaviour and a gate must be able to make it fire: at depth one the walk waits
-//: on almost every word, and the answer must still be bit for bit rung 5B's.
+//: THE FORMED RING'S DEPTH, in words per side. A RESIDENCY quantity, not an axis:
+//: `2 * kFormWords * 4` bytes must leave every arm's staging depth and CTA target
+//: unmoved, and `arms()` reports both so it is checked. Build-time overridable so
+//: a gate can make the wait fire -- docs/internals/chunk/chunk_kernel.md#form-ring
 #ifndef CHUNK_FORM_WORDS
 #define CHUNK_FORM_WORDS 128
 #endif
@@ -318,34 +254,17 @@ constexpr int kFormWords = CHUNK_FORM_WORDS;
 static_assert((kFormWords & (kFormWords - 1)) == 0,
               "the formed ring's index is a mask, so its depth is a power of two");
 
-//: WHAT THE WALK PUBLISHES, AND IT IS ONLY WHAT ANOTHER WARP NEEDS: the cursor,
-//: so the former knows how far it may run, and the "I ran out" flag, so the whole
-//: CTA takes the same path.  The running counts stay in the walk's registers.
-//: The slot count is four rather than two so the buffer behind it stays
-//: sixteen-byte aligned.
+//: The walk publishes only what another warp needs -- the cursor and the ran-out
+//: flag; four slots, not two, to keep the buffer behind it 16-byte aligned
+//: -- docs/internals/chunk/chunk_kernel.md#the-walk
 constexpr int kCookWord = 0, kCookOpen = 1;
 constexpr int kCookSlots = 4;
 
 // ------------------------------------------------------------------ geometry
 
-//: THIS KERNEL'S LIVE REGISTER SET, per (chunk, block width).  It is a
-//: DECLARATION rather than a derivation, and deliberately so: ptxas's allocation
-//: for this body does not follow from the operand counts, and the number's only
-//: job is to stop the shared-memory ceiling from asking for more CTAs than the
-//: register file holds.
-//:
-//: It is FALSIFIABLE, not asserted: `build.py` fails the build on any nonzero
-//: `localSizeBytes`, so a floor set too low cannot ship quietly.  The values are
-//: the measured census of THIS body, which carries the cook's cursor and the
-//: staircase's thresholds on top of rung 5A's set.
-//:
-//: ONE FLOOR FOR BOTH STATE VARIANTS.  The state-I/O variant briefly needed its
-//: own row -- `(C = 32, BC >= 128)` measured 242 against the shared 236 -- because
-//: its plane bases were pinned at kernel scope and lived across the whole body.
-//: The paged slot resolve moved those bases inside the state blocks and the row
-//: went with them: the ON variants now measure at or under the shared floor on
-//: every arm and both architectures (worst: 220), so a state row would be a
-//: declaration about nothing.
+//: THIS KERNEL'S LIVE REGISTER SET, per (chunk, block width). A measured
+//: DECLARATION, not a derivation, and falsifiable: the build fails on any nonzero
+//: `localSizeBytes`. ONE floor for both state variants -- docs/internals/chunk/chunk_kernel.md#reg-floor
 constexpr int reg_floor(int C, int BC) {
   //: a two-group arm's PER-THREAD demand is one group's, i.e. the BC/2 row --
   //: each thread holds its group's slice, which is the same slice a BC/2
@@ -415,19 +334,10 @@ constexpr int kCtaTarget =
 
 // -------------------------------------------------------------------- kernel
 
-//: `STATE` COMPILES THE CARRIED STATE'S I/O IN OR OUT.  It is a template axis and
-//: not a runtime null test: the entry load and the final store need a plane base,
-//: a base is a widening multiply, and the only place this kernel may form one is
-//: kernel scope -- so a runtime test still pays for the addressing on the path
-//: that does no state I/O at all.  Measured at +1.2% wall on two cells; the OFF
-//: instantiation below assembles to the same bodies as the kernel that predates
-//: the state entirely (docs/internals/chunk/chunk_kernel.md).
-//:
-//: THE STATE POINTERS ARE THE LAST PARAMETERS, after `L`, so that the OFF
-//: variant's constant-bank displacements are the pre-state kernel's -- a
-//: parameter inserted mid-list moves every later parameter's offset and with it
-//: every instruction that reads one.  The page table joins them at the tail for
-//: the same reason.
+//: `STATE` compiles the carried state's I/O in or out. A template axis, not a
+//: runtime null test. THE STATE POINTERS AND THE PAGE TABLE MUST STAY THE LAST
+//: PARAMETERS, after `L`: a parameter inserted mid-list moves every later
+//: parameter's constant-bank displacement -- docs/internals/chunk/chunk_kernel.md#state-axis
 template <int C, int D, int B, int BC, bool STATE>
 __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
@@ -471,35 +381,14 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
                 "maximum");
   constexpr int STAGES = G::stages;
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
-  //: THE SCHEDULE STREAM AND THE VALUE STREAM RUN AT DIFFERENT DEPTHS, and that
-  //: is the whole reason the index ring is separate from the value ring.
-  //:
-  //: THE CHAIN COMPACTION CREATES.  Without it every address is affine and the
-  //: only global round trip in flight is the value stage.  With it the chain is
-  //: schedule word -> cook -> index -> gather issue -> gather lands -> mma, which
-  //: is TWO round trips in series, and in a latency-bound arm that is the wrong
-  //: shape.  Running the cook further ahead than the value ring collapses it back
-  //: to one: by the time a super-chunk is staged its indices have been ready for
-  //: `kAheadExtra` iterations, so only the gather is outstanding.
-  //:
-  //: WHY THE SCHEDULE IS NOT STAGED ASYNCHRONOUSLY.  A super-chunk's schedule is
-  //: one word per side per thirty-two tokens -- eight bytes at `C = 64` -- against
-  //: a value tile of `C x d_v`.  There is nothing to stream: what the cook needs
-  //: is DISTANCE, not bandwidth, and distance is free here because the cook's
-  //: carried state is a cursor and four induction pointers.  It also keeps the
-  //: staging FIFO single-stream, so `stage_wait` still means what it means: one
-  //: implicit group, retired in issue order, with nothing behind it that a later
-  //: consumer needs first.
-  //:
-  //: THE DEPTH IS DERIVED, NOT SWEPT: the cook must be at least as far ahead as
-  //: the stage it feeds, plus enough distance to cover its own dependent loads.
+  //: The schedule stream runs deeper than the value stream, which is why the index
+  //: ring is separate. The depth is DERIVED, not swept: at least as far ahead as
+  //: the stage it feeds -- docs/internals/chunk/chunk_kernel.md#cook-distance
   constexpr int AHEAD = STAGES - 1 + kAheadExtra;
-  //: THE INDEX RING HOLDS EVERY SUPER-CHUNK IN FLIGHT: the one being drained, the
-  //: one computing, and the `AHEAD` cooked but not yet consumed.  That is also
-  //: what fences it: the slot the cook overwrites belongs to the super-chunk
-  //: drained a whole iteration earlier, across the rendezvous that follows the
-  //: fold -- which is why that rendezvous is issued on every super-chunk rather
-  //: than only on live ones.
+  //: THE RING HOLDS EVERY SUPER-CHUNK IN FLIGHT, which is what fences it: the slot
+  //: the cook overwrites was drained an iteration earlier, across the rendezvous
+  //: after the fold -- so that rendezvous is issued on EVERY super-chunk, not only
+  //: on live ones.
   constexpr int IRING = AHEAD + 2;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdG = G::LdG, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;   // token m-tiles in a chunk
@@ -778,18 +667,9 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + dv0 + (lane >> 2) + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kD; };
-  //: ONE PASS OVER AN ATOM'S PAGE, the global side and the staged side in step.
-  //: `body` takes the staging index and the global byte displacement.
-  //:
-  //: THE SWEEP CARRIES A CURSOR RATHER THAN DIVIDING.  `cols` is `d_v + 1` and
-  //: therefore not a power of two, so recovering a row from a flat index costs a
-  //: magic-number division -- a WIDENING MULTIPLY, the one instruction shape
-  //: this kernel's bodies do not emit.  A step of `kGroupThreads` is one row
-  //: plus a remainder, so the row advances by a compare instead.
-  //:
-  //: `cols` is 260 bytes and not sixteen-byte aligned, so a page row cannot move
-  //: by a vector access; these are plain float accesses, coalesced across the
-  //: group.
+  //: One pass over an atom's page; `body` takes the staging index and the global
+  //: byte displacement. THE SWEEP CARRIES A CURSOR RATHER THAN DIVIDING, and the
+  //: accesses are plain floats -- docs/internals/chunk/chunk_kernel.md#page-sweep
   constexpr int kPageElems = kAtomLeaves * kCols;
   constexpr int kPageCarry = kGroupThreads - kCols;
   static_assert(kGroupThreads > kCols && kGroupThreads < 2 * kCols,
@@ -809,36 +689,19 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
       col -= wrap ? kCols : 0;
     }
   };
-  //: THIS GROUP'S FIRST LOGICAL ATOM.  The atom index is the leaf-order law's --
-  //: a block's leaves are one aligned run starting at `LevelPlan::block_base`,
-  //: so the index is that base over the quantum, which is `AtomKeying.atom_of`
-  //: verbatim.  It is derived INSIDE each state block: nothing about the state
-  //: I/O is live across the main loop any more, which is what the plane bases
-  //: below cost before there was a slot to resolve.
-  //: ALL-INT, like the plan's own suffix products: the atom index is bounded by
-  //: the plane's page count, which the 32-bit displacement below already caps at
-  //: about a million, so a 64-bit index would be a widening multiply bought for
-  //: nothing.
+  //: This group's first logical atom, `AtomKeying.atom_of` verbatim. DERIVED
+  //: INSIDE each state block so no state I/O is live across the main loop, and
+  //: ALL-INT because the 32-bit displacement already caps the page count
+  //: -- docs/internals/chunk/chunk_kernel.md#atom-index
   constexpr int kAtomsPerBh = (int)(LP::slots / kAtomLeaves);
   auto atom_first = [&] {
     return (int)blockIdx.y * kAtomsPerBh + LP::block_base(blk) / kAtomLeaves + grp * kAtoms;
   };
-  //: THE ONE BASE TRANSLATION.  A null table is the DENSE plane, where a slot IS
-  //: its atom; a table maps the atom to its page and `-1` says the atom has none.
-  //: The branch is on a POINTER that is uniform over the whole grid -- a fact of
-  //: the plan, not of a dimension -- and it is taken once per atom, of which a
-  //: group stores at most eight (docs/internals/paging/paging.md).
-  //:
-  //: EVERYTHING PER ATOM IS A 32-BIT BYTE DISPLACEMENT from a base the block
-  //: pinned, and the bases themselves are the PLAIN ORIGINS of the table and the
-  //: plane -- no arithmetic at all.  The atom's table entry is `atom * 4` bytes
-  //: in and a slot's page is `slot * 4160` bytes in.  Either one formed as a
-  //: 64-bit pointer sum instead is a widening multiply that ptxas schedules
-  //: inside the main loop's span: measured at ninety of them for the plane and
-  //: one per arm for the table.  The 32-bit bound is the caller's, exactly as it
-  //: is for the gathered rows (`gather_ptr`), and `chunk.cu` states it against
-  //: the plane's own size -- which bounds the table's with room to spare, the
-  //: table being one int32 per 4160-byte page.
+  //: THE ONE BASE TRANSLATION: a null table is the dense plane, a table is the
+  //: paged one, `-1` is an atom with no page. EVERYTHING PER ATOM MUST STAY A
+  //: 32-BIT BYTE DISPLACEMENT from a PLAIN pinned origin -- a 64-bit pointer sum
+  //: here reaches the main loop's span as a widening multiply
+  //: -- docs/internals/chunk/chunk_kernel.md#base-translation, docs/internals/chunk/chunk_kernel.md#state-addressing
   auto slot_of = [](const int32_t* tbl, int atom) {
     return tbl != nullptr ? *reinterpret_cast<const int32_t*>(
                                 gather_ptr(tbl, (uint32_t)atom * (uint32_t)sizeof(int32_t)))
@@ -977,16 +840,9 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
       pOff[j][i] = SWZ ? ((((slot0 + j * kInnerSpan) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
                        : ((j * kInnerSpan + i * 8) * 2);
 
-  //: THE PRODUCTION.  One trailing 16-byte vector is held at a time and reused
-  //: across every leading digit this thread owns, so the register cost does not
-  //: grow with the block width.  Each coefficient is one `mul_bf16x2`.
-  //:
-  //: A PANEL ROW PAST THE GATHERED COUNT IS EXACTLY ZERO, and it is zeroed at the
-  //: LEADING amplitude rather than at the product: one select per leading digit
-  //: instead of one per coefficient, and the zero propagates through a
-  //: multiplication whose other operand is a finite simplex amplitude.  A zero
-  //: row contributes nothing to the Gram, nothing to the fold and nothing the
-  //: drain will publish, which is what makes a partly filled buffer exact.
+  //: THE PRODUCTION. A panel row past the gathered count must be EXACTLY zero, and
+  //: it is zeroed at the LEADING amplitude rather than at the product -- that is
+  //: what makes a partly filled buffer exact -- docs/internals/chunk/chunk_kernel.md#produce
   auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have, uint32_t gsp) {
     [[maybe_unused]] const __nv_bfloat16* p0 =
         reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
@@ -1046,31 +902,16 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   };
 
   // ---- the membership bits, read out of the union table --------------------
-  //: THE BLOCK'S TWO ENTRY ROWS, PER SIDE.  Level 0's entry is the aligned run of
-  //: digits this block spans there and level 1's is its sub-range; the trailing
-  //: row DISAPPEARS when the block spans that level entirely, exactly as the
-  //: clause does, and a block that spans BOTH levels entirely -- which is the
-  //: whole slot space, so there is exactly one of them -- has no clause at all.
-  //: RUNG 5A OR-ED THE SIDES to get a group bit; the cook keeps them APART,
-  //: which is the whole of per-side compaction at the schedule's end.
+  //: The block's entry rows, per side; the trailing row disappears when the block
+  //: spans that level entirely -- docs/internals/chunk/chunk_kernel.md#clause-rows
   constexpr int kClauses = LP::clauses;
   constexpr int kEntries = LP::entries;
   const int tokWords = tok_words(L);
   const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
   const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
-  //: THE FORM'S FOUR TABLE ROWS ARE PINNED BASES AND A 32-BIT DISPLACEMENT.  The
-  //: form is a MAP over words, not a walk, so a thread's word is an index rather
-  //: than the previous address plus one; `gather_ptr` is what keeps that index a
-  //: zero-extended byte displacement instead of a widening multiply.  The bound is
-  //: `tokWords` words, four bytes each.
-  //: one pinned row per SURVIVING clause per side -- the levels the block
-  //: does not span entirely, in level order.  At D = 2 this is exactly the
-  //: old tR0/tR1 pair; at depth it grows to at most D rows.
-  //: NAMED SCALARS, never an array: the clause loop's callees carry inline
-  //: asm, which blocks unrolling, and a runtime-indexed pointer array is
-  //: demoted to a STACK FRAME -- the gate caught exactly that (STL [R1+..])
-  //: on the two-clause arms.  Unused clauses alias clause 0 and are never
-  //: read (the AND stanzas below are constexpr-gated the same way).
+  //: One pinned row per SURVIVING clause per side. NAMED SCALARS, never an array:
+  //: the clause loop's callees carry inline asm, so a runtime-indexed pointer
+  //: array is demoted to a stack frame -- docs/internals/chunk/chunk_kernel.md#clause-rows
   const uint32_t *tRa = tbl, *tWa = tbl, *tRb = tbl, *tWb = tbl, *tRc = tbl, *tWc = tbl, *tRd = tbl,
                  *tWd = tbl;
 #define ROLA_CLAUSE(CL_, PR_, PW_)                                             \
@@ -1095,14 +936,9 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
       (L & (kTokBits - 1)) ? ((1u << (L & (kTokBits - 1))) - 1u) : 0xFFFFFFFFu;
   const int lastWord = tokWords - 1;
 
-  //: THE FORM.  The membership AND, and nothing else: every thread takes whole
-  //: words of the token axis, ANDs the block's surviving clauses on each side and
-  //: publishes one word per side into the resident ring.  Affine, dependency-free
-  //: and over the whole CTA.
-  //:
-  //: THE RING'S HEAD IS THE WALK'S CURSOR PLUS ITS DEPTH, so the former stops of
-  //: its own accord when it catches its tail -- backpressure, with no test for it
-  //: anywhere but the loop bound.
+  //: THE FORM: the membership AND and nothing else. The ring's head is the walk's
+  //: cursor plus its depth, so backpressure needs no test outside the loop bound
+  //: -- docs/internals/chunk/chunk_kernel.md#the-form
   int formEnd = 0;
   //: FORCED INLINE: the two-clause arms grew this body past ptxas's
   //: outlining threshold and it became a CALL with an ABI frame -- stack
@@ -1125,31 +961,10 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     if (formEnd < tokWords && formEnd - scook[kCookWord] < kFormWords / 2) form();
   };
 
-  //: THE WALK.  One lockstep unit consumes the formed bitmap a word at a time,
-  //: keeps a running count on each side, and closes the super-chunk at the FIRST
-  //: TOKEN that would push either count past its buffer.
-  //:
-  //: THE CLOSING RULE IS TOKEN-GRANULAR, NOT WORD-GRANULAR, and the difference is
-  //: not cosmetic: a chunk whose read list is full keeps ABSORBING write-live
-  //: tokens until a read-live one arrives, and a stretch dead on both sides is
-  //: swallowed however many words it spans.  Stopping at the word boundary where
-  //: a count happened to fill would put those write tokens in the next chunk and
-  //: make the partition depend on the packing, which is an implementation detail
-  //: the sizing model does not have.  So the loop runs on the CUT, and the counts
-  //: appear only in the per-lane test that produces it.
-  //:
-  //: IT CLEARS WHAT IT TOOK.  On a mid-word close the remainder is written back,
-  //: so re-entry reads what is left and its prefix counts ARE the counts of what
-  //: is left -- which is why there is no `inrange` and no mask on any access.
-  //:
-  //: IT STOPS AT THE FORMED REGION'S EDGE, NOT AT THE TOKEN AXIS'S.  Running out
-  //: of formed words leaves the super-chunk OPEN; the CTA forms more and calls
-  //: again, and the partition is therefore unchanged.
-  //:
-  //: ITS STATE IS REGISTER-RESIDENT, exactly as rung 5B's cursor was.  Shared
-  //: memory carries only what ANOTHER warp needs -- the cursor, so the former
-  //: knows how far it may run, and the open flag, so the whole CTA takes the same
-  //: path -- and it carries them by STORE ONLY.
+  //: THE WALK. The closing rule is TOKEN-granular, never word-granular: a
+  //: word-boundary close would make the partition depend on the packing. It clears
+  //: what it took, and it stops at the FORMED region's edge, not the token axis's
+  //: -- docs/internals/chunk/chunk_kernel.md#the-walk
   int cookWord = 0, cookNr = 0, cookNw = 0;
   bool cookOpen = false;
   //: the walk's window cursor (6E): line positions in units of formed WORDS --
@@ -1281,19 +1096,11 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: barriers that fill the formed ring ONCE, before the first walk; the steady
   //: state pays none.
 
-  //: ---- the ENTRY STATE.  A continued sequence hands its carried state in as
-  //: the same plane the epilogue writes, so the load is the store read backwards
-  //: through the same staging buffer: one coalesced pass per atom into `so`,
-  //: then each warp takes ITS fragments out of it.  The fragments are SET rather
-  //: than accumulated -- they are provably zero here.  A caller with no entry
-  //: state passes a null pointer to the SAME variant; the variant that carries no
-  //: state at all does not compile this block.
-  //:
-  //: AN ABSENT ATOM IS SKIPPED AND ITS FRAGMENTS STAY ZERO, which is the whole
-  //: content of "reads of never-written atoms are inert".  What is skipped is the
-  //: MEMORY TRAFFIC alone: both groups iterate the same atom count and every
-  //: rendezvous sits outside the skip, so a barrier stays CTA-uniform however the
-  //: two groups' residency differs.
+  //: ---- the ENTRY STATE, the store read backwards through the same staging
+  //: buffer. The fragments are SET, never accumulated: they are provably zero
+  //: here. An absent atom is skipped and its fragments stay zero; what the skip
+  //: omits is MEMORY TRAFFIC only, so every barrier stays CTA-uniform
+  //: -- docs/internals/chunk/chunk_kernel.md#entry-state, docs/internals/chunk/chunk_kernel.md#base-translation
   if constexpr (STATE) {
     if (s_in != nullptr) {
       const int atomFirst = atom_first();
@@ -1358,14 +1165,9 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     const int* h = ihdr(dc);
     const int nr = h[0], nw = h[1];
     if (!h[2]) break;
-    //: PER-SIDE LIVENESS GATES PER-SIDE WORK, and that is not an optimisation
-    //: bolted on: it is what having two lists MEANS.  The readout, the Gram, the
-    //: output and its drain are read-side work; the value staging and the fold
-    //: are write-side work; the intra term is the one that needs both, and it
-    //: needs both to be present rather than merely nonzero -- a super-chunk with
-    //: no write entry stages no value tile, so a term that reads one must not
-    //: run.  On a routing whose sides are separated (`split`) this is where the
-    //: mma and the staging the union schedule could not skip actually go away.
+    //: Per-side liveness gates per-side work. The intra term needs both sides
+    //: PRESENT, not merely nonzero: a super-chunk with no write entry stages no
+    //: value tile -- docs/internals/chunk/chunk_kernel.md#side-liveness
     const bool liveR = nr != 0, liveW = nw != 0;
     const bool live = liveR || liveW;
 
@@ -1944,21 +1746,8 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
 
 // --------------------------------------------------------------- host side
 
-// THE ARM SET.  Rung 5A's, arm for arm, so every delta this rung reports is a
-// same-arm delta.  Two measured axes (`C`, `SWZ`) and `BC`, which carries rung
-// 2's measured optimum and is not a tuned axis.  The three WIDTH CONFIGURATIONS
-// are not axes: they are problem sizes.  (8,8) is N = 64 with ONE block, the
-// same-work control; (64,64) is the flagship N = 4096; (16,16) is N = 256, a real
-// fan-in cheap enough for an fp64 reference to gate at full length.
-//: an arm is now (C, SWZ, BC, D, B): the widths pair became DEPTH x ONE
-//: UNIFORM POW2 WIDTH (the level plan's own parameters).  The two-level arms
-//: are rung 5A's, arm for arm; the three DEEP arms are G4's -- (16,16,16) and
-//: (8,8,8,8) at the flagship's matched N = 4096, and a BC = 32 depth-4 arm
-//: whose block leaves TWO single-digit levels above a partial one, so the
-//: three-clause form and the two-scalar upper chain are both exercised.
-//: THE ARM SET, GENERATED: tools/gen_shards.py owns the one list; this
-//: include is the whole of the kernel's knowledge of it (the two-places
-//: debt, fixed the dispatch_table.inc way).
+// THE ARM SET, GENERATED: tools/gen_shards.py owns the one list, and this include
+// is the whole of the kernel's knowledge of it -- docs/internals/chunk/chunk_kernel.md#arm-set
 #include "../instantiations/chunk_arms.inc"
 
 }  // namespace rola::chunk

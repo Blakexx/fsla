@@ -242,13 +242,9 @@ class RoLAState:
                 "sequence's first tokens through rola_op and step from the state it "
                 "returns.")
         if self._arena is not None:
-            #: GROWTH. `bitmap` is the step's write-atom set when the device growth probe
-            #: says this step reaches an atom the table does not map, and `None` when it
-            #: says nothing is new -- in which case there is nothing to admit and the
-            #: step launches against the residency it already has. The atoms a growth
-            #: step deposits into join the resident set on the arena's side stream;
-            #: `decode_forward`'s `arena.wait()` is what puts that admission before the
-            #: launch. An atom neither resident nor written stays ABSENT and reads inert.
+            #: `bitmap` is `None` when the growth probe says nothing is new. Admission
+            #: runs on the ARENA's side stream, so `decode_forward`'s `arena.wait()` is
+            #: what orders it before the launch (docs/internals/state.md#host-order).
             if bitmap is not None:
                 self._arena.plan_exact(bitmap, fresh=False)
             return self._arena.state, self._arena.page_table, self._arena

@@ -627,3 +627,72 @@ slower path** — there is no spill-to-global arm for the staged rows.
 
 The expansion's arm selection is not this check; it is structural and lives in
 [`decode_expand.md`](decode_expand.md#smem-arm).
+
+---
+
+# Part C — the host side (`rola/ops/decode.py`)
+
+## <a id="decay-domain"></a>36. Decode's decay domain is strictly larger, as a consequence
+
+The tiled consumer refused a routing whose per-leaf reference exponent exceeded
+`PANEL_MAX_EXPONENT`, because its rule-1 lowering exponentiated `keep^{+P}` and
+`keep^{-P}` separately and their product is wrong — not merely rounded — once one
+saturates while the other underflows. At `T = 1` that rule-1 half-mass shift is EXACTLY
+the identity: the readout's `fr * s0` collapses to `keep^c`, and the fold's
+`s0 * (s0 M + W fw Vw)` to `keep^c M + W Vw`. So decode forms ONE exponential, never a
+quotient of two, and has no admissibility precondition to check — which is why it does
+not import one.
+
+## <a id="forward-only"></a>37. Forward only, and the guard is defence in depth
+
+The decode kernels have no backward. The layer's `validate_execution_envelope` already
+refuses training mode and gradient reachability before the decode fork is reached, so
+the module's own check exists for a direct caller.
+
+## <a id="host-carrier"></a>38. The kernel-layout carrier and the workspace
+
+`FrozenDecodeConfig` answers "what shape is the launch?" — widths, mixed-radix strides,
+spans, row offsets, word and group counts, `d_v`, the normalization and decay arms,
+`eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a field:
+owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]` block
+across many tokens, and with one token there is nothing to amortize, so the decode
+kernels are BC-blind by construction.
+
+`DecodeWorkspace` is per-sequence scratch, allocated once and rebuilt (never resized)
+when the shape key moves. `ctr` is zeroed exactly once at build: the last-arriving CTA of
+every step resets it, so no `memset` launch ever stands between two decode steps and the
+whole step stays capturable in a CUDA graph.
+
+Both the carrier and the workspace are memoized in the MODULE and appear on no public
+signature, for the same reason the chunk arm's tables do not: they are how the step runs,
+not what it computes.
+
+## <a id="probe-blocking-read"></a>39. The probe's read is BLOCKING, and that is the measured choice
+
+`_growth_probe` reads one pinned `[BH]` int32 device-to-host, into a workspace-owned
+buffer so a steady step allocates nothing. Blocking is not the obvious choice and it is
+the measured one: the same copy issued asynchronously and awaited on an event costs
+0.152 ms against 0.093 (RTX 3090, medians of 15 × 100), because the host must wait for
+the kernel either way and the event path adds its own record and query on top of the
+wait the copy already performs. A NO — which is the usual answer — therefore costs one
+kernel plus that read, against a host-derived preamble measured at 0.38–0.48 ms.
+
+The kernel expands the write side with `decode_expand.cu`'s OWN `expand_side`, over the
+same amplitude pointers the step itself uses, and ANDs the 16-deep condensation against
+`page_table >= 0`.
+
+## <a id="second-derivation"></a>40. `_write_atom_bitmap` is the gate's independent second derivation
+
+The shipped path derives the write-atom set on the device (the probe publishes it), so
+`_write_atom_bitmap` has no production caller and is not meant to acquire one. It
+survives deliberately as a SECOND derivation of an object the kernel computes, written
+from the definition rather than from the kernel's structure, so the equality
+`tests/tier2_geometry/test_decode_growth_trigger.py` asserts is a real check and not the
+kernel agreeing with itself. The decode paging and VMM gates plan from it for the same
+reason: a fixture using the kernel's own answer could not catch the kernel.
+
+The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
+digit is nonzero, so the write support is the Cartesian product of the per-level
+exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
+object `rola.ops.chunk.stats` produces for the chunk arm and the same one the probe
+condenses, reached by neither's route.
