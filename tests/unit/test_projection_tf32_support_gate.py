@@ -67,7 +67,7 @@ def test_packed_router_logits_matches_fp64_oracle_support(seed):
     torch.manual_seed(seed)
     # Old: `level_routing_configs=LevelRoutingConfig(read="dense", write="sparse",
     # tied=False, alpha=1.5)` -- a mixed per-side tag, so neither `dense_routing()`
-    # nor `sparse_routing()` (the symmetric convenience constructors) applies; built
+    # nor `union_routing()` (the symmetric convenience constructors) applies; built
     # directly as the `IndependentRouting` the old mapping produced.
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_HEADS, d_v=_HEAD_V_DIM, widths=_BRANCHES,

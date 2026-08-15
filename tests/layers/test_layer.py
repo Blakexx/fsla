@@ -5,7 +5,7 @@ one public dataclass, `rola.layers.LevelRoutingConfig`, resolved by a free funct
 `resolve_level_routing_configs`. The break DELETES both: "the routing vocabulary is
 the tag vocabulary directly" -- `IndependentRouting(tied=..., read_activation=...,
 write_activation=...)` and `UnionRouting(alpha)` (`rola.routing.types`), with
-`rola.dense_routing()`/`rola.sparse_routing(alpha)` as the two convenience
+`rola.dense_routing()`/`rola.union_routing(alpha)` as the two convenience
 constructors. There is no longer one dataclass to gate; there are two, and the
 broadcast/length-validation the free function used to do moved onto
 `SimplexProducer`, which is where a routing tag actually meets a topology now. Every

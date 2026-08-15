@@ -88,12 +88,12 @@ _WIDTHS, _DV, _T, _H = (16, 16), 64, 64, 2
 
 def _cell():
     """`(routes, v)` from the real gateway — `rola_op` refuses any other bundle."""
-    from rola import sparse_routing
+    from rola import union_routing
     from tests.conftest import build_routes
 
     torch.manual_seed(61)
     producer = build_routes(hidden_size=64, num_heads=_H, widths=_WIDTHS,
-                            routing=sparse_routing(1.5), normalization="global").cuda()
+                            routing=union_routing(1.5), normalization="global").cuda()
     gen = torch.Generator(device="cuda").manual_seed(62)
     x = torch.randn(1, _T, 64, device="cuda", generator=gen)
     v = torch.randn(1, _T, _H, _DV, device="cuda", generator=gen)

@@ -14,10 +14,10 @@ and everything else is linear attention's own contract.
 the value stream, ``decay`` is the recurrence dial. Build the bundle through the
 gateway, whose list of producers is the feature map:
 
-    producer = SimplexProducer((64, 64), sparse_routing(1.5),
+    producer = SimplexProducer((64, 64), union_routing(1.5),
                                hidden_size=1024, num_heads=8)
-    routes = RouteProducer([producer], d_v=64, num_heads=8, hidden_size=1024)
-    layer = RoLA(1024, 8, routes, decay=LearnedDecay(widths=routes.widths, num_heads=8))
+    routes = RouteGateway([producer], num_heads=8, hidden_size=1024)
+    layer = RoLA(routes, d_v=64, decay=LearnedDecay(widths=routes.widths, num_heads=8))
 
 **No public name says `v3`.** This repository IS that generation; encoding it in the
 API would force a break at the next one for a reason that is not an API reason.
@@ -30,7 +30,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteProducer`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `sparse_routing` | STABLE |
+| feature map | `RouteGateway`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `union_routing` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA` | STABLE |
 | state | `state()`, `RoLAState` | STABLE |
@@ -48,14 +48,14 @@ from rola.interface import rola_op
 from rola.layers.rola import RoLA
 from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
-from rola.routing.factors import RouteFactors, RouteProducer
+from rola.routing.factors import RouteFactors, RouteGateway
 from rola.routing.producer import (
     LevelProducer,
     ProducedRoutes,
     RouteSource,
     SimplexProducer,
     dense_routing,
-    sparse_routing,
+    union_routing,
 )
 from rola.routing.types import (
     EntmaxActivation,
@@ -73,14 +73,14 @@ __all__ = [
     # the op — the single autograd boundary (rola/interface.py)
     "rola_op",
     # the feature map: the gateway, its bundle, and the producers that fill it
-    "RouteProducer",
+    "RouteGateway",
     "RouteFactors",
     "LevelProducer",
     "ProducedRoutes",
     "RouteSource",
     "SimplexProducer",
     "dense_routing",
-    "sparse_routing",
+    "union_routing",
     # the decay-source slot — where the recurrence's rates come from
     "DecaySource",
     "ConstantDecay",

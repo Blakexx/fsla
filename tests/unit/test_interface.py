@@ -171,7 +171,7 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
     carrying only `topology`/`normalization`. New: `rola_op` takes a
-    `RouteFactors`, obtainable only from `RouteProducer`, so the fixture builds
+    `RouteFactors`, obtainable only from `RouteGateway`, so the fixture builds
     one -- `requires_grad` on the source stream `x` reaches every tensor the
     gateway derives (read/write levels, gains), exactly as `requires_grad` on the
     five loose tensors used to.

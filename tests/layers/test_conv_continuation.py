@@ -60,7 +60,7 @@ def _layer(seed: int = 0):
     torch.manual_seed(seed)
     routes = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
                           normalization="global")
-    layer = rola.RoLA(_HIDDEN, _H, routes, d_v=_DV, layer_idx=0,
+    layer = rola.RoLA(routes, d_v=_DV, layer_idx=0,
                       value_conv=CausalConv(_H * _DV),
                       route_conv=CausalConv(_HIDDEN))
     return layer.cuda().float().eval()

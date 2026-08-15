@@ -11,12 +11,12 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 ```python
 import rola
 
-producer = rola.SimplexProducer((64, 64), rola.sparse_routing(1.5),
+producer = rola.SimplexProducer((64, 64), rola.union_routing(1.5),
                                 hidden_size=1024, num_heads=8)
-routes   = rola.RouteProducer([producer], num_heads=8, hidden_size=1024)
+routes   = rola.RouteGateway([producer], num_heads=8, hidden_size=1024)
 decay    = rola.LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8)
 
-layer = rola.RoLA(1024, 8, routes, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+layer = rola.RoLA(routes, d_v=64, decay=decay, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
@@ -115,11 +115,11 @@ accretion nowhere to land.
 ### 2.1 The gateway
 
 ```python
-RouteProducer(producers, *, num_heads, hidden_size, normalization='global',
-              gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
+RouteGateway(producers, *, num_heads, hidden_size, normalization='global',
+             gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
 ```
 
-`RouteProducer` is how a MODEL obtains a `RouteFactors`: it runs each producer once,
+`RouteGateway` is how a MODEL obtains a `RouteFactors`: it runs each producer once,
 places its levels in the slots the list assigned, folds each level into
 `(mass, simplex)`, and hands the mass to the side gain. Construction validates the
 whole assembly — widths in range, a buildable topology, a gain layout consistent with
@@ -202,7 +202,7 @@ SimplexProducer(widths, routing=dense_routing(), *, hidden_size, num_heads,
 
 A learned packed per-head router projection, solved with the exact production
 entmax/softmax closed form. `routing` is the tag vocabulary directly:
-`dense_routing()` (softmax on both duties), `sparse_routing(alpha)` (one exact entmax
+`dense_routing()` (softmax on both duties), `union_routing(alpha)` (one exact entmax
 solve determining a shared support that the two duties split), or any
 `IndependentRouting` / `UnionRouting` you build yourself. One tag broadcasts across the
 covered levels; a sequence gives per-level control.
@@ -265,7 +265,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(hidden_size, num_heads, routes, *, d_v=64, decay=None,
+RoLA(routes, *, d_v=64, decay=None,
      value_conv=None, route_conv=None, layer_idx=None, expert=None)
 
 y, (state, conv_rings) = layer(hidden_states, state=(rola.state(), None))
@@ -277,8 +277,10 @@ y, _ = layer(hidden_states)                            # stateless -> (y, (None,
 pair, `conv_rings` `None` when no convolution is configured. See §1.2; a bare
 `RoLAState` is refused rather than adopted.
 
-`d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`;
-the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
+`routes` is the only positional argument, and it is the only declaration of
+`hidden_size`/`num_heads`: the layer reads both off the gateway rather than taking a
+second copy to check against. `d_v` is the per-head value width — the layer's, because
+it sizes `v_proj`/`o_proj`; the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
 take a MODULE
 (e.g. `fla.modules.ShortConvolution`) rather than three scalars describing one: the layer
 does not need to know how a convolution is configured, only where it goes.
@@ -315,7 +317,7 @@ the layer's one public flag:
 
 ```python
 from rola.expert import PlanOverrides, envelope_refusal
-layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
+layer = rola.RoLA(routes, expert=PlanOverrides())
 ```
 
 | name | what it is |

@@ -31,7 +31,7 @@ def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
     producer = rola.SimplexProducer(
         widths, rola.dense_routing() if routing is None else routing,
         hidden_size=hidden, num_heads=heads, **kwargs)
-    return rola.RouteProducer([producer], num_heads=heads, hidden_size=hidden)
+    return rola.RouteGateway([producer], num_heads=heads, hidden_size=hidden)
 
 
 def _x(gateway, *, B=2, T=6, dtype=torch.float64):
@@ -168,7 +168,7 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
             level = torch.full((B, T, 2, 4), 0.25, dtype=source.read.dtype)
             return ProducedRoutes(read=(level,), write=(level.clone(),))
 
-    gateway = rola.RouteProducer(
+    gateway = rola.RouteGateway(
         [Uniform()], num_heads=2, hidden_size=32)
     factors = gateway(_x(gateway))
     assert type(gateway.topology.levels[0].routing).__name__ == "OpaqueRouting", (
@@ -193,7 +193,7 @@ def test_a_producer_whose_output_is_malformed_is_named_with_its_level():
             bad = torch.full((B, T, 2, 3), 1 / 3, dtype=source.read.dtype)
             return ProducedRoutes(read=(good, bad), write=(good, good))
 
-    gateway = rola.RouteProducer([Wrong()], num_heads=2, hidden_size=32)
+    gateway = rola.RouteGateway([Wrong()], num_heads=2, hidden_size=32)
     with pytest.raises(ValueError, match=r"level 1"):
         gateway(_x(gateway))
 
@@ -202,7 +202,7 @@ def test_a_producer_that_declares_no_widths_is_refused_at_construction():
     """Construction-time validation, so an unbuildable model fails on the line that
     built it rather than inside a forward several frames away."""
     with pytest.raises(TypeError, match="widths"):
-        rola.RouteProducer([torch.nn.Identity()], num_heads=2, hidden_size=32)
+        rola.RouteGateway([torch.nn.Identity()], num_heads=2, hidden_size=32)
 
 
 def test_one_producer_covers_many_levels_and_the_gateway_keeps_their_order():
@@ -254,7 +254,7 @@ def test_the_stored_levels_are_simplices_and_the_mass_went_to_the_gain():
             level = torch.full((B, T, 2, 4), 0.5, dtype=source.read.dtype)  # sums to 2
             return ProducedRoutes(read=(level,), write=(level.clone(),))
 
-    gateway = rola.RouteProducer([Doubled()], num_heads=2, hidden_size=32,
+    gateway = rola.RouteGateway([Doubled()], num_heads=2, hidden_size=32,
                                  gain=False)
     factors = gateway(_x(gateway))
     ones = torch.ones(2, 6, 2, dtype=torch.float64)
@@ -288,9 +288,9 @@ def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
     """PLANTED VIOLATION: the right source, the wrong widths."""
     gateway = _routes(widths=(4, 4))
     with pytest.raises(ValueError, match="widths"):
-        rola.RoLA(32, 2, gateway,
+        rola.RoLA(gateway,
                   decay=rola.LearnedDecay(widths=(4, 6), num_heads=2))
-    rola.RoLA(32, 2, gateway, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
+    rola.RoLA(gateway, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
 
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
-        "self", "hidden_size", "num_heads", "routes",
+        "self", "routes",
         "d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"]
     for name in ("d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
@@ -339,7 +339,7 @@ def test_the_expert_argument_refuses_a_lookalike():
     """PLANTED VIOLATION: a dict that happens to have the right keys."""
     gateway = _routes()
     with pytest.raises(TypeError, match="PlanOverrides"):
-        rola.RoLA(32, 2, gateway, expert={"state_block": 16})
+        rola.RoLA(gateway, expert={"state_block": 16})
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +355,7 @@ def test_training_mode_alone_refuses():
     """
     from rola.interface import BackwardNotImplemented
 
-    layer = rola.RoLA(32, 2, _routes()).double().train()
+    layer = rola.RoLA(_routes()).double().train()
     with torch.no_grad(), pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
@@ -363,7 +363,7 @@ def test_training_mode_alone_refuses():
 
 def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
     """PLANTED VIOLATION: the HF-compat keyword the layer used to accept and ignore."""
-    layer = rola.RoLA(32, 2, _routes()).double().eval()
+    layer = rola.RoLA(_routes()).double().eval()
     x = torch.randn(2, 6, 32, dtype=torch.float64)
     with pytest.raises(TypeError, match="output_attentions"):
         layer(x, output_attentions=True)

@@ -189,11 +189,11 @@ def test_stats_through_the_host_seam():
     from conftest import build_routes
 
     from rola.ops import chunk
-    from rola.routing.producer import sparse_routing
+    from rola.routing.producer import union_routing
 
     torch.manual_seed(0)
     gateway = build_routes(hidden_size=64, num_heads=_H, widths=(16, 16),
-                           routing=sparse_routing()).cuda()
+                           routing=union_routing()).cuda()
     x = torch.randn(_B, _T, 64, device="cuda")
     routes = gateway(x)
     bits = chunk.stats(routes)

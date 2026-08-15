@@ -24,7 +24,7 @@ from conftest import build_layer, build_routes, produce_routing
 from einops import rearrange
 
 import rola
-from rola import RoLA, dense_routing, sparse_routing
+from rola import RoLA, dense_routing, union_routing
 from rola.expert import PlanOverrides
 from rola.interface import BackwardNotImplemented, envelope_refusal
 from rola.ops.naive import naive_rola
@@ -49,7 +49,7 @@ _DECAY = {"none": None, "leaf_mass": "learned"}
 
 
 def _routing_for(router: str):
-    return dense_routing() if router == "dense" else sparse_routing(1.5)
+    return dense_routing() if router == "dense" else union_routing(1.5)
 
 
 def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: str = "cuda",
@@ -390,7 +390,7 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     layer = _layer(decay="none")
     routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_BRANCHES)
     layer_32 = RoLA(
-        _HIDDEN, _H, routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
+        routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
     ).to("cuda", torch.float32).eval()
     x = torch.randn(1, 32, _HIDDEN, device="cuda")
     with pytest.raises(NotImplementedError, match="state_block"), torch.no_grad():

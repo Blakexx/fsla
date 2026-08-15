@@ -61,7 +61,7 @@ __all__ = [
     "RouteSource",
     "SimplexProducer",
     "dense_routing",
-    "sparse_routing",
+    "union_routing",
 ]
 
 
@@ -71,7 +71,7 @@ def dense_routing() -> IndependentRouting:
                               write_activation=SoftmaxActivation())
 
 
-def sparse_routing(alpha: float = 1.5) -> UnionRouting:
+def union_routing(alpha: float = 1.5) -> UnionRouting:
     """One exact entmax solve determining a shared support, split across duties."""
     return UnionRouting(alpha)
 
@@ -144,7 +144,7 @@ class SimplexProducer(LevelProducer):
         widths: the branch width ``b_l`` of each level this producer fills -- an int
             for one level, a tuple for several.
         routing: the routing tag for those levels -- :func:`dense_routing`,
-            :func:`sparse_routing`, or any ``IndependentRouting``/``UnionRouting``. One
+            :func:`union_routing`, or any ``IndependentRouting``/``UnionRouting``. One
             tag broadcasts to every covered level; a sequence gives per-level control.
             The tag names activations from the closed registry
             (``rola/routing/activations.py``); users never supply property metadata.

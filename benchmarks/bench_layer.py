@@ -34,7 +34,7 @@ import time
 
 import torch
 
-from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
+from rola import RoLA, RouteGateway, SimplexProducer, dense_routing, union_routing
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -190,15 +190,15 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             torch.manual_seed(0)
             from rola import LearnedDecay
 
-            routing = sparse_routing(1.5) if side == "sparse" else dense_routing()
+            routing = union_routing(1.5) if side == "sparse" else dense_routing()
             producer = SimplexProducer(
                 tuple(branches), routing, hidden_size=hidden, num_heads=H)
-            routes = RouteProducer(
-                [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+            routes = RouteGateway(
+                [producer], num_heads=H, hidden_size=hidden, normalization=norm)
             decay_source = (LearnedDecay(widths=routes.widths, num_heads=H)
                             if decay_on else None)
             layer = RoLA(
-                hidden, H, routes, decay=decay_source, layer_idx=0,
+                routes, d_v=d_v, decay=decay_source, layer_idx=0,
             ).to("cuda", dtype)
             # Fix pass item 2 (wiring-review.md §3): the CUDA path now additionally
             # requires eval mode. This script measures inference-path cost, so eval

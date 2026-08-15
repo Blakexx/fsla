@@ -48,7 +48,7 @@ from rola.expert import PlanOverrides  # noqa: E402
 from rola.ops import chunk as _chunk  # noqa: E402
 from rola.ops.decode import decode_forward  # noqa: E402
 from rola.ops.naive import _leaf_product, _radix_strides, naive_rola  # noqa: E402
-from rola.routing.producer import sparse_routing  # noqa: E402
+from rola.routing.producer import union_routing  # noqa: E402
 from tests.tier1_semantics.test_decode_vs_oracle import DECODE_RTOL  # noqa: E402
 
 pytestmark = [
@@ -57,7 +57,7 @@ pytestmark = [
 ]
 
 #: `(16, 16)` at `d_v = 64` is the uniform-width topology the chunk arm has a built arm
-#: for; `T` is a multiple of the arm's `C`. `sparse_routing` (exact entmax) is what makes
+#: for; `T` is a multiple of the arm's `C`. `union_routing` (exact entmax) is what makes
 #: the write support genuinely sparse, so atoms are genuinely absent and the decode
 #: steps' growth is reachable rather than vacuous.
 _HIDDEN, _H, _DV, _WIDTHS, _T, _S, _B = 64, 2, 64, (16, 16), 128, 6, 2
@@ -67,7 +67,7 @@ _DENSE = PlanOverrides(paging=False)
 def _gateway(seed=0):
     torch.manual_seed(seed)
     return build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
-                        routing=sparse_routing()).cuda()
+                        routing=union_routing()).cuda()
 
 
 def _inputs(seed=0):

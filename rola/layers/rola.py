@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The RoLA layer: a value projection, the feature-map slot, and the op.
 
-    RoLA(hidden_size, num_heads, routes, d_v=..., decay=..., layer_idx=...)
+    RoLA(routes, d_v=..., decay=..., layer_idx=...)
 
-``routes`` is a :class:`~rola.routing.factors.RouteProducer` -- the feature map, which
+``routes`` is a :class:`~rola.routing.factors.RouteGateway` -- the feature map, which
 carries the topology, the normalization arm and the producers that fill each level.
+It also carries ``hidden_size`` and ``num_heads``, so the layer reads them off it.
 ``d_v`` is the per-head value width, which is the LAYER's: it sizes ``v_proj`` and
 ``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
 SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
@@ -43,7 +44,7 @@ from rola.interface import (
 )
 from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
-from rola.routing.factors import RouteProducer
+from rola.routing.factors import RouteGateway
 
 if TYPE_CHECKING:
     from rola._state import RoLAState
@@ -73,12 +74,11 @@ class RoLA(nn.Module):
     """Routed linear attention.
 
     Args:
-        hidden_size: model dim. Must match the routing gateway's.
-        num_heads: head count ``H``. Must match the routing gateway's.
-        routes: the feature-map slot -- a :class:`~rola.routing.factors.RouteProducer`.
+        routes: the feature-map slot -- a :class:`~rola.routing.factors.RouteGateway`.
             It owns the topology (levels, widths), the normalization arm and the side
             gains, because those are facts about the map rather than about the layer
-            wrapping it.
+            wrapping it, and it owns ``hidden_size``/``num_heads``, which the layer
+            reads off it rather than taking a second declaration of.
         d_v: per-head value width -- the width of the state each leaf holds. It sizes
             ``v_proj`` and ``o_proj``, which is why it is the layer's; the default is
             the width the chunk matrix is built at.
@@ -96,9 +96,7 @@ class RoLA(nn.Module):
 
     def __init__(
         self,
-        hidden_size: int,
-        num_heads: int,
-        routes: RouteProducer,
+        routes: RouteGateway,
         *,
         d_v: int = 64,
         decay=None,
@@ -108,15 +106,13 @@ class RoLA(nn.Module):
         expert=None,
     ) -> None:
         super().__init__()
-        if type(routes) is not RouteProducer:
+        if type(routes) is not RouteGateway:
             raise TypeError(
                 "RoLA's `routes` argument is the feature-map slot and must be a "
-                f"rola.RouteProducer, got {type(routes).__name__}. It is what carries the "
+                f"rola.RouteGateway, got {type(routes).__name__}. It is what carries the "
                 "topology and the producers that fill each level.")
-        if routes.hidden_size != hidden_size or routes.num_heads != num_heads:
-            raise ValueError(
-                f"this layer is {hidden_size} wide with {num_heads} heads, but its RouteProducer "
-                f"was built for {routes.hidden_size}/{routes.num_heads}")
+        hidden_size = routes.hidden_size
+        num_heads = routes.num_heads
         if type(d_v) is not int or d_v < 1:
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
         if decay is not None:

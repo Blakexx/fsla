@@ -62,7 +62,7 @@ import time
 
 import torch
 
-from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
+from rola import RoLA, RouteGateway, SimplexProducer, dense_routing, union_routing
 from rola import state as rola_state
 from rola.expert import PlanOverrides
 from rola.ops import chunk as chunk_arm
@@ -87,14 +87,14 @@ def _median_ms(fn, *, reps: int, warmup: int) -> float:
 def _layer(*, hidden, H, d_v, branches, router, norm, decay, dense_pin=False, seed=0):
     from rola import LearnedDecay
 
-    routing = sparse_routing(1.5) if router == "entmax" else dense_routing()
+    routing = union_routing(1.5) if router == "entmax" else dense_routing()
     torch.manual_seed(seed)
     producer = SimplexProducer(tuple(branches), routing, hidden_size=hidden, num_heads=H)
-    routes = RouteProducer(
-        [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
+    routes = RouteGateway(
+        [producer], num_heads=H, hidden_size=hidden, normalization=norm)
     decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay else None
     layer = RoLA(
-        hidden, H, routes, decay=decay_source, layer_idx=0,
+        routes, d_v=d_v, decay=decay_source, layer_idx=0,
         expert=PlanOverrides(paging=False) if dense_pin else None,
     ).cuda().eval()
     for param in layer.parameters():

@@ -85,7 +85,7 @@ import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from bench.regression import settle_clocks
-from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
+from rola import RoLA, RouteGateway, SimplexProducer, union_routing
 from rola import state as rola_state
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
@@ -271,7 +271,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
     def routing_tag(read_router: str, write_router: str):
         """Old `LevelRoutingConfig(read=side(read_router), write=side(write_router),
         tied=False, alpha=1.5)`. Per the migration mapping: both sides sparse and
-        untied -> `UnionRouting(alpha)` (`sparse_routing(1.5)`); otherwise
+        untied -> `UnionRouting(alpha)` (`union_routing(1.5)`); otherwise
         `IndependentRouting(tied, ...)` with each side's own activation -- which
         is what a MIXED read/write router (the read-dense/write-sparse parity
         cell) needs, since `IndependentRouting` already takes per-side
@@ -283,7 +283,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             return entmax(1.5) if router == "entmax" else softmax()
 
         if read_router == "entmax" and write_router == "entmax":
-            return sparse_routing(1.5)
+            return union_routing(1.5)
         return IndependentRouting(False, activation(read_router), activation(write_router))
 
     row = {"arm": arm, "cell_role": cell_role, "L": L, "B": B, "H": H, "d_v": d_v,
@@ -303,10 +303,10 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         producer = SimplexProducer(
             tuple(branches), routing_tag(read_router, write_router),
             hidden_size=hidden, num_heads=H)
-        routes = RouteProducer(
-            [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization="global")
+        routes = RouteGateway(
+            [producer], num_heads=H, hidden_size=hidden, normalization="global")
         layer = RoLA(
-            hidden, H, routes, decay=None, layer_idx=0,
+            routes, d_v=d_v, decay=None, layer_idx=0,
         ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
             with torch.no_grad():

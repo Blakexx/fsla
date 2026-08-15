@@ -5,7 +5,7 @@
 Linear attention's op takes ``(q, k, v)``. RoLA's takes ``(routes, v)``, where
 ``routes`` is the ``(q, k)`` pair AFTER the feature map -- the read-side and write-side
 simplices and their side gains. That bundle is :class:`RouteFactors`;
-:class:`RouteProducer` is the module that assembles one out of producers.
+:class:`RouteGateway` is the module that assembles one out of producers.
 
 The bundle carries tensors and nothing else, which is why it is constructible rather
 than sealed, and why its invariants are structural rather than provenance. What they
@@ -47,7 +47,7 @@ from rola.routing.types import (
     validate_normalization,
 )
 
-__all__ = ["RouteFactors", "RouteProducer"]
+__all__ = ["RouteFactors", "RouteGateway"]
 
 @dataclass(frozen=True, slots=True)
 class RouteFactors:
@@ -143,7 +143,7 @@ class RouteFactors:
         return (*self.read, *self.write, *gains)
 
 
-class RouteProducer(nn.Module):
+class RouteGateway(nn.Module):
     """The gateway from producers to :class:`RouteFactors`.
 
     Args:
@@ -177,7 +177,7 @@ class RouteProducer(nn.Module):
         super().__init__()
         producers = list(producers)
         if not producers:
-            raise ValueError("RouteProducer needs at least one producer -- one per routing level")
+            raise ValueError("RouteGateway needs at least one producer -- one per routing level")
         for index, producer in enumerate(producers):
             widths = getattr(producer, "widths", None)
             if not isinstance(widths, tuple) or not widths or any(
@@ -226,7 +226,7 @@ class RouteProducer(nn.Module):
                 f"{getattr(read_stream, 'shape', type(read_stream).__name__)}")
         if read_stream.shape[-1] != self.hidden_size:
             raise ValueError(
-                f"read_stream is {read_stream.shape[-1]} wide but this RouteProducer was built "
+                f"read_stream is {read_stream.shape[-1]} wide but this RouteGateway was built "
                 f"for hidden_size={self.hidden_size}")
         if write_stream is None:
             write_stream = read_stream

@@ -167,13 +167,13 @@ def poison_torch_memory(request):
 def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
                  normalization="global", gain=True, bias=False,
                  gain_bias_init=None, gain_config=None):
-    """One :class:`rola.RouteProducer` over one simplex producer covering every level."""
-    from rola import RouteProducer, SimplexProducer, dense_routing
+    """One :class:`rola.RouteGateway` over one simplex producer covering every level."""
+    from rola import RouteGateway, SimplexProducer, dense_routing
 
     producer = SimplexProducer(
         tuple(widths), dense_routing() if routing is None else routing,
         hidden_size=hidden_size, num_heads=num_heads, bias=bias)
-    return RouteProducer(
+    return RouteGateway(
         [producer], num_heads=num_heads, hidden_size=hidden_size,
         normalization=normalization, gain=gain, gain_bias_init=gain_bias_init,
         gain_config=gain_config)
@@ -196,7 +196,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
     sources = {"learned": LearnedDecay, "constant": ConstantDecay}
     source = None if decay is None else sources[decay](
         decay_rate, widths=routes.widths, num_heads=num_heads)
-    return RoLA(hidden_size, num_heads, routes, d_v=d_v, decay=source,
+    return RoLA(routes, d_v=d_v, decay=source,
                 layer_idx=layer_idx, expert=expert)
 
 
@@ -208,7 +208,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # tests/unit/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
 # is what lets them isolate a backward-through-every-tensor gate. The production
-# orchestration is `SimplexProducer`/`RouteProducer` -- nn.Module methods over
+# orchestration is `SimplexProducer`/`RouteGateway` -- nn.Module methods over
 # nn.Parameters -- so `produce_routing` builds that pair and runs it under
 # `torch.nn.utils.stateless.functional_call` with the caller's tensors standing
 # in for its parameters. The graph reaches the caller's leaves and the numerics
@@ -236,14 +236,14 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
 
     from torch.func import functional_call
 
-    from rola.routing.factors import RouteProducer
+    from rola.routing.factors import RouteGateway
     from rola.routing.producer import SimplexProducer
 
     H, hidden_size, _ = route_W.shape
     producer = SimplexProducer(
         topology.widths, tuple(level.routing for level in topology.levels),
         hidden_size=hidden_size, num_heads=H, bias=route_bias is not None)
-    gateway = RouteProducer(
+    gateway = RouteGateway(
         [producer], num_heads=H, hidden_size=hidden_size, normalization=normalization)
     parameters = {"producers.0.route_W": route_W, "side_gain.gain_W": gain_W,
                   "side_gain.gain_bias": gain_bias}

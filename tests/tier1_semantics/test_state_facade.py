@@ -36,7 +36,7 @@ from conftest import build_layer, build_routes  # noqa: E402
 import rola  # noqa: E402
 from rola.expert import PlanOverrides  # noqa: E402
 from rola.ops import chunk as _chunk  # noqa: E402
-from rola.routing.producer import sparse_routing  # noqa: E402
+from rola.routing.producer import union_routing  # noqa: E402
 
 pytestmark = [
     pytest.mark.cuda,
@@ -50,7 +50,7 @@ _DENSE = PlanOverrides(paging=False)
 def _gateway(seed=0, widths=_WIDTHS):
     torch.manual_seed(seed)
     return build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=widths,
-                        routing=sparse_routing()).cuda()
+                        routing=union_routing()).cuda()
 
 
 def _inputs(seed=0, T=_T, B=2):
@@ -243,7 +243,7 @@ def test_the_layer_returns_the_layered_pair_always():
     rings are `None` here because no convolution is configured, which is the layer
     holding exactly the recurrences its own level introduced."""
     layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_WIDTHS,
-                        routing=sparse_routing(), normalization="global", decay=None,
+                        routing=union_routing(), normalization="global", decay=None,
                         layer_idx=0).cuda().float().eval()
     x = torch.randn(2, _T, _HIDDEN, device="cuda")
     with torch.no_grad():

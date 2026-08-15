@@ -138,9 +138,9 @@ the feature map. `docs/api.md` is the contract in full.
 ```python
 import rola
 
-producer = rola.SimplexProducer((8, 8), rola.sparse_routing(1.5),
+producer = rola.SimplexProducer((8, 8), rola.union_routing(1.5),
                                 hidden_size=512, num_heads=8)
-routes   = rola.RouteProducer([producer], num_heads=8, hidden_size=512)
+routes   = rola.RouteGateway([producer], num_heads=8, hidden_size=512)
 
 factors = routes(hidden_states)          # the (q, k) pair, after the feature map
 y, state = rola.rola_op(factors, v)
@@ -159,15 +159,16 @@ from the routing it was actually given.
 ```python
 from rola import RoLA, LearnedDecay
 
-layer = RoLA(512, 8, routes, d_v=64,
+layer = RoLA(routes, d_v=64,
              decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
              layer_idx=0).cuda()
 y, (state, conv_rings) = layer(x, state=(rola.state(), None))
 ```
 
-Five arguments, because everything else was either a fact about the feature map (which
-lives on the feature map) or a launch decision (which the op makes). `d_v` is the
-layer's: it sizes `v_proj`/`o_proj`, and the routing carries no value geometry.
+One positional argument, because everything else was either a fact about the feature
+map (which lives on the feature map, `hidden_size` and `num_heads` included) or a
+launch decision (which the op makes). `d_v` is the layer's: it sizes
+`v_proj`/`o_proj`, and the routing carries no value geometry.
 
 ### The state
 

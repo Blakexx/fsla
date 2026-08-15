@@ -327,12 +327,12 @@ def test_the_state_travels_through_the_host_seam():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from conftest import build_routes
 
-    from rola.routing.producer import sparse_routing
+    from rola.routing.producer import union_routing
 
     widths, T = (16, 16), 64
     torch.manual_seed(0)
     gateway = build_routes(hidden_size=64, num_heads=2, widths=widths,
-                           routing=sparse_routing()).cuda()
+                           routing=union_routing()).cuda()
     x = torch.randn(2, T, 64, device="cuda")
 
     y_full, s_full = chunk.run(gateway(x), torch.randn(2, T, 2, _DV, device="cuda"),
