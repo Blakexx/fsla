@@ -10,7 +10,7 @@
 // consumers): one CTA owns exactly the 32 tokens of one support word.
 //
 // Why this is CUDA and not Triton, the measured occupancy history, and the whole
-// solve: docs/internals/entmax.md
+// solve: docs/internals/entmax/entmax.md
 #pragma once
 
 #include <cstdint>
@@ -21,11 +21,11 @@ namespace rola {
 namespace entmax {
 
 //: One launch = one union routing LEVEL = one width class = one alpha; the caller's
-//: per-level loop supplies the levels -- docs/internals/entmax.md#launch-shape
+//: per-level loop supplies the levels -- docs/internals/entmax/entmax.md#launch-shape
 //:
 //: `read_values`/`write_values` accept BOTH route-value layouts (rank-3 dense,
 //: rank-4 tile-major) through ONE stride 5-tuple, so layout is data here and never a
-//: codegen axis -- docs/internals/entmax.md#strides
+//: codegen axis -- docs/internals/entmax/entmax.md#strides
 void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                    torch::Tensor& midpoint_values, torch::Tensor& support_words,
                    torch::Tensor& read_values, torch::Tensor& write_values, double alpha);

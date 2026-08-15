@@ -39,7 +39,7 @@ the same purity holds of the chunk arm's clause resolve and of
 `rola/ops/naive.py::_leaf_product`)
 is a pure function of the leaf index that reads no routing data. So the support's
 *bitmap* is likewise a Kronecker product of the per-level indicators
-([`decode.md`](../internals/decode.md), which expands two `N`-bit maps by
+([`decode/decode.md`](../internals/decode/decode.md), which expands two `N`-bit maps by
 Kronecker broadcast rather than storing one).
 
 ## The instances it unifies
@@ -106,8 +106,8 @@ waste or worse:
 - Leaf-digit purity: the tiled consumer's `consumer.cuh` (`git show
   c7eaeb9:csrc/rola/src/consumer.cuh`), and `rola/ops/naive.py::_leaf_product`
   in the tree today; bitmap Kronecker
-  structure: [`docs/internals/decode.md`](../internals/decode.md),
-  [`decode_expand.md`](../internals/decode_expand.md); reference semantics:
+  structure: [`docs/internals/decode/decode.md`](../internals/decode/decode.md),
+  [`decode/decode_expand.md`](../internals/decode/decode_expand.md); reference semantics:
   `rola/ops/naive.py::_leaf_product`.
 - Materialization refusals and the staging decline: campaign journal,
   2026-08-04.

@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode.cuh` + `csrc/rola/src/decode.cu` — the `T = 1` decode path
+# `csrc/rola/src/decode/decode.cuh` + `csrc/rola/src/decode/decode.cu` — the `T = 1` decode path
 
 This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the objects both decode translation units share,

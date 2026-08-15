@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode_api.cuh` — the decode path's host-facing declarations
+# `csrc/rola/src/decode/decode_api.cuh` — the decode path's host-facing declarations
 
 The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares three
 symbols and carries no definitions: the two capacity accessors and

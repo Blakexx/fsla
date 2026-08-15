@@ -23,8 +23,8 @@
 
 #include <memory>
 
-#include "src/decode_api.cuh"
-#include "src/entmax.cuh"
+#include "src/decode/decode_api.cuh"
+#include "src/entmax/entmax.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/chunk/chunk_api.cuh"
 

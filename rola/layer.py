@@ -284,7 +284,7 @@ class RoLA(nn.Module):
 
         The layer's only contribution is the plan overrides; the carrier, the scratch,
         the backing and its growth all live behind ``decode_forward``
-        (``docs/internals/decode.md``), exactly as the chunk arm's tables live behind
+        (``docs/internals/decode/decode.md``), exactly as the chunk arm's tables live behind
         ``rola_op``.
         """
         out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)

@@ -377,9 +377,9 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     # TRACK D (thunder §6b): the T=1 decode path, two TUs.
-    "csrc/rola/src/decode_expand.cu",
-    "csrc/rola/src/decode.cu",
-    "csrc/rola/src/entmax.cu",
+    "csrc/rola/src/decode/decode_expand.cu",
+    "csrc/rola/src/decode/decode.cu",
+    "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     "csrc/rola/src/chunk/chunk.cu",
 ]

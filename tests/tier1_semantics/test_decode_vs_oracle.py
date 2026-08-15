@@ -3,7 +3,7 @@
 
 """TIER 1 — the T=1 decode path against the canonical fp64 oracle.
 
-Gates G1-G7 of the decode design (docs/internals/decode.md).
+Gates G1-G7 of the decode design (docs/internals/decode/decode.md).
 
 **WHY "BIT-IDENTITY VS THE PREFILL CONSUMER" IS NOT ONE OF THEM, and this has to be
 said before the tolerances make sense.** Three independent facts make byte-equality

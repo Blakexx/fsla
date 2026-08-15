@@ -14,7 +14,7 @@
 //   3. Membership is the EXACT-NONZERO test on the amplitude, never a threshold.
 //
 // The cost ledger, destination-word ownership, the ping-pong, and the SMEM arm:
-// docs/internals/decode_expand.md
+// docs/internals/decode/decode_expand.md
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -36,7 +36,7 @@ using BlockScanT = cub::BlockScan<int, kDecodeThreads>;
 //: leaves every dead digit's range zero. After level 0 the buffer holds `S_0 = N` bits.
 //: DESTINATION-WORD OWNERSHIP -- one thread owns one destination word and PULLS -- is
 //: what makes this race-free without atomics.
-//: docs/internals/decode_expand.md#the-recursion
+//: docs/internals/decode/decode_expand.md#the-recursion
 __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh,
                                             const float* const* amp, uint32_t* buf0, uint32_t* buf1,
                                             uint32_t* out) {
@@ -60,7 +60,7 @@ __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh
           if (g >= width) break;
           //: MEMBERSHIP IS THE EXACT-NONZERO TEST -- the DEFINING EXPRESSION of
           //: `schedule.py`'s support bitmap, never a threshold:
-          //: docs/internals/decode_expand.md#the-recursion
+          //: docs/internals/decode/decode_expand.md#the-recursion
           if (row[g] != 0.0f) m |= 1u << b;
         }
       }
@@ -77,7 +77,7 @@ __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh
     const int out_words = ceil_div_int(span_out, 32);
     const int width = p.level_width[l];
     const float* row = amp[l] + static_cast<int64_t>(bh) * width;
-    //: HAZARD ping-pong -- docs/internals/decode_expand.md#ping-pong
+    //: HAZARD ping-pong -- docs/internals/decode/decode_expand.md#ping-pong
     const uint32_t* src = buf[cur];
     uint32_t* dst = buf[cur ^ 1];
     for (int dw = tid; dw < nw; dw += kDecodeThreads) {
@@ -110,7 +110,7 @@ __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh
 
 //: `IN_SMEM` is a STRUCTURE-DRIVEN arm, not a threshold: `n_words` is a topology fact
 //: and the SMEM budget a hardware fact, both admitted as branch inputs by spec I2. The
-//: two arms compute the IDENTICAL function: docs/internals/decode_expand.md#smem-arm
+//: two arms compute the IDENTICAL function: docs/internals/decode/decode_expand.md#smem-arm
 template <bool IN_SMEM>
 __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodeParams p) {
   extern __shared__ char smem_raw[];
@@ -135,7 +135,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodePar
   // `pc_coarse[n_groups]` = `M`, the exact touched-row count. Taken from the PUBLISHED
   // words rather than accumulated per side, because the two sides' popcounts do not sum
   // to `popcount(r | w)`. This is the ONE place the union is formed outside a register,
-  // and it is formed as a COUNT: docs/internals/decode_expand.md#coarse-index
+  // and it is formed as a COUNT: docs/internals/decode/decode_expand.md#coarse-index
   __shared__ typename BlockScanT::TempStorage scan_temp;
   __shared__ int running;
   if (tid == 0) running = 0;
@@ -167,7 +167,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodePar
 //: same `amp_write` pointers -- so "the probe and the step's admission agree about the
 //: write support" is a property of the call graph rather than of an audit, and the set is
 //: derived ONCE per growth step rather than once here and again on the host.
-//: docs/internals/decode_expand.md#growth-probe
+//: docs/internals/decode/decode_expand.md#growth-probe
 template <bool IN_SMEM>
 __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(DecodeParams p) {
   extern __shared__ char smem_raw[];
@@ -188,7 +188,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(Dec
   //: no loop over leaves. Every atom's byte is written UNCONDITIONALLY -- a dead atom's
   //: `false` is as much of the published set as a live one's `true`, and writing only the
   //: live ones would leave the buffer carrying the previous step's answer:
-  //: docs/internals/decode_expand.md#growth-probe
+  //: docs/internals/decode/decode_expand.md#growth-probe
   const int32_t* page_row = p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
   bool* atom_row = p.atom_bits + static_cast<int64_t>(bh) * p.atoms_per_bh;
   int found = 0;

@@ -423,7 +423,7 @@ def test_affine_composition_algebra_matches_direct_recurrence():
 
 # ---------------------------------------------------------------------------
 # 7. The dial invariant AT THE CAST BOUNDARY the kernel reads it across
-#     (`rola.ops.decay.leaf_rate_dials`; docs/internals/decode.md)
+#     (`rola.ops.decay.leaf_rate_dials`; docs/internals/decode/decode.md)
 # ---------------------------------------------------------------------------
 
 

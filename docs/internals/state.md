@@ -140,14 +140,14 @@ returns the state exactly as `rola_op` does. Three things live behind that seam:
 * **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
   or a VIEW of the dense plane — the view is what makes the kernel's in-place update
   the state's update. Dense and paged compute the same bytes
-  ([`decode.md` §4](decode.md#paged-address)).
+  ([`decode/decode.md` §4](decode/decode.md#paged-address)).
 * **Growth is CONDITIONAL, and the condition arrives from the device.** `_decode_entry`
   takes the step's write-atom bitmap or `None`. A bitmap means the device growth probe
   found an atom this step writes that the table does not map, and the entry plans it
   with `plan_exact(..., fresh=False)` — residency becomes the UNION and the launch waits
   on the one event. `None` means there is nothing to admit, and the entry hands back the
   residency the state already has without touching the arena at all
-  ([`decode.md` §4b](decode.md#growth)).
+  ([`decode/decode.md` §4b](decode/decode.md#growth)).
 
 A decode step CONTINUES, so `_decode_entry` refuses a state that carries nothing —
 there is no prefill at one token and no entry state to read. That is a computational
@@ -248,7 +248,7 @@ A steady paged decode step is HOST-WAIT-BOUND: the growth probe's `[BH]` int32 r
 0.12–0.16 ms of a 0.22–0.24 ms step, and the floor is the WSL2 host's own
 launch-to-visible latency rather than anything tunable. The derivation and the two
 structural exits — capture the step, or consume the verdict on the DEVICE — are
-[`decode.md` §4b](decode.md#graph-capture).
+[`decode/decode.md` §4b](decode/decode.md#graph-capture).
 
 ### 9.3 Lifting the 4 GiB state-plane bound
 

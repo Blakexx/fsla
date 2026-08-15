@@ -1,7 +1,7 @@
 # `docs/internals/` — the source mirror
 
 One markdown file here per source file under `csrc/rola/`, at the same relative
-path (`csrc/rola/src/decode.cuh` → `docs/internals/decode.md`;
+path (`csrc/rola/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
 `csrc/rola/src/paging/vmm_owner.cu` → `docs/internals/paging/vmm_owner.md`).
 
 The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc that
@@ -25,7 +25,7 @@ What stays in the source:
 A hazard stub is one line, no prose, no numbers beyond its anchor id:
 
 ```cpp
-//: HAZARD update-then-read -- docs/internals/decode.md#update-then-read
+//: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
 ```
 
 Stubs are for **measured** hazards only — a place where moving, reordering or

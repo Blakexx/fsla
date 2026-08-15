@@ -1,4 +1,4 @@
-# `csrc/rola/src/entmax.{cuh,cu}` — the producer's union entmax solve
+# `csrc/rola/src/entmax/entmax.{cuh,cu}` — the producer's union entmax solve
 
 Hand CUDA over CUB warp primitives: the α-entmax solve that turns per-token read
 and write LOGITS into route VALUES, a midpoint amplitude, and §4.1's packed

@@ -630,10 +630,10 @@ def _launch_union_fwd(
     write_output: torch.Tensor,
     alpha: float,
 ) -> None:
-    # The union entmax solve is a hand-CUDA + CUB kernel in `csrc/rola/src/entmax.cu`,
+    # The union entmax solve is a hand-CUDA + CUB kernel in `csrc/rola/src/entmax/entmax.cu`,
     # not Triton: the Triton lowering measured 255 registers with spills and an
     # uncontrollable `tl.sort` scratch, and a JIT violates the ahead-of-time
-    # build policy (docs/internals/entmax.md).  NO FALLBACK, by policy --
+    # build policy (docs/internals/entmax/entmax.md).  NO FALLBACK, by policy --
     # `rola.ops._ext` raises loudly if the wheel is missing.
     from rola.ops._ext import extension
 

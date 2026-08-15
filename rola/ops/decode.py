@@ -3,7 +3,7 @@
 
 """The T=1 decode op — the frozen-config carrier, the workspace, and the guard.
 
-Design ruling (docs/internals/decode.md): **T = 1 has no stage 2.** Every stage-2 decision is
+Design ruling (docs/internals/decode/decode.md): **T = 1 has no stage 2.** Every stage-2 decision is
 degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split;
 statistics: a population of one), so the decode path bypasses selection
 *architecturally* — the config freezes at
@@ -55,7 +55,7 @@ the probe ALREADY PUBLISHED (``plan_exact(..., fresh=False)`` on the arena's sid
 stream, then the one event wait), so even a growth step derives its write set once, on
 the device. There is one expansion behind both arms, which is why the probe is a kernel
 BESIDE the step's own rather than a second derivation of it
-(docs/internals/decode.md#growth).
+(docs/internals/decode/decode.md#growth).
 
 **THE KERNEL-LAYOUT CARRIER.** :class:`FrozenDecodeConfig` answers "what shape is the
 launch?" -- widths, mixed-radix strides, spans, row offsets, word and group counts,
@@ -218,12 +218,12 @@ class DecodeWorkspace:
     ctr: torch.Tensor
     #: The growth probe's device answer and its PINNED landing buffer. Pinned is what
     #: makes the read one DMA rather than a staging copy, and holding both here is what
-    #: keeps a steady step free of allocation: docs/internals/decode.md#growth-probe
+    #: keeps a steady step free of allocation: docs/internals/decode/decode.md#growth-probe
     growth: torch.Tensor
     growth_host: torch.Tensor
     #: The probe's OTHER output: `[BH, N/16]` bool, the step's own write-atom set,
     #: condensed on the device from the expansion the verdict was read off. A growth
-    #: step admits from THIS -- the host derives nothing: docs/internals/decode.md#growth
+    #: step admits from THIS -- the host derives nothing: docs/internals/decode/decode.md#growth
     atom_bits: torch.Tensor
     key: tuple = field(default=())
 
@@ -287,7 +287,7 @@ def _guard_no_grad(operands) -> None:
 #: about: a carrier is a function of its KEY (it is frozen and immutable for the
 #: sequence), and a workspace is scratch belonging to one live state. The workspace map
 #: holds its states weakly, so a dropped sequence drops its scratch and two concurrent
-#: sequences never share a buffer (docs/internals/decode.md).
+#: sequences never share a buffer (docs/internals/decode/decode.md).
 _CARRIERS: dict[tuple, FrozenDecodeConfig] = {}
 _WORKSPACES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -316,7 +316,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     The launch machinery -- the frozen carrier and the scratch -- is memoized in this
     MODULE and never appears here, for the same reason the chunk arm's tables do not:
     it is how the step runs, not what it computes. The backing is likewise invisible,
-    and its growth is handled below (docs/internals/decode.md#growth).
+    and its growth is handled below (docs/internals/decode/decode.md#growth).
     """
     from rola.expert import PlanOverrides
 
@@ -332,7 +332,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     #: ..., fresh=False)` on the arena's side stream over the set the PROBE published, and
     #: the launch's one event wait. Nothing is derived on the host on either arm, and a
     #: steady step's only host synchronization is the probe's `[BH]` int32 read:
-    #: docs/internals/decode.md#growth
+    #: docs/internals/decode/decode.md#growth
     bitmap = None
     if state.paged and _growth_probe(routes.write, config, state.page_table, workspace):
         bitmap = workspace.atom_bits

@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode_expand.cu` — the `T = 1` support expansion
+# `csrc/rola/src/decode/decode_expand.cu` — the `T = 1` support expansion
 
 `supp(R)` and `supp(W)` as EXACT leaf bitmaps. One CTA per batch-head: it builds
 two `N`-bit maps by Kronecker broadcast and emits the coarse popcount index the

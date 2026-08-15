@@ -13,7 +13,7 @@ anywhere in this file's ground truth.
 **THE DEVICE LOWERING IS NOT ONE KERNEL, and this file's wording used to say "fused
 Triton" as though it were** (corrected at the thunder merge, 2026-08-02). Independent
 levels are still fused Triton; the UNION solve is a hand-CUDA + CUB kernel
-(`csrc/rola/src/entmax.cu`, Track E), and the Triton union kernel was deleted when it
+(`csrc/rola/src/entmax/entmax.cu`, Track E), and the Triton union kernel was deleted when it
 landed -- it was measured at 255 registers with spills and an uncontrollable `tl.sort`
 scratch, and a JIT is against the closed-world AOT policy. Everything below that says
 "the two lowerings" still means exactly what it meant, device against torch; what

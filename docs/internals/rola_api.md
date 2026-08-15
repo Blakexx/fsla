@@ -4,7 +4,7 @@ The only translation unit that knows pybind exists. One `PYBIND11_MODULE`, four
 groups of `m.def`, and one `py::class_`.
 
 `m.def` bodies live here and nowhere else; the declarations they name come from
-`src/chunk/chunk_api.cuh`, `src/decode_api.cuh`, `src/entmax.cuh` and
+`src/chunk/chunk_api.cuh`, `src/decode/decode_api.cuh`, `src/entmax/entmax.cuh` and
 `src/paging/vmm_owner.cuh`.
 
 Symbols: a TU is a translation unit; `-gencode` is the nvcc flag that emits one device
@@ -124,7 +124,7 @@ host runs it first, reads one `[BH]` int32, and only then decides whether the st
 its admission at all — planning, when it does, from the write-atom set the probe published
 beside that verdict. Binding it separately is what keeps that ordering visible at
 the boundary instead of implied by a flag. Its contract is
-[`decode_api.md` §4](decode_api.md#growth-probe).
+[`decode/decode_api.md` §4](decode/decode_api.md#growth-probe).
 
 ## The chunk consumer's entries (operator adoption)
 

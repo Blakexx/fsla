@@ -74,7 +74,7 @@ def _sources() -> list[Path]:
 def _mirror_for(source: Path) -> Path:
     """The doc a source file must have.
 
-    ``csrc/rola/src/decode.cuh``          -> ``docs/internals/decode.md``
+    ``csrc/rola/src/decode/decode.cuh``   -> ``docs/internals/decode/decode.md``
     ``csrc/rola/src/paging/vmm_owner.cu`` -> ``docs/internals/paging/vmm_owner.md``
     ``csrc/rola/rola_api.cpp``            -> ``docs/internals/rola_api.md``
 

@@ -18,7 +18,7 @@
 //
 // The GEMV/GEMM argument, the measured reproducibility divergence, the barrier ledger,
 // and the derivation that collapses the causal intra Gram into UPDATE-THEN-READ:
-// docs/internals/decode.md
+// docs/internals/decode/decode.md
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -36,12 +36,12 @@ namespace detail {
 //: `intra_panel.cuh`'s `kPanelMaxExponent`, restated because decode shares none of that
 //: header's panel algebra. On this path the clamp is STRUCTURALLY INERT -- the exponent
 //: cannot go positive -- and is written anyway so ONE convention governs every survival
-//: exponential in the repository: docs/internals/decode.md#decode-max-exponent
+//: exponential in the repository: docs/internals/decode/decode.md#decode-max-exponent
 constexpr float kDecodeMaxExponent = 88.0f;
 
 //: Locate the bitmap word holding global set-bit index `row`, and how many set bits of
 //: that word precede it. Two steps, NEITHER a scan of the bitmap: a binary search over
-//: the coarse index, then at most 32 popcounts. docs/internals/decode.md#locate-row
+//: the coarse index, then at most 32 popcounts. docs/internals/decode/decode.md#locate-row
 __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bits_r,
                                            const uint32_t* bits_w, int n_words, int n_groups,
                                            int row, int& out_word, int& out_skip) {
@@ -69,7 +69,7 @@ __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bi
 template <int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
-  //: template axis and not a runtime test: docs/internals/decode.md#template-axes
+  //: template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
   constexpr int cols = DV + 1;
   //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's
   //: accumulators are its own output columns.
@@ -130,7 +130,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   //: The two per-token row scales. At `T = 1` there is no owner rectangle, so what
   //: remains here is exactly the per-TOKEN part -- the side gains; the per-LEVEL factors
   //: the tiled kernel hoists stay in the per-LEAF product.
-  //: docs/internals/decode.md#row-scales
+  //: docs/internals/decode/decode.md#row-scales
   const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
   const float sw = p.g_write[bh];
 
@@ -141,7 +141,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   // ---- resolve this CTA's ROW range into a WORD range -------------------------
   // Defined in ROWS (popcount-balanced by construction), handed out in WORDS; the two
   // boundary words are cut by dropping / keeping set bits, exact rather than by an index
-  // comparison. docs/internals/decode.md#row-range-to-words
+  // comparison. docs/internals/decode/decode.md#row-range-to-words
   if (tid == 0) {
     const int M = pc[ng];
     const int row_lo = static_cast<int>(static_cast<int64_t>(seg) * M / p.n_split);
@@ -203,7 +203,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   //: ELEMENT offset from `p.state`: dense is `bh * N + (atom << 4)` (which is why a
   //: topology whose `N` is not a whole number of atoms still addresses correctly -- the
   //: two halves recombine to `bh * N + leaf`), paged is `slot << 4`.
-  //: docs/internals/decode.md#paged-address
+  //: docs/internals/decode/decode.md#paged-address
   const int32_t* page_row =
       (p.page_tbl == nullptr) ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
   const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
@@ -217,7 +217,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   while (w <= w_last) {
     //: THE COARSE-INDEX CONSULT AT WALK TIME: a group whose prefix does not advance
     //: holds no touched row, so its 32 words are never read. Once per GROUP, not once
-    //: per word: docs/internals/decode.md#coarse-consult
+    //: per word: docs/internals/decode/decode.md#coarse-consult
     const int grp = w >> 5;
     if (grp != g_cached) {
       g_cached = grp;
@@ -233,7 +233,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
     const uint32_t ww_word = bits_w[w];
     //: THE UNION, formed in a REGISTER and never stored.
     uint32_t u = rw_word | ww_word;
-    //: HAZARD boundary-cut-order -- docs/internals/decode.md#boundary-cut-order
+    //: HAZARD boundary-cut-order -- docs/internals/decode/decode.md#boundary-cut-order
     if (w == w_last) u = keep_low_set_bits(u, keep_last);
     if (w == w_start) u = drop_low_set_bits(u, drop_first);
     if (u == 0u) {
@@ -244,7 +244,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
     const int leaf_base = w * 32;
     //: The `D` integer divisions are paid ONCE PER WORD, not once per row -- a per-row
     //: decomposition would make the A100 dense arm instruction-bound:
-    //: docs/internals/decode.md#divisions-per-word
+    //: docs/internals/decode/decode.md#divisions-per-word
     {
       int rem = leaf_base;
 #pragma unroll
@@ -261,7 +261,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
     //: The word is walked in ALIGNED SUB-RANGES, each inside ONE inner block, so the
     //: innermost digit needs no division and the outer digits are constant. ONE uniform
     //: loop that degenerates, not a fast path with a fallback:
-    //: docs/internals/decode.md#aligned-subranges
+    //: docs/internals/decode/decode.md#aligned-subranges
     while (q < 32) {
       int take = b_last - cur;
       if (take > 32 - q) take = 32 - q;
@@ -294,7 +294,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
         //: plan admits the step's write set exactly, so an atom with no slot is outside
         //: it, and a never-deposited leaf holds zeros in the dense backing too. The
         //: self-normalizing readout then contributes exactly nothing through it.
-        //: docs/internals/decode.md#absent-atom
+        //: docs/internals/decode/decode.md#absent-atom
         float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
         float sv[NC];
 #pragma unroll
@@ -311,13 +311,13 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
         //: causal intra Gram collapses into reading the row after it is written. A row
         //: in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression
         //: is its readout too -- one path, no arm.
-        //: HAZARD update-then-read -- docs/internals/decode.md#update-then-read
+        //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
         if (in_w && atom_present) {
           //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
           //: SPLIT: at `T = 1` the tiled kernel's §12 rule-1 half-mass shift is exactly
           //: the identity, so ONE `expf` replaces its three. `log1pf` IS the composition
           //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of §12
-          //: rule 2's prohibitions: docs/internals/decode.md#decay-at-read
+          //: rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
           float keep = 1.0f;
           if (DECAY) {
             const float rate = o_rate * sd[off_last];
@@ -359,7 +359,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
   }
 
   // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
-  //: HAZARD fold-bank-padding -- docs/internals/decode.md#fold-bank-padding
+  //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
   const int fold_pitch = cols + 3;
 #pragma unroll
   for (int k = 0; k < NC; ++k) fold[warp * fold_pitch + lane + 32 * k] = acc[k];
@@ -394,7 +394,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParam
 
   //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so the
   //: reader sees the stores the `__threadfence` above made visible.
-  //: HAZARD slot-order -- docs/internals/decode.md#slot-order
+  //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
   if (tid < cols) {
     const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
     float t = 0.0f;
@@ -422,7 +422,7 @@ size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay) {
 void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay) {
   //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16` (the GLOBAL axis
   //: died with raw). What is NOT an axis -- `BT`, `BC` -- is the interesting part:
-  //: docs/internals/decode.md#instantiation-matrix
+  //: docs/internals/decode/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
   const size_t smem = decode_gemv_smem_bytes(p.total_rows, d_v, cols, decay);
@@ -468,7 +468,7 @@ int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 //: The MIRRORED copy of the producer's `MAX_BRANCH_WIDTH`, bound separately from the
 //: capacity because the two are DIFFERENT CLAIMS -- the second is what stops the
 //: `static_assert` being satisfied by a stale mirror:
-//: docs/internals/decode.md#producer-width-mirror
+//: docs/internals/decode/decode.md#producer-width-mirror
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
 at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
@@ -504,7 +504,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   //: the leaf space (`[BH, N / kAtomLeaves]`) and the plane holds only the slots a plan
   //: committed; without one the plane IS the leaf space. Slot VALUES are not
   //: bounds-checked -- that would be a device-side read of the table, and the plan owns
-  //: the bound. docs/internals/decode_api.md#paged-state
+  //: the bound. docs/internals/decode/decode_api.md#paged-state
   int64_t N = 0;
   int atoms_per_bh = 0;
   const int32_t* page_ptr = nullptr;
@@ -531,7 +531,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   const int n_groups = (n_words + kCoarseGroupWords - 1) / kCoarseGroupWords;
   //: ONE FLAT allocation, carved into `bits_r | bits_w | scratch`. Flat rather than
   //: shaped, because a shape that lies is worse than no shape:
-  //: docs/internals/decode.md#flat-bits
+  //: docs/internals/decode/decode.md#flat-bits
   TORCH_CHECK(bits.dim() == 1 && bits.size(0) == 4LL * BH * n_words,
               "bits must be a flat [4 * BH * ceil(N/32)] int32 workspace");
   TORCH_CHECK(pc_coarse.dim() == 2 && pc_coarse.size(0) == BH && pc_coarse.size(1) == n_groups + 1,
@@ -593,7 +593,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
 
   //: `empty`, not `zeros`: every element is written, so a zero-fill is a launch the
   //: launch-latency-bound small-batch regime pays for nothing:
-  //: docs/internals/decode.md#empty-not-zeros
+  //: docs/internals/decode/decode.md#empty-not-zeros
   auto y = at::empty({BH, d_v}, v.options());
   auto* bits_base = reinterpret_cast<uint32_t*>(bits.data_ptr<int32_t>());
   p.g_write = g_write.data_ptr<float>();
