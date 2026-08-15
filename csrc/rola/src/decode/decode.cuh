@@ -95,6 +95,15 @@ struct DecodeParams {
   //: unconditionally, so the buffer needs no zero-fill and the probe needs no atomic:
   //: docs/internals/decode/decode_expand.md#growth-probe
   int32_t* growth;
+  //: `[1]` int32, the OR of `growth` over batch-heads, reduced by the probe's
+  //: last-arriving CTA, and that CTA's `[1]` int32 self-resetting arrival counter:
+  //: docs/internals/decode/decode_expand.md#growth-reduction
+  int32_t* growth_any;
+  int32_t* probe_ctr;
+  //: `[1]` int32 or `nullptr`. NONZERO MAKES THE STEP A NO-OP -- no `y`, no state, no
+  //: scratch touched -- which is the only thing that lets a step be ENQUEUED before its
+  //: admission is known: docs/internals/decode/decode.md#the-gate
+  const int32_t* gate;
   //: `[BH, atoms_per_bh]` bool, the GROWTH PROBE's second output: this step's own write
   //: set, condensed to atoms. It is what a growth step's `plan_exact` admits from, so the
   //: host never re-derives the set the probe has already expanded:

@@ -56,18 +56,26 @@ the plan owns the bound — the same division of labour `chunk.cu`'s `page_table
 states. The address the kernel builds from a slot, and what a `-1` means, are
 [`decode.md` §4](decode.md#paged-address).
 
+The trailing `c10::optional<at::Tensor> gate` beside it is the probe's reduced verdict,
+`[1]` int32: nonzero makes the whole step a NO-OP, which is what lets a caller enqueue it
+before the verdict is host-visible and, under capture, never read the verdict at all
+([`decode.md` §4c](decode.md#the-gate)). Absent — the default — the step always runs, and
+the bytes are the pre-P67-a path's exactly.
+
 ## <a id="growth-probe"></a>4. `rola_decode_growth_probe` — a precondition, not a mode
 
 The probe is bound as its own entry because it is a different HOST ORDER, not an option on
 the step. It runs BEFORE `rola_decode_forward` so the host can learn whether this step's
-write set is already resident WITHOUT deriving that set itself. It writes two things and
-nothing else — no state, no `y`, no page table: the `[BH]` int32 verdict (`growth`), and
-the `[BH, atoms_per_bh]` bool write-atom set that verdict was read off (`atom_bits`),
-which is what a growth step then admits from.
+write set is already resident WITHOUT deriving that set itself. It writes three things and
+nothing else — no state, no `y`, no page table: the `[BH]` int32 verdict (`growth`), its
+`[1]` int32 reduction (`growth_any`, which the STEP reads as its `gate` —
+[`decode.md` §4c](decode.md#the-gate)), and the `[BH, atoms_per_bh]` bool write-atom set
+that verdict was read off (`atom_bits`), which is what a growth step then admits from.
 
-Its argument list is the subset of the step's that an expansion needs, plus those two
+Its argument list is the subset of the step's that an expansion needs, plus those
 outputs: `amp_write`, the three per-level integer vectors, the `page_table` it tests
-residency against, the step's own flat `bits` workspace, `growth` and `atom_bits`. There
+residency against, the step's own flat `bits` workspace, `growth`, `growth_any` and the
+reducing CTA's `probe_ctr`, and `atom_bits`. There
 is no `v`, no read side, no `n_split`, no `eps`, because none of them participates in the
 question. `atom_bits` is REQUIRED rather than optional: the kernel must condense to answer
 at all, so a caller who declined the buffer would be asking for the same work with the

@@ -250,6 +250,21 @@ class RoLAState:
             return self._arena.state, self._arena.page_table, self._arena
         return self._plane.view(self._shape), None, None
 
+    def _decode_entry_arena(self, bitmap: torch.Tensor):
+        """Admit `bitmap`'s atoms into the carried arena and hand it back.
+
+        The gated step's half of :meth:`_decode_entry`: the step has already run as a
+        no-op, so admission is all that is left before it is replayed
+        (docs/internals/decode/decode.md#capture). The arena's own plane and table are
+        untouched objects -- the base never moves and the table is written in place --
+        which is what keeps a CUDA graph captured over them valid across an admission.
+        """
+        if self._arena is None:
+            raise RuntimeError("a growth admission wants a paged state; this one is dense")
+        self._arena.plan_exact(
+            bitmap.reshape(self._keying.BH, self._keying.atoms_per_bh).bool(), fresh=False)
+        return self._arena
+
     # -- backing internals -----------------------------------------------------
 
     def _new_arena(self, widths: tuple[int, ...], BC: int) -> PageArena:

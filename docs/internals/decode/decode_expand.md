@@ -141,6 +141,16 @@ be talked out of. The expansion in the step's own launch is followed immediately
 GEMV, and the GEMV is what needs the corrected page table; a flag read after that launch is
 a flag read one step too late.
 
+<a id="growth-reduction"></a>**THE REDUCTION, and why it is all-or-nothing.** Every CTA
+writes its own `growth[bh]` unconditionally, so that buffer needs no zero-fill; the
+LAST-ARRIVING CTA then ORs the whole vector into `growth_any`, a `[1]` int32, and resets
+the arrival counter it used — the same self-resetting pattern the GEMV's `ctr` uses, and
+for the same reason: no `memset` may stand between two decode steps if the step is to be
+capturable. `growth_any` is what the STEP reads as its gate
+([`decode.md` §4c](decode.md#the-gate)), and the skip it drives is all-or-nothing across
+batch-heads on purpose — a per-`bh` skip would need a per-`bh` replay, and a replay that
+re-ran an already-deposited `bh` would double its write.
+
 The condensation is two half-word tests and no loop over leaves: a bitmap WORD is exactly
 TWO atoms, because an atom is 16 leaves and leaf order is the bitmap's bit order. Word `w`
 covers atoms `2w` (its low half) and `2w + 1` (its high half), each guarded against

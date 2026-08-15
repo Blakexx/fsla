@@ -242,13 +242,13 @@ built is settled, and the settlement is what must not be re-litigated:
   pages. It is decided when COW is scheduled; eager `clone()` ships first and COW is its
   drop-in optimization behind the same contract.
 
-### 9.2 A CUDA-graph-captured decode step
+### 9.2 A device-side ADMISSION
 
-A steady paged decode step is HOST-WAIT-BOUND: the growth probe's `[BH]` int32 read is
-0.12–0.16 ms of a 0.22–0.24 ms step, and the floor is the WSL2 host's own
-launch-to-visible latency rather than anything tunable. The derivation and the two
-structural exits — capture the step, or consume the verdict on the DEVICE — are
-[`decode/decode.md` §4b](decode/decode.md#graph-capture).
+A captured decode step no longer needs the host per steady token
+([`decode/decode.md` §4d](decode/decode.md#capture)), but `plan_exact` is still host code,
+so a GROWTH step surfaces once. Removing that last round trip means admitting on the
+device — an allocator cursor and a page-table patch inside the step, drawing on
+committed headroom the host tops up lazily.
 
 ### 9.3 Lifting the 4 GiB state-plane bound
 

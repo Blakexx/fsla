@@ -126,7 +126,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("eps"),
         //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
         //: backing, where the slot IS the atom and the bytes are the same.
-        py::arg("page_table") = c10::optional<at::Tensor>());
+        py::arg("page_table") = c10::optional<at::Tensor>(),
+        //: `gate` is the probe's reduced verdict: nonzero makes the whole step a no-op,
+        //: which is what lets it be enqueued before the verdict is host-visible.
+        py::arg("gate") = c10::optional<at::Tensor>());
   //: The step's PRECONDITION, not a mode of it: one CTA per batch-head expands the write
   //: side and ANDs it against residency, so the host learns whether the step needs the
   //: exact admission preamble at all. It publishes the condensation it judged
@@ -136,8 +139,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "RoLA T=1 decode growth probe: does this step write an atom the page table does "
         "not map? Publishes the step's write-atom set beside the verdict.",
         py::arg("amp_write"), py::arg("page_table"), py::arg("bits"), py::arg("growth"),
-        py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_strides"),
-        py::arg("level_spans"));
+        py::arg("growth_any"), py::arg("probe_ctr"), py::arg("atom_bits"), py::arg("level_widths"),
+        py::arg("level_strides"), py::arg("level_spans"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

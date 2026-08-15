@@ -120,10 +120,11 @@ device's own allocation granularity, which is the finest commitment the driver a
 
 The probe is registered as its own entry rather than as an argument to
 `rola_decode_forward`, because it is a PRECONDITION of the step and not a mode of it: the
-host runs it first, reads one `[BH]` int32, and only then decides whether the step needs
-its admission at all — planning, when it does, from the write-atom set the probe published
-beside that verdict. Binding it separately is what keeps that ordering visible at
-the boundary instead of implied by a flag. Its contract is
+host runs it first and the STEP reads its reduced verdict as a `gate`, so the step is
+enqueued behind the probe and the host learns the answer afterwards — planning, when it
+must, from the write-atom set the probe published beside that verdict. Binding it
+separately is what keeps that ordering visible at the boundary instead of implied by a
+flag. Its contract is
 [`decode/decode_api.md` §4](decode/decode_api.md#growth-probe).
 
 ## The chunk consumer's entries (operator adoption)

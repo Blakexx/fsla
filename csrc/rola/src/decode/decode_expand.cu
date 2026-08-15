@@ -113,6 +113,8 @@ __device__ __forceinline__ void expand_side(const DecodeParams& p, int D, int bh
 //: two arms compute the IDENTICAL function: docs/internals/decode/decode_expand.md#smem-arm
 template <bool IN_SMEM>
 __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodeParams p) {
+  //: HAZARD gate-before-anything -- docs/internals/decode/decode.md#gate-before-anything
+  if (p.gate != nullptr && *p.gate != 0) return;
   extern __shared__ char smem_raw[];
   const int bh = blockIdx.x;
   const int tid = threadIdx.x;
@@ -209,6 +211,28 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(Dec
   if (found) any_new = 1;
   __syncthreads();
   if (tid == 0) p.growth[bh] = any_new;
+
+  //: THE REDUCTION THE GATE READS, and it is all-or-nothing across batch-heads on
+  //: purpose: a per-`bh` skip would need a per-`bh` replay, and a replay that re-ran an
+  //: already-deposited `bh` would double its write. The last-arriving CTA ORs the vector
+  //: and resets the counter, so no `memset` stands between two steps:
+  //: docs/internals/decode/decode_expand.md#growth-reduction
+  __shared__ int s_last, s_any;
+  __threadfence();
+  __syncthreads();
+  if (tid == 0) s_last = (atomicAdd(p.probe_ctr, 1) == gridDim.x - 1) ? 1 : 0;
+  __syncthreads();
+  if (s_last == 0) return;
+  if (tid == 0) s_any = 0;
+  __syncthreads();
+  int seen = 0;
+  for (int i = tid; i < gridDim.x; i += blockDim.x) seen |= __ldcg(p.growth + i);
+  if (seen) s_any = 1;
+  __syncthreads();
+  if (tid == 0) {
+    *p.growth_any = s_any;
+    *p.probe_ctr = 0;
+  }
 }
 
 }  // namespace

@@ -154,9 +154,12 @@ settled writes atoms that are already resident. So the order per step is a QUEST
 then, only if the answer is yes, `rola_op`'s order at `L = 1`:
 
 ```
-_growth_probe(routes.write)        ->  one kernel + one [BH] int32 read: anything new?
-                                       and, either way, the step's write-ATOM set
-  no  -> _decode_step              ->  the walk, against the residency it already has
+_growth_probe_launch(routes.write) ->  one kernel: anything new? and, either way, the
+                                       step's write-ATOM set and the reduced verdict
+growth_host.copy_(growth_any)      ->  async into pinned; the event records on it
+_decode_step(gate=growth_any)      ->  ENQUEUED BEHIND THE VERDICT, gated on it
+verdict.synchronize()              ->  the wait, now spent on the launches above
+  no  -> done                      ->  the walk ran, against the residency it had
   yes -> state._decode_entry       ->  plan_exact(workspace.atom_bits, fresh=False)
          arena.wait()              ->  the ONE event the launch waits on
          _decode_step              ->  the walk, resolving through the grown table
@@ -181,18 +184,74 @@ The pool is reserved once, so admission never moves a base pointer and there is 
 the kernel to discover. `plan_exact`'s single size read is the only host synchronization a
 growth step adds beyond the probe's own.
 
-<a id="graph-capture"></a>**NAMED FUTURE WORK: the step is now HOST-WAIT-BOUND, and the
-next move is structural.** Of a 0.22-0.24 ms steady step, 0.12-0.16 ms is the host waiting
-for a 0.007 ms kernel to become visible: the probe's kernel enqueues in 0.0071 ms and a
-bare `torch.cuda.synchronize()` costs 0.0039, but launch-to-host-visible-completion on this
-WSL2 host is ~0.05-0.08 ms. Blocking is already the cheapest of the five mechanisms
-measured (0.093 ms against 0.099 for `.any().item()`, 0.111 for a stream sync, 0.139 for
-`.cpu()`, 0.152 for an event), so there is nothing left to tune -- the floor IS the host
-round trip. Two structural exits, neither scheduled: capture the whole step in a CUDA graph
-(the workspace is already allocation-free and `ctr` is reset by the step's own last CTA
-precisely so a step is capturable), or consume the probe's verdict ON THE DEVICE so no host
-round trip happens at all -- which would mean a device-side admission, the successor
-`PageArena._admit_pages` already names in its own docstring. Both are post-P67.
+## <a id="the-gate"></a>4c. The gate — the step is a no-op it can enqueue blind
+
+<a id="gate-before-anything"></a>**HAZARD `gate-before-anything`.** `DecodeParams::gate`
+is a `[1]` int32 (or `nullptr`). Both decode kernels test it in their FIRST statement and
+return; nothing downstream may be reordered above that test, because the whole contract is
+that a gated step touches nothing — not `y`, not the state, not `ctr`, not a bitmap word.
+`tests/integration/test_decode_graph_step.py` states it as `torch.equal` on the plane
+across a gated step.
+
+**WHY IT EXISTS, AND THE FACT THAT FORCED IT.** A deposit into an ABSENT atom is DROPPED
+([§4](#absent-atom)) — `if (in_w && atom_present)`. So a host that read the growth verdict
+LAZILY (every `K` steps, a pinned poll) would run steps whose writes are silently lost.
+Laziness is not an available design at any `K > 1`; the only sound shapes are per-step
+synchronization, or a step that DECLINES TO RUN when its writes are not yet addressable.
+The gate is the second, and it is what turns the verdict from a host decision into a
+device one.
+
+The probe reduces its per-`bh` verdict into one `[1]` int32 and the step reads THAT — the
+skip is all-or-nothing across batch-heads on purpose
+([`decode_expand.md`](decode_expand.md#growth-reduction)): a per-`bh` skip would need a
+per-`bh` replay, and a replay that re-ran an already-deposited `bh` would double its write.
+
+**WHAT IT BUYS THE EAGER PATH.** The verdict's copy is issued asynchronously, an event is
+recorded on it, and the step is enqueued GATED behind it; the host then waits on the
+event, having spent the wait on the launches instead of in front of them. Measured (RTX
+3080 Ti, medians of 15 x 50, one steady paged step, `d_v = 64`, `BH = 6`), a loop of steps
+with one synchronize at the end:
+
+| cell | steady, S4b order | steady, gated order | steady, CAPTURED | growth, S4b | growth, gated |
+|---|---|---|---|---|---|
+| 16x16 BC64    | 0.2468 | 0.2046 | **0.0367** | 0.7720 | 0.9107 |
+| 8x8x8x8 BC128 | 0.3254 | 0.2220 | **0.0573** | 0.8048 | 0.9672 |
+| 64x64 BC256   | 0.2811 | 0.2127 | **0.0553** | 0.6517 | 0.7780 |
+
+The host time the caller's thread spends per steady step falls from 0.259–0.318 ms to
+0.008–0.010 ms under capture: the host-wait floor S4b measured (launch-to-visible ~0.05–0.08
+ms on this WSL2 host) is not tuned away, it is left with nothing to sit in front of.
+
+**THE ONE PRICE, STATED.** A growth step now pays a wasted gated launch before its
+admission: +0.126 to +0.163 ms (+16% to +20%). It is the same trade the probe itself was:
+the rare step subsidizes the common one, and in a settled sequence steady steps outnumber
+growth steps by orders of magnitude.
+
+## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
+
+With no host read inside it the step is capturable, and `rola.ops.decode.decode_step_gated`
+is that entry: the same kernels in the same order as `decode_forward` minus the verdict
+read. The CALLER owns the verdict, at whatever synchronization it already has (a decode
+loop syncs once per token to sample):
+
+```
+y, state = decode_step_gated(...)   # or graph.replay()
+if growth_pending(state):           # one 4-byte read, at the caller's own sync
+    admit_growth(state)             # plan_exact from the probe's own condensation
+    y, state = decode_step_gated(...)  # or graph.replay(); now it runs
+```
+
+**A REPLAY IS SELF-CORRECTING**, which is what makes one captured graph enough: the probe
+re-runs inside it, so after the admission its verdict is 0 and the same graph performs the
+step it had skipped. Nothing in the loop reallocates — the workspace is built once, `ctr`
+is reset by the step's own last CTA, `probe_ctr` by the probe's, and the arena's base
+address and page table are objects an admission writes IN PLACE (the reservation never
+moves), so a graph captured over them survives growth. The eager `decode_forward` remains
+THE base path; capture is an optimization the caller selects, not a fallback either way.
+
+Still open, and NOT what this section does: a device-side ADMISSION. `plan_exact` is host
+code, so a growth step still surfaces to the host once. What P67-a removes is the host's
+participation in the steady step, which is all of them but a few.
 
 <a id="growth-probe"></a>**THE PROBE, and why it is exact.** `rola_decode_growth_probe` is
 a kernel BESIDE the expansion, in `decode_expand.cu`, and it calls that TU's own
@@ -667,15 +726,18 @@ Both the carrier and the workspace are memoized in the MODULE and appear on no p
 signature, for the same reason the chunk arm's tables do not: they are how the step runs,
 not what it computes.
 
-## <a id="probe-blocking-read"></a>39. The probe's read is BLOCKING, and that is the measured choice
+## <a id="probe-blocking-read"></a>39. The probe's read is ASYNCHRONOUS, and the gate is why it can be
 
-`_growth_probe` reads one pinned `[BH]` int32 device-to-host, into a workspace-owned
-buffer so a steady step allocates nothing. Blocking is not the obvious choice and it is
-the measured one: the same copy issued asynchronously and awaited on an event costs
-0.152 ms against 0.093 (RTX 3090, medians of 15 × 100), because the host must wait for
-the kernel either way and the event path adds its own record and query on top of the
-wait the copy already performs. A NO — which is the usual answer — therefore costs one
-kernel plus that read, against a host-derived preamble measured at 0.38–0.48 ms.
+`_growth_probe_launch` publishes the verdict into `growth_any`; the eager path copies that
+one `[1]` int32 into a workspace-owned PINNED buffer asynchronously, records an event, and
+enqueues the GATED step before waiting on it. Blocking was the measured choice while the
+read stood IN FRONT of the step (0.093 ms against 0.152 for an event, RTX 3090, medians of
+15 × 100 — the host had to wait for the kernel either way, and the event added a record
+and a query on top of the wait the copy already performed). The gate removes that premise:
+the wait now has the step's own launches to overlap, and the event is what lets it (see
+[§4c](#the-gate) for the measured effect and its one price). Under capture the read leaves
+the step entirely — the caller performs it, at its own synchronization
+([§4d](#capture)).
 
 The kernel expands the write side with `decode_expand.cu`'s OWN `expand_side`, over the
 same amplitude pointers the step itself uses, and ANDs the 16-deep condensation against

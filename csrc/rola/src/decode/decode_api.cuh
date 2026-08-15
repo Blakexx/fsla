@@ -32,16 +32,18 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table);
+                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table,
+                               c10::optional<at::Tensor> gate);
 
 //: THE GROWTH PROBE, bound separately because it is a different HOST ORDER and not a
 //: mode of the step: it runs BEFORE the step so the host can learn whether this step's
 //: write set is already resident WITHOUT deriving that set itself. It writes the verdict
-//: (`growth`) and the write-atom set that verdict was reached from (`atom_bits`, which is
-//: what a growth step then admits) -- no state, no `y`, no table:
-//: docs/internals/decode/decode_api.md#growth-probe
+//: (`growth`, and its `growth_any` reduction -- the step's GATE), and the write-atom set
+//: that verdict was reached from (`atom_bits`, which is what a growth step then admits)
+//: -- no state, no `y`, no table: docs/internals/decode/decode_api.md#growth-probe
 void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
-                              at::Tensor bits, at::Tensor growth, at::Tensor atom_bits,
+                              at::Tensor bits, at::Tensor growth, at::Tensor growth_any,
+                              at::Tensor probe_ctr, at::Tensor atom_bits,
                               std::vector<int64_t> level_widths, std::vector<int64_t> level_strides,
                               std::vector<int64_t> level_spans);
 
