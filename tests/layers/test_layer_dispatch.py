@@ -238,9 +238,12 @@ def test_a_no_grad_cuda_context_takes_the_kernel_arm(decay):
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
+        #: inside the no-grad context on purpose: `dispatch_for` answers the gradient
+        #: question FIRST and short-circuits, so an envelope read under grad would say
+        #: `no_kernel_arm is None` about every topology and assert nothing.
+        envelope = dispatch_for(layer.routes(x), x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
     assert layer.last_selected_plan is None
-    envelope = dispatch_for(layer.routes(x), x)
     assert envelope.no_kernel_arm is None, (
         "fixture rot: this topology must be a BUILT chunk arm for the row above to "
         "mean anything")
@@ -502,8 +505,8 @@ def test_a_d_v_outside_the_built_matrix_dispatches_to_the_oracle_and_says_so():
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}
-    routes = layer.routes(x)
     with torch.no_grad():
+        routes = layer.routes(x)
         envelope = dispatch_for(routes, x)
     assert envelope.backend == "reference"
     assert "d_v=48" in envelope.no_kernel_arm
