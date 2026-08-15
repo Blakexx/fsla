@@ -26,11 +26,11 @@ else was written:
 | the SLOT GRAM `G = staircase(R · W^T)` | the forward's, see [two Grams](#two-grams) |
 | `dv`'s intra term `dv^T += dnum^T · G` — so **`dv` is complete** | (A.17), intra |
 | the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots — **`sum_s dW`, not `d gw`** | (A.18), inter-chunk part |
+| **`d gw` COMPLETE**, inter and intra | (A.11) |
 
-Not carried, and named so that nothing reads as an omission: the `d_v` Gram `Gd`,
-the transposed staircase (A.19), the per-slot `dW`, the leave-one-out digit
-reduction (A.9)/(A.10), and `d gw`'s own weighting (A.11). So `d gw` is the
-inter-chunk part alone and `d pr` / `d pw` are not emitted;
+Not carried, and named so that nothing reads as an omission: the `d_v` Gram `Gd'`,
+the transposed staircase (A.19), the per-slot `dW`, and the leave-one-out digit
+reduction (A.9)/(A.10). So `d pr` and `d pw` are not emitted;
 `rola.ops.chunk.backward` refuses by name until they land.
 
 ## <a id="no-reversed-table"></a>Why the walk needs no reversed table
@@ -108,11 +108,13 @@ configuration every ladder gate has ever run. Checked over exact rationals again
 unweighted one does not.
 
 The output is therefore named `dwsum` throughout, and the probe's docstring says
-so. Nothing downstream may bind it to `gw`'s cotangent.
+so. Nothing downstream may bind it to `gw`'s cotangent. It is kept because it is
+what holds (A.18)'s CHANNEL CONTRACTION — the one new primitive, and the only
+`MOVM` in this kernel — live and censused until the per-slot `dW` takes it over.
 
-**What completing it takes**, so the next stage does not rediscover it. `U` is
-per write token and per slot, so the weighting cannot be applied after the slot
-sum. The clean form is the `(d_v + 1)`-th column identity: with
+**`d gw` ITSELF IS NOW EMITTED**, beside it, and this is how. `U` is per write
+token and per slot, so the weighting cannot be applied after the slot sum. The
+clean form is the `(d_v + 1)`-th column identity: with
 `ṽ[j,:] = [v[j,:], 1]` and `d̃S = [dS, dz]`, `dW[j,s] = ⟨d̃S_after[j,s,:], ṽ[j,:]⟩`,
 so
 
@@ -125,10 +127,27 @@ trailing one. Two consequences worth stating before anything is built:
   `so` store, on the `n` axis (`gw[j]` is uniform along the accumulator's token
   index). `dv` is unaffected — `sum_s W · dS = gw[j] · sum_s U · dS` — and the
   slot Gram becomes the UNGAINED `Gu`, which is what `d gw`'s intra term wants;
-* with `Gu` in hand, `d gw`'s intra half is an ELEMENTWISE product:
-  `d gw_intra[j] = sum_i [j < J(i)] · Gd'[i,j] · Gu[i,j]`. Since `Gd'` can be held
-  in registers while `Gu` is in the Gram buffer, both live at once without the
-  second buffer the [two-Gram budget](#two-grams) forbids.
+* the value channels then need no separate contraction at all: `acc` — the
+  ungained readout, inter and intra together — IS `sum_s U[j,s] dS_after[j,s,:]`,
+  so `d gw`'s value half is `⟨acc[j,:], v[j,:]⟩`, read straight off the
+  accumulator before it is stored.
+
+So `d gw` is three partials that all land in `sgrad` and meet at one fan-in:
+
+| term | what it is | who computes it |
+|---|---|---|
+| A | `⟨acc[j,:], v[j,:]⟩` | per UNIT, over its own 16 channels |
+| B | `sum_s U[j,s] · dz_a[s]` | per QUARTER of the slots |
+| H | `sum_i [j<J(i)] · dden[i] · Gu[i,j]` | per QUARTER of the read entries |
+
+and the fan-in sums four of each — which is why A is STORED once per unit (its
+four partials are the four channel groups) while B and H are ADDED once (their
+four partials are one token's whole sum). The Gram is stored already masked, so H
+does not re-apply the staircase.
+
+`Gd'` does not appear: the `⟨dnum,v⟩` half of it is already inside `acc` through
+`dv`'s intra term, and only the `dden` column of `Gd'` is left over — which is H.
+Building `Gd'` explicitly is the PER-SLOT `dW`'s business, not `d gw`'s.
 
 ## <a id="mass-gram"></a>The transposed staircase carries the mass channel too
 

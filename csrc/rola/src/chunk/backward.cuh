@@ -19,7 +19,7 @@ namespace rola::chunk {
 struct ScanBParams {
   const __nv_bfloat16 *pr, *pw, *gw, *v, *dnum, *dden;
   const uint32_t* tbl;
-  float *dv, *dwsum;
+  float *dv, *dwsum, *dgw;
   int BH, L;
   int v_row_bytes;
 };
@@ -48,6 +48,12 @@ struct GeomB {
   //: per k-tile per lane.
   static constexpr int grad_bytes = kUnits * C * (int)sizeof(float);
   static constexpr int dden_bytes = C * (int)sizeof(float);
+  //: the chunk's write GAINS, staged per write entry: the panel is produced
+  //: ungained so `d gw` can read the level product alone, and the gain is applied
+  //: once, on the readout's token axis -- docs/internals/chunk/backward.md#dw-slotsum
+  static constexpr int gain_bytes = C * (int)sizeof(float);
+  //: `dz` published per slot, so a token-major reduction can reach it
+  static constexpr int dz_bytes = BCg * (int)sizeof(float);
   //: ONE GRAM BUFFER, AND SCAN B NEEDS TWO GRAMS.  `dv`'s intra term contracts
   //: over SLOTS (the forward's own `R.W^T`) and `dW`'s contracts over `d_v`
   //: (`dnum.v^T`); two resident buffers reach `cta_target = 1` and the arm's
@@ -56,7 +62,8 @@ struct GeomB {
   static constexpr int gram_bytes = C * LdG * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16)
                                + GRP * C * LdO * (int)sizeof(float) + grad_bytes + dden_bytes
-                               + gram_bytes + (1 + kAheadExtra) * idx_slot + form_bytes;
+                               + gain_bytes + dz_bytes + gram_bytes + (1 + kAheadExtra) * idx_slot
+                               + form_bytes;
   static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
@@ -396,8 +403,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
-    const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum, int L,
-    int v_row_bytes) {
+    const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum,
+    float* __restrict__ dgw, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
   using G = GeomB<C, BC>;
   constexpr int GROUPS = groups_for(BC);
@@ -477,6 +484,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const __nv_bfloat16* const ddenPlane = pin_address(dden + (long)blockIdx.y * L);
   float* const dvPlane = pin_address(dv + base);
   float* const dwsPlane = pin_address(dwsum + (long)blockIdx.y * L);
+  float* const dgwPlane = pin_address(dgw + (long)blockIdx.y * L);
   const __nv_bfloat16* const pRead = pin_address(pread + pbase);
   const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
   const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
@@ -494,12 +502,15 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   float* so = reinterpret_cast<float*>(sg + C * G::LdG);
   float* sgrad = so + C * LdO;
   float* sdd = sgrad + kUnits * C;
-  char* sidx = reinterpret_cast<char*>(sdd + C);
+  float* sgw = sdd + C;
+  float* sdz = sgw + C;
+  char* sidx = reinterpret_cast<char*>(sdz + BCg);
   uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
   static_assert((2 * C * LdS + C * G::LdG) % 8 == 0, "the fp32 region must start 16-byte aligned");
-  static_assert((C * LdO + kUnits * C + C) % 4 == 0, "the index ring must start 16-byte aligned");
+  static_assert((C * LdO + kUnits * C + C + C + BCg) % 4 == 0,
+                "the index ring must start 16-byte aligned");
   static_assert(G::idx_slot % 16 == 0,
                 "the formed schedule follows the index ring and must stay aligned");
 
@@ -645,6 +656,22 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #pragma unroll
         for (int e = 0; e < kFanPerThr; ++e) fan_in_add(dp + e * kFanLanes, so[e0 + e * kFanLanes]);
       }
+    }
+  };
+
+  //: d gw's FAN-IN.  Same shape as the one below and the same reason: every
+  //: contributor to a token's gain gradient is a different unit or a different
+  //: block, and none of them holds the whole sum.
+  auto drain_dgw = [&](int d, int nw) {
+    if (gtid < C && gtid < nw) {
+      float s = 0.f;
+#pragma unroll
+      for (int u = 0; u < kUnits; ++u) s += sgrad[u * C + gtid];
+      fan_in_add(
+          reinterpret_cast<float*>(gather_ptr(
+              dgwPlane, (uint32_t)iwrite(d)[gtid] * 4u
+                            + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * (int)sizeof(float)))),
+          s);
     }
   };
 
@@ -807,19 +834,30 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
       const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
       const uint32_t winG = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
-      const uint32_t gsp = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-          gather_ptr(gWrite, (uint32_t)iwrite(dc)[prow] * 2u + winG)));
+      //: BOTH PANELS ARE PRODUCED UNGAINED.  The write gain is a per-TOKEN scale
+      //: and the readout's `n` axis is the token, so applying it once at the `so`
+      //: store is the same number -- and it leaves the level product alone, which
+      //: is the operand (A.11) needs and the one a decay clock will tap.
       produce(pRead, dstR, rOff, prow < nr, kOneSplat);
-      produce(pWrite, dstW, wOff, prow < nw, gsp);
-      //: THE MASS COLUMN'S SEED, STAGED ONCE.  One value per read entry, and
-      //: exactly zero past `nr` so `dz`'s fold can run the whole chunk unbounded.
-      if (tid < C)
+      produce(pWrite, dstW, wOff, prow < nw, kOneSplat);
+      //: THE PER-CHUNK ROWS, STAGED ONCE: the mass seed per READ entry and the
+      //: gain per WRITE entry, both exactly zero past their counts so the
+      //: reductions below can run the whole chunk unbounded.
+      if (tid < C) {
         sdd[tid] = tid < nr
                        ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(
                              ddenPlane, (uint32_t)iread(dc)[tid] * 2u
                                             + (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2))))
                        : 0.f;
+        sgw[tid] = tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                                  gather_ptr(gWrite, (uint32_t)iwrite(dc)[tid] * 2u + winG)))
+                            : 0.f;
+      }
     }
+    //: `dz` AS THIS CHUNK ENTERS IT -- the adjoint arriving from the future, which
+    //: is what every write-side term reads.  The fold updates it at the end of the
+    //: iteration, so publishing here publishes the entry value.
+    sdz[gtid] = dz_s;
 
     stage_wait<STAGES - 2>();
     rendezvous();  // (1) panels and both staged tiles visible; the previous
@@ -832,6 +870,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
     const uint32_t atv = svB + cmpSlot + rowFv;
     const uint32_t adn = sdnB + cmpSlot + rowTv;
+    //: the SAME V panel, addressed scalar-wise: `d gw`'s value half reads it one
+    //: element at a time against the readout accumulator, not as an mma operand.
+    const __nv_bfloat16* const vpan = sv + (cmpSlot >> 1);
     cmpSlot += kSlot;
     if (cmpSlot == kRing) cmpSlot = 0;
 
@@ -891,6 +932,13 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
     //: BOTH WRITE-SIDE TERMS READ THE STATE THIS CHUNK ENTERS WITH -- the
     //: adjoint arriving from the FUTURE -- so both run before the fold.
+    //: d gw's value half outlives the readout's accumulator: one partial per
+    //: (token pair, n-tile), summed over this unit's channels, carried from the
+    //: readout to the fan-in phase two barriers later.
+    float pa[NTOK][2];
+#pragma unroll
+    for (int j = 0; j < NTOK; ++j) pa[j][0] = pa[j][1] = 0.f;
+
     if (liveW) {
       //: dv's WHOLE TERM IS ONE SCOPE, so the accumulator and both operand
       //: fragments are dead before the channel contraction opens.  At this
@@ -940,13 +988,31 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
           }
         }
 
+        //: d gw's VALUE HALF, taken here because `acc` IS the ungained readout
+        //: `sum_s U[j,s] dS_after[j,s,:]` and (A.11) contracts exactly that
+        //: against `v[j,:]`.  The contraction runs over THIS unit's channels, so
+        //: what leaves the shuffle is a partial and the four units meet at the
+        //: fan-in -- docs/internals/chunk/backward.md#dw-slotsum
+#pragma unroll
+        for (int j = 0; j < NTOK; ++j) {
+          const int t0 = oq + j * 8;
+          const int c0 = dv0 + om;
+          pa[j][0] = acc[j][0] * __bfloat162float(vpan[t0 * LdV + c0])
+                     + acc[j][2] * __bfloat162float(vpan[t0 * LdV + c0 + 8]);
+          pa[j][1] = acc[j][1] * __bfloat162float(vpan[(t0 + 1) * LdV + c0])
+                     + acc[j][3] * __bfloat162float(vpan[(t0 + 1) * LdV + c0 + 8]);
+        }
+        //: THE GAIN LANDS HERE AND NOWHERE ELSE.  `gw[j]` is uniform along the
+        //: accumulator's token axis, so one multiply per stored entry turns the
+        //: ungained readout into `dv`.
 #pragma unroll
         for (int j = 0; j < NTOK; ++j) {
           const int jo = j * 8 * LdO;
-          store_f32(&so[oE0 + jo], acc[j][0]);
-          store_f32(&so[oE0 + jo + LdO], acc[j][1]);
-          store_f32(&so[oE0 + jo + 8], acc[j][2]);
-          store_f32(&so[oE0 + jo + LdO + 8], acc[j][3]);
+          const float g0 = sgw[oq + j * 8], g1 = sgw[oq + j * 8 + 1];
+          store_f32(&so[oE0 + jo], acc[j][0] * g0);
+          store_f32(&so[oE0 + jo + LdO], acc[j][1] * g1);
+          store_f32(&so[oE0 + jo + 8], acc[j][2] * g0);
+          store_f32(&so[oE0 + jo + LdO + 8], acc[j][3] * g1);
         }
       }
 
@@ -1014,6 +1080,64 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       drain_dv(dc, nw);
       drain_dwsum(dc, nw);
     }
+
+    rendezvous();  // (2b) `sgrad` has been drained and is free for d gw's own sum
+
+    //: (A.11) d gw[j] = sum_s dW[j,s] * U[j,s], assembled from three partials that
+    //: all land in `sgrad` and all meet at the same fan-in:
+    //:   A  <acc[j,:], v[j,:]>            this unit's channels   (taken above)
+    //:   B  sum_s U[j,s] * dz_a[s]        this quarter's slots
+    //:   H  sum_i [j<J(i)] dden[i] Gu[i,j]  this quarter's read entries
+    //: A is per-UNIT and B/H are per-QUARTER, and the drain sums four of each --
+    //: which is why A must be stored once per unit and B/H added once.
+    if (liveW) {
+      sgrad[gwarp * C + lane] = 0.f;
+      __syncwarp();
+      //: only the lane that owns channel row zero publishes; every other lane in
+      //: its column holds the same shuffled total.
+#pragma unroll
+      for (int j = 0; j < NTOK; ++j) {
+        float p0 = pa[j][0], p1 = pa[j][1];
+#pragma unroll
+        for (int b2 = 4; b2 < 32; b2 <<= 1) {
+          p0 += __shfl_xor_sync(0xFFFFFFFFu, p0, b2);
+          p1 += __shfl_xor_sync(0xFFFFFFFFu, p1, b2);
+        }
+        if (om == 0) {
+          sgrad[gwarp * C + oq + j * 8] = p0;
+          sgrad[gwarp * C + oq + j * 8 + 1] = p1;
+        }
+      }
+      __syncwarp();
+      //: FOUR THREADS PER TOKEN, and the token is this warp's own eighth of the
+      //: chunk, so the store below is the only writer of its cell.
+      {
+        const int j = gtid / 4, part = gtid % 4;
+        constexpr int kSlotRun = BCg / 4;
+        constexpr int kReadRun = C / 4;
+        float pb = 0.f;
+#pragma unroll
+        for (int s = 0; s < kSlotRun; ++s) {
+          const int sl = part * kSlotRun + s;
+          pb += __bfloat162float(sw[j * LdS + sl]) * sdz[sl];
+        }
+        if (liveR) {
+          //: `Gu` is stored ALREADY MASKED, so the staircase is not applied twice.
+#pragma unroll
+          for (int i = 0; i < kReadRun; ++i) {
+            const int ir = part * kReadRun + i;
+            pb += sdd[ir] * __bfloat162float(sg[ir * G::LdG + j]);
+          }
+        }
+#pragma unroll
+        for (int b2 = 1; b2 < 4; b2 <<= 1) pb += __shfl_xor_sync(0xFFFFFFFFu, pb, b2);
+        if (part == 0) sgrad[gwarp * C + j] += pb;
+      }
+    }
+
+    rendezvous();  // (2c) every unit's d gw partial is visible
+
+    if (liveW) drain_dgw(dc, nw);
 
     if (liveR) {
       // ---- (A.16) THE FOLD: dS^T += dnum^T . R, and dz^T += dden^T . R -------

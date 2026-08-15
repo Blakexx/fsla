@@ -129,8 +129,11 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
     #: and built PER CHUNK, because the whole `[T, N]` coefficient plane is a
     #: gigabyte once `T` crosses a K-window.
     def coeffs(idx):
+        #: THE WRITE PANEL IS UNGAINED, as the kernel produces it; the gain is a
+        #: per-token scale applied once at the readout's store, so it multiplies
+        #: `dv` and never the level product `d gw` contracts against.
         return (_rb(prf[idx][:, d0] * prf[idx][:, W + d1]),
-                _rb(_rb(pwf[idx][:, d0] * gwf[idx, None]) * pwf[idx][:, W + d1]))
+                _rb(pwf[idx][:, d0] * pwf[idx][:, W + d1]))
 
     dS = torch.zeros(N, DV, device=dev)
     dz = torch.zeros(N, device=dev)
@@ -140,7 +143,8 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
     adS = torch.zeros(N, DV, device=dev)
     adz = torch.zeros(N, device=dev)
     out = {k: torch.zeros(sh, device=dev)
-           for k, sh in (("dv", (T, DV)), ("dwsum", (T,)), ("bdv", (T, DV)), ("bdwsum", (T,)))}
+           for k, sh in (("dv", (T, DV)), ("dwsum", (T,)), ("dgw", (T,)),
+                         ("bdv", (T, DV)), ("bdwsum", (T,)), ("bdgw", (T,)))}
     #: THE INTER PATH'S REASSOCIATION: the `T` terms the fold accumulates into
     #: `dS`, the `N` the write-side contraction sums inside a block, and the
     #: `N / BC` block partials the fan-in adds in an order the scheduler picks.
@@ -161,14 +165,32 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
         #: same statement as its compacted lists.
         stair = (tok <= tok.T).to(Rc.dtype)
         Gm = _rb(Rc @ Wc.T) * stair
-        out["dv"][idx] = Wc @ dSb + Gm.T @ dnf[idx]
+        #: `Wc` is UNGAINED, so this is the ungained readout and the gain lands on
+        #: the store -- exactly the kernel's own sequence.
+        ungained = Wc @ dSb + Gm.T @ dnf[idx]
+        out["dv"][idx] = ungained * gwf[idx, None]
+        #: (A.11) d gw[j] = sum_s dW[j,s] * U[j,s], and the three terms it splits
+        #: into: the value channels off the ungained readout, the entry mass
+        #: column, and the in-chunk mass the staircase selects.
+        out["dgw"][idx] = ((ungained * vf[idx]).sum(1)
+                           + Wc @ dz
+                           + Gm.T @ ddf[idx])
         #: TWO INDEPENDENT FLOORS, and the intra one is NOT a reassociation. Two
         #: correctly-rounded bf16 values of fp32 sums that differ at all can
         #: straddle a rounding boundary, so the kernel's Gram and the reference's
         #: may differ by a whole bf16 ulp -- `2 ** -7` relative, twice the unit
         #: roundoff -- which dominates the intra sum's own `C`-term reassociation.
-        out["bdv"][idx] = (n_inter * EPS32 * (Wc.abs() @ adS)
-                           + (ULP_BF16_PAIR + len(ch) * EPS32) * (Gm.abs().T @ dnf[idx].abs()))
+        out["bdv"][idx] = gwf[idx, None].abs() * (
+            n_inter * EPS32 * (Wc.abs() @ adS)
+            + (ULP_BF16_PAIR + len(ch) * EPS32) * (Gm.abs().T @ dnf[idx].abs()))
+        #: d gw inherits `dv`'s floor through the value contraction (a further `DV`
+        #: terms), plus its own two slot/read reductions and the Gram's rounding.
+        out["bdgw"][idx] = (
+            (n_inter + DV) * EPS32 * ((Wc.abs() @ adS) * vf[idx].abs()).sum(1)
+            + (ULP_BF16_PAIR + (len(ch) + DV) * EPS32)
+            * ((Gm.abs().T @ dnf[idx].abs()) * vf[idx].abs()).sum(1)
+            + (n_inter + N) * EPS32 * (Wc.abs() @ adz)
+            + (ULP_BF16_PAIR + len(ch) * EPS32) * (Gm.abs().T @ ddf[idx].abs()))
         #: THE SLOT SUM OF dW, unweighted -- NOT `d gw`, which weights it by the
         #: ungained level product (A.11). Off the write support the level chain is
         #: exactly zero, so the emitted reduction is zero too.
@@ -222,11 +244,12 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
     live_r, live_w = _liveness(T, frac, seed=7)
     inputs = _inputs(T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    dv_k, dws_k = _run(inputs)
+    dv_k, dws_k, dgw_k = _run(inputs)
     ref = _reference(*inputs, chunks, T, live_w)
 
     for name, got, want, bound in (("dv", dv_k[0, 0], ref["dv"], ref["bdv"]),
-                                   ("sum_s dW", dws_k[0, 0], ref["dwsum"], ref["bdwsum"])):
+                                   ("sum_s dW", dws_k[0, 0], ref["dwsum"], ref["bdwsum"]),
+                                   ("d gw", dgw_k[0, 0], ref["dgw"], ref["bdgw"])):
         err = (got - want).abs()
         worst = (err / bound.clamp_min(torch.finfo(torch.float32).tiny)).max().item()
         assert worst <= 1.0, (
@@ -236,6 +259,25 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
             f"kernel rounds it, so nothing but summation ORDER is allowed to separate "
             f"them -- a term that is missing, transposed or taken from the wrong chunk "
             f"lands orders of magnitude outside this.")
+
+
+def test_d_gw_rejects_the_unweighted_slot_sum():
+    """THE NON-VACUITY ROW THAT MATTERS, because it is the defect that was there.
+
+    `d gw` weights the slot sum by the UNGAINED level product (A.11); the plane
+    beside it does not. The two coincide at `U = 1`, which is every ladder gate ever
+    run, so the budget has to be able to tell them apart on a cell where `U` is not
+    one. If this ever passes, `d gw` is being gated against something that is not
+    `d gw`.
+    """
+    T = 96
+    live_r, live_w = _liveness(T, None, seed=7)
+    inputs = _inputs(T, 3, live_r, live_w)
+    chunks = _partition(live_r.tolist(), live_w.tolist(), T)
+    ref = _reference(*inputs, chunks, T, live_w)
+    assert ((ref["dwsum"] - ref["dgw"]).abs() > ref["bdgw"]).any(), (
+        "the d gw budget accepts the UNWEIGHTED slot sum of dW, so it cannot see the "
+        "one term (A.11) adds and is not gating a gain gradient at all")
 
 
 def test_the_budget_is_not_vacuous():
