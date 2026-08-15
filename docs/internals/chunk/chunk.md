@@ -30,12 +30,12 @@ in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 
 `CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped
 being reachable from production it is the whole of what the package ships a kernel for.
-`rola.interface.dispatch_for` reads `rola.ops.chunk.unsupported` and sends everything
-outside the matrix to the fp64 reference arm, naming the clause that refused in
-`Dispatch.no_kernel_arm` — the same labelled-surface treatment decay and an unratified
-activation already get, and the same refusal wording, so there is one authority on what
+`rola.interface.envelope_refusal` reads `rola.ops.chunk.unsupported`, and everything
+outside the matrix is REFUSED by the clause that names it — the same treatment decay
+and an unratified activation get, in the same words, so there is one authority on what
 this kernel runs and it is this file's arm list. The envelope's user-facing statement,
-including what it costs, is [`docs/api.md` §1.1](../../api.md#11-the-kernel-envelope).
+including what it costs, is
+[`docs/api.md` §1.1](../../api.md#11-the-built-envelope-is-the-surface).
 
 The direct entries below still refuse loudly: a caller who asks for an unbuilt arm BY
 NAME gets `unbuilt arm: ...`, never the oracle. Dispatch is not a lie; an override is.
@@ -67,8 +67,8 @@ decay-off specialization was free (−0.7..0.0%), but the mass clock cost
 +63–93% wall dense/sparse — the C-deep serial per-column scan is a bare
 dependency chain plus one barrier per live chunk.  That price fired the
 stop-gate: decay ships NOWHERE in the operator, and a decay-configured call is
-routed to the fp64 reference arm at the `rola_op` seam (direct consumer
-entries refuse loudly).  Reopen candidates, in order of promise: a parallel
+REFUSED at the `rola_op` seam by name (the T=1 decode arm does implement decay, and
+its envelope is its own).  Reopen candidates, in order of promise: a parallel
 prefix across the scan rows, scan/produce overlap, dressing fused into the
 produce rendezvous, coarser clock granularity (a semantic change) — any of
 them justified only by a quality measurement showing decay matters at scale.

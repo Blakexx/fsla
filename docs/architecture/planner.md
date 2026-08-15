@@ -24,8 +24,8 @@ emits it as `instantiations/chunk_arms.inc`, and `rola/ops/chunk.py` picks the
 arm for a topology out of the binary's own `chunk_arms()` list by a fixed
 preference order over MEASURED arms (`_PIN_C`, `_PIN_BC`, falling back to the
 largest built `BC` for that `(D, B)`). A topology with no built arm gets no
-kernel: `chunk.unsupported` names the refusing clause and `rola_op` dispatches to
-the fp64 reference ([`../api.md`](../api.md), the kernel envelope).
+kernel: `chunk.unsupported` names the refusing clause and `rola_op` raises it
+([`../api.md`](../api.md) §1.1, the built envelope).
 
 That is the same category of answer the old derivation gave, taken one step
 further. The closed form read launch-static facts to choose among compiled

@@ -20,9 +20,9 @@ Three halves, plus the slot:
   which is the matching-the-naive rule's strongest available answer.
 * **THE KERNEL SLOT** — the CUDA consumer is forward-only; its named refusal
   (`BackwardNotImplemented`) is gated in ``tests/unit/test_interface.py`` and
-  the layer's grad-context routing in ``tests/layers/test_layer_dispatch.py``,
+  the layer's grad-bearing refusals in ``tests/layers/test_layer_dispatch.py``,
   so neither is duplicated here. When the native backward lands
-  (``docs/open-work.md`` M-2), its VJP gates plug into THESE families —
+  (``docs/open-work.md`` W9), its VJP gates plug into THESE families —
   kernel-vs-oracle-VJP under the conditioned-tolerance/seed machinery
   ``tools/oracle_dual_run.py``'s P3 half already runs bit-identically over
   1328 quantities, plus a rerun floor for atomic-nondeterministic grads.

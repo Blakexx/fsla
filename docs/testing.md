@@ -102,7 +102,7 @@ Three axes this cross-product used to carry are gone (P26, `52a67d8`; see
 [`internals/DELETIONS.md`](internals/DELETIONS.md), revival = git). Normalization
 is no longer an axis: `raw` is dead, `global` (the mass column and the `num`/`den`
 divide, unconditional) is the only value the kernel arm accepts — anything else
-is a named refusal onto the reference arm. `BC` is likewise no longer a host axis:
+is a named refusal. `BC` is likewise no longer a host axis:
 it belongs to the built arm (P67 D2), so what varies across cells is the ARM. MMA precision is no
 longer an axis: `tf32x3` is dead, bf16 storage with fp32 accumulation is the only
 arm the kernel has, and the fp64 oracle stands in as the exactness reference a
@@ -456,10 +456,13 @@ ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # o
 battery was ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
 IS the full battery above and no per-commit subset needs choosing. The
 same battery, scoped as `tests/tier1_semantics tests/layers tests/unit
-tests/tier2_geometry tests/conformance -q`, is **863 passed, 13 skipped, 0
-xfailed in ~20 s**, and the tree carries no xfail at all. Two retirements
+tests/tier2_geometry tests/conformance -q`, is **860 passed, 5 skipped, 0
+xfailed in ~18 s**, and the tree carries no xfail at all. Three retirements
 account for the shape of that number: the tiled arm's gates left with the tiled
-arm (P67 D2), and the routing-summary surface took 244 rows with it (P71-A) —
+arm (P67 D2), the routing-summary surface took 244 rows with it (P71-A), and the
+fast-fail retired the oracle-dispatch rows outright (P71-B — every `skip` that
+read "decay routes to the oracle now" went with them, which is where 13 skips
+became 5) —
 `test_docs_mirror.py` and `test_shard_partition.py` each parametrize one row per
 mirror doc and per csrc source, so a deleted surface moves the count by more than
 its own tests. The

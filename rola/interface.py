@@ -42,8 +42,8 @@ __all__ = [
 
 #: The one sentence every no-backward refusal in the package ends with.
 BACKWARD_ARRIVES_WITH = (
-    "the backward arrives with the native backward (docs/open-work.md M-2); until "
-    "then there is no training path through this surface")
+    "the backward arrives with the native backward (docs/open-work.md W9); until then "
+    "there is no training path through this surface")
 
 
 class BackwardNotImplemented(NotImplementedError):
