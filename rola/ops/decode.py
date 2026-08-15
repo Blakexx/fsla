@@ -286,7 +286,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     """ONE decode step over a routing bundle and a carried state -- the whole surface.
 
     ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`; ``v`` is
-    ``[B, 1, H, d_v]``; ``state`` is a :class:`~rola.state.RoLAState` that CARRIES
+    ``[B, 1, H, d_v]``; ``state`` is a :class:`~rola.RoLAState` that CARRIES
     (a step continues a sequence, so an empty state has nothing to decode from).
     Returns ``(y, state)`` -- ``y`` shaped ``[B, 1, H, d_v]`` and the SAME state
     object, updated in place, exactly as :func:`rola.rola_op` returns it.

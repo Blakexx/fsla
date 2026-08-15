@@ -56,7 +56,7 @@ from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
 
 if TYPE_CHECKING:
-    from rola.state import RoLAState
+    from rola._state import RoLAState
 
 __all__ = ["RoLA"]
 
@@ -222,7 +222,7 @@ class RoLA(nn.Module):
     ) -> tuple[torch.Tensor, RoLAState | None]:
         """``(y, state)``, mirroring the op. THE LAYER IS A PASS-THROUGH FOR STATE.
 
-        ``state`` is a :class:`~rola.state.RoLAState` or ``None``, and the predicate is
+        ``state`` is a :class:`~rola.RoLAState` or ``None``, and the predicate is
         the op's: ``state is not None`` engages the carried state, a stateless call
         returns ``(y, None)``. Nothing is wrapped, stamped or checked here -- state
         semantics are the state's (docs/internals/state.md), and a layer that

@@ -1,6 +1,6 @@
 # The carried state, and the facade that engages it
 
-Mirror doc for `rola/state.py` and for `rola_op`'s stateful half in
+Mirror doc for `rola/_state.py` and for `rola_op`'s stateful half in
 `rola/interface.py`. It is the contract the repository carries: the design ledger
 that produced it is a workflow record, and this file is what a reader ten years from
 now is owed.
@@ -18,6 +18,12 @@ s = rola.state()                        # unbound
 y, s = rola.rola_op(routes, v, state=s) # bound to this call's keying; s is mutated
 y, _ = rola.rola_op(routes, v)          # stateless: (y, None)
 ```
+
+`rola.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
+`rola/_state.py`, private by its underscore, so no module answers to the public name.
+(It was `rola/state.py` until P67 S5, where the function shadowed the module through
+`rola/__init__.py` — a working arrangement that made `from rola import state` mean two
+things depending on import order.)
 
 `rola.state(strategy=...)` builds a fresh UNBOUND state. `RoLAState` holds a strategy
 stamp, the keying it bound to, and its backing — and nothing else. There is no handle

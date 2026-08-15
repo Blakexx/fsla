@@ -46,11 +46,11 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from rola._state import RoLAState
 from rola.ops.consumer import _consumer_forward, sm_shared_bytes
 from rola.ops.naive import naive_rola
 from rola.planner.derive import MachineFacts, derive_bc
 from rola.planner.schedule import Plan, build_plan, build_schedule
-from rola.state import RoLAState
 
 if TYPE_CHECKING:
     from rola.planner.schedule import Schedule
@@ -93,7 +93,7 @@ def rola_op(
     ``decay``: the recurrence dial, or ``None``. Build one from a decay source
     (:mod:`rola.routing.decay`), which is the slot that decides where rates come from.
 
-    ``state``: ``None`` for a stateless call, or a :class:`~rola.state.RoLAState` from
+    ``state``: ``None`` for a stateless call, or a :class:`~rola.RoLAState` from
     :func:`rola.state`. THE PREDICATE IS ``state is not None``: it is the whole
     engagement signal for the carried state, there is no second flag, and a stateless
     call runs the kernel variant that has no state I/O compiled into it at all. An
