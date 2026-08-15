@@ -136,6 +136,66 @@ def pack(routes) -> PackedRoutes:
         rm=None if mass is None else _pack(mass.permute(0, 2, 1), torch.float32))
 
 
+@dataclass(slots=True)
+class SavedForward:
+    """THE CTX CONTRACT: what the forward hands the backward, and nothing else.
+
+    Everything here is `O(L)` with a per-topology constant, and that is the claim
+    the whole two-pass design rests on: the backward REBUILDS the state and
+    REPLAYS the schedule, so no per-chunk snapshot and nothing of size `O(N * L)`
+    is retained. The state, the per-chunk compaction lists, the causal thresholds
+    and the numerator are absent by construction. The union table is the ONE
+    forward byproduct inherited by save rather than by replay: rebuilding it would
+    be a second launch over the whole amplitude plane for a bit-identical answer,
+    and it is the seam the schedule is replayed from
+    (docs/internals/chunk/backward.md).
+
+    Populated only when the call carries a gradient; on an inference call these
+    tensors are freed with the launch exactly as they were before this existed.
+    """
+
+    pr: torch.Tensor | None = None
+    pw: torch.Tensor | None = None
+    gw: torch.Tensor | None = None
+    rm: torch.Tensor | None = None
+    tbl: torch.Tensor | None = None
+    den: torch.Tensor | None = None
+    block_bits: torch.Tensor | None = None
+    #: the plan's non-tensor half: the arm, the topology, the readout constant and
+    #: V's row stride, which the backward's launch needs and cannot re-derive.
+    c: int = 0
+    bc: int = 0
+    widths: tuple[int, ...] = ()
+    eps: float = 0.0
+    v_row_bytes: int = 0
+
+    def retained_bytes(self) -> int:
+        """What a grad-bearing call costs OVER an inference one. `y` and `v` are the
+        op's own output and operand, alive either way, so neither is counted here
+        and neither is stored here."""
+        return sum(t.numel() * t.element_size()
+                   for t in (self.pr, self.pw, self.gw, self.rm, self.tbl, self.den,
+                             self.block_bits) if t is not None)
+
+
+def backward(saved: SavedForward, dy: torch.Tensor):
+    """The reverse pass over one saved forward. NOT WIRED YET.
+
+    The two scans exist as separate gated kernels before they exist as one
+    operator -- Scan B's skeleton is reachable as the extension's
+    `chunk_scan_b_probe` at its own stage's scope. This entry is the seam they
+    land behind, and it refuses BY NAME rather than returning something a caller
+    could mistake for a gradient.
+    """
+    raise NotImplementedError(
+        "rola.ops.chunk.backward is the two-pass reverse pass' seam and it is not "
+        "wired: the forward SAVES its ctx (the union table, the packed sides, the "
+        "write gain, the read mass and the denominator) and Scan B's skeleton is "
+        "built and gated, but the scans do not yet emit a full cotangent set. Until "
+        "they do, rola_op refuses a grad-bearing call at the envelope and "
+        "ChunkConsumer.backward refuses one that bypassed it.")
+
+
 def stats(packed: PackedRoutes) -> torch.Tensor:
     """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
 
@@ -171,8 +231,8 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
 
 
 def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = None,
-        want_state: bool = False, arena=None,
-        sparse_grid: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+        want_state: bool = False, arena=None, sparse_grid: bool = False,
+        saved: SavedForward | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
 
     `packed` is this call's :func:`pack` -- the routing already in the kernels'
@@ -198,6 +258,11 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
     heuristic inside the kernel -- the reduction costs a launch of its own, so it
     pays where the dead-block count is large and not where it is not
     (docs/internals/chunk/chunk_kernel.md#work-loop).
+
+    `saved` is an OUT PARAMETER on the state plane's own rule: a
+    :class:`SavedForward` the caller hands in when this call carries a gradient,
+    filled with the `O(L)` byproducts the reverse pass replays from. `None` -- the
+    inference call -- retains nothing and is byte-for-byte the call this was.
     """
     m = extension()
     routes = packed.routes
@@ -228,4 +293,13 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
     #: normalized ones; passing `eps * m` makes the divide `m*num / (m*(den + eps))`,
     #: which is the defined readout exactly rather than to within a scaled floor.
     y = m.chunk_divide_pass(num, den, packed.rm, READOUT_EPS, v.dtype)
+    #: THE CTX IS FILLED HERE OR NOWHERE. Every field is a reference to something
+    #: this call already built, so a saving call and an inference call issue the
+    #: same launches in the same order; what differs is only what stays alive.
+    if saved is not None:
+        saved.pr, saved.pw, saved.gw, saved.rm = pr, pw, gw, packed.rm
+        saved.tbl, saved.den, saved.block_bits = tbl, den, bits
+        saved.c, saved.bc, saved.widths = c, bc, widths
+        saved.eps = READOUT_EPS
+        saved.v_row_bytes = vk.shape[2] * vk.shape[3] * vk.element_size()
     return y, s_out

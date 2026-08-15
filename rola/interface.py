@@ -312,9 +312,20 @@ class ChunkConsumer(torch.autograd.Function):
         # `backward` unreachable, which is the same silence this class exists to break.
         from rola.ops import chunk as _chunk
 
+        #: THE CTX IS TAKEN ON THE GRADIENT'S OWN CONDITION, and `needs_input_grad`
+        #: is that condition rather than a guess at it: an inference call retains
+        #: nothing, so the two-pass activation cost is paid by training alone
+        #: (docs/internals/chunk/backward.md).
+        saved = _chunk.SavedForward() if any(ctx.needs_input_grad) else None
         y, call.plane = _chunk.run(
             call.packed, v, state_in=call.state_in, want_state=call.want_state,
-            arena=call.arena, sparse_grid=call.sparse_grid)
+            arena=call.arena, sparse_grid=call.sparse_grid, saved=saved)
+        if saved is not None:
+            #: `v` and `y` ride `save_for_backward` because they are this node's own
+            #: operand and output and autograd owns their versioning; the O(L)
+            #: byproducts are not graph tensors and ride beside them.
+            ctx.save_for_backward(v, y)
+            ctx.saved_plan = saved
         #: The state plane leaves through the payload rather than as a second output:
         #: it is the CALLER's allocation (the arena's, when paged), and an autograd
         #: node that returned it would stamp graph metadata onto storage the state
