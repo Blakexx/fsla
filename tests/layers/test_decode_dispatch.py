@@ -63,14 +63,14 @@ def _prime(layer, device, *, prefill=32):
     state = rola.state()
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     with torch.no_grad():
-        _out, state = layer(x, state=state)
+        _out, (state, _rings) = layer(x, state=(state, None))
     return state
 
 
 def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
     x = torch.randn(1, L, _HIDDEN, device=device, requires_grad=requires_grad)
     with torch.set_grad_enabled(grad_enabled):
-        out, _state = layer(x, state=state)
+        out, _continuation = layer(x, state=(state, None))
     return x, out
 
 
@@ -163,7 +163,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
                                  write_activation=SoftmaxActivation())
     topology = Topology(levels=tuple(LevelConfig(w, routing) for w in widths))
-    config = freeze_decode_config(topology, "global", d_v=d_v, decay=False, BH=1, device=device,
+    config = freeze_decode_config(topology, d_v=d_v, decay=False, BH=1, device=device,
                                   mma_precision="bf16")
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
@@ -257,10 +257,10 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin():
     boundary must CARRY the pin so nothing downstream can disagree with the layer
     (the feeder-flags lesson, same class).
 
-    REPOINTED (P67 S4): the carrier is cached on the STATE, not on the layer -- it is
-    per-sequence launch machinery, like the short-conv rings beside it -- so the pin is
-    read off ``state._decode_carrier_cache`` where it used to be read off
-    ``layer._decode_config``. The claim is unchanged.
+    REPOINTED (P71-B): the carrier is memoized in ``rola.ops.decode`` by its own KEY
+    (a frozen object is a function of its key, and a state is a paged tensor that does
+    not know about launch machinery), so the pin is read out of ``_CARRIERS``. The
+    claim is unchanged.
 
     P26: ``mma_precision`` is a dead axis -- ``PlanOverrides`` and
     ``freeze_decode_config`` both accept only ``"bf16"`` (a second, ``"tf32x3"``,
@@ -280,11 +280,13 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin():
     _step(layer, cache, device, grad_enabled=False)
     after = layer.execution_backend_counts
     assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
-    frozen = cache._decode_carrier_cache
-    assert frozen is not None, "the decode fork ran but froze no carrier"
-    assert frozen[1].mma_precision == "bf16", (
-        f"the layer's bf16 pin was dropped at the boundary: the frozen carrier says "
-        f"{frozen[1].mma_precision!r}")
+    from rola.ops.decode import _CARRIERS
+
+    frozen = [c for c in _CARRIERS.values() if c.widths == _BRANCHES and c.d_v == _DV]
+    assert frozen, "the decode fork ran but froze no carrier"
+    assert all(c.mma_precision == "bf16" for c in frozen), (
+        "the layer's bf16 pin was dropped at the boundary: a frozen carrier says "
+        f"{[c.mma_precision for c in frozen]}")
 
 
 def test_freeze_decode_config_refuses_an_unknown_precision():
@@ -295,5 +297,5 @@ def test_freeze_decode_config_refuses_an_unknown_precision():
                                  write_activation=SoftmaxActivation())
     topology = Topology(levels=tuple(LevelConfig(w, routing) for w in _BRANCHES))
     with pytest.raises(ValueError, match="mma_precision"):
-        freeze_decode_config(topology, "global", d_v=_DV, decay=False, BH=1,
+        freeze_decode_config(topology, d_v=_DV, decay=False, BH=1,
                              device="cpu", mma_precision="fp16")

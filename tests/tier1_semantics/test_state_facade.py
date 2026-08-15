@@ -5,8 +5,8 @@
 What this file gates, and nothing else: the SURFACE. That the predicate is
 `state is not None`; that an unbound state binds from its first call and a bound one
 continues; that a chained pair of halves computes what one whole call computes; that
-`clone` is independent; that the two backings are the same answer; that a state
-crosses to the reference arm and back. The kernel-level claims underneath it -- the
+`clone` is independent; that the two backings are the same answer; that a bound state
+holds its SHAPE and no fingerprint. The kernel-level claims underneath it -- the
 exact atom bitmap, dense-vs-paged bit identity at the ABI, zero-page inertness -- are
 `tests/tier2_geometry/test_atom_bitmap.py` and
 `tests/tier2_geometry/test_chunk_paging_equivalence.py`, and are not restated here.
@@ -199,10 +199,30 @@ def test_a_clone_is_independent(expert):
 
 
 # ---------------------------------------------------------------------------
-# 3. the refusals, which are computational impossibilities only
+# 3. the shape a state is bound to
 # ---------------------------------------------------------------------------
 
-def test_a_bound_state_refuses_an_incompatible_call_by_naming_the_field():
+def test_a_bound_state_carries_the_shape_it_bound_and_nothing_else():
+    """Binding is SHAPE ACQUISITION. The state took `[B, H, N, cols]`, a device and a
+    backing from its first call, and it holds no fingerprint of the routing that gave
+    them -- a widths/normalization interview would be a second contract to keep in
+    step with the first, and a wrong-shaped call fails where the bytes are addressed
+    exactly as it does for a tensor."""
+    gateway, (x, v) = _gateway(seed=11), _inputs(seed=11)
+    state = rola.state()
+    assert not state.bound and state.shape is None
+    with torch.no_grad():
+        rola.rola_op(gateway(x), v, state=state)
+    assert state.shape == (2, _H, prod(_WIDTHS), _DV + 1)
+    assert state.device == torch.device("cuda", torch.cuda.current_device())
+    assert state.dtype is torch.float32
+    assert state.page_table is not None and state.paged
+
+
+def test_a_call_the_state_was_not_bound_by_fails_where_the_bytes_are():
+    """The named accepted hazard, gated at its real edge: a DIFFERENT-SHAPED call
+    against a bound state raises (the addressing cannot be satisfied), and it raises
+    from the shape machinery rather than from a policy interview."""
     gateway, (x, v) = _gateway(seed=11), _inputs(seed=11)
     other = _gateway(seed=12, widths=(64, 64))
     x2 = torch.randn(2, _T, _HIDDEN, device="cuda")
@@ -210,66 +230,33 @@ def test_a_bound_state_refuses_an_incompatible_call_by_naming_the_field():
     with torch.no_grad():
         state = rola.state()
         rola.rola_op(gateway(x), v, state=state)
-        with pytest.raises(ValueError, match="widths"):
+        with pytest.raises(RuntimeError):
             rola.rola_op(other(x2), v2, state=state)
-        with pytest.raises(ValueError, match=r"\(batch, heads\)"):
-            rola.rola_op(gateway(x[:1]), v[:1], state=state)
-
-
-# ---------------------------------------------------------------------------
-# 4. the dense-contents bridge
-# ---------------------------------------------------------------------------
-
-def test_a_readmitted_state_carries_the_same_contents():
-    """The bridge is a MOVE, not a reset: what was carried is still there afterwards.
-
-    Checked by comparing a reference-arm-then-kernel-arm continuation against the same
-    contents continued on a state that never left the kernel arm. Both entry states are
-    the same numbers; only the route they took into the launch differs.
-    """
-    gateway, (x, v) = _gateway(seed=17), _inputs(seed=17)
-    half = _T // 2
-    with torch.no_grad():
-        first, second = gateway(x[:, :half]), gateway(x[:, half:])
-        direct = rola.state()
-        rola.rola_op(first, v[:, :half], state=direct)
-        y_direct, direct = rola.rola_op(second, v[:, half:], state=direct)
-
-        crossed = rola.state()
-        rola.rola_op(first, v[:, :half], state=crossed)
-        #: force the dense-contents route without changing the numbers: store the
-        #: state's own contents back through the reference arm's bridge.
-        crossed.adopt_dense_contents(crossed.materialize().clone())
-        assert not crossed.paged
-        y_crossed, crossed = rola.rola_op(second, v[:, half:], state=crossed)
-
-    assert crossed.paged, "the re-admission did not happen"
-    assert torch.equal(direct.materialize(), crossed.materialize()), (
-        "the re-admitted continuation computed a different state")
-    #: `y` is the fan-in's, so it is held to its envelope rather than to equality --
-    #: the two runs differ in RESIDENCY (the re-admission unions the carried
-    #: occupancy in), and a zero page is inert but an atomic order is not repeatable.
-    assert (y_direct - y_crossed).abs().max() <= _envelope(y_direct, second)
 
 
 # ---------------------------------------------------------------------------
 # 5. the layer is a pass-through
 # ---------------------------------------------------------------------------
 
-def test_the_layer_mirrors_the_op():
-    """`forward(x, state=...) -> (y, state)`, and a stateless layer call is `(y, None)`."""
+def test_the_layer_returns_the_layered_pair_always():
+    """`forward(x, state=...) -> (y, (state, conv_rings))`, ALWAYS the pair -- and the
+    rings are `None` here because no convolution is configured, which is the layer
+    holding exactly the recurrences its own level introduced."""
     layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_WIDTHS,
                         routing=sparse_routing(), normalization="global", decay=None,
                         layer_idx=0).cuda().float().eval()
     x = torch.randn(2, _T, _HIDDEN, device="cuda")
     with torch.no_grad():
-        y, none = layer(x)
-        assert none is None
+        y, (none, no_rings) = layer(x)
+        assert none is None and no_rings is None
         state = rola.state()
-        y1, returned = layer(x, state=state)
+        y1, (returned, rings) = layer(x, state=(state, None))
         assert returned is state, "the layer did not hand back the state it was given"
         assert state.paged and state.carries
-        y2, returned = layer(x, state=state)
+        y2, (returned, rings) = layer(x, state=(returned, rings))
+        assert rings is None, "a layer with no convolution has no ring to carry"
+        with pytest.raises(TypeError, match=r"\(state, conv_rings\)"):
+            layer(x, state=state)
     assert y.shape == y1.shape == y2.shape
     assert layer.last_execution_backend == "cuda"
 
@@ -315,7 +302,8 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
         with torch.no_grad():
             forced["BC"] = 64
             rola.rola_op(first, v[:, :32], state=state, expert=expert)
-            arena, bc = state._arena, state._BC
+            arena = state._arena
+            bc = None if arena is None else arena.BC
             forced["BC"] = 128
             rola.rola_op(second, v[:, 32:], state=state, expert=expert)
         return state, arena, bc
@@ -324,10 +312,11 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
     paged, arena_after_first, bc_after_first = chain(None)
     dense, _, _ = chain(_DENSE)
 
-    assert bc_after_first == 64 and paged._BC == 128, (
+    assert bc_after_first == 64 and forced["BC"] == 128, (
         "the script did not reach the state's extent policy, so the flip never happened")
-    assert paged._arena is arena_after_first, (
-        "the BC flip rebuilt the arena; residency is keyed to the compute tile")
+    assert paged._arena is arena_after_first and paged._arena.BC == 64, (
+        "the BC flip rebuilt the arena or re-keyed its extent policy; residency is not "
+        "the compute tile's to move")
     assert paged.paged and not dense.paged, "both chains took the same backing"
     assert torch.equal(paged.materialize(), dense.materialize()), (
         "the paged chain across a BC flip differs from the dense one")

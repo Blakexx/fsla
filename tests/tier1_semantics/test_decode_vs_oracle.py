@@ -171,7 +171,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         y_refs.append(y_ref)
 
     # ---- decode ---------------------------------------------------------------
-    config = freeze_decode_config(topology, norm, d_v=d_v, decay=decay is not None, BH=B * H,
+    config = freeze_decode_config(topology, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split, mma_precision="bf16")
     state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
              if initial_state is None else initial_state.to(torch.float32).clone())
@@ -299,7 +299,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = freeze_decode_config(topology, "global", d_v=d_v, decay=False, BH=B * H, device=device,
+    config = freeze_decode_config(topology, d_v=d_v, decay=False, BH=B * H, device=device,
                                   mma_precision="bf16")
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
@@ -548,7 +548,7 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    config = freeze_decode_config(pre["topology"], "global", d_v=d_v, decay=False, BH=B * H,
+    config = freeze_decode_config(pre["topology"], d_v=d_v, decay=False, BH=B * H,
                                   device=device, mma_precision="bf16")
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),

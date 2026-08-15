@@ -68,6 +68,7 @@ token there is nothing to amortize, so the decode kernels are BC-blind by constr
 from __future__ import annotations
 
 import math
+import weakref
 from dataclasses import dataclass, field
 
 import torch
@@ -145,7 +146,6 @@ class FrozenDecodeConfig:
 
 def freeze_decode_config(
     topology: Topology,
-    normalization: str,
     *,
     d_v: int,
     decay: bool,
@@ -283,6 +283,27 @@ def _guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
+#: THE LAUNCH MACHINERY'S MEMOS, module-internal because that is what they are facts
+#: about: a carrier is a function of its KEY (it is frozen and immutable for the
+#: sequence), and a workspace is scratch belonging to one live state. The workspace map
+#: holds its states weakly, so a dropped sequence drops its scratch and two concurrent
+#: sequences never share a buffer (docs/internals/decode.md).
+_CARRIERS: dict[tuple, FrozenDecodeConfig] = {}
+_WORKSPACES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _carrier(topology, *, d_v: int, decay: bool, BH: int, device,
+             mma_precision: str) -> FrozenDecodeConfig:
+    key = (tuple(topology.widths), d_v, decay, BH, torch.device(device), mma_precision)
+    config = _CARRIERS.get(key)
+    if config is None:
+        config = freeze_decode_config(
+            topology, d_v=d_v, decay=decay, BH=BH, device=device,
+            mma_precision=mma_precision)
+        _CARRIERS[key] = config
+    return config
+
+
 def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     """ONE decode step over a routing bundle and a carried state -- the whole surface.
 
@@ -292,18 +313,18 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     Returns ``(y, state)`` -- ``y`` shaped ``[B, 1, H, d_v]`` and the SAME state
     object, updated in place, exactly as :func:`rola.rola_op` returns it.
 
-    The launch machinery -- the frozen carrier and the scratch -- is cached ON THE
-    STATE and never appears here, for the same reason the chunk arm's tables do not:
+    The launch machinery -- the frozen carrier and the scratch -- is memoized in this
+    MODULE and never appears here, for the same reason the chunk arm's tables do not:
     it is how the step runs, not what it computes. The backing is likewise invisible,
     and its growth is handled below (docs/internals/decode.md#growth).
     """
     from rola.expert import PlanOverrides
 
     overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
-    config = state._decode_carrier(routes, d_v=v.shape[-1], decay=decay,
-                                   mma_precision=overrides.mma_precision)
     BH = routes.batch * routes.heads
-    workspace = state._decode_workspace
+    config = _carrier(routes.topology, d_v=v.shape[-1], decay=decay is not None, BH=BH,
+                      device=routes.device, mma_precision=overrides.mma_precision)
+    workspace = _WORKSPACES.get(state)
     if workspace is None or not workspace.matches(config, BH, routes.device):
         workspace = DecodeWorkspace.build(config, BH, routes.device)
     #: THE HOST ORDER, `rola_op`'s at `L = 1` (design §A.4/§C.3/§D). A paged step asks the
@@ -313,7 +334,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     #: steady step's only host synchronization is the probe's `[BH]` int32 read:
     #: docs/internals/decode.md#growth
     bitmap = None
-    if state.paged and _growth_probe(routes.write, config, state._page_table, workspace):
+    if state.paged and _growth_probe(routes.write, config, state.page_table, workspace):
         bitmap = workspace.atom_bits
     plane, page_table, arena = state._decode_entry(routes, bitmap)
     if arena is not None and bitmap is not None:
@@ -321,7 +342,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
     #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
     #: re-widens here and the cast is exact, the values being bf16-rounded already.
-    y, _, state._decode_workspace = _decode_step(
+    y, _, _WORKSPACES[state] = _decode_step(
         v.to(torch.float32), routes.read, routes.write, routes.g_read, routes.g_write,
         config, plane, decay=decay, workspace=workspace,
         page_table=page_table)

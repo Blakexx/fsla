@@ -284,7 +284,7 @@ def test_the_carried_state_the_kernel_arm_hands_back_matches_the_oracle_s():
     _y_ref, oracle_state = _oracle(layer, x, want_state=True)
     carried = rola.state()
     with torch.no_grad():
-        layer(x, state=carried)
+        layer(x, state=(carried, None))
     kernel_state = carried.materialize()
 
     assert kernel_state.shape == oracle_state.shape
@@ -308,7 +308,7 @@ def test_a_kernel_produced_state_feeds_an_oracle_step_at_the_ops_level():
 
     carried = rola.state()
     with torch.no_grad():
-        layer(x, state=carried)
+        layer(x, state=(carried, None))
     kernel_state = carried.materialize()
     assert kernel_state.dtype == torch.float32
 
@@ -423,8 +423,8 @@ def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance():
     dense_pin.load_state_dict(layer.state_dict())
     with torch.no_grad():
         state_u, state_p = rola.state(), rola.state()
-        y_u, state_u = dense_pin(x, state=state_u)
-        y_p, state_p = layer(x, state=state_p)
+        y_u, (state_u, _) = dense_pin(x, state=(state_u, None))
+        y_p, (state_p, _) = layer(x, state=(state_p, None))
 
     assert not state_u.paged and state_p.paged, (
         "both arms took the same backing; the cell is vacuous")

@@ -118,7 +118,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
         # on and the only one there is.
         def run():
             with torch.no_grad():
-                module(x, state=carried)
+                module(x, state=(carried, None))
         return run
 
     paged_state = rola_state()

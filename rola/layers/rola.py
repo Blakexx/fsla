@@ -51,6 +51,24 @@ if TYPE_CHECKING:
 __all__ = ["RoLA"]
 
 
+def _unpack_continuation(state):
+    """``(op state, conv rings)`` from the pair a forward returns, or ``(None, None)``.
+
+    A bare :class:`~rola.RoLAState` is refused rather than adopted: the pair is the
+    contract in both directions, and accepting the half that happens to be the op's
+    would make the rings silently optional to carry.
+    """
+    if state is None:
+        return None, None
+    if type(state) is not tuple or len(state) != 2:
+        raise TypeError(
+            "RoLA.forward's `state` is the (state, conv_rings) pair a forward returns, "
+            f"got {type(state).__name__}. A bare rola.state() is the OP's half: pass "
+            "(state, None) for a fresh sequence, and hand back what forward returned "
+            "for a continuation.")
+    return state
+
+
 class RoLA(nn.Module):
     """Routed linear attention.
 
@@ -182,16 +200,16 @@ class RoLA(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        state: RoLAState | None = None,
+        state: tuple[RoLAState | None, tuple | None] | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, RoLAState | None]:
-        """``(y, state)``, mirroring the op. THE LAYER IS A PASS-THROUGH FOR STATE.
+    ) -> tuple[torch.Tensor, tuple[RoLAState | None, tuple | None]]:
+        """``(y, (state, conv_rings))`` -- ALWAYS the pair. CONTINUATION IS LAYERED.
 
-        ``state`` is a :class:`~rola.RoLAState` or ``None``, and the predicate is
-        the op's: ``state is not None`` engages the carried state, a stateless call
-        returns ``(y, None)``. Nothing is wrapped, stamped or checked here -- state
-        semantics are the state's (docs/internals/state.md), and a layer that
-        re-validated them would be a second contract to keep in step with the first.
+        ``state`` is ``None`` (a stateless call) or the pair a previous forward
+        returned. The op's paged tensor is the op's; the short-convolution rings are
+        the LAYER's, because the layer is what introduced that recurrence, and they
+        are ``None`` when no convolution is configured. Each level of the stack holds
+        exactly the recurrences its own level introduced (docs/api.md §1.2).
         """
         if attention_mask is not None and attention_mask.dim() != 2:
             raise ValueError(
@@ -206,6 +224,7 @@ class RoLA(nn.Module):
                 "(`cu_seqlens`) and attention-probability outputs are not implemented; RoLA "
                 "has no attention matrix to return.")
 
+        state, conv_rings = _unpack_continuation(state)
         x = hidden_states
         B, L, _ = x.shape
         H = self.num_heads
@@ -226,13 +245,11 @@ class RoLA(nn.Module):
                 v = v.to(x.dtype)
         else:
             v = self.v_proj(x)
-        #: The short-convolution rings ride ALONGSIDE the routed state, on the same
-        #: object, because they are also part of the recurrence: a continuation that
-        #: dropped them would restart the causal conv from zeros and compute a
-        #: different function for the first `conv_size - 1` tokens of every step.
+        #: The rings ARE part of the recurrence: a continuation that dropped them would
+        #: restart the causal conv from zeros and compute a different function for the
+        #: first `conv_size - 1` tokens of every step.
         stateful = state is not None
-        conv_states = list(state.conv_state) if (
-            stateful and state.conv_state is not None) else [None, None]
+        conv_states = [None, None] if conv_rings is None else list(conv_rings)
         if self.value_conv is not None:
             v, conv_states[0] = self.value_conv(
                 v, cache=conv_states[0], output_final_state=stateful)
@@ -260,8 +277,9 @@ class RoLA(nn.Module):
 
         self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
-        if stateful and (self.value_conv is not None or self.route_conv is not None):
-            state.conv_state = tuple(conv_states)
+        conv_rings = (tuple(conv_states)
+                      if self.value_conv is not None or self.route_conv is not None
+                      else None)
         out = out.reshape(B, L, H * self.head_v_dim)
         if bf16_proj:
             #: `out`'s VALUES are already bf16-rounded (y is cast post-divide in the
@@ -270,7 +288,7 @@ class RoLA(nn.Module):
                 out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         else:
             projected = self.o_proj(out)
-        return projected, state
+        return projected, (state, conv_rings)
 
     # --- the arm that needs layer-owned state --------------------------------
 

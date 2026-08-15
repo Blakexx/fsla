@@ -1,36 +1,34 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The carried recurrent state: ONE object, one predicate (docs/internals/state.md).
+"""The carried recurrent state: A PAGED TENSOR, and nothing more.
 
-**A fixed-size recurrent state is not a KV cache.** A KV cache grows with the
-sequence; RoLA's carried state is `[B, H, N, cols]` -- a shape that does not mention
-`T` at all -- which is why nothing here borrows `transformers`' cache vocabulary
-(concatenation, eviction, window rolling) and why the package's only hard
-dependencies stay `torch` + `einops`.
+Storage (an arena or a dense plane), a page table, the logical shape
+``[B, H, N, cols]``, a device and a dtype, and the storage-mechanics stamp
+(``strategy``). Everything else that used to ride here failed one question --
+*would a paged tensor know this?* -- and lives where it belongs now
+(docs/internals/state.md).
 
-    s = rola.state()                     # unbound; keying binds at the first call
+    s = rola.state()                     # unbound; the first call binds the shape
     y1, s = rola.rola_op(routes1, v1, state=s)
     y2, s = rola.rola_op(routes2, v2, state=s)
 
-`state=None` is the stateless call and returns `(y, None)`. That predicate --
-`state is not None` -- is the whole engagement signal at the op and at the layer.
+``state=None`` is the stateless call and returns ``(y, None)``. That predicate --
+``state is not None`` -- is the whole engagement signal at the op and at the layer.
 
-What the object holds and what it does NOT hold is the design's closed surface
-(`s0_design.md` amendment 11): a strategy stamp, the keying it bound to, and the
-backing. No step stamp, no lineage, no staleness machinery, no wrapper tier. A
-state is a buffer with a contract, exactly like a `torch` tensor is, and using one
-across a branch is the caller's business rather than something this class polices.
+**A fixed-size recurrent state is not a KV cache.** A KV cache grows with the
+sequence; this shape does not mention ``T`` at all, which is why nothing here borrows
+``transformers``' cache vocabulary (concatenation, eviction, window rolling).
 
-The backing is DENSE or PAGED and that is invisible to a caller: both spell the
-same math and the same bytes (`tests/tier2_geometry/test_chunk_paging_equivalence.py`
-asserts it with `torch.equal`), and only the footprint differs.
+Using one across a branch, or against a call it was not bound by, is the CALLER's
+business exactly as it is for a ``torch`` tensor: a disagreement fails as a shape
+error where the bytes are addressed, and nothing here polices it in advance.
 """
 
 from __future__ import annotations
 
 import torch
 
-from rola.ops.paging import MMA_K_QUANTUM, AtomKeying, PageArena
+from rola.ops.paging import AtomKeying, PageArena
 
 __all__ = ["RoLAState", "state"]
 
@@ -49,20 +47,18 @@ def state(strategy: str = "mutable") -> RoLAState:
 class RoLAState:
     """One sequence's carried state, mutated in place and handed back.
 
-    Construct through :func:`rola.state`. The first stateful call binds the keying
-    (`N`, `cols`, `BH`), the topology fingerprint, the device and the backing from
-    the call itself; every later call is checked against those for
-    MATH-COMPATIBILITY only -- a disagreement is the wrong-shaped-tensor class of
-    error, not a policy refusal.
+    Construct through :func:`rola.state`. The first stateful call binds the shape, the
+    device and the backing from the call itself -- binding is SHAPE ACQUISITION, not a
+    fingerprint, and there is no later compatibility interview.
 
-    ``strategy`` is the construction-time stamp. ``"mutable"`` is the built one:
-    the call writes in place and returns THIS object. Changing a state's strategy is
+    ``strategy`` is a storage-mechanics fact, the same class as a tensor's layout: it
+    governs what a write does to this object's own storage. ``"mutable"`` is the built
+    one -- the call writes in place and returns THIS object. Changing it is
     :meth:`clone`, never a mode flip on a live object.
     """
 
-    __slots__ = ("strategy", "conv_state", "_keying", "_widths", "_normalization",
-                 "_batch", "_heads", "_device", "_paging", "_BC", "_arena", "_plane",
-                 "_decode_carrier_cache", "_decode_workspace")
+    __slots__ = ("strategy", "_shape", "_device", "_paging", "_arena", "_plane",
+                 "__weakref__")
 
     def __init__(self, *, strategy: str = "mutable") -> None:
         if strategy in _NAMED_UNBUILT_STRATEGIES:
@@ -74,23 +70,9 @@ class RoLAState:
             raise ValueError(
                 f"strategy must be one of {_BUILT_STRATEGIES}, got {strategy!r}")
         self.strategy = strategy
-        #: The layer's short-convolution rings, carried ALONGSIDE the routed state.
-        #: They are the layer's lifecycle sugar and the op never reads them.
-        self.conv_state: tuple[torch.Tensor | None, ...] | None = None
-        #: The `T = 1` path's LAUNCH MACHINERY -- the frozen carrier and its scratch --
-        #: cached where the sequence is, for the same reason `conv_state` is: it is
-        #: per-sequence and it is not a caller's burden. Neither is read by the chunk
-        #: arm, and a clone does not copy them (they rebuild from their own key).
-        self._decode_carrier_cache = None
-        self._decode_workspace = None
-        self._keying: AtomKeying | None = None
-        self._widths: tuple[int, ...] | None = None
-        self._normalization: str | None = None
-        self._batch = 0
-        self._heads = 0
+        self._shape: tuple[int, int, int, int] | None = None
         self._device: torch.device | None = None
         self._paging = True
-        self._BC = 0
         self._arena: PageArena | None = None
         self._plane: torch.Tensor | None = None
 
@@ -99,14 +81,29 @@ class RoLAState:
     def __repr__(self) -> str:
         if not self.bound:
             return f"RoLAState(strategy={self.strategy!r}, unbound)"
-        return (f"RoLAState(strategy={self.strategy!r}, widths={self._widths}, "
-                f"BH={self._keying.BH}, cols={self._keying.cols}, "
+        return (f"RoLAState(strategy={self.strategy!r}, shape={self._shape}, "
                 f"backing={'paged' if self.paged else 'dense'}, device={self._device})")
 
     @property
     def bound(self) -> bool:
-        """Whether a call has bound this state's keying, device and backing yet."""
-        return self._keying is not None
+        """Whether a call has bound this state's shape, device and backing yet."""
+        return self._shape is not None
+
+    @property
+    def shape(self) -> tuple[int, int, int, int] | None:
+        """``[B, H, N, cols]``, or ``None`` while unbound."""
+        return self._shape
+
+    @property
+    def device(self) -> torch.device | None:
+        return self._device
+
+    @property
+    def dtype(self) -> torch.dtype | None:
+        """The STORAGE's dtype, or ``None`` while nothing is carried."""
+        if self._arena is not None:
+            return self._arena.state.dtype
+        return None if self._plane is None else self._plane.dtype
 
     @property
     def paged(self) -> bool:
@@ -114,36 +111,19 @@ class RoLAState:
         return self._arena is not None
 
     @property
-    def _page_table(self) -> torch.Tensor:
-        """The arena's ``[BH, N/16]`` table. Only a paged state has one."""
-        return self._arena.page_table
-
-    def _wants_pages(self, paging: bool) -> bool:
-        """Whether this call needs an atom bitmap -- i.e. whether it will PAGE.
-
-        Asked by the facade before the stats pass, so a dense-backed state does not
-        pay for a bitmap nothing reads. Once bound, the state's own backing preference
-        answers it; the argument is only consulted on the call that binds.
-        """
-        return self._paging if self.bound else bool(paging)
-
-    @property
     def carries(self) -> bool:
         """Whether anything is STORED yet. A bound state can still be empty.
 
-        Binding fixes the keying and the backing kind; contents arrive with the first
+        Binding fixes the shape and the backing kind; contents arrive with the first
         call that finishes. The two are separate because a call may bind a state and
         then have nothing to carry (a fresh sequence's entry state is no state at all).
         """
         return self._arena is not None or self._plane is not None
 
     @property
-    def keying(self) -> AtomKeying | None:
-        return self._keying
-
-    @property
-    def device(self) -> torch.device | None:
-        return self._device
+    def page_table(self) -> torch.Tensor | None:
+        """The arena's ``[BH, N/16]`` table, or ``None`` for a dense backing."""
+        return None if self._arena is None else self._arena.page_table
 
     def materialize(self) -> torch.Tensor | None:
         """`[B, H, N, cols]`, or `None` while nothing is carried. ORACLE AND BRIDGE ONLY.
@@ -154,10 +134,9 @@ class RoLAState:
         """
         if not self.carries:
             return None
-        shape = (self._batch, self._heads, self._keying.N, self._keying.cols)
         if self._arena is not None:
-            return self._arena.materialize().view(shape)
-        return self._plane.view(shape)
+            return self._arena.materialize().view(self._shape)
+        return self._plane.view(self._shape)
 
     def clone(self, strategy: str | None = None) -> RoLAState:
         """An EAGER deep copy, and the only sanctioned strategy change.
@@ -169,17 +148,14 @@ class RoLAState:
         descendant a guarantee its ancestor can break.
         """
         out = RoLAState(strategy=self.strategy if strategy is None else strategy)
-        out.conv_state = None if self.conv_state is None else tuple(
-            None if t is None else t.clone() for t in self.conv_state)
         if not self.bound:
             return out
-        out._keying, out._widths = self._keying, self._widths
-        out._normalization, out._batch, out._heads = self._normalization, self._batch, self._heads
-        out._device, out._paging, out._BC = self._device, self._paging, self._BC
+        out._shape, out._device, out._paging = self._shape, self._device, self._paging
         if self._arena is None:
-            out._plane = self._plane.clone()
+            if self._plane is not None:
+                out._plane = self._plane.clone()
             return out
-        arena = out._new_arena()
+        arena = out._new_arena(self._arena.widths, self._arena.BC)
         arena.plan_exact(self._arena.page_table >= 0, fresh=True)
         arena.wait()
         source, destination = self._arena.page_table, arena.page_table
@@ -190,74 +166,21 @@ class RoLAState:
         out._arena = arena
         return out
 
-    def adopt_dense_contents(self, dense: torch.Tensor) -> None:
-        """Store a dense `[B, H, N, cols]` state, replacing whatever backed this one.
+    # -- the facade's seam (rola/interface.py and rola/ops/decode.py) -----------
 
-        The bridge back FROM the reference arm, which keeps raw tensors by spec
-        (`rola/ops/naive.py`'s signature is the oracle's contract). The backing
-        becomes the dense plane holding exactly these contents, in the dtype they
-        arrive in -- the fp64 oracle's result stays fp64, so a reference-arm chain
-        never rounds through fp32. A kernel-arm call on such a state re-admits from
-        the contents' own atom occupancy (:meth:`_kernel_entry`).
+    @property
+    def _keying(self) -> AtomKeying:
+        B, H, N, cols = self._shape
+        return AtomKeying(N=N, cols=cols, BH=B * H)
 
-        Deliberately NOT `PageArena.adopt_dense`: that commits the dense limit, which
-        is the footprint the paged backing exists to avoid.
+    def _wants_pages(self, paging: bool) -> bool:
+        """Whether this call needs an atom bitmap -- i.e. whether it will PAGE.
+
+        Asked by the facade before the stats pass, so a dense-backed state does not
+        pay for a bitmap nothing reads. Once bound, the state's own backing preference
+        answers it; the argument is only consulted on the call that binds.
         """
-        if not self.bound:
-            raise RuntimeError(
-                "adopt_dense_contents needs a bound state: the keying it would store "
-                "against comes from a call, and this state has not seen one")
-        expected = (self._batch, self._heads, self._keying.N, self._keying.cols)
-        if tuple(dense.shape) != expected:
-            raise ValueError(f"a dense state must be {expected}, got {tuple(dense.shape)}")
-        self._arena = None
-        self._plane = dense.reshape(
-            self._keying.BH, self._keying.atoms_per_bh, MMA_K_QUANTUM,
-            self._keying.cols).contiguous()
-
-    # -- the facade's seam (rola/interface.py is the only caller) --------------
-
-    def _bind(self, routes, *, d_v: int, paging: bool) -> None:
-        """Take the keying, the topology fingerprint, the device and the backing kind.
-
-        Binding happens ONCE, at the first call that receives this state. The paging
-        preference is read here and nowhere else: a backing is chosen, and changing
-        it afterwards is a :meth:`clone`, not a per-call flag.
-        """
-        topology = routes.topology
-        self._widths = tuple(topology.widths)
-        self._normalization = routes.normalization
-        self._batch, self._heads = routes.batch, routes.heads
-        self._device = routes.device
-        self._paging = bool(paging)
-        self._keying = AtomKeying(
-            N=topology.N, cols=d_v + (1 if routes.normalization == "global" else 0),
-            BH=routes.batch * routes.heads)
-
-    def _require_compatible(self, routes) -> None:
-        """Math-compatibility, and only that: keying, topology, device.
-
-        Each of these makes the call literally uncomputable against this state -- a
-        different leaf count addresses different rows, a different `cols` a different
-        stride, a different device different memory. Everything else (who else holds
-        this object, what order the calls came in) is the caller's business.
-        """
-        topology = routes.topology
-        if tuple(topology.widths) != self._widths:
-            raise ValueError(
-                f"this state is bound to widths={self._widths}; the call routes "
-                f"{tuple(topology.widths)}")
-        if routes.normalization != self._normalization:
-            raise ValueError(
-                f"this state is bound to normalization={self._normalization!r}; the call "
-                f"is {routes.normalization!r}, which is a different column count")
-        if (routes.batch, routes.heads) != (self._batch, self._heads):
-            raise ValueError(
-                f"this state is bound to (batch, heads)=({self._batch}, {self._heads}); "
-                f"the call is ({routes.batch}, {routes.heads})")
-        if routes.device != self._device:
-            raise ValueError(
-                f"this state lives on {self._device}; the call is on {routes.device}")
+        return self._paging if self.bound else bool(paging)
 
     def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, d_v: int,
                       paging: bool, BC: int):
@@ -268,15 +191,16 @@ class RoLAState:
         `plan_exact` on the arena's side stream -- one device-to-host size read, no
         other synchronization. The launch's `arena.wait()` (in `rola.ops.chunk.run`)
         is what puts the admission before the kernel.
+
+        `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
+        extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by
+        the atom re-key, so a `BC` flip between calls neither rebuilds the arena nor
+        moves a byte.
         """
         if not self.bound:
-            self._bind(routes, d_v=d_v, paging=paging)
-        else:
-            self._require_compatible(routes)
-        #: `BC` reaches the arena as allocator POLICY only (the extent default is one
-        #: owner's atoms); every ADDRESS is `BC`-invariant by the atom re-key, so a
-        #: `BC` flip between calls neither rebuilds the arena nor moves a byte.
-        self._BC = int(BC)
+            self._shape = (routes.batch, routes.heads, routes.topology.N, d_v + 1)
+            self._device = routes.device
+            self._paging = bool(paging)
         bitmap = (None if atom_bits is None else
                   atom_bits.reshape(self._keying.BH, self._keying.atoms_per_bh).bool())
 
@@ -285,50 +209,19 @@ class RoLAState:
             #: a sequence means, and the atoms already committed keep their contents.
             self._arena.plan_exact(bitmap, fresh=False)
             return self._arena.state, self._arena
-        if self._plane is None:
-            #: nothing carried yet -- a fresh sequence, whichever call bound the state.
-            if not self._paging:
-                return None, None
-            arena = self._new_arena()
-            arena.plan_exact(bitmap, fresh=True)
-            self._arena = arena
-            return None, arena
-        if self._paging:
-            #: a reference-arm result returning to the kernel arm: the dense contents'
-            #: OWN atom occupancy joins this call's write set, so the admission covers
-            #: what is carried as well as what will be written.
-            s_in = self._readmit(bitmap)
-            return s_in, self._arena
-        if self._plane.dtype is not torch.float32:
-            self._plane = self._plane.to(torch.float32)
-        return self._plane, None
+        if self._plane is not None:
+            return self._plane, None
+        if not self._paging:
+            return None, None
+        arena = self._new_arena(routes.topology.widths, BC)
+        arena.plan_exact(bitmap, fresh=True)
+        self._arena = arena
+        return None, arena
 
     def _kernel_commit(self, plane: torch.Tensor) -> None:
         """Take the kernel's final-state plane. Paged states already own theirs."""
         if self._arena is None:
             self._plane = plane
-
-    def _decode_carrier(self, routes, *, d_v: int, decay, mma_precision: str):
-        """The `T = 1` frozen carrier for this sequence, built once and cached HERE.
-
-        It freezes at the prefill/decode boundary and is immutable for the sequence
-        (`docs/internals/decode.md`), so it is rebuilt only when its own key moves --
-        `BH`, the device, and the decay arm, the three facts it is a function of that
-        the state does not already pin. Everything else in it is a topology fact, and
-        the topology is what this state is bound to.
-        """
-        from rola.ops.decode import freeze_decode_config
-
-        key = (routes.batch * routes.heads, routes.device, decay is not None,
-               mma_precision)
-        cached = self._decode_carrier_cache
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        config = freeze_decode_config(
-            routes.topology, routes.normalization, d_v=d_v, decay=decay is not None,
-            BH=key[0], device=routes.device, mma_precision=mma_precision)
-        self._decode_carrier_cache = (key, config)
-        return config
 
     def _decode_entry(self, routes, bitmap: torch.Tensor | None):
         """`(plane, page_table, arena)` for one decode step, with its atoms committed.
@@ -348,7 +241,6 @@ class RoLAState:
                 "at T = 1 there is no prefill to run and no entry state to read. Run the "
                 "sequence's first tokens through rola_op and step from the state it "
                 "returns.")
-        self._require_compatible(routes)
         if self._arena is not None:
             #: GROWTH. `bitmap` is the step's write-atom set when the device growth probe
             #: says this step reaches an atom the table does not map, and `None` when it
@@ -360,47 +252,11 @@ class RoLAState:
             if bitmap is not None:
                 self._arena.plan_exact(bitmap, fresh=False)
             return self._arena.state, self._arena.page_table, self._arena
-        if self._plane.dtype is not torch.float32:
-            self._plane = self._plane.to(torch.float32)
-        return (self._plane.view(self._batch, self._heads, self._keying.N,
-                                 self._keying.cols),
-                None, None)
-
-    def _dense_entry(self, routes, *, d_v: int, paging: bool) -> torch.Tensor | None:
-        """The `[B, H, N, cols]` entry state the fp64 oracle takes, or `None`.
-
-        The reference arm keeps RAW TENSORS by spec, so a paged state materializes
-        here. It is the expensive direction of the bridge and it is the one the
-        design accepts: the oracle is not a measured path.
-        """
-        if not self.bound:
-            self._bind(routes, d_v=d_v, paging=paging)
-            return None
-        self._require_compatible(routes)
-        return self.materialize()
+        return self._plane.view(self._shape), None, None
 
     # -- backing internals -----------------------------------------------------
 
-    def _new_arena(self) -> PageArena:
-        return PageArena(widths=self._widths, BC=self._BC, cols=self._keying.cols,
-                         BH=self._keying.BH, device=self._device)
-
-    def _readmit(self, bitmap: torch.Tensor) -> torch.Tensor:
-        """Dense contents -> pages, admitting occupancy UNION this call's write set.
-
-        Occupancy is a nonzero reduction at atom grain, which is exact in the safe
-        direction: an atom holding nothing but zeros reads as zeros whether it is
-        resident or absent (the zero-page inertness gate), so admitting on nonzero
-        contents can only ever admit a superset of what is carried.
-        """
-        plane = self._plane
-        occupied = (plane != 0).any(dim=-1).any(dim=-1)
-        arena = self._new_arena()
-        arena.plan_exact(occupied | bitmap, fresh=True)
-        arena.wait()
-        table = arena.page_table
-        present = table >= 0
-        arena.state.index_copy_(
-            0, table[present].long(), plane[present].to(torch.float32))
-        self._arena, self._plane = arena, None
-        return arena.state
+    def _new_arena(self, widths: tuple[int, ...], BC: int) -> PageArena:
+        keying = self._keying
+        return PageArena(widths=widths, BC=int(BC), cols=keying.cols, BH=keying.BH,
+                         device=self._device)

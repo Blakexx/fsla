@@ -241,7 +241,7 @@ def test_a_decoded_sequence_continues_back_onto_the_chunk_arm():
     gateway = _gateway(seed=5)
     x, v = _inputs(seed=5)
     y, state = _run(gateway, x, v)
-    resident = int((state.keying is not None) and (state._arena.page_table >= 0).sum())
+    resident = int(state.bound and (state.page_table >= 0).sum())
 
     tail = slice(_T + _S, None)
     x2 = torch.randn(_B, _chunk.arm(gateway(x[:, :_T]))[0], _HIDDEN, device="cuda")

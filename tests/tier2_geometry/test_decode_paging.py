@@ -123,7 +123,7 @@ def _f32(fixture):
 
 def _config(widths, fixture):
     return freeze_decode_config(
-        _topology(widths), "global", d_v=_DV, decay=False,
+        _topology(widths), d_v=_DV, decay=False,
         BH=fixture["B"] * fixture["H"], device="cuda", mma_precision="bf16")
 
 

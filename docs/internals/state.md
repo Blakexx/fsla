@@ -11,60 +11,63 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count;
 which is the page granule; **slot** = the physical page an atom is mapped to;
 `BC` = leaves one owner block owns.
 
-## <a id="one-object"></a>1. ONE object, one predicate
+## <a id="one-object"></a>1. A PAGED TENSOR, and one predicate
 
 ```python
 s = rola.state()                        # unbound
-y, s = rola.rola_op(routes, v, state=s) # bound to this call's keying; s is mutated
+y, s = rola.rola_op(routes, v, state=s) # bound to this call's shape; s is mutated
 y, _ = rola.rola_op(routes, v)          # stateless: (y, None)
 ```
 
 `rola.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
 `rola/_state.py`, private by its underscore, so no module answers to the public name.
-(It was `rola/state.py` until P67 S5, where the function shadowed the module through
-`rola/__init__.py` — a working arrangement that made `from rola import state` mean two
-things depending on import order.)
 
-`rola.state(strategy=...)` builds a fresh UNBOUND state. `RoLAState` holds a strategy
-stamp, the keying it bound to, and its backing — and nothing else. There is no handle
-tier, no step stamp, no lineage, no staleness check. A state is a buffer with a
-contract, exactly as a `torch` tensor is; two callers sharing one is their business.
+A `RoLAState` is a paged tensor and nothing more:
+
+| it holds | what it is |
+|---|---|
+| storage | a `PageArena`, or one dense plane |
+| the page table | `[BH, N/16]` slot ids, `None` when dense (`state.page_table`) |
+| the logical shape | `[B, H, N, cols]` (`state.shape`) |
+| device, dtype | `state.device`, `state.dtype` — the STORAGE's |
+| `strategy` | storage mechanics: what a write does to this object's own storage |
+
+**THE MEMBERSHIP TEST is a question, and it is the whole design rule: would a paged
+tensor know this?** A tensor knows its layout and its contiguity, so `strategy` stays.
+A tensor does not know which routing widths produced it, whether a convolution ran
+before it, or what launch scratch some kernel wants — so the widths/normalization
+fingerprint, the short-convolution rings, the decode carrier and the decode workspace
+are all GONE from here, each to the level that owns it ([§5b](#decode-seam),
+[§7](#conv-rings)). Accretion onto a carried state is the failure mode this rule
+exists to leave nowhere to land.
 
 **The predicate is `state is not None`**, at the op and at the layer alike. There is
 no second flag, because the kernel's store epilogue is skipped by a NULL POINTER: a
 stateless call runs a variant with no state I/O compiled into it at all and pays
-nothing for the feature, and a "give me no state back" flag would only buy a null
-return and a second contract to keep in step with the first.
+nothing for the feature.
 
-The layer mirrors the op exactly and is a PASS-THROUGH: `forward(x, state=...)`
-returns `(y, state)`, unwrapping nothing and checking nothing.
+## <a id="binding"></a>2. Binding is SHAPE ACQUISITION, and there is no interview
 
-## <a id="binding"></a>2. Binding, and the only refusals
+A fresh state has a strategy and nothing else. The FIRST call that receives it takes
+`[B, H, N, cols]`, the device and the backing kind from the call itself. `cols` needs
+`d_v`, which is NOT on the routing — the value width is the value stream's own fact —
+so `rola_op` sources it from `v.shape[-1]`.
 
-A fresh state has a strategy and nothing else. The FIRST call that receives it binds
-its keying (`N`, `cols`, `BH`), its topology fingerprint (the level widths and the
-normalization), its device, and its backing. `cols` needs `d_v`, which is NOT on the
-routing — the value width is the value stream's own fact — so the binding takes it
-from the call, sourced by `rola_op` from `v.shape[-1]`. Every later call is checked
-against what was bound, and the check is MATH-COMPATIBILITY ONLY:
+Later calls are NOT checked against what was bound. A state used against a call it
+does not fit fails where the bytes are addressed — a reshape or an index raises —
+exactly as it does for a `torch` tensor handed to the wrong op.
 
-| refused | because |
-|---|---|
-| different level widths | a different leaf count addresses different rows |
-| different normalization | a different `cols` is a different stride |
-| different `(batch, heads)` | a different `BH` is a different keying |
-| different device | different memory |
-
-Each of those makes the call literally uncomputable against this state — the
-wrong-shaped-tensor class of error. Nothing else is policed. In particular, resubmitting
-an older state object, sharing one between two sequences, or continuing after a
-`clone` are all legal and are the caller's semantics to own.
+**The named accepted hazard**: two states of the same `N` and `cols` built from
+DIFFERENT widths have different leaf orders, and interchanging them is silent. That is
+the caller's risk, deliberately: a widths/normalization fingerprint on the state is a
+second contract to keep in step with the first, and every mechanism that carried one
+grew luggage. Resubmitting an older state, sharing one between two sequences, and
+continuing after a `clone` are likewise legal and the caller's semantics to own.
 
 `strategy="cow"` is refused AT CONSTRUCTION, by name: copy-on-write branching is
 designed (per-branch tables, refcounted slot GC) and not built, and its settled
-semantics are [§9.1](#cow) so that a future builder implements the ruling rather than
-re-deriving it. `"mutable"` is the built strategy: the call writes in place and returns
-THE SAME OBJECT.
+semantics are [§9.1](#cow). `"mutable"` is the built strategy: the call writes in
+place and returns THE SAME OBJECT.
 
 ## <a id="backing"></a>3. The backing: dense or paged, and invisible either way
 
@@ -84,7 +87,8 @@ the expert overrides the MAPPING only. Dense and paged are ONE kernel, one ABI, 
 accumulation order and one base translation — `torch.equal`, not a tolerance
 (`tests/tier2_geometry/test_chunk_paging_equivalence.py`). A caller cannot observe
 which backing a state has except by asking (`state.paged`), and no result depends on
-the answer.
+the answer. A state never switches backing mid-life: there is one arm, and it reads
+whichever backing the state bound.
 
 `materialize() -> [B, H, N, cols]` gathers the state into a dense tensor. It is for
 the oracle, for a cross-arm hand-off and for a test. **Never on a measured path**:
@@ -105,41 +109,34 @@ the sequence, and it is the read that also SIZES the admission. A fresh state pl
 continuation plans `fresh=False`, so residency becomes the UNION — which is what
 continuing a sequence means.
 
-## <a id="arms"></a>5. Crossing the arms
+`BC` arrives FROM THE CALL (`_kernel_entry(..., BC=...)`) and is never stored. It is
+allocator policy — it resolves the arena's default extent — and every ADDRESS is
+`BC`-invariant by the atom re-key, so a `BC` flip between two calls on one live state
+neither rebuilds the arena nor moves a byte. `clone()` reads the widths and `BC` it
+needs off the arena it is copying, which is where they already live.
 
-The reference arm is the fp64 oracle, and `naive_rola`'s raw-tensor signature is SPEC:
-it does not learn about state objects. So the FACADE crosses the boundary in both
-directions. An incoming state materializes to `[B, H, N, cols]` fp64; the oracle's
-final state is stored back through `adopt_dense_contents`, in the dtype it arrives in,
-so a reference-arm chain never rounds through fp32.
+## <a id="arms"></a>5. There is one arm, and no bridge
 
-A PAGED state that takes the reference arm therefore becomes dense-backed. Returning to
-the kernel arm RE-ADMITS: the dense contents' own atom occupancy (a nonzero reduction
-at atom grain) is unioned with the call's write bitmap and planned into a fresh arena,
-and the contents are scattered into their slots. Occupancy is exact in the safe
-direction — an atom holding only zeros reads as zeros whether resident or absent (the
-zero-page inertness gate) — so this admits at most a superset of what is carried.
-
-It is deliberately NOT `PageArena.adopt_dense`, which commits the dense limit and
-would reintroduce the footprint the arena exists to avoid.
-
-There is no raw-tensor state crossing left in the layer. A topology the chunk arm has
-no built arm for dispatches to the reference arm, which crosses the state through this
-facade like any other reference-arm call ([`api.md` §1.1](../api.md#11-the-kernel-envelope)),
-so `_decode_step` is the only raw-tensor seam anywhere.
+The fp64 oracle is the executable SPEC, not an arm of the op
+([`api.md` §1.1](../api.md#11-the-built-envelope-is-the-surface)): a caller that wants
+it calls `naive_rola` and passes raw tensors. So no state ever crosses to it through
+the facade, and the dense-contents bridge that existed to carry it (`_dense_entry`,
+`adopt_dense_contents`, the re-admission of dense contents into pages) is GONE
+(`DELETIONS.md`). What is left is one kernel arm reading the backing its state bound.
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
 `rola.ops.decode.decode_forward(routes, v, state, decay=..., expert=...)` takes and
-returns the state exactly as `rola_op` does; the layer is a pass-through to it. Three
-things live behind that seam and are worth naming because they used to be the caller's:
+returns the state exactly as `rola_op` does. Three things live behind that seam:
 
-* **The frozen carrier and the scratch** (`FrozenDecodeConfig`, `DecodeWorkspace`) are
-  cached ON THE STATE (`_decode_carrier_cache`, `_decode_workspace`). They are
-  per-sequence launch machinery, exactly like `conv_state` beside them, and the carrier
-  is what "frozen at the prefill/decode boundary" means — it is rebuilt only when its
-  own key (`BH`, device, the decay arm, the precision pin) moves. `clone()` does not
-  copy them: they rebuild from that key.
+* **The frozen carrier and the scratch** (`FrozenDecodeConfig`, `DecodeWorkspace`)
+  are MEMOIZED IN `rola.ops.decode`, not on the state — launch machinery fails the
+  membership test. The carrier is a pure function of its key (widths, `d_v`, the decay
+  arm, `BH`, device, the precision pin), so a plain module-level dict is exactly
+  right: identical keys are the identical frozen object. The workspace is scratch
+  belonging to ONE live state, so it is keyed by the state object in a
+  `WeakKeyDictionary` — a dropped sequence drops its scratch, and two concurrent
+  sequences can never share a buffer.
 * **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
   or a VIEW of the dense plane — the view is what makes the kernel's in-place update
   the state's update. Dense and paged compute the same bytes
@@ -149,8 +146,7 @@ things live behind that seam and are worth naming because they used to be the ca
   found an atom this step writes that the table does not map, and the entry plans it
   with `plan_exact(..., fresh=False)` — residency becomes the UNION and the launch waits
   on the one event. `None` means there is nothing to admit, and the entry hands back the
-  residency the state already has without touching the arena at all. Which one it is,
-  and why the question is asked on the device, are
+  residency the state already has without touching the arena at all
   ([`decode.md` §4b](decode.md#growth)).
 
 A decode step CONTINUES, so `_decode_entry` refuses a state that carries nothing —
@@ -161,20 +157,34 @@ impossibility and not a policy, which is the only kind of refusal this surface h
 
 `clone()` is an EAGER deep copy: a paged state's copy gets its own arena with the same
 residency and its own pages; a dense state's copy gets its own plane. Nothing is
-shared.
+shared, and nothing else is copied — a clone has no rings and no scratch to copy,
+because it holds none.
 
 It is also the ONLY sanctioned strategy change (`clone(strategy=...)`). A live mutable
 ancestor is a standing alias onto shared slots, so a cheaper transition would hand a
 descendant a guarantee its ancestor can break. Strategies never mix within a lineage:
 crossing strategies crosses a clone, and the cost is visible at the point it is paid.
 
-## <a id="conv-rings"></a>7. What rides along: the short-convolution rings
+## <a id="conv-rings"></a>7. CONTINUATION IS LAYERED
 
-`state.conv_state` carries the layer's causal short-convolution ring buffers. They are
-fixed-size and genuinely part of the recurrence — a continuation that dropped them
-would restart the convolution from zeros and compute a different function for the
-first `conv_size - 1` tokens of each step — but they are not routed state and the op
-never reads them. The layer writes them; `clone()` copies them.
+The op's state is the paged tensor. The LAYER returns its own thin bundle:
+
+```python
+y, (state, conv_rings) = layer(x, state=(state, conv_rings))   # always the pair
+```
+
+`conv_rings` is `None` when no convolution is configured. The rings are genuinely part
+of the recurrence — a continuation that dropped them would restart the causal
+convolution from zeros and compute a different function for the first `conv_size - 1`
+tokens of every step — but they are the LAYER's recurrence, introduced by the layer.
+
+**The membership test, one level up: an object holds exactly the recurrences ITS OWN
+level introduced.** Op: the routed state. Layer: the conv rings. Model: the per-layer
+bundles. This is not the old pooled state object recreated — that defect was layer
+luggage INSIDE the op's object, and this keeps each object pure while giving accretion
+nowhere to land. The pair is the contract in BOTH directions, so a bare `RoLAState`
+handed to `forward` is refused by name rather than adopted: accepting the op's half
+would make the rings silently optional to carry.
 
 ## <a id="not-a-kv-cache"></a>8. What is deliberately absent
 

@@ -133,7 +133,7 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
         topology, decay, "global", output_final_state=True)
 
-    config = freeze_decode_config(topology, "global", d_v=_DV, decay=decay_on, BH=_B * _H,
+    config = freeze_decode_config(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device, mma_precision="bf16")
     state = state.reshape(_B, _H, config.N, config.cols).clone()
     workspace, cold_seen = None, False
@@ -179,7 +179,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
 
-    config = freeze_decode_config(topology, "global", d_v=_DV, decay=True, BH=_B * _H,
+    config = freeze_decode_config(topology, d_v=_DV, decay=True, BH=_B * _H,
                                   device=device, mma_precision="bf16")
     state, ref_state = m0.float().clone(), m0
     workspace, errors = None, {}
@@ -222,8 +222,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = g._topology(_WIDTHS)
     configs = {
-        f"n_split={n}": freeze_decode_config(
-            topology, "global", d_v=_DV, decay=False, BH=_B * _H, device=device,
+        f"n_split={n}": freeze_decode_config(topology, d_v=_DV, decay=False, BH=_B * _H, device=device,
             n_split=n, mma_precision="bf16")
         for n in (1, 3, 8)
     }
@@ -312,14 +311,14 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     x_seq = torch.randn(1, T + 1, 128, device=device)
     carried = rola.state()
     with torch.no_grad():
-        layer(x_seq[:, :T], state=carried)
+        layer(x_seq[:, :T], state=(carried, None))
     after = dict(layer.execution_backend_counts)
     assert after["cuda"] == before["cuda"] + 1, "the prefill leg did not take the kernel arm"
 
     # LEG 3 — eval decode: the decode arm, consuming the kernel arm's state.
     before = after
     with torch.no_grad():
-        y_dec, _ = layer(x_seq[:, T:T + 1], state=carried)
+        y_dec, _ = layer(x_seq[:, T:T + 1], state=(carried, None))
     after = dict(layer.execution_backend_counts)
     assert after["decode"] == before["decode"] + 1, "the step did not take the decode arm"
 

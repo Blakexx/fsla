@@ -332,7 +332,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         if paging:
             with torch.no_grad():
                 carried = rola_state()
-                layer(x, state=carried)
+                layer(x, state=(carried, None))
             assert carried.paged, (
                 f"cell L={L}: this topology has no built chunk arm, so its state is "
                 "dense-backed and there is no residency to report")

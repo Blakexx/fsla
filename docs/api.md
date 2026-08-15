@@ -91,6 +91,25 @@ context returns a tensor with no `grad_fn` and severs the graph silently — is
 structural, not a bug in any one call site. `ChunkConsumer`'s backward is the last
 line, loud if the first is ever bypassed.
 
+### 1.2 Continuation is LAYERED
+
+The op's state is the paged tensor and nothing else
+([`docs/internals/state.md`](internals/state.md)). Each level of the stack returns its
+OWN thin bundle, and the rule is a membership test:
+
+> **An object holds exactly the recurrences ITS level introduced.**
+> Op: the routed state. Layer: the short-convolution rings. Model: the per-layer
+> bundles.
+
+So `RoLA.forward` returns `(y, (state, conv_rings))` — always the pair, `conv_rings`
+`None` when no convolution is configured — and takes that same pair back. The pair is
+the contract in both directions: a bare `RoLAState` is refused by name, because
+accepting the op's half would make the layer's half silently optional to carry.
+
+This is not the old pooled state object recreated. That object's defect was LAYER
+LUGGAGE INSIDE THE OP's state; keeping each level's object pure is what leaves
+accretion nowhere to land.
+
 ## 2. The feature map
 
 ### 2.1 The gateway
@@ -249,12 +268,14 @@ rest on that property.
 RoLA(hidden_size, num_heads, routes, *, d_v=64, decay=None,
      value_conv=None, route_conv=None, layer_idx=None, expert=None)
 
-y, state = layer(hidden_states, state=rola.state())    # or state=None -> (y, None)
+y, (state, conv_rings) = layer(hidden_states, state=(rola.state(), None))
+y, (state, conv_rings) = layer(next_tokens, state=(state, conv_rings))
+y, _ = layer(hidden_states)                            # stateless -> (y, (None, None))
 ```
 
-`forward(x, attention_mask=None, state=None) -> (y, state)` MIRRORS the op, and the
-layer is a PASS-THROUGH for the state: it unwraps nothing and checks nothing, because
-state semantics are the state's.
+`forward(x, attention_mask=None, state=None) -> (y, (state, conv_rings))` — ALWAYS the
+pair, `conv_rings` `None` when no convolution is configured. See §1.2; a bare
+`RoLAState` is refused rather than adopted.
 
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`;
 the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
@@ -262,11 +283,10 @@ take a MODULE
 (e.g. `fla.modules.ShortConvolution`) rather than three scalars describing one: the layer
 does not need to know how a convolution is configured, only where it goes.
 
-The layer adds exactly one thing the op cannot know: `self.training` gates the CUDA path
-independently of gradient reachability, because reentrant gradient checkpointing runs its
-first pass under `no_grad()` with the module still in training mode. Without that
-condition the value flowing downstream and the gradient taken would come from two
-implementations agreeing only to a tolerance.
+The layer adds exactly one clause the op cannot know: `self.training` REFUSES,
+independently of gradient reachability, because reentrant gradient checkpointing runs
+its first pass under `no_grad()` with the module still in training mode — and a
+forward that pass could take would be a forward no backward can follow.
 
 `layer.execution_backend_counts` reports which of `oracle` / `cuda` / `decode` ran, which
 is a fact about the branch rather than an inference from a timing.

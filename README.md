@@ -146,12 +146,13 @@ factors = routes(hidden_states)          # the (q, k) pair, after the feature ma
 y, state = rola.rola_op(factors, v)
 ```
 
-`rola_op` is the **single autograd boundary**. A call that requires gradients runs
-the whole operation — forward and backward, from one graph — on the differentiable
-reference, so a value and its gradient never come from two implementations that
-merely agree to a tolerance. It takes no plan and no configuration: those are how the
-op runs rather than what the model is, and the op decides how it runs, per call, from
-the routing it was actually given.
+`rola_op` runs the BUILT ENVELOPE and refuses everything else, by name — including
+every call that carries a gradient, because the backward arrives with the native
+backward. There is no second arm behind it: the fp64 oracle is the executable spec,
+called directly (below), never dispatched to, since a silent ~1000x-slower route is
+exactly what a fallback would be. It takes no plan and no configuration: those are how
+the op runs rather than what the model is, and the op decides how it runs, per call,
+from the routing it was actually given.
 
 ### The layer
 
@@ -161,7 +162,7 @@ from rola import RoLA, LearnedDecay
 layer = RoLA(512, 8, routes, d_v=64,
              decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
              layer_idx=0).cuda()
-y, state = layer(x, state=rola.state())
+y, (state, conv_rings) = layer(x, state=(rola.state(), None))
 ```
 
 Five arguments, because everything else was either a fact about the feature map (which
@@ -171,20 +172,20 @@ layer's: it sizes `v_proj`/`o_proj`, and the routing carries no value geometry.
 ### The state
 
 `rola.state()` builds one, and `rola.RoLAState` is a **fixed-size recurrent state,
-not a KV cache**: one sequence's slot state (paged by default, so what stays resident
-scales with the leaves the routing REALIZES), plus the short-convolution rings. The
-predicate is `state is not None` at the op and at the layer alike, and a stateless
-call returns `(y, None)`. Every `transformers` cache abstraction is built for the
-GROWING case, which this is not, so RoLA owns its object outright
-(docs/internals/state.md).
+not a KV cache**: a PAGED TENSOR — storage, page table, `[B, H, N, cols]`, device,
+dtype, strategy — and nothing else, paged by default so what stays resident scales
+with the leaves the routing REALIZES. Continuation is LAYERED: the layer returns
+`(y, (state, conv_rings))`, because the short-convolution rings are the recurrence the
+LAYER introduced. Every `transformers` cache abstraction is built for the GROWING
+case, which this is not, so RoLA owns its object outright (docs/internals/state.md).
 
 ### The launch geometry
 
 There is no planner and no cost model. The runtime geometry — `BC`, the CTA's
 resident state tile — belongs to the BUILT ARM: the op looks the topology up in the
-binary's own arm list and runs it, or names the clause that refuses and dispatches
-to the fp64 reference. `rola.expert` is the marked door for a caller that must ask
-what a call will do (`dispatch_for`) or pin the state's backing; the axes that are
+binary's own arm list and runs it, or names the clause that refuses. `rola.expert` is
+the marked door for a caller that must ask whether a call has an arm at all
+(`envelope_refusal`) or pin the state's backing; the axes that are
 not host-selectable refuse by name rather than being ignored. The kernel's
 correctness does not depend on which arm a topology lands on, and that is what Tier
 2 exists to prove.
