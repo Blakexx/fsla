@@ -86,7 +86,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     ("prefix", r"one \[B, T, H\] prefix"),
     ("dtype", "one dtype"),
     ("gain_shape", r"g_write must be a \[B, T, H\]"),
-    ("read_gain", "g_read is None under"),
+    ("read_gain", "g_read must be None"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
     """Unsealing removed the ORIGIN check, not the invariants. Each row plants one

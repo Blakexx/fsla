@@ -108,11 +108,11 @@ class RouteFactors:
                     raise ValueError(
                         f"every routing level shares one dtype; {name}[{level}] is "
                         f"{tensor.dtype} against {self.read[0].dtype}")
-        if (self.g_read is None) != (self.normalization == "global"):
+        if self.g_read is not None:
             raise ValueError(
-                f"RouteFactors(normalization={self.normalization!r}) with g_read="
-                f"{'None' if self.g_read is None else 'a tensor'}: g_read is None under "
-                "'global' (architecture §4.2 fixes it to 1) and a tensor under 'raw'")
+                "RouteFactors.g_read must be None: architecture §4.2 fixes g_read := 1 "
+                "under the self-normalizing readout, so there is no read-gain column "
+                "and a supplied one would be silently ignored")
         for name, gain in (("g_read", self.g_read), ("g_write", self.g_write)):
             if gain is None:
                 continue
@@ -201,9 +201,8 @@ class RouteProducer(nn.Module):
                          for width, routing in zip(widths, _scattered_tags(producers, self.slots))))
         self.side_gain = SideGain(
             num_heads=self.num_heads, hidden_size=self.hidden_size,
-            normalization=self.normalization,
             config=(gain_config if gain_config is not None
-                    else GainConfig.from_public(gain, self.normalization)),
+                    else GainConfig.from_public(gain)),
             bias_init=gain_bias_init)
 
     @property
@@ -255,20 +254,18 @@ class RouteProducer(nn.Module):
                 write[level] = produced.write[local]
 
         B, H = source.batch, self.num_heads
-        read_levels, read_mass = _fold(tuple(read), B=B, H=H)
+        #: THE READ MASS IS DROPPED, and that is the self-normalizing readout's own
+        #: statement: `R` enters as num/den, so a per-token scale common to every leaf
+        #: cancels exactly (architecture §4.2). The WRITE mass rides the write channel,
+        #: where it scales the deposit.
+        read_levels, _read_mass = _fold(tuple(read), B=B, H=H)
         write_levels, write_mass = _fold(tuple(write), B=B, H=H)
         gains = self.side_gain(read_stream)
-        # The write mass always rides the write channel: W scales the deposit under both
-        # normalizations. The read mass matters only under `raw` -- under `global`, R
-        # enters as num/den and a per-token scale common to every leaf cancels exactly.
-        g_write = gains["g_write"] * write_mass
-        g_read = gains["g_read"]
-        if self.normalization == "raw":
-            g_read = g_read * read_mass
 
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,
-            read=read_levels, write=write_levels, g_read=g_read, g_write=g_write)
+            read=read_levels, write=write_levels, g_read=None,
+            g_write=gains["g_write"] * write_mass)
 
 
 # --- construction-time assembly ---------------------------------------------

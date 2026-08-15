@@ -2,12 +2,13 @@
 
 ``ROLA_V3_SPEC.md`` §1.1 and architecture §4.2: routing allocations are
 normalized per level per side, so without a magnitude the model can only ever
-write total mass 1 per token. The per-side learned magnitude supplies it:
+write total mass 1 per token. The learned WRITE magnitude supplies it:
 
-    raw:     hidden -> [value, packed route logits, read gain logit, write gain logit]
-    global:  hidden -> [value, packed route logits, write gain logit]   # g_read := 1
+    hidden -> [value, packed route logits, write gain logit]     # g_read := 1
 
-This module owns only the gain half of that contract (value/route-logit
+There is no read gain: architecture §4.2 fixes ``g_read := 1`` under the
+self-normalizing readout, where a per-token uniform read scale cancels identically
+in the ratio. This module owns only the gain half of that contract (value/route-logit
 projection is unchanged packed-router machinery in ``projection.py``).
 """
 
@@ -20,7 +21,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 WRITE_GAIN = 0
-READ_GAIN = 1
 
 
 def softplus_side_gain(logit: torch.Tensor, bias: torch.Tensor | float = 0.0) -> torch.Tensor:
@@ -54,76 +54,32 @@ def init_side_gain_bias(target_gain: float) -> float:
     return math.log(math.expm1(target_gain))
 
 
-READ_GAIN_UNDER_GLOBAL = (
-    "under normalization='global' the read gain is a parameter with an identically "
-    "zero gradient: the readout is a ratio, so a per-token uniform read scale cancels "
-    "identically.")
-
-
 @dataclass(frozen=True, slots=True)
 class GainConfig:
-    """The INTERNAL gain surface: two independent booleans.
+    """The INTERNAL gain surface: one boolean, behind the public ``gain: bool``.
 
-    The public layer parameter is a single `gain: bool`, mapped by
-    :meth:`from_public`. This object is the research surface behind it -- a
-    fine-grained combination such as `raw` with a write gain and no read gain is
-    reachable by constructing one directly, and is deliberately not a public
-    parameter, because the public surface is opinionated on purpose.
-
-    A `False` side REMOVES its projection column rather than pinning it to 1: a
-    parameter whose value is fixed is a parameter whose gradient is wasted, and a
-    missing column is a constant, which has no gradient to waste.
+    ``False`` REMOVES the projection column rather than pinning it to 1: a parameter
+    whose value is fixed is a parameter whose gradient is wasted, and a missing column
+    is a constant, which has no gradient to waste.
     """
 
     write_gain: bool = True
-    read_gain: bool = True
 
     @classmethod
-    def from_public(cls, gain: bool, normalization: str) -> GainConfig:
-        """Map the public `gain: bool` onto the two internal booleans.
-
-        `gain=True` enables the write gain under both normalizations and the read
-        gain only under `raw` (under `global` a read gain is a dead parameter), and
-        `gain=False` disables both -- salience through routing only.
-        """
+    def from_public(cls, gain: bool) -> GainConfig:
         if type(gain) is not bool:
             raise TypeError(f"gain must be a bool, got {gain!r}")
-        if normalization not in ("raw", "global"):
-            raise ValueError(f"normalization must be 'raw' or 'global', got {normalization!r}")
-        return cls(write_gain=gain, read_gain=gain and normalization == "raw")
-
-    def validate(self, normalization: str) -> GainConfig:
-        """The ONE refusal: a read gain under `global` is an identically-zero-gradient
-        parameter, and it is rejected at construction rather than optimized."""
-        if normalization not in ("raw", "global"):
-            raise ValueError(f"normalization must be 'raw' or 'global', got {normalization!r}")
-        if self.read_gain and normalization == "global":
-            raise ValueError(
-                "GainConfig(read_gain=True) with normalization='global': "
-                + READ_GAIN_UNDER_GLOBAL
-                + " Use normalization='raw', where the read gain is expressive, or "
-                  "leave the read gain off.")
-        return self
+        return cls(write_gain=gain)
 
     @property
     def layout(self) -> tuple[str, ...]:
         """The projection's columns, in order. A column is present iff its gain is."""
-        return tuple(
-            side for side, enabled in (("write", self.write_gain), ("read", self.read_gain))
-            if enabled)
+        return ("write",) if self.write_gain else ()
 
 
-def gain_layout(
-    normalization: str, *, write_gain: bool = True, read_gain: bool | None = None,
-) -> tuple[str, ...]:
-    """The side-gain projection's columns, validated. THE ONE PLACE it is decided.
-
-    `read_gain=None` means "whatever the normalization admits", which is the mapping
-    `GainConfig.from_public` applies to an enabled public `gain`.
-    """
-    if read_gain is None:
-        read_gain = normalization == "raw"
-    return GainConfig(write_gain=write_gain, read_gain=read_gain).validate(normalization).layout
+def gain_layout(*, write_gain: bool = True) -> tuple[str, ...]:
+    """The side-gain projection's columns. THE ONE PLACE it is decided."""
+    return GainConfig(write_gain=write_gain).layout
 
 
 def validate_gain_projection(
@@ -132,12 +88,10 @@ def validate_gain_projection(
     *,
     heads: int,
     hidden_size: int,
-    normalization: str,
     write_gain: bool = True,
-    read_gain: bool | None = None,
 ) -> tuple[str, ...]:
     """Validate ``gain_W``/``gain_bias`` shapes and return the projection's layout."""
-    layout = gain_layout(normalization, write_gain=write_gain, read_gain=read_gain)
+    layout = gain_layout(write_gain=write_gain)
     if not isinstance(gain_W, torch.Tensor) or gain_W.ndim != 3:
         shape = getattr(gain_W, "shape", None)
         raise ValueError(f"gain_W must have shape [H, sides, hidden_size], got {shape}")
@@ -145,9 +99,7 @@ def validate_gain_projection(
     if h != heads or dm != hidden_size or sides != len(layout):
         raise ValueError(
             f"gain_W must have shape [{heads}, {len(layout)}, {hidden_size}] for "
-            f"normalization={normalization!r}, write_gain={write_gain}, "
-            f"read_gain={read_gain!r} (layout {layout}), "
-            f"got {tuple(gain_W.shape)}")
+            f"write_gain={write_gain} (layout {layout}), got {tuple(gain_W.shape)}")
     if gain_bias is not None:
         if not isinstance(gain_bias, torch.Tensor) or tuple(gain_bias.shape) != (heads, sides):
             shape = getattr(gain_bias, "shape", None)
@@ -160,40 +112,29 @@ def project_side_gains(
     gain_W: torch.Tensor,
     gain_bias: torch.Tensor | None,
     *,
-    normalization: str,
     write_gain: bool = True,
-    read_gain: bool | None = None,
     projection_dtype: torch.dtype = torch.float32,
 ) -> dict[str, torch.Tensor]:
-    """Project per-head side-gain logits and apply the positive parameterization.
+    """Project per-head write-gain logits and apply the positive parameterization.
 
     ``h``: ``[B, L, hidden_size]`` (shared source stream, matching the packed
     router's projection convention -- architecture §8 does not require a
     separate per-head hidden stream for gains).
-    ``gain_W``: ``[H, sides, hidden_size]``, ``sides`` = 2 for raw
-    (write-then-read, matching ``WRITE_GAIN``/``READ_GAIN``), 1 for global
-    (write only; architecture §4.2 fixes ``g_read := 1``, no projection).
+    ``gain_W``: ``[H, sides, hidden_size]``, ``sides`` = 1 (write only).
 
-    Returns ``{'g_write': [B,L,H], 'g_read': [B,L,H] | None}``.
+    Returns ``{'g_write': [B,L,H]}``.
     """
-    if normalization not in ("raw", "global"):
-        raise ValueError(f"normalization must be 'raw' or 'global', got {normalization!r}")
     if not isinstance(h, torch.Tensor) or h.ndim != 3:
         shape = getattr(h, "shape", None)
         raise ValueError(f"h must have shape [B, L, hidden_size], got {shape}")
     heads = gain_W.shape[0]
     layout = validate_gain_projection(
-        gain_W, gain_bias, heads=heads, hidden_size=h.shape[-1],
-        normalization=normalization, write_gain=write_gain, read_gain=read_gain)
-    def _ones() -> torch.Tensor:
-        return torch.ones(h.shape[0], h.shape[1], heads, dtype=h.dtype, device=h.device)
-
+        gain_W, gain_bias, heads=heads, hidden_size=h.shape[-1], write_gain=write_gain)
     if not layout:
-        # No projected column at all. The gains are CONSTANTS, not pinned parameters:
-        # there is no column, so there is nothing to take a gradient of. `g_read` is
-        # `None` under `global` because the engine's contract there is that there IS
-        # no read gain, and `1` under `raw` because the read channel still exists.
-        return {"g_write": _ones(), "g_read": None if normalization == "global" else _ones()}
+        #: No projected column at all. The gain is a CONSTANT, not a pinned parameter:
+        #: there is no column, so there is nothing to take a gradient of.
+        return {"g_write": torch.ones(h.shape[0], h.shape[1], heads, dtype=h.dtype,
+                                      device=h.device)}
     logits = torch.einsum(
         "bld,hsd->bhls", h.to(projection_dtype), gain_W.to(projection_dtype))
     if gain_bias is not None:
@@ -203,26 +144,18 @@ def project_side_gains(
         # explicit head axis in position 0, matching a [B,H,...] tensor whose *own* dim
         # 0 is B, not H -- placing gain_bias's H there instead silently broadcasts B and
         # H against each other whenever B == H (as it commonly does), corrupting the
-        # batch dimension instead of raising. Caught by `tests/layers/test_rola_v3_layer.py`.
+        # batch dimension instead of raising.
         logits = logits + gain_bias.to(projection_dtype)[None, :, None, :]
     logits = logits.permute(0, 2, 1, 3)  # [B,L,H,sides], columns ordered by `layout`
-    gains: dict[str, torch.Tensor | None] = {"g_write": None, "g_read": None}
-    for column, side in enumerate(layout):
-        gains[f"g_{side}"] = softplus_side_gain(logits[..., column]).to(h.dtype)
-    if gains["g_write"] is None:
-        gains["g_write"] = _ones()
-    if gains["g_read"] is None and normalization == "raw":
-        gains["g_read"] = _ones()
-    return gains
+    return {"g_write": softplus_side_gain(logits[..., 0]).to(h.dtype)}
 
 
 class SideGain(nn.Module):
     """The side-gain producer: one learned per-head projection, positively parameterized.
 
-    ``config`` is VALIDATED against ``normalization`` here, so an unbuildable gain
-    layout fails at model build and never inside a forward. ``bias_init`` places an
-    all-zero-logit gain at that value (``None`` leaves the bias at zero). Why the gain
-    belongs to routing rather than to the layer: ``docs/api.md`` §2.1.
+    ``bias_init`` places an all-zero-logit gain at that value (``None`` leaves the bias
+    at zero). Why the gain belongs to routing rather than to the layer:
+    ``docs/api.md`` §2.1.
     """
 
     def __init__(
@@ -230,15 +163,13 @@ class SideGain(nn.Module):
         *,
         num_heads: int,
         hidden_size: int,
-        normalization: str,
         config: GainConfig,
         bias_init: float | None = None,
     ) -> None:
         super().__init__()
         self.num_heads = int(num_heads)
         self.hidden_size = int(hidden_size)
-        self.normalization = normalization
-        self.config = config.validate(normalization)
+        self.config = config
         self.layout = self.config.layout
         sides = len(self.layout)
         self.gain_W = nn.Parameter(torch.empty(self.num_heads, sides, self.hidden_size))
@@ -248,21 +179,18 @@ class SideGain(nn.Module):
         bias_value = 0.0 if bias_init is None else init_side_gain_bias(bias_init)
         self.gain_bias = nn.Parameter(torch.full((self.num_heads, sides), bias_value))
 
-    def forward(self, stream: torch.Tensor) -> dict[str, torch.Tensor | None]:
-        """``{'g_write': [B,T,H], 'g_read': [B,T,H] | None}`` over ``[B,T,hidden]``.
+    def forward(self, stream: torch.Tensor) -> dict[str, torch.Tensor]:
+        """``{'g_write': [B,T,H]}`` over ``[B,T,hidden]``.
 
         fp64 in, fp64 out; anything else projects in fp32, the packed router's rule.
         """
         return project_side_gains(
-            stream, self.gain_W, self.gain_bias, normalization=self.normalization,
-            write_gain=self.config.write_gain, read_gain=self.config.read_gain,
+            stream, self.gain_W, self.gain_bias, write_gain=self.config.write_gain,
             projection_dtype=(torch.float64 if stream.dtype == torch.float64
                               else torch.float32))
 
 
 __all__ = [
-    "READ_GAIN",
-    "READ_GAIN_UNDER_GLOBAL",
     "WRITE_GAIN",
     "GainConfig",
     "SideGain",

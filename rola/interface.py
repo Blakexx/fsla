@@ -236,16 +236,13 @@ def _validate_call(routes, v, decay) -> None:
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
             "build one with RouteProducer, or construct a RouteFactors directly -- its "
             "invariants are checked either way.")
-    #: THE GAIN LAYOUT AGAINST THE ARM, structurally. `g_read` exists iff the
-    #: normalization is `raw` -- architecture §4.2 fixes it to 1 under `global`, so
-    #: production has no read-gain column there and a supplied one would be silently
-    #: ignored. Checked here rather than trusted from the gateway because the bundle
-    #: is hand-constructible.
-    if (routes.g_read is None) != (routes.normalization == "global"):
+    #: THE GAIN LAYOUT AGAINST THE ARM, structurally: architecture §4.2 fixes
+    #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
+    #: than trusted from the gateway because the bundle is hand-constructible.
+    if routes.g_read is not None:
         raise ValueError(
-            f"this bundle is normalization={routes.normalization!r} with g_read="
-            f"{'None' if routes.g_read is None else 'a tensor'}: g_read is None under "
-            "'global' (architecture §4.2 fixes it to 1) and a tensor under 'raw'")
+            "this bundle carries a g_read tensor: architecture §4.2 fixes g_read := 1 "
+            "under the self-normalizing readout, and there is no read-gain column")
     topology = routes.topology
     if not isinstance(v, torch.Tensor) or v.ndim != 4:
         raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")

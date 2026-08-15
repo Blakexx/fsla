@@ -32,14 +32,11 @@ _HIDDEN = _H * _DV
 
 # --- the public flag ---------------------------------------------------------
 
-def test_the_public_flag_maps_onto_the_two_internal_booleans():
-    """`gain=True` enables the write gain under both normalizations and the read gain
-    only under `raw`. That is the opinionated mapping, and it is the whole public
-    surface."""
-    assert GainConfig.from_public(True, "raw") == GainConfig(write_gain=True, read_gain=True)
-    assert GainConfig.from_public(True, "global") == GainConfig(write_gain=True, read_gain=False)
-    assert GainConfig.from_public(False, "raw") == GainConfig(write_gain=False, read_gain=False)
-    assert GainConfig.from_public(False, "global") == GainConfig(write_gain=False, read_gain=False)
+def test_the_public_flag_maps_onto_the_one_internal_boolean():
+    """`gain` enables the WRITE gain, and there is no second side to enable:
+    architecture §4.2 fixes `g_read := 1` under the self-normalizing readout."""
+    assert GainConfig.from_public(True) == GainConfig(write_gain=True)
+    assert GainConfig.from_public(False) == GainConfig(write_gain=False)
 
 
 def test_the_public_flag_is_the_only_gain_parameter_on_the_route_producer():
@@ -64,84 +61,58 @@ def test_the_public_flag_is_the_only_gain_parameter_on_the_route_producer():
 
 def test_the_public_flag_rejects_a_non_bool_rather_than_coercing_it():
     with pytest.raises(TypeError, match="gain must be a bool"):
-        GainConfig.from_public("auto", "raw")
+        GainConfig.from_public("auto")
 
 
 # --- what the engine actually receives ---------------------------------------
 
-@pytest.mark.parametrize("config,norm,write_is_one,read_shape", [
-    (GainConfig(True, True), "raw", False, "tensor"),
-    (GainConfig(False, True), "raw", True, "tensor"),
-    (GainConfig(True, False), "raw", False, "tensor"),
-    (GainConfig(False, False), "raw", True, "tensor"),
-    (GainConfig(True, False), "global", False, "none"),
-    (GainConfig(False, False), "global", True, "none"),
+@pytest.mark.parametrize("config,write_is_one", [
+    (GainConfig(True), False),
+    (GainConfig(False), True),
 ])
-def test_a_missing_column_becomes_the_constant_one_and_global_still_has_no_read_gain(
-        config, norm, write_is_one, read_shape):
-    """The engine's contract does not change shape when a gain is ablated. Under
-    `raw` the read channel still exists, so an absent read gain is the CONSTANT 1
-    (the oracle requires an explicit `g_read` there); under `global` there is no read
-    gain at all and it stays `None`, which is what fixes `g_read := 1` in the ratio."""
+def test_a_missing_column_becomes_the_constant_one_and_there_is_never_a_read_gain(
+        config, write_is_one):
+    """The engine's contract does not change shape when the gain is ablated: an absent
+    write gain is the CONSTANT 1, and there is no read gain in either case -- which is
+    what fixes `g_read := 1` in the ratio."""
     torch.manual_seed(5)
     h = torch.randn(2, 6, _HIDDEN, dtype=torch.float64)
-    layout = config.validate(norm).layout
-    gain_W = torch.randn(3, len(layout), _HIDDEN, dtype=torch.float64)
-    gains = project_side_gains(
-        h, gain_W, None, normalization=norm, write_gain=config.write_gain,
-        read_gain=config.read_gain, projection_dtype=torch.float64)
+    gain_W = torch.randn(3, len(config.layout), _HIDDEN, dtype=torch.float64)
+    gains = project_side_gains(h, gain_W, None, write_gain=config.write_gain,
+                               projection_dtype=torch.float64)
 
+    assert set(gains) == {"g_write"}
     assert gains["g_write"].shape == (2, 6, 3)
     assert torch.equal(gains["g_write"], torch.ones_like(gains["g_write"])) is write_is_one
-    if read_shape == "none":
-        assert gains["g_read"] is None
-    else:
-        assert gains["g_read"].shape == (2, 6, 3)
-        assert (gains["g_read"] > 0).all()
-
 
 
 # --- the named producer ------------------------------------------------------
 
-@pytest.mark.parametrize("norm,sides", [("raw", 2), ("global", 1)])
-def test_the_side_gain_module_owns_the_layout_and_the_projection(norm, sides):
+def test_the_side_gain_module_owns_the_layout_and_the_projection():
     """`SideGain` is the gain half of the feature map as a MODULE, and it must be the
     same function as the free projection it wraps -- same layout, same parameters,
     same numbers -- so extracting it from the gateway's body moved code and not
     semantics."""
     torch.manual_seed(7)
-    module = SideGain(num_heads=3, hidden_size=_HIDDEN, normalization=norm,
-                      config=GainConfig.from_public(True, norm))
-    assert len(module.layout) == sides
-    assert module.gain_W.shape == (3, sides, _HIDDEN)
-    assert module.gain_bias.shape == (3, sides)
+    module = SideGain(num_heads=3, hidden_size=_HIDDEN, config=GainConfig.from_public(True))
+    assert module.layout == ("write",)
+    assert module.gain_W.shape == (3, 1, _HIDDEN)
+    assert module.gain_bias.shape == (3, 1)
 
     h = torch.randn(2, 6, _HIDDEN, dtype=torch.float64)
     gains = module(h)
     direct = project_side_gains(
-        h, module.gain_W, module.gain_bias, normalization=norm,
-        write_gain=module.config.write_gain, read_gain=module.config.read_gain,
+        h, module.gain_W, module.gain_bias, write_gain=module.config.write_gain,
         projection_dtype=torch.float64)
     assert torch.equal(gains["g_write"], direct["g_write"])
-    if norm == "global":
-        assert gains["g_read"] is None
-    else:
-        assert torch.equal(gains["g_read"], direct["g_read"])
-
-
-def test_the_side_gain_module_refuses_a_read_gain_under_global_at_construction():
-    """The ONE refusal stays construction-time: an unbuildable gain layout fails at
-    model build and never inside a forward."""
-    with pytest.raises(ValueError, match="read_gain=True"):
-        SideGain(num_heads=2, hidden_size=_HIDDEN, normalization="global",
-                 config=GainConfig(write_gain=True, read_gain=True))
+    assert "g_read" not in gains
 
 
 def test_the_side_gain_bias_init_places_the_zero_logit_gain():
     """`bias_init` is the flagged model-level init decision, inverted through
     `softplus` so an all-zero-logit gain starts where the caller asked."""
-    module = SideGain(num_heads=2, hidden_size=_HIDDEN, normalization="global",
-                      config=GainConfig.from_public(True, "global"), bias_init=1.0)
+    module = SideGain(num_heads=2, hidden_size=_HIDDEN,
+                      config=GainConfig.from_public(True), bias_init=1.0)
     with torch.no_grad():
         module.gain_W.zero_()
     gains = module(torch.zeros(1, 3, _HIDDEN))
