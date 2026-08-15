@@ -27,18 +27,6 @@ namespace rola {
 namespace entmax {
 namespace detail {
 
-//: The per-launch level table travels in the kernel's PARAMETER space (448 B at this
-//: bound, against a 4 KB floor), so batching costs no H2D copy and no extra
-//: indirection -- docs/internals/entmax/factor.md#batched-levels
-constexpr int MAX_BATCHED_LEVELS = 16;
-
-struct LevelTable {
-  int64_t logit_off[MAX_BATCHED_LEVELS];
-  int64_t value_off[MAX_BATCHED_LEVELS];
-  int64_t support_off[MAX_BATCHED_LEVELS];
-  int width[MAX_BATCHED_LEVELS];
-};
-
 // ---------------------------------------------------------------------------
 // FORWARD -- the threshold-after-sort solve
 // ---------------------------------------------------------------------------
@@ -457,49 +445,6 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
 // The level table's entries are the caller's grouping: same class, same alpha, same
 // dtype -- docs/internals/entmax/factor.md#batched-levels
 // ---------------------------------------------------------------------------
-inline Strides five_or_zero(const c10::optional<torch::Tensor>& t) {
-  if (!t.has_value()) return {0, 0, 0, 0, 0};
-  return five(*t);
-}
-
-template <typename T>
-T* ptr_or_null(const c10::optional<torch::Tensor>& t) {
-  return t.has_value() ? (T*)t->data_ptr() : nullptr;
-}
-
-//: The padded width is what selects the `(lane width, items per thread)` pair, and every
-//: level in one table must share it -- otherwise the sort and the prefix scan would
-//: associate differently per level and the batch would not be the loop it replaces.
-inline int padded_width(int width) {
-  int w = 1;
-  while (w < width) w <<= 1;
-  return w < 2 ? 2 : w;
-}
-
-LevelTable build_table(const std::vector<int64_t>& logit_off, const std::vector<int64_t>& value_off,
-                       const std::vector<int64_t>& support_off,
-                       const std::vector<int64_t>& widths) {
-  const int n = (int)widths.size();
-  TORCH_CHECK(n > 0 && n <= MAX_BATCHED_LEVELS, "batched level count must be in [1, ",
-              MAX_BATCHED_LEVELS, "], got ", n);
-  TORCH_CHECK((int)logit_off.size() == n && (int)value_off.size() == n,
-              "level offset tables must match the width table");
-  TORCH_CHECK(support_off.empty() || (int)support_off.size() == n,
-              "support offset table must match the width table");
-  const int klass = padded_width((int)widths[0]);
-  LevelTable table{};
-  for (int i = 0; i < n; ++i) {
-    TORCH_CHECK(padded_width((int)widths[i]) == klass,
-                "a batched solve must be one width class; level ", i, " has width ", widths[i],
-                " against class ", klass);
-    table.logit_off[i] = logit_off[i];
-    table.value_off[i] = value_off[i];
-    table.support_off[i] = support_off.empty() ? 0 : support_off[i];
-    table.width[i] = (int)widths[i];
-  }
-  return table;
-}
-
 template <typename OutT>
 void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tensor>& mask,
                            torch::Tensor& values, const c10::optional<torch::Tensor>& values_second,

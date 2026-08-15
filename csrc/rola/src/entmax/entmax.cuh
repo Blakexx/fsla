@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <torch/types.h>
 
@@ -105,6 +106,22 @@ __device__ __forceinline__ unsigned logical_warp_mask() {
                            : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
 }
 
+//: THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448 B at
+//: this bound, against a 4 KB floor), so batching a plan's levels into one launch costs
+//: no device table, no H2D copy and no indirection. Offsets are COLUMN indices into the
+//: base tensor, which is what `addr` adds them to -- docs/internals/entmax/factor.md#batched-levels
+constexpr int MAX_BATCHED_LEVELS = 16;
+
+struct LevelTable {
+  int64_t logit_off[MAX_BATCHED_LEVELS];
+  int64_t value_off[MAX_BATCHED_LEVELS];
+  int64_t support_off[MAX_BATCHED_LEVELS];
+  //: The union solve's midpoint plane is packed over the UNION levels alone, so it does
+  //: not share `value_off`; every other operand does.
+  int64_t midpoint_off[MAX_BATCHED_LEVELS];
+  int width[MAX_BATCHED_LEVELS];
+};
+
 //: The 5-tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no token
 //: stride of its own), rank-3 the dense plane (no tile/lane stride). Deriving it keeps
 //: one launch site per kernel instead of one per layout.
@@ -113,24 +130,81 @@ inline Strides five(const torch::Tensor& t) {
   return {t.stride(0), t.stride(1), t.stride(2), 0, 0};
 }
 
+inline Strides five_or_zero(const c10::optional<torch::Tensor>& t) {
+  if (!t.has_value()) return {0, 0, 0, 0, 0};
+  return five(*t);
+}
+
+template <typename T>
+T* ptr_or_null(const c10::optional<torch::Tensor>& t) {
+  return t.has_value() ? (T*)t->data_ptr() : nullptr;
+}
+
+//: The padded width is what selects the `(lane width, items per thread)` pair, and every
+//: level in one table must share it -- otherwise the sort and the prefix scan would
+//: associate differently per level and the batch would not be the loop it replaces.
+inline int padded_width(int width) {
+  int w = 1;
+  while (w < width) w <<= 1;
+  return w < 2 ? 2 : w;
+}
+
+inline LevelTable build_table(const std::vector<int64_t>& logit_off,
+                              const std::vector<int64_t>& value_off,
+                              const std::vector<int64_t>& support_off,
+                              const std::vector<int64_t>& widths,
+                              const std::vector<int64_t>& midpoint_off = {}) {
+  const int n = (int)widths.size();
+  TORCH_CHECK(n > 0 && n <= MAX_BATCHED_LEVELS, "batched level count must be in [1, ",
+              MAX_BATCHED_LEVELS, "], got ", n);
+  TORCH_CHECK((int)logit_off.size() == n && (int)value_off.size() == n,
+              "level offset tables must match the width table");
+  TORCH_CHECK(support_off.empty() || (int)support_off.size() == n,
+              "support offset table must match the width table");
+  const int klass = padded_width((int)widths[0]);
+  LevelTable table{};
+  for (int i = 0; i < n; ++i) {
+    TORCH_CHECK(padded_width((int)widths[i]) == klass,
+                "a batched solve must be one width class; level ", i, " has width ", widths[i],
+                " against class ", klass);
+    table.logit_off[i] = logit_off[i];
+    table.value_off[i] = value_off[i];
+    table.support_off[i] = support_off.empty() ? 0 : support_off[i];
+    table.midpoint_off[i] = midpoint_off.empty() ? value_off[i] : midpoint_off[i];
+    table.width[i] = (int)widths[i];
+  }
+  return table;
+}
+
 }  // namespace detail
 #endif  // __CUDACC__
 
-//: One launch = one union routing LEVEL = one width class = one alpha; the caller's
-//: per-level loop supplies the levels -- docs/internals/entmax/entmax.md#launch-shape
+//: ONE LAUNCH, MANY LEVELS: the entries take BASE tensors plus per-level COLUMN
+//: offsets, so every union level of one width class and one alpha runs in one launch
+//: doing exactly what the per-level loop did -- docs/internals/entmax/entmax.md#launch-shape
 //:
 //: `read_values`/`write_values` accept BOTH route-value layouts (rank-3 dense,
 //: rank-4 tile-major) through ONE stride 5-tuple, so layout is data here and never a
 //: codegen axis -- docs/internals/entmax/entmax.md#strides
 void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                    torch::Tensor& midpoint_values, torch::Tensor& support_words,
-                   torch::Tensor& read_values, torch::Tensor& write_values, double alpha);
+                   torch::Tensor& read_values, torch::Tensor& write_values,
+                   const std::vector<int64_t>& logit_offsets,
+                   const std::vector<int64_t>& value_offsets,
+                   const std::vector<int64_t>& midpoint_offsets,
+                   const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
+                   double alpha);
 
 void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                     const torch::Tensor& midpoint_values, const torch::Tensor& support_words,
                     const torch::Tensor& read_values, const torch::Tensor& write_values,
                     const torch::Tensor& d_read, const torch::Tensor& d_write,
-                    torch::Tensor& d_read_logits, torch::Tensor& d_write_logits, double alpha);
+                    torch::Tensor& d_read_logits, torch::Tensor& d_write_logits,
+                    const std::vector<int64_t>& logit_offsets,
+                    const std::vector<int64_t>& value_offsets,
+                    const std::vector<int64_t>& midpoint_offsets,
+                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
+                    double alpha);
 
 }  // namespace entmax
 }  // namespace rola

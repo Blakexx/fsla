@@ -116,21 +116,24 @@ move, which is the check that says so rather than the claim that it should.
 
 ## <a id="launch-shape"></a>5. Launch shape and the width class
 
-One launch = one union routing LEVEL = one width class = one alpha:
-`_launch_union_fwd` is called inside the per-level loop, and the Triton diagnostic
-specializes a separate binary per `next_power_of_2(width)` the same way, so **the two
-lowerings issue the same launch count.**
+The grid is `(words, streams, LEVELS)`: one CTA owns one 32-token support word of one
+stream of one level, and `blockIdx.z` indexes a [`LevelTable`](factor.md#batched-levels)
+that arrives in the kernel's parameter space. So one launch covers every union level
+that selects the same template arm — same padded width, same alpha, same output dtype —
+and `production.py`'s `_Plan` is what groups a walk into those launches.
 
-The width CLASS is chosen on the HOST, so the kernel branches on nothing (I2). The
-grid is `(n_words, n_streams)` with `n_words = ceil(tokens / 32)`. The dispatch is
-on `w_pad = next_power_of_2(width)`, floored at 2:
+**Why the class is in the grouping rule and the width is not.** `LW` and `IPT` are what
+`w_pad = next_pow2(width)` selects, and they set how `WarpMergeSort` permutes the row and
+how the `WarpScan` associates the prefix sums. Running a width-3 level in a width-64 arm
+would therefore round `tau` differently in fp32 and could move a support boundary — it
+would not be the loop it replaces. Widths INSIDE a class may differ freely; the kernel
+reads each level's own `width` from the table. `build_table` refuses a mixed-class table
+rather than padding to the largest.
 
-| `w_pad` | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 |
-|---|---|---|---|---|---|---|---|---|
-| `LW` | 2 | 4 | 8 | 16 | 32 | 32 | 32 | 32 |
-| `IPT` | 1 | 1 | 1 | 1 | 1 | 2 | 4 | 8 |
-
-Past 256 the dispatch `TORCH_CHECK`s: the width exceeds `MAX_BRANCH_WIDTH`.
+That this is exactly the loop is gated, at `rtol = 0`:
+`test_the_batched_solve_is_the_per_level_loop_bit_for_bit` runs four levels of one class
+as one launch and as four, and asserts `torch.equal` on values, second output, midpoints
+and support words.
 
 ## <a id="overflow-free-delta"></a>6. `overflow_free_delta` — the read-write difference
 

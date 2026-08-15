@@ -163,16 +163,101 @@ def _arena_shape(logits: torch.Tensor) -> tuple[int, int]:
     return logits.shape[0], logits.shape[1]
 
 
-def _launch_factor_into(
-    logits: torch.Tensor,
-    output: torch.Tensor,
-    output_second: torch.Tensor | None,
-    support_words: torch.Tensor,
-    alpha: float,
-) -> None:
-    _extension().entmax_factor_forward(
-        logits, None, output, output_second, support_words,
-        [0], [0], [0], _one(logits.shape[-1]), float(alpha))
+# ---------------------------------------------------------------------------
+# THE LAUNCH PLAN -- one launch per (operator, alpha, width class, operand set),
+# which is what makes `producer.py`'s "one batched solve" true rather than aspirational.
+# ---------------------------------------------------------------------------
+
+#: The kernel's own bound on one launch's level table (`entmax.cuh::MAX_BATCHED_LEVELS`).
+#: A topology deeper than this issues a second launch of the same arm, not a wider table.
+_MAX_BATCHED_LEVELS = 16
+
+
+def _width_class(width: int) -> int:
+    """The PADDED width, which is what selects the template arm.
+
+    Two levels may share a launch only if they share this. `LW`/`IPT` set how the sort
+    permutes and how the prefix scan associates, so running a narrow level in a wider
+    arm would round `tau` differently and could move a support boundary -- the batch has
+    to be the loop, not an approximation of it.
+    """
+    return max(1 << (int(width) - 1).bit_length(), 2)
+
+
+class _Launch:
+    """The levels of ONE kernel launch: one operator, one alpha, one width class, one
+    set of base tensors. Offsets are COLUMN indices into those bases, which is the unit
+    the kernel's address expression adds them in."""
+
+    __slots__ = ("kind", "alpha", "operands", "accumulate",
+                 "logit", "value", "midpoint", "support", "widths")
+
+    def __init__(self, kind, alpha, operands, accumulate):
+        self.kind, self.alpha, self.operands, self.accumulate = kind, alpha, operands, accumulate
+        self.logit, self.value, self.midpoint, self.support, self.widths = [], [], [], [], []
+
+    def full(self) -> bool:
+        return len(self.widths) == _MAX_BATCHED_LEVELS
+
+    def add(self, width, logit_off, value_off, midpoint_off, support_off) -> None:
+        self.widths.append(int(width))
+        self.logit.append(int(logit_off))
+        self.value.append(int(value_off))
+        self.midpoint.append(int(midpoint_off))
+        self.support.append(int(support_off))
+
+    def issue(self) -> None:
+        extension = _extension()
+        if self.kind == "union":
+            read_logits, write_logits, midpoint, support, read_values, write_values = self.operands
+            extension.entmax_union_forward(
+                read_logits, write_logits, midpoint, support, read_values, write_values,
+                self.logit, self.value, self.midpoint, self.support, self.widths, self.alpha)
+        elif self.kind == "entmax":
+            logits, values, values_second, support = self.operands
+            extension.entmax_factor_forward(
+                logits, None, values, values_second, support,
+                self.logit, self.value, self.support, self.widths, self.alpha)
+        else:
+            logits, values, values_second = self.operands
+            extension.routing_softmax_forward(
+                logits, values, values_second, self.logit, self.value, self.widths)
+
+
+class _Plan:
+    """The forward walk's launches, grouped by arm and issued in FIRST-APPEARANCE order.
+
+    That order is what makes the grouping safe rather than merely faster. In the forward
+    every level owns disjoint output columns, so there is no write hazard to preserve at
+    all; the order is kept because a reader should be able to read the launch sequence
+    off the plan walk.
+    """
+
+    def __init__(self):
+        self._open: dict = {}
+        self._issued: list[_Launch] = []
+
+    def add(self, kind, alpha, operands, width, *, logit_off,
+            value_off=0, midpoint_off=0, support_off=0):
+        key = (kind, alpha, _width_class(width), *(id(t) for t in operands))
+        launch = self._open.get(key)
+        if launch is None or launch.full():
+            launch = _Launch(kind, alpha, operands, False)
+            self._open[key] = launch
+            self._issued.append(launch)
+        launch.add(width, logit_off, value_off, midpoint_off, support_off)
+
+    def issue(self) -> int:
+        for launch in self._issued:
+            launch.issue()
+        return len(self._issued)
+
+
+# ---------------------------------------------------------------------------
+# THE BACKWARD stays one launch per level-side, and that is a MEASURED shape, not an
+# oversight: autograd delivers D separate cotangent tensors with no common base, so
+# batching them would mean copying D of them into one plane to save D-1 launches.
+# ---------------------------------------------------------------------------
 
 
 def _launch_factor_backward_into_logits(
@@ -190,20 +275,6 @@ def _launch_factor_backward_into_logits(
         [0], [0], [0], _one(d_logits.shape[-1]), bool(accumulate), float(alpha))
 
 
-def _launch_union_fwd(
-    read_source: torch.Tensor,
-    write_source: torch.Tensor,
-    midpoint: torch.Tensor,
-    support_words: torch.Tensor,
-    read_output: torch.Tensor,
-    write_output: torch.Tensor,
-    alpha: float,
-) -> None:
-    _extension().entmax_union_forward(
-        read_source, write_source, midpoint, support_words, read_output, write_output,
-        float(alpha))
-
-
 def _launch_union_bwd(
     read_logits_level: torch.Tensor,
     write_logits_level: torch.Tensor,
@@ -217,19 +288,11 @@ def _launch_union_bwd(
     d_write_level: torch.Tensor,
     alpha: float,
 ) -> None:
+    width = _one(d_read_level.shape[-1])
     _extension().entmax_union_backward(
         read_logits_level, write_logits_level, midpoint, support_words,
         read_output, write_output, d_read_output, d_write_output,
-        d_read_level, d_write_level, float(alpha))
-
-
-def _launch_softmax_into(
-    logits: torch.Tensor,
-    output: torch.Tensor,
-    output_second: torch.Tensor | None,
-) -> None:
-    _extension().routing_softmax_forward(
-        logits, output, output_second, [0], [0], _one(logits.shape[-1]))
+        d_read_level, d_write_level, [0], [0], [0], [0], width, float(alpha))
 
 
 def _launch_softmax_backward_into_logits(
@@ -243,7 +306,6 @@ def _launch_softmax_backward_into_logits(
     _extension().routing_softmax_backward(
         output, d_output, d_output_second, d_logits,
         [0], [0], _one(d_logits.shape[-1]), bool(accumulate))
-
 
 
 class _ProductionRoutingArenaFn(torch.autograd.Function):
@@ -282,59 +344,69 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             dtype=torch.int32,
             device=read_logits.device,
         )
-        union_midpoints: list[torch.Tensor] = []
         empty_launch = n_streams == 0 or tokens == 0
+        #: ONE midpoint plane, packed over the UNION levels alone -- the only levels that
+        #: have one. It is saved whole and sliced in the backward.
+        union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
+                        if isinstance(level, UnionRouting)]
+        midpoints = torch.empty(
+            (n_streams, tokens, sum(union_widths)), dtype=torch.float32,
+            device=read_logits.device)
+        plan = _Plan()
+        midpoint_offset = 0
+        midpoint_offsets: list[int] = []
 
         for index, level in enumerate(routing.levels):
             width = routing.branches[index]
-            span = routing.level_logit_slice(index)
-            read_source = read_logits[:, :, span]
-            write_source = write_logits[:, :, span]
+            logit_offset = routing.level_logit_slice(index).start
             offset = routing.level_offsets[index]
-            read_output = read_arena[:, :, offset:offset + width, :]
-            write_output = write_arena[:, :, offset:offset + width, :]
             support_offset = routing.support_offsets[index]
 
             if isinstance(level, UnionRouting):
-                midpoint = torch.empty((n_streams, tokens, width), dtype=torch.float32, device=read_logits.device)
-                union_midpoints.append(midpoint)
-                if empty_launch:
-                    continue
-                words = support_words[:, :, support_offset:support_offset + width]
-                _launch_union_fwd(
-                    read_source, write_source, midpoint, words, read_output, write_output,
-                    level.alpha)
+                midpoint_offsets.append(midpoint_offset)
+                if not empty_launch:
+                    plan.add("union", level.alpha,
+                             (read_logits, write_logits, midpoints, support_words,
+                              read_arena, write_arena),
+                             width, logit_off=logit_offset, value_off=offset,
+                             midpoint_off=midpoint_offset, support_off=support_offset)
+                midpoint_offset += width
                 continue
 
             assert isinstance(level, IndependentRouting)
             if empty_launch:
                 continue
             if level.shares_solve:
+                second = None if fully_shared else write_arena
                 if isinstance(level.write_activation, EntmaxActivation):
-                    words = support_words[:, :, support_offset:support_offset + width]
-                    _launch_factor_into(
-                        write_source, read_output,
-                        None if fully_shared else write_output, words, level.write_activation.alpha)
+                    plan.add("entmax", level.write_activation.alpha,
+                             (write_logits, read_arena, second, support_words), width,
+                             logit_off=logit_offset, value_off=offset,
+                             support_off=support_offset)
                 else:
-                    _launch_softmax_into(
-                        write_source, read_output, None if fully_shared else write_output)
+                    plan.add("softmax", 0.0, (write_logits, read_arena, second), width,
+                             logit_off=logit_offset, value_off=offset)
                 continue
 
             for activation, source, output in (
-                (level.read_activation, write_source if level.tied else read_source, read_output),
-                (level.write_activation, write_source, write_output),
+                (level.read_activation, write_logits if level.tied else read_logits, read_arena),
+                (level.write_activation, write_logits, write_arena),
             ):
                 if isinstance(activation, EntmaxActivation):
-                    words = support_words[:, :, support_offset:support_offset + width]
-                    _launch_factor_into(source, output, None, words, activation.alpha)
+                    plan.add("entmax", activation.alpha, (source, output, None, support_words),
+                             width, logit_off=logit_offset, value_off=offset,
+                             support_off=support_offset)
                 else:
-                    _launch_softmax_into(source, output, None)
+                    plan.add("softmax", 0.0, (source, output, None), width,
+                             logit_off=logit_offset, value_off=offset)
 
-        union_state = (read_logits, write_logits, *union_midpoints) if union_midpoints else ()
+        plan.issue()
+
+        union_state = (read_logits, write_logits, midpoints) if midpoint_offsets else ()
         ctx.save_for_backward(read_arena, write_arena, support_words, *union_state)
         ctx.routing = routing
         ctx.logits_shape = read_logits.shape
-        ctx.union_count = len(union_midpoints)
+        ctx.midpoint_offsets = midpoint_offsets
         ctx.mark_non_differentiable(support_words)
         return read_arena, write_arena, support_words
 
@@ -342,12 +414,10 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
     def backward(ctx, d_read, d_write, _d_support_words):
         saved = ctx.saved_tensors
         read_arena, write_arena, support_words = saved[:3]
-        if ctx.union_count:
-            read_logits, write_logits = saved[3:5]
-            union_midpoints = saved[5:5 + ctx.union_count]
+        if ctx.midpoint_offsets:
+            read_logits, write_logits, midpoints = saved[3:6]
         else:
-            read_logits = write_logits = None
-            union_midpoints = ()
+            read_logits = write_logits = midpoints = None
         routing = ctx.routing
         if d_read is None:
             d_read = torch.zeros_like(read_arena)
@@ -375,7 +445,8 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
 
             if isinstance(level, UnionRouting):
                 assert read_logits is not None and write_logits is not None
-                midpoint = union_midpoints[union_index]
+                midpoint_offset = ctx.midpoint_offsets[union_index]
+                midpoint = midpoints[:, :, midpoint_offset:midpoint_offset + width]
                 union_index += 1
                 words = support_words[:, :, support_offset:support_offset + width]
                 _launch_union_bwd(
@@ -442,34 +513,48 @@ class _ProductionLevelsFn(torch.autograd.Function):
             device=device,
         )
         empty_launch = n_streams == 0 or tokens == 0
+        #: ONE PLANE PER SIDE, sliced into levels. The levels stay separate fp32
+        #: `[BH, T, width_l]` tensors -- the contract is unchanged, and each is still a
+        #: distinct graph output -- but they now live at their own columns of one
+        #: allocation, which is what lets the levels of a width class share a launch
+        #: (docs/internals/entmax/factor.md#batched-levels) and what turns D
+        #: allocations per side into one.
+        #:
+        #: UNINITIALIZED: a dense level is exactly the tokens, and every solve writes
+        #: every element of one (unlike the tile-major arena, whose tail lanes past
+        #: `tokens` no kernel touches).
+        packed_width = routing.level_offsets[-1]
+        read_plane = torch.empty(
+            (n_streams, tokens, packed_width), dtype=torch.float32, device=device)
+        write_plane = torch.empty_like(read_plane)
+        union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
+                        if isinstance(level, UnionRouting)]
+        midpoints = torch.empty(
+            (n_streams, tokens, sum(union_widths)), dtype=torch.float32, device=device)
+
         read_levels: list[torch.Tensor] = []
         write_levels: list[torch.Tensor] = []
-        union_midpoints: list[torch.Tensor] = []
+        midpoint_offsets: list[int] = []
+        midpoint_offset = 0
+        plan = _Plan()
 
         for index, level in enumerate(routing.levels):
             width = routing.branches[index]
-            span = routing.level_logit_slice(index)
-            read_source = read_logits[:, :, span]
-            write_source = write_logits[:, :, span]
-            #: UNINITIALIZED: a dense level is exactly the tokens, and every solve
-            #: writes every element of one (unlike the tile-major arena, whose tail
-            #: lanes past `tokens` no kernel touches).
-            read_output = torch.empty((n_streams, tokens, width), dtype=torch.float32, device=device)
-            write_output = torch.empty_like(read_output)
-            read_levels.append(read_output)
-            write_levels.append(write_output)
+            logit_offset = routing.level_logit_slice(index).start
+            offset = routing.level_offsets[index]
+            read_levels.append(read_plane[:, :, offset:offset + width])
+            write_levels.append(write_plane[:, :, offset:offset + width])
             support_offset = routing.support_offsets[index]
-            words = None if support_offset < 0 else support_words[
-                :, :, support_offset:support_offset + width]
 
             if isinstance(level, UnionRouting):
-                midpoint = torch.empty((n_streams, tokens, width), dtype=torch.float32, device=device)
-                union_midpoints.append(midpoint)
-                if empty_launch:
-                    continue
-                _launch_union_fwd(
-                    read_source, write_source, midpoint, words, read_output, write_output,
-                    level.alpha)
+                midpoint_offsets.append(midpoint_offset)
+                if not empty_launch:
+                    plan.add("union", level.alpha,
+                             (read_logits, write_logits, midpoints, support_words,
+                              read_plane, write_plane),
+                             width, logit_off=logit_offset, value_off=offset,
+                             midpoint_off=midpoint_offset, support_off=support_offset)
+                midpoint_offset += width
                 continue
 
             assert isinstance(level, IndependentRouting)
@@ -477,27 +562,34 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 continue
             if level.shares_solve:
                 if isinstance(level.write_activation, EntmaxActivation):
-                    _launch_factor_into(
-                        write_source, read_output, write_output, words,
-                        level.write_activation.alpha)
+                    plan.add("entmax", level.write_activation.alpha,
+                             (write_logits, read_plane, write_plane, support_words), width,
+                             logit_off=logit_offset, value_off=offset,
+                             support_off=support_offset)
                 else:
-                    _launch_softmax_into(write_source, read_output, write_output)
+                    plan.add("softmax", 0.0, (write_logits, read_plane, write_plane), width,
+                             logit_off=logit_offset, value_off=offset)
                 continue
 
             for activation, source, output in (
-                (level.read_activation, write_source if level.tied else read_source, read_output),
-                (level.write_activation, write_source, write_output),
+                (level.read_activation, write_logits if level.tied else read_logits, read_plane),
+                (level.write_activation, write_logits, write_plane),
             ):
                 if isinstance(activation, EntmaxActivation):
-                    _launch_factor_into(source, output, None, words, activation.alpha)
+                    plan.add("entmax", activation.alpha, (source, output, None, support_words),
+                             width, logit_off=logit_offset, value_off=offset,
+                             support_off=support_offset)
                 else:
-                    _launch_softmax_into(source, output, None)
+                    plan.add("softmax", 0.0, (source, output, None), width,
+                             logit_off=logit_offset, value_off=offset)
 
-        union_state = (read_logits, write_logits, *union_midpoints) if union_midpoints else ()
+        plan.issue()
+
+        union_state = (read_logits, write_logits, midpoints) if midpoint_offsets else ()
         ctx.save_for_backward(*read_levels, *write_levels, support_words, *union_state)
         ctx.routing = routing
         ctx.logits_shape = read_logits.shape
-        ctx.union_count = len(union_midpoints)
+        ctx.midpoint_offsets = midpoint_offsets
         return (*read_levels, *write_levels)
 
     @staticmethod
@@ -508,12 +600,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
         read_levels = saved[:D]
         write_levels = saved[D:2 * D]
         support_words = saved[2 * D]
-        if ctx.union_count:
-            read_logits, write_logits = saved[2 * D + 1:2 * D + 3]
-            union_midpoints = saved[2 * D + 3:]
+        if ctx.midpoint_offsets:
+            read_logits, write_logits, midpoints = saved[2 * D + 1:2 * D + 4]
         else:
-            read_logits = write_logits = None
-            union_midpoints = ()
+            read_logits = write_logits = midpoints = None
 
         d_read_logits = torch.zeros(
             ctx.logits_shape, dtype=torch.float32, device=support_words.device)
@@ -544,7 +634,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
 
             if isinstance(level, UnionRouting):
                 assert read_logits is not None and write_logits is not None
-                midpoint = union_midpoints[union_index]
+                midpoint_offset = ctx.midpoint_offsets[union_index]
+                midpoint = midpoints[:, :, midpoint_offset:midpoint_offset + width]
                 union_index += 1
                 _launch_union_bwd(
                     read_logits[:, :, span], write_logits[:, :, span],
