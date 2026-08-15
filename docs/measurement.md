@@ -4,6 +4,12 @@ Every performance number this repository publishes is produced by one harness, t
 with one stopwatch, and written to one file with its provenance. This document is
 what those three sentences mean.
 
+**THE SUCCESSOR HAS LANDED (P72).** The chunk arm's harness is `benchmarks/bench_chunk.py`
+over `benchmarks/{unit,integration}/`, and the owed list below is DELIVERED — item by item,
+with the file that discharges it, in [the owed list](#what-the-chunk-arm-harness-owed-and-where-it-landed).
+The table and the sections that follow describe the RETIRED tiled apparatus and remain the
+predecessor's record; where a row says RETIRED, its successor is named beside it.
+
 **HALF OF THIS HARNESS IS RETIRED, AND THIS DOCUMENT IS BOTH ITS SUCCESSOR'S
 SPECIFICATION AND ITS PREDECESSOR'S RECORD.** Every fixture, every methodology
 object and the driver itself named the tiled consumer — `probe/registry.py`'s
@@ -22,19 +28,47 @@ c7eaeb9:<path>`).
 | record | `perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards | **SURVIVES** |
 | driver | `benchmarks/rola_probe.py`, `benchmarks/probe/` | the process that runs all of it | **RETIRED** |
 
-**What the chunk-arm harness card OWES, stated as a list so it cannot be
-half-remembered:** the interleaved paired-ratio engine (`_paired_one_kernel` and
-its ~7x bias-reduction rule), the discipline gates below (the lock, the
-dirty-tree refusal, the clock-settle refusal) and their planted-violation tests,
-per-cell latency baselines for the chunk arm, and its own LOCKING STATEMENT —
-whether it takes `/tmp/rola_gpu.lock` itself or expects to be wrapped
-(`docs/testing.md`). The surviving benches (`bench_layer.py`, `bench_scaling.py`,
-`bench_paging.py`) run today and use the surviving statistics, but none of them
-is that harness.
+## What the chunk-arm harness owed, and where it landed
 
-Everything below describes the discipline as it was BUILT and measured. It is the
-specification the successor is held to, not a description of a program in the
-tree today.
+Stated as a list so it cannot be half-remembered, and marked DELIVERED only where a file
+in the tree discharges it.
+
+| owed | state | where |
+|---|---|---|
+| the interleaved paired-ratio engine (`_paired_one_kernel` and its ~7x bias-reduction rule) | **DELIVERED** | `benchmarks/bench/pairing.py` — `interleaved_ab`, and `PairedResult` REFUSES a statistic over samples that were not alternated |
+| the discipline gates (the lock, the dirty-tree refusal, the clock-settle refusal, the extension's identity, the warmup floor) | **DELIVERED** | `benchmarks/bench/discipline.py`, `bench/pairing.py`, `bench/chunk_baseline.py` |
+| their planted-violation tests | **DELIVERED** | `tests/unit/test_chunk_bench_harness.py` — one planted violation per gate, with positive controls |
+| per-cell latency baselines for the chunk arm | **DELIVERED** | `benchmarks/cells/chunk_latency_baseline.json`, recorded whole across seven sessions by `bench_chunk.py baseline --write`; the gate is `tests/unit/test_chunk_latency_regression.py`, which reads and never writes |
+| the frozen cells the baselines are keyed to | **DELIVERED** | `benchmarks/bench/chunk_cells.py` + `benchmarks/cells/chunk_manifest.json` |
+| its own LOCKING STATEMENT | **DELIVERED** | below, and enforced by `require_gpu_lock` |
+| a sanitizer measurement for the chunk arm | **STILL OWED** | never existed; see [the sanitizer gap](#the-sanitizer-gap) |
+
+**THE LOCKING STATEMENT.** The chunk-arm harness does **not** take `/tmp/rola_gpu.lock`
+itself. It is invoked WRAPPED —
+
+```bash
+flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py --tier landing
+```
+
+— and `bench.discipline.require_gpu_lock` CHECKS that it was, by finding the ancestor
+process holding the lock path open. A bare invocation is a refusal, not a warning. This
+puts the successor on the side of the rule that has no exception left: the `rola-probe`
+self-lock exception retired with `rola-probe`, and nothing in the tree needs it back.
+`bench_chunk.py list` is the one subcommand that reaches no device and needs no lock.
+
+**The sanitizer gap.** No sanitizer measurement has ever been taken of the chunk arm, and
+this harness does not add one: `compute-sanitizer` runs a kernel under conditions no timing
+instrument reproduces, so it is a THIRD instrument like `ncu` and needs its own refusal
+rules and its own row shape before a number from it can enter the record. Stating it here
+is the honest half of the delivery — an undelivered item named is not a delivered one.
+
+The surviving pre-P72 benches (`bench_layer.py`, `bench_scaling.py`, `bench_paging.py`) run
+today and use the same statistics, but they are curve and attribution studies rather than
+gated cells.
+
+Everything below describes the discipline as it was BUILT and measured on the tiled
+apparatus. It is the specification the successor is held to; where the successor's
+implementation differs it is noted at the row.
 
 ## The stopwatch
 
@@ -73,7 +107,7 @@ documented.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. A harness that takes the lock ITSELF must be invoked BARE — `flock` locks are held per open file description, so wrapping it in the lock it is about to take blocks it forever with no output. That was `rola-probe`'s standing exception to the flock rule; with the harness retired the exception is retired too (`docs/testing.md`), and the successor states which side of it it is on. `ROLA_GPU_LOCK` exists to MOVE the lock for a caller composing with a genuinely DIFFERENT outer lock; pointing it at the path the caller already holds is the deadlock it exists to avoid. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. A harness that takes the lock ITSELF must be invoked BARE — `flock` locks are held per open file description, so wrapping it in the lock it is about to take blocks it forever with no output. That was `rola-probe`'s standing exception to the flock rule; with the harness retired the exception is retired too (`docs/testing.md`), **SUCCESSOR: the other side of it.** The chunk-arm harness is WRAPPED and `bench.discipline.require_gpu_lock` refuses a bare invocation, so nothing in the tree takes this lock itself and the rule has no exception. `ROLA_GPU_LOCK` still MOVES the lock for a caller composing with a genuinely DIFFERENT outer lock. |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `settle_clocks()` — moved to `bench/regression.py` when `bench/instruments.py` went, because `bench_scaling.py` still needs it; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
@@ -145,7 +179,49 @@ gate now takes the arm's median once, through the recorder's own entry point, so
 two sides are the same quantity by construction. `benchmarks/test_latency_regression.py`
 recorded the measurement that forced it, and retired with the harness — the lesson
 (the gate and the recorder must take the same quantity through the same entry
-point) is on the successor's list.
+point) is CARRIED: `tests/unit/test_chunk_latency_regression.py` and
+`bench_chunk.py baseline --write` both go through `bench.pairing.measure_arm` on a
+fixture from the same registry, and neither owns a round loop of its own.
+
+### The chunk arm's committed baseline
+
+`benchmarks/cells/chunk_latency_baseline.json`, one row per `subject|cell` over the
+registry in `benchmarks/bench/chunk_cells.py`. Recorded WHOLE, on a CLEAN tree —
+`bench.chunk_baseline.write` refuses a dirty one, because a number taken over uncommitted
+edits describes a tree nobody can check out. It carries the GPU, the arch, the driver,
+torch, the assembler, the ratification digest, the recorded sha and the extension's own
+device-side build stamp; it carries no hostname, username or path. The gate side reads it
+and never writes it.
+
+**EACH ROW IS THE MEDIAN AND IQR OVER SEVEN SESSION MEDIANS, NOT OVER ONE SESSION'S
+BLOCKS — and that is a measured correction, not a preference.** The first chunk baseline
+was recorded from one session, and the very next `gate` run, on the same binary a minute
+later, put **17 of 44 arms over their limit**. The two spreads are different quantities: a
+within-session block IQR is eleven reps taken back to back on one warm fixture, often
+exactly `0.0000 ms`, while the gate's comparison crosses two PROCESSES — the fixture is
+rebuilt, the caching allocator is cold, the launch order differs. A threshold derived from
+the tighter one is derived from a spread the comparison never crosses. So the recorder
+runs seven child processes (the retired recorder's own `35 reps x 5 blocks x 7 processes`
+shape, reached here from the same evidence) and the row keeps `within_session_iqr_ms`
+beside the cross-session one as the record of the contrast. `MIN_SESSIONS = 2` is enforced
+on both sides: a single-session baseline can neither be written nor gated against.
+
+**AND A SPREAD OF ZERO IS A STATEMENT ABOUT THE STOPWATCH, NOT THE KERNEL.** The
+cross-session fix left two arms over their limit on an unchanged binary, both of them rows
+whose recorded IQR was exactly `0.0000 ms`: the device-event timer quantizes, seven
+sessions of a small kernel land on the same value every time, and `median + 3*IQR/1.349`
+is then a limit exactly at the median that the next tick exceeds. The spread the threshold
+uses is therefore `max(recorded IQR, the instrument's measured resolution)`, where the
+resolution is the smallest nonzero gap between the DISTINCT values the run itself produced
+— measured every run rather than stored, because it is a property of the stopwatch and the
+box and a stored copy could disagree with the samples beside it. Both halves are measured;
+neither is chosen. The verdict says which one bound it (`floored_at_resolution`).
+
+The lesson generalizes past this file: **a threshold must be derived from the spread of
+the quantity the comparison actually crosses, and never from a spread smaller than the
+instrument can resolve.** The paired A/B engine crosses two reps in
+one process, so its spread is the per-pair ratio's; the latency gate crosses two
+processes, so its spread is the session median's.
 
 ## The flagging rule: three gates, all must fire
 

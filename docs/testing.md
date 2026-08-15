@@ -497,10 +497,14 @@ P67 D2 (`docs/measurement.md`), so the rule has no exception today:
 
 > **everything that reaches a device is wrapped in `flock /tmp/rola_gpu.lock`.**
 
-A successor bench harness for the chunk arm OWES a locking statement of its own —
-either it takes the lock itself and is invoked bare, or it does not and is
-wrapped — stated in its usage line, because the failure mode of guessing is a
-silent shared device on one side and a permanent hang on the other.
+**THE CHUNK-ARM HARNESS'S LOCKING STATEMENT, MADE (P72): it is WRAPPED, and it CHECKS
+that it is.** `benchmarks/bench_chunk.py` and every driver under `benchmarks/unit/` and
+`benchmarks/integration/` are invoked under `flock /tmp/rola_gpu.lock`;
+`bench.discipline.require_gpu_lock` looks for the ancestor process holding that path and
+REFUSES a bare invocation. So the rule above has no exception in the tree — nothing takes
+this lock itself — and the failure mode of guessing is gone in both directions:
+forgetting the wrapper is a refusal with the command in it, and there is no self-locking
+command left to hang. `bench_chunk.py list` reaches no device and needs no lock.
 
 **EVERY OTHER LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME
 QUESTION AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
@@ -539,14 +543,17 @@ refusal; none launches a kernel.
 | file | what it plants |
 |---|---|
 | `tests/unit/test_perf_ledger.py` | a row missing its provenance, a row from an unknown schema, a shift smaller than its own scatter, a single unlucky run, an effect with no significance behind it |
+| `tests/unit/test_chunk_bench_harness.py` | a bare invocation with no `flock` ancestor, a clock that never settles, an extension resolved from another checkout, a measurement below the warmup floor, block-sequential samples read as a paired statistic, a baseline written from a dirty tree, a gate across two stopwatches, a baseline that does not say which stopwatch, a measured arm with no committed row |
+| `tests/unit/test_chunk_latency_regression.py` | `bench`-marked and opt-in: HEAD's per-cell latency against the committed baseline, read-only |
 
 `test_probe_harness.py` (the discipline gates: a lock held by another process, a
 clock that never settles, a corrupt ncu section file, a subcommand offering to
 skip the lock) and `benchmarks/test_latency_regression.py` (a baseline taken with
 a different stopwatch, and one that does not say which) went with the probe
-harness in P67 D2. Their claims are part of what the chunk-arm harness card owes
-([`measurement.md`](measurement.md)); until it lands, `test_perf_ledger.py` is the
-one file holding this machinery.
+harness in P67 D2. **Their claims are re-anchored** in the two files above, which
+is the chunk-arm harness card's planted-violation obligation discharged
+([`measurement.md`](measurement.md)); the ncu section-file row has no successor
+because the successor takes no counters yet.
 
 `python tools/ratify.py --self-test` is the same discipline on the codegen side and
 is listed arm by arm in `docs/ratification.md`.
