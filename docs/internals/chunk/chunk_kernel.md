@@ -311,6 +311,27 @@ in the next chunk and make the partition depend on the packing — an implementa
 the sizing model does not have. So the loop runs on the CUT, and the counts appear only in
 the per-lane test that produces it.
 
+**THE CLOSING RULE HAS ONE IMPLEMENTATION.** It lives in `Ascent`, a component in
+this file, and the forward drives it through four one-line lambdas. Scan A drives
+the same object: its partition is its OWN (a chunk boundary is an association of a
+sum, not a semantic object) but the rule that closes a chunk is the same law, and a
+second copy of that law is what this arrangement exists to prevent. Its mirror for
+the reverse pass is `Descent` in `backward.cuh`.
+
+The extraction is behaviour-neutral and was accepted on that basis rather than on
+byte identity. Measured across all 580 ratified instantiations, both architectures:
+**148 bodies re-assembled, 20 register counts moved by at most 9, and zero changes
+to spill bytes, zero to in-loop local accesses, zero to CTA targets.** The component
+DEFINED but unused moves nothing, so what moved is the allocator re-landing a
+rewritten kernel, not a change in what it does. The forward's wall was checked
+against its committed cross-session baseline over two sessions: 0 of 44 arms over
+limit, the pinned cell at 0.7905 / 0.7946 ms against a 0.8135 ms limit.
+
+Byte identity was the criterion first proposed, and it does not transfer here: the
+`Descent` precedent held the forward's bytes because that extraction never edited
+the forward's translation unit. Extracting the forward's OWN walk rewrites the
+forward, so the behavioural columns are the honest gate.
+
 It CLEARS WHAT IT TOOK: on a mid-word close the remainder is written back, so re-entry
 reads what is left and its prefix counts ARE the counts of what is left, which is why
 there is no `inrange` and no mask on any access. It stops at the FORMED REGION's edge, not

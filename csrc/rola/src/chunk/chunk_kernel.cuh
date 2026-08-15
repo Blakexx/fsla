@@ -277,6 +277,179 @@ static_assert((kFormWords & (kFormWords - 1)) == 0,
 constexpr int kCookWord = 0, kCookOpen = 1;
 constexpr int kCookSlots = 4;
 
+//: THE ASCENDING SCHEDULE, as a component rather than as three closures.  The
+//: closing rule is THE load-bearing law of the compaction and it must have ONE
+//: implementation: the forward drives this, and so does Scan A, whose partition
+//: is its own but whose rule is the same one.  Its mirror is `Descent` in
+//: backward.cuh -- docs/internals/chunk/chunk_kernel.md#the-walk
+template <int C, int kClauses, int kThreadsT, int kIdxSlotT, int kHdrT>
+struct Ascent {
+  char* sidx;
+  uint32_t* sfR;
+  uint32_t* sfW;
+  int* scook;
+  const uint32_t* rowR;
+  const uint32_t* rowW;
+  uint32_t cA, cB, cC, cD;
+  uint32_t tailMask;
+  int lastWord;
+  int tokWords;
+
+  int formEnd;
+  int cookWord, cookNr, cookNw;
+  bool cookOpen;
+  int chunkWin, nextLineW, winBaseW;
+
+  static constexpr int kWinWords = kWindow / kTokBits;
+
+  __device__ __forceinline__ int* ihdr(int d) const {
+    return reinterpret_cast<int*>(sidx + d * kIdxSlotT);
+  }
+  __device__ __forceinline__ uint16_t* iread(int d) const {
+    return reinterpret_cast<uint16_t*>(sidx + d * kIdxSlotT + kHdrT);
+  }
+  __device__ __forceinline__ uint16_t* iwrite(int d) const { return iread(d) + C; }
+  __device__ __forceinline__ uint8_t* ithr(int d) const {
+    return reinterpret_cast<uint8_t*>(sidx + d * kIdxSlotT + kHdrT + 4 * C);
+  }
+
+  //: THE STATE IS INITIALISED WHERE THE DRIVER DECLARED IT, not in one block:
+  //: `formEnd` before the form, the cook's cursor before the walk.  The two live
+  //: ranges are what they were as locals, which is why the extraction leaves the
+  //: forward's codegen untouched.
+  __device__ __forceinline__ void begin_form() { formEnd = 0; }
+  __device__ __forceinline__ void begin_walk() {
+    cookWord = 0;
+    cookNr = 0;
+    cookNw = 0;
+    cookOpen = false;
+    chunkWin = 0;
+    nextLineW = kWinWords;
+    winBaseW = 0;
+  }
+
+  __device__ __forceinline__ void form(int tid) {
+    const int head = scook[kCookWord] + kFormWords;
+    const int limit = head < tokWords ? head : tokWords;
+    form_impl<kClauses, kFormWords, kThreadsT>(formEnd, limit, tid, rowR, rowW, cA, cB, cC, cD,
+                                               tailMask, lastWord, sfR, sfW);
+  }
+
+  __device__ __forceinline__ void form_if_low(int tid) {
+    if (formEnd < tokWords && formEnd - scook[kCookWord] < kFormWords / 2) form(tid);
+  }
+
+  __device__ __forceinline__ void walk(int d, int lane) {
+    uint16_t* lrd = iread(d);
+    uint16_t* lwr = iwrite(d);
+    uint8_t* ljt = ithr(d);
+    const bool exists = cookOpen || cookWord < tokWords;
+    int nr = cookOpen ? cookNr : 0;
+    int nw = cookOpen ? cookNw : 0;
+    if (!cookOpen) {
+      chunkWin = cookWord / kWinWords;
+      winBaseW = chunkWin * kWinWords;
+      nextLineW = winBaseW + kWinWords;
+    }
+    bool closed = cookWord >= tokWords;
+    const uint32_t lt = (1u << lane) - 1u;
+#pragma unroll 1
+    while (cookWord < formEnd) {
+      //: THE WINDOW LINE, as an EQUALITY against a maintained register --
+      //: the walk advances a word at a time, so a line is never jumped.  A
+      //: super-chunk holding entries closes at the line; an empty one slides
+      //: its window forward, exactly as it crosses words.
+      if (cookWord == nextLineW) {
+        if (nr != 0 || nw != 0) {
+          closed = true;
+          break;
+        }
+        ++chunkWin;
+        winBaseW = nextLineW;
+        nextLineW += kWinWords;
+      }
+      const int slot = cookWord & (kFormWords - 1);
+      const uint32_t rm = sfR[slot];
+      const uint32_t wm = sfW[slot];
+      const int prx = bit_count(rm & lt);
+      const int pwx = bit_count(wm & lt);
+      const bool lvR = ((rm >> lane) & 1u) != 0u;
+      const bool lvW = ((wm >> lane) & 1u) != 0u;
+      const int cut = first_set(lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
+      const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
+      const int t = (cookWord - winBaseW) * kTokBits + lane;
+      if (lane < cut) {
+        if (lvR) {
+          lrd[nr + prx] = (uint16_t)t;
+          ljt[nr + prx] = (uint8_t)(nw + pwx + (lvW ? 1 : 0));
+        }
+        if (lvW) lwr[nw + pwx] = (uint16_t)t;
+      }
+      nr += bit_count(rm & keep);
+      nw += bit_count(wm & keep);
+      if (cut < kTokBits) {
+        if (lane == 0) {
+          sfR[slot] = rm & ~keep;
+          sfW[slot] = wm & ~keep;
+        }
+        closed = true;
+        break;
+      }
+      ++cookWord;
+      if (cookWord == tokWords) {
+        closed = true;
+        break;
+      }
+    }
+    if (!closed) {
+      cookNr = nr;
+      cookNw = nw;
+      cookOpen = true;
+      if (lane == 0) {
+        scook[kCookWord] = cookWord;
+        scook[kCookOpen] = 1;
+      }
+      return;
+    }
+    //: THE BUFFER'S TAIL.  A slot past the gathered count names token zero, so
+    //: every gather stays in range without a predicate, and carries a threshold
+    //: of zero, so its Gram row is empty.  Its panel row is zeroed at production
+    //: and its output row is never drained.
+#pragma unroll
+    for (int k = 0; k < (C + kTokBits - 1) / kTokBits; ++k) {
+      const int i = lane + k * kTokBits;
+      if (i < C) {
+        if (i >= nr) {
+          lrd[i] = 0;
+          ljt[i] = 0;
+        }
+        if (i >= nw) lwr[i] = 0;
+      }
+    }
+    const bool wasOpen = cookOpen;
+    cookOpen = false;
+    if (lane == 0) {
+      int* h = ihdr(d);
+      h[0] = nr;
+      h[1] = nw;
+      h[2] = exists ? 1 : 0;
+      h[3] = chunkWin;  // whose window the LOCAL indices live in
+      scook[kCookWord] = cookWord;
+      if (wasOpen) scook[kCookOpen] = 0;
+    }
+  }
+
+  __device__ __forceinline__ void walk_wait(int d, int tid, int warp, int lane) {
+#pragma unroll 1
+    while (scook[kCookOpen]) {
+      form(tid);
+      rendezvous();
+      if (warp == 0) walk(d, lane);
+      rendezvous();
+    }
+  }
+};
+
 // ------------------------------------------------------------------ geometry
 
 //: THIS KERNEL'S LIVE REGISTER SET, per (chunk, block width). A measured
@@ -993,155 +1166,16 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     //: THE FORM: the membership AND and nothing else. The ring's head is the walk's
     //: cursor plus its depth, so backpressure needs no test outside the loop bound
     //: -- docs/internals/chunk/chunk_kernel.md#the-form
-    int formEnd = 0;
-    //: FORCED INLINE: the two-clause arms grew this body past ptxas's
-    //: outlining threshold and it became a CALL with an ABI frame -- stack
-    //: stores the spill gate rightly refuses.  Inline it at all three sites.
-    auto form = [&]() {
-      const int head = scook[kCookWord] + kFormWords;
-      const int limit = head < tokWords ? head : tokWords;
-      form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, rowR, rowW, cA, cB, cC, cD,
-                                                tailMask, lastWord, sfR, sfW);
-    };
-
-    //: A PRODUCER REFILLS IN BATCHES; THAT IS WHAT THE RING IS FOR.  Forming the
-    //: one or two words a dense super-chunk consumed, once per super-chunk, is the
-    //: fused walk again with extra steps: the loop's own setup is a FIXED cost paid
-    //: by EVERY warp on EVERY super-chunk, against a redundant decode that was one
-    //: warp's.  So the former runs only once the ring has drained past half --
-    //: every `2048 / C` super-chunks at dense, where the walk consumes `C / 32`
-    //: words of each.
-    auto form_if_low = [&]() {
-      if (formEnd < tokWords && formEnd - scook[kCookWord] < kFormWords / 2) form();
-    };
-
-    //: THE WALK. The closing rule is TOKEN-granular, never word-granular: a
-    //: word-boundary close would make the partition depend on the packing. It clears
-    //: what it took, and it stops at the FORMED region's edge, not the token axis's
-    //: -- docs/internals/chunk/chunk_kernel.md#the-walk
-    int cookWord = 0, cookNr = 0, cookNw = 0;
-    bool cookOpen = false;
-    //: the walk's window cursor (6E): line positions in units of formed WORDS --
-    //: the words of one K-window.  A super-chunk never crosses a window line,
-    //: so its list entries share one window and sixteen LOCAL bits name any of
-    //: its tokens; the line advances by EQUALITY against a maintained register,
-    //: an affine advance, never a per-chunk multiply.
-    constexpr int kWinWords = kWindow / kTokBits;
-    int chunkWin = 0, nextLineW = kWinWords, winBaseW = 0;
-    auto walk = [&](int d) {
-      uint16_t* lrd = iread(d);
-      uint16_t* lwr = iwrite(d);
-      uint8_t* ljt = ithr(d);
-      const bool exists = cookOpen || cookWord < tokWords;
-      int nr = cookOpen ? cookNr : 0;
-      int nw = cookOpen ? cookNw : 0;
-      if (!cookOpen) {
-        chunkWin = cookWord / kWinWords;
-        winBaseW = chunkWin * kWinWords;
-        nextLineW = winBaseW + kWinWords;
-      }
-      bool closed = cookWord >= tokWords;
-      const uint32_t lt = (1u << lane) - 1u;
-#pragma unroll 1
-      while (cookWord < formEnd) {
-        //: THE WINDOW LINE, as an EQUALITY against a maintained register --
-        //: the walk advances a word at a time, so a line is never jumped.  A
-        //: super-chunk holding entries closes at the line; an empty one slides
-        //: its window forward, exactly as it crosses words.
-        if (cookWord == nextLineW) {
-          if (nr != 0 || nw != 0) {
-            closed = true;
-            break;
-          }
-          ++chunkWin;
-          winBaseW = nextLineW;
-          nextLineW += kWinWords;
-        }
-        const int slot = cookWord & (kFormWords - 1);
-        const uint32_t rm = sfR[slot];
-        const uint32_t wm = sfW[slot];
-        const int prx = bit_count(rm & lt);
-        const int pwx = bit_count(wm & lt);
-        const bool lvR = ((rm >> lane) & 1u) != 0u;
-        const bool lvW = ((wm >> lane) & 1u) != 0u;
-        const int cut = first_set(lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
-        const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
-        const int t = (cookWord - winBaseW) * kTokBits + lane;
-        if (lane < cut) {
-          if (lvR) {
-            lrd[nr + prx] = (uint16_t)t;
-            ljt[nr + prx] = (uint8_t)(nw + pwx + (lvW ? 1 : 0));
-          }
-          if (lvW) lwr[nw + pwx] = (uint16_t)t;
-        }
-        nr += bit_count(rm & keep);
-        nw += bit_count(wm & keep);
-        if (cut < kTokBits) {
-          if (lane == 0) {
-            sfR[slot] = rm & ~keep;
-            sfW[slot] = wm & ~keep;
-          }
-          closed = true;
-          break;
-        }
-        ++cookWord;
-        if (cookWord == tokWords) {
-          closed = true;
-          break;
-        }
-      }
-      if (!closed) {
-        cookNr = nr;
-        cookNw = nw;
-        cookOpen = true;
-        if (lane == 0) {
-          scook[kCookWord] = cookWord;
-          scook[kCookOpen] = 1;
-        }
-        return;
-      }
-      //: THE BUFFER'S TAIL.  A slot past the gathered count names token zero, so
-      //: every gather stays in range without a predicate, and carries a threshold
-      //: of zero, so its Gram row is empty.  Its panel row is zeroed at production
-      //: and its output row is never drained.
-#pragma unroll
-      for (int k = 0; k < (C + kTokBits - 1) / kTokBits; ++k) {
-        const int i = lane + k * kTokBits;
-        if (i < C) {
-          if (i >= nr) {
-            lrd[i] = 0;
-            ljt[i] = 0;
-          }
-          if (i >= nw) lwr[i] = 0;
-        }
-      }
-      const bool wasOpen = cookOpen;
-      cookOpen = false;
-      if (lane == 0) {
-        int* h = ihdr(d);
-        h[0] = nr;
-        h[1] = nw;
-        h[2] = exists ? 1 : 0;
-        h[3] = chunkWin;  // whose window the LOCAL indices live in
-        scook[kCookWord] = cookWord;
-        if (wasOpen) scook[kCookOpen] = 0;
-      }
-    };
-
-    //: THE WAIT, AND IT IS THE ORDINARY ONE.  `scook[kCookOpen]` is CTA-uniform by
-    //: construction -- it is read out of shared memory after a rendezvous -- so
-    //: every warp takes the same path and this loop's body does not run unless the
-    //: walk genuinely outran the former.  The CALLER supplies the rendezvous that
-    //: publishes the flag, because in the steady state that barrier already exists.
-    auto walk_wait = [&](int d) {
-#pragma unroll 1
-      while (scook[kCookOpen]) {
-        form();
-        rendezvous();
-        if (warp == 0) walk(d);
-        rendezvous();
-      }
-    };
+    //: THE SCHEDULE IS A COMPONENT.  The closing rule has ONE implementation and
+    //: Scan A drives the same object -- this file's `Ascent`.
+    Ascent<C, kClauses, kThreads, G::idx_slot, G::hdr> aw{
+        sidx, sfR, sfW, scook, rowR, rowW, cA, cB, cC, cD, tailMask, lastWord, tokWords};
+    aw.begin_form();
+    auto form = [&]() { aw.form(tid); };
+    auto form_if_low = [&]() { aw.form_if_low(tid); };
+    aw.begin_walk();
+    auto walk = [&](int d) { aw.walk(d, lane); };
+    auto walk_wait = [&](int d) { aw.walk_wait(d, tid, warp, lane); };
 
     // ---- the pipeline's prologue: cook and stage `STAGES - 1` super-chunks ----
     //: THE PROLOGUE FILLS THE SCHEDULE STREAM FIRST AND THE VALUE STREAM SECOND,
