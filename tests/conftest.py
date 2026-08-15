@@ -164,7 +164,7 @@ def poison_torch_memory(request):
 # have something to run.
 
 
-def build_routes(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
+def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
                  normalization="global", gain=True, bias=False,
                  gain_bias_init=None, gain_config=None):
     """One :class:`rola.RouteProducer` over one simplex producer covering every level."""
@@ -174,7 +174,7 @@ def build_routes(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=N
         tuple(widths), dense_routing() if routing is None else routing,
         hidden_size=hidden_size, num_heads=num_heads, bias=bias)
     return RouteProducer(
-        [producer], d_v=d_v, num_heads=num_heads, hidden_size=hidden_size,
+        [producer], num_heads=num_heads, hidden_size=hidden_size,
         normalization=normalization, gain=gain, gain_bias_init=gain_bias_init,
         gain_config=gain_config)
 
@@ -190,14 +190,14 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
     """
     from rola import ConstantDecay, LearnedDecay, RoLA
 
-    routes = build_routes(hidden_size=hidden_size, num_heads=num_heads, d_v=d_v,
+    routes = build_routes(hidden_size=hidden_size, num_heads=num_heads,
                           widths=widths, routing=routing, normalization=normalization,
                           gain=gain, bias=bias, **kwargs)
     sources = {"learned": LearnedDecay, "constant": ConstantDecay}
     source = None if decay is None else sources[decay](
         decay_rate, widths=routes.widths, num_heads=num_heads)
-    return RoLA(hidden_size, num_heads, routes, decay=source, layer_idx=layer_idx,
-                expert=expert)
+    return RoLA(hidden_size, num_heads, routes, d_v=d_v, decay=source,
+                layer_idx=layer_idx, expert=expert)
 
 
 # -----------------------------------------------------------------------------
@@ -244,8 +244,7 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
         topology.widths, tuple(level.routing for level in topology.levels),
         hidden_size=hidden_size, num_heads=H, bias=route_bias is not None)
     gateway = RouteProducer(
-        [producer], d_v=topology.d_v, num_heads=H, hidden_size=hidden_size,
-        normalization=normalization)
+        [producer], num_heads=H, hidden_size=hidden_size, normalization=normalization)
     parameters = {"producers.0.route_W": route_W, "side_gain.gain_W": gain_W,
                   "side_gain.gain_bias": gain_bias}
     if route_bias is not None:

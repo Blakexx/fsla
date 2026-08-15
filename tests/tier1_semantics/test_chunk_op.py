@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 
 def _bundle(widths=(64, 64), d_v=64, heads=2, B=1, T=512, seed=0):
     torch.manual_seed(seed)
-    rp = build_routes(hidden_size=128, num_heads=heads, d_v=d_v, widths=widths).cuda()
+    rp = build_routes(hidden_size=128, num_heads=heads, widths=widths).cuda()
     x = torch.randn(B, T, 128, device="cuda")
     routes = rp(x)
     v = torch.randn(B, T, heads, d_v, device="cuda")

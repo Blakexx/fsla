@@ -27,11 +27,11 @@ from rola.routing.factors import RouteFactors
 from rola.routing.producer import ProducedRoutes
 
 
-def _routes(*, widths=(4, 4), hidden=32, heads=2, d_v=8, routing=None, **kwargs):
+def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
     producer = rola.SimplexProducer(
         widths, rola.dense_routing() if routing is None else routing,
         hidden_size=hidden, num_heads=heads, **kwargs)
-    return rola.RouteProducer([producer], d_v=d_v, num_heads=heads, hidden_size=hidden)
+    return rola.RouteProducer([producer], num_heads=heads, hidden_size=hidden)
 
 
 def _x(gateway, *, B=2, T=6, dtype=torch.float64):
@@ -116,10 +116,20 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():
+    """The TOKEN ADDRESSING must agree; the value width is not a disagreement at all.
+
+    `d_v` is `v`'s own width -- the routing carries no value geometry -- so a
+    different one is a different model, not a mismatch, and the op reads it. What
+    the bundle does pin is `[B, T, H]`, and a `v` that disagrees there is refused
+    with the expected prefix in the message rather than handed to a kernel.
+    """
     gateway = _routes()
     factors = gateway(_x(gateway))
-    with pytest.raises(ValueError, match=r"v must be \[B, T, H, d_v\]"):
-        rola.rola_op(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))
+    with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
+        rola.rola_op(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
+    #: the control: the same call at a width the bundle never declared runs fine.
+    y, _ = rola.rola_op(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))
+    assert y.shape == (2, 6, 2, 9)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +154,7 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
             return ProducedRoutes(read=(level,), write=(level.clone(),))
 
     gateway = rola.RouteProducer(
-        [Uniform()], d_v=8, num_heads=2, hidden_size=32)
+        [Uniform()], num_heads=2, hidden_size=32)
     factors = gateway(_x(gateway))
     assert type(gateway.topology.levels[0].routing).__name__ == "OpaqueRouting", (
         "a producer that names no activation must take the opaque registry row")
@@ -167,7 +177,7 @@ def test_a_producer_whose_output_is_malformed_is_named_with_its_level():
             bad = torch.full((B, T, 2, 3), 1 / 3, dtype=source.read.dtype)
             return ProducedRoutes(read=(good, bad), write=(good, good))
 
-    gateway = rola.RouteProducer([Wrong()], d_v=8, num_heads=2, hidden_size=32)
+    gateway = rola.RouteProducer([Wrong()], num_heads=2, hidden_size=32)
     with pytest.raises(ValueError, match=r"level 1"):
         gateway(_x(gateway))
 
@@ -176,7 +186,7 @@ def test_a_producer_that_declares_no_widths_is_refused_at_construction():
     """Construction-time validation, so an unbuildable model fails on the line that
     built it rather than inside a forward several frames away."""
     with pytest.raises(TypeError, match="widths"):
-        rola.RouteProducer([torch.nn.Identity()], d_v=8, num_heads=2, hidden_size=32)
+        rola.RouteProducer([torch.nn.Identity()], num_heads=2, hidden_size=32)
 
 
 def test_one_producer_covers_many_levels_and_the_gateway_keeps_their_order():
@@ -228,7 +238,7 @@ def test_the_stored_levels_are_simplices_and_the_mass_went_to_the_gain():
             level = torch.full((B, T, 2, 4), 0.5, dtype=source.read.dtype)  # sums to 2
             return ProducedRoutes(read=(level,), write=(level.clone(),))
 
-    gateway = rola.RouteProducer([Doubled()], d_v=8, num_heads=2, hidden_size=32,
+    gateway = rola.RouteProducer([Doubled()], num_heads=2, hidden_size=32,
                                  gain=False)
     factors = gateway(_x(gateway))
     ones = torch.ones(2, 6, 2, dtype=torch.float64)
@@ -294,8 +304,8 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
         "self", "hidden_size", "num_heads", "routes",
-        "decay", "value_conv", "route_conv", "layer_idx", "expert"]
-    for name in ("decay", "value_conv", "route_conv", "layer_idx", "expert"):
+        "d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"]
+    for name in ("d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 

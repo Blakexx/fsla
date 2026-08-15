@@ -70,7 +70,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     # P26: the mass column is unconditional (`"raw"` is dead, `normalization` is
     # `"global"` everywhere), so `cols = d_v + 1` rather than a norm-conditional.
     cols = d_v + 1
-    topology = _topology(widths, d_v)
+    topology = _topology(widths)
 
     generator = torch.Generator(device=device).manual_seed(20260802)
     read_levels = tuple(_simplex((B, 1, H, w), 0.5, generator, device).float() for w in widths)

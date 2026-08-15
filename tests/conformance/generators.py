@@ -42,8 +42,8 @@ _ROUTING = IndependentRouting(
     tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
 
 
-def _topology(widths, d_v):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
+def _topology(widths):
+    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
 
 
 def _simplex(shape, p_nonzero, gen, device):
@@ -106,7 +106,7 @@ class Case:
         # length, and a `T` that is not a multiple of it has no kernel at all.
         self.BT = CHUNK_TOKENS
         self.norm, self.paging = c["norm"], c["paging"]
-        self.topology = _topology(self.widths, self.d_v)
+        self.topology = _topology(self.widths)
         self.N = self.topology.N
         self.cols = self.d_v + (1 if self.norm == "global" else 0)
         shape = (self.B, self.T, self.H)

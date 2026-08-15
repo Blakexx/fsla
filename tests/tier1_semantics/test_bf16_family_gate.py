@@ -113,7 +113,7 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
     """
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(seed)
-    topology = _topology(widths, d_v)
+    topology = _topology(widths)
     if read_levels is None:
         read_levels = tuple(_simplex((B, T, H, w), p_read, gen, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), p_write, gen, device) for w in widths)

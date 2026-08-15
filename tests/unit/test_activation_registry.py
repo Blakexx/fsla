@@ -137,8 +137,7 @@ def test_the_public_constructors_take_no_property_metadata():
 def _topology(read, write, *, width=4, tied=True):
     return Topology(
         levels=(LevelConfig(width=width, routing=IndependentRouting(
-            tied=tied, read_activation=read, write_activation=write)),),
-        d_v=16)
+            tied=tied, read_activation=read, write_activation=write)),))
 
 
 def test_per_level_and_per_duty_configuration_is_addressable_as_a_grid():

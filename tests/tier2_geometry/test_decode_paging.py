@@ -93,7 +93,7 @@ _SUPPORTS = {"sparse": 0.25, "half": 0.5, "all": 1.0}
 
 
 def _topology(widths):
-    return _build_topology(widths, _DV)
+    return _build_topology(widths)
 
 
 def _simplex(shape, generator, live=None):

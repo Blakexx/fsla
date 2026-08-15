@@ -56,7 +56,7 @@ def _producer_and_stream(family):
     c = family.config
     torch.manual_seed(c["seed"])
     producer = build_routes(
-        hidden_size=64, num_heads=c["H"], d_v=c["d_v"], widths=c["widths"],
+        hidden_size=64, num_heads=c["H"], widths=c["widths"],
         routing=sparse_routing(1.5), normalization=c["norm"]).cuda()
     B, T = c["B"], c["T"]
     gen = torch.Generator(device="cuda").manual_seed(c["seed"] + 1)

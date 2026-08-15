@@ -72,8 +72,8 @@ def _output_charge(y, y_ref):
     )
 
 
-def _topology(widths, d_v):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
+def _topology(widths):
+    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
 
 
 def _simplex(shape, p_nonzero, generator, device):

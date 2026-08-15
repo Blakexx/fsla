@@ -42,8 +42,8 @@ _ROUTING = IndependentRouting(
 _WIDTH_VALUES = (1, 2, 3, 4, 7, 8, 16, 17, 32, 64, 256)
 
 
-def _topology(widths, d_v=32):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
+def _topology(widths):
+    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def test_the_convention_is_msb_first_and_the_last_level_varies_fastest():
 def _oracle_outputs(topology):
     """One small deterministic `naive_rola` call, forward and state."""
     torch.manual_seed(11)
-    B, T, H, d_v = 1, 5, 2, topology.d_v
+    B, T, H, d_v = 1, 5, 2, 32
     widths = topology.widths
 
     def simplex(width):

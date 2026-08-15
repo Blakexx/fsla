@@ -68,8 +68,6 @@ def validate_inputs(
     if v.ndim != 4:
         raise ValueError(f"v must have shape [B,T,H,d_v], got {tuple(v.shape)}")
     B, T, H, d_v = v.shape
-    if d_v != topology.d_v:
-        raise ValueError(f"v's last dim {d_v} must match topology.d_v={topology.d_v}")
     widths = topology.widths
     for name, levels in (("read_levels", read_levels), ("write_levels", write_levels)):
         levels = tuple(levels)

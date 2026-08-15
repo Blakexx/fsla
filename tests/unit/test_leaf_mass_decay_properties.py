@@ -53,11 +53,10 @@ from rola.routing.types import (
 )
 
 
-def _topology(widths, d_v=4) -> Topology:
+def _topology(widths) -> Topology:
     routing = IndependentRouting(
         tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
-    return Topology(
-        levels=tuple(LevelConfig(width=w, routing=routing) for w in widths), d_v=d_v)
+    return Topology(levels=tuple(LevelConfig(width=w, routing=routing) for w in widths))
 
 
 def _one_hot(width: int, digit: int, *, dtype=torch.float64) -> torch.Tensor:
@@ -87,7 +86,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
         LevelConfig(w, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()))
         for w in widths
     ]
-    topology = Topology(levels=tuple(levels), d_v=dv)
+    topology = Topology(levels=tuple(levels))
 
     # Leaf under test: level0 digit 0, level1 digit 0 -> leaf index 0.
     # Written (write factor 1 at every level, i.e. c=1) at tokens 0 and 4 only;
@@ -207,7 +206,6 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     delta0 = 0.37
     topology = Topology(
         levels=(LevelConfig(width, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),),
-        d_v=dv,
     )
     dial = torch.tensor([[delta0, 0.6, 0.05]], dtype=torch.float64)
     decay = LeafMassDecay(dials=(dial,))
@@ -245,11 +243,10 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
 @pytest.mark.parametrize("c_value", [0.0, 0.1, 0.37, 0.6, 0.9, 1.0])
 def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     # rate==0 requires delta==0 at the addressed digit (allowed: 0 <= delta).
-    B, H, dv, T = 1, 1, 1, 2
+    B, H, T = 1, 1, 2
     width = 2
     topology = Topology(
         levels=(LevelConfig(width, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),),
-        d_v=dv,
     )
     dial = torch.tensor([[0.0, 0.8]], dtype=torch.float64)  # rate at digit0 == 0
     decay = LeafMassDecay(dials=(dial,))
@@ -326,7 +323,7 @@ def _random_case(seed: int, *, B, T, H, dv, widths):
         LevelConfig(w, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()))
         for w in widths
     ]
-    topology = Topology(levels=tuple(levels), d_v=dv)
+    topology = Topology(levels=tuple(levels))
     read_levels = tuple(simplex(w) for w in widths)
     write_levels = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, dv, generator=gen, dtype=torch.float64)
@@ -438,7 +435,7 @@ def test_leaf_rate_dials_rejects_fp64_dial_that_rounds_to_1_0f():
     any leaf with a zero clock). ``leaf_rate_dials``'s cast-boundary re-check
     must reject it loudly rather than let it through to the kernel."""
     widths = (4, 4)
-    topology = _topology(widths, d_v=4)
+    topology = _topology(widths)
     dial_val = 1.0 - 1e-9  # strictly < 1 in fp64
     assert float(torch.tensor(dial_val, dtype=torch.float64).float()) == 1.0, (
         "fixture assumption broken: this fp64 value no longer rounds to 1.0f")
@@ -453,7 +450,7 @@ def test_leaf_rate_dials_accepts_fp64_dial_that_survives_the_cast():
     a value strictly less than ``1.0f``, so the cast-boundary check must not
     raise, and the flattened dial tensor must be usable by the kernel."""
     widths = (4, 4)
-    topology = _topology(widths, d_v=4)
+    topology = _topology(widths)
     dial_val = 1.0 - 1e-6
     assert float(torch.tensor(dial_val, dtype=torch.float64).float()) < 1.0, (
         "fixture assumption broken: this fp64 value no longer survives the fp32 cast")

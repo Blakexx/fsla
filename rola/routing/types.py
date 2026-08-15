@@ -650,16 +650,21 @@ class LevelConfig:
 
 @dataclass(frozen=True, slots=True)
 class Topology:
-    """Complete routing topology plus value width (``ROLA_V3_SPEC.md`` §1).
+    """The routing topology, and ONLY routing (``ROLA_V3_SPEC.md`` §1).
 
     ``D = len(levels)`` is validated in ``[1, 4]`` and every level's width in
     ``[1, 256]`` by ``validate_routing_shape`` -- the same validator ``V2``'s
     ``ResolvedRouting`` uses, so the two structural invariants are not
     reimplemented here.
+
+    **The value width is not here, and that is the point.** ``d_v`` is the width of
+    the state each leaf holds, which is a fact about the VALUE stream: the layer
+    sizes ``v_proj``/``o_proj`` with it and the op reads it off ``v.shape[-1]`` at
+    call time. Nothing on this object ever used it -- it was validated here and read
+    from here by five consumers that all had ``v`` in hand.
     """
 
     levels: tuple[LevelConfig, ...]
-    d_v: int
 
     def __post_init__(self) -> None:
         levels = tuple(self.levels)
@@ -667,8 +672,6 @@ class Topology:
             if type(level) is not LevelConfig:
                 raise TypeError(f"Topology.levels[{index}] must be a LevelConfig, got {level!r}")
         validate_routing_shape(tuple(level.width for level in levels), owner="Topology")
-        if type(self.d_v) is not int or self.d_v < 1:
-            raise ValueError(f"Topology.d_v must be a positive exact int, got {self.d_v!r}")
         object.__setattr__(self, "levels", levels)
 
     @property

@@ -30,6 +30,10 @@ from rola.routing.types import (
     UnionRouting,
 )
 
+#: the fixtures' value width; it is the LAYER's fact, so a topology no longer
+#: carries one and these gates state their own.
+_D_V = 5
+
 
 def _topology(mixed: bool = False) -> Topology:
     levels = [
@@ -38,7 +42,7 @@ def _topology(mixed: bool = False) -> Topology:
     ]
     if mixed:
         levels.append(LevelConfig(3, IndependentRouting(True, SoftmaxActivation(), SoftmaxActivation())))
-    return Topology(levels=tuple(levels), d_v=5)
+    return Topology(levels=tuple(levels))
 
 
 def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
@@ -48,7 +52,7 @@ def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
     route_W = torch.randn(H, dm, resolved.packed_router_width, dtype=dtype, requires_grad=True)
     gain_W = torch.randn(H, gain_sides, dm, dtype=dtype, requires_grad=True)
     gain_bias = torch.zeros(H, gain_sides, dtype=dtype, requires_grad=True)
-    v = torch.randn(B, L, H, topology.d_v, dtype=dtype)
+    v = torch.randn(B, L, H, _D_V, dtype=dtype)
     return x, route_W, gain_W, gain_bias, v
 
 
@@ -98,7 +102,7 @@ def test_softmax_level_mass_is_identically_one():
     an all-softmax topology's g_write must equal its raw projected gain exactly
     (up to floating point), not scaled by any level mass."""
     levels = (LevelConfig(4, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),)
-    topology = Topology(levels=levels, d_v=3)
+    topology = Topology(levels=levels)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
     out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
@@ -128,7 +132,6 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
             LevelConfig(4, UnionRouting(1.5)),
             LevelConfig(5, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
         ),
-        d_v=3,
     )
     B, L, H, dm = 2, 6, 3, 7
     x, route_W, gain_W, gain_bias, v = _params(

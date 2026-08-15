@@ -340,11 +340,14 @@ def _validate_call(routes, v, decay) -> None:
     topology = routes.topology
     if not isinstance(v, torch.Tensor) or v.ndim != 4:
         raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")
-    expected = (routes.batch, routes.tokens, routes.heads, topology.d_v)
-    if tuple(v.shape) != expected:
+    #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
+    #: and the routing carries no value geometry, so there is nothing to agree with;
+    #: what must match the bundle is the token addressing, `[B, T, H]`.
+    expected = (routes.batch, routes.tokens, routes.heads)
+    if tuple(v.shape[:3]) != expected:
         raise ValueError(
-            f"v must be [B, T, H, d_v]={expected} to match the routing bundle, got "
-            f"{tuple(v.shape)}")
+            f"v must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
+            f"bundle, got {tuple(v.shape)}")
     if v.device != routes.device:
         raise ValueError(f"v is on {v.device} but the routing bundle is on {routes.device}")
     if decay is not None:

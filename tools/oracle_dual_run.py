@@ -269,54 +269,68 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
         x = torch.rand(shape, generator=g, dtype=torch.float64) + 1e-3
         return x / x.sum(dim=-1, keepdim=True)
 
-    #: The structural rectangles, the two `d_v`, both normalizations, decay off and
-    #: on, and the tile-boundary/ragged `T` values. Named adversarial corners are
-    #: mandatory rows, not options (the card's fixture design).
+    #: The structural rectangles, the two `d_v`, decay off and on, and the
+    #: tile-boundary/ragged `T` values. Named adversarial corners are mandatory rows,
+    #: not options (the card's fixture design).
+    #:
+    #: THERE IS ONE NORMALIZATION AXIS VALUE, AND THAT IS NOT A NARROWING. `raw` is a
+    #: dead axis: `validate_normalization` refuses it, and `naive_rola` calls that
+    #: validator on entry, so every `raw` row raised on BOTH sides -- and since the
+    #: emit runs before the comparison, one raising row aborted the whole run. This
+    #: surface was therefore unrunnable, not merely narrower, for as long as `raw`
+    #: has been dead. Reviving `raw` revives its rows here in the same batch.
+    normalization = "global"
     index = -1
     for widths in ((64, 64), (8, 8, 8, 16), (4, 4)):
         for d_v in (32, 64):
-            for normalization in ("raw", "global"):
-                for decay_on in (False, True):
-                    for T in (1, 17, 37, 64):
-                        index += 1
-                        B, H = 1, 2
-                        topo = Topology(
-                            levels=tuple(LevelConfig(w, routing) for w in widths),
-                            d_v=d_v)
-                        read = tuple(simplex((B, T, H, w)) for w in widths)
-                        write = tuple(simplex((B, T, H, w)) for w in widths)
-                        v = torch.randn(B, T, H, d_v, generator=g, dtype=torch.float64)
-                        g_write = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
-                        g_read = (None if normalization == "global"
-                                  else torch.rand(B, T, H, generator=g,
-                                                  dtype=torch.float64) + 0.5)
-                        decay = None
-                        if decay_on:
-                            dials = tuple(
-                                torch.rand(H, w, generator=g, dtype=torch.float64)
-                                * 0.3 + 0.1 for w in widths)
-                            decay = LeafMassDecay(dials=dials)
-                        if index % chunks != chunk:
-                            continue
-                        name = (f"{'x'.join(map(str, widths))}-dv{d_v}-{normalization}-"
-                                f"{'decay' if decay_on else 'nodecay'}-T{T}")
-                        #: The stored clock is a DISTINCT tensor, not the default
-                        #: alias of `write`. It is the one input the spec says must
-                        #: receive no gradient (`c = stop_gradient(...)`), and it
-                        #: cannot be observed at all while it is the same object the
-                        #: deposit trains through.
-                        stored = tuple(level.clone() for level in write)
-                        operands = _differentiable(
-                            v=v, g_read=g_read, g_write=g_write, read=read,
-                            write=write, stored=stored,
-                            dials=None if decay is None else decay.dials)
-                        y, state = naive_rola(
-                            v, read, write, g_read, g_write, topo, decay,
-                            normalization, write_levels_stored=stored,
-                            output_final_state=True)
-                        out[f"{name}/y"] = y
-                        out[f"{name}/state"] = state
-                        out.update(_backward(name, y, state, operands))
+            for decay_on in (False, True):
+                for T in (1, 17, 37, 64):
+                    index += 1
+                    B, H = 1, 2
+                    #: BOUND BY SIGNATURE, because `d_v` left `Topology` for the
+                    #: layer (P71). The old side still declares the parameter and
+                    #: is handed it; the new side does not and is not. The oracle
+                    #: derives `d_v` from `v` on BOTH sides, so the two are asked
+                    #: the same question through two spellings -- which is the
+                    #: mechanism `_call` exists for.
+                    topo = _call(
+                        Topology,
+                        levels=tuple(LevelConfig(w, routing) for w in widths),
+                        d_v=d_v)
+                    read = tuple(simplex((B, T, H, w)) for w in widths)
+                    write = tuple(simplex((B, T, H, w)) for w in widths)
+                    v = torch.randn(B, T, H, d_v, generator=g, dtype=torch.float64)
+                    g_write = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
+                    g_read = (None if normalization == "global"
+                              else torch.rand(B, T, H, generator=g,
+                                              dtype=torch.float64) + 0.5)
+                    decay = None
+                    if decay_on:
+                        dials = tuple(
+                            torch.rand(H, w, generator=g, dtype=torch.float64)
+                            * 0.3 + 0.1 for w in widths)
+                        decay = LeafMassDecay(dials=dials)
+                    if index % chunks != chunk:
+                        continue
+                    name = (f"{'x'.join(map(str, widths))}-dv{d_v}-{normalization}-"
+                            f"{'decay' if decay_on else 'nodecay'}-T{T}")
+                    #: The stored clock is a DISTINCT tensor, not the default
+                    #: alias of `write`. It is the one input the spec says must
+                    #: receive no gradient (`c = stop_gradient(...)`), and it
+                    #: cannot be observed at all while it is the same object the
+                    #: deposit trains through.
+                    stored = tuple(level.clone() for level in write)
+                    operands = _differentiable(
+                        v=v, g_read=g_read, g_write=g_write, read=read,
+                        write=write, stored=stored,
+                        dials=None if decay is None else decay.dials)
+                    y, state = naive_rola(
+                        v, read, write, g_read, g_write, topo, decay,
+                        normalization, write_levels_stored=stored,
+                        output_final_state=True)
+                    out[f"{name}/y"] = y
+                    out[f"{name}/state"] = state
+                    out.update(_backward(name, y, state, operands))
     return out
 
 

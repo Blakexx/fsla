@@ -516,8 +516,11 @@ def _producer_topology(alpha: float) -> Topology:
             LevelConfig(6, UnionRouting(alpha)),
             LevelConfig(3, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
         ),
-        d_v=5,
     )
+
+
+#: the fixtures' value width; the topology carries none, so these gates state theirs.
+_D_V = 5
 
 
 def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2, dm=16,
@@ -533,7 +536,7 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
         "route_W": _randn(H, dm, resolved.packed_router_width),
         "gain_W": _randn(H, sides, dm),
         "gain_bias": torch.zeros(H, sides, device=device, dtype=dtype),
-        "v": _randn(B, L, H, topology.d_v),
+        "v": _randn(B, L, H, _D_V),
     }
 
 

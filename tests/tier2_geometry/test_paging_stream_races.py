@@ -92,7 +92,7 @@ def _cell():
     from tests.conftest import build_routes
 
     torch.manual_seed(61)
-    producer = build_routes(hidden_size=64, num_heads=_H, d_v=_DV, widths=_WIDTHS,
+    producer = build_routes(hidden_size=64, num_heads=_H, widths=_WIDTHS,
                             routing=sparse_routing(1.5), normalization="global").cuda()
     gen = torch.Generator(device="cuda").manual_seed(62)
     x = torch.randn(1, _T, 64, device="cuda", generator=gen)

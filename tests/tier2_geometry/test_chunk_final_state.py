@@ -136,7 +136,7 @@ def _kernel(fixture, widths, C, BC, *, state_in=None, want_state=True, eps=1e-6)
 
 def _oracle_state(fixture, widths):
     read, write, g_write, v = fixture
-    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=_DV)
+    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
     _, state = naive_rola(v, read, write, None, g_write, topology, None, "global",
                           output_final_state=True)
     return state
@@ -331,7 +331,7 @@ def test_the_state_travels_through_the_host_seam():
 
     widths, T = (16, 16), 64
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=2, d_v=_DV, widths=widths,
+    gateway = build_routes(hidden_size=64, num_heads=2, widths=widths,
                            routing=sparse_routing()).cuda()
     x = torch.randn(2, T, 64, device="cuda")
 

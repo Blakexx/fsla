@@ -171,8 +171,6 @@ class RouteProducer(nn.Module):
         producers: one :class:`~rola.routing.producer.LevelProducer` per routing
             level, outermost level first. A producer covering several levels occupies
             that many consecutive slots.
-        d_v: per-head value width. It is a feature-map fact (the width of the state
-            each leaf holds), so it lives with the topology rather than on the layer.
         normalization: ``'global'`` or ``'raw'`` -- the recurrence's normalization arm.
         gain: whether the side gains are learned projections. ``False`` removes the
             columns rather than pinning them to 1, so no dead parameter is optimized.
@@ -190,7 +188,6 @@ class RouteProducer(nn.Module):
         self,
         producers,
         *,
-        d_v: int,
         num_heads: int,
         hidden_size: int,
         normalization: str = "global",
@@ -222,18 +219,13 @@ class RouteProducer(nn.Module):
         widths = _scattered_widths(producers, self.slots)
         self.topology = Topology(
             levels=tuple(LevelConfig(width, routing)
-                         for width, routing in zip(widths, _scattered_tags(producers, self.slots))),
-            d_v=int(d_v))
+                         for width, routing in zip(widths, _scattered_tags(producers, self.slots))))
         self.side_gain = SideGain(
             num_heads=self.num_heads, hidden_size=self.hidden_size,
             normalization=self.normalization,
             config=(gain_config if gain_config is not None
                     else GainConfig.from_public(gain, self.normalization)),
             bias_init=gain_bias_init)
-
-    @property
-    def d_v(self) -> int:
-        return self.topology.d_v
 
     @property
     def widths(self) -> tuple[int, ...]:

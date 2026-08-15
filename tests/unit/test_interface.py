@@ -147,7 +147,7 @@ def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
     torch.manual_seed(5)
     B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 32, (8, 8)
     gateway = build_routes(
-        hidden_size=hidden, num_heads=H, d_v=d_v, widths=widths,
+        hidden_size=hidden, num_heads=H, widths=widths,
         routing=_dense_routing()).to("cuda")
     x = torch.randn(B, T, hidden, device="cuda", requires_grad=True)
     routes = gateway(x)
@@ -187,7 +187,7 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     torch.manual_seed(3)
     B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
     gateway = build_routes(
-        hidden_size=hidden, num_heads=H, d_v=d_v, widths=(w,), routing=_dense_routing()
+        hidden_size=hidden, num_heads=H, widths=(w,), routing=_dense_routing()
     ).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
     routes = gateway(x)

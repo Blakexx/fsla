@@ -222,7 +222,7 @@ def test_gradcheck_insurance_on_the_glue():
     is under check is OUR glue (leaf product, gate, ratio readout) composed
     with autograd, against finite differences."""
     widths, d_v, B, T, H = (3, 2), 2, 1, 3, 1
-    topology = g._topology(widths, d_v)
+    topology = g._topology(widths)
     gen = torch.Generator().manual_seed(7)
 
     def leaf(*shape):

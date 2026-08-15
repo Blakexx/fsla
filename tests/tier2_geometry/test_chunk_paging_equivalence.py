@@ -493,7 +493,7 @@ def test_the_arena_travels_through_the_host_seam():
 
     widths, T = (16, 16), 64
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=2, d_v=_DV, widths=widths,
+    gateway = build_routes(hidden_size=64, num_heads=2, widths=widths,
                            routing=sparse_routing()).cuda()
     x = torch.randn(2, T, 64, device="cuda")
     v = torch.randn(2, T, 2, _DV, device="cuda")

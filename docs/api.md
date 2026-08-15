@@ -13,10 +13,10 @@ import rola
 
 producer = rola.SimplexProducer((64, 64), rola.sparse_routing(1.5),
                                 hidden_size=1024, num_heads=8)
-routes   = rola.RouteProducer([producer], d_v=64, num_heads=8, hidden_size=1024)
+routes   = rola.RouteProducer([producer], num_heads=8, hidden_size=1024)
 decay    = rola.LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8)
 
-layer = rola.RoLA(1024, 8, routes, decay=decay, layer_idx=0).cuda().eval()
+layer = rola.RoLA(1024, 8, routes, d_v=64, decay=decay, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
@@ -95,7 +95,7 @@ any one call site.
 ### 2.1 The gateway
 
 ```python
-RouteProducer(producers, *, d_v, num_heads, hidden_size, normalization='global',
+RouteProducer(producers, *, num_heads, hidden_size, normalization='global',
               gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
 ```
 
@@ -117,9 +117,11 @@ device reduction per level per call, it is the gateway's own output guarantee, a
 conformance fixtures plant non-canonical amplitudes on purpose. The op still type-gates
 on the class, so handing it bare tensors is still a clean refusal.
 
-The gateway also owns the topology (`routes.topology`, `routes.widths`), the value width
-`d_v`, and the normalization arm, because all three are facts about the map rather than
-about the layer wrapping it.
+The gateway also owns the topology (`routes.topology`, `routes.widths`) and the
+normalization arm, because both are facts about the map rather than about the layer
+wrapping it. It does NOT own `d_v`: the value width is the width of the state each leaf
+holds, which is a fact about the value stream — the layer sizes `v_proj`/`o_proj` with
+it and the op reads it off `v.shape[-1]` at call time.
 
 ### 2.2 The producer interface
 
@@ -230,7 +232,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(hidden_size, num_heads, routes, *, decay=None,
+RoLA(hidden_size, num_heads, routes, *, d_v=64, decay=None,
      value_conv=None, route_conv=None, layer_idx=None, expert=None)
 
 y, state = layer(hidden_states, state=rola.state())    # or state=None -> (y, None)
@@ -240,7 +242,9 @@ y, state = layer(hidden_states, state=rola.state())    # or state=None -> (y, No
 layer is a PASS-THROUGH for the state: it unwraps nothing and checks nothing, because
 state semantics are the state's.
 
-Four public arguments and two module slots. `value_conv` / `route_conv` take a MODULE
+`d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`;
+the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
+take a MODULE
 (e.g. `fla.modules.ShortConvolution`) rather than three scalars describing one: the layer
 does not need to know how a convolution is configured, only where it goes.
 

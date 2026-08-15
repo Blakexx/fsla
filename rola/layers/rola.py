@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """The RoLA layer: a value projection, the feature-map slot, and the op.
 
-    RoLA(hidden_size, num_heads, routes, decay=..., layer_idx=...)
+    RoLA(hidden_size, num_heads, routes, d_v=..., decay=..., layer_idx=...)
 
 ``routes`` is a :class:`~rola.routing.factors.RouteProducer` -- the feature map, which
-carries the topology, the value width, the normalization arm and the producers that
-fill each level. ``decay`` is a decay SOURCE (:mod:`rola.routing.decay`), the slot that
-decides where the recurrence's forgetting rates come from. Everything else the layer
-used to take was either one of those two facts spelled out flat, or a launch decision
-the op makes.
+carries the topology, the normalization arm and the producers that fill each level.
+``d_v`` is the per-head value width, which is the LAYER's: it sizes ``v_proj`` and
+``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
+SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
+forgetting rates come from. Everything else the layer used to take was either one of
+those facts spelled out flat, or a launch decision the op makes.
 
 **Execution backends, and the rule that picks between them.** The layer has three, and
 the choice is STRUCTURAL -- decided before any of them runs:
@@ -77,9 +78,12 @@ class RoLA(nn.Module):
         hidden_size: model dim. Must match the routing gateway's.
         num_heads: head count ``H``. Must match the routing gateway's.
         routes: the feature-map slot -- a :class:`~rola.routing.factors.RouteProducer`.
-            It owns the topology (levels, widths), the per-head value width ``d_v``, the
-            normalization arm and the side gains, because all of those are facts about
-            the map rather than about the layer wrapping it.
+            It owns the topology (levels, widths), the normalization arm and the side
+            gains, because those are facts about the map rather than about the layer
+            wrapping it.
+        d_v: per-head value width -- the width of the state each leaf holds. It sizes
+            ``v_proj`` and ``o_proj``, which is why it is the layer's; the default is
+            the width the chunk matrix is built at.
         decay: a decay source (:mod:`rola.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         value_conv: an optional causal short convolution over the value stream, e.g.
@@ -98,6 +102,7 @@ class RoLA(nn.Module):
         num_heads: int,
         routes: RouteProducer,
         *,
+        d_v: int = 64,
         decay=None,
         value_conv: nn.Module | None = None,
         route_conv: nn.Module | None = None,
@@ -109,11 +114,13 @@ class RoLA(nn.Module):
             raise TypeError(
                 "RoLA's `routes` argument is the feature-map slot and must be a "
                 f"rola.RouteProducer, got {type(routes).__name__}. It is what carries the "
-                "topology, the value width and the producers that fill each level.")
+                "topology and the producers that fill each level.")
         if routes.hidden_size != hidden_size or routes.num_heads != num_heads:
             raise ValueError(
                 f"this layer is {hidden_size} wide with {num_heads} heads, but its RouteProducer "
                 f"was built for {routes.hidden_size}/{routes.num_heads}")
+        if type(d_v) is not int or d_v < 1:
+            raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
         if decay is not None:
             validate_decay_source(decay, routes.topology, num_heads)
 
@@ -123,6 +130,7 @@ class RoLA(nn.Module):
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
+        self.d_v = d_v
         self.routes = routes
         self.decay = decay
         self.value_conv = value_conv
@@ -130,7 +138,7 @@ class RoLA(nn.Module):
         self.layer_idx = layer_idx
         self.expert = overrides
 
-        self.value_dim = num_heads * routes.d_v
+        self.value_dim = num_heads * d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
@@ -151,7 +159,7 @@ class RoLA(nn.Module):
 
     @property
     def head_v_dim(self) -> int:
-        return self.routes.d_v
+        return self.d_v
 
     @property
     def normalization(self) -> str:

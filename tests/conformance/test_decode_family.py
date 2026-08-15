@@ -106,7 +106,7 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9000 + int(decay_on))
     T, steps = 2 * _chunk.CHUNK_TOKENS, 4
-    topology = g._topology(_WIDTHS, _DV)
+    topology = g._topology(_WIDTHS)
     decay = (None if not decay_on else
              LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))
     pre = _draw(gen, device, T, 0.5, 0.4, norm="global",
@@ -173,7 +173,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9100)
     decay = LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device))
-    topology = g._topology(_WIDTHS, _DV)
+    topology = g._topology(_WIDTHS)
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
                            generator=gen)
@@ -220,7 +220,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     frozen once at the boundary is that it cannot."""
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
-    topology = g._topology(_WIDTHS, _DV)
+    topology = g._topology(_WIDTHS)
     configs = {
         f"n_split={n}": freeze_decode_config(
             topology, "global", d_v=_DV, decay=False, BH=_B * _H, device=device,

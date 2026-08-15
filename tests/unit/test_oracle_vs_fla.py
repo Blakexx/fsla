@@ -80,7 +80,7 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
     for width in widths:
         N *= width
     g = torch.Generator().manual_seed(31)
-    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=d_v)
+    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
 
     def simplex(width):
         x = torch.rand(B, T, H, width, generator=g, dtype=torch.float64) + 1e-3

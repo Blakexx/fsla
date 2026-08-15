@@ -66,7 +66,7 @@ _DENSE = PlanOverrides(paging=False)
 
 def _gateway(seed=0):
     torch.manual_seed(seed)
-    return build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_WIDTHS,
+    return build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
                         routing=sparse_routing()).cuda()
 
 

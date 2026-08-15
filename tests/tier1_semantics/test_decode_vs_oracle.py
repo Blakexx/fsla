@@ -134,7 +134,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     """Build one fixture, run the oracle and decode, return everything both produced."""
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(seed)
-    topology = _topology(widths, d_v)
+    topology = _topology(widths)
     N = math.prod(widths)
     cols = d_v + (1 if norm == "global" else 0)
 
@@ -295,7 +295,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     """
     device = "cuda"
     widths, d_v, B, H = (8, 16), 64, 1, 2
-    topology = _topology(widths, d_v)
+    topology = _topology(widths)
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
@@ -477,7 +477,7 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
     """
     from rola.ops import chunk as _chunk
 
-    topology = _topology(widths, d_v)
+    topology = _topology(widths)
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5

@@ -713,7 +713,7 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     believe a launch was shaped a way it never was, which is the failure this closes.
     """
     layer = _layer(norm="global", decay="none")
-    routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
+    routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_BRANCHES)
     layer_32 = RoLA(
         _HIDDEN, _H, routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
     ).to("cuda", torch.float32).eval()
