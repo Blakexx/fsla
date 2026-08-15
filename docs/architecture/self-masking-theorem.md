@@ -95,22 +95,28 @@ The oracle establishes the *semantics*; the kernel has to reproduce the exact
 zero in floating point, which is a separate claim with two load-bearing parts.
 
 **(a) The amplitude is never logged.** The coefficient is built as a direct
-product of staged per-level factors (`build_wt_rows` in
-`csrc/rola/src/consumer_kernel.cuh`),
-so a structurally dead route is an exact `0.0f`. The alternative log-space
+product of staged per-level factors (`build_wt_rows` in the retired tiled
+consumer's `consumer_kernel.cuh`; the chunk arm's panel production is the same
+product form), so a structurally dead route is an exact `0.0f`. The alternative log-space
 lowering — log the factors, select with a binary MMA, exponentiate in the
 epilogue — would turn that zero into `-inf`, and a clamped `-inf` exponentiates
 to `6e-39`, a *small* number rather than a zero. The decision not to take that
 form is recorded, with its arithmetic, at
-[`docs/internals/intra_panel.md#no-log-space`](../internals/intra_panel.md#no-log-space).
+the tiled consumer's `intra_panel.md#no-log-space`, retired with that arm
+([`DELETIONS.md`](../internals/DELETIONS.md)); the rule it recorded is the spec's
+and binds every arm.
 **That is a live instance of a design choice made to keep this theorem true.**
 
 **(b) The other factor is finite by construction.** `0 * finite == 0` exactly;
 `0 * inf == NaN`. The spec's rule-3 read-side format guard
-(`clamp_bf16_finite`, `csrc/rola/src/readout_mma.cuh`, documented at
-[`readout_mma.md#rule-3-bf16`](../internals/readout_mma.md#rule-3-bf16)) is what
-keeps the multiplicand finite on the narrowing arm. The comment at
-`build_wt_rows` states the composition explicitly: rule 4's
+(`clamp_bf16_finite`, carried by the tiled consumer's `readout_mma.cuh` until P67
+D2 retired that arm) is what kept the multiplicand finite on that narrowing arm.
+On the CHUNK arm the multiplicand is a bf16 simplex amplitude produced host-side —
+finite by construction rather than by a read-side clamp — and
+`chunk_kernel.cuh`'s panel production says so at the site: a zeroed panel row
+propagates through "a multiplication whose other operand is a finite simplex
+amplitude". The composition is the same one the tiled arm's `build_wt_rows`
+stated: rule 4's
 zero-route annihilation is satisfied *branchlessly and structurally* because the
 coefficient is a product of amplitudes, the factor it multiplies is finite by
 rule 3, and `0 * finite == 0`. **There is no test on the amplitude anywhere on
@@ -152,11 +158,12 @@ than the true support costs bandwidth and never correctness. This is what makes
 the engine's granularity coarsening legal:
 
 - the **paging atom** is one `MMA_K_QUANTUM`-leaf granule, not the true support
-  ([`consumer.md#state-layout`](../internals/consumer.md#state-layout));
-- **tile unions** over `BT` tokens are an OR, deliberately coarser than the
-  per-token AND;
-- the **owner rectangle** is the granularity of a visit: every leaf of the block
-  is resident for the whole visit whether or not the tile's support names it, so a
+  ([`paging/paging.md`](../internals/paging/paging.md), the atom re-key);
+- **chunk unions** over a chunk's tokens are an OR, deliberately coarser than the
+  per-token AND (the `BT` token tile the tiled consumer took this union over is
+  retired; the chunk arm's token quantum is what takes it now);
+- the **block rectangle** is the granularity of a visit: every leaf of the block
+  is resident for the whole visit whether or not the visit's support names it, so a
   leaf outside the support is read, multiplied by an exactly-zero coefficient, and
   contributes nothing to either the readout or the fold.
 
@@ -176,7 +183,8 @@ Two live uses:
   committed slot (`kAbsentPage = -1`); it reads as zeros and is never stored
   back, which is what makes the paged path *bitwise* equal to the unpaged one
   rather than approximately equal
-  ([`consumer.md#page-table`](../internals/consumer.md#page-table)).
+  ([`paging/paging.md`](../internals/paging/paging.md); gated by
+`tests/tier2_geometry/test_chunk_paging_equivalence.py`).
 - **Untouched rows do not walk.** A row whose writes are all zero is left
   bit-identical, so repeated store/reload cannot drift it. This is what separates
   the *store* count from the *visit* count in the state-precision analysis: the
@@ -188,7 +196,8 @@ Two live uses:
 A capability flag may be **conservatively wrong in the inclusive direction
 without changing a result**. `StaticDensity` — one boolean per level per side,
 declaring "this cell's activation cannot emit an exact structural zero"
-(`rola/planner/schedule.py`) — is *trusted outright*, with no verification, on
+(`rola/routing/density.py`, exported through `rola.expert`) — is *trusted
+outright*, with no verification, on
 exactly this argument: a false "dense" declaration over-approximates the support,
 which is inert. It costs the declaring caller performance and nobody else
 correctness. `workflows/research/api-contract-audit.md` §3.4 records the
@@ -198,7 +207,8 @@ false at high logit gain **with the plan unchanged**.
 The same reasoning licenses the emission-side `if (out != 0.0f)` skips: adding
 `0.0f` is the identity, so including the term is a no-op and the test is
 over-inclusion-safe in the direction that matters
-([`consumer.md`](../internals/consumer.md), the membership-authority section).
+(the membership-authority rule, stated for the surviving arm at
+[`chunk/chunk_kernel.md`](../internals/chunk/chunk_kernel.md)).
 
 **The direction is asymmetric and that asymmetry is the whole content.**
 Over-approximating support is always safe. **Under-approximating it is wrong** —
@@ -214,7 +224,7 @@ breaks this.
 | Change | Why the theorem dies |
 |---|---|
 | **An epsilon floor** on routing weights (`max(p, eps)`, or an STE-style relaxed support) | There are no exact zeros left. Every dead route becomes a small live route: the clock ticks, `keep < 1`, untouched states decay, over-fetch changes results, identity-store drifts. Standing ruling: sparsity comes from the activation's exact zeros only — never a floor, never a threshold. |
-| **A log-space amplitude** | `log 0 = -inf`. Either `-inf * 0 = NaN`, or the clamp turns the zero into `6e-39` and the route is no longer dead. See [`intra_panel.md#no-log-space`](../internals/intra_panel.md#no-log-space). |
+| **A log-space amplitude** | `log 0 = -inf`. Either `-inf * 0 = NaN`, or the clamp turns the zero into `6e-39` and the route is no longer dead. The arithmetic is in the retired `intra_panel.md#no-log-space` (`git show c7eaeb9:docs/internals/intra_panel.md`). |
 | **A non-zero-preserving normalization** — per-state normalization that divides by the state's own magnitude, or any readout of the form `q · S / ‖S‖` | `0/0`. A never-written state has no unit direction, so reading it is undefined rather than inert. The shipped readout is a **global ratio** `Σ r̃ᶜ Nᶜ / (Σ r̃ᶜ dᶜ + ε)` in which the explicit `dᶜ` factor kills the dead leaf in numerator *and* denominator; that structure is what makes the theorem survive normalization at all. |
 | **A mean-style reduction** — averaging over the *live* entries, or any readout whose denominator counts contributors rather than summing their mass | A zero is then not inert; it is a vote for zero. A dead leaf would drag an `O(1)` average down by an amount proportional to how many leaves are dead — data-dependent, silent, and absent from the reference. This is the exact reason the "average over only-written states" variant is classified a **modeling change** rather than an optimization: it alters the dense result too. |
 | **Time decay** in place of mass decay | The exponent is 1 whether or not a write occurred. Untouched states decay. See §4. |

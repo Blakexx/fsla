@@ -34,7 +34,9 @@ numbers. At the design scale — `N ≳ 65K` states, the standing target — the
 difference is the difference between a plan that fits and a plan that does not.
 
 The **address side factors too**: `leaf_digit(p, l, base, i) = base +
-(i / level_stride[l]) % level_modulus[l]` (`csrc/rola/src/consumer.cuh:131-133`)
+(i / level_stride[l]) % level_modulus[l]` (the tiled consumer's `consumer.cuh`;
+the same purity holds of the chunk arm's clause resolve and of
+`rola/ops/naive.py::_leaf_product`)
 is a pure function of the leaf index that reads no routing data. So the support's
 *bitmap* is likewise a Kronecker product of the per-level indicators
 ([`decode.md`](../internals/decode.md), which expands two `N`-bit maps by
@@ -44,10 +46,10 @@ Kronecker broadcast rather than storing one).
 
 | Object | Factored form stored | Expansion, and where it lives |
 |---|---|---|
-| **Routing gates** | per-level amplitude arrays `[BH, T, b_l]` | the `[BT × BC]` coefficient panel, synthesized in registers inside the consumer; the gates are **never materialized** as `[L, N]`. The fused per-head routing path exists precisely so that they cannot be. |
-| **The Kronecker ledger** — the leaf-index arithmetic | `radix_strides`, `level_stride`, `level_modulus` | `leaf_digit()` evaluated per element; the digit table is a per-owner hoist, not a stored map (`consumer.cuh:131-133`). |
+| **Routing gates** | per-level amplitude arrays `[BH, T, b_l]` | the coefficient panel, synthesized in registers inside the consumer (a `[BT × BC]` tile in the retired tiled arm, a group-sized panel in the chunk arm); the gates are **never materialized** as `[L, N]`. The fused per-head routing path exists precisely so that they cannot be. |
+| **The Kronecker ledger** — the leaf-index arithmetic | `radix_strides`, `level_stride`, `level_modulus` | `leaf_digit()` evaluated per element; the digit table is a per-owner hoist, not a stored map (`chunk/chunk_kernel.cuh`'s clause resolve; the tiled arm's `consumer.cuh` carried the same hoist). |
 | **Bitmap / support words** | per-level digit bitmaps and slice unions, sized by `Σ_l b_l` | candidacy is **evaluated** by a warp-local AND chain in shared memory (~0.2% of the instruction stream), never stored per owner. |
-| **Panel factors** | per-level factors + the clock | the survival and readout panels, built per tile in registers, consumed by the MMA, discarded ([`intra_panel.md`](../internals/intra_panel.md)). |
+| **Panel factors** | per-level factors + the clock | the survival and readout panels, built per tile in registers, consumed by the MMA, discarded. |
 | **The schedule** | the same per-level bitmaps | the per-owner work set, re-evaluated in kernel. Storing it would be the `O(L·N)` wall. |
 | **The token-gather ballots** | the same factor words | live-token masks computed from the support words already loaded. |
 
@@ -101,7 +103,9 @@ waste or worse:
 
 - Unification statement: campaign journal, 2026-08-05, affine-schedulability
   entry.
-- Leaf-digit purity: `csrc/rola/src/consumer.cuh:131-133`; bitmap Kronecker
+- Leaf-digit purity: the tiled consumer's `consumer.cuh` (`git show
+  c7eaeb9:csrc/rola/src/consumer.cuh`), and `rola/ops/naive.py::_leaf_product`
+  in the tree today; bitmap Kronecker
   structure: [`docs/internals/decode.md`](../internals/decode.md),
   [`decode_expand.md`](../internals/decode_expand.md); reference semantics:
   `rola/ops/naive.py::_leaf_product`.

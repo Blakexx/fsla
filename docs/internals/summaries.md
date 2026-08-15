@@ -27,7 +27,8 @@ fallback: no runtime path reaches it, and it refuses to be called as one.
 Three reasons the runtime pass is hand-written:
 
 1. **No Inductor in the runtime.** One standing rule exists partly to
-   remove `torch.compile` as a runtime dependency of the planner; a fused torch
+   remove `torch.compile` as a runtime dependency of this library — the rule that
+   retired the planner, and it did not retire with it; a fused torch
    summary pass would put it straight back. Eager torch instead means ~30 kernel
    launches and a DRAM round trip per intermediate, on a pass whose whole
    justification is that it is microseconds.
@@ -109,7 +110,7 @@ parity topology (`branches = 256, 256`) `sum_l b_l = 512`, so this admits 4x tha
 with the union words derived on the fly rather than stored.
 
 `kMaxLevels`: a declared ceiling on `D`, generous relative to the consumer's own
-`D <= 4` (spec §1, `consumer.cuh`'s `kMaxLevels`) — the summary pass carries no
+`D <= 4` (spec §1) — the summary pass carries no
 level-count restriction of its own to justify a tighter one.
 
 ## <a id="params"></a>6. `SummaryParams` — every argument the pass takes

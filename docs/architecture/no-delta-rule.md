@@ -59,7 +59,8 @@ reordering of that list is a legal execution. Everything the engine gets from
 that follows:
 
 - **sequence parallelism** — the flat `(owner, segment)` work list and its
-  segment machinery ([`consumer.md#work-list`](../internals/consumer.md#work-list));
+  segment machinery of the retired tiled consumer, and the chunk arm's own
+  schedule after it;
 - **split-K** — partial outputs over an arbitrary partition of the contraction,
   reduced afterwards;
 - **the paged arena** — residency decided from the plan, ahead of execution,
@@ -123,5 +124,6 @@ standing directive that all kernel and benchmark design targets `N ≳ 65K`.
 - The schedulability argument and its precision clause: campaign journal,
   2026-08-05, "affine-schedulability observation (paper material)".
 - The reordering win it licenses: campaign journal, 2026-08-04, head-major owner
-  order; `tests/unit/test_planner.py::test_the_owner_order_is_head_major`; commit
-  `309bfbe`.
+  order; `test_the_owner_order_is_head_major`, which retired with
+  `tests/unit/test_planner.py` in P67 D2 (`git show
+  c7eaeb9:tests/unit/test_planner.py`); commit `309bfbe`.

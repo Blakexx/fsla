@@ -36,17 +36,19 @@ same week.
   `read_tok_bits` is the sole support authority. Amplitude comparisons exist in
   the kernel only as *performance* skips on a value where inclusion is a no-op
   (`if (out != 0.0f)`), and none of them decides membership
-  ([`consumer.md`](../internals/consumer.md)).
+  ([`chunk/chunk_kernel.md`](../internals/chunk/chunk_kernel.md)).
 - **Paging is bitwise invisible**, not approximately equivalent. An absent atom
   reads as zeros and is never stored back
-  ([`consumer.md#page-table`](../internals/consumer.md#page-table)).
+  ([`paging/paging.md`](../internals/paging/paging.md)).
 
 **Numerics**
 
 - **Accumulators are fp32** — value state, mass state, clock, decay dials,
   emission accumulators. → [fp32-accumulators.md](fp32-accumulators.md).
 - **The amplitude is never logged.** The direct staged-factor lowering is required,
-  not preferred ([`intra_panel.md#no-log-space`](../internals/intra_panel.md#no-log-space)).
+  not preferred (the arithmetic is in the retired tiled consumer's
+  `intra_panel.md#no-log-space`, `git show c7eaeb9:docs/internals/intra_panel.md`;
+  the rule binds every arm).
 
 **Build and execution**
 

@@ -19,6 +19,18 @@ there is no `GLOBAL` axis anywhere in this repository, decode included);
 bits_w)`); `n_split` the split-K degree; `BT`/`BC` are the tiled consumer's token
 and owner tiles, which appear here only to be ruled out.
 
+**The tiled consumer, in this document, is a RETIRED arm.** It was the prefill
+kernel this path was designed against, and P67 D2 deleted it whole — sources,
+mirror docs and all (`DELETIONS.md`; revival `git show c7eaeb9:<path>`). The
+contrasts drawn against it below are kept deliberately and read in the past
+tense: decode's shape is what it is BECAUSE of what it declined to inherit, and a
+design record that erases the thing declined leaves the decision unexplained.
+Where a section says a constant is restated rather than included, the header it
+was not included from is one of the deleted ones, and the restatement is now
+simply this file's own constant. The surviving prefill arm is the CHUNK consumer
+([`chunk/chunk.md`](chunk/chunk.md)) — a different kernel, named as such wherever
+it is meant.
+
 ---
 
 # Part A — the header (`decode.cuh`)
@@ -200,7 +212,7 @@ an event, 0.093 ms against 0.152 (medians of 15 x 100). The host must wait for t
 either way, and the event path adds a record and a query on top of the wait the copy
 already performs.
 
-**Why not the tiled arm's stats pass.** `chunk_stats` reduces over a
+**Why not the prefill arm's stats pass.** `chunk_stats` reduces over a
 `[BH, T, sum_l width_l]` routing stream; at a population of one that launch would be pure
 overhead, and it would be a THIRD derivation of a set the step's own expansion already
 holds. The reference derivation `_write_atom_bitmap` keeps for the gate costs `D - 1`
@@ -212,10 +224,12 @@ boundary with it.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 
-Spec §1 gives `1 <= D <= 4`. That is the same bound the consumer's `kMaxLevels`
-states, and it is restated in `decode.cuh` rather than included from
-`consumer.cuh` because the decode TUs share no other object with the tiled
-consumer, and a one-way include would imply they do.
+Spec §1 gives `1 <= D <= 4`. `decode.cuh` states that bound itself rather than
+inheriting it from a prefill header: it was restated rather than included from the
+tiled consumer's `consumer.cuh` because the decode TUs shared no other object with
+that kernel and a one-way include would have implied they did — and the same holds
+of the chunk consumer today. The SPEC is the shared authority here; a header is
+not.
 
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
@@ -241,8 +255,8 @@ things pin it:
 
 1. at `d_v = 64` it is exactly two columns per lane, with 128 B coalesced row
    loads;
-2. it matches the tiled consumer's `kConsumerThreads`, so the two agree on a
-   block size;
+2. it matched the tiled consumer's `kConsumerThreads`, so the prefill and decode
+   arms of that era agreed on a block size;
 3. 6 CTAs of 256 fill sm_86's 1536-thread limit exactly.
 
 ## <a id="coarse-group"></a>8. `kCoarseGroupWords = 32` — the coarse popcount index
@@ -392,11 +406,11 @@ UPDATE-THEN-READ because §2's survival is inclusive at `j = t`
 
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here
 
-`expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as
-`intra_panel.cuh`'s `kPanelMaxExponent`
-([`intra_panel.md`](intra_panel.md#rule-3)), restated rather than included
-because that header is the tiled consumer's panel algebra and decode shares none
-of it.
+`expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as the
+tiled consumer's `intra_panel.cuh` carried in `kPanelMaxExponent` — restated here
+rather than included, because that header was that kernel's panel algebra and
+decode shares none of it. The header went with the arm (`DELETIONS.md`); the
+convention is the spec's rule 3, and this file states it for itself.
 
 On this path the clamp is **structurally inert**, and that is worth saying rather
 than leaving a reader to wonder: the exponent is `clock * log1pf(-rate)` with
@@ -570,8 +584,8 @@ two decode steps and the counter is safe to capture in a CUDA graph.
 
 `DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one
 token), no `BC` (no owner blocking), no `MmaPrec`/precision split (there is no
-MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else — see
-[`mma.md`](mma.md)), no `GLOBAL` (raw normalization is dead; the mass column is
+MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else —
+`DELETIONS.md`), no `GLOBAL` (raw normalization is dead; the mass column is
 unconditional — [§20](#template-axes)). Every axis is a structural plan fact with
 few legal values, which is the standing *"branch on structure, not thresholds"*
 rule. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1,

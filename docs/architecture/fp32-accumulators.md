@@ -17,30 +17,41 @@ the lifetime of the state.
 
 ## <a id="compensated-pair"></a>A compensated pair is not a plain narrowing, and the two are governed separately
 
-The consumer kernel's resident state is two bf16 planes (`Shi`, a value's bf16
-rounding, and `Slo`, its residual) rather than one fp32 plane
-([`docs/internals/smem_layout.md#state-planes`](../internals/smem_layout.md#state-planes)).
-This is NOT the single-narrowing "bf16 resident state" the measured reason below
-refuses: that proposal halved the state's footprint (one bf16 plane at 2 bytes/element
+**HISTORICAL, and kept because the ruling it tests is not.** The mechanism this
+section governs was the TILED consumer's, retired whole in P67 D2
+([`DELETIONS.md`](../internals/DELETIONS.md); revival `git show c7eaeb9:<path>`).
+The prefill arm in the tree today is the chunk consumer, whose state plane is
+plain fp32 (`chunk_kernel.cuh`'s `s_in`/`s_out`) — there is no compensated pair in
+this tree now, and the paragraphs below are the record of how the split was
+applied when there was one. What is NOT historical is the distinction, the ruling,
+and the gate: `tests/tier1_semantics/test_bf16_family_gate.py` re-anchored onto
+the chunk arm in the same phase and still runs the `sqrt(T)` walk over
+`T in {512, 2048, 8192}`.
+
+The tiled consumer's resident state was two bf16 planes (`Shi`, a value's bf16
+rounding, and `Slo`, its residual) rather than one fp32 plane. That was NOT the
+single-narrowing "bf16 resident state" the measured reason below refuses: that
+proposal halved the state's footprint (one bf16 plane at 2 bytes/element
 against fp32's 4) to buy a larger `BC`. The plane pair costs the SAME bytes per
 element as the fp32 form it replaced (two bf16 words = 4 bytes = one fp32 word) and
 was built for a different reason entirely — an `ldmatrix`-fetchable B operand for
-GEMM 1 — so it does not touch the tradeoff this document's measurement declined.
+GEMM 1 — so it did not touch the tradeoff this document's measurement declined.
 
-The ACCUMULATION/STORAGE split above still applies, and still governs the plane
-form: the fold's read-modify-write reads the pair, sums in fp32 registers, and splits
-back to `Shi`/`Slo` at its one writeback — the accumulator stays fp32, exactly as this
-ruling requires. The state's STORAGE precision between accumulation events is a
-compensated pair (~16 mantissa bits) where it was single fp32 (~24) — a live axis
-under this document's own table, and this page's own `sqrt(T)`-walk gate
+The ACCUMULATION/STORAGE split above applied to it, and governed the plane form:
+the fold's read-modify-write read the pair, summed in fp32 registers, and split
+back to `Shi`/`Slo` at its one writeback — the accumulator stayed fp32, exactly as
+this ruling requires. The state's STORAGE precision between accumulation events was
+a compensated pair (~16 mantissa bits) where it had been single fp32 (~24) — a live
+axis under this document's own table, and this page's own `sqrt(T)`-walk gate
 (`tests/tier1_semantics/test_bf16_family_gate.py::test_family_deviation_is_flat_in_T`,
-run against the real kernel's state output, both `decay` arms) HAS been run against
-it and holds: every swept `T in {512, 2048, 8192}` clears `BF16_RTOL`, and the fitted
-log-log slope clears the `< 0.25` bar against the resident-state walk's measured
-`+0.49`. That is exactly what distinguishes a compensated pair from a single
-narrowing — 16 mantissa bits leave enough headroom that the walk does not surface
-inside the swept range. A plain single-narrowing bf16 state remains refused for the
-reason measured below; the same gate is what killed it.
+run against the real kernel's state output) was run against it and held: every swept
+`T in {512, 2048, 8192}` cleared `BF16_RTOL`, and the fitted log-log slope cleared
+the `< 0.25` bar against the resident-state walk's measured `+0.49`. That is exactly
+what distinguishes a compensated pair from a single narrowing — 16 mantissa bits
+leave enough headroom that the walk does not surface inside the swept range. A plain
+single-narrowing bf16 state remains refused for the reason measured below; the same
+gate is what killed it, and that gate now reports on the chunk arm (slope `+0.053`
+over the same three lengths, P67 D2-b).
 
 ## The measured reason
 
@@ -103,8 +114,9 @@ There is a second, independent instance of the same rule already in tree, and it
 is worth citing because it is not about the state: the decay **dials** are
 accumulated in fp32 and never bf16, because `rate` near 1 makes `1 - rate`
 catastrophically cancelling and `log1pf` cannot repair a cancellation that has
-already happened inside the product
-([`consumer.md#dials`](../internals/consumer.md#dials-fp32)).
+already happened inside the product (the tiled consumer's decay dials, retired with
+that arm — [`DELETIONS.md`](../internals/DELETIONS.md); the rule is the spec's, and
+`rola/routing/`'s dial construction still holds it host-side).
 
 ## What stays open
 
@@ -145,4 +157,5 @@ Two conditions govern any of these landing:
 - Composition law, `V_max` derivations and the gate defect: `vmax_budget.md`
   (150 paired runs), journal 2026-08-04.
 - Final kill and the standing conclusion: campaign journal, 2026-08-05 late.
-- The dials instance: [`docs/internals/consumer.md#dials`](../internals/consumer.md#dials-fp32).
+- The dials instance: the tiled consumer's `consumer.md#dials-fp32`, recoverable
+  with the arm at `git show c7eaeb9:docs/internals/consumer.md`.

@@ -3,21 +3,24 @@
 The only translation unit that knows pybind exists. One `PYBIND11_MODULE`, five
 groups of `m.def`, and one `py::class_`.
 
+`m.def` bodies live here and nowhere else; the declarations they name come from
+`src/chunk/chunk_api.cuh`, `src/decode_api.cuh`, `src/entmax.cuh`,
+`src/summaries.cuh` and `src/paging/vmm_owner.cuh`.
+
 Symbols: a TU is a translation unit; `-gencode` is the nvcc flag that emits one device
 code path per target architecture; `TORCH_EXTENSION_NAME` is the macro the build
 substitutes for the module name.
 
 ---
 
-## <a id="why-cpp"></a>1. Why it is a `.cpp` and not part of `consumer.cu`
+## <a id="why-cpp"></a>1. Why it is a `.cpp` and not part of a kernel `.cu`
 
 Binding code is host-only. Left inside a `.cu` it is recompiled once per `-gencode`
 target for no benefit, and **every future architecture added to the ratified set
 multiplies that cost.** `flash_api.cpp` is the convention; this is the same split.
 
-The declarations the binder needs are in `src/host_api.cuh` (plus `decode_api.cuh`,
-`entmax.cuh`, `summaries.cuh` and `paging/vmm_owner.cuh`), so nothing here needs a
-device body in scope.
+Every declaration the binder needs is a `*_api.cuh`-shaped host header, so nothing
+here needs a device body in scope.
 
 ## <a id="one-module"></a>2. One module, not two
 
@@ -25,13 +28,13 @@ The consumer and the §7.1 paging arena register into the SAME extension: the co
 reads the page table the plan publishes, so splitting them would put a **cross-module
 ABI between two halves of one contract.**
 
-Registration happens HERE and nowhere else: every `m.def` body is in this file and
-every declaration it needs is in `src/host_api.cuh`. No fragment header registers
-anything, so there is one place to read to know what the module exports.
+Registration happens HERE and nowhere else: every `m.def` body is in this file. No
+fragment header registers anything, so there is one place to read to know what the
+module exports.
 
 The T=1 decode path registers here for the same reason: it is a SIBLING of the
-consumer, not a specialization of it — shared produce contract, own consumer, frozen
-config — and one contract deserves one ABI boundary.
+prefill consumer, not a specialization of it — shared produce contract, own kernel,
+frozen config — and one contract deserves one ABI boundary.
 
 ## <a id="module-name"></a>3. The module name comes from the build
 
@@ -48,7 +51,7 @@ that.
 | group | entries |
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
-| the consumer | `rola_consumer_forward`, `rola_consumer_occupancy`, `rola_consumer_check_arch_table`, `rola_consumer_smem_bytes`, `rola_sm_shared_bytes` |
+| the chunk consumer (the prefill arm) | `chunk_union_table`, `chunk_forward_raw`, `chunk_forward`, `chunk_stats`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | producer-epilogue summaries (§4.1/§4.2) | `rola_routing_summaries` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
@@ -61,7 +64,13 @@ constant, pinned EQUAL to the Python value so a stale mirror cannot silently sat
 capacity `static_assert`.
 
 `rola_decode_forward` is the only entry bound with explicit `py::arg` names; the
-consumer's much larger signature is positional.
+prefill consumer's much larger signature is positional.
+
+The tiled consumer's five entries — `rola_consumer_forward`,
+`rola_consumer_occupancy`, `rola_consumer_check_arch_table`,
+`rola_consumer_smem_bytes` and `rola_sm_shared_bytes` — were bound here until P67
+D2 retired that arm; none of them is in the module today, and the device-side
+entry list is the check that says so ([`DELETIONS.md`](DELETIONS.md)).
 
 ## <a id="summaries-contract"></a>5. The routing-summary pass's calling contract
 
@@ -132,7 +141,6 @@ the boundary instead of implied by a flag. Its contract is
 
 ## The chunk consumer's entries (operator adoption)
 
-`chunk_union_table`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`,
-`chunk_build_stamp`, `chunk_arms` — the chunk consumer's private seam
-(declarations in `src/chunk/chunk_api.cuh`; `rola/ops/chunk.py` is the only
-intended caller, behind `rola_op`).  See docs/internals/chunk/.
+The chunk group above is a PRIVATE seam: declarations in
+`src/chunk/chunk_api.cuh`, `rola/ops/chunk.py` the only intended caller, and
+`rola_op` the only public door onto it. See `docs/internals/chunk/`.

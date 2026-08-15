@@ -5,11 +5,16 @@ from runtime values. This header is the mechanism for that selection in the
 hand-written launchers: `decode.cu`'s `launch_decode_gemv` and `entmax.cu`'s forward
 and backward launchers.
 
-The consumer does not use it, and does not use a switch at all. Its dispatch is a
-GENERATED TABLE (`instantiations/dispatch_table.inc`): a mixed-radix key over the
-matrix axes indexes a row that carries the launcher, the residency query and the
-footprint, so selection is an array load and the enumeration is single-sourced with
-the shards it selects ([`consumer.md#shard-rows`](consumer.md#shard-rows)).
+The chunk consumer does not use it, and does not use a switch at all. Its dispatch
+walks a GENERATED ARM LIST: `tools/gen_shards.py` emits
+`instantiations/chunk_arms.inc`, one X-macro over every built `(C, BC, D, B)` tuple,
+and `chunk/chunk.cu` expands that same macro four times — the launch dispatch, the
+arm table, the census and the arm listing — so the enumeration exists once and is
+single-sourced with the shards it partitions into
+([`chunk/chunk_kernel.md`](chunk/chunk_kernel.md), `instantiations/README.md`). The
+tiled consumer's `dispatch_table.inc` — a mixed-radix key indexing a row carrying
+the launcher, the residency query and the footprint — was the previous form of the
+same rule, and it went with that arm in P67 D2 (`DELETIONS.md`).
 
 THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
 axes and one kernel writes its selection here, in the one place its `<<<...>>>`
@@ -85,7 +90,7 @@ do not have.
 
 | half | what it is | what covers it |
 |---|---|---|
-| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py` (144 entries per arch: 16 decode + 64 entmax + 64 consumer) and `tools/fatbin_entries.py`, both reading the built `.so`. A tuple that stops being instantiated fails them. |
+| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py` (147 entries per arch: 16 decode + 64 entmax + 67 chunk) and `tools/fatbin_entries.py`, both reading the built `.so`. A tuple that stops being instantiated fails them. |
 | the SELECTION | which tuple a given set of runtime values reaches | the CUDA suites, which exercise every arm |
 
 `tools/sass_bodies.py` hashes DEVICE entry points. Host `.text` is not in that hash, so

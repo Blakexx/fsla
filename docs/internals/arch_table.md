@@ -17,8 +17,20 @@ architectures) and **rule 3** (no arch in the fatbin without a ratified manifest
 both key on exactly this table:
 
 - `sm_arch_tabulated()` is what fails the BUILD for an untabulated compile target;
-- `rola_consumer_check_arch_table()` (`consumer.cu`) is what fails the FIRST LAUNCH
-  on a device the table disagrees with.
+- the chunk dispatch's `check_arch_table()` (`chunk/chunk.cu`) is what fails the
+  FIRST LAUNCH on a device the tables disagree with.
+
+The runtime half moved with the arm it protects. It was
+`rola_consumer_check_arch_table()`, in the tiled consumer's `consumer.cu`, until
+P67 D2 retired that arm (`DELETIONS.md`); `check_arch_table()` is the same refusal
+made at the same moment — a static host function, first statement of every chunk
+entry that launches, admitting a device only after it passes — and it carries one
+clause the consumer's did not: an untabulated ARCHITECTURE and an unbuilt ARM are
+now distinct refusals. It reads `chunk/arch_caps.cuh`'s capability row and, from
+`cudaGetDeviceProperties` / `cudaDeviceGetAttribute`, the four FACT columns this
+table's own rows declare. Those four are exactly the numbers every staging depth,
+CTA target and shared-memory fit was derived from at compile time, which is why
+checking them is checking this table.
 
 A supported-architecture list buried in a kernel header is invisible to review and
 to the `tools/manifests/` cross-check. The list of architectures this binary claims
@@ -29,8 +41,8 @@ to support must be a file one can open.
 `__launch_bounds__` needs compile-time constants, so these cannot be read from
 `cudaDeviceProp` at the point of use. They are therefore a COMPILE-TARGET table
 keyed on `__CUDA_ARCH__` — and because a table can be wrong or stale in a way a
-driver query cannot, `consumer_check_arch_table()` VALIDATES IT AGAINST
-`cudaDeviceProp` on the running device and fails loudly on a mismatch.
+driver query cannot, `check_arch_table()` VALIDATES IT AGAINST `cudaDeviceProp` on
+the running device and fails loudly on a mismatch.
 
 **The two halves are the point: the table is what the compiler can use, the check
 is what makes the table trustworthy.**
@@ -57,10 +69,12 @@ table decides is one thing: which `__launch_bounds__` the compiler is told to hi
 Rather than guessing. A wrong launch bound is silently discarded by the driver, so
 a guess here would be a silent occupancy loss on the arch nobody checked. The
 `static_assert` on `sm_arch_tabulated(kConsumerArch)` is the enforcement point, and
-its message names both places a new row must land: `sm_resources()` and
-`consumer_check_arch_table()`.
+its message names both places a new row must land: `sm_resources()` and the chunk
+dispatch's runtime check.
 
-`kConsumerArch` is the arch this translation pass is compiling FOR. In the HOST
+`kConsumerArch` is the arch this translation pass is compiling FOR — the name
+predates the tiled consumer's retirement and outlived it, because what it names is
+the compile target of every arm in the extension and not one kernel family. In the HOST
 pass `__CUDA_ARCH__` is undefined and no launch bound is emitted, so the value is
 inert there; it is pinned to the SMALLEST tabulated configuration so that if it
 ever stopped being inert it would under-promise rather than over-promise.
@@ -84,8 +98,8 @@ exactly this term.
 
 ## <a id="mma-quantum"></a>5. `kMmaKQuantum = 16` — the hardware `mma.sync` k-extent
 
-The k-extent of the `mma.sync.aligned.m16n8k16` instruction the consumer issues on
-the sm80-class bf16 path, and therefore **the** named constant every quanta-shaped
+The k-extent of the `mma.sync.aligned.m16n8k16` instruction the chunk consumer
+issues on the sm80-class bf16 path, and therefore **the** named constant every quanta-shaped
 quantity in this engine is an expression in (spec §1 invariant I1 forbids a
 `BC`-derived literal). Two derived names appear everywhere:
 
@@ -97,17 +111,16 @@ quantity in this engine is an expression in (spec §1 invariant I1 forbids a
 It is a SHAPE of an instruction, never a tuning threshold, so it belongs with the
 other compile-time hardware facts rather than with any one consumer of it.
 
-**Why this header owns it.** Three translation units need the same number and share
-no other header: `consumer_kernel.cuh` (the atom granularity of the state block, the
-`WT` window, the control-word count), `consumer.cu`'s `scan_kernel` (§4.5's page
-granule — it must address the state exactly as the consumer does while deliberately
-NOT including the consumer kernel's header), and `summaries.cuh` (§6's bin count,
-`QPO + 1`). A per-file constant in each is three definitions of one hardware fact,
-which is how a re-key drifts. `arch_table.cuh` is host-safe and already reachable
-from all three.
+**Why this header owns it.** It is one number for three readers that share no other
+header: the chunk consumer (the atom granularity of the state block), the decode
+sibling, and `summaries.cuh` (§6's bin count, `QPO + 1`, and the `state_block %
+kMmaKQuantum` refusal at its host entry). A per-file constant in each is three
+definitions of one hardware fact, which is how a re-key drifts. `arch_table.cuh` is
+host-safe and reachable from all three. The atom is also §4.5's page granule, which
+is why the paging plane counts in the same unit.
 
-The Python side mirrors the same value at `rola.planner.schedule.MMA_K_QUANTUM`,
-`rola.routing.summaries.MMA_K_QUANTUM` and `rola.ops.paging.MMA_K_QUANTUM`; a C++
+The Python side mirrors the same value at `rola.routing.summaries.MMA_K_QUANTUM`,
+`rola.routing.exact_summaries.MMA_K_QUANTUM` and `rola.ops.paging.MMA_K_QUANTUM`; a C++
 `constexpr` cannot be imported there. `tests/unit/test_paging_atoms.py` and the paged
 equivalence fixtures are what keep those mirrors honest, and the summary pass's host
 entry checks its derived bin count against the caller's so a drift fails loudly

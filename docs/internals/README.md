@@ -1,8 +1,12 @@
 # `docs/internals/` — the source mirror
 
 One markdown file here per source file under `csrc/rola/`, at the same relative
-path (`csrc/rola/src/consumer_kernel.cuh` → `docs/internals/consumer_kernel.md`;
+path (`csrc/rola/src/decode.cuh` → `docs/internals/decode.md`;
 `csrc/rola/src/paging/vmm_owner.cu` → `docs/internals/paging/vmm_owner.md`).
+
+The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc that
+no test catches. Deleting the doc with the source is therefore part of deleting
+the source, and the removal is recorded in `DELETIONS.md` like any other.
 
 ## Why this directory exists
 
@@ -21,7 +25,7 @@ What stays in the source:
 A hazard stub is one line, no prose, no numbers beyond its anchor id:
 
 ```cpp
-//: HAZARD clock-prefix-fp32 -- docs/internals/consumer_kernel.md#clock-prefix-fp32
+//: HAZARD update-then-read -- docs/internals/decode.md#update-then-read
 ```
 
 Stubs are for **measured** hazards only — a place where moving, reordering or

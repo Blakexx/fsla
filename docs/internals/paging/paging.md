@@ -9,9 +9,13 @@ one-sentence purpose.  Companion: `vmm_owner.md` (the VMM backing).
 COMPUTE tile; a page is a MEMORY-RESIDENCY atom.** Their consumers are different
 objects with different lifetimes -- admission bitmaps, arena pools, residency ledgers,
 warm reuse across sequences -- and every one of them must survive a ``BC`` change
-unbiased. Since the planner chooses ``BC`` PER LAUNCH, a ``BC``-keyed page
-would have to be rebuilt whenever the planner moved it, which is exactly the
-arena-rebuild class the re-key kills.
+unbiased. The re-key was ruled while a PLANNER chose ``BC`` per launch: a
+``BC``-keyed page would have to be rebuilt whenever the planner moved it, which is
+exactly the arena-rebuild class the re-key kills. That planner is retired
+(``DELETIONS.md``) and ``BC`` is now a property of the built chunk arm, which
+weakens the URGENCY of the argument and none of its force -- ``BC`` still varies
+across arms and across rebuilds of the matrix, and a residency structure keyed to
+a compute tile would still be re-keyed by each such move.
 
 Every legal ``BC`` is a whole number of atoms by construction (``16 | BC``), so an
 owner spans exactly ``QPO`` atoms and a CTA resolves ``QPO`` slots at startup instead
