@@ -96,6 +96,54 @@ use, deriving them from the tensor's own RANK. **Layout is therefore data, not a
 codegen axis** — the Triton lowering this replaced needed a `tl.where(TILE_MAJOR,
 ...)` select and a specialization axis for it.
 
+## <a id="stream-split"></a>4.2 The stream axis is TWO strides
+
+A *stream* is one `(batch, head)` pair, and the grid indexes it as one number,
+`b*H + h`. The logits do not have to be laid out that way, and the packed router GEMM
+does not lay them out that way: it is a single `[B·L, d] x [d, H·C]` sgemm whose output
+is `[B, L, H, C]`. Flattening `(B, H)` into one axis of THAT is not a view — it needs a
+transpose of the whole plane.
+
+**What that transpose cost, measured** (the P73 cell's projection, `[2,2048,512] x
+[8,512,256]`, paired medians of 51): the `bhlc` einsum plus its reshape is 0.5149 ms,
+where the `blhc` einsum is 0.4301 ms and returns a CONTIGUOUS VIEW of the one GEMM — no
+copy at all. **−0.085 ms, and BIT-IDENTICAL**: a column of the output is a dot product
+over the full hidden dim, so it does not depend on where the column is written. S4
+measured the two other candidate reorders (`unsqueeze`/`expand` matmul) at +23% and
+refused them; this is the form its §5 named as the one that would actually work.
+
+So `Strides` carries the stream axis as a PAIR, `stream` and `stream2`, and each kernel
+splits `blockIdx.y` once per block:
+
+```
+sb = stream / heads          //  b
+sh = stream - sb * heads     //  h
+addr_split = sb*s.stream + sh*s.stream2 + tok*s.token + col*s.col
+```
+
+Three things about that are load-bearing, and each was MEASURED rather than reasoned:
+
+1. **`addr_split` is a SECOND expression, not a widening of `addr`.** Only the logit
+   plane (and its gradient) needs two products; every other operand keeps the one-stride
+   `addr` it always had. Widening all of them cost the family its 64-register bound —
+   **4 spilling instantiations became 56**, with 180–244 byte spills at `IPT = 8`.
+2. **The split is UNCONDITIONAL, and `heads >= 1` always** — `heads == 1` is one head,
+   for which this is `sb = stream, sh = 0`. Guarding it as `heads ? stream/heads : stream`
+   spilled the family just as badly, and the reason is not the division's latency:
+   `blockIdx.y` is a special register, free to re-read, and a plain quotient of it is
+   cheap to rematerialize, but a value that arrives through a branch is neither, so it
+   is pinned in registers across the whole kernel.
+3. **Hoisting the stream term per operand made it worse, not better** (56 → 58): six
+   live `int64_t` bases is more expensive than rematerializing each from `blockIdx.y`.
+
+The grid's stream extent is `logits.size(0) * heads`, which is `B*H` for the token-major
+plane and `size(0)` for the flat one, since a flat plane declares `heads == 1`.
+
+The producer emits the token-major plane only where the CUDA solve will read it (CUDA
+fp32). The torch lowering and the fp64 reference solve read a level by SLICING, with no
+stride tuple to read a head axis through, so they keep the flat plane — **no reference's
+accepted shape changed**, and no dual run is owed.
+
 ## <a id="warp-row"></a>4.1 The warp-row vocabulary lives in the header
 
 `Strides`/`addr`, `store_value`/`load_value`, `Descending`, `Pair`/`PairAdd`,

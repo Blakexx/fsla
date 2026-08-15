@@ -15,6 +15,7 @@ def _packed_router_logits(
     route_bias: torch.Tensor | None = None,
     h_w: torch.Tensor | None = None,
     projection_dtype: torch.dtype,
+    token_major: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Project packed router weights in one explicitly selected arithmetic domain.
 
@@ -22,6 +23,15 @@ def _packed_router_logits(
     one side's levels laid out end to end on ``routing.level_offsets``, so level ``l`` is
     ``logits[:, :, routing.level_logit_slice(l)]``. There is no per-level padding to
     ``max(branches)`` -- see ``ResolvedRouting.packed_logit_width``.
+
+    ``token_major`` returns the same numbers as ``[B, T, H, packed_logit_width]``
+    instead, WITHOUT the transpose that flattening ``(B, H)`` needs. The sgemm's own
+    output is already this layout, so the flat form costs a full pass over the plane
+    that the flat form is the only reason for; the solve reads either through its stride
+    tuple. BIT-IDENTICAL, and that is checkable rather than argued: a column of the
+    output is a dot product over the full hidden dim, so it does not depend on where the
+    column is written -- gated by
+    ``test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit``.
 
     ``route_W`` is ``[H, hidden_size, routing.packed_router_width]``: the stored
     parameter IS the packed layout, one slot's columns per level it feeds.
@@ -80,10 +90,17 @@ def _packed_router_logits(
         return weight, bias
 
     def project(hidden: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
-        equation = "bld,hdc->bhlc" if hidden.ndim == 3 else "blhd,hdc->bhlc"
+        #: `blhc` is the sgemm's OWN output order, so the einsum returns a view of it and
+        #: the head axis costs nothing; `bhlc` is that plus a full-plane transpose, which
+        #: exists only to let `(B, H)` flatten into one stream axis.
+        order = "blhc" if token_major else "bhlc"
+        equation = f"bld,hdc->{order}" if hidden.ndim == 3 else f"blhd,hdc->{order}"
         logits = torch.einsum(equation, hidden.to(projection_dtype), weight.to(projection_dtype))
         if bias is not None:
-            logits = logits + bias.to(projection_dtype)[None, :, None, :]
+            logits = logits + bias.to(projection_dtype)[None, None, :, :] if token_major \
+                else logits + bias.to(projection_dtype)[None, :, None, :]
+        if token_major:
+            return logits
         return logits.reshape(hidden.shape[0] * heads, hidden.shape[1], weight.shape[2])
 
     write_slots = tuple(range(routing.D))
@@ -108,7 +125,7 @@ def _packed_router_logits(
         both_weight, both_bias = pack_weight(write_slots + read_slots)
         both = project(h, both_weight, both_bias)
         width = routing.packed_logit_width
-        return both[:, :, width:], both[:, :, :width]
+        return both[..., width:], both[..., :width]
 
     # Split read/write streams: the write side is projected from `h_w`, and a TIED level
     # takes its read logits from that write projection (the write stream is its source),
@@ -127,12 +144,12 @@ def _packed_router_logits(
         cursor += routing.branches[level]
     read_logits = torch.cat(
         [
-            untied_logits[:, :, untied_offsets[level]:untied_offsets[level] + routing.branches[level]]
+            untied_logits[..., untied_offsets[level]:untied_offsets[level] + routing.branches[level]]
             if level in untied_offsets
-            else write_logits[:, :, routing.level_logit_slice(level)]
+            else write_logits[..., routing.level_logit_slice(level)]
             for level in range(routing.D)
         ],
-        dim=2,
+        dim=-1,
     )
     return read_logits, write_logits
 

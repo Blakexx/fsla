@@ -45,17 +45,37 @@ constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
 //: of a silent spill, which `tools/ratify.py` then fails the BUILD on.
 constexpr int MIN_BLOCKS_PER_SM = 8;
 
-//: `(stream, token, col, tile, lane)` -- ONE address expression serves both route-value
-//: layouts because the caller zeroes the members its layout does not use, which is why
-//: layout is data here -- docs/internals/entmax/entmax.md#strides
+//: `(stream, stream2, token, col, tile, lane)` -- ONE address expression serves every
+//: operand layout in this family because the caller zeroes the members its layout does
+//: not use, which is why layout is data here -- docs/internals/entmax/entmax.md#strides
+//:
+//: THE STREAM AXIS IS TWO STRIDES because a token-major logit plane needs two: `b` and
+//: `h` are separate axes of `[B, T, H, C]` and the solve's stream is `b*H + h`. The
+//: caller splits `blockIdx.y` ONCE per block -- docs/internals/entmax/entmax.md#stream-split
 struct Strides {
-  int64_t stream, token, col, tile, lane;
+  int64_t stream, stream2, token, col, tile, lane;
 };
 
+//: THE FLAT ADDRESS, unchanged: ONE stream register, and every term after it
+//: rematerializes from constant memory. Keeping it that way is a REGISTER decision --
+//: see `addr_split` -- docs/internals/entmax/entmax.md#stream-split
 __device__ __forceinline__ int64_t addr(const Strides& s, int64_t stream, int64_t tok,
                                         int64_t col) {
   return stream * s.stream + tok * s.token + (tok >> 5) * s.tile + col * s.col
          + (tok & 31) * s.lane;
+}
+
+//: THE SPLIT ADDRESS, for the LOGIT plane alone. `b` and `h` are separate axes of a
+//: token-major `[B, T, H, C]`, so its stream term is two products rather than one.
+//:
+//: This is a SECOND expression and not a widening of `addr` because the widening was
+//: MEASURED: making every operand's stream term two products cost the family its
+//: 64-register bound -- 4 spilling instantiations became 56, with 180-244 byte spills at
+//: `IPT = 8`. Confining it to the one operand that needs it keeps every other address
+//: rematerializable from a single register, which is what it always was.
+__device__ __forceinline__ int64_t addr_split(const Strides& s, int64_t sb, int64_t sh, int64_t tok,
+                                              int64_t col) {
+  return sb * s.stream + sh * s.stream2 + tok * s.token + col * s.col;
 }
 
 template <typename T>
@@ -122,16 +142,31 @@ struct LevelTable {
   int width[MAX_BATCHED_LEVELS];
 };
 
-//: The 5-tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no token
+//: The tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no token
 //: stride of its own), rank-3 the dense plane (no tile/lane stride). Deriving it keeps
 //: one launch site per kernel instead of one per layout.
+//:
 inline Strides five(const torch::Tensor& t) {
-  if (t.dim() == 4) return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
-  return {t.stride(0), t.stride(1), t.stride(2), 0, 0};
+  if (t.dim() == 4) return {t.stride(0), 0, 0, t.stride(2), t.stride(1), t.stride(3)};
+  return {t.stride(0), 0, t.stride(1), t.stride(2), 0, 0};
+}
+
+//: THE LOGIT PLANE, in whichever of its two layouts the caller holds it: token-major
+//: `[B, T, H, C]` (the packed router GEMM's own output, so taking it here is what
+//: deletes the transpose that used to follow), or the flat `[BH, T, C]` whose head
+//: stride is simply 0 -- docs/internals/entmax/entmax.md#stream-split
+inline Strides five_logits(const torch::Tensor& t, int heads) {
+  TORCH_CHECK(heads >= 1, "the stream split needs heads >= 1; 1 is one head");
+  if (t.dim() == 4) {
+    TORCH_CHECK(t.size(2) == heads, "a token-major logit plane's head axis must be `heads`");
+    return {t.stride(0), t.stride(2), t.stride(1), t.stride(3), 0, 0};
+  }
+  TORCH_CHECK(heads == 1, "a flat [BH, T, W] logit plane declares no split (heads == 1)");
+  return {t.stride(0), 0, t.stride(1), t.stride(2), 0, 0};
 }
 
 inline Strides five_or_zero(const c10::optional<torch::Tensor>& t) {
-  if (!t.has_value()) return {0, 0, 0, 0, 0};
+  if (!t.has_value()) return {0, 0, 0, 0, 0, 0};
   return five(*t);
 }
 
@@ -193,7 +228,7 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
                    const std::vector<int64_t>& value_offsets,
                    const std::vector<int64_t>& midpoint_offsets,
                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                   double alpha);
+                   int64_t heads, double alpha);
 
 void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                     const torch::Tensor& midpoint_values, const torch::Tensor& support_words,
@@ -204,7 +239,7 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
                     const std::vector<int64_t>& value_offsets,
                     const std::vector<int64_t>& midpoint_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                    double alpha);
+                    int64_t heads, double alpha);
 
 }  // namespace entmax
 }  // namespace rola

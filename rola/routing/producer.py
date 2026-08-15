@@ -225,9 +225,22 @@ class SimplexProducer(LevelProducer):
         run must still get on its routing logits.
         """
         projection_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
+        #: TOKEN-MAJOR `[B, T, H, W]` for the hand-CUDA solve: that is the sgemm's own
+        #: output order, so the head axis is free here and the solve addresses `b` and
+        #: `h` as two strides; the flat `[B*H, T, W]` form costs a whole pass over the
+        #: plane to make `(B, H)` one axis
+        #: (docs/internals/entmax/entmax.md#stream-split).
+        #:
+        #: The PREDICATE is the one `production_routing_factor_levels` selects the CUDA
+        #: solve on, and it is here for the same reason: every other consumer -- the
+        #: torch lowering, and the fp64 reference solve the oracle-equivalence gate
+        #: swaps in -- reads a level by slicing, with no stride tuple to read a head
+        #: axis through, so handing them the flat plane is what keeps this an
+        #: implementation choice rather than a change to what a reference accepts.
+        cuda_solve = x.is_cuda and projection_dtype is torch.float32
         return _packed_router_logits(
             x, self.route_W, self.routing, route_bias=self.route_bias, h_w=x_w,
-            projection_dtype=projection_dtype)
+            projection_dtype=projection_dtype, token_major=cuda_solve)
 
     def _solve(self, x: torch.Tensor, x_w: torch.Tensor | None):
         read_logits, write_logits = self._project(x, x_w)

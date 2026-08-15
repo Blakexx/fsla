@@ -82,7 +82,7 @@ def _launch_fwd(z, mask, alpha, *, tokens, n_streams):
     _extension().entmax_factor_forward(
         z.view(n_streams, tokens, cols), mask.view(n_streams, tokens, cols),
         p.view(n_streams, tokens, cols), None, support_words,
-        [0], [0], [0], _one(cols), float(alpha))
+        [0], [0], [0], _one(cols), 1, float(alpha))
     return p, support_words
 
 
@@ -111,7 +111,7 @@ class _ProductionFactorFn(torch.autograd.Function):
         shape = (ctx.n_streams, ctx.tokens, cols)
         _extension().entmax_factor_backward(
             p.view(shape), support_words, mask.view(shape), dp.view(shape), None, dz.view(shape),
-            [0], [0], [0], _one(cols), False, ctx.alpha)
+            [0], [0], [0], _one(cols), False, 1, ctx.alpha)
         return dz, None, None, None, None
 
 
@@ -157,10 +157,31 @@ def production_factor(z, activation="entmax", alpha=1.5, mask=None):
 
 
 def _arena_shape(logits: torch.Tensor) -> tuple[int, int]:
+    """``(streams, tokens)`` for either logit layout.
+
+    Rank 3 is the flat ``[BH, T, W]`` plane; rank 4 is the TOKEN-MAJOR ``[B, T, H, W]``
+    the packed router GEMM writes directly, whose stream ``b*H + h`` is two axes. Which
+    one arrived is `_heads`' question, and the solve carries the answer as a stride pair
+    rather than as a copy.
+    """
+    if logits.ndim == 4:
+        return logits.shape[0] * logits.shape[2], logits.shape[1]
     if logits.ndim != 3:
         raise ValueError(
-            f"production routing logits must be [BH, L, W], got {tuple(logits.shape)}")
+            f"production routing logits must be [BH, T, W] or [B, T, H, W], got "
+            f"{tuple(logits.shape)}")
     return logits.shape[0], logits.shape[1]
+
+
+def _heads(logits: torch.Tensor) -> int:
+    """The STREAM SPLIT the launch runs under: ``H`` for token-major logits, 1 for flat.
+
+    NEVER 0, and that is the kernel's constraint rather than a convention: the split is
+    unconditional there because guarding it cost the family its register budget, so
+    ``heads = 1`` -- one head, ``sb = stream``, ``sh = 0`` -- is how a flat plane says it
+    has no head axis (docs/internals/entmax/entmax.md#stream-split).
+    """
+    return logits.shape[2] if logits.ndim == 4 else 1
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +210,11 @@ class _Launch:
     set of base tensors. Offsets are COLUMN indices into those bases, which is the unit
     the kernel's address expression adds them in."""
 
-    __slots__ = ("kind", "alpha", "operands", "accumulate",
+    __slots__ = ("kind", "alpha", "operands", "heads",
                  "logit", "value", "midpoint", "support", "widths")
 
-    def __init__(self, kind, alpha, operands, accumulate):
-        self.kind, self.alpha, self.operands, self.accumulate = kind, alpha, operands, accumulate
+    def __init__(self, kind, alpha, operands, heads):
+        self.kind, self.alpha, self.operands, self.heads = kind, alpha, operands, heads
         self.logit, self.value, self.midpoint, self.support, self.widths = [], [], [], [], []
 
     def full(self) -> bool:
@@ -212,16 +233,17 @@ class _Launch:
             read_logits, write_logits, midpoint, support, read_values, write_values = self.operands
             extension.entmax_union_forward(
                 read_logits, write_logits, midpoint, support, read_values, write_values,
-                self.logit, self.value, self.midpoint, self.support, self.widths, self.alpha)
+                self.logit, self.value, self.midpoint, self.support, self.widths, self.heads,
+                self.alpha)
         elif self.kind == "entmax":
             logits, values, values_second, support = self.operands
             extension.entmax_factor_forward(
                 logits, None, values, values_second, support,
-                self.logit, self.value, self.support, self.widths, self.alpha)
+                self.logit, self.value, self.support, self.widths, self.heads, self.alpha)
         else:
             logits, values, values_second = self.operands
             extension.routing_softmax_forward(
-                logits, values, values_second, self.logit, self.value, self.widths)
+                logits, values, values_second, self.logit, self.value, self.widths, self.heads)
 
 
 class _Plan:
@@ -238,11 +260,11 @@ class _Plan:
         self._issued: list[_Launch] = []
 
     def add(self, kind, alpha, operands, width, *, logit_off,
-            value_off=0, midpoint_off=0, support_off=0):
-        key = (kind, alpha, _width_class(width), *(id(t) for t in operands))
+            value_off=0, midpoint_off=0, support_off=0, heads=1):
+        key = (kind, alpha, _width_class(width), heads, *(id(t) for t in operands))
         launch = self._open.get(key)
         if launch is None or launch.full():
-            launch = _Launch(kind, alpha, operands, False)
+            launch = _Launch(kind, alpha, operands, heads)
             self._open[key] = launch
             self._issued.append(launch)
         launch.add(width, logit_off, value_off, midpoint_off, support_off)
@@ -272,7 +294,8 @@ def _launch_factor_backward_into_logits(
 ) -> None:
     _extension().entmax_factor_backward(
         output, support_words, None, d_output, d_output_second, d_logits,
-        [0], [0], [0], _one(d_logits.shape[-1]), bool(accumulate), float(alpha))
+        [0], [0], [0], _one(d_logits.shape[-1]), bool(accumulate), _heads(d_logits),
+        float(alpha))
 
 
 def _launch_union_bwd(
@@ -292,7 +315,8 @@ def _launch_union_bwd(
     _extension().entmax_union_backward(
         read_logits_level, write_logits_level, midpoint, support_words,
         read_output, write_output, d_read_output, d_write_output,
-        d_read_level, d_write_level, [0], [0], [0], [0], width, float(alpha))
+        d_read_level, d_write_level, [0], [0], [0], [0], width, _heads(d_read_level),
+        float(alpha))
 
 
 def _launch_softmax_backward_into_logits(
@@ -305,7 +329,7 @@ def _launch_softmax_backward_into_logits(
 ) -> None:
     _extension().routing_softmax_backward(
         output, d_output, d_output_second, d_logits,
-        [0], [0], _one(d_logits.shape[-1]), bool(accumulate))
+        [0], [0], _one(d_logits.shape[-1]), bool(accumulate), _heads(d_logits))
 
 
 class _ProductionRoutingArenaFn(torch.autograd.Function):
@@ -345,6 +369,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             device=read_logits.device,
         )
         empty_launch = n_streams == 0 or tokens == 0
+        heads = _heads(read_logits)
         #: ONE midpoint plane, packed over the UNION levels alone -- the only levels that
         #: have one. It is saved whole and sliced in the backward.
         union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
@@ -369,7 +394,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                              (read_logits, write_logits, midpoints, support_words,
                               read_arena, write_arena),
                              width, logit_off=logit_offset, value_off=offset,
-                             midpoint_off=midpoint_offset, support_off=support_offset)
+                             midpoint_off=midpoint_offset, support_off=support_offset, heads=heads)
                 midpoint_offset += width
                 continue
 
@@ -382,10 +407,10 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                     plan.add("entmax", level.write_activation.alpha,
                              (write_logits, read_arena, second, support_words), width,
                              logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset)
+                             support_off=support_offset, heads=heads)
                 else:
                     plan.add("softmax", 0.0, (write_logits, read_arena, second), width,
-                             logit_off=logit_offset, value_off=offset)
+                             logit_off=logit_offset, value_off=offset, heads=heads)
                 continue
 
             for activation, source, output in (
@@ -395,10 +420,10 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 if isinstance(activation, EntmaxActivation):
                     plan.add("entmax", activation.alpha, (source, output, None, support_words),
                              width, logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset)
+                             support_off=support_offset, heads=heads)
                 else:
                     plan.add("softmax", 0.0, (source, output, None), width,
-                             logit_off=logit_offset, value_off=offset)
+                             logit_off=logit_offset, value_off=offset, heads=heads)
 
         plan.issue()
 
@@ -439,8 +464,8 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             d_read_output = d_read[:, :, offset:offset + width, :]
             d_write_output = d_write[:, :, offset:offset + width, :]
             span = routing.level_logit_slice(index)
-            d_read_level = d_read_logits[:, :, span]
-            d_write_level = d_write_logits[:, :, span]
+            d_read_level = d_read_logits[..., span]
+            d_write_level = d_write_logits[..., span]
             support_offset = routing.support_offsets[index]
 
             if isinstance(level, UnionRouting):
@@ -450,7 +475,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 union_index += 1
                 words = support_words[:, :, support_offset:support_offset + width]
                 _launch_union_bwd(
-                    read_logits[:, :, span], write_logits[:, :, span],
+                    read_logits[..., span], write_logits[..., span],
                     midpoint, words, read_output, write_output,
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
@@ -513,6 +538,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
             device=device,
         )
         empty_launch = n_streams == 0 or tokens == 0
+        heads = _heads(read_logits)
         #: ONE PLANE PER SIDE, sliced into levels. The levels stay separate fp32
         #: `[BH, T, width_l]` tensors -- the contract is unchanged, and each is still a
         #: distinct graph output -- but they now live at their own columns of one
@@ -553,7 +579,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                              (read_logits, write_logits, midpoints, support_words,
                               read_plane, write_plane),
                              width, logit_off=logit_offset, value_off=offset,
-                             midpoint_off=midpoint_offset, support_off=support_offset)
+                             midpoint_off=midpoint_offset, support_off=support_offset, heads=heads)
                 midpoint_offset += width
                 continue
 
@@ -565,10 +591,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
                     plan.add("entmax", level.write_activation.alpha,
                              (write_logits, read_plane, write_plane, support_words), width,
                              logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset)
+                             support_off=support_offset, heads=heads)
                 else:
                     plan.add("softmax", 0.0, (write_logits, read_plane, write_plane), width,
-                             logit_off=logit_offset, value_off=offset)
+                             logit_off=logit_offset, value_off=offset, heads=heads)
                 continue
 
             for activation, source, output in (
@@ -578,10 +604,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 if isinstance(activation, EntmaxActivation):
                     plan.add("entmax", activation.alpha, (source, output, None, support_words),
                              width, logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset)
+                             support_off=support_offset, heads=heads)
                 else:
                     plan.add("softmax", 0.0, (source, output, None), width,
-                             logit_off=logit_offset, value_off=offset)
+                             logit_off=logit_offset, value_off=offset, heads=heads)
 
         plan.issue()
 
@@ -626,8 +652,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
             d_read_output = d_read_output.contiguous()
             d_write_output = d_write_output.contiguous()
             span = routing.level_logit_slice(index)
-            d_read_level = d_read_logits[:, :, span]
-            d_write_level = d_write_logits[:, :, span]
+            d_read_level = d_read_logits[..., span]
+            d_write_level = d_write_logits[..., span]
             support_offset = routing.support_offsets[index]
             words = None if support_offset < 0 else support_words[
                 :, :, support_offset:support_offset + width]
@@ -638,7 +664,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 midpoint = midpoints[:, :, midpoint_offset:midpoint_offset + width]
                 union_index += 1
                 _launch_union_bwd(
-                    read_logits[:, :, span], write_logits[:, :, span],
+                    read_logits[..., span], write_logits[..., span],
                     midpoint, words, read_output, write_output,
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
@@ -819,6 +845,13 @@ def production_routing_factor_levels(
     on CUDA fp32 and to the identical sorted closed form in torch elsewhere;
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.
+
+    LOGITS ARRIVE IN EITHER LAYOUT: flat ``[BH, T, packed_logit_width]``, or the
+    TOKEN-MAJOR ``[B, T, H, packed_logit_width]`` the packed router GEMM writes without
+    a transpose. The OUTPUT layout is the same either way. Only the CUDA solve reads the
+    second one as it lies (it addresses ``b`` and ``h`` as two strides); the torch
+    lowering flattens it first, which is the transpose this seam exists to avoid paying
+    on the shipped path and does not mind paying on the oracle's.
     """
     if not isinstance(routing, ResolvedRouting):
         raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
@@ -826,20 +859,35 @@ def production_routing_factor_levels(
         raise ValueError(
             "read/write logits must have identical shapes, got "
             f"{read_logits.shape} and {write_logits.shape}")
-    if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
+    if read_logits.ndim not in (3, 4) or read_logits.shape[-1] != routing.packed_logit_width:
         raise ValueError(
-            "routing logits must be [BH, T, packed_logit_width] with packed_logit_width="
+            "routing logits must be [BH, T, packed_logit_width] or "
+            f"[B, T, H, packed_logit_width] with packed_logit_width="
             f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
     if read_logits.device != write_logits.device or read_logits.dtype != write_logits.dtype:
         raise ValueError("read/write logits must share one device and dtype")
 
     if read_logits.is_cuda and read_logits.dtype == torch.float32:
         #: NOT `.contiguous()`: every solve entry below reads the logits through an
-        #: explicit stride triple, so a packed projection's half-slice is addressable
-        #: as it stands and materializing it is a whole extra pass over the side.
+        #: explicit stride tuple, so a packed projection's half-slice -- and its head
+        #: axis -- are addressable as they stand, and materializing either is a whole
+        #: extra pass over the side.
         outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing)
         return tuple(outputs[:routing.D]), tuple(outputs[routing.D:])
-    return _torch_routing_factor_levels(read_logits, write_logits, routing)
+    return _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
+
+
+def _flat(logits: torch.Tensor) -> torch.Tensor:
+    """Token-major ``[B, T, H, W]`` as the flat ``[BH, T, W]`` plane, or itself.
+
+    This IS the transpose the token-major layout exists to avoid; it is here because the
+    torch lowering has no stride tuple to read the head axis through, and it runs on the
+    fp64 oracle path where a pass over the plane is not the cost that matters.
+    """
+    if logits.ndim != 4:
+        return logits
+    return logits.permute(0, 2, 1, 3).reshape(
+        logits.shape[0] * logits.shape[2], logits.shape[1], logits.shape[3])
 
 
 def production_routing_factors(

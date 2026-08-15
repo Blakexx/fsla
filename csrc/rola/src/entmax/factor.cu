@@ -33,7 +33,7 @@ namespace detail {
 template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forward_kernel(
     const float* __restrict__ logits, const bool* __restrict__ mask, OutT* __restrict__ values,
-    OutT* __restrict__ values_second, int32_t* __restrict__ support_words, int tokens,
+    OutT* __restrict__ values_second, int32_t* __restrict__ support_words, int tokens, int heads,
     LevelTable table, Strides sz, Strides smask, Strides sv, Strides sv2, Strides ssup) {
   constexpr int W_PAD = LW * IPT;
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
@@ -73,6 +73,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -97,12 +111,12 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
       const int col = lane + i * LW;
       const bool in_width = col < width;
       const bool valid =
-          in_width && (mask == nullptr || mask[addr(smask, stream, token, logit_base + col)]);
+          in_width && (mask == nullptr || mask[addr_split(smask, sb, sh, token, logit_base + col)]);
       if (valid) {
         valid_mask |= (1u << i);
         ++local_valid;
       }
-      z[i] = valid ? logits[addr(sz, stream, token, logit_base + col)] : 0.0f;
+      z[i] = valid ? logits[addr_split(sz, sb, sh, token, logit_base + col)] : 0.0f;
     }
     //: A masked row can be EMPTY, so the member count is a per-row reduction and not
     //: `width`; `production_factor`'s empty-row autograd contract is exactly this case.
@@ -247,7 +261,7 @@ template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backward_kernel(
     const OutT* __restrict__ values, const int32_t* __restrict__ support_words,
     const bool* __restrict__ mask, const OutT* __restrict__ d_values,
-    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens,
+    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens, int heads,
     bool accumulate, LevelTable table, Strides sv, Strides ssup, Strides smask, Strides sdv,
     Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
@@ -261,6 +275,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -278,7 +306,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
       const bool valid =
-          (col < width) && (mask == nullptr || mask[addr(smask, stream, token, logit_base + col)]);
+          (col < width)
+          && (mask == nullptr || mask[addr_split(smask, sb, sh, token, logit_base + col)]);
       const uint32_t wword =
           (col < width) ? (uint32_t)support_words[stream * ssup.stream + (int64_t)word * ssup.token
                                                   + (support_base + col) * ssup.col]
@@ -313,7 +342,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
           dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
         dz = s * (dp - shift);
       }
-      float* out = d_logits + addr(sdz, stream, token, logit_base + col);
+      float* out = d_logits + addr_split(sdz, sb, sh, token, logit_base + col);
       if (accumulate)
         atomicAdd(out, dz);
       else
@@ -328,7 +357,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
 template <int LW, int IPT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forward_kernel(
     const float* __restrict__ logits, OutT* __restrict__ values, OutT* __restrict__ values_second,
-    int tokens, LevelTable table, Strides sz, Strides sv, Strides sv2) {
+    int tokens, int heads, LevelTable table, Strides sz, Strides sv, Strides sv2) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
   using WarpRedF = cub::WarpReduce<float, LW>;
@@ -340,6 +369,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -355,7 +398,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
-      e[i] = (col < width) ? logits[addr(sz, stream, token, logit_base + col)] : -INFINITY;
+      e[i] = (col < width) ? logits[addr_split(sz, sb, sh, token, logit_base + col)] : -INFINITY;
       local_max = fmaxf(local_max, e[i]);
     }
     float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
@@ -385,7 +428,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
 template <int LW, int IPT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_backward_kernel(
     const OutT* __restrict__ values, const OutT* __restrict__ d_values,
-    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens,
+    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens, int heads,
     bool accumulate, LevelTable table, Strides sv, Strides sdv, Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
@@ -398,6 +441,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -431,7 +488,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
       if (d_values_second != nullptr)
         dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
       const float dz = p * (dp - dot);
-      float* out = d_logits + addr(sdz, stream, token, logit_base + col);
+      float* out = d_logits + addr_split(sdz, sb, sh, token, logit_base + col);
       if (accumulate)
         atomicAdd(out, dz);
       else
@@ -449,8 +506,11 @@ template <typename OutT>
 void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tensor>& mask,
                            torch::Tensor& values, const c10::optional<torch::Tensor>& values_second,
                            torch::Tensor& support, const LevelTable& table, int levels, int klass,
-                           double alpha) {
-  const int n_streams = logits.size(0), tokens = logits.size(1);
+                           int heads, double alpha) {
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
@@ -462,9 +522,9 @@ void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torc
           factor_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
                   logits.data_ptr<float>(), ptr_or_null<const bool>(mask), (OutT*)values.data_ptr(),
-                  ptr_or_null<OutT>(values_second), support.data_ptr<int32_t>(), tokens, table,
-                  five(logits), five_or_zero(mask), five(values), five_or_zero(values_second),
-                  five(support));
+                  ptr_or_null<OutT>(values_second), support.data_ptr<int32_t>(), tokens, heads,
+                  table, five_logits(logits, heads), five_or_zero(mask), five(values),
+                  five_or_zero(values_second), five(support));
         });
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -475,8 +535,11 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
                             const c10::optional<torch::Tensor>& mask, const torch::Tensor& d_values,
                             const c10::optional<torch::Tensor>& d_values_second,
                             torch::Tensor& d_logits, const LevelTable& table, int levels, int klass,
-                            bool accumulate, double alpha) {
-  const int n_streams = d_logits.size(0), tokens = d_logits.size(1);
+                            int heads, bool accumulate, double alpha) {
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
@@ -490,8 +553,8 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
                   (const OutT*)values.data_ptr(), support.data_ptr<int32_t>(),
                   ptr_or_null<const bool>(mask), (const OutT*)d_values.data_ptr(),
                   ptr_or_null<const OutT>(d_values_second), d_logits.data_ptr<float>(), tokens,
-                  accumulate, table, five(values), five(support), five_or_zero(mask),
-                  five(d_values), five_or_zero(d_values_second), five(d_logits));
+                  heads, accumulate, table, five(values), five(support), five_or_zero(mask),
+                  five(d_values), five_or_zero(d_values_second), five_logits(d_logits, heads));
         });
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -500,8 +563,11 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
 template <typename OutT>
 void launch_softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                             const c10::optional<torch::Tensor>& values_second,
-                            const LevelTable& table, int levels, int klass) {
-  const int n_streams = logits.size(0), tokens = logits.size(1);
+                            const LevelTable& table, int levels, int klass, int heads) {
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
@@ -511,8 +577,8 @@ void launch_softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         softmax_forward_kernel<kLaneWidth, kItemsPerThread, OutT>
             <<<grid, BLOCK_THREADS, 0, stream>>>(logits.data_ptr<float>(), (OutT*)values.data_ptr(),
-                                                 ptr_or_null<OutT>(values_second), tokens, table,
-                                                 five(logits), five(values),
+                                                 ptr_or_null<OutT>(values_second), tokens, heads,
+                                                 table, five_logits(logits, heads), five(values),
                                                  five_or_zero(values_second));
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -522,8 +588,11 @@ template <typename OutT>
 void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values,
                              const c10::optional<torch::Tensor>& d_values_second,
                              torch::Tensor& d_logits, const LevelTable& table, int levels,
-                             int klass, bool accumulate) {
-  const int n_streams = d_logits.size(0), tokens = d_logits.size(1);
+                             int klass, int heads, bool accumulate) {
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
@@ -534,9 +603,9 @@ void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d
         softmax_backward_kernel<kLaneWidth, kItemsPerThread, OutT>
             <<<grid, BLOCK_THREADS, 0, stream>>>(
                 (const OutT*)values.data_ptr(), (const OutT*)d_values.data_ptr(),
-                ptr_or_null<const OutT>(d_values_second), d_logits.data_ptr<float>(), tokens,
+                ptr_or_null<const OutT>(d_values_second), d_logits.data_ptr<float>(), tokens, heads,
                 accumulate, table, five(values), five(d_values), five_or_zero(d_values_second),
-                five(d_logits));
+                five_logits(d_logits, heads));
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -555,7 +624,7 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
                     torch::Tensor& support_words, const std::vector<int64_t>& logit_offsets,
                     const std::vector<int64_t>& value_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                    double alpha) {
+                    int64_t heads, double alpha) {
   TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == torch::kFloat32,
               "independent entmax requires fp32 CUDA logits");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
@@ -567,10 +636,11 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
   const at::cuda::CUDAGuard guard(logits.device());
   if (values.scalar_type() == torch::kFloat32)
     detail::launch_factor_forward<float>(logits, mask, values, values_second, support_words, table,
-                                         (int)widths.size(), klass, alpha);
+                                         (int)widths.size(), klass, (int)heads, alpha);
   else
     detail::launch_factor_forward<__nv_bfloat16>(logits, mask, values, values_second, support_words,
-                                                 table, (int)widths.size(), klass, alpha);
+                                                 table, (int)widths.size(), klass, (int)heads,
+                                                 alpha);
 }
 
 void factor_backward(const torch::Tensor& values, const torch::Tensor& support_words,
@@ -579,7 +649,8 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
                      const std::vector<int64_t>& logit_offsets,
                      const std::vector<int64_t>& value_offsets,
                      const std::vector<int64_t>& support_offsets,
-                     const std::vector<int64_t>& widths, bool accumulate, double alpha) {
+                     const std::vector<int64_t>& widths, bool accumulate, int64_t heads,
+                     double alpha) {
   TORCH_CHECK(d_logits.is_cuda() && d_logits.scalar_type() == torch::kFloat32,
               "independent entmax backward writes fp32 CUDA logit gradients");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
@@ -593,19 +664,19 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
   const at::cuda::CUDAGuard guard(d_logits.device());
   if (values.scalar_type() == torch::kFloat32)
     detail::launch_factor_backward<float>(values, support_words, mask, d_values, d_values_second,
-                                          d_logits, table, (int)widths.size(), klass, accumulate,
-                                          alpha);
+                                          d_logits, table, (int)widths.size(), klass, (int)heads,
+                                          accumulate, alpha);
   else
-    detail::launch_factor_backward<__nv_bfloat16>(values, support_words, mask, d_values,
-                                                  d_values_second, d_logits, table,
-                                                  (int)widths.size(), klass, accumulate, alpha);
+    detail::launch_factor_backward<__nv_bfloat16>(
+        values, support_words, mask, d_values, d_values_second, d_logits, table, (int)widths.size(),
+        klass, (int)heads, accumulate, alpha);
 }
 
 void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                      const c10::optional<torch::Tensor>& values_second,
                      const std::vector<int64_t>& logit_offsets,
-                     const std::vector<int64_t>& value_offsets,
-                     const std::vector<int64_t>& widths) {
+                     const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
+                     int64_t heads) {
   TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == torch::kFloat32,
               "softmax routing requires fp32 CUDA logits");
   detail::check_values(values, values_second);
@@ -614,17 +685,17 @@ void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
   const at::cuda::CUDAGuard guard(logits.device());
   if (values.scalar_type() == torch::kFloat32)
     detail::launch_softmax_forward<float>(logits, values, values_second, table, (int)widths.size(),
-                                          klass);
+                                          klass, (int)heads);
   else
     detail::launch_softmax_forward<__nv_bfloat16>(logits, values, values_second, table,
-                                                  (int)widths.size(), klass);
+                                                  (int)widths.size(), klass, (int)heads);
 }
 
 void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values,
                       const c10::optional<torch::Tensor>& d_values_second, torch::Tensor& d_logits,
                       const std::vector<int64_t>& logit_offsets,
                       const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
-                      bool accumulate) {
+                      bool accumulate, int64_t heads) {
   TORCH_CHECK(d_logits.is_cuda() && d_logits.scalar_type() == torch::kFloat32,
               "softmax routing backward writes fp32 CUDA logit gradients");
   detail::check_values(values, d_values_second);
@@ -635,10 +706,11 @@ void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values
   const at::cuda::CUDAGuard guard(d_logits.device());
   if (values.scalar_type() == torch::kFloat32)
     detail::launch_softmax_backward<float>(values, d_values, d_values_second, d_logits, table,
-                                           (int)widths.size(), klass, accumulate);
+                                           (int)widths.size(), klass, (int)heads, accumulate);
   else
     detail::launch_softmax_backward<__nv_bfloat16>(values, d_values, d_values_second, d_logits,
-                                                   table, (int)widths.size(), klass, accumulate);
+                                                   table, (int)widths.size(), klass, (int)heads,
+                                                   accumulate);
 }
 
 }  // namespace entmax

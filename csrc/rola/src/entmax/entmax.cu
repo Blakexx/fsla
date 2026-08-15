@@ -60,8 +60,9 @@ template <int LW, int IPT, bool ALPHA15, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forward_kernel(
     const float* __restrict__ read_logits, const float* __restrict__ write_logits,
     float* __restrict__ midpoint_values, int32_t* __restrict__ support_words,
-    OutT* __restrict__ read_values, OutT* __restrict__ write_values, int tokens, LevelTable table,
-    Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite, Strides ssup) {
+    OutT* __restrict__ read_values, OutT* __restrict__ write_values, int tokens, int heads,
+    LevelTable table, Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
+    Strides ssup) {
   constexpr int W_PAD = LW * IPT;
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
@@ -102,6 +103,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -127,8 +142,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
       const bool valid = col < width;
-      const float r = valid ? read_logits[addr(sr, stream, token, logit_base + col)] : 0.0f;
-      const float w = valid ? write_logits[addr(sw, stream, token, logit_base + col)] : 0.0f;
+      const float r = valid ? read_logits[addr_split(sr, sb, sh, token, logit_base + col)] : 0.0f;
+      const float w = valid ? write_logits[addr_split(sw, sb, sh, token, logit_base + col)] : 0.0f;
       midpoint[i] = 0.5f * r + 0.5f * w;
       bool sat = false;
       delta[i] = overflow_free_delta(r, w, &sat);
@@ -313,7 +328,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
     const float* __restrict__ midpoint_values, const int32_t* __restrict__ support_words,
     const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
     const OutT* __restrict__ d_read, const OutT* __restrict__ d_write,
-    float* __restrict__ d_read_logits, float* __restrict__ d_write_logits, int tokens,
+    float* __restrict__ d_read_logits, float* __restrict__ d_write_logits, int tokens, int heads,
     LevelTable table, Strides sr, Strides sw, Strides smid, Strides srv, Strides swv, Strides sdr,
     Strides sdw, Strides sdrl, Strides sdwl, Strides ssup) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
@@ -330,6 +345,20 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+  //: and it spilled the family. `heads == 0` means no split at all.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+  //: cheap to rematerialize. 4 spilling instantiations became 56.
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int stream32 = (int)blockIdx.y;
+  const int64_t sb = stream32 / heads;
+  const int64_t sh = stream32 - (int)sb * heads;
   const int level = blockIdx.z;
   const int width = table.width[level];
   const int64_t logit_base = table.logit_off[level];
@@ -380,8 +409,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const float dw =
           valid ? load_value(d_write, addr(sdw, stream, token, value_base + col)) : 0.0f;
       const float dlw = wv * (dw - dot);
-      const float r = valid ? read_logits[addr(sr, stream, token, logit_base + col)] : 0.0f;
-      const float w = valid ? write_logits[addr(sw, stream, token, logit_base + col)] : 0.0f;
+      const float r = valid ? read_logits[addr_split(sr, sb, sh, token, logit_base + col)] : 0.0f;
+      const float w = valid ? write_logits[addr_split(sw, sb, sh, token, logit_base + col)] : 0.0f;
       bool sat = false;
       const float delta = overflow_free_delta(r, w, &sat);
       if (sat) saturated_mask |= (1u << i);
@@ -418,8 +447,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const float mid = midpoint_values[addr(smid, stream, token, midpoint_base + col)];
       const float si = sup ? (ALPHA15 ? sqrtf(mid) : 1.0f) : 0.0f;
       const float d_ml = si * (d_mid[i] - num / den);
-      d_read_logits[addr(sdrl, stream, token, logit_base + col)] = 0.5f * d_ml + d_delta[i];
-      d_write_logits[addr(sdwl, stream, token, logit_base + col)] = 0.5f * d_ml - d_delta[i];
+      d_read_logits[addr_split(sdrl, sb, sh, token, logit_base + col)] = 0.5f * d_ml + d_delta[i];
+      d_write_logits[addr_split(sdwl, sb, sh, token, logit_base + col)] = 0.5f * d_ml - d_delta[i];
     }
   }
 }
@@ -432,8 +461,11 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 template <typename OutT>
 void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Tensor& mid,
                     torch::Tensor& sup, torch::Tensor& rv, torch::Tensor& wv,
-                    const LevelTable& table, int levels, int w_pad, double alpha) {
-  const int n_streams = rl.size(0), tokens = rl.size(1);
+                    const LevelTable& table, int levels, int w_pad, int heads, double alpha) {
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = rl.size(0) * heads, tokens = rl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   const bool a15 = alpha == 1.5;
@@ -452,7 +484,8 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
               <<<grid, BLOCK_THREADS, 0, stream>>>(
                   rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
                   sup.data_ptr<int32_t>(), (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens,
-                  table, five(rl), five(wl), five(mid), five(rv), five(wv), five(sup));
+                  heads, table, five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv),
+                  five(wv), five(sup));
         });
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -462,9 +495,12 @@ template <typename OutT>
 void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const torch::Tensor& mid,
                      const torch::Tensor& sup, const torch::Tensor& rv, const torch::Tensor& wv,
                      const torch::Tensor& dr, const torch::Tensor& dw, torch::Tensor& drl,
-                     torch::Tensor& dwl, const LevelTable& table, int levels, int w_pad,
+                     torch::Tensor& dwl, const LevelTable& table, int levels, int w_pad, int heads,
                      double alpha) {
-  const int n_streams = drl.size(0), tokens = drl.size(1);
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+  //: a flat plane declares `heads == 1` and the same product is `size(0)`
+  //: -- docs/internals/entmax/entmax.md#stream-split
+  const int n_streams = drl.size(0) * heads, tokens = drl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   const bool a15 = alpha == 1.5;
@@ -480,8 +516,9 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
                   rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
                   sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
                   (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), drl.data_ptr<float>(),
-                  dwl.data_ptr<float>(), tokens, table, five(rl), five(wl), five(mid), five(rv),
-                  five(wv), five(dr), five(dw), five(drl), five(dwl), five(sup));
+                  dwl.data_ptr<float>(), tokens, heads, table, five_logits(rl, heads),
+                  five_logits(wl, heads), five(mid), five(rv), five(wv), five(dr), five(dw),
+                  five_logits(drl, heads), five_logits(dwl, heads), five(sup));
         });
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -496,7 +533,7 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
                    const std::vector<int64_t>& value_offsets,
                    const std::vector<int64_t>& midpoint_offsets,
                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                   double alpha) {
+                   int64_t heads, double alpha) {
   TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
               "union entmax requires fp32 CUDA logits");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
@@ -508,10 +545,12 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
   const at::cuda::CUDAGuard guard(read_logits.device());
   if (read_values.scalar_type() == torch::kFloat32)
     detail::launch_forward<float>(read_logits, write_logits, midpoint_values, support_words,
-                                  read_values, write_values, table, levels, w_pad, alpha);
+                                  read_values, write_values, table, levels, w_pad, (int)heads,
+                                  alpha);
   else if (read_values.scalar_type() == torch::kBFloat16)
     detail::launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
-                                          read_values, write_values, table, levels, w_pad, alpha);
+                                          read_values, write_values, table, levels, w_pad,
+                                          (int)heads, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }
@@ -525,7 +564,7 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
                     const std::vector<int64_t>& value_offsets,
                     const std::vector<int64_t>& midpoint_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                    double alpha) {
+                    int64_t heads, double alpha) {
   TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
               "union entmax backward requires fp32 CUDA logits");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
@@ -536,11 +575,11 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
   if (read_values.scalar_type() == torch::kFloat32)
     detail::launch_backward<float>(read_logits, write_logits, midpoint_values, support_words,
                                    read_values, write_values, d_read, d_write, d_read_logits,
-                                   d_write_logits, table, levels, w_pad, alpha);
+                                   d_write_logits, table, levels, w_pad, (int)heads, alpha);
   else if (read_values.scalar_type() == torch::kBFloat16)
     detail::launch_backward<__nv_bfloat16>(
         read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
-        d_read, d_write, d_read_logits, d_write_logits, table, levels, w_pad, alpha);
+        d_read, d_write, d_read_logits, d_write_logits, table, levels, w_pad, (int)heads, alpha);
   else
     TORCH_CHECK(false, "route values must be fp32 or bf16");
 }

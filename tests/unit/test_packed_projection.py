@@ -154,3 +154,78 @@ def test_uniform_tie_state_returns_read_write_views_of_one_projection(untied_lev
     read_logits, write_logits = packed_router_logits(h, route_W, routing)
     if not untied_levels:
         assert read_logits.untyped_storage().data_ptr() == write_logits.untyped_storage().data_ptr()
+
+
+@pytest.mark.parametrize("untied_levels", [(), (0,), (0, 1, 2)])
+@pytest.mark.parametrize("with_bias", [False, True])
+@pytest.mark.parametrize("split_stream", [False, True])
+def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(
+        untied_levels, with_bias, split_stream):
+    """P73 S5: `token_major=True` returns `[B, T, H, W]` instead of `[B*H, T, W]`.
+
+    TWO claims, and they are separate. **The numbers are the same bytes**: a column of
+    the output is a dot product over the full hidden dim, so it cannot depend on where
+    the column is written -- `torch.equal`, not a tolerance, because a tolerance here
+    would hide a real arithmetic change behind an "acceptable" one and this seam's whole
+    licence is that it moves no number (`test_projection_tf32_support_gate.py` exists
+    because a previous change to this GEMM's arithmetic flipped 14-95 entmax support
+    entries).
+
+    **And the token-major form is a VIEW of one GEMM**: it is contiguous, where the flat
+    form needs a transpose of the whole plane to make `(B, H)` one axis. That is the
+    0.085 ms this layout exists to delete, and asserting contiguity is what keeps a
+    future edit from silently reintroducing the copy while still returning the right
+    numbers.
+
+    Swept over the three tie states (which decide whether the two sides are one GEMM,
+    two, or a concatenation), the bias (a different broadcast per layout), and the split
+    read/write stream.
+    """
+    from rola.routing.projection import _packed_router_logits
+
+    torch.manual_seed(23)
+    heads, batch, tokens, hidden = 3, 2, 5, 4
+    routing = _routing_for_untied(3, untied_levels, 2)
+    h = torch.randn(batch, tokens, hidden)
+    h_w = torch.randn(batch, tokens, hidden) if split_stream else None
+    route_W = torch.randn(heads, hidden, routing.packed_router_width)
+    route_bias = torch.randn(heads, routing.packed_router_width) if with_bias else None
+
+    def project(token_major):
+        return _packed_router_logits(
+            h, route_W, routing, route_bias=route_bias, h_w=h_w,
+            projection_dtype=torch.float32, token_major=token_major)
+
+    flat = project(False)
+    major = project(True)
+    for side, (flat_side, major_side) in enumerate(zip(flat, major)):
+        assert major_side.shape == (batch, tokens, heads, routing.packed_logit_width), (
+            f"side {side}: token-major must be [B, T, H, W], got {tuple(major_side.shape)}")
+        folded = major_side.permute(0, 2, 1, 3).reshape(
+            batch * heads, tokens, routing.packed_logit_width)
+        assert torch.equal(folded, flat_side), (
+            f"side {side}: the two layouts disagree in "
+            f"{int((folded != flat_side).sum())} of {flat_side.numel()} entries. They are "
+            "the same dot products written to different addresses; any difference is a "
+            "real arithmetic change, and the entmax support boundary is a threshold on "
+            "these numbers.")
+
+    #: THE SECOND CLAIM, asserted where it is unambiguous. A fully tied plan is ONE GEMM
+    #: with no slicing afterwards, so "token-major is the GEMM's own output" means
+    #: exactly contiguity there. The untied plans hand back HALF-SLICES of one GEMM,
+    #: which are non-contiguous by construction and were already established as free to
+    #: read (P73 S4): the solve takes them through its stride tuple.
+    if not untied_levels:
+        for side, major_side in enumerate(major):
+            assert major_side.is_contiguous(), (
+                f"side {side}: a fully tied plan's token-major projection must BE the "
+                "GEMM's output; a non-contiguous one means the copy this layout exists "
+                "to delete is back")
+    #: And whatever the flat form shares between its two sides, the token-major form
+    #: shares too -- so the layout change materialized nothing the flat one did not.
+    def one_storage(sides):
+        return sides[0].untyped_storage().data_ptr() == sides[1].untyped_storage().data_ptr()
+
+    assert one_storage(major) == one_storage(flat), (
+        "the token-major layout changed which sides share a storage, so it materialized "
+        "something the flat layout did not")

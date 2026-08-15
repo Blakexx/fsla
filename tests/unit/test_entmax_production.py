@@ -704,7 +704,7 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     values = torch.zeros(BH, T, 68, device="cuda")
     with pytest.raises(RuntimeError, match="one width class"):
         extension().routing_softmax_forward(
-            torch.randn(BH, T, 68, device="cuda"), values, None, [0, 4], [0, 4], [4, 64])
+            torch.randn(BH, T, 68, device="cuda"), values, None, [0, 4], [0, 4], [4, 64], 1)
 
 
 
