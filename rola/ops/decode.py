@@ -73,9 +73,9 @@ from dataclasses import dataclass, field
 
 import torch
 
-from rola.internal.decay import leaf_rate_dials
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
+from rola.ops.decay import leaf_rate_dials
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import Topology
 

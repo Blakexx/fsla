@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.layers.rola import RoLA
+from rola.layer import RoLA
 from rola.routing.side_gain import GainConfig, SideGain, project_side_gains
 
 _H, _DV = 2, 32

@@ -279,7 +279,7 @@ _ALLOWED_TO_NAME_ACTIVATIONS = {
     "routing/entmax/production.py",
     "routing/entmax/reference.py",
     # The layer translates the PUBLIC 'dense'/'sparse' vocabulary into activations.
-    "layers/rola.py",
+    "layer.py",
     # The calibration AUDITOR constructs fixture topologies to price cells with. It is
     # not a runtime rule -- nothing under `rola/` imports it at module scope and it is
     # reached only by the bench and the planner gates -- and it names ONE activation

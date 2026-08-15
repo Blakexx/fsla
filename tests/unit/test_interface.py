@@ -57,7 +57,7 @@ def test_the_predicate_ignores_non_tensors_rather_than_guessing():
 def test_the_layer_and_the_op_ask_the_same_question():
     """One predicate, or the two surfaces drift into two slightly different answers.
     Asserted structurally -- the layer imports it -- not by comparing behaviours."""
-    import rola.layers.rola as layer_module
+    import rola.layer as layer_module
 
     assert layer_module.requires_backward is requires_backward
     assert layer_module.operands_of is operands_of

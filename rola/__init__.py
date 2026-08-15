@@ -45,7 +45,7 @@ __version__ = "0.1.0.dev0"
 #: name the function was shadowing): docs/internals/state.md
 from rola._state import RoLAState, state
 from rola.interface import rola_op
-from rola.layers.rola import RoLA
+from rola.layer import RoLA
 from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from rola.routing.factors import RouteFactors, RouteGateway

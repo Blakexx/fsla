@@ -434,7 +434,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "import sys;"
             # Everything the CUDA prefill path resolves, imported by name.
             "import rola;"
-            "from rola.layers.rola import RoLA;"
+            "from rola.layer import RoLA;"
             "from rola.interface import rola_op, require_envelope;"
             "from rola.ops.chunk import CHUNK_TOKENS, run, stats, unsupported;"
             "from rola.ops.decode import freeze_decode_config;"

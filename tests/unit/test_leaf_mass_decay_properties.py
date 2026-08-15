@@ -33,7 +33,7 @@ Covered:
       state-continuation *is* that composition (the recurrence is affine in
       ``M``, spec §2's "no delta correction" consequence);
     - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
-      consumes: ``rola.internal.decay.leaf_rate_dials`` casts to fp32, where a
+      consumes: ``rola.ops.decay.leaf_rate_dials`` casts to fp32, where a
       value strictly below 1 in fp64 can round to exactly ``1.0f``.
 """
 
@@ -42,7 +42,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.internal.decay import leaf_rate_dials
+from rola.ops.decay import leaf_rate_dials
 from rola.ops.naive import _leaf_product, naive_rola
 from rola.routing.types import (
     IndependentRouting,
@@ -423,7 +423,7 @@ def test_affine_composition_algebra_matches_direct_recurrence():
 
 # ---------------------------------------------------------------------------
 # 7. The dial invariant AT THE CAST BOUNDARY the kernel reads it across
-#     (`rola.internal.decay.leaf_rate_dials`; docs/internals/decode.md)
+#     (`rola.ops.decay.leaf_rate_dials`; docs/internals/decode.md)
 # ---------------------------------------------------------------------------
 
 
