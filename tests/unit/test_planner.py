@@ -41,11 +41,9 @@ from rola.planner.schedule import (
     MMA_K_QUANTUM,
     LevelSupportStats,
     Plan,
-    StaticDensity,
     build_clock_stream,
     build_plan,
     build_schedule,
-    leaf_rate_dials,
     owner_geometry,
     permuted_topology,
     plan_and_schedule,
@@ -55,6 +53,7 @@ from rola.planner.schedule import (
     spanned_moduli,
     unpack_bits,
 )
+from rola.routing.density import StaticDensity
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -879,44 +878,6 @@ def test_owners_match_oracle_set_and_order_nondyadic_weight(combo):
 
 
 # ---------------------------------------------------------------------------
-# 12. LeafMassDecay dial cast-boundary re-validation (review fix pass, B1)
-# ---------------------------------------------------------------------------
-
-
-def test_leaf_rate_dials_rejects_fp64_dial_that_rounds_to_1_0f():
-    """B1 cliff, reject side: an fp64 dial in ``[1 - 3e-8, 1)`` passes
-    ``LeafMassDecay``'s own-dtype check (strictly ``< 1`` in fp64) but rounds to
-    exactly ``1.0f`` under the ``.to(torch.float32)`` cast the kernel consumes,
-    which NaNs the kernel (``log1pf(-1.0f) = -inf``, then ``expf(0 * -inf)`` for
-    any leaf with a zero clock). ``leaf_rate_dials``'s cast-boundary re-check
-    must reject it loudly rather than let it through to the kernel."""
-    widths = (4, 4)
-    topology = _topology(widths, d_v=4)
-    dial_val = 1.0 - 1e-9  # strictly < 1 in fp64
-    assert float(torch.tensor(dial_val, dtype=torch.float64).float()) == 1.0, (
-        "fixture assumption broken: this fp64 value no longer rounds to 1.0f")
-    dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
-    decay = LeafMassDecay(dials=dials)  # passes the fp64 __post_init__ check
-    with pytest.raises(ValueError, match="1\\.0f"):
-        leaf_rate_dials(decay, topology)
-
-
-def test_leaf_rate_dials_accepts_fp64_dial_that_survives_the_cast():
-    """B1 cliff, survive side: a dial far enough from 1 (``1 - 1e-6``) rounds to
-    a value strictly less than ``1.0f``, so the cast-boundary check must not
-    raise, and the flattened dial tensor must be usable by the kernel."""
-    widths = (4, 4)
-    topology = _topology(widths, d_v=4)
-    dial_val = 1.0 - 1e-6
-    assert float(torch.tensor(dial_val, dtype=torch.float64).float()) < 1.0, (
-        "fixture assumption broken: this fp64 value no longer survives the fp32 cast")
-    dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
-    decay = LeafMassDecay(dials=dials)
-    flat = leaf_rate_dials(decay, topology)
-    assert torch.all(flat < 1.0)
-
-
-# ---------------------------------------------------------------------------
 # 13. build_clock_stream: stored != 0 => live != 0 (review fix pass, B2)
 # ---------------------------------------------------------------------------
 
@@ -981,7 +942,6 @@ def test_panel_exponent_bound_is_an_upper_bound_and_scales_as_derived():
         build_clock_stream,
         panel_exponent_bound,
     )
-    from rola.routing.types import LeafMassDecay
 
     widths, BC, T, H = (4, 4), 16, 32, 1
     topology = _topology(widths, d_v=32)

@@ -28,6 +28,7 @@ from math import prod
 
 import torch
 
+from rola.internal.decay import leaf_rate_dials
 from rola.ops.constants import READOUT_EPS
 from rola.planner.schedule import (
     DEFAULT_SM_SHARED_BYTES,
@@ -37,7 +38,6 @@ from rola.planner.schedule import (
     Schedule,
     build_clock_stream,
     build_schedule,
-    leaf_rate_dials,
     panel_exponent_bound,
     select_window,
 )

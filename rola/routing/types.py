@@ -742,7 +742,7 @@ class LeafMassDecay:
     here yet rounds to exactly ``1.0f`` on cast, which NaNs the kernel
     (``log1pf(-1.0f) = -inf``, then ``expf(0 * -inf)``). The invariant is
     re-checked in fp32 at the cast boundary in
-    ``routing/schedule_v3.py::leaf_rate_dials`` -- that second check, not this
+    ``rola/internal/decay.py::leaf_rate_dials`` -- that second check, not this
     one, is what the kernel's correctness actually depends on.
     """
 

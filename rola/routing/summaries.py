@@ -402,7 +402,7 @@ def summarize_routing_reference(read_mask: tuple[torch.Tensor, ...],
                                 debug: bool | None = None) -> RoutingSummaries:
     """§4.2's struct, with ONE D2H transfer and no other host synchronization.
 
-    ``density`` is the configuration's :class:`~rola.planner.schedule.StaticDensity`
+    ``density`` is the configuration's :class:`~rola.routing.density.StaticDensity`
     declaration; when it is supplied AND debug assertions are on, the declaration is
     checked against the realized occupancy this pass has already reduced (see below).
     ``debug`` defaults to the ``ROLA_DEBUG_ASSERTS`` environment switch.

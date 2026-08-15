@@ -33,10 +33,10 @@ from rola.planner.calibration.census import resolve_census, tile_union_census
 from rola.planner.schedule import (
     MMA_K_QUANTUM,
     RoutingViews,
-    StaticDensity,
     owner_geometry,
     routing_views,
 )
+from rola.routing.density import StaticDensity
 from rola.routing.types import Topology
 
 #: The ONE granularity these statistics are taken at: the group quantum

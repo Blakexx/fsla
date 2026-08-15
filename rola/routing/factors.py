@@ -45,8 +45,8 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 
-from rola.planner.schedule import StaticDensity, _fold_bth
 from rola.routing.budget import exact_support_count, touched_bitset_update
+from rola.routing.density import StaticDensity
 from rola.routing.producer import RouteSource
 from rola.routing.side_gain import GainConfig, init_side_gain_bias, project_side_gains
 from rola.routing.types import (
@@ -77,7 +77,7 @@ class RouteFactors:
     already knows them supplies them and no launch happens at all.
     ``density``: which cells are full-support by construction, for PRICING only --
     the schedule the kernel executes is built from the realized masks and never reads
-    it (:class:`~rola.planner.schedule.StaticDensity`).
+    it (:class:`~rola.routing.density.StaticDensity`).
 
     Obtain one from :class:`RouteProducer`. Constructing it directly is refused: a
     bundle whose fields did not come from the derivation code is a bundle whose
@@ -404,6 +404,17 @@ def _scattered_tags(producers, slots) -> tuple:
             tags[level] = (declared[local] if isinstance(declared, tuple) and local < len(declared)
                            else OpaqueRouting())
     return tuple(tags[level] for level in sorted(tags))
+
+
+def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
+    """``[B, T, H, *] -> [B*H, T, *]`` (the convention every routing module uses).
+
+    Held here rather than imported, on :func:`~rola.routing.summaries._pack_leaf_bitmap`'s
+    precedent: the routing side must not import the planner, and three lines of permute
+    arithmetic with a gate on each side is the cheaper of the two couplings.
+    """
+    return tensor.permute(0, 2, 1, 3).reshape(
+        tensor.shape[0] * tensor.shape[2], tensor.shape[1], *tensor.shape[3:])
 
 
 def _declared_density(topology: Topology, producers, slots) -> StaticDensity:

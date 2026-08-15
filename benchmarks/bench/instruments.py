@@ -279,7 +279,8 @@ def gather_stats(cell: Cell, fx=None, max_owners=48):
 
 def _decay_preamble_ms(cell, fx, decay_temp, reps=9):
     """Median cost of the decay arm's per-call preamble, on this fixture."""
-    from rola.planner.schedule import build_clock_stream, leaf_rate_dials, panel_exponent_bound
+    from rola.internal.decay import leaf_rate_dials
+    from rola.planner.schedule import build_clock_stream, panel_exponent_bound
     decay = LeafMassDecay(dials=fx["dials"][decay_temp])
     plan, _ = cell.plan(norm="global", decay_on=True,
                         fx=fx)

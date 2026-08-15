@@ -31,11 +31,11 @@ from rola.planner.derive import MachineFacts, derive_bc, feasible_bc, largest_fe
 from rola.planner.schedule import (
     Plan,
     Schedule,
-    StaticDensity,
     build_plan,
     build_schedule,
     plan_and_schedule,
 )
+from rola.routing.density import StaticDensity
 from rola.routing.side_gain import GainConfig
 
 __all__ = [

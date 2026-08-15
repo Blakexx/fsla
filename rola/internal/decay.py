@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 import torch.nn.functional as F
+
+if TYPE_CHECKING:
+    from rola.routing.types import Topology
 
 PUBLIC_DECAY_KERNELS = ("rla", "gla_static", "gla_mass_detached")
 
@@ -196,6 +201,51 @@ def batch_compact_log_gamma(
     ).contiguous()
 
 
+def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
+    """Flatten ``LeafMassDecay.dials`` to ``[H, sum_l width_l]``, rows at ``level_offsets``.
+
+    The leaf rate is ``rate[s] = prod_l delta_l[d_l(s)]`` (spec §2) -- a plain
+    product of **dials**, not an AND over per-branch retentions as in V2. It is
+    accumulated by the kernel in fp32 and never in bf16: ``rate`` near 1 makes
+    ``1 - rate`` catastrophically cancelling, and ``log1p(-rate)`` cannot repair a
+    cancellation that already happened in the product (§7.4, this workflow's
+    numerics audit).
+
+    **Cast-boundary re-validation (fix pass, review B1).**
+    ``LeafMassDecay.__post_init__`` enforces ``0 <= delta < 1`` in the dial
+    tensor's OWN dtype (``types.py``). That is not the dtype the kernel reads: an
+    fp64 dial in ``[1 - 3e-8, 1)`` is strictly ``< 1`` in fp64 and passes, but
+    round-to-nearest at the ``.to(torch.float32)`` cast below lands it on exactly
+    ``1.0f``. A leaf rate of exactly 1 makes ``log1pf(-1.0f) = -inf`` in the
+    kernel, and any leaf whose clock is exactly zero at a token then computes
+    ``expf(0 * -inf) = NaN`` -- the strict-upper-bound invariant the kernel's
+    survival math depends on is checked in the wrong dtype. The contract is
+    "the dtype the kernel consumes", so it is re-checked HERE, after the cast,
+    rather than loosened or floored: this is not a fallback, it is the same
+    invariant enforced at the boundary where it actually has to hold.
+    """
+    dials = tuple(decay.dials)
+    if len(dials) != topology.D:
+        raise ValueError(
+            f"decay.dials must contain one tensor per level (D={topology.D}), got {len(dials)}")
+    cast = [dial.to(torch.float32) for dial in dials]
+    for level, (original, rounded) in enumerate(zip(dials, cast)):
+        if torch.any(rounded >= 1.0):
+            bad = int(torch.sum(rounded >= 1.0))
+            worst = float(original[rounded >= 1.0].max())
+            raise ValueError(
+                f"LeafMassDecay.dials[{level}] has {bad} entry(ies) that round to exactly "
+                f"1.0f under the fp32 cast the kernel consumes (worst fp64 value: {worst!r}), "
+                "even though every entry satisfies the strict '0 <= delta < 1' invariant in "
+                "its own (fp64) dtype. This is fp64->fp32 round-to-nearest, not a bug in the "
+                "input: any dial within roughly 3e-8 of 1 rounds up. rate == 1.0f makes "
+                "log1pf(-rate) == -inf in the kernel and NaNs any leaf with a zero clock at a "
+                "write-candidate token. Move the dial strictly below "
+                "1 - 3e-8 in fp64 (or otherwise keep it < 1.0f after casting to fp32); this is "
+                "not silently clamped or nudged because that would be a hidden fallback.")
+    return torch.cat(cast, dim=1).contiguous()
+
+
 __all__ = [
     "PUBLIC_DECAY_KERNELS",
     "batch_compact_log_gamma",
@@ -204,6 +254,7 @@ __all__ = [
     "decay_parameter_width",
     "decay_retention_from_strides",
     "leaf_log_retention_from_strides",
+    "leaf_rate_dials",
     "validate_compact_decay_theta",
     "validate_compact_log_gamma",
     "validate_decay_kernel",

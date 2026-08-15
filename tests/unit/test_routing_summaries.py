@@ -21,8 +21,9 @@ from math import prod
 import pytest
 import torch
 
-from rola.planner.calibration.census import exact_routing_summaries
-from rola.planner.schedule import StaticDensity, owner_geometry
+from rola.planner.schedule import owner_geometry
+from rola.routing.density import StaticDensity
+from rola.routing.exact_summaries import exact_routing_summaries
 from rola.routing.summaries import (
     MMA_K_QUANTUM,
     summarize_routing,

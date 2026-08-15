@@ -31,7 +31,10 @@ Covered:
       exactly, across several split points -- this is the practical form of
       ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1 + B2)`` since the oracle's own
       state-continuation *is* that composition (the recurrence is affine in
-      ``M``, spec §2's "no delta correction" consequence).
+      ``M``, spec §2's "no delta correction" consequence);
+    - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
+      consumes: ``rola.internal.decay.leaf_rate_dials`` casts to fp32, where a
+      value strictly below 1 in fp64 can round to exactly ``1.0f``.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.internal.decay import leaf_rate_dials
 from rola.ops.naive import _leaf_product, naive_rola
 from rola.routing.types import (
     IndependentRouting,
@@ -47,6 +51,13 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
+
+
+def _topology(widths, d_v=4) -> Topology:
+    routing = IndependentRouting(
+        tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
+    return Topology(
+        levels=tuple(LevelConfig(width=w, routing=routing) for w in widths), d_v=d_v)
 
 
 def _one_hot(width: int, digit: int, *, dtype=torch.float64) -> torch.Tensor:
@@ -411,3 +422,42 @@ def test_affine_composition_algebra_matches_direct_recurrence():
             f"composed (A,B) at split={split} gives {m_composed}, direct recurrence gives "
             f"{m_direct_full}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. The dial invariant AT THE CAST BOUNDARY the kernel reads it across
+#     (`rola.internal.decay.leaf_rate_dials`; docs/internals/decode.md)
+# ---------------------------------------------------------------------------
+
+
+def test_leaf_rate_dials_rejects_fp64_dial_that_rounds_to_1_0f():
+    """B1 cliff, reject side: an fp64 dial in ``[1 - 3e-8, 1)`` passes
+    ``LeafMassDecay``'s own-dtype check (strictly ``< 1`` in fp64) but rounds to
+    exactly ``1.0f`` under the ``.to(torch.float32)`` cast the kernel consumes,
+    which NaNs the kernel (``log1pf(-1.0f) = -inf``, then ``expf(0 * -inf)`` for
+    any leaf with a zero clock). ``leaf_rate_dials``'s cast-boundary re-check
+    must reject it loudly rather than let it through to the kernel."""
+    widths = (4, 4)
+    topology = _topology(widths, d_v=4)
+    dial_val = 1.0 - 1e-9  # strictly < 1 in fp64
+    assert float(torch.tensor(dial_val, dtype=torch.float64).float()) == 1.0, (
+        "fixture assumption broken: this fp64 value no longer rounds to 1.0f")
+    dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
+    decay = LeafMassDecay(dials=dials)  # passes the fp64 __post_init__ check
+    with pytest.raises(ValueError, match="1\\.0f"):
+        leaf_rate_dials(decay, topology)
+
+
+def test_leaf_rate_dials_accepts_fp64_dial_that_survives_the_cast():
+    """B1 cliff, survive side: a dial far enough from 1 (``1 - 1e-6``) rounds to
+    a value strictly less than ``1.0f``, so the cast-boundary check must not
+    raise, and the flattened dial tensor must be usable by the kernel."""
+    widths = (4, 4)
+    topology = _topology(widths, d_v=4)
+    dial_val = 1.0 - 1e-6
+    assert float(torch.tensor(dial_val, dtype=torch.float64).float()) < 1.0, (
+        "fixture assumption broken: this fp64 value no longer survives the fp32 cast")
+    dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
+    decay = LeafMassDecay(dials=dials)
+    flat = leaf_rate_dials(decay, topology)
+    assert torch.all(flat < 1.0)
