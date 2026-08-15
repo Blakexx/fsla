@@ -1,30 +1,43 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""TIER 1 — the T=1 decode path against the canonical fp64 oracle and the tiled kernel.
+"""TIER 1 — the T=1 decode path against the canonical fp64 oracle.
 
 Gates G1-G7 of the decode design (docs/internals/decode.md).
 
-**WHY "BIT-IDENTITY VS THE TILED CONSUMER" IS NOT ONE OF THEM, and this has to be said
-before the tolerances make sense.** Three independent facts make byte-equality between
-decode and the tiled consumer unattainable, so a gate asking for it would be asking for
-something no implementation can deliver:
+**WHY "BIT-IDENTITY VS THE PREFILL CONSUMER" IS NOT ONE OF THEM, and this has to be
+said before the tolerances make sense.** Three independent facts make byte-equality
+between decode and the prefill kernel unattainable, so a gate asking for it would be
+asking for something no implementation can deliver:
 
-1. The tiled consumer's ``y`` is not reproducible against ITSELF wherever a ``bh`` holds
-   more than one owner — it emits split-K partials through ``atomicAdd`` and CUDA fixes
-   no inter-CTA order (Track K measured 384 of 976 fixture cases differing between two
-   runs of one binary). Decode is deterministic by design.
-2. Summation order differs by construction: the tiled kernel contracts inside an
-   ``m16n8k16`` fragment tree per owner then sums owners by atomic; decode contracts in
-   leaf order in fp32 FMA chains and folds 8 warps then ``n_split`` CTAs in fixed order.
-3. The precision path differs: the tiled readout narrows its operands to bf16 (or
-   tf32x3) for the MMA; decode has no MMA and stays fp32. Decode is the *more* accurate
-   of the two, which is the safe direction but is still a difference.
+1. The prefill consumer's ``y`` is not reproducible against ITSELF wherever a ``bh``
+   holds more than one owner block — it fans partials in by ``atomicAdd`` and CUDA
+   fixes no inter-CTA order (Track K measured 384 of 976 fixture cases differing
+   between two runs of one binary). Decode is deterministic by design.
+2. Summation order differs by construction: the prefill kernel contracts inside an
+   MMA fragment tree per owner then sums owners by atomic; decode contracts in leaf
+   order in fp32 FMA chains and folds 8 warps then ``n_split`` CTAs in fixed order.
+3. The precision path differs: the prefill readout narrows its operands to bf16 for
+   the MMA; decode has no MMA and stays fp32. Decode is the *more* accurate of the
+   two, which is the safe direction but is still a difference.
 
 So the gates are: byte-equality where decode is *supposed* to be exact (G1, G2, the
-BC-blindness row in tier 2), and the oracle band everywhere the two consumers are
-compared (G4, G5, G6, G7). Decode's byte gates are STRONGER than the tiled kernel's,
-not weaker — G1 is a gate the tiled consumer cannot pass.
+BC-blindness row in tier 2), and the ORACLE band everywhere else. Decode's byte gates
+are STRONGER than the prefill kernel's, not weaker — G1 is a gate no MMA path passes.
+
+**P67 D2-b.** The prefill arm here is ``rola.ops.chunk`` now, not the tiled consumer.
+That took one gate with it and improved another:
+
+* **G5** — decode against the TILED consumer at ``T = 1`` — RETIRES. Its subject was
+  the second prefill kernel as a cross-check, and the chunk arm cannot run ``T = 1``
+  at all (``T`` must be a multiple of ``rola.ops.chunk.CHUNK_TOKENS``). What G5
+  actually established beyond the oracle rows was consumer-to-consumer agreement, and
+  after D2 there is one prefill consumer.
+* **G7** — the prefill/decode seam — is now graded against the fp64 ORACLE over the
+  whole ``L + 1`` sequence rather than against a second prefill of ``L + 1``. It has
+  to be: ``L`` and ``L + 1`` cannot both be chunk multiples. The replacement is an
+  INDEPENDENT reference for the seam instead of the same family of kernel twice,
+  which is the direction the standing rule points.
 
 Run: ``pytest tests/tier1_semantics/test_decode_vs_oracle.py``
 """
@@ -39,28 +52,30 @@ import torch
 from rola.ops.decode import _decode_step, freeze_decode_config
 from rola.ops.naive import naive_rola
 from rola.routing.types import LeafMassDecay
-from tests.tier1_semantics.test_consumer_vs_oracle import (
-    BF16_RTOL,
-    _decay_dials,
-    _simplex,
-    _topology,
-)
+from tests.conftest import RawRoutes
+from tests.tier1_semantics.oracle_fixtures import _decay_dials, _simplex, _topology
+from tests.tier1_semantics.tolerances import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-#: DECODE'S TOLERANCE IS THE TILED KERNEL'S bf16 NUMBER, ADOPTED RATHER THAN INVENTED.
-#: P26: `mma_precision` is a dead axis everywhere (bf16 is the only value both
-#: `PlanOverrides` and `freeze_decode_config` accept), so the tiled consumer's own
-#: exactness bound is `BF16_RTOL` now, not the tf32x3-era `RTOL` (which no longer
-#: exists -- `test_consumer_vs_oracle.py` deleted it with the tf32x3 arm, P26 phase 1).
-#: Decode has no MMA and never leaves fp32, so it is the MORE accurate of the two
-#: consumers and is expected to land strictly INSIDE the tiled kernel's bf16 band. A
-#: decode-specific constant would be a number with no derivation of its own, which
-#: `docs/testing.md` calls a defect.
+#: DECODE'S TOLERANCE IS THE bf16 FAMILY BOUND, ADOPTED RATHER THAN INVENTED.
+#: `mma_precision` is a dead axis everywhere (bf16 is the only value
+#: `freeze_decode_config` accepts). Decode has no MMA and never leaves fp32, so it is
+#: the MORE accurate of the two consumers and is expected to land strictly INSIDE the
+#: prefill kernel's bf16 band. A decode-specific constant would be a number with no
+#: derivation of its own, which `docs/testing.md` calls a defect.
 DECODE_RTOL = BF16_RTOL
+
+
+def _chunk_tokens() -> int:
+    """The prefill arm's token quantum. Imported through the function so this
+    module stays importable without the extension for a collection-only run."""
+    from rola.ops.chunk import CHUNK_TOKENS
+
+    return CHUNK_TOKENS
 
 #: THE TOPOLOGY AXIS, and the last three rows are the reason it is written out rather
 #: than reduced. The bitmap expansion copies an ``S_{l+1}``-bit block into each live
@@ -448,102 +463,111 @@ def test_g6_sixty_four_chained_steps(widths, decay):
 
 
 # ---------------------------------------------------------------------------
-# G5 / G7 -- against the tiled consumer, and across the prefill/decode seam
+# G7 -- the prefill/decode seam, graded against the oracle
 # ---------------------------------------------------------------------------
 
-def _prefill(widths, d_v, B, T, H, norm, generator, device, BC, *, decay=None):
-    """Run the TILED consumer over ``T`` tokens and return everything decode needs."""
-    from rola.ops.consumer import _consumer_forward
-    from rola.planner.schedule import Plan
+
+def _chunk_prefill(widths, d_v, B, T, H, generator, device):
+    """Run the PRODUCTION prefill arm over ``T`` tokens; return what decode needs.
+
+    `RawRoutes` and not the gateway: the fixture plants a specific density on
+    each side, which a producer cannot be asked for. Every field
+    `rola.ops.chunk` reads is present and no other, and the envelope is asserted
+    rather than assumed -- a fixture that drifted out of the built matrix would
+    otherwise be silently served by nothing at all.
+    """
+    from rola.ops import chunk as _chunk
 
     topology = _topology(widths, d_v)
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
-    g_read = (None if norm == "global"
-              else torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5)
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    plan = Plan(topology=topology, normalization=norm, BC=BC,
-                warp_tile=(1, max(1, d_v // 32)), decay=decay is not None)
-    y, state, _ = _consumer_forward(
-        v.float(), tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
-        None if g_read is None else g_read.float(), g_write.float(), plan, decay=decay)
+    routes = RawRoutes(
+        topology, "global",
+        tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
+        None, g_write.float())
+    refusal = _chunk.unsupported(routes, None)
+    assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
+    y, plane = _chunk.run(routes, v.float(), want_state=True)
     return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
-                g_read=g_read, g_write=g_write, v=v, y=y, state=state, plan=plan)
+                g_read=None, g_write=g_write, v=v, y=y,
+                state=plane.reshape(B, H, topology.N, d_v + 1))
 
 
-@pytest.mark.parametrize("widths,BC", [((8, 16), 16), ((64, 64), 64), ((4, 4, 4), 16)])
-def test_g5_agrees_with_the_tiled_consumer_at_T_equals_one(widths, BC):
-    """Both consumers, the same one-token input, the same entry state.
+@pytest.mark.parametrize("widths", [(16, 16), (16, 16, 16)],
+                         ids=lambda w: "x".join(map(str, w)))
+def test_g7_prefill_decode_seam(widths):
+    """Prefill ``L`` on the chunk arm, decode token ``L + 1``, and grade the pair
+    against the fp64 oracle over the whole ``L + 1`` sequence.
 
-    At the oracle band and NOT at byte level — see the module docstring for the three
-    independent reasons byte-equality is unavailable here.
+    This is the gate on the frozen carrier being the RIGHT config: an ``eps``
+    that disagreed with the divide pass's, a head fold that disagreed with the
+    consumer's ``h = bh % H``, or a state layout that was not leaf-major would
+    each show up here and nowhere else.
+
+    The reference moved at P67 D2-b. It used to be a SECOND prefill, of ``L + 1``
+    tokens, on the same kernel; ``L`` and ``L + 1`` cannot both be multiples of
+    the chunk, so that construction is unavailable -- and the oracle is a better
+    reference for a seam than the same family of kernel run twice.
+
+    That change brings the PREFILL's own charge into the number, which the old
+    kernel-vs-kernel comparison cancelled out. So the prefill leg is graded on
+    its own first, as a CONTROL: a fixture whose prefill is already out of band
+    is telling us about the prefill (the bf16 family gate's subject and the
+    conformance battery's), and without the control this row would report it as
+    a seam defect. MEASURED at these two cells: prefill-only state charge
+    5.2e-3 and 6.4e-3 against a 1e-2 band.
     """
     device = "cuda"
-    generator = torch.Generator(device=device).manual_seed(4321)
-    pre = _prefill(widths, 64, 2, 1, 2, "global", generator, device, BC)
-
-    config = freeze_decode_config(pre["topology"], "global", decay=False, BH=2 * 2, device=device,
-                                  mma_precision="bf16")
-    state = torch.zeros(2, 2, config.N, config.cols, device=device, dtype=torch.float32)
-    y, state, _ = _decode_step(
-        pre["v"].float(), tuple(t.float() for t in pre["read_levels"]),
-        tuple(t.float() for t in pre["write_levels"]),
-        None if pre["g_read"] is None else pre["g_read"].float(), pre["g_write"].float(),
-        config, state)
-
-    scale_y = max(1e-30, float(pre["y"].abs().max()))
-    scale_s = max(1e-30, float(pre["state"].abs().max()))
-    err_y = float((y - pre["y"]).abs().max()) / scale_y
-    err_s = float((state - pre["state"]).abs().max()) / scale_s
-    assert err_y < DECODE_RTOL, f"decode disagrees with the tiled consumer on y: {err_y:.3e}"
-    assert err_s < DECODE_RTOL, f"decode disagrees with the tiled consumer on state: {err_s:.3e}"
-
-
-@pytest.mark.parametrize("widths,BC", [((8, 16), 16), ((4, 4, 4), 16)])
-def test_g7_prefill_decode_seam(widths, BC):
-    """Prefill ``L`` with the tiled kernel then decode token ``L+1``, versus prefilling
-    ``L+1``.
-
-    This is the gate on the frozen carrier being the RIGHT config: an ``eps`` that
-    disagreed with ``divide_kernel``'s, a head fold that disagreed with the consumer's
-    ``h = bh % H``, or a state layout that was not leaf-major would each show up here
-    and nowhere else.
-    """
-    device = "cuda"
-    d_v, B, H, L = 64, 2, 2, 33
+    d_v, B, H = 64, 2, 2
+    L = 4 * _chunk_tokens()
     seed = 909
-    full = _prefill(widths, d_v, B, L + 1, H, "global",
-                    torch.Generator(device=device).manual_seed(seed), device, BC)
-    # the same routing, truncated: same generator, same draw order
-    gen = torch.Generator(device=device).manual_seed(seed)
-    _ = _prefill(widths, d_v, B, L + 1, H, "global", gen, device, BC)  # replay to fix the draws
+    pre = _chunk_prefill(widths, d_v, B, L, H,
+                         torch.Generator(device=device).manual_seed(seed), device)
 
-    from rola.ops.consumer import _consumer_forward
-    head = {k: (tuple(t[:, :L] for t in v) if isinstance(v, tuple)
-                else (v[:, :L] if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == L + 1 else v))
-            for k, v in full.items() if k in ("read_levels", "write_levels", "g_read", "g_write", "v")}
-    y_pre, state_pre, _ = _consumer_forward(
-        head["v"].float(), tuple(t.float() for t in head["read_levels"]),
-        tuple(t.float() for t in head["write_levels"]),
-        None if head["g_read"] is None else head["g_read"].float(), head["g_write"].float(),
-        full["plan"])
+    # CONTROL: the prefill leg alone, against the oracle over its own L tokens.
+    y_pre_ref, state_pre_ref = naive_rola(
+        pre["v"], pre["read_levels"], pre["write_levels"], None, pre["g_write"],
+        pre["topology"], None, "global", output_final_state=True)
+    e_pre_y = (float((pre["y"].double() - y_pre_ref).abs().max())
+               / max(1e-30, float(y_pre_ref.abs().max())))
+    e_pre_s = (float((pre["state"].double() - state_pre_ref).abs().max())
+               / max(1e-30, float(state_pre_ref.abs().max())))
+    assert e_pre_y < DECODE_RTOL and e_pre_s < DECODE_RTOL, (
+        f"the PREFILL leg is already out of band (y {e_pre_y:.3e}, state "
+        f"{e_pre_s:.3e}) before decode runs: this fixture is reporting on the "
+        "prefill arm, not on the seam, and the assertion below would blame the "
+        "wrong thing")
 
-    config = freeze_decode_config(full["topology"], "global", decay=False, BH=B * H, device=device,
-                                  mma_precision="bf16")
-    tail = {k: (tuple(t[:, L:L + 1] for t in v) if isinstance(v, tuple)
-                else (v[:, L:L + 1] if torch.is_tensor(v) and v.dim() >= 2 else v))
-            for k, v in full.items() if k in ("read_levels", "write_levels", "g_read", "g_write", "v")}
+    # the step's own token: drawn from the same generator so the fixture is one
+    # sequence of L + 1 tokens rather than a prefill and an unrelated step.
+    gen = torch.Generator(device=device).manual_seed(seed + 1)
+    step_read = tuple(_simplex((B, 1, H, w), 0.5, gen, device) for w in widths)
+    step_write = tuple(_simplex((B, 1, H, w), 0.4, gen, device) for w in widths)
+    step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
+    step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
+
+    config = freeze_decode_config(pre["topology"], "global", decay=False, BH=B * H,
+                                  device=device, mma_precision="bf16")
     y_dec, state_dec, _ = _decode_step(
-        tail["v"].float(), tuple(t.float() for t in tail["read_levels"]),
-        tuple(t.float() for t in tail["write_levels"]),
-        None if tail["g_read"] is None else tail["g_read"].float(), tail["g_write"].float(),
-        config, state_pre.clone())
+        step_v.float(), tuple(t.float() for t in step_read),
+        tuple(t.float() for t in step_write), None, step_gw.float(),
+        config, pre["state"].clone())
 
-    scale_y = max(1e-30, float(full["y"][:, L:L + 1].abs().max()))
-    scale_s = max(1e-30, float(full["state"].abs().max()))
-    err_y = float((y_dec - full["y"][:, L:L + 1]).abs().max()) / scale_y
-    err_s = float((state_dec - full["state"]).abs().max()) / scale_s
+    #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
+    #: reference sees exactly what the two kernel legs together saw.
+    cat = lambda a, b: tuple(torch.cat([x, s], dim=1) for x, s in zip(a, b))  # noqa: E731
+    y_ref, state_ref = naive_rola(
+        torch.cat([pre["v"], step_v], dim=1),
+        cat(pre["read_levels"], step_read), cat(pre["write_levels"], step_write),
+        None, torch.cat([pre["g_write"], step_gw], dim=1),
+        pre["topology"], None, "global", output_final_state=True)
+
+    scale_y = max(1e-30, float(y_ref[:, L:L + 1].abs().max()))
+    scale_s = max(1e-30, float(state_ref.abs().max()))
+    err_y = float((y_dec.double() - y_ref[:, L:L + 1]).abs().max()) / scale_y
+    err_s = float((state_dec.double() - state_ref).abs().max()) / scale_s
     assert err_y < DECODE_RTOL, f"the prefill/decode seam moved y: {err_y:.3e}"
     assert err_s < DECODE_RTOL, f"the prefill/decode seam moved state: {err_s:.3e}"
-    assert y_pre.shape[1] == L
+    assert pre["y"].shape[1] == L

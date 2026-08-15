@@ -34,7 +34,7 @@ import pytest
 import torch
 
 from rola.ops.decode import FrozenDecodeConfig, _decode_step, freeze_decode_config
-from rola.planner.schedule import Plan
+from tests.conformance.instantiation import CHUNK_ARMS
 from tests.tier1_semantics.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -42,8 +42,11 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-#: 16 and 64 are the tiled consumer's instantiated set; 32 is I1's HYPOTHETICAL value.
-_BCS = [16, 32, 64]
+#: Every `BC` the built chunk matrix carries, plus one it does NOT build. Decode
+#: must be blind to a number it will never see as thoroughly as to one it will,
+#: and taking the real values from the manifest rather than writing them out
+#: means a widened matrix arrives here without an edit.
+_BCS = sorted({bc for (_c, bc, _d, _b) in CHUNK_ARMS}) + [1024]
 
 
 def test_no_field_of_the_frozen_carrier_names_bc():
@@ -81,13 +84,15 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     results = []
     configs = []
     for BC in _BCS:
-        # The plan is CONSTRUCTED at this BC and then deliberately not handed to decode:
-        # the point of the gate is that there is no channel through which it could be.
-        # P26: `BT`/`mma_precision` are dead `Plan` kwargs -- dropped entirely (the
-        # scan word is the fixed `TOKEN_WORD`; bf16 is the only MMA format).
-        plan = Plan(topology=topology, normalization="global", BC=BC,
-                    warp_tile=(1, max(1, d_v // 32)), decay=False)
-        assert plan.BC == BC
+        # `BC` is here to be IGNORED. P67 D2-b: the prefill's `BC` used to be a
+        # host-chosen `Plan` field constructed at each value and deliberately not
+        # handed to decode; on the chunk arm it belongs to the built arm and is
+        # not host-selectable at all, so the loop now varies the number a prefill
+        # COULD have run at and asserts, as before, that there is no channel
+        # through which it could reach the frozen carrier. `freeze_decode_config`
+        # is called inside the loop for exactly that reason: it must be a pure
+        # function of the topology, the normalization arm and the device.
+        assert BC in _BCS
         config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
                                       mma_precision="bf16")
         configs.append(config)

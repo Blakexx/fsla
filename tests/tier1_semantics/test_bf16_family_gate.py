@@ -1,73 +1,69 @@
-"""GATE I6-B, EXTENDED -- the bf16 MEMORY-FAMILY gate, written before the family.
+"""GATE I6-B -- the bf16 MEMORY-FAMILY gate.
 
-The phase-2 family stores five surfaces in bf16 (the ruling of 2026-08-04): the
-SPANNED-level amplitudes, the value tensor, the v/o projection GEMM operands, and
-the output ``y`` cast after the fp32 divide. As of P26 (2026-08-06) this is no
-longer one storage arm selected by an ``mma_precision`` field -- it is
-UNCONDITIONAL, the only arm the kernel has (``Plan`` carries no precision axis at
-all; ``level_amp_dtype`` hardcodes bf16 for every spanned level). Everything else
--- state, mass, num/den accumulators, the decay clock, the FIXED-level amplitudes
-(the per-token row scales), and the producer/support tensors -- stays fp32.
+The kernel arm stores its routing amplitudes and its value tensor in bf16 and
+accumulates in fp32. Everything else -- state, mass, the num/den accumulators --
+stays fp32, and `y` comes back in the operand dtype with the fp32 accumulator's
+precision behind it. The comparison basis is the fp64 oracle, and the derived
+budget is `tolerances.BF16_RTOL`.
 
-**This file is the gate, and it exists before the code it gates.** The mutants
-below are VALUE-LEVEL quantizations injected on the KERNEL side only (the fp64
-oracle keeps the exact input): they prove the family's own tolerance can SEE a
-defect of the family's own magnitude. Each mutant carries an unmutated control,
-because a mutant whose control does not pass proves nothing.
+**The file's job is to prove that budget can SEE a defect of the family's own
+magnitude.** A tolerance nobody has tried to break is a number, not a bound. So
+the claim carries a MUTANT -- a value-level quantization injected on the KERNEL
+side only, with the fp64 oracle keeping the exact input -- and the mutant
+carries an unmutated control, because a mutant whose control does not pass
+proves nothing.
 
-**P26 collapsed the file's scope gate.** M1/M4/M5 existed to prove a SEPARATE
-``tf32x3`` exactness arm still held ``RTOL`` when handed exactly the bf16
-narrowing the production arm was about to adopt -- catching an accidental global
-cast onto the wrong arm. There is no second arm left to accidentally cast onto
-(bf16 is the only storage format the kernel has), so the scope question M1/M4/M5
-asked is unaskable and all three are DELETED (accounting in
-``workflows/perf/p26_endgame.md``):
+P67 D2-b RE-ANCHORED this file onto the chunk arm, and the re-anchor SIMPLIFIED
+the staging in a way worth stating, because it changes what a pass means:
 
-* M1 gated amplitudes at bf16 values, staged under the tf32x3 arm.
-* M4 gated the value tensor at bf16 values, staged under the tf32x3 arm.
-* M5 gated ``y`` at bf16 values, staged under the tf32x3 arm.
+* the narrowing used to be STAGED, with quantizers applied to the tiled
+  consumer's fp32 inputs. `rola.ops.chunk.run` casts the routing sides and `v`
+  to bf16 itself, so on this arm the narrowing IS what the kernel does and the
+  budget row MEASURES it rather than emulating it. `q_amps`/`q_v` at bf16 would
+  be no-ops and are gone. What remains staged is `q_y` -- the kernel hands back
+  the operand dtype, so a caller who STORES `y` in bf16 adds a rounding the
+  kernel did not -- and M3's coarser-than-bf16 amplitude mutant, which is a real
+  perturbation precisely because it is applied before the kernel's own cast.
+* the tiled arm distinguished FIXED from SPANNED levels: only the spanned ones
+  were stored bf16, and the mutant scope followed
+  `Plan.geometry.first_spanned_level`. The chunk arm concatenates every level
+  and casts the whole thing, so the distinction does not exist and the mutant
+  applies to ALL levels. That is a wider mutant scope, not a narrower one.
 
-The remaining named mutant (`PARITY_BATCH_DESIGN.md` §2.B2, extended to the
-family):
+RETIRED WITH THEIR SUBJECTS, both already inert before this commit:
 
-* **M2** clock values at bf16 on a decay arm         -> must exceed ``BF16_RTOL``
-  (the exponent amplification argument, §4.7 -- this is what makes "the clock
-  stays fp32" a checked property rather than a comment).
-* **M3** amplitudes at 4 mantissa bits on the bf16 arm -> must exceed
-  ``BF16_RTOL`` (the anti-slack mutant: the tolerance is not wide enough to
-  swallow a format two rungs below the one under test).
+* **M2**, the decay-clock mutant (`write_levels_stored` at bf16 -- the §4.7
+  exponent-amplification argument that makes "the clock stays fp32" a checked
+  property). Decay is retired from the operator: there is no clock in the kernel
+  arm to pin, and `write_levels_stored` was a `_consumer_forward` argument. It
+  was `pytest.skip`-ed at the decay retirement, so its removal changes nothing
+  that ran.
+* **the decay arm** of the family-budget and T-scaling rows, for the same
+  reason. The T-scaling row's UNDECAYED arm was skipped along with it and only
+  the decay one had cause, so this commit turns a skip back into a running
+  measurement.
 
-**M2's comparison basis changed.** Pre-P26, M2 ran under ``normalization="raw"``
-specifically because the ``global`` ratio readout ``y = num/den`` was suspected
-to cancel a common multiplicative clock error between its numerator and
-denominator, hiding the mutant. ``raw`` is dead now (``Plan`` validates
-``global`` only), so M2 was measured directly against ``global``'s output AND
-final state. MEASURED (this file's exact fixture, `_family_errors`): the ratio
-readout `y` really does cancel the mutant's effect near-exactly -- the control
-and mutant `y` charges came back numerically identical (`~6.48e-3`, both under
-budget) -- but the final STATE (the raw decayed `M`/`z` accumulators the ratio
-divides, never itself normalized) does not: control state error `~1.6e-3`,
-mutant state error `~1.25e-2`, a clear breach of `BF16_RTOL = 1e-2` against a
-control comfortably inside it. M2 is therefore KEPT, reworked to compare
-directly against the fp64 oracle at `BF16_RTOL` (no tf32x3 arm), with its
-discriminating power now resting on the STATE term rather than the (cancelling)
-output term -- both terms are still asserted, `max(e_out, e_state)`, exactly as
-before; only the comparison basis under it changed.
+RETIRED AS A CLAIM, stated rather than dropped: **support invariance under the
+amplitude cast.** The tiled gate read a SCHEDULE's `read_token_bits` at a
+planted sub-bf16-subnormal amplitude and asserted the liveness bit was set while
+the stored coefficient was a hard zero -- support decided strictly above the
+cast. The chunk arm builds no read-side support bitmap at all (it multiplies
+through the cast amplitudes; residency is a WRITE-side fact from `chunk_stats`,
+gated in `tests/tier2_geometry/test_atom_bitmap.py`), so there is no support
+decision for the cast to sit above. What survives, and is kept below, is the
+half that is still checkable and is why the claim mattered: a live leaf whose
+stored amplitude flushed to zero is INERT.
 
-Plus the two arms §2.B3/§2.B4 demand:
+The two arms `PARITY_BATCH_DESIGN.md` §2.B3/§2.B4 demand are both here:
 
-* **the T-scaling arm** -- the full family's narrowing at ``T in {512, 2048,
-  8192}``, asserting the deviation is FLAT in ``T`` (fitted log-log slope well
-  below the ``sqrt(T)`` walk's ``+0.5``). This is the batch-1 lesson: bf16
-  RESIDENT STATE died on a ``sqrt(T)`` re-quantization walk that a short fixture
-  passes; the amplitudes/value/y are read-only -- no accumulator, no walk -- and
-  that claim is MEASURED here, not asserted.
-* **support invariance** -- the amplitude cast happens strictly BELOW support
-  selection, so the schedule's bitmaps/owners are byte-identical between
-  ``amp_dtype`` fp32 and bf16, INCLUDING on a fixture where the cast provably
-  flushes values to zero (the flush count is asserted nonzero so the claim is
-  tested rather than vacuously true; the flushed leaf stays bitmap-live and is
-  inert by zero-route annihilation, spec §12 rule 4).
+* **the T-scaling arm** -- the narrowing at `T in {512, 2048, 8192}`, asserting
+  the deviation is FLAT in `T` (fitted log-log slope well below the `sqrt(T)`
+  walk's `+0.5`). This is the batch-1 lesson: bf16 RESIDENT STATE died on a
+  `sqrt(T)` re-quantization walk that a short fixture passes; the amplitudes,
+  the value tensor and `y` are read-only -- no accumulator, no walk -- and that
+  claim is MEASURED here, not asserted.
+* **the flush arm** -- a planted amplitude below bf16's smallest subnormal is
+  inert, on a fixture where the flush is asserted to actually happen.
 """
 
 from __future__ import annotations
@@ -77,20 +73,15 @@ import math
 import pytest
 import torch
 
+from rola.ops import chunk as _chunk
 from rola.ops.naive import naive_rola
-from rola.planner.schedule import Plan, build_schedule
-from rola.routing.types import LeafMassDecay
-from tests.tier1_semantics.test_consumer_vs_oracle import (
-    BF16_RTOL,
-    _decay_dials,
-    _output_charge,
-    _simplex,
-    _topology,
-)
+from tests.conftest import RawRoutes
+from tests.tier1_semantics.oracle_fixtures import _output_charge, _simplex, _topology
+from tests.tier1_semantics.tolerances import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="V3 consumer is a CUDA kernel"),
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="the chunk consumer is a CUDA kernel"),
 ]
 
 
@@ -109,206 +100,117 @@ def q_mant4(t: torch.Tensor) -> torch.Tensor:
     return rounded.view(torch.float32).to(t.dtype)
 
 
-def _family_errors(widths, BC, d_v, B, T, H, p_read, p_write, *, seed,
-                   decay=False, q_amps=None, q_clock=None, q_v=None,
-                   q_y=None, write_levels=None, dials=None, g_write=None):
-    """`(e_out, e_state)` of the kernel vs the canonical fp64 oracle, with the
-    named value-level quantizers applied to the KERNEL's inputs/output only.
+def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
+                q_amps=None, q_y=None, read_levels=None):
+    """`(y, state, y_ref, state_ref)` -- the chunk arm and the fp64 oracle.
 
-    ``normalization`` is always ``"global"`` -- the only value ``Plan`` accepts
-    (P26). ``q_amps`` applies to the SPANNED levels (``l >= j``) of both routing
-    sides -- the family's Option B scope; fixed levels and the row scales they
-    feed stay exact. ``q_clock`` applies to the kernel's ``write_levels_stored``
-    (the decay clock's source) while the oracle keeps the exact clock.
-    ``q_v``/``q_y`` apply to the value tensor and the output.
+    `q_amps` is applied to BOTH routing sides at every level BEFORE the call, so
+    the kernel's own bf16 cast happens on top of it and only a quantizer COARSER
+    than bf16 perturbs anything. `q_y` is applied to the returned output, which
+    the kernel hands back at the operand dtype. `normalization` is always
+    `"global"`: it is the only value the chunk arm carries.
     """
-    from rola.ops.consumer import _consumer_forward
-
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(seed)
     topology = _topology(widths, d_v)
-    read_levels = tuple(_simplex((B, T, H, w), p_read, gen, device) for w in widths)
-    if write_levels is None:
-        write_levels = tuple(_simplex((B, T, H, w), p_write, gen, device) for w in widths)
-    if g_write is None:
-        g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
-    # `normalization` is always "global" now, so `g_read` is always None -- the
-    # kernel raises on a non-None `g_read` under global normalization.
-    g_read = None
+    if read_levels is None:
+        read_levels = tuple(_simplex((B, T, H, w), p_read, gen, device) for w in widths)
+    write_levels = tuple(_simplex((B, T, H, w), p_write, gen, device) for w in widths)
+    g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=gen)
     cols = d_v + 1
     initial_state = 0.1 * torch.randn(
         B, H, topology.N, cols, device=device, dtype=torch.float64, generator=gen)
     initial_state[..., d_v] = initial_state[..., d_v].abs()
 
-    if decay and dials is None:
-        dials = _decay_dials(widths, H, gen, device)
-    decay_obj = None if dials is None else LeafMassDecay(dials=dials)
-
     y_ref, state_ref = naive_rola(
-        v, read_levels, write_levels, g_read, g_write, topology, decay_obj, "global",
+        v, tuple(read_levels), write_levels, None, g_write, topology, None, "global",
         initial_state=initial_state, output_final_state=True)
 
-    plan = Plan(topology=topology, normalization="global", BC=BC,
-                warp_tile=(1, max(1, d_v // 32)), decay=decay)
-    j = plan.geometry.first_spanned_level
-
-    def spanned(levels, q):
-        if q is None:
-            return levels
+    def quantized(levels):
+        if q_amps is None:
+            return tuple(levels)
         out = []
-        for level, t in enumerate(levels):
-            if level < j:
-                out.append(t)
-                continue
-            qt = q(t)
+        for t in levels:
+            qt = q_amps(t)
             # The mutant must perturb VALUES, never SUPPORT -- otherwise it tests
             # a bitmap difference, which is a different (and gated) property.
             assert bool(((qt == 0) == (t == 0)).all()), (
                 "the quantizer changed the support set; this mutant is malformed")
             out.append(qt)
-        return out
+        return tuple(out)
 
-    k_read = tuple(spanned(read_levels, q_amps))
-    k_write = tuple(spanned(write_levels, q_amps))
-    k_stored = None
-    if q_clock is not None:
-        assert decay, "the clock mutant is a decay-arm mutant"
-        k_stored = tuple(q_clock(t) for t in write_levels)
-    k_v = v if q_v is None else q_v(v)
-
-    y, state, _schedule = _consumer_forward(
-        k_v.to(torch.float32),
-        tuple(t.to(torch.float32) for t in k_read),
-        tuple(t.to(torch.float32) for t in k_write),
-        g_read,
-        g_write.to(torch.float32),
-        plan,
-        initial_state=initial_state.to(torch.float32),
-        decay=decay_obj,
-        write_levels_stored=None if k_stored is None else tuple(
-            t.to(torch.float32) for t in k_stored))
+    routes = RawRoutes(
+        topology, "global",
+        tuple(t.to(torch.float32) for t in quantized(read_levels)),
+        tuple(t.to(torch.float32) for t in quantized(write_levels)),
+        None, g_write.to(torch.float32))
+    refusal = _chunk.unsupported(routes, None)
+    assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
+    y, state = _chunk.run(
+        routes, v.to(torch.float32), want_state=True,
+        state_in=initial_state.to(torch.float32).reshape(
+            B * H, topology.N // 16, 16, cols))
     if q_y is not None:
         y = q_y(y)
 
-    e_out = _output_charge(y, y_ref)
-    e_state = (float((state.double() - state_ref).abs().max())
-               / max(1e-30, float(state_ref.abs().max())))
-    return e_out, e_state
+    return y, state.reshape(B, H, topology.N, cols), y_ref, state_ref
 
 
-#: The topology rows the family gate runs: the flagship-shaped one-spanned-level
-#: cell, a fixed-level cell (`j = 1`), and the §4.4 WORST CASE `D = 4, j = 0`
-#: (four spanned factors, no margin argued -- measured here).
-_FAMILY_CELLS = [((8, 8), 64), ((4, 4, 4), 16), ((2, 2, 2, 2), 16)]
+def _charge(y, state, y_ref, state_ref) -> tuple[float, float]:
+    return (_output_charge(y, y_ref),
+            float((state.double() - state_ref).abs().max())
+            / max(1e-30, float(state_ref.abs().max())))
 
 
-def _family_quantizers():
-    """The production arm's full narrowing, as value-level quantizers."""
-    return dict(q_amps=q_bf16, q_v=q_bf16, q_y=q_bf16)
+def _family_errors(*a, **k) -> tuple[float, float]:
+    """`(e_out, e_state)` of the chunk arm against the canonical fp64 oracle."""
+    return _charge(*_family_run(*a, **k))
+
+
+#: The topology rows the family gate runs, all BUILT arms of the chunk manifest:
+#: the flagship-shaped `D = 2` cell, a `D = 3` cell, and the §4.4 WORST CASE
+#: `D = 4` (four routed factors multiplied into every leaf coefficient, with no
+#: margin argued -- measured here). Pre-D2 these were `(8,8)`, `(4,4,4)` and
+#: `(2,2,2,2)`: the DEPTH axis is what the row set is for, and it is preserved;
+#: the widths moved to the ones the manifest builds.
+_FAMILY_CELLS = [(8, 8), (16, 16, 16), (8, 8, 8, 8)]
+
+#: `T` must be a multiple of the operator's chunk (`rola.ops.chunk.CHUNK_TOKENS`).
+#: `37` -- the tiled file's deliberately ragged length -- has no kernel arm now.
+_T = 64
 
 
 # --- the production arm must HOLD ITS BUDGET under the full family ----------
 
 
-@pytest.mark.parametrize("widths,BC", _FAMILY_CELLS)
-def test_family_narrowing_holds_bf16_budget(widths, BC):
-    """bf16 spanned amps + bf16 v + bf16 y TOGETHER stay under `BF16_RTOL`.
+@pytest.mark.parametrize("widths", _FAMILY_CELLS, ids=lambda w: "x".join(map(str, w)))
+def test_family_narrowing_holds_bf16_budget(widths):
+    """bf16 amplitudes + bf16 `v` + a bf16-stored `y` TOGETHER stay under
+    `BF16_RTOL`.
 
-    This is the family's feasibility measured before it is built: if the stacked
-    roundings blow the budget on any topology (the `D=4, j=0` row has no argued
-    margin), the family halts here, before any kernel change. (P26: `normalization`
-    is always `"global"` now -- the `"raw"` arm this row set used to also sweep is
-    dead, see `workflows/perf/p26_endgame.md` DELETIONS.)
+    The first two are the kernel's own casts; the third is the caller's, staged
+    with `q_y`. If the stacked roundings blow the budget on any topology -- the
+    `D = 4` row has no argued margin -- the family halts here.
     """
     e_out, e_state = _family_errors(
-        widths=widths, BC=BC, d_v=64, B=2, T=37, H=3,
-        p_read=0.4, p_write=0.3, seed=90210,
-        **_family_quantizers())
+        widths=widths, d_v=64, B=2, T=_T, H=3,
+        p_read=0.4, p_write=0.3, seed=90210, q_y=q_bf16)
     assert e_out < BF16_RTOL, f"family narrowing blows the output budget: {e_out:.3e}"
     assert e_state < BF16_RTOL, f"family narrowing blows the state budget: {e_state:.3e}"
 
 
-@pytest.mark.parametrize("widths,BC", [((8, 8), 64), ((2, 2, 2, 2), 16)])
-def test_family_narrowing_holds_budget_under_decay(widths, BC):
-    """Same claim on the decay arm -- with the clock EXACT, as the family pins it."""
-    pytest.skip("decay retired from the operator; retires with the old "
-                "consumer (docs/internals/chunk/chunk.md)")
-    e_out, e_state = _family_errors(
-        widths=widths, BC=BC, d_v=64, B=2, T=37, H=3,
-        p_read=0.4, p_write=0.3, seed=555, decay=True,
-        **_family_quantizers())
-    assert e_out < BF16_RTOL, f"decay-arm family narrowing blows the budget: {e_out:.3e}"
-    assert e_state < BF16_RTOL, f"decay-arm family narrowing blows the budget: {e_state:.3e}"
+# --- M3: the anti-slack mutant ---------------------------------------------
 
 
-# --- the mutants: each must FAIL its arm's tolerance ------------------------
+@pytest.mark.parametrize("widths", [(8, 8), (8, 8, 8, 8)], ids=lambda w: "x".join(map(str, w)))
+def test_M3_four_mantissa_bit_amps_exceed_BF16_RTOL(widths):
+    """A format two rungs below bf16 must BREACH the budget.
 
-
-def test_M2_bf16_clock_values_exceed_BF16_RTOL():
-    """The clock's fp32 pin, enforced by a mutant with a VISIBLE amplified exponent.
-
-    The clock error enters survival as `exp(eps * E) - 1` with `E` the elapsed
-    decay exponent (§4.7; clamp at 88), but a fixture with continuous writes hides
-    it: every token's readout is dominated by its FRESH deposits, whose elapsed
-    exponent -- and therefore whose amplified error -- is near zero. So the
-    fixture makes the elapsed exponent the only thing left to read:
-
-    * COHERENT concentrated writes (one dominant digit per (batch, head), value
-      0.502 -- maximally far from a bf16 grid point at [0.5, 1)'s 2^-8 ulp) make
-      the clock prefix accumulate the SAME signed rounding every token;
-    * the write gain drops to ~0 after the first 32 tokens, so every later token
-      reads the DECAYED early state, whose survival carries the full elapsed
-      exponent (~35 nats by the last segment, inside fp32's range);
-    * the PER-SEGMENT output charge (each segment normalizes by its own decayed
-      scale) keeps the amplified error visible in principle -- but MEASURED on
-      this exact fixture, `global`'s ratio readout `y = num/den` cancels the
-      mutant's effect almost exactly (control and mutant `e_out` came back
-      numerically identical, `~6.48e-3`). What stays discriminating is the final
-      STATE: the raw decayed `M`/`z` accumulators the ratio divides, never
-      themselves normalized, carry the clock error directly (control `~1.6e-3`,
-      mutant `~1.25e-2` -- a clean breach of `BF16_RTOL` against a control that
-      clears it with room to spare). Both terms are still asserted via
-      `max(e_out, e_state)`, exactly as before P26; only the STATE term is what
-      does the discriminating now that `raw` (which avoided the cancellation
-      entirely) is dead.
-
-    Predicted deviation at the tail: `exp(~7.6e-3 * 35) - 1 ~ 0.3`, against a
-    bf16-MMA control floor of ~5e-3 -- an order past `BF16_RTOL` either way; the
-    measured `~1.25e-2` on the state is the diluted-by-owner-mixing version of
-    that same amplification argument.
+    Otherwise `BF16_RTOL` is slack enough to swallow the change under test and
+    gates nothing. The control is the same fixture unmutated and must pass.
     """
-    pytest.skip("decay retired from the operator; retires with the old "
-                "consumer (docs/internals/chunk/chunk.md)")
-    device = "cuda"
-    widths, B, T, H = (8, 8), 2, 512, 3
-    gen = torch.Generator(device=device).manual_seed(777)
-    concentrated = []
-    for w in widths:
-        digit = torch.randint(w, (B, 1, H, 1), device=device, generator=gen).expand(B, T, H, 1)
-        level = torch.full((B, T, H, w), 0.498 / (w - 1), device=device, dtype=torch.float64)
-        level = level.scatter(-1, digit, 0.502)
-        concentrated.append(level)
-    dials = tuple(torch.full((H, w), 0.86, device=device, dtype=torch.float64)
-                  for w in widths)
-    g_write = torch.rand(B, T, H, device=device, dtype=torch.float64,
-                         generator=gen) + 0.5
-    g_write[:, 32:, :] = 1e-12
-    kw = dict(widths=widths, BC=64, d_v=64, B=B, T=T, H=H,
-              p_read=1.0, p_write=0.6, seed=555, decay=True,
-              write_levels=tuple(concentrated), dials=dials, g_write=g_write)
-    clean_out, clean_state = _family_errors(**kw)
-    assert clean_out < BF16_RTOL and clean_state < BF16_RTOL, (
-        f"M2's control does not pass (out {clean_out:.3e}, state {clean_state:.3e})")
-    e_out, e_state = _family_errors(q_clock=q_bf16, **kw)
-    assert max(e_out, e_state) > BF16_RTOL, (
-        f"a bf16-valued clock moved the gate only to out {e_out:.3e} / state {e_state:.3e}: "
-        "the clock's fp32 pin is not load-bearing on this fixture, so the pin is unenforced")
-
-
-@pytest.mark.parametrize("widths,BC", [((8, 8), 64), ((2, 2, 2, 2), 16)])
-def test_M3_four_mantissa_bit_amps_exceed_BF16_RTOL(widths, BC):
-    kw = dict(widths=widths, BC=BC, d_v=64, B=2, T=37, H=3,
+    kw = dict(widths=widths, d_v=64, B=2, T=_T, H=3,
               p_read=0.4, p_write=0.3, seed=90210)
     clean_out, clean_state = _family_errors(**kw)
     assert clean_out < BF16_RTOL and clean_state < BF16_RTOL, (
@@ -326,22 +228,18 @@ def test_M3_four_mantissa_bit_amps_exceed_BF16_RTOL(widths, BC):
 _T_ARM = (512, 2048, 8192)
 
 
-@pytest.mark.parametrize("decay", [False, True])
-def test_family_deviation_is_flat_in_T(decay):
+def test_family_deviation_is_flat_in_T():
     """The read-only/no-walk claim, measured. KILL CONDITION: a monotone T-trend.
 
     A resident-state walk grows as `sqrt(T)` (measured exponent +0.49, J1-B); a
     read-only rounding is flat. The fitted log-log slope over the three lengths
     must sit far below the walk's, and every point must clear the budget.
     """
-    pytest.skip("decay retired from the operator; retires with the old "
-                "consumer (docs/internals/chunk/chunk.md)")
     errs = []
     for T in _T_ARM:
         e_out, e_state = _family_errors(
-            widths=(8, 8), BC=64, d_v=64, B=2, T=T, H=3,
-            p_read=0.4, p_write=0.3, seed=90210, decay=decay,
-            **_family_quantizers())
+            widths=(8, 8), d_v=64, B=2, T=T, H=3,
+            p_read=0.4, p_write=0.3, seed=90210, q_y=q_bf16)
         assert e_out < BF16_RTOL, f"T={T}: family narrowing blows the budget: {e_out:.3e}"
         assert e_state < BF16_RTOL, f"T={T}: family narrowing blows the budget: {e_state:.3e}"
         errs.append(e_out)
@@ -358,94 +256,127 @@ def test_family_deviation_is_flat_in_T(decay):
         "standing scale target -- the family halts pending re-derivation (batch-1 rule)")
 
 
-# --- support invariance (§2.B4): the cast is BELOW support selection --------
+# --- the flush arm (§2.B4): a flushed live amplitude is INERT ---------------
 
 
-def test_support_is_invariant_under_amp_dtype_and_the_flush_is_inert():
-    """The bitmap's liveness bit for a planted sub-bf16-subnormal leaf stays SET
-    even though the STORED amplitude at that leaf is a hard zero, and the kernel
-    run on that fixture still matches the oracle in budget.
+def test_a_sub_subnormal_amplitude_flushes_and_is_inert():
+    """A live amplitude below bf16's smallest subnormal stores as a hard zero,
+    and the kernel run on that fixture still matches the oracle in budget.
 
-    **P26 rework note.** Pre-P26, `Plan` accepted a caller-chosen `amp_dtype` and
-    this test built TWO schedules (`fp32`, `bf16`) from the identical fixture and
-    diffed their bitmaps byte-for-byte -- the direct way to show the cast sits
-    strictly below support selection. `Plan` no longer exposes `amp_dtype`
-    (`level_amp_dtype` hardcodes bf16 for every spanned level, unconditionally),
-    so there is no longer a full-precision arm to build and diff against; only
-    ONE schedule is buildable now. The claim is re-derived from that single
-    schedule instead: the fixture plants a live amplitude below bf16's smallest
-    subnormal (~9.2e-41) at a KNOWN `(level, digit, token)` triple, and the test
-    reads the schedule's `read_token_bits` support bit and its `read_amps` stored
-    value AT THAT SAME TRIPLE directly -- the bit must be 1 (the exact fp32-side
-    mask that built the bitmap saw the leaf as live) while the stored coefficient
-    is exactly 0.0 (the cast flushed it). That is the same "support decided
-    upstream of the cast" claim, checked from one schedule instead of a diff of
-    two, because a diff of two is no longer constructible.
+    The flush is ASSERTED rather than assumed -- `1e-41` is an fp32 subnormal and
+    a bf16 zero, checked here at the planted value after renormalization -- so
+    the cell cannot go green by the plant quietly surviving the cast. A leaf
+    whose stored coefficient is zero contributes exactly zero to every product it
+    enters, and `1e-41` of amplitude moves nothing at `1e-2`; that is what inert
+    means, and the oracle comparison is what measures it.
     """
     device = "cuda"
-    widths, BC, d_v, B, T, H = (8, 8), 64, 64, 2, 37, 3
+    widths, d_v, B, T, H = (8, 8), 64, 2, _T, 3
     gen = torch.Generator(device=device).manual_seed(2718)
-    topology = _topology(widths, d_v)
-    # Dense (`p_nonzero=1.0`) on the planted level so every digit starts live --
-    # the plant then has company (the "multi-live" requirement) by construction,
-    # not by chance.
+    # Dense on the planted level so every digit starts live -- the plant then has
+    # company by construction rather than by chance.
     read_levels = [_simplex((B, T, H, w), 1.0 if i == len(widths) - 1 else 0.4, gen, device)
                    for i, w in enumerate(widths)]
-    write_levels = [_simplex((B, T, H, w), 0.3, gen, device) for w in widths]
-
-    level_idx = len(widths) - 1                 # the last (spanned) level
-    digit, token = 3, 5                          # a fixed, known plant site
-    # Plant a sub-bf16-subnormal amplitude at ONE (batch, head, token, digit):
-    # 1e-41 is nonzero in fp32 (subnormal) and flushes to 0.0 in bf16.
+    level_idx, digit, token = len(widths) - 1, 3, 5
     tiny = read_levels[level_idx].clone()
     tiny[0, token, 0, digit] = 1e-41
     tiny[0, token, 0] = tiny[0, token, 0] / tiny[0, token, 0].sum()
     read_levels[level_idx] = tiny
-    g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
-    v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    plan = Plan(topology=topology, normalization="global", BC=BC,
-                warp_tile=(1, d_v // 32))
-    sched = build_schedule(
-        tuple(t.to(torch.float32) for t in read_levels),
-        tuple(t.to(torch.float32) for t in write_levels),
-        None, g_write.to(torch.float32), plan)
+    planted = tiny[0, token, 0, digit]
+    assert float(planted) > 0.0, "the plant did not survive renormalization in fp64"
+    assert float(planted.to(torch.float32).to(torch.bfloat16)) == 0.0, (
+        f"the planted amplitude {float(planted)!r} does NOT flush under bf16 storage: "
+        "the fixture no longer tests the flush direction and must be re-derived, "
+        "not deleted")
 
-    # The stored amplitude is a hard bf16 flush: the family's `level_amp_dtype`
-    # is bf16 for every spanned level (`level_idx` is spanned since j = 0 at
-    # `BC == N`), and the planted value is below bf16's smallest subnormal.
-    assert plan.level_amp_dtype(level_idx) == torch.bfloat16
-    tile, t_in_tile = token // 32, token % 32
-    stored = float(sched.read_amps[level_idx][0, tile, t_in_tile, digit])
-    assert stored == 0.0, (
-        f"the planted sub-subnormal amplitude did NOT flush under bf16 storage "
-        f"(read {stored!r}): the fixture no longer tests the flush direction and "
-        "must be re-derived, not deleted")
-
-    # The bitmap's liveness bit is still SET at that exact (level, digit, token):
-    # support was decided on the exact fp32 mask, upstream of the bf16 store.
-    row = sched.level_offsets[level_idx] + digit
-    bit = (int(sched.read_token_bits[0, tile, row]) >> t_in_tile) & 1
-    assert bit == 1, (
-        "the planted leaf's support bit is NOT set: the bitmap moved above the "
-        "exact fp32 mask, which the ruling forbids")
-
-    # The flushed configuration is INERT: the kernel runs on THIS planted fixture
-    # against the exact-fp64 oracle, in budget -- a bitmap-live leaf with a zero
-    # coefficient contributes exactly zero, and 1e-41 of amplitude moves nothing
-    # at 1e-2.
-    from rola.ops.consumer import _consumer_forward
-    y_ref, state_ref = naive_rola(
-        v, tuple(read_levels), tuple(write_levels), None, g_write, topology, None,
-        "global", output_final_state=True)
-    y, state, _ = _consumer_forward(
-        v.to(torch.float32),
-        tuple(t.to(torch.float32) for t in read_levels),
-        tuple(t.to(torch.float32) for t in write_levels),
-        None, g_write.to(torch.float32), plan)
-    e_out = _output_charge(y, y_ref)
-    e_state = (float((state.double() - state_ref).abs().max())
-               / max(1e-30, float(state_ref.abs().max())))
+    e_out, e_state = _family_errors(
+        widths=widths, d_v=d_v, B=B, T=T, H=H, p_read=0.4, p_write=0.3,
+        seed=2718, read_levels=tuple(read_levels))
     assert e_out < BF16_RTOL and e_state < BF16_RTOL, (
         f"the planted-flush fixture is out of budget (out {e_out:.3e}, state "
         f"{e_state:.3e}): a flushed-to-zero live leaf is NOT inert")
+
+
+# --- the CHARGE itself, and the mass column's own localization --------------
+
+
+def test_output_charge_sees_a_drift_the_global_max_cannot():
+    """The metric the budget rows above are stated in has to be the right one.
+
+    The readout is a ratio whose denominator is accumulated write mass, so at
+    `t = 0` -- nothing accumulated -- `|y|` is orders of magnitude above the rest
+    of the sequence. A single global normalizer is therefore set by token 0, and
+    both the numerator's max and the normalizer's max land on the token whose
+    state has been updated zero times: that metric is structurally incapable of
+    seeing an error that ACCUMULATES. A `sqrt(t)` drift ten times the budget is
+    planted, and the two forms must disagree about it -- the old one passing it
+    is the premise, the new one catching it is the claim.
+    """
+    T = 2048
+    y, _state, y_ref, _state_ref = _family_run(
+        widths=(8, 8), d_v=64, B=2, T=T, H=3, p_read=0.4, p_write=0.3, seed=90210)
+
+    def global_charge(a):
+        return float((a.double() - y_ref).abs().max()) / max(1e-30, float(y_ref.abs().max()))
+
+    assert global_charge(y) < BF16_RTOL and _output_charge(y, y_ref) < BF16_RTOL, (
+        "the unperturbed control must pass under BOTH forms, or the mutant proves "
+        f"nothing (global {global_charge(y):.3e}, per-segment {_output_charge(y, y_ref):.3e})")
+
+    p = 10.0 * BF16_RTOL
+    ramp = (torch.arange(T, device=y.device, dtype=torch.float64) / (T - 1)).sqrt()
+    mutant = y.double() * (1.0 + p * ramp[None, :, None, None])
+
+    assert global_charge(mutant) < BF16_RTOL, (
+        f"a {p:.1e} sqrt-t drift moved the OLD global-max charge to "
+        f"{global_charge(mutant):.3e}, i.e. past {BF16_RTOL:.0e}: the premise of this "
+        "claim is that the old form passes this mutant, and it no longer does -- "
+        "re-derive the mutant's size rather than deleting the claim")
+    assert _output_charge(mutant, y_ref) > BF16_RTOL, (
+        f"a {p:.1e} sqrt-t drift moved the per-segment charge only to "
+        f"{_output_charge(mutant, y_ref):.3e}: the replacement metric is as blind as "
+        "the one it replaced")
+
+
+def test_the_mass_column_is_charged_separately_from_the_value_block():
+    """A mass-column defect must not be able to hide inside a value-dominated max.
+
+    The state is `[..., d_v + 1]`: `d_v` value channels and ONE mass column, and
+    the two are on different scales whenever the write gains are. `e_state` above
+    is a single max over both, so a mass error smaller than the value block's
+    largest deviation is invisible to it. This row charges the two blocks
+    separately, and PROVES the split is load-bearing by perturbing the mass
+    column alone and requiring exactly the mass charge to move.
+
+    (The tiled predecessor made the same point through a `_mass_errors` helper
+    that injected into the kernel's own mass accumulator. There is no such
+    injection point on the chunk arm, so the perturbation is applied to the
+    returned state -- which tests the CHARGE's localization, which is what the
+    predecessor's third assertion was actually about.)
+    """
+    d_v = 64
+    _y, state, _y_ref, state_ref = _family_run(
+        widths=(8, 8), d_v=d_v, B=2, T=_T, H=3, p_read=1.0, p_write=1.0, seed=31337)
+
+    def charges(s):
+        val = (float((s[..., :d_v].double() - state_ref[..., :d_v]).abs().max())
+               / max(1e-30, float(state_ref[..., :d_v].abs().max())))
+        mass = (float((s[..., d_v].double() - state_ref[..., d_v]).abs().max())
+                / max(1e-30, float(state_ref[..., d_v].abs().max())))
+        return val, mass
+
+    clean_val, clean_mass = charges(state)
+    assert clean_val < BF16_RTOL and clean_mass < BF16_RTOL, (
+        "the unperturbed control must pass on BOTH blocks, or the perturbation "
+        f"below proves nothing (value {clean_val:.3e}, mass {clean_mass:.3e})")
+
+    perturbed = state.double().clone()
+    perturbed[..., d_v] *= 1.0 + 100.0 * BF16_RTOL
+    bad_val, bad_mass = charges(perturbed)
+    assert bad_mass > BF16_RTOL, (
+        f"a 100x-budget mass perturbation moved the mass charge only to "
+        f"{bad_mass:.3e}: the split is not gating the mass column")
+    assert bad_val < BF16_RTOL, (
+        f"perturbing the mass column moved the VALUE charge to {bad_val:.3e}: the "
+        "two charges are not independent and the localization is unsound")

@@ -63,7 +63,7 @@ from rola.planner.derive import GROUP_TOKENS, SUPPORTED_BC, largest_feasible_bc
 #: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
 #: accepts; `SUPPORTED_BT`/the `(BC, BT)` template pair are gone). Every backend
 #: comparison in this file therefore runs bf16-vs-fp64-oracle, and the bound is the
-#: bf16 family bound (`tests/tier1_semantics/test_consumer_vs_oracle.py:BF16_RTOL`),
+#: bf16 family bound (`tests/tier1_semantics/tolerances.py:BF16_RTOL`),
 #: quoted at its value rather than imported so that loosening it here would be a
 #: visible edit to this file. Max absolute deviation divided by the reference's own
 #: scale; whole-layer outputs sit behind `o_proj`, a linear map applied identically

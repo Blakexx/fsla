@@ -304,3 +304,47 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
         read_levels=read_levels, write_levels=write_levels,
         g_read=g_read, g_write=g_write,
         exact_support_counts=exact_support_counts, touched_bits=touched_bits)
+
+
+# -----------------------------------------------------------------------------
+# A routing bundle over HAND-BUILT tensors (P67 D2-b)
+# -----------------------------------------------------------------------------
+
+
+class RawRoutes:
+    """The routing bundle `rola.ops.chunk` reads, over hand-built tensors.
+
+    `RouteFactors` refuses direct construction on purpose -- a bundle whose
+    statistics did not come from the derivation code could disagree with its own
+    tensors -- and a gate that plants a specific routing pattern (a conformance
+    regime cell, a sub-subnormal amplitude, a confined write support) is by
+    definition not producer-derived. So those gates reach the kernel arm through
+    this: EXACTLY the fields `rola.ops.chunk`'s `unsupported`/`arm`/`stats`/`run`
+    read, and nothing else, so it cannot quietly stand in for a real bundle
+    anywhere one is required -- `rola_op` refuses it, which is the point.
+
+    It lives here rather than in one of its callers for the reason `build_routes`
+    does: every gate that drives the kernel arm over planted tensors needs the
+    same six fields, and a per-file copy is how they drift.
+    """
+
+    def __init__(self, topology, normalization, read, write, g_read, g_write):
+        self.topology, self.normalization = topology, normalization
+        self.read, self.write = read, write
+        self.g_read, self.g_write = g_read, g_write
+
+    @property
+    def batch(self):
+        return self.read[0].shape[0]
+
+    @property
+    def tokens(self):
+        return self.read[0].shape[1]
+
+    @property
+    def heads(self):
+        return self.read[0].shape[2]
+
+    @property
+    def device(self):
+        return self.read[0].device

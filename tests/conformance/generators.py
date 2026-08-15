@@ -27,6 +27,7 @@ from rola.routing.types import (
     Topology,
 )
 from tests.conformance.families import Family
+from tests.conftest import RawRoutes
 
 #: The operator's token quantum, re-exported so a family fixture and the
 #: checkers that read a "word" of tokens both name ONE number. P67 D2-b
@@ -88,41 +89,6 @@ def _leaf_product(levels, widths):
     return out
 
 
-class _Bundle:
-    """The routing bundle `rola.ops.chunk` reads, over hand-built tensors.
-
-    `RouteFactors` refuses direct construction on purpose -- a bundle whose
-    statistics did not come from the derivation code could disagree with its own
-    tensors -- and a conformance fixture is by definition not producer-derived
-    (that is what the `producer` source families are for, and they DO drive the
-    real gateway through `rola_op`). So the stratified and adversarial families
-    reach the kernel arm through this: exactly the fields
-    `chunk.unsupported`/`arm`/`stats`/`run` read, and nothing else, so it cannot
-    quietly stand in for a bundle anywhere the real one is required.
-    """
-
-    def __init__(self, topology, normalization, read, write, g_read, g_write):
-        self.topology, self.normalization = topology, normalization
-        self.read, self.write = read, write
-        self.g_read, self.g_write = g_read, g_write
-
-    @property
-    def batch(self):
-        return self.read[0].shape[0]
-
-    @property
-    def tokens(self):
-        return self.read[0].shape[1]
-
-    @property
-    def heads(self):
-        return self.read[0].shape[2]
-
-    @property
-    def device(self):
-        return self.read[0].device
-
-
 class Case:
     """One realized family fixture: tensors, the routing bundle, and both runs."""
 
@@ -169,7 +135,7 @@ class Case:
             write=tuple(t.to(torch.float32) for t in self.write_levels),
             g_read=None if self.g_read is None else self.g_read.to(torch.float32),
             g_write=self.g_write.to(torch.float32))
-        self.bundle = _Bundle(self.topology, self.norm, self._f32["read"],
+        self.bundle = RawRoutes(self.topology, self.norm, self._f32["read"],
                               self._f32["write"], self._f32["g_read"],
                               self._f32["g_write"])
         #: WHY the kernel arm refuses this family, or None. Read from the
