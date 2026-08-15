@@ -592,3 +592,42 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
         for level_a, level_b in zip(side_a, side_b):
             assert torch.equal(level_a, level_b)
     assert torch.equal(d_strided, d_packed)
+
+
+@pytest.mark.parametrize("width", [3, 8, 64])
+def test_every_solve_writes_every_element_of_a_dense_level(width):
+    """The licence for allocating a dense level UNINITIALIZED (P73 S4, inventory §B5).
+
+    A dense level is exactly `[BH, T, width]` -- no tile padding, unlike the
+    tile-major arena whose tail lanes past `T` no kernel touches -- so nothing may
+    survive a solve. Each shipped solve writes into a buffer poisoned two different
+    ways; if any element were left alone the two results would differ there. Widths
+    that are not powers of two are the ones a masked lane could hide in.
+    """
+    from rola.routing.entmax.production import (
+        _launch_factor_into,
+        _launch_softmax_into,
+        _launch_union_fwd,
+    )
+
+    torch.manual_seed(6)
+    BH, T = 4, 96
+    logits = torch.randn(BH, T, width, device="cuda")
+    words = torch.empty((BH, (T + 31) // 32, width), dtype=torch.int32, device="cuda")
+
+    def buffers(fill, count):
+        return [torch.full((BH, T, width), fill, device="cuda") for _ in range(count)]
+
+    def solves(fill, alpha):
+        union = buffers(fill, 3)
+        _launch_union_fwd(logits, logits + 1, union[2], words, union[0], union[1], alpha)
+        factor = buffers(fill, 2)
+        _launch_factor_into(logits, factor[0], factor[1], words, alpha)
+        soft = buffers(fill, 2)
+        _launch_softmax_into(logits, soft[0], soft[1])
+        return union + factor + soft
+
+    for alpha in (1.5, 2.0):
+        for cold, hot in zip(solves(0.0, alpha), solves(7.0, alpha)):
+            assert torch.equal(cold, hot), (
+                "a solve left an element of its dense output alone")

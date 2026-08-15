@@ -912,8 +912,11 @@ class _ProductionLevelsFn(torch.autograd.Function):
             span = routing.level_logit_slice(index)
             read_source = read_logits[:, :, span]
             write_source = write_logits[:, :, span]
-            read_output = torch.zeros((n_streams, tokens, width), dtype=torch.float32, device=device)
-            write_output = torch.zeros_like(read_output)
+            #: UNINITIALIZED: a dense level is exactly the tokens, and every solve
+            #: writes every element of one (unlike the tile-major arena, whose tail
+            #: lanes past `tokens` no kernel touches).
+            read_output = torch.empty((n_streams, tokens, width), dtype=torch.float32, device=device)
+            write_output = torch.empty_like(read_output)
             read_levels.append(read_output)
             write_levels.append(write_output)
             support_offset = routing.support_offsets[index]
