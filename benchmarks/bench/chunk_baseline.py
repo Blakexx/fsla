@@ -4,10 +4,14 @@
 `latency_baseline.json` and never a replacement for it: that file's arms name a kernel
 that no longer exists, and no chunk number may be compared against one.
 
-**A BASELINE IS A MEASUREMENT.** It is recorded whole, in one session, on a clean tree,
-by :func:`write` -- never by a test, never partially. Half a baseline taken in one
-session and half in another compares two runs that were never comparable, and nothing in
-the file would say so. The gate side (:func:`compare`) READS ONLY.
+**A BASELINE IS A MEASUREMENT, AND IT IS RECORDED ACROSS SESSIONS.** It is recorded
+whole, on a clean tree, by :func:`write` -- never by a test, never partially. Each row's
+median and IQR are taken over `sessions` SESSION MEDIANS, one per child process, because
+the gate's comparison crosses two processes and a within-session block IQR does not bound
+that gap: measured here, a single-session baseline put 17 of 44 arms over their limit on
+the very next run of the same binary. The within-session spread is kept beside it as
+`within_session_iqr_ms`, as the record of the contrast. The gate side (:func:`compare`)
+READS ONLY.
 
 The threshold is `bench.regression.threshold_ms`, derived from the recorded cell's own
 IQR; the instrument check is `bench.regression.check_instrument`. Neither is re-stated
@@ -38,7 +42,15 @@ def load(path: Path = BASELINE) -> dict:
     return json.loads(path.read_text())
 
 
-def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict,
+#: A baseline row must be built from at least this many SESSIONS. The gate compares two
+#: processes, so the spread it is entitled to be judged against is the spread across
+#: processes. MEASURED: a first single-session baseline put 17 of 44 arms over their limit
+#: on the very next run of the same binary, because a within-session block IQR is often
+#: 0.0000 ms and bounds nothing the comparison actually crosses.
+MIN_SESSIONS = 2
+
+
+def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict, sessions: int = 1,
           path: Path = BASELINE) -> None:
     """Record the whole baseline with its provenance. A DIRTY TREE IS REFUSED.
 
@@ -46,6 +58,14 @@ def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict,
     that no longer exists, so it can never be the thing later numbers are compared
     against.
     """
+    if sessions < MIN_SESSIONS:
+        raise SystemExit(
+            f"REFUSING to write a baseline from {sessions} session(s): the gate compares "
+            f"across PROCESSES, so the spread it is judged against has to be measured "
+            f"across processes. A within-session block IQR is the spread of eleven reps on "
+            f"one warm fixture, and it bounds nothing the comparison crosses -- measured, "
+            f"17 of 44 arms over their limit on an unchanged binary. "
+            f"Record with --sessions >= {MIN_SESSIONS}.")
     if dirty:
         raise SystemExit(
             "REFUSING to write a baseline from a DIRTY tree: the recorded number would "
@@ -53,7 +73,7 @@ def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict,
             "compare against a tree nobody can check out. Commit first, then record.")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"provenance": provenance(), "alarm_sigma": ALARM_SIGMA, "sha": sha,
-               "build_stamp": build_stamp, "arms": arms}
+               "build_stamp": build_stamp, "sessions": sessions, "arms": arms}
     path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
 
 
@@ -74,6 +94,11 @@ def compare(baseline: dict, subject: str, cell: str, measured: dict) -> dict:
             f"baseline whole rather than adding one row to it.")
     row = arms[k]
     check_instrument(row, measured["source"], k)
+    if row.get("sessions", 1) < MIN_SESSIONS:
+        raise SystemExit(
+            f"{k}'s committed baseline was recorded from {row.get('sessions', 1)} "
+            f"session(s), so its spread cannot bound a cross-process comparison. "
+            f"Re-record it: a baseline is a measurement.")
     limit = threshold_ms(row["median_ms"], row["iqr_ms"])
     got = measured["median_ms"]
     return {"key": k, "verdict": "over_limit" if got > limit else "within_limit",

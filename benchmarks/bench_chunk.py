@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
 import json
+import subprocess
 
 from bench import chunk_baseline
 from bench.chunk_cells import CELLS, GROUPS, check_manifest, write_manifest
@@ -74,25 +75,91 @@ def _sweep(run, *, rounds, reps, instrument):
     return arms, rows
 
 
+def _sweep_once(args) -> int:
+    """ONE session's sweep, dumped as JSON. The unit the recorder pairs ACROSS."""
+    with disciplined(tier="landing", cmd="bench_chunk sweep") as run:
+        arms, rows = _sweep(run, rounds=args.rounds, reps=args.reps,
+                            instrument=args.instrument)
+        print(f"ledger += {append(rows)} rows")
+    with open(args.json, "w", encoding="utf-8") as fh:
+        json.dump({k: {"median_ms": v["median_ms"], "blocks": v["blocks"],
+                       "source": v["source"], "rounds": v["rounds"],
+                       "reps_per_round": v["reps_per_round"], "warmup": v["warmup"]}
+                   for k, v in arms.items()}, fh)
+    return 0
+
+
 def _baseline(args) -> int:
+    """Record the baseline across SESSIONS, because that is what the gate compares.
+
+    **MEASURED, and the reason this is not a single sweep.** A first baseline was recorded
+    from one session's block medians, and the very next gate run on the SAME BINARY put 17
+    of 44 arms over their limit. The within-session block IQR is the spread of eleven reps
+    taken back to back on one warm fixture -- often 0.0000 ms -- and the gate's comparison
+    is across two PROCESSES, where the fixture is rebuilt, the allocator is cold and the
+    launch order differs. Those are different spreads, and the threshold has to be derived
+    from the one the comparison actually crosses.
+
+    So the recorder runs `--sessions` CHILD PROCESSES and takes the median and IQR over
+    their session medians. This is the retired recorder's own shape (35 reps x 5 blocks x
+    7 processes) arrived at from the same evidence. The within-session IQR is recorded
+    beside it as `within_session_iqr_ms`, because it is a real measurement of a different
+    thing and dropping it would lose the contrast that motivated the change.
+
+    The children inherit the wrapper's lock descriptor, so `require_gpu_lock` passes in
+    each of them without any of them taking a second lock.
+    """
+    import statistics
+    import tempfile
+
     if not args.write:
         raise SystemExit("`baseline` records; pass --write to say so. `gate` is the read side.")
-    from bench.regression import summarize
+    from bench.regression import CANONICAL_INSTRUMENT as _ci
+    from bench.regression import iqr
 
-    with disciplined(tier="landing", cmd="bench_chunk baseline --write") as run:
+    with disciplined(tier="light", cmd="bench_chunk baseline --write") as run:
         if not check_manifest():
             raise SystemExit("REFUSING to record a baseline over DRIFTED cells: the file "
                              "would name fixtures nobody can rebuild.")
-        arms, rows = _sweep(run, rounds=TIER_ROUNDS["landing"], reps=args.reps,
-                            instrument=args.instrument)
-        recorded = {k: dict(summarize(v["blocks"], source=v["source"]),
-                            rounds=v["rounds"], reps_per_round=v["reps_per_round"],
-                            warmup=v["warmup"])
-                    for k, v in arms.items()}
-        chunk_baseline.write(recorded, dirty=run.dirty, sha=run.sha,
-                             build_stamp=run.stamp)
-        print(f"ledger += {append(rows)} rows")
-        print(f"wrote {len(recorded)} baseline rows to {chunk_baseline.BASELINE}")
+        sha, dirty, stamp = run.sha, run.dirty, run.stamp
+
+    sessions = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(args.sessions):
+            out = Path(tmp) / f"session{i}.json"
+            print(f"--- session {i + 1}/{args.sessions}")
+            done = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "sweep",
+                 "--json", str(out), "--rounds", str(args.rounds),
+                 "--reps", str(args.reps), "--instrument", args.instrument],
+                check=False)
+            if done.returncode != 0:
+                raise SystemExit(f"session {i} failed with {done.returncode}; a baseline is "
+                                 f"recorded WHOLE or not at all")
+            sessions.append(json.loads(out.read_text()))
+
+    keys = set(sessions[0])
+    for session in sessions[1:]:
+        if set(session) != keys:
+            raise SystemExit("the sessions measured different arms; a baseline whose rows "
+                             "come from different rosters compares nothing")
+    recorded = {}
+    for k in sorted(keys):
+        medians = [s[k]["median_ms"] for s in sessions]
+        first = sessions[0][k]
+        recorded[k] = {"median_ms": round(statistics.median(medians), 6),
+                       "iqr_ms": round(iqr(medians), 6),
+                       "within_session_iqr_ms": round(iqr(first["blocks"]), 6),
+                       "session_medians": [round(m, 6) for m in medians],
+                       "sessions": len(medians), "reps": first["rounds"] * first["reps_per_round"],
+                       "rounds": first["rounds"], "reps_per_round": first["reps_per_round"],
+                       "warmup": first["warmup"], "source": first["source"] or _ci}
+        print(f"  {k:<44} {recorded[k]['median_ms']:9.4f} ms  "
+              f"cross-session IQR {recorded[k]['iqr_ms']:.4f}  "
+              f"(within-session {recorded[k]['within_session_iqr_ms']:.4f})")
+    chunk_baseline.write(recorded, dirty=dirty, sha=sha, build_stamp=stamp,
+                         sessions=args.sessions)
+    print(f"wrote {len(recorded)} baseline rows to {chunk_baseline.BASELINE}")
     return 0
 
 
@@ -124,12 +191,19 @@ def main(argv=None) -> int:
     sub.add_parser("run")
     m = sub.add_parser("manifest")
     m.add_argument("--write", action="store_true")
-    for name in ("baseline", "gate"):
+    for name in ("baseline", "gate", "sweep"):
         s = sub.add_parser(name)
         s.add_argument("--reps", type=int, default=REPS_PER_ROUND)
         s.add_argument("--instrument", default=CANONICAL_INSTRUMENT)
         if name == "baseline":
             s.add_argument("--write", action="store_true")
+            #: SEVEN sessions, the retired recorder's own count. The threshold is derived
+            #: from the spread ACROSS them because that is the gap the gate crosses.
+            s.add_argument("--sessions", type=int, default=7)
+            s.add_argument("--rounds", type=int, default=TIER_ROUNDS["light"])
+        elif name == "sweep":
+            s.add_argument("--json", required=True)
+            s.add_argument("--rounds", type=int, default=TIER_ROUNDS["light"])
         else:
             s.add_argument("--tier", default="landing", choices=sorted(TIER_ROUNDS))
     args, rest = p.parse_known_args(argv)
@@ -139,6 +213,8 @@ def main(argv=None) -> int:
         return _manifest(args)
     if args.command == "baseline":
         return _baseline(args)
+    if args.command == "sweep":
+        return _sweep_once(args)
     if args.command == "gate":
         return _gate(args)
     return drive(set(SUBJECTS), rest, description=__doc__)

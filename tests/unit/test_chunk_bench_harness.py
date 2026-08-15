@@ -167,17 +167,50 @@ def test_a_baseline_from_a_dirty_tree_is_refused(tmp_path):
     """PLANTED: a baseline recorded over uncommitted edits. Every later gate would then
     compare against a tree nobody can check out."""
     with pytest.raises(SystemExit) as excinfo:
-        chunk_baseline.write({}, dirty=True, sha="0" * 40, build_stamp={},
+        chunk_baseline.write({}, dirty=True, sha="0" * 40, build_stamp={}, sessions=7,
                              path=tmp_path / "b.json")
     assert "DIRTY tree" in str(excinfo.value)
     assert not (tmp_path / "b.json").exists()
 
 
-def _baseline(source):
-    row = {"median_ms": 1.0, "iqr_ms": 0.01, "reps": 8}
+def test_a_baseline_recorded_from_ONE_session_is_refused_on_both_sides(tmp_path):
+    """PLANTED: the defect this harness shipped and then measured. A within-session block
+    IQR is the spread of eleven reps on one warm fixture -- often exactly zero -- and the
+    gate's comparison crosses two PROCESSES. Recorded that way, 17 of 44 arms went over
+    their limit on the very next run of an unchanged binary."""
+    with pytest.raises(SystemExit) as excinfo:
+        chunk_baseline.write({}, dirty=False, sha="0" * 40, build_stamp={}, sessions=1,
+                             path=tmp_path / "b.json")
+    assert "across PROCESSES" in str(excinfo.value)
+    assert not (tmp_path / "b.json").exists()
+
+    measured = {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT}
+    with pytest.raises(SystemExit) as reading:
+        chunk_baseline.compare(_baseline(CANONICAL_INSTRUMENT, sessions=1),
+                               "chunk_forward", "c", measured)
+    assert "cannot bound a cross-process comparison" in str(reading.value)
+
+
+def test_the_committed_baseline_carries_its_session_count_and_clears_the_floor():
+    """The file in the tree, not a fixture: the shipped baseline must itself satisfy the
+    floor, or every gate run against it is refused."""
+    committed = json.loads((BENCHMARKS / "cells" / "chunk_latency_baseline.json").read_text())
+    assert committed["sessions"] >= chunk_baseline.MIN_SESSIONS
+    roster = {chunk_baseline.key(subject, name)
+              for name, cell in CELLS.items() for subject in applicable(cell)}
+    assert set(committed["arms"]) == roster
+    for name, row in committed["arms"].items():
+        assert row["sessions"] >= chunk_baseline.MIN_SESSIONS, name
+        assert row["source"] == CANONICAL_INSTRUMENT, name
+        assert "within_session_iqr_ms" in row, name
+
+
+def _baseline(source, sessions=7):
+    row = {"median_ms": 1.0, "iqr_ms": 0.01, "reps": 8, "sessions": sessions}
     if source is not None:
         row["source"] = source
-    return {"provenance": {}, "alarm_sigma": 3.0, "arms": {"chunk_forward|c": row}}
+    return {"provenance": {}, "alarm_sigma": 3.0, "sessions": sessions,
+            "arms": {"chunk_forward|c": row}}
 
 
 def test_a_gate_across_two_stopwatches_is_refused():
