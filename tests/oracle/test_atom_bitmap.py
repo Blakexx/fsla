@@ -196,6 +196,6 @@ def test_stats_through_the_host_seam():
                            routing=union_routing()).cuda()
     x = torch.randn(_B, _T, 64, device="cuda")
     routes = gateway(x)
-    bits = chunk.stats(routes)
+    bits = chunk.stats(chunk.pack(routes))
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(bits.bool(), _oracle_bitmap(routes.write, (16, 16)))

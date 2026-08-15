@@ -149,7 +149,7 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
     refusal = _chunk.unsupported(routes, None, d_v=d_v)
     assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
     y, state = _chunk.run(
-        routes, v.to(torch.float32), want_state=True,
+        _chunk.pack(routes), v.to(torch.float32), want_state=True,
         state_in=initial_state.to(torch.float32).reshape(
             B * H, topology.N // 16, 16, cols))
     if q_y is not None:

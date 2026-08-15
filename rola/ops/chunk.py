@@ -6,12 +6,15 @@ does not (the facade stays generic; capabilities return through the paging
 and backward work, not
 through silent degradation).
 
-The packing performed here (level concat + [B,T,H,*] -> [B,H,T,*] permutes)
-is torch glue, measured and scheduled for deletion by the e2e cleanup step
-(fused into the producer epilogue); the seam's shape does not change when it
-goes.
+The packing performed here is torch glue, and it happens ONCE per call
+(`pack` -> `PackedRoutes`), so every entry a call makes reads the same bytes.
+It is still scheduled for deletion -- the producer's epilogue is where a
+`[B, H, T, sumW]` bf16 side is eventually emitted directly -- and the seam's
+shape does not change when it goes.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 
@@ -82,7 +85,53 @@ def unsupported(routes, decay, *, d_v: int) -> str | None:
     return None
 
 
-def stats(routes) -> torch.Tensor:
+def _pack_side(levels) -> torch.Tensor:
+    """The per-level `[B, T, H, width_l]` tuple as one `[B, H, T, sumW]` bf16 tensor.
+
+    ONE destination and one pass per level: concatenating in the public layout
+    materializes an intermediate no kernel reads, and the transpose and the
+    narrowing are then a second pass over it.
+    """
+    batch, tokens, heads, _ = levels[0].shape
+    widths = [level.shape[-1] for level in levels]
+    packed = torch.empty((batch, heads, tokens, sum(widths)),
+                         dtype=torch.bfloat16, device=levels[0].device)
+    offset = 0
+    for level, width in zip(levels, widths):
+        packed[:, :, :, offset:offset + width].copy_(level.permute(0, 2, 1, 3))
+        offset += width
+    return packed
+
+
+@dataclass(frozen=True, slots=True)
+class PackedRoutes:
+    """One call's routing bundle in the KERNEL's layout, materialized ONCE.
+
+    The bundle's public layout is `[B, T, H, width_l]` per level; every chunk entry
+    reads `[B, H, T, sumW]` bf16 per side. Both the stats pass and the launch need
+    exactly that, so it is built once per call and carried, rather than derived at
+    each entry from the bundle that outlives them.
+
+    `routes` rides along because the launch's non-tensor facts -- the topology, the
+    device, `T` -- are the bundle's and are not recoverable from the packed tensors.
+    """
+
+    routes: object
+    pr: torch.Tensor
+    pw: torch.Tensor
+    gw: torch.Tensor
+
+
+def pack(routes) -> PackedRoutes:
+    """THE packing, and the only one: `routes` in the layout the kernels read."""
+    return PackedRoutes(
+        routes=routes,
+        pr=_pack_side(routes.read),
+        pw=_pack_side(routes.write),
+        gw=_pack(routes.g_write.permute(0, 2, 1)))
+
+
+def stats(packed: PackedRoutes) -> torch.Tensor:
     """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
 
     The page plan's input (docs/internals/paging/stats.md).  It is keyed to the
@@ -91,9 +140,8 @@ def stats(routes) -> torch.Tensor:
     be an OUTPUT of the plan rather than a consequence of it.  Device-side: no
     host synchronization happens here.
     """
-    widths = tuple(l.width for l in routes.topology.levels)
-    pw = _pack(torch.cat(routes.write, -1).permute(0, 2, 1, 3))
-    return extension().chunk_stats(pw, list(widths))
+    widths = [l.width for l in packed.routes.topology.levels]
+    return extension().chunk_stats(packed.pw, widths)
 
 
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
@@ -117,10 +165,14 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     return build(shape, device=routes.device, dtype=torch.float32)
 
 
-def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
+def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = None,
         want_state: bool = False, arena=None,
         sparse_grid: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
+
+    `packed` is this call's :func:`pack` -- the routing already in the kernels'
+    layout, so a stateful call's stats pass and its launch read the same bytes
+    instead of each building their own copy of them.
 
     `state_in` is a plane of the call's backing, or `None` for a fresh sequence;
     `want_state` asks for the carried state back. A call that asks for neither
@@ -143,11 +195,10 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     (docs/internals/chunk/chunk_kernel.md#work-loop).
     """
     m = extension()
+    routes = packed.routes
     widths = tuple(l.width for l in routes.topology.levels)
     c, bc = _arm_for(len(widths), widths[0])
-    pr = _pack(torch.cat(routes.read, -1).permute(0, 2, 1, 3))
-    pw = _pack(torch.cat(routes.write, -1).permute(0, 2, 1, 3))
-    gw = _pack(routes.g_write.permute(0, 2, 1))
+    pr, pw, gw = packed.pr, packed.pw, packed.gw
     vk = _pack(v.permute(0, 2, 1, 3))
     if arena is None:
         page_tbl = None

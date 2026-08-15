@@ -273,8 +273,8 @@ class Case:
                               device=torch.device("cuda"))
             #: the arena is planned from the KERNEL's own exact write bitmap,
             #: so residency is an output of the routing and not a guess about it.
-            arena.plan_exact(_chunk.stats(self.bundle))
-        y, plane = _chunk.run(self.bundle, self._f32["v"], state_in=s_in,
+            arena.plan_exact(_chunk.stats(_chunk.pack(self.bundle)))
+        y, plane = _chunk.run(_chunk.pack(self.bundle), self._f32["v"], state_in=s_in,
                               want_state=True, arena=arena)
         state = arena.materialize() if arena is not None else plane
         return y, state.reshape(self.B, self.H, self.N, self.cols)

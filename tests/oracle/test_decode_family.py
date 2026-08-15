@@ -127,7 +127,7 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
                    output_final_state=True)
         return
     assert _chunk.unsupported(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
-    _y_pre, state = _chunk.run(bundle, f["v"], want_state=True)
+    _y_pre, state = _chunk.run(_chunk.pack(bundle), f["v"], want_state=True)
 
     _y_ref, ref_state = naive_rola(
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],

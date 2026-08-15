@@ -58,7 +58,7 @@ class _ChunkCall:
     operand, plus the out-parameter the state plane returns through.
     """
 
-    routes: Any
+    packed: Any
     state_in: torch.Tensor | None
     want_state: bool
     arena: Any
@@ -129,17 +129,20 @@ def rola_op(
             "TILED consumer's owner block. The chunk arm's BC belongs to the built arm "
             "the manifest carries for this topology and is not host-selectable; pass "
             "state_block=None.")
+    #: ONE packing per call, and every entry below reads it: the stats pass and the
+    #: launch want the same bytes in the same layout.
+    packed = _chunk.pack(routes)
     if state is None:
         #: No state object, no state I/O: the variant with none of it compiled in
         #: runs (docs/internals/chunk/chunk_kernel.md#state-axis).
-        y, _ = ChunkConsumer.run(routes, v)
+        y, _ = ChunkConsumer.run(packed, v)
         return y, None
     # THE HOST ORDER is why these four lines are not folded into `chunk.run`
     # (docs/internals/state.md#host-order).
-    atom_bits = _chunk.stats(routes) if state._wants_pages(paging) else None
+    atom_bits = _chunk.stats(packed) if state._wants_pages(paging) else None
     s_in, arena = state._kernel_entry(
         routes, atom_bits, d_v=v.shape[-1], paging=paging, BC=_chunk.arm(routes)[1])
-    y, plane = ChunkConsumer.run(routes, v, state_in=s_in, want_state=True, arena=arena)
+    y, plane = ChunkConsumer.run(packed, v, state_in=s_in, want_state=True, arena=arena)
     state._kernel_commit(plane)
     return y, state
 
@@ -279,11 +282,11 @@ class ChunkConsumer(torch.autograd.Function):
     """
 
     @staticmethod
-    def run(routes, v, *, state_in=None, want_state=False, arena=None):
+    def run(packed, v, *, state_in=None, want_state=False, arena=None):
         """``(y, final state or None)`` -- ``rola.ops.chunk.run`` through the node."""
-        call = _ChunkCall(routes=routes, state_in=state_in, want_state=want_state,
+        call = _ChunkCall(packed=packed, state_in=state_in, want_state=want_state,
                           arena=arena, plane=None)
-        y = ChunkConsumer.apply(call, v, *routes.tensors())
+        y = ChunkConsumer.apply(call, v, *packed.routes.tensors())
         return y, call.plane
 
     @staticmethod
@@ -293,7 +296,7 @@ class ChunkConsumer(torch.autograd.Function):
         from rola.ops import chunk as _chunk
 
         y, call.plane = _chunk.run(
-            call.routes, v, state_in=call.state_in, want_state=call.want_state,
+            call.packed, v, state_in=call.state_in, want_state=call.want_state,
             arena=call.arena)
         #: The state plane leaves through the payload rather than as a second output:
         #: it is the CALLER's allocation (the arena's, when paged), and an autograd

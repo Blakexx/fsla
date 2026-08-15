@@ -147,7 +147,7 @@ def test_the_node_is_what_makes_a_bypassed_refusal_loud_rather_than_silent():
     from rola.ops import chunk as _chunk
 
     assert _chunk.unsupported(routes, None, d_v=v.shape[-1]) is None, "fixture must be a BUILT arm"
-    y, _ = ChunkConsumer.run(routes, v)
+    y, _ = ChunkConsumer.run(_chunk.pack(routes), v)
     assert y.grad_fn is not None, (
         "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "
         "graph is severed and nothing said so")

@@ -500,11 +500,11 @@ def test_the_arena_travels_through_the_host_seam():
 
     routes = gateway(x)
     BC = 128  # the arm `rola.ops.chunk` pins for this topology
-    y_dense, dense = chunk.run(routes, v, want_state=True)
-    y_control, _ = chunk.run(routes, v, want_state=True)
+    y_dense, dense = chunk.run(chunk.pack(routes), v, want_state=True)
+    y_control, _ = chunk.run(chunk.pack(routes), v, want_state=True)
     arena = _arena(widths, BC, routes.batch * routes.heads)
-    arena.plan_exact(chunk.stats(routes).bool())
-    y_paged, plane = chunk.run(routes, v, want_state=True, arena=arena)
+    arena.plan_exact(chunk.stats(chunk.pack(routes)).bool())
+    y_paged, plane = chunk.run(chunk.pack(routes), v, want_state=True, arena=arena)
 
     assert plane is arena.state
     assert torch.equal(dense.view(-1, prod(widths), _COLS), arena.materialize())
