@@ -5,8 +5,7 @@ slots**, and whose per-token routing decides which slots each token reads from a
 writes to. The state is a fixed size chosen by the topology, not a cache that grows
 with the sequence — so the memory footprint at token *T* is the same as at token 1.
 This repository ships the CUDA consumer kernel that executes that routed
-recurrence, the planner that chooses its runtime geometry, the layer, and the
-evidence for all three.
+recurrence, the layer around it, and the evidence for both.
 
 Paper: *(link on publication)* · Citation: [below](#citation)
 
@@ -26,19 +25,20 @@ looked at. → [`tools/manifests/`](tools/manifests/), [`docs/bringup.md`](docs/
 (inter-implementation)* gates the kernel against an fp64 oracle across the full
 semantic matrix, at tolerances that are derived and documented rather than tuned
 until green. *Tier 2 (intra-implementation)* gates the kernel against **itself**
-across every runtime geometry the planner may choose — and every geometry pair
-carries a declared contract class: engineered identities are tested as **byte
-equality**, and legitimate reassociations are tested against the oracle plus a
-**derived** error bound. A pair changing class is itself a test failure.
+across every geometry the built matrix carries and under both state backings — and
+every geometry pair carries a declared contract class: engineered identities are
+tested as **byte equality**, and legitimate reassociations are tested against the
+oracle plus a **derived** error bound. A pair changing class is itself a test
+failure.
 → [`docs/testing.md`](docs/testing.md),
-[`tests/tier2_geometry/matrix.py`](tests/tier2_geometry/matrix.py)
+[`tests/tier2_geometry/`](tests/tier2_geometry/)
 
 **Committed measured cells, with provenance.** The benchmark results in this
 README are files in this repository, each carrying the machine, driver, toolchain,
 and the SHA of the ratification manifest the binary was built from. Regression
 thresholds are derived from each cell's own measured spread, never an invented
-percentage, and the planner's shared-memory ceiling is gated against the *built
-binary's own* dispatch-table carve rather than a modelled one.
+percentage, and the kernel's geometry is read out of the *built binary's own* arm
+list rather than modelled.
 → [`benchmarks/cells/`](benchmarks/cells/), [`docs/build.md`](docs/build.md)
 
 **A documentation tree the code is checked against.** The engine's design reasons
@@ -82,9 +82,9 @@ The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, nev
 `.so` is asserted to contain zero PTX images. Setting `ROLA_CUDA_ARCHS` to an
 architecture with no ratified manifest fails the build before it compiles anything.
 
-The consumer's 512 kernel instantiations are compiled as **eight generated
+The consumer's 42 kernel instantiations are compiled as **three generated
 translation units** ([`csrc/rola/src/instantiations/`](csrc/rola/src/instantiations/)),
-partitioned on precision x normalization x tile width, so the matrix parallelizes
+partitioned as contiguous blocks of the declared arm list, so the matrix parallelizes
 across `MAX_JOBS` instead of serializing inside one compiler process. They are
 checked in — what is reviewed is what compiles — and `python tools/gen_shards.py
 --check` is the gate that keeps them the files their generator produces. `MAX_JOBS`
@@ -165,7 +165,7 @@ y, state = layer(x, state=rola.state())
 ```
 
 Four arguments, because everything else was either a fact about the feature map (which
-lives on the feature map) or a launch decision (which the planner makes).
+lives on the feature map) or a launch decision (which the op makes).
 
 ### The state
 
@@ -177,16 +177,16 @@ call returns `(y, None)`. Every `transformers` cache abstraction is built for th
 GROWING case, which this is not, so RoLA owns its object outright
 (docs/internals/state.md).
 
-### The planner
+### The launch geometry
 
-The planner derives the runtime geometry — `BC`, the CTA's resident state tile — as a
-closed form over launch-static facts (the topology, the built binary's own dispatch
-table, the machine), inside the op, per call. There is no cost model and nothing to
-calibrate. It is not on the public surface: `rola.expert` is the marked door for a
-caller that must pin an axis, and a
-`Plan` built by hand there can be executed straight through `rola.expert.execute` —
-the kernel's correctness does not depend on which geometry the planner picked, and
-that is what Tier 2 exists to prove.
+There is no planner and no cost model. The runtime geometry — `BC`, the CTA's
+resident state tile — belongs to the BUILT ARM: the op looks the topology up in the
+binary's own arm list and runs it, or names the clause that refuses and dispatches
+to the fp64 reference. `rola.expert` is the marked door for a caller that must ask
+what a call will do (`dispatch_for`) or pin the state's backing; the axes that are
+not host-selectable refuse by name rather than being ignored. The kernel's
+correctness does not depend on which arm a topology lands on, and that is what Tier
+2 exists to prove.
 
 ### The oracle
 
@@ -202,22 +202,25 @@ Benchmark cells are committed data, not scripts that might reproduce it:
 carries each cell's realized statistics, and
 [`benchmarks/cells/latency_baseline.json`](benchmarks/cells/latency_baseline.json)
 carries per-arm latencies with normalized provenance (GPU, driver, toolchain,
-manifest SHA — no host identifiers). The methodology — interleaved paired arms,
-median of per-pair ratios, IQR reported alongside — is documented in
-[`benchmarks/bench/pairing.py`](benchmarks/bench/pairing.py).
+manifest SHA — no host identifiers). **Those cells are the retired tiled consumer's
+and are parked as a record**; no chunk-arm number may be compared against them
+([`benchmarks/cells/README.md`](benchmarks/cells/README.md)). The methodology —
+interleaved paired arms, median of per-pair ratios, IQR reported alongside — is
+documented in [`docs/measurement.md`](docs/measurement.md), which also states what
+the successor harness owes.
 
 ## Evidence
 
 - [`docs/architecture/`](docs/architecture/README.md) — the permanent decision
   record: the self-masking theorem, the affine-recurrence rule, the factored
-  representation, fp32 accumulation, closed-world codegen, the planner
-  principle, and the guarantees/choices/preferences taxonomy.
+  representation, fp32 accumulation, closed-world codegen, the launch-geometry
+  rule, and the guarantees/choices/preferences taxonomy.
 - [`docs/internals/`](docs/internals/README.md) — one document per source file,
   carrying the reasons attached to a line, plus the deletion ledger.
 - [`docs/testing.md`](docs/testing.md) — the tiers, the tolerance discipline, the
-  geometry matrix and its meta-tests, and the conformance data-regime box.
-- [`docs/measurement.md`](docs/measurement.md) — the one stopwatch, the discipline
-  the probe harness acquires rather than documents, and the append-only ledger.
+  geometry pairs and their contract classes, and the conformance data-regime box.
+- [`docs/measurement.md`](docs/measurement.md) — the one stopwatch, the discipline a
+  harness must acquire rather than document, and the append-only ledger.
 - [`docs/ratification.md`](docs/ratification.md) — what a manifest is, what the
   closed-world rules refuse, and why the gate self-tests.
 - [`docs/build.md`](docs/build.md) — the ahead-of-time build and the
@@ -233,9 +236,9 @@ pytest tests/unit tests/tier1_semantics -m "not cuda"   # CPU: no device, no bui
 pytest tests/tier1_semantics -m cuda                    # TIER 1: kernel vs fp64 oracle
 pytest tests/tier2_geometry                             # TIER 2: kernel vs itself
 pytest tests/layers                                     # layer <-> op
+pytest tests/conformance                                # the data-regime box
 python tools/ratify.py --arch 80 --arch 86              # ratification, no GPU needed
 python tools/ratify.py --self-test                      # prove the gate can fail
-pytest benchmarks/test_latency_regression.py -m bench   # latency vs the committed baseline
 ```
 
 Never `pytest tests/` unscoped. The `cuda` marker exists so that `-m "not cuda"`

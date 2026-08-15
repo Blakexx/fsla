@@ -25,9 +25,10 @@ mainline is the union of upstream FLA and RoLA V3.
 
 Considered and rejected: `git filter-repo` of the RoLA paths into this repository.
 
-The extraction **renames essentially every file** (`v3_consumer.cu` →
+The extraction **renamed essentially every file** (`v3_consumer.cu` →
 `csrc/rola/src/consumer.cu`, `ops/rola/routing/schedule_v3.py` →
-`rola/planner/schedule.py`, and so on for ~50 paths), and it also renames the C++
+`rola/planner/schedule.py`, and so on for ~50 paths — both of those destinations
+have since been deleted outright, P67 D2), and it also renames the C++
 symbols the ratification manifest is keyed on. `git blame` continuity — the only
 real benefit of filtering — is therefore not actually delivered without a large,
 error-prone, and unverifiable `--path-rename` script. Meanwhile the filtered
@@ -44,7 +45,7 @@ performed later; a filter-repo on a published repository cannot be undone.
 This package is licensed **Apache-2.0** (see `LICENSE`, `NOTICE`).
 
 The upstream project, flash-linear-attention, is MIT-licensed. The RoLA CUDA
-kernels, routing producers, planner, ratification tooling, and evidence machinery
+kernels, routing producers, ratification tooling, and evidence machinery
 are original work and are not derived from it. The files whose lineage does trace
 to the fork — chiefly the layer scaffolding conventions and small cache helpers —
 are noted in `NOTICE`; MIT permits the relicensing of derivative distributions

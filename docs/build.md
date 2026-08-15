@@ -2,7 +2,7 @@
 
 ## The governing constraint
 
-The consumer kernel is compiled **ahead of time** into a fatbin containing
+The kernels are compiled **ahead of time** into a fatbin containing
 `code=sm_XX` images only. There is no JIT, no PTX for the driver to compile, and no
 runtime autotuning. Everything the binary can execute has been assembled by a
 `ptxas` whose output was measured and committed
@@ -50,16 +50,16 @@ mamba-ssm require the same thing for the same reason.
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. The consumer's 64 kernel instantiations are spread over
-   eight translation units (`csrc/rola/src/instantiations/`), so the matrix
-   parallelizes across `MAX_JOBS` processes instead of serializing inside one
-   `cicc`.
+5. **Compile.** `ninja`. The chunk consumer's 42 kernel instantiations are spread
+   over three generated translation units (`csrc/rola/src/instantiations/`, 5
+   generated files in all), so the matrix parallelizes across `MAX_JOBS` processes
+   instead of serializing inside one `cicc`.
 6. **The fatbin gate.** `tools/fatbin_entries.py --check` reads the built `.so` and
    requires exactly one device entry per instantiation per architecture, each in
    the shard the matrix assigns it, and every ratified name present. This is the
    only gate that can see a *failed* split: duplicated device code leaves the build
-   green, the manifest byte-identical and `nm` at 64, because a `__global__`
-   template's host stub is weak and the linker keeps one.
+   green, the manifest byte-identical and `nm` reporting one symbol per arm,
+   because a `__global__` template's host stub is weak and the linker keeps one.
 7. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves
    the codegen still matches what was measured.
@@ -82,8 +82,8 @@ MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
 The dominant term a single translation unit imposes is measured: one `nvcc` process
 holding the whole matrix at 512 arms took 411 s of wall and 4.4 GB of resident set,
 with no way to spend a second core on it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
-the same ten translation units the build does, which a content-addressed compiler
-cache would turn into hits.
+the same five translation units the build does (three chunk shards, `decode.cu`,
+`entmax.cu`), which a content-addressed compiler cache turns into hits.
 
 The two clean rebuilds are byte-identical in every entry point's SASS
 (`tools/sass_bodies.py`), so those numbers are the same binary twice.
@@ -187,13 +187,16 @@ Verified non-vacuously: master built in a fresh worktree fails exactly as descri
 above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
 its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-Three OTHER files' anonymous-namespace kernel blocks are unaffected and still
-path-dependent by name (`consumer.cu`'s `scan_kernel`/`divide_kernel`,
-`decode_expand.cu`'s `decode_expand_kernel`, `summaries.cu`'s `summaries_kernel`,
-5/arch) — P19 was scoped to the two files the ratified manifest actually certifies
-through this discriminator. These five were never in the ratified manifest to begin
-with (it holds 352 entries/arch; the full SASS scan holds 358, and the 6/arch
-difference is these five kernels plus one path-independent CUB entry point), so their residual
+Other files' anonymous-namespace kernel blocks are unaffected and still
+path-dependent by name (`decode_expand.cu`'s `decode_expand_kernel`,
+`summaries.cu`'s `summaries_kernel`; `consumer.cu`'s `scan_kernel`/`divide_kernel`
+were of this class and left with that file in P67 D2) — P19 was scoped to the two
+files the ratified manifest actually certifies through this discriminator. They were
+never in the ratified manifest to begin with (which holds 147 entries/arch against
+the full SASS scan's 155: the eight-entry difference is `decode_expand`'s two arms
+and its two growth-probe entries, `summaries_kernel`, the chunk arm's
+path-independent `stamp_kernel` and `divide_kernel`, and one CUB entry point), so
+their residual
 path-dependence shows up only in a raw `sass_bodies.py` dump, never in a build or a
 ratification gate. A worktree build no longer fails, and a same-tip SASS comparison
 across paths is 0-differing over every ratified entry.
@@ -211,9 +214,11 @@ build and the ratification import). `fatbinary` compresses by default, but that
 default covers PTX and debug images only, and for the cubins it applies a SIZE
 HEURISTIC: measured on this tree, every cubin it stored raw was <= 9,076,960 B and
 every one it compressed was >= 10,075,232 B. That makes the shipped artifact a
-function of the SHARD PARTITION rather than of the code — at 32 arms per shard
-twelve of the sixteen consumer cubins fall under the threshold. Measured, same 256
-arms, same sources:
+function of the SHARD PARTITION rather than of the code. The measurement below was
+taken on the tiled consumer's 256-arm matrix (retired in P67 D2), where at 32 arms
+per shard twelve of the sixteen cubins fell under the threshold; the FLAG is what
+made the artifact size independent of that partition, which is why the measurement
+still governs. Same 256 arms, same sources:
 
 | build | `.so` |
 |---|---|
@@ -224,8 +229,8 @@ arms, same sources:
 So the flag decouples size from the partition — and beats the coarser partition
 outright, because it compresses the four large cubins the heuristic already took AND
 the twelve it did not. The partition therefore stays a build-time question decided on
-its own terms (`tools/gen_shards.py`: the shard axes are PREC x GLOBAL x BT, which is
-what keeps a ratchet refusal a one-shard event).
+its own terms (`tools/gen_shards.py`: the chunk partition is contiguous blocks of the
+declared arm list, which is what keeps a ratchet refusal a one-shard event).
 
 Compression is applied to the image AFTER `ptxas` has assembled it, so it cannot move
 codegen — proven rather than asserted, by comparing every entry point's SASS across
@@ -267,5 +272,5 @@ side effect; it is rule 2, checked.
 ## Dependencies
 
 `torch` and `einops`. Not `transformers` (the HF model classes stay in the fork),
-not `fla`, not `triton` — the consumer is CUDA. Optional interop lives behind
+not `fla`, not `triton` — the kernels are CUDA. Optional interop lives behind
 extras (`[transformers]`, `[fla]`) and `rola` itself imports neither.

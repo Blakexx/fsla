@@ -1,7 +1,7 @@
 # Ratification — the closed-world codegen policy
 
 A **ratification manifest** is a measured, committed record of what the assembler
-did to every instantiation of the consumer kernel, on one architecture, under one
+did to every instantiation the extension ships, on one architecture, under one
 exact `ptxas`:
 
 ```
@@ -10,25 +10,24 @@ tools/manifests/sm_86.json
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
-    "shards":   { "consumer_gt16_decay_bc16": { "members_sha256": "...",
-                                                "count": 8 }, ... },
+    "shards":   { "chunk_s0": { "members_sha256": "...", "count": 16 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
                                             "hot_locals": 0, "local_ops": 12,
                                             "sass_sha256": "..." }, ... } }
 ```
 
-144 entries per architecture, measured on the current tree: 64 for the consumer —
-one per point of the `consumer_forward_kernel<BC, DV, D, DECAY, GT>` product (the
-P26 endgame executor collapsed the matrix from 256 to 32 by deleting the `BT`,
-`PREC` and `GLOBAL` axes, and the window batch then widened it back to 64 by adding
-`GT`; [`docs/internals/DELETIONS.md`](internals/DELETIONS.md)) — plus 16
-`decode_gemv_kernel` (`DV x D x DECAY`; its own `GLOBAL` axis died with raw
-normalization the P26 sweep) and 32 each of `union_forward_kernel` and
-`union_backward_kernel`, whose matrix the window batch did not touch. `defines` is
-the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since the
-closed-world codegen surface carries no `#define` this gate has to pin. Two
-ratified architectures (`sm_80`, `sm_86`) make 288 entries total. The manifest is
+**147 entries per architecture**, measured on the current tree: **67 for the chunk
+consumer** — 42 `compacted_kernel` (one per built `(C, BC, D, B)` arm crossed with
+the state axis), plus its table passes (11 `union_table_kernel`, 7
+`atom_table_kernel`, 7 `atom_bitmap_kernel`) — plus 16 `decode_gemv_kernel`
+(`DV x D x DECAY`) and 32 each of `union_forward_kernel` and
+`union_backward_kernel`. It was 179 over seven shards, of which 32 entries were the
+tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>` product carried by four of them;
+that arm retired in P67 D2 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
+`defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
+the closed-world codegen surface carries no `#define` this gate has to pin. Two
+ratified architectures (`sm_80`, `sm_86`) make **294 entries total**. The manifest is
 the authority on the count and no comment restates it independently. The mangled
 name is the key because it is exact, stable, and encodes every template argument
 — an entry cannot be silently re-pointed at a different instantiation by a rename
@@ -46,34 +45,25 @@ ratchet, not a spill ban** (P25's recorded adjudication): a spill is admissible
 when it is priced, recorded here, and worse than every alternative in hand — not
 when it is absent.
 
-On the current tree the consumer's 64-arm matrix ratifies at zero spill
-EXCEPT TWO arms, and those two are an accepted, priced trade rather than an
-oversight: `<BC=16, DV=32|64, D=1, nodecay, GT=16>` spill **16 bytes stores /
-48 bytes loads each on `sm_86`** (**8 bytes stores / 24 bytes loads each on
-`sm_80`**) — the tightest key in the matrix (a 64-register budget, four CTAs/SM),
-and `D = 1` specifically; the same key at `D = 2, 3` stays at 64 registers with
-zero spill. A `72`-register budget on that key removes the spill but costs a CTA
-(4 -> 3) on exactly those two arms, and residency is this kernel's own expensive
-resource (its headline result), so paying a CTA to retire 16 bytes on a
-degenerate one-level topology priced worse than carrying the spill — a trade,
-not a ban, and the successor's or a reviewer's to overturn with new evidence
-(full adjudication: `workflows/perf/p36_quantum.md`, "THE ONE RATCHET ITEM,
-RECORDED AND FLAGGED RATHER THAN LAUNDERED"). Every other consumer arm,
-including all 32 new `GT = 64` window arms, is zero-spill (measured: the P26
-endgame executor's SMEM carve dropped every consumer instantiation's spill from a
-nonzero working set to none, and hot-loop locals from 8,933 to 254 across the
-matrix; the window batch's `GT = 64` arms carry a register working set of
-87..117 on `sm_86` (113 max on `sm_80`) against the 112-register budget the `GT`
-axis buys — [`internals/DELETIONS.md`](internals/DELETIONS.md) records what was
-cut to get there). The other two live spilling entries in the current manifest
-are both `union_backward_kernel` (entmax), 16 bytes stores / 16 bytes loads each
-on `sm_86` (24/24 on `sm_80`), unrelated to either sweep.
+**On the current tree, 294 instantiations measured, 0 with an unhonored bound, and
+4 that spill at all** — all four the same entmax kernel, `union_backward_kernel`
+`<32, 8, false>` in both its bf16 and fp32 forms, at 16 stores / 16 loads on
+`sm_86` and 24/24 on `sm_80`, 64 registers. **Every chunk and decode instantiation
+is zero-spill.**
+
+The tiled consumer's two priced-spill arms (`<BC=16, DV=32|64, D=1, nodecay,
+GT=16>`, carried deliberately because a 72-register budget removed the spill and
+cost a CTA on exactly those two arms) left the manifest with that kernel in P67 D2.
+The adjudication is kept because the RULE it settled is what governs the next such
+trade: a spill is admissible when it is priced, recorded, and worse than every
+alternative in hand (`workflows/perf/p36_quantum.md`, "THE ONE RATCHET ITEM,
+RECORDED AND FLAGGED RATHER THAN LAUNDERED").
 
 ## What it compiles, and why that is the shipped source
 
 `python tools/ratify.py` compiles **the translation units the build compiles** —
-the eight generated instantiation shards under `csrc/rola/src/instantiations/`,
-plus `decode.cu` and `entmax.cu` — under the flag list `setup.py` uses, imported
+the three generated chunk shards under `csrc/rola/src/instantiations/`, plus
+`decode.cu` and `entmax.cu` — under the flag list `setup.py` uses, imported
 from `tools/build_flags.py` rather than restated. Two properties follow, and
 neither held before:
 
@@ -83,15 +73,16 @@ neither held before:
   decode/entmax keys named symbols that existed in no shipped `.so`. They now name
   the entry points the binary carries, and `tools/fatbin_entries.py` checks that
   rather than asserting it.
-- **there is one enumeration of the matrix.** The shards, the dispatch table and
-  this gate's source list all come out of `tools/gen_shards.py`; there is no second
-  file that could enumerate a different 64.
+- **there is one enumeration of the matrix.** The shards, the kernel's own X-macro
+  walk (`instantiations/chunk_arms.inc`) and this gate's source list all come out of
+  `tools/gen_shards.py`; there is no second file that could enumerate a different
+  arm set.
 
-The consumer's 64 keys are unaffected by the split by construction:
-`consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
-depend on which translation unit expands it.
+The chunk keys are unaffected by the shard split by construction:
+`rola::chunk::compacted_kernel` lives in a NAMED namespace, so its mangled name
+does not depend on which translation unit expands it.
 
-`--shard NAME` scopes the compile to one shard's 8-entry slice for triage. It is a
+`--shard NAME` scopes the compile to one shard's slice for triage. It is a
 measurement scope only: `--write` refuses it, because a manifest written from a
 subset would silently drop every instantiation it did not compile.
 
@@ -153,7 +144,7 @@ to be version 1, because guessing produces a confident wrong answer.
 | **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
 | **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
-| **R4** | launching on a device the kernel's arch table does not describe | `consumer_check_arch_table()` at run time, `static_assert` at compile time |
+| **R4** | launching on a device the kernel's arch table does not describe | `chunk/chunk.cu`'s `check_arch_table()` at run time (first statement of every launching entry), `static_assert` at compile time |
 
 There is no environment variable that turns any of these off.
 
@@ -183,7 +174,7 @@ hash per shard: the sha256 of the shard's sorted list of template tuples, not of
 its file's bytes. A comment edit does not move it; adding, dropping or moving one
 instantiation does.
 
-It enters the digest, and that is the point. "Only `consumer_gt16_decay_bc16` was
+It enters the digest, and that is the point. "Only `chunk_s0` was
 re-measured" is otherwise an unprovable sentence; with membership in the ratified
 record it is a diff. Because the block carries membership and nothing else — no
 paths, no ordering — re-filing the same measurements cannot move the digest, which

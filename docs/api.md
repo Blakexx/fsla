@@ -214,9 +214,11 @@ delta_l)**c` (one write-conditioned clock per leaf), a rate only ever enters the
 recurrence through that per-leaf product, so per-digit and per-head are the two degrees
 of freedom the product structure lets the recurrence actually distinguish.
 
-`ConstantDecay` set high is a legitimate performance lever: the state forgets fast, the
-planner OBSERVES that in the realized routing, and prices accordingly — through exactly
-the same door a learned source uses. Nothing about it is a special case.
+`ConstantDecay` set high is a legitimate performance lever: the state forgets fast and
+the realized routing shows it, through exactly the same door a learned source uses.
+Nothing about it is a special case. (Today every decay-configured call runs on the
+reference arm — §1.1 — so the lever is a modelling one until the kernel-side decay
+retirement is reopened.)
 
 The decay is **write-conditioned** (mass decay), never time decay. A leaf whose write
 amplitude is exactly zero ticks its clock by zero, so `keep = (1 - rate) ** 0 = 1`
@@ -269,7 +271,10 @@ left. **Supplied statistics feed pricing only.** Membership and support bits are
 recomputed from the tensors, so a wrong declaration costs its author performance and can
 never cost anyone correctness.
 
-Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` is the harness;
+Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` was the harness
+(retired with the tiled measurement apparatus in P67 D2 — its subject was
+`RouteFactors.views()`/`.summaries()`, deleted in the same phase; revival
+`git show c7eaeb9:benchmarks/bench_api_stats.py`);
 median per-call duration over 21 rounds, CUDA events, on `B=2, hidden=1024, H=8,
 widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger (rows
 recorded at `1338854` on a then-dirty tree — immaterial to the claims, which are
@@ -294,31 +299,46 @@ library reads them, which is why they are derived on demand and not before.
 
 ## 6. The expert surface
 
-`rola.expert` holds everything BELOW the contract line — plans, schedules, the
-derivation that fixes their geometry, the seam the op is split at, the state's
-backing, the numeric arm:
+`rola.expert` holds everything BELOW the contract line — the dispatch's own answer,
+the pins over axes the op otherwise decides, the producer-side statistics a
+measurement reads:
 
 ```python
-from rola.expert import PlanOverrides
+from rola.expert import PlanOverrides, dispatch_for
 layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
 ```
 
-The contract for everything there is **stable construction, advisory contents**: build
-these objects and pass them; do not assert on their fields. A plan's geometry moves with
-every recalibration by design — it is the answer to "how should this launch run", and
-that answer is allowed to change. The model facts a plan carries (`topology`,
-`normalization`) are the exception, because they are not decisions.
+| name | what it is |
+|---|---|
+| `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
+| `Dispatch` / `dispatch_for` | how a call WILL run, asked before making it — including `no_kernel_arm`, the refusing clause |
+| `select_backend`, `requires_backward` | the two predicates the dispatch is built from |
+| `StaticDensity`, `GainConfig` | producer-side declarations a measurement reads |
 
-The op is split there too: `_derive_plan(routes) -> Plan` chooses the launch geometry
-from resident facts, and `_execute(plan, routes, v)` builds the schedule from the
-realized masks and runs the kernel. Exported as `derive_plan` / `execute`, they are what
-lets a conformance test drive execution with a SYNTHETIC plan — a stale one, one
-straddling a boundary — which a pipeline that derived and immediately used its plan
-could not be adversarially tested against.
+The contract for everything there is **stable construction, advisory contents**:
+build these objects and pass them; do not assert on their fields. What a `Dispatch`
+reports is the answer to "how will this call run", and that answer moves with the
+machine and with the built matrix. The model facts it carries are the exception,
+because they are not decisions.
 
-Selection is per step and never cached per shape: the statistics it prices are exact over
-the REALIZED routing, so a cached plan prices a support distribution that no longer
-exists the moment training moves it.
+**Two of the three pins are declared restrictions rather than dials, and each
+refuses by name rather than being ignored.** `state_block` (`BC`) is not
+host-selectable: the chunk arm's `BC` belongs to the built arm the manifest carries
+for a topology, so any value but `None` is refused at the call — a knob that
+silently does nothing is how a caller comes to believe a launch was shaped a way it
+never was. `mma_precision` has one legal value, `"bf16"`; the precision escape is
+the fp64 reference path. `paging` overrides the MAPPING only: `None` is the paged
+default, `False` pins the dense plane the bit-identity gate compares against, and
+`True` is refused because paging is on by default and bitwise invisible.
+
+**There is no plan object and no derive/execute seam.** `Plan`, `Schedule`,
+`derive_plan` and `execute` were the tiled consumer's, and went with it in P67 D2
+([`internals/DELETIONS.md`](internals/DELETIONS.md)). The geometry they carried is
+now a property of the built arm rather than of a per-launch derivation, so there is
+no launch-shaping object for a caller to hold, synthesize or staleness-test. What
+replaces the adversarial use they enabled: a conformance family drives
+`rola.ops.chunk` directly and declares the refusal clause it expects, and
+`dispatch_for` answers the same question a synthetic plan used to be built to probe.
 
 ## 7. What is deliberately not here
 

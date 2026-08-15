@@ -6,7 +6,7 @@ real bug hides. It is organized into three named tiers plus a units layer.
 | Tier | Question | Compares |
 |---|---|---|
 | **Tier 1 — inter-implementation** | Does the kernel compute the right function? | the kernel against the **fp64 oracle** |
-| **Tier 2 — intra-implementation** | Does the kernel compute the *same* function at every runtime geometry the planner may choose? | the kernel against **itself** |
+| **Tier 2 — intra-implementation** | Does the kernel compute the *same* function at every geometry the BUILT MATRIX carries, and under both state backings? | the kernel against **itself** |
 | **Conformance — the data-regime box** | Is it that function over the whole DISTRIBUTION SPACE the model can put through it? | the kernel against the oracle, at DECLARED regime cells |
 
 Tier 1 alone is insufficient because a per-geometry tolerance can absorb a geometry
@@ -87,13 +87,15 @@ Every cell of this cross-product is gated against the oracle:
 |---|---|
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
-| `(widths, BC, D, d_v)` | the planner's supported rectangles |
+| `(widths, D, B)` | the built arm list the manifest carries (`chunk_arms()`), projected |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
 
 Three axes this cross-product used to carry are gone (P26, `52a67d8`; see
 [`internals/DELETIONS.md`](internals/DELETIONS.md), revival = git). Normalization
 is no longer an axis: `raw` is dead, `global` (the mass column and the `num`/`den`
-divide, unconditional) is the only value `Plan` accepts. MMA precision is no
+divide, unconditional) is the only value the kernel arm accepts — anything else
+is a named refusal onto the reference arm. `BC` is likewise no longer a host axis:
+it belongs to the built arm (P67 D2), so what varies across cells is the ARM. MMA precision is no
 longer an axis: `tf32x3` is dead, bf16 storage with fp32 accumulation is the only
 arm the kernel has, and the fp64 oracle stands in as the exactness reference a
 `tf32x3` family delta used to provide. `BT` is no longer an axis: the work unit is
@@ -108,22 +110,16 @@ single bf16 family bound below instead.
 The length axis is not decoration. An error that ACCUMULATES along the sequence
 grows as `sqrt(T)`, so a short fixture under-charges it by `sqrt(8192/37) = 15x` —
 the blind spot a resident-state re-quantization walk was measured to exploit.
-`test_consumer_vs_oracle.py::test_mass_column_at_sequence_length` closes it, at
-the same tolerance.
+`tests/tier1_semantics/test_bf16_family_gate.py::test_family_deviation_is_flat_in_T`
+closes it, at the same tolerance and over the same three lengths (measured slope
+`+0.053` on the chunk arm against the walk's `+0.49`).
 
-**The window, `GT`, is NOT a fifth cell of this cross-product.** `select_window`
-picks the consumer's token quantum from the realized routing
-([`internals/smem_layout.md#window`](internals/smem_layout.md#window)), and every
-cell above is short enough that it always picks the group quantum (`GT = 16`) —
-so the main cross-product never exercises the wide window's own formulation (a
-shared entry state across `W` groups, the block-lower-triangular window Gram, the
-fold's `W`-slot-resident accumulator, the decay reference frame spanning the whole
-window) at all. That formulation is gated separately, by fixtures built long
-enough to force `GT = 64`: `test_consumer_vs_oracle.py`'s "wide window against the
-oracle" section. The class it catches is real — a group can carry live write
-atoms while being side-dead and therefore unstaged, which the group-quantum fold
-could not reach (it ran under that group's own write flag) and the window-quantum
-fold does.
+**The window, `GT`, was a fifth axis and is not one now.** It was the tiled
+consumer's token quantum, chosen per launch by reading the realized routing, and
+gated by fixtures built long enough to force the wide arm. Both the axis and its
+kernel retired in P67 D2 ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
+chunk arm's token quantum is `CHUNK_TOKENS = 32`, a build fact, and `T` not being a
+multiple of it is a named refusal rather than a second formulation to gate.
 
 ### Tolerance discipline
 
@@ -133,10 +129,14 @@ fold does.
    exactness gate. There is no separate `tf32x3` tolerance to widen it against or
    to protect — the fp64 oracle is the exactness reference this bound is measured
    against directly.
-2. The **CPU-only fp64 arm** (`tests/tier1_semantics/test_algorithm_vs_oracle.py`)
-   transcribes the kernel's *control structure* into fp64 Python at `~1e-16`. It
-   separates "the algorithm is wrong" from "fp32 accumulated differently", and it
-   needs no GPU.
+2. The **kernel-vs-oracle arm** is `tests/tier1_semantics/test_chunk_op.py` plus
+   the conformance tier's kernel families. The CPU-only fp64 transcription that
+   used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
+   kernel's control structure and retired with that kernel (P67 D2); the
+   separation it bought — "the algorithm is wrong" against "fp32 accumulated
+   differently" — is carried by the oracle comparison itself, which is fp64 on
+   one side, and by `tests/unit/test_oracle_contract.py` on the reference's own
+   properties.
 4. **Every tolerance is either DECLARED with its derivation in a module comment or
    DERIVED in code.** A number with neither is a defect.
 5. **Loosening a tolerance is a semantic change**: changelog entry, derivation,
@@ -156,20 +156,34 @@ fold does.
 
 ## Tier 2 — geometry, as data
 
-`tests/tier2_geometry/matrix.py` holds the matrix as a literal table. Every pair of
-geometries carries a **declared contract class**, and the class decides the
-assertion.
+**The matrix machinery retired with its axes (P67 D2, R-8).** Tier 2 held its
+geometry pairs as a literal table in `matrix.py`, over five axes — `BC`, `DV`,
+`DECAY`, `P` and `paging`. Four of those are gone: `P` in P28, and `BC`/`DV`/
+`DECAY` when the tiled consumer went, leaving a one-axis table that could not earn
+the three meta-tests written to keep a matrix honest. The table, its meta-tests
+and `test_endgame_executor.py` (the tiled walk's own gate) are in
+[`internals/DELETIONS.md`](internals/DELETIONS.md); revival = git.
 
-`tests/tier2_geometry/test_endgame_executor.py` sits alongside the matrix rather
-than inside it: it gates the P26 endgame executor's WALK itself (the streamed
-membership scan, stable-ascending group assembly, the atom masks and the
-compact-into-registers walk) rather than a pair of geometries. 44 cells against
-the fp64 oracle — dense/sparse degeneracy, cold reads, ragged tails, group
-boundaries straddling a member word, decay's ticks-ride-writes exactness, union-visit
-semantics, `P in {2, 4}` — plus 3 build-cycle mutants (dropped-token,
-permuted-group, boundary-straddle) that must each fail the suite when injected,
-proving the causality/stability assertions have teeth. The mutants are recorded in
-`workflows/perf/p26_endgame.md`, not shipped as gates.
+What Tier 2 is now is the same QUESTION asked of the pairs that still exist, one
+file per pair rather than one table over all of them:
+
+| file | the pair it relates |
+|---|---|
+| `test_chunk_paging_equivalence.py` | paged vs dense backing — bit identity, continuation, absent-atom inertness, residency at every built `BC`, a fragmented non-monotone slot arena, the plan's exact demand through a real launch |
+| `test_chunk_final_state.py` | the register-resident state against its stored plane, and the leaf-order law |
+| `test_decode_bc_blindness.py` | one decode step across prefill arms that differ in `BC` |
+| `test_decode_paging.py`, `test_page_arena_vmm.py`, `test_atom_bitmap.py` | the backing's own structures |
+| `test_paging_stream_races.py`, `test_stream_discipline_fixture.py` | the crossing paths (below) |
+
+The two contract classes below still govern every one of those comparisons, and
+the prohibitions in them are what the deleted table's meta-tests enforced
+mechanically. What is LOST with the table is the mechanical enforcement — a new
+built axis no longer fails collection until someone declares its class — and that
+is stated rather than papered over: the census that catches an undeclared
+instantiation axis now lives on the conformance side
+(`test_conformance_census.py`, whose left-hand side is projected from the built
+arm list), and the shard partition's own structural checks in
+`tests/unit/test_shard_partition.py` carry M1's manifest pin.
 
 ### Class (a) — ENGINEERED IDENTITY
 
@@ -225,7 +239,8 @@ data rather than inferred from behaviour.
 ## The conformance tier — the data-regime box
 
 `tests/conformance/`. The regime axes and every family are DATA
-(`families.py`, pure CPU, the matrix.py doctrine); generation and the
+(`families.py`, pure CPU — the declared-data doctrine the tier-2 table also
+followed); generation and the
 non-vacuity checkers live in `generators.py`; execution in the `test_*`
 files. Three fixture sources cover the box, and each is there for a stated
 reason:
@@ -237,11 +252,16 @@ reason:
   routing is coincident.
 * **producer** — the REAL entmax gateway at swept input gains (realized
   density 1.00 → 0.10, monotone, asserted), because some correlations only
-  realized routing produces. The stale-plan family drives `rola.expert`'s
-  derive/execute seam with a plan priced on a distribution 4x dead.
+  realized routing produces. (The stale-plan family drove `rola.expert`'s
+  derive/execute seam with a plan priced on a distribution 4x dead; that seam no
+  longer exists — there is no plan object to make stale — and the family retired
+  with it in P67 D2.)
 * **adversarial** — named corners FROZEN PERMANENT (cold read, all-read-only,
-  K = 0 fold, ragged tail, chunk boundary): the bug list, kept forever, and
-  enforced by `test_family_meta.py::test_the_adversarial_corners_are_permanent`.
+  chunk boundary): the bug list, kept forever, and enforced by
+  `test_family_meta.py::test_the_adversarial_corners_are_permanent`. Two more —
+  `k0-fold` and `ragged-tail` — were forced-`P` fixtures and left with the `P`
+  axis in P28; the freeze protects a demonstrated bug class, not a deleted
+  capability's fixture.
 
 **Self-policing**: every family carries an IN-TEST non-vacuity assertion —
 checkers keyed `(axis, value)` so a claim cannot be declared without its
@@ -250,10 +270,13 @@ FAILS before any kernel comparison (the token-0 vacuity lesson generalized).
 The checkers themselves are under test: each is fed a violating fixture and
 must refuse it, and each accepts an in-regime witness.
 
-**The census join** (`test_conformance_census.py`, pure CPU) extends M1 by one
-dimension: (instantiation x data-regime), pairwise, with the left-hand side
-IMPORTED from `matrix.py` so a new template parameter fails here demanding
-families or expected-empty rows. Empty cells are LISTED against a committed
+**The census join** (`test_conformance_census.py`, pure CPU) is the completeness
+claim the suite still enforces mechanically: (instantiation x data-regime),
+pairwise, with the left-hand side projected from the BUILT ARM LIST via
+`tests/conformance/instantiation.py`, so a new built arm fails here demanding
+families or expected-empty rows. Post-D2 it joins 7 off-mid instantiation values
+against 10 non-mid regime values — 70 cells, `EXPECTED_EMPTY` 69 — where the
+tiled axes gave 6 x 10 and 56. Empty cells are LISTED against a committed
 `EXPECTED_EMPTY` rule with named exceptions, asserted with exact equality in
 both directions — a newly-empty cell fails, and a stale listing fails too.
 
@@ -274,11 +297,21 @@ it cannot express the spec's detachment, and the insurance harness holds the
 clock constant explicitly to demonstrate exactly that. When the native
 backward lands (M-2), its kernel-VJP gates plug into these same families.
 
-## The three meta-tests
+## The three meta-tests — RETIRED WITH THE MATRIX, and where each claim went
 
-`tests/tier2_geometry/test_meta.py`. Without these the matrix is a list of tests
-with a nicer shape; with them it is a claim about completeness that the suite
-enforces.
+`tests/tier2_geometry/test_meta.py` held them, and it retired with the table they
+policed (P67 D2, R-8). They are recorded here because a completeness claim that
+quietly stops being enforced is exactly the failure they existed to prevent, and
+because the successor of each is a specific file rather than a hope.
+
+| meta-test | what it required | where the claim lives now |
+|---|---|---|
+| M1 census | every built axis DECLARED, and the manifest pinned to the build's own | `tests/conformance/test_conformance_census.py` (the instantiation side, projected from `chunk_arms()`) and `tests/unit/test_shard_partition.py` (the manifest pin, through `tools/ratify.py`'s own loader) |
+| M2 non-vacuity | a class-(a) row's declared probe must move its output | the conformance families' own in-test non-vacuity checkers, and the bf16 gate's M3-mutant rows |
+| M3 class drift | a class-(b) pair must NOT be byte-equal | `test_split_k_determinism_is_not_assumed`, and the paging pairs, which are class (a) by construction |
+
+The definitions below are kept because the two contract classes are still the
+vocabulary Tier 2 reasons in.
 
 **M1 — CENSUS.** Decodes the template arguments of every ratified instantiation
 from the mangled names in the manifests, and requires every axis to be **declared**
@@ -302,14 +335,17 @@ either**, because "identical" passes any bound. The failure message names both
 hypotheses, because the correct response differs: a kernel change is a bug, a
 fixture change is a re-derivation of the row.
 
-**Each meta-test is verified by construction.** M1 is pointed at a fabricated
-product carrying a new value on an existing axis (`D = 5`). M3 is pointed at a `P > 1` launch forced to degrade to
-`P = 1`, and at a genuine engineered identity mislabelled as a reassociation. M2 is
-pointed at a probe that cannot move its output. *A meta-test that cannot fail is
-not a meta-test.*
+**Each meta-test was verified by construction**, and the standard outlives them:
+M1 was pointed at a fabricated product carrying a new value on an existing axis
+(`D = 5`), M3 at a `P > 1` launch forced to degrade to `P = 1` and at a genuine
+engineered identity mislabelled as a reassociation, M2 at a probe that cannot move
+its output. *A gate that cannot fail is not a gate* — which is why the conformance
+tier's own checkers are each fed a violating fixture, and why the bf16 family gate
+ships M3-shaped mutant rows that must breach.
 
-**A class change is a reviewed edit to `matrix.py`, in a diff, with a new `basis`
-string.** It can never happen as a side effect of a kernel edit.
+**A contract class is declared, never inferred from behaviour**, and changing one
+is a reviewed edit with a new stated basis. That was a rule about `matrix.py`; it
+is now a rule about the file that holds the pair.
 
 ## The build-shape gates
 
@@ -317,16 +353,23 @@ Four checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
 they are here because each one guards a property whose failure leaves every other
 gate green.
 
-**`python tools/gen_shards.py --check`** regenerates the eight instantiation shards
-into memory and diffs them against the committed files. Generated sources are
+**`python tools/gen_shards.py --check`** regenerates the generated instantiation
+sources into memory and diffs them against the committed files — post-D2, **5
+generated files, 42 instantiations over 3 shards** (it was 10 files over 4 shards
+plus the tiled consumer's `dispatch_table.inc`). Generated sources are
 checked in so that what is reviewed is what compiles; this is what keeps that a
 fact. `setup.py` runs it before compiling and CI runs it in the CPU lane.
 
-**`tests/unit/test_shard_partition.py`** checks the partition as a STRUCTURE: every
-committed instantiation maps back to its own file under `shard_of`, the sharded
-axes are the derived prefix of the priority list rather than a hand-written answer,
-each membership hash is the digest of its file's tuple list, and `consumer.cu` does
-not include the header that would let it instantiate the kernels locally. CPU only.
+**`tests/unit/test_shard_partition.py`** checks the partition as a STRUCTURE:
+membership is a function of the declared ARM LIST and nothing else (a shard is a
+contiguous block of `CHUNK_ARMS` crossed with the state axis, and both state
+variants of an arm ride the same shard), the committed files are the generated
+files, `chunk.cu` does not include the header that would let it instantiate the
+kernels locally, and the ratification on disk is the one `_build_config.py`
+recorded at build time. The tiled partition derived its sharded AXES from a
+priority list; the chunk matrix is an explicit arm list with no axes to
+prioritize, so the block rule makes the same statement over the structure that
+exists. CPU only.
 
 **`python tools/fatbin_entries.py --check <so>`** is the one that needs a built
 binary, and the only one that can see a FAILED split. It reads device entry points
@@ -354,25 +397,14 @@ are here because a document nothing checks is a document that drifts.
 tables to `tools/supported.py --check`. A hand-maintained support table is a
 claim; a generated one is a report, and this is what keeps the difference real.
 
-**`tests/unit/test_derive.py`** gates `derive_bc` term by term: the subtree ceiling,
-the box ceiling and the fill ceiling are each exercised against an otherwise-open
-`MachineFacts` so a passing term cannot be carried by a neighbour, then the
-composition, the downward clamp onto the compiled ladder, and the expert pin
-(`PlanOverrides.state_block`, alignment-validated like any derived value) are gated
-together. `MachineFacts` is injected as a plain record, so every term runs CPU-only
-against a synthetic machine of arbitrary SM count and arm carve; one test is marked
-`cuda` and checks the box arithmetic against the *built binary's own* dispatch-table
-carve, the only place the derivation's shared-memory term is checked against real
-numbers rather than a synthetic one.
-
-**`tests/unit/test_dispatch_table.py`** is the CENSUS: it reads the dispatch table out
-of the built extension and joins it against the fatbin's device entry points, decoded
-from their mangled names, asserting set equality in both directions per architecture —
-an entry the table cannot reach is dead payload, a row with no entry is a dispatch into
-a launcher the binary does not define. It also gives the staleness filter teeth (a
-perturbed shard key must drop exactly that shard's rows, and they must stop resolving),
-proves the enable predicate is non-vacuous below the largest footprint, and pins the
-planner's `SUPPORTED_*` tuples to the table's own axis values.
+`test_derive.py` (the `BC` derivation, term by term) and `test_dispatch_table.py`
+(the tiled dispatch table joined against the fatbin's entry points) were the third
+and fourth of these gates. Both retired with their subjects in P67 D2: there is no
+derivation left to gate — `BC` belongs to the built arm — and no dispatch table to
+census. The binary-side half of the census question survives, in a stronger form
+than either: `tools/fatbin_entries.py --check` above, and the DEVICE-SIDE entry
+list the build reports (`chunk_arms()`, `chunk_build_stamp`), which answer out of
+the running binary rather than out of a host table describing it.
 
 **`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
 engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
@@ -407,16 +439,18 @@ flock /tmp/rola_gpu.lock pytest tests/tier1_semantics -m cuda                # T
 flock /tmp/rola_gpu.lock pytest tests/tier2_geometry                         # TIER 2 (incl. the meta-tests)
 flock /tmp/rola_gpu.lock pytest tests/layers                                 # layer <-> op, at every dispatch threshold
 flock /tmp/rola_gpu.lock pytest tests/conformance                            # CONFORMANCE families (incl. decode + backward)
-flock /tmp/rola_gpu.lock pytest benchmarks/test_latency_regression.py -m bench   # the latency gate
-python benchmarks/rola_probe.py duration consumer_forward --ab global:raw    # NO flock -- see below
 ROLA_FLA_CROSSCHECK=1 pytest tests/unit/test_oracle_vs_fla.py                # one-time, opt-in -- see below
 ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # one-time, opt-in -- see above
 ```
 
 **The lane, measured** (2026-08-06, sm_86, warm build): CPU 70 s; unit-cuda
 2.5 s; tier 1 123 s; tier 2 9 s; layers 6 s; conformance 4.5 s — the WHOLE
-battery is ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
-IS the full battery above and no per-commit subset needs choosing. The
+battery was ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
+IS the full battery above and no per-commit subset needs choosing. Post-D2 the
+same battery, scoped as `tests/tier1_semantics tests/layers tests/unit
+tests/tier2_geometry tests/conformance -q`, is **1118 passed, 13 skipped, 0
+xfailed in ~30 s**: the tiled arm's gates left with the tiled arm, and the tree
+now carries no xfail at all. The
 build-shape gates and `tools/ratify.py` run additionally at a batch tip (and
 always when csrc, manifests or codegen flags moved); the latency gate and the
 sanitizer lane are scheduled, never per-commit. The runtime x
@@ -440,19 +474,17 @@ time and neither can tell. Every command in this repository, every benchmark's u
 line and every agent brief uses this one path. If you find another spelling anywhere,
 it is a defect — fix it rather than adding a second lock beside it.
 
-**THE ONE EXCEPTION IS `rola-probe`, AND WRAPPING IT IS A DEADLOCK, NOT BELT AND
-BRACES.** The probe harness acquires this same lock itself, by design — the
-discipline is enforced rather than documented (`docs/measurement.md`). `flock` locks
-are held per open file description, so an outer `flock /tmp/rola_gpu.lock` around
-`python benchmarks/rola_probe.py …` blocks the harness's own acquisition of the same
-file, forever, with no output. The canonical rule is therefore:
+**THE `rola-probe` EXCEPTION IS RETIRED.** The probe harness took this lock
+itself, so wrapping it deadlocked, and the standing rule carried an exception for
+exactly one command. That harness retired with the tiled measurement apparatus in
+P67 D2 (`docs/measurement.md`), so the rule has no exception today:
 
-> **everything that reaches a device is wrapped in `flock /tmp/rola_gpu.lock`,
-> EXCEPT `rola-probe`, which is invoked bare.**
+> **everything that reaches a device is wrapped in `flock /tmp/rola_gpu.lock`.**
 
-`ROLA_GPU_LOCK` exists to MOVE the harness's lock for a caller that must compose with
-a genuinely different outer lock; pointing it at the path the caller is already
-holding is the deadlock it exists to avoid.
+A successor bench harness for the chunk arm OWES a locking statement of its own —
+either it takes the lock itself and is invoked bare, or it does not and is
+wrapped — stated in its usage line, because the failure mode of guessing is a
+silent shared device on one side and a permanent hang on the other.
 
 **EVERY OTHER LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME
 QUESTION AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
@@ -467,8 +499,7 @@ the tiers it names do, unconditionally, and the recipe says so. This is the same
 `flock /tmp/rola_gpu.lock`"), applied to the test recipe.
 
 `tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
-`test_interface.py::test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm`,
-five in `test_planner.py`) the same way it deselects `tier1_semantics`'s
+`test_interface.py`'s dispatch rows) the same way it deselects `tier1_semantics`'s
 -- so the `-m cuda` line above is what makes them reachable at all. Every committed test
 must be collected by SOME line here; a test that only a `-m "not cuda"` line ever
 selects against is a test nothing runs.
@@ -491,9 +522,15 @@ refusal; none launches a kernel.
 
 | file | what it plants |
 |---|---|
-| `tests/unit/test_probe_harness.py` | a lock held by another process (the harness must block), a clock that never settles (the run must abort), a corrupt ncu section file, a subcommand offering to skip the lock |
 | `tests/unit/test_perf_ledger.py` | a row missing its provenance, a row from an unknown schema, a shift smaller than its own scatter, a single unlucky run, an effect with no significance behind it |
-| `benchmarks/test_latency_regression.py` | a baseline taken with a different stopwatch, and one that does not say which stopwatch took it |
+
+`test_probe_harness.py` (the discipline gates: a lock held by another process, a
+clock that never settles, a corrupt ncu section file, a subcommand offering to
+skip the lock) and `benchmarks/test_latency_regression.py` (a baseline taken with
+a different stopwatch, and one that does not say which) went with the probe
+harness in P67 D2. Their claims are part of what the chunk-arm harness card owes
+([`measurement.md`](measurement.md)); until it lands, `test_perf_ledger.py` is the
+one file holding this machinery.
 
 `python tools/ratify.py --self-test` is the same discipline on the codegen side and
 is listed arm by arm in `docs/ratification.md`.
@@ -553,28 +590,31 @@ nobody can falsify.
 
 ### The sanitizer lane
 
-```bash
-python benchmarks/rola_probe.py sanitize consumer_forward --tool memcheck
-```
+The lane's DRIVER was `rola_probe sanitize`, retired in P67 D2 with the rest of the
+harness; the lane's shape and its measured findings are kept here because they are
+what the successor has to reproduce, and re-deriving them from memory is how a
+finding turns into a belief.
 
 **A scheduled lane over a named subset, never a PR gate** — the shape every surveyed
 adopter converged on, because the tools cost one to two orders of magnitude and a gate
 that takes an hour gets disabled. `--error-exitcode=1`, a committed suppressions file,
 and an explicit skip-list whose entries carry their reason.
 
-Measured on this box, `consumer_forward` and `consumer_forward_deep`: memcheck,
-initcheck and synccheck report 0 errors; racecheck reports 0 hazards, 0 warnings.
+Measured on this box, on the TILED consumer's two registered probes
+(`consumer_forward`, `consumer_forward_deep`): memcheck, initcheck and synccheck
+reported 0 errors; racecheck reported 0 hazards, 0 warnings. **No such measurement
+exists for the chunk arm yet** — that is a gap, not a carry-over.
 
 **Sold honestly, in both directions.**
 
 * It does **not** own our historical bug class. Both escaped races were host-side
   Python ordering; `racecheck` detects on-chip shared-memory hazards only. The
   stream-discipline fixture above is what covers that class.
-* `racecheck` runs on both registered probes: the skip-list is empty. The `Gm`
-  write/read edge that once needed the exemption is ordered by the visit's own
-  `__syncthreads()` (`docs/internals/consumer_kernel.md#visit-barrier`) — exactly the
-  barrier class `racecheck` orders shared memory by — so there is no edge left in this
-  kernel that a counter protocol publishes instead.
+* `racecheck` ran on both registered probes with an EMPTY skip-list. The `Gm`
+  write/read edge that once needed an exemption was ordered by the visit's own
+  `__syncthreads()` — exactly the barrier class `racecheck` orders shared memory
+  by — so no edge was left that a counter protocol published instead. An empty
+  skip-list is the standard the successor lane inherits.
 * `--leak-check full` is **not** used: torch's caching allocator retains its pools by
   design, so the flag reports 3 "leaks" on a clean run — a lane whose clean state is
   three errors is a lane whose findings nobody reads.

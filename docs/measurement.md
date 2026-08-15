@@ -4,14 +4,37 @@ Every performance number this repository publishes is produced by one harness, t
 with one stopwatch, and written to one file with its provenance. This document is
 what those three sentences mean.
 
-| Layer | Where | Answers |
-|---|---|---|
-| fixtures | `benchmarks/bench/cells.py` | WHAT is measured |
-| methodology | `benchmarks/bench/pairing.py` | HOW: interleaved paired arms, median of per-pair ratios |
-| preconditions | `benchmarks/bench/instruments.py`, `benchmarks/probe/discipline.py` | what the box must be doing first |
-| statistics | `benchmarks/bench/stats.py`, `bench/regression.py` | whether a difference is real |
-| record | `perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards |
-| driver | `benchmarks/rola_probe.py`, `benchmarks/probe/` | the process that runs all of it |
+**HALF OF THIS HARNESS IS RETIRED, AND THIS DOCUMENT IS BOTH ITS SUCCESSOR'S
+SPECIFICATION AND ITS PREDECESSOR'S RECORD.** Every fixture, every methodology
+object and the driver itself named the tiled consumer — `probe/registry.py`'s
+entries each named `consumer_forward_kernel` and a `bench.cells` cell — so when
+that kernel was deleted (P67 D2) the harness had no subject and could not even
+import. It was deleted as ONE capability rather than left broken
+([`internals/DELETIONS.md`](internals/DELETIONS.md); revival `git show
+c7eaeb9:<path>`).
+
+| Layer | Where | Answers | State |
+|---|---|---|---|
+| fixtures | `benchmarks/bench/cells.py` | WHAT is measured | **RETIRED** — every cell was a tiled arm |
+| methodology | `benchmarks/bench/pairing.py` | HOW: interleaved paired arms, median of per-pair ratios | **RETIRED** — the engine is what the successor most owes |
+| preconditions | `benchmarks/probe/discipline.py` | what the box must be doing first | **RETIRED**; `settle_clocks` survives, moved into `bench/regression.py` |
+| statistics | `benchmarks/bench/stats.py`, `bench/regression.py` | whether a difference is real | **SURVIVES**, gated by `tests/unit/test_perf_ledger.py` |
+| record | `perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards | **SURVIVES** |
+| driver | `benchmarks/rola_probe.py`, `benchmarks/probe/` | the process that runs all of it | **RETIRED** |
+
+**What the chunk-arm harness card OWES, stated as a list so it cannot be
+half-remembered:** the interleaved paired-ratio engine (`_paired_one_kernel` and
+its ~7x bias-reduction rule), the discipline gates below (the lock, the
+dirty-tree refusal, the clock-settle refusal) and their planted-violation tests,
+per-cell latency baselines for the chunk arm, and its own LOCKING STATEMENT —
+whether it takes `/tmp/rola_gpu.lock` itself or expects to be wrapped
+(`docs/testing.md`). The surviving benches (`bench_layer.py`, `bench_scaling.py`,
+`bench_paging.py`) run today and use the surviving statistics, but none of them
+is that harness.
+
+Everything below describes the discipline as it was BUILT and measured. It is the
+specification the successor is held to, not a description of a program in the
+tree today.
 
 ## The stopwatch
 
@@ -44,14 +67,15 @@ it is refused as unknown rather than assumed compatible.
 
 ## The discipline, which the harness acquires
 
-Not a checklist. `probe.discipline.disciplined` does each of these, and there is no
-flag that skips any of them.
+Not a checklist. `probe.discipline.disciplined` did each of these with no flag
+that skipped any of them, and the successor owes the same — enforced, not
+documented.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. **Invoke `rola-probe` BARE — never under an outer `flock` on this path.** `flock` locks are held per open file description, so wrapping the harness in the lock it is about to take blocks it forever with no output. `ROLA_GPU_LOCK` exists to MOVE the harness's lock for a caller composing with a genuinely DIFFERENT outer lock; pointing it at the path the caller already holds is the deadlock it exists to avoid. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. A harness that takes the lock ITSELF must be invoked BARE — `flock` locks are held per open file description, so wrapping it in the lock it is about to take blocks it forever with no output. That was `rola-probe`'s standing exception to the flock rule; with the harness retired the exception is retired too (`docs/testing.md`), and the successor states which side of it it is on. `ROLA_GPU_LOCK` exists to MOVE the lock for a caller composing with a genuinely DIFFERENT outer lock; pointing it at the path the caller already holds is the deadlock it exists to avoid. |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
-| clock settling | `bench.instruments.settle_clocks()`; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
+| clock settling | `settle_clocks()` — moved to `bench/regression.py` when `bench/instruments.py` went, because `bench_scaling.py` still needs it; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
 | extension identity | `import rola`, then resolve its `__file__` against this checkout's root; **an extension resolved from OUTSIDE this checkout ABORTS the run.** `rola` installs editable into a shared venv, so a probe launched from a worktree can silently import the MAIN tree's compiled extension unless the worktree leads it on `sys.path` — the row would then carry this tree's sha and csrc digest against another tree's kernel, agreeing with itself the way a true negative also would. The resolved path is stamped into every row's `env` regardless |
 | tier | `light` or `landing`, stamped into every row — a light-tier number can never be quoted as a landing one by a reader who did not see the command |
@@ -105,8 +129,11 @@ their `ts`, `sha` and `csrc_sha256` are null rather than invented.
 
 ### The committed latency baseline
 
-`benchmarks/cells/latency_baseline.json` is the per-commit gate's reference, recorded
-by `benchmarks/bench_regression.py --write` and never by a test. Under the committed
+`benchmarks/cells/latency_baseline.json` was the per-commit gate's reference,
+recorded by `benchmarks/bench_regression.py --write` and never by a test. **Its
+rows are the TILED consumer's and no chunk number may be compared against them**;
+`benchmarks/cells/README.md` says so beside the files, which are parked rather
+than deleted because a measurement is a record even when its subject is gone. Under the committed
 instrument its arms read 0.0625–0.2376 ms with block IQRs of 0.001–0.005 ms — a
 spread 30–60× tighter than the host timer's, because the launch and sync cost that
 dominated it is no longer in the measurement.
@@ -116,7 +143,9 @@ one immediately: the gate had been reading its number from inside a benchmark
 runner's round loop, and that runner's schedule — not the kernel — set the value. The
 gate now takes the arm's median once, through the recorder's own entry point, so the
 two sides are the same quantity by construction. `benchmarks/test_latency_regression.py`
-records the measurement that forced it.
+recorded the measurement that forced it, and retired with the harness — the lesson
+(the gate and the recorder must take the same quantity through the same entry
+point) is on the successor's list.
 
 ## The flagging rule: three gates, all must fire
 
@@ -140,27 +169,32 @@ says the design cannot decide, the second says it decided.
 
 ## Running it
 
+The five subcommands the retired driver carried, kept as the successor's surface
+brief:
+
 ```bash
-python benchmarks/rola_probe.py duration consumer_forward --ab global:raw --tier landing
-python benchmarks/rola_probe.py counters consumer_forward --arm global --section RolaMemOcc
-python benchmarks/rola_probe.py sanitize consumer_forward --tool memcheck
-python benchmarks/rola_probe.py sass --json bodies.json [--diff-against before.json]
-python benchmarks/rola_probe.py report [--probe consumer_forward] [--format md]
+rola-probe duration <probe> --ab <arm>:<arm> --tier landing
+rola-probe counters <probe> --arm <arm> --section <section>
+rola-probe sanitize <probe> --tool memcheck
+rola-probe sass --json bodies.json [--diff-against before.json]
+rola-probe report [--probe <probe>] [--format md]
 ```
 
-**No `flock` on those lines, and adding one HANGS the command** — the harness takes
+**No `flock` on those lines, and adding one HANGED the command** — the harness took
 the lock itself, and a second acquisition of the same path from the parent process
-blocks its child forever. Everything else that reaches a device is wrapped;
-`rola-probe` is invoked bare (`docs/testing.md`, "Running it"). `sass` and `report`
-take no lock at all because neither runs a kernel.
+blocks its child forever. `sass` and `report` took no lock at all because neither
+runs a kernel.
 
-`rola-probe` is not a console script. The installed wheel ships `rola/`, not
+It was not a console script, deliberately: the installed wheel ships `rola/`, not
 `benchmarks/`, so a `rola-probe` on PATH would be a command that exists and cannot
-import the harness it drives.
+import the harness it drives. The same holds of anything that replaces it.
+
+The two commands that DO survive today are the ones that never needed the harness:
+`python tools/ratify.py` and `python tools/sass_bodies.py` (below).
 
 ### Counters
 
-The metric list is a committed section file, `benchmarks/probe/sections/*.section`,
+The metric list was a committed section file, `benchmarks/probe/sections/*.section`,
 not a flag string — two throwaway scripts holding the same 24-metric comma-joined
 string is how the two drifted apart. Two ncu behaviours are handled by the harness
 rather than remembered:
@@ -177,8 +211,9 @@ mandatory.
 
 ### SASS
 
-`rola-probe sass` is a front door to `tools/ratify.py` and `tools/sass_bodies.py`; it
-re-implements neither the disassembly nor the compile flags. Both binaries in a
+`rola-probe sass` was a front door to `tools/ratify.py` and `tools/sass_bodies.py`
+and re-implemented neither the disassembly nor the compile flags; **both tools are
+in the tree and are the front door now.** Both binaries in a
 comparison no longer need to have been built at the same path (P19,
 `docs/build.md`'s path-trap section) — they must agree on `ratify.SASS_HASH_VERSION`,
 which `--compare` checks and refuses on mismatch.

@@ -24,9 +24,10 @@ struct SmResources {
 Take them from the CUDA C Programming Guide's *Compute Capabilities* table and add
 the row to `sm_arch_tabulated()` and `sm_resources()`. **Do not guess**: an
 overstated resource makes `ptxas` silently discard the launch bound, which is a
-silent occupancy loss on the architecture nobody checked. `consumer_check_arch_table()`
-checks every row against the driver at run time, so a wrong number is caught — but
-it is caught by a user unless you check it first.
+silent occupancy loss on the architecture nobody checked. The chunk dispatch's
+`check_arch_table()` (`csrc/rola/src/chunk/chunk.cu`) checks every row against the
+driver at run time, so a wrong number is caught — but it is caught by a user unless
+you check it first.
 
 ## 2. Probe and ratify
 
@@ -71,7 +72,8 @@ pytest tests/layers
 ```
 
 Tier 1 says the kernel computes the right function on this hardware. Tier 2 says it
-computes the same function at every geometry the planner may choose there — which
+computes the same function at every geometry the built matrix carries there, and
+under both state backings — which
 is the part a new register file is most likely to disturb, because it is the part
 that depends on how the compiler laid the kernel out.
 
