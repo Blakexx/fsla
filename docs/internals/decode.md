@@ -169,6 +169,19 @@ The pool is reserved once, so admission never moves a base pointer and there is 
 the kernel to discover. `plan_exact`'s single size read is the only host synchronization a
 growth step adds beyond the probe's own.
 
+<a id="graph-capture"></a>**NAMED FUTURE WORK: the step is now HOST-WAIT-BOUND, and the
+next move is structural.** Of a 0.22-0.24 ms steady step, 0.12-0.16 ms is the host waiting
+for a 0.007 ms kernel to become visible: the probe's kernel enqueues in 0.0071 ms and a
+bare `torch.cuda.synchronize()` costs 0.0039, but launch-to-host-visible-completion on this
+WSL2 host is ~0.05-0.08 ms. Blocking is already the cheapest of the five mechanisms
+measured (0.093 ms against 0.099 for `.any().item()`, 0.111 for a stream sync, 0.139 for
+`.cpu()`, 0.152 for an event), so there is nothing left to tune -- the floor IS the host
+round trip. Two structural exits, neither scheduled: capture the whole step in a CUDA graph
+(the workspace is already allocation-free and `ctr` is reset by the step's own last CTA
+precisely so a step is capturable), or consume the probe's verdict ON THE DEVICE so no host
+round trip happens at all -- which would mean a device-side admission, the successor
+`PageArena._admit_pages` already names in its own docstring. Both are post-P67.
+
 <a id="growth-probe"></a>**THE PROBE, and why it is exact.** `rola_decode_growth_probe` is
 a kernel BESIDE the expansion, in `decode_expand.cu`, and it calls that TU's own
 `expand_side` over the same `amp_write` pointers the step itself expands. It condenses the

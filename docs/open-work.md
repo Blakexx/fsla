@@ -28,7 +28,21 @@ published (execution checklist E12); until then this file is the list.
 
 ## M-4 — Decode kernel + decode bench cells (filed 2026-08-01, user question)
 
-No V3 decode kernel exists (V2's fused_recurrent_rola had no successor).
+**THE KERNEL HALF IS DONE.** A dedicated `T = 1` decode path ships: bitmap support
+expansion + token-stationary gather-GEMV (`csrc/rola/src/decode{,_expand}.cu`), behind
+the same state facade as the chunk arm (`decode_forward(routes, v, state)`), with a
+PAGED backing whose address is the 16-leaf atom and a device-side growth probe that keeps
+a steady step off the admission preamble (`docs/internals/decode.md`). Gated by
+`tests/tier1_semantics/test_decode_vs_oracle.py`, `test_decode_continuation.py` (6),
+`tests/tier2_geometry/test_decode_paging.py` (24), `test_decode_growth_trigger.py` (33),
+`test_decode_bc_blindness.py` (4) and `tests/layers/test_decode_dispatch.py` (18).
+**Still open, and it is the measurement half this item also asked for:** decode BENCH
+cells and latency-regression rows — every shipped bench cell is still prefill, so any
+serving/decode-bandwidth claim remains derivation-only. The steady step's own profile is
+recorded (`decode.md` §4b) and is host-wait-bound, which is what a decode bench would
+have to be built to measure honestly.
+
+*Original text, for the record:* No V3 decode kernel exists (V2's fused_recurrent_rola had no successor).
 Decode today = the layer's cache path through general machinery (correct —
 91 layer tests incl. cache round-trips — but never benchmarked or gated; all
 17 bench cells are prefill). Work: a dedicated small decode kernel (T=1:
@@ -40,3 +54,16 @@ bearing for: any MEASURED serving/decode-bandwidth claim (§6's decode ledger
 is currently derivation-only) and the lifelong demos. Sequencing: post-freeze
 era, natural sibling of the backward build (shares the freeze's stability
 premise). Sized: days under batch discipline, not weeks.
+
+## P67 named future work (filed 2026-08-14, the paging integration's close-out)
+
+Designed, contract carried IN THE REPOSITORY, not built and not scheduled. Each has a
+doc section rather than a line here, because the contract is what a future builder needs:
+
+| # | Item | The contract |
+|---|---|---|
+| **P67-a** | **A CUDA-graph-captured decode step.** A steady paged step is host-wait-bound (0.12–0.16 ms of a 0.22–0.24 ms step is the host waiting for a 0.007 ms kernel to become visible; blocking is already the cheapest of five measured mechanisms, so the floor is the round trip). Two structural exits: capture the step, or consume the probe's verdict on the DEVICE. | [`internals/decode.md` §4b](internals/decode.md#graph-capture) |
+| **P67-b** | **Lifting the 4 GiB state-plane bound.** The chunk consumer addresses state by a 32-bit byte displacement from a pinned origin. The dense backing hits the bound first and the paged backing is the answer to it; the two need different lifts (one per-`bh` 64-bit base vs arena sharding). | [`internals/chunk/chunk_kernel.md`](internals/chunk/chunk_kernel.md#plane-bound) |
+| **P67-c** | **Copy-on-write state branching.** `strategy="cow"` is refused by name today. The semantics are SETTLED (strategy on the state as a stamp, plan-overridable; fresh-slot writes; every returned state stays valid and resubmitting one IS branching; refcounts for GC and the never-write-a-shared-slot invariant; a strategy change is a full deep copy in both directions), as is the known cost and its known fix (the per-step table copy wants a two-level page table). | [`internals/state.md` §9.1](internals/state.md#cow) |
+| **P67-d** | **S6: fold the two table passes into one.** The consumer's `BC`-keyed union table is an OR-reduction of the atom-grain stats table. Measured NOT worth scheduling on S1's evidence: the stats pass is 2.7% of the step (0.0514 ms of 1.9056 ms at `D=2, B=64, N=L=4096, BH=16`) and the union pass it could subsume is 0.0401 ms. | `workflows/p67-paging/s1_build.md` |
+| **P67-e** | **Retire the legacy V3 tiled consumer.** It is the last raw-tensor state crossing in the layer (`RoLA._dense_carry`), the only reason `PageArena.adopt_dense` still has a caller, and the reason a non-uniform topology has no paged backing. Unblocked by this integration; it is the next stage. | [`internals/state.md` §5](internals/state.md#arms) |

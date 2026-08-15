@@ -37,9 +37,13 @@ plane bound the 32-bit displacement form owes the caller.
 
 ## Allocation: Planned-Exact-Async
 
-The pool is sized EXACTLY, not grown: the popcount of the atom condensation (the producer epilogue's canonical write bitmap) is the
-number of atoms this call will touch, So the arena knows its own footprint before the
-consumer launches, and there is nothing to discover.
+The pool is sized EXACTLY, not grown: the popcount of the atom condensation is the
+number of atoms this call will touch, so the arena knows its own footprint before the
+consumer launches, and there is nothing to discover. The condensation comes from the
+call's own arm and never from a second derivation — `chunk_stats` at `T > 1`
+([`stats.md`](stats.md)), the decode growth probe's published `atom_bits` at `T = 1`
+([`decode_expand.md` §7](../decode_expand.md#growth-probe)) — and both are EXACT rather
+than a bound, which is what makes `resident == realized` a fact instead of a hope.
 
 Allocation and zero-init issue on a SIDE STREAM as soon as the epilogue lands, and the
 consumer launch waits on ONE event. That is the whole of the asynchrony: no polling, no
@@ -89,6 +93,33 @@ cursor is a host integer and the residency is a device reduction, so the cursor 
 arena's own logic runs on and what sizes the commitment; ``allocated_pages`` is that
 number, and ``resident_pages`` is the exact one, a REPORTING surface that syncs and never
 appears on a measured path.
+
+## <a id="granule"></a>The Savings-Claim Rule: State The Pool Size
+
+**A paging-savings statement that does not state its pool size is not a result.** The
+driver commits in ALLOCATION GRANULES (2 MiB on sm_86), so a pool smaller than one
+granule commits its whole dense limit in a single mapping and saves NOTHING, however
+sparse its residency. Measured, at `BH = 8`, `widths = (16, 16)`, `cols = 65`: a 0.51 MiB
+dense limit reports `committed 2.00 MiB` — 394% of dense — while the same routing at
+`widths = (8, 8, 8, 8)` (8.12 MiB dense) reports 10.00 MiB, and the `(128, 128)`,
+`BH = 32` pool of `tests/tier2_geometry/test_page_arena_vmm.py` reports **27.7% committed
+against a 25% plan** (37,748,736 B of a 130 MiB dense limit — `ceil(8192/504) = 17`
+chunks plus the owner's one-chunk lookahead, asserted exactly rather than as a band).
+
+Two consequences, both binding on anything that quotes a number:
+
+* every savings claim carries its pool size and its dense counterfactual — which is why
+  `PagingResult` reports `committed_bytes` and `dense_bytes` beside every fraction, and
+  why `benchmarks/bench_paging.py` prints all three;
+* the small topologies the test suite uses (0.5–8 MiB pools) are inside the granule
+  regime and CANNOT show a saving. They gate correctness, never the claim. The claim is
+  measured at pools many chunks wide, which is the standing
+  design-for-1M-scale rule arriving in the memory system.
+
+A second floor sits above the granule one and is a property of the ROUTING rather than
+the driver: with unstructured sparsity at long `L`, every atom is live (S1's measurement,
+reproduced by `bench_paging` at `logit_gain = 8`: 2048/2048 atoms resident). Sparse
+RESIDENCY needs STRUCTURED support and does not follow from entmax alone.
 
 ## Extents Are Allocator Policy And Nothing Else
 

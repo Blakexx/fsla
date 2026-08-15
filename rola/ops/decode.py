@@ -46,9 +46,9 @@ An atom with no slot reads as zeros and is not written, which is the same state 
 never-deposited leaf holds densely.
 
 **GROWTH IS THE STEP'S OWN NEW WORK, AND MOST STEPS HAVE NONE.** A step may write an
-atom that is not resident, and the exact admission that handles it costs far more than
-the launch it precedes (a host derivation, ``plan_exact``, and the cross-stream event
-measured at 0.38-0.48 ms against a 0.04 ms kernel). So the step asks FIRST, on the
+atom that is not resident, and the admission that handles it costs far more than the
+launch it precedes (``plan_exact`` plus the cross-stream event, 0.38-0.40 ms against a
+0.09-0.10 ms kernel). So the step asks FIRST, on the
 device: :func:`_growth_probe` expands the write side with the kernel's own
 ``expand_side``, condenses it 16-deep, and ANDs that against the page table; the host
 reads one ``[BH]`` int32 answer. A step with nothing new launches immediately -- no

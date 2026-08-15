@@ -59,8 +59,10 @@ an older state object, sharing one between two sequences, or continuing after a
 `clone` are all legal and are the caller's semantics to own.
 
 `strategy="cow"` is refused AT CONSTRUCTION, by name: copy-on-write branching is
-designed (per-branch tables, refcounted slot GC) and not built. `"mutable"` is the
-built strategy: the call writes in place and returns THE SAME OBJECT.
+designed (per-branch tables, refcounted slot GC) and not built, and its settled
+semantics are [§9.1](#cow) so that a future builder implements the ruling rather than
+re-deriving it. `"mutable"` is the built strategy: the call writes in place and returns
+THE SAME OBJECT.
 
 ## <a id="backing"></a>3. The backing: dense or paged, and invisible either way
 
@@ -185,3 +187,62 @@ The `transformers` / `flash-linear-attention` adapters that presented a foreign 
 to the old per-stack state object were DELETED with it (docs/internals/DELETIONS.md).
 A shim onto this surface is a thin wrapper at a model boundary if one is ever wanted;
 it is not a second stateful surface, and the layer will not import either package.
+
+## <a id="future-work"></a>9. NAMED FUTURE WORK
+
+Three items are designed and NOT BUILT. They are here rather than in a workflow ledger
+because the repository has to carry its own contracts: a reader ten years from now gets
+the design, not an archaeology exercise. None of them is scheduled.
+
+### <a id="cow"></a>9.1 Copy-on-write state branching — the SEMANTICS, fixed
+
+`strategy="cow"` is refused by name today ([§2](#binding)). What it will mean when it is
+built is settled, and the settlement is what must not be re-litigated:
+
+* **Strategy lives on the STATE, stamped at construction** (`rola.state(strategy=...)`),
+  and it is a convenience stamp rather than a contract: the PLAN defaults to the state's
+  strategy and an expert override wins unconditionally. Cross-branch clobbering that an
+  override causes is the caller's business logic, not something this surface polices —
+  the same rule that gives the object no step stamps and no lineage checks today.
+* **Mutable** (the built strategy): writes in place; the call returns THE SAME object.
+* **COW**: writes always to FRESH slots plus an updated table, so every state object ever
+  returned stays valid, and resubmitting an older one IS branching — an implicit fork,
+  not an error. A COW step therefore returns a NEW state object referencing a
+  mostly-shared table. Slot lifetime is refcounted, and refcounts exist for COW's own
+  garbage collection and for one data-integrity invariant: **a slot with refcount > 1 is
+  never written in place.**
+* **Mixing strategies inside a lineage is UNEXPRESSIBLE, not policed.** Changing a
+  state's strategy is a full deep copy of its resident data to fresh pages, in BOTH
+  directions — i.e. `clone(strategy=...)`, whose cost is visible at the point it is paid.
+  A cheaper transition was designed and REJECTED: a live mutable ancestor is a standing
+  alias onto shared slots, so its future in-place writes would break every COW
+  descendant's validity guarantee, and the mirror-image residual sharing on the way back
+  is the same defect reflected.
+* **What it buys**: beam and speculative decode at per-branch memory proportional to the
+  atoms a branch WRITES rather than to the state's size. The machinery is already here —
+  per-branch page tables are the indirection, the stats pass gives the exact write set
+  BEFORE the launch (so the copy is planned-exact and never faulted), and the kernel's
+  own state store writes through the child's table while reading through the parent's,
+  which makes a fork cost zero bytes.
+* **The known cost, and its known fix**: at decode grain the per-step TABLE copy
+  (`BH * N/16` int32 — about 1 MiB at `N = 65,536`, `BH = 64`) dwarfs the step's own
+  state bytes. The answer is a two-level (paged) page table copying only diverged table
+  pages. It is decided when COW is scheduled; eager `clone()` ships first and COW is its
+  drop-in optimization behind the same contract.
+
+### 9.2 A CUDA-graph-captured decode step
+
+A steady paged decode step is HOST-WAIT-BOUND: the growth probe's `[BH]` int32 read is
+0.12–0.16 ms of a 0.22–0.24 ms step, and the floor is the WSL2 host's own
+launch-to-visible latency rather than anything tunable. The derivation and the two
+structural exits — capture the step, or consume the verdict on the DEVICE — are
+[`decode.md` §4b](decode.md#graph-capture).
+
+### 9.3 Lifting the 4 GiB state-plane bound
+
+The chunk consumer's state addressing is a 32-bit byte displacement from a pinned plane
+origin, which bounds a plane at 4 GiB (~1,032,192 pages) and is refused loudly above it.
+The dense backing hits it first and the paged backing IS the answer to it; when a cell
+does reach it, the two backings need different lifts (one per-`bh` 64-bit base for dense,
+arena sharding for paged). Stated at
+[`chunk/chunk_kernel.md`](chunk/chunk_kernel.md#plane-bound).

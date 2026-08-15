@@ -107,6 +107,17 @@ bound: `chunk.cu` refuses a plane of 4 GiB or more, which is a little over a
 million pages. It binds the DENSE backing first, and a paged plane holding only
 the atoms a plan realized is precisely the answer to that.
 
+<a id="plane-bound"></a>**NAMED FUTURE WORK: lifting the 4 GiB bound**, if a campaign cell
+ever reaches it. The two backings need different answers, and that asymmetry is the whole
+of the note. A DENSE plane is `bh`-major, so ONE per-`bh` 64-bit base formed at kernel
+scope lifts it -- affordable now in a way it was not when the bound was set, because the
+OFF variant is specialized and carries none of this code, so the cost lands only where the
+capability is used. A PAGED plane has no such structure: slots are pool-global by
+construction, so the answer there is ARENA SHARDING (a pool per shard, each under the
+bound, the table naming its shard), which is a plan change and not a kernel one. Nothing
+is built; the refusal is loud, and the number to compare against is
+`BH * (N/16)` pages for the dense backing and the plan's popcount for the paged one.
+
 The alternative — a 64-bit `plane + slot * kPageElems` per atom — was built and
 measured: ptxas lays the store epilogue out at addresses INSIDE the main loop's
 backward-branch span, so the gate counted ninety `IMAD.WIDE` in loop bodies, and
