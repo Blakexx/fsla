@@ -30,7 +30,7 @@ def _widths(fx) -> list:
 
 def _union_table(fx):
     packed = fx["packed"]
-    return extension().chunk_union_table(packed.pr, packed.pw, fx["v_prefill"],
+    return extension().chunk_union_table(packed.pr, packed.pw, fx["v_kernel"],
                                          fx["C"], fx["BC"], _widths(fx))
 
 
@@ -42,7 +42,7 @@ def chunk_forward(fx) -> Arm:
     attributed to any of them.
     """
     m, packed = extension(), fx["packed"]
-    tbl, widths, v = _union_table(fx), _widths(fx), fx["v_prefill"]
+    tbl, widths, v = _union_table(fx), _widths(fx), fx["v_kernel"]
     c, bc = fx["C"], fx["BC"]
 
     def call():
@@ -76,7 +76,7 @@ def chunk_block_bits(fx) -> Arm:
 def _numerator(fx):
     """One forward's `(num, den)`, for the two readout subjects to consume."""
     m, packed = extension(), fx["packed"]
-    return m.chunk_forward_raw(packed.pr, packed.pw, packed.gw, fx["v_prefill"],
+    return m.chunk_forward_raw(packed.pr, packed.pw, packed.gw, fx["v_kernel"],
                                _union_table(fx), fx["C"], fx["BC"], _widths(fx),
                                None, None, None, None)
 

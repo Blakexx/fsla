@@ -104,7 +104,12 @@ class Cell:
         c, bc = chunk_arm.arm(routes)
         return {"cell": self, "layer": layer, "gateway": layer.routes, "x": x, "v": v,
                 "routes": routes, "packed": packed, "C": c, "BC": bc,
-                "v_prefill": v[:, :self.T].contiguous()}
+                #: `v_prefill` is the operand in the CELL's dtype, which is what the layer
+                #: and the op facade take; `v_kernel` is the bf16 contiguous form the raw
+                #: kernel entries require, narrowed once here rather than inside a timed
+                #: callable where it would be priced as part of the launch.
+                "v_prefill": v[:, :self.T].contiguous(),
+                "v_kernel": v[:, :self.T].to(torch.bfloat16).contiguous()}
 
 
 def _cells() -> dict[str, Cell]:
