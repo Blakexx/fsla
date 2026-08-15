@@ -30,6 +30,16 @@ CHUNK_TOKENS = 32
 _PIN_C, _PIN_BC = CHUNK_TOKENS, 128
 
 
+def _pack(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
+    """`view` as a contiguous `dtype` tensor, in ONE copy.
+
+    `.to(dtype)` preserves a permuted view's strides, so `.to(dtype).contiguous()`
+    walks the tensor twice; an already-contiguous destination fuses the transpose
+    and the narrowing into the one copy that is actually needed.
+    """
+    return torch.empty(view.shape, dtype=dtype, device=view.device).copy_(view)
+
+
 def _arm_for(D: int, B: int):
     """The manifest arm this topology runs, or None."""
     arms = [tuple(a[:4]) for a in extension().chunk_arms()]
@@ -82,7 +92,7 @@ def stats(routes) -> torch.Tensor:
     host synchronization happens here.
     """
     widths = tuple(l.width for l in routes.topology.levels)
-    pw = torch.cat(routes.write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
+    pw = _pack(torch.cat(routes.write, -1).permute(0, 2, 1, 3))
     return extension().chunk_stats(pw, list(widths))
 
 
@@ -135,10 +145,10 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     m = extension()
     widths = tuple(l.width for l in routes.topology.levels)
     c, bc = _arm_for(len(widths), widths[0])
-    pr = torch.cat(routes.read, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    pw = torch.cat(routes.write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    gw = routes.g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
-    vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
+    pr = _pack(torch.cat(routes.read, -1).permute(0, 2, 1, 3))
+    pw = _pack(torch.cat(routes.write, -1).permute(0, 2, 1, 3))
+    gw = _pack(routes.g_write.permute(0, 2, 1))
+    vk = _pack(v.permute(0, 2, 1, 3))
     if arena is None:
         page_tbl = None
         s_out = state_plane(routes, d_v=v.shape[-1]) if want_state else None
