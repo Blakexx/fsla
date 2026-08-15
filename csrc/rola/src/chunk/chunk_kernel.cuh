@@ -206,11 +206,9 @@ struct LevelPlan {
 //: spill gate refuses), and the always_inline attribute is not honored on a
 //: lambda -- it is on a function.
 template <int kClauses, int kFormWordsT, int kThreadsT>
-__device__ __forceinline__ void form_impl(int& formEnd, int limit, int tid, const uint32_t* tRa,
-                                          const uint32_t* tWa, const uint32_t* tRb,
-                                          const uint32_t* tWb, const uint32_t* tRc,
-                                          const uint32_t* tWc, const uint32_t* tRd,
-                                          const uint32_t* tWd, uint32_t tailMask, int lastWord,
+__device__ __forceinline__ void form_impl(int& formEnd, int limit, int tid, const uint32_t* rowR,
+                                          const uint32_t* rowW, uint32_t cA, uint32_t cB,
+                                          uint32_t cC, uint32_t cD, uint32_t tailMask, int lastWord,
                                           uint32_t* sfR, uint32_t* sfW) {
   for (int w = formEnd + tid; w < limit; w += kThreadsT) {
     const uint32_t off = (uint32_t)w * (uint32_t)sizeof(uint32_t);
@@ -221,23 +219,23 @@ __device__ __forceinline__ void form_impl(int& formEnd, int limit, int tid, cons
       rm = 0xFFFFFFFFu;
       wm = 0xFFFFFFFFu;
     } else if constexpr (kClauses == 1) {
-      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(tRa, off));
-      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(tWa, off));
+      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cA + off));
+      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cA + off));
     } else if constexpr (kClauses == 2) {
-      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(tRa, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tRb, off));
-      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(tWa, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tWb, off));
+      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cA + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cB + off));
+      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cA + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cB + off));
     } else {
-      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(tRa, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tRb, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tRc, off));
-      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(tWa, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tWb, off))
-           & *reinterpret_cast<const uint32_t*>(gather_ptr(tWc, off));
+      rm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cA + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cB + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cC + off));
+      wm = *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cA + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cB + off))
+           & *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cC + off));
       if constexpr (kClauses > 3) {
-        rm &= *reinterpret_cast<const uint32_t*>(gather_ptr(tRd, off));
-        wm &= *reinterpret_cast<const uint32_t*>(gather_ptr(tWd, off));
+        rm &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowR, cD + off));
+        wm &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowW, cD + off));
       }
     }
     if (w == lastWord) {
@@ -498,6 +496,33 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: order is Geom::fixed's, and the per-group regions are indexed by `grp`.
   extern __shared__ __align__(16) char smem_base[];
 
+  //: THE (bh)-KEYED BASES, AND THEY ARE THE ONLY THING HOISTED ABOVE THE WORK
+  //: LOOP.  Every one is a function of `blockIdx.y` alone, which is why `bh`
+  //: stays on that axis; leaving them inside the loop lets ptxas rematerialize
+  //: their widening multiplies INSIDE the super-chunk loop under the pressure
+  //: the loop adds (docs/internals/chunk/chunk_kernel.md#work-loop).
+  const long base = (long)blockIdx.y * L * kD;
+  const long pbase = (long)blockIdx.y * L * kWtot;
+  const int tokWords = tok_words(L);
+  const __nv_bfloat16* const vPlane = pin_address(v + base);
+  float* const oPlane = pin_address(o + base);
+  float* const denPlane = pin_address(den + (long)blockIdx.y * L);
+  const __nv_bfloat16* const pRead = pin_address(pread + pbase);
+  const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
+  //: THE WRITE GAIN, DECOUPLED (spec 4.2): a per-token positive scalar, its own
+  //: plane -- the amplitudes stay pure simplexes, so the SUPPORT BITS ARE
+  //: UNGAINED and a small gain can never underflow a live token out of the
+  //: schedule.  The deposit is gained; a decay clock reads the UNGAINED
+  //: coefficient, which is why the gain folds AFTER the level chain.
+  const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
+  //: ONE 64-BIT BASE PER (bh, side) and a 32-bit BYTE displacement per clause row
+  //: after it -- the addressing discipline the table's own producer keeps.
+  const uint32_t* const rowR =
+      pin_address(tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * tokWords);
+  const uint32_t* const rowW =
+      pin_address(tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * tokWords);
+  const uint32_t clauseStride = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
+
   //: this (bh)'s liveness row -- the persistent variant's only extra load.
   [[maybe_unused]] const uint8_t* bitRow = nullptr;
   if constexpr (PERSIST) bitRow = pin_address(block_bits + (long)blockIdx.y * LP::blocks);
@@ -507,9 +532,13 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //: live across the back edge, which MEASURED costs +20 to +34 registers and
   //: spills, against +2 for re-deriving.  The same trade the state I/O already
   //: takes (docs/internals/chunk/chunk_kernel.md#work-loop).
+  //:
+  //: A `do`/`while` WHOSE CONDITION IS COMPILE-TIME FALSE at `!PERSIST`, so that
+  //: variant carries no back edge at all -- the one-block launch is the kernel it
+  //: was before the loop existed, opcode for opcode.
+  int blk = (int)blockIdx.x;
 #pragma unroll 1
-  for (int blk = (int)blockIdx.x, end = PERSIST ? (int)LP::blocks : (int)blockIdx.x + 1; blk < end;
-       blk += (PERSIST ? (int)gridDim.x : 1)) {
+  do {
     //: CTA-UNIFORM by construction -- the byte is per (blockIdx.y, blk), so the
     //: whole CTA continues together and no rendezvous is left half-arrived.
     if constexpr (PERSIST) {
@@ -537,8 +566,6 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     static_assert((C * LdO + kUnits * C) % 4 == 0, "the index ring must start 16-byte aligned");
     static_assert(G::idx_slot % 16 == 0,
                   "the formed schedule follows the index ring and must stay aligned");
-
-    const long base = (long)blockIdx.y * L * kD;
 
     //: THE INDEX RING'S ACCESSORS.  A slot is a header the whole CTA reads
     //: (`nr`, `nw`, whether the super-chunk exists at all) followed by the two
@@ -641,7 +668,6 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     constexpr int kPasses = C / kRowsPerPass;
     static_assert(kPasses >= 1, "a chunk must be at least kThreads/8 rows");
     const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
-    const __nv_bfloat16* const vPlane = pin_address(v + base);
     const uint32_t ldColB = (uint32_t)(ldCol * 2);
     constexpr uint32_t kVRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
 
@@ -677,8 +703,6 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     static_assert(kFanPasses * kFanRows == C && kFanPasses >= 1,
                   "the fan-in's passes must cover the chunk exactly");
     const int fanRow = gtid / kFanLanes, fanCol = gtid % kFanLanes;
-    float* const oPlane = pin_address(o + base);
-    float* const denPlane = pin_address(den + (long)blockIdx.y * L);
     const uint32_t fanColB = (uint32_t)(fanCol * (int)sizeof(float));
     constexpr uint32_t kORowB = (uint32_t)(kD * (int)sizeof(float));
     const int fanE = fanRow * LdO + fanCol;
@@ -819,17 +843,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     //: base is a live 64-bit value for the whole kernel; the level a thread reads
     //: is a byte offset inside its token's row and therefore adds before the
     //: widening, not after it.
-    const long pbase = (long)blockIdx.y * L * kWtot;
     constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
-    const __nv_bfloat16* const pRead = pin_address(pread + pbase);
-    const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
-    //: THE WRITE GAIN, DECOUPLED (spec 4.2): a per-token positive scalar, its
-    //: own plane -- the amplitudes stay pure simplexes, so the SUPPORT BITS ARE
-    //: UNGAINED and a small gain can never underflow a live token out of the
-    //: schedule.  The deposit (value AND mass columns) is gained; the clock a
-    //: later rung adds reads the UNGAINED coefficient, which is why the gain
-    //: folds AFTER the level chain and nowhere earlier.
-    const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
     //: 1.0 as a bf16x2 splat: the read side's gain.  Folding it through the
     //: same multiply keeps ONE produce body, and rn(a*1) = a keeps the read
     //: panel BIT-EXACT -- the multiply is paid, the value is untouched.
@@ -942,28 +956,21 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     //: The block's entry rows, per side; the trailing row disappears when the block
     //: spans that level entirely -- docs/internals/chunk/chunk_kernel.md#clause-rows
     constexpr int kClauses = LP::clauses;
-    constexpr int kEntries = LP::entries;
-    const int tokWords = tok_words(L);
-    const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
-    const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
-    //: One pinned row per SURVIVING clause per side. NAMED SCALARS, never an array:
-    //: the clause loop's callees carry inline asm, so a runtime-indexed pointer
-    //: array is demoted to a stack frame -- docs/internals/chunk/chunk_kernel.md#clause-rows
-    const uint32_t *tRa = tbl, *tWa = tbl, *tRb = tbl, *tWb = tbl, *tRc = tbl, *tWc = tbl,
-                   *tRd = tbl, *tWd = tbl;
-#define ROLA_CLAUSE(CL_, PR_, PW_)                                             \
+    //: NAMED SCALARS, never an array: the clause loop's callees carry inline asm,
+    //: so a runtime-indexed array is demoted to a stack frame
+    //: -- docs/internals/chunk/chunk_kernel.md#clause-rows
+    uint32_t cA = 0, cB = 0, cC = 0, cD = 0;
+#define ROLA_CLAUSE(CL_, C_)                                                   \
   if constexpr ((CL_) < kClauses) {                                            \
     constexpr int kDiv = LP::suffix_groups((CL_) + 1);                         \
     constexpr int kGrp = LP::groups_at(CL_);                                   \
     constexpr int kPre = LP::prefix_entries(CL_);                              \
-    const int e = kPre + (blk / kDiv) % kGrp;                                  \
-    PR_ = pin_address(tbl + rowR + (long)e * tokWords);                        \
-    PW_ = pin_address(tbl + rowW + (long)e * tokWords);                        \
+    C_ = (uint32_t)(kPre + (blk / kDiv) % kGrp) * clauseStride;                \
   }
-    ROLA_CLAUSE(0, tRa, tWa)
-    ROLA_CLAUSE(1, tRb, tWb)
-    ROLA_CLAUSE(2, tRc, tWc)
-    ROLA_CLAUSE(3, tRd, tWd)
+    ROLA_CLAUSE(0, cA)
+    ROLA_CLAUSE(1, cB)
+    ROLA_CLAUSE(2, cC)
+    ROLA_CLAUSE(3, cD)
 #undef ROLA_CLAUSE
 
     //: THE LAST WORD'S PADDING TOKENS DO NOT EXIST.  The table leaves them zero;
@@ -983,8 +990,8 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     auto form = [&]() {
       const int head = scook[kCookWord] + kFormWords;
       const int limit = head < tokWords ? head : tokWords;
-      form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, tRa, tWa, tRb, tWb, tRc, tWc,
-                                                tRd, tWd, tailMask, lastWord, sfR, sfW);
+      form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, rowR, rowW, cA, cB, cC, cD,
+                                                tailMask, lastWord, sfR, sfW);
     };
 
     //: A PRODUCER REFILLS IN BATCHES; THAT IS WHAT THE RING IS FOR.  Forming the
@@ -1570,7 +1577,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
         rendezvous();
       }
     }
-  }
+  } while (PERSIST && (blk += (int)gridDim.x) < (int)LP::blocks);
 #undef ADDRF
 #undef ADDRT
 #undef ADDRT_M

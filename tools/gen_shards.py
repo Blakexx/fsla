@@ -90,9 +90,11 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 `compacted_kernel<C, BC, D, B, STATE, PERSIST>` has {total} built instantiations —
 {narms} arms crossed with the carried state's I/O and the launch shape, the exact set
-`chunk_forward` can select, no more and no fewer. One arm carries no work-loop
-variant: `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
-budget, and spills inside the main loop once a loop counter is added to it. They are split across **{nshards} shards of {per} arms**,
+`chunk_forward` can select, no more and no fewer. Five arms carry no work-loop
+variant, each for a measured reason `tools/gen_shards.py` states: one is at the
+ISA's whole per-thread register budget and spills once a loop counter is added,
+and four have the shortest super-chunk loop in the manifest, into which `ptxas`
+sinks address arithmetic the SASS gate forbids there. They are split across **{nshards} shards of {per} arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -176,15 +178,25 @@ CHUNK_STATE = (False, True)
 #: address live, MEASURED at +20 to +34 registers on the saturated arms.
 CHUNK_PERSIST = (False, True)
 
-#: THE ARM THE WORK LOOP DOES NOT FIT, and this is a MEASURED DECLARATION of the
-#: same kind as `reg_floor` -- falsifiable, because the spill manifest fails if an
-#: arm listed as fitting does not.  `(64, 128, 2, 64)` declares `reg_floor` 255,
-#: the ISA's whole per-thread budget, so it has no register left for a loop counter
-#: and spills 66-122 bytes INSIDE the main loop.  The answer to a configuration a
-#: strategy costs too much on is a different configuration, never a special-cased
-#: path: this arm runs the full grid, and asking it for the sparse one is refused
-#: BY NAME (docs/internals/chunk/chunk.md#run-table).
-CHUNK_NO_PERSIST = ((64, 128, 2, 64),)
+#: THE ARMS THE WORK LOOP DOES NOT FIT, and this is a MEASURED DECLARATION of the
+#: same kind as `reg_floor` -- falsifiable in both directions, because the spill
+#: manifest and `tools/chunk_sass_gate.py` fail on any arm listed as fitting that
+#: does not.  The answer to a configuration a strategy costs too much on is a
+#: different configuration, never a special-cased path: these arms run the full
+#: grid, and asking one for the sparse grid is refused BY NAME
+#: (docs/internals/chunk/chunk.md#run-table).  Two measurements put them here:
+#:
+#: * `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
+#:   budget, so it has no register left for a loop counter and SPILLS 66-122
+#:   bytes inside the main loop -- a bare grid-stride loop with no predicate and
+#:   no fence still spills it.
+#: * the four `C = 16, BC = 64` arms have the shortest super-chunk loop and the
+#:   lowest register floor in the manifest (128), and `ptxas` answers the work
+#:   loop's added pressure by SINKING three of the `(bh)`-keyed widening
+#:   multiplies INTO that loop, where the addressing discipline forbids them.
+#:   `C = 16` is a measured chunk-length axis, not the pinned production length.
+CHUNK_NO_PERSIST = ((64, 128, 2, 64),
+                    (16, 64, 2, 8), (16, 64, 2, 16), (16, 64, 2, 64), (16, 64, 1, 256))
 
 
 def chunk_persist(arm) -> bool:

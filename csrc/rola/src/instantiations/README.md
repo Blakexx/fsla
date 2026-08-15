@@ -10,11 +10,13 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has 82 built instantiations —
+`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has 74 built instantiations —
 21 arms crossed with the carried state's I/O and the launch shape, the exact set
-`chunk_forward` can select, no more and no fewer. One arm carries no work-loop
-variant: `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
-budget, and spills inside the main loop once a loop counter is added to it. They are split across **3 shards of 8 arms**,
+`chunk_forward` can select, no more and no fewer. Five arms carry no work-loop
+variant, each for a measured reason `tools/gen_shards.py` states: one is at the
+ISA's whole per-thread register budget and spills once a loop counter is added,
+and four have the shortest super-chunk loop in the manifest, into which `ptxas`
+sinks address arithmetic the SASS gate forbids there. They are split across **3 shards of 8 arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -59,6 +61,6 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `chunk_s0.cu` | 32 |
-| `chunk_s1.cu` | 30 |
-| `chunk_s2.cu` | 20 |
+| `chunk_s0.cu` | 28 |
+| `chunk_s1.cu` | 28 |
+| `chunk_s2.cu` | 18 |
