@@ -10,7 +10,7 @@ to open a pull request.
 
 ## 1. Tabulate the architecture's resources
 
-`csrc/rola/src/arch_table.cuh` carries, per compute capability, the three numbers
+`csrc/rola/src/chunk/arch_caps.cuh` carries, per compute capability, the capability rows and the numbers
 the launch-bound formula needs:
 
 ```cpp

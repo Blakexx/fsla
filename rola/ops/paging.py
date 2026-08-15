@@ -21,7 +21,7 @@ from math import prod
 import torch
 
 #: the MMA k-extent, and the page granule. The Python mirror of
-#: ``arch_table.cuh``'s ``kMmaKQuantum`` (docs/internals/arch_table.md), which a C++
+#: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
 #: ``constexpr`` cannot supply here; :meth:`PageArena.__init__` checks it against the
 #: atom geometry it addresses.
 MMA_K_QUANTUM = 16

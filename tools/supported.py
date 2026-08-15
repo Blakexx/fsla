@@ -4,7 +4,7 @@ A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
 answer, and CI fails on drift:
 
-* ``csrc/rola/src/arch_table.cuh`` -- the architectures the KERNEL knows how to
+* ``csrc/rola/src/chunk/arch_caps.cuh`` -- the architectures the KERNEL knows how to
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time
   and the chunk dispatch's first-launch check a refusal at run time, so an arch
   missing from it cannot execute whatever the table says.
@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCH_TABLE = ROOT / "csrc" / "rola" / "src" / "arch_table.cuh"
+ARCH_TABLE = ROOT / "csrc" / "rola" / "src" / "chunk" / "arch_caps.cuh"
 MANIFEST_DIR = ROOT / "tools" / "manifests"
 README = ROOT / "README.md"
 
@@ -59,21 +59,21 @@ GPUS = {
     "sm_89": "L40S, RTX 40xx",
 }
 
-_TABULATED = re.compile(r"return\s+((?:arch\s*==\s*\d+\s*\|\|\s*)*arch\s*==\s*\d+)\s*;")
+_TABULATED = re.compile(r"return\s+((?:cc\s*==\s*\d+\s*\|\|\s*)*cc\s*==\s*\d+)\s*;")
 
 
 def tabulated_archs() -> list[str]:
-    """The `sm_XX` the kernel can size itself for, read out of `sm_arch_tabulated`.
+    """The `sm_XX` the kernel can size itself for, read out of `tabulated`.
 
     Parsed from the header rather than restated here, because a second list is a
     list that can disagree with the `static_assert`.
     """
     text = ARCH_TABLE.read_text()
-    body = text.split("constexpr bool sm_arch_tabulated", 1)[1]
+    body = text.split("constexpr bool tabulated", 1)[1]
     match = _TABULATED.search(body)
     if match is None:
         raise SystemExit(
-            "cannot read `sm_arch_tabulated()` from arch_table.cuh. The supported "
+            "cannot read `tabulated()` from chunk/arch_caps.cuh. The supported "
             "table is GENERATED from that function; if its shape changed, this "
             "parser must change with it rather than the table being hand-written.")
     codes = [int(n) for n in re.findall(r"\d+", match.group(1))]

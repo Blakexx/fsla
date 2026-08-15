@@ -16,7 +16,7 @@ rule   what it forbids                                                      here
 R1     a build under an assembler the manifest was not ratified under       ``_gate_toolchain``
 R2     ``code=compute_XX`` (PTX) anywhere in the fatbin                     ``gencodes`` + its assertion
 R3     an architecture in the fatbin with no ratified manifest              ``_gate_ratified``
-R4     a *launch* on a device whose arch was never measured                 ``csrc/rola/src/arch_table.cuh`` (C++)
+R4     a *launch* on a device whose arch was never measured                 ``csrc/rola/src/chunk/arch_caps.cuh`` (C++)
 R5     a vendored codegen INPUT that does not match its recorded pin        ``_gate_vendored``
 ===== ==================================================================== ==========
 
