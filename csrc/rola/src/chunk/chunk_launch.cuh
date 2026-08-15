@@ -49,9 +49,9 @@ cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
   const int want = (kCtaTarget<C, BC> * p.sm_count + p.BH - 1) / p.BH;
   const int span = !PERSIST ? kBlocks : want < 1 ? 1 : want < kBlocks ? want : kBlocks;
   const dim3 grid((unsigned)span, (unsigned)p.BH);
-  compacted_kernel<C, D, B, BC, STATE, PERSIST>
-      <<<grid, threads_for(BC), sm, stream>>>(p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.s_in,
-                                              p.s_out, p.page_tbl, p.block_bits, p.run_table);
+  compacted_kernel<C, D, B, BC, STATE, PERSIST><<<grid, threads_for(BC), sm, stream>>>(
+      p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.v_row_bytes, p.s_in, p.s_out, p.page_tbl,
+      p.block_bits, p.run_table);
   return cudaGetLastError();
 }
 

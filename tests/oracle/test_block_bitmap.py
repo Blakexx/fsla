@@ -92,7 +92,7 @@ def _bits(read, write, widths, bc, page_tbl=None):
             "fixture amplitudes flushed to zero in bf16; the comparison would be "
             "about the cast, not about the bitmap")
     B, T, H = read[0].shape[:3]
-    v = torch.zeros((B, H, T, _DV), device="cuda", dtype=torch.bfloat16)
+    v = torch.zeros((B, T, H, _DV), device="cuda", dtype=torch.bfloat16)
     tbl = extension().chunk_union_table(pr, pw, v, _C, bc, list(widths))
     return extension().chunk_block_bits(tbl, bc, list(widths), T, page_tbl)
 

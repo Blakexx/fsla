@@ -1203,8 +1203,10 @@ def production_routing_factor_levels(
         raise ValueError("read/write logits must share one device and dtype")
 
     if read_logits.is_cuda and read_logits.dtype == torch.float32:
-        outputs = _ProductionLevelsFn.apply(
-            read_logits.contiguous(), write_logits.contiguous(), routing)
+        #: NOT `.contiguous()`: every solve entry below reads the logits through an
+        #: explicit stride triple, so a packed projection's half-slice is addressable
+        #: as it stands and materializing it is a whole extra pass over the side.
+        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing)
         return tuple(outputs[:routing.D]), tuple(outputs[routing.D:])
     return _torch_routing_factor_levels(read_logits, write_logits, routing)
 

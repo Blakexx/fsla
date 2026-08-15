@@ -170,12 +170,24 @@ stretches slide, so sixteen local bits name any of its tokens at any `L`. Below 
 window no line is ever crossed, and the partition — and the output, bit for bit — is
 exactly what it was when 65536 was a refusal.
 
-The window is a DISPLACEMENT, not a table. Each plane's per-window byte stride is
-compile-time, so a super-chunk's window number is one uniform multiply-add into a
-column term the consumer already carries, and the per-index addressing keeps its exact
+The window is a DISPLACEMENT, not a table. Each plane's per-window byte stride is a
+per-launch constant, so a super-chunk's window number is one uniform multiply-add into
+a column term the consumer already carries, and the per-index addressing keeps its exact
 shape against kernel-wide pinned bases. What bounds `L` is therefore the 32-bit gather
 displacement itself: the widest plane row is the fp32 output at `kD * 4` bytes, so
 `L * kD * 4` must sit inside the 4 GiB zero-extension window. That is `kMaxGatherL`.
+`V`'s row is the one that is not fixed by `d_v` alone (below), so the entry bounds it
+in the same window explicitly.
+
+<a id="v-layout"></a>**`V` is read TOKEN-MAJOR, where the caller holds it.** The value
+stream arrives `[B, T, H, d_v]` — a head's `d_v` columns are contiguous, and its rows
+are a whole token (`H * d_v`) apart. That stride is the launch's `v_row_bytes`, and it
+is the ONLY thing about `V`'s addressing that is not compile-time: the head count is
+`v_row_bytes / d_v` and is not carried twice. Nothing else changes, because `V` is
+gathered by the WRITE LIST — the rows a staged chunk wants are already scattered across
+the plane, so a row stride wider than the row costs the gather no coalescing, and the
+128-byte row remains one aligned vector pass. What it buys is the transpose the host
+used to pay for the kernel's benefit alone.
 
 <a id="the-carve"></a>**The carve is derived, not chosen.** One MMA unit owns a
 private 16-row slice of the transposed state's `m` axis, which is `d_v`, so the unit

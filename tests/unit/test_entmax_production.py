@@ -557,3 +557,38 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
     assert stored.to(torch.float16)[0, 0, 0] == 0
     assert _unpack_token_support(narrow.support_words, 1)[0, 0, 0]
     _assert_support_matches_stored_descriptor(narrow)
+
+
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
+    """Every solve entry takes an explicit stride triple, so the logits need not be
+    contiguous (P73 S4, inventory §B3).
+
+    An untied packed projection returns each side as a half-slice of one GEMM output,
+    and the claim is that the entries address it AS IT LIES: the levels off the slice
+    must be the levels off a materialized copy of it BIT FOR BIT, forward and backward
+    alike. A row that only checked closeness would pass on a stride bug that read the
+    wrong columns of a symmetric fixture.
+    """
+    from rola.routing.entmax.production import production_routing_factor_levels
+
+    torch.manual_seed(5)
+    routing = ResolvedRouting(levels=(UnionRouting(alpha),
+                                      IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
+                              branches=(8, 8))
+    both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda",
+                       requires_grad=True)
+    sides = (both[:, :, routing.packed_logit_width:], both[:, :, :routing.packed_logit_width])
+    assert not sides[0].is_contiguous()
+
+    def run(read, write):
+        levels = production_routing_factor_levels(read, write, routing)
+        out = sum(level.square().sum() for side in levels for level in side)
+        return levels, torch.autograd.grad(out, both, retain_graph=True)[0]
+
+    strided, d_strided = run(*sides)
+    packed, d_packed = run(*(side.contiguous() for side in sides))
+    for side_a, side_b in zip(strided, packed):
+        for level_a, level_b in zip(side_a, side_b):
+            assert torch.equal(level_a, level_b)
+    assert torch.equal(d_strided, d_packed)

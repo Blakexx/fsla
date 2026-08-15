@@ -263,18 +263,19 @@ static void check_inputs(const torch::Tensor& pr, const torch::Tensor& pw, const
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   TORCH_CHECK(pr.is_contiguous() && pw.is_contiguous());
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16);
-  TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,H,L,64]");
+  TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,L,H,64]");
   int64_t wsum = 0;
   for (auto w : widths) wsum += w;
   TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 4 && pr.size(3) == wsum,
               "expect packed amplitudes [B,H,L,sum(widths)]");
-  const int B = v.size(0), H = v.size(1), L = v.size(2);
+  const int B = v.size(0), L = v.size(1), H = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
-  //: the widest gathered rows are the fp32 output (kD*4 B) and the packed
-  //: amplitudes (sum(widths)*2 B); every gathered displacement must
-  //: zero-extend from 32 bits.
-  TORCH_CHECK((long)L <= kMaxGatherL && (long)L * wsum * 2 < (1L << 32),
+  //: the widest gathered rows are the fp32 output (kD*4 B), the packed amplitudes
+  //: (sum(widths)*2 B) and V's own token row (H*kD*2 B, because V is token-major);
+  //: every gathered displacement must zero-extend from 32 bits.
+  TORCH_CHECK((long)L <= kMaxGatherL && (long)L * wsum * 2 < (1L << 32)
+                  && (long)L * H * kD * 2 < (1L << 32),
               "a gathered displacement is 32 bits; this launch's would not "
               "fit (L=",
               L, ")");
@@ -284,7 +285,7 @@ torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, i
                           int64_t bc, std::vector<int64_t> widths) {
   check_arch_table();
   check_inputs(pr, pw, v, chunk, widths);
-  const int BH = v.size(0) * v.size(1), L = v.size(2);
+  const int BH = v.size(0) * v.size(2), L = v.size(1);
 #define CHUNK_TABLE_X(C_, BC_, D_, B_)                                     \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_))                     \
     return build_table<D_, B_, BC_>(pr, pw, BH, L);
@@ -433,14 +434,14 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   check_arch_table();
   //: the write gain: per-token positive scalar, bf16, [B,H,L] -- spec 4.2.
   TORCH_CHECK(gw.is_cuda() && gw.is_contiguous() && gw.scalar_type() == torch::kBFloat16
-                  && gw.dim() == 3 && gw.size(0) == v.size(0) && gw.size(1) == v.size(1)
-                  && gw.size(2) == v.size(2),
+                  && gw.dim() == 3 && gw.size(0) == v.size(0) && gw.size(1) == v.size(2)
+                  && gw.size(2) == v.size(1),
               "g_write must be a contiguous bf16 [B,H,L] tensor");
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   check_inputs(pr, pw, v, chunk, widths);
-  const int B = v.size(0), H = v.size(1), L = v.size(2);
+  const int B = v.size(0), L = v.size(1), H = v.size(2);
   //: The accumulator is zeroed, not merely allocated: the fan-in ADDS, so the
   //: identity of the sum has to be there before the first contribution.
   auto opts = v.options().dtype(torch::kFloat32);
@@ -490,7 +491,8 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    blockBits,                                                  \
                    run_table(sIn != nullptr, sOut != nullptr,                   \
                              pageTbl != nullptr),                              \
-                   sm_count(),      BH,              L};                                        \
+                   sm_count(),      BH,              L,                        \
+                   H * kD * (int)sizeof(__nv_bfloat16)};                        \
     const auto stream_ = at::cuda::getCurrentCUDAStream();                     \
     C10_CUDA_CHECK((launch_variant<C_, BC_, D_, B_>(p_, stream_)));            \
     return {o, den};                                                           \

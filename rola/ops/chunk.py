@@ -204,7 +204,11 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
     widths = tuple(l.width for l in routes.topology.levels)
     c, bc = _arm_for(len(widths), widths[0])
     pr, pw, gw = packed.pr, packed.pw, packed.gw
-    vk = _pack(v.permute(0, 2, 1, 3))
+    #: THE KERNEL TAKES V AS THE CALLER HOLDS IT: token-major, and bf16 because that
+    #: is the operand dtype the consumer reads. A caller already holding that pays
+    #: nothing here; the gather is by write-list token either way, so the row stride
+    #: costs the kernel no coalescing.
+    vk = v if v.dtype is torch.bfloat16 and v.is_contiguous() else _pack(v)
     if arena is None:
         page_tbl = None
         s_out = state_plane(routes, d_v=v.shape[-1]) if want_state else None

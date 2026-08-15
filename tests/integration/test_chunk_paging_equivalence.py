@@ -103,7 +103,7 @@ def _packed(fixture):
     return (torch.cat(read, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous(),
             torch.cat(write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous(),
             g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous(),
-            v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous())
+            v.to(torch.bfloat16).contiguous())
 
 
 def _dense_plane(widths, BH):

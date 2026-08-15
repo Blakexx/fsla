@@ -81,7 +81,7 @@ def _routing(bh, L, live_blocks, bc, seed, *, split_sides=False):
         side[0, :, :, lo:hi] = a0 / a0.sum(-1, keepdim=True)
         side[0, :, :, _WIDTHS[0]:] = a1 / a1.sum(-1, keepdim=True)
     gw = torch.rand(1, bh, L, device="cuda", generator=g) + 0.5
-    v = torch.randn(1, bh, L, _DV, device="cuda", generator=g)
+    v = torch.randn(1, L, bh, _DV, device="cuda", generator=g)
     return (pr.to(torch.bfloat16).contiguous(), pw.to(torch.bfloat16).contiguous(),
             gw.to(torch.bfloat16).contiguous(), v.to(torch.bfloat16).contiguous())
 

@@ -128,7 +128,7 @@ def _kernel(fixture, widths, C, BC, *, state_in=None, want_state=True, eps=1e-6)
     pr = torch.cat(read, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     pw = torch.cat(write, -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     gw = g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
-    vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
+    vk = v.to(torch.bfloat16).contiguous()
     out = _plane(widths, B, H) if want_state else None
     y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, None,
                                   torch.float32, state_in, out, None)

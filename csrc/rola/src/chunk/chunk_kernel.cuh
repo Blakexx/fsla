@@ -38,6 +38,10 @@ struct ChunkParams {
   uint32_t run_table;
   int sm_count;
   int BH, L;
+  //: V's per-token row stride in BYTES. The value stream arrives token-major
+  //: (`[B, T, H, d_v]`), so a head's rows are `H * d_v` apart; the head count is
+  //: this over `d_v` and is not carried twice.
+  int v_row_bytes;
 };
 }  // namespace rola::chunk
 
@@ -356,8 +360,9 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L,
-    const float* __restrict__ s_in, float* __restrict__ s_out, const int32_t* __restrict__ page_tbl,
-    const uint8_t* __restrict__ block_bits, uint32_t run_table) {
+    int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out,
+    const int32_t* __restrict__ page_tbl, const uint8_t* __restrict__ block_bits,
+    uint32_t run_table) {
   using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, BC>;
   static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
@@ -504,7 +509,12 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   const long base = (long)blockIdx.y * L * kD;
   const long pbase = (long)blockIdx.y * L * kWtot;
   const int tokWords = tok_words(L);
-  const __nv_bfloat16* const vPlane = pin_address(v + base);
+  //: V IS TOKEN-MAJOR: this (bh)'s rows start at its head's columns of token 0 and
+  //: advance a whole token apart, which is the only place the two layouts differ.
+  const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
+  const int heads = vRowElems / kD;
+  const __nv_bfloat16* const vPlane =
+      pin_address(v + (long)(blockIdx.y / heads) * L * vRowElems + (long)(blockIdx.y % heads) * kD);
   float* const oPlane = pin_address(o + base);
   float* const denPlane = pin_address(den + (long)blockIdx.y * L);
   const __nv_bfloat16* const pRead = pin_address(pread + pbase);
@@ -669,7 +679,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     static_assert(kPasses >= 1, "a chunk must be at least kThreads/8 rows");
     const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
     const uint32_t ldColB = (uint32_t)(ldCol * 2);
-    constexpr uint32_t kVRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
+    const uint32_t kVRowB = (uint32_t)v_row_bytes;
 
     const uint32_t stgOff =
         SWZ ? (uint32_t)(ldRow * (int)kRowV + (((tid % kChunkV) ^ (ldRow & 7)) << 4))
@@ -778,7 +788,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
       if (go) {
         const uint16_t* lw = iwrite(d);
         //: the window, folded (6E): one uniform multiply-add per staged chunk.
-        const uint32_t winCol = ldColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * 2);
+        const uint32_t winCol = ldColB + (uint32_t)ihdr(d)[3] * (kWindow * kVRowB);
 #pragma unroll
         for (int p = 0; p < kPasses; ++p) {
           const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol;
