@@ -448,9 +448,11 @@ ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # o
 battery was ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
 IS the full battery above and no per-commit subset needs choosing. Post-D2 the
 same battery, scoped as `tests/tier1_semantics tests/layers tests/unit
-tests/tier2_geometry tests/conformance -q`, is **1118 passed, 13 skipped, 0
-xfailed in ~30 s**: the tiled arm's gates left with the tiled arm, and the tree
-now carries no xfail at all. The
+tests/tier2_geometry tests/conformance -q`, is **1108 passed, 13 skipped, 0
+xfailed in ~31 s**: the tiled arm's gates left with the tiled arm, and the tree
+now carries no xfail at all. (The last ten of that fall are this document's own
+neighbours: `test_docs_mirror.py`'s anchor-uniqueness rule parametrizes one row
+per mirror doc, and ten mirror docs went with their sources.) The
 build-shape gates and `tools/ratify.py` run additionally at a batch tip (and
 always when csrc, manifests or codegen flags moved); the latency gate and the
 sanitizer lane are scheduled, never per-commit. The runtime x
