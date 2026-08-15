@@ -66,13 +66,14 @@ fails if it is edited by hand.
 
 ```bash
 ROLA_CUDA_ARCHS="80;86;89" pip install -e . --no-build-isolation
-pytest tests/tier1_semantics -m cuda
-pytest tests/tier2_geometry
-pytest tests/layers
+pytest tests/oracle
+pytest tests/integration
+pytest tests/unit
 ```
 
-Tier 1 says the kernel computes the right function on this hardware. Tier 2 says it
-computes the same function at every geometry the built matrix carries there, and
+The ORACLE tier says the kernel computes the right function on this hardware. The
+INTEGRATION tier says it computes the same function at every geometry the built
+matrix carries there, and
 under both state backings — which
 is the part a new register file is most likely to disturb, because it is the part
 that depends on how the compiler laid the kernel out.

@@ -103,12 +103,12 @@ bitmap omits gets no slot, and the kernel SKIPS it at both ends of the state I/O
 omitted atom was never deposited into, so its fragment is zero, and storing zero
 or storing nothing are the same state. The safe direction is the SUPERSET one: a
 bitmap that overshoots costs footprint and nothing else, which
-`tests/tier2_geometry/test_chunk_paging_equivalence.py` gates by forcing a
+`tests/integration/test_chunk_paging_equivalence.py` gates by forcing a
 never-written atom resident and demanding a bit-identical answer. A bitmap that
 UNDERSHOOTS drops state silently, and nothing downstream can detect it — which is
 why exactness is gated here, at the source.
 
-The gate is `tests/tier2_geometry/test_atom_bitmap.py`: exact equality against
+The gate is `tests/oracle/test_atom_bitmap.py`: exact equality against
 `atom_bitmap_from_schedule` and against an independent fp64 recomputation from
 the routing amplitudes, including the two-token cross-product cell that is the
 one case separating this derivation from every looser one.

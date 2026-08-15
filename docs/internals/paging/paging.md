@@ -106,7 +106,7 @@ granule commits its whole dense limit in a single mapping and saves NOTHING, how
 sparse its residency. Measured, at `BH = 8`, `widths = (16, 16)`, `cols = 65`: a 0.51 MiB
 dense limit reports `committed 2.00 MiB` — 394% of dense — while the same routing at
 `widths = (8, 8, 8, 8)` (8.12 MiB dense) reports 10.00 MiB, and the `(128, 128)`,
-`BH = 32` pool of `tests/tier2_geometry/test_page_arena_vmm.py` reports **27.7% committed
+`BH = 32` pool of `tests/integration/test_page_arena_vmm.py` reports **27.7% committed
 against a 25% plan** (37,748,736 B of a 130 MiB dense limit — `ceil(8192/504) = 17`
 chunks plus the owner's one-chunk lookahead, asserted exactly rather than as a band).
 

@@ -7,7 +7,7 @@ per-leaf support bitmap. `entmax.cuh` is the host declaration pair
 two kernels and their host dispatch.
 
 Design of record: this document.
-Gates: `tests/unit/test_entmax_cuda_gates.py`, against the **fp64 oracle only** —
+Gates: `tests/oracle/test_entmax_cuda_gates.py`, against the **fp64 oracle only** —
 the Triton kernel is a debugging diagnostic and is never asserted against
 (trackE.md §4).
 

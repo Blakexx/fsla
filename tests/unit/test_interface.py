@@ -8,7 +8,7 @@ exception and no wrong number, only a `grad_fn` that quietly is not there, and t
 answer to it is a refusal rather than a second arm. The second is the NAME contract:
 no public spelling says `v3`.
 
-The CUDA arm's own numerics are gated in `tests/tier1_semantics/`; nothing here
+The CUDA arm's own numerics are gated in `tests/oracle/`; nothing here
 re-measures them.
 """
 

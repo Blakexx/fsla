@@ -332,7 +332,7 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
 #: not host-selectable, so there is no feasible SET for a pin to shrink. The pin
 #: itself did not become silently inert -- D2-a refused
 #: `PlanOverrides(state_block=...)` on the kernel arm BY NAME, and
-#: `tests/layers/test_layer_dispatch.py` holds that refusal.
+#: `tests/integration/test_layer_dispatch.py` holds that refusal.
 
 
 def test_the_expert_argument_refuses_a_lookalike():

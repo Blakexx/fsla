@@ -67,7 +67,7 @@ def _radix_strides(widths: tuple[int, ...]) -> tuple[int, ...]:
     reason to have a reference at all.
 
     The agreement is then a TESTED CLAIM rather than an unexamined shared import:
-    `tests/unit/test_oracle_independence.py` asserts these strides equal the
+    `tests/oracle/test_oracle_independence.py` asserts these strides equal the
     production property over the whole supported width space, and is allowed to fail.
 
     The convention, stated so the reader can check it without leaving the file: leaf

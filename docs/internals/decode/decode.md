@@ -138,7 +138,7 @@ slot is outside
 it, and a never-deposited leaf holds zeros in the dense backing too. The
 self-normalizing readout then contributes exactly nothing through it — the
 mechanical form of the dead-leaf argument, gated by
-`tests/tier2_geometry/test_decode_paging.py`.
+`tests/integration/test_decode_paging.py`.
 
 ## <a id="growth"></a>4b. Growth — the step's own new work
 
@@ -173,7 +173,7 @@ cheaper AND growth steps cheaper than the preamble-every-step order that precede
 
 `rola.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
 condensation — the same set derived from the Cartesian-product definition in torch, with
-the comparison in `tests/tier2_geometry/test_decode_growth_trigger.py` as its only
+the comparison in `tests/integration/test_decode_growth_trigger.py` as its only
 caller. It is not a fallback and not a second path a caller may select; it is what makes
 the gate a check rather than the kernel agreeing with itself.
 
@@ -202,7 +202,7 @@ order is bit order — PUBLISHES that condensation as `[BH, N/16]` bool, ANDs it
 `page_table >= 0`, and writes one `[BH]` int32. So "the probe and the admission agree about
 the write support" is a property of the CALL GRAPH rather than of an audit — the admission
 plans from the very bytes the verdict was read off; what
-`tests/tier2_geometry/test_decode_growth_trigger.py` can still catch is a condensation or
+`tests/integration/test_decode_growth_trigger.py` can still catch is a condensation or
 a residency test that drifted, and it sweeps both directions of the agreement.
 
 Every CTA writes its own entry unconditionally, so the buffer needs no zero-fill and the
@@ -687,7 +687,7 @@ The shipped path derives the write-atom set on the device (the probe publishes i
 `_write_atom_bitmap` has no production caller and is not meant to acquire one. It
 survives deliberately as a SECOND derivation of an object the kernel computes, written
 from the definition rather than from the kernel's structure, so the equality
-`tests/tier2_geometry/test_decode_growth_trigger.py` asserts is a real check and not the
+`tests/integration/test_decode_growth_trigger.py` asserts is a real check and not the
 kernel agreeing with itself. The decode paging and VMM gates plan from it for the same
 reason: a fixture using the kernel's own answer could not catch the kernel.
 

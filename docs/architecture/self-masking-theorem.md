@@ -184,7 +184,7 @@ Two live uses:
   back, which is what makes the paged path *bitwise* equal to the unpaged one
   rather than approximately equal
   ([`paging/paging.md`](../internals/paging/paging.md); gated by
-`tests/tier2_geometry/test_chunk_paging_equivalence.py`).
+`tests/integration/test_chunk_paging_equivalence.py`).
 - **Untouched rows do not walk.** A row whose writes are all zero is left
   bit-identical, so repeated store/reload cannot drift it. This is what separates
   the *store* count from the *visit* count in the state-precision analysis: the

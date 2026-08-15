@@ -65,7 +65,7 @@ class FrozenDecodeConfig:
     ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
     the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
     token there is nothing to amortize, and the decode kernels are BC-blind by
-    construction (``tests/tier2_geometry/test_decode_bc_blindness.py`` asserts
+    construction (``tests/integration/test_decode_bc_blindness.py`` asserts
     byte-identical decode output under prefill ``BC`` in ``{16, 32, 64}``).
     """
 

@@ -48,7 +48,7 @@ subject and are recorded here rather than silently dropped:
   is the block rule below, which is the same statement (membership is derived,
   not assigned) over the structure the chunk matrix actually has.
 * ``census()``'s manifest pin arrived here from
-  ``tests/tier2_geometry/test_meta.py``, which retires with the geometry matrix.
+  the retired ``test_meta.py``, which went with the geometry matrix.
   It is not a matrix claim: it is the claim that every manifest reader in the
   tree is reading the shipped ratification.
 

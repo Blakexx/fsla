@@ -85,7 +85,7 @@ The backing is chosen at BIND time and is not a per-call flag:
 `paging=True` is REFUSED: paging is on by default, so there is nothing to turn on, and
 the expert overrides the MAPPING only. Dense and paged are ONE kernel, one ABI, one
 accumulation order and one base translation — `torch.equal`, not a tolerance
-(`tests/tier2_geometry/test_chunk_paging_equivalence.py`). A caller cannot observe
+(`tests/integration/test_chunk_paging_equivalence.py`). A caller cannot observe
 which backing a state has except by asking (`state.paged`), and no result depends on
 the answer. A state never switches backing mid-life: there is one arm, and it reads
 whichever backing the state bound.

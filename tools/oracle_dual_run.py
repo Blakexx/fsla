@@ -416,7 +416,7 @@ def apply_mutant(kind: str) -> None:
         #: now moves nothing here BY DESIGN -- and the inverted claim, that a wrong
         #: production stride leaves the oracle unmoved and therefore DISAGREEING
         #: with the kernel, is asserted where it belongs, in
-        #: `tests/unit/test_oracle_independence.py`. What this file must still be
+        #: `tests/oracle/test_oracle_independence.py`. What this file must still be
         #: able to see is a change to the address map the oracle uses.
         import rola.ops.naive as naive
 

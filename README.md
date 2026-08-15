@@ -21,17 +21,19 @@ refuses to launch on a device without one. There is **no PTX JIT fallback** — 
 unmeasured architecture fails loudly rather than silently running codegen nobody
 looked at. → [`tools/manifests/`](tools/manifests/), [`docs/bringup.md`](docs/bringup.md)
 
-**A two-tier test taxonomy that separates two different questions.** *Tier 1
-(inter-implementation)* gates the kernel against an fp64 oracle across the full
-semantic matrix, at tolerances that are derived and documented rather than tuned
-until green. *Tier 2 (intra-implementation)* gates the kernel against **itself**
-across every geometry the built matrix carries and under both state backings — and
-every geometry pair carries a declared contract class: engineered identities are
-tested as **byte equality**, and legitimate reassociations are tested against the
-oracle plus a **derived** error bound. A pair changing class is itself a test
-failure.
+**A test taxonomy in three tiers, where each tier ASSUMES the one below it.**
+`tests/oracle` gates the kernels against an fp64 oracle (and, once, against
+torch's own linear-attention loop) across the full semantic matrix, at tolerances
+that are derived and documented rather than tuned until green.
+`tests/integration` gates the COMPOSITION — the layer, the dispatch walks, the
+prefill/decode handoff, and the two-branches-agree class where the kernel is
+gated against **itself** across every geometry the built matrix carries and under
+both state backings; engineered identities are tested as **byte equality**, and
+legitimate reassociations against the oracle plus a **derived** error bound, with
+a pair changing class itself a test failure. `tests/unit` gates each file's own
+public contract. A tier never re-grades the arithmetic the tier below it proved.
 → [`docs/testing.md`](docs/testing.md),
-[`tests/tier2_geometry/`](tests/tier2_geometry/)
+[`tests/oracle/`](tests/oracle/), [`tests/integration/`](tests/integration/)
 
 **Committed measured cells, with provenance.** The benchmark results in this
 README are files in this repository, each carrying the machine, driver, toolchain,
@@ -235,11 +237,10 @@ the successor harness owes.
 ## Tests
 
 ```bash
-pytest tests/unit tests/tier1_semantics -m "not cuda"   # CPU: no device, no build
-pytest tests/tier1_semantics -m cuda                    # TIER 1: kernel vs fp64 oracle
-pytest tests/tier2_geometry                             # TIER 2: kernel vs itself
-pytest tests/layers                                     # layer <-> op
-pytest tests/conformance                                # the data-regime box
+pytest tests/unit tests/oracle -m "not cuda"    # CPU: no device, no build
+pytest tests/oracle                             # kernels vs the fp64/torch baselines
+pytest tests/integration                        # composition, dispatch, two-branches-agree
+pytest tests/unit                               # each file's public contract
 python tools/ratify.py --arch 80 --arch 86              # ratification, no GPU needed
 python tools/ratify.py --self-test                      # prove the gate can fail
 ```

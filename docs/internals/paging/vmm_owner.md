@@ -71,7 +71,7 @@ the finest commitment the hardware admits: a smaller target is rounded straight 
 `round_up`, and a larger one over-commits for nothing. A pool smaller than one granule
 therefore commits its whole dense limit in a single mapping and saves no memory at all —
 that is a hardware fact about the granularity, not a defect, and it is why the savings
-receipt in `tests/tier2_geometry/test_page_arena_vmm.py` is taken on a pool many chunks
+receipt in `tests/integration/test_page_arena_vmm.py` is taken on a pool many chunks
 wide.
 
 `grow(required_pages)` returns immediately when the requirement is already met, and

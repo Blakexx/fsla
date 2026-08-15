@@ -34,7 +34,7 @@
 #   Stage 3 - the values p                  -- theirs
 #
 # NOT ON THE PRODUCTION IMPORT PATH. `rola/routing/entmax/production.py` is RoLA's own
-# Triton producer and imports nothing from here; `tests/unit/test_production_levels.py`
+# Triton producer and imports nothing from here; `tests/integration/test_production_levels.py`
 # asserts that by making this module's entry points raise if production reaches them,
 # and separately greps that production imports nothing from this module at all.
 #

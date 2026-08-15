@@ -34,9 +34,9 @@ expansion + token-stationary gather-GEMV (`csrc/rola/src/decode{,_expand}.cu`), 
 the same state facade as the chunk arm (`decode_forward(routes, v, state)`), with a
 PAGED backing whose address is the 16-leaf atom and a device-side growth probe that keeps
 a steady step off the admission preamble (`docs/internals/decode/decode.md`). Gated by
-`tests/tier1_semantics/test_decode_vs_oracle.py`, `test_decode_continuation.py` (6),
-`tests/tier2_geometry/test_decode_paging.py` (24), `test_decode_growth_trigger.py` (33),
-`test_decode_bc_blindness.py` (4) and `tests/layers/test_decode_dispatch.py` (18).
+`tests/oracle/test_decode_vs_oracle.py`, `test_decode_continuation.py` (6),
+`tests/integration/test_decode_paging.py` (24), `test_decode_growth_trigger.py` (33),
+`test_decode_bc_blindness.py` (4) and `tests/integration/test_decode_dispatch.py` (18).
 **Still open, and it is the measurement half this item also asked for:** decode BENCH
 cells and latency-regression rows — every shipped bench cell is still prefill, so any
 serving/decode-bandwidth claim remains derivation-only. The steady step's own profile is

@@ -33,7 +33,7 @@ bench = ["matplotlib", "pandas"]
 # paper authors' own implementation, pure python with torch as its only dependency.
 # A TEST dependency and never a runtime one: `rola/routing/entmax/production.py` is
 # RoLA's own Triton producer and imports nothing from it, which
-# `tests/unit/test_production_levels.py` asserts rather than assumes.
+# `tests/integration/test_production_levels.py` asserts rather than assumes.
 #
 # PINNED to `==1.3`: `rola/routing/entmax/PIN.json` records the version AND a digest
 # of the installed package, and `rola/routing/entmax/reference.py` refuses to import
@@ -106,8 +106,6 @@ force-sort-within-sections = false
 [tool.pytest.ini_options]
 markers = [
   "cuda: launches a CUDA kernel (deselect with -m 'not cuda')",
-  "tier1: inter-implementation semantics — kernel vs the fp64 oracle",
-  "tier2: intra-implementation geometry — the geometry-equivalence matrix",
   "ratify: compile-time ratification gate; no GPU required",
   # A LATENCY gate, not a correctness gate: it belongs to the nightly `bench` job
   # and is deselected everywhere else, so a noisy machine can never fail a merge.

@@ -127,13 +127,11 @@ def _guarded_new_empty(self, *args, **kwargs):
     return _poison(_ORIGINAL_NEW_EMPTY(self, *args, **kwargs))
 
 
-#: The tiers whose tests exercise `rola`'s tensor math directly (op-level: the two
-#: semantics/geometry tiers; module-level: the layer tier). The unit tier is host-side
-#: planner/schedule logic and is deliberately outside the guard. NOTE (coverage-closure
-#: 2026-08-03): this previously gated on `tests/ops/` and `tests/modules/` — the FORK's
-#: layout, neither of which exists here — so the NaN-poison guard had never run.
-_POISON_TIERS = ('tests/tier1_semantics/', 'tests/tier2_geometry/', 'tests/layers/',
-                 'tests/conformance/')
+#: The tiers whose tests exercise `rola`'s tensor math directly. The unit tier is
+#: host-side logic and is deliberately outside the guard. A directory named here that
+#: does not exist silently disables the guard, which is what
+#: `tests/integration/test_poison_guard_vacuity_probe.py` exists to catch.
+_POISON_TIERS = ('tests/oracle/', 'tests/integration/')
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -204,8 +202,8 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # Driving the gateway from bare parameter tensors
 # -----------------------------------------------------------------------------
 #
-# The low-level producer gates in tests/unit/test_producer.py and
-# tests/unit/test_production_levels.py drive raw parameter tensors directly
+# The low-level producer gates in tests/oracle/test_producer.py and
+# tests/integration/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
 # is what lets them isolate a backward-through-every-tensor gate. The production
 # orchestration is `SimplexProducer`/`RouteGateway` -- nn.Module methods over
