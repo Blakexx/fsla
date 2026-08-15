@@ -22,14 +22,16 @@ else was written:
 |---|---|
 | the descending walk and both operand panels | §C.2 |
 | the fold `dS += dnum^T · R`, with its mass column `dz += dden^T · R` | (A.16) |
-| the readout `dv = W · dS_a` | (A.17) |
+| the readout `dv = W · dS_a` | (A.17), inter |
+| the SLOT GRAM `G = staircase(R · W^T)` | the forward's, see [two Grams](#two-grams) |
+| `dv`'s intra term `dv^T += dnum^T · G` — so **`dv` is complete** | (A.17), intra |
 | the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots | (A.18), inter-chunk part |
 
-Not carried, and named so that nothing reads as an omission: the Gram `Gd`, the
-transposed staircase (A.19), the leave-one-out digit reduction (A.9)/(A.10), and
-`d gw`'s own weighting (A.11). What the kernel emits today is the INTER-chunk part
-of the write side plus `dv`; the intra-chunk terms and the digit reduction are the
-next stages'. `rola.ops.chunk.backward` refuses by name until they land.
+Not carried, and named so that nothing reads as an omission: the `d_v` Gram `Gd`,
+the transposed staircase (A.19), the per-slot `dW`, the leave-one-out digit
+reduction (A.9)/(A.10), and `d gw`'s own weighting (A.11). So `d gw` is the
+inter-chunk part alone and `d pr` / `d pw` are not emitted;
+`rola.ops.chunk.backward` refuses by name until they land.
 
 ## <a id="no-reversed-table"></a>Why the walk needs no reversed table
 
@@ -61,6 +63,87 @@ it, is `nw - above` with the chunk's own total `nw`, known at close.
 
 Scan A and Scan B associate their sums differently by construction, so the gate on
 this operator is ratio-to-floor and never bit-identity.
+
+## <a id="two-grams"></a>Two Grams, one buffer
+
+`dv[j]` reads the adjoint state the write token `j` **leaves the chunk with** —
+the entry state plus every read token above `j` — so its intra term factors over
+slots as `sum_i [j < J(i)] G[i,j] dnum[i,:]` with `G = R . W^T`. That is the
+**forward's own Gram**, contracted over slots, with the forward's staircase
+unchanged.
+
+`dW[j,s]` factors the other way: `sum_i [j < J(i)] R[i,s] Gd[i,j]` with
+`Gd = dnum . v^T`, contracted over **`d_v`**. So Scan B needs BOTH Grams — the
+design's cost table names only `Gd`, which is right for Scan A and one Gram short
+for Scan B.
+
+They cannot both be resident. Measured with the tree's own constants
+(`design::cta_target`, sm_86):
+
+| carve | bytes | CTA target |
+|---|---|---|
+| no Gram | 46,624 | 2 |
+| one Gram (`C * LdG` bf16 = 2,560 B) | 49,184 | 2 |
+| two Grams | 51,744 | **1** |
+
+The arm's occupancy is not negotiable, so the two share one buffer across disjoint
+phases: the slot Gram is formed, consumed by `dv`, and dead before the `d_v` Gram
+is formed. (An earlier ruling aliased the Gram into the `so` staging window on the
+strength of a 4,608-byte estimate; that figure used the V panel's row stride
+(`kD + kPadE`) where the Gram's is `C + kPadE`, and with the real number no alias
+into `so` is needed at all.)
+
+## <a id="mass-gram"></a>The transposed staircase carries the mass channel too
+
+The design's (A.19) writes the write-side adjoint as
+
+    dW[j,s] = <dS_a[s,:], v[j,:]> + dz_a[s] + sum_i [j < J(i)] Gd[i,j] R[i,s]
+
+with `Gd[i,j] = <dnum[i,:], v[j,:]>`. **That is wrong**, and the error is a whole
+term rather than an index: `dW` differentiates BOTH uses of `W[j,s]`, the state and
+the mass column, so the adjoint entering `j` is
+`dz_after[j,s] = dz_a[s] + sum_i [j < J(i)] R[i,s] dden[i]` — and only the
+inter-chunk half `dz_a[s]` survives above. Differentiating the recurrence directly
+gives the exact statement
+
+    dW[j,s] = sum_{t >= j} R[t,s] ( <dnum[t,:], v[j,:]> + dden[t] )
+
+which is the same expression with a **ones column appended to the write side**:
+
+    Gd'[i,j] = <dnum[i,:], v[j,:]> + dden[i]
+
+so ONE transposed staircase covers value and mass channels together and no second
+pass exists. In this kernel that is not even an extra mma: `Gd'` is `Gd` plus a
+row-broadcast of `dden[i]`, and `dden` is already staged per read entry in `sdd`
+for the [mass column](#mass-column)'s own fold, so it is one add per Gram entry.
+
+Verified two ways before it was written down: symbolically over exact rationals
+(the design's addendum), and independently here by differentiating the loss
+`sum_t (<dnum_t, num_t> + dden_t den_t)` against the chunked form on a two-chunk
+instance — 15 of 18 entries wrong as written, 0 of 18 with the ones column.
+
+`dv` is untouched by this: it is a value-channel quantity and the mass column does
+not enter it, so the term this component ships today is unaffected. The correction
+binds the stage that builds `Gd`, the per-slot `dW` and the digit reduction.
+
+## <a id="mass-column"></a>The adjoint mass column is one slot per thread
+
+The forward rides its mass channel on the value mma: the `d_v + 1`-th channel
+occupies row 0 of a 16-row `m` quantum and rows 1..15 are structural zeros. That
+costs `kMassTiles * 4 = 16` registers per lane to carry one slot's worth of
+information, and it is free in the forward because the mma is already issued.
+
+Scan B cannot afford it beside the adjoint state, and does not need it. `dz` is a
+per-SLOT quantity and this arm has exactly as many slots per group as threads
+(`BCg == kGroupThreads`, asserted), so it is a **scalar** and its fold is a dot
+product of the chunk's staged `dden` row against this thread's column of the `R`
+panel. Fifteen registers back, and `dz` lands in the layout the digit reduction
+wants rather than one it would have to be transposed out of.
+
+That was not a preference. With the slot Gram and `dv`'s intra term added, the
+mma-carried mass column put sm_80's allocator four bytes over its bound; every
+smaller perturbation left it there, and this is the change that returned both
+arches to zero spill at 255 registers.
 
 ## <a id="seeds"></a>The seeds, and the fifth output
 

@@ -10,12 +10,18 @@ i.e. from every token ABOVE the chunk.
 
 **WHAT SCAN B CARRIES AT THIS STAGE**, and the file gates exactly that and
 nothing it does not carry: the descending walk, both operand panels, the fold
-`dS += dnum^T . R` with its mass column, the readout `dv = Wc . dS_a`, and the
-CHANNEL CONTRACTION `<dS_a[s,:], v[j,:]>` -- the one arithmetic primitive the
-backward adds, whose `k` axis is `d_v` rather than slots or tokens. The
-intra-chunk staircase and the digit reduction are later stages'; until they land,
-what the kernel emits is the INTER-chunk part, which is why the reference below
-replays the partition rather than summing over the whole sequence.
+`dS += dnum^T . R` with its mass column, the SLOT GRAM `G = staircase(R . Wc^T)`,
+`dv` COMPLETE (`Wc . dS_a` plus the intra term `G^T . dnum` the staircase
+selects), and the CHANNEL CONTRACTION `<dS_a[s,:], v[j,:]>` -- the one arithmetic
+primitive the backward adds, whose `k` axis is `d_v` rather than slots or tokens.
+
+`d gw` is still the INTER-chunk part alone: its intra half needs the OTHER Gram
+(`dnum . v^T`, contracted over `d_v`) and the per-slot `dW` the digit reduction
+consumes, which is the next stage's. `d pr` and `d pw` are not emitted at all.
+
+The `T = C` cell below is the sharpest gate on the new term and is why it is
+first: with one chunk the entry adjoint is exactly zero, so `dv` there is
+ENTIRELY the intra staircase and nothing else can carry it.
 
 **WHY THE REFERENCE CAN REPLAY THE PARTITION.** Scan B walks its own descending
 partition (the chunk boundary is an association of a sum, not a semantic object),
@@ -52,6 +58,11 @@ C, BC, D, W = 32, 128, 2, 64
 DV = 64
 N = W ** D
 EPS32 = 2.0 ** -24
+#: ONE bf16 ULP, RELATIVE. bf16 carries 8 significand bits, so the unit roundoff is
+#: `2 ** -8` and two correctly-rounded values either side of a boundary differ by
+#: `2 ** -7`. This is the Gram's floor, and it is a ROUNDING floor, not a
+#: reassociation one -- see `_reference`.
+ULP_BF16_PAIR = 2.0 ** -7
 #: An index-list entry is 16 bits, so a chunk must lie inside one K-window and the
 #: walk is forced to cut at every window line (`chunk_kernel.cuh`). Descending, the
 #: line is a floor rather than a ceiling, and that is NEW code.
@@ -103,7 +114,7 @@ def _partition(live_r, live_w, T) -> list[list[int]]:
 
 
 def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
-    """`(dv, dgw, term sums)` -- the rounded reference and its own error budget."""
+    """`(dv, dgw)` and each one's BOUND -- the rounded reference and its own budget."""
     dev = "cuda"
     s = torch.arange(N, device=dev)
     d0, d1 = s // W, s % W
@@ -126,18 +137,39 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
     adS = torch.zeros(N, DV, device=dev)
     adz = torch.zeros(N, device=dev)
     out = {k: torch.zeros(sh, device=dev)
-           for k, sh in (("dv", (T, DV)), ("dgw", (T,)), ("adv", (T, DV)), ("adgw", (T,)))}
+           for k, sh in (("dv", (T, DV)), ("dgw", (T,)), ("bdv", (T, DV)), ("bdgw", (T,)))}
+    #: THE INTER PATH'S REASSOCIATION: the `T` terms the fold accumulates into
+    #: `dS`, the `N` the write-side contraction sums inside a block, and the
+    #: `N / BC` block partials the fan-in adds in an order the scheduler picks.
+    n_inter = T + N + N // BC
     for ch in chunks:
         idx = torch.tensor(ch, device=dev)
         Rc, Wc = coeffs(idx)
         dSb = _rb(dS)
         wl = live_w[idx].float()
-        out["dv"][idx] = Wc @ dSb
-        out["adv"][idx] = Wc.abs() @ adS
+        #: THE SLOT GRAM, and it is a NEW ROUNDING SITE: the kernel contracts it
+        #: over slots in fp32 and stores it as bf16, so the reference stores it as
+        #: bf16 too. Masking commutes with rounding (the mask is 0/1), so the
+        #: order the two do it in does not matter.
+        tok = idx.unsqueeze(0)
+        #: the staircase in TOKEN terms: a write entry is kept when its token is
+        #: at or before the read entry's, which is what `J` counts. Dead tokens
+        #: carry exactly-zero coefficients, so the chunk's whole token span is the
+        #: same statement as its compacted lists.
+        stair = (tok <= tok.T).to(Rc.dtype)
+        Gm = _rb(Rc @ Wc.T) * stair
+        out["dv"][idx] = Wc @ dSb + Gm.T @ dnf[idx]
+        #: TWO INDEPENDENT FLOORS, and the intra one is NOT a reassociation. Two
+        #: correctly-rounded bf16 values of fp32 sums that differ at all can
+        #: straddle a rounding boundary, so the kernel's Gram and the reference's
+        #: may differ by a whole bf16 ulp -- `2 ** -7` relative, twice the unit
+        #: roundoff -- which dominates the intra sum's own `C`-term reassociation.
+        out["bdv"][idx] = (n_inter * EPS32 * (Wc.abs() @ adS)
+                           + (ULP_BF16_PAIR + len(ch) * EPS32) * (Gm.abs().T @ dnf[idx].abs()))
         #: d gw is a WRITE-SIDE quantity: off the write support the level chain
         #: is exactly zero, so the emitted slot reduction is zero too.
         out["dgw"][idx] = wl * ((vf[idx] @ dSb.T).sum(1) + dz.sum())
-        out["adgw"][idx] = wl * ((vf[idx].abs() @ adS.T).sum(1) + adz.sum())
+        out["bdgw"][idx] = n_inter * EPS32 * wl * ((vf[idx].abs() @ adS.T).sum(1) + adz.sum())
         dS += Rc.T @ dnf[idx]
         dz += Rc.T @ ddf[idx]
         adS += Rc.abs().T @ dnf[idx].abs()
@@ -189,13 +221,8 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
     dv_k, dgw_k = _run(inputs)
     ref = _reference(*inputs, chunks, T, live_w)
 
-    #: THE REASSOCIATION BUDGET: the `T` terms the fold accumulates into `dS`,
-    #: the `N` the write-side contraction sums inside a block, and the `N / BC`
-    #: block partials the fan-in adds in an order the scheduler picks.
-    n_terms = T + N + N // BC
-    for name, got, want, absum in (("dv", dv_k[0, 0], ref["dv"], ref["adv"]),
-                                   ("dgw", dgw_k[0, 0], ref["dgw"], ref["adgw"])):
-        bound = n_terms * EPS32 * absum
+    for name, got, want, bound in (("dv", dv_k[0, 0], ref["dv"], ref["bdv"]),
+                                   ("dgw", dgw_k[0, 0], ref["dgw"], ref["bdgw"])):
         err = (got - want).abs()
         worst = (err / bound.clamp_min(torch.finfo(torch.float32).tiny)).max().item()
         assert worst <= 1.0, (
@@ -215,8 +242,7 @@ def test_the_budget_is_not_vacuous():
     inputs = _inputs(T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
     ref = _reference(*inputs, chunks, T, live_w)
-    n_terms = T + N + N // BC
-    bound = n_terms * EPS32 * ref["adv"]
+    bound = ref["bdv"]
     #: the smallest STRUCTURAL wrong answer available: one chunk's entry adjoint
     #: taken from the wrong side of its own fold.
     wrong = ref["dv"].roll(C, dims=0)

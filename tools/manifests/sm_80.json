@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "861d6cdf3ca23bd84ae737fca4f413cf1f4c6c8f99df66e7115a4fc05afd63f0",
+  "csrc_sha256": "fa1733d1c801f2674e97e6baa2b1aead86ee215718187464cd293bc8f7729e0e",
   "date": "2026-08-15"
  },
  "shards": {
@@ -63,7 +63,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "7ff110bbde892efecb824d5d0c1f2823fb181b3b04de3ab8dde9b35c6a163f69"
+   "sass_sha256": "e3912954d6f34ca2f5553ece9de18bbddaca884a8015e08ea0efd182ce8ed963"
   },
   "sm_80:_ZN4rola5chunk16compacted_kernelILi16ELi1ELi256ELi64ELb0ELb0EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiPKfS7_PKiPKhj": {
    "regs": 114,

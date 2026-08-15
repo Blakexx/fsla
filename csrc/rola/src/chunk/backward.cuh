@@ -1,10 +1,12 @@
 // csrc/rola/src/chunk/backward.cuh -- SCAN B, the reverse adjoint of the chunk
-// consumer (P65).  This is the STAGE-1 SKELETON: it carries the two adjoint
-// accumulators, the descending walk, both operand panels and the one new
-// arithmetic primitive (a contraction whose k axis is d_v), and it deliberately
-// does NOT yet carry the Gram, the transposed staircase or the digit reduction.
-// What it computes, what it omits, why the walk needs no reversed table, and the
-// register/shared arithmetic it was built to measure: docs/internals/chunk/backward.md
+// consumer (P65).  It carries the two adjoint accumulators, the descending walk,
+// both operand panels, the slot Gram with its staircase, dv COMPLETE, and the one
+// new arithmetic primitive (a contraction whose k axis is d_v).  It does NOT yet
+// carry the d_v Gram, the per-slot dW or the digit reduction, so d gw is the
+// inter-chunk part alone and d pr / d pw are not emitted.
+// What it computes, what it omits, why the walk needs no reversed table, why two
+// Grams do not fit at once, and the register arithmetic behind the mass column:
+// docs/internals/chunk/backward.md
 #pragma once
 
 #include "chunk_kernel.cuh"
@@ -31,6 +33,7 @@ struct GeomB {
   static constexpr int BCg = BC / GRP;
   static constexpr int LdV = kD + kPadE;
   static constexpr int LdS = BCg + kPadE;
+  static constexpr int LdG = C + kPadE;
   static constexpr int LdO = kD + kPadF;
   static constexpr int hdr = 16;
   static constexpr int idx_slot = hdr + ((5 * C + 15) / 16) * 16;
@@ -40,10 +43,20 @@ struct GeomB {
   //: THE CHANNEL CONTRACTION'S k AXIS IS d_v, WHICH IS THE CARVE'S OWN AXIS, so
   //: every unit holds a PARTIAL and the sum across units is structural.  One row
   //: per unit, one column per token, is the whole of it.
+  //: `grad` is the units' rendezvous for `d gw`; `dden_bytes` is the chunk's own
+  //: readout seed for the mass column, staged once per chunk instead of gathered
+  //: per k-tile per lane.
   static constexpr int grad_bytes = kUnits * C * (int)sizeof(float);
+  static constexpr int dden_bytes = C * (int)sizeof(float);
+  //: ONE GRAM BUFFER, AND SCAN B NEEDS TWO GRAMS.  `dv`'s intra term contracts
+  //: over SLOTS (the forward's own `R.W^T`) and `dW`'s contracts over `d_v`
+  //: (`dnum.v^T`); two resident buffers reach `cta_target = 1` and the arm's
+  //: occupancy is not negotiable, so the two share this one across disjoint
+  //: phases -- docs/internals/chunk/backward.md#two-grams
+  static constexpr int gram_bytes = C * LdG * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16)
-                               + GRP * C * LdO * (int)sizeof(float) + grad_bytes
-                               + (1 + kAheadExtra) * idx_slot + form_bytes;
+                               + GRP * C * LdO * (int)sizeof(float) + grad_bytes + dden_bytes
+                               + gram_bytes + (1 + kAheadExtra) * idx_slot + form_bytes;
   static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
@@ -412,11 +425,18 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   constexpr int NDV = BCg / kMmaN;
   constexpr int kChunkV = kD / 8;
 
-  constexpr int kMassUnits = KD < kUnits ? KD : kUnits;
-  constexpr int kMassKD = KD / kMassUnits;
-  constexpr int kMassTiles = 2 * kMassKD;
-  static_assert(KD % kMassUnits == 0 && NDV == kMassUnits * kMassTiles,
-                "the mass channel's slots must be carved across the units exactly");
+  //: THE GRAM'S WARP SPLIT, the forward's: the C x C tile is cut over both token
+  //: axes so every warp owns a rectangle of it.
+  constexpr int MSPLIT = MTOK >= kGroupWarps ? kGroupWarps : MTOK;
+  constexpr int NSPLIT_RAW = kGroupWarps / MSPLIT;
+  constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
+  constexpr int MPW = MTOK / MSPLIT;
+  constexpr int NPW = NTOK / NSPLIT;
+  constexpr int GWARPS = MSPLIT * NSPLIT;
+  static_assert(NPW % 2 == 0, "n-tiles are consumed in ldmatrix pairs");
+  //: THE WARP'S WHOLE n-RUN IS ONE PASS: the Gram's n axis is the chunk, which
+  //: is small, so there is no second tile group to pipeline against.
+  constexpr int GPAIR = NPW / 2;
 
   // ---- coefficient production geometry, the forward's -----------------------
   constexpr int kWtot = LP::col_base(LP::depth);
@@ -470,14 +490,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   __nv_bfloat16* sdn = sv + STAGES * C * LdV;
   __nv_bfloat16* sr = sdn + STAGES * C * LdV;
   __nv_bfloat16* sw = sr + C * LdS;
-  float* so = reinterpret_cast<float*>(sw + C * LdS);
+  __nv_bfloat16* sg = sw + C * LdS;
+  float* so = reinterpret_cast<float*>(sg + C * G::LdG);
   float* sgrad = so + C * LdO;
-  char* sidx = reinterpret_cast<char*>(sgrad + kUnits * C);
+  float* sdd = sgrad + kUnits * C;
+  char* sidx = reinterpret_cast<char*>(sdd + C);
   uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
-  static_assert((2 * C * LdS) % 8 == 0, "the fp32 region must start 16-byte aligned");
-  static_assert((C * LdO + kUnits * C) % 4 == 0, "the index ring must start 16-byte aligned");
+  static_assert((2 * C * LdS + C * G::LdG) % 8 == 0, "the fp32 region must start 16-byte aligned");
+  static_assert((C * LdO + kUnits * C + C) % 4 == 0, "the index ring must start 16-byte aligned");
   static_assert(G::idx_slot % 16 == 0,
                 "the formed schedule follows the index ring and must stay aligned");
 
@@ -508,12 +530,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   //: fragment maps it serves is carried by the BASE (`rowFs`/`rowTs`), never by
   //: the displacement -- so one displacement form covers both.
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
-  const uint32_t massOff = (uint32_t)(gwarp * kMmaK * (int)sizeof(__nv_bfloat16));
-#define ADDR_S_M(b_, R_, q_) \
-  ((b_) + (uint32_t)(((R_) * LdS + (2 * (q_) * kMassUnits) * 8) * 2) + massOff)
 
   const int dv0 = gwarp * 16;
 #define ADDR_V(b_, R_) ((b_) + (uint32_t)(((R_) * LdV + dv0) * 2))
+  //: THE GRAM'S ROWS ARE READ TOKENS AND ITS COLUMNS WRITE TOKENS, so the two
+  //: fragment maps land on `LdG` exactly as they land on `LdS`.
+#define ADDR_G(b_, R_, g_) ((b_) + (uint32_t)(((R_) * (int)G::LdG + (g_) * 8) * 2))
+  const int gm0 = (gwarp / NSPLIT) * MPW;
+  const int gn0 = (gwarp % NSPLIT) * NPW;
 
   //: THE ADJOINT STATE, transposed exactly as the forward's state is:
   //: m = d_v (this unit's 16 rows), n = this block's slots.
@@ -523,11 +547,18 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #pragma unroll
     for (int e = 0; e < 4; ++e) dst[j][e] = 0.f;
 
-  float dz_st[kMassTiles][4];
-#pragma unroll
-  for (int j = 0; j < kMassTiles; ++j)
-#pragma unroll
-    for (int e = 0; e < 4; ++e) dz_st[j][e] = 0.f;
+  //: THE ADJOINT MASS COLUMN, ONE SLOT PER THREAD.  The forward rides its mass
+  //: channel on the value mma, which spends a 16-row m quantum to carry ONE real
+  //: row -- sixteen registers per lane for one slot's worth of information. Scan
+  //: B cannot afford that beside the adjoint state, and it does not need to: `dz`
+  //: is a per-SLOT quantity and there are exactly as many slots as threads, so it
+  //: is a scalar and its fold is a dot product over the chunk's read entries.
+  //: The digit reduction wants it in this layout too.
+  //: docs/internals/chunk/backward.md#mass-column
+  static_assert(BCg == kGroupThreads,
+                "the adjoint mass column is one slot per thread, so a group's slice "
+                "must be exactly its thread count");
+  float dz_s = 0.f;
 
   // ---- global -> shared staging: V by the WRITE list, dnum by the READ list --
   constexpr int kRowsPerPass = kThreads / kChunkV;
@@ -547,8 +578,11 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const uint32_t sdnB = smem_addr(sdn);
   uint32_t stgSlot = 0, cmpSlot = 0;
 
+  //: ONE BASE, TWO ROLES: the R panel is the Gram's A operand and the fold's B
+  //: operand, and both want the same lane map, so there is one address to keep.
   const uint32_t brF = smem_addr(sr) + rowFs;
   const uint32_t bwT = smem_addr(sw) + rowTs;
+  const uint32_t bgF = smem_addr(sg) + (uint32_t)((rF * (int)G::LdG + cF * 8) * 2);
 
   // ---- the fan-in's addressing, the forward's ------------------------------
   constexpr int kFanLanes = 32;
@@ -563,11 +597,11 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const int fanE = fanRow * LdO + fanCol;
 
   const int oq = (lane & 3) * 2, om = lane >> 2;
-  int oE[2][2];
-#pragma unroll
-  for (int e = 0; e < 2; ++e)
-#pragma unroll
-    for (int f = 0; f < 2; ++f) oE[e][f] = (oq + e) * LdO + dv0 + om + f * 8;
+  //: ONE STAGING OFFSET, NOT FOUR.  The accumulator's other three entries sit at
+  //: compile-time displacements of the first (`+LdO` down the token axis, `+8`
+  //: across the channel axis), and holding them as separate live values is three
+  //: registers this kernel does not have -- docs/internals/chunk/backward.md#residency
+  const int oE0 = oq * LdO + dv0 + om;
 
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  Both panels ride one
   //: slot cursor, so the wait/commit accounting stays the forward's.
@@ -775,6 +809,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
           gather_ptr(gWrite, (uint32_t)iwrite(dc)[prow] * 2u + winG)));
       produce(pRead, dstR, rOff, prow < nr, kOneSplat);
       produce(pWrite, dstW, wOff, prow < nw, gsp);
+      //: THE MASS COLUMN'S SEED, STAGED ONCE.  One value per read entry, and
+      //: exactly zero past `nr` so `dz`'s fold can run the whole chunk unbounded.
+      if (tid < C)
+        sdd[tid] = tid < nr
+                       ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(
+                             ddenPlane, (uint32_t)iread(dc)[tid] * 2u
+                                            + (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2))))
+                       : 0.f;
     }
 
     stage_wait<STAGES - 2>();
@@ -791,40 +833,119 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     cmpSlot += kSlot;
     if (cmpSlot == kRing) cmpSlot = 0;
 
+    // ---- THE SLOT GRAM: G = staircase(R . W^T), the forward's, verbatim ------
+    //: `dv[j]` reads the adjoint state the WRITE token j leaves the chunk with,
+    //: which is the entry state plus every read token ABOVE j.  Factoring that
+    //: sum over slots is this Gram -- the forward's own, contracted over slots --
+    //: and the mask is the forward's staircase unchanged: read entry `tr` keeps
+    //: write entries `tc < J[tr]`.
+    if (liveR && liveW && gwarp < GWARPS) {
+      const uint8_t* ljt = ithr(dc);
+      //: THE OPERAND TILES ARE NOT HOISTED, and that is a REGISTER decision the
+      //: forward does not have to make: Scan B carries the adjoint state through
+      //: this block, so holding both panels' whole k-runs live (2 * KD * 4
+      //: registers) puts sm_80's allocator over its bound and spills. One k-tile
+      //: of each at a time costs nothing at this arm -- `MPW` is one, so nothing
+      //: is re-read -- docs/internals/chunk/backward.md#two-grams
+#pragma unroll
+      for (int m = 0; m < MPW; ++m) {
+        float g[GPAIR][2][4];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) g[u][h2][e] = 0.f;
+#pragma unroll
+        for (int kk = 0; kk < KD; ++kk) {
+          uint32_t qa[4];
+          load_frag(qa, ADDR_S(brF, (gm0 + m) * 16, 2 * kk));
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u) {
+            uint32_t bf[4];
+            load_frag(bf, ADDR_S(bwT, (gn0 + u * 2) * 8, 2 * kk));
+            mma(g[u][0], qa, &bf[0]);
+            mma(g[u][1], qa, &bf[2]);
+          }
+        }
+        const int tr = (gm0 + m) * 16 + (lane >> 2);
+        //: THE THRESHOLDS ARE READ AT THE MASK, not before the contraction: two
+        //: values held across the whole k-run are two registers at a ceiling.
+        const int j0 = ljt[tr], j1 = ljt[tr + 8];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2) {
+            const int tc = (gn0 + u * 2 + h2) * 8 + (lane & 3) * 2;
+            store_bf16x2(&sg[tr * G::LdG + tc], pack_bf16x2(tc + 0 < j0 ? g[u][h2][0] : 0.f,
+                                                            tc + 1 < j0 ? g[u][h2][1] : 0.f));
+            store_bf16x2(&sg[(tr + 8) * G::LdG + tc], pack_bf16x2(tc + 0 < j1 ? g[u][h2][2] : 0.f,
+                                                                  tc + 1 < j1 ? g[u][h2][3] : 0.f));
+          }
+      }
+    }
+
+    rendezvous();  // (1b) the slot Gram is visible to every unit
+
     //: BOTH WRITE-SIDE TERMS READ THE STATE THIS CHUNK ENTERS WITH -- the
     //: adjoint arriving from the FUTURE -- so both run before the fold.
     if (liveW) {
-      uint32_t da[KD][4];
+      //: dv's WHOLE TERM IS ONE SCOPE, so the accumulator and both operand
+      //: fragments are dead before the channel contraction opens.  At this
+      //: register ceiling a live range that merely OUTLIVES its use is a spill.
+      {
+        // ---- (A.17) dv^T = dS^T . W^T, the forward's readout with the write panel
+        float acc[NTOK][4];
 #pragma unroll
-      for (int kk = 0; kk < KD; ++kk) {
-        da[kk][0] = pack_bf16x2(dst[2 * kk][0], dst[2 * kk][1]);
-        da[kk][1] = pack_bf16x2(dst[2 * kk][2], dst[2 * kk][3]);
-        da[kk][2] = pack_bf16x2(dst[2 * kk + 1][0], dst[2 * kk + 1][1]);
-        da[kk][3] = pack_bf16x2(dst[2 * kk + 1][2], dst[2 * kk + 1][3]);
-      }
-      // ---- (A.17) dv^T = dS^T . W^T, the forward's readout with the write panel
-      float acc[NTOK][4];
+        for (int j = 0; j < NTOK; ++j)
 #pragma unroll
-      for (int j = 0; j < NTOK; ++j)
+          for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
+        //: NEITHER OPERAND IS HOISTED, and that is a REGISTER decision the forward
+        //: does not have to make.  The whole packed adjoint (`2 * KD * 4` registers)
+        //: plus the whole W k-run put sm_80's allocator over its bound and spilled;
+        //: the pack is a register op repeated `MTOK` times and the panel tile is an
+        //: `ldmatrix` the loop was going to issue anyway, so both are re-formed per
+        //: k-tile -- docs/internals/chunk/backward.md#residency
 #pragma unroll
-        for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
+        for (int m = 0; m < MTOK; ++m)
 #pragma unroll
-      for (int m = 0; m < MTOK; ++m) {
-        uint32_t wb[KD][4];
+          for (int kk = 0; kk < KD; ++kk) {
+            uint32_t da[4];
+            da[0] = pack_bf16x2(dst[2 * kk][0], dst[2 * kk][1]);
+            da[1] = pack_bf16x2(dst[2 * kk][2], dst[2 * kk][3]);
+            da[2] = pack_bf16x2(dst[2 * kk + 1][0], dst[2 * kk + 1][1]);
+            da[3] = pack_bf16x2(dst[2 * kk + 1][2], dst[2 * kk + 1][3]);
+            uint32_t wb[4];
+            load_frag(wb, ADDR_S(bwT, m * 16, 2 * kk));
 #pragma unroll
-        for (int kk = 0; kk < KD; ++kk) load_frag(wb[kk], ADDR_S(bwT, m * 16, 2 * kk));
+            for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], da, &wb[2 * p]);
+          }
+        // ---- dv's INTRA term: dv^T += dnum^T . G, the same accumulator --------
+        //: The staircase already lives in `G`, so this is the fold's own mma with
+        //: the Gram in the W panel's place and the READ token axis as its k.
+        if (liveR) {
 #pragma unroll
-        for (int kk = 0; kk < KD; ++kk)
+          for (int kk = 0; kk < MTOK; ++kk) {
+            uint32_t a[4];
+            load_frag_t(a, ADDR_V(adn, kk * 16));
 #pragma unroll
-          for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], da[kk], &wb[kk][2 * p]);
-      }
+            for (int nj = 0; nj < NTOK / 2; ++nj) {
+              uint32_t b[4];
+              load_frag_t(b, ADDR_G(bgF, kk * 16, 2 * nj));
+              mma(acc[2 * nj], a, &b[0]);
+              mma(acc[2 * nj + 1], a, &b[2]);
+            }
+          }
+        }
+
 #pragma unroll
-      for (int j = 0; j < NTOK; ++j) {
-        const int jo = j * 8 * LdO;
-        store_f32(&so[oE[0][0] + jo], acc[j][0]);
-        store_f32(&so[oE[1][0] + jo], acc[j][1]);
-        store_f32(&so[oE[0][1] + jo], acc[j][2]);
-        store_f32(&so[oE[1][1] + jo], acc[j][3]);
+        for (int j = 0; j < NTOK; ++j) {
+          const int jo = j * 8 * LdO;
+          store_f32(&so[oE0 + jo], acc[j][0]);
+          store_f32(&so[oE0 + jo + LdO], acc[j][1]);
+          store_f32(&so[oE0 + jo + 8], acc[j][2]);
+          store_f32(&so[oE0 + jo + LdO + 8], acc[j][3]);
+        }
       }
 
       // ---- (A.18) the CHANNEL CONTRACTION: dW[j,s] = <dS[s,:], v[j,:]> + dz[s],
@@ -841,6 +962,10 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       //: TILE BY TILE, REDUCED IN PLACE.  Holding the whole C x BCg gradient
       //: accumulator is the measured alternative and it does not fit -- neither
       //: in the register budget nor beside the ring (docs/internals/chunk/backward.md).
+      //: THIS IS THE INTER-CHUNK PART ONLY.  Its intra half rides a SECOND Gram
+      //: whose write side carries a ones column, so the staircase covers the mass
+      //: channel as well as the value channels -- the design's (A.19) drops that
+      //: term -- docs/internals/chunk/backward.md#mass-gram
 #pragma unroll
       for (int n = 0; n < NDV; ++n) {
         uint32_t db[2];
@@ -861,11 +986,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       //: Its slots are spread over the whole unit -- the padding rows are
       //: identically zero, so the reduction needs no lane predicate, only every
       //: lane.
-      float dzs = 0.f;
-#pragma unroll
-      for (int j = 0; j < kMassTiles; ++j)
-#pragma unroll
-        for (int e = 0; e < 4; ++e) dzs += dz_st[j][e];
+      float dzs = dz_s;
 #pragma unroll
       for (int b2 = 1; b2 < 32; b2 <<= 1) dzs += __shfl_xor_sync(0xFFFFFFFFu, dzs, b2);
 #pragma unroll
@@ -898,43 +1019,23 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       for (int kk = 0; kk < MTOK; ++kk) {
         uint32_t a[4];
         load_frag_t(a, ADDR_V(adn, kk * 16));
-        uint32_t b[KD][4];
-#pragma unroll
-        for (int nj = 0; nj < KD; ++nj) load_frag_t(b[nj], ADDR_S(brF, kk * 16, 2 * nj));
+        //: THE R PANEL'S k-RUN IS NOT HOISTED.  The fold runs with the whole
+        //: adjoint state live, so `KD * 4` more registers here is a peak this
+        //: kernel cannot afford; one tile at a time is the same `ldmatrix` count.
 #pragma unroll
         for (int nj = 0; nj < KD; ++nj) {
-          mma(dst[2 * nj], a, &b[nj][0]);
-          mma(dst[2 * nj + 1], a, &b[nj][2]);
-        }
-        //: THE MASS COLUMN'S A OPERAND IS dden WHERE THE FORWARD'S IS THE
-        //: LITERAL ONE: row 0 carries the seed, rows 1..15 are the m quantum's
-        //: padding and stay identically zero.
-        if (gwarp < kMassUnits) {
-          uint32_t dda[4];
-          {
-            const int k0 = kk * 16 + (lane & 3) * 2;
-            const uint16_t* lrd = iread(dc);
-            const uint32_t winD = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
-            const bool row0 = (lane >> 2) == 0;
-            auto seed = [&](int k) {
-              return row0 ? (uint32_t)*reinterpret_cast<const unsigned short*>(
-                                gather_ptr(ddenPlane, (uint32_t)lrd[k] * 2u + winD))
-                          : 0u;
-            };
-            dda[0] = seed(k0) | (seed(k0 + 1) << 16);
-            dda[1] = 0u;
-            dda[2] = seed(k0 + 8) | (seed(k0 + 9) << 16);
-            dda[3] = 0u;
-          }
-#pragma unroll
-          for (int q = 0; q < kMassKD; ++q) {
-            uint32_t mb[4];
-            load_frag_t(mb, ADDR_S_M(brF, kk * 16, q));
-            mma(dz_st[2 * q], dda, &mb[0]);
-            mma(dz_st[2 * q + 1], dda, &mb[2]);
-          }
+          uint32_t b[4];
+          load_frag_t(b, ADDR_S(brF, kk * 16, 2 * nj));
+          mma(dst[2 * nj], a, &b[0]);
+          mma(dst[2 * nj + 1], a, &b[2]);
         }
       }
+      //: dz's OWN FOLD: this thread's slot against the chunk's read entries.  The
+      //: R panel's rows past `nr` are identically zero and so is `sdd` there, so
+      //: the run is the whole chunk and needs no bound.
+      const __nv_bfloat16* rcol = sr + gtid;
+#pragma unroll
+      for (int i = 0; i < C; ++i) dz_s += sdd[i] * __bfloat162float(rcol[i * LdS]);
     }
 
     rendezvous();  // (3) `so`/`sgrad` are free and the panels are dead
@@ -944,7 +1045,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     if (++dn == IRING) dn = 0;
   }
 #undef ADDR_S
-#undef ADDR_S_M
+#undef ADDR_G
 #undef ADDR_V
 }
 
