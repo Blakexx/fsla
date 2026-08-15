@@ -119,8 +119,9 @@ standing directive that all kernel and benchmark design targets `N ≳ 65K`.
 
 ## Provenance
 
-- User veto and its four-pillar argument: memory `no-delta-rule-affine-recurrence`
-  (2026-07-31, restated 2026-08-01); theory notes §10i.25/§10i.25a.
+- User veto and its four-pillar argument: ruled 2026-07-31, restated
+  2026-08-01 (development journal; theory notes §10i.25/§10i.25a); this page
+  is the standing statement of it.
 - The schedulability argument and its precision clause: campaign journal,
   2026-08-05, "affine-schedulability observation (paper material)".
 - The reordering win it licenses: campaign journal, 2026-08-04, head-major owner
