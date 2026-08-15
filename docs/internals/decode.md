@@ -121,7 +121,8 @@ where the previous code paid one per ROW, so the change strictly reduces it.
 
 <a id="absent-atom"></a>**An absent atom (`slot < 0`) reads as zeros and is not
 written.** That is exact rather than defensive: a step's plan admits its write set
-EXACTLY (`rola.ops.decode._write_atom_bitmap`), so an atom with no slot is outside
+EXACTLY (the growth probe's published condensation, [§4b](#growth)), so an atom with no
+slot is outside
 it, and a never-deposited leaf holds zeros in the dense backing too. The
 self-normalizing readout then contributes exactly nothing through it — the
 mechanical form of the dead-leaf argument, gated by
@@ -131,28 +132,38 @@ mechanical form of the dead-leaf argument, gated by
 
 A step may deposit into an atom that is not resident. At `T = 1` the write support is
 a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is the
-per-level exact-nonzero indicators' product ORed 16-deep, and
-`rola.ops.decode._write_atom_bitmap` derives it host-side without a launch.
+per-level exact-nonzero indicators' product ORed 16-deep — and the probe below computes
+exactly that, on the device, as a by-product of the question it was launched to answer.
 
 **MOST STEPS HAVE NO GROWTH, AND THE STEP FINDS THAT OUT FIRST.** The exact admission is
-dear against the launch it precedes — 0.48 to 0.56 ms of derivation, `plan_exact` and
-cross-stream event against a 0.08 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a
-sequence whose routing has settled writes atoms that are already resident. So the order per
-step is a QUESTION and then, only if the answer is yes, `rola_op`'s order at `L = 1`:
+dear against the launch it precedes — a `plan_exact` and a cross-stream event against a
+0.09 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a sequence whose routing has
+settled writes atoms that are already resident. So the order per step is a QUESTION and
+then, only if the answer is yes, `rola_op`'s order at `L = 1`:
 
 ```
 _growth_probe(routes.write)        ->  one kernel + one [BH] int32 read: anything new?
+                                       and, either way, the step's write-ATOM set
   no  -> _decode_step              ->  the walk, against the residency it already has
-  yes -> _write_atom_bitmap        ->  the step's exact write atoms
-         state._decode_entry       ->  plan_exact(..., fresh=False) on the side stream
+  yes -> state._decode_entry       ->  plan_exact(workspace.atom_bits, fresh=False)
          arena.wait()              ->  the ONE event the launch waits on
          _decode_step              ->  the walk, resolving through the grown table
 ```
 
-A steady step's whole host cost is the probe, 0.093 to 0.106 ms. A growth step pays the
-probe ON TOP of the preamble it would have paid anyway, moving from 0.56–0.66 ms to
-0.66–0.80 — the trade the trigger makes, and the right one at any ratio of steady steps to
-growth steps a sequence long enough to decode will have.
+**THE SET IS DERIVED ONCE, AND ON THE DEVICE.** The probe has to condense the write
+expansion to atoms in order to test it against the table, so publishing that condensation
+costs one byte per atom and removes the host derivation from a growth step entirely.
+Measured (RTX 3090, medians of 15 x 50, the same three cells): a growth step is
+0.615–0.626 ms against 0.756–0.862 ms for the same step planning from a host-derived
+bitmap, i.e. −17% to −27%; a steady step is 0.222–0.242 ms, of which the probe is
+0.118–0.156. So the trigger is no longer a trade at all — it makes steady steps ~3x
+cheaper AND growth steps cheaper than the preamble-every-step order that preceded it.
+
+`rola.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
+condensation — the same set derived from the Cartesian-product definition in torch, with
+the comparison in `tests/tier2_geometry/test_decode_growth_trigger.py` as its only
+caller. It is not a fallback and not a second path a caller may select; it is what makes
+the gate a check rather than the kernel agreeing with itself.
 
 The pool is reserved once, so admission never moves a base pointer and there is nothing for
 the kernel to discover. `plan_exact`'s single size read is the only host synchronization a
@@ -162,9 +173,10 @@ growth step adds beyond the probe's own.
 a kernel BESIDE the expansion, in `decode_expand.cu`, and it calls that TU's own
 `expand_side` over the same `amp_write` pointers the step itself expands. It condenses the
 result 16-deep — a bitmap word is exactly two atoms, because the atom is 16 leaves and leaf
-order is bit order — ANDs it against `page_table >= 0`, and writes one `[BH]` int32. So
-"the probe and the admission agree about the write support" is a property of the CALL
-GRAPH rather than of an audit; what
+order is bit order — PUBLISHES that condensation as `[BH, N/16]` bool, ANDs it against
+`page_table >= 0`, and writes one `[BH]` int32. So "the probe and the admission agree about
+the write support" is a property of the CALL GRAPH rather than of an audit — the admission
+plans from the very bytes the verdict was read off; what
 `tests/tier2_geometry/test_decode_growth_trigger.py` can still catch is a condensation or
 a residency test that drifted, and it sweeps both directions of the agreement.
 
@@ -175,13 +187,15 @@ an event, 0.093 ms against 0.152 (medians of 15 x 100). The host must wait for t
 either way, and the event path adds a record and a query on top of the wait the copy
 already performs.
 
-**What the derivation costs, stated.** `D - 1` broadcast ANDs over a `[BH, N]` bool —
-four times the page table's own bytes, transient, and nothing that scales with `T`.
-The tiled arm's `chunk_stats` kernel is not used at one token: it reduces over a
-`[BH, T, sum_l width_l]` routing stream, and at a population of one that launch would
-be pure overhead. Deriving at atom grain directly is not available in general, because
-an atom is 16 CONSECUTIVE leaves and the mixed radix does not align a level boundary
-with it.
+**Why not the tiled arm's stats pass.** `chunk_stats` reduces over a
+`[BH, T, sum_l width_l]` routing stream; at a population of one that launch would be pure
+overhead, and it would be a THIRD derivation of a set the step's own expansion already
+holds. The reference derivation `_write_atom_bitmap` keeps for the gate costs `D - 1`
+broadcast ANDs over a `[BH, N]` bool — four times the page table's own bytes, transient,
+measured at 0.130–0.236 ms, which is what the published condensation removes from a growth
+step. Deriving at atom grain directly, without the leaf expansion, is not available in
+general: an atom is 16 CONSECUTIVE leaves and the mixed radix does not align a level
+boundary with it.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 

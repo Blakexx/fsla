@@ -90,11 +90,16 @@ struct DecodeParams {
   //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
   //: slot IS the atom. ONE base translation for both: docs/internals/decode.md#paged-address
   const int32_t* page_tbl;
-  //: `[BH]` int32, the GROWTH PROBE's only output: `1` where this batch-head writes an
+  //: `[BH]` int32, the GROWTH PROBE's verdict: `1` where this batch-head writes an
   //: atom the table does not map, `0` where it does not. Every CTA writes its own entry
   //: unconditionally, so the buffer needs no zero-fill and the probe needs no atomic:
   //: docs/internals/decode_expand.md#growth-probe
   int32_t* growth;
+  //: `[BH, atoms_per_bh]` bool, the GROWTH PROBE's second output: this step's own write
+  //: set, condensed to atoms. It is what a growth step's `plan_exact` admits from, so the
+  //: host never re-derives the set the probe has already expanded:
+  //: docs/internals/decode_expand.md#growth-probe
+  bool* atom_bits;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   //: §1.1's exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at

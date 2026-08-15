@@ -634,8 +634,8 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
 }
 
 void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
-                              at::Tensor bits, at::Tensor growth, std::vector<int64_t> level_widths,
-                              std::vector<int64_t> level_strides,
+                              at::Tensor bits, at::Tensor growth, at::Tensor atom_bits,
+                              std::vector<int64_t> level_widths, std::vector<int64_t> level_strides,
                               std::vector<int64_t> level_spans) {
   const int D = static_cast<int>(amp_write.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4] (spec §1), got ", D);
@@ -651,6 +651,12 @@ void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page
   const int atoms_per_bh = static_cast<int>(page_table.size(1));
   const int64_t N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
   TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
+  TORCH_CHECK(
+      atom_bits.is_cuda() && atom_bits.scalar_type() == at::kBool && atom_bits.is_contiguous(),
+      "atom_bits must be a contiguous CUDA bool tensor, got ", atom_bits.scalar_type());
+  TORCH_CHECK(atom_bits.dim() == 2 && atom_bits.size(0) == BH && atom_bits.size(1) == atoms_per_bh,
+              "atom_bits must be the page table's shape [BH, N / ", kAtomLeaves, "] bool, got ",
+              atom_bits.sizes());
 
   const int n_words = static_cast<int>((N + 31) / 32);
   TORCH_CHECK(bits.dim() == 1 && bits.size(0) == 4LL * BH * n_words,
@@ -680,6 +686,7 @@ void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page
   auto* bits_base = reinterpret_cast<uint32_t*>(bits.data_ptr<int32_t>());
   p.page_tbl = page_table.data_ptr<int32_t>();
   p.growth = growth.data_ptr<int32_t>();
+  p.atom_bits = atom_bits.data_ptr<bool>();
   p.bits_w = bits_base + static_cast<int64_t>(BH) * n_words;
   p.scratch = bits_base + 2 * static_cast<int64_t>(BH) * n_words;
   p.atoms_per_bh = atoms_per_bh;

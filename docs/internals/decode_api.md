@@ -60,13 +60,18 @@ states. The address the kernel builds from a slot, and what a `-1` means, are
 
 The probe is bound as its own entry because it is a different HOST ORDER, not an option on
 the step. It runs BEFORE `rola_decode_forward` so the host can learn whether this step's
-write set is already resident WITHOUT deriving that set itself, and it writes `growth` and
-nothing else — no state, no `y`, no page table.
+write set is already resident WITHOUT deriving that set itself. It writes two things and
+nothing else — no state, no `y`, no page table: the `[BH]` int32 verdict (`growth`), and
+the `[BH, atoms_per_bh]` bool write-atom set that verdict was read off (`atom_bits`),
+which is what a growth step then admits from.
 
-Its argument list is the subset of the step's that an expansion needs: `amp_write`, the
-three per-level integer vectors, the `page_table` it tests residency against, the step's
-own flat `bits` workspace, and the `[BH]` int32 answer. There is no `v`, no read side, no
-`n_split`, no `eps`, because none of them participates in the question.
+Its argument list is the subset of the step's that an expansion needs, plus those two
+outputs: `amp_write`, the three per-level integer vectors, the `page_table` it tests
+residency against, the step's own flat `bits` workspace, `growth` and `atom_bits`. There
+is no `v`, no read side, no `n_split`, no `eps`, because none of them participates in the
+question. `atom_bits` is REQUIRED rather than optional: the kernel must condense to answer
+at all, so a caller who declined the buffer would be asking for the same work with the
+result discarded.
 
 `page_table` is REQUIRED here where it is optional on the step: a dense backing has no
 absent atom to find, so an unpaged caller never asks. The table also NAMES the leaf space

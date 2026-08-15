@@ -125,8 +125,11 @@ the same standing rule `summaries.cuh` states in full
 ## <a id="growth-probe"></a>7. The growth probe — the same expansion, asked one step earlier
 
 `decode_growth_probe_kernel` is the second kernel in this TU and it exists so a paged
-decode step can skip its admission preamble. It answers one question: does this step
-deposit into an atom the page table does not map?
+decode step can skip its admission preamble. It answers one question — does this step
+deposit into an atom the page table does not map? — and PUBLISHES the object it answered
+that question from: `atom_bits`, `[BH, atoms_per_bh]` bool, the step's exact write-atom
+set. A step that does grow admits from that buffer, so the set is derived ONCE, here,
+instead of once here and again on the host.
 
 **It is here, and not in `paging.py`, for one reason.** It calls `expand_side` — the same
 device function `decode_expand_kernel` calls, over the same `amp_write` pointers — so the
@@ -143,7 +146,10 @@ a flag read one step too late.
 The condensation is two half-word tests and no loop over leaves: a bitmap WORD is exactly
 TWO atoms, because an atom is 16 leaves and leaf order is the bitmap's bit order. Word `w`
 covers atoms `2w` (its low half) and `2w + 1` (its high half), each guarded against
-`atoms_per_bh` for a leaf space whose last word is half used.
+`atoms_per_bh` for a leaf space whose last word is half used. Both bytes are written
+UNCONDITIONALLY: a dead atom's `false` is as much of the published set as a live atom's
+`true`, and writing only the live ones would leave the previous step's answer standing in
+the buffer the next admission plans from.
 
 The reduction is a `__shared__ int` written by any thread that found something and read by
 thread 0 — no atomic, because every writer writes the same value — and every CTA writes its

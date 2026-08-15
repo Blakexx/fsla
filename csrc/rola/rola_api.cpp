@@ -103,12 +103,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("page_table") = c10::optional<at::Tensor>());
   //: The step's PRECONDITION, not a mode of it: one CTA per batch-head expands the write
   //: side and ANDs it against residency, so the host learns whether the step needs the
-  //: exact admission preamble at all -- docs/internals/rola_api.md#growth-probe
+  //: exact admission preamble at all. It publishes the condensation it judged
+  //: (`atom_bits`), which is what a growth step admits from --
+  //: docs/internals/rola_api.md#growth-probe
   m.def("rola_decode_growth_probe", &rola::decode::rola_decode_growth_probe,
         "RoLA T=1 decode growth probe: does this step write an atom the page table does "
-        "not map?",
+        "not map? Publishes the step's write-atom set beside the verdict.",
         py::arg("amp_write"), py::arg("page_table"), py::arg("bits"), py::arg("growth"),
-        py::arg("level_widths"), py::arg("level_strides"), py::arg("level_spans"));
+        py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_strides"),
+        py::arg("level_spans"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

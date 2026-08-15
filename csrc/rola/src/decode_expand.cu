@@ -159,12 +159,15 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_expand_kernel(DecodePar
   if (tid == 0) p.pc_coarse[static_cast<int64_t>(bh) * (ng + 1) + ng] = running;
 }
 
-//: THE GROWTH PROBE. `expand_side` on the WRITE side alone, condensed 16-deep and ANDed
-//: against residency: `growth[bh] = 1` iff this step deposits into an atom the page
-//: table does not map. It shares the expansion with `decode_expand_kernel` -- the same
-//: device function over the same `amp_write` pointers -- so "the probe and the step's
-//: admission agree about the write support" is a property of the call graph rather than
-//: of an audit. docs/internals/decode_expand.md#growth-probe
+//: THE GROWTH PROBE. `expand_side` on the WRITE side alone, condensed 16-deep. The
+//: condensation IS PUBLISHED as `atom_bits` -- the step's exact write-atom set, which is
+//: what a growth step's `plan_exact` admits from -- and is ANDed against residency into
+//: `growth[bh] = 1` iff this step deposits into an atom the page table does not map. It
+//: shares the expansion with `decode_expand_kernel` -- the same device function over the
+//: same `amp_write` pointers -- so "the probe and the step's admission agree about the
+//: write support" is a property of the call graph rather than of an audit, and the set is
+//: derived ONCE per growth step rather than once here and again on the host.
+//: docs/internals/decode_expand.md#growth-probe
 template <bool IN_SMEM>
 __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(DecodeParams p) {
   extern __shared__ char smem_raw[];
@@ -182,16 +185,22 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(Dec
 
   //: A bitmap WORD is exactly TWO atoms, because the atom is 16 leaves and leaf order is
   //: the bitmap's bit order. So the condensation is a pair of half-word tests and needs
-  //: no loop over leaves: docs/internals/decode_expand.md#growth-probe
+  //: no loop over leaves. Every atom's byte is written UNCONDITIONALLY -- a dead atom's
+  //: `false` is as much of the published set as a live one's `true`, and writing only the
+  //: live ones would leave the buffer carrying the previous step's answer:
+  //: docs/internals/decode_expand.md#growth-probe
   const int32_t* page_row = p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+  bool* atom_row = p.atom_bits + static_cast<int64_t>(bh) * p.atoms_per_bh;
   int found = 0;
   for (int w = tid; w < nw; w += kDecodeThreads) {
     const uint32_t word = bits_w[w];
-    if (word == 0u) continue;
     const int atom = w << 1;
-    if ((word & 0x0000ffffu) != 0u && atom < p.atoms_per_bh && page_row[atom] < 0) found = 1;
-    if ((word & 0xffff0000u) != 0u && (atom + 1) < p.atoms_per_bh && page_row[atom + 1] < 0) {
-      found = 1;
+    const bool live[2] = {(word & 0x0000ffffu) != 0u, (word & 0xffff0000u) != 0u};
+    for (int half = 0; half < 2; ++half) {
+      const int a = atom + half;
+      if (a >= p.atoms_per_bh) break;
+      atom_row[a] = live[half];
+      if (live[half] && page_row[a] < 0) found = 1;
     }
   }
   __shared__ int any_new;

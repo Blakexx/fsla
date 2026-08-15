@@ -213,3 +213,45 @@ def test_the_probe_expands_the_same_write_support_the_preamble_derives(arm, supp
         expanded.bool().view(BH, config.N // 16, 16).any(-1),
         _write_atom_bitmap(write, config)), (
         "the probe's expansion and the preamble's bitmap condense differently")
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
+@pytest.mark.parametrize("support", ("sparse", "half", "all"))
+def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
+    """The probe's `atom_bits` IS the write-atom set, against an independent derivation.
+
+    A growth step plans from this buffer and derives nothing on the host, so the buffer
+    is not an internal of the probe -- it is the admission's input, and a wrong bit in it
+    is either a page committed for nothing (a bit set too many) or a deposit silently
+    dropped into an absent atom (a bit missing). `_write_atom_bitmap` is the ENUMERATED
+    REFERENCE the comparison needs: the same set derived from the Cartesian-product
+    definition in torch, with no share of the kernel's expansion or its 16-deep
+    condensation, and with this gate as its only caller.
+
+    The arena is EMPTY here, which is the growth step's own condition -- every atom the
+    step writes is new -- so the equality is asserted exactly where the shipped path
+    consumes it.
+    """
+    widths, BC = arm
+    fixture = _fixture(widths, seed=419 + len(widths), support=_SUPPORT[support])
+    config = _config(widths, fixture)
+    BH = fixture["B"] * fixture["H"]
+    _v, _read, write, _g = _f32(fixture)
+
+    arena = _arena(widths, BC, BH)
+    fired, workspace = _probe(fixture, config, arena)
+    torch.cuda.synchronize()
+    reference = _write_atom_bitmap(write, config)
+    assert fired, "an empty table and a step that writes: this cell IS a growth step"
+    assert reference.any(), "a vacuous cell would compare two empty bitmaps"
+    assert torch.equal(workspace.atom_bits, reference), (
+        "the set the probe published is not the set the definition derives, so a growth "
+        "step would admit the wrong atoms")
+
+    #: and the admission agrees with the verdict: planning from the published set leaves
+    #: nothing for the next probe to find.
+    arena.plan_exact(workspace.atom_bits, fresh=False)
+    arena.wait()
+    torch.cuda.synchronize()
+    assert not _probe(fixture, config, arena)[0], (
+        "admitting the probe's own published set did not settle the trigger")
