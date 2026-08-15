@@ -1,6 +1,6 @@
 # `csrc/rola/src/chunk/chunk.cu` — the chunk consumer's dispatch and torch entries
 
-Adopted from the ladder's rung 6G; the ladder repo (rola-wt-ladder) holds the
+Adopted from the ladder's rung 6G; the ladder history (branch `ref/ladder`) holds the
 rung-by-rung derivation and every measurement receipt behind this kernel's
 shape.
 
