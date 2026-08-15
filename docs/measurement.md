@@ -38,7 +38,7 @@ in the tree discharges it.
 | the interleaved paired-ratio engine (`_paired_one_kernel` and its ~7x bias-reduction rule) | **DELIVERED** | `benchmarks/bench/pairing.py` — `interleaved_ab`, and `PairedResult` REFUSES a statistic over samples that were not alternated |
 | the discipline gates (the lock, the dirty-tree refusal, the clock-settle refusal, the extension's identity, the warmup floor) | **DELIVERED** | `benchmarks/bench/discipline.py`, `bench/pairing.py`, `bench/chunk_baseline.py` |
 | their planted-violation tests | **DELIVERED** | `tests/unit/test_chunk_bench_harness.py` — one planted violation per gate, with positive controls |
-| per-cell latency baselines for the chunk arm | **DELIVERED** | `benchmarks/cells/chunk_latency_baseline.json`, recorded whole by `bench_chunk.py baseline --write`; the gate is `tests/unit/test_chunk_latency_regression.py`, which reads and never writes |
+| per-cell latency baselines for the chunk arm | **DELIVERED** | `benchmarks/cells/chunk_latency_baseline.json`, recorded whole across seven sessions by `bench_chunk.py baseline --write`; the gate is `tests/unit/test_chunk_latency_regression.py`, which reads and never writes |
 | the frozen cells the baselines are keyed to | **DELIVERED** | `benchmarks/bench/chunk_cells.py` + `benchmarks/cells/chunk_manifest.json` |
 | its own LOCKING STATEMENT | **DELIVERED** | below, and enforced by `require_gpu_lock` |
 | a sanitizer measurement for the chunk arm | **STILL OWED** | never existed; see [the sanitizer gap](#the-sanitizer-gap) |
@@ -186,12 +186,30 @@ fixture from the same registry, and neither owns a round loop of its own.
 ### The chunk arm's committed baseline
 
 `benchmarks/cells/chunk_latency_baseline.json`, one row per `subject|cell` over the
-registry in `benchmarks/bench/chunk_cells.py`. Recorded WHOLE, in one quiet locked
-session, on a CLEAN tree — `bench.chunk_baseline.write` refuses a dirty one, because a
-number taken over uncommitted edits describes a tree nobody can check out. It carries the
-GPU, the arch, the driver, torch, the assembler, the ratification digest, the recorded
-sha and the extension's own device-side build stamp; it carries no hostname, username or
-path. The gate side reads it and never writes it.
+registry in `benchmarks/bench/chunk_cells.py`. Recorded WHOLE, on a CLEAN tree —
+`bench.chunk_baseline.write` refuses a dirty one, because a number taken over uncommitted
+edits describes a tree nobody can check out. It carries the GPU, the arch, the driver,
+torch, the assembler, the ratification digest, the recorded sha and the extension's own
+device-side build stamp; it carries no hostname, username or path. The gate side reads it
+and never writes it.
+
+**EACH ROW IS THE MEDIAN AND IQR OVER SEVEN SESSION MEDIANS, NOT OVER ONE SESSION'S
+BLOCKS — and that is a measured correction, not a preference.** The first chunk baseline
+was recorded from one session, and the very next `gate` run, on the same binary a minute
+later, put **17 of 44 arms over their limit**. The two spreads are different quantities: a
+within-session block IQR is eleven reps taken back to back on one warm fixture, often
+exactly `0.0000 ms`, while the gate's comparison crosses two PROCESSES — the fixture is
+rebuilt, the caching allocator is cold, the launch order differs. A threshold derived from
+the tighter one is derived from a spread the comparison never crosses. So the recorder
+runs seven child processes (the retired recorder's own `35 reps x 5 blocks x 7 processes`
+shape, reached here from the same evidence) and the row keeps `within_session_iqr_ms`
+beside the cross-session one as the record of the contrast. `MIN_SESSIONS = 2` is enforced
+on both sides: a single-session baseline can neither be written nor gated against.
+
+The lesson generalizes past this file: **a threshold must be derived from the spread of
+the quantity the comparison actually crosses.** The paired A/B engine crosses two reps in
+one process, so its spread is the per-pair ratio's; the latency gate crosses two
+processes, so its spread is the session median's.
 
 ## The flagging rule: three gates, all must fire
 

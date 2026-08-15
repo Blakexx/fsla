@@ -50,6 +50,21 @@ def load(path: Path = BASELINE) -> dict:
 MIN_SESSIONS = 2
 
 
+def refuse_if_dirty(dirty: bool) -> None:
+    """The dirty-tree refusal, callable BEFORE the sessions run as well as at the write.
+
+    It fired once at the write, after seven sessions had already been measured -- a
+    correct refusal delivered at the most expensive moment there is. The recorder captures
+    the tree's identity before its first session and checks it there too; the check at the
+    write stays, because the file must not be writable by any path that skipped it.
+    """
+    if dirty:
+        raise SystemExit(
+            "REFUSING to record a baseline from a DIRTY tree: the number would describe "
+            "edits that are not in any commit, and every later gate would compare against "
+            "a tree nobody can check out. Commit first, then record.")
+
+
 def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict, sessions: int = 1,
           path: Path = BASELINE) -> None:
     """Record the whole baseline with its provenance. A DIRTY TREE IS REFUSED.
@@ -66,11 +81,7 @@ def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict, sessions: int
             f"one warm fixture, and it bounds nothing the comparison crosses -- measured, "
             f"17 of 44 arms over their limit on an unchanged binary. "
             f"Record with --sessions >= {MIN_SESSIONS}.")
-    if dirty:
-        raise SystemExit(
-            "REFUSING to write a baseline from a DIRTY tree: the recorded number would "
-            "describe edits that are not in any commit, and every later gate would "
-            "compare against a tree nobody can check out. Commit first, then record.")
+    refuse_if_dirty(dirty)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"provenance": provenance(), "alarm_sigma": ALARM_SIGMA, "sha": sha,
                "build_stamp": build_stamp, "sessions": sessions, "arms": arms}

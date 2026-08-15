@@ -122,6 +122,11 @@ def _baseline(args) -> int:
             raise SystemExit("REFUSING to record a baseline over DRIFTED cells: the file "
                              "would name fixtures nobody can rebuild.")
         sha, dirty, stamp = run.sha, run.dirty, run.stamp
+    #: THE DIRTY REFUSAL IS TAKEN HERE, NOT AT THE WRITE. It fired once at the write
+    #: after seven sessions had already run, which is a correct refusal delivered at
+    #: the most expensive possible moment. The identity is captured before the first
+    #: session and checked before it too.
+    chunk_baseline.refuse_if_dirty(dirty)
 
     sessions = []
     with tempfile.TemporaryDirectory() as tmp:

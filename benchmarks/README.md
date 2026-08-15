@@ -22,7 +22,9 @@ cell registry (a cell is its constructor and its seed) with its committed manife
 `subjects.py` is what each roster entry times; `pairing.py` is the interleaved paired-ratio
 engine; `discipline.py` is the preconditions, enforced; `stats.py` and `regression.py` are
 whether a difference is real; `ledger.py` is where the number lives afterwards;
-`chunk_baseline.py` is the committed per-cell latency baseline and the read-only gate.
+`chunk_baseline.py` is the committed per-cell latency baseline and the read-only gate — its
+rows are medians and IQRs over SEVEN SESSION MEDIANS, because the gate's comparison crosses
+two processes and a within-session block IQR does not bound that gap (`docs/measurement.md`).
 
 **THE LOCK: this harness is invoked WRAPPED, and it checks that it was.**
 
@@ -31,7 +33,7 @@ python benchmarks/bench_chunk.py list                                    # no de
 flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py manifest
 flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py --tier landing
 flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py run --ab chunk_forward@chunk-p73-pinned:chunk_forward@chunk-sparse-gain8
-flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py baseline --write   # ONE quiet session
+flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py baseline --write   # 7 child sessions
 flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py gate               # reads, never writes
 ```
 
