@@ -21,7 +21,7 @@ changed is WHICH BINARY the union rows were measured on, and the tie table was
 re-measured on the new one (see `_TIE_DIVERGENCE_BOUND`).
 
 Support is checked for **exact** set equality, never by threshold: entmax support is a
-discrete object ([[sparsity-comes-from-entmax]]), so "the same zeros" is a hard
+discrete object (sparsity comes from entmax, not from a floor), so "the same zeros" is a hard
 assertion and only the amplitudes carry a tolerance. Two scopes are deliberately
 excluded from that hard assertion, and neither is a tolerance in disguise:
 
@@ -610,7 +610,7 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
     at the unmodified production tolerances.
 
     Support is an EXACT set assertion: both are closed forms, so neither has
-    convergence slack to hide behind ([[sparsity-comes-from-entmax]] -- entmax
+    convergence slack to hide behind (sparsity comes from entmax, not from a floor -- entmax
     support is a discrete object, not a thresholded one). The exact-TIE fixture is
     excluded because it has its own gate,
     ``test_the_two_lowerings_agree_on_exact_ties``, with its own measured bound.

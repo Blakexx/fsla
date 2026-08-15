@@ -40,9 +40,14 @@ ROOT = Path(__file__).resolve().parents[2]
 #: below refuses.
 EPS_SITES = (
     ("rola/ops/naive.py", "naive_rola"),
-    ("rola/ops/consumer.py", "_consumer_forward"),
     ("rola/ops/decode.py", "freeze_decode_config"),
 )
+
+#: P67 D2-b dropped `("rola/ops/consumer.py", "_consumer_forward")`: the tiled
+#: consumer retires. Its replacement is NOT another row here, because the chunk arm
+#: takes no epsilon PARAMETER -- `rola/ops/chunk.py` passes the constant straight
+#: into the launch. Rule 3 below is what covers it: a literal epsilon anywhere in
+#: the package is refused wherever it appears, parameter or not.
 
 
 def _function_defs(path: Path):
@@ -82,11 +87,10 @@ def test_every_eps_default_is_the_named_constant_not_a_literal(relative, functio
 
 def test_every_eps_default_is_the_same_value_at_runtime():
     """Rule 1, through the signature a caller actually binds against."""
-    from rola.ops.consumer import _consumer_forward
     from rola.ops.decode import freeze_decode_config
     from rola.ops.naive import naive_rola
 
-    for fn in (naive_rola, _consumer_forward, freeze_decode_config):
+    for fn in (naive_rola, freeze_decode_config):
         default = inspect.signature(fn).parameters["eps"].default
         assert default == READOUT_EPS, f"{fn.__qualname__} binds eps={default}"
 

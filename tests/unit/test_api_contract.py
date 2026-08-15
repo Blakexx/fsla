@@ -23,7 +23,6 @@ import pytest
 import torch
 
 import rola
-from rola.planner.schedule import routing_views
 from rola.routing.factors import RouteFactors
 from rola.routing.producer import ProducedRoutes
 
@@ -193,21 +192,28 @@ def test_the_statistics_are_derived_on_demand_and_not_before():
 # ---------------------------------------------------------------------------
 
 
-def test_the_public_layout_is_a_view_of_the_packed_one():
-    """The solve emits the kernel's layout, so exactly one of the two can be
-    materialized -- and it is the kernel's. The public tensors are permuted views, so
-    the fold the planner takes is free.
+def test_the_public_layout_is_a_view_and_not_a_materialization():
+    """The solve emits ONE layout and the public tensors are permuted views of it,
+    so nothing on this surface costs a copy.
 
     Asserted on STORAGE, which is the fact; a shape assertion would pass over a copy.
+
+    P67 D2-b NARROWED this row, per ruling R-6. It used to also assert WHICH of the
+    two layouts is the materialized one, by comparing `data_ptr()` against
+    `routing_views`' folded view -- and `routing_views` is the TILED consumer's
+    packing, deleted with it. The chunk arm builds its own packed operands per call
+    (`rola/ops/chunk.py` says so, and says they are scheduled for deletion into the
+    producer epilogue), so there is no second standing layout left to be the one
+    that is materialized. What survives, and is what a caller of this surface is
+    owed, is that the public tensors are views.
     """
     gateway = _routes(widths=(4, 6))
     factors = gateway(_x(gateway))
-    views = routing_views(factors.read, factors.write, factors.topology)
-    for level, (public, folded) in enumerate(zip(factors.read, views.read_folded)):
+    for level, public in enumerate(factors.read):
         assert not public.is_contiguous(), f"level {level}'s public tensor was materialized"
-        assert folded.is_contiguous()
-        assert folded.data_ptr() == public.data_ptr(), (
-            f"level {level}'s fold copied; the inverse-copy pair is back")
+        assert public._base is not None, (
+            f"level {level}'s public tensor owns its storage; the solve's layout was "
+            "copied out instead of being viewed")
 
 
 def test_the_stored_levels_are_simplices_and_the_mass_went_to_the_gain():
@@ -270,10 +276,12 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     the top level, one shelf below the model types, and the tier label on it was a
     warning sign at eye level. It now lives behind a marked door.
     """
-    quarantined = {"Plan", "Schedule", "StaticDensity",
-                   "plan_and_schedule",
-                   "PlanOverrides", "derive_plan", "execute", "requires_backward",
-                   "dispatch_for"}
+    #: P67 D2-b (R-2/R-6): `Plan`, `Schedule`, `StaticDensity`, `plan_and_schedule`,
+    #: `derive_plan` and `execute` left this set because they leave `rola.expert`
+    #: entirely -- the planner they belong to retires with the tiled consumer. The
+    #: RULE is unchanged and is what this row states: launch geometry is behind the
+    #: marked door, never at the top level.
+    quarantined = {"PlanOverrides", "requires_backward", "dispatch_for"}
     import rola.expert as expert
 
     assert quarantined.isdisjoint(rola.__all__)
@@ -292,17 +300,14 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_an_expert_pin_shrinks_the_feasible_set_and_an_inadmissible_one_is_refused():
-    from rola.expert import PlanOverrides
-
-    producer = rola.SimplexProducer((4, 256), rola.dense_routing(),
-                                    hidden_size=64, num_heads=2)
-    routes = rola.RouteProducer([producer], d_v=32, num_heads=2, hidden_size=64)
-    assert rola.RoLA(64, 2, routes).feasible_BC == (16, 64)
-    pinned = rola.RoLA(64, 2, routes, expert=PlanOverrides(state_block=16))
-    assert pinned.feasible_BC == (16,)
-    with pytest.raises(ValueError):
-        rola.RoLA(64, 2, routes, expert=PlanOverrides(state_block=24))
+#: RETIRED at P67 D2-b (ruling R-2): `test_an_expert_pin_shrinks_the_feasible_set_
+#: and_an_inadmissible_one_is_refused`. Its subject is `RoLA.feasible_BC` and the
+#: tiled ladder `derive.SUPPORTED_BC` behind it, both deleted in D2-c: the chunk
+#: arm's `BC` belongs to the built arm the manifest carries for a topology and is
+#: not host-selectable, so there is no feasible SET for a pin to shrink. The pin
+#: itself did not become silently inert -- D2-a refused
+#: `PlanOverrides(state_block=...)` on the kernel arm BY NAME, and
+#: `tests/layers/test_layer_dispatch.py` holds that refusal.
 
 
 def test_the_expert_argument_refuses_a_lookalike():
@@ -345,57 +350,88 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.cuda
-def test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path():
-    """The `decay` flag used to be computed twice, by two different expressions, on two
-    different paths out of the layer. One path now: the plan reads its model fields from
-    the tier-0 record the planner was given.
+#: RETIRED at P67 D2-b, both rows of "The seam":
+#: `test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path`
+#: and `test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen`.
+#: Their subject is `rola.expert.{Plan, derive_plan, execute}` -- the plan-as-DATA
+#: seam -- which D2-c deletes whole. The second is a real loss and is recorded as
+#: one: it was the adversarial handle a derive-then-immediately-use pipeline does
+#: not have, and the conformance family that used the same handle
+#: (`producer/stale-plan`) retired with it. What replaces the seam is that there is
+#: no plan: the chunk arm's geometry is the manifest's, and `rola_op` refuses a pin
+#: over it rather than accepting one it cannot honor.
+
+
+# ---------------------------------------------------------------------------
+# The installed layout
+# ---------------------------------------------------------------------------
+
+
+def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
+    """The release blocker this gate exists to close, gated FOREVER.
+
+    **THE DEFECT.** A module under `rola/` reached a package under `benchmarks/`
+    by inserting that directory onto `sys.path` RELATIVE TO ITS OWN FILE. That
+    resolves from a source checkout and from nowhere else: `setup.py` packages
+    `find_packages(include=["rola", "rola.*"])`, so an installed wheel has no
+    `benchmarks/` sibling and every relocated name raised `ModuleNotFoundError`
+    there.
+
+    **WHY A SUBPROCESS OVER A SYNTHESIZED LAYOUT.** `tests/conftest.py` puts
+    `benchmarks/` on `sys.path` for the bench packages, so an in-process import
+    proves nothing about a wheel. This builds the INSTALLED layout -- a directory
+    whose only entry is the `rola` package -- runs a fresh interpreter with exactly
+    that on the path, and imports the whole prefill path there. A regression
+    re-introducing a `benchmarks/` reach fails here with the import error itself,
+    and one that merely IMPORTS a benchmarks module fails on the second assertion.
+
+    P67 D2-b re-anchored it here from `tests/unit/test_planner.py`. The module list
+    is the post-D2 prefill path (the facade, the chunk arm, the state, decode, the
+    routing summaries); the `rola.planner.calibration` clause it also carried is
+    gone with that package (ruling R-3), and the general `benchmarks/` clause --
+    which is the release blocker -- is unchanged.
     """
-    from rola.expert import derive_plan
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    import tempfile
 
-    gateway = _routes(widths=(16, 16), d_v=64).cuda()
-    factors = gateway(_x(gateway, dtype=torch.float32).cuda())
-    source = rola.LearnedDecay(widths=gateway.widths, num_heads=2)
+    root = pathlib.Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory() as tmp:
+        site = pathlib.Path(tmp)
+        # The wheel's shape: `rola/` and nothing beside it. A symlink rather than a
+        # copy so the built extension is the one under test and not a stale duplicate.
+        (site / "rola").symlink_to(root / "rola", target_is_directory=True)
+        assert not (site / "benchmarks").exists()
 
-    assert derive_plan(factors, device=factors.device).decay is False
-    #: decay retired from the operator: no arm exists for decay geometry, so
-    #: the planner cannot derive a plan for it -- the refusal IS the contract
-    #: (docs/internals/chunk/chunk.md); the flag's one-path property is
-    #: covered by the False case above.
-    with pytest.raises(NotImplementedError, match="decay"):
-        derive_plan(factors, decay=source(), device=factors.device)
-    assert derive_plan(factors, device=factors.device).topology is factors.topology
+        probe = (
+            "import sys;"
+            # Everything the CUDA prefill path resolves, imported by name.
+            "import rola;"
+            "from rola.layers.rola import RoLA;"
+            "from rola.interface import rola_op, dispatch_for;"
+            "from rola.ops.chunk import CHUNK_TOKENS, run, stats, unsupported;"
+            "from rola.ops.decode import freeze_decode_config;"
+            "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
+            "from rola.routing.summaries import summarize_routing;"
+            "from rola.routing.geometry import owner_geometry;"
+            # Nothing may have come from a `benchmarks/` or `tests/` tree.
+            "bad = [m.__name__ for m in list(sys.modules.values())"
+            " if getattr(m, '__file__', None)"
+            " and ('benchmarks' in str(m.__file__) or '/tests/' in str(m.__file__))];"
+            "print(('BAD' + repr(bad)) if bad else 'CLEAN')")
 
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(site)
+        # `-P` (3.11+) keeps the script's directory off `sys.path`, so the checkout
+        # cannot leak in through the cwd.
+        out = subprocess.run([sys.executable, "-P", "-c", probe],
+                             capture_output=True, text=True, cwd=tmp, env=env)
 
-@pytest.mark.cuda
-def test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen():
-    """The seam's whole point: a plan is DATA, so a plan nobody derived is runnable.
-
-    This is the handle the conformance families need. A pipeline that derived its plan
-    and immediately used it could only ever be tested at the plan its own cost model
-    picked -- which is exactly the plan least likely to expose a boundary bug. Here the
-    tiling is chosen to disagree with the planner's, and the result must still be the
-    one the definition gives.
-    """
-    from rola.expert import Plan, derive_plan, execute
-
-    torch.manual_seed(0)
-    gateway = _routes(widths=(16, 16), d_v=64).cuda()
-    x = _x(gateway, B=1, T=64, dtype=torch.float32).cuda()
-    factors = gateway(x)
-    v = torch.randn(1, 64, 2, 64, device="cuda")
-
-    chosen = derive_plan(factors, device=v.device)
-    other_BC = 64 if chosen.BC == 16 else 16
-    synthetic = Plan(topology=factors.topology, normalization=factors.normalization,
-                     BC=other_BC, warp_tile=chosen.warp_tile, decay=False)
-    with torch.no_grad():
-        y_synthetic, _state, _schedule = execute(synthetic, factors, v)
-        reference, _ = rola.naive_rola(
-            v.double(), tuple(t.double() for t in factors.read),
-            tuple(t.double() for t in factors.write), None,
-            factors.g_write.double(), factors.topology, None, factors.normalization)
-    # bf16 is the only storage format now (no tf32x3 arm), so the tolerance is the
-    # derived bf16 family bound rather than the old near-fp32 rtol.
-    assert torch.allclose(y_synthetic.double(), reference, rtol=1e-2, atol=1e-2), (
-        "a plan the planner did not pick must still compute the definition")
+    assert out.returncode == 0, (
+        "the prefill path does not import from the installed package layout -- this is "
+        f"the ModuleNotFoundError class this gate exists to close.\n{out.stderr}")
+    assert out.stdout.strip().endswith("CLEAN"), (
+        f"the prefill path pulled in a `benchmarks/` or `tests/` module, which it "
+        f"must not: {out.stdout!r}")

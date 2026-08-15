@@ -194,7 +194,7 @@ class RouteFactors:
         key = ("summaries", BC, BT)
         summaries = self.resident.get(key)
         if summaries is None:
-            from rola.planner.schedule import owner_geometry
+            from rola.routing.geometry import owner_geometry
             from rola.routing.summaries import summarize_routing
 
             views = self.views()

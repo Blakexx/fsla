@@ -150,7 +150,7 @@ def test_forward_dispatch_runs_the_named_kernel(route):
 def test_backward_dispatch_runs_the_named_kernel(route):
     """The VJP is a separate dispatch and gets its own identity assertion.
 
-    [[layer-dispatch-autograd-gap]]: a forward-only kernel reachable from a grad
+    the layer-dispatch autograd gap: a forward-only kernel reachable from a grad
     context is exactly the defect an output-only gate misses, so the backward route
     is pinned by name too, not assumed to follow the forward's.
     """

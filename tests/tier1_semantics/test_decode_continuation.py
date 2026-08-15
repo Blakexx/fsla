@@ -129,7 +129,7 @@ def _run(gateway, x, v, *, expert=None):
 
     Under `no_grad` because carried-state execution is inference-only end to end -- the
     layer refuses it outright and the decode op's own guard refuses it again
-    (`[[layer-dispatch-autograd-gap]]`). The gateway's parameters require grad, so this
+    (the layer-dispatch autograd gap). The gateway's parameters require grad, so this
     is the same context a served model runs in, not a convenience.
     """
     state = rola.state()

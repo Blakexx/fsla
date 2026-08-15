@@ -4,7 +4,7 @@ RATIFIED GATE PLAN (user ruling 2026-08-02, recorded in
 docs/internals/entmax.md). The Triton kernel is NOT a
 reference here and is never asserted against -- "matching the old is not a virtue"; the
 baseline is the independent fp64 ground truth in `entmax/reference.py`, whose own header
-says the same thing ("never kernel-vs-kernel"). `[[matching-the-naive-antipattern]]`.
+says the same thing ("never kernel-vs-kernel"). the matching-the-naive antipattern.
 
 FOUR GATES, split at the seam the measurement in §4.1 identified:
 
@@ -17,7 +17,7 @@ FOUR GATES, split at the seam the measurement in §4.1 identified:
   cells, an fp64-folded oracle disagrees on exactly ONE element, and that element was
   attributed to the fold's 6-ulp fp32 rounding, NOT to the solve (trackE.md §4.1). Given
   the kernel's own fp32 midpoint the oracle agrees exactly, 0/528, both fixture classes.
-  Support is the product invariant (`[[sparsity-comes-from-entmax]]`).
+  Support is the product invariant (sparsity comes from entmax, not from a floor).
 * **B (values)** -- `midpoint_values`/`read`/`write` vs the fp64 oracle at the repo's
   ratified production tolerance.
 * **C (gradients)** -- vs the fp64 oracle's autograd at the ratified gradient tolerance,

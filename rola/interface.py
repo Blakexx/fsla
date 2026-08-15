@@ -29,7 +29,7 @@ the quarantined door to it, and it is also what lets a conformance test drive
 ``_execute`` with a SYNTHETIC plan -- a stale one, one straddling a boundary -- which
 is the adversarial handle a plan-derived-then-immediately-used pipeline would not have.
 
-**Why the boundary sits here** (`[[layer-dispatch-autograd-gap]]`): a forward-only
+**Why the boundary sits here** (the layer-dispatch autograd gap): a forward-only
 kernel reachable from a gradient-requiring context does not raise. It returns a
 perfectly good tensor with no ``grad_fn``, the graph is severed, and the symptom is
 ``x.grad is None`` several files away. ``rola_op`` is the ONE place that rule is
@@ -484,7 +484,7 @@ class ChunkConsumer(torch.autograd.Function):
     :class:`RoLAConsumer`'s claim, for the arm that replaced it. ``rola.ops.chunk.run``
     is a bare extension call: reached from a gradient-requiring context it returns a
     perfectly good tensor with no ``grad_fn``, and the symptom is ``x.grad is None``
-    several files away (`[[layer-dispatch-autograd-gap]]`). ``rola_op``'s dispatch is
+    several files away (the layer-dispatch autograd gap). ``rola_op``'s dispatch is
     what keeps that from happening; this node is what makes it LOUD if the dispatch is
     ever bypassed -- a first line and a last line, not one line twice.
 

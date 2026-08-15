@@ -14,7 +14,7 @@ per device -- an architecture the table has no row for, or a row the driver
 disagrees with. Neither half can substitute for the other: a derivation is only
 as good as the facts it was closed over, and only a fact read off the DEVICE can
 establish that this is the device they were read for
-(``[[extension-trap-device-side-check]]``).
+(the extension trap: only a device-side fact catches a stale binary).
 
 **WHY THIS SHAPE OF TEST.** The refusal's subject is an architecture this
 machine is not, so the refusal itself cannot be provoked on real hardware: an
@@ -139,3 +139,35 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     pw = torch.zeros(1, 1, tokens, d * b, dtype=torch.bfloat16, device="cuda")
     bits = extension().chunk_stats(pw, [b] * d)
     assert bits.shape[0] == bh
+
+
+def test_the_dynamic_shared_memory_OPT_IN_is_load_bearing_for_the_built_matrix():
+    """At least one built arm needs more shared memory than a CTA gets by default.
+
+    The launcher raises every arm's dynamic-shared-memory limit with
+    `cudaFuncSetAttribute(..., MaxDynamicSharedMemorySize, ...)`
+    (`csrc/rola/src/chunk/chunk_launch.cuh`). That call is the difference between a
+    working arm and `cudaErrorInvalidValue` at launch, and a matrix whose every arm
+    happened to fit under the 48 KB default would let the opt-in be deleted with
+    every gate staying green. So the NON-VACUITY is asserted: the shipped footprints
+    straddle the default limit.
+
+    P67 D2-b re-anchored this from `tests/unit/test_dispatch_table.py::
+    test_every_shipped_arm_is_admitted_by_this_device`, whose authority was
+    `rola_max_dynamic_smem_bytes` -- a tiled binding D2-c deletes. The ADMISSION
+    half moved with R-7: `check_arch_table` compares the arch row's
+    `smem_per_cta_max` against the driver's on every launching entry, which refuses
+    a device the table does not describe rather than one derived number.
+    """
+    from rola.ops._ext import extension
+
+    #: `chunk_arms()` rows are `(C, BC, D, B, ...)` with the arm's shared-memory
+    #: footprint at index 8 -- the number `chunk_launch.cuh` opts in to.
+    footprints = [row[8] for row in extension().chunk_arms()]
+    assert footprints, "the manifest reports no built arms"
+    default_limit = 48 * 1024
+    assert max(footprints) > default_limit, (
+        f"every built arm fits in the {default_limit}-byte default ({max(footprints)} "
+        "is the largest), so the launcher's opt-in could be deleted and nothing here "
+        "would notice -- the claim is vacuous and the matrix or this row must change")
+    assert min(footprints) > 0

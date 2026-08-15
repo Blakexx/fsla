@@ -353,7 +353,7 @@ _ADVERSARIAL: tuple[Family, ...] = (
         basis="level 0's write support confined to 2 of 8 digits while reads are "
               "dense: 48 of 64 leaves are read but never written. The §6.4 "
               "carve-out's data regime, and the self-normalizing-readout fact "
-              "([[rola-self-normalizing-dead-leaves-inert]]) made checkable: "
+              "(the self-normalizing readout's dead-leaf ruling) made checkable: "
               "reading never-written state must be exact, not approximately dead."),
     Family(
         "corner/cold-read-global-decay", "adversarial",

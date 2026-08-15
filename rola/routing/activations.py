@@ -38,7 +38,7 @@ about capability: `launch_consumer` remains the single authority on supported sh
 (§4.6), and a `False` here means "nobody measured it", which is why a config naming
 such an activation runs on the reference path carrying an explicit `not_kerneled`
 flag. That is a LABELED RESEARCH SURFACE, and it is a different thing from a kernel
-fallback -- `[[kernel-engineering-rules]]`'s no-fallbacks rule is about the kernel
+fallback -- the kernel engineering standard's no-fallbacks rule is about the kernel
 declining work it was asked to do, which never happens here.
 
 **Extending it** is one row plus one constructor, and it is a MINOR version bump
@@ -89,7 +89,7 @@ ActivationTag = tuple[str, float | None]
 #: * `entmax` at `alpha = 1.5` and `alpha = 2` (the latter is sparsemax). Both land
 #:   on the simplex and both produce EXACT structural zeros -- that exactness is the
 #:   whole reason the production solve is an exact entmax and not an epsilon-floored
-#:   approximation (`[[sparsity-comes-from-entmax]]`). Gradient does not flow across
+#:   approximation (sparsity comes from entmax, not from a floor). Gradient does not flow across
 #:   the support boundary: an off-support coordinate has zero gradient, which is a
 #:   property of the map and not an implementation shortcut.
 ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {

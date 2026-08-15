@@ -16,7 +16,12 @@ dead tree-wide and every poison finding it would have produced is being missed.
 
 import torch
 
-from rola.ops import consumer as probe_mod
+#: An ARBITRARY real `rola` module -- the probe needs a filename and globals
+#: that resolve inside the package, and nothing about the claim depends on
+#: which one. P28 pointed it at `rola.ops.consumer` when `rola.routing.
+#: sequence_parallel` was deleted; P67 D2-b points it at the chunk arm for the
+#: same reason and by the same precedent.
+from rola.ops import chunk as probe_mod
 
 
 def test_the_nan_poison_guard_engages_in_this_tier():

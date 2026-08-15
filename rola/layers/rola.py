@@ -26,7 +26,7 @@ the choice is STRUCTURAL -- decided before any of them runs:
   contract, own consumer, frozen config. Its envelope is its own: decode is BC-blind
   and general in the topology, so it is never gated on the prefill matrix.
 
-**The autograd trap this dispatch exists to close** (`[[layer-dispatch-autograd-gap]]`):
+**The autograd trap this dispatch exists to close** (the layer-dispatch autograd gap):
 a forward-only kernel reachable from a gradient-requiring context does not raise. It
 returns a tensor with no ``grad_fn`` and the graph is severed here. ``rola_op`` owns the
 predicate -- it is evaluated on the tensors the OPERATION consumes, not on the module's

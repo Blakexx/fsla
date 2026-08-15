@@ -3,7 +3,7 @@
 """The public op stack (`rola/interface.py`) and the O-3 name contract.
 
 Two things are gated here. The first is the DISPATCH -- which arm `rola_op` takes,
-made explicit and asserted from both sides, because `[[layer-dispatch-autograd-gap]]`
+made explicit and asserted from both sides, because the layer-dispatch autograd gap
 is a failure that produces no exception and no wrong number, only a `grad_fn` that
 quietly is not there. The second is the NAME contract: no public spelling says `v3`.
 
@@ -32,7 +32,6 @@ import rola
 from rola.interface import (
     BackwardNotImplemented,
     ChunkConsumer,
-    RoLAConsumer,
     requires_backward,
 )
 
@@ -70,23 +69,11 @@ def test_the_layer_and_the_op_ask_the_same_question():
 
 # --- the tripwire ------------------------------------------------------------
 
-def test_the_consumer_node_refuses_a_gradient_by_name_instead_of_severing_the_graph():
-    """`RoLAConsumer.backward` is reachable only by bypassing `rola_func`. It must
-    raise a named error; the failure being closed is the one where it does NOT."""
-    with pytest.raises(BackwardNotImplemented, match="forward-only"):
-        RoLAConsumer.backward(None, None)
-
-
-def test_the_consumer_node_does_not_mark_its_output_non_differentiable():
-    """Marking it would make the tripwire unreachable, which is the same silence the
-    node exists to break. Read off the source, since the condition is an absence."""
-    source = pathlib.Path(rola.interface.__file__).read_text()
-    tree = ast.parse(source)
-    node = next(n for n in ast.walk(tree)
-                if isinstance(n, ast.ClassDef) and n.name == "RoLAConsumer")
-    calls = {a.attr for n in ast.walk(node) if isinstance(n, ast.Call)
-             for a in [n.func] if isinstance(a, ast.Attribute)}
-    assert "mark_non_differentiable" not in calls
+#: RETIRED at P67 D2-b: the two `RoLAConsumer` rows (the named refusal, and the
+#: absence of `mark_non_differentiable`). Their subject is the TILED arm's autograd
+#: node, which D2-c deletes with its consumer. The CLAIM did not retire with it --
+#: D2-a's R-10 wrapper gave the chunk arm the same node, and the two rows below are
+#: its twins, written against `ChunkConsumer` and asserting the same two things.
 
 
 def test_the_chunk_node_refuses_a_gradient_by_name_instead_of_severing_the_graph():
@@ -135,7 +122,7 @@ def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 def test_the_kernel_arm_never_returns_a_grad_fn_less_tensor_from_a_grad_context():
-    """The claim in the form `[[layer-dispatch-autograd-gap]]` states it.
+    """The claim in the form the layer-dispatch autograd gap states it.
 
     Inside a grad-enabled context with grad-requiring operands, a call must either
     reach the reference arm (the facade's decision) or raise (the node's). What it

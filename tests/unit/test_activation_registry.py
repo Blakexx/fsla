@@ -243,21 +243,21 @@ def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_f
         del ACTIVATION_REGISTRY[tag]
 
 
-def test_the_private_kernel_path_refuses_an_unratified_activation_rather_than_running_it():
-    """The guarantee, not the convention: a direct caller of the private path cannot
-    quietly launch something nobody measured."""
-    tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=False)
-    try:
-        from rola.ops.consumer import _consumer_forward
-
-        topology = _topology(entmax(1.75), entmax(1.75))
-        v = torch.zeros(1, 8, 1, 16)
-        with pytest.raises(ValueError, match="no ratified kernel row|CUDA device"):
-            _consumer_forward(v, (), (), None, torch.ones(1, 8, 1), _StubPlan(topology))
-    finally:
-        del ACTIVATION_REGISTRY[tag]
+#: RETIRED at P67 D2-b: `test_the_private_kernel_path_refuses_an_unratified_
+#: activation_rather_than_running_it`. Its subject was `_consumer_forward`'s own
+#: activation check -- a refusal at the private tiled entry, so that a caller who
+#: bypassed the dispatch could not launch something nobody measured. The chunk arm
+#: has no such entry to bypass (`chunk.run` has exactly one caller and it is inside
+#: the autograd node, asserted structurally in `tests/unit/test_interface.py`), and
+#: the path the check guarded is closed at BOTH ends by rows that already exist:
+#: the GATEWAY refuses to produce an unratified activation's routing at all
+#: (`rola/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
+#: registering `("entmax", 1.75)` does not make the producer able to emit it), and
+#: `rola_op` refuses any bundle the gateway did not derive
+#: (`tests/unit/test_api_contract.py`), so no bundle carrying an unratified
+#: activation can reach any arm. The DISPATCH half -- an unratified activation goes
+#: to the reference arm and is named in `Dispatch.not_kerneled` -- is the row
+#: directly above this one.
 
 
 def test_every_shipped_configuration_is_kerneled():

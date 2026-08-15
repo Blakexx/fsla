@@ -13,18 +13,21 @@ Vocabulary, defined here and used unqualified below: `D` = level count;
 (`rola.ops.paging.MMA_K_QUANTUM`); `atoms = N // 16`; the **bitmap** is
 `[BH, atoms]`, true where this routing's WRITE side touches the atom.
 
-**The two references, and why there are two.**
+**THE REFERENCE, and why it is an independent one.** The bitmap is checked
+against an fp64 recomputation built from the ORACLE's own leaf materialization
+(`rola.ops.naive._leaf_product` over `rola.ops.naive._radix_strides`), which
+derives leaf addresses separately from production on purpose. Validating a device
+kernel against a FRESH reference written beside it would prove only
+self-consistency -- the failure mode this repository has already been bitten by --
+so the reference has to be one that already existed for another reason, and the
+oracle's address map is exactly that.
 
-1. `atom_bitmap_from_schedule` (`rola/ops/paging.py`) -- the production
-   condensation the arena already admits pages from. Equality here is what makes
-   the kernel a drop-in for it.
-2. An independent fp64 recomputation built from the ORACLE's own leaf
-   materialization (`rola.ops.naive._leaf_product` over
-   `rola.ops.naive._radix_strides`), which derives leaf addresses separately from
-   production on purpose. Reference 1 and the kernel could in principle share a
-   wrong idea of what a leaf is; reference 2 is the second opinion that would
-   disagree. Gating against a fresh reference ALONE is the
-   [[matching-the-naive-antipattern]] this repository has already been bitten by.
+P67 D2-b (ruling R-4) removed a SECOND reference, `atom_bitmap_from_schedule`,
+the host condensation the tiled arena admitted pages from. It takes a `Schedule`
+and retires with it. Its removal does not reopen the matching-the-naive risk,
+which is the reason the ruling turned on: the surviving reference is the
+independent fp64 one, not a re-derivation of the kernel. What it does remove is a
+drop-in-equality claim about a production path that no longer exists.
 
 **The adversarial cell is the point of the file.** Every looser derivation of
 residency -- OR over tokens first, AND over levels second, or the same
@@ -43,14 +46,11 @@ import torch
 
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
-from rola.ops.paging import MMA_K_QUANTUM, AtomKeying, atom_bitmap_from_schedule
-from rola.planner.schedule import Plan, build_schedule
+from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
-    LevelConfig,
     SoftmaxActivation,
-    Topology,
 )
 
 pytestmark = [
@@ -79,7 +79,7 @@ def _simplex(shape, p_nonzero, generator):
     """Rows on the simplex with EXACT support zeros -- entmax's own output shape.
 
     A fixture with no exact zero tests only the dense limit
-    ([[sparsity-comes-from-entmax]]).
+    (sparsity comes from entmax, not from a floor).
     """
     x = torch.rand(shape, device="cuda", dtype=torch.float64, generator=generator)
     if p_nonzero < 1.0:
@@ -108,7 +108,7 @@ def _kernel_bitmap(write, widths):
 
 
 def _oracle_bitmap(write, widths):
-    """Reference 2: the leaf is written iff at SOME token its fp64 leaf product
+    """THE REFERENCE: the leaf is written iff at SOME token its fp64 leaf product
     is nonzero, condensed to atoms. Built from the oracle's address map."""
     B, T, H = write[0].shape[:3]
     N = prod(widths)
@@ -116,21 +116,6 @@ def _oracle_bitmap(write, widths):
     leaves = _leaf_product(levels64, _radix_strides(tuple(widths)), N)  # [B,T,H,N]
     live = (leaves != 0).permute(0, 2, 1, 3).reshape(B * H, T, N).any(dim=1)
     return live.view(B * H, N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(dim=-1)
-
-
-def _schedule_bitmap(read, write, g_write, widths):
-    """Reference 1: the production condensation, through a real `Schedule`.
-
-    `BC` is a `Plan` field the schedule needs and the bitmap does not: the
-    condensation is atom-keyed, which `test_the_bitmap_is_bc_free` states as a
-    claim rather than leaving as an assumption.
-    """
-    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=_DV)
-    plan = Plan(topology=topology, normalization="global", BC=MMA_K_QUANTUM,
-                warp_tile=(1, _DV // 32), decay=None)
-    schedule = build_schedule(read, write, None, g_write, plan)
-    keying = AtomKeying(N=prod(widths), cols=_DV + 1, BH=read[0].shape[0] * read[0].shape[2])
-    return atom_bitmap_from_schedule(schedule, keying)
 
 
 def _fixture(widths, p_nonzero, seed):
@@ -144,20 +129,16 @@ def _fixture(widths, p_nonzero, seed):
 @pytest.mark.parametrize("support", list(_SUPPORTS), ids=list(_SUPPORTS))
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: f"d{a[0]}b{a[1]}")
 def test_atom_bitmap_is_exact(arm, support):
-    """Exact tensor equality against BOTH references, on every built arm."""
+    """Exact tensor equality against the independent reference, on every built arm."""
     D, B = arm
     widths = (B,) * D
-    read, write, g_write = _fixture(widths, _SUPPORTS[support], seed=D * 1000 + B)
+    _read, write, _g_write = _fixture(widths, _SUPPORTS[support], seed=D * 1000 + B)
     bits = _kernel_bitmap(write, widths)
     oracle = _oracle_bitmap(write, widths)
-    schedule = _schedule_bitmap(read, write, g_write, widths)
     assert bits.shape == (_B * _H, prod(widths) // MMA_K_QUANTUM)
     assert torch.equal(bits, oracle), (
         f"kernel and the fp64 leaf-product reference disagree on "
         f"{(bits ^ oracle).sum().item()} atoms")
-    assert torch.equal(bits, schedule), (
-        f"kernel and atom_bitmap_from_schedule disagree on "
-        f"{(bits ^ schedule).sum().item()} atoms")
 
 
 def test_two_token_cross_product_is_excluded():
@@ -186,26 +167,14 @@ def test_two_token_cross_product_is_excluded():
     assert torch.equal(bits, _oracle_bitmap(write, widths))
 
 
-def test_the_bitmap_is_bc_free():
-    """One routing, two `Plan` `BC`s: the SAME bitmap, bit for bit.
-
-    Residency keyed to the invariant quantum is the property the whole atom
-    re-key exists for, and a block-grain derivation would fail this by
-    construction. The kernel takes no `BC` at all, so what this checks is that
-    the reference it is gated against does not either -- which is what makes the
-    equality above a `BC`-free statement.
-    """
-    widths = (16, 16)
-    read, write, g_write = _fixture(widths, 0.35, seed=99)
-    bits = _kernel_bitmap(write, widths)
-    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths), d_v=_DV)
-    keying = AtomKeying(N=prod(widths), cols=_DV + 1, BH=_B * _H)
-    for BC in (16, 64):
-        plan = Plan(topology=topology, normalization="global", BC=BC,
-                    warp_tile=(1, _DV // 32), decay=None)
-        schedule = build_schedule(read, write, None, g_write, plan)
-        assert torch.equal(bits, atom_bitmap_from_schedule(schedule, keying)), (
-            f"the bitmap moved with BC={BC}")
+#: RETIRED at P67 D2-b: `test_the_bitmap_is_bc_free`. It ran ONE routing through
+#: two `Plan` `BC` values and required the same bitmap -- a claim about the
+#: reference, since the kernel takes no `BC` at all, and `Plan` is deleted. The
+#: property itself is not lost and is asserted where a `BC` still exists to vary:
+#: `tests/tier2_geometry/test_chunk_paging_equivalence.py::
+#: test_the_same_routing_is_the_same_residency_at_every_built_BC` plans an arena
+#: from this bitmap at every built `BC` and requires the same page count and the
+#: same state, which is the same statement against the arms that ship.
 
 
 def test_stats_through_the_host_seam():

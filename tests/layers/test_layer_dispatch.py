@@ -58,7 +58,6 @@ import rola
 from rola import RoLA, dense_routing, sparse_routing
 from rola.expert import PlanOverrides
 from rola.interface import dispatch_for
-from rola.planner.derive import GROUP_TOKENS, SUPPORTED_BC, largest_feasible_bc
 
 #: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
 #: accepts; `SUPPORTED_BT`/the `(BC, BT)` template pair are gone). Every backend
@@ -140,15 +139,25 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     return zeros / sum(t.shape[-1] for t in out.write_levels)
 
 
-def _summaries_for(layer: RoLA, x: torch.Tensor):
-    """The §4.2 summary the plan was priced from, on the SAME routing a forward used.
+def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
+    """The realized WRITE-side support fraction on the same routing a forward used.
 
-    Reconstructed rather than read off the layer: the statistics ride the routing bundle
-    (`RouteFactors.summaries`), which lives inside one forward, and a layer that retained
-    them would be retaining a per-step measurement past the step it describes.
+    Reconstructed rather than read off the layer: the statistics ride the routing
+    bundle, which lives inside one forward, and a layer that retained them would be
+    retaining a per-step measurement past the step it describes.
+
+    P67 D2-b: this was `RouteFactors.summaries(BC=..., BT=GROUP_TOKENS)`, the tiled
+    planner's §4.2 pricing summary, deleted with the planner (ruling R-6). The row
+    it serves is about the layer RE-MEASURING per step rather than caching per
+    shape, and the exact statistic was never the point -- the predecessor had
+    already changed it once for the same reason (`k_hat` could not move at the cell
+    it ran on). The realized support fraction is what a router sharpening moves
+    most directly, and it needs no launch geometry to state.
     """
     routes = layer.routes(x)
-    return routes.summaries(BC=layer.feasible_BC[0], BT=GROUP_TOKENS)
+    live = sum(int((level != 0).sum()) for level in routes.write)
+    total = sum(level.numel() for level in routes.write)
+    return live / total
 
 
 # ---------------------------------------------------------------------------
@@ -258,19 +267,14 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     from. A per-shape cache would return the first step's statistics for the second
     step's routing, which is precisely the staleness the ruling rejects.
 
-    **RE-POINTED TWICE, AND THE SECOND TIME IS A CORRECTION.** `last_plan_axes` no longer
-    exists on the layer (the API contract; the §4.2 summary is reconstructed here on the
-    same bundle a forward used, via `_summaries_for`). The statistic also changed,
-    and that is the correction: this
-    row used to assert on `k_hat`, the mean of `ceil(K_hat / MMA_K_QUANTUM)` over
-    candidate `(owner, tile)` pairs, and at THIS cell `k_hat` cannot move. The summary
-    pass is measured at the finest feasible `BC = 16`, so `QPO = 1` and every candidate
-    pair quantizes to exactly one k-step whether its support is 94 % or 19 % of the
-    rectangle. Measured on the pre-break tree, the assertion passed on `1.0` against
-    `0.9999999403953552` -- a difference of 6e-8, one fp32 ulp of accumulation noise, not
-    a re-measurement. `candidate_frac` is the statistic that actually carries the change
-    at this granularity (1.0 -> 0.943 for the same 16x sharpening), and `occupancy` is
-    asserted beside it because it is the quantity the sharpening directly moves.
+    **RE-POINTED THREE TIMES, AND EACH TIME THE STATISTIC MOVED, NOT THE CLAIM.**
+    `last_plan_axes` left the layer (the API contract), then `k_hat` was replaced
+    because at THIS cell it could not move at all (`QPO = 1`, so every candidate
+    pair quantizes to one k-step whether its support is 94 % or 19 %), and at P67
+    D2-b the planner summary it was read from was deleted (R-6). What the row has
+    always asserted is that a layer re-measures its routing per STEP rather than
+    caching per shape; the realized write-side support fraction carries a 16x
+    router sharpening directly and depends on no launch geometry to be stated.
     """
     torch.manual_seed(11)
     layer = _layer(decay="none", router="sparse")
@@ -278,17 +282,14 @@ def test_the_selected_plan_is_re_measured_every_step_not_cached():
     x = torch.randn(1, 128, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
-        dense = _summaries_for(layer, x)
+        dense = _support_fraction(layer, x)
         layer.routes.producers[0].route_W.mul_(16.0)
         layer(x)
-        sharp = _summaries_for(layer, x)
+        sharp = _support_fraction(layer, x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 2, "decode": 0}
-    assert sharp.occupancy.max() < 0.5 < dense.occupancy.min(), (
-        "the sharpening did not move the routing it is supposed to move: occupancy went "
-        f"{dense.occupancy.tolist()} -> {sharp.occupancy.tolist()}")
-    assert sharp.candidate_frac < dense.candidate_frac - 1e-3, (
-        "the per-step selection did not re-measure: candidate_frac went "
-        f"{dense.candidate_frac} -> {sharp.candidate_frac} after a 16x router sharpening")
+    assert sharp < 0.5 < dense, (
+        "the sharpening did not move the routing it is supposed to move: the realized "
+        f"write support went {dense:.3f} -> {sharp:.3f}")
 
 
 # ---------------------------------------------------------------------------
@@ -436,33 +437,37 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     """
     if decay == "leaf_mass":
         pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
-    from rola.ops.consumer import _consumer_forward
+    from rola.ops import chunk as _chunk
     from rola.ops.naive import naive_rola
-    from rola.planner.schedule import plan_and_schedule
+    from tests.conftest import RawRoutes
 
     torch.manual_seed(41)
     layer = _layer(decay=decay)
     layer.eval()
     producer = layer.routes.producers[0]
-    x = torch.randn(1, 48, _HIDDEN, device="cuda")
+    #: `T` is a multiple of the operator's chunk (P67 D2-b: it was 48, which the
+    #: chunk arm refuses); the topology is the file's, a built arm.
+    T = 2 * _chunk.CHUNK_TOKENS
+    x = torch.randn(1, T, _HIDDEN, device="cuda")
 
     with torch.no_grad():
-        v = layer.v_proj(x).view(1, 48, _H, _DV)
+        v = layer.v_proj(x).view(1, T, _H, _DV)
         ro = produce_routing(
             x, None, v, producer.route_W, producer.route_bias, layer.routes.gain_W,
             layer.routes.gain_bias, layer.topology, "global")
-        decay_config = _decay_config(layer)
-        plan, _schedule = plan_and_schedule(
-            ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, layer.topology,
-            layer.state_block, normalization="global", decay=decay_config is not None)
-        _out, cuda_state, _sched = _consumer_forward(
-            v, ro.read_levels, ro.write_levels, ro.g_read, ro.g_write, plan,
-            initial_state=None, decay=decay_config)
+        routes = RawRoutes(layer.topology, "global", ro.read_levels, ro.write_levels,
+                           ro.g_read, ro.g_write)
+        refusal = _chunk.unsupported(routes, None)
+        assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
+        _out, plane = _chunk.run(routes, v, want_state=True)
+        #: the kernel's atom-major plane IS the oracle's `[B, H, N, cols]` layout
+        #: byte for byte (`rola.ops.chunk.state_plane`), so this is a reshape.
+        cuda_state = plane.reshape(1, _H, layer.topology.N, _DV + 1)
     assert cuda_state.dtype == torch.float32
 
     # Consume that fp32 CUDA-produced state as the PRIOR state of a grad-context
     # oracle step -- the direction the layer forbids, exercised at the ops level.
-    v2 = layer.v_proj(x).view(1, 48, _H, _DV)
+    v2 = layer.v_proj(x).view(1, T, _H, _DV)
     with torch.enable_grad():
         ro2 = produce_routing(
             x, None, v2, producer.route_W, producer.route_bias, layer.routes.gain_W,
@@ -533,7 +538,7 @@ def test_the_decay_dials_are_a_grad_requiring_operation_input():
     requires grad (`v`, `g_read`, `g_write` and the read/write allocations do not,
     because `v_proj`/the producer's `route_W`/the gateway's `gain_W`/`gain_bias` are
     frozen and `x` does not require grad) IS a grad-requiring operation input,
-    because the dials are handed straight to `_consumer_forward(..., decay=...)`.
+    because the dials are handed straight to the operation as `decay=`.
 
     `o_proj` is left trainable (matching the reviewer's fixture, wiring-review.md
     §2): its weight requiring grad is what lets `.backward()` complete regardless of
@@ -676,43 +681,23 @@ def test_an_inadmissible_state_block_is_rejected_at_construction():
         RoLA(_HIDDEN, _H, routes, expert=PlanOverrides(state_block=12))
 
 
-def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
-    """§6 P6's default, over several mixed radices.
-
-    **THIS REPLACES THE `widths[-1]` CONTRACT** (`state_block` defaulted to the
-    innermost width, which was always admissible because the owner rectangle was
-    exactly one full innermost level). §6 P6 replaced it with `largest_feasible_bc`
-    over the INSTANTIATED ladder, because `widths[-1]` names a rectangle the kernel
-    may have no instantiation for -- a topology whose innermost level is 4 has no
-    `BC = 4` kernel, and the old default produced a construction that could only ever
-    run on the oracle.
-
-    `state_block` is now a CEILING and no longer pins the launch: the selector
-    chooses `BC` per launch from `feasible_BC`, and an explicit `state_block=` is the
-    EXPERT PIN that shrinks the feasible set to one value (§4.3). Both halves are
-    asserted here, because the default losing its pinning role is the whole content of
-    the change.
-    """
-    for branches in ([8, 16], [4, 4, 8], [16], [2, 3, 16]):
-        routes = build_routes(hidden_size=32, num_heads=2, d_v=8, widths=tuple(branches))
-        layer = RoLA(32, 2, routes)
-        assert layer.state_block == largest_feasible_bc(tuple(branches))
-        assert layer.state_block == layer.feasible_BC[-1]
-        assert set(layer.feasible_BC) <= set(SUPPORTED_BC)
-        assert layer.last_execution_backend is None
-
-    # The expert pin, which is the ONLY thing that fixes `BC` for a launch now.
-    pinned_routes = build_routes(hidden_size=32, num_heads=2, d_v=8, widths=(8, 16))
-    pinned = RoLA(32, 2, pinned_routes, expert=PlanOverrides(state_block=16))
-    assert pinned.feasible_BC == (16,)
-
+#: RETIRED at P67 D2-b (ruling R-2): `test_the_default_state_block_is_the_LARGEST_
+#: FEASIBLE_BC_on_every_topology`. Its subject is `RoLA.state_block`/`feasible_BC`
+#: and `derive.{largest_feasible_bc, SUPPORTED_BC}` -- the tiled ladder, deleted in
+#: D2-c. The chunk arm's `BC` belongs to the built arm the manifest carries for a
+#: topology and is not host-selectable, so there is no ladder to take a largest
+#: member of and no feasible SET for a pin to shrink. The two claims that survive
+#: the ladder are held elsewhere: an inadmissible pin fails at CONSTRUCTION (the
+#: row above), and a pin the kernel arm cannot honor is refused BY NAME rather than
+#: silently ignored (`test_an_uninstantiated_but_aligned_state_block_is_refused_
+#: host_side`, below).
 
 
 # ---------------------------------------------------------------------------
 # H2 (coverage-closure): the dispatch on a SECOND built geometry, deep rather than
 # shallow. Every cell above runs one two-level arm, so a dispatch that happened to
 # be right only at `D = 2` would pass the whole file
-# ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
+# (the capacity-fair comparison rule: small-regime-only gates invert).
 # ---------------------------------------------------------------------------
 
 _DEEP_BRANCHES = (8, 8, 8, 8)  # the manifest's D=4, B=8 arm; N = 4096
@@ -760,7 +745,6 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     layer_32 = RoLA(
         _HIDDEN, _H, routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
     ).to("cuda", torch.float32).eval()
-    assert layer_32.feasible_BC == (32,)
     x = torch.randn(1, 32, _HIDDEN, device="cuda")
     with pytest.raises(NotImplementedError, match="state_block"), torch.no_grad():
         layer_32(x)
