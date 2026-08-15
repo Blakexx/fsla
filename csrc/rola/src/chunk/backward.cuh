@@ -19,7 +19,7 @@ namespace rola::chunk {
 struct ScanBParams {
   const __nv_bfloat16 *pr, *pw, *gw, *v, *dnum, *dden;
   const uint32_t* tbl;
-  float *dv, *dwsum, *dgw;
+  float *dv, *dwsum, *dgw, *dpw;
   int BH, L;
   int v_row_bytes;
 };
@@ -52,6 +52,9 @@ struct GeomB {
   //: ungained so `d gw` can read the level product alone, and the gain is applied
   //: once, on the readout's token axis -- docs/internals/chunk/backward.md#dw-slotsum
   static constexpr int gain_bytes = C * (int)sizeof(float);
+  //: the OUTER level's amplitudes for this block's two digits, per write entry --
+  //: the leave-one-out factor the inner level's digit gradient is weighted by
+  static constexpr int pw0_bytes = 2 * C * (int)sizeof(float);
   //: THE READOUT WINDOW IS TWO THINGS IN SEQUENCE, and it is sized for the
   //: larger: `dv`'s fp32 staging until the drain frees it, then `dz` published
   //: per slot for `d gw`'s token-major reduction.  They never overlap, so the
@@ -59,8 +62,18 @@ struct GeomB {
   //: transposed adjoint state -- is carved to fit here as well:
   //: docs/internals/chunk/backward.md#readout-window
   static constexpr int dz_bytes = BCg * (int)sizeof(float);
+  //: THE TRANSPOSED ADJOINT STATE, a QUARTER of the slots at a time.  (A.18)'s k
+  //: axis is `d_v`, which is the carve's own axis, so no unit can finish the
+  //: contraction from its own registers; each writes its 16 channels here, the
+  //: writes are DISJOINT, and every unit then reads all `d_v` for its own slots.
+  //: The row count carries `kMmaN` of pad because `ldmatrix` reads sixteen rows
+  //: from an eight-row tile's base -- docs/internals/chunk/backward.md#readout-window
+  static constexpr int LdDs = kD + kPadE;
+  static constexpr int DsRows = BCg / 4 + kMmaN;
+  static constexpr int ds_bytes = DsRows * LdDs * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
-  static constexpr int win_bytes = out_bytes > dz_bytes ? out_bytes : dz_bytes;
+  static constexpr int late_bytes = dz_bytes + ds_bytes;
+  static constexpr int win_bytes = out_bytes > late_bytes ? out_bytes : late_bytes;
   //: ONE GRAM BUFFER, AND SCAN B NEEDS TWO GRAMS.  `dv`'s intra term contracts
   //: over SLOTS (the forward's own `R.W^T`) and `dW`'s contracts over `d_v`
   //: (`dnum.v^T`); two resident buffers reach `cta_target = 1` and the arm's
@@ -68,7 +81,7 @@ struct GeomB {
   //: phases -- docs/internals/chunk/backward.md#two-grams
   static constexpr int gram_bytes = C * LdG * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16) + GRP * win_bytes
-                               + grad_bytes + dden_bytes + gain_bytes + gram_bytes
+                               + grad_bytes + dden_bytes + gain_bytes + pw0_bytes + gram_bytes
                                + (1 + kAheadExtra) * idx_slot + form_bytes;
   static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
@@ -410,7 +423,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
     const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum,
-    float* __restrict__ dgw, int L, int v_row_bytes) {
+    float* __restrict__ dgw, float* __restrict__ dpw, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
   using G = GeomB<C, BC>;
   constexpr int GROUPS = groups_for(BC);
@@ -437,6 +450,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   constexpr int KD = BCg / kMmaK;
   constexpr int NDV = BCg / kMmaN;
   constexpr int kChunkV = kD / 8;
+  //: the CHANNEL axis as an mma k: the d_v Gram and the per-slot dW both run it.
+  constexpr int KV = kD / kMmaK;
 
   //: THE GRAM'S WARP SPLIT, the forward's: the C x C tile is cut over both token
   //: axes so every warp owns a rectangle of it.
@@ -470,6 +485,13 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
                 "must be a whole number of eight coefficients");
   static_assert(kLeadPerThr == 1 || kFastSpan % kLeadPerThr == 0,
                 "a thread's outer run crosses a fast-level boundary");
+  //: THE DIGIT REDUCTION IS WRITTEN FOR THE TWO-LEVEL ARM, and says so rather
+  //: than mis-reducing a topology it was not derived for.
+  static_assert(kDepth == 2, "the write-side digit reduction is the two-level form");
+  static_assert(kOuterSpan * kInnerSpan == BCg, "the block is a rectangle in digit space");
+  static_assert(kInnerSpan == 2 * (BCg / 4),
+                "a quarter of the slots must be half an inner-level span, so a quarter "
+                "fixes the outer digit and two quarters cover the inner one");
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -491,6 +513,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   float* const dvPlane = pin_address(dv + base);
   float* const dwsPlane = pin_address(dwsum + (long)blockIdx.y * L);
   float* const dgwPlane = pin_address(dgw + (long)blockIdx.y * L);
+  float* const dpwPlane = pin_address(dpw + (long)blockIdx.y * L * kWtot);
   const __nv_bfloat16* const pRead = pin_address(pread + pbase);
   const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
   const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
@@ -509,19 +532,21 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   float* sgrad = reinterpret_cast<float*>(reinterpret_cast<char*>(so) + G::win_bytes);
   float* sdd = sgrad + kUnits * C;
   float* sgw = sdd + C;
-  char* sidx = reinterpret_cast<char*>(sgw + C);
+  float* spw0 = sgw + C;
+  char* sidx = reinterpret_cast<char*>(spw0 + 2 * C);
   //: THE READOUT WINDOW, RE-READ.  `so` stages `dv` until the drain frees it;
   //: `sdz` then publishes the entry mass column for `d gw` in the same bytes.
   //: One region, two phases, a barrier between --
   //: docs/internals/chunk/backward.md#readout-window
   float* const sdz = so;
+  __nv_bfloat16* const sds = reinterpret_cast<__nv_bfloat16*>(sdz + BCg);
   uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
   static_assert((2 * C * LdS + C * G::LdG) % 8 == 0, "the fp32 region must start 16-byte aligned");
-  static_assert((G::win_bytes / (int)sizeof(float) + kUnits * C + C + C) % 4 == 0,
+  static_assert((G::win_bytes / (int)sizeof(float) + kUnits * C + C + C + 2 * C) % 4 == 0,
                 "the index ring must start 16-byte aligned");
-  static_assert(G::win_bytes >= (int)(BCg * sizeof(float)),
+  static_assert(G::win_bytes >= G::late_bytes,
                 "the readout window must cover every phase that overlays it");
   static_assert(G::idx_slot % 16 == 0,
                 "the formed schedule follows the index ring and must stay aligned");
@@ -556,6 +581,10 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
   const int dv0 = gwarp * 16;
 #define ADDR_V(b_, R_) ((b_) + (uint32_t)(((R_) * LdV + dv0) * 2))
+  //: the value-shaped panels read with a k-GROUP index rather than this unit's
+  //: fixed channel slice -- the d_v Gram contracts the whole of `d_v`.
+#define ADDR_VG(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdV + (g_) * 8) * 2))
+#define ADDR_DS(b_, R_, g_) ((b_) + (uint32_t)(((R_) * (int)G::LdDs + (g_) * 8) * 2))
   //: THE GRAM'S ROWS ARE READ TOKENS AND ITS COLUMNS WRITE TOKENS, so the two
   //: fragment maps land on `LdG` exactly as they land on `LdS`.
 #define ADDR_G(b_, R_, g_) ((b_) + (uint32_t)(((R_) * (int)G::LdG + (g_) * 8) * 2))
@@ -606,6 +635,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const uint32_t brF = smem_addr(sr) + rowFs;
   const uint32_t bwT = smem_addr(sw) + rowTs;
   const uint32_t bgF = smem_addr(sg) + (uint32_t)((rF * (int)G::LdG + cF * 8) * 2);
+  const uint32_t sgT = smem_addr(sg) + (uint32_t)((rT * (int)G::LdG + cT * 8) * 2);
+  const uint32_t bdsT = smem_addr(sds) + (uint32_t)((rT * (int)G::LdDs + cT * 8) * 2);
 
   // ---- the fan-in's addressing, the forward's ------------------------------
   constexpr int kFanLanes = 32;
@@ -711,6 +742,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const int leadLocal = (rIn / kThrPerLead) * kLeadPerThr;
   const int tailLocal = (rIn % kThrPerLead) * kTailPerThr;
   constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
+  //: the digit gradients are fp32, so their row stride is not the amplitudes'.
+  constexpr uint32_t kPRowW = (uint32_t)(kWtot * (int)sizeof(float));
   constexpr uint32_t kOneSplat = 0x3F803F80u;
   const int oBase = leadLocal;
   [[maybe_unused]] uint32_t colFast = 0;
@@ -838,6 +871,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     if (!h[2]) break;
     const bool liveR = nr != 0, liveW = nw != 0;
     const bool live = liveR || liveW;
+    const uint32_t winPc = (uint32_t)h[3] * (uint32_t)(kWindow * kWtot * 2);
+    const uint32_t winPw = (uint32_t)h[3] * (uint32_t)(kWindow * kWtot * 4);
 
     if (warp == 0) dw.walk(dn, lane);
 
@@ -846,6 +881,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
       const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
       const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
       const uint32_t winG = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
+      const uint32_t winP0 = winP;
       //: BOTH PANELS ARE PRODUCED UNGAINED.  The write gain is a per-TOKEN scale
       //: and the readout's `n` axis is the token, so applying it once at the `so`
       //: store is the same number -- and it leaves the level product alone, which
@@ -864,6 +900,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         sgw[tid] = tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
                                   gather_ptr(gWrite, (uint32_t)iwrite(dc)[tid] * 2u + winG)))
                             : 0.f;
+#pragma unroll
+        for (int o = 0; o < kOuterSpan; ++o) {
+          const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winP0;
+          spw0[o * C + tid] =
+              tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                             gather_ptr(pWrite, (uint32_t)iwrite(dc)[tid] * kPRowB + col)))
+                       : 0.f;
+        }
       }
     }
 
@@ -881,6 +925,11 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     //: the SAME V panel, addressed scalar-wise: `d gw`'s value half reads it one
     //: element at a time against the readout accumulator, not as an mma operand.
     const __nv_bfloat16* const vpan = sv + (cmpSlot >> 1);
+    //: the d_v GRAM's operands: `dnum` as A (m = read token, k = channel) and V as
+    //: B (k = channel, n = write token) -- the same pair the fold and the readout
+    //: already stage, read through the other lane map.
+    const uint32_t adnF = sdnB + cmpSlot + rowFv;
+    const uint32_t avT = svB + cmpSlot + rowTv;
     cmpSlot += kSlot;
     if (cmpSlot == kRing) cmpSlot = 0;
 
@@ -1154,6 +1203,209 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     rendezvous();  // (2c) every unit's d gw partial is visible
 
     if (liveW) drain_dgw(dc, nw);
+
+    rendezvous();  // (2d) `sgrad` is drained and the slot Gram is dead
+
+    // ---- THE d_v GRAM, with the R-b ONES COLUMN ------------------------------
+    //: `Gd'[i,j] = <dnum[i,:], v[j,:]> + dden[i]`.  The `+ dden[i]` is the design's
+    //: (A.19) correction: `dW` differentiates BOTH uses of `W`, so the adjoint
+    //: entering write entry `j` carries the in-chunk mass as well as the state,
+    //: and a ones column on the write side puts both under ONE staircase.  It is
+    //: a row broadcast of the `dden` row already staged, not a second contraction
+    //: -- docs/internals/chunk/backward.md#mass-gram
+    if (liveR && liveW && gwarp < GWARPS) {
+      const uint8_t* ljt = ithr(dc);
+#pragma unroll
+      for (int m = 0; m < MPW; ++m) {
+        float g[GPAIR][2][4];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) g[u][h2][e] = 0.f;
+#pragma unroll
+        for (int kk = 0; kk < KV; ++kk) {
+          uint32_t qa[4];
+          load_frag(qa, ADDR_VG(adnF, (gm0 + m) * 16, 2 * kk));
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u) {
+            uint32_t bf[4];
+            load_frag(bf, ADDR_VG(avT, (gn0 + u * 2) * 8, 2 * kk));
+            mma(g[u][0], qa, &bf[0]);
+            mma(g[u][1], qa, &bf[2]);
+          }
+        }
+        const int tr = (gm0 + m) * 16 + (lane >> 2);
+        const int j0 = ljt[tr], j1 = ljt[tr + 8];
+        const float m0 = sdd[tr], m1 = sdd[tr + 8];
+#pragma unroll
+        for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+          for (int h2 = 0; h2 < 2; ++h2) {
+            const int tc = (gn0 + u * 2 + h2) * 8 + (lane & 3) * 2;
+            store_bf16x2(&sg[tr * G::LdG + tc], pack_bf16x2(tc + 0 < j0 ? g[u][h2][0] + m0 : 0.f,
+                                                            tc + 1 < j0 ? g[u][h2][1] + m0 : 0.f));
+            store_bf16x2(&sg[(tr + 8) * G::LdG + tc],
+                         pack_bf16x2(tc + 0 < j1 ? g[u][h2][2] + m1 : 0.f,
+                                     tc + 1 < j1 ? g[u][h2][3] + m1 : 0.f));
+          }
+      }
+    }
+
+    rendezvous();  // (2e) the d_v Gram is visible
+
+    // ---- THE PER-SLOT dW, A QUARTER OF THE SLOTS AT A TIME -------------------
+    //: `u1` is the INNER level's digit gradient and needs no reduction at all:
+    //: quarter `p` fixes the outer digit, and each `(token, inner digit)` cell is
+    //: held by exactly one lane.  `u0` is the OUTER level's and reduces over the
+    //: lane's slot run and then over the units.
+    float u1[2][MTOK][4];
+    float u0[kOuterSpan][MTOK][2];
+#pragma unroll
+    for (int c = 0; c < 2; ++c)
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
+#pragma unroll
+    for (int o = 0; o < kOuterSpan; ++o)
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+
+    if (liveW) {
+      //: THE QUARTER INDEX IS COMPILE-TIME, and that is not a scheduling
+      //: preference: `u0`/`u1` are indexed by the quarter's own digit class, and a
+      //: runtime index into a register array is a stack frame -- the same rule the
+      //: forward's clause scalars are written to.
+#pragma unroll
+      for (int pq = 0; pq < 4; ++pq) {
+        //: EACH UNIT WRITES ITS OWN CHANNELS, so the writes are disjoint and the
+        //: cross-unit sum (A.18)'s k axis would otherwise force does not exist.
+#pragma unroll
+        for (int q = 0; q < BCg / 4 / kMmaN; ++q) {
+          const int nq = pq * (BCg / 4 / kMmaN) + q;
+          const int row = q * kMmaN + (lane & 3) * 2;
+          const int col = dv0 + (lane >> 2);
+          sds[row * G::LdDs + col] = __float2bfloat16_rn(dst[nq][0]);
+          sds[(row + 1) * G::LdDs + col] = __float2bfloat16_rn(dst[nq][1]);
+          sds[row * G::LdDs + col + 8] = __float2bfloat16_rn(dst[nq][2]);
+          sds[(row + 1) * G::LdDs + col + 8] = __float2bfloat16_rn(dst[nq][3]);
+        }
+        rendezvous();
+
+        float acc[MTOK][4];
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
+        //: the INTER half: `<dS_a[s,:], v[j,:]>` with the WHOLE `d_v` contracted,
+        //: because the state arrived through shared instead of through registers.
+#pragma unroll
+        for (int kk = 0; kk < KV; ++kk) {
+          uint32_t bs[4];
+          load_frag(bs, ADDR_DS(bdsT, gwarp * 8, 2 * kk));
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m) {
+            uint32_t av[4];
+            load_frag(av, ADDR_VG(atv, m * 16, 2 * kk));
+            mma(acc[m], av, &bs[0]);
+          }
+        }
+        //: the INTRA half: the transposed staircase, `A = Gd'^T` off the Gram and
+        //: `B` = the R panel, contracted over the chunk's READ tokens.
+        if (liveR) {
+#pragma unroll
+          for (int kk = 0; kk < MTOK; ++kk) {
+            uint32_t br[4];
+            load_frag_t(br, ADDR_S(brF, kk * 16, (pq * (BCg / 4) + gwarp * 8) / 8));
+#pragma unroll
+            for (int m = 0; m < MTOK; ++m) {
+              uint32_t ag[4];
+              load_frag_t(ag, ADDR_G(sgT, kk * 16, m * 2));
+              mma(acc[m], ag, &br[0]);
+            }
+          }
+        }
+        //: the ENTRY mass column, one value per slot, added where `dW` wants it.
+        const int s0 = pq * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          acc[m][0] += sdz[s0];
+          acc[m][1] += sdz[s0 + 1];
+          acc[m][2] += sdz[s0];
+          acc[m][3] += sdz[s0 + 1];
+        }
+
+        // ---- the digit reduction, in lane --------------------------------------
+        const int cls = pq & 1, od = pq >> 1;
+        const int i1 = cls * (kInnerSpan / 2) + gwarp * 8 + (lane & 3) * 2;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          const int t0 = m * 16 + (lane >> 2);
+          const float w0 = spw0[od * C + t0], w1 = spw0[od * C + t0 + 8];
+          u1[cls][m][0] += acc[m][0] * w0;
+          u1[cls][m][1] += acc[m][1] * w0;
+          u1[cls][m][2] += acc[m][2] * w1;
+          u1[cls][m][3] += acc[m][3] * w1;
+          const uint32_t pcol = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 2) + winPc;
+          const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
+              gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0] * kPRowB + pcol));
+          const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
+              gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0 + 8] * kPRowB + pcol));
+          u0[od][m][0] +=
+              acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
+              + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
+          u0[od][m][1] +=
+              acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
+              + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+        }
+        rendezvous();
+      }
+
+      // ---- the write side's digit gradients leave here ------------------------
+      //: THE INNER LEVEL NEEDS NO REDUCTION: every `(token, digit)` cell is held
+      //: by exactly one lane, so the fan-in is `C * B` adds per block and that is
+      //: the minimum the destination admits.
+#pragma unroll
+      for (int cls = 0; cls < 2; ++cls)
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m) {
+          const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+          const uint32_t col = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 4) + winPw;
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
+            if (tk < nw)
+              fan_in_add(
+                  reinterpret_cast<float*>(gather_ptr(
+                      dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
+                  sgw[tk] * u1[cls][m][e]);
+          }
+        }
+      //: THE OUTER LEVEL sums over this lane's slot run first -- two shuffles --
+      //: and then over the units, which the fan-in does.
+#pragma unroll
+      for (int o = 0; o < kOuterSpan; ++o)
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int hh = 0; hh < 2; ++hh) {
+#pragma unroll
+            for (int b2 = 1; b2 < 4; b2 <<= 1)
+              u0[o][m][hh] += __shfl_xor_sync(0xFFFFFFFFu, u0[o][m][hh], b2);
+            const int tk = m * 16 + (lane >> 2) + hh * 8;
+            if ((lane & 3) == 0 && tk < nw) {
+              const uint32_t col =
+                  (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 4) + winPw;
+              fan_in_add(reinterpret_cast<float*>(
+                             gather_ptr(dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col)),
+                         sgw[tk] * u0[o][m][hh]);
+            }
+          }
+    }
 
     if (liveR) {
       // ---- (A.16) THE FOLD: dS^T += dnum^T . R, and dz^T += dden^T . R -------

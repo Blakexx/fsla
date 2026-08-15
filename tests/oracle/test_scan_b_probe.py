@@ -116,7 +116,7 @@ def _partition(live_r, live_w, T) -> list[list[int]]:
     return chunks
 
 
-def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
+def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
     """`(dv, dwsum)` and each one's BOUND -- the rounded reference and its budget."""
     dev = "cuda"
     s = torch.arange(N, device=dev)
@@ -143,8 +143,9 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
     adS = torch.zeros(N, DV, device=dev)
     adz = torch.zeros(N, device=dev)
     out = {k: torch.zeros(sh, device=dev)
-           for k, sh in (("dv", (T, DV)), ("dwsum", (T,)), ("dgw", (T,)),
-                         ("bdv", (T, DV)), ("bdwsum", (T,)), ("bdgw", (T,)))}
+           for k, sh in (("dv", (T, DV)), ("dwsum", (T,)), ("dgw", (T,)), ("dpw", (T, D * W)),
+                         ("bdv", (T, DV)), ("bdwsum", (T,)), ("bdgw", (T,)),
+                         ("bdpw", (T, D * W)))}
     #: THE INTER PATH'S REASSOCIATION: the `T` terms the fold accumulates into
     #: `dS`, the `N` the write-side contraction sums inside a block, and the
     #: `N / BC` block partials the fan-in adds in an order the scheduler picks.
@@ -196,6 +197,36 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
         #: exactly zero, so the emitted reduction is zero too.
         out["dwsum"][idx] = wl * ((vf[idx] @ dSb.T).sum(1) + dz.sum())
         out["bdwsum"][idx] = n_inter * EPS32 * wl * ((vf[idx].abs() @ adS.T).sum(1) + adz.sum())
+        #: THE PER-SLOT dW, which `d pw` reduces over digit classes. Its intra half
+        #: carries the R-b ONES COLUMN: `dW` differentiates both uses of `W`, so the
+        #: adjoint entering write entry `j` is the state AND the mass, and one
+        #: staircase covers them together.
+        Gdp = _rb(dnf[idx] @ vf[idx].T + ddf[idx][:, None]) * stair
+        dWc = (vf[idx] @ dSb.T) + dz[None, :] + Gdp.T @ Rc
+        aWc = (vf[idx].abs() @ adS.T) + adz[None, :] + Gdp.abs().T @ Rc.abs()
+        #: (A.10): the leave-one-out product is the OTHER level's amplitude, never
+        #: `W / pw_l` -- exact at the zeros entmax puts there.
+        pw0, pw1 = pwf[idx][:, d0], pwf[idx][:, W + d1]
+        gram_abs = Gdp.abs().T @ Rc.abs()
+        pairs = ((0, pw0, d0), (1, pw1, d1)) if swap_loo else ((0, pw1, d0), (1, pw0, d1))
+        for lv, loo, dig in pairs:
+            gain = gwf[idx, None]
+            wgt = dWc * loo * gain
+            #: A DIGIT CLASS IS A SUM, so the scatter must ACCUMULATE: `N / W` slots
+            #: land on each column and an advanced-index assignment would keep the
+            #: last one.
+            col = (lv * W + dig).unsqueeze(0).expand(len(ch), -1)
+            acc_w = torch.zeros(len(ch), D * W, device=dev, dtype=wgt.dtype)
+            acc_w.scatter_add_(1, col, wgt)
+            out["dpw"].index_add_(0, idx, acc_w)
+            #: the class's `N / W` slots reassociate, the `N / BC` block partials the
+            #: fan-in adds reassociate, and the Gram's bf16 store is the same
+            #: rounding floor `dv` carries.
+            bnd = ((n_inter + N // W + N // BC) * EPS32 * (aWc * loo.abs() * gain.abs())
+                   + ULP_BF16_PAIR * gram_abs * loo.abs() * gain.abs())
+            acc_b = torch.zeros(len(ch), D * W, device=dev, dtype=bnd.dtype)
+            acc_b.scatter_add_(1, col, bnd)
+            out["bdpw"].index_add_(0, idx, acc_b)
         dS += Rc.T @ dnf[idx]
         dz += Rc.T @ ddf[idx]
         adS += Rc.abs().T @ dnf[idx].abs()
@@ -244,12 +275,13 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
     live_r, live_w = _liveness(T, frac, seed=7)
     inputs = _inputs(T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    dv_k, dws_k, dgw_k = _run(inputs)
+    dv_k, dws_k, dgw_k, dpw_k = _run(inputs)
     ref = _reference(*inputs, chunks, T, live_w)
 
     for name, got, want, bound in (("dv", dv_k[0, 0], ref["dv"], ref["bdv"]),
                                    ("sum_s dW", dws_k[0, 0], ref["dwsum"], ref["bdwsum"]),
-                                   ("d gw", dgw_k[0, 0], ref["dgw"], ref["bdgw"])):
+                                   ("d gw", dgw_k[0, 0], ref["dgw"], ref["bdgw"]),
+                                   ("d pw", dpw_k[0, 0], ref["dpw"], ref["bdpw"])):
         err = (got - want).abs()
         worst = (err / bound.clamp_min(torch.finfo(torch.float32).tiny)).max().item()
         assert worst <= 1.0, (
@@ -259,6 +291,26 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
             f"kernel rounds it, so nothing but summation ORDER is allowed to separate "
             f"them -- a term that is missing, transposed or taken from the wrong chunk "
             f"lands orders of magnitude outside this.")
+
+
+def test_d_pw_rejects_the_swapped_leave_one_out():
+    """(A.10)'s leave-one-out factor is the OTHER level's amplitude, and which one
+    is not a detail: at depth two the two digit gradients differ only in that
+    choice. A budget that could not tell them apart would pass a kernel that
+    weighted each level by its own amplitude.
+
+    Recomputed here rather than perturbed, so the rejected answer is a REAL
+    alternative implementation and not noise.
+    """
+    T = 96
+    live_r, live_w = _liveness(T, None, seed=7)
+    inputs = _inputs(T, 3, live_r, live_w)
+    chunks = _partition(live_r.tolist(), live_w.tolist(), T)
+    ref = _reference(*inputs, chunks, T, live_w)
+    swapped = _reference(*inputs, chunks, T, live_w, swap_loo=True)["dpw"]
+    assert ((swapped - ref["dpw"]).abs() > ref["bdpw"]).any(), (
+        "the d pw budget accepts the two levels' leave-one-out factors exchanged, so "
+        "it is not gating (A.10)'s product at all")
 
 
 def test_d_gw_rejects_the_unweighted_slot_sum():

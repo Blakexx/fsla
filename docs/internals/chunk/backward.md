@@ -27,11 +27,48 @@ else was written:
 | `dv`'s intra term `dv^T += dnum^T · G` — so **`dv` is complete** | (A.17), intra |
 | the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots — **`sum_s dW`, not `d gw`** | (A.18), inter-chunk part |
 | **`d gw` COMPLETE**, inter and intra | (A.11) |
+| the `d_v` Gram `Gd'` with the R-b ones column | (A.19), repaired |
+| the PER-SLOT `dW`, a quarter of the slots at a time | (A.18)+(A.19) |
+| **`d pw` COMPLETE** — the write side's leave-one-out digit reduction | (A.10) |
 
-Not carried, and named so that nothing reads as an omission: the `d_v` Gram `Gd'`,
-the transposed staircase (A.19), the per-slot `dW`, and the leave-one-out digit
-reduction (A.9)/(A.10). So `d pr` and `d pw` are not emitted;
-`rola.ops.chunk.backward` refuses by name until they land.
+Not carried, and named so that nothing reads as an omission: `d pr` (A.9), which
+needs the FORWARD state and is therefore Scan A's — Scan B owns `dS`, Scan A owns
+`S`, and neither owns both. `rola.ops.chunk.backward` refuses by name until Scan A
+lands beside this.
+
+**So Scan B is whole**: every gradient the reverse pass owes — `dv`, `d gw`,
+`d pw` — is emitted and gated.
+
+## <a id="digit-reduction"></a>The write side's digit reduction is in lane
+
+(A.10) weights each slot by the leave-one-out product `prod_{l' != l} pw_{l'}`,
+never by `W / pw_l` — under exact entmax `pw_l` is exactly zero off the support and
+so is `W`, so the division is `0/0` with no epsilon that does not invent a
+gradient. At depth two the leave-one-out factor is simply the OTHER level's
+amplitude, and the two digit gradients differ ONLY in that choice, which is what
+the gate's non-vacuity row exchanges.
+
+The slots are walked a QUARTER at a time, and the quarter is chosen so the digit
+structure falls out of the geometry rather than being computed:
+
+* a quarter is `BCg / 4` slots, which is half an inner-level span, so **a quarter
+  fixes the outer digit** (`o = p / 2`) and two quarters cover the inner one;
+* within a quarter, a lane's accumulator entries carry two inner digits and two
+  write tokens, and every `(token, inner digit)` cell is held by **exactly one
+  lane**. So the inner level's gradient needs NO reduction at all — the fan-in is
+  `C * B` adds per block, which is the minimum the destination admits;
+* the outer level's gradient sums over the lane's slot run (two shuffles) and then
+  over the four units, which the fan-in does.
+
+Both are asserted structurally rather than assumed: `kDepth == 2`,
+`kOuterSpan * kInnerSpan == BCg`, and `kInnerSpan == 2 * (BCg / 4)`. A topology
+that breaks any of them does not compile, instead of mis-reducing quietly.
+
+**The quarter index is a compile-time constant and that is load-bearing.** `u0`
+and `u1` are indexed by the quarter's own digit class; a runtime index into a
+register array is a stack frame, and leaving the loop rolled cost exactly that —
+352 bytes of frame at zero spill, which is local memory rather than register
+pressure. Unrolling it returned both arches to a zero-byte frame.
 
 ## <a id="no-reversed-table"></a>Why the walk needs no reversed table
 
