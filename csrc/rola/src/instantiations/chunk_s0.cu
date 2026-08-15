@@ -68,6 +68,31 @@ template cudaError_t launch_chunk_table_arm<4, 8, 32>(const __nv_bfloat16*, cons
 template cudaError_t launch_chunk_table_arm<4, 8, 128>(const __nv_bfloat16*, const __nv_bfloat16*,
                                                        uint32_t*, int, int, cudaStream_t);
 
+//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the
+//: table it reduces.
+template cudaError_t launch_chunk_block_bitmap_arm<1, 64, 64>(const uint32_t*, const int32_t*,
+                                                              uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<1, 256, 64>(const uint32_t*, const int32_t*,
+                                                               uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 8, 64>(const uint32_t*, const int32_t*,
+                                                             uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 16, 64>(const uint32_t*, const int32_t*,
+                                                              uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 64, 32>(const uint32_t*, const int32_t*,
+                                                              uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 64, 64>(const uint32_t*, const int32_t*,
+                                                              uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 64, 128>(const uint32_t*, const int32_t*,
+                                                               uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<2, 64, 256>(const uint32_t*, const int32_t*,
+                                                               uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<3, 16, 128>(const uint32_t*, const int32_t*,
+                                                               uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<4, 8, 32>(const uint32_t*, const int32_t*,
+                                                             uint8_t*, int, int, cudaStream_t);
+template cudaError_t launch_chunk_block_bitmap_arm<4, 8, 128>(const uint32_t*, const int32_t*,
+                                                              uint8_t*, int, int, cudaStream_t);
+
 //: the STATS arms (one per topology) ride shard 0 with them.
 template cudaError_t launch_chunk_atom_table_arm<1, 64>(const __nv_bfloat16*, uint32_t*, int, int,
                                                         cudaStream_t);

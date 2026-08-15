@@ -51,7 +51,7 @@ that.
 | group | entries |
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
-| the chunk consumer (the prefill arm) | `chunk_union_table`, `chunk_forward_raw`, `chunk_forward`, `chunk_stats`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
+| the chunk consumer (the prefill arm) | `chunk_union_table`, `chunk_block_bits`, `chunk_forward_raw`, `chunk_forward`, `chunk_stats`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
@@ -62,8 +62,8 @@ pair), and `rola_decode_producer_width_mirror` is the C++ mirror of that produce
 constant, pinned EQUAL to the Python value so a stale mirror cannot silently satisfy the
 capacity `static_assert`.
 
-`rola_decode_forward` is the only entry bound with explicit `py::arg` names; the
-prefill consumer's much larger signature is positional.
+`rola_decode_forward` and `chunk_block_bits` are the entries bound with explicit
+`py::arg` names; the prefill consumer's much larger signature is positional.
 
 The tiled consumer's five entries — `rola_consumer_forward`,
 `rola_consumer_occupancy`, `rola_consumer_check_arch_table`,

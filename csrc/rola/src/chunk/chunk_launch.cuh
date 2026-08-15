@@ -76,6 +76,19 @@ cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits
   return cudaGetLastError();
 }
 
+//: THE LIVENESS EPILOGUE'S LAUNCH, keyed to (D, B, BC) like the union table it
+//: reduces -- the block grain is the LAUNCH's, so unlike the stats pass this one
+//: does carry a `BC` axis.
+template <int D, int B, int BC>
+cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
+                                          uint8_t* block_bits, int BH, int L, cudaStream_t stream) {
+  using LP = LevelPlan<D, B, BC>;
+  constexpr int kInner = LP::clauses > 0 ? LP::groups_at(LP::clauses - 1) : 1;
+  const dim3 grid((unsigned)(LP::blocks / kInner), (unsigned)BH);
+  block_bitmap_kernel<D, B, BC><<<grid, kAtomThreads, 0, stream>>>(tbl, page_tbl, block_bits, L);
+  return cudaGetLastError();
+}
+
 //: the census: everything build_stamp reports for an arm.  Lives HERE so the
 //: dispatch TU never touches the kernel symbol.
 template <int C, int BC, int D, int B, bool STATE>

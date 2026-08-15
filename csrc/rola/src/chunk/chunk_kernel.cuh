@@ -1744,6 +1744,138 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
   }
 }
 
+// ------------------------------------------------------ the block-grain liveness
+//: THE LIVENESS EPILOGUE, at the LAUNCH's block grain: `atom_bitmap_kernel`'s
+//: reduction re-instantiated at `BC`, over BOTH sides, with the page table's
+//: residency condensed beside them.  The three facts are emitted SEPARATELY --
+//: one byte per (bh, block), bits {READ, WRITE, STATE} -- because what a skipped
+//: block would have contributed differs by call class and by backing, so the
+//: predicate over them is the host's (docs/internals/chunk/chunk_kernel.md#block-bitmap).
+template <int D, int B, int BC>
+__global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
+                                    const int32_t* __restrict__ page_tbl,
+                                    uint8_t* __restrict__ block_bits, int L) {
+  using LP = LevelPlan<D, B, BC>;
+  constexpr int kClauses = LP::clauses;
+  constexpr int kBlocks = (int)LP::blocks;
+  constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;
+  constexpr int kAtomsPer = BC / kAtomLeaves;
+  static_assert(BC % kAtomLeaves == 0, "a block is a whole number of page atoms");
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int blkBase = blockIdx.x * kInner;
+  const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kBlocks + (uint32_t)blkBase;
+
+  //: the two sides share one token tile, so the read row's stream and the write
+  //: row's are formed together and the tile is read once.
+  __shared__ uint32_t sUp[2][kAtomTileWords];
+  __shared__ uint8_t sLive[2 * kInner];
+  __shared__ uint8_t sState[kInner];
+  __shared__ int sAllLive;
+  for (int e = tid; e < 2 * kInner; e += kAtomThreads) sLive[e] = 0;
+  for (int a = tid; a < kInner; a += kAtomThreads) sState[a] = 0;
+  if (tid == 0) sAllLive = 0;
+  rendezvous();
+
+  //: AN UNMAPPED ATOM'S ENTRY STATE IS PROVABLY ZERO, so residency is the exact
+  //: witness for "this block may carry state in"; the dense backing has no such
+  //: map and the host degrades the predicate rather than guessing one.
+  if (page_tbl != nullptr) {
+    const int32_t* const pt = pin_address(page_tbl);
+    const uint32_t bhAtoms = (uint32_t)blockIdx.y * (uint32_t)(LP::slots / kAtomLeaves);
+    for (int e = tid; e < kInner * kAtomsPer; e += kAtomThreads) {
+      const int a = e / kAtomsPer;
+      const uint32_t atom = bhAtoms + (uint32_t)(LP::block_base(blkBase + a) / kAtomLeaves)
+                            + (uint32_t)(e - a * kAtomsPer);
+      if (*reinterpret_cast<const int32_t*>(gather_ptr(pt, atom * (uint32_t)sizeof(int32_t))) >= 0)
+        sState[a] = 1;
+    }
+  }
+
+  //: NO CLAUSE AT ALL is the whole slot space in one block: live on both sides
+  //: whenever the sequence has a token, which the caller's topology guarantees.
+  if constexpr (kClauses == 0) {
+    for (int e = tid; e < 2 * kInner; e += kAtomThreads) sLive[e] = 1;
+  } else {
+    const int tokWords = tok_words(L);
+    //: ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every
+    //: row and word after it a 32-bit byte displacement that zero-extends.
+    const uint32_t* const baseR =
+        pin_address(tbl + ((long)(2 * blockIdx.y + 0) * (long)LP::entries) * (long)tokWords);
+    const uint32_t* const baseW =
+        pin_address(tbl + ((long)(2 * blockIdx.y + 1) * (long)LP::entries) * (long)tokWords);
+    const uint32_t rowBytes = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
+    //: NAMED SCALARS, never an array -- a runtime-indexed offset array is
+    //: demoted to a stack frame.  The entry rows are the block's, so the two
+    //: sides share every displacement and differ only in their base.
+    uint32_t offUa = 0u, offUb = 0u, offUc = 0u;
+#define ROLA_BLOCK_UPPER(CL_, O_)                              \
+  if constexpr ((CL_) + 1 < kClauses) {                        \
+    constexpr int kDiv = LP::suffix_groups((CL_) + 1);         \
+    constexpr int kGrp = LP::groups_at(CL_);                   \
+    constexpr int kPre = LP::prefix_entries(CL_);              \
+    O_ = (uint32_t)(kPre + (blkBase / kDiv) % kGrp) * rowBytes; \
+  }
+    ROLA_BLOCK_UPPER(0, offUa)
+    ROLA_BLOCK_UPPER(1, offUb)
+    ROLA_BLOCK_UPPER(2, offUc)
+#undef ROLA_BLOCK_UPPER
+    const uint32_t offInner = (uint32_t)LP::prefix_entries(kClauses - 1) * rowBytes;
+
+    for (int w0 = 0; w0 < tokWords; w0 += kAtomTileWords) {
+      const int n = min(kAtomTileWords, tokWords - w0);
+      for (int i = tid; i < n; i += kAtomThreads) {
+        const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
+        uint32_t mr = 0xFFFFFFFFu, mw = 0xFFFFFFFFu;
+#define ROLA_BLOCK_AND(CL_, O_)                                                  \
+  if constexpr ((CL_) < kClauses) {                                              \
+    mr &= *reinterpret_cast<const uint32_t*>(gather_ptr(baseR, (O_) + off));     \
+    mw &= *reinterpret_cast<const uint32_t*>(gather_ptr(baseW, (O_) + off));     \
+  }
+        ROLA_BLOCK_AND(1, offUa)
+        ROLA_BLOCK_AND(2, offUb)
+        ROLA_BLOCK_AND(3, offUc)
+#undef ROLA_BLOCK_AND
+        sUp[0][i] = mr;
+        sUp[1][i] = mw;
+      }
+      rendezvous();
+      for (int e = tid >> 5; e < 2 * kInner; e += kAtomThreads / kBallotLanes) {
+        if (sLive[e]) continue;
+        const int s = e / kInner;
+        const uint32_t* const base = s == 0 ? baseR : baseW;
+        const uint32_t rowOff = offInner + (uint32_t)(e - s * kInner) * rowBytes;
+        bool hit = false;
+        for (int i = lane; i < n; i += kBallotLanes) {
+          const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
+          hit |= (sUp[s][i] & *reinterpret_cast<const uint32_t*>(gather_ptr(base, rowOff + off)))
+                 != 0u;
+        }
+        //: the vote is the WHOLE unit's -- every lane issues it, lane 0 files it.
+        const uint32_t any = lane_ballot(hit);
+        if (lane == 0 && any != 0u) sLive[e] = 1;
+      }
+      rendezvous();
+      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
+      //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
+      if (tid < kBallotLanes) {
+        bool all = true;
+        for (int e = tid; e < 2 * kInner; e += kBallotLanes) all &= sLive[e] != 0;
+        const uint32_t every = lane_ballot(all);
+        if (tid == 0 && every == 0xFFFFFFFFu) sAllLive = 1;
+      }
+      rendezvous();
+      if (sAllLive) break;
+    }
+  }
+  rendezvous();
+  for (int a = tid; a < kInner; a += kAtomThreads) {
+    const uint8_t v =
+        (uint8_t)(sLive[a] | (uint8_t)(sLive[kInner + a] << 1) | (uint8_t)(sState[a] << 2));
+    *reinterpret_cast<uint8_t*>(gather_ptr(block_bits, outOff + (uint32_t)a)) = v;
+  }
+}
+
 // --------------------------------------------------------------- host side
 
 // THE ARM SET, GENERATED: tools/gen_shards.py owns the one list, and this include

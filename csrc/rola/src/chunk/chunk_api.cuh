@@ -23,6 +23,8 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torc
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl);
 torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths);
+torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> widths, int64_t L,
+                         c10::optional<torch::Tensor> page_tbl);
 torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps);
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths);
 std::vector<std::vector<int64_t>> arms();

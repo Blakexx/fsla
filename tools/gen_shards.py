@@ -261,6 +261,11 @@ def chunk_shard_source(name: str, rows: list) -> str:
             body.append(f"template cudaError_t launch_chunk_table_arm<{d}, {b}, {bc}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
                         "    cudaStream_t);\n")
+        body.append("\n//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the\n"
+                    "//: table it reduces.\n")
+        for (d, b, bc) in tables:
+            body.append(f"template cudaError_t launch_chunk_block_bitmap_arm<{d}, {b}, {bc}>(\n"
+                        "    const uint32_t*, const int32_t*, uint8_t*, int, int, cudaStream_t);\n")
         body.append("\n//: the STATS arms (one per topology) ride shard 0 with them.\n")
         for (d, b) in chunk_atom_arms():
             body.append(f"template cudaError_t launch_chunk_atom_table_arm<{d}, {b}>(\n"

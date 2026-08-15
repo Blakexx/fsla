@@ -87,6 +87,9 @@ cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, 
 template <int D, int B>
 cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
                                          cudaStream_t stream);
+template <int D, int B, int BC>
+cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
+                                          uint8_t* block_bits, int BH, int L, cudaStream_t stream);
 template <int C, int BC, int D, int B, bool STATE>
 std::array<int64_t, 9> query_chunk_census_arm();
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
@@ -271,6 +274,47 @@ static const int32_t* page_table(const c10::optional<torch::Tensor>& t, int BH, 
   TORCH_CHECK(t->numel() == (long)BH * (N / kAtomLeaves), "the page table must hold BH * N / ",
               kAtomLeaves, " entries (one per atom); got ", t->numel(), " for BH=", BH, " N=", N);
   return t->data_ptr<int32_t>();
+}
+
+//: THE LIVENESS EPILOGUE: `[BH, N/BC]` uint8, bits {READ, WRITE, STATE}, reduced
+//: from the union table THIS launch already built.  A SEPARATE ENTRY POINT, on
+//: the union table's own rule: a per-call reduction that the sparse grid pays
+//: for must be reported on its own line and never folded into a kernel delta.
+template <int D, int B, int BC>
+static torch::Tensor build_block_bits(const torch::Tensor& tbl, const int32_t* pageTbl, int BH,
+                                      int L) {
+  auto bits =
+      torch::empty({BH, (long)LevelPlan<D, B, BC>::blocks}, tbl.options().dtype(torch::kUInt8));
+  C10_CUDA_CHECK((launch_chunk_block_bitmap_arm<D, B, BC>(
+      reinterpret_cast<const uint32_t*>(tbl.data_ptr()), pageTbl,
+      reinterpret_cast<uint8_t*>(bits.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
+  return bits;
+}
+
+torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> widths, int64_t L,
+                         c10::optional<torch::Tensor> page_tbl) {
+  check_arch_table();
+  TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32
+                  && tbl.dim() == 4 && tbl.size(1) == 2,
+              "the union table is a contiguous int32 [BH, 2, entries, L/32] tensor");
+  TORCH_CHECK(tbl.size(3) == tok_words((int)L), "the union table was built for a different L");
+  const int BH = (int)tbl.size(0);
+  long N = 1;
+  for (auto w : widths) N *= w;
+  const int32_t* const pageTbl = page_table(page_tbl, BH, N);
+  //: NO `C` AXIS: the table this reduces is the (D, B, BC) one, so the arm walk
+  //: matches on the block grain alone and an arm list repeating a grain at
+  //: several chunk lengths resolves to the one instantiation.
+#define CHUNK_BLOCK_BITS_X(C_, BC_, D_, B_)                                \
+  if (bc == BC_ && is_arm(widths, D_, B_)) {                               \
+    const long want = (long)LevelPlan<D_, B_, BC_>::entries;               \
+    TORCH_CHECK(tbl.size(2) == want,                                       \
+                "the union table was built for a different arm");          \
+    return build_block_bits<D_, B_, BC_>(tbl, pageTbl, BH, (int)L);        \
+  }
+  CHUNK_ARMS_X(CHUNK_BLOCK_BITS_X)
+#undef CHUNK_BLOCK_BITS_X
+  TORCH_CHECK(false, "unbuilt arm: BC=", bc, " depth=", widths.size());
 }
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,

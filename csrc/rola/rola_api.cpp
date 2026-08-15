@@ -50,6 +50,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none());
   m.def("chunk_stats", &rola::chunk::stats,
         "chunk consumer: the exact atom-grain write bitmap the page plan admits from");
+  //: the sparse grid's predicate INPUT: three liveness facts per (bh, block),
+  //: reduced from the union table this call already built. The predicate OVER
+  //: them is the dispatch's, because it differs by call class and by backing.
+  m.def("chunk_block_bits", &rola::chunk::block_bits,
+        "chunk consumer: the block-grain read/write/state liveness bitmap", py::arg("tbl"),
+        py::arg("bc"), py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
   m.def("chunk_divide_pass", &rola::chunk::divide_pass,
         "chunk consumer: the ratio, one elementwise pass");
   m.def("chunk_build_stamp", &rola::chunk::build_stamp,

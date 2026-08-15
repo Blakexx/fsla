@@ -356,3 +356,38 @@ delta; the deep arms are G4's — `(16,16,16)` and `(8,8,8,8)` at the flagship's
 partial one, so the three-clause form and the two-scalar upper chain are both exercised.
 The list itself is GENERATED: `tools/gen_shards.py` owns it, and the `.inc` include is the
 whole of the kernel's knowledge of it.
+
+## The liveness epilogue, at the launch's block grain
+
+<a id="block-bitmap"></a>**`block_bitmap_kernel` answers, per `(bh, block)`, the three
+questions a launch needs before it can skip a block.** It is `atom_bitmap_kernel`'s
+reduction re-instantiated at `BC` instead of `kAtomLeaves`, and everything structural
+transfers: the prefix carve (blocks sharing an upper-digit prefix share every clause row
+but the innermost, so one CTA serves a prefix and the shared rows are ANDed into a word
+stream once), the per-row ballot over the token axis, and the CTA-uniform all-live early
+exit that makes the DENSE case the cheap one. Two things are added. The reduction runs
+BOTH SIDES against one token tile — the read rows sit at `2·bh + 0` and the write rows at
+`2·bh + 1` of the same union table, so the tile is read once and the two upper streams are
+formed together. And the page table, when there is one, is OR-condensed over the block's
+`BC / 16` atoms into a third bit.
+
+It consumes an artifact that ALREADY EXISTS. The `BC`-grain union table is built for the
+launch anyway, with exactly the rows the consumer's clause pointers address, so this is a
+pure reduction and not a second producer pass. It is nonetheless a SEPARATE LAUNCH, on the
+union table's own rule: a per-call cost the sparse grid pays is reported on its own line
+and never folded into a kernel delta.
+
+**Why three bits and not one predicate.** `READ` and `WRITE` are exact at the block's own
+grain — a block is an aligned digit-range rectangle, so any combination of digits live at
+one token, one per level, inside the rectangle IS a leaf of the rectangle, which is what
+makes the AND-over-levels-then-OR-over-tokens evaluation exact rather than a bound. What a
+skipped block would have COST, however, is not a property of the routing: it differs by
+call class (stateless, state-in, state-out) and by backing (dense, paged). So the facts
+are emitted separately and the predicate over them is the host's
+(`docs/internals/chunk/chunk.md#run-table`).
+
+`STATE` is the residency witness for "this block may carry a nonzero entry state": an atom
+with no page has provably zero entry fragments, so an unmapped block cannot read anything
+out. The dense backing carries no residency map, and the bit is then ZERO everywhere
+rather than guessed — the host's dense predicate is weakened to compensate, which is a
+recorded weakening rather than a hidden one.
