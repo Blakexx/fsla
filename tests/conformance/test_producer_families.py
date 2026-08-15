@@ -106,9 +106,10 @@ def _demonstrated_by_some_arm(family, views):
 
 @pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-d64",
                                   "producer/swept-gain-d2"])
-def test_the_swept_gain_family_agrees_across_both_arms(name):
+def test_the_swept_gain_family_agrees_with_the_oracle(name):
     from rola import rola_op
     from rola.expert import PlanOverrides
+    from rola.ops.naive import naive_rola
 
     family = FAMILY_BY_NAME[name]
     assert family.runs_on_kernel, (
@@ -119,14 +120,14 @@ def test_the_swept_gain_family_agrees_across_both_arms(name):
     for gain in family.params["gains"]:
         with torch.no_grad():
             routes = producer(gain * x)
-            #: `_arm="kernel"` and not the bare dispatch: the dispatch would
-            #: quietly serve the REFERENCE arm if the envelope ever moved out
-            #: from under this family, and the comparison below would then be
-            #: the oracle against itself — passing, and proving nothing.
-            y_k, _ = rola_op(routes, v, expert=PlanOverrides(), _arm="kernel")
-        y_r, _ = rola_op(routes, v, _arm="reference")
+            y_k, _ = rola_op(routes, v, expert=PlanOverrides())
+            #: the oracle is CALLED, never dispatched to: a facade that could serve
+            #: it would let this comparison become the oracle against itself.
+            y_r, _ = naive_rola(v, routes.read, routes.write, routes.g_read,
+                                routes.g_write, routes.topology, None,
+                                routes.normalization)
         rel_y = g.relative(y_k, y_r)
-        assert rel_y < BF16_RTOL, f"gain {gain}: y differs across arms by {rel_y:.3e}"
+        assert rel_y < BF16_RTOL, f"gain {gain}: y is {rel_y:.3e} from the oracle"
         densities.append(_density(routes))
         views.append(_view(family, routes))
 

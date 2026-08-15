@@ -217,37 +217,8 @@ def test_a_bound_state_refuses_an_incompatible_call_by_naming_the_field():
 
 
 # ---------------------------------------------------------------------------
-# 4. crossing the arms
+# 4. the dense-contents bridge
 # ---------------------------------------------------------------------------
-
-def test_a_state_crosses_to_the_reference_arm_and_back():
-    """The oracle keeps raw tensors, so the FACADE crosses the boundary both ways.
-
-    A decay call dispatches to the reference arm; its fp64 result is stored back into
-    the state as dense contents, and the next kernel-arm call RE-ADMITS them from the
-    contents' own atom occupancy. The claim is that the round trip is lossless at the
-    dtype it was stored in and that the continuation runs.
-    """
-    from rola.routing.decay import LearnedDecay
-
-    gateway, (x, v) = _gateway(seed=13), _inputs(seed=13)
-    decay = LearnedDecay(2.0 ** -8, widths=_WIDTHS, num_heads=_H).cuda()
-    with torch.no_grad():
-        state = rola.state()
-        y_ref, state = rola.rola_op(gateway(x), v, decay(), state=state)
-        assert y_ref.dtype == torch.float64, "the reference arm did not run"
-        assert not state.paged, "the reference arm's result must be dense-backed"
-        carried = state.materialize()
-        assert carried.dtype == torch.float64, "the fp64 oracle's state was rounded"
-
-        y, state = rola.rola_op(gateway(x), v, state=state)
-    assert state.paged, "the kernel arm did not re-admit the dense contents into pages"
-    assert torch.isfinite(y).all()
-    occupied = (carried != 0).any(-1).any(-1).sum()
-    resident = int((state._arena.page_table >= 0).sum())
-    assert resident * 16 >= int(occupied), (
-        "the re-admission committed fewer leaves than the dense contents occupy")
-
 
 def test_a_readmitted_state_carries_the_same_contents():
     """The bridge is a MOVE, not a reset: what was carried is still there afterwards.

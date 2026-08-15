@@ -38,6 +38,22 @@ def _x(gateway, *, B=2, T=6, dtype=torch.float64):
     return torch.randn(B, T, gateway.hidden_size, dtype=dtype)
 
 
+def _admitted(routes, v) -> None:
+    """The op's own validation ACCEPTED this call: everything about the bundle passed,
+    and the only clause left to refuse it is the device -- these fixtures are CPU fp64,
+    which is the oracle's dtype and not any kernel's."""
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+        rola.rola_op(routes, v)
+
+
+def _oracle(routes, v):
+    from rola.ops.naive import naive_rola
+
+    y, _ = naive_rola(v, routes.read, routes.write, routes.g_read, routes.g_write,
+                      routes.topology, None, routes.normalization)
+    return y
+
+
 # ---------------------------------------------------------------------------
 # The bundle is a record of tensors, and its invariants are structural
 # ---------------------------------------------------------------------------
@@ -59,8 +75,9 @@ def test_a_well_formed_hand_built_bundle_is_legal():
         topology=factors.topology, normalization=factors.normalization,
         read=factors.read, write=factors.write, g_read=factors.g_read,
         g_write=factors.g_write)
-    y, _ = rola.rola_op(hand_built, torch.randn(2, 6, 2, 8, dtype=torch.float64))
-    assert torch.isfinite(y).all()
+    v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
+    _admitted(hand_built, v)
+    assert torch.isfinite(_oracle(hand_built, v)).all()
 
 
 @pytest.mark.parametrize("break_it,message", [
@@ -111,8 +128,7 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
         rola.rola_op(factors.read, v)
     #: The well-formed call is the control: the refusal above must be about the TYPE,
     #: not about this fixture being unrunnable.
-    y, _ = rola.rola_op(factors, v)
-    assert y.shape == v.shape
+    _admitted(factors, v)
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():
@@ -127,9 +143,8 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
     factors = gateway(_x(gateway))
     with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
         rola.rola_op(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
-    #: the control: the same call at a width the bundle never declared runs fine.
-    y, _ = rola.rola_op(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))
-    assert y.shape == (2, 6, 2, 9)
+    #: the control: the same call at a width the bundle never declared is admitted.
+    _admitted(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +173,9 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
     factors = gateway(_x(gateway))
     assert type(gateway.topology.levels[0].routing).__name__ == "OpaqueRouting", (
         "a producer that names no activation must take the opaque registry row")
-    y, _ = rola.rola_op(factors, torch.randn(2, 6, 2, 8, dtype=torch.float64))
-    assert torch.isfinite(y).all()
+    v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
+    _admitted(factors, v)
+    assert torch.isfinite(_oracle(factors, v)).all()
 
 
 def test_a_producer_whose_output_is_malformed_is_named_with_its_level():
@@ -290,7 +306,7 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     #: The set names what is BEHIND the door today; the RULE is what this row states
     #: and it does not move when the set does: launch geometry is behind the marked
     #: door, never at the top level.
-    quarantined = {"PlanOverrides", "requires_backward", "dispatch_for"}
+    quarantined = {"PlanOverrides", "requires_backward", "envelope_refusal"}
     import rola.expert as expert
 
     assert quarantined.isdisjoint(rola.__all__)
@@ -331,17 +347,18 @@ def test_the_expert_argument_refuses_a_lookalike():
 # ---------------------------------------------------------------------------
 
 
-def test_training_mode_alone_selects_the_differentiable_arm():
+def test_training_mode_alone_refuses():
     """The condition the op cannot own: reentrant checkpointing runs its first pass
     under `no_grad()` with the module still training, so a predicate keyed only on
-    gradient reachability would take the kernel there while backward recomputes the same
-    step on the reference -- two implementations agreeing only to a tolerance.
+    gradient reachability would admit the kernel there and hand back a forward whose
+    backward does not exist.
     """
+    from rola.interface import BackwardNotImplemented
+
     layer = rola.RoLA(32, 2, _routes()).double().train()
-    with torch.no_grad():
+    with torch.no_grad(), pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
-    assert layer.execution_backend_counts["oracle"] == 1
-    assert layer.last_execution_backend == "oracle"
+    assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
 
 
 def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
@@ -418,7 +435,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             # Everything the CUDA prefill path resolves, imported by name.
             "import rola;"
             "from rola.layers.rola import RoLA;"
-            "from rola.interface import rola_op, dispatch_for;"
+            "from rola.interface import rola_op, require_envelope;"
             "from rola.ops.chunk import CHUNK_TOKENS, run, stats, unsupported;"
             "from rola.ops.decode import freeze_decode_config;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"

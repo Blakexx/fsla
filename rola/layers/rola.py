@@ -12,45 +12,19 @@ SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
 those facts spelled out flat, or a launch decision the op makes.
 
-**Execution backends, and the rule that picks between them.** The layer has three, and
-the choice is STRUCTURAL -- decided before any of them runs:
+**Execution backends: two kernels, and the choice is STRUCTURAL.** ``'cuda'`` is the
+chunk consumer through :func:`rola.rola_op`; ``'decode'`` is the ``T = 1`` sibling
+kernel, which bypasses selection architecturally (at one token there is no tile to
+choose, no split, a statistics population of one) and carries its own envelope --
+BC-blind and general in the topology, so it is never gated on the prefill matrix.
 
-* ``'oracle'`` -- ``naive_rola``, the canonical reference run in the layer's working
-  dtype. It is fully differentiable and it is the ONLY implemented training path, which
-  is not the same thing as a fallback: nothing degrades into it after a failure, and no
-  configuration reaches it because something else declined.
-* ``'cuda'`` -- the chunk consumer, through :func:`rola.rola_op`.
-* ``'decode'`` -- the ``T = 1`` sibling kernel. At one token every selection decision is
-  degenerate (no tile to choose, no split, a statistics population of one), so decode
-  bypasses selection ARCHITECTURALLY rather than deciding it per step. It is a SIBLING
-  of the prefill path, not a specialization: shared production contract, own consumer,
-  frozen config. Its envelope is its own: decode is BC-blind and general in the
-  topology, so it is never gated on the prefill matrix.
-
-**The autograd trap this dispatch exists to close** (the layer-dispatch autograd gap):
-a forward-only kernel reachable from a gradient-requiring context does not raise. It
-returns a tensor with no ``grad_fn`` and the graph is severed here. ``rola_op`` owns the
-predicate -- it is evaluated on the tensors the OPERATION consumes, not on the module's
-parameters -- and the layer adds ONE condition of its own, which has no meaning for a
-free function: ``self.training``. Reentrant gradient checkpointing runs its first pass
-under ``torch.no_grad()`` with ``module.training`` still ``True``, so a predicate keyed
-only on gradient reachability would take the CUDA path there while backward recomputes
-the same step on the oracle -- the value flowing downstream and the gradient taken would
-come from two implementations agreeing only to a tolerance. Gating on training mode
-closes that structurally.
-
-**THE KERNEL ENVELOPE IS THE BUILT CHUNK MATRIX** (the unsupported-topology
-retirement, 2026-08-14). Uniform widths, ``d_v = 64``, ``(D, B)`` in the manifest's
-combinations, ``T`` a multiple of the chunk. A configuration outside it -- a jagged
-topology, ``d_v = 32``, ``raw`` or per-state normalization, an unbuilt ``(D, B)`` --
-DISPATCHES to the oracle, exactly as decay and an unratified activation already do,
-and :attr:`~rola.interface.Dispatch.no_kernel_arm` names which clause refused it. That
-is a dispatch and not a degradation: nothing failed, the kernel was never asked, and
-the configuration is a labelled research surface rather than a broken one. It is also
-a REAL capability narrowing -- those shapes had a kernel and now have the oracle's
-throughput -- and ``docs/open-work.md`` carries the card that widens the matrix.
-A caller who overrules the dispatch (``rola_op(_arm="kernel")``) still gets a loud
-refusal: dispatch is not a lie, override is.
+**THE BUILT ENVELOPE IS THE WHOLE SURFACE** (docs/api.md §1). Everything outside it
+raises: training mode and any grad-bearing call (the backward arrives with the native
+backward), a CPU device, decay, a jagged topology, ``d_v != 64``, an unbuilt
+``(D, B)``, ``T`` off the chunk. The layer's own clause is ``self.training``, which
+has no meaning for a free function -- reentrant checkpointing runs its first pass under
+``torch.no_grad()`` with ``module.training`` still ``True``, and that pass must refuse
+too rather than produce a forward no backward can follow.
 """
 from __future__ import annotations
 
@@ -60,7 +34,13 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from rola.interface import dispatch_for, rola_op, select_backend
+from rola.interface import (
+    BACKWARD_ARRIVES_WITH,
+    BackwardNotImplemented,
+    operands_of,
+    requires_backward,
+    rola_op,
+)
 from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
@@ -143,11 +123,10 @@ class RoLA(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         # Execution telemetry. Plain attributes, not buffers: diagnostic state must not
-        # enter a state_dict and must not be cast by `_apply`. The dispatch gate asserts
-        # on these rather than on wall-clock, because timing cannot distinguish "took
-        # the CUDA path" from "took a fast oracle path" and that is exactly the
-        # distinction the autograd trap turns on.
-        self._execution_backend_counts = {"oracle": 0, "cuda": 0, "decode": 0}
+        # enter a state_dict and must not be cast by `_apply`. Which kernel ran is
+        # asserted from these rather than from wall-clock, which cannot tell two arms
+        # apart.
+        self._execution_backend_counts = {"cuda": 0, "decode": 0}
         self.last_execution_backend: str | None = None
 
     # --- accessors ----------------------------------------------------------
@@ -170,50 +149,32 @@ class RoLA(nn.Module):
         """How many forwards took each backend, since construction. Read-only view."""
         return dict(self._execution_backend_counts)
 
-    def select_execution_backend(self, *operation_inputs) -> str:
-        """``'oracle'`` or ``'cuda'`` from the module's mode and the OPERATION's inputs.
+    def validate_execution_envelope(self, *operation_inputs) -> None:
+        """THE MODULE'S CLAUSES: training mode, and a gradient reaching the operation.
 
-        Training mode alone selects the oracle, independent of
-        ``torch.is_grad_enabled()`` -- see this module's docstring for the
-        reentrant-checkpointing case that condition exists for. The other two conditions
-        (gradient reachability, device) are the op's own, shared verbatim so the layer
-        and the free function cannot drift into two slightly different answers.
-
-        THE MODULE'S CONDITIONS ONLY. Whether a topology has a built kernel arm at all
-        is the op's question, answered by :func:`~rola.interface.dispatch_for` at the
-        call site -- an ``'cuda'`` here means "nothing about this MODULE forces the
-        oracle", and a configuration outside the built chunk matrix still dispatches
-        there (the unsupported-topology retirement; this module's docstring states the
-        envelope). Keeping the two separate is what lets decode, whose envelope is its
-        own, be chosen from this answer without being gated on the prefill matrix.
+        Both refuse, because neither has a backward to be followed by. The
+        configuration clauses are the op's (:func:`rola.interface.require_envelope`),
+        asked separately so decode -- whose envelope is its own -- is never gated on
+        the prefill matrix.
         """
         if self.training:
-            return "oracle"
-        #: the decay retirement: decay is not implemented in the kernel arm; a decay-
-        #: configured layer routes to the oracle like an unratified
-        #: activation would -- dispatch, not silent degradation (the direct
-        #: consumer entries still refuse loudly).
-        if self.decay is not None:
-            return "oracle"
-        tensors = [t for t in operation_inputs if t is not None]
-        return "oracle" if select_backend(*tensors) == "reference" else "cuda"
+            raise BackwardNotImplemented(
+                f"RoLA is in TRAINING mode and there is no training path: "
+                f"{BACKWARD_ARRIVES_WITH}. Call `.eval()` for inference.")
+        if requires_backward(*[t for t in operation_inputs if t is not None]):
+            raise BackwardNotImplemented(
+                f"a RoLA forward carrying a gradient: {BACKWARD_ARRIVES_WITH}. Run "
+                "under torch.no_grad(), or freeze the operands.")
 
     def _bf16_projection_active(self, x: torch.Tensor) -> bool:
         """Whether this call's v/o projections run as bf16 GEMMs (P09 family).
 
-        Keyed to the SAME conditions that reach the kernel arm -- eval mode, no
-        grad anywhere (``torch.is_grad_enabled()`` off implies ``select_backend``
-        cannot pick the reference for gradient reasons), CUDA -- plus the
-        ``mma_precision`` format axis. Any grad-bearing call (training, the
-        reentrant-checkpointing eval case, a dial-only finetune) keeps the
-        module-dtype projections that feed the fp64 oracle. The GEMMs run with
-        bf16 operands and cuBLAS's fp32 compute type (the accumulate-in-fp32
-        ruling; the global reduced-precision-reduction knob is deliberately not
-        touched -- this is the same environment the FA comparison arm runs in).
+        The GEMMs run with bf16 operands and cuBLAS's fp32 compute type (the
+        accumulate-in-fp32 ruling; the global reduced-precision-reduction knob is
+        deliberately not touched -- this is the same environment the FA comparison arm
+        runs in).
         """
-        return (not self.training and not torch.is_grad_enabled() and x.is_cuda
-                and self.expert.mma_precision == "bf16"
-                and self.normalization == "global")
+        return x.is_cuda and self.expert.mma_precision == "bf16"
 
     # --- forward -------------------------------------------------------------
 
@@ -283,40 +244,19 @@ class RoLA(nn.Module):
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         routes = self.routes(source)
         decay = None if self.decay is None else self.decay()
-        operands = (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
-        backend = self.select_execution_backend(*operands)
+        self.validate_execution_envelope(*operands_of(routes, v, decay))
         #: a state that carries CONTENTS, which is what makes a step a continuation.
-        #: A bound-but-empty state is a fresh sequence, and takes the prefill arms.
+        #: A bound-but-empty state is a fresh sequence, and takes the prefill arm.
         carrying = stateful and state.carries
-        if carrying and torch.is_grad_enabled():
-            raise RuntimeError("RoLA carried-state execution is inference-only")
 
-        if backend == "cuda" and L == 1 and carrying:
-            #: decode is its own kernel family with its own envelope -- BC-blind, and
-            #: general in the topology -- so it is chosen from the module's answer and
-            #: never from the PREFILL matrix below.
+        if L == 1 and carrying:
+            #: decode's envelope is its own -- BC-blind, general in the topology -- so
+            #: it is never asked the PREFILL matrix's questions.
             out = self._decode(routes, v, decay, state)
             backend = "decode"
         else:
-            #: ONE CALL, TWO ARMS, AND THE OP OWNS THE CHOICE BETWEEN THEM. The layer's
-            #: only contribution is `_arm="reference"`, its training-mode condition,
-            #: which is a property of a module and has no meaning for a free function.
-            #: Everything else -- gradient reachability, the device, an unratified
-            #: activation, and the BUILT CHUNK MATRIX -- is `dispatch_for`'s, asked
-            #: once so the counter below reports the arm that actually ran rather than
-            #: the one the module would have preferred.
-            arm = "reference" if backend == "oracle" else dispatch_for(
-                routes, *operands).backend
-            out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
-                                 _arm="reference" if arm == "reference" else "kernel")
-            backend = "oracle" if arm == "reference" else "cuda"
-            # The reference arm is the fp64 oracle and returns fp64 whatever it was
-            # handed; casting back is the caller's business because the caller is the
-            # one who knows why. Here that reason is `o_proj`, which holds the module's
-            # working dtype. The carried state deliberately stays fp64 -- the state
-            # object is dtype-agnostic by design. The kernel arm already hands back the
-            # operand dtype, where this is an exact no-op.
-            out = out.to(v.dtype)
+            out, state = rola_op(routes, v, decay, state=state, expert=self.expert)
+            backend = "cuda"
 
         self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
@@ -324,10 +264,8 @@ class RoLA(nn.Module):
             state.conv_state = tuple(conv_states)
         out = out.reshape(B, L, H * self.head_v_dim)
         if bf16_proj:
-            # Off the kernel arm `out`'s VALUES are already bf16-rounded (y is
-            # cast post-divide in the kernel and returned in the module dtype),
-            # so this operand cast is exact; the result returns to the module
-            # dtype at the layer boundary.
+            #: `out`'s VALUES are already bf16-rounded (y is cast post-divide in the
+            #: kernel), so this operand cast is exact.
             projected = nn.functional.linear(
                 out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         else:

@@ -22,8 +22,9 @@ another axis's default), and it is the granularity the expected-empty list
 makes reviewable.
 
 **Only families the KERNEL ARM RUNS are coverage.** A family outside the built
-chunk matrix keeps a live claim — the refusal is named and the dispatch routes
-it to the fp64 oracle — but it is not a kernel-coverage cell. D2-a excluded the
+chunk matrix keeps a live claim — the refusal is named, and the semantics are
+graded against the oracle the test calls — but it is not a kernel-coverage cell.
+D2-a excluded the
 decay families by name; post-D2 decay is one refusing clause among six, and
 singling it out would have counted a `d_v = 32` or ragged-`T` family as kernel
 coverage it is not, so the exclusion is now the envelope itself.
@@ -158,8 +159,8 @@ _EXCEPTIONS: frozenset[tuple] = frozenset({
 #: `tail = ragged` is empty at EVERY instantiation, and that is an envelope
 #: fact rather than a coverage gap: the chunk arm's token quantum is
 #: `rola.ops.chunk.CHUNK_TOKENS`, and a `T` that is not a multiple of it has no
-#: kernel at all — the dispatch routes it to the fp64 oracle. So the ragged
-#: regime is oracle-only by construction. `stratified/ragged` and
+#: kernel at all — the call is REFUSED. So the ragged regime is oracle-graded by
+#: construction, never kernel-covered. `stratified/ragged` and
 #: `stratified/ragged-raw-decay` still run: they hold the ragged SEMANTICS
 #: against the oracle and pin the named refusal, which is what remains to hold.
 #: The off-mid ragged cells are already covered by the cross-term rule; these

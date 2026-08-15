@@ -216,16 +216,18 @@ def test_two_exact_zero_sides_still_require_one_shared_solve():
 
 # --- the not-kerneled surface ------------------------------------------------
 
-class _StubPlan:
+class _StubBundle:
     def __init__(self, topology):
         self.topology = topology
-        self.normalization = "raw"
+        self.normalization = "global"
+        self.device = torch.device("cuda")
 
 
-def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_flag():
-    """§4.6: a LABELED RESEARCH SURFACE, not a kernel fallback. The flag is a
-    property of the configuration, so it is answerable before the call and without a
-    device -- and `dispatch_for` honours it even when everything else says 'cuda'."""
+def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
+    """§4.6: nobody measured a kernel for it, so there is no arm and the envelope says
+    so BY NAME. The flag is a property of the configuration, so the answer is
+    available before the call and without a device -- and it wins over every clause
+    that would otherwise admit the call."""
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
         normalized=True, exact_zeros=True, support_differentiable=False, kerneled=False)
@@ -235,10 +237,9 @@ def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_f
         assert topology.unratified_activations == (
             (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
 
-        dispatch = rola.interface.dispatch_for(
-            _StubPlan(topology), torch.zeros(1, 1, 1, 64))
-        assert dispatch.backend == "reference"
-        assert dispatch.not_kerneled == topology.unratified_activations
+        refusal = rola.interface.envelope_refusal(
+            _StubBundle(topology), torch.zeros(1, 1, 1, 64))
+        assert "unratified activations" in refusal and "entmax" in refusal
     finally:
         del ACTIVATION_REGISTRY[tag]
 

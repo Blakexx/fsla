@@ -3,14 +3,14 @@
 
 """The T=1 decode fork's dispatch, and the autograd gap it must not open.
 
-This is the `layer-dispatch-autograd-gap` gate, generalized to a THIRD backend. The
+This is the `layer-dispatch-autograd-gap` gate, generalized to a SECOND kernel. The
 failure class it exists to close: a forward-only kernel reachable from a
 grad-requiring context does not raise — it returns a tensor with no ``grad_fn`` and the
 graph is silently severed at this layer (the fleet-smoke ``x.grad = None`` failure,
-fixed at ``fab325ae``). The decode kernels are forward-only, so every row below asserts
-BOTH the numeric outcome AND **which branch actually ran**, read off
-``execution_backend_counts``. A timing comparison would be an inference; a counter
-delta is a fact.
+fixed at ``fab325ae``). Both RoLA kernels are forward-only, so every row below asserts
+**which branch actually ran**, read off ``execution_backend_counts`` — a timing
+comparison would be an inference; a counter delta is a fact — or that the call was
+REFUSED, which is what everything outside the built envelope now is.
 
 ``'decode'`` is a separate counter key rather than a sub-count of ``'cuda'`` precisely
 so this table can tell the two CUDA branches apart. A test that could not would pass
@@ -20,7 +20,7 @@ while the wrong kernel ran.
 exercised because a mis-stated predicate hides exactly there, and both ``L = 1``
 sub-cases (carried state present / absent) because that is the second half of the
 predicate: a one-token call with NO carried state is a degenerate prefill, not a decode
-step, and must take the tiled path.
+step, and a one-token prefill is outside the chunk matrix — a refusal, not a step.
 
 Run: ``pytest tests/layers/test_decode_dispatch.py``
 """
@@ -33,6 +33,7 @@ from conftest import build_layer
 
 import rola
 from rola.expert import PlanOverrides
+from rola.interface import BackwardNotImplemented
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
 #: PREFILL kernel can. Decode itself is indifferent (it is BC-blind and general in the
@@ -54,11 +55,15 @@ def _layer(device, *, norm="global", decay="none"):
     ).to(device, torch.float32)
 
 
-def _prime(layer, device, *, prefill=4, requires_grad=False):
-    """Run a prefill so the next call has a carried state — the decode precondition."""
+def _prime(layer, device, *, prefill=32):
+    """Run a prefill so the next call has a carried state — the decode precondition.
+
+    `prefill` is a multiple of the chunk `C = 32`: the prefill itself has to be an
+    in-envelope call."""
     state = rola.state()
-    x = torch.randn(1, prefill, _HIDDEN, device=device, requires_grad=requires_grad)
-    _out, state = layer(x, state=state)
+    x = torch.randn(1, prefill, _HIDDEN, device=device)
+    with torch.no_grad():
+        _out, state = layer(x, state=state)
     return state
 
 
@@ -73,88 +78,72 @@ def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
 # the dispatch table
 # ---------------------------------------------------------------------------
 
+#: The refusal each out-of-envelope row must carry, by the clause that refused it.
+_REFUSALS = {
+    "refuses-training": (BackwardNotImplemented, "TRAINING mode"),
+    "refuses-grad": (BackwardNotImplemented, "native backward"),
+    "refuses-chunk": (NotImplementedError, "multiple of the chunk"),
+}
+
+
 @pytest.mark.cuda
 @_CUDA
 @pytest.mark.parametrize(
     "training,grad_enabled,requires_grad,L,carried,expected",
     [
-        # A CARRIED STATE UNDER A GRAD CONTEXT RAISES, BEFORE ANY DISPATCH RUNS.
-        # This is a pre-existing layer invariant ("RoLA carried-state execution is
-        # inference-only") and it is STRONGER than routing such a call to the oracle:
-        # a carried state is the decode fork's own precondition, so the fork is
-        # MUTUALLY EXCLUSIVE with gradient reachability at the layer boundary and
-        # could not sever a graph even if both of its own guards were removed. These
-        # are rows rather than an implicit assumption because that exclusivity is
-        # load-bearing for the whole autograd argument, and any future relaxation of
-        # the raise has to come through here.
-        (True, True, True, 1, True, 'raises'),
-        (False, True, True, 1, True, 'raises'),
-        (False, True, False, 1, True, 'raises'),
         # training mode wins under any wrapper -- including the reentrant checkpointing
         # shape (training=True under no_grad), which is why that is its own row.
-        (True, True, True, 1, False, 'oracle'),
-        (True, False, True, 1, True, 'oracle'),
+        (True, True, True, 1, True, "refuses-training"),
+        (True, True, True, 1, False, "refuses-training"),
+        (True, False, True, 1, True, "refuses-training"),
+        # eval, but a gradient reaches the operation: refused before any fork.
+        (False, True, True, 1, True, "refuses-grad"),
+        (False, True, False, 1, True, "refuses-grad"),
         # eval mode, no grad: the fork's own predicate decides
-        (False, False, False, 1, True, 'decode'),
+        (False, False, False, 1, True, "decode"),
         # ... and the PREFILL rows it is being distinguished from. `T` is a multiple
-        # of the chunk `C = 32` wherever the row must reach the kernel; `L = 1`
-        # uncarried cannot be, so it is an `oracle` row -- a one-token PREFILL is
-        # outside the built matrix and dispatches there, which is a different
-        # statement from `decode` and is exactly the distinction being drawn.
-        (False, False, False, 1, False, 'oracle'),
-        (False, False, False, 32, True, 'cuda'),
-        (False, False, False, 64, True, 'cuda'),
+        # of the chunk `C = 32` wherever the row must reach the kernel; a one-token
+        # UNCARRIED call is a degenerate prefill, outside the built matrix, and is
+        # refused -- a different statement from `decode` and exactly the distinction
+        # being drawn.
+        (False, False, False, 1, False, "refuses-chunk"),
+        (False, False, False, 32, True, "cuda"),
+        (False, False, False, 64, True, "cuda"),
     ],
 )
 def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expected):
     device = "cuda"
     layer = _layer(device)
+    layer.eval()
+    cache = _prime(layer, device) if carried else rola.state()
     layer.train(training)
-    if carried:
-        was_training = layer.training
-        layer.eval()
-        cache = _prime(layer, device)
-        layer.train(was_training)
-    else:
-        cache = rola.state()
     before = layer.execution_backend_counts
 
-    if expected == 'raises':
-        with pytest.raises(RuntimeError, match="inference-only"):
+    if expected.startswith("refuses"):
+        error, match = _REFUSALS[expected]
+        with pytest.raises(error, match=match):
             _step(layer, cache, device, L=L, requires_grad=requires_grad,
                   grad_enabled=grad_enabled)
         assert layer.execution_backend_counts == before, (
-            "the refusal must happen BEFORE dispatch; a counter that moved means some "
-            "backend ran and then the call unwound")
+            "the refusal must happen BEFORE a kernel runs; a counter that moved means "
+            "some backend ran and then the call unwound")
         return
 
-    x, out = _step(layer, cache, device, L=L, requires_grad=requires_grad,
-                   grad_enabled=grad_enabled)
+    _step(layer, cache, device, L=L, requires_grad=requires_grad,
+          grad_enabled=grad_enabled)
     after = layer.execution_backend_counts
     moved = {k for k in after if after[k] != before[k]}
     assert moved == {expected}, f"expected the {expected!r} backend, counters moved {moved}"
 
-    # THE AUTOGRAD HALF: wherever the graph must survive, it must actually survive.
-    if grad_enabled and requires_grad:
-        out.sum().backward()
-        assert x.grad is not None, (
-            "the graph was severed at this layer: a grad-requiring forward returned a "
-            "tensor with no usable grad_fn. This is the fab325ae failure class.")
-
 
 @pytest.mark.cuda
 @_CUDA
-def test_a_cpu_decode_shaped_call_takes_the_oracle():
-    """Device dispatch, not degradation: there is no CPU lowering to decline."""
+def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
+    """There is no CPU lowering to decline, so a CPU sequence cannot even be primed."""
     layer = _layer("cpu")
     layer.eval()
-    with torch.no_grad():
-        cache = _prime(layer, "cpu")
-        before = layer.execution_backend_counts
-        _step(layer, cache, "cpu", L=1, grad_enabled=False)
-    after = layer.execution_backend_counts
-    assert after['oracle'] == before['oracle'] + 1
-    assert after['decode'] == before['decode']
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+        _prime(layer, "cpu")
 
 
 @pytest.mark.cuda
@@ -208,54 +197,49 @@ def test_a_dense_pinned_layer_still_reaches_decode():
     with torch.no_grad():
         cache = _prime(layer, device)
         before = layer.execution_backend_counts
-        _step(layer, cache, device, L=1, grad_enabled=False)
+        _step(layer, cache, device, L=1, grad_enabled=False)  # noqa: E501
     after = layer.execution_backend_counts
     assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
     assert after['cuda'] == before['cuda']
 
 
 # ---------------------------------------------------------------------------
-# H9 (coverage-closure): the four CUDA rows of the table, swept over the decay
-# axis the layer default never leaves. `normalization` is no longer a second axis
-# here -- `"raw"` is a dead axis (`rola.routing.types.validate_normalization`
-# accepts only `"global"`, P26) -- so this collapses from a (norm, decay) cross to
-# decay alone. The dispatch predicate does not read decay, so a mis-routed cell
-# here means the PREDICATE grew an accidental coupling -- and the decode/tiled
-# kernels both branch on decay internally, so 'the row runs' is asserted through
-# the counter exactly as the base table does. 4 rows x 1 non-default combo
-# (decay="leaf_mass"; decay="none" is the base table's own default combo).
+# H9 (coverage-closure): the table's rows swept over the decay axis the layer
+# default never leaves. THE TWO ENVELOPES SEPARATE HERE: decode implements decay
+# (at one token the rule-1 half-mass shift is the identity, so it forms one
+# exponential and has no admissibility precondition), while the chunk arm does not
+# and refuses by name. A row that moved the wrong way would mean one arm's envelope
+# had been asked the other's question.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.cuda
 @_CUDA
-@pytest.mark.parametrize("decay", ["leaf_mass"])
-@pytest.mark.parametrize("L,carried,expected", [
-    #: decay retired from the operator: a decay-configured layer routes EVERY
-    #: row to the oracle (dispatch, not degradation) -- see
-    #: docs/internals/chunk/chunk.md and the decay-routing layer test.
-    (1, True, 'oracle'),
-    (1, False, 'oracle'),
-    (2, True, 'oracle'),
-    (16, True, 'oracle'),
-])
-def test_the_cuda_rows_dispatch_identically_across_decay(
-        decay, L, carried, expected):
+def test_a_decay_step_runs_on_decode_which_has_the_arm():
+    """The state is primed by a NON-decay layer of the same shape, because a decay
+    prefill has no arm to run on: the state carries a sequence, not a configuration."""
     device = "cuda"
-    layer = _layer(device, decay=decay)
-    layer.eval()
-    if carried:
-        cache = _prime(layer, device)
-    else:
-        cache = rola.state()
+    plain = _layer(device).eval()
+    cache = _prime(plain, device)
+    layer = _layer(device, decay="leaf_mass").eval()
     before = layer.execution_backend_counts
-    _step(layer, cache, device, L=L, grad_enabled=False)
+    _step(layer, cache, device, L=1, grad_enabled=False)
     after = layer.execution_backend_counts
-    moved = {k for k in after if after[k] != before[k]}
-    assert moved == {expected}, (
-        f"(decay={decay}): expected the {expected!r} backend, "
-        f"counters moved {moved} -- the dispatch predicate has grown a coupling "
-        f"to an axis it must not read")
+    assert {k for k in after if after[k] != before[k]} == {"decode"}
+
+
+@pytest.mark.cuda
+@_CUDA
+@pytest.mark.parametrize("L,carried", [(1, False), (2, True), (16, True)])
+def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
+    device = "cuda"
+    plain = _layer(device).eval()
+    cache = _prime(plain, device) if carried else rola.state()
+    layer = _layer(device, decay="leaf_mass").eval()
+    before = layer.execution_backend_counts
+    with pytest.raises(NotImplementedError, match="decay"):
+        _step(layer, cache, device, L=L, grad_enabled=False)
+    assert layer.execution_backend_counts == before
 
 
 # ---------------------------------------------------------------------------

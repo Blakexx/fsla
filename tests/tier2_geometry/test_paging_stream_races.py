@@ -106,7 +106,7 @@ def _run(routes, v, *, paging: bool):
     """One `rola_op` call carrying a state, at the requested backing."""
     st = rola.state()
     with torch.no_grad():
-        _y, st = rola.rola_op(routes, v, state=st, _arm="kernel",
+        _y, st = rola.rola_op(routes, v, state=st,
                               expert=PlanOverrides() if paging
                               else PlanOverrides(paging=False))
     return st

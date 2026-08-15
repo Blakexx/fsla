@@ -275,50 +275,42 @@ def test_the_decode_split_is_performance_only_under_drift():
 # 4. Dispatch-boundary crossings, one test, forward AND backward
 # ---------------------------------------------------------------------------
 
-def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
-    """oracle (train, bwd) -> kernel prefill (eval) -> decode step (eval) ->
-    oracle again (train, bwd), in ONE test — the layer-dispatch autograd-gap
-    lesson says the seams between modes are where op-level suites go blind.
-    Every grad-requiring leg asserts ``x.grad is not None`` (the fab325ae
-    failure class); every eval leg asserts the counter of the arm it claims;
-    and the decode leg's output is cross-checked against one prefill of the whole
-    sequence, which is the layer-level statement of the seam.
+def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
+    """kernel prefill (eval) -> decode step (eval) -> the seam against an oracle the
+    test CALLS -> the refusals at both ends, in ONE test. The layer-dispatch
+    autograd-gap lesson says the seams between modes are where op-level suites go
+    blind, and the fast-fail turned two of those seams into refusals rather than
+    arms; both kinds are walked here.
 
     The topology and ``T`` are the BUILT chunk arm's: uniform widths and a multiple
-    of the chunk. A cell outside the built matrix dispatches to the oracle (the
-    unsupported-topology retirement), which would leave this walk no boundary to
-    cross — the same reason decay is not configured on this layer."""
+    of the chunk."""
     from conftest import build_layer
+    from einops import rearrange
 
     import rola
+    from rola.interface import BackwardNotImplemented
+    from rola.ops.naive import naive_rola
+    from tests.tier1_semantics.tolerances import BF16_RTOL
 
     device = "cuda"
     torch.manual_seed(9300)
-    #: decay dropped from THIS layer (the decay retirement): a decay-configured layer
-    #: routes every arm to the oracle, which would leave this walk no
-    #: boundary to cross -- the decay routing has its own test below.
     layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(16, 16),
                         normalization="global", decay=None,
                         layer_idx=0).to(device, torch.float32)
     T = 32
 
-    # LEG 1 — training: the oracle arm, forward AND backward.
+    # LEG 1 — training: refused, and nothing ran.
     layer.train()
     x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
     before = dict(layer.execution_backend_counts)
-    out1, _ = layer(x1)
-    out1.sum().backward()
-    after = dict(layer.execution_backend_counts)
-    assert after["oracle"] == before["oracle"] + 1
-    assert x1.grad is not None, "the training leg severed the graph (fab325ae class)"
-    grads = [p.grad for p in layer.parameters() if p.requires_grad]
-    assert any(g_ is not None for g_ in grads), "no parameter received a gradient"
+    with pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
+        layer(x1)
+    assert dict(layer.execution_backend_counts) == before
 
     # LEG 2 — eval prefill: the chunk CUDA arm, carried state out.
     layer.eval()
     x_seq = torch.randn(1, T + 1, 128, device=device)
     carried = rola.state()
-    before = dict(layer.execution_backend_counts)
     with torch.no_grad():
         layer(x_seq[:, :T], state=carried)
     after = dict(layer.execution_backend_counts)
@@ -331,35 +323,33 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     after = dict(layer.execution_backend_counts)
     assert after["decode"] == before["decode"] + 1, "the step did not take the decode arm"
 
-    # The seam, stated at layer level: one prefill of ALL T + 1 tokens must agree
-    # with prefill-T-then-decode-1 on the last token. `T + 1` is not a multiple of
-    # the chunk, so that whole-sequence leg runs on the oracle — which makes it an
-    # INDEPENDENT reference for the seam rather than the same arm twice. The band is
-    # the bf16 family's, since the two legs under test are the bf16 production arms.
-    from tests.tier1_semantics.tolerances import BF16_RTOL
-
+    # THE SEAM, stated at layer level: one whole-sequence run over all T + 1 tokens
+    # must agree with prefill-T-then-decode-1 on the last token. The whole-sequence
+    # leg is the fp64 ORACLE, called directly -- an independent reference rather than
+    # the same arm twice. The band is the bf16 family's.
     with torch.no_grad():
-        y_full, _ = layer(x_seq)
+        v_full = rearrange(layer.v_proj(x_seq), "b l (h d) -> b l h d", d=64)
+        routes_full = layer.routes(x_seq)
+        y_oracle, _ = naive_rola(
+            v_full, routes_full.read, routes_full.write, routes_full.g_read,
+            routes_full.g_write, layer.topology, None, "global")
+        y_full = layer.o_proj(y_oracle.to(x_seq.dtype).reshape(1, T + 1, -1))
     rel = g.relative(y_dec[:, 0], y_full[:, T])
     assert rel < BF16_RTOL, (
         f"the layer-level prefill/decode seam moved the last token by {rel:.3e}")
 
-    # LEG 4 — back to training on a fresh sequence: the graph must be alive
-    # again (a carried state under grad correctly RAISES and is gated in
-    # tests/layers/test_decode_dispatch.py, so this leg starts clean).
-    layer.train()
-    layer.zero_grad(set_to_none=True)
+    # LEG 4 — a grad-bearing eval step on a fresh sequence: also refused, and by the
+    # gradient clause rather than the training one.
     x4 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    out4, _ = layer(x4)
-    out4.sum().backward()
-    assert x4.grad is not None, "returning to training after decode severed the graph"
+    with pytest.raises(BackwardNotImplemented, match="native backward"):
+        layer(x4)
 
 
-def test_a_decay_configured_layer_routes_every_arm_to_the_oracle():
-    """The decay retirement: decay is not implemented in the kernel arm.  A layer
-    CONFIGURED with decay dispatches to the oracle at eval exactly as an
-    unratified activation would -- counted, not silently degraded -- and the
-    direct consumer entries keep the loud refusal."""
+def test_a_decay_configured_layer_refuses_every_prefill_arm():
+    """The decay retirement, under the fast-fail: decay is not implemented in the
+    kernel arm and there is nothing to route to, so a decay-configured layer refuses
+    by naming decay. (Decode has the arm, and its row lives in
+    tests/layers/test_decode_dispatch.py.)"""
     from conftest import build_layer
 
     device = "cuda"
@@ -369,8 +359,7 @@ def test_a_decay_configured_layer_routes_every_arm_to_the_oracle():
                         layer_idx=0).to(device, torch.float32).eval()
     x = torch.randn(2, 8, 128, device=device)
     before = dict(layer.execution_backend_counts)
-    with torch.no_grad():
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="decay"):
         layer(x)
-    after = dict(layer.execution_backend_counts)
-    assert after["oracle"] == before["oracle"] + 1
-    assert after["cuda"] == before["cuda"]
+    assert dict(layer.execution_backend_counts) == before
+

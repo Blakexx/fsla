@@ -3,8 +3,8 @@
 `benchmark_rola_v3_consumer.py` benchmarks the consumer KERNEL and says in its own
 output that it cannot be divided against `20260728-stage0/baseline.md`'s V2 numbers,
 because those are a whole-layer forward and this was not: "a matched whole-layer V3
-number requires the consumer wired into the layer." The consumer is now wired
-(`RoLA.select_execution_backend`), so this script is that number.
+number requires the consumer wired into the layer." The consumer is now wired, so this
+script is that number.
 
 **What is measured.** One `RoLA.forward` under `torch.no_grad()` on CUDA, which is
 the context in which the layer reaches the kernel arm -- projections, producer,
@@ -217,11 +217,11 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
 
             # One untimed call to (a) fault in the template instantiation this cell
             # needs and (b) publish `last_execution_backend`, which is the assertion
-            # that this row measures the CUDA path and not the oracle.
+            # that this row measures the prefill kernel and not the decode one.
             whole_layer()
             assert layer.last_execution_backend == "cuda", (
                 f"cell decay={decay_on} norm={norm} did not take the CUDA backend; it took "
-                f"{layer.last_execution_backend!r}, so this row would be an oracle timing")
+                f"{layer.last_execution_backend!r}, so this row measures the wrong kernel")
 
             # Plane decomposition, on the identical inputs the whole-layer call uses.
             v = layer.v_proj(x)

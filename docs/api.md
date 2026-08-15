@@ -37,58 +37,59 @@ rola_op(routes: RouteFactors, v: Tensor, decay: LeafMassDecay | None = None, *,
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `v` is `[B, T, H, d_v]`. `decay` is
-the recurrence dial; a decay-configured call runs on the fp64 reference arm — decay is
-not a feature of the CUDA consumer (the measured mass-clock price fired the stop-gate;
-docs/internals/chunk/chunk.md records the retirement and its reopen conditions). `y` is `[B, T, H, d_v]`.
+the recurrence dial. `y` is `[B, T, H, d_v]`.
 
 `state` is `None` (a stateless call, returning `(y, None)`) or a `rola.state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
 is no second flag, because a stateless call runs a kernel variant with no state I/O
 compiled into it at all. Read the carried state with
-`state.materialize() -> [B, H, N, d_v + (norm == 'global')]`, where `N = prod(widths)` is
-the leaf capacity; that is a bridge for the oracle and for a test, never a measured
-path. See [`docs/internals/state.md`](internals/state.md).
+`state.materialize() -> [B, H, N, d_v + 1]`, where `N = prod(widths)` is the leaf
+capacity; that is a bridge for the oracle and for a test, never a measured path. See
+[`docs/internals/state.md`](internals/state.md).
 
 There is no plan argument, no configuration argument, and no statistics argument. Those
 are not model facts — they are how the op RUNS, and the op decides how it runs, per
 call, from the routing it was actually given. They live behind
 [`rola.expert`](#6-the-expert-surface).
 
-### 1.1 The kernel envelope
+### 1.1 The built envelope IS the surface
 
-The kernel arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. A
-configuration outside it dispatches to the fp64 reference arm — a labelled research
-surface, not a fallback: nothing failed, the kernel was never asked, and
-`rola.expert.dispatch_for(routes, v, *operands).no_kernel_arm` names the clause that
-refused, before the call and in the refusal's own words.
+The arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. **Everything
+outside it raises.** There is no second arm behind this surface: the fp64 oracle
+(`rola.ops.naive.naive_rola`) is the executable spec — what tests and ratification
+call directly — and it is not reachable by dispatch, because a dispatch to it at
+inference is a silent ~1000x-slower route shipping unnoticed, which is the exact thing
+the no-fallback rule forbids.
 
 | axis | the built matrix | outside it |
 |---|---|---|
-| `d_v` | `64` | reference arm |
-| `normalization` | `"global"` | reference arm (`raw`, per-state) |
-| widths | uniform (`len(set(widths)) == 1`) | reference arm (a jagged topology) |
-| `(D, B)` | the manifest's combinations (`rola.ops.chunk`'s `chunk_arms()`) | reference arm |
-| `T` | a multiple of the chunk `C = 32` | reference arm |
-| `decay` | not implemented at all | reference arm |
-| an unratified activation | — | reference arm |
+| a gradient anywhere in the operands | none | `BackwardNotImplemented` |
+| the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
+| device | CUDA | refused |
+| `d_v` | `64` | refused |
+| `normalization` | `"global"` | refused |
+| widths | uniform (`len(set(widths)) == 1`) | refused (a jagged topology) |
+| `(D, B)` | the manifest's combinations (`rola.ops.chunk`'s `chunk_arms()`) | refused |
+| `T` | a multiple of the chunk `C = 32` | refused |
+| `decay` | not implemented in the chunk arm (decode has it) | refused |
+| an unratified activation | — | refused |
+
+Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the
+sentence the refusal will carry, or `None`. `rola.expert.require_envelope(...)` is the
+raising form the op itself uses.
 
 **This is a real capability narrowing, and it is stated rather than softened.** Shapes
 outside the matrix — including the flagship `widths = (8, 16)`, which is refused for
-being non-uniform — had a kernel before the tiled consumer's retirement and now have
-the reference arm's throughput, which is the textbook recurrence in fp64 and orders of
-magnitude slower. The card that widens the matrix is in
+being non-uniform — had a kernel before the tiled consumer's retirement, and there is
+NO TRAINING PATH through this surface at all until the native backward lands. The cards
+that widen the matrix and bring the backward are in
 [`docs/open-work.md`](open-work.md).
 
-A caller who overrules the dispatch gets a refusal rather than the oracle:
-`rola_op(..., _arm="kernel")` on a configuration with no built arm raises by name.
-Dispatch is not a lie; an override is.
-
-`rola_op` is the **single autograd boundary**. A call that wants a gradient runs the
-whole operation on the differentiable reference, forward and backward from one graph; a
-call that does not reaches the CUDA consumer. It is one decision in one place because
-the failure it prevents — a forward-only kernel reached from a gradient context returns
-a tensor with no `grad_fn` and severs the graph silently — is structural, not a bug in
-any one call site.
+`rola_op` is the **single autograd boundary**, and it is a refusal rather than a
+branch: the failure it prevents — a forward-only kernel reached from a gradient
+context returns a tensor with no `grad_fn` and severs the graph silently — is
+structural, not a bug in any one call site. `ChunkConsumer`'s backward is the last
+line, loud if the first is ever bypassed.
 
 ## 2. The feature map
 
@@ -233,9 +234,9 @@ of freedom the product structure lets the recurrence actually distinguish.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast and
 the realized routing shows it, through exactly the same door a learned source uses.
-Nothing about it is a special case. (Today every decay-configured call runs on the
-reference arm — §1.1 — so the lever is a modelling one until the kernel-side decay
-retirement is reopened.)
+Nothing about it is a special case. (Today the chunk arm has no decay and refuses it
+— §1.1 — so the lever reaches production only through the decode arm, which does have
+it, until the kernel-side decay retirement is reopened.)
 
 The decay is **write-conditioned** (mass decay), never time decay. A leaf whose write
 amplitude is exactly zero ticks its clock by zero, so `keep = (1 - rate) ** 0 = 1`
@@ -277,15 +278,15 @@ the pins over axes the op otherwise decides, and the fine-grained gain layout be
 the layer's one public flag:
 
 ```python
-from rola.expert import PlanOverrides, dispatch_for
+from rola.expert import PlanOverrides, envelope_refusal
 layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
 ```
 
 | name | what it is |
 |---|---|
 | `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
-| `Dispatch` / `dispatch_for(routes, v, *operands)` | how a call WILL run, asked before making it — including `no_kernel_arm`, the refusing clause. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
-| `select_backend`, `requires_backward` | the two predicates the dispatch is built from |
+| `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | whether a call has an arm, asked before making it — the refusing clause in its own words, or `None`. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
+| `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 
 The contract for everything there is **stable construction, advisory contents**:
@@ -311,7 +312,7 @@ now a property of the built arm rather than of a per-launch derivation, so there
 no launch-shaping object for a caller to hold, synthesize or staleness-test. What
 replaces the adversarial use they enabled: a conformance family drives
 `rola.ops.chunk` directly and declares the refusal clause it expects, and
-`dispatch_for` answers the same question a synthetic plan used to be built to probe.
+`envelope_refusal` answers the same question a synthetic plan used to be built to probe.
 
 ## 6. What is deliberately not here
 

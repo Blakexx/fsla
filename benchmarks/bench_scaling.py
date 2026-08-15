@@ -292,8 +292,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "logit_gain": logit_gain,
            #: TWO DEAD AXES RETIRED (P67 S5). `normalization='raw'` is refused outright
            #: by `validate_normalization` -- the mass column is unconditional -- and a
-           #: decay-configured layer dispatches every arm to the fp64 oracle, which the
-           #: `last_execution_backend` assert below would then fail. Both raised on their
+           #: decay-configured layer is refused by the chunk arm. Both raised on their
            #: first cell. The columns stay in the row, as the CONSTANTS they are, so a
            #: reader of an old JSON beside a new one is comparing the same arm.
            "norm": "global", "decay": "None",
@@ -323,7 +322,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         whole_layer()
         assert layer.last_execution_backend == "cuda", (
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
-            "would be an oracle timing")
+            "measures the wrong kernel")
         # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
         # engages only on a call that carries a state. The TIMED call above stays
         # stateless -- that is the row this benchmark reports -- and residency is read
@@ -401,9 +400,8 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         row.update({"oom": True, "oom_stage": "forward-or-planes", "error": str(exc)[:200]})
     except RuntimeError as exc:
         # A LAUNCHABILITY CEILING, not a crash and not an OOM. The consumer rejects
-        # an unrealizable configuration loudly rather than degrading to the oracle
-        # (`wiring.md` §1.2 item 2 -- launchability is deliberately NOT a dispatch
-        # condition), so at some `L` the sweep hits a hard kernel bound. That bound
+        # an unrealizable configuration loudly, so at some `L` the sweep hits a hard
+        # kernel bound. That bound
         # is exactly the arm's max-`L`, so it is RECORDED as a row with its message
         # verbatim and the sweep continues at the next arm.
         row.update({"oom": False, "unsupported": True, "error": str(exc)[:400]})

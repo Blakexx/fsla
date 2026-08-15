@@ -2,21 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op stack (`rola/interface.py`) and the O-3 name contract.
 
-Two things are gated here. The first is the DISPATCH -- which arm `rola_op` takes,
-made explicit and asserted from both sides, because the layer-dispatch autograd gap
-is a failure that produces no exception and no wrong number, only a `grad_fn` that
-quietly is not there. The second is the NAME contract: no public spelling says `v3`.
+Two things are gated here. The first is THE ENVELOPE -- what `rola_op` runs and what
+it refuses -- because the layer-dispatch autograd gap is a failure that produces no
+exception and no wrong number, only a `grad_fn` that quietly is not there, and the
+answer to it is a refusal rather than a second arm. The second is the NAME contract:
+no public spelling says `v3`.
 
 The CUDA arm's own numerics are gated in `tests/tier1_semantics/`; nothing here
 re-measures them.
-
-**MIGRATED (API-contract break, 2026-08-05).** `rola_func(v, read, write, g_read,
-g_write, plan, ...)` and the separate inference entrypoint `rola_forward(...)` are
-both gone, replaced by the ONE op `rola_op(routes: RouteFactors, v, decay=None, *,
-...)`. There is no more `plan` argument (the op derives its own) and no more
-`_StubPlan` -- the reference arm reads a `RouteFactors` bundle's own `.topology`/
-`.normalization`, so the dispatch fixture below builds a real bundle through
-`RouteProducer` instead of five loose tensors plus a plan stand-in.
 """
 
 from __future__ import annotations
@@ -32,6 +25,9 @@ import rola
 from rola.interface import (
     BackwardNotImplemented,
     ChunkConsumer,
+    envelope_refusal,
+    operands_of,
+    require_envelope,
     requires_backward,
 )
 
@@ -62,9 +58,9 @@ def test_the_layer_and_the_op_ask_the_same_question():
     """One predicate, or the two surfaces drift into two slightly different answers.
     Asserted structurally -- the layer imports it -- not by comparing behaviours."""
     import rola.layers.rola as layer_module
-    from rola.interface import select_backend
 
-    assert layer_module.select_backend is select_backend
+    assert layer_module.requires_backward is requires_backward
+    assert layer_module.operands_of is operands_of
 
 
 # --- the tripwire ------------------------------------------------------------
@@ -77,12 +73,10 @@ def test_the_layer_and_the_op_ask_the_same_question():
 
 
 def test_the_chunk_node_refuses_a_gradient_by_name_instead_of_severing_the_graph():
-    """`ChunkConsumer` carries `RoLAConsumer`'s claim for the arm that replaced it.
-
-    `rola.ops.chunk.run` is a bare extension call, so an arm that reached it from a
+    """`rola.ops.chunk.run` is a bare extension call, so an arm that reached it from a
     gradient-requiring context would hand back a tensor with no `grad_fn` and no
-    error. The dispatch is what prevents that; this node is what makes a bypassed
-    dispatch loud."""
+    error. `require_envelope` is what prevents that; this node is what makes a
+    bypassed refusal loud."""
     with pytest.raises(BackwardNotImplemented, match="forward-only"):
         ChunkConsumer.backward(None, None)
 
@@ -124,26 +118,24 @@ def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
 def test_the_kernel_arm_never_returns_a_grad_fn_less_tensor_from_a_grad_context():
     """The claim in the form the layer-dispatch autograd gap states it.
 
-    Inside a grad-enabled context with grad-requiring operands, a call must either
-    reach the reference arm (the facade's decision) or raise (the node's). What it
-    must NOT do is return a good-looking tensor whose graph is gone."""
+    Inside a grad-enabled context with grad-requiring operands, a call must RAISE.
+    What it must NOT do is return a good-looking tensor whose graph is gone."""
     v, routes = _tiny_routing(requires_grad=True, device="cuda")
-    y, _ = rola.rola_op(routes, v)
-    assert y.grad_fn is not None, "the graph was severed at the op boundary"
-    y.sum().backward()
-    assert v.grad is not None and torch.isfinite(v.grad).all()
+    with pytest.raises(BackwardNotImplemented, match="native backward"):
+        rola.rola_op(routes, v)
 
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
-    """The last line, exercised: `_arm="kernel"` is a caller overruling the dispatch.
+def test_the_node_is_what_makes_a_bypassed_refusal_loud_rather_than_silent():
+    """The last line, exercised: `ChunkConsumer.run` is the op's refusal BYPASSED.
 
-    The kernel then runs on grad-requiring operands -- which is exactly the case the
-    dispatch exists to prevent -- and the node is the whole of what stands between a
-    severed graph and an error. `grad_fn` present is the node having attached; the
-    named raise is it refusing. Without the wrapper both assertions read the other
-    way round: no `grad_fn`, no error, and `v.grad is None` several files away."""
+    The kernel then runs on grad-requiring operands -- exactly the case
+    `require_envelope` exists to prevent -- and the node is the whole of what stands
+    between a severed graph and an error. `grad_fn` present is the node having
+    attached; the named raise is it refusing. Without the wrapper both assertions read
+    the other way round: no `grad_fn`, no error, and `v.grad is None` several files
+    away."""
     torch.manual_seed(5)
     B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 32, (8, 8)
     gateway = build_routes(
@@ -155,7 +147,7 @@ def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
     from rola.ops import chunk as _chunk
 
     assert _chunk.unsupported(routes, None, d_v=v.shape[-1]) is None, "fixture must be a BUILT arm"
-    y, _ = rola.rola_op(routes, v, _arm="kernel")
+    y, _ = ChunkConsumer.run(routes, v)
     assert y.grad_fn is not None, (
         "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "
         "graph is severed and nothing said so")
@@ -163,7 +155,7 @@ def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
         y.sum().backward()
 
 
-# --- the dispatch, end to end ------------------------------------------------
+# --- the envelope, end to end ------------------------------------------------
 
 def _dense_routing():
     from rola.routing.types import IndependentRouting
@@ -195,16 +187,14 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     return v, routes
 
 
-def test_a_grad_requiring_call_lands_on_the_reference_arm_with_a_live_graph():
-    """The whole point. The op must come back differentiable, from ONE
-    implementation -- not a kernel value with an oracle gradient bolted on."""
+def test_a_grad_requiring_call_is_refused_and_says_where_the_backward_comes_from():
+    """The whole point. There is no differentiable arm behind this surface, so the
+    call that wants one is told which milestone brings it rather than being handed a
+    ~1000x-slower oracle nobody asked for."""
     v, routes = _tiny_routing(requires_grad=True)
     assert requires_backward(v, *routes.tensors()) is True
-    y, final = rola.rola_op(routes, v)
-    assert y.grad_fn is not None, "the graph was severed at the op boundary"
-    assert final is None
-    y.sum().backward()
-    assert v.grad is not None and torch.isfinite(v.grad).all()
+    with pytest.raises(BackwardNotImplemented, match="native backward"):
+        rola.rola_op(routes, v)
 
 
 def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
@@ -223,59 +213,56 @@ def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
         rola.rola_op(routes, v, paging=object())
 
 
-def test_an_explicit_no_grad_context_around_rola_op_builds_no_graph():
+def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     """OLD: `rola_forward` was a separate entrypoint that established its own
     no-grad context internally, so an inference caller could not be wrong about
     it by forgetting to wrap the call. `rola_op` merges the two entrypoints into
     one: there is no separate inference spelling any more, and the caller's own
     `torch.no_grad()` is what an inference site now uses -- exactly as any other
-    PyTorch op. This pins the surviving half of the old claim: wrapped in
-    `torch.no_grad()`, `rola_op` produces no graph even though every input
-    requires grad.
+    PyTorch op. The surviving half of the old claim: wrapped in `torch.no_grad()`,
+    an every-input-requires-grad call is ADMITTED past the gradient clause, because
+    the predicate is gradient REACHABILITY and not the `requires_grad` flag.
     """
     v, routes = _tiny_routing(requires_grad=True)
     with torch.no_grad():
-        y, _ = rola.rola_op(routes, v)
-    assert y.grad_fn is None and not y.requires_grad
+        assert requires_backward(v, *routes.tensors()) is False
+        #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
+        assert "CUDA kernel" in envelope_refusal(routes, v)
 
 
-def test_turning_the_gradient_off_changes_the_arm_and_nothing_else():
-    """Same operands, grad off: no graph. Same operands, grad on: a graph. And the
-    two agree exactly, because on CPU both arms ARE the reference -- which is the
-    point of asserting it here: the dispatch decision is visible in the `grad_fn`
-    and invisible in the numbers."""
+def test_the_two_refusal_clauses_are_told_apart_by_which_one_speaks():
+    """Grad on: the backward clause. Grad off: whatever the CONFIGURATION says. Both
+    are refusals, and a caller must be able to tell which one it hit -- otherwise
+    "unsupported" is one undifferentiated wall."""
     v, routes = _tiny_routing(requires_grad=True)
+    with pytest.raises(BackwardNotImplemented, match="native backward"):
+        rola.rola_op(routes, v)
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+        rola.rola_op(routes, v)
+
+
+def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
+    """The arm is a CUDA kernel and there is no CPU implementation to reach."""
+    v, routes = _tiny_routing(requires_grad=False)
     with torch.no_grad():
-        y_off, _ = rola.rola_op(routes, v)
-    y_on, _ = rola.rola_op(routes, v)
-    assert y_off.grad_fn is None and y_on.grad_fn is not None
-    assert torch.allclose(y_off, y_on.detach())
-
-
-def test_select_backend_sends_cpu_operands_to_the_reference_arm():
-    """Condition 2 of the dispatch: the consumer is a CUDA kernel, so on CPU the
-    reference is the only implementation that exists FOR THAT DEVICE. A device
-    dispatch, not a degradation -- there is no CPU lowering being declined."""
-    from rola.interface import select_backend
-
-    cpu = torch.zeros(2)
-    with torch.no_grad():
-        assert select_backend(cpu) == "reference"
+        assert "CUDA kernel" in envelope_refusal(routes, v)
 
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_select_backend_sends_no_grad_cuda_operands_to_the_consumer_arm():
-    """The other side of the same decision, which a CPU-only run cannot see: with a
-    gradient off and the operands on the device, the dispatch must actually choose
-    the kernel. Asserting only the reference side would let the consumer arm rot."""
-    from rola.interface import select_backend
-
-    on_device = torch.zeros(2, device="cuda")
+def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
+    """The other side of the same decision, which a CPU-only run cannot see: with the
+    gradient off and the operands on the device, an in-matrix bundle must actually be
+    ADMITTED. Asserting only the refusals would let the arm rot behind them."""
+    torch.manual_seed(5)
+    gateway = build_routes(hidden_size=32, num_heads=1, widths=(8, 8),
+                           routing=_dense_routing()).to("cuda")
+    x = torch.randn(1, 32, 32, device="cuda")
+    v = torch.randn(1, 32, 1, 64, device="cuda")
     with torch.no_grad():
-        assert select_backend(on_device, (on_device,)) == "cuda"
-    leaf = torch.zeros(2, device="cuda", requires_grad=True)
-    assert select_backend(on_device, (leaf,)) == "reference"
+        routes = gateway(x)
+        assert envelope_refusal(routes, v) is None
+        require_envelope(routes, v)
 
 
 # --- the O-3 name contract ---------------------------------------------------

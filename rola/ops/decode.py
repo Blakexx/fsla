@@ -32,11 +32,9 @@ collapses to ``keep^c`` and the fold's ``s0 * (s0 M + W fw Vw)`` to
 and has no admissibility precondition to check. It therefore does not import one.
 
 **FORWARD ONLY, AND THE GUARD RAISES.** The decode kernels have no backward. The
-layer's ``select_execution_backend`` already excludes training mode, gradient
-reachability and non-CUDA devices before the decode fork is reached, so this module's
-own check is defense in depth for a direct caller — and it *raises* rather than
-silently redirecting to the oracle, because a silent redirect is the same class of
-failure (two implementations behind one call) that the guard exists to prevent.
+layer's ``validate_execution_envelope`` already refuses training mode and gradient
+reachability before the decode fork is reached, so this module's own check is defense
+in depth for a direct caller.
 
 **PAGED AND DENSE ARE ONE WALK.** §4.5's page granule is the ATOM
 (``page_states := MMA_K_QUANTUM`` = 16 leaves), which is what makes the paged address
@@ -276,11 +274,13 @@ def _guard_no_grad(operands) -> None:
     if not torch.is_grad_enabled():
         return
     if any(t is not None and torch.is_tensor(t) and t.requires_grad for t in operands):
-        raise RuntimeError(
-            "rola decode is forward-only and has no native backward; reaching it from a "
+        from rola.interface import BACKWARD_ARRIVES_WITH, BackwardNotImplemented
+
+        raise BackwardNotImplemented(
+            f"rola decode is forward-only: {BACKWARD_ARRIVES_WITH}. Reaching it from a "
             "grad-requiring context would return a tensor with no grad_fn and silently "
             "sever the graph (the x.grad-is-None failure class). Use eval mode / "
-            "torch.no_grad, or the differentiable oracle path.")
+            "torch.no_grad.")
 
 
 def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):

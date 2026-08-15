@@ -131,10 +131,9 @@ class Family:
         """The CLAUSE the kernel arm refuses this family on, or None if it runs it.
 
         One of `instantiation.REFUSAL_CLAUSES`. A family outside the built
-        chunk matrix still carries a live claim -- the refusal is named and the
-        dispatch routes the call to the fp64 oracle -- but it is not a
-        kernel-coverage cell, so the census join excludes it exactly as it
-        already excluded the decay families.
+        chunk matrix still carries a live claim -- the refusal is named, and the
+        family's semantics are held against the oracle the test CALLS -- but it is
+        not a kernel-coverage cell, so the census join excludes it.
         """
         return kernel_refusal(self.config)
 

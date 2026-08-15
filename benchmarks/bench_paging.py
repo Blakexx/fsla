@@ -113,10 +113,9 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     x = torch.randn(B, L, hidden, device="cuda")
 
     def step(module, carried):
-        # `torch.no_grad()` is load-bearing, not hygiene: a grad-enabled forward
-        # dispatches to the fp64 oracle, which would be an oracle timing AND would
-        # take the state's dense bridge. This measures the inference path, which is
-        # the path paging exists on.
+        # `torch.no_grad()` is load-bearing, not hygiene: a grad-enabled forward is
+        # REFUSED. This measures the inference path, which is the path paging exists
+        # on and the only one there is.
         def run():
             with torch.no_grad():
                 module(x, state=carried)
@@ -126,10 +125,9 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     step(layer, paged_state)()
     assert layer.last_execution_backend == "cuda", (
         f"the paged cell took the {layer.last_execution_backend!r} backend, so this row "
-        "would be an oracle timing")
+        "measures the wrong kernel")
     assert paged_state.paged, (
-        "this topology has no built chunk arm, so its state fell to the legacy tiled "
-        "consumer and is dense-backed; there is no paged cell to measure here")
+        "the state is dense-backed; there is no paged cell to measure here")
     stats = paged_state._arena.last_result
 
     # The paging plane ALONE: `prepare -> publish -> admit mask` against the exact
@@ -226,10 +224,8 @@ def main() -> None:
 
     branches = [int(s) for s in args.branches.split(",")]
     #: TWO DEAD ARMS RETIRED, both older than this benchmark's repoint and both of
-    #: which raised on their first cell: `normalization="raw"` is refused outright
-    #: (`validate_normalization`), and a decay-configured layer dispatches every arm
-    #: to the fp64 oracle (the decay retirement), which the cell below asserts against
-    #: precisely so it cannot be reported as a kernel timing.
+    #: which raised on their first cell: `normalization="raw"` and a decay-configured
+    #: layer, which the chunk arm refuses (the decay retirement).
     rows = [measure_residency(
         B=args.batch, L=args.seq_len, H=args.heads, d_v=args.head_v_dim,
         branches=branches, router=args.router, logit_gain=args.logit_gain,

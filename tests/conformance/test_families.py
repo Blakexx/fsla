@@ -9,20 +9,19 @@ numeric arm. The tolerances are IMPORTED from the tier-1 gate, never restated:
 no family widens a number.
 
 A family OUTSIDE the built chunk matrix has no kernel comparison to make, and
-its contract is the REFUSAL: `rola.ops.chunk` names the refusing clause, and the
-dispatch routes such a call to the fp64 oracle (`docs/api.md`, "The kernel
-envelope"). That is asserted here BY NAME rather than by catching any exception,
-so a family that started being refused for a different reason than it declares
-fails instead of passing quietly. The FACADE half of the same contract -- that
-`_arm="kernel"` overrules the dispatch and is refused loudly -- is gated where a
-real `RouteFactors` exists to pass it (`tests/layers/test_layer_dispatch.py`,
-`tests/unit/test_interface.py`); a hand-built fixture cannot reach `rola_op`,
-which refuses any bundle the gateway did not derive. The family's regime cell is still proven
-either way -- non-vacuity is a fact about the FIXTURE, and it is what the census
-join is built on.
+its contract is the REFUSAL: `rola.ops.chunk` names the refusing clause, and
+`rola_op` raises it (`docs/api.md` §1). That is asserted here BY NAME rather than
+by catching any exception, so a family that started being refused for a different
+reason than it declares fails instead of passing quietly. The FACADE half -- the
+refusal reaching a caller -- is gated where a real `RouteFactors` exists to pass
+(`tests/layers/test_layer_dispatch.py`, `tests/unit/test_interface.py`); a
+hand-built fixture cannot reach `rola_op`, which refuses any bundle the gateway
+did not derive. The family's regime cell is proven either way -- non-vacuity is a
+fact about the FIXTURE, and it is what the census join is built on.
 
-The producer-source families run in ``test_producer_families.py`` (they drive
-the real gateway and both arms of ``rola_op``).
+The oracle is CALLED here, never dispatched to. The producer-source families run
+in ``test_producer_families.py`` (they drive the real gateway and the kernel arm
+against the oracle).
 """
 from __future__ import annotations
 

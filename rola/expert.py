@@ -3,18 +3,16 @@
 """The advanced surface. Nothing here is part of the contract.
 
 The public surface is the reduction theorem: linear attention, plus the one slot that
-makes it RoLA. Everything in this module is BELOW that line -- the dispatch's own
+makes it RoLA. Everything in this module is BELOW that line -- the envelope's own
 answer, the pins over axes the op otherwise decides, the fine-grained gain layout
 behind the layer's one public flag. They are exported because a serious consumer
-legitimately needs them (a gate that must ask for the exact numeric arm, a deployment
-that must pin the state's backing) and reaching past a package into its privates is
-worse than a marked door.
+legitimately needs them (a caller that must ask whether a configuration has an arm
+before building it, a deployment that must pin the state's backing) and reaching past
+a package into its privates is worse than a marked door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
-these objects and pass them; do not assert on their fields. What a :class:`Dispatch`
-reports is the answer to "how will this call run", and that answer moves with the
-machine and with the built matrix. The model facts it carries are the exception and
-are stable, because they are not decisions.
+these objects and pass them; do not assert on their fields. What
+:func:`~rola.interface.envelope_refusal` reports moves with the built matrix.
 
 Importing this module is a statement that you accept that. The op never requires it.
 """
@@ -24,16 +22,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rola.interface import Dispatch, dispatch_for, requires_backward, select_backend
+from rola.interface import envelope_refusal, require_envelope, requires_backward
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
-    "Dispatch",
     "GainConfig",
     "PlanOverrides",
-    "dispatch_for",
+    "envelope_refusal",
+    "require_envelope",
     "requires_backward",
-    "select_backend",
 ]
 
 
