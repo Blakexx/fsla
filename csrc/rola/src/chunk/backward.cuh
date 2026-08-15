@@ -19,7 +19,7 @@ namespace rola::chunk {
 struct ScanBParams {
   const __nv_bfloat16 *pr, *pw, *gw, *v, *dnum, *dden;
   const uint32_t* tbl;
-  float *dv, *dgw;
+  float *dv, *dwsum;
   int BH, L;
   int v_row_bytes;
 };
@@ -396,7 +396,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
-    const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dgw, int L,
+    const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum, int L,
     int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
   using G = GeomB<C, BC>;
@@ -476,7 +476,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const __nv_bfloat16* const dnumPlane = pin_address(dnum + base);
   const __nv_bfloat16* const ddenPlane = pin_address(dden + (long)blockIdx.y * L);
   float* const dvPlane = pin_address(dv + base);
-  float* const dgwPlane = pin_address(dgw + (long)blockIdx.y * L);
+  float* const dwsPlane = pin_address(dwsum + (long)blockIdx.y * L);
   const __nv_bfloat16* const pRead = pin_address(pread + pbase);
   const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
   const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
@@ -651,14 +651,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   //: THE UNITS' PARTIAL CONTRACTIONS MEET HERE, which is the same shape the
   //: forward's denominator drain has and for the same reason: the contraction's
   //: k axis is the carve's axis, so no unit holds the whole sum.
-  auto drain_dgw = [&](int d, int nw) {
+  //: WHAT DRAINS HERE IS `sum_s dW[j,s]`, NOT `d gw` -- see
+  //: docs/internals/chunk/backward.md#dw-slotsum
+  auto drain_dwsum = [&](int d, int nw) {
     if (gtid < C && gtid < nw) {
       float s = 0.f;
 #pragma unroll
       for (int u = 0; u < kUnits; ++u) s += sgrad[u * C + gtid];
       fan_in_add(
           reinterpret_cast<float*>(gather_ptr(
-              dgwPlane, (uint32_t)iwrite(d)[gtid] * 4u
+              dwsPlane, (uint32_t)iwrite(d)[gtid] * 4u
                             + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * (int)sizeof(float)))),
           s);
     }
@@ -1010,7 +1012,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
     if (liveW) {
       drain_dv(dc, nw);
-      drain_dgw(dc, nw);
+      drain_dwsum(dc, nw);
     }
 
     if (liveR) {

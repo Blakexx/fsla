@@ -15,9 +15,12 @@ nothing it does not carry: the descending walk, both operand panels, the fold
 selects), and the CHANNEL CONTRACTION `<dS_a[s,:], v[j,:]>` -- the one arithmetic
 primitive the backward adds, whose `k` axis is `d_v` rather than slots or tokens.
 
-`d gw` is still the INTER-chunk part alone: its intra half needs the OTHER Gram
-(`dnum . v^T`, contracted over `d_v`) and the per-slot `dW` the digit reduction
-consumes, which is the next stage's. `d pr` and `d pw` are not emitted at all.
+The second output is `sum_s dW[j,s]`, INTER-chunk part only, and it is **not
+`d gw`** -- (A.11) weights that slot sum by the ungained level product `U[j,s]`
+and this does not, so the two agree only at `U = 1`. It is named `dwsum` for that
+reason. Completing it needs the ungained write panel and the `(d_v+1)`-th column
+identity (`docs/internals/chunk/backward.md#dw-slotsum`); `d pr` and `d pw` are
+not emitted at all.
 
 The `T = C` cell below is the sharpest gate on the new term and is why it is
 first: with one chunk the entry adjoint is exactly zero, so `dv` there is
@@ -114,7 +117,7 @@ def _partition(live_r, live_w, T) -> list[list[int]]:
 
 
 def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
-    """`(dv, dgw)` and each one's BOUND -- the rounded reference and its own budget."""
+    """`(dv, dwsum)` and each one's BOUND -- the rounded reference and its budget."""
     dev = "cuda"
     s = torch.arange(N, device=dev)
     d0, d1 = s // W, s % W
@@ -137,7 +140,7 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
     adS = torch.zeros(N, DV, device=dev)
     adz = torch.zeros(N, device=dev)
     out = {k: torch.zeros(sh, device=dev)
-           for k, sh in (("dv", (T, DV)), ("dgw", (T,)), ("bdv", (T, DV)), ("bdgw", (T,)))}
+           for k, sh in (("dv", (T, DV)), ("dwsum", (T,)), ("bdv", (T, DV)), ("bdwsum", (T,)))}
     #: THE INTER PATH'S REASSOCIATION: the `T` terms the fold accumulates into
     #: `dS`, the `N` the write-side contraction sums inside a block, and the
     #: `N / BC` block partials the fan-in adds in an order the scheduler picks.
@@ -166,10 +169,11 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w):
         #: roundoff -- which dominates the intra sum's own `C`-term reassociation.
         out["bdv"][idx] = (n_inter * EPS32 * (Wc.abs() @ adS)
                            + (ULP_BF16_PAIR + len(ch) * EPS32) * (Gm.abs().T @ dnf[idx].abs()))
-        #: d gw is a WRITE-SIDE quantity: off the write support the level chain
-        #: is exactly zero, so the emitted slot reduction is zero too.
-        out["dgw"][idx] = wl * ((vf[idx] @ dSb.T).sum(1) + dz.sum())
-        out["bdgw"][idx] = n_inter * EPS32 * wl * ((vf[idx].abs() @ adS.T).sum(1) + adz.sum())
+        #: THE SLOT SUM OF dW, unweighted -- NOT `d gw`, which weights it by the
+        #: ungained level product (A.11). Off the write support the level chain is
+        #: exactly zero, so the emitted reduction is zero too.
+        out["dwsum"][idx] = wl * ((vf[idx] @ dSb.T).sum(1) + dz.sum())
+        out["bdwsum"][idx] = n_inter * EPS32 * wl * ((vf[idx].abs() @ adS.T).sum(1) + adz.sum())
         dS += Rc.T @ dnf[idx]
         dz += Rc.T @ ddf[idx]
         adS += Rc.abs().T @ dnf[idx].abs()
@@ -218,11 +222,11 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
     live_r, live_w = _liveness(T, frac, seed=7)
     inputs = _inputs(T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    dv_k, dgw_k = _run(inputs)
+    dv_k, dws_k = _run(inputs)
     ref = _reference(*inputs, chunks, T, live_w)
 
     for name, got, want, bound in (("dv", dv_k[0, 0], ref["dv"], ref["bdv"]),
-                                   ("dgw", dgw_k[0, 0], ref["dgw"], ref["bdgw"])):
+                                   ("sum_s dW", dws_k[0, 0], ref["dwsum"], ref["bdwsum"])):
         err = (got - want).abs()
         worst = (err / bound.clamp_min(torch.finfo(torch.float32).tiny)).max().item()
         assert worst <= 1.0, (

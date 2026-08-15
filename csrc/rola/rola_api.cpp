@@ -73,8 +73,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: so in its name: it emits the write-side terms that read the adjoint state a
   //: chunk ENTERS with, and not yet the intra-chunk staircase or the digit
   //: reduction. `chunk_backward` does not exist until it does.
+  //: The second return is `sum_s dW[j,s]`, NOT `d gw`: (A.11) weights that slot sum
+  //: by the UNGAINED level product and the probe does not
+  //: (docs/internals/chunk/backward.md#dw-slotsum).
   m.def("chunk_scan_b_probe", &rola::chunk::scan_b_probe,
-        "chunk consumer, Scan B (stage 1): the inter-chunk write-side adjoint terms", py::arg("pr"),
+        "chunk consumer, Scan B: dv, and the unweighted slot sum of dW", py::arg("pr"),
         py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
   //: THE SEEDS. `dm = eps * dden` is a FIFTH output and it is not zero: the

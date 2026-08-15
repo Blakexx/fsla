@@ -25,7 +25,7 @@ else was written:
 | the readout `dv = W · dS_a` | (A.17), inter |
 | the SLOT GRAM `G = staircase(R · W^T)` | the forward's, see [two Grams](#two-grams) |
 | `dv`'s intra term `dv^T += dnum^T · G` — so **`dv` is complete** | (A.17), intra |
-| the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots | (A.18), inter-chunk part |
+| the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots — **`sum_s dW`, not `d gw`** | (A.18), inter-chunk part |
 
 Not carried, and named so that nothing reads as an omission: the `d_v` Gram `Gd`,
 the transposed staircase (A.19), the per-slot `dW`, the leave-one-out digit
@@ -92,6 +92,43 @@ is formed. (An earlier ruling aliased the Gram into the `so` staging window on t
 strength of a 4,608-byte estimate; that figure used the V panel's row stride
 (`kD + kPadE`) where the Gram's is `C + kPadE`, and with the real number no alias
 into `so` is needed at all.)
+
+## <a id="dw-slotsum"></a>The second output is `sum_s dW`, and that is NOT `d gw`
+
+The probe returns `dv` and a per-token plane that the kernel used to call `dgw`.
+It is not `d gw`. Writing `W[t,s] = gw[t] · U[t,s]` with `U` the UNGAINED level
+product, (A.11) is
+
+    d gw[t] = sum_s dW[t,s] · U[t,s]
+
+and what the kernel emits is `sum_s dW[t,s]` with no `U` weighting — d `gw`'s
+SHAPE, and not its value. The two coincide only when `U ≡ 1`, which is exactly the
+configuration every ladder gate has ever run. Checked over exact rationals against
+`d/d gw` of the recurrence's loss: the `U`-weighted sum reproduces it, the
+unweighted one does not.
+
+The output is therefore named `dwsum` throughout, and the probe's docstring says
+so. Nothing downstream may bind it to `gw`'s cotangent.
+
+**What completing it takes**, so the next stage does not rediscover it. `U` is
+per write token and per slot, so the weighting cannot be applied after the slot
+sum. The clean form is the `(d_v + 1)`-th column identity: with
+`ṽ[j,:] = [v[j,:], 1]` and `d̃S = [dS, dz]`, `dW[j,s] = ⟨d̃S_after[j,s,:], ṽ[j,:]⟩`,
+so
+
+    d gw[j] = ⟨ sum_s U[j,s] · d̃S_after[j,s,:] , ṽ[j,:] ⟩
+
+— the UNGAINED `dv` readout widened by one column, contracted against `v` with a
+trailing one. Two consequences worth stating before anything is built:
+
+* the write panel should hold `U` and the gain should be applied once, at the
+  `so` store, on the `n` axis (`gw[j]` is uniform along the accumulator's token
+  index). `dv` is unaffected — `sum_s W · dS = gw[j] · sum_s U · dS` — and the
+  slot Gram becomes the UNGAINED `Gu`, which is what `d gw`'s intra term wants;
+* with `Gu` in hand, `d gw`'s intra half is an ELEMENTWISE product:
+  `d gw_intra[j] = sum_i [j < J(i)] · Gd'[i,j] · Gu[i,j]`. Since `Gd'` can be held
+  in registers while `Gu` is in the Gram buffer, both live at once without the
+  second buffer the [two-Gram budget](#two-grams) forbids.
 
 ## <a id="mass-gram"></a>The transposed staircase carries the mass channel too
 

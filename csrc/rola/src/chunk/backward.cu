@@ -39,7 +39,7 @@ static cudaError_t launch_scan_b_arm(const ScanBParams& p, cudaStream_t stream) 
   }
   const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, (unsigned)p.BH);
   scan_b_kernel<C, D, B, BC><<<grid, threads_for(BC), sm, stream>>>(
-      p.pr, p.pw, p.gw, p.v, p.dnum, p.dden, p.tbl, p.dv, p.dgw, p.L, p.v_row_bytes);
+      p.pr, p.pw, p.gw, p.v, p.dnum, p.dden, p.tbl, p.dv, p.dwsum, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -90,7 +90,9 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
   //: BOTH OUTPUTS ARE FAN-IN TARGETS, so the identity of the sum has to be there
   //: before the first block contributes.
   auto dv = torch::zeros({B_, H, (long)L, (long)kD}, opts);
-  auto dgw = torch::zeros({B_, H, (long)L}, opts);
+  //: NOT `d gw`: this is `sum_s dW[j,s]`, unweighted, which has d gw's shape and
+  //: not its value -- docs/internals/chunk/backward.md#dw-slotsum
+  auto dwsum = torch::zeros({B_, H, (long)L}, opts);
 #define SCAN_B_DISPATCH_X(C_, BC_, D_, B__)                                                    \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                   \
     const long want = (long)BH * 2 * LevelPlan<D_, B__, BC_>::entries * tok_words(L);          \
@@ -103,12 +105,12 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
                    reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                    \
                    reinterpret_cast<const uint32_t*>(tbl.data_ptr()),                          \
                    dv.data_ptr<float>(),                                                       \
-                   dgw.data_ptr<float>(),                                                      \
+                   dwsum.data_ptr<float>(),                                                      \
                    BH,                                                                         \
                    L,                                                                          \
                    H * kD * (int)sizeof(__nv_bfloat16)};                                       \
     C10_CUDA_CHECK((launch_scan_b_arm<C_, BC_, D_, B__>(p_, at::cuda::getCurrentCUDAStream()))); \
-    return {dv, dgw};                                                                          \
+    return {dv, dwsum};                                                                          \
   }
   SCAN_B_ARMS_X(SCAN_B_DISPATCH_X)
 #undef SCAN_B_DISPATCH_X
