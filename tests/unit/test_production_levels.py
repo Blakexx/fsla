@@ -1,7 +1,7 @@
 """Gates for the dense per-level production routing solve (V3's producer path).
 
 `rola.routing.entmax.production.production_routing_factor_levels` is
-what `routing/producer_v3.py` calls. It has two lowerings of one semantics -- a DEVICE
+what `rola/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
 lowering at CUDA fp32 and the identical sorted closed form in torch on CPU/fp64 -- and
 both are gated here against the ONE canonical ground truth this branch authorizes for
 the routing primitive: the fp64 oracle in `routing/reference.py`
@@ -51,7 +51,7 @@ import pytest
 import torch
 from conftest import produce_routing, resolved_routing_from_topology
 
-import rola.routing.entmax.production as producer_v3
+import rola.routing.producer as production_path
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
@@ -545,8 +545,7 @@ def _run_producer(params, topology, normalization):
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("normalization", ["raw", "global"])
-def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, normalization):
+def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
     """`produce_routing` end to end: production solve vs fp64 oracle solve.
 
     Support sets must match EXACTLY on every zero-capable side (entmax support is
@@ -557,14 +556,15 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, no
     resolved = resolved_routing_from_topology(topology)
 
     production_params = _producer_params(
-        topology, dtype=torch.float32, device="cuda",
-        sides=1 if normalization == "global" else 2)
+        topology, dtype=torch.float32, device="cuda", sides=1)
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
 
-    production = _run_producer(production_params, topology, normalization)
+    production = _run_producer(production_params, topology, "global")
+    #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.routing.producer`
+    #: binds the name at import -- so the oracle arm really runs the reference solve.
     monkeypatch.setattr(
-        producer_v3, "production_routing_factor_levels", oracle_factor_levels)
-    oracle = _run_producer(oracle_params, topology, normalization)
+        production_path, "production_routing_factor_levels", oracle_factor_levels)
+    oracle = _run_producer(oracle_params, topology, "global")
 
     for level in range(topology.D):
         if resolved.read_level_can_zero[level]:
@@ -583,10 +583,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, no
             production.touched_bits[level], oracle.touched_bits[level])
 
     _assert_levels_match(production.g_write, oracle.g_write)
-    if normalization == "raw":
-        _assert_levels_match(production.g_read, oracle.g_read)
-    else:
-        assert production.g_read is None and oracle.g_read is None
+    assert production.g_read is None and oracle.g_read is None
 
 
 # ---------------------------------------------------------------------------

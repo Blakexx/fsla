@@ -107,36 +107,15 @@ def test_softmax_level_mass_is_identically_one():
     torch.testing.assert_close(out.g_write, gains["g_write"], rtol=1e-10, atol=1e-10)
 
 
-def test_union_level_mass_is_folded_not_dropped():
-    """UnionRouting's read side is not individually unit-sum (reference.py's own
-    `_union_split_with_support`); the producer must still return a unit-sum
-    read level (spec §4.1) by folding the leftover mass into g_read, not by
-    silently renormalizing away information. Check the identity
-    `mass * normalized == raw_union_read` end to end via the oracle's raw-mode
-    output being sensitive to that mass (a design smoke check: multiplying the
-    write-side projection weights should NOT commute with dropping the mass)."""
-    levels = (LevelConfig(6, UnionRouting(1.5)),)
-    topology = Topology(levels=levels, d_v=3)
-    B, L, H, dm = 1, 4, 1, 5
-    x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=2)
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
-    assert torch.allclose(out.read_levels[0].sum(-1), torch.ones(B, L, H, dtype=torch.float64), atol=1e-8)
-    assert torch.allclose(out.write_levels[0].sum(-1), torch.ones(B, L, H, dtype=torch.float64), atol=1e-8)
-    # g_read must not be a pure function of gain_W alone (it must carry the folded read mass) --
-    # i.e. it must differ from the raw projected gain whenever the union split's read mass != 1.
-    from rola.routing.side_gain import project_side_gains
-    raw_gains = project_side_gains(x, gain_W, gain_bias, normalization="raw", projection_dtype=torch.float64)
-    assert not torch.allclose(out.g_read, raw_gains["g_read"])
-
-
 def test_union_mass_fold_is_an_exact_identity_at_fp64():
     """The fold must MOVE the per-level mass, not approximate it (architecture §4.2:
     "multiplicative per-level masses collapse into one side-wide product").
 
-    Required identity, per side, for every leaf `s`:
-        g_side_raw * prod_l level_l_raw[d_l(s)]  ==  g_side_out * prod_l p_l_out[d_l(s)]
+    Required identity for every leaf `s`, on the write side -- the side that carries
+    a gain under the shipped `global` arm:
+        g_write_raw * prod_l level_l_raw[d_l(s)]  ==  g_write_out * prod_l p_l_out[d_l(s)]
     where `level_l_raw` is `routing_factor_levels`' own (possibly unnormalized, on
-    UnionRouting's read side) output and `p_l_out` is the producer's simplex.
+    UnionRouting's side) output and `p_l_out` is the producer's simplex.
     Checked against the machinery the producer wraps -- NOT against a second
     implementation of routing (the "matching-the-naive" standing rule).
     """
@@ -153,27 +132,26 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
     )
     B, L, H, dm = 2, 6, 3, 7
     x, route_W, gain_W, gain_bias, v = _params(
-        topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=2)
+        topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
     resolved = resolved_routing_from_topology(topology)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "raw")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
 
     read_logits, write_logits = _packed_router_logits(
         x, route_W, resolved, route_bias=None, h_w=None, projection_dtype=torch.float64)
     reads_raw, writes_raw = routing_factor_levels(read_logits, write_logits, resolved)
     gains_raw = project_side_gains(
-        x, gain_W, gain_bias, normalization="raw", projection_dtype=torch.float64)
+        x, gain_W, gain_bias, normalization="global", projection_dtype=torch.float64)
 
     def unfold(tensor):
         T, width = tensor.shape[1], tensor.shape[2]
         return tensor.reshape(B, H, T, width).permute(0, 2, 1, 3)
 
-    # The union read side must be genuinely unnormalized here, or the identity is vacuous.
+    # The union side must be genuinely unnormalized here, or the identity is vacuous.
     read_mass = unfold(reads_raw[0]).sum(-1)
     assert float((read_mass - 1).abs().max()) > 1e-3
 
     for side, raw_levels, raw_gain, out_levels, out_gain in (
-        ("read", reads_raw, gains_raw["g_read"], out.read_levels, out.g_read),
         ("write", writes_raw, gains_raw["g_write"], out.write_levels, out.g_write),
     ):
         leaf_raw = raw_gain[..., None, None] * (

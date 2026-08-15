@@ -202,28 +202,18 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 
 
 # -----------------------------------------------------------------------------
-# Pre-break producer adapter (API-contract migration, 2026-08-05)
+# Driving the gateway from bare parameter tensors
 # -----------------------------------------------------------------------------
 #
 # The low-level producer gates in tests/unit/test_producer.py and
 # tests/unit/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
-# is what lets them isolate a backward-through-every-tensor gate. The break moved
-# that orchestration inside `SimplexProducer`/`RouteProducer` (nn.Module methods
-# over nn.Parameters), so there is no longer a free function taking bare tensors.
-# These adapters reassemble the pre-break free-function surface
-# (`produce_routing`, `resolved_routing_from_topology`, `_project_logits`) from
-# the exact primitives the new methods call (`_packed_router_logits`,
-# `production_routing_factor_levels`, `project_side_gains`, the statistics
-# primitives in `rola.routing.budget`, the mass fold `rola.routing.factors._fold`)
-# -- so the tests keep exercising the real numerics, only the top-level wiring
-# (which the old code also had as one free function) is reconstructed here
-# rather than re-derived from a module.
-#
-# The §4.5 budget-conditioning arm this adapter used to also reassemble (a
-# temperature actuator + a usage-bias head, both chunk-recurrent) is gone with
-# the machinery it exercised (queue P29, 2026-08-06): the producer has no
-# conditioning inputs left to drive.
+# is what lets them isolate a backward-through-every-tensor gate. The production
+# orchestration is `SimplexProducer`/`RouteProducer` -- nn.Module methods over
+# nn.Parameters -- so `produce_routing` builds that pair and runs it under
+# `torch.nn.utils.stateless.functional_call` with the caller's tensors standing
+# in for its parameters. The graph reaches the caller's leaves and the numerics
+# are the REAL gateway's, not a second derivation of them.
 
 
 def resolved_routing_from_topology(topology):
@@ -236,74 +226,38 @@ def resolved_routing_from_topology(topology):
         levels=tuple(level.routing for level in topology.levels), branches=topology.widths)
 
 
-def _project_logits(x, route_W, routing, *, route_bias=None, h_w=None):
-    """The packed router projection at `SimplexProducer._project`'s own precision
-    rule: fp64 in, fp64 out; anything else projects in fp32."""
-    from rola.routing.projection import _packed_router_logits
-
-    projection_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    return _packed_router_logits(
-        x, route_W, routing, route_bias=route_bias, h_w=h_w, projection_dtype=projection_dtype)
-
-
 def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology, normalization):
-    """The pre-break `produce_routing(...) -> RoutingOutput`, reassembled.
+    """The gateway, run over bare parameter tensors -> a plain namespace.
 
-    ``v`` is accepted (matching the old call sites) and unused: the old function
-    never consumed it either, callers only needed it afterwards to run the
-    oracle. The return carries the pre-break field names
-    (`read_levels`/`write_levels`/`g_read`/`g_write`/`exact_support_counts`/
-    `touched_bits`) as a plain namespace.
+    ``v`` is accepted (matching the call sites) and unused: callers need it only
+    afterwards, to run the oracle. The return carries the field names those gates
+    read (`read_levels`/`write_levels`/`g_read`/`g_write`/`exact_support_counts`/
+    `touched_bits`).
     """
     from types import SimpleNamespace
 
-    from rola.routing.budget import exact_support_count, touched_bitset_update
-    from rola.routing.entmax.production import production_routing_factor_levels
-    from rola.routing.factors import _fold
-    from rola.routing.side_gain import project_side_gains
+    from torch.func import functional_call
 
-    resolved = resolved_routing_from_topology(topology)
-    B = x.shape[0]
-    H = route_W.shape[0]
-    D = topology.D
-    widths = topology.widths
+    from rola.routing.factors import RouteProducer
+    from rola.routing.producer import SimplexProducer
 
-    read_logits, write_logits = _project_logits(
-        x, route_W, resolved, route_bias=route_bias, h_w=x_w)
-    read_bh, write_bh = production_routing_factor_levels(read_logits, write_logits, resolved)
-
-    def unfold(tensor):
-        T, width = tensor.shape[1], tensor.shape[2]
-        return tensor.reshape(B, H, T, width).permute(0, 2, 1, 3)
-
-    read_unfold = tuple(unfold(t) for t in read_bh)
-    write_unfold = tuple(unfold(t) for t in write_bh)
-    read_levels, read_mass = _fold(read_unfold, B=B, H=H)
-    write_levels, write_mass = _fold(write_unfold, B=B, H=H)
-
-    projection_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    gains = project_side_gains(
-        x, gain_W, gain_bias, normalization=normalization, projection_dtype=projection_dtype)
-    g_write = gains["g_write"] * write_mass
-    g_read = gains["g_read"]
-    if normalization == "raw":
-        g_read = g_read * read_mass
-
-    exact_support_counts = {}
-    for level in range(D):
-        for side, levels in (("read", read_levels), ("write", write_levels)):
-            exact_support_counts[(level, side)] = exact_support_count(levels[level])
-    touched_bits = {
-        level: touched_bitset_update(
-            torch.zeros(B, H, widths[level], dtype=torch.bool, device=x.device),
-            write_levels[level].permute(0, 2, 1, 3))
-        for level in range(D)
-    }
+    H, hidden_size, _ = route_W.shape
+    producer = SimplexProducer(
+        topology.widths, tuple(level.routing for level in topology.levels),
+        hidden_size=hidden_size, num_heads=H, bias=route_bias is not None)
+    gateway = RouteProducer(
+        [producer], d_v=topology.d_v, num_heads=H, hidden_size=hidden_size,
+        normalization=normalization)
+    parameters = {"producers.0.route_W": route_W, "gain_W": gain_W, "gain_bias": gain_bias}
+    if route_bias is not None:
+        parameters["producers.0.route_bias"] = route_bias
+    streams = (x,) if x_w is None else (x, x_w)
+    routes = functional_call(gateway, parameters, streams)
 
     return SimpleNamespace(
-        read_levels=read_levels, write_levels=write_levels,
-        g_read=g_read, g_write=g_write,
-        exact_support_counts=exact_support_counts, touched_bits=touched_bits)
+        read_levels=routes.read, write_levels=routes.write,
+        g_read=routes.g_read, g_write=routes.g_write,
+        exact_support_counts=routes.support_counts(), touched_bits=routes.touched_bits())
 
 
 # -----------------------------------------------------------------------------
