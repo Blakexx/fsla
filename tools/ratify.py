@@ -1,21 +1,16 @@
 """SPILL-MANIFEST GATE for the extension's launch bounds.
 
-**WHAT THIS CONVERTS, AND WHY.** The consumer rewrite's §2.21 ruling landed a
-three-term residency formula and ACCEPTED a measured spill profile as the optimum --
-the alternatives spill worse (the unbounded status quo and the thread-slot cap both
-measured strictly larger). That acceptance was a judgment recorded in a document, and
-it lived nowhere else: **nothing failed if a later codegen change grew it.** This file
-makes it an ASSERTED INVARIANT, on the same doctrine every other gate in this tree
-runs on -- a property the batch believes is a property the batch checks. (The profile is
-a RATCHET per instantiation, not a spill ban: on the current 256-entry consumer
-matrix roughly a fifth of the instantiations spill by design under their derived
-register budgets -- the decay arms' structural local-array traffic -- and the gate
-holds each one AT its ratified bytes. The original "one 4-byte spill on one of 128"
-phrasing described the pre-K3/K4 kernel and went stale; coverage-closure item 12.)
+**WHAT THIS CONVERTS, AND WHY.** A measured spill profile accepted as an optimum is
+a judgment recorded in a document, and a judgment that lives nowhere else means
+**nothing fails if a later codegen change grows it.** This file makes it an ASSERTED
+INVARIANT, on the same doctrine every other gate in this tree runs on -- a property
+the batch believes is a property the batch checks. The profile is a RATCHET per
+instantiation, not a spill ban: the gate holds each entry AT its ratified bytes.
 
-The gate also measures the DECODE GEMV (32 instantiations) and the two UNION-ENTMAX
-kernels (64), so their `__launch_bounds__` are read off `ptxas -v` instead of
-asserted in comments.
+The gate measures the shipped translation units together: the chunk consumer's
+instantiation shards, the DECODE GEMV and the two UNION-ENTMAX kernels, so every
+`__launch_bounds__` in the extension is read off `ptxas -v` instead of asserted in a
+comment.
 
 SIX OUTCOMES, and the difference between them is deliberate:
 
@@ -38,25 +33,25 @@ SIX OUTCOMES, and the difference between them is deliberate:
   to have fixed. It is a hard failure even at zero spills.
 * **FAIL -- source drift (session 9).** The tree's `csrc/rola/src` digest differs
   from the one the manifest was ratified against. The manifest's numbers -- and the
-  `consumer_reg_budget` derivation they justify -- describe a kernel that no longer
+  register-budget derivation they justify -- describe a kernel that no longer
   exists; re-ratify with `--write`. This is the structural fix for the
-  stale-constant trap (the budget's justification table went stale by 10x across
-  K0-K4 and nothing failed).
+  stale-constant trap: a measured constant's justification must not outlive the
+  working set it was measured on.
 * **FAIL -- hot-loop growth (session 9).** Any instantiation executing MORE
   `LDL`/`STL` inside a loop (backward-`BRA` interval in the SASS) than its ratified
   `hot_locals` count. In-loop spill is a memory round-trip per iteration and is
-  disqualifying whatever the byte count; the count is a RATCHET because the decay
-  arms carry structural dynamically-indexed local-array traffic in loops that no
-  budget removes (measured at 255 registers).
+  disqualifying whatever the byte count; the count is a RATCHET rather than a ban so
+  that structural dynamically-indexed local-array traffic no budget removes is held
+  at its measured level instead of forbidden.
 * **REPORT -- register drift.** A changed `Used N registers` with no spill growth is
   printed, not failed. The register count is an ALLOCATOR OUTCOME that legitimately
   moves when the kernel changes; what must not move is the spilling.
 
 THE FORCING CENSUS (`--census [--force-ctas N] [--json PATH]`) is the measurement
-mode the register rung is derived from: a compile of the whole 256-entry dispatch
-matrix at a candidate launch bound, reported per structural key and per SHARD. It
-never touches a manifest, and `--force-ctas` outside `--census` is refused -- a
-forced bound must never be ratified.
+mode the register rung is derived from: a compile of every built arm at a candidate
+launch bound, reported per structural key and per SHARD. It never touches a
+manifest, and `--force-ctas` outside `--census` is refused -- a forced bound must
+never be ratified.
 
 **RE-RATIFICATION IS A MEASUREMENT, NOT AN EDIT.** The manifest is regenerated only by
 `--write`, which re-runs this same compile and records what it reports. Hand-editing an
@@ -70,10 +65,10 @@ Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the l
     python tools/ratify.py
     python tools/ratify.py --arch 80 --arch 86
     python tools/ratify.py --arch 89 --write               # bringing up a new arch
-    python tools/ratify.py --shard consumer_bf16_raw_bt32  # triage one shard's slice
+    python tools/ratify.py --shard chunk_s1                # triage one shard's slice
 
 `--shard` is a MEASUREMENT scope and never a ratification scope: a ratchet refusal is
-investigated one 64-entry slice at a time instead of by re-deriving 1,216 entries, but
+investigated one shard's slice at a time instead of by re-deriving every entry, but
 `--write` refuses it, because a manifest written from a subset of the translation
 units would silently drop every instantiation it did not compile.
 
@@ -198,27 +193,26 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: THE TRANSLATION UNITS THIS GATE COMPILES -- THE SHIPPED ONES.
 #:
 #: It used to compile a probe: one file under `tools/` that re-enumerated the
-#: consumer's instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to
-#: reach their dispatch closures. That probe was a SECOND enumeration of a set the
-#: dispatch already defined (the drift shape this project has been bitten by), it
-#: re-compiled the whole matrix on every build cycle on top of the build's own
-#: compile of it, and -- the part that was never stated -- its 96 decode/entmax keys
-#: named symbols that existed IN NO SHIPPED BINARY, because nvcc derives an
-#: anonymous-namespace kernel's mangled discriminator from the file that instantiates
-#: it, and that file was the probe.
+#: instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to reach their
+#: dispatch closures. That probe was a SECOND enumeration of a set the dispatch
+#: already defined (the drift shape this project has been bitten by), it re-compiled
+#: the whole matrix on every build cycle on top of the build's own compile of it,
+#: and -- the part that was never stated -- its decode/entmax keys named symbols
+#: that existed IN NO SHIPPED BINARY, because nvcc derives an anonymous-namespace
+#: kernel's mangled discriminator from the file that instantiates it, and that file
+#: was the probe.
 #:
-#: Now the gate compiles the shipped sources themselves: the eight generated
-#: instantiation shards, plus `decode.cu` and `entmax.cu` as the translation units
-#: they are in the build. The consumer keys are unchanged by construction --
-#: `consumer_forward_kernel` lives in a NAMED namespace, so its mangled name does not
-#: depend on which translation unit expands it -- and the 96 decode/entmax keys now
-#: name the symbols that are actually in the `.so`, which `tools/fatbin_entries.py`
-#: checks rather than asserts.
+#: Now the gate compiles the shipped sources themselves: the generated instantiation
+#: shards, plus `decode.cu` and `entmax.cu` as the translation units they are in the
+#: build. The chunk keys are unchanged by construction -- `compacted_kernel` lives in
+#: a NAMED namespace, so its mangled name does not depend on which translation unit
+#: expands it -- and the decode/entmax keys now name the symbols that are actually in
+#: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
 STANDALONE_TUS = ("decode.cu", "entmax.cu")
 
 
 def shard_paths() -> list[Path]:
-    names = sorted(gen_shards.shards()) + sorted(gen_shards.chunk_shards())
+    names = sorted(gen_shards.chunk_shards())
     return [SRC / "instantiations" / f"{name}.cu" for name in names]
 
 
@@ -336,32 +330,38 @@ SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
-#: The consumer kernel's mangled template arguments, in declaration order:
-#: `<int BC, int DV, int D, bool DECAY, int GT>` (the endgame matrix plus the
-#: window -- BT, PREC and GLOBAL are dead). The mangled name is the manifest key,
-#: so this is the ONE place a key is turned back into a shape; the census's
-#: per-key grouping and the hot-loop gate's reporting both go through it.
-CONSUMER_TPL = re.compile(
-    r"consumer_forward_kernelILi(\d+)ELi(\d+)ELi(\d+)ELb(\d)ELi(\d+)E")
+#: The chunk kernel's mangled template arguments, in DECLARATION order:
+#: `compacted_kernel<int C, int D, int B, int BC, bool STATE>`. Note that this is
+#: not the arm list's tuple order (`(C, BC, D, B)`), and the difference is exactly
+#: why the mangled name is decoded in ONE place: the manifest key is what the
+#: assembler saw, and every consumer of it -- the census's per-key grouping, the
+#: hot-loop gate's reporting, the fatbin gate's ownership check -- goes through here.
+CHUNK_TPL = re.compile(
+    r"compacted_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
-    """Shape axes off a consumer instantiation's mangled name, or None."""
-    m = CONSUMER_TPL.search(mangled)
+    """Shape axes off a chunk instantiation's mangled name, or None."""
+    m = CHUNK_TPL.search(mangled)
     if not m:
         return None
-    return dict(BC=int(m.group(1)), DV=int(m.group(2)), D=int(m.group(3)),
-                decay=m.group(4) == "1", GT=int(m.group(5)))
+    return dict(C=int(m.group(1)), D=int(m.group(2)), B=int(m.group(3)),
+                BC=int(m.group(4)), state=m.group(5) == "1")
+
+
+def arm_of_shape(shape: dict) -> tuple:
+    """The generator's arm tuple `(C, BC, D, B, STATE)` for a decoded shape."""
+    return (shape["C"], shape["BC"], shape["D"], shape["B"], shape["state"])
 
 
 def shard_of_key(mangled: str) -> str:
     """The translation unit that owns a ratified instantiation.
 
-    A consumer arm's shard is a STRUCTURAL function of its template tuple, so it is
-    recomputed from the mangled name rather than recorded beside it -- the name is
-    what the assembler saw and cannot disagree with the binary. The decode and entmax
-    kernels are single translation units and carry their file's stem, so every
-    ratified entry answers the same question in the same schema.
+    An arm's shard is a STRUCTURAL function of its tuple, so it is recomputed from
+    the mangled name rather than recorded beside it -- the name is what the assembler
+    saw and cannot disagree with the binary. The decode and entmax kernels are single
+    translation units and carry their file's stem, so every ratified entry answers
+    the same question in the same schema.
     """
     shape = parse_shape(mangled)
     if shape is None:
@@ -369,8 +369,11 @@ def shard_of_key(mangled: str) -> str:
             if f"_{Path(tu).stem}_cu_" in mangled:
                 return Path(tu).stem
         return "?"
-    return gen_shards.shard_of(dict(BC=shape["BC"], DV=shape["DV"], D=shape["D"],
-                                    DECAY=shape["decay"], GT=shape["GT"]))
+    want = gen_shards.chunk_canonical(arm_of_shape(shape))
+    for name, arms in gen_shards.chunk_shards().items():
+        if any(gen_shards.chunk_canonical(a) == want for a in arms):
+            return name
+    return "?"
 
 
 def shard_field(entries: dict) -> dict[str, str]:
@@ -390,12 +393,12 @@ RATIFIED_DEFINES: tuple[str, ...] = ()
 
 def shipped_defines() -> dict[str, int]:
     """The `#define` defaults of :data:`RATIFIED_DEFINES` in the digested source."""
-    src = (SRC / "smem_layout.cuh").read_text()
+    src = (SRC / "chunk" / "chunk_kernel.cuh").read_text()
     out = {}
     for name in RATIFIED_DEFINES:
         m = re.search(rf"^#define {name} (\d+)$", src, re.MULTILINE)
         if m is None:
-            raise SystemExit(f"smem_layout.cuh no longer defines a default for "
+            raise SystemExit(f"chunk_kernel.cuh no longer defines a default for "
                              f"{name}; the provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out
@@ -481,9 +484,8 @@ def check_defines(manifest: dict) -> bool:
 def csrc_digest() -> str:
     """A digest of the kernel sources the manifest's numbers were measured against.
 
-    THE FRESHNESS TRIGGER (session 9, R1). `consumer_reg_budget` is a measured
-    constant; its justification EXPIRES when `csrc/` moves (the shipped 96 was
-    derived pre-K3/K4 and went stale by 10x -- D8-Q1). Recording the source digest
+    THE FRESHNESS TRIGGER (session 9, R1). A register budget is a MEASURED
+    constant; its justification EXPIRES when `csrc/` moves. Recording the source digest
     in the manifest and CHECKING it makes that trap structural: a ratification
     whose sources have materially changed is a hard failure demanding `--write`,
     which is a fresh measurement, never an edit.
@@ -629,7 +631,7 @@ def check_freshness(manifest: dict, digest: str | None = None) -> bool:
     when `csrc/rola/src` moves materially, the ratification is a description of a
     kernel that no longer exists and must be RE-MEASURED (`--write`), never
     trusted. This is the structural fix for the stale-constant trap that blocked
-    K5: `consumer_reg_budget`'s justification cannot silently outlive the working
+    K5: a register budget's justification cannot silently outlive the working
     set it was measured on, because the gate that every build runs re-checks the
     tree the measurement was taken from."""
     digest = digest if digest is not None else csrc_digest()
@@ -1104,7 +1106,7 @@ def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool,
 
 #: --------------------------------------------------------------------------
 #: THE FORCING CENSUS (session 9, R0) -- the permanent instrument the register
-#: rung is derived from. `--census` compiles the whole 256-entry matrix at a
+#: rung is derived from. `--census` compiles every built arm at a
 #: candidate bound (`--force-ctas N` -> `-DROLA_FORCE_CTAS=N`; omitted -> the
 #: shipped derived bound) and prints the per-key register/spill table. It never
 #: touches a manifest: a census is a measurement of a CANDIDATE, ratification is
@@ -1113,8 +1115,8 @@ def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool,
 
 def _regs_ctas(regs: int) -> int:
     """Register-file-side CTAs/SM at 256 threads after sm_86's 8-register
-    allocation granularity. The REGISTER term only -- the driver
-    (`rola_consumer_occupancy`) stays the sole residency authority."""
+    allocation granularity. The REGISTER term only -- the driver's own occupancy
+    query stays the sole residency authority."""
     alloc = 256 * ((regs + 7) // 8) * 8
     return min(6, 65536 // alloc) if alloc else 6
 
@@ -1132,11 +1134,11 @@ def census_report(entries: dict, unhonored: list[str],
         #: which translation unit would have to be recompiled to move it, which is
         #: what turns "re-ratify only these shards" from a plan into a checkable
         #: claim: csrc/rola/src/instantiations/README.md
-        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["BC"],
-             shape["DV"], shape["decay"])
+        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["C"],
+             shape["BC"], f"{shape['D']}x{shape['B']}")
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':28} {'BC':>3} {'DV':>3} "
-          f"{'decay':5} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
+    print(f"\n{'arch':6} {'shard':10} {'C':>3} {'BC':>4} "
+          f"{'DxB':>7} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
           f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
         regs = sorted(e["regs"] for e, _ in es)
@@ -1148,8 +1150,8 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:28} {k[2]:>3} {k[3]:>3} "
-              f"{str(k[4]).lower():5} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
+        print(f"{k[0]:6} {k[1]:10} {k[2]:>3} {k[3]:>4} "
+              f"{k[4]:>7} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())
     total_ld = sum(e["spill_loads"] for e in entries.values())

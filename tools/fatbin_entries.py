@@ -4,26 +4,27 @@
 failure modes that leave every other gate green:
 
 1. the per-arm launcher's DEFINITION becomes visible to the dispatch translation
-   unit, which then implicitly instantiates all 256 kernels right back into itself;
+   unit, which then implicitly instantiates every kernel right back into itself;
 2. a query path (residency, footprint) keeps taking kernel ADDRESSES in the
    dispatch translation unit, duplicating the arms it queries.
 
 In both cases the build links, the ratification manifest is byte-identical, the
-geometry census still reports the whole matrix -- and the compile time simply does
+geometry census still reports the whole arm list -- and the compile time simply does
 not fall, for a reason no gate in the design can see. `nm` cannot see it either: a
 `__global__` template's host-side stub symbol is WEAK, so the linker keeps exactly
-one however many objects emitted it, and `nm` reports 256 either way.
+one however many objects emitted it, and `nm` reports the full set either way.
 
 **THE FATBIN CAN SEE IT.** Device code is not linked that way: each object registers
 its OWN cubin, and `cuobjdump -symbols` lists them one fatbin section at a time, each
 tagged with the architecture and with the source file it was compiled from. So the
 question "is this actually sharded?" has an exact answer in the shipped `.so`:
 
-* exactly one `STO_ENTRY` per instantiation per architecture -- 256 consumer entries
-  for each of sm_80 and sm_86, no more (duplication) and no fewer (a dropped arm);
+* exactly one `STO_ENTRY` per instantiation per architecture -- one per built chunk
+  arm per state variant, for each of sm_80 and sm_86, no more (duplication) and no
+  fewer (a dropped arm);
 * every entry in the object built from the shard `tools/gen_shards.py` assigns it,
   which is a stronger statement than any count: a SWAP (one arm added, one dropped)
-  keeps the count at 256 and is caught here;
+  keeps the count unchanged and is caught here;
 * every mangled name the ratification manifest records is present in the binary,
   which is what makes the manifest a description of the shipped codegen rather than
   of a probe nobody ships.
@@ -38,7 +39,7 @@ would surface as an `ImportError` at first import instead of as a build failure 
 and, for the occupancy wrapper, which has no device code of its own, the fatbin count
 above would not see it at all. `--no-undefined` is not available as a fix, for exactly
 the reason the loader-resolved symbols exist. So the closure is checked here: NO
-undefined `launch_consumer_arm` or `query_consumer_occupancy_arm` symbol may remain.
+undefined `launch_chunk_arm` or `query_chunk_census_arm` symbol may remain.
 Verified by removal -- dropping one arm from its shard leaves exactly one undefined
 symbol, naming its tuple.
 
@@ -101,7 +102,7 @@ def device_entries(so: Path) -> list[tuple[str, str, str]]:
 
 
 #: The two host entry points a shard is the only possible definer of.
-_SHARD_SYMBOLS = ("launch_consumer_arm", "query_consumer_occupancy_arm")
+_SHARD_SYMBOLS = ("launch_chunk_arm", "query_chunk_census_arm")
 
 
 def unresolved_arms(so: Path) -> list[str]:
@@ -117,23 +118,22 @@ def unresolved_arms(so: Path) -> list[str]:
 
 
 def expected_shards() -> dict[str, str]:
-    """`{mangled name -> shard stem}` for the whole matrix, from the generator.
+    """`{canonical arm -> shard stem}` for the whole arm list, from the generator.
 
-    The mangled name is rebuilt from the manifest's own decoder rather than
-    hand-spelled here: `tools/ratify.py:parse_shape` turns a mangled name into a
-    template tuple, so this direction is the composition of that with `shard_of`,
-    and there is no second mangling convention to drift.
+    Keyed on the generator's canonical spelling rather than on a mangled name, so
+    this side never has to reproduce a mangling: `tools/ratify.py:parse_shape` is the
+    one decoder, and :func:`shape_key` composes it with the same canonical form.
     """
-    return {gen_shards.canonical(row): gen_shards.shard_of(row) for row in gen_shards.matrix()}
+    return {gen_shards.chunk_canonical(arm): name
+            for name, arms in gen_shards.chunk_shards().items() for arm in arms}
 
 
 def shape_key(mangled: str) -> str | None:
-    """A consumer instantiation's mangled name, as the generator's canonical tuple."""
+    """A chunk instantiation's mangled name, as the generator's canonical tuple."""
     shape = ratify.parse_shape(mangled)
     if shape is None:
         return None
-    return gen_shards.canonical(dict(BC=shape["BC"], DV=shape["DV"], D=shape["D"],
-                                     DECAY=shape["decay"], GT=shape["GT"]))
+    return gen_shards.chunk_canonical(ratify.arm_of_shape(shape))
 
 
 def check(so: Path, arches=None) -> bool:
@@ -154,14 +154,14 @@ def check(so: Path, arches=None) -> bool:
         missing = sorted(set(want) - set(got))
         extra = sorted(set(got) - set(want))
         dup = sorted(k for k, v in got.items() if len(v) > 1)
-        wrong = sorted(f"{k}: in {v[0]}, matrix says {want[k]}"
+        wrong = sorted(f"{k}: in {v[0]}, the arm list says {want[k]}"
                        for k, v in sorted(got.items()) if k in want and v[0] != want[k])
         if missing or extra or dup or wrong:
             ok = False
-            print(f"\nFAIL  {arch}: {len(got)} consumer instantiations in the fatbin, "
-                  f"{len(want)} in the matrix.")
+            print(f"\nFAIL  {arch}: {len(got)} chunk instantiations in the fatbin, "
+                  f"{len(want)} in the arm list.")
             for label, rows in (("absent from the binary", missing),
-                                ("in the binary, not in the matrix", extra),
+                                ("in the binary, not in the arm list", extra),
                                 ("EMITTED BY MORE THAN ONE OBJECT (nothing is sharded)", dup),
                                 ("in the wrong shard", wrong)):
                 if rows:
@@ -169,8 +169,8 @@ def check(so: Path, arches=None) -> bool:
                     for row in rows[:6]:
                         print(f"        {row}")
         else:
-            print(f"fatbin OK  {arch}: {len(got)} consumer entries, one per "
-                  f"instantiation, each in the shard the matrix assigns it")
+            print(f"fatbin OK  {arch}: {len(got)} chunk entries, one per "
+                  f"instantiation, each in the shard the arm list assigns it")
 
     #: 2. THE DISPATCH CLOSURE, host side. An arm the dispatch can select and no shard
     #: defines is an unresolved reference that this kind of link does not refuse.
@@ -211,7 +211,7 @@ def main() -> int:
     ap.add_argument("so", type=Path, help="the built extension")
     ap.add_argument("--check", action="store_true",
                     help="gate: nonzero exit unless the binary carries exactly the "
-                         "matrix, one entry per instantiation per arch, in the right "
+                         "arm list, one entry per instantiation per arch, in the right "
                          "shard")
     ap.add_argument("--json", metavar="PATH", help="dump the raw (arch, object, entry) list")
     a = ap.parse_args()

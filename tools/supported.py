@@ -6,8 +6,8 @@ answer, and CI fails on drift:
 
 * ``csrc/rola/src/arch_table.cuh`` -- the architectures the KERNEL knows how to
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time
-  and ``consumer_check_arch_table()`` a refusal at run time, so an arch missing
-  from it cannot execute whatever the table says.
+  and the chunk dispatch's first-launch check a refusal at run time, so an arch
+  missing from it cannot execute whatever the table says.
 * ``tools/manifests/sm_XX.json`` -- the architectures that have been MEASURED.
   One file per arch (§3.7), so "is it ratified?" is a file-existence question.
 
