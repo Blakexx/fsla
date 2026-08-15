@@ -299,6 +299,26 @@ whole CTA. The ring's head is the walk's cursor plus its depth, so the former st
 own accord when it catches its tail: backpressure, with no test for it anywhere but the
 loop bound.
 
+<a id="the-production"></a>**The production.** A thread owns one token row and a
+contiguous run of slots; the coefficient it publishes is the product of one amplitude
+per level at that slot's digits, and the digits are LOOP INDICES rather than arithmetic —
+which is why this is the same code for every level count, and why it must be the same
+code for every scan.
+
+It lives in `Producer`, and the forward and Scan B drive one instance of it each. They
+drove BYTE-IDENTICAL copies before the component existed (548 tokens, checked token for
+token with comments stripped), and Scan A would have made a third. What stays with each
+caller is the plan arithmetic that feeds it — the per-thread column offsets and the slot
+displacements — because the multi-group carve computes those differently from the
+one-group one; what is shared is the production itself.
+
+Extracted on the same behavioural criterion as [the walk](#the-walk), and it is a
+strictly better trade than that one because it DELETES a duplicate rather than merely
+preventing one. Measured across all 580 ratified instantiations, both architectures:
+**21 bodies re-assembled (19 forward, 2 Scan B), 1 register count moved by 2, and zero
+changes to spill bytes, in-loop local accesses or CTA targets.** The component defined
+with both call sites untouched moves nothing.
+
 <a id="the-walk"></a>**The walk.** One lockstep unit consumes the formed bitmap a word at
 a time, keeps a running count on each side, and closes the super-chunk at the FIRST TOKEN
 that would push either count past its buffer.

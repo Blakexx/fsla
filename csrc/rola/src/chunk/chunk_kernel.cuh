@@ -450,6 +450,78 @@ struct Ascent {
   }
 };
 
+//: THE ROUTED KRONECKER PRODUCTION, as a component.  A thread owns one token row
+//: and a contiguous run of slots; the coefficient it publishes is the product of
+//: one amplitude per level at that slot's digits, and the digits are LOOP INDICES
+//: rather than arithmetic -- which is why this is the same code for every level
+//: count and why it must be the same code for every scan.  The forward and Scan B
+//: drove byte-identical copies of it before this component existed; Scan A would
+//: have made a third -- docs/internals/chunk/chunk_kernel.md#the-production
+//:
+//: The per-thread COLUMN OFFSETS and the slot displacements are the caller's:
+//: they are plan arithmetic, and the multi-group carve computes them differently
+//: from the one-group one.  What is shared is the production itself.
+template <int kDepth, int kLeadPerThr, int kTailVec, int kUppers>
+struct Producer {
+  uint32_t colFast, colInner, colUpA, colUpB;
+  int pOff[kLeadPerThr][kTailVec];
+
+  //: `have` is the row's existence, and a row past the gathered count must be
+  //: EXACTLY zero -- zeroed at the LEADING amplitude rather than at the product,
+  //: so one select per digit covers the whole run.
+  __device__ __forceinline__ void emit(const __nv_bfloat16* bs, char* dst, uint32_t tokOff,
+                                       bool have, uint32_t gsp) const {
+    [[maybe_unused]] const __nv_bfloat16* p0 =
+        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
+    const __nv_bfloat16* p1 =
+        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
+    __align__(8) unsigned short amp0[kLeadPerThr];
+    if constexpr (kDepth == 1) {
+      amp0[0] = 0x3F80;
+    } else if constexpr (kLeadPerThr == 1) {
+      amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
+    } else if constexpr (kLeadPerThr == 2) {
+      *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
+    } else {
+      *reinterpret_cast<uint2*>(amp0) = *reinterpret_cast<const uint2*>(p0);
+    }
+    if constexpr (kUppers >= 1) {
+      uint32_t up =
+          splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpA)));
+      if constexpr (kUppers >= 2)
+        up = mul_bf16x2(
+            up,
+            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpB))));
+#pragma unroll
+      for (int j = 0; j < kLeadPerThr; ++j) {
+        const uint32_t m =
+            mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), up);
+        amp0[j] = (unsigned short)(m & 0xffffu);
+      }
+    }
+#pragma unroll
+    for (int j = 0; j < kLeadPerThr; ++j) {
+      const uint32_t m =
+          mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), gsp);
+      amp0[j] = (unsigned short)(m & 0xffffu);
+    }
+#pragma unroll
+    for (int i = 0; i < kTailVec; ++i) {
+      __align__(16) uint32_t a1[4];
+      *reinterpret_cast<uint4*>(a1) = load_vec16(p1 + i * 8);
+#pragma unroll
+      for (int j = 0; j < kLeadPerThr; ++j) {
+        __align__(16) uint32_t prod[4];
+        const uint32_t a2 =
+            have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])) : 0u;
+#pragma unroll
+        for (int e = 0; e < 4; ++e) prod[e] = mul_bf16x2(a2, a1[e]);
+        store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4*>(prod));
+      }
+    }
+  }
+};
+
 // ------------------------------------------------------------------ geometry
 
 //: THIS KERNEL'S LIVE REGISTER SET, per (chunk, block width). A measured
@@ -1074,66 +1146,16 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
         pOff[j][i] = SWZ ? ((((slot0 + j * kInnerSpan) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
                          : ((j * kInnerSpan + i * 8) * 2);
 
-    //: THE PRODUCTION. A panel row past the gathered count must be EXACTLY zero, and
-    //: it is zeroed at the LEADING amplitude rather than at the product -- that is
-    //: what makes a partly filled buffer exact -- docs/internals/chunk/chunk_kernel.md#produce
+    //: THE PRODUCTION IS A COMPONENT -- this file's `Producer`, which Scan B
+    //: drives too.  The column offsets and slot displacements above are this
+    //: carve's; the production itself is everyone's.
+    Producer<kDepth, kLeadPerThr, kTailVec, kUppers> prod{colFast, colInner, colUpA, colUpB, {}};
+#pragma unroll
+    for (int j = 0; j < kLeadPerThr; ++j)
+#pragma unroll
+      for (int i = 0; i < kTailVec; ++i) prod.pOff[j][i] = pOff[j][i];
     auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have,
-                       uint32_t gsp) {
-      [[maybe_unused]] const __nv_bfloat16* p0 =
-          reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
-      const __nv_bfloat16* p1 =
-          reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
-      __align__(8) unsigned short amp0[kLeadPerThr];
-      if constexpr (kDepth == 1) {
-        amp0[0] = 0x3F80;  // bf16 1.0: the flat arm has no outer factor
-      } else if constexpr (kLeadPerThr == 1) {
-        amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
-      } else if constexpr (kLeadPerThr == 2) {
-        *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
-      } else {
-        *reinterpret_cast<uint2*>(amp0) = *reinterpret_cast<const uint2*>(p0);
-      }
-      //: THE OUTER CHAIN (G3, empty at D = 2).  Every level above the fast one
-      //: contributes ONE per-token scalar at this thread's fixed digits; the
-      //: scalars fold into the fast amplitudes here, so the hot loop below is
-      //: untouched at any depth and the zero-row select stays ONE per digit.
-      if constexpr (kUppers >= 1) {
-        uint32_t up =
-            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpA)));
-        if constexpr (kUppers >= 2)
-          up = mul_bf16x2(up, splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                                  gather_ptr(bs, tokOff + colUpB))));
-#pragma unroll
-        for (int j = 0; j < kLeadPerThr; ++j) {
-          const uint32_t m =
-              mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), up);
-          amp0[j] = (unsigned short)(m & 0xffffu);
-        }
-      }
-      //: THE GAIN FOLD -- after the level chain, so the ungained coefficient is
-      //: what a decay clock will tap, and the gained one is what deposits.
-#pragma unroll
-      for (int j = 0; j < kLeadPerThr; ++j) {
-        const uint32_t m =
-            mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), gsp);
-        amp0[j] = (unsigned short)(m & 0xffffu);
-      }
-
-#pragma unroll
-      for (int i = 0; i < kTailVec; ++i) {
-        __align__(16) uint32_t a1[4];
-        *reinterpret_cast<uint4*>(a1) = load_vec16(p1 + i * 8);
-#pragma unroll
-        for (int j = 0; j < kLeadPerThr; ++j) {
-          __align__(16) uint32_t prod[4];
-          const uint32_t a2 =
-              have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])) : 0u;
-#pragma unroll
-          for (int e = 0; e < 4; ++e) prod[e] = mul_bf16x2(a2, a1[e]);
-          store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4*>(prod));
-        }
-      }
-    };
+                       uint32_t gsp) { prod.emit(bs, dst, tokOff, have, gsp); };
 
     // ---- the membership bits, read out of the union table --------------------
     //: The block's entry rows, per side; the trailing row disappears when the block

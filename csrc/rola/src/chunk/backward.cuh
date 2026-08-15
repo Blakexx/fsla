@@ -770,63 +770,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const int slot0 = leadLocal * kInnerSpan + tailLocal;
   char* dstR = reinterpret_cast<char*>(sr) + prow * (int)(LdS * 2) + slot0 * 2;
   char* dstW = reinterpret_cast<char*>(sw) + prow * (int)(LdS * 2) + slot0 * 2;
-  int pOff[kLeadPerThr][kTailVec];
+  //: THE PRODUCTION IS A COMPONENT -- chunk_kernel.cuh's `Producer`, which the
+  //: forward drives too.  The column offsets and slot displacements above are this
+  //: carve's; the production itself is everyone's.
+  Producer<kDepth, kLeadPerThr, kTailVec, kUppers> prod{colFast, colInner, colUpA, colUpB, {}};
 #pragma unroll
   for (int j = 0; j < kLeadPerThr; ++j)
 #pragma unroll
-    for (int i = 0; i < kTailVec; ++i) pOff[j][i] = (j * kInnerSpan + i * 8) * 2;
-
-  //: A panel row past the gathered count must be EXACTLY zero, and it is zeroed
-  //: at the LEADING amplitude rather than at the product.
+    for (int i = 0; i < kTailVec; ++i) prod.pOff[j][i] = (j * kInnerSpan + i * 8) * 2;
   auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have, uint32_t gsp) {
-    [[maybe_unused]] const __nv_bfloat16* p0 =
-        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
-    const __nv_bfloat16* p1 =
-        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
-    __align__(8) unsigned short amp0[kLeadPerThr];
-    if constexpr (kDepth == 1) {
-      amp0[0] = 0x3F80;
-    } else if constexpr (kLeadPerThr == 1) {
-      amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
-    } else if constexpr (kLeadPerThr == 2) {
-      *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
-    } else {
-      *reinterpret_cast<uint2*>(amp0) = *reinterpret_cast<const uint2*>(p0);
-    }
-    if constexpr (kUppers >= 1) {
-      uint32_t up =
-          splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpA)));
-      if constexpr (kUppers >= 2)
-        up = mul_bf16x2(
-            up,
-            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpB))));
-#pragma unroll
-      for (int j = 0; j < kLeadPerThr; ++j) {
-        const uint32_t m =
-            mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), up);
-        amp0[j] = (unsigned short)(m & 0xffffu);
-      }
-    }
-#pragma unroll
-    for (int j = 0; j < kLeadPerThr; ++j) {
-      const uint32_t m =
-          mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), gsp);
-      amp0[j] = (unsigned short)(m & 0xffffu);
-    }
-#pragma unroll
-    for (int i = 0; i < kTailVec; ++i) {
-      __align__(16) uint32_t a1[4];
-      *reinterpret_cast<uint4*>(a1) = load_vec16(p1 + i * 8);
-#pragma unroll
-      for (int j = 0; j < kLeadPerThr; ++j) {
-        __align__(16) uint32_t prod[4];
-        const uint32_t a2 =
-            have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])) : 0u;
-#pragma unroll
-        for (int e = 0; e < 4; ++e) prod[e] = mul_bf16x2(a2, a1[e]);
-        store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4*>(prod));
-      }
-    }
+    prod.emit(bs, dst, tokOff, have, gsp);
   };
 
   // ---- the membership bits, the forward's clause rows ----------------------
