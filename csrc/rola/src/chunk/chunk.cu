@@ -9,6 +9,7 @@
 #include <torch/extension.h>
 
 #include <array>
+#include <map>
 #include <mutex>
 #include <set>
 #include <vector>
@@ -74,9 +75,47 @@ static void check_arch_table() {
   admitted.insert(dev);
 }
 
+//: THE SM COUNT IS A RUNTIME DEVICE FACT, never an arch-table row: GA102 ships
+//: at 80 and 82 SMs and GA100 at 108, so a table that carried it would be right
+//: for one part and wrong for the next (docs/internals/chunk/arch_caps.md).
+static int sm_count() {
+  int dev = 0;
+  C10_CUDA_CHECK(cudaGetDevice(&dev));
+  static std::mutex mu;
+  static std::map<int, int> counts;
+  const std::lock_guard<std::mutex> hold(mu);
+  auto it = counts.find(dev);
+  if (it == counts.end()) {
+    int n = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, dev));
+    it = counts.emplace(dev, n).first;
+  }
+  return it->second;
+}
+
+//: THE SKIP PREDICATE, DERIVED FROM THE RULE rather than hand-authored as a
+//: mask: a truth table over the liveness byte's three bits, one host constant
+//: per call class (docs/internals/chunk/chunk.md#run-table).
+static uint32_t run_table(bool state_in, bool state_out, bool paged) {
+  uint32_t table = 0;
+  for (uint32_t v = 0; v < 8; ++v) {
+    const bool R = (v & 1u) != 0, W = (v & 2u) != 0, S = (v & 4u) != 0;
+    //: `y` needs a read entry AND something for it to read: this call's own
+    //: write, or a carried state the block may hold.  Without a residency map
+    //: the dense backing cannot witness the latter and must assume it.
+    bool run = R && (W || (state_in && (paged ? S : true)));
+    //: the state epilogue stores this block's atoms.  Paged, an unwritten block
+    //: must leave its slot UNCHANGED, which is what skipping does; dense, the
+    //: plane is `torch::empty` and is written WHOLE, so nothing may be skipped.
+    if (state_out) run = run || (paged ? W : true);
+    if (run) table |= 1u << v;
+  }
+  return table;
+}
+
 //: the arm surface, DECLARED only -- definitions live in the instantiation
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
-template <int C, int BC, int D, int B, bool STATE>
+template <int C, int BC, int D, int B, bool STATE, bool PERSIST>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream);
 template <int D, int B, int BC>
 cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
@@ -90,8 +129,30 @@ cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits
 template <int D, int B, int BC>
 cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
                                           uint8_t* block_bits, int BH, int L, cudaStream_t stream);
-template <int C, int BC, int D, int B, bool STATE>
+template <int C, int BC, int D, int B, bool STATE, bool PERSIST>
 std::array<int64_t, 9> query_chunk_census_arm();
+//: THE KERNEL AXES, RESOLVED: the carried state's I/O and the launch shape are
+//: compiled in or out, and which pair a call wants is read off its pointers.  An
+//: arm whose register census cannot hold the work loop carries no persistent
+//: variant at all, and asking it for one is refused BY NAME rather than served by
+//: the full grid -- a silent downgrade is how a measurement gets attributed to a
+//: launch that never ran (docs/internals/chunk/chunk.md#run-table).
+template <int C, int BC, int D, int B>
+static cudaError_t launch_variant(const ChunkParams& p, cudaStream_t stream) {
+  const bool state = p.s_in != nullptr || p.s_out != nullptr;
+  if (p.block_bits != nullptr) {
+    TORCH_CHECK(CHUNK_ARM_PERSIST_BUILT(C, BC, D, B),
+                "the sparse grid is not built for arm chunk=", C, " BC=", BC, " depth=", D,
+                ": its register census does not hold the work loop. Run this arm without a "
+                "liveness bitmap, or run the sparse grid on an arm that carries it.");
+    if constexpr (CHUNK_ARM_PERSIST_BUILT(C, BC, D, B))
+      return state ? launch_chunk_arm<C, BC, D, B, true, true>(p, stream)
+                   : launch_chunk_arm<C, BC, D, B, false, true>(p, stream);
+  }
+  return state ? launch_chunk_arm<C, BC, D, B, true, false>(p, stream)
+               : launch_chunk_arm<C, BC, D, B, false, false>(p, stream);
+}
+
 //: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
 //: because the cook wants them apart.  It is a SEPARATE ENTRY POINT so that its
 //: cost is reported on its own line and never folded into a kernel delta.
@@ -322,7 +383,8 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                                        int64_t bc, std::vector<int64_t> widths,
                                        c10::optional<torch::Tensor> s_in,
                                        c10::optional<torch::Tensor> s_out,
-                                       c10::optional<torch::Tensor> page_tbl) {
+                                       c10::optional<torch::Tensor> page_tbl,
+                                       c10::optional<torch::Tensor> block_bits) {
   check_arch_table();
   //: the write gain: per-token positive scalar, bf16, [B,H,L] -- spec 4.2.
   TORCH_CHECK(gw.is_cuda() && gw.is_contiguous() && gw.scalar_type() == torch::kBFloat16
@@ -343,16 +405,32 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   long N = 1;
   for (auto w : widths) N *= w;
   const int32_t* const pageTbl = page_table(page_tbl, BH, N);
+  //: THE SPARSE GRID IS THE CALLER'S CHOICE, taken by handing over a bitmap.
+  //: There is no in-kernel density test to make it: what a skipped block would
+  //: have cost is a property of the call class, and the caller is what knows
+  //: whether this call's routing is worth reducing at all.
+  const uint8_t* blockBits = nullptr;
+  if (block_bits.has_value()) {
+    const torch::Tensor& b = *block_bits;
+    TORCH_CHECK(b.is_cuda() && b.is_contiguous() && b.scalar_type() == torch::kUInt8 && b.dim() == 2
+                    && b.size(0) == BH,
+                "the liveness bitmap is a contiguous uint8 [BH, N/BC] tensor");
+    blockBits = reinterpret_cast<const uint8_t*>(b.data_ptr());
+  }
   const float* const sIn = state_plane(s_in, "the entry state", BH, N, pageTbl != nullptr);
   float* const sOut = state_plane(s_out, "the final state", BH, N, pageTbl != nullptr);
   TORCH_CHECK(pageTbl == nullptr || sIn != nullptr || sOut != nullptr,
               "a page table resolves the state plane's atoms; a call that "
               "carries no state has nothing for it to resolve");
   //: THE STATE VARIANT IS A STRUCTURAL CHOICE, taken here: a call that carries
-  //: no state runs the kernel that has no state code in it at all
+  //: no state runs the kernel that has no state code in it at all, and a call
+  //: that hands over no liveness bitmap runs the one that has no work loop in it
   //: (docs/internals/chunk/chunk_kernel.md).
 #define CHUNK_DISPATCH_X(C_, BC_, D_, B_)                                   \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                    \
+    const long rows = (long)LevelPlan<D_, B_, BC_>::blocks;                    \
+    TORCH_CHECK(blockBits == nullptr || block_bits->size(1) == rows,           \
+                "the liveness bitmap was built for a different arm");          \
     const long want = (long)BH * 2 * LevelPlan<D_, B_, BC_>::entries *        \
                       tok_words(L);                                          \
     TORCH_CHECK(tbl.numel() == want,                                           \
@@ -364,12 +442,12 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    reinterpret_cast<const uint32_t *>(tbl.data_ptr()),         \
                    o.data_ptr<float>(), den.data_ptr<float>(),                 \
                    sIn,             sOut,             pageTbl,                 \
-                   BH,              L};                                        \
+                   blockBits,                                                  \
+                   run_table(sIn != nullptr, sOut != nullptr,                   \
+                             pageTbl != nullptr),                              \
+                   sm_count(),      BH,              L};                                        \
     const auto stream_ = at::cuda::getCurrentCUDAStream();                     \
-    C10_CUDA_CHECK((sIn != nullptr || sOut != nullptr)                         \
-                       ? (launch_chunk_arm<C_, BC_, D_, B_, true>(p_, stream_)) \
-                       : (launch_chunk_arm<C_, BC_, D_, B_, false>(p_,          \
-                                                                   stream_)));  \
+    C10_CUDA_CHECK((launch_variant<C_, BC_, D_, B_>(p_, stream_)));            \
     return {o, den};                                                           \
   }
   CHUNK_ARMS_X(CHUNK_DISPATCH_X)
@@ -380,9 +458,10 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
                       int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
-                      c10::optional<torch::Tensor> page_tbl) {
+                      c10::optional<torch::Tensor> page_tbl,
+                      c10::optional<torch::Tensor> block_bits) {
   auto tbl = union_table(pr, pw, v, chunk, bc, widths);
-  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl);
+  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl, block_bits);
   return divide_pass(nd[0], nd[1], eps);
 }
 
@@ -401,14 +480,25 @@ std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t>
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
-  //: BOTH STATE VARIANTS ARE REPORTED, the stateless one first: they are two
-  //: kernels with two register censuses, and a stamp that named only one of them
-  //: would attribute a measurement to a kernel the launch may not have run.
-#define CHUNK_CENSUS_X(C_, BC_, D_, B_)                                         \
-  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                        \
-    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, false>()) r.push_back(x); \
-    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, true>()) r.push_back(x);  \
-    return r;                                                                      \
+  //: EVERY BUILT VARIANT IS REPORTED, full grid first and stateless first within
+  //: each: they are four kernels with four register censuses, and a stamp that
+  //: named one of them would attribute a measurement to a kernel the launch may
+  //: not have run.  An arm with no persistent variant reports the unbuilt
+  //: sentinel for it rather than repeating a row that describes another kernel.
+#define CHUNK_CENSUS_X(C_, BC_, D_, B_)                                                \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) {                            \
+    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, false, false>())             \
+      r.push_back(x);                                                                  \
+    for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, true, false>()) r.push_back(x); \
+    if constexpr (CHUNK_ARM_PERSIST_BUILT(C_, BC_, D_, B_)) {                          \
+      for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, false, true>())            \
+        r.push_back(x);                                                                \
+      for (auto x : query_chunk_census_arm<C_, BC_, D_, B_, true, true>())             \
+        r.push_back(x);                                                                \
+    } else {                                                                           \
+      for (int i = 0; i < 18; ++i) r.push_back(-1);                                    \
+    }                                                                                  \
+    return r;                                                                          \
   }
   CHUNK_ARMS_X(CHUNK_CENSUS_X)
 #undef CHUNK_CENSUS_X

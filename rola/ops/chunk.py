@@ -108,7 +108,8 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
 
 
 def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
-        want_state: bool = False, arena=None) -> tuple[torch.Tensor, torch.Tensor | None]:
+        want_state: bool = False, arena=None,
+        sparse_grid: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
 
     `state_in` is a plane of the call's backing, or `None` for a fresh sequence;
@@ -123,6 +124,13 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     than defensive because the plan's bitmap is the write set exactly
     (docs/internals/paging/paging.md). Dense is `arena=None`, where the slot IS
     the atom.
+
+    `sparse_grid` runs the launch over LIVE BLOCKS ONLY: a block-grain liveness
+    reduction over this call's union table, then a fixed persistent grid whose
+    work loop skips the dead ones. It is the PLAN's choice and never a density
+    heuristic inside the kernel -- the reduction costs a launch of its own, so it
+    pays where the dead-block count is large and not where it is not
+    (docs/internals/chunk/chunk_kernel.md#work-loop).
     """
     m = extension()
     widths = tuple(l.width for l in routes.topology.levels)
@@ -140,8 +148,12 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
         arena.wait()
         page_tbl = arena.page_table
         s_out = arena.state if want_state else None
-    y = m.chunk_forward(pr, pw, gw, vk, c, bc, list(widths), READOUT_EPS, state_in, s_out,
-                        page_tbl)
+    tbl = m.chunk_union_table(pr, pw, vk, c, bc, list(widths))
+    bits = (m.chunk_block_bits(tbl, bc, list(widths), routes.tokens, page_tbl)
+            if sparse_grid else None)
+    num, den = m.chunk_forward_raw(pr, pw, gw, vk, tbl, c, bc, list(widths), state_in, s_out,
+                                   page_tbl, bits)
+    y = m.chunk_divide_pass(num, den, READOUT_EPS)
     #: kernel arm hands back the operand dtype (the facade's documented
     #: contract); the fp32 accumulator is the kernel's, not the caller's.
     return y.permute(0, 2, 1, 3).to(v.dtype), s_out

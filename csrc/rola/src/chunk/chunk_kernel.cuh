@@ -29,6 +29,14 @@ struct ChunkParams {
   //: the atom -> slot map, `[BH, N/16]` int32 with `-1` for an absent atom; null
   //: is the DENSE plane, where the slot IS the atom.
   const int32_t* page_tbl;
+  //: THE SPARSE GRID IS A PLAN CHOICE, and this null is where it is taken: a
+  //: bitmap makes the launch a fixed persistent grid whose work loop strides,
+  //: its absence the full one-CTA-per-block grid.  `run_table` is the truth
+  //: table over the bitmap's three bits and `sm_count` sizes the persistent
+  //: grid; both are the HOST's (docs/internals/chunk/chunk.md#run-table).
+  const uint8_t* block_bits;
+  uint32_t run_table;
+  int sm_count;
   int BH, L;
 };
 }  // namespace rola::chunk
@@ -46,6 +54,13 @@ static_assert(design::kStateResidency == design::StateResidency::REGISTERS && kM
               "different algorithm.");
 
 static constexpr int kBuildMagic = 6700101;
+
+//: THE SKIP PREDICATE IS A TRUTH TABLE over the liveness byte's three bits, so
+//: every call class is ONE host constant and the kernel carries no branching
+//: taxonomy (docs/internals/chunk/chunk.md#run-table).
+__device__ __forceinline__ bool live_block(uint8_t v, uint32_t run_table) {
+  return ((run_table >> (v & 7u)) & 1u) != 0u;
+}
 
 //: THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle
 //: the stats pass keys residency to.  It is the MMA's k-extent because the
@@ -338,13 +353,13 @@ constexpr int kCtaTarget =
 //: runtime null test. THE STATE POINTERS AND THE PAGE TABLE MUST STAY THE LAST
 //: PARAMETERS, after `L`: a parameter inserted mid-list moves every later
 //: parameter's constant-bank displacement -- docs/internals/chunk/chunk_kernel.md#state-axis
-template <int C, int D, int B, int BC, bool STATE>
+template <int C, int D, int B, int BC, bool STATE, bool PERSIST>
 __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacted_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ tbl, float* __restrict__ o, float* __restrict__ den, int L,
-    const float* __restrict__ s_in, float* __restrict__ s_out,
-    const int32_t* __restrict__ page_tbl) {
+    const float* __restrict__ s_in, float* __restrict__ s_out, const int32_t* __restrict__ page_tbl,
+    const uint8_t* __restrict__ block_bits, uint32_t run_table) {
   using LP = LevelPlan<D, B, BC>;
   using G = Geom<C, BC>;
   static constexpr bool SWZ = false;  // the retired axis, folded (see Geom)
@@ -482,57 +497,78 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   //:   GROUPS | denominators x GROUPS | index ring | formed schedule ] -- the
   //: order is Geom::fixed's, and the per-group regions are indexed by `grp`.
   extern __shared__ __align__(16) char smem_base[];
-  __nv_bfloat16* sv = reinterpret_cast<__nv_bfloat16*>(smem_raw);
-  __nv_bfloat16* srAll = sv + STAGES * C * LdV;
-  __nv_bfloat16* sr = srAll + grp * (2 * C * LdS);
-  __nv_bfloat16* sw = sr + C * LdS;
-  __nv_bfloat16* sg = srAll + GROUPS * (2 * C * LdS);
-  float* sgf = reinterpret_cast<float*>(sg + C * LdG);
-  float* soAll = sgf + (GROUPS > 1 ? GROUPS * C * G::LdGf : 0);
-  float* so = soAll + grp * (C * LdO + kUnits * C);
-  float* sden = so + C * LdO;
-  char* sidx = reinterpret_cast<char*>(soAll + GROUPS * (C * LdO + kUnits * C));
-  //: THE FORMED SCHEDULE, one word per thirty-two tokens per side, and the walk's
-  //: published state behind it.
-  uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
-  uint32_t* sfW = sfR + kFormWords;
-  int* scook = reinterpret_cast<int*>(sfW + kFormWords);
-  static_assert((GROUPS * 2 * C * LdS + C * LdG) % 8 == 0,
-                "the fp32 region must start 16-byte aligned");
-  static_assert((C * LdO + kUnits * C) % 4 == 0, "the index ring must start 16-byte aligned");
-  static_assert(G::idx_slot % 16 == 0,
-                "the formed schedule follows the index ring and must stay aligned");
 
-  const int blk = blockIdx.x;  // which block of BC slots this CTA owns
-  const long base = (long)blockIdx.y * L * kD;
+  //: this (bh)'s liveness row -- the persistent variant's only extra load.
+  [[maybe_unused]] const uint8_t* bitRow = nullptr;
+  if constexpr (PERSIST) bitRow = pin_address(block_bits + (long)blockIdx.y * LP::blocks);
 
-  //: THE INDEX RING'S ACCESSORS.  A slot is a header the whole CTA reads
-  //: (`nr`, `nw`, whether the super-chunk exists at all) followed by the two
-  //: lists and the thresholds.
-  auto ihdr = [&](int d) { return reinterpret_cast<int*>(sidx + d * G::idx_slot); };
-  auto iread = [&](int d) { return reinterpret_cast<uint16_t*>(sidx + d * G::idx_slot + G::hdr); };
-  auto iwrite = [&](int d) { return iread(d) + C; };
-  auto ithr = [&](int d) {
-    return reinterpret_cast<uint8_t*>(sidx + d * G::idx_slot + G::hdr + 4 * C);
-  };
+  //: THE WORK LOOP, and it OPENS HERE, ABOVE THE ADDRESSING.  Everything below
+  //: is re-derived per work item on purpose: hoisting it would make every value
+  //: live across the back edge, which MEASURED costs +20 to +34 registers and
+  //: spills, against +2 for re-deriving.  The same trade the state I/O already
+  //: takes (docs/internals/chunk/chunk_kernel.md#work-loop).
+#pragma unroll 1
+  for (int blk = (int)blockIdx.x, end = PERSIST ? (int)LP::blocks : (int)blockIdx.x + 1; blk < end;
+       blk += (PERSIST ? (int)gridDim.x : 1)) {
+    //: CTA-UNIFORM by construction -- the byte is per (blockIdx.y, blk), so the
+    //: whole CTA continues together and no rendezvous is left half-arrived.
+    if constexpr (PERSIST) {
+      if (!live_block(*reinterpret_cast<const uint8_t*>(gather_ptr(bitRow, (uint32_t)blk)),
+                      run_table))
+        continue;
+    }
+    __nv_bfloat16* sv = reinterpret_cast<__nv_bfloat16*>(smem_raw);
+    __nv_bfloat16* srAll = sv + STAGES * C * LdV;
+    __nv_bfloat16* sr = srAll + grp * (2 * C * LdS);
+    __nv_bfloat16* sw = sr + C * LdS;
+    __nv_bfloat16* sg = srAll + GROUPS * (2 * C * LdS);
+    float* sgf = reinterpret_cast<float*>(sg + C * LdG);
+    float* soAll = sgf + (GROUPS > 1 ? GROUPS * C * G::LdGf : 0);
+    float* so = soAll + grp * (C * LdO + kUnits * C);
+    float* sden = so + C * LdO;
+    char* sidx = reinterpret_cast<char*>(soAll + GROUPS * (C * LdO + kUnits * C));
+    //: THE FORMED SCHEDULE, one word per thirty-two tokens per side, and the walk's
+    //: published state behind it.
+    uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
+    uint32_t* sfW = sfR + kFormWords;
+    int* scook = reinterpret_cast<int*>(sfW + kFormWords);
+    static_assert((GROUPS * 2 * C * LdS + C * LdG) % 8 == 0,
+                  "the fp32 region must start 16-byte aligned");
+    static_assert((C * LdO + kUnits * C) % 4 == 0, "the index ring must start 16-byte aligned");
+    static_assert(G::idx_slot % 16 == 0,
+                  "the formed schedule follows the index ring and must stay aligned");
 
-  // The block's aligned digit ranges.  Compile-time divisors, formed once.
-  //: (G3) the per-level digit offsets come from the plan's one map below, at
-  //: the columns' construction -- the legacy lead_off/tail_off pair is gone.
+    const long base = (long)blockIdx.y * L * kD;
 
-  // ---- lane-invariant operand addressing -----------------------------------
-  const int lr = lane & 7, tl = lane >> 3;
-  const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
-  const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
-  const uint32_t rowF = SWZ ? (uint32_t)(rF * kRowS) : (uint32_t)((rF * LdS + cF * 8) * 2);
-  const uint32_t rowT = SWZ ? (uint32_t)(rT * kRowS) : (uint32_t)((rT * LdS + cT * 8) * 2);
-  const uint32_t rowTV = SWZ ? (uint32_t)(rT * kRowV) : (uint32_t)((rT * LdV + cT * 8) * 2);
-  uint32_t tabF[kChunkS], tabT[kChunkS];
+    //: THE INDEX RING'S ACCESSORS.  A slot is a header the whole CTA reads
+    //: (`nr`, `nw`, whether the super-chunk exists at all) followed by the two
+    //: lists and the thresholds.
+    auto ihdr = [&](int d) { return reinterpret_cast<int*>(sidx + d * G::idx_slot); };
+    auto iread = [&](int d) {
+      return reinterpret_cast<uint16_t*>(sidx + d * G::idx_slot + G::hdr);
+    };
+    auto iwrite = [&](int d) { return iread(d) + C; };
+    auto ithr = [&](int d) {
+      return reinterpret_cast<uint8_t*>(sidx + d * G::idx_slot + G::hdr + 4 * C);
+    };
+
+    // The block's aligned digit ranges.  Compile-time divisors, formed once.
+    //: (G3) the per-level digit offsets come from the plan's one map below, at
+    //: the columns' construction -- the legacy lead_off/tail_off pair is gone.
+
+    // ---- lane-invariant operand addressing -----------------------------------
+    const int lr = lane & 7, tl = lane >> 3;
+    const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
+    const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
+    const uint32_t rowF = SWZ ? (uint32_t)(rF * kRowS) : (uint32_t)((rF * LdS + cF * 8) * 2);
+    const uint32_t rowT = SWZ ? (uint32_t)(rT * kRowS) : (uint32_t)((rT * LdS + cT * 8) * 2);
+    const uint32_t rowTV = SWZ ? (uint32_t)(rT * kRowV) : (uint32_t)((rT * LdV + cT * 8) * 2);
+    uint32_t tabF[kChunkS], tabT[kChunkS];
 #pragma unroll
-  for (int g = 0; g < kChunkS; ++g) {
-    tabF[g] = (uint32_t)((((g + cF) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
-    tabT[g] = (uint32_t)((((g + cT) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
-  }
+    for (int g = 0; g < kChunkS; ++g) {
+      tabF[g] = (uint32_t)((((g + cF) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
+      tabT[g] = (uint32_t)((((g + cT) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
+    }
 #define ADDRF(b_, R_, g_) \
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowS) + tabF[(g_)]) \
        : ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2)))
@@ -540,17 +576,17 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowS) + tabT[(g_)]) \
        : ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2)))
 
-  //: THE MASS CHANNEL'S OWN OPERAND ADDRESSES.  This unit's tile `q` is the
-  //: value path's tile `q * kMassUnits + warp`, so its address is the value
-  //: address at a compile-time `q` plus a LOOP-INVARIANT per-unit displacement.
-  const uint32_t massOff = (uint32_t)(gwarp * kMmaK * (int)sizeof(__nv_bfloat16));
-  uint32_t tabMT[kMassKD], tabMF[kMassKD];
+    //: THE MASS CHANNEL'S OWN OPERAND ADDRESSES.  This unit's tile `q` is the
+    //: value path's tile `q * kMassUnits + warp`, so its address is the value
+    //: address at a compile-time `q` plus a LOOP-INVARIANT per-unit displacement.
+    const uint32_t massOff = (uint32_t)(gwarp * kMmaK * (int)sizeof(__nv_bfloat16));
+    uint32_t tabMT[kMassKD], tabMF[kMassKD];
 #pragma unroll
-  for (int q = 0; q < kMassKD; ++q) {
-    const int g = 2 * (q * kMassUnits + gwarp);
-    tabMT[q] = (uint32_t)((((g + cT) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
-    tabMF[q] = (uint32_t)((((g + cF) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
-  }
+    for (int q = 0; q < kMassKD; ++q) {
+      const int g = 2 * (q * kMassUnits + gwarp);
+      tabMT[q] = (uint32_t)((((g + cT) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
+      tabMF[q] = (uint32_t)((((g + cF) & (kChunkS - 1)) ^ (lr & (kChunkS - 1))) << 4);
+    }
 #define ADDRT_M(b_, R_, q_) \
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowS) + tabMT[(q_)]) \
        : ((b_) + (uint32_t)(((R_) * LdS + (2 * (q_) * kMassUnits) * 8) * 2) + massOff))
@@ -558,362 +594,363 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowS) + tabMF[(q_)]) \
        : ((b_) + (uint32_t)(((R_) * LdS + (2 * (q_) * kMassUnits) * 8) * 2) + massOff))
 
-  const int offBg = (rT * LdG + cT * 8) * 2;
+    const int offBg = (rT * LdG + cT * 8) * 2;
 
-  const int gm0 = (gwarp / NSPLIT) * MPW;
-  const int gn0 = (gwarp % NSPLIT) * NPW;
-  const int dv0 = gwarp * 16;
-  constexpr int DVG_STEP = 2;
-  const int dvg = gwarp * DVG_STEP;
-  const uint32_t dvTabT = (uint32_t)((((dvg + cT) & (kChunkV - 1)) ^ lr) << 4);
+    const int gm0 = (gwarp / NSPLIT) * MPW;
+    const int gn0 = (gwarp % NSPLIT) * NPW;
+    const int dv0 = gwarp * 16;
+    constexpr int DVG_STEP = 2;
+    const int dvg = gwarp * DVG_STEP;
+    const uint32_t dvTabT = (uint32_t)((((dvg + cT) & (kChunkV - 1)) ^ lr) << 4);
 #define ADDRT_DV(b_, R_) \
   (SWZ ? ((b_) + (uint32_t)((R_) * (int)kRowV) + dvTabT) \
        : ((b_) + (uint32_t)(((R_) * LdV + dv0) * 2)))
 
-  // The state, transposed: m = d_v (this warp's 16 rows), n = this block's slots.
-  float st[NDV][4];
+    // The state, transposed: m = d_v (this warp's 16 rows), n = this block's slots.
+    float st[NDV][4];
 #pragma unroll
-  for (int j = 0; j < NDV; ++j)
+    for (int j = 0; j < NDV; ++j)
 #pragma unroll
-    for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
+      for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
 
-  //: THE d_v+1-th CHANNEL'S STATE, in the same accumulator layout and on the
-  //: same recurrence: m = the mass tile (row 0 is the channel, rows 1..15 are
-  //: the m quantum's padding and are identically zero), n = this unit's share of
-  //: the block's slots.
-  float mass_st[kMassTiles][4];
+    //: THE d_v+1-th CHANNEL'S STATE, in the same accumulator layout and on the
+    //: same recurrence: m = the mass tile (row 0 is the channel, rows 1..15 are
+    //: the m quantum's padding and are identically zero), n = this unit's share of
+    //: the block's slots.
+    float mass_st[kMassTiles][4];
 #pragma unroll
-  for (int j = 0; j < kMassTiles; ++j)
+    for (int j = 0; j < kMassTiles; ++j)
 #pragma unroll
-    for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
+      for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
-  //: THE ONES OPERAND, WHICH IS AN IMMEDIATE.  The value of the mass channel is
-  //: literally 1, so the A fragment of the fold and of the intra is the constant
-  //: whose row 0 is all ones and whose padding rows are zero.
-  constexpr uint32_t kOnesPair = 0x3F803F80u;  // two bf16 1.0
-  uint32_t ones_a[4];
-  ones_a[0] = (lane >> 2) == 0 ? kOnesPair : 0u;
-  ones_a[1] = 0u;
-  ones_a[2] = ones_a[0];
-  ones_a[3] = 0u;
+    //: THE ONES OPERAND, WHICH IS AN IMMEDIATE.  The value of the mass channel is
+    //: literally 1, so the A fragment of the fold and of the intra is the constant
+    //: whose row 0 is all ones and whose padding rows are zero.
+    constexpr uint32_t kOnesPair = 0x3F803F80u;  // two bf16 1.0
+    uint32_t ones_a[4];
+    ones_a[0] = (lane >> 2) == 0 ? kOnesPair : 0u;
+    ones_a[1] = 0u;
+    ones_a[2] = ones_a[0];
+    ones_a[3] = 0u;
 
-  // ---- global -> shared staging of V, GATHERED BY THE WRITE LIST -----------
-  //: V IS A WRITE-SIDE QUANTITY.  Both terms that consume it -- the fold and the
-  //: intra -- contract over the WRITE token axis, so one gather serves both and
-  //: the read list never touches V.
-  constexpr int kRowsPerPass = kThreads / kChunkV;
-  constexpr int kPasses = C / kRowsPerPass;
-  static_assert(kPasses >= 1, "a chunk must be at least kThreads/8 rows");
-  const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
-  const __nv_bfloat16* const vPlane = pin_address(v + base);
-  const uint32_t ldColB = (uint32_t)(ldCol * 2);
-  constexpr uint32_t kVRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
+    // ---- global -> shared staging of V, GATHERED BY THE WRITE LIST -----------
+    //: V IS A WRITE-SIDE QUANTITY.  Both terms that consume it -- the fold and the
+    //: intra -- contract over the WRITE token axis, so one gather serves both and
+    //: the read list never touches V.
+    constexpr int kRowsPerPass = kThreads / kChunkV;
+    constexpr int kPasses = C / kRowsPerPass;
+    static_assert(kPasses >= 1, "a chunk must be at least kThreads/8 rows");
+    const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
+    const __nv_bfloat16* const vPlane = pin_address(v + base);
+    const uint32_t ldColB = (uint32_t)(ldCol * 2);
+    constexpr uint32_t kVRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
 
-  const uint32_t stgOff =
-      SWZ ? (uint32_t)(ldRow * (int)kRowV + (((tid % kChunkV) ^ (ldRow & 7)) << 4))
-          : (uint32_t)((ldRow * LdV + ldCol) * 2);
+    const uint32_t stgOff =
+        SWZ ? (uint32_t)(ldRow * (int)kRowV + (((tid % kChunkV) ^ (ldRow & 7)) << 4))
+            : (uint32_t)((ldRow * LdV + ldCol) * 2);
 
-  constexpr uint32_t kSlot = (uint32_t)(C * LdV) * 2;
-  constexpr uint32_t kRing = STAGES * kSlot;
-  const uint32_t svL = smem_addr(sv) + stgOff;
-  const uint32_t svB = smem_addr(sv);
-  const uint32_t sgT = smem_addr(sg) + (uint32_t)offBg;
-  uint32_t stgSlot = 0, cmpSlot = 0;
+    constexpr uint32_t kSlot = (uint32_t)(C * LdV) * 2;
+    constexpr uint32_t kRing = STAGES * kSlot;
+    const uint32_t svL = smem_addr(sv) + stgOff;
+    const uint32_t svB = smem_addr(sv);
+    const uint32_t sgT = smem_addr(sg) + (uint32_t)offBg;
+    uint32_t stgSlot = 0, cmpSlot = 0;
 
-  const uint32_t arF = smem_addr(sr) + rowF;
-  const uint32_t brT = smem_addr(sr) + rowT;
-  const uint32_t bwT = smem_addr(sw) + rowT;
-  const uint32_t bwF = smem_addr(sw) + rowF;
+    const uint32_t arF = smem_addr(sr) + rowF;
+    const uint32_t brT = smem_addr(sr) + rowT;
+    const uint32_t bwT = smem_addr(sw) + rowT;
+    const uint32_t bwF = smem_addr(sw) + rowF;
 
-  // ---- the fan-in's own addressing -----------------------------------------
-  // CONSECUTIVE CHANNELS SIT IN CONSECUTIVE LANES OF ONE REDUCTION.  That is a
-  // property of the REDUCTION and not of the thread: this architecture's
-  // reduction carries ONE channel, so what decides how much output one of them
-  // covers is the span its 32 lanes reach.  Giving a THREAD the consecutive run
-  // instead leaves a reduction's lanes strided by that run, and the coalescer
-  // then touches four times the sectors for the same bytes.
-  constexpr int kFanLanes = 32;
-  constexpr int kFanPerThr = kD / kFanLanes;
-  constexpr int kFanRows = kGroupThreads / kFanLanes;
-  constexpr int kFanPasses = C / kFanRows;
-  static_assert(kD % kFanLanes == 0 && kGroupThreads % kFanLanes == 0,
-                "a reduction's lanes must tile both an output row and the CTA");
-  static_assert(kFanPasses * kFanRows == C && kFanPasses >= 1,
-                "the fan-in's passes must cover the chunk exactly");
-  const int fanRow = gtid / kFanLanes, fanCol = gtid % kFanLanes;
-  float* const oPlane = pin_address(o + base);
-  float* const denPlane = pin_address(den + (long)blockIdx.y * L);
-  const uint32_t fanColB = (uint32_t)(fanCol * (int)sizeof(float));
-  constexpr uint32_t kORowB = (uint32_t)(kD * (int)sizeof(float));
-  const int fanE = fanRow * LdO + fanCol;
+    // ---- the fan-in's own addressing -----------------------------------------
+    // CONSECUTIVE CHANNELS SIT IN CONSECUTIVE LANES OF ONE REDUCTION.  That is a
+    // property of the REDUCTION and not of the thread: this architecture's
+    // reduction carries ONE channel, so what decides how much output one of them
+    // covers is the span its 32 lanes reach.  Giving a THREAD the consecutive run
+    // instead leaves a reduction's lanes strided by that run, and the coalescer
+    // then touches four times the sectors for the same bytes.
+    constexpr int kFanLanes = 32;
+    constexpr int kFanPerThr = kD / kFanLanes;
+    constexpr int kFanRows = kGroupThreads / kFanLanes;
+    constexpr int kFanPasses = C / kFanRows;
+    static_assert(kD % kFanLanes == 0 && kGroupThreads % kFanLanes == 0,
+                  "a reduction's lanes must tile both an output row and the CTA");
+    static_assert(kFanPasses * kFanRows == C && kFanPasses >= 1,
+                  "the fan-in's passes must cover the chunk exactly");
+    const int fanRow = gtid / kFanLanes, fanCol = gtid % kFanLanes;
+    float* const oPlane = pin_address(o + base);
+    float* const denPlane = pin_address(den + (long)blockIdx.y * L);
+    const uint32_t fanColB = (uint32_t)(fanCol * (int)sizeof(float));
+    constexpr uint32_t kORowB = (uint32_t)(kD * (int)sizeof(float));
+    const int fanE = fanRow * LdO + fanCol;
 
-  // Output staging write index: this lane owns d_v = dv0 + (lane>>2) and that
-  // + 8, at tokens 8j + 2*(lane&3) + {0,1}.
-  const int oq = (lane & 3) * 2, om = lane >> 2;
-  int oE[2][2];
+    // Output staging write index: this lane owns d_v = dv0 + (lane>>2) and that
+    // + 8, at tokens 8j + 2*(lane&3) + {0,1}.
+    const int oq = (lane & 3) * 2, om = lane >> 2;
+    int oE[2][2];
 #pragma unroll
-  for (int e = 0; e < 2; ++e)
+    for (int e = 0; e < 2; ++e)
 #pragma unroll
-    for (int f = 0; f < 2; ++f) oE[e][f] = (oq + e) * LdO + dv0 + om + f * 8;
+      for (int f = 0; f < 2; ++f) oE[e][f] = (oq + e) * LdO + dv0 + om + f * 8;
 
-  //: ---- the state plane's addressing and its fragment ownership map --------
-  //: WHICH THREAD OWNS WHICH ELEMENT of an atom's page, as an index into the
-  //: output staging buffer.  Element `k` of an accumulator tile sits at row
-  //: `(lane>>2) + 8*(k>>1)` and column `(lane&3)*2 + (k&1)`; for the value
-  //: state the rows are channels and the columns are leaves, and for the mass
-  //: state only row 0 is the channel, so only lanes 0..3 and `k in {0,1}` carry
-  //: it -- the same restriction the denominator store already makes.
-  auto page_value = [&](int p, int k) {
-    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + dv0 + (lane >> 2) + 8 * (k >> 1);
-  };
-  auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kD; };
-  //: One pass over an atom's page; `body` takes the staging index and the global
-  //: byte displacement. THE SWEEP CARRIES A CURSOR RATHER THAN DIVIDING, and the
-  //: accesses are plain floats -- docs/internals/chunk/chunk_kernel.md#page-sweep
-  constexpr int kPageElems = kAtomLeaves * kCols;
-  constexpr int kPageCarry = kGroupThreads - kCols;
-  static_assert(kGroupThreads > kCols && kGroupThreads < 2 * kCols,
-                "the page sweep's step must cross one row boundary, so its row "
-                "cursor advances by one or two and never by a division");
-  auto page_sweep = [&](uint32_t pageOff, auto&& body) {
-    int e = gtid;
-    int row = gtid < kCols ? 0 : 1;
-    int col = gtid < kCols ? gtid : gtid - kCols;
+    //: ---- the state plane's addressing and its fragment ownership map --------
+    //: WHICH THREAD OWNS WHICH ELEMENT of an atom's page, as an index into the
+    //: output staging buffer.  Element `k` of an accumulator tile sits at row
+    //: `(lane>>2) + 8*(k>>1)` and column `(lane&3)*2 + (k&1)`; for the value
+    //: state the rows are channels and the columns are leaves, and for the mass
+    //: state only row 0 is the channel, so only lanes 0..3 and `k in {0,1}` carry
+    //: it -- the same restriction the denominator store already makes.
+    auto page_value = [&](int p, int k) {
+      return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + dv0 + (lane >> 2) + 8 * (k >> 1);
+    };
+    auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kD; };
+    //: One pass over an atom's page; `body` takes the staging index and the global
+    //: byte displacement. THE SWEEP CARRIES A CURSOR RATHER THAN DIVIDING, and the
+    //: accesses are plain floats -- docs/internals/chunk/chunk_kernel.md#page-sweep
+    constexpr int kPageElems = kAtomLeaves * kCols;
+    constexpr int kPageCarry = kGroupThreads - kCols;
+    static_assert(kGroupThreads > kCols && kGroupThreads < 2 * kCols,
+                  "the page sweep's step must cross one row boundary, so its row "
+                  "cursor advances by one or two and never by a division");
+    auto page_sweep = [&](uint32_t pageOff, auto&& body) {
+      int e = gtid;
+      int row = gtid < kCols ? 0 : 1;
+      int col = gtid < kCols ? gtid : gtid - kCols;
 #pragma unroll 1
-    while (e < kPageElems) {
-      body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
-      e += kGroupThreads;
-      col += kPageCarry;
-      const bool wrap = col >= kCols;
-      row += wrap ? 2 : 1;
-      col -= wrap ? kCols : 0;
-    }
-  };
-  //: This group's first logical atom, `AtomKeying.atom_of` verbatim. DERIVED
-  //: INSIDE each state block so no state I/O is live across the main loop, and
-  //: ALL-INT because the 32-bit displacement already caps the page count
-  //: -- docs/internals/chunk/chunk_kernel.md#atom-index
-  constexpr int kAtomsPerBh = (int)(LP::slots / kAtomLeaves);
-  auto atom_first = [&] {
-    return (int)blockIdx.y * kAtomsPerBh + LP::block_base(blk) / kAtomLeaves + grp * kAtoms;
-  };
-  //: THE ONE BASE TRANSLATION: a null table is the dense plane, a table is the
-  //: paged one, `-1` is an atom with no page. EVERYTHING PER ATOM MUST STAY A
-  //: 32-BIT BYTE DISPLACEMENT from a PLAIN pinned origin -- a 64-bit pointer sum
-  //: here reaches the main loop's span as a widening multiply
-  //: -- docs/internals/chunk/chunk_kernel.md#base-translation, docs/internals/chunk/chunk_kernel.md#state-addressing
-  auto slot_of = [](const int32_t* tbl, int atom) {
-    return tbl != nullptr ? *reinterpret_cast<const int32_t*>(
-                                gather_ptr(tbl, (uint32_t)atom * (uint32_t)sizeof(int32_t)))
-                          : atom;
-  };
-  auto page_off = [](int slot) {
-    return (uint32_t)slot * (uint32_t)(kPageElems * (int)sizeof(float));
-  };
-
-  //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
-  //: write entry stages nothing, but the slot advances either way so that the
-  //: wait/commit accounting stays rung 2's.
-  auto stage_chunk = [&](int d, bool go) {
-    if (go) {
-      const uint16_t* lw = iwrite(d);
-      //: the window, folded (6E): one uniform multiply-add per staged chunk.
-      const uint32_t winCol = ldColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * 2);
-#pragma unroll
-      for (int p = 0; p < kPasses; ++p) {
-        const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol;
-        stage_tile(svL + stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowV),
-                   gather_ptr(vPlane, off));
+      while (e < kPageElems) {
+        body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
+        e += kGroupThreads;
+        col += kPageCarry;
+        const bool wrap = col >= kCols;
+        row += wrap ? 2 : 1;
+        col -= wrap ? kCols : 0;
       }
-    }
-    stgSlot += kSlot;
-    if (stgSlot == kRing) stgSlot = 0;
-  };
+    };
+    //: This group's first logical atom, `AtomKeying.atom_of` verbatim. DERIVED
+    //: INSIDE each state block so no state I/O is live across the main loop, and
+    //: ALL-INT because the 32-bit displacement already caps the page count
+    //: -- docs/internals/chunk/chunk_kernel.md#atom-index
+    constexpr int kAtomsPerBh = (int)(LP::slots / kAtomLeaves);
+    auto atom_first = [&] {
+      return (int)blockIdx.y * kAtomsPerBh + LP::block_base(blk) / kAtomLeaves + grp * kAtoms;
+    };
+    //: THE ONE BASE TRANSLATION: a null table is the dense plane, a table is the
+    //: paged one, `-1` is an atom with no page. EVERYTHING PER ATOM MUST STAY A
+    //: 32-BIT BYTE DISPLACEMENT from a PLAIN pinned origin -- a 64-bit pointer sum
+    //: here reaches the main loop's span as a widening multiply
+    //: -- docs/internals/chunk/chunk_kernel.md#base-translation, docs/internals/chunk/chunk_kernel.md#state-addressing
+    auto slot_of = [](const int32_t* tbl, int atom) {
+      return tbl != nullptr ? *reinterpret_cast<const int32_t*>(
+                                  gather_ptr(tbl, (uint32_t)atom * (uint32_t)sizeof(int32_t)))
+                            : atom;
+    };
+    auto page_off = [](int slot) {
+      return (uint32_t)slot * (uint32_t)(kPageElems * (int)sizeof(float));
+    };
 
-  //: THE FAN-IN'S TARGET ROW IS GATHERED.  The partial staged for read entry `i`
-  //: belongs to token `r[i]`; entries past `nr` are the buffer's padding and have
-  //: no token, so they contribute nothing rather than contributing zero to
-  //: somewhere.
-  auto drain = [&](int d, int nr) {
-    const uint16_t* lrd = iread(d);
-    const uint32_t winFan =
-        fanColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * (int)sizeof(float));
+    //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  A super-chunk with no
+    //: write entry stages nothing, but the slot advances either way so that the
+    //: wait/commit accounting stays rung 2's.
+    auto stage_chunk = [&](int d, bool go) {
+      if (go) {
+        const uint16_t* lw = iwrite(d);
+        //: the window, folded (6E): one uniform multiply-add per staged chunk.
+        const uint32_t winCol = ldColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * 2);
 #pragma unroll
-    for (int p = 0; p < kFanPasses; ++p) {
-      const int row = fanRow + p * kFanRows;
-      if (row < nr) {
-        float* dp =
-            reinterpret_cast<float*>(gather_ptr(oPlane, (uint32_t)lrd[row] * kORowB + winFan));
-        const int e0 = fanE + p * kFanRows * LdO;
-#pragma unroll
-        for (int e = 0; e < kFanPerThr; ++e) fan_in_add(dp + e * kFanLanes, so[e0 + e * kFanLanes]);
+        for (int p = 0; p < kPasses; ++p) {
+          const uint32_t off = (uint32_t)lw[ldRow + p * kRowsPerPass] * kVRowB + winCol;
+          stage_tile(svL + stgSlot + (uint32_t)(p * kRowsPerPass * (int)kRowV),
+                     gather_ptr(vPlane, off));
+        }
       }
-    }
-  };
+      stgSlot += kSlot;
+      if (stgSlot == kRing) stgSlot = 0;
+    };
 
-  //: THE UNITS' PARTIAL DENOMINATORS MEET HERE, at no cost in barriers: the
-  //: rendezvous that already separates a chunk's staging from the next chunk's
-  //: drain is the one that publishes them.
-  auto drain_den = [&](int d, int nr) {
-    if (gtid < C && gtid < nr) {
-      float s = 0.f;
+    //: THE FAN-IN'S TARGET ROW IS GATHERED.  The partial staged for read entry `i`
+    //: belongs to token `r[i]`; entries past `nr` are the buffer's padding and have
+    //: no token, so they contribute nothing rather than contributing zero to
+    //: somewhere.
+    auto drain = [&](int d, int nr) {
+      const uint16_t* lrd = iread(d);
+      const uint32_t winFan =
+          fanColB + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * kD * (int)sizeof(float));
 #pragma unroll
-      for (int u = 0; u < kUnits; ++u) s += sden[u * C + gtid];
-      fan_in_add(
-          reinterpret_cast<float*>(gather_ptr(
-              denPlane, (uint32_t)iread(d)[gtid] * 4u
-                            + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * (int)sizeof(float)))),
-          s);
-    }
-  };
-
-  // ---- routed Kronecker coefficient production, digit-major ---------------
-  // Thread `tid` owns panel row `tid / kRowThr` and, within the block's
-  // rectangle, the leading digits [leadLocal, leadLocal + kLeadPerThr) and the
-  // trailing run [tailLocal, tailLocal + kTailPerThr).  THE DIGITS OF A SLOT ARE
-  // NEVER COMPUTED: they are the loop indices.  What compaction changes is only
-  // WHICH TOKEN a panel row reads -- the row's own slot addressing is untouched,
-  // which is why the gather costs a displacement and not a recomputation.
-  const int prow = gtid / kRowThr;
-  const int rIn = gtid % kRowThr;
-  const int leadLocal = (rIn / kThrPerLead) * kLeadPerThr;
-  const int tailLocal = (rIn % kThrPerLead) * kTailPerThr;
-  //: ONE BASE PER SIDE, AND THE TWO LEVELS ARE 32-BIT COLUMN DISPLACEMENTS.  A
-  //: base is a live 64-bit value for the whole kernel; the level a thread reads
-  //: is a byte offset inside its token's row and therefore adds before the
-  //: widening, not after it.
-  const long pbase = (long)blockIdx.y * L * kWtot;
-  constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
-  const __nv_bfloat16* const pRead = pin_address(pread + pbase);
-  const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
-  //: THE WRITE GAIN, DECOUPLED (spec 4.2): a per-token positive scalar, its
-  //: own plane -- the amplitudes stay pure simplexes, so the SUPPORT BITS ARE
-  //: UNGAINED and a small gain can never underflow a live token out of the
-  //: schedule.  The deposit (value AND mass columns) is gained; the clock a
-  //: later rung adds reads the UNGAINED coefficient, which is why the gain
-  //: folds AFTER the level chain and nowhere earlier.
-  const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
-  //: 1.0 as a bf16x2 splat: the read side's gain.  Folding it through the
-  //: same multiply keeps ONE produce body, and rn(a*1) = a keeps the read
-  //: panel BIT-EXACT -- the multiply is paid, the value is untouched.
-  constexpr uint32_t kOneSplat = 0x3F803F80u;
-  //: (G3) THE COLUMNS, ONE PER CONTRIBUTING LEVEL, all built from the plan's
-  //: col_base/off_at map.  A thread's composite outer index `oBase` splits into
-  //: a FAST digit (level D-2, varies across its owned run) and a fixed upper
-  //: row; the upper levels' digits are per-thread CONSTANTS, so each upper
-  //: level is one named column scalar -- at D = 2 there are none and the pair
-  //: below is exactly the legacy colLead/colTail.
-  const int oBase = grp * kLeadSpanG + leadLocal;
-  [[maybe_unused]] uint32_t colFast = 0;
-  if constexpr (kDepth >= 2)
-    colFast =
-        (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
-                   * 2);
-  const uint32_t colInner =
-      (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
-  constexpr int kUppers = kDepth - 2;
-  [[maybe_unused]] uint32_t colUpA = 0, colUpB = 0;  // named scalars, never an array
-  if constexpr (kUppers >= 1) {
-    constexpr int lA = kDepth - 3;
-    colUpA =
-        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + (oBase / kFastSpan) % LP::span_at(lA))
-                   * 2);
-  }
-  if constexpr (kUppers >= 2) {
-    constexpr int lB = kDepth - 4;
-    colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk)
-                         + (oBase / (kFastSpan * LP::span_at(kDepth - 3))) % LP::span_at(lB))
-                        * 2);
-  }
-
-  const int slot0 = leadLocal * kInnerSpan + tailLocal;  // local slot of this thread
-  char* dstR =
-      reinterpret_cast<char*>(sr) + (SWZ ? prow * (int)kRowS : prow * (int)kRowS + slot0 * 2);
-  char* dstW =
-      reinterpret_cast<char*>(sw) + (SWZ ? prow * (int)kRowS : prow * (int)kRowS + slot0 * 2);
-  const int pPh = prow & (kChunkS - 1);
-  int pOff[kLeadPerThr][kTailVec];
+      for (int p = 0; p < kFanPasses; ++p) {
+        const int row = fanRow + p * kFanRows;
+        if (row < nr) {
+          float* dp =
+              reinterpret_cast<float*>(gather_ptr(oPlane, (uint32_t)lrd[row] * kORowB + winFan));
+          const int e0 = fanE + p * kFanRows * LdO;
 #pragma unroll
-  for (int j = 0; j < kLeadPerThr; ++j)
-#pragma unroll
-    for (int i = 0; i < kTailVec; ++i)
-      pOff[j][i] = SWZ ? ((((slot0 + j * kInnerSpan) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
-                       : ((j * kInnerSpan + i * 8) * 2);
+          for (int e = 0; e < kFanPerThr; ++e)
+            fan_in_add(dp + e * kFanLanes, so[e0 + e * kFanLanes]);
+        }
+      }
+    };
 
-  //: THE PRODUCTION. A panel row past the gathered count must be EXACTLY zero, and
-  //: it is zeroed at the LEADING amplitude rather than at the product -- that is
-  //: what makes a partly filled buffer exact -- docs/internals/chunk/chunk_kernel.md#produce
-  auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have, uint32_t gsp) {
-    [[maybe_unused]] const __nv_bfloat16* p0 =
-        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
-    const __nv_bfloat16* p1 =
-        reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
-    __align__(8) unsigned short amp0[kLeadPerThr];
-    if constexpr (kDepth == 1) {
-      amp0[0] = 0x3F80;  // bf16 1.0: the flat arm has no outer factor
-    } else if constexpr (kLeadPerThr == 1) {
-      amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
-    } else if constexpr (kLeadPerThr == 2) {
-      *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
-    } else {
-      *reinterpret_cast<uint2*>(amp0) = *reinterpret_cast<const uint2*>(p0);
-    }
-    //: THE OUTER CHAIN (G3, empty at D = 2).  Every level above the fast one
-    //: contributes ONE per-token scalar at this thread's fixed digits; the
-    //: scalars fold into the fast amplitudes here, so the hot loop below is
-    //: untouched at any depth and the zero-row select stays ONE per digit.
+    //: THE UNITS' PARTIAL DENOMINATORS MEET HERE, at no cost in barriers: the
+    //: rendezvous that already separates a chunk's staging from the next chunk's
+    //: drain is the one that publishes them.
+    auto drain_den = [&](int d, int nr) {
+      if (gtid < C && gtid < nr) {
+        float s = 0.f;
+#pragma unroll
+        for (int u = 0; u < kUnits; ++u) s += sden[u * C + gtid];
+        fan_in_add(
+            reinterpret_cast<float*>(gather_ptr(
+                denPlane, (uint32_t)iread(d)[gtid] * 4u
+                              + (uint32_t)ihdr(d)[3] * (uint32_t)(kWindow * (int)sizeof(float)))),
+            s);
+      }
+    };
+
+    // ---- routed Kronecker coefficient production, digit-major ---------------
+    // Thread `tid` owns panel row `tid / kRowThr` and, within the block's
+    // rectangle, the leading digits [leadLocal, leadLocal + kLeadPerThr) and the
+    // trailing run [tailLocal, tailLocal + kTailPerThr).  THE DIGITS OF A SLOT ARE
+    // NEVER COMPUTED: they are the loop indices.  What compaction changes is only
+    // WHICH TOKEN a panel row reads -- the row's own slot addressing is untouched,
+    // which is why the gather costs a displacement and not a recomputation.
+    const int prow = gtid / kRowThr;
+    const int rIn = gtid % kRowThr;
+    const int leadLocal = (rIn / kThrPerLead) * kLeadPerThr;
+    const int tailLocal = (rIn % kThrPerLead) * kTailPerThr;
+    //: ONE BASE PER SIDE, AND THE TWO LEVELS ARE 32-BIT COLUMN DISPLACEMENTS.  A
+    //: base is a live 64-bit value for the whole kernel; the level a thread reads
+    //: is a byte offset inside its token's row and therefore adds before the
+    //: widening, not after it.
+    const long pbase = (long)blockIdx.y * L * kWtot;
+    constexpr uint32_t kPRowB = (uint32_t)(kWtot * (int)sizeof(__nv_bfloat16));
+    const __nv_bfloat16* const pRead = pin_address(pread + pbase);
+    const __nv_bfloat16* const pWrite = pin_address(pwrite + pbase);
+    //: THE WRITE GAIN, DECOUPLED (spec 4.2): a per-token positive scalar, its
+    //: own plane -- the amplitudes stay pure simplexes, so the SUPPORT BITS ARE
+    //: UNGAINED and a small gain can never underflow a live token out of the
+    //: schedule.  The deposit (value AND mass columns) is gained; the clock a
+    //: later rung adds reads the UNGAINED coefficient, which is why the gain
+    //: folds AFTER the level chain and nowhere earlier.
+    const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
+    //: 1.0 as a bf16x2 splat: the read side's gain.  Folding it through the
+    //: same multiply keeps ONE produce body, and rn(a*1) = a keeps the read
+    //: panel BIT-EXACT -- the multiply is paid, the value is untouched.
+    constexpr uint32_t kOneSplat = 0x3F803F80u;
+    //: (G3) THE COLUMNS, ONE PER CONTRIBUTING LEVEL, all built from the plan's
+    //: col_base/off_at map.  A thread's composite outer index `oBase` splits into
+    //: a FAST digit (level D-2, varies across its owned run) and a fixed upper
+    //: row; the upper levels' digits are per-thread CONSTANTS, so each upper
+    //: level is one named column scalar -- at D = 2 there are none and the pair
+    //: below is exactly the legacy colLead/colTail.
+    const int oBase = grp * kLeadSpanG + leadLocal;
+    [[maybe_unused]] uint32_t colFast = 0;
+    if constexpr (kDepth >= 2)
+      colFast =
+          (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
+                     * 2);
+    const uint32_t colInner =
+        (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
+    constexpr int kUppers = kDepth - 2;
+    [[maybe_unused]] uint32_t colUpA = 0, colUpB = 0;  // named scalars, never an array
     if constexpr (kUppers >= 1) {
-      uint32_t up =
-          splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpA)));
-      if constexpr (kUppers >= 2)
-        up = mul_bf16x2(
-            up,
-            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpB))));
+      constexpr int lA = kDepth - 3;
+      colUpA = (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk)
+                           + (oBase / kFastSpan) % LP::span_at(lA))
+                          * 2);
+    }
+    if constexpr (kUppers >= 2) {
+      constexpr int lB = kDepth - 4;
+      colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk)
+                           + (oBase / (kFastSpan * LP::span_at(kDepth - 3))) % LP::span_at(lB))
+                          * 2);
+    }
+
+    const int slot0 = leadLocal * kInnerSpan + tailLocal;  // local slot of this thread
+    char* dstR =
+        reinterpret_cast<char*>(sr) + (SWZ ? prow * (int)kRowS : prow * (int)kRowS + slot0 * 2);
+    char* dstW =
+        reinterpret_cast<char*>(sw) + (SWZ ? prow * (int)kRowS : prow * (int)kRowS + slot0 * 2);
+    const int pPh = prow & (kChunkS - 1);
+    int pOff[kLeadPerThr][kTailVec];
+#pragma unroll
+    for (int j = 0; j < kLeadPerThr; ++j)
+#pragma unroll
+      for (int i = 0; i < kTailVec; ++i)
+        pOff[j][i] = SWZ ? ((((slot0 + j * kInnerSpan) / 8 + i) & (kChunkS - 1)) ^ pPh) << 4
+                         : ((j * kInnerSpan + i * 8) * 2);
+
+    //: THE PRODUCTION. A panel row past the gathered count must be EXACTLY zero, and
+    //: it is zeroed at the LEADING amplitude rather than at the product -- that is
+    //: what makes a partly filled buffer exact -- docs/internals/chunk/chunk_kernel.md#produce
+    auto produce = [&](const __nv_bfloat16* bs, char* dst, uint32_t tokOff, bool have,
+                       uint32_t gsp) {
+      [[maybe_unused]] const __nv_bfloat16* p0 =
+          reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colFast));
+      const __nv_bfloat16* p1 =
+          reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colInner));
+      __align__(8) unsigned short amp0[kLeadPerThr];
+      if constexpr (kDepth == 1) {
+        amp0[0] = 0x3F80;  // bf16 1.0: the flat arm has no outer factor
+      } else if constexpr (kLeadPerThr == 1) {
+        amp0[0] = *reinterpret_cast<const unsigned short*>(p0);
+      } else if constexpr (kLeadPerThr == 2) {
+        *reinterpret_cast<uint32_t*>(amp0) = *reinterpret_cast<const uint32_t*>(p0);
+      } else {
+        *reinterpret_cast<uint2*>(amp0) = *reinterpret_cast<const uint2*>(p0);
+      }
+      //: THE OUTER CHAIN (G3, empty at D = 2).  Every level above the fast one
+      //: contributes ONE per-token scalar at this thread's fixed digits; the
+      //: scalars fold into the fast amplitudes here, so the hot loop below is
+      //: untouched at any depth and the zero-row select stays ONE per digit.
+      if constexpr (kUppers >= 1) {
+        uint32_t up =
+            splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(bs, tokOff + colUpA)));
+        if constexpr (kUppers >= 2)
+          up = mul_bf16x2(up, splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
+                                  gather_ptr(bs, tokOff + colUpB))));
+#pragma unroll
+        for (int j = 0; j < kLeadPerThr; ++j) {
+          const uint32_t m =
+              mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), up);
+          amp0[j] = (unsigned short)(m & 0xffffu);
+        }
+      }
+      //: THE GAIN FOLD -- after the level chain, so the ungained coefficient is
+      //: what a decay clock will tap, and the gained one is what deposits.
 #pragma unroll
       for (int j = 0; j < kLeadPerThr; ++j) {
         const uint32_t m =
-            mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), up);
+            mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), gsp);
         amp0[j] = (unsigned short)(m & 0xffffu);
       }
-    }
-    //: THE GAIN FOLD -- after the level chain, so the ungained coefficient is
-    //: what a decay clock will tap, and the gained one is what deposits.
-#pragma unroll
-    for (int j = 0; j < kLeadPerThr; ++j) {
-      const uint32_t m =
-          mul_bf16x2(splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])), gsp);
-      amp0[j] = (unsigned short)(m & 0xffffu);
-    }
 
 #pragma unroll
-    for (int i = 0; i < kTailVec; ++i) {
-      __align__(16) uint32_t a1[4];
-      *reinterpret_cast<uint4*>(a1) = load_vec16(p1 + i * 8);
+      for (int i = 0; i < kTailVec; ++i) {
+        __align__(16) uint32_t a1[4];
+        *reinterpret_cast<uint4*>(a1) = load_vec16(p1 + i * 8);
 #pragma unroll
-      for (int j = 0; j < kLeadPerThr; ++j) {
-        __align__(16) uint32_t prod[4];
-        const uint32_t a2 =
-            have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])) : 0u;
+        for (int j = 0; j < kLeadPerThr; ++j) {
+          __align__(16) uint32_t prod[4];
+          const uint32_t a2 =
+              have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&amp0[j])) : 0u;
 #pragma unroll
-        for (int e = 0; e < 4; ++e) prod[e] = mul_bf16x2(a2, a1[e]);
-        store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4*>(prod));
+          for (int e = 0; e < 4; ++e) prod[e] = mul_bf16x2(a2, a1[e]);
+          store_vec16(dst + pOff[j][i], *reinterpret_cast<const uint4*>(prod));
+        }
       }
-    }
-  };
+    };
 
-  // ---- the membership bits, read out of the union table --------------------
-  //: The block's entry rows, per side; the trailing row disappears when the block
-  //: spans that level entirely -- docs/internals/chunk/chunk_kernel.md#clause-rows
-  constexpr int kClauses = LP::clauses;
-  constexpr int kEntries = LP::entries;
-  const int tokWords = tok_words(L);
-  const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
-  const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
-  //: One pinned row per SURVIVING clause per side. NAMED SCALARS, never an array:
-  //: the clause loop's callees carry inline asm, so a runtime-indexed pointer
-  //: array is demoted to a stack frame -- docs/internals/chunk/chunk_kernel.md#clause-rows
-  const uint32_t *tRa = tbl, *tWa = tbl, *tRb = tbl, *tWb = tbl, *tRc = tbl, *tWc = tbl, *tRd = tbl,
-                 *tWd = tbl;
+    // ---- the membership bits, read out of the union table --------------------
+    //: The block's entry rows, per side; the trailing row disappears when the block
+    //: spans that level entirely -- docs/internals/chunk/chunk_kernel.md#clause-rows
+    constexpr int kClauses = LP::clauses;
+    constexpr int kEntries = LP::entries;
+    const int tokWords = tok_words(L);
+    const long rowR = ((long)(2 * blockIdx.y + 0) * kEntries) * tokWords;
+    const long rowW = ((long)(2 * blockIdx.y + 1) * kEntries) * tokWords;
+    //: One pinned row per SURVIVING clause per side. NAMED SCALARS, never an array:
+    //: the clause loop's callees carry inline asm, so a runtime-indexed pointer
+    //: array is demoted to a stack frame -- docs/internals/chunk/chunk_kernel.md#clause-rows
+    const uint32_t *tRa = tbl, *tWa = tbl, *tRb = tbl, *tWb = tbl, *tRc = tbl, *tWc = tbl,
+                   *tRd = tbl, *tWd = tbl;
 #define ROLA_CLAUSE(CL_, PR_, PW_)                                             \
   if constexpr ((CL_) < kClauses) {                                            \
     constexpr int kDiv = LP::suffix_groups((CL_) + 1);                         \
@@ -923,601 +960,613 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
     PR_ = pin_address(tbl + rowR + (long)e * tokWords);                        \
     PW_ = pin_address(tbl + rowW + (long)e * tokWords);                        \
   }
-  ROLA_CLAUSE(0, tRa, tWa)
-  ROLA_CLAUSE(1, tRb, tWb)
-  ROLA_CLAUSE(2, tRc, tWc)
-  ROLA_CLAUSE(3, tRd, tWd)
+    ROLA_CLAUSE(0, tRa, tWa)
+    ROLA_CLAUSE(1, tRb, tWb)
+    ROLA_CLAUSE(2, tRc, tWc)
+    ROLA_CLAUSE(3, tRd, tWd)
 #undef ROLA_CLAUSE
 
-  //: THE LAST WORD'S PADDING TOKENS DO NOT EXIST.  The table leaves them zero;
-  //: the clause-free block has no table to leave them zero, so the mask is
-  //: applied in the FORM, where it is one select on one word of a parallel map.
-  const uint32_t tailMask =
-      (L & (kTokBits - 1)) ? ((1u << (L & (kTokBits - 1))) - 1u) : 0xFFFFFFFFu;
-  const int lastWord = tokWords - 1;
+    //: THE LAST WORD'S PADDING TOKENS DO NOT EXIST.  The table leaves them zero;
+    //: the clause-free block has no table to leave them zero, so the mask is
+    //: applied in the FORM, where it is one select on one word of a parallel map.
+    const uint32_t tailMask =
+        (L & (kTokBits - 1)) ? ((1u << (L & (kTokBits - 1))) - 1u) : 0xFFFFFFFFu;
+    const int lastWord = tokWords - 1;
 
-  //: THE FORM: the membership AND and nothing else. The ring's head is the walk's
-  //: cursor plus its depth, so backpressure needs no test outside the loop bound
-  //: -- docs/internals/chunk/chunk_kernel.md#the-form
-  int formEnd = 0;
-  //: FORCED INLINE: the two-clause arms grew this body past ptxas's
-  //: outlining threshold and it became a CALL with an ABI frame -- stack
-  //: stores the spill gate rightly refuses.  Inline it at all three sites.
-  auto form = [&]() {
-    const int head = scook[kCookWord] + kFormWords;
-    const int limit = head < tokWords ? head : tokWords;
-    form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, tRa, tWa, tRb, tWb, tRc, tWc,
-                                              tRd, tWd, tailMask, lastWord, sfR, sfW);
-  };
+    //: THE FORM: the membership AND and nothing else. The ring's head is the walk's
+    //: cursor plus its depth, so backpressure needs no test outside the loop bound
+    //: -- docs/internals/chunk/chunk_kernel.md#the-form
+    int formEnd = 0;
+    //: FORCED INLINE: the two-clause arms grew this body past ptxas's
+    //: outlining threshold and it became a CALL with an ABI frame -- stack
+    //: stores the spill gate rightly refuses.  Inline it at all three sites.
+    auto form = [&]() {
+      const int head = scook[kCookWord] + kFormWords;
+      const int limit = head < tokWords ? head : tokWords;
+      form_impl<kClauses, kFormWords, kThreads>(formEnd, limit, tid, tRa, tWa, tRb, tWb, tRc, tWc,
+                                                tRd, tWd, tailMask, lastWord, sfR, sfW);
+    };
 
-  //: A PRODUCER REFILLS IN BATCHES; THAT IS WHAT THE RING IS FOR.  Forming the
-  //: one or two words a dense super-chunk consumed, once per super-chunk, is the
-  //: fused walk again with extra steps: the loop's own setup is a FIXED cost paid
-  //: by EVERY warp on EVERY super-chunk, against a redundant decode that was one
-  //: warp's.  So the former runs only once the ring has drained past half --
-  //: every `2048 / C` super-chunks at dense, where the walk consumes `C / 32`
-  //: words of each.
-  auto form_if_low = [&]() {
-    if (formEnd < tokWords && formEnd - scook[kCookWord] < kFormWords / 2) form();
-  };
+    //: A PRODUCER REFILLS IN BATCHES; THAT IS WHAT THE RING IS FOR.  Forming the
+    //: one or two words a dense super-chunk consumed, once per super-chunk, is the
+    //: fused walk again with extra steps: the loop's own setup is a FIXED cost paid
+    //: by EVERY warp on EVERY super-chunk, against a redundant decode that was one
+    //: warp's.  So the former runs only once the ring has drained past half --
+    //: every `2048 / C` super-chunks at dense, where the walk consumes `C / 32`
+    //: words of each.
+    auto form_if_low = [&]() {
+      if (formEnd < tokWords && formEnd - scook[kCookWord] < kFormWords / 2) form();
+    };
 
-  //: THE WALK. The closing rule is TOKEN-granular, never word-granular: a
-  //: word-boundary close would make the partition depend on the packing. It clears
-  //: what it took, and it stops at the FORMED region's edge, not the token axis's
-  //: -- docs/internals/chunk/chunk_kernel.md#the-walk
-  int cookWord = 0, cookNr = 0, cookNw = 0;
-  bool cookOpen = false;
-  //: the walk's window cursor (6E): line positions in units of formed WORDS --
-  //: the words of one K-window.  A super-chunk never crosses a window line,
-  //: so its list entries share one window and sixteen LOCAL bits name any of
-  //: its tokens; the line advances by EQUALITY against a maintained register,
-  //: an affine advance, never a per-chunk multiply.
-  constexpr int kWinWords = kWindow / kTokBits;
-  int chunkWin = 0, nextLineW = kWinWords, winBaseW = 0;
-  auto walk = [&](int d) {
-    uint16_t* lrd = iread(d);
-    uint16_t* lwr = iwrite(d);
-    uint8_t* ljt = ithr(d);
-    const bool exists = cookOpen || cookWord < tokWords;
-    int nr = cookOpen ? cookNr : 0;
-    int nw = cookOpen ? cookNw : 0;
-    if (!cookOpen) {
-      chunkWin = cookWord / kWinWords;
-      winBaseW = chunkWin * kWinWords;
-      nextLineW = winBaseW + kWinWords;
-    }
-    bool closed = cookWord >= tokWords;
-    const uint32_t lt = (1u << lane) - 1u;
+    //: THE WALK. The closing rule is TOKEN-granular, never word-granular: a
+    //: word-boundary close would make the partition depend on the packing. It clears
+    //: what it took, and it stops at the FORMED region's edge, not the token axis's
+    //: -- docs/internals/chunk/chunk_kernel.md#the-walk
+    int cookWord = 0, cookNr = 0, cookNw = 0;
+    bool cookOpen = false;
+    //: the walk's window cursor (6E): line positions in units of formed WORDS --
+    //: the words of one K-window.  A super-chunk never crosses a window line,
+    //: so its list entries share one window and sixteen LOCAL bits name any of
+    //: its tokens; the line advances by EQUALITY against a maintained register,
+    //: an affine advance, never a per-chunk multiply.
+    constexpr int kWinWords = kWindow / kTokBits;
+    int chunkWin = 0, nextLineW = kWinWords, winBaseW = 0;
+    auto walk = [&](int d) {
+      uint16_t* lrd = iread(d);
+      uint16_t* lwr = iwrite(d);
+      uint8_t* ljt = ithr(d);
+      const bool exists = cookOpen || cookWord < tokWords;
+      int nr = cookOpen ? cookNr : 0;
+      int nw = cookOpen ? cookNw : 0;
+      if (!cookOpen) {
+        chunkWin = cookWord / kWinWords;
+        winBaseW = chunkWin * kWinWords;
+        nextLineW = winBaseW + kWinWords;
+      }
+      bool closed = cookWord >= tokWords;
+      const uint32_t lt = (1u << lane) - 1u;
 #pragma unroll 1
-    while (cookWord < formEnd) {
-      //: THE WINDOW LINE, as an EQUALITY against a maintained register --
-      //: the walk advances a word at a time, so a line is never jumped.  A
-      //: super-chunk holding entries closes at the line; an empty one slides
-      //: its window forward, exactly as it crosses words.
-      if (cookWord == nextLineW) {
-        if (nr != 0 || nw != 0) {
+      while (cookWord < formEnd) {
+        //: THE WINDOW LINE, as an EQUALITY against a maintained register --
+        //: the walk advances a word at a time, so a line is never jumped.  A
+        //: super-chunk holding entries closes at the line; an empty one slides
+        //: its window forward, exactly as it crosses words.
+        if (cookWord == nextLineW) {
+          if (nr != 0 || nw != 0) {
+            closed = true;
+            break;
+          }
+          ++chunkWin;
+          winBaseW = nextLineW;
+          nextLineW += kWinWords;
+        }
+        const int slot = cookWord & (kFormWords - 1);
+        const uint32_t rm = sfR[slot];
+        const uint32_t wm = sfW[slot];
+        const int prx = bit_count(rm & lt);
+        const int pwx = bit_count(wm & lt);
+        const bool lvR = ((rm >> lane) & 1u) != 0u;
+        const bool lvW = ((wm >> lane) & 1u) != 0u;
+        const int cut = first_set(lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
+        const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
+        const int t = (cookWord - winBaseW) * kTokBits + lane;
+        if (lane < cut) {
+          if (lvR) {
+            lrd[nr + prx] = (uint16_t)t;
+            ljt[nr + prx] = (uint8_t)(nw + pwx + (lvW ? 1 : 0));
+          }
+          if (lvW) lwr[nw + pwx] = (uint16_t)t;
+        }
+        nr += bit_count(rm & keep);
+        nw += bit_count(wm & keep);
+        if (cut < kTokBits) {
+          if (lane == 0) {
+            sfR[slot] = rm & ~keep;
+            sfW[slot] = wm & ~keep;
+          }
           closed = true;
           break;
         }
-        ++chunkWin;
-        winBaseW = nextLineW;
-        nextLineW += kWinWords;
-      }
-      const int slot = cookWord & (kFormWords - 1);
-      const uint32_t rm = sfR[slot];
-      const uint32_t wm = sfW[slot];
-      const int prx = bit_count(rm & lt);
-      const int pwx = bit_count(wm & lt);
-      const bool lvR = ((rm >> lane) & 1u) != 0u;
-      const bool lvW = ((wm >> lane) & 1u) != 0u;
-      const int cut = first_set(lane_ballot((lvR && nr + prx >= C) || (lvW && nw + pwx >= C)));
-      const uint32_t keep = cut >= kTokBits ? 0xFFFFFFFFu : ((1u << cut) - 1u);
-      const int t = (cookWord - winBaseW) * kTokBits + lane;
-      if (lane < cut) {
-        if (lvR) {
-          lrd[nr + prx] = (uint16_t)t;
-          ljt[nr + prx] = (uint8_t)(nw + pwx + (lvW ? 1 : 0));
+        ++cookWord;
+        if (cookWord == tokWords) {
+          closed = true;
+          break;
         }
-        if (lvW) lwr[nw + pwx] = (uint16_t)t;
       }
-      nr += bit_count(rm & keep);
-      nw += bit_count(wm & keep);
-      if (cut < kTokBits) {
+      if (!closed) {
+        cookNr = nr;
+        cookNw = nw;
+        cookOpen = true;
         if (lane == 0) {
-          sfR[slot] = rm & ~keep;
-          sfW[slot] = wm & ~keep;
+          scook[kCookWord] = cookWord;
+          scook[kCookOpen] = 1;
         }
-        closed = true;
-        break;
+        return;
       }
-      ++cookWord;
-      if (cookWord == tokWords) {
-        closed = true;
-        break;
+      //: THE BUFFER'S TAIL.  A slot past the gathered count names token zero, so
+      //: every gather stays in range without a predicate, and carries a threshold
+      //: of zero, so its Gram row is empty.  Its panel row is zeroed at production
+      //: and its output row is never drained.
+#pragma unroll
+      for (int k = 0; k < (C + kTokBits - 1) / kTokBits; ++k) {
+        const int i = lane + k * kTokBits;
+        if (i < C) {
+          if (i >= nr) {
+            lrd[i] = 0;
+            ljt[i] = 0;
+          }
+          if (i >= nw) lwr[i] = 0;
+        }
       }
-    }
-    if (!closed) {
-      cookNr = nr;
-      cookNw = nw;
-      cookOpen = true;
+      const bool wasOpen = cookOpen;
+      cookOpen = false;
       if (lane == 0) {
+        int* h = ihdr(d);
+        h[0] = nr;
+        h[1] = nw;
+        h[2] = exists ? 1 : 0;
+        h[3] = chunkWin;  // whose window the LOCAL indices live in
         scook[kCookWord] = cookWord;
-        scook[kCookOpen] = 1;
+        if (wasOpen) scook[kCookOpen] = 0;
       }
-      return;
-    }
-    //: THE BUFFER'S TAIL.  A slot past the gathered count names token zero, so
-    //: every gather stays in range without a predicate, and carries a threshold
-    //: of zero, so its Gram row is empty.  Its panel row is zeroed at production
-    //: and its output row is never drained.
-#pragma unroll
-    for (int k = 0; k < (C + kTokBits - 1) / kTokBits; ++k) {
-      const int i = lane + k * kTokBits;
-      if (i < C) {
-        if (i >= nr) {
-          lrd[i] = 0;
-          ljt[i] = 0;
-        }
-        if (i >= nw) lwr[i] = 0;
-      }
-    }
-    const bool wasOpen = cookOpen;
-    cookOpen = false;
-    if (lane == 0) {
-      int* h = ihdr(d);
-      h[0] = nr;
-      h[1] = nw;
-      h[2] = exists ? 1 : 0;
-      h[3] = chunkWin;  // whose window the LOCAL indices live in
-      scook[kCookWord] = cookWord;
-      if (wasOpen) scook[kCookOpen] = 0;
-    }
-  };
+    };
 
-  //: THE WAIT, AND IT IS THE ORDINARY ONE.  `scook[kCookOpen]` is CTA-uniform by
-  //: construction -- it is read out of shared memory after a rendezvous -- so
-  //: every warp takes the same path and this loop's body does not run unless the
-  //: walk genuinely outran the former.  The CALLER supplies the rendezvous that
-  //: publishes the flag, because in the steady state that barrier already exists.
-  auto walk_wait = [&](int d) {
+    //: THE WAIT, AND IT IS THE ORDINARY ONE.  `scook[kCookOpen]` is CTA-uniform by
+    //: construction -- it is read out of shared memory after a rendezvous -- so
+    //: every warp takes the same path and this loop's body does not run unless the
+    //: walk genuinely outran the former.  The CALLER supplies the rendezvous that
+    //: publishes the flag, because in the steady state that barrier already exists.
+    auto walk_wait = [&](int d) {
 #pragma unroll 1
-    while (scook[kCookOpen]) {
-      form();
-      rendezvous();
-      if (warp == 0) walk(d);
-      rendezvous();
-    }
-  };
-
-  // ---- the pipeline's prologue: cook and stage `STAGES - 1` super-chunks ----
-  //: THE PROLOGUE FILLS THE SCHEDULE STREAM FIRST AND THE VALUE STREAM SECOND,
-  //: which is the same ordering the steady state keeps: the walk runs `AHEAD`
-  //: super-chunks out before the first value tile is issued.  It pays the two
-  //: barriers that fill the formed ring ONCE, before the first walk; the steady
-  //: state pays none.
-
-  //: ---- the ENTRY STATE, the store read backwards through the same staging
-  //: buffer. The fragments are SET, never accumulated: they are provably zero
-  //: here. An absent atom is skipped and its fragments stay zero; what the skip
-  //: omits is MEMORY TRAFFIC only, so every barrier stays CTA-uniform
-  //: -- docs/internals/chunk/chunk_kernel.md#entry-state, docs/internals/chunk/chunk_kernel.md#base-translation
-  if constexpr (STATE) {
-    if (s_in != nullptr) {
-      const int atomFirst = atom_first();
-      const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
-      const float* const plane = pin_address(s_in);
-#pragma unroll
-      for (int i = 0; i < kAtoms; ++i) {
-        const int slot = slot_of(tbl, atomFirst + i);
-        if (slot >= 0) {
-          page_sweep(page_off(slot), [&](int s, uint32_t off) {
-            so[s] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
-          });
-        }
+      while (scook[kCookOpen]) {
+        form();
         rendezvous();
-        if (slot >= 0) {
+        if (warp == 0) walk(d);
+        rendezvous();
+      }
+    };
+
+    // ---- the pipeline's prologue: cook and stage `STAGES - 1` super-chunks ----
+    //: THE PROLOGUE FILLS THE SCHEDULE STREAM FIRST AND THE VALUE STREAM SECOND,
+    //: which is the same ordering the steady state keeps: the walk runs `AHEAD`
+    //: super-chunks out before the first value tile is issued.  It pays the two
+    //: barriers that fill the formed ring ONCE, before the first walk; the steady
+    //: state pays none.
+
+    //: ---- the ENTRY STATE, the store read backwards through the same staging
+    //: buffer. The fragments are SET, never accumulated: they are provably zero
+    //: here. An absent atom is skipped and its fragments stay zero; what the skip
+    //: omits is MEMORY TRAFFIC only, so every barrier stays CTA-uniform
+    //: -- docs/internals/chunk/chunk_kernel.md#entry-state, docs/internals/chunk/chunk_kernel.md#base-translation
+    if constexpr (STATE) {
+      if (s_in != nullptr) {
+        const int atomFirst = atom_first();
+        const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
+        const float* const plane = pin_address(s_in);
 #pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
-          if (gwarp == i % kMassUnits && lane < 4) {
+        for (int i = 0; i < kAtoms; ++i) {
+          const int slot = slot_of(tbl, atomFirst + i);
+          if (slot >= 0) {
+            page_sweep(page_off(slot), [&](int s, uint32_t off) {
+              so[s] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+            });
+          }
+          rendezvous();
+          if (slot >= 0) {
 #pragma unroll
             for (int p = 0; p < 2; ++p)
 #pragma unroll
-              for (int k = 0; k < 2; ++k)
-                mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+              for (int k = 0; k < 4; ++k) st[2 * i + p][k] = so[page_value(p, k)];
+            if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 2; ++k)
+                  mass_st[2 * (i / kMassUnits) + p][k] = so[page_mass(p, k)];
+            }
           }
+          rendezvous();
         }
-        rendezvous();
       }
     }
-  }
 
-  if (tid == 0) {
-    scook[kCookWord] = 0;
-    scook[kCookOpen] = 0;
-  }
-  rendezvous();
-  form();
-  rendezvous();
-#pragma unroll 1
-  for (int s = 0; s < AHEAD; ++s) {
-    if (warp == 0) walk(s);
+    if (tid == 0) {
+      scook[kCookWord] = 0;
+      scook[kCookOpen] = 0;
+    }
     rendezvous();
-    walk_wait(s);
-    form_if_low();
+    form();
     rendezvous();
-  }
 #pragma unroll 1
-  for (int s = 0; s < STAGES - 1; ++s) {
-    stage_chunk(s, ihdr(s)[1] != 0);
-    stage_commit();
-  }
-
-  //: THE RING CURSORS ARE COUNTERS, NOT REMAINDERS.  `IRING` is not a power of
-  //: two, so a modulo would put a compile-time reciprocal in the body of the one
-  //: loop the whole kernel runs in.  Three of them: what is computing, what is
-  //: being staged, and what is being cooked.
-  int dc = 0, ds = STAGES - 1, dn = AHEAD;
-  int prev_d = 0, prev_nr = 0;
+    for (int s = 0; s < AHEAD; ++s) {
+      if (warp == 0) walk(s);
+      rendezvous();
+      walk_wait(s);
+      form_if_low();
+      rendezvous();
+    }
 #pragma unroll 1
-  for (;;) {
-    const int* h = ihdr(dc);
-    const int nr = h[0], nw = h[1];
-    if (!h[2]) break;
-    //: Per-side liveness gates per-side work. The intra term needs both sides
-    //: PRESENT, not merely nonzero: a super-chunk with no write entry stages no
-    //: value tile -- docs/internals/chunk/chunk_kernel.md#side-liveness
-    const bool liveR = nr != 0, liveW = nw != 0;
-    const bool live = liveR || liveW;
-
-    //: THE COOK RUNS BEFORE THE PRODUCTION AND PUBLISHES AT THE SAME RENDEZVOUS
-    //: THE PANELS DO.  It is one unit's work against three units' production, so
-    //: what it costs the CTA is the difference and not the whole of it.
-    if (warp == 0) walk(dn);
-
-    if (live) {
-      const uint32_t winP = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * kWtot * 2);
-      const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
-      const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
-      //: the write token's gain: one 2-byte gather per row (padding rows read
-      //: token zero's gain and are zeroed at the leading select regardless).
-      const uint32_t winG = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
-      const uint32_t gsp = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-          gather_ptr(gWrite, (uint32_t)iwrite(dc)[prow] * 2u + winG)));
-      produce(pRead, dstR, rOff, prow < nr, kOneSplat);
-      produce(pWrite, dstW, wOff, prow < nw, gsp);
+    for (int s = 0; s < STAGES - 1; ++s) {
+      stage_chunk(s, ihdr(s)[1] != 0);
+      stage_commit();
     }
 
-    stage_wait<STAGES - 2>();
-    rendezvous();  // (1) V visible / R,W visible / last chunk's reads done / O drained
-                   //     and the walk's cursor and open flag are published
+    //: THE RING CURSORS ARE COUNTERS, NOT REMAINDERS.  `IRING` is not a power of
+    //: two, so a modulo would put a compile-time reciprocal in the body of the one
+    //: loop the whole kernel runs in.  Three of them: what is computing, what is
+    //: being staged, and what is being cooked.
+    int dc = 0, ds = STAGES - 1, dn = AHEAD;
+    int prev_d = 0, prev_nr = 0;
+#pragma unroll 1
+    for (;;) {
+      const int* h = ihdr(dc);
+      const int nr = h[0], nw = h[1];
+      if (!h[2]) break;
+      //: Per-side liveness gates per-side work. The intra term needs both sides
+      //: PRESENT, not merely nonzero: a super-chunk with no write entry stages no
+      //: value tile -- docs/internals/chunk/chunk_kernel.md#side-liveness
+      const bool liveR = nr != 0, liveW = nw != 0;
+      const bool live = liveR || liveW;
 
-    walk_wait(dn);
-    //: THE FORM RIDES THE BARRIERS THAT ARE ALREADY HERE.  It is issued where the
-    //: value tile is, after the rendezvous that published the walk's cursor and
-    //: before (2), which is what makes the formed words visible to the next
-    //: super-chunk's walk.
-    form_if_low();
-    stage_chunk(ds, ihdr(ds)[1] != 0);
-    stage_commit();
+      //: THE COOK RUNS BEFORE THE PRODUCTION AND PUBLISHES AT THE SAME RENDEZVOUS
+      //: THE PANELS DO.  It is one unit's work against three units' production, so
+      //: what it costs the CTA is the difference and not the whole of it.
+      if (warp == 0) walk(dn);
 
-    const uint32_t atv = svB + cmpSlot + rowTV;
-    cmpSlot += kSlot;
-    if (cmpSlot == kRing) cmpSlot = 0;
-
-    float acc[NTOK][4];
-    float macc[NTOK][4];
-    if (liveR) {
-      // ---- 1. readout: O^T = S^T . R^T, A operand straight out of the state ---
-      //      and, on the same B fragments, the d_v+1-th channel's row of it.
-      {
-        uint32_t sa[KD][4];
-#pragma unroll
-        for (int kk = 0; kk < KD; ++kk) {
-          sa[kk][0] = pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
-          sa[kk][1] = pack_bf16x2(st[2 * kk][2], st[2 * kk][3]);
-          sa[kk][2] = pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
-          sa[kk][3] = pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3]);
-        }
-        uint32_t ma[kMassKD][4];
-#pragma unroll
-        for (int q = 0; q < kMassKD; ++q) {
-          ma[q][0] = pack_bf16x2(mass_st[2 * q][0], mass_st[2 * q][1]);
-          ma[q][1] = pack_bf16x2(mass_st[2 * q][2], mass_st[2 * q][3]);
-          ma[q][2] = pack_bf16x2(mass_st[2 * q + 1][0], mass_st[2 * q + 1][1]);
-          ma[q][3] = pack_bf16x2(mass_st[2 * q + 1][2], mass_st[2 * q + 1][3]);
-        }
-#pragma unroll
-        for (int j = 0; j < NTOK; ++j)
-#pragma unroll
-          for (int e = 0; e < 4; ++e) {
-            acc[j][e] = 0.f;
-            macc[j][e] = 0.f;
-          }
-#pragma unroll
-        for (int m = 0; m < MTOK; ++m) {
-          uint32_t rb[KD][4];
-#pragma unroll
-          for (int kk = 0; kk < KD; ++kk) load_frag(rb[kk], ADDRT(brT, m * 16, 2 * kk));
-#pragma unroll
-          for (int kk = 0; kk < KD; ++kk)
-#pragma unroll
-            for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
-          if (gwarp < kMassUnits) {
-            uint32_t mb[kMassKD][4];
-#pragma unroll
-            for (int q = 0; q < kMassKD; ++q) load_frag(mb[q], ADDRT_M(brT, m * 16, q));
-#pragma unroll
-            for (int q = 0; q < kMassKD; ++q)
-#pragma unroll
-              for (int p = 0; p < 2; ++p) mma(macc[2 * m + p], ma[q], &mb[q][2 * p]);
-          }
-        }
+      if (live) {
+        const uint32_t winP = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * kWtot * 2);
+        const uint32_t rOff = (uint32_t)iread(dc)[prow] * kPRowB + winP;
+        const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
+        //: the write token's gain: one 2-byte gather per row (padding rows read
+        //: token zero's gain and are zeroed at the leading select regardless).
+        const uint32_t winG = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
+        const uint32_t gsp = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
+            gather_ptr(gWrite, (uint32_t)iwrite(dc)[prow] * 2u + winG)));
+        produce(pRead, dstR, rOff, prow < nr, kOneSplat);
+        produce(pWrite, dstW, wOff, prow < nw, gsp);
       }
 
-      // ---- 2. Gram: G = staircase(R.W^T) over THIS BLOCK's slots ---------------
-      //: THE MASK IS THE MONOTONE STAIRCASE, AND IT IS THE SAME SHAPE AS THE
-      //: TRIANGLE IT GENERALISES.  Both lists are ascending, so read entry `tr`
-      //: keeps exactly the write entries below its threshold `J[tr]` -- one byte
-      //: the cook already observed.  At dense `J[tr] = tr + 1` and this reduces to
-      //: `tc <= tr` term for term.
-      if (gwarp < GWARPS) {
-        int jv[MPW][2];
-        if constexpr (GROUPS == 1) {
-          const uint8_t* ljt = ithr(dc);
-#pragma unroll
-          for (int m = 0; m < MPW; ++m) {
-            const int tr = (gm0 + m) * 16 + (lane >> 2);
-            jv[m][0] = ljt[tr];
-            jv[m][1] = ljt[tr + 8];
-          }
-        }
-        uint32_t qa[MPW][KD][4];
-#pragma unroll
-        for (int m = 0; m < MPW; ++m)
-#pragma unroll
-          for (int kk = 0; kk < KD; ++kk) load_frag(qa[m][kk], ADDRF(arF, (gm0 + m) * 16, 2 * kk));
+      stage_wait<STAGES - 2>();
+      rendezvous();  // (1) V visible / R,W visible / last chunk's reads done / O drained
+                     //     and the walk's cursor and open flag are published
 
+      walk_wait(dn);
+      //: THE FORM RIDES THE BARRIERS THAT ARE ALREADY HERE.  It is issued where the
+      //: value tile is, after the rendezvous that published the walk's cursor and
+      //: before (2), which is what makes the formed words visible to the next
+      //: super-chunk's walk.
+      form_if_low();
+      stage_chunk(ds, ihdr(ds)[1] != 0);
+      stage_commit();
+
+      const uint32_t atv = svB + cmpSlot + rowTV;
+      cmpSlot += kSlot;
+      if (cmpSlot == kRing) cmpSlot = 0;
+
+      float acc[NTOK][4];
+      float macc[NTOK][4];
+      if (liveR) {
+        // ---- 1. readout: O^T = S^T . R^T, A operand straight out of the state ---
+        //      and, on the same B fragments, the d_v+1-th channel's row of it.
+        {
+          uint32_t sa[KD][4];
 #pragma unroll
-        for (int np = 0; np < NPW / 2; np += GPAIR) {
-          uint32_t bf[GPAIR][KD][4];
+          for (int kk = 0; kk < KD; ++kk) {
+            sa[kk][0] = pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
+            sa[kk][1] = pack_bf16x2(st[2 * kk][2], st[2 * kk][3]);
+            sa[kk][2] = pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
+            sa[kk][3] = pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3]);
+          }
+          uint32_t ma[kMassKD][4];
 #pragma unroll
-          for (int u = 0; u < GPAIR; ++u)
+          for (int q = 0; q < kMassKD; ++q) {
+            ma[q][0] = pack_bf16x2(mass_st[2 * q][0], mass_st[2 * q][1]);
+            ma[q][1] = pack_bf16x2(mass_st[2 * q][2], mass_st[2 * q][3]);
+            ma[q][2] = pack_bf16x2(mass_st[2 * q + 1][0], mass_st[2 * q + 1][1]);
+            ma[q][3] = pack_bf16x2(mass_st[2 * q + 1][2], mass_st[2 * q + 1][3]);
+          }
 #pragma unroll
-            for (int kk = 0; kk < KD; ++kk)
-              load_frag(bf[u][kk], ADDRT(bwT, (gn0 + (np + u) * 2) * 8, 2 * kk));
+          for (int j = 0; j < NTOK; ++j)
 #pragma unroll
-          for (int m = 0; m < MPW; ++m) {
-            float g[GPAIR][2][4];
+            for (int e = 0; e < 4; ++e) {
+              acc[j][e] = 0.f;
+              macc[j][e] = 0.f;
+            }
 #pragma unroll
-            for (int u = 0; u < GPAIR; ++u)
+          for (int m = 0; m < MTOK; ++m) {
+            uint32_t rb[KD][4];
 #pragma unroll
-              for (int h2 = 0; h2 < 2; ++h2)
-#pragma unroll
-                for (int e = 0; e < 4; ++e) g[u][h2][e] = 0.f;
+            for (int kk = 0; kk < KD; ++kk) load_frag(rb[kk], ADDRT(brT, m * 16, 2 * kk));
 #pragma unroll
             for (int kk = 0; kk < KD; ++kk)
 #pragma unroll
-              for (int u = 0; u < GPAIR; ++u) {
-                mma(g[u][0], qa[m][kk], &bf[u][kk][0]);
-                mma(g[u][1], qa[m][kk], &bf[u][kk][2]);
-              }
-            const int tr = (gm0 + m) * 16 + (lane >> 2);
+              for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
+            if (gwarp < kMassUnits) {
+              uint32_t mb[kMassKD][4];
+#pragma unroll
+              for (int q = 0; q < kMassKD; ++q) load_frag(mb[q], ADDRT_M(brT, m * 16, q));
+#pragma unroll
+              for (int q = 0; q < kMassKD; ++q)
+#pragma unroll
+                for (int p = 0; p < 2; ++p) mma(macc[2 * m + p], ma[q], &mb[q][2 * p]);
+            }
+          }
+        }
+
+        // ---- 2. Gram: G = staircase(R.W^T) over THIS BLOCK's slots ---------------
+        //: THE MASK IS THE MONOTONE STAIRCASE, AND IT IS THE SAME SHAPE AS THE
+        //: TRIANGLE IT GENERALISES.  Both lists are ascending, so read entry `tr`
+        //: keeps exactly the write entries below its threshold `J[tr]` -- one byte
+        //: the cook already observed.  At dense `J[tr] = tr + 1` and this reduces to
+        //: `tc <= tr` term for term.
+        if (gwarp < GWARPS) {
+          int jv[MPW][2];
+          if constexpr (GROUPS == 1) {
+            const uint8_t* ljt = ithr(dc);
+#pragma unroll
+            for (int m = 0; m < MPW; ++m) {
+              const int tr = (gm0 + m) * 16 + (lane >> 2);
+              jv[m][0] = ljt[tr];
+              jv[m][1] = ljt[tr + 8];
+            }
+          }
+          uint32_t qa[MPW][KD][4];
+#pragma unroll
+          for (int m = 0; m < MPW; ++m)
+#pragma unroll
+            for (int kk = 0; kk < KD; ++kk)
+              load_frag(qa[m][kk], ADDRF(arF, (gm0 + m) * 16, 2 * kk));
+
+#pragma unroll
+          for (int np = 0; np < NPW / 2; np += GPAIR) {
+            uint32_t bf[GPAIR][KD][4];
 #pragma unroll
             for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
-              for (int h2 = 0; h2 < 2; ++h2) {
-                const int tc = (gn0 + (np + u) * 2 + h2) * 8 + (lane & 3) * 2;
-                if constexpr (GROUPS == 1) {
-                  //: one group: the block's whole Gram -- mask and publish, as
-                  //: rung 5D did.
-                  const int j0 = jv[m][0], j1 = jv[m][1];
-                  const float m0 = (tc + 0 < j0) ? g[u][h2][0] : 0.f;
-                  const float m1 = (tc + 1 < j0) ? g[u][h2][1] : 0.f;
-                  const float m2 = (tc + 0 < j1) ? g[u][h2][2] : 0.f;
-                  const float m3 = (tc + 1 < j1) ? g[u][h2][3] : 0.f;
-                  store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(m0, m1));
-                  store_bf16x2(&sg[(tr + 8) * LdG + tc], pack_bf16x2(m2, m3));
-                } else {
-                  //: two groups: this is HALF the Gram (this group's slots), so
-                  //: it is published RAW in fp32; the exchange after (2) sums
-                  //: the halves and applies the staircase ONCE.  The sum happens
-                  //: in fp32 exactly because bf16 partials would round twice.
-                  float* gp = sgf + grp * C * G::LdGf + tr * G::LdGf + tc;
-                  store_f32(gp + 0, g[u][h2][0]);
-                  store_f32(gp + 1, g[u][h2][1]);
-                  store_f32(gp + G::LdGf * 8 + 0, g[u][h2][2]);
-                  store_f32(gp + G::LdGf * 8 + 1, g[u][h2][3]);
+              for (int kk = 0; kk < KD; ++kk)
+                load_frag(bf[u][kk], ADDRT(bwT, (gn0 + (np + u) * 2) * 8, 2 * kk));
+#pragma unroll
+            for (int m = 0; m < MPW; ++m) {
+              float g[GPAIR][2][4];
+#pragma unroll
+              for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+                for (int h2 = 0; h2 < 2; ++h2)
+#pragma unroll
+                  for (int e = 0; e < 4; ++e) g[u][h2][e] = 0.f;
+#pragma unroll
+              for (int kk = 0; kk < KD; ++kk)
+#pragma unroll
+                for (int u = 0; u < GPAIR; ++u) {
+                  mma(g[u][0], qa[m][kk], &bf[u][kk][0]);
+                  mma(g[u][1], qa[m][kk], &bf[u][kk][2]);
                 }
-              }
+              const int tr = (gm0 + m) * 16 + (lane >> 2);
+#pragma unroll
+              for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+                for (int h2 = 0; h2 < 2; ++h2) {
+                  const int tc = (gn0 + (np + u) * 2 + h2) * 8 + (lane & 3) * 2;
+                  if constexpr (GROUPS == 1) {
+                    //: one group: the block's whole Gram -- mask and publish, as
+                    //: rung 5D did.
+                    const int j0 = jv[m][0], j1 = jv[m][1];
+                    const float m0 = (tc + 0 < j0) ? g[u][h2][0] : 0.f;
+                    const float m1 = (tc + 1 < j0) ? g[u][h2][1] : 0.f;
+                    const float m2 = (tc + 0 < j1) ? g[u][h2][2] : 0.f;
+                    const float m3 = (tc + 1 < j1) ? g[u][h2][3] : 0.f;
+                    store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(m0, m1));
+                    store_bf16x2(&sg[(tr + 8) * LdG + tc], pack_bf16x2(m2, m3));
+                  } else {
+                    //: two groups: this is HALF the Gram (this group's slots), so
+                    //: it is published RAW in fp32; the exchange after (2) sums
+                    //: the halves and applies the staircase ONCE.  The sum happens
+                    //: in fp32 exactly because bf16 partials would round twice.
+                    float* gp = sgf + grp * C * G::LdGf + tr * G::LdGf + tc;
+                    store_f32(gp + 0, g[u][h2][0]);
+                    store_f32(gp + 1, g[u][h2][1]);
+                    store_f32(gp + G::LdGf * 8 + 0, g[u][h2][2]);
+                    store_f32(gp + G::LdGf * 8 + 1, g[u][h2][3]);
+                  }
+                }
+            }
           }
         }
       }
+
+      // ---- 3. fan the PREVIOUS super-chunk's partial output into the accumulator
+      if (prev_nr) {
+        drain(prev_d, prev_nr);
+        drain_den(prev_d, prev_nr);
+      }
+
+      if (liveW) {
+        // ---- 4. fold: S^T += V^T . W -------------------------------------------
+#pragma unroll
+        for (int kk = 0; kk < MTOK; ++kk) {
+          uint32_t a[4];
+          load_frag_t(a, ADDRT_DV(atv, kk * 16));
+          uint32_t b[KD][4];
+#pragma unroll
+          for (int nj = 0; nj < KD; ++nj) load_frag_t(b[nj], ADDRF(bwF, kk * 16, 2 * nj));
+#pragma unroll
+          for (int nj = 0; nj < KD; ++nj) {
+            mma(st[2 * nj], a, &b[nj][0]);
+            mma(st[2 * nj + 1], a, &b[nj][2]);
+          }
+          //: The d_v+1-th channel deposits through the same W panel at this unit's
+          //: own slots, with the literal 1 for its A operand.
+          if (gwarp < kMassUnits) {
+#pragma unroll
+            for (int q = 0; q < kMassKD; ++q) {
+              uint32_t mb[4];
+              load_frag_t(mb, ADDRF_M(bwF, kk * 16, q));
+              mma(mass_st[2 * q], ones_a, &mb[0]);
+              mma(mass_st[2 * q + 1], ones_a, &mb[2]);
+            }
+          }
+        }
+      }
+
+      //: (2) THE GRAM IS VISIBLE; R AND W ARE DEAD UNTIL THE NEXT PRODUCTION; AND
+      //: THE PREVIOUS SUPER-CHUNK'S INDEX SLOT IS FREE FOR THE COOK TO REUSE.  It
+      //: is issued on every super-chunk, live or dead, because that last clause is
+      //: what separates the drain from a cook one iteration later.
+      rendezvous();
+
+      //: THE GRAM EXCHANGE -- the slot carve's ONE genuine cross-group sum, and
+      //: also its prize: the summed Gram is multiplied into V ONCE per block
+      //: instead of once per group.  fp32 partials in, one staircase, bf16 out;
+      //: the extra rendezvous publishes the sum to every group's intra.  The
+      //: conditions are CTA-uniform (they come off the shared header), so the
+      //: barrier is uniform too.
+      if constexpr (GROUPS > 1) {
+        if (liveR && liveW) {
+          const uint8_t* ljt = ithr(dc);
+#pragma unroll 1
+          for (int e = tid; e < C * (C / 2); e += kThreads) {
+            const int tr = e / (C / 2);
+            const int tc = (e - tr * (C / 2)) * 2;
+            const int j = ljt[tr];
+            float s0 = 0.f, s1 = 0.f;
+#pragma unroll
+            for (int g2 = 0; g2 < GROUPS; ++g2) {
+              const float* gp = sgf + g2 * C * G::LdGf + tr * G::LdGf + tc;
+              s0 += gp[0];
+              s1 += gp[1];
+            }
+            store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(tc < j ? s0 : 0.f, tc + 1 < j ? s1 : 0.f));
+          }
+          rendezvous();
+        }
+      }
+
+      if (liveR) {
+        if (liveW) {
+          // ---- 5. intra: O^T += V^T . G^T ----------------------------------------
+          uint32_t va[MTOK][4];
+#pragma unroll
+          for (int kk = 0; kk < MTOK; ++kk) load_frag_t(va[kk], ADDRT_DV(atv, kk * 16));
+          //: the contraction runs over EVERY write token (the k axis stays whole);
+          //: what splits across the groups is the OUTPUT token axis -- each group
+          //: computes its m-tiles into its own acc and the fan-in sums the groups
+          //: exactly as it sums the blocks.  THE TILE BASE IS COMPILE-TIME: `acc`
+          //: is a register array, and a runtime index into one is a spill, so the
+          //: group takes its half through a uniform branch on its own id rather
+          //: than through arithmetic the allocator cannot see through.
+          constexpr int MI = MTOK / GROUPS;
+          auto intra_half = [&](auto base_c) {
+            constexpr int M0 = decltype(base_c)::value;
+#pragma unroll
+            for (int mi = 0; mi < MI; ++mi) {
+              uint32_t gb[MTOK][4];
+#pragma unroll
+              for (int kk = 0; kk < MTOK; ++kk)
+                load_frag(gb[kk], sgT + (uint32_t)(((M0 + mi) * 16 * LdG + kk * 16) * 2));
+#pragma unroll
+              for (int kk = 0; kk < MTOK; ++kk)
+#pragma unroll
+                for (int p = 0; p < 2; ++p) mma(acc[2 * (M0 + mi) + p], va[kk], &gb[kk][2 * p]);
+            }
+            //: THE INTRA TERM'S SHARE OF THE MASS, same compile-time base.
+            if (gwarp < kIntraUnits) {
+#pragma unroll
+              for (int mi = 0; mi < MI; ++mi)
+#pragma unroll
+                for (int q = 0; q < kIntraKD; ++q) {
+                  uint32_t mg[4];
+                  load_frag(mg, sgT + (uint32_t)(((M0 + mi) * 16 * LdG + q * kIntraUnits * 16) * 2)
+                                    + massOff);
+#pragma unroll
+                  for (int p = 0; p < 2; ++p) mma(macc[2 * (M0 + mi) + p], ones_a, &mg[2 * p]);
+                }
+            }
+          };
+          if constexpr (GROUPS == 1) {
+            intra_half(std::integral_constant<int, 0>{});
+          } else {
+            if (grp == 0)
+              intra_half(std::integral_constant<int, 0>{});
+            else
+              intra_half(std::integral_constant<int, MI>{});
+          }
+        }
+
+        // ---- 6. stage this chunk's partial output; the fan-in is next iteration --
+#pragma unroll
+        for (int j = 0; j < NTOK; ++j) {
+          const int jo = j * 8 * LdO;
+          store_f32(&so[oE[0][0] + jo], acc[j][0]);
+          store_f32(&so[oE[1][0] + jo], acc[j][1]);
+          store_f32(&so[oE[0][1] + jo], acc[j][2]);
+          store_f32(&so[oE[1][1] + jo], acc[j][3]);
+        }
+        //: THE MASS ROW IS ROW 0 OF ITS TILE, which in this atom's accumulator is
+        //: held by the four lanes of the first group, two tokens each.
+        if (lane < 4) {
+#pragma unroll
+          for (int j = 0; j < NTOK; ++j) {
+            store_f32(&sden[gwarp * C + j * 8 + lane * 2], macc[j][0]);
+            store_f32(&sden[gwarp * C + j * 8 + lane * 2 + 1], macc[j][1]);
+          }
+        }
+      }
+      prev_d = dc;
+      prev_nr = nr;
+      if (++dc == IRING) dc = 0;
+      if (++ds == IRING) ds = 0;
+      if (++dn == IRING) dn = 0;
     }
 
-    // ---- 3. fan the PREVIOUS super-chunk's partial output into the accumulator
+    rendezvous();
     if (prev_nr) {
       drain(prev_d, prev_nr);
       drain_den(prev_d, prev_nr);
     }
 
-    if (liveW) {
-      // ---- 4. fold: S^T += V^T . W -------------------------------------------
-#pragma unroll
-      for (int kk = 0; kk < MTOK; ++kk) {
-        uint32_t a[4];
-        load_frag_t(a, ADDRT_DV(atv, kk * 16));
-        uint32_t b[KD][4];
-#pragma unroll
-        for (int nj = 0; nj < KD; ++nj) load_frag_t(b[nj], ADDRF(bwF, kk * 16, 2 * nj));
-#pragma unroll
-        for (int nj = 0; nj < KD; ++nj) {
-          mma(st[2 * nj], a, &b[nj][0]);
-          mma(st[2 * nj + 1], a, &b[nj][2]);
-        }
-        //: The d_v+1-th channel deposits through the same W panel at this unit's
-        //: own slots, with the literal 1 for its A operand.
-        if (gwarp < kMassUnits) {
-#pragma unroll
-          for (int q = 0; q < kMassKD; ++q) {
-            uint32_t mb[4];
-            load_frag_t(mb, ADDRF_M(bwF, kk * 16, q));
-            mma(mass_st[2 * q], ones_a, &mb[0]);
-            mma(mass_st[2 * q + 1], ones_a, &mb[2]);
-          }
-        }
-      }
-    }
-
-    //: (2) THE GRAM IS VISIBLE; R AND W ARE DEAD UNTIL THE NEXT PRODUCTION; AND
-    //: THE PREVIOUS SUPER-CHUNK'S INDEX SLOT IS FREE FOR THE COOK TO REUSE.  It
-    //: is issued on every super-chunk, live or dead, because that last clause is
-    //: what separates the drain from a cook one iteration later.
-    rendezvous();
-
-    //: THE GRAM EXCHANGE -- the slot carve's ONE genuine cross-group sum, and
-    //: also its prize: the summed Gram is multiplied into V ONCE per block
-    //: instead of once per group.  fp32 partials in, one staircase, bf16 out;
-    //: the extra rendezvous publishes the sum to every group's intra.  The
-    //: conditions are CTA-uniform (they come off the shared header), so the
-    //: barrier is uniform too.
-    if constexpr (GROUPS > 1) {
-      if (liveR && liveW) {
-        const uint8_t* ljt = ithr(dc);
-#pragma unroll 1
-        for (int e = tid; e < C * (C / 2); e += kThreads) {
-          const int tr = e / (C / 2);
-          const int tc = (e - tr * (C / 2)) * 2;
-          const int j = ljt[tr];
-          float s0 = 0.f, s1 = 0.f;
-#pragma unroll
-          for (int g2 = 0; g2 < GROUPS; ++g2) {
-            const float* gp = sgf + g2 * C * G::LdGf + tr * G::LdGf + tc;
-            s0 += gp[0];
-            s1 += gp[1];
-          }
-          store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(tc < j ? s0 : 0.f, tc + 1 < j ? s1 : 0.f));
-        }
+    //: ---- the FINAL STATE.  The mirror of the entry load, after the last drain
+    //: has consumed the staging buffer -- which is what the one extra rendezvous
+    //: below is for.  Both groups iterate the same atom count against their own
+    //: `so`, so every barrier here stays CTA-uniform.
+    if constexpr (STATE) {
+      if (s_out != nullptr) {
+        const int atomFirst = atom_first();
+        const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
+        float* const plane = pin_address(s_out);
         rendezvous();
-      }
-    }
-
-    if (liveR) {
-      if (liveW) {
-        // ---- 5. intra: O^T += V^T . G^T ----------------------------------------
-        uint32_t va[MTOK][4];
 #pragma unroll
-        for (int kk = 0; kk < MTOK; ++kk) load_frag_t(va[kk], ADDRT_DV(atv, kk * 16));
-        //: the contraction runs over EVERY write token (the k axis stays whole);
-        //: what splits across the groups is the OUTPUT token axis -- each group
-        //: computes its m-tiles into its own acc and the fan-in sums the groups
-        //: exactly as it sums the blocks.  THE TILE BASE IS COMPILE-TIME: `acc`
-        //: is a register array, and a runtime index into one is a spill, so the
-        //: group takes its half through a uniform branch on its own id rather
-        //: than through arithmetic the allocator cannot see through.
-        constexpr int MI = MTOK / GROUPS;
-        auto intra_half = [&](auto base_c) {
-          constexpr int M0 = decltype(base_c)::value;
-#pragma unroll
-          for (int mi = 0; mi < MI; ++mi) {
-            uint32_t gb[MTOK][4];
-#pragma unroll
-            for (int kk = 0; kk < MTOK; ++kk)
-              load_frag(gb[kk], sgT + (uint32_t)(((M0 + mi) * 16 * LdG + kk * 16) * 2));
-#pragma unroll
-            for (int kk = 0; kk < MTOK; ++kk)
-#pragma unroll
-              for (int p = 0; p < 2; ++p) mma(acc[2 * (M0 + mi) + p], va[kk], &gb[kk][2 * p]);
-          }
-          //: THE INTRA TERM'S SHARE OF THE MASS, same compile-time base.
-          if (gwarp < kIntraUnits) {
-#pragma unroll
-            for (int mi = 0; mi < MI; ++mi)
-#pragma unroll
-              for (int q = 0; q < kIntraKD; ++q) {
-                uint32_t mg[4];
-                load_frag(mg, sgT + (uint32_t)(((M0 + mi) * 16 * LdG + q * kIntraUnits * 16) * 2)
-                                  + massOff);
-#pragma unroll
-                for (int p = 0; p < 2; ++p) mma(macc[2 * (M0 + mi) + p], ones_a, &mg[2 * p]);
-              }
-          }
-        };
-        if constexpr (GROUPS == 1) {
-          intra_half(std::integral_constant<int, 0>{});
-        } else {
-          if (grp == 0)
-            intra_half(std::integral_constant<int, 0>{});
-          else
-            intra_half(std::integral_constant<int, MI>{});
-        }
-      }
-
-      // ---- 6. stage this chunk's partial output; the fan-in is next iteration --
-#pragma unroll
-      for (int j = 0; j < NTOK; ++j) {
-        const int jo = j * 8 * LdO;
-        store_f32(&so[oE[0][0] + jo], acc[j][0]);
-        store_f32(&so[oE[1][0] + jo], acc[j][1]);
-        store_f32(&so[oE[0][1] + jo], acc[j][2]);
-        store_f32(&so[oE[1][1] + jo], acc[j][3]);
-      }
-      //: THE MASS ROW IS ROW 0 OF ITS TILE, which in this atom's accumulator is
-      //: held by the four lanes of the first group, two tokens each.
-      if (lane < 4) {
-#pragma unroll
-        for (int j = 0; j < NTOK; ++j) {
-          store_f32(&sden[gwarp * C + j * 8 + lane * 2], macc[j][0]);
-          store_f32(&sden[gwarp * C + j * 8 + lane * 2 + 1], macc[j][1]);
-        }
-      }
-    }
-    prev_d = dc;
-    prev_nr = nr;
-    if (++dc == IRING) dc = 0;
-    if (++ds == IRING) ds = 0;
-    if (++dn == IRING) dn = 0;
-  }
-
-  rendezvous();
-  if (prev_nr) {
-    drain(prev_d, prev_nr);
-    drain_den(prev_d, prev_nr);
-  }
-
-  //: ---- the FINAL STATE.  The mirror of the entry load, after the last drain
-  //: has consumed the staging buffer -- which is what the one extra rendezvous
-  //: below is for.  Both groups iterate the same atom count against their own
-  //: `so`, so every barrier here stays CTA-uniform.
-  if constexpr (STATE) {
-    if (s_out != nullptr) {
-      const int atomFirst = atom_first();
-      const int32_t* const tbl = page_tbl != nullptr ? pin_address(page_tbl) : nullptr;
-      float* const plane = pin_address(s_out);
-      rendezvous();
-#pragma unroll
-      for (int i = 0; i < kAtoms; ++i) {
-        const int slot = slot_of(tbl, atomFirst + i);
-        if (slot >= 0) {
-#pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
-          if (gwarp == i % kMassUnits && lane < 4) {
+        for (int i = 0; i < kAtoms; ++i) {
+          const int slot = slot_of(tbl, atomFirst + i);
+          if (slot >= 0) {
 #pragma unroll
             for (int p = 0; p < 2; ++p)
 #pragma unroll
-              for (int k = 0; k < 2; ++k)
-                store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+              for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * i + p][k]);
+            if (gwarp == i % kMassUnits && lane < 4) {
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 2; ++k)
+                  store_f32(&so[page_mass(p, k)], mass_st[2 * (i / kMassUnits) + p][k]);
+            }
           }
+          rendezvous();
+          if (slot >= 0) {
+            page_sweep(page_off(slot), [&](int s, uint32_t off) {
+              store_f32(reinterpret_cast<float*>(gather_ptr(plane, off)), so[s]);
+            });
+          }
+          rendezvous();
         }
-        rendezvous();
-        if (slot >= 0) {
-          page_sweep(page_off(slot), [&](int s, uint32_t off) {
-            store_f32(reinterpret_cast<float*>(gather_ptr(plane, off)), so[s]);
-          });
-        }
+      }
+    }
+    //: THE RE-USE FENCE, AND IT IS NOT A `rendezvous`.  The steady loop waits at
+    //: STAGES-2, so up to STAGES-1 `cp.async` groups are still in flight when it
+    //: breaks -- and their writes land in the ring slots the NEXT work item
+    //: stages into.  `__syncthreads` does not fence them.
+    if constexpr (PERSIST) {
+      if (blk + (int)gridDim.x < (int)LP::blocks) {
+        stage_wait<0>();
         rendezvous();
       }
     }

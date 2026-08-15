@@ -43,11 +43,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "chunk consumer: the readout's d_v+1 columns, undivided", py::arg("pr"), py::arg("pw"),
         py::arg("gw"), py::arg("v"), py::arg("tbl"), py::arg("chunk"), py::arg("bc"),
         py::arg("widths"), py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
-        py::arg("page_tbl") = py::none());
+        py::arg("page_tbl") = py::none(), py::arg("block_bits") = py::none());
   m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("chunk"), py::arg("bc"),
         py::arg("widths"), py::arg("eps"), py::arg("s_in") = py::none(),
-        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none());
+        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
+        py::arg("block_bits") = py::none());
   m.def("chunk_stats", &rola::chunk::stats,
         "chunk consumer: the exact atom-grain write bitmap the page plan admits from");
   //: the sparse grid's predicate INPUT: three liveness facts per (bh, block),

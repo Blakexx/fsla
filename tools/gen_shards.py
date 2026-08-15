@@ -20,7 +20,7 @@ directory cannot be reviewed. `--check` regenerates into memory and diffs, which
 what CI and `tests/unit/test_shard_partition.py` run.
 
 **MEMBERSHIP IS A STRUCTURAL FUNCTION.** A shard is a contiguous slice of
-`CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, both of an arm's state variants riding the
+`CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel variant of an arm riding the
 same shard, and nothing else -- no measured compile time, no hand-written file list,
 no size threshold. "Rebalance the shards by how long they took to compile last week"
 is therefore not a thing that can be expressed here; changing the partition is a
@@ -29,9 +29,9 @@ asserts every member of every generated file maps back to that file.
 
 **WHY AN ARM LIST AND NOT AN AXIS CROSS.** The level plan's geometry law admits only
 certain `(C, BC, D, B)` tuples as built arms, so a cross product would name
-unbuildable combinations. The one axis that IS crossed is the carried state's I/O
-(`compacted_kernel`'s `STATE`), because it is compiled in or out of an arm rather
-than being a geometry of its own.
+unbuildable combinations. The axes that ARE crossed are the carried state's I/O
+(`compacted_kernel`'s `STATE`) and the launch shape (`PERSIST`), because each is
+compiled in or out of an arm rather than being a geometry of its own.
 
 Usage:
 
@@ -88,9 +88,11 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE>` has {total} built instantiations — {narms}
-arms crossed with the carried state's I/O, the exact set `chunk_forward` can select,
-no more and no fewer. They are split across **{nshards} shards of {per} arms**,
+`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has {total} built instantiations —
+{narms} arms crossed with the carried state's I/O and the launch shape, the exact set
+`chunk_forward` can select, no more and no fewer. One arm carries no work-loop
+variant: `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
+budget, and spills inside the main loop once a loop counter is added to it. They are split across **{nshards} shards of {per} arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -111,15 +113,15 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
-list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch, plus `CHUNK_ARM_PERSIST_BUILT` (which arms carry the work-loop variant) and
+`CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
 ## The partition
 
-A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, both state
-variants of an arm riding the same shard, and nothing else — membership is a
+A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel
+variant of an arm riding the same shard, and nothing else — membership is a
 structural function of the arm, never a measured compile time. Repartitioning is a
 change to that one constant.
 
@@ -167,10 +169,37 @@ CHUNK_PER_SHARD = 8
 #: because the state is not a geometry.
 CHUNK_STATE = (False, True)
 
+#: THE LAUNCH-SHAPE AXIS, on the same rule: `compacted_kernel`'s `PERSIST` compiles
+#: the sparse grid's work loop in or out, so a call that hands over no liveness
+#: bitmap runs the kernel that has no loop in it at all.  It is an axis rather than
+#: a runtime branch because a loop is not free: its back edge holds every hoisted
+#: address live, MEASURED at +20 to +34 registers on the saturated arms.
+CHUNK_PERSIST = (False, True)
+
+#: THE ARM THE WORK LOOP DOES NOT FIT, and this is a MEASURED DECLARATION of the
+#: same kind as `reg_floor` -- falsifiable, because the spill manifest fails if an
+#: arm listed as fitting does not.  `(64, 128, 2, 64)` declares `reg_floor` 255,
+#: the ISA's whole per-thread budget, so it has no register left for a loop counter
+#: and spills 66-122 bytes INSIDE the main loop.  The answer to a configuration a
+#: strategy costs too much on is a different configuration, never a special-cased
+#: path: this arm runs the full grid, and asking it for the sparse one is refused
+#: BY NAME (docs/internals/chunk/chunk.md#run-table).
+CHUNK_NO_PERSIST = ((64, 128, 2, 64),)
+
+
+def chunk_persist(arm) -> bool:
+    """Whether this arm's work-loop variant is built."""
+    return tuple(arm[:4]) not in CHUNK_NO_PERSIST
+
+
+def _variants(arm) -> tuple:
+    return tuple((s, pz) for s in CHUNK_STATE for pz in CHUNK_PERSIST
+                 if not pz or chunk_persist(arm))
+
 
 def chunk_rows() -> tuple:
-    """Every built chunk instantiation: an arm crossed with the state axis."""
-    return tuple((*a, s) for a in CHUNK_ARMS for s in CHUNK_STATE)
+    """Every built chunk instantiation: an arm crossed with the two kernel axes."""
+    return tuple((*a, s, pz) for a in CHUNK_ARMS for (s, pz) in _variants(a))
 
 
 def chunk_atom_arms() -> tuple:
@@ -185,7 +214,7 @@ def chunk_atom_arms() -> tuple:
 
 
 def chunk_canonical(a) -> str:
-    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]} STATE={_b(a[4])}"
+    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]} STATE={_b(a[4])} PERSIST={_b(a[5])}"
 
 
 def chunk_members_sha256(rows) -> str:
@@ -194,16 +223,16 @@ def chunk_members_sha256(rows) -> str:
 
 
 def chunk_shards() -> dict:
-    """The partition, still BY ARM: both state variants of an arm ride the same
-    shard, so a shard is one slice of the geometry and not half of one."""
-    return {f"chunk_s{i}": [(*a, s) for a in CHUNK_ARMS[i * CHUNK_PER_SHARD:
-                                                        (i + 1) * CHUNK_PER_SHARD]
-                            for s in CHUNK_STATE]
+    """The partition, still BY ARM: every kernel variant of an arm rides the same
+    shard, so a shard is one slice of the geometry and not part of one."""
+    return {f"chunk_s{i}": [(*a, s, pz) for a in CHUNK_ARMS[i * CHUNK_PER_SHARD:
+                                                            (i + 1) * CHUNK_PER_SHARD]
+                            for (s, pz) in _variants(a)]
             for i in range((len(CHUNK_ARMS) + CHUNK_PER_SHARD - 1) // CHUNK_PER_SHARD)}
 
 
 def chunk_targs(a) -> str:
-    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}, {_b(a[4])}"
+    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}, {_b(a[4])}, {_b(a[5])}"
 
 
 def chunk_arms_inc() -> str:
@@ -219,6 +248,13 @@ def chunk_arms_inc() -> str:
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
         lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
+    lines.append("\n// Which arms carry the work-loop variant -- the projection of\n"
+                 "// CHUNK_NO_PERSIST, so the dispatch and the shards cannot disagree\n"
+                 "// about what was built.\n"
+                 "#define CHUNK_ARM_PERSIST_BUILT(C_, BC_, D_, B_) \\\n")
+    lines.append("  (" + " && ".join(
+        f"!((C_) == {a[0]} && (BC_) == {a[1]} && (D_) == {a[2]} && (B_) == {a[3]})"
+        for a in CHUNK_NO_PERSIST) + ")\n")
     atoms = chunk_atom_arms()
     lines.append("\n// The STATS pass' arms -- (D, B) only, the projection of the\n"
                  "// list above (residency is keyed to the invariant quantum, not BC).\n"

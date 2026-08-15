@@ -10,9 +10,11 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE>` has 42 built instantiations — 21
-arms crossed with the carried state's I/O, the exact set `chunk_forward` can select,
-no more and no fewer. They are split across **3 shards of 8 arms**,
+`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has 82 built instantiations —
+21 arms crossed with the carried state's I/O and the launch shape, the exact set
+`chunk_forward` can select, no more and no fewer. One arm carries no work-loop
+variant: `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
+budget, and spills inside the main loop once a loop counter is added to it. They are split across **3 shards of 8 arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -33,15 +35,15 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
-list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch, plus `CHUNK_ARM_PERSIST_BUILT` (which arms carry the work-loop variant) and
+`CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
 ## The partition
 
-A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, both state
-variants of an arm riding the same shard, and nothing else — membership is a
+A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel
+variant of an arm riding the same shard, and nothing else — membership is a
 structural function of the arm, never a measured compile time. Repartitioning is a
 change to that one constant.
 
@@ -57,6 +59,6 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `chunk_s0.cu` | 16 |
-| `chunk_s1.cu` | 16 |
-| `chunk_s2.cu` | 10 |
+| `chunk_s0.cu` | 32 |
+| `chunk_s1.cu` | 30 |
+| `chunk_s2.cu` | 20 |

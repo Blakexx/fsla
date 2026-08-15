@@ -391,3 +391,44 @@ with no page has provably zero entry fragments, so an unmapped block cannot read
 out. The dense backing carries no residency map, and the bit is then ZERO everywhere
 rather than guessed — the host's dense predicate is weakened to compensate, which is a
 recorded weakening rather than a hidden one.
+
+## The work loop, and where it opens
+
+<a id="work-loop"></a>**`PERSIST` compiles the sparse grid's work loop in or out**, on exactly the
+rule the carried state's I/O follows: a call that hands over no liveness bitmap runs the
+kernel that has no loop in it at all, launched one CTA per block as it always was. With a
+bitmap the grid is FIXED — this arm's resident CTAs times the device's SM count, capped at
+the block count — and the loop strides over the block axis, testing one byte per work item
+and skipping the dead ones. `bh` stays on `blockIdx.y` in both, which is what keeps every
+`bh`-keyed base (`v`, the amplitude planes, `o`, `den`, the table rows) a launch constant.
+
+**Why an axis and not a runtime null test.** A loop is not free: its back edge holds live
+everything computed above it. Measured, a runtime loop around the hoisted setup cost +20 to
++34 registers and spilled five instantiations inside the main loop; the same body with the
+loop degenerated to one iteration cost +2. Compiling the loop out restores the full-grid
+kernel exactly, so the launch that does not use the feature does not pay for it — which is
+the same reason `STATE` is an axis.
+
+**The loop opens ABOVE the addressing, and that is deliberate.** Everything from the
+shared-memory carve down — the operand addresses, the fan-in's rows, the production
+geometry, the amplitude columns, the clause rows, the accumulators and every cursor — is
+re-derived per work item rather than hoisted, because hoisting is precisely what puts a
+value on the back edge. It is the same trade the state I/O already takes: the atom index is
+derived inside each state block so that nothing about it is live across the main loop.
+
+**The one hazard the loop introduces is the asynchronous copy pipeline.** The steady loop
+issues a `cp.async` group per super-chunk and only ever waits at `STAGES - 2`, so up to
+`STAGES - 1` groups are still in flight when it breaks. A one-shot CTA exits and those
+copies are discarded; under the loop they land in the V ring slots the NEXT work item is
+already staging into. `rendezvous()` does not fence them — `__syncthreads` orders shared
+memory accesses, not outstanding asynchronous copies — so each item ends with
+`stage_wait<0>()` before its barrier, and only when another item follows.
+
+**An arm the loop does not fit carries no persistent variant.** `(C=64, BC=128, D=2, B=64)`
+declares `reg_floor` 255, the ISA's whole per-thread budget; a loop counter added to it
+spills inside the main loop whatever else is trimmed. The answer to a configuration a
+strategy costs too much on is a different configuration, never a special-cased path, so
+that arm runs the full grid and asking it for the sparse one is refused by name. The set is
+the generator's (`CHUNK_NO_PERSIST`), a measured declaration of the same kind as
+`reg_floor` and falsifiable the same way: the spill manifest fails if an arm listed as
+fitting does not.

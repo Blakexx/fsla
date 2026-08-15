@@ -73,3 +73,44 @@ its envelope is its own).  Reopen candidates, in order of promise: a parallel
 prefix across the scan rows, scan/produce overlap, dressing fused into the
 produce rendezvous, coarser clock granularity (a semantic change) — any of
 them justified only by a quality measurement showing decay matters at scale.
+
+## <a id="run-table"></a>The skip predicate is a host decision
+
+The liveness epilogue (`chunk_block_bits`, reducing the union table this call already
+built — `chunk_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `READ`,
+`WRITE`, `STATE`. It does not emit a verdict, because the verdict is not a property of the
+routing. What a skipped block would have cost differs by call class and by backing:
+
+| call class | rule |
+|---|---|
+| stateless `y`-only | `R && W` |
+| state-in `y`-only, paged | `R && (W \| S)` |
+| state-in `y`-only, dense | `R` |
+| state-out, paged | `(R && (W \| S)) \| W` |
+| state-out, dense | always run |
+
+`run_table(state_in, state_out, paged)` derives a `uint8` TRUTH TABLE over the byte's three
+bits by evaluating that rule for each of the eight values, so the rule is written once in
+readable form and the mask is derived, never hand-authored. The kernel's whole predicate is
+then one shift and one AND, with no branching taxonomy and no call-class knowledge in it.
+
+**Why each row is what it is.** A skipped block's contribution to `y` and to `den` is the
+exact additive identity, not a negligible one: its mass accumulator is initialised to `+0.0`
+and only ever written inside the write-side gate, and `x + (+0.0)` is the identity in
+round-to-nearest for every `x` the zero-initialised accumulator can hold. That is what makes
+`R && W` sound for a stateless call — a write-only block folds into the register state and
+then discards it, so it is provably inert. A carried entry state breaks that argument, which
+is what `S` restores where a page table can witness it; the dense backing has no residency
+map, so its predicate degrades to `R` and says so.
+
+**The dense state-out row is the one that cannot skip at all.** The dense `s_out` plane is
+allocated uninitialised precisely because it is written WHOLE — the owner blocks tile the
+leaf space exactly, so every atom is stored by exactly one CTA. Skipping a block there
+would leave that block's atoms as garbage in the returned state. The paged backing is
+different and does skip: an unmapped atom is already a no-op in the epilogue, and a mapped
+slot either was zero-initialised on admission or is carried from a previous call, which a
+skipped block must leave UNCHANGED — which is what skipping does.
+
+**An arm with no persistent variant is refused by name, never downgraded.** Serving the
+full grid to a caller who asked for the sparse one is how a measurement gets attributed to a
+launch that never ran; `launch_variant` raises instead, and names the arm.

@@ -132,7 +132,10 @@ def test_the_paged_path_orders_plan_exact_then_wait_then_launch(monkeypatch):
     #: bound at ITS import; patching the source module only works when the
     #: importer has not been imported yet, which is a property of test ordering
     #: and not of the code under test.
-    spy.watch_extension(monkeypatch, chunk_mod, "chunk_forward", label="launch")
+    #: `chunk_forward_raw` IS the launch: `run` builds the union table, reduces it
+    #: when the plan asked for the sparse grid, and calls the kernel entry itself,
+    #: so the entry that must follow the join is this one.
+    spy.watch_extension(monkeypatch, chunk_mod, "chunk_forward_raw", label="launch")
 
     _run(routes, v, paging=True)
 

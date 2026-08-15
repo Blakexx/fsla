@@ -15,31 +15,43 @@
 
 namespace rola::chunk {
 
-//: ONE ARM, ONE STATE VARIANT.  `STATE` is a kernel axis (chunk_kernel.cuh): the
-//: variant that carries no state I/O compiles none of it, so the null-state path
-//: is the pre-state kernel exactly.  Which variant a call wants is a property of
-//: its POINTERS and is decided by `chunk.cu`'s dispatch, on the host, where a
-//: branch costs nothing.  The BACKING is not an axis: dense and paged are one
+//: ONE ARM, ONE STATE VARIANT, ONE LAUNCH SHAPE.  `STATE` and `PERSIST` are
+//: kernel axes (chunk_kernel.cuh): the variant that carries no state I/O
+//: compiles none of it and the variant that owns one block compiles no work
+//: loop, so each is the kernel that existed before its feature did.  Which
+//: variant a call wants is a property of its POINTERS and is decided by
+//: `chunk.cu`'s dispatch, on the host, where a branch costs nothing.  The BACKING is not an axis: dense and paged are one
 //: kernel and one base translation, told apart by whether the page table is null
 //: (docs/internals/paging/paging.md).
-template <int C, int BC, int D, int B, bool STATE>
+template <int C, int BC, int D, int B, bool STATE, bool PERSIST>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
   constexpr size_t sm = Geom<C, BC>::bytes;
   static bool configured = false;
   if (!configured) {
-    const cudaError_t e = cudaFuncSetAttribute(
-        compacted_kernel<C, D, B, BC, STATE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
+    const cudaError_t e =
+        cudaFuncSetAttribute(compacted_kernel<C, D, B, BC, STATE, PERSIST>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
     if (e != cudaSuccess) return e;
     configured = true;
   }
   //: a state pointer -- or a table to resolve one through -- handed to the
-  //: variant that has no state code would be read by nothing: the dispatch's
-  //: choice and the pointers must agree.
+  //: variant that has no state code would be read by nothing, and a bitmap
+  //: handed to the variant with no work loop would be read by nothing either:
+  //: the dispatch's choice and the pointers must agree.
   if (!STATE && (p.s_in != nullptr || p.s_out != nullptr || p.page_tbl != nullptr))
     return cudaErrorInvalidValue;
-  const dim3 grid((unsigned)LevelPlan<D, B, BC>::blocks, (unsigned)p.BH);
-  compacted_kernel<C, D, B, BC, STATE><<<grid, threads_for(BC), sm, stream>>>(
-      p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.s_in, p.s_out, p.page_tbl);
+  if (PERSIST != (p.block_bits != nullptr)) return cudaErrorInvalidValue;
+  //: THE PERSISTENT GRID IS FIXED: this arm's resident CTAs times the device's
+  //: SM count, capped at the block count, and the work loop strides over the
+  //: rest.  `sm_count` is a runtime device fact and never an arch-table row
+  //: (docs/internals/chunk/chunk_launch.md#persistent-grid).
+  constexpr int kBlocks = (int)LevelPlan<D, B, BC>::blocks;
+  const int want = (kCtaTarget<C, BC> * p.sm_count + p.BH - 1) / p.BH;
+  const int span = !PERSIST ? kBlocks : want < 1 ? 1 : want < kBlocks ? want : kBlocks;
+  const dim3 grid((unsigned)span, (unsigned)p.BH);
+  compacted_kernel<C, D, B, BC, STATE, PERSIST>
+      <<<grid, threads_for(BC), sm, stream>>>(p.pr, p.pw, p.gw, p.v, p.tbl, p.o, p.den, p.L, p.s_in,
+                                              p.s_out, p.page_tbl, p.block_bits, p.run_table);
   return cudaGetLastError();
 }
 
@@ -91,10 +103,10 @@ cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* pa
 
 //: the census: everything build_stamp reports for an arm.  Lives HERE so the
 //: dispatch TU never touches the kernel symbol.
-template <int C, int BC, int D, int B, bool STATE>
+template <int C, int BC, int D, int B, bool STATE, bool PERSIST>
 std::array<int64_t, 9> query_chunk_census_arm() {
   cudaFuncAttributes a{};
-  if (cudaFuncGetAttributes(&a, compacted_kernel<C, D, B, BC, STATE>) != cudaSuccess)
+  if (cudaFuncGetAttributes(&a, compacted_kernel<C, D, B, BC, STATE, PERSIST>) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
