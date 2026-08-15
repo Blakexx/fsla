@@ -113,8 +113,9 @@ def _dense_plane(widths, BH):
 
 def _launch(fixture, widths, C, BC, *, s_in=None, s_out=None, page_tbl=None, eps=1e-6):
     pr, pw, gw, vk = _packed(fixture)
-    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, s_in, s_out, page_tbl)
-    return y
+    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, None,
+                                  torch.float32, s_in, s_out, page_tbl)
+    return y.permute(0, 2, 1, 3)
 
 
 def _dense(fixture, widths, C, BC, *, s_in=None):

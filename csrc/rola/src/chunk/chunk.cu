@@ -170,33 +170,78 @@ static torch::Tensor build_table(const torch::Tensor& pr, const torch::Tensor& p
 //: THE RATIO, IN ONE ELEMENTWISE PASS.  It cannot be in the kernel: `den[t]` is
 //: a sum over the N/BC blocks and no block knows the total.  `eps` is a runtime
 //: argument -- it is a constant of the DEFINITION and belongs to the definition's
-//: file.  The divide is round-to-nearest by name.
+//: file.  The divide is round-to-nearest by name, and so is the narrowing store.
+//:
+//: `mass` MAY BE NULL, and null is 1: the read levels' per-token scale rides here
+//: instead of being divided out of them, and the floor is scaled with the ratio so
+//: nothing about the defined readout moves -- docs/internals/chunk/chunk.md#readout.
+template <typename OutT>
+__device__ __forceinline__ void store_quad(OutT* y, long vec, const float4& r);
+
+template <>
+__device__ __forceinline__ void store_quad<float>(float* y, long vec, const float4& r) {
+  reinterpret_cast<float4*>(y)[vec] = r;
+}
+
+template <>
+__device__ __forceinline__ void store_quad<__nv_bfloat16>(__nv_bfloat16* y, long vec,
+                                                          const float4& r) {
+  const __nv_bfloat162 lo = __floats2bfloat162_rn(r.x, r.y);
+  const __nv_bfloat162 hi = __floats2bfloat162_rn(r.z, r.w);
+  reinterpret_cast<uint2*>(y)[vec] =
+      make_uint2(*reinterpret_cast<const uint32_t*>(&lo), *reinterpret_cast<const uint32_t*>(&hi));
+}
+
+template <typename OutT>
 __global__ void divide_kernel(const float* __restrict__ num, const float* __restrict__ den,
-                              float* __restrict__ y, long vecs, float eps) {
-  constexpr int kVec = 4;
+                              const float* __restrict__ mass, OutT* __restrict__ y, long vecs,
+                              int L, int H, float eps) {
+  constexpr int kQuads = kD / 4;
   const long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= vecs) return;
-  const float d = den[i / (kD / kVec)] + eps;
+  const long tok = i / kQuads;
+  const float d = den[tok] + eps * (mass != nullptr ? mass[tok] : 1.0f);
   const float4 x = reinterpret_cast<const float4*>(num)[i];
   float4 r;
   r.x = __fdiv_rn(x.x, d);
   r.y = __fdiv_rn(x.y, d);
   r.z = __fdiv_rn(x.z, d);
   r.w = __fdiv_rn(x.w, d);
-  reinterpret_cast<float4*>(y)[i] = r;
+  //: `[bh, t, d_v] -> [b, t, h, d_v]`: the operand layout `o_proj` reads, so the
+  //: transpose and the narrowing are this store rather than two host passes.
+  const long bh = tok / L, t = tok % L;
+  store_quad<OutT>(y, ((bh / H * L + t) * H + bh % H) * kQuads + i % kQuads, r);
 }
 
-torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps) {
+torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, c10::optional<torch::Tensor> mass,
+                          double eps, at::ScalarType out) {
   check_arch_table();
   TORCH_CHECK(num.is_contiguous() && den.is_contiguous());
   TORCH_CHECK(num.scalar_type() == torch::kFloat32 && den.scalar_type() == torch::kFloat32);
-  TORCH_CHECK(num.size(-1) == kD, "expect a numerator of d_v columns");
-  auto y = torch::empty_like(num);
+  TORCH_CHECK(num.dim() == 4 && num.size(-1) == kD, "expect a numerator [B, H, T, d_v]");
+  const long B = num.size(0), H = num.size(1), L = num.size(2);
+  const float* massPtr = nullptr;
+  if (mass.has_value()) {
+    TORCH_CHECK(mass->is_cuda() && mass->is_contiguous() && mass->scalar_type() == torch::kFloat32
+                    && mass->numel() == B * H * L,
+                "the read mass must be a contiguous fp32 [B, H, T] tensor");
+    massPtr = mass->data_ptr<float>();
+  }
+  auto y = torch::empty({B, L, H, (long)kD}, num.options().dtype(out));
   const long vecs = num.numel() / 4;
   const int threads = 256;
-  divide_kernel<<<(int)((vecs + threads - 1) / threads), threads, 0,
-                  at::cuda::getCurrentCUDAStream()>>>(num.data_ptr<float>(), den.data_ptr<float>(),
-                                                      y.data_ptr<float>(), vecs, (float)eps);
+  const int blocks = (int)((vecs + threads - 1) / threads);
+  const auto stream = at::cuda::getCurrentCUDAStream();
+  if (out == torch::kFloat32)
+    divide_kernel<float>
+        <<<blocks, threads, 0, stream>>>(num.data_ptr<float>(), den.data_ptr<float>(), massPtr,
+                                         y.data_ptr<float>(), vecs, (int)L, (int)H, (float)eps);
+  else if (out == torch::kBFloat16)
+    divide_kernel<__nv_bfloat16><<<blocks, threads, 0, stream>>>(
+        num.data_ptr<float>(), den.data_ptr<float>(), massPtr,
+        reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), vecs, (int)L, (int)H, (float)eps);
+  else
+    TORCH_CHECK(false, "the readout is emitted in the operand's dtype: fp32 or bf16");
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return y;
 }
@@ -457,12 +502,13 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
                       int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
+                      c10::optional<torch::Tensor> read_mass, at::ScalarType out,
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl,
                       c10::optional<torch::Tensor> block_bits) {
   auto tbl = union_table(pr, pw, v, chunk, bc, widths);
   auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl, block_bits);
-  return divide_pass(nd[0], nd[1], eps);
+  return divide_pass(nd[0], nd[1], read_mass, eps, out);
 }
 
 //: THE RING'S DEPTH IS PART OF THE BUILD'S IDENTITY, so a measurement can never

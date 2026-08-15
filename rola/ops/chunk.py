@@ -120,15 +120,20 @@ class PackedRoutes:
     pr: torch.Tensor
     pw: torch.Tensor
     gw: torch.Tensor
+    rm: torch.Tensor | None
 
 
 def pack(routes) -> PackedRoutes:
     """THE packing, and the only one: `routes` in the layout the kernels read."""
+    mass = routes.read_mass
     return PackedRoutes(
         routes=routes,
         pr=_pack_side(routes.read),
         pw=_pack_side(routes.write),
-        gw=_pack(routes.g_write.permute(0, 2, 1)))
+        gw=_pack(routes.g_write.permute(0, 2, 1)),
+        #: fp32, because it scales the readout's floor and `eps` is an fp32 definition
+        #: constant; bf16 here would quantize the floor, not the amplitudes.
+        rm=None if mass is None else _pack(mass.permute(0, 2, 1), torch.float32))
 
 
 def stats(packed: PackedRoutes) -> torch.Tensor:
@@ -214,7 +219,9 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
             if sparse_grid else None)
     num, den = m.chunk_forward_raw(pr, pw, gw, vk, tbl, c, bc, list(widths), state_in, s_out,
                                    page_tbl, bits)
-    y = m.chunk_divide_pass(num, den, READOUT_EPS)
-    #: kernel arm hands back the operand dtype (the facade's documented
-    #: contract); the fp32 accumulator is the kernel's, not the caller's.
-    return y.permute(0, 2, 1, 3).to(v.dtype), s_out
+    #: THE READ MASS RIDES INTO THE FLOOR. `packed.rm` is the per-token scale the read
+    #: levels still carry, so numerator and denominator are both `m` times the
+    #: normalized ones; passing `eps * m` makes the divide `m*num / (m*(den + eps))`,
+    #: which is the defined readout exactly rather than to within a scaled floor.
+    y = m.chunk_divide_pass(num, den, packed.rm, READOUT_EPS, v.dtype)
+    return y, s_out

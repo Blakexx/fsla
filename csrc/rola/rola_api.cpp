@@ -46,7 +46,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("page_tbl") = py::none(), py::arg("block_bits") = py::none());
   m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("chunk"), py::arg("bc"),
-        py::arg("widths"), py::arg("eps"), py::arg("s_in") = py::none(),
+        py::arg("widths"), py::arg("eps"), py::arg("read_mass") = py::none(),
+        py::arg("out") = torch::kFloat32, py::arg("s_in") = py::none(),
         py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
         py::arg("block_bits") = py::none());
   m.def("chunk_stats", &rola::chunk::stats,
@@ -57,8 +58,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_block_bits", &rola::chunk::block_bits,
         "chunk consumer: the block-grain read/write/state liveness bitmap", py::arg("tbl"),
         py::arg("bc"), py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
+  //: the read mass is the scale the read levels still carry; `eps * mass` is what
+  //: keeps the floor on the ratio's own scale (docs/internals/chunk/chunk.md#readout).
   m.def("chunk_divide_pass", &rola::chunk::divide_pass,
-        "chunk consumer: the ratio, one elementwise pass");
+        "chunk consumer: the ratio, one elementwise pass, in the operand's layout", py::arg("num"),
+        py::arg("den"), py::arg("mass"), py::arg("eps"), py::arg("out") = torch::kFloat32);
   m.def("chunk_build_stamp", &rola::chunk::build_stamp,
         "chunk consumer: device-side build identity + the census of both state "
         "variants, stateless first");

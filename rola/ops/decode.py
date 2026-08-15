@@ -298,7 +298,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
     #: re-widens here and the cast is exact, the values being bf16-rounded already.
     y, _, _WORKSPACES[state] = _decode_step(
-        v.to(torch.float32), routes.read, routes.write, routes.g_read, routes.g_write,
+        v.to(torch.float32), routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
         config, plane, decay=decay, workspace=workspace,
         page_table=page_table)
     return y, state

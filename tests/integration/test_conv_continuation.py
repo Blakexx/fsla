@@ -76,7 +76,7 @@ def _oracle_last_token(layer, x):
         source, _ = layer.route_conv(x)
         v = rearrange(v, "b l (h d) -> b l h d", d=_DV)
         routes = layer.routes(source)
-        y, _ = naive_rola(v, routes.read, routes.write, routes.g_read, routes.g_write,
+        y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
                           layer.topology, None, "global")
         y = layer.o_proj(y.to(x.dtype).reshape(x.shape[0], x.shape[1], -1))
     return y[:, -1]

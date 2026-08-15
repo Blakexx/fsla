@@ -27,6 +27,30 @@ exercises the three-clause form), and three flat D=1 arms (the benchmark's
 in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 (measured −2.1..+2.2%, noise, no winner — one layout ships).
 
+## <a id="readout"></a>The divide is where the readout's layout and dtype are settled
+
+`den[t]` is a sum over the `N/BC` blocks and no block knows the total, so the ratio
+cannot live inside the consumer kernel. It is one elementwise pass, and it carries
+three jobs the host used to pay for separately.
+
+**The scaled floor.** The gateway hands the read side over with its per-token mass `m`
+still on the levels (`docs/api.md` §2.2), so the numerator and denominator this pass
+reads are both `m` times the normalized ones. `eps` is a constant of the DEFINITION,
+which means it is the one term that does not scale with the ratio — so the mass arrives
+as its own operand and the divide is `m·num / (m·den + eps·m)`. That is the defined
+readout exactly, not an approximation of it, and the exactness is checkable rather than
+argued: on power-of-two operands the scaled divide is the unscaled one bit for bit
+(`tests/oracle/test_chunk_op.py`). A null `mass` is the scale 1, which is what every
+bundle whose read duties are all declared on the simplex passes.
+
+**The operand's layout and dtype, in the store.** The consumer accumulates `[BH, T,
+d_v]` fp32 and `o_proj` wants `[B, T, H·d_v]` in the operand's dtype. Both the
+transpose and the narrowing are addressing and rounding on a value already in a
+register, so they are the store's, and the two host passes that used to walk the output
+again are gone. The narrowing is round-to-nearest, which is bit for bit the host cast it
+replaces; `out` is fp32 or bf16 and nothing else, because those are the operand dtypes
+the consumer accepts.
+
 ## The built matrix IS the kernel envelope (2026-08-14)
 
 `CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped

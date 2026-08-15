@@ -251,5 +251,5 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
     routes = functional_call(gateway, parameters, streams)
 
     return SimpleNamespace(
-        read_levels=routes.read, write_levels=routes.write,
+        read_levels=routes.read_simplex(), write_levels=routes.write,
         g_read=routes.g_read, g_write=routes.g_write)

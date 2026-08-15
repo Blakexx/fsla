@@ -121,17 +121,18 @@ RouteGateway(producers, *, num_heads, hidden_size, normalization='global',
 
 `RouteGateway` is how a MODEL obtains a `RouteFactors`: it runs each producer once,
 places its levels in the slots the list assigned, folds each level into
-`(mass, simplex)`, and hands the mass to the side gain. Construction validates the
+`(mass, simplex)`, and routes the mass to the channel that duty takes it on (§2.2). Construction validates the
 whole assembly — widths in range, a buildable topology, a gain layout consistent with
 the normalization arm — so an unbuildable model fails on the line that built it.
 
 **The bundle is a record of tensors, and it is constructible.** Its fields are the
-stored simplices, the side gains and the topology they are shaped by — nothing else,
+stored levels, the side gains, the read mass and the topology they are shaped by —
+nothing else,
 and in particular no declaration a caller could pair with tensors that do not describe
 it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the
 provenance: one level per topology level at that level's width, one shared `[B, T, H]`
-prefix, one device, one dtype, `g_read` present iff the arm is `raw`, `g_write` shaped
-`[B, T, H]`. A test that plants a specific routing pattern builds one directly and is
+prefix, one device, one dtype, `g_read` present iff the arm is `raw`, `g_write` and
+(when present) `read_mass` shaped `[B, T, H]`. A test that plants a specific routing pattern builds one directly and is
 held to exactly those invariants. Unit-sum-ness is deliberately not among them: it is a
 device reduction per level per call, it is the gateway's own output guarantee, and
 conformance fixtures plant non-canonical amplitudes on purpose. The op still type-gates
@@ -171,13 +172,32 @@ never asks what a producer is, only that its output is well formed:
 (the same object when the model does not split them). `ProducedRoutes` carries one
 `[B, T, H, width_l]` tensor per level per side.
 
-Levels need not be unit-sum: the gateway factors each into `(mass, simplex)` and folds
-the mass into the side gain, which is where a per-level magnitude belongs.
+Levels need not be unit-sum: the gateway factors each into `(mass, simplex)`. The two
+sides then take the mass differently, because the two duties use their levels
+differently. The WRITE side APPLIES it — the stored level is the simplex and the
+magnitude folds into `g_write`, which is where a per-level magnitude belongs, and the
+decay clock is defined on the stored level. The READ side CARRIES it — the readout is a
+ratio, so a per-token scale common to every leaf is homogeneous of degree zero through
+it, and `RouteFactors.read` is stored with the mass still on it while
+`RouteFactors.read_mass` holds the per-token product (`None` when there is none).
+`RouteFactors.read_simplex()` divides it back out for every consumer defined on the
+simplex instead: the fp64 oracle and its input contract, the decode arm, the reference
+recurrence.
 
-**The fold is skipped where it is DECLARED to be the identity, and only there.** Each
+**The read mass reaches the readout as a scaled floor.** The one term that does not
+scale with a ratio is its floor, so it is handed over pre-scaled: the consumer computes
+`m·num / (m·den + READOUT_EPS·m)`, which is `num / (den + READOUT_EPS)` exactly — the
+same function, not a differently conditioned one. The alternative — dropping the mass
+and leaving the floor alone — is an *effective* floor of `READOUT_EPS / m`, and the
+union read mass runs as low as 7e-4 across the gain sweep, so it is a change to the
+definition rather than to its conditioning. `READOUT_EPS` is a DEFINITION constant
+(`rola/ops/constants.py`); the scaled floor is what keeps it one.
+
+**The mass is only COMPUTED where it is not declared to be 1, and only there.** Each
 `(level, duty)` cell answers `simplex_output` — "does this cell's own output already
-land on the simplex?" — and where it answers yes, the mass is 1, so the `sum`/`div`
-pair is omitted. The answer is a declaration read off the activation registry
+land on the simplex?" — and where it answers yes, the mass is 1, so its `sum` is
+omitted, it contributes nothing to the product, and the write side's `div` goes with it.
+The answer is a declaration read off the activation registry
 (`rola/routing/activations.py`) through the level's routing form, never a runtime test
 of the tensor: a `sum(...) == 1` check is the very reduction the skip exists to delete,
 and it would make the bundle's arithmetic depend on its data rather than on its
@@ -187,18 +207,6 @@ half is exactly that, so it answers `False` while the entmax it names answers `T
 An opaque (foreign-producer) cell answers `False` and always pays the generic fold.
 Measured across the shipped census (`D` in 1..4, fp32 and fp64), every cell answering
 `True` has `max |sum − 1| ≤ 2.4e-7` in fp32 and `≤ 4.4e-16` in fp64.
-
-**Why the union READ half is not skipped**, although its mass is a per-token scale
-common to every leaf and would therefore cancel in the readout's `num/den` ratio. Two
-reasons, both measured. First, the ratio has a floor: `y = num / (den + READOUT_EPS)`,
-so scaling both by a per-token mass `m` leaves an *effective* floor of
-`READOUT_EPS / m`, and the union read mass runs as low as 7e-4 across the gain sweep.
-`READOUT_EPS` is a DEFINITION constant (`rola/ops/constants.py`), so that is a change
-to the function, not to its conditioning. Second, the fp64 oracle's own input contract
-requires every read level to be a simplex within a named 5e-3 *semantic* slack
-(`rola/ops/_oracle_contract.py`, spec §4.1), which unnormalized read levels miss by two
-orders of magnitude. The cancellation argument is sound; what it does not survive is
-the floor and the spec.
 
 **Batching is a producer's business.** The gateway calls each producer once, with every
 level that producer covers. A producer covering several levels is therefore how a model

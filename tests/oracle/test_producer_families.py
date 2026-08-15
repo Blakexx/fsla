@@ -81,7 +81,7 @@ def _density(routes) -> float:
 def _view(family, routes):
     c = family.config
     return SimpleNamespace(
-        read_levels=routes.read, write_levels=routes.write, widths=tuple(c["widths"]),
+        read_levels=routes.read_simplex(), write_levels=routes.write, widths=tuple(c["widths"]),
         T=c["T"], BT=g.TOKEN_WORD, initial_state=None)
 
 
@@ -123,7 +123,7 @@ def test_the_swept_gain_family_agrees_with_the_oracle(name):
             y_k, _ = rola_op(routes, v, expert=PlanOverrides())
             #: the oracle is CALLED, never dispatched to: a facade that could serve
             #: it would let this comparison become the oracle against itself.
-            y_r, _ = naive_rola(v, routes.read, routes.write, routes.g_read,
+            y_r, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read,
                                 routes.g_write, routes.topology, None,
                                 routes.normalization)
         rel_y = g.relative(y_k, y_r)

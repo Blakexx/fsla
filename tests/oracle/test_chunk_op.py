@@ -25,7 +25,7 @@ def _bundle(widths=(64, 64), d_v=64, heads=2, B=1, T=512, seed=0):
 
 
 def _oracle(routes, v):
-    y, _ = naive_rola(v, routes.read, routes.write, routes.g_read, routes.g_write,
+    y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
                       routes.topology, None, routes.normalization)
     return y
 
@@ -90,3 +90,85 @@ def test_the_layer_stateless_eval_path_runs_the_chunk_consumer():
     assert layer.execution_backend_counts["cuda"] == before["cuda"] + 1
     rel = float((y_cuda.double() - y_ref.double()).norm() / y_ref.double().norm())
     assert rel < 1e-2, f"layer chunk path off the oracle: rel={rel:.3e}"
+
+
+def test_the_read_mass_rides_to_the_divide_and_is_exact_there():
+    """The m-CARRY: the producer stops normalizing the read side, and the divide
+    compensates (P73 S4, adjudication 1).
+
+    The readout is a ratio, so scaling every read leaf of a token by ``m`` scales
+    numerator and denominator alike; the ONE thing that does not scale with them is
+    the floor, so the floor is handed over pre-scaled. The claim is exactness, not
+    closeness, and the fixture makes it checkable: every operand is a power of two, so
+    the scaled divide is the unscaled one BIT FOR BIT.
+
+    THE TOOTH is the same call with the mass dropped: on a denominator at the floor's
+    own scale that is an order-of-magnitude answer, which is what makes the argument
+    a compensation rather than a cancellation.
+    """
+    from rola.ops._ext import extension
+
+    torch.manual_seed(3)
+    B, H, T, d_v, eps = 2, 2, 64, 64, 1e-5
+    num = torch.randint(-8, 8, (B, H, T, d_v), device="cuda").float()
+    den = torch.full((B, H, T), 2.0 ** -18, device="cuda")
+    mass = 2.0 ** torch.randint(-10, 0, (B, H, T), device="cuda").float()
+
+    plain = extension().chunk_divide_pass(num, den, None, eps, torch.float32)
+    scaled = extension().chunk_divide_pass(
+        num * mass.unsqueeze(-1), den * mass, mass, eps, torch.float32)
+    assert torch.equal(plain, scaled), "the carried mass is not exact in the divide"
+
+    dropped = extension().chunk_divide_pass(
+        num * mass.unsqueeze(-1), den * mass, None, eps, torch.float32)
+    moved = (dropped - plain).abs().max() / plain.abs().max()
+    assert moved > 0.5, f"dropping the mass must move the readout; it moved {moved:.3e}"
+
+
+def test_the_readout_is_narrowed_and_transposed_in_the_kernel():
+    """The epilogue fold (P73 S4, inventory §B6): the consumer emits the OPERAND's
+    layout and dtype, and doing it in the store is bit-for-bit the host cast it
+    replaces -- both are round-to-nearest over the same fp32 quotient.
+    """
+    from rola.ops._ext import extension
+
+    torch.manual_seed(4)
+    B, H, T, d_v = 2, 4, 32, 64
+    num = torch.randn(B, H, T, d_v, device="cuda")
+    den = torch.rand(B, H, T, device="cuda") + 0.5
+    wide = extension().chunk_divide_pass(num, den, None, 1e-5, torch.float32)
+    narrow = extension().chunk_divide_pass(num, den, None, 1e-5, torch.bfloat16)
+    assert tuple(wide.shape) == (B, T, H, d_v) and wide.is_contiguous()
+    assert torch.equal(narrow, wide.to(torch.bfloat16))
+    torch.testing.assert_close(
+        wide.permute(0, 2, 1, 3), num / (den + 1e-5).unsqueeze(-1), rtol=0, atol=0)
+
+
+def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
+    """WHICH bundles carry it, pinned at the seam the kernel reads (P73 S4).
+
+    A bit-identity row on ``y`` would pass just as well if the column never left the
+    gateway. This one watches ``read_mass`` arrive at the packing, and pins both
+    answers: the union read duty is the one cell the registry does not declare on the
+    simplex, so it is the one cell that carries a mass. The carried bundle must still
+    satisfy the fp64 oracle's own input contract through :meth:`read_simplex`.
+    """
+    from rola.ops import chunk as _chunk
+    from rola.ops._oracle_contract import validate_simplex
+    from rola.routing.producer import union_routing
+
+    dense, _ = _bundle(T=256)
+    assert dense.read_mass is None and _chunk.pack(dense).rm is None
+
+    torch.manual_seed(7)
+    gateway = build_routes(hidden_size=128, num_heads=2, widths=(64, 64),
+                           routing=union_routing(1.5)).cuda()
+    with torch.no_grad():
+        routes = gateway(torch.randn(1, 256, 128, device="cuda"))
+    assert routes.read_mass is not None and float(routes.read_mass.min()) > 0
+    packed = _chunk.pack(routes)
+    assert packed.rm is not None and packed.rm.dtype is torch.float32
+    torch.testing.assert_close(packed.rm, routes.read_mass.permute(0, 2, 1), rtol=0, atol=0)
+    validate_simplex("read_levels", routes.read_simplex())
+    with pytest.raises(ValueError, match="must sum to 1"):
+        validate_simplex("read_levels", routes.read)

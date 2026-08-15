@@ -145,7 +145,7 @@ def _run(gateway, x, v, *, expert=None):
 @torch.no_grad()
 def _oracle(gateway, x, v):
     routes = gateway(x)
-    return naive_rola(v.double(), routes.read, routes.write, routes.g_read, routes.g_write,
+    return naive_rola(v.double(), routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
                       routes.topology, None, routes.normalization, output_final_state=True)
 
 

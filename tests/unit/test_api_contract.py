@@ -49,7 +49,7 @@ def _admitted(routes, v) -> None:
 def _oracle(routes, v):
     from rola.ops.naive import naive_rola
 
-    y, _ = naive_rola(v, routes.read, routes.write, routes.g_read, routes.g_write,
+    y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
                       routes.topology, None, routes.normalization)
     return y
 
@@ -181,10 +181,14 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
 def test_a_foreign_producers_mass_is_still_folded_because_it_declares_no_simplex():
     """THE TOOTH under the ``simplex_output`` skip (P73 S2, ruling R2).
 
-    The gateway omits a level's ``sum``/``div`` where the topology DECLARES the map
-    lands on the simplex. An opaque cell declares no such thing, so the generic fold
-    must still run for it -- and this row fails, in both of its assertions, the moment
-    the skip is applied unconditionally rather than on the column.
+    The gateway omits a level's ``sum`` where the topology DECLARES the map lands on
+    the simplex. An opaque cell declares no such thing, so the generic fold must still
+    run for it -- and this row fails, in every one of its assertions, the moment the
+    skip is applied unconditionally rather than on the column.
+
+    The two sides take the mass differently and both are pinned here: the WRITE side
+    applies it, because the decay clock is defined on the stored level; the READ side
+    carries it in ``read_mass``, because the readout is a ratio (P73 S4).
 
     PLANTED VIOLATION: a duck whose levels carry mass 2 apiece.
     """
@@ -202,12 +206,17 @@ def test_a_foreign_producers_mass_is_still_folded_because_it_declares_no_simplex
                    for level, duty in gateway.topology.duty_cells())
     x = _x(gateway)
     factors = gateway(x)
-    for side in (factors.read, factors.write):
-        for level in side:
-            torch.testing.assert_close(
-                level, torch.full_like(level, 0.25), rtol=0, atol=0,
-                msg="an opaque level must be STORED as the simplex, not as the producer "
-                    "returned it")
+    for level in factors.write:
+        torch.testing.assert_close(
+            level, torch.full_like(level, 0.25), rtol=0, atol=0,
+            msg="an opaque write level must be STORED as the simplex, not as the "
+                "producer returned it")
+    for level, simplex in zip(factors.read, factors.read_simplex()):
+        torch.testing.assert_close(level, torch.full_like(level, 0.5), rtol=0, atol=0)
+        torch.testing.assert_close(simplex, torch.full_like(simplex, 0.25), rtol=0, atol=0)
+    #: mass 2 per level over two levels, so the read column carries the product 4.
+    torch.testing.assert_close(
+        factors.read_mass, torch.full_like(factors.read_mass, 4.0), rtol=0, atol=0)
     from rola.routing.side_gain import project_side_gains
 
     raw = project_side_gains(

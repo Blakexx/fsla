@@ -130,8 +130,9 @@ def _kernel(fixture, widths, C, BC, *, state_in=None, want_state=True, eps=1e-6)
     gw = g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
     vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     out = _plane(widths, B, H) if want_state else None
-    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, state_in, out, None)
-    return y, out
+    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, None,
+                                  torch.float32, state_in, out, None)
+    return y.permute(0, 2, 1, 3), out
 
 
 def _oracle_state(fixture, widths):

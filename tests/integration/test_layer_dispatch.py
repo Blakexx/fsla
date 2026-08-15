@@ -79,7 +79,7 @@ def _oracle(layer: RoLA, x: torch.Tensor, *, initial_state=None, want_state: boo
         routes = layer.routes(x)
         decay = None if layer.decay is None else layer.decay()
         y, final = naive_rola(
-            v, routes.read, routes.write, routes.g_read, routes.g_write, layer.topology,
+            v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write, layer.topology,
             decay, layer.normalization, initial_state=initial_state,
             output_final_state=want_state)
         y = layer.o_proj(y.to(x.dtype).reshape(x.shape[0], x.shape[1], -1))
@@ -317,7 +317,7 @@ def test_a_kernel_produced_state_feeds_an_oracle_step_at_the_ops_level():
         routes = layer.routes(x)
     v = v.requires_grad_(True)
     out2, oracle_state2 = naive_rola(
-        v, routes.read, routes.write, routes.g_read, routes.g_write, layer.topology,
+        v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write, layer.topology,
         None, "global", initial_state=kernel_state, output_final_state=True)
     out2.square().mean().backward()
     assert torch.isfinite(out2).all() and v.grad is not None
