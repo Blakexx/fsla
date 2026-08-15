@@ -25,7 +25,6 @@
 
 #include "src/decode_api.cuh"
 #include "src/entmax.cuh"
-#include "src/summaries.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/chunk/chunk_api.cuh"
 
@@ -96,16 +95,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_decode_producer_width_mirror", &rola::decode::rola_decode_producer_width_mirror,
         "the C++ mirror of the producer's MAX_BRANCH_WIDTH; pinned EQUAL to the Python "
         "constant so a stale mirror cannot silently satisfy the capacity static_assert");
-
-  // ---- spec §4.1/§4.2 producer-epilogue summaries ---------------------------
-  //: THE PRODUCER-EPILOGUE ROUTING SUMMARY PASS (THUNDER_RUN_SPEC.md §4.1/§4.2).
-  //: One launch, no allocation, no host synchronization: every output is a caller-owned
-  //: tensor the Python side zeroes beforehand and reads back in its ONE D2H transfer,
-  //: which is why nothing here returns -- docs/internals/rola_api.md#summaries-contract
-  m.def("rola_routing_summaries", &rola::summaries::rola_routing_summaries_cuda,
-        "Producer-epilogue routing summaries: occupancy, the quantum histogram, the "
-        "candidate count, and §4.1's canonical per-leaf write bitmap with its owner "
-        "condensation");
 
   // ---- the VMM owner ------------------------------------------------------
   m.def(

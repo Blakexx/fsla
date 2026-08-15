@@ -111,17 +111,12 @@ quantity in this engine is an expression in (spec §1 invariant I1 forbids a
 It is a SHAPE of an instruction, never a tuning threshold, so it belongs with the
 other compile-time hardware facts rather than with any one consumer of it.
 
-**Why this header owns it.** It is one number for three readers that share no other
-header: the chunk consumer (the atom granularity of the state block), the decode
-sibling, and `summaries.cuh` (§6's bin count, `QPO + 1`, and the `state_block %
-kMmaKQuantum` refusal at its host entry). A per-file constant in each is three
-definitions of one hardware fact, which is how a re-key drifts. `arch_table.cuh` is
-host-safe and reachable from all three. The atom is also §4.5's page granule, which
-is why the paging plane counts in the same unit.
+**Why this header owns it.** It is one number for two readers that share no other
+header: the chunk consumer (the atom granularity of the state block) and the decode
+sibling. A per-file constant in each is two definitions of one hardware fact, which is
+how a re-key drifts. `arch_table.cuh` is host-safe and reachable from both. The atom is
+also §4.5's page granule, which is why the paging plane counts in the same unit.
 
-The Python side mirrors the same value at `rola.routing.summaries.MMA_K_QUANTUM`,
-`rola.routing.exact_summaries.MMA_K_QUANTUM` and `rola.ops.paging.MMA_K_QUANTUM`; a C++
+The Python side mirrors the same value at `rola.ops.paging.MMA_K_QUANTUM`; a C++
 `constexpr` cannot be imported there. `tests/unit/test_paging_atoms.py` and the paged
-equivalence fixtures are what keep those mirrors honest, and the summary pass's host
-entry checks its derived bin count against the caller's so a drift fails loudly
-rather than silently.
+equivalence fixtures are what keep that mirror honest.

@@ -187,16 +187,13 @@ Verified non-vacuously: master built in a fresh worktree fails exactly as descri
 above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
 its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-Other files' anonymous-namespace kernel blocks are unaffected and still
-path-dependent by name (`decode_expand.cu`'s `decode_expand_kernel`,
-`summaries.cu`'s `summaries_kernel`; `consumer.cu`'s `scan_kernel`/`divide_kernel`
-were of this class and left with that file in P67 D2) — P19 was scoped to the two
-files the ratified manifest actually certifies through this discriminator. They were
-never in the ratified manifest to begin with (which holds 147 entries/arch against
-the full SASS scan's 155: the eight-entry difference is `decode_expand`'s two arms
-and its two growth-probe entries, `summaries_kernel`, the chunk arm's
-path-independent `stamp_kernel` and `divide_kernel`, and one CUB entry point), so
-their residual
+One other file's anonymous-namespace kernel block is unaffected and still
+path-dependent by name (`decode_expand.cu`'s `decode_expand_kernel`) — P19 was scoped
+to the two files the ratified manifest actually certifies through this discriminator.
+It was never in the ratified manifest to begin with (which holds 147 entries/arch
+against the full SASS scan's 153: the six-entry difference is `decode_expand`'s two
+arms and its two growth-probe entries, and the chunk arm's path-independent
+`stamp_kernel` and `divide_kernel`), so its residual
 path-dependence shows up only in a raw `sass_bodies.py` dump, never in a build or a
 ratification gate. A worktree build no longer fails, and a same-tip SASS comparison
 across paths is 0-differing over every ratified entry.

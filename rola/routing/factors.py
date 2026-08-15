@@ -363,9 +363,9 @@ def _scattered_tags(producers, slots) -> tuple:
 def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
     """``[B, T, H, *] -> [B*H, T, *]`` (the convention every routing module uses).
 
-    Held here rather than imported, on :func:`~rola.routing.summaries._pack_leaf_bitmap`'s
-    precedent: the routing side must not import a consumer, and three lines of permute
-    arithmetic with a gate on each side is the cheaper of the two couplings.
+    Held here rather than imported: the routing side must not import a consumer, and
+    three lines of permute arithmetic with a gate on each side is the cheaper of the
+    two couplings.
     """
     return tensor.permute(0, 2, 1, 3).reshape(
         tensor.shape[0] * tensor.shape[2], tensor.shape[1], *tensor.shape[3:])

@@ -142,17 +142,14 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
 def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
     """The realized WRITE-side support fraction on the same routing a forward used.
 
-    Reconstructed rather than read off the layer: the statistics ride the routing
-    bundle, which lives inside one forward, and a layer that retained them would be
-    retaining a per-step measurement past the step it describes.
+    Reconstructed rather than read off the layer: the routing bundle lives inside one
+    forward, and a layer that retained a statistic off it would be retaining a per-step
+    measurement past the step it describes.
 
-    P67 D2-b: this was `RouteFactors.summaries(BC=..., BT=GROUP_TOKENS)`, the tiled
-    planner's §4.2 pricing summary, deleted with the planner (ruling R-6). The row
-    it serves is about the layer RE-MEASURING per step rather than caching per
-    shape, and the exact statistic was never the point -- the predecessor had
-    already changed it once for the same reason (`k_hat` could not move at the cell
-    it ran on). The realized support fraction is what a router sharpening moves
-    most directly, and it needs no launch geometry to state.
+    The row this serves is about the layer RE-MEASURING per step rather than caching
+    per shape, so the exact statistic is not the point: the realized support fraction
+    is what a router sharpening moves most directly, and it needs no launch geometry
+    to state.
     """
     routes = layer.routes(x)
     live = sum(int((level != 0).sum()) for level in routes.write)

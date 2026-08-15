@@ -7,9 +7,9 @@ one slot the public surface has. A PRODUCER fills that slot for one or more rout
 levels: it turns a source stream into the read-side and write-side simplices those
 levels route with. :class:`LevelProducer` is the whole contract, and it is DUCK-TYPED
 -- the library never asks what a producer is, only that its outputs are well formed
-(``docs/api.md``). Correctness is producer-blind by construction: support bits and
-summaries are derived from the returned tensors, never from anything a producer says
-about itself.
+(``docs/api.md``). Correctness is producer-blind by construction: support bits are
+derived from the returned tensors, never from anything a producer says about
+itself.
 
 **The interface, in full.**
 

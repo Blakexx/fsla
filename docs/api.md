@@ -179,8 +179,8 @@ checking a claim instead of a fact.
 Any module satisfying the interface works, with no registration and no tier. This is
 sound because no producer-specific execution path exists: the consumer eats tensors and
 cannot tell what produced them — no producer identity reaches the kernel's parameters at
-all. Support bits and summaries are computed FROM the tensors, so a foreign producer
-changes nothing about correctness. Its only cost is inside its own module.
+all. Support bits are computed FROM the tensors, so a foreign producer changes nothing
+about correctness. Its only cost is inside its own module.
 
 A level filled by a producer that does not name one of our activations is *opaque*: it
 reads the `("opaque", None)` registry row, whose columns are argued in
@@ -272,8 +272,7 @@ recomputed from the tensors, so a wrong declaration costs its author performance
 never cost anyone correctness.
 
 Which arm is faster is a measurement. `benchmarks/bench_api_stats.py` was the harness
-(retired with the tiled measurement apparatus in P67 D2 — its subject was
-`RouteFactors.views()`/`.summaries()`, deleted in the same phase; revival
+(retired with the tiled measurement apparatus in P67 D2; revival
 `git show c7eaeb9:benchmarks/bench_api_stats.py`);
 median per-call duration over 21 rounds, CUDA events, on `B=2, hidden=1024, H=8,
 widths=(64,64)`, union entmax at α=1.5, raw samples in the performance ledger (rows

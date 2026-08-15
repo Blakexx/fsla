@@ -1,11 +1,11 @@
 # `csrc/rola/rola_api.cpp` — the extension's Python binding
 
-The only translation unit that knows pybind exists. One `PYBIND11_MODULE`, five
+The only translation unit that knows pybind exists. One `PYBIND11_MODULE`, four
 groups of `m.def`, and one `py::class_`.
 
 `m.def` bodies live here and nowhere else; the declarations they name come from
-`src/chunk/chunk_api.cuh`, `src/decode_api.cuh`, `src/entmax.cuh`,
-`src/summaries.cuh` and `src/paging/vmm_owner.cuh`.
+`src/chunk/chunk_api.cuh`, `src/decode_api.cuh`, `src/entmax.cuh` and
+`src/paging/vmm_owner.cuh`.
 
 Symbols: a TU is a translation unit; `-gencode` is the nvcc flag that emits one device
 code path per target architecture; `TORCH_EXTENSION_NAME` is the macro the build
@@ -53,7 +53,6 @@ that.
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
 | the chunk consumer (the prefill arm) | `chunk_union_table`, `chunk_forward_raw`, `chunk_forward`, `chunk_stats`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
-| producer-epilogue summaries (§4.1/§4.2) | `rola_routing_summaries` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
 Two of the decode entries are gates rather than operations, and their docstrings say
@@ -72,19 +71,7 @@ The tiled consumer's five entries — `rola_consumer_forward`,
 D2 retired that arm; none of them is in the module today, and the device-side
 entry list is the check that says so ([`DELETIONS.md`](DELETIONS.md)).
 
-## <a id="summaries-contract"></a>5. The routing-summary pass's calling contract
-
-`rola_routing_summaries` (docs/internals/summaries.md) is **one launch, no
-allocation, no host synchronization.** Every output is a caller-owned tensor that the
-Python side zeroes beforehand and reads back in its ONE D2H transfer.
-
-It produces occupancy, the quantum histogram, the candidate count, and §4.1's canonical
-per-leaf write bitmap with its owner condensation.
-
-That contract is why the entry takes outputs by reference rather than returning them:
-allocating inside would force a synchronization the caller has designed out.
-
-## <a id="deleted-page-plan"></a>6. There is no CUDA page-plan producer
+## <a id="deleted-page-plan"></a>5. There is no CUDA page-plan producer
 
 The page table the consumer reads is published by the torch PLANNED-EXACT-ASYNC arena
 in `rola/ops/paging.py`, and nothing under `rola/`, `tests/` or `benchmarks/` reaches

@@ -245,8 +245,7 @@ kernel**, in which the density declaration selects a code path but membership is
 still decided by the support bits the kernel reads. A future factored feeder that
 let a declaration become execution-affecting — deciding what is fetched *without*
 consulting the realized masks — would step outside the theorem and need its own
-argument. This coupling is flagged in `rola/routing/summaries.py` and in
-`workflows/research/api-contract-audit.md` §5.4.
+argument. This coupling is flagged in `workflows/research/api-contract-audit.md` §5.4.
 
 State it as a rule: **the kernel is self-masking; anything that skips reading the
 masks is outside the theorem.**

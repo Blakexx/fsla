@@ -385,11 +385,10 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     re-introducing a `benchmarks/` reach fails here with the import error itself,
     and one that merely IMPORTS a benchmarks module fails on the second assertion.
 
-    P67 D2-b re-anchored it here from `tests/unit/test_planner.py`. The module list
-    is the post-D2 prefill path (the facade, the chunk arm, the state, decode, the
-    routing summaries); the `rola.planner.calibration` clause it also carried is
-    gone with that package (ruling R-3), and the general `benchmarks/` clause --
-    which is the release blocker -- is unchanged.
+    The module list is the prefill path itself -- the facade, the chunk arm, the
+    state, decode, paging -- and nothing else: a module the prefill path does not
+    resolve does not belong in a probe about what the prefill path resolves. The
+    general `benchmarks/` clause is the release blocker.
     """
     import os
     import pathlib
@@ -414,8 +413,6 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from rola.ops.chunk import CHUNK_TOKENS, run, stats, unsupported;"
             "from rola.ops.decode import freeze_decode_config;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
-            "from rola.routing.summaries import summarize_routing;"
-            "from rola.routing.geometry import owner_geometry;"
             # Nothing may have come from a `benchmarks/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"
             " if getattr(m, '__file__', None)"

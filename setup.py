@@ -380,7 +380,6 @@ SOURCES = [
     "csrc/rola/src/decode_expand.cu",
     "csrc/rola/src/decode.cu",
     "csrc/rola/src/entmax.cu",
-    "csrc/rola/src/summaries.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     "csrc/rola/src/chunk/chunk.cu",
 ]

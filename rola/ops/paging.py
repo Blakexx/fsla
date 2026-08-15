@@ -20,9 +20,10 @@ from math import prod
 
 import torch
 
-#: §6's MMA k-extent, and §1b's page granule. Mirrored from
-#: ``rola.routing.summaries.MMA_K_QUANTUM`` rather than imported so this module has no
-#: routing dependency; :meth:`PageArena.__init__` checks the two agree.
+#: §6's MMA k-extent, and §1b's page granule. The Python mirror of
+#: ``arch_table.cuh``'s ``kMmaKQuantum`` (docs/internals/arch_table.md), which a C++
+#: ``constexpr`` cannot supply here; :meth:`PageArena.__init__` checks it against the
+#: atom geometry it addresses.
 MMA_K_QUANTUM = 16
 
 #: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
@@ -551,11 +552,10 @@ class PageArena:
                    fresh: bool = True) -> PagingResult:
         """§4.5's PLANNED-EXACT-ASYNC admission, from §4.1's atom condensation.
 
-        ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- exactly what
-        :meth:`rola.routing.summaries.RoutingSummaries.atom_bitmap` condenses from the
-        canonical per-leaf write bitmap. It is the EXACT set of atoms this call touches
-        on the write side, so the pool is SIZED rather than grown and there is nothing
-        for an allocator to discover.
+        ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- the per-leaf write set
+        condensed to the atom quantum, as :func:`rola.ops.chunk.stats` publishes it. It
+        is the EXACT set of atoms this call touches on the write side, so the pool is
+        SIZED rather than grown and there is nothing for an allocator to discover.
 
         ``fresh`` (default ``True``): reset first, so this call is call-scoped -- it
         computes as if nothing preceded it, matching the unpaged path's "allocate zeros

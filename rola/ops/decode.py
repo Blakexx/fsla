@@ -372,10 +372,9 @@ def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor
 
     **AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES.** The shipped path derives
     this set on the device (:func:`_growth_probe` publishes it), so this function has no
-    production caller and is not meant to acquire one. It survives deliberately, under
-    the pattern the routing summaries already use: a SECOND, independent derivation of an
-    object the kernel computes, written from the definition rather than from the kernel's
-    structure, so that the equality
+    production caller and is not meant to acquire one. It survives deliberately as a
+    SECOND, independent derivation of an object the kernel computes, written from the
+    definition rather than from the kernel's structure, so that the equality
     ``tests/tier2_geometry/test_decode_growth_trigger.py`` asserts is a real check and
     not the kernel agreeing with itself. (The decode paging and VMM gates also plan from
     it, for the same reason: a fixture that used the kernel's own answer could not catch

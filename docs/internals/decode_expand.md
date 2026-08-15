@@ -118,9 +118,7 @@ a COUNT. No third bitmap is ever stored.
 
 The block-wide exclusive sum is `cub::BlockScan`, carried across the outer
 `base`-strided loop by a `__shared__ int running`. That is a commodity primitive
-on a scalar fold; the digit algebra above it is semantics and is written out —
-the same standing rule `summaries.cuh` states in full
-([`summaries.md` §2](summaries.md#hand-roll-rule)).
+on a scalar fold; the digit algebra above it is semantics and is written out.
 
 ## <a id="growth-probe"></a>7. The growth probe — the same expansion, asked one step earlier
 
