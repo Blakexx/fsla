@@ -44,8 +44,11 @@ __all__ = [
     "C_DECODE_TARGET_CTAS_PER_SM",
     "DecodeWorkspace",
     "FrozenDecodeConfig",
+    "admit_growth",
     "decode_forward",
+    "decode_step_gated",
     "freeze_decode_config",
+    "growth_pending",
 ]
 
 
@@ -180,7 +183,16 @@ class DecodeWorkspace:
     #: makes the read one DMA rather than a staging copy, and holding both here is what
     #: keeps a steady step free of allocation: docs/internals/decode/decode.md#growth-probe
     growth: torch.Tensor
+    #: The probe's REDUCTION over batch-heads and the step's GATE are the same `[1]`
+    #: int32 buffer: the step reads it on the device, the host reads its pinned mirror.
+    #: `probe_ctr` is the reducing CTA's self-resetting arrival counter, zeroed exactly
+    #: once here: docs/internals/decode/decode.md#the-gate
+    growth_any: torch.Tensor
+    probe_ctr: torch.Tensor
     growth_host: torch.Tensor
+    #: Recorded after the verdict's copy and BEFORE the step is enqueued, so the host's
+    #: wait for a 4-byte flag overlaps the launches it used to sit in front of.
+    verdict: torch.cuda.Event | None
     #: The probe's OTHER output: `[BH, N/16]` bool, the step's own write-atom set,
     #: condensed on the device from the expansion the verdict was read off. A growth
     #: step admits from THIS -- the host derives nothing: docs/internals/decode/decode.md#growth
@@ -198,7 +210,10 @@ class DecodeWorkspace:
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
             ctr=torch.zeros(BH, **i32),
             growth=torch.empty(BH, **i32),
-            growth_host=torch.empty(BH, dtype=torch.int32, pin_memory=cuda),
+            growth_any=torch.zeros(1, **i32),
+            probe_ctr=torch.zeros(1, **i32),
+            growth_host=torch.empty(1, dtype=torch.int32, pin_memory=cuda),
+            verdict=torch.cuda.Event() if cuda else None,
             atom_bits=torch.empty(BH, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                                   device=device),
             key=(BH, config.N, config.n_words, config.n_groups, config.n_split, config.cols,
@@ -262,6 +277,73 @@ def _carrier(topology, *, d_v: int, decay: bool, BH: int, device,
     return config
 
 
+def _prepare(routes, v: torch.Tensor, decay, expert, state):
+    """The carrier, the scratch and the step's operand set -- shared by both entries."""
+    from rola.expert import PlanOverrides
+
+    overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+    BH = routes.batch * routes.heads
+    config = _carrier(routes.topology, d_v=v.shape[-1], decay=decay is not None, BH=BH,
+                      device=routes.device, mma_precision=overrides.mma_precision)
+    workspace = _WORKSPACES.get(state)
+    if workspace is None or not workspace.matches(config, BH, routes.device):
+        workspace = DecodeWorkspace.build(config, BH, routes.device)
+    #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
+    #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
+    #: re-widens here and the cast is exact, the values being bf16-rounded already.
+    step = dict(v=v.to(torch.float32), read_levels=routes.read_simplex(),
+                write_levels=routes.write, g_read=routes.g_read, g_write=routes.g_write,
+                config=config, decay=decay, workspace=workspace)
+    return config, workspace, step
+
+
+def decode_step_gated(routes, v: torch.Tensor, state, *, decay=None, expert=None):
+    """ONE decode step with NO host participation -- the CAPTURE-SAFE entry.
+
+    Same kernels in the same order as :func:`decode_forward`, minus the verdict read:
+    the step is gated on the probe's device-side answer, so a step whose write set is
+    not resident is a NO-OP that leaves the state exactly as the admission needs it.
+    The CALLER owns the verdict, at whatever synchronization it already has:
+
+        y, state = decode_step_gated(...)   # or graph.replay()
+        if growth_pending(state):
+            admit_growth(state)
+            y, state = decode_step_gated(...)   # or graph.replay(); now it runs
+
+    A REPLAY IS SELF-CORRECTING because the probe re-runs inside it: after the
+    admission its verdict is 0 and the same captured graph performs the step.
+    docs/internals/decode/decode.md#capture
+    """
+    config, workspace, step = _prepare(routes, v, decay, expert, state)
+    if not state.paged:
+        plane, page_table, _ = state._decode_entry(routes, None)
+        y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
+        return y, state
+    _growth_probe_launch(routes.write, config, state.page_table, workspace)
+    plane, page_table, _ = state._decode_entry(routes, None)
+    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table,
+                                            gate=workspace.growth_any, **step)
+    return y, state
+
+
+def growth_pending(state) -> bool:
+    """Did the last gated step skip itself for want of an atom? ONE 4-byte read."""
+    workspace = _WORKSPACES.get(state)
+    if workspace is None or not state.paged:
+        return False
+    workspace.growth_host.copy_(workspace.growth_any)
+    return bool(workspace.growth_host[0])
+
+
+def admit_growth(state) -> None:
+    """Admit the pending step's write atoms, from the probe's own condensation."""
+    workspace = _WORKSPACES.get(state)
+    if workspace is None:
+        raise RuntimeError("admit_growth wants the workspace a gated step leaves behind")
+    arena = state._decode_entry_arena(workspace.atom_bits)
+    arena.wait()
+
+
 def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     """ONE decode step over a routing bundle and a carried state -- the whole surface.
 
@@ -276,42 +358,44 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     it is how the step runs, not what it computes. The backing is likewise invisible,
     and its growth is handled below (docs/internals/decode/decode.md#growth).
     """
-    from rola.expert import PlanOverrides
+    config, workspace, step = _prepare(routes, v, decay, expert, state)
+    if not state.paged:
+        plane, page_table, _ = state._decode_entry(routes, None)
+        y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
+        return y, state
 
-    overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
-    BH = routes.batch * routes.heads
-    config = _carrier(routes.topology, d_v=v.shape[-1], decay=decay is not None, BH=BH,
-                      device=routes.device, mma_precision=overrides.mma_precision)
-    workspace = _WORKSPACES.get(state)
-    if workspace is None or not workspace.matches(config, BH, routes.device):
-        workspace = DecodeWorkspace.build(config, BH, routes.device)
-    #: THE HOST ORDER, `rola_op`'s at `L = 1`: a paged step asks the DEVICE whether it
-    #: grows, and only a step that does pays the admission
-    #: (docs/internals/decode/decode.md#growth).
-    bitmap = None
-    if state.paged and _growth_probe(routes.write, config, state.page_table, workspace):
-        bitmap = workspace.atom_bits
-    plane, page_table, arena = state._decode_entry(routes, bitmap)
-    if arena is not None and bitmap is not None:
-        arena.wait()
-    #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
-    #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
-    #: re-widens here and the cast is exact, the values being bf16-rounded already.
-    y, _, _WORKSPACES[state] = _decode_step(
-        v.to(torch.float32), routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
-        config, plane, decay=decay, workspace=workspace,
-        page_table=page_table)
+    #: THE HOST ORDER, and the whole of P67-a: the step is ENQUEUED BEHIND ITS OWN
+    #: VERDICT, gated so that a growth step is a device-side no-op, and the host's wait
+    #: for the 4-byte flag is spent on the launches instead of in front of them
+    #: (docs/internals/decode/decode.md#the-gate).
+    _growth_probe_launch(routes.write, config, state.page_table, workspace)
+    workspace.growth_host.copy_(workspace.growth_any, non_blocking=True)
+    workspace.verdict.record()
+    plane, page_table, arena = state._decode_entry(routes, None)
+    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table,
+                                            gate=workspace.growth_any, **step)
+    workspace.verdict.synchronize()
+    if not bool(workspace.growth_host[0]):
+        return y, state
+
+    #: The gated step deposited nothing and read nothing, so the state is exactly where
+    #: the admission needs it. `atom_bits` is the probe's own condensation -- the host
+    #: derives no support (docs/internals/decode/decode.md#second-derivation).
+    plane, page_table, arena = state._decode_entry(routes, workspace.atom_bits)
+    arena.wait()
+    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
     return y, state
 
 
-def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Tensor,
-                  workspace: DecodeWorkspace) -> bool:
-    """Does this step deposit into an atom the page table does not map?
+def _growth_probe_launch(write_levels, config: FrozenDecodeConfig, page_table: torch.Tensor,
+                         workspace: DecodeWorkspace) -> None:
+    """Does this step deposit into an atom the page table does not map? ASKED, not read.
 
     THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``workspace.atom_bits``
     and IS what a growth step admits, so the write-atom set is derived exactly once per
-    step, on the device. The read is BLOCKING by measurement
-    (docs/internals/decode/decode.md#probe-blocking-read).
+    step, on the device. The verdict lands in ``growth_any``, which the step reads on the
+    device (docs/internals/decode/decode.md#the-gate) and the host reads after enqueueing
+    it.
     """
     amp_write = [_fold(t).float() for t in write_levels]
     extension().rola_decode_growth_probe(
@@ -319,12 +403,12 @@ def _growth_probe(write_levels, config: FrozenDecodeConfig, page_table: torch.Te
         page_table=page_table,
         bits=workspace.bits,
         growth=workspace.growth,
+        growth_any=workspace.growth_any,
+        probe_ctr=workspace.probe_ctr,
         atom_bits=workspace.atom_bits,
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span))
-    workspace.growth_host.copy_(workspace.growth)
-    return bool(workspace.growth_host.any())
 
 
 def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:
@@ -357,6 +441,7 @@ def _decode_step(
     write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     workspace: DecodeWorkspace | None = None,
     page_table: torch.Tensor | None = None,
+    gate: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeWorkspace]:
     """The RAW-TENSOR launch, in place on ``state``. The prefill arm's sibling.
 
@@ -455,6 +540,7 @@ def _decode_step(
         n_split=config.n_split,
         eps=config.eps,
         page_table=page_table,
+        gate=gate,
     )
     return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous(), state, workspace
 

@@ -68,6 +68,8 @@ __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bi
 
 template <int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kDecodeThreads) void decode_gemv_kernel(DecodeParams p) {
+  //: HAZARD gate-before-anything -- docs/internals/decode/decode.md#gate-before-anything
+  if (p.gate != nullptr && *p.gate != 0) return;
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
   //: template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
   constexpr int cols = DV + 1;
@@ -478,7 +480,8 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
                                at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
                                std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table) {
+                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table,
+                               c10::optional<at::Tensor> gate) {
   const int D = static_cast<int>(amp_read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
   TORCH_CHECK(static_cast<int>(amp_write.size()) == D, "amp_write must have D entries");
@@ -608,6 +611,11 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
   p.pc_coarse = pc_coarse.data_ptr<int32_t>();
   p.ws = ws.data_ptr<float>();
   p.ctr = ctr.data_ptr<int32_t>();
+  if (gate.has_value()) {
+    detail::check_i32(*gate, "gate");
+    TORCH_CHECK(gate->dim() == 1 && gate->size(0) == 1, "gate must be [1] int32");
+    p.gate = gate->data_ptr<int32_t>();
+  }
   p.N = N;
   p.BH = BH;
   p.H = static_cast<int>(heads);
@@ -634,7 +642,8 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at:
 }
 
 void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
-                              at::Tensor bits, at::Tensor growth, at::Tensor atom_bits,
+                              at::Tensor bits, at::Tensor growth, at::Tensor growth_any,
+                              at::Tensor probe_ctr, at::Tensor atom_bits,
                               std::vector<int64_t> level_widths, std::vector<int64_t> level_strides,
                               std::vector<int64_t> level_spans) {
   const int D = static_cast<int>(amp_write.size());
@@ -650,7 +659,11 @@ void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page
   const int BH = static_cast<int>(page_table.size(0));
   const int atoms_per_bh = static_cast<int>(page_table.size(1));
   const int64_t N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
+  detail::check_i32(growth_any, "growth_any");
+  detail::check_i32(probe_ctr, "probe_ctr");
   TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
+  TORCH_CHECK(growth_any.dim() == 1 && growth_any.size(0) == 1, "growth_any must be [1] int32");
+  TORCH_CHECK(probe_ctr.dim() == 1 && probe_ctr.size(0) == 1, "probe_ctr must be [1] int32");
   TORCH_CHECK(
       atom_bits.is_cuda() && atom_bits.scalar_type() == at::kBool && atom_bits.is_contiguous(),
       "atom_bits must be a contiguous CUDA bool tensor, got ", atom_bits.scalar_type());
@@ -686,6 +699,8 @@ void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page
   auto* bits_base = reinterpret_cast<uint32_t*>(bits.data_ptr<int32_t>());
   p.page_tbl = page_table.data_ptr<int32_t>();
   p.growth = growth.data_ptr<int32_t>();
+  p.growth_any = growth_any.data_ptr<int32_t>();
+  p.probe_ctr = probe_ctr.data_ptr<int32_t>();
   p.atom_bits = atom_bits.data_ptr<bool>();
   p.bits_w = bits_base + static_cast<int64_t>(BH) * n_words;
   p.scratch = bits_base + 2 * static_cast<int64_t>(BH) * n_words;
