@@ -217,7 +217,7 @@ class RoLAState:
 
     # -- the facade's seam (rola/interface.py is the only caller) --------------
 
-    def _bind(self, routes, *, paging: bool) -> None:
+    def _bind(self, routes, *, d_v: int, paging: bool) -> None:
         """Take the keying, the topology fingerprint, the device and the backing kind.
 
         Binding happens ONCE, at the first call that receives this state. The paging
@@ -231,7 +231,7 @@ class RoLAState:
         self._device = routes.device
         self._paging = bool(paging)
         self._keying = AtomKeying(
-            N=topology.N, cols=topology.d_v + (1 if routes.normalization == "global" else 0),
+            N=topology.N, cols=d_v + (1 if routes.normalization == "global" else 0),
             BH=routes.batch * routes.heads)
 
     def _require_compatible(self, routes) -> None:
@@ -259,8 +259,8 @@ class RoLAState:
             raise ValueError(
                 f"this state lives on {self._device}; the call is on {routes.device}")
 
-    def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, paging: bool,
-                      BC: int):
+    def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, d_v: int,
+                      paging: bool, BC: int):
         """`(s_in, arena)` for the kernel arm, with this call's pages committed.
 
         The host order the design fixes (§A.4/§C.3): the caller has already run the
@@ -270,7 +270,7 @@ class RoLAState:
         is what puts the admission before the kernel.
         """
         if not self.bound:
-            self._bind(routes, paging=paging)
+            self._bind(routes, d_v=d_v, paging=paging)
         else:
             self._require_compatible(routes)
         #: `BC` reaches the arena as allocator POLICY only (the extent default is one
@@ -308,7 +308,7 @@ class RoLAState:
         if self._arena is None:
             self._plane = plane
 
-    def _decode_carrier(self, routes, *, decay, mma_precision: str):
+    def _decode_carrier(self, routes, *, d_v: int, decay, mma_precision: str):
         """The `T = 1` frozen carrier for this sequence, built once and cached HERE.
 
         It freezes at the prefill/decode boundary and is immutable for the sequence
@@ -325,7 +325,7 @@ class RoLAState:
         if cached is not None and cached[0] == key:
             return cached[1]
         config = freeze_decode_config(
-            routes.topology, routes.normalization, decay=decay is not None,
+            routes.topology, routes.normalization, d_v=d_v, decay=decay is not None,
             BH=key[0], device=routes.device, mma_precision=mma_precision)
         self._decode_carrier_cache = (key, config)
         return config
@@ -366,7 +366,7 @@ class RoLAState:
                                  self._keying.cols),
                 None, None)
 
-    def _dense_entry(self, routes, *, paging: bool) -> torch.Tensor | None:
+    def _dense_entry(self, routes, *, d_v: int, paging: bool) -> torch.Tensor | None:
         """The `[B, H, N, cols]` entry state the fp64 oracle takes, or `None`.
 
         The reference arm keeps RAW TENSORS by spec, so a paged state materializes
@@ -374,7 +374,7 @@ class RoLAState:
         design accepts: the oracle is not a measured path.
         """
         if not self.bound:
-            self._bind(routes, paging=paging)
+            self._bind(routes, d_v=d_v, paging=paging)
             return None
         self._require_compatible(routes)
         return self.materialize()

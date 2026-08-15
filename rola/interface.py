@@ -6,8 +6,7 @@
 
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
-:class:`~rola.routing.factors.RouteFactors` bundle, obtainable only from
-:class:`~rola.routing.factors.RouteProducer` -- ``v`` is the value stream, and
+:class:`~rola.routing.factors.RouteFactors` bundle -- ``v`` is the value stream, and
 ``decay`` is the recurrence dial. No plan, no configuration, no statistics appear on
 it, because none of them are model facts: they are how the op runs, and the op decides
 how it runs.
@@ -81,12 +80,13 @@ def rola_op(
 ) -> tuple[torch.Tensor, RoLAState | None]:
     """Run RoLA over one routing bundle and one value stream.
 
-    ``routes``: a :class:`~rola.routing.factors.RouteFactors` from
-    :class:`~rola.routing.factors.RouteProducer`. Anything else is refused -- a bundle
-    the gateway did not derive is a bundle whose statistics need not describe its own
-    tensors, and every trustless property of this surface rests on that being
-    impossible.
-    ``v``: ``[B, T, H, d_v]``.
+    ``routes``: a :class:`~rola.routing.factors.RouteFactors`, from
+    :class:`~rola.routing.factors.RouteProducer` or built directly. Anything else is
+    refused by type: the routing sides are the feature-mapped ``(q, k)`` pair and a
+    loose tuple of tensors is not one.
+    ``v``: ``[B, T, H, d_v]``. THE VALUE WIDTH IS READ HERE, off ``v``: the routing
+    bundle carries no value geometry, so ``d_v`` is a fact about this operand and the
+    op is where it enters.
     ``decay``: the recurrence dial, or ``None``. Build one from a decay source
     (:mod:`rola.routing.decay`), which is the slot that decides where rates come from.
 
@@ -142,7 +142,7 @@ def rola_op(
     #: is refused by name, on the decay precedent: dispatch is not a lie, override is.
     from rola.ops import chunk as _chunk
 
-    reason = _chunk.unsupported(routes, decay)
+    reason = _chunk.unsupported(routes, decay, d_v=v.shape[-1])
     if reason is not None:
         raise NotImplementedError(
             f"chunk consumer (kernel arm): {reason}. The dispatch would have run this "
@@ -174,7 +174,7 @@ def rola_op(
     # sequence is `plan_exact`'s one size read, which also sizes the allocation.
     atom_bits = _chunk.stats(routes) if state._wants_pages(paging) else None
     s_in, arena = state._kernel_entry(
-        routes, atom_bits, paging=paging, BC=_chunk.arm(routes)[1])
+        routes, atom_bits, d_v=v.shape[-1], paging=paging, BC=_chunk.arm(routes)[1])
     y, plane = ChunkConsumer.run(routes, v, state_in=s_in, want_state=True, arena=arena)
     state._kernel_commit(plane)
     return y, state
@@ -188,7 +188,8 @@ def _reference_arm(routes, v, decay, state, *, paging: bool):
     state object as dense contents. A paged state that comes back to the kernel arm
     afterwards re-admits from those contents' own atom occupancy.
     """
-    initial = None if state is None else state._dense_entry(routes, paging=paging)
+    initial = (None if state is None
+               else state._dense_entry(routes, d_v=v.shape[-1], paging=paging))
     y, final = naive_rola(
         v, routes.read, routes.write, routes.g_read, routes.g_write, routes.topology,
         decay, routes.normalization, initial_state=initial,
@@ -277,8 +278,8 @@ def select_backend(*operands: Any) -> str:
     return "cuda"
 
 
-def dispatch_for(routes: RouteFactors, *operands: Any) -> Dispatch:
-    """The arm the op will take for this bundle and these operands.
+def dispatch_for(routes: RouteFactors, v: torch.Tensor, *operands: Any) -> Dispatch:
+    """The arm the op will take for this bundle, this value stream and these operands.
 
     THE UNSUPPORTED-TOPOLOGY RETIREMENT (2026-08-14) is decided here, in the one
     place, so the op and every caller that asks first get the same answer. The kernel
@@ -291,24 +292,30 @@ def dispatch_for(routes: RouteFactors, *operands: Any) -> Dispatch:
     kernel envelope to the built matrix and the reference arm's throughput is the
     price; ``docs/open-work.md`` carries the card that widens the matrix.
 
+    ``v`` IS AN ARGUMENT AND NOT A CONVENTION. The ``d_v`` clause is a fact about the
+    value stream -- the routing carries no value geometry -- so the dispatch reads it
+    off ``v.shape[-1]``, and naming ``v`` is what makes that a contract rather than a
+    habit of the call sites. The answer is still available before the call and without
+    a device: it is a property of the CONFIGURATION and of the value stream's width.
+
     ``decay`` is not an argument here: a decay-configured call is routed by ``rola_op``
     before this is consulted, so asking the chunk arm about it again would be a second
     authority on the same retirement.
     """
     not_kerneled = tuple(routes.topology.unratified_activations)
-    backend = "reference" if not_kerneled else select_backend(*operands)
+    backend = "reference" if not_kerneled else select_backend(v, *operands)
     no_kernel_arm = None
     if backend == "cuda":
         from rola.ops import chunk as _chunk
 
-        no_kernel_arm = _chunk.unsupported(routes, None)
+        no_kernel_arm = _chunk.unsupported(routes, None, d_v=v.shape[-1])
         if no_kernel_arm is not None:
             backend = "reference"
     return Dispatch(backend=backend, not_kerneled=not_kerneled, no_kernel_arm=no_kernel_arm)
 
 
-def _backend_for(routes: RouteFactors, *operands: Any) -> str:
-    return dispatch_for(routes, *operands).backend
+def _backend_for(routes: RouteFactors, v: torch.Tensor, *operands: Any) -> str:
+    return dispatch_for(routes, v, *operands).backend
 
 
 def _validate_call(routes, v, decay) -> None:
@@ -316,10 +323,10 @@ def _validate_call(routes, v, decay) -> None:
 
     if type(routes) is not _RouteFactors:
         raise TypeError(
-            "rola_op's first argument must be a RouteFactors bundle from RouteProducer, got "
-            f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair, "
-            "and the gateway is what derives their statistics from their tensors -- there is "
-            "no supported way to assemble the bundle by hand.")
+            "rola_op's first argument must be a RouteFactors bundle, got "
+            f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
+            "build one with RouteProducer, or construct a RouteFactors directly -- its "
+            "invariants are checked either way.")
     #: THE GAIN LAYOUT AGAINST THE ARM, structurally. `g_read` exists iff the
     #: normalization is `raw` -- architecture §4.2 fixes it to 1 under `global`, so
     #: production has no read-gain column there and a supplied one would be silently

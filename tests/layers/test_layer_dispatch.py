@@ -240,12 +240,13 @@ def test_a_no_grad_cuda_context_takes_the_kernel_arm(decay):
     layer = _layer(decay=decay)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
+    v = torch.randn(1, 96, _H, _DV, device="cuda")
     with torch.no_grad():
         layer(x)
         #: inside the no-grad context on purpose: `dispatch_for` answers the gradient
         #: question FIRST and short-circuits, so an envelope read under grad would say
         #: `no_kernel_arm is None` about every topology and assert nothing.
-        envelope = dispatch_for(layer.routes(x), x)
+        envelope = dispatch_for(layer.routes(x), v)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
     assert envelope.no_kernel_arm is None, (
         "fixture rot: this topology must be a BUILT chunk arm for the row above to "
@@ -445,7 +446,7 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     with torch.no_grad():
         v = layer.v_proj(x).view(1, T, _H, _DV)
         routes = layer.routes(x)
-        refusal = _chunk.unsupported(routes, None)
+        refusal = _chunk.unsupported(routes, None, d_v=_DV)
         assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
         _out, plane = _chunk.run(routes, v, want_state=True)
         #: the kernel's atom-major plane IS the oracle's `[B, H, N, cols]` layout
@@ -496,12 +497,12 @@ def test_a_d_v_outside_the_built_matrix_dispatches_to_the_oracle_and_says_so():
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}
+    v = torch.randn(1, 64, _H, 48, device="cuda")
     with torch.no_grad():
         routes = layer.routes(x)
-        envelope = dispatch_for(routes, x)
+        envelope = dispatch_for(routes, v)
     assert envelope.backend == "reference"
     assert "d_v=48" in envelope.no_kernel_arm
-    v = torch.randn(1, 64, _H, 48, device="cuda")
     with torch.no_grad(), pytest.raises(NotImplementedError, match="d_v=48"):
         rola.rola_op(routes, v, _arm="kernel")
 
@@ -684,9 +685,10 @@ def test_the_no_grad_dispatch_holds_on_a_deeper_built_arm(decay):
     layer = _layer(decay=decay, branches=_DEEP_BRANCHES)
     layer.eval()
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
+    v = torch.randn(1, 96, _H, _DV, device="cuda")
     with torch.no_grad():
         layer(x)
-        envelope = dispatch_for(layer.routes(x), x)
+        envelope = dispatch_for(layer.routes(x), v)
     assert envelope.no_kernel_arm is None, (
         "fixture rot: this topology must be a BUILT chunk arm")
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}

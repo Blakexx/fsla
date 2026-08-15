@@ -154,7 +154,7 @@ def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
     v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=True)
     from rola.ops import chunk as _chunk
 
-    assert _chunk.unsupported(routes, None) is None, "fixture must be a BUILT arm"
+    assert _chunk.unsupported(routes, None, d_v=v.shape[-1]) is None, "fixture must be a BUILT arm"
     y, _ = rola.rola_op(routes, v, _arm="kernel")
     assert y.grad_fn is not None, (
         "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "

@@ -144,7 +144,7 @@ class Case:
         #: mirror exists so `families.py` stays device-free, and this is the
         #: line that makes a drift between them observable
         #: (`test_family_meta.py` asserts the two agree for every family).
-        self.refusal = _chunk.unsupported(self.bundle, self.decay)
+        self.refusal = _chunk.unsupported(self.bundle, self.decay, d_v=self.d_v)
 
     # -- generators ---------------------------------------------------------
 

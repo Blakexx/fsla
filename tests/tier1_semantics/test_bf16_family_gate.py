@@ -146,7 +146,7 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
         read=tuple(t.to(torch.float32) for t in quantized(read_levels)),
         write=tuple(t.to(torch.float32) for t in quantized(write_levels)),
         g_read=None, g_write=g_write.to(torch.float32))
-    refusal = _chunk.unsupported(routes, None)
+    refusal = _chunk.unsupported(routes, None, d_v=d_v)
     assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
     y, state = _chunk.run(
         routes, v.to(torch.float32), want_state=True,

@@ -123,8 +123,8 @@ def _f32(fixture):
 
 def _config(widths, fixture):
     return freeze_decode_config(
-        _topology(widths), "global", decay=False, BH=fixture["B"] * fixture["H"],
-        device="cuda", mma_precision="bf16")
+        _topology(widths), "global", d_v=_DV, decay=False,
+        BH=fixture["B"] * fixture["H"], device="cuda", mma_precision="bf16")
 
 
 def _leaf_support(levels, widths):

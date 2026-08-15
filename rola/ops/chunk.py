@@ -52,12 +52,16 @@ def arm(routes) -> tuple[int, int]:
     return _arm_for(len(widths), widths[0])
 
 
-def unsupported(routes, decay) -> str | None:
-    """Why the chunk arm refuses this call, or None if it runs."""
+def unsupported(routes, decay, *, d_v: int) -> str | None:
+    """Why the chunk arm refuses this call, or None if it runs.
+
+    `d_v` is the value stream's per-head width, which is a fact about `v` and not
+    about the routing -- the caller reads it off the operand and states it here.
+    """
     top = routes.topology
     widths = tuple(l.width for l in top.levels)
-    if top.d_v != 64:
-        return f"d_v={top.d_v}; the chunk matrix is built at d_v=64"
+    if d_v != 64:
+        return f"d_v={d_v}; the chunk matrix is built at d_v=64"
     if routes.normalization != "global":
         return f"normalization={routes.normalization!r}; the chunk consumer is global-only"
     if decay is not None:
@@ -85,7 +89,7 @@ def stats(routes) -> torch.Tensor:
     return extension().chunk_stats(pw, list(widths))
 
 
-def state_plane(routes, *, zeros: bool = False) -> torch.Tensor:
+def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
 
     The ATOM-MAJOR view of `[BH, N, d_v+1]`, byte for byte: leaves are stored in
@@ -101,8 +105,7 @@ def state_plane(routes, *, zeros: bool = False) -> torch.Tensor:
     n = 1
     for w in widths:
         n *= w
-    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM,
-             routes.topology.d_v + 1)
+    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1)
     build = torch.zeros if zeros else torch.empty
     return build(shape, device=routes.device, dtype=torch.float32)
 
@@ -133,7 +136,7 @@ def run(routes, v: torch.Tensor, state_in: torch.Tensor | None = None,
     vk = v.permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
     if arena is None:
         page_tbl = None
-        s_out = state_plane(routes) if want_state else None
+        s_out = state_plane(routes, d_v=v.shape[-1]) if want_state else None
     else:
         #: the admission's table write and slot zeroing ran on the arena's side
         #: stream; this is the one wait that puts them before the launch.

@@ -149,6 +149,7 @@ def freeze_decode_config(
     topology: Topology,
     normalization: str,
     *,
+    d_v: int,
     decay: bool,
     BH: int,
     device: torch.device | str,
@@ -198,7 +199,7 @@ def freeze_decode_config(
     return FrozenDecodeConfig(
         D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
         level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
-        d_v=topology.d_v, has_decay=decay,
+        d_v=int(d_v), has_decay=decay,
         eps=eps, n_split=int(n_split),
         mma_precision=mma_precision)
 
@@ -299,7 +300,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     from rola.expert import PlanOverrides
 
     overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
-    config = state._decode_carrier(routes, decay=decay,
+    config = state._decode_carrier(routes, d_v=v.shape[-1], decay=decay,
                                    mma_precision=overrides.mma_precision)
     BH = routes.batch * routes.heads
     workspace = state._decode_workspace

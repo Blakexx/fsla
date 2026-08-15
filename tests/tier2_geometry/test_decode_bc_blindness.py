@@ -93,7 +93,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
         # is called inside the loop for exactly that reason: it must be a pure
         # function of the topology, the normalization arm and the device.
         assert BC in _BCS
-        config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
+        config = freeze_decode_config(topology, "global", d_v=d_v, decay=False, BH=B * H, device=device,
                                       mma_precision="bf16")
         configs.append(config)
         state = m0.clone()

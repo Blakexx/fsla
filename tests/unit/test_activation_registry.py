@@ -236,7 +236,8 @@ def test_an_unratified_activation_dispatches_to_the_reference_with_an_explicit_f
         assert topology.unratified_activations == (
             (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
 
-        dispatch = rola.interface.dispatch_for(_StubPlan(topology))
+        dispatch = rola.interface.dispatch_for(
+            _StubPlan(topology), torch.zeros(1, 1, 1, 64))
         assert dispatch.backend == "reference"
         assert dispatch.not_kerneled == topology.unratified_activations
     finally:

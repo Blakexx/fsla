@@ -174,7 +174,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
                                  write_activation=SoftmaxActivation())
     topology = Topology(levels=tuple(LevelConfig(w, routing) for w in widths), d_v=d_v)
-    config = freeze_decode_config(topology, "global", decay=False, BH=1, device=device,
+    config = freeze_decode_config(topology, "global", d_v=d_v, decay=False, BH=1, device=device,
                                   mma_precision="bf16")
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
@@ -311,5 +311,5 @@ def test_freeze_decode_config_refuses_an_unknown_precision():
                                  write_activation=SoftmaxActivation())
     topology = Topology(levels=tuple(LevelConfig(w, routing) for w in _BRANCHES), d_v=_DV)
     with pytest.raises(ValueError, match="mma_precision"):
-        freeze_decode_config(topology, "global", decay=False, BH=1, device="cpu",
-                             mma_precision="fp16")
+        freeze_decode_config(topology, "global", d_v=_DV, decay=False, BH=1,
+                             device="cpu", mma_precision="fp16")

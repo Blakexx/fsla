@@ -120,20 +120,20 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
         # kernel arm names the refusal and the dispatch routes such a call to
         # the oracle; the refusal IS this cell's contract until the reopen
         # conditions, and the oracle below keeps the handoff semantics alive.
-        reason = _chunk.unsupported(bundle, decay)
+        reason = _chunk.unsupported(bundle, decay, d_v=_DV)
         assert reason is not None and "decay" in reason, reason
         naive_rola(pre["v"], pre["read"], pre["write"], pre["g_read"],
                    pre["g_write"], topology, decay, "global",
                    output_final_state=True)
         return
-    assert _chunk.unsupported(bundle, decay) is None, "the prefill fixture left the envelope"
+    assert _chunk.unsupported(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
     _y_pre, state = _chunk.run(bundle, f["v"], want_state=True)
 
     _y_ref, ref_state = naive_rola(
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
         topology, decay, "global", output_final_state=True)
 
-    config = freeze_decode_config(topology, "global", decay=decay_on, BH=_B * _H,
+    config = freeze_decode_config(topology, "global", d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device, mma_precision="bf16")
     state = state.reshape(_B, _H, config.N, config.cols).clone()
     workspace, cold_seen = None, False
@@ -179,7 +179,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
 
-    config = freeze_decode_config(topology, "global", decay=True, BH=_B * _H,
+    config = freeze_decode_config(topology, "global", d_v=_DV, decay=True, BH=_B * _H,
                                   device=device, mma_precision="bf16")
     state, ref_state = m0.float().clone(), m0
     workspace, errors = None, {}
@@ -223,7 +223,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     topology = g._topology(_WIDTHS, _DV)
     configs = {
         f"n_split={n}": freeze_decode_config(
-            topology, "global", decay=False, BH=_B * _H, device=device,
+            topology, "global", d_v=_DV, decay=False, BH=_B * _H, device=device,
             n_split=n, mma_precision="bf16")
         for n in (1, 3, 8)
     }

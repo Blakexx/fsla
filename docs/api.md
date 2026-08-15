@@ -267,7 +267,7 @@ layer = rola.RoLA(1024, 8, routes, expert=PlanOverrides())
 | name | what it is |
 |---|---|
 | `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
-| `Dispatch` / `dispatch_for` | how a call WILL run, asked before making it — including `no_kernel_arm`, the refusing clause |
+| `Dispatch` / `dispatch_for(routes, v, *operands)` | how a call WILL run, asked before making it — including `no_kernel_arm`, the refusing clause. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `select_backend`, `requires_backward` | the two predicates the dispatch is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 

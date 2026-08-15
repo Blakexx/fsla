@@ -171,7 +171,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         y_refs.append(y_ref)
 
     # ---- decode ---------------------------------------------------------------
-    config = freeze_decode_config(topology, norm, decay=decay is not None, BH=B * H,
+    config = freeze_decode_config(topology, norm, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split, mma_precision="bf16")
     state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
              if initial_state is None else initial_state.to(torch.float32).clone())
@@ -299,7 +299,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = freeze_decode_config(topology, "global", decay=False, BH=B * H, device=device,
+    config = freeze_decode_config(topology, "global", d_v=d_v, decay=False, BH=B * H, device=device,
                                   mma_precision="bf16")
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
@@ -487,7 +487,7 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
         read=tuple(t.float() for t in read_levels),
         write=tuple(t.float() for t in write_levels),
         g_read=None, g_write=g_write.float())
-    refusal = _chunk.unsupported(routes, None)
+    refusal = _chunk.unsupported(routes, None, d_v=d_v)
     assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
     y, plane = _chunk.run(routes, v.float(), want_state=True)
     return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
@@ -548,7 +548,7 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    config = freeze_decode_config(pre["topology"], "global", decay=False, BH=B * H,
+    config = freeze_decode_config(pre["topology"], "global", d_v=d_v, decay=False, BH=B * H,
                                   device=device, mma_precision="bf16")
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),
