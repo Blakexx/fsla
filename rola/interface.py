@@ -34,9 +34,12 @@ kernel reachable from a gradient-requiring context does not raise. It returns a
 perfectly good tensor with no ``grad_fn``, the graph is severed, and the symptom is
 ``x.grad is None`` several files away. ``rola_op`` is the ONE place that rule is
 enforced: a call that wants a gradient runs the whole operation on ``naive_rola``,
-forward and backward from one graph; a call that does not reaches the CUDA consumer
-wrapped in :class:`RoLAConsumer`, whose backward raises by name rather than severing
-anything.
+forward and backward from one graph; a call that does not reaches a CUDA consumer
+wrapped in an autograd node -- :class:`RoLAConsumer` for the tiled arm,
+:class:`ChunkConsumer` for the chunk one -- whose backward raises by name rather than
+severing anything. The dispatch above is the FIRST line of that defence and the nodes
+are the LAST: the dispatch decides, and the node is what makes a decision that was
+somehow bypassed loud instead of silent.
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ if TYPE_CHECKING:
     from rola.routing.factors import RouteFactors
     from rola.routing.types import DecayConfig
 
-__all__ = ["BackwardNotImplemented", "RoLAConsumer", "rola_op"]
+__all__ = ["BackwardNotImplemented", "ChunkConsumer", "RoLAConsumer", "rola_op"]
 
 #: Tier-H facts, cached on the DEVICE they are facts about. No member can move within a
 #: process for a fixed device, and no routing statistic lives here.
@@ -66,6 +69,21 @@ _MACHINE: dict[torch.device, MachineFacts] = {}
 
 class BackwardNotImplemented(NotImplementedError):
     """Raised when a gradient is demanded of the forward-only CUDA consumer."""
+
+
+@dataclass
+class _ChunkCall:
+    """The non-tensor half of a chunk launch, and the plane it hands back.
+
+    Everything :func:`rola.ops.chunk.run` needs that autograd must NOT see as an
+    operand, plus the out-parameter the state plane returns through.
+    """
+
+    routes: Any
+    state_in: torch.Tensor | None
+    want_state: bool
+    arena: Any
+    plane: torch.Tensor | None
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +168,7 @@ def rola_op(
         #: no state object, no state I/O: both of the kernel's state pointers are
         #: null and the variant with none of it compiled in runs
         #: (docs/internals/chunk/chunk_kernel.md).
-        y, _ = _chunk.run(routes, v)
+        y, _ = ChunkConsumer.run(routes, v)
         return y, None
     # THE HOST ORDER (design §A.4/§C.3), and it is the reason these four lines are
     # not folded into `chunk.run`: the stats pass is `BC`-free and precedes the arm,
@@ -160,7 +178,7 @@ def rola_op(
     atom_bits = _chunk.stats(routes) if state._wants_pages(paging) else None
     s_in, arena = state._kernel_entry(
         routes, atom_bits, paging=paging, BC=_chunk.arm(routes)[1])
-    y, plane = _chunk.run(routes, v, state_in=s_in, want_state=True, arena=arena)
+    y, plane = ChunkConsumer.run(routes, v, state_in=s_in, want_state=True, arena=arena)
     state._kernel_commit(plane)
     return y, state
 
@@ -407,4 +425,54 @@ class RoLAConsumer(torch.autograd.Function):
             "(docs/open-work.md M-2). Reaching this means the consumer was invoked directly on "
             "grad-requiring operands, bypassing `rola.rola_op`, which routes such calls to the "
             "differentiable reference path instead. Call `rola_op`, or run under "
+            "`torch.no_grad()`.")
+
+
+class ChunkConsumer(torch.autograd.Function):
+    """The CHUNK consumer as an autograd node whose backward refuses, loudly.
+
+    :class:`RoLAConsumer`'s claim, for the arm that replaced it. ``rola.ops.chunk.run``
+    is a bare extension call: reached from a gradient-requiring context it returns a
+    perfectly good tensor with no ``grad_fn``, and the symptom is ``x.grad is None``
+    several files away (`[[layer-dispatch-autograd-gap]]`). ``rola_op``'s dispatch is
+    what keeps that from happening; this node is what makes it LOUD if the dispatch is
+    ever bypassed -- a first line and a last line, not one line twice.
+
+    ``forward`` takes the routing tensors it does not read. That is the mechanism, not
+    an oversight: autograd inspects the FLAT argument list for grad-requiring tensors,
+    so an operand passed inside the ``call`` payload would be invisible to it and the
+    node would attach to nothing. Everything the operation consumes is therefore passed
+    positionally, and :meth:`run` is the one place that is assembled.
+    """
+
+    @staticmethod
+    def run(routes, v, *, state_in=None, want_state=False, arena=None):
+        """``(y, final state or None)`` -- ``rola.ops.chunk.run`` through the node."""
+        call = _ChunkCall(routes=routes, state_in=state_in, want_state=want_state,
+                          arena=arena, plane=None)
+        y = ChunkConsumer.apply(call, v, *routes.tensors())
+        return y, call.plane
+
+    @staticmethod
+    def forward(ctx, call, v, *operands):  # type: ignore[override]
+        # Deliberately NOT `ctx.mark_non_differentiable`: marking the output would make
+        # `backward` unreachable, which is the same silence this class exists to break.
+        from rola.ops import chunk as _chunk
+
+        y, call.plane = _chunk.run(
+            call.routes, v, state_in=call.state_in, want_state=call.want_state,
+            arena=call.arena)
+        #: The state plane leaves through the payload rather than as a second output:
+        #: it is the CALLER's allocation (the arena's, when paged), and an autograd
+        #: node that returned it would stamp graph metadata onto storage the state
+        #: object owns and reuses across steps.
+        return y
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):  # type: ignore[override]
+        raise BackwardNotImplemented(
+            "the RoLA chunk consumer is forward-only: there is no native backward for it "
+            "yet (docs/open-work.md M-2). Reaching this means the kernel arm was invoked "
+            "on grad-requiring operands, bypassing `rola.rola_op`, which routes such calls "
+            "to the differentiable reference path instead. Call `rola_op`, or run under "
             "`torch.no_grad()`.")

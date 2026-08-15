@@ -29,7 +29,12 @@ import torch
 from conftest import build_routes
 
 import rola
-from rola.interface import BackwardNotImplemented, RoLAConsumer, requires_backward
+from rola.interface import (
+    BackwardNotImplemented,
+    ChunkConsumer,
+    RoLAConsumer,
+    requires_backward,
+)
 
 # --- the predicate -----------------------------------------------------------
 
@@ -82,6 +87,93 @@ def test_the_consumer_node_does_not_mark_its_output_non_differentiable():
     calls = {a.attr for n in ast.walk(node) if isinstance(n, ast.Call)
              for a in [n.func] if isinstance(a, ast.Attribute)}
     assert "mark_non_differentiable" not in calls
+
+
+def test_the_chunk_node_refuses_a_gradient_by_name_instead_of_severing_the_graph():
+    """`ChunkConsumer` carries `RoLAConsumer`'s claim for the arm that replaced it.
+
+    `rola.ops.chunk.run` is a bare extension call, so an arm that reached it from a
+    gradient-requiring context would hand back a tensor with no `grad_fn` and no
+    error. The dispatch is what prevents that; this node is what makes a bypassed
+    dispatch loud."""
+    with pytest.raises(BackwardNotImplemented, match="forward-only"):
+        ChunkConsumer.backward(None, None)
+
+
+def test_the_chunk_node_does_not_mark_its_output_non_differentiable():
+    """Marking it would make the tripwire unreachable -- the same silence the node
+    exists to break. Read off the source, since the condition is an absence."""
+    source = pathlib.Path(rola.interface.__file__).read_text()
+    tree = ast.parse(source)
+    node = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == "ChunkConsumer")
+    calls = {a.attr for n in ast.walk(node) if isinstance(n, ast.Call)
+             for a in [n.func] if isinstance(a, ast.Attribute)}
+    assert "mark_non_differentiable" not in calls
+
+
+def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
+    """`chunk.run` has ONE caller in the package, and it is inside the autograd node.
+
+    A second call site would be a path to the kernel with no node on it, which is the
+    gap the node exists to close; asserted structurally because the failure it guards
+    against produces no exception to catch."""
+    package = pathlib.Path(rola.__path__[0])
+    callers = sorted(
+        str(path.relative_to(package)) for path in package.rglob("*.py")
+        if "_chunk.run(" in path.read_text() or "chunk.run(" in path.read_text())
+    assert callers == ["interface.py"], (
+        f"the chunk kernel is reached from {callers}; every path to it must go through "
+        "ChunkConsumer")
+    source = (package / "interface.py").read_text()
+    tree = ast.parse(source)
+    node = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == "ChunkConsumer")
+    assert "_chunk.run(" in ast.get_source_segment(source, node)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_kernel_arm_never_returns_a_grad_fn_less_tensor_from_a_grad_context():
+    """The claim in the form `[[layer-dispatch-autograd-gap]]` states it.
+
+    Inside a grad-enabled context with grad-requiring operands, a call must either
+    reach the reference arm (the facade's decision) or raise (the node's). What it
+    must NOT do is return a good-looking tensor whose graph is gone."""
+    v, routes = _tiny_routing(requires_grad=True, device="cuda")
+    y, _ = rola.rola_op(routes, v)
+    assert y.grad_fn is not None, "the graph was severed at the op boundary"
+    y.sum().backward()
+    assert v.grad is not None and torch.isfinite(v.grad).all()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_node_is_what_makes_a_bypassed_dispatch_loud_rather_than_silent():
+    """The last line, exercised: `_arm="kernel"` is a caller overruling the dispatch.
+
+    The kernel then runs on grad-requiring operands -- which is exactly the case the
+    dispatch exists to prevent -- and the node is the whole of what stands between a
+    severed graph and an error. `grad_fn` present is the node having attached; the
+    named raise is it refusing. Without the wrapper both assertions read the other
+    way round: no `grad_fn`, no error, and `v.grad is None` several files away."""
+    torch.manual_seed(5)
+    B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 32, (8, 8)
+    gateway = build_routes(
+        hidden_size=hidden, num_heads=H, d_v=d_v, widths=widths,
+        routing=_dense_routing()).to("cuda")
+    x = torch.randn(B, T, hidden, device="cuda", requires_grad=True)
+    routes = gateway(x)
+    v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=True)
+    from rola.ops import chunk as _chunk
+
+    assert _chunk.unsupported(routes, None) is None, "fixture must be a BUILT arm"
+    y, _ = rola.rola_op(routes, v, _arm="kernel")
+    assert y.grad_fn is not None, (
+        "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "
+        "graph is severed and nothing said so")
+    with pytest.raises(BackwardNotImplemented, match="forward-only"):
+        y.sum().backward()
 
 
 # --- the dispatch, end to end ------------------------------------------------
