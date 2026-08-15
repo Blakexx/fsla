@@ -35,7 +35,7 @@ import torch
 
 from rola.ops.decode import FrozenDecodeConfig, _decode_step, freeze_decode_config
 from rola.planner.schedule import Plan
-from tests.tier1_semantics.test_consumer_vs_oracle import _simplex, _topology
+from tests.tier1_semantics.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
     pytest.mark.cuda,

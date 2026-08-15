@@ -77,8 +77,19 @@ class OrderingSpy:
         return self
 
     def watch_extension(self, monkeypatch, ext_module, symbol, *, label):
-        """Record every call to one entry point of the built extension."""
+        """Record every call to one entry point of the built extension.
+
+        `ext_module` must be the module that BINDS the name `extension`, which is
+        usually the CALLER (`rola.ops.chunk` does `from rola.ops._ext import
+        extension`, so its `extension` is a module-level name of its own and
+        patching `rola.ops._ext` reaches it only if it has not been imported
+        yet). Getting that wrong makes the spy a silent no-op whose pass depends
+        on test ordering, so `symbol` is checked against the real extension here
+        and the label's absence is a failure at `assert_between`.
+        """
         real = ext_module.extension()
+        assert hasattr(real, symbol), (
+            f"the extension has no entry {symbol!r}; the spy would record nothing")
         events = self.events
 
         class Spy:

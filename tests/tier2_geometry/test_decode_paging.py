@@ -72,7 +72,7 @@ _POISON = -4321.5
 #: DECODE'S TOLERANCE AND ITS TOPOLOGY BUILDER, ADOPTED RATHER THAN INVENTED -- the
 #: reasoning `test_decode_vs_oracle.py` states for the first and the routing tag it
 #: fixes for the second, imported so there is ONE of each.
-from tests.tier1_semantics.test_consumer_vs_oracle import (  # noqa: E402
+from tests.tier1_semantics.oracle_fixtures import (  # noqa: E402
     _topology as _build_topology,
 )
 from tests.tier1_semantics.test_decode_vs_oracle import DECODE_RTOL  # noqa: E402

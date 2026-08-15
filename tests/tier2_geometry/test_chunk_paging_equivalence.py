@@ -40,7 +40,7 @@ owner block; `owners = N / BC`.
 in with `atomicAdd` across owner blocks, so at `owners > 1` the path is not
 bit-reproducible against ITSELF and the comparison is against the reordering
 envelope with the null control asserted to fit inside it -- the derivation
-`test_chunk_final_state.py` and `test_paging_equivalence.py` both ship. The
+`test_chunk_final_state.py` ships and the allocator cells below reuse. The
 STATE is exact on every arm regardless: each atom is stored by exactly one CTA.
 """
 from __future__ import annotations
@@ -383,6 +383,94 @@ def test_the_same_routing_is_the_same_residency_at_every_built_BC(arm):
             f"the carried state differs across BC={base} vs BC={BC} by "
             f"{(state_base - state_bc).abs().max().item():.3e}")
         assert torch.isfinite(y_bc).all(), f"BC={BC} produced a non-finite y"
+
+
+# ---------------------------------------------------------------------------
+# the allocator's layout, re-anchored here at P67 D2-b
+# ---------------------------------------------------------------------------
+#
+# Both cells below came from `test_paging_equivalence.py`, the TILED consumer's
+# paging family, which retires with its consumer. Neither claim is about that
+# consumer: one is about the kernel addressing THROUGH the table rather than by
+# atom rank, the other about the commitment being the plan's popcount exactly.
+# The rest of that file's rows have twins above and retire without a successor.
+
+
+def test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible():
+    """Bit-identity through an arena whose SLOT ORDER is scrambled relative to
+    logical atom order (coverage-closure H5).
+
+    Every other cell here plans FRESH, so slots are assigned in ascending atom id
+    and `slot == rank(atom)` — a page table that any rank-keyed indexing bug can
+    survive, because a wrong-but-monotone address maps to a plausibly-right slot.
+    Here the EVEN touched atoms are pre-admitted alone (slots `0..k`), then the
+    odd remainder is admitted `fresh=False` into LATER slots: the table
+    interleaves low and high slot ids atom by atom, which is exactly the
+    fragmentation a long-lived arena accumulates. The kernel must address through
+    the table, and the non-monotonicity is asserted so the cell cannot silently
+    degrade back into the fresh layout.
+    """
+    widths, C, BC = (16, 16), 32, 64
+    fixture = _fixture(widths, T=2 * C, support=_SUPPORTS["sparse"], seed=67)
+    BH = fixture[3].shape[0] * fixture[3].shape[2]
+
+    bitmap = _bitmap(fixture, widths)
+    assert int(bitmap.sum()) >= 8, "fixture too sparse to fragment anything"
+    flat = bitmap.reshape(-1)
+    touched = flat.nonzero(as_tuple=True)[0]
+    partial = torch.zeros_like(flat)
+    partial[touched[::2]] = True
+
+    arena = _arena(widths, BC, BH)
+    arena.plan_exact(partial.view_as(bitmap), fresh=True)
+    arena.plan_exact(bitmap, fresh=False)
+
+    table = arena.page_table.reshape(-1)
+    slots = table[touched]
+    assert bool((slots >= 0).all()), "an admitted atom lost its slot"
+    assert bool(((slots[1:] - slots[:-1]) < 0).any()), (
+        "the slot order came out monotone in atom id; the cell is not exercising "
+        "a fragmented table and needs a different admission split")
+
+    y_dense, dense = _dense(fixture, widths, C, BC)
+    y_control, _ = _dense(fixture, widths, C, BC)
+    y_paged, paged = _paged(fixture, widths, C, BC, arena)
+    assert torch.equal(dense, paged), (
+        "a non-monotone slot layout moved the state: the kernel (or materialize) "
+        "is addressing by atom RANK instead of through the page table")
+    _assert_y(y_dense, y_paged, y_control, widths, BC,
+              "the fragmented arena's y differs from the dense y")
+
+
+def test_the_arena_commits_exactly_the_plan_s_demand_through_a_real_launch():
+    """The allocation is PLANNED-EXACT: committed pages == the bitmap's popcount.
+
+    `tests/unit/test_paging_atoms.py` pins the same arithmetic at the allocator,
+    with no kernel in sight. This is the half that needs one: at a REAL partial
+    demand the launch must still address correctly, so a commitment that happened
+    to be right by rounding up to the dense limit would be caught by the popcount
+    and a commitment that under-committed by the state comparison.
+    """
+    widths, C, BC = (16, 16), 32, 64
+    fixture = _fixture(widths, T=2 * C, support=_SUPPORTS["sparse"], seed=91)
+    BH = fixture[3].shape[0] * fixture[3].shape[2]
+
+    arena = _arena(widths, BC, BH)
+    bitmap = _bitmap(fixture, widths)
+    demand = int(bitmap.sum())
+    assert 0 < demand < arena.logical_pages, (
+        "the fixture saturated (or wrote nothing); this cell needs a real partial "
+        "demand or the popcount assertion below is the dense limit restated")
+    result = arena.plan_exact(bitmap)
+    assert result.allocated_pages == demand, (
+        "the arena committed something other than the plan's exact demand")
+
+    y_dense, dense = _dense(fixture, widths, C, BC)
+    y_control, _ = _dense(fixture, widths, C, BC)
+    y_paged, paged = _paged(fixture, widths, C, BC, arena)
+    assert torch.equal(dense, paged)
+    _assert_y(y_dense, y_paged, y_control, widths, BC,
+              "the planned-exact arena's y differs from the dense y")
 
 
 # ---------------------------------------------------------------------------

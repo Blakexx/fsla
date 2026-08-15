@@ -41,7 +41,8 @@ tolerance.**
    `owners == 1`: `y` is fanned in with `atomicAdd` across owner blocks, so at
    `owners > 1` the unpaged path is not bit-reproducible against ITSELF and the
    comparison is against the reordering envelope with the null control asserted
-   to fit inside it (the same derivation `test_paging_equivalence.py` ships).
+   to fit inside it (the same derivation
+   `test_chunk_paging_equivalence.py` ships).
 
 3. *A zero entry state is no entry state.* Bit-identical, both outputs. The
    recurrence is affine in the state with no decay in the operator, so a zero
