@@ -218,6 +218,13 @@ comparison no longer need to have been built at the same path (P19,
 `docs/build.md`'s path-trap section) — they must agree on `ratify.SASS_HASH_VERSION`,
 which `--compare` checks and refuses on mismatch.
 
+**Measuring a kernel's register DEMAND at a bound it does not ship at** is a
+scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
+the instantiation, run `python tools/ratify.py --census` there, read the spill
+column — and never a flag on the shipped tool. `--force-ctas` was that flag; it
+was deleted (P65 S2) once nothing in `csrc/` read its macro, because a tool that
+can force a bound is a tool that can ratify one.
+
 ## What is deliberately not here
 
 * **Clock locking.** `nvidia-smi -lgc` has no effect from inside WSL2; the plateau

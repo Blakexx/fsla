@@ -46,11 +46,13 @@ SIX OUTCOMES, and the difference between them is deliberate:
   printed, not failed. The register count is an ALLOCATOR OUTCOME that legitimately
   moves when the kernel changes; what must not move is the spilling.
 
-THE FORCING CENSUS (`--census [--force-ctas N] [--json PATH]`) is the measurement
-mode the register rung is derived from: a compile of every built arm at a candidate
-launch bound, reported per structural key and per SHARD. It never touches a
-manifest, and `--force-ctas` outside `--census` is refused -- a forced bound must
-never be ratified.
+THE CENSUS (`--census [--json PATH]`) is the measurement mode the register rung is
+derived from: a compile of every built arm at the SHIPPED derived bound, reported
+per structural key and per SHARD. It never touches a manifest. Measuring a
+CANDIDATE bound is a scratch-tree edit of the bound itself
+(`docs/measurement.md`), not a flag here -- a forced bound must never be
+ratifiable, and the cheapest way to guarantee that is for the tool not to have
+one.
 
 **RE-RATIFICATION IS A MEASUREMENT, NOT AN EDIT.** The manifest is regenerated only by
 `--write`, which re-runs this same compile and records what it reports. Hand-editing an
@@ -531,6 +533,24 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     return nvcc, cuda_cflags, cuda_post_cflags
 
 
+def _without_gencode(flags: list[str]) -> list[str]:
+    """`flags` with every `-gencode` dropped, in both of nvcc's spellings
+    (`-gencode=...` and a separated `-gencode ...`)."""
+    out: list[str] = []
+    drop_next = False
+    for f in flags:
+        if drop_next:
+            drop_next = False
+            continue
+        if f in ("-gencode", "--generate-code"):
+            drop_next = True
+            continue
+        if f.startswith(("-gencode=", "--generate-code=")):
+            continue
+        out.append(f)
+    return out
+
+
 def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
     """The extension's own compile flags, IMPORTED rather than restated.
 
@@ -563,16 +583,27 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
       reconstruction below. This path has no cache to collide with yet, so its
       only job is to compile correctly, which `ratified_flags()`'s own
       byte-for-byte record covers.
+
+    **THE ONE FLAG THAT IS NOT INHERITED IS `-gencode`.** The targets are this
+    RUN's (`--arch`, defaulting to :data:`DEFAULT_ARCHES`), never the last
+    build's. Inheriting them made a single-arch build (`ROLA_CUDA_ARCHS=86`)
+    silently narrow the next ratification to sm_86 and then refuse with "the
+    compile reported NO entries for sm_80" -- a message that reads as source
+    drift and is not one. That is the extension-trap family: an environment fact
+    the tool could not see, surfacing as a claim about the tree. `-gencode` is
+    already excluded from :data:`_NON_CODEGEN_FLAG_PREFIXES`' ratified list for
+    the same reason it is substituted here: it names targets, and the per-arch
+    manifest filing is what records them.
     """
     tpl = _ninja_cuda_template()
     if tpl is not None:
         nvcc, cuda_cflags, cuda_post_cflags = tpl
         cmd = [_NVCC_BIN or nvcc, "--generate-dependencies-with-compile",
                "--dependency-output", f"{obj_path}.d"]
-        cmd += shlex.split(cuda_cflags)
+        cmd += _without_gencode(shlex.split(cuda_cflags))
         cmd += ["-c", str(source), "-o", obj_path]
-        cmd += shlex.split(cuda_post_cflags)
-        return cmd
+        cmd += _without_gencode(shlex.split(cuda_post_cflags))
+        return cmd + build_flags.gencodes(arches)
 
     import torch.utils.cpp_extension as ext
 
@@ -682,7 +713,6 @@ def _parse_report(stderr: str) -> tuple[dict, list[str]]:
 
 
 def compile_and_parse(arches, objdir: str, sources: list[Path],
-                      defines: tuple[str, ...] = (),
                       jobs: int | None = None) -> tuple[dict, list[str], dict[str, str]]:
     """Compile the shipped translation units and read `ptxas`'s report.
 
@@ -690,8 +720,7 @@ def compile_and_parse(arches, objdir: str, sources: list[Path],
     object file it came from -- the hot-loop gate disassembles the SASS out of the
     SAME compile the register numbers came from, so the two can never describe
     different binaries, and with more than one translation unit that association has
-    to be carried rather than assumed. `defines` is the census mode's
-    `-DROLA_FORCE_CTAS=N`.
+    to be carried rather than assumed.
 
     The translation units are compiled CONCURRENTLY, at the same memory-derived job
     count the build uses: this gate compiles the same matrix the build does, and
@@ -708,7 +737,7 @@ def compile_and_parse(arches, objdir: str, sources: list[Path],
 
     def run(source: Path) -> tuple[Path, str, str]:
         obj = str(Path(objdir) / f"{source.stem}.o")
-        cmd = _nvcc_command(arches, source, obj) + [f"-D{d}" for d in defines]
+        cmd = _nvcc_command(arches, source, obj)
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(COMPILE_CWD))
         if proc.returncode != 0:
             sys.stderr.write(proc.stderr)
@@ -734,8 +763,7 @@ def compile_and_parse(arches, objdir: str, sources: list[Path],
     wall = time.perf_counter() - t0
     print(f"{len(sources)} translation unit(s) compiled in {wall:.1f} s at "
           f"{min(jobs, len(sources))} jobs over {len(arches)} targets "
-          f"({', '.join('sm_' + a for a in arches)})"
-          + (f" with {' '.join(defines)}" if defines else ""))
+          f"({', '.join('sm_' + a for a in arches)})")
     return entries, sorted(unhonored), objects
 
 
@@ -1105,13 +1133,11 @@ def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool,
 
 
 #: --------------------------------------------------------------------------
-#: THE FORCING CENSUS (session 9, R0) -- the permanent instrument the register
-#: rung is derived from. `--census` compiles every built arm at a
-#: candidate bound (`--force-ctas N` -> `-DROLA_FORCE_CTAS=N`; omitted -> the
-#: shipped derived bound) and prints the per-key register/spill table. It never
-#: touches a manifest: a census is a measurement of a CANDIDATE, ratification is
-#: the recording of the SHIPPED bound, and conflating them is how a stale budget
-#: constant survived three kernel rungs.
+#: THE CENSUS (session 9, R0) -- the permanent instrument the register rung is
+#: derived from. `--census` compiles every built arm at the shipped derived bound
+#: and prints the per-key register/spill table. It never touches a manifest:
+#: ratification is the recording of the SHIPPED bound, and conflating it with a
+#: measurement is how a stale budget constant survived three kernel rungs.
 
 def _regs_ctas(regs: int) -> int:
     """Register-file-side CTAs/SM at 256 threads after sm_86's 8-register
@@ -1180,9 +1206,6 @@ def main() -> int:
     ap.add_argument("--census", action="store_true",
                     help="FORCING CENSUS: compile the whole matrix, print the "
                          "per-key register/spill table, touch no manifest")
-    ap.add_argument("--force-ctas", type=int, metavar="N",
-                    help="census only: compile with -DROLA_FORCE_CTAS=N, i.e. force "
-                         "every instantiation's launch bound to N CTAs/SM")
     ap.add_argument("--json", metavar="PATH",
                     help="census only: dump the raw per-instantiation record for "
                          "arm-vs-arm diffing")
@@ -1193,10 +1216,6 @@ def main() -> int:
     a = ap.parse_args()
 
     arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
-    if a.force_ctas is not None and not a.census:
-        raise SystemExit("--force-ctas is a CENSUS instrument; a forced bound must "
-                         "never be ratified or checked against a manifest "
-                         "(use --census)")
     if a.shard and a.write:
         raise SystemExit("--shard is a MEASUREMENT scope, not a ratification scope: "
                          "a manifest written from a subset of the translation units "
@@ -1207,10 +1226,7 @@ def main() -> int:
     version = ptxas_version()
     import tempfile
     with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
-        defines = (f"ROLA_FORCE_CTAS={a.force_ctas}",) if a.force_ctas is not None \
-            else ()
-        entries, unhonored, objects = compile_and_parse(arches, tmp, sources,
-                                                        defines=defines)
+        entries, unhonored, objects = compile_and_parse(arches, tmp, sources)
         scan = measure_sass(objects, entries)
         hot = {name: len(s["hot_locals"]) for name, s in scan.items()}
         bodies = {name: s["body_sha256"] for name, s in scan.items()}
@@ -1223,7 +1239,7 @@ def main() -> int:
             census_report(entries, unhonored, hot)
             if a.json:
                 Path(a.json).write_text(json.dumps(
-                    dict(ptxas=version, force_ctas=a.force_ctas,
+                    dict(ptxas=version,
                          csrc_sha256=csrc_digest(), entries=entries,
                          shards=shard_field(entries)),
                     indent=1, sort_keys=True) + "\n")
