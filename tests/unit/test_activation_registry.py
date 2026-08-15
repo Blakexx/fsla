@@ -109,7 +109,8 @@ def test_a_registry_row_added_at_runtime_is_immediately_constructible():
     be the single source of truth."""
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=False)
+        normalized=True, simplex_output=True, exact_zeros=True,
+        support_differentiable=False, kerneled=False)
     try:
         activation = EntmaxActivation(1.75)
         assert activation.properties.exact_zeros
@@ -158,7 +159,8 @@ def test_mass_decay_demands_a_normalized_write_side_loudly():
     accepted, and never phrased as "softmax or entmax is required"."""
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
-        normalized=False, exact_zeros=False, support_differentiable=True, kerneled=False)
+        normalized=False, simplex_output=False, exact_zeros=False,
+        support_differentiable=True, kerneled=False)
     try:
         topology = _topology(softmax(), EntmaxActivation(1.75), tied=False)
         decay = LeafMassDecay(dials=(torch.full((1, 4), 0.5),))
@@ -178,7 +180,8 @@ def test_an_activation_with_a_row_is_configurable_without_widening_an_isinstance
         tag = ("future_family", None)
 
     ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(
-        normalized=True, exact_zeros=False, support_differentiable=True, kerneled=False)
+        normalized=True, simplex_output=True, exact_zeros=False,
+        support_differentiable=True, kerneled=False)
     try:
         routing = IndependentRouting(
             tied=False, read_activation=_Future(), write_activation=_Future())
@@ -200,7 +203,8 @@ def test_mass_decay_accepts_every_ratified_activation():
 def test_union_routing_demands_exact_zeros_for_the_intersection_guarantee():
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
-        normalized=True, exact_zeros=False, support_differentiable=True, kerneled=False)
+        normalized=True, simplex_output=True, exact_zeros=False,
+        support_differentiable=True, kerneled=False)
     try:
         with pytest.raises(ValueError, match="exact_zeros"):
             UnionRouting(alpha=1.75)
@@ -230,7 +234,8 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
     that would otherwise admit the call."""
     tag = ("entmax", 1.75)
     ACTIVATION_REGISTRY[tag] = ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=False)
+        normalized=True, simplex_output=True, exact_zeros=True,
+        support_differentiable=False, kerneled=False)
     try:
         topology = _topology(entmax(1.75), entmax(1.75))
         assert not topology.kerneled
@@ -311,8 +316,8 @@ def test_no_module_outside_the_registry_branches_on_an_activation_type():
 def test_the_capability_matrix_is_generated_from_the_registry():
     table = capability_table()
     assert table.splitlines()[0] == "| activation | " + " | ".join(ACTIVATION_COLUMNS) + " |"
-    assert "| entmax(alpha=1.5) | yes | yes | no | yes |" in table
-    assert "| softmax | yes | no | yes | yes |" in table
+    assert "| entmax(alpha=1.5) | yes | yes | yes | no | yes |" in table
+    assert "| softmax | yes | yes | no | yes | yes |" in table
     assert len(table.splitlines()) == len(ACTIVATION_REGISTRY) + 2
 
 

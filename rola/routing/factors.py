@@ -23,7 +23,12 @@ and nobody has measured it to matter.
 **The mass fold, and the one modelling consequence it carries.** A producer's levels
 need not be unit-sum. The gateway factors each level into ``(mass, simplex)``, stores
 the simplex, and folds the mass product into that side's gain: multiplicative per-level
-masses collapse into one side-wide product. The identity is
+masses collapse into one side-wide product. **Where the topology DECLARES the level's
+map lands on the simplex** (the registry's ``simplex_output`` column, read per
+``(level, duty)`` so that a routing form handing a duty a share of a solve is not
+covered by its activation's row), the mass is 1 and the fold is the identity, so its
+two launches are omitted; the generic fold stays live for every cell that does not
+declare it, which is every foreign producer. The identity is
 loss-free for the readout. It is not neutral for the recurrence: the decay clock is
 defined on the STORED (normalized) level, so a producer whose write-side mass differs
 from 1 has moved magnitude out of the clock and into ``g_write``. That is the defined
@@ -258,14 +263,24 @@ class RouteGateway(nn.Module):
         #: statement: `R` enters as num/den, so a per-token scale common to every leaf
         #: cancels exactly. The WRITE mass rides the write channel,
         #: where it scales the deposit.
-        read_levels, _read_mass = _fold(tuple(read), B=B, H=H)
-        write_levels, write_mass = _fold(tuple(write), B=B, H=H)
+        read_levels, _read_mass = _fold(tuple(read), B=B, H=H, skip=self._skip("read"))
+        write_levels, write_mass = _fold(tuple(write), B=B, H=H, skip=self._skip("write"))
         gains = self.side_gain(read_stream)
 
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,
             read=read_levels, write=write_levels, g_read=None,
-            g_write=gains["g_write"] * write_mass)
+            g_write=gains["g_write"] if write_mass is None else gains["g_write"] * write_mass)
+
+    def _skip(self, duty: str) -> tuple[bool, ...]:
+        """The levels whose fold is an identity, from the topology's declared columns.
+
+        A DECLARATION, never a measurement: a runtime ``sum(...) == 1`` test would be
+        the very reduction the skip exists to delete, and would make the bundle's
+        arithmetic depend on its data rather than on its configuration.
+        """
+        return tuple(self.topology.duty_simplex_output(level, duty)
+                     for level in range(self.topology.D))
 
 
 # --- construction-time assembly ---------------------------------------------
@@ -358,11 +373,18 @@ def _validate_produced(group, produced, slots, topology, source, heads) -> None:
                     f"{tensor.dtype} against {read[0].dtype}")
 
 
-def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int):
-    """Factor every level into ``(simplex, mass)`` and return the mass product.
+def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int, skip: tuple[bool, ...]):
+    """Factor every level into ``(simplex, mass)`` and return the mass product, or ``None``.
 
     The stored level is the simplex; the magnitude leaves for the side gain. See the
     module docstring for the one consequence this carries for the decay clock.
+
+    ``skip[l]`` is the topology's declared ``simplex_output`` for that cell: the level
+    is already on the simplex, so its ``sum`` is 1 and its divide is the identity, and
+    both launches are omitted. A skipped level contributes nothing to the mass product;
+    when every level is skipped the product is exactly 1 and is returned as ``None``,
+    so the caller multiplies no gain by a tensor of ones. ``skip`` is a declaration read
+    off the registry, never a measurement -- see :meth:`RouteGateway._skip`.
 
     **PACKING LIVES HERE, and the normalization is done in the packed domain.** The
     kernel's view is ``[BH, T, width]``; the public layout is ``[B, T, H, width]``. Those
@@ -370,15 +392,19 @@ def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int):
     be the kernel's -- normalizing in the public layout would produce a tensor the fold
     then has to copy, which is the inverse-copy pair this deliberately does not create.
     So: fold (free, the producer returned a view), divide (one pass, materializing the
-    packed tensor), and hand back a permuted view for the public layout.
+    packed tensor), and hand back a permuted view for the public layout. A skipped level
+    is that path with the one materializing pass removed, so it is views end to end.
     """
     normalized: list[torch.Tensor] = []
     mass_product: torch.Tensor | None = None
-    for level in levels:
+    for level, unit_sum in zip(levels, skip):
         folded = _fold_bth(level)
-        mass = folded.sum(dim=-1)
-        packed = folded / mass.unsqueeze(-1)
-        width = packed.shape[-1]
-        normalized.append(packed.reshape(B, H, -1, width).permute(0, 2, 1, 3))
-        mass_product = mass if mass_product is None else mass_product * mass
+        if not unit_sum:
+            mass = folded.sum(dim=-1)
+            folded = folded / mass.unsqueeze(-1)
+            mass_product = mass if mass_product is None else mass_product * mass
+        width = folded.shape[-1]
+        normalized.append(folded.reshape(B, H, -1, width).permute(0, 2, 1, 3))
+    if mass_product is None:
+        return tuple(normalized), None
     return tuple(normalized), mass_product.reshape(B, H, -1).permute(0, 2, 1)

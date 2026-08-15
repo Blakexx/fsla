@@ -174,6 +174,32 @@ never asks what a producer is, only that its output is well formed:
 Levels need not be unit-sum: the gateway factors each into `(mass, simplex)` and folds
 the mass into the side gain, which is where a per-level magnitude belongs.
 
+**The fold is skipped where it is DECLARED to be the identity, and only there.** Each
+`(level, duty)` cell answers `simplex_output` — "does this cell's own output already
+land on the simplex?" — and where it answers yes, the mass is 1, so the `sum`/`div`
+pair is omitted. The answer is a declaration read off the activation registry
+(`rola/routing/activations.py`) through the level's routing form, never a runtime test
+of the tensor: a `sum(...) == 1` check is the very reduction the skip exists to delete,
+and it would make the bundle's arithmetic depend on its data rather than on its
+configuration. It is asked per *duty* and not per *activation*, because a routing form
+may hand one duty a share of a solve rather than the whole of it — union routing's read
+half is exactly that, so it answers `False` while the entmax it names answers `True`.
+An opaque (foreign-producer) cell answers `False` and always pays the generic fold.
+Measured across the shipped census (`D` in 1..4, fp32 and fp64), every cell answering
+`True` has `max |sum − 1| ≤ 2.4e-7` in fp32 and `≤ 4.4e-16` in fp64.
+
+**Why the union READ half is not skipped**, although its mass is a per-token scale
+common to every leaf and would therefore cancel in the readout's `num/den` ratio. Two
+reasons, both measured. First, the ratio has a floor: `y = num / (den + READOUT_EPS)`,
+so scaling both by a per-token mass `m` leaves an *effective* floor of
+`READOUT_EPS / m`, and the union read mass runs as low as 7e-4 across the gain sweep.
+`READOUT_EPS` is a DEFINITION constant (`rola/ops/constants.py`), so that is a change
+to the function, not to its conditioning. Second, the fp64 oracle's own input contract
+requires every read level to be a simplex within a named 5e-3 *semantic* slack
+(`rola/ops/_oracle_contract.py`, spec §4.1), which unnormalized read levels miss by two
+orders of magnitude. The cancellation argument is sound; what it does not survive is
+the floor and the spec.
+
 **Batching is a producer's business.** The gateway calls each producer once, with every
 level that producer covers. A producer covering several levels is therefore how a model
 gets one launch across them — `SimplexProducer` takes a width tuple and runs the whole

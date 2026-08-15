@@ -28,10 +28,19 @@ with a ROW, and the row is the only place the properties live.
 
 | column | question it answers |
 |---|---|
-| `normalized` | does the map land on the simplex (mass exactly 1)? |
+| `normalized` | is the STORED level on the simplex (mass exactly 1)? |
+| `simplex_output` | does the map's OWN output already land there, before the fold? |
 | `exact_zeros` | does it produce exact structural zeros, not merely small values? |
 | `support_differentiable` | does gradient flow through the support boundary? |
 | `kerneled` | has the CUDA consumer been RATIFIED for this activation? |
+
+`normalized` and `simplex_output` are asked on opposite sides of the gateway's mass
+fold and are NOT duplicates. `normalized` is a promise about what the BUNDLE carries
+and is satisfiable BY the fold, so an opaque cell answers it `True`. `simplex_output`
+is a claim about the PRODUCER's own arithmetic, and it is what licenses the gateway to
+skip the fold, so an opaque cell answers it `False` -- reading `normalized` for that
+decision would be circular (the fold would be skipped on the strength of a promise the
+fold is what keeps).
 
 `kerneled` is the kernel-dispatch column and it is a statement about EVIDENCE, not
 about capability: `launch_consumer` remains the single authority on supported shapes
@@ -69,9 +78,10 @@ class UnknownActivation(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ActivationProperties:
-    """One registry row. Four booleans; no behaviour, so it stays serializable."""
+    """One registry row. Five booleans; no behaviour, so it stays serializable."""
 
     normalized: bool
+    simplex_output: bool
     exact_zeros: bool
     support_differentiable: bool
     kerneled: bool
@@ -92,15 +102,25 @@ ActivationTag = tuple[str, float | None]
 #:   approximation (sparsity comes from entmax, not from a floor). Gradient does not flow across
 #:   the support boundary: an off-support coordinate has zero gradient, which is a
 #:   property of the map and not an implementation shortcut.
+#:
+#: `simplex_output` is TRUE for both families because each is a closed-form projection
+#: onto the simplex: the sum is 1 to the floating-point floor by construction, not by a
+#: subsequent renormalization. MEASURED across the shipped census (D in 1..4, fp32 and
+#: fp64): `max|sum - 1|` is 2.4e-7 in fp32 and 4.4e-16 in fp64 on every cell whose
+#: output is one solve's whole output.
 ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
     ("softmax", None): ActivationProperties(
-        normalized=True, exact_zeros=False, support_differentiable=True, kerneled=True),
+        normalized=True, simplex_output=True, exact_zeros=False,
+        support_differentiable=True, kerneled=True),
     ("entmax", 1.5): ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
+        normalized=True, simplex_output=True, exact_zeros=True,
+        support_differentiable=False, kerneled=True),
     ("entmax", 2.0): ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
+        normalized=True, simplex_output=True, exact_zeros=True,
+        support_differentiable=False, kerneled=True),
     ("opaque", None): ActivationProperties(
-        normalized=True, exact_zeros=True, support_differentiable=False, kerneled=True),
+        normalized=True, simplex_output=False, exact_zeros=True,
+        support_differentiable=False, kerneled=True),
 }
 
 #: THE ROW FOR A CELL WE DID NOT SOLVE. A producer is duck-typed
@@ -111,6 +131,9 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
 #: * `normalized` is TRUE because the gateway normalizes what it stores: it factors
 #:   every level into `(mass, simplex)` and folds the mass into the side gain, so the
 #:   stored level is on the simplex whatever the producer returned.
+#: * `simplex_output` is FALSE, and it is the column that keeps the line above honest:
+#:   a foreign producer's own output is exactly the thing this package cannot vouch
+#:   for, so an opaque cell always pays the generic fold.
 #: * `exact_zeros` is TRUE, which is the CONSERVATIVE reading: it means "may produce
 #:   zeros", so nothing may assume this cell's support is the full rectangle.
 #: * `support_differentiable` is FALSE, the assumption that never over-promises.

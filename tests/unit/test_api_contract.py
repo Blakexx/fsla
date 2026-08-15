@@ -178,6 +178,63 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
     assert torch.isfinite(_oracle(factors, v)).all()
 
 
+def test_a_foreign_producers_mass_is_still_folded_because_it_declares_no_simplex():
+    """THE TOOTH under the ``simplex_output`` skip (P73 S2, ruling R2).
+
+    The gateway omits a level's ``sum``/``div`` where the topology DECLARES the map
+    lands on the simplex. An opaque cell declares no such thing, so the generic fold
+    must still run for it -- and this row fails, in both of its assertions, the moment
+    the skip is applied unconditionally rather than on the column.
+
+    PLANTED VIOLATION: a duck whose levels carry mass 2 apiece.
+    """
+    class Heavy(torch.nn.Module):
+        widths = (4, 4)
+
+        def forward(self, source):
+            B, T = source.batch, source.tokens
+            level = torch.full((B, T, 2, 4), 0.5, dtype=source.read.dtype)
+            return ProducedRoutes(read=(level, level.clone()),
+                                  write=(level.clone(), level.clone()))
+
+    gateway = rola.RouteGateway([Heavy()], num_heads=2, hidden_size=32)
+    assert not any(gateway.topology.duty_simplex_output(level, duty)
+                   for level, duty in gateway.topology.duty_cells())
+    x = _x(gateway)
+    factors = gateway(x)
+    for side in (factors.read, factors.write):
+        for level in side:
+            torch.testing.assert_close(
+                level, torch.full_like(level, 0.25), rtol=0, atol=0,
+                msg="an opaque level must be STORED as the simplex, not as the producer "
+                    "returned it")
+    from rola.routing.side_gain import project_side_gains
+
+    raw = project_side_gains(
+        x, gateway.side_gain.gain_W, gateway.side_gain.gain_bias,
+        projection_dtype=x.dtype)["g_write"]
+    #: mass 2 per level over two levels, so the write gain must carry the product 4.
+    torch.testing.assert_close(factors.g_write, raw * 4.0, rtol=1e-12, atol=1e-12)
+
+
+def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
+    """The skip's licence is a ROUTING-FORM question (P73 S2, ruling R2).
+
+    Union routing names one entmax for both duties, but hands the write duty the whole
+    of the shared solve and the read duty a SHARE of it. A skip keyed on the
+    activation's row alone would skip a fold that is not an identity, so the read
+    cell's answer must be ``False`` while its own activation's column is ``True``.
+    """
+    union = rola.RouteGateway(
+        [rola.SimplexProducer((4, 4), rola.union_routing(1.5), hidden_size=32, num_heads=2)],
+        num_heads=2, hidden_size=32).topology
+    dense = _routes().topology
+    assert [union.duty_simplex_output(l, d) for l, d in union.duty_cells()] == [
+        False, True, False, True]
+    assert union.activation_properties(0, "read").simplex_output is True
+    assert all(dense.duty_simplex_output(l, d) for l, d in dense.duty_cells())
+
+
 def test_a_producer_whose_output_is_malformed_is_named_with_its_level():
     """A merged or multi-level producer fails as one unit; the gateway holds the level
     map, so the gateway is what can say which level's data was involved.

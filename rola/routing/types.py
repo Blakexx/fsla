@@ -285,6 +285,14 @@ class IndependentRouting:
         """Whether tied logits and equal activations make one solve exact."""
         return self.tied and self.read_activation == self.write_activation
 
+    def duty_simplex_output(self, duty: str) -> bool:
+        """Whether this cell's own output already lands on the simplex.
+
+        Independent routing hands each duty one WHOLE solve, so the duty's answer is
+        the activation's registry column unchanged.
+        """
+        return activation_properties(self.activation(duty)).simplex_output
+
 
 @dataclass(frozen=True, slots=True)
 class UnionRouting:
@@ -318,6 +326,18 @@ class UnionRouting:
         if duty not in ("read", "write"):
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return EntmaxActivation(self.alpha)
+
+    def duty_simplex_output(self, duty: str) -> bool:
+        """Whether this cell's own output already lands on the simplex.
+
+        The write duty receives the shared solve WHOLE, so it is the activation's
+        registry column. The read duty receives a SPLIT of that solve's support and
+        therefore a strict share of its mass: measured across the shipped census, the
+        read sum runs as low as 7e-4, so the column does not transfer to it.
+        """
+        if duty not in ("read", "write"):
+            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+        return duty == "write" and self.properties.simplex_output
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting
 
@@ -623,6 +643,10 @@ class OpaqueRouting:
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return OpaqueActivation()
 
+    def duty_simplex_output(self, duty: str) -> bool:
+        """The opaque row's column: a foreign producer's output is never vouched for."""
+        return activation_properties(self.activation(duty)).simplex_output
+
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting | OpaqueRouting
 
@@ -703,6 +727,15 @@ class Topology:
         """That cell's registry row -- the ONLY source of activation properties."""
         return activation_properties(
             self.activation(level, duty), owner=f"Topology.levels[{level}].{duty}")
+
+    def duty_simplex_output(self, level: int, duty: str) -> bool:
+        """Whether that cell arrives at the gateway already on the simplex.
+
+        THE gateway's licence to skip a level's mass fold. It is a routing-form
+        question and not only an activation one, because a routing form may hand a
+        duty a share of a solve rather than the whole of it.
+        """
+        return self.levels[level].routing.duty_simplex_output(duty)
 
     def duty_cells(self) -> tuple[tuple[int, str], ...]:
         """Every `(level, duty)` cell, so a rule can quantify over the whole grid
