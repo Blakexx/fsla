@@ -1745,6 +1745,15 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
 }
 
 // ------------------------------------------------------ the block-grain liveness
+//: THE REDUCTION'S ROW GROUP: at most one innermost row per warp per side.  The
+//: prefix carve amortizes the UPPER-clause stream, so a block with no upper
+//: clause has nothing to amortize and one CTA per prefix would be one CTA for
+//: the whole reduction; re-reading the upper stream per group buys the grid
+//: back (docs/internals/chunk/chunk_kernel.md#block-bitmap).
+constexpr int block_bitmap_group(int inner) {
+  return inner < (kAtomThreads / kBallotLanes) / 2 ? inner : (kAtomThreads / kBallotLanes) / 2;
+}
+
 //: THE LIVENESS EPILOGUE, at the LAUNCH's block grain: `atom_bitmap_kernel`'s
 //: reduction re-instantiated at `BC`, over BOTH sides, with the page table's
 //: residency condensed beside them.  The three facts are emitted SEPARATELY --
@@ -1759,21 +1768,25 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   constexpr int kClauses = LP::clauses;
   constexpr int kBlocks = (int)LP::blocks;
   constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;
+  constexpr int kWarps = kAtomThreads / kBallotLanes;
+  constexpr int kGroup = block_bitmap_group(kInner);
+  static_assert(kInner % kGroup == 0, "a row group must divide the prefix's inner run");
   constexpr int kAtomsPer = BC / kAtomLeaves;
   static_assert(BC % kAtomLeaves == 0, "a block is a whole number of page atoms");
   const int tid = threadIdx.x;
   const int lane = tid & 31;
-  const int blkBase = blockIdx.x * kInner;
+  const int blkBase = blockIdx.x * kGroup;
+  const int innerBase = blkBase % kInner;
   const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kBlocks + (uint32_t)blkBase;
 
   //: the two sides share one token tile, so the read row's stream and the write
   //: row's are formed together and the tile is read once.
   __shared__ uint32_t sUp[2][kAtomTileWords];
-  __shared__ uint8_t sLive[2 * kInner];
-  __shared__ uint8_t sState[kInner];
+  __shared__ uint8_t sLive[2 * kGroup];
+  __shared__ uint8_t sState[kGroup];
   __shared__ int sAllLive;
-  for (int e = tid; e < 2 * kInner; e += kAtomThreads) sLive[e] = 0;
-  for (int a = tid; a < kInner; a += kAtomThreads) sState[a] = 0;
+  for (int e = tid; e < 2 * kGroup; e += kAtomThreads) sLive[e] = 0;
+  for (int a = tid; a < kGroup; a += kAtomThreads) sState[a] = 0;
   if (tid == 0) sAllLive = 0;
   rendezvous();
 
@@ -1783,7 +1796,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   if (page_tbl != nullptr) {
     const int32_t* const pt = pin_address(page_tbl);
     const uint32_t bhAtoms = (uint32_t)blockIdx.y * (uint32_t)(LP::slots / kAtomLeaves);
-    for (int e = tid; e < kInner * kAtomsPer; e += kAtomThreads) {
+    for (int e = tid; e < kGroup * kAtomsPer; e += kAtomThreads) {
       const int a = e / kAtomsPer;
       const uint32_t atom = bhAtoms + (uint32_t)(LP::block_base(blkBase + a) / kAtomLeaves)
                             + (uint32_t)(e - a * kAtomsPer);
@@ -1795,7 +1808,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   //: NO CLAUSE AT ALL is the whole slot space in one block: live on both sides
   //: whenever the sequence has a token, which the caller's topology guarantees.
   if constexpr (kClauses == 0) {
-    for (int e = tid; e < 2 * kInner; e += kAtomThreads) sLive[e] = 1;
+    for (int e = tid; e < 2 * kGroup; e += kAtomThreads) sLive[e] = 1;
   } else {
     const int tokWords = tok_words(L);
     //: ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every
@@ -1840,11 +1853,11 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
         sUp[1][i] = mw;
       }
       rendezvous();
-      for (int e = tid >> 5; e < 2 * kInner; e += kAtomThreads / kBallotLanes) {
+      for (int e = tid >> 5; e < 2 * kGroup; e += kWarps) {
         if (sLive[e]) continue;
-        const int s = e / kInner;
+        const int s = e / kGroup;
         const uint32_t* const base = s == 0 ? baseR : baseW;
-        const uint32_t rowOff = offInner + (uint32_t)(e - s * kInner) * rowBytes;
+        const uint32_t rowOff = offInner + (uint32_t)(innerBase + e - s * kGroup) * rowBytes;
         bool hit = false;
         for (int i = lane; i < n; i += kBallotLanes) {
           const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
@@ -1860,7 +1873,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
       //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
       if (tid < kBallotLanes) {
         bool all = true;
-        for (int e = tid; e < 2 * kInner; e += kBallotLanes) all &= sLive[e] != 0;
+        for (int e = tid; e < 2 * kGroup; e += kBallotLanes) all &= sLive[e] != 0;
         const uint32_t every = lane_ballot(all);
         if (tid == 0 && every == 0xFFFFFFFFu) sAllLive = 1;
       }
@@ -1869,9 +1882,9 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
     }
   }
   rendezvous();
-  for (int a = tid; a < kInner; a += kAtomThreads) {
+  for (int a = tid; a < kGroup; a += kAtomThreads) {
     const uint8_t v =
-        (uint8_t)(sLive[a] | (uint8_t)(sLive[kInner + a] << 1) | (uint8_t)(sState[a] << 2));
+        (uint8_t)(sLive[a] | (uint8_t)(sLive[kGroup + a] << 1) | (uint8_t)(sState[a] << 2));
     *reinterpret_cast<uint8_t*>(gather_ptr(block_bits, outOff + (uint32_t)a)) = v;
   }
 }

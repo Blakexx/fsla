@@ -84,7 +84,7 @@ cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* pa
                                           uint8_t* block_bits, int BH, int L, cudaStream_t stream) {
   using LP = LevelPlan<D, B, BC>;
   constexpr int kInner = LP::clauses > 0 ? LP::groups_at(LP::clauses - 1) : 1;
-  const dim3 grid((unsigned)(LP::blocks / kInner), (unsigned)BH);
+  const dim3 grid((unsigned)(LP::blocks / block_bitmap_group(kInner)), (unsigned)BH);
   block_bitmap_kernel<D, B, BC><<<grid, kAtomThreads, 0, stream>>>(tbl, page_tbl, block_bits, L);
   return cudaGetLastError();
 }
