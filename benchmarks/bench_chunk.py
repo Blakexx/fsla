@@ -177,7 +177,9 @@ def _gate(args) -> int:
     over = []
     for k, res in arms.items():
         subject, cell = k.split("|")
-        verdict = chunk_baseline.compare(baseline, subject, cell, res)
+        verdict = chunk_baseline.compare(
+            baseline, subject, cell, res,
+            resolution_ms=chunk_baseline.instrument_resolution(res["values"]))
         if verdict["verdict"] == "over_limit":
             over.append(verdict)
         print(f"  {k:<44} {verdict['verdict']:<13} {verdict['median_ms']:9.4f} ms  "

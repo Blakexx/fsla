@@ -51,8 +51,10 @@ def measured():
 def test_the_cell_stays_inside_the_limit_derived_from_its_own_recorded_spread(
         measured, subject, cell):
     baseline, results = measured
-    verdict = chunk_baseline.compare(baseline, subject, cell,
-                                     results[chunk_baseline.key(subject, cell)])
+    got = results[chunk_baseline.key(subject, cell)]
+    verdict = chunk_baseline.compare(
+        baseline, subject, cell, got,
+        resolution_ms=chunk_baseline.instrument_resolution(got["values"]))
     assert verdict["verdict"] == "within_limit", (
         f"{verdict['key']} measured {verdict['median_ms']:.4f} ms against a limit of "
         f"{verdict['limit_ms']:.4f} ms (baseline median {verdict['baseline_median_ms']:.4f} "

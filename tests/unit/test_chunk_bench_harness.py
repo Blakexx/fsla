@@ -31,6 +31,10 @@ BENCHMARKS = ROOT / "benchmarks"
 
 _SETTLED = {"settled": True, "sm_mhz": 1845.0, "plateau_mhz": 15.0, "elapsed_s": 1.1}
 
+#: A resolution far below every fixture's IQR here, so it never becomes the binding
+#: spread except in the row that plants exactly that.
+_RESOLUTION = 1e-6
+
 
 # ---------------------------------------------------------------------------
 # VIOLATION 1 -- the lock
@@ -187,7 +191,7 @@ def test_a_baseline_recorded_from_ONE_session_is_refused_on_both_sides(tmp_path)
     measured = {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT}
     with pytest.raises(SystemExit) as reading:
         chunk_baseline.compare(_baseline(CANONICAL_INSTRUMENT, sessions=1),
-                               "chunk_forward", "c", measured)
+                               "chunk_forward", "c", measured, resolution_ms=_RESOLUTION)
     assert "cannot bound a cross-process comparison" in str(reading.value)
 
 
@@ -218,14 +222,16 @@ def test_a_gate_across_two_stopwatches_is_refused():
     The gap between them is the launch and sync cost, not noise."""
     measured = {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT}
     with pytest.raises(ValueError) as excinfo:
-        chunk_baseline.compare(_baseline("perf_counter"), "chunk_forward", "c", measured)
+        chunk_baseline.compare(_baseline("perf_counter"), "chunk_forward", "c", measured,
+                               resolution_ms=_RESOLUTION)
     assert "different quantities" in str(excinfo.value)
 
 
 def test_a_baseline_that_does_not_say_which_stopwatch_took_it_is_refused():
     measured = {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT}
     with pytest.raises(ValueError) as excinfo:
-        chunk_baseline.compare(_baseline(None), "chunk_forward", "c", measured)
+        chunk_baseline.compare(_baseline(None), "chunk_forward", "c", measured,
+                               resolution_ms=_RESOLUTION)
     assert "does not say which stopwatch" in str(excinfo.value)
 
 
@@ -234,7 +240,8 @@ def test_a_measured_arm_with_no_committed_row_is_refused_not_skipped():
     silently checks nothing."""
     measured = {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT}
     with pytest.raises(SystemExit) as excinfo:
-        chunk_baseline.compare(_baseline(CANONICAL_INSTRUMENT), "decode_step", "c", measured)
+        chunk_baseline.compare(_baseline(CANONICAL_INSTRUMENT), "decode_step", "c", measured,
+                               resolution_ms=_RESOLUTION)
     assert "no committed baseline row" in str(excinfo.value)
 
 
@@ -243,9 +250,11 @@ def test_the_limit_is_derived_from_the_recorded_cell_own_spread():
     the recorded IQR's, never a flat percentage."""
     baseline = _baseline(CANONICAL_INSTRUMENT)
     inside = chunk_baseline.compare(baseline, "chunk_forward", "c",
-                                    {"median_ms": 1.01, "source": CANONICAL_INSTRUMENT})
+                                    {"median_ms": 1.01, "source": CANONICAL_INSTRUMENT},
+                                    resolution_ms=_RESOLUTION)
     outside = chunk_baseline.compare(baseline, "chunk_forward", "c",
-                                     {"median_ms": 1.5, "source": CANONICAL_INSTRUMENT})
+                                     {"median_ms": 1.5, "source": CANONICAL_INSTRUMENT},
+                                     resolution_ms=_RESOLUTION)
     assert inside["verdict"] == "within_limit"
     assert outside["verdict"] == "over_limit"
     assert outside["limit_ms"] == pytest.approx(1.0 + 3.0 * 0.01 / 1.349)
@@ -322,3 +331,48 @@ def test_the_environment_variable_moves_the_lock_and_cannot_disable_it():
     source = (BENCHMARKS / "bench" / "discipline.py").read_text()
     assert 'os.environ.get("ROLA_GPU_LOCK"' in source
     assert "def require_gpu_lock" in source
+
+
+# ---------------------------------------------------------------------------
+# VIOLATION 7 -- a spread of zero
+# ---------------------------------------------------------------------------
+
+def test_a_zero_iqr_does_not_become_a_zero_width_limit():
+    """PLANTED: a recorded IQR of exactly 0.0.
+
+    It is not hypothetical -- it happened on the first multi-session baseline. The
+    device-event timer quantizes, so seven sessions of a small kernel can land on the same
+    value every time and the recorded spread is 0.0000 ms. `threshold_ms` then puts the
+    limit exactly at the median and the next tick of the same timer exceeds it: two arms
+    over their limit on an unchanged binary. The floor is the instrument's own measured
+    resolution, because a spread of zero is a statement about the stopwatch.
+    """
+    baseline = _baseline(CANONICAL_INSTRUMENT)
+    baseline["arms"]["chunk_forward|c"]["iqr_ms"] = 0.0
+    resolution = 0.0007
+    verdict = chunk_baseline.compare(baseline, "chunk_forward", "c",
+                                     {"median_ms": 1.0 + resolution / 2,
+                                      "source": CANONICAL_INSTRUMENT},
+                                     resolution_ms=resolution)
+    assert verdict["verdict"] == "within_limit"
+    assert verdict["floored_at_resolution"] is True
+    assert verdict["spread_ms"] == resolution
+
+
+def test_the_resolution_is_the_smallest_gap_the_samples_actually_show():
+    """Derived from the run's own samples, never a constant. Repeated values contribute
+    nothing, which is the point: the tick is the smallest gap between DISTINCT ones."""
+    assert chunk_baseline.instrument_resolution(
+        [0.0041, 0.0041, 0.0048, 0.0055, 0.0041]) == pytest.approx(0.0007)
+    with pytest.raises(ValueError) as excinfo:
+        chunk_baseline.instrument_resolution([0.0041, 0.0041, 0.0041])
+    assert "cannot be measured" in str(excinfo.value)
+
+
+def test_a_measured_iqr_above_the_resolution_is_the_one_that_binds():
+    """The positive control: the floor is a floor, not a replacement."""
+    verdict = chunk_baseline.compare(_baseline(CANONICAL_INSTRUMENT), "chunk_forward", "c",
+                                     {"median_ms": 1.0, "source": CANONICAL_INSTRUMENT},
+                                     resolution_ms=1e-9)
+    assert verdict["floored_at_resolution"] is False
+    assert verdict["spread_ms"] == pytest.approx(0.01)

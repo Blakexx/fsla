@@ -1,5 +1,9 @@
 """The committed per-cell latency baseline of the CHUNK arm, and the gate that reads it.
 
+The threshold's spread is `max(the recorded cross-session IQR, the instrument's measured
+resolution)`. Both halves are measured; neither is chosen. See
+:func:`instrument_resolution`.
+
 `benchmarks/cells/chunk_latency_baseline.json`. A sibling of the tiled arm's PARKED
 `latency_baseline.json` and never a replacement for it: that file's arms name a kernel
 that no longer exists, and no chunk number may be compared against one.
@@ -88,7 +92,38 @@ def write(arms: dict, *, dirty: bool, sha: str, build_stamp: dict, sessions: int
     path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
 
 
-def compare(baseline: dict, subject: str, cell: str, measured: dict) -> dict:
+def instrument_resolution(values) -> float:
+    """The smallest gap this stopwatch RESOLVES, measured from the run's own samples.
+
+    A floor on the spread, and a derived one. The device-event timer quantizes: seven
+    sessions of a small kernel can land on the same value every time, and the recorded IQR
+    is then exactly 0.0 -- which makes `threshold_ms` a zero-width limit that the next tick
+    of the same timer exceeds. MEASURED consequence: two arms over their limit on an
+    unchanged binary, both of them rows whose cross-session IQR was 0.0000.
+
+    A spread of zero is a statement about the instrument, not about the kernel, so the
+    floor is the instrument's own tick -- the smallest nonzero gap between the distinct
+    values the run actually produced. It is measured every run rather than stored, because
+    it is a property of the stopwatch and the box and a stored copy could disagree with
+    the samples beside it.
+
+    **PER ARM, not pooled across the roster.** Pooling was tried first and is INERT: the
+    minimum gap over every arm's samples together is whatever the finest-grained arm on the
+    board happened to resolve (0.000032 ms measured here), which floors nothing for the
+    coarse sub-10-microsecond arms that need it. The gap this timer resolves depends on the
+    magnitude being timed, so it is measured at the magnitude in question.
+    """
+    distinct = sorted({round(float(v), 9) for v in values})
+    gaps = [b - a for a, b in zip(distinct, distinct[1:]) if b > a]
+    if not gaps:
+        raise ValueError("every sample in this run is identical; the instrument's "
+                         "resolution cannot be measured from it, and neither can anything "
+                         "else")
+    return min(gaps)
+
+
+def compare(baseline: dict, subject: str, cell: str, measured: dict,
+            *, resolution_ms: float) -> dict:
     """One cell's measured median against its committed limit. READ ONLY.
 
     `measured` is a `bench.pairing.measure_arm` result. The verdict is `over_limit` or
@@ -110,8 +145,11 @@ def compare(baseline: dict, subject: str, cell: str, measured: dict) -> dict:
             f"{k}'s committed baseline was recorded from {row.get('sessions', 1)} "
             f"session(s), so its spread cannot bound a cross-process comparison. "
             f"Re-record it: a baseline is a measurement.")
-    limit = threshold_ms(row["median_ms"], row["iqr_ms"])
+    spread = max(row["iqr_ms"], resolution_ms)
+    limit = threshold_ms(row["median_ms"], spread)
     got = measured["median_ms"]
     return {"key": k, "verdict": "over_limit" if got > limit else "within_limit",
             "median_ms": got, "limit_ms": limit, "baseline_median_ms": row["median_ms"],
-            "baseline_iqr_ms": row["iqr_ms"], "source": measured["source"]}
+            "baseline_iqr_ms": row["iqr_ms"], "spread_ms": spread,
+            "floored_at_resolution": spread > row["iqr_ms"],
+            "resolution_ms": resolution_ms, "source": measured["source"]}

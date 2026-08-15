@@ -206,8 +206,20 @@ shape, reached here from the same evidence) and the row keeps `within_session_iq
 beside the cross-session one as the record of the contrast. `MIN_SESSIONS = 2` is enforced
 on both sides: a single-session baseline can neither be written nor gated against.
 
+**AND A SPREAD OF ZERO IS A STATEMENT ABOUT THE STOPWATCH, NOT THE KERNEL.** The
+cross-session fix left two arms over their limit on an unchanged binary, both of them rows
+whose recorded IQR was exactly `0.0000 ms`: the device-event timer quantizes, seven
+sessions of a small kernel land on the same value every time, and `median + 3*IQR/1.349`
+is then a limit exactly at the median that the next tick exceeds. The spread the threshold
+uses is therefore `max(recorded IQR, the instrument's measured resolution)`, where the
+resolution is the smallest nonzero gap between the DISTINCT values the run itself produced
+— measured every run rather than stored, because it is a property of the stopwatch and the
+box and a stored copy could disagree with the samples beside it. Both halves are measured;
+neither is chosen. The verdict says which one bound it (`floored_at_resolution`).
+
 The lesson generalizes past this file: **a threshold must be derived from the spread of
-the quantity the comparison actually crosses.** The paired A/B engine crosses two reps in
+the quantity the comparison actually crosses, and never from a spread smaller than the
+instrument can resolve.** The paired A/B engine crosses two reps in
 one process, so its spread is the per-pair ratio's; the latency gate crosses two
 processes, so its spread is the session median's.
 
