@@ -59,7 +59,7 @@ call, from the routing it was actually given. They live behind
 The kernel arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. A
 configuration outside it dispatches to the fp64 reference arm — a labelled research
 surface, not a fallback: nothing failed, the kernel was never asked, and
-`rola.expert.dispatch_for(routes, *operands).no_kernel_arm` names the clause that
+`rola.expert.dispatch_for(routes, v, *operands).no_kernel_arm` names the clause that
 refused, before the call and in the refusal's own words.
 
 | axis | the built matrix | outside it |
@@ -122,6 +122,19 @@ normalization arm, because both are facts about the map rather than about the la
 wrapping it. It does NOT own `d_v`: the value width is the width of the state each leaf
 holds, which is a fact about the value stream — the layer sizes `v_proj`/`o_proj` with
 it and the op reads it off `v.shape[-1]` at call time.
+
+**The side gains are routing's, and they ride the bundle** (`SideGain`, constructed by
+the gateway). Two things put them there rather than on the layer. Their SHAPE is
+defined by the normalization arm — `g_read` exists iff `normalization == 'raw'` — so a
+layer-owned gain producer would have to be told the routing arm in order to know its
+own columns, which is the coupling running backwards. And the gain is where the
+per-level mass product lands: the gateway folds each level's mass into it, so the gain
+and the routing mass are the same number by the time any consumer sees either, and
+splitting the ownership would give the layer half of a product the gateway computes
+the other half of. They ride the bundle rather than arriving as a third op argument
+because `RouteFactors.tensors()` is the autograd-reachability enumeration, and an
+operand outside that flat list is invisible to autograd — the exact failure the single
+autograd boundary exists to make impossible.
 
 ### 2.2 The producer interface
 

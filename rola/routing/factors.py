@@ -7,18 +7,9 @@ Linear attention's op takes ``(q, k, v)``. RoLA's takes ``(routes, v)``, where
 simplices and their side gains. That bundle is :class:`RouteFactors`;
 :class:`RouteProducer` is the module that assembles one out of producers.
 
-**The bundle carries tensors and nothing else, which is why it is constructible.**
-Every field is a tensor or the topology those tensors are shaped by, and
-:meth:`RouteFactors.__post_init__` checks the STRUCTURE they must have -- one level per
-topology level at that level's width, one shared ``(B, T, H)`` prefix, one device, one
-dtype, a gain layout matching the normalization arm. There is no declaration on the
-bundle that could disagree with its own tensors, so there is nothing for a gateway
-monopoly to protect: a test may assemble a bundle by hand and it is held to exactly
-the same invariants. Unit-sum-ness is deliberately NOT among them -- it is a device
-reduction per level per call, it is the gateway's own output contract
-(:func:`_fold`), and fixtures legitimately plant non-canonical amplitudes.
-:func:`rola.rola_op` still type-gates on the class, so handing the op bare tensors is
-still a clean refusal.
+The bundle carries tensors and nothing else, which is why it is constructible rather
+than sealed, and why its invariants are structural rather than provenance. What they
+are and why unit-sum-ness is not among them: ``docs/api.md`` §2.1.
 
 **One call per producer, and the gateway owns packing.** Each producer is called once
 with every level it covers and returns amplitudes in the plain documented layout; the
@@ -66,10 +57,8 @@ class RouteFactors:
     ``g_read``/``g_write``: ``[B, T, H]`` side gains; ``g_read`` is ``None`` under
     ``normalization='global'``, where architecture §4.2 fixes it to 1.
 
-    :class:`RouteProducer` derives one from producers, and that is how a model gets
-    one. Constructing one directly is legal and is how a fixture plants a specific
-    routing pattern: the invariants below hold for either, because there is nothing on
-    this record but the tensors and the shape facts they must satisfy.
+    Direct construction is legal; ``__post_init__`` holds it to the same invariants a
+    derived bundle satisfies (``docs/api.md`` §2.1).
     """
 
     topology: Topology
@@ -80,14 +69,7 @@ class RouteFactors:
     g_write: torch.Tensor
 
     def __post_init__(self) -> None:
-        """The STRUCTURE, checked; the arithmetic, not.
-
-        Every check here is a shape, a device, a dtype or a ``None``-ness -- host-side
-        facts that cost nothing per call. Unit-sum-ness is the one contract
-        deliberately left out: it is an ``O(BTH * width)`` device reduction per level
-        per call, it is :func:`_fold`'s own output guarantee for a produced bundle, and
-        conformance fixtures plant non-canonical amplitudes on purpose.
-        """
+        """Shapes, devices, dtypes and ``None``-ness only -- never a device reduction."""
         object.__setattr__(self, "normalization", validate_normalization(self.normalization))
         object.__setattr__(self, "read", tuple(self.read))
         object.__setattr__(self, "write", tuple(self.write))
@@ -126,9 +108,6 @@ class RouteFactors:
                     raise ValueError(
                         f"every routing level shares one dtype; {name}[{level}] is "
                         f"{tensor.dtype} against {self.read[0].dtype}")
-        #: THE GAIN LAYOUT IS A FUNCTION OF THE ARM. Under ``global`` the readout is a
-        #: ratio, so a per-token read scale cancels identically and there is no read
-        #: gain to carry; under ``raw`` the read channel is real and needs one.
         if (self.g_read is None) != (self.normalization == "global"):
             raise ValueError(
                 f"RouteFactors(normalization={self.normalization!r}) with g_read="

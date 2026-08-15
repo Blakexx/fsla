@@ -219,25 +219,10 @@ def project_side_gains(
 class SideGain(nn.Module):
     """The side-gain producer: one learned per-head projection, positively parameterized.
 
-    It sits beside the routers rather than on the layer because a side gain is a
-    ROUTING fact by both tests that separate the two. Its output SHAPE is defined by
-    the normalization arm -- ``g_read`` exists iff ``normalization == 'raw'`` -- so a
-    layer-owned gain would have to be told the routing arm to know its own columns.
-    And the gain is where architecture §4.2's per-level mass product lands: the
-    gateway folds the routing mass into what this returns, so gain and routing mass
-    are the same number by the time any consumer sees either.
-
-    Args:
-        num_heads / hidden_size: the head count and the source stream's width.
-        normalization: the recurrence's normalization arm.
-        config: the two-boolean :class:`GainConfig`, VALIDATED against
-            ``normalization`` here -- so an unbuildable layout fails at model build
-            and never inside a forward.
-        bias_init: place an all-zero-logit gain at this value, or ``None`` for a zero
-            bias (unit gain at zero logits).
-
-    A ``False`` side has no projection column at all, so an all-``False`` config
-    learns nothing and returns constants.
+    ``config`` is VALIDATED against ``normalization`` here, so an unbuildable gain
+    layout fails at model build and never inside a forward. ``bias_init`` places an
+    all-zero-logit gain at that value (``None`` leaves the bias at zero). Why the gain
+    belongs to routing rather than to the layer: ``docs/api.md`` §2.1.
     """
 
     def __init__(
@@ -264,11 +249,9 @@ class SideGain(nn.Module):
         self.gain_bias = nn.Parameter(torch.full((self.num_heads, sides), bias_value))
 
     def forward(self, stream: torch.Tensor) -> dict[str, torch.Tensor | None]:
-        """``{'g_write': [B,T,H], 'g_read': [B,T,H] | None}`` over a ``[B,T,hidden]`` stream.
+        """``{'g_write': [B,T,H], 'g_read': [B,T,H] | None}`` over ``[B,T,hidden]``.
 
-        fp64 in, fp64 out; anything else projects in fp32 -- the same precision rule
-        the packed router's projection follows, so a bf16 training run still gets an
-        fp32 gain projection.
+        fp64 in, fp64 out; anything else projects in fp32, the packed router's rule.
         """
         return project_side_gains(
             stream, self.gain_W, self.gain_bias, normalization=self.normalization,

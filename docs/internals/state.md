@@ -43,8 +43,10 @@ returns `(y, state)`, unwrapping nothing and checking nothing.
 
 A fresh state has a strategy and nothing else. The FIRST call that receives it binds
 its keying (`N`, `cols`, `BH`), its topology fingerprint (the level widths and the
-normalization), its device, and its backing. Every later call is checked against
-those, and the check is MATH-COMPATIBILITY ONLY:
+normalization), its device, and its backing. `cols` needs `d_v`, which is NOT on the
+routing — the value width is the value stream's own fact — so the binding takes it
+from the call, sourced by `rola_op` from `v.shape[-1]`. Every later call is checked
+against what was bound, and the check is MATH-COMPATIBILITY ONLY:
 
 | refused | because |
 |---|---|

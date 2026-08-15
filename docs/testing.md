@@ -446,13 +446,15 @@ ROLA_GRADCHECK_INSURANCE=1 pytest tests/conformance/test_backward_family.py  # o
 **The lane, measured** (2026-08-06, sm_86, warm build): CPU 70 s; unit-cuda
 2.5 s; tier 1 123 s; tier 2 9 s; layers 6 s; conformance 4.5 s — the WHOLE
 battery was ~3.6 min, inside the < 5 min commit-lane goal, so the commit lane
-IS the full battery above and no per-commit subset needs choosing. Post-D2 the
+IS the full battery above and no per-commit subset needs choosing. The
 same battery, scoped as `tests/tier1_semantics tests/layers tests/unit
-tests/tier2_geometry tests/conformance -q`, is **1108 passed, 13 skipped, 0
-xfailed in ~31 s**: the tiled arm's gates left with the tiled arm, and the tree
-now carries no xfail at all. (The last ten of that fall are this document's own
-neighbours: `test_docs_mirror.py`'s anchor-uniqueness rule parametrizes one row
-per mirror doc, and ten mirror docs went with their sources.) The
+tests/tier2_geometry tests/conformance -q`, is **863 passed, 13 skipped, 0
+xfailed in ~20 s**, and the tree carries no xfail at all. Two retirements
+account for the shape of that number: the tiled arm's gates left with the tiled
+arm (P67 D2), and the routing-summary surface took 244 rows with it (P71-A) —
+`test_docs_mirror.py` and `test_shard_partition.py` each parametrize one row per
+mirror doc and per csrc source, so a deleted surface moves the count by more than
+its own tests. The
 build-shape gates and `tools/ratify.py` run additionally at a batch tip (and
 always when csrc, manifests or codegen flags moved); the latency gate and the
 sanitizer lane are scheduled, never per-commit. The runtime x
