@@ -9,11 +9,70 @@
 #include <torch/extension.h>
 
 #include <array>
+#include <mutex>
+#include <set>
 #include <vector>
 
 #include "chunk_kernel.cuh"
 
 namespace rola::chunk {
+
+//: THE RUNTIME HALF OF THE CLOSED-WORLD ARCH RULE (setup.py's R4).  Its
+//: compile-time half is `arch_caps.cuh`'s `static_assert(tabulated(kArch))`,
+//: which fixes the table this binary's shapes were DERIVED from; this is the
+//: refusal at first launch on a device that table has no row for, or has a row
+//: that the driver disagrees with.  Both halves must stay: a derivation is only
+//: as good as the facts it was closed over, and only a fact read off the DEVICE
+//: can establish that this is the device they were read for.
+//: docs/internals/chunk/arch_caps.md
+static void check_arch_table() {
+  int dev = 0;
+  C10_CUDA_CHECK(cudaGetDevice(&dev));
+  //: ONCE PER PROCESS PER DEVICE, on the first launch rather than at import: a
+  //: CUDA context as a side effect of `import` costs more than the check.  The
+  //: device is recorded only after it passes, so a refusal is raised on every
+  //: call rather than once.
+  static std::mutex mu;
+  static std::set<int> admitted;
+  {
+    const std::lock_guard<std::mutex> hold(mu);
+    if (admitted.count(dev)) return;
+  }
+  cudaDeviceProp prop{};
+  C10_CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
+  const int cc = prop.major * 100 + prop.minor * 10;
+  TORCH_CHECK(denseref::arch::tabulated(cc),
+              "the chunk consumer's capability table has no row for compute capability ",
+              prop.major, ".", prop.minor,
+              "; add it to caps_of() rather than letting an operation guess which "
+              "implementation it has. This binary is closed-world: it runs the "
+              "architectures it was measured on and refuses the rest.");
+  const denseref::arch::Caps want = denseref::arch::caps_of(cc);
+  TORCH_CHECK(denseref::arch::supported(want), "UNSUPPORTED ARCHITECTURE at compute capability ",
+              prop.major, ".", prop.minor,
+              ": a REQUIRED capability clause of the chunk baseline is false in its own "
+              "row. There is no partial support and no slower route to take.");
+  int smem_per_sm = 0, smem_per_cta_max = 0;
+  C10_CUDA_CHECK(
+      cudaDeviceGetAttribute(&smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev));
+  C10_CUDA_CHECK(
+      cudaDeviceGetAttribute(&smem_per_cta_max, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev));
+  TORCH_CHECK(want.smem_per_sm == smem_per_sm && want.smem_per_cta_max == smem_per_cta_max
+                  && want.regs_per_sm == prop.regsPerMultiprocessor
+                  && want.max_threads_per_sm == prop.maxThreadsPerMultiProcessor,
+              "the chunk consumer's capability table disagrees with the driver at compute "
+              "capability ",
+              prop.major, ".", prop.minor, ": table {smem/SM ", want.smem_per_sm, ", smem/CTA ",
+              want.smem_per_cta_max, ", regs/SM ", want.regs_per_sm, ", threads/SM ",
+              want.max_threads_per_sm, "} vs driver {smem/SM ", smem_per_sm, ", smem/CTA ",
+              smem_per_cta_max, ", regs/SM ", prop.regsPerMultiprocessor, ", threads/SM ",
+              prop.maxThreadsPerMultiProcessor,
+              "}. Every arm's staging depth, CTA target and shared-memory fit compiled "
+              "into this binary was derived from the table, so they are wrong for this "
+              "device.");
+  const std::lock_guard<std::mutex> hold(mu);
+  admitted.insert(dev);
+}
 
 //: the arm surface, DECLARED only -- definitions live in the instantiation
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
@@ -64,6 +123,7 @@ __global__ void divide_kernel(const float* __restrict__ num, const float* __rest
 }
 
 torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, double eps) {
+  check_arch_table();
   TORCH_CHECK(num.is_contiguous() && den.is_contiguous());
   TORCH_CHECK(num.scalar_type() == torch::kFloat32 && den.scalar_type() == torch::kFloat32);
   TORCH_CHECK(num.size(-1) == kD, "expect a numerator of d_v columns");
@@ -113,6 +173,7 @@ static void check_inputs(const torch::Tensor& pr, const torch::Tensor& pw, const
 
 torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, int64_t chunk,
                           int64_t bc, std::vector<int64_t> widths) {
+  check_arch_table();
   check_inputs(pr, pw, v, chunk, widths);
   const int BH = v.size(0) * v.size(1), L = v.size(2);
 #define CHUNK_TABLE_X(C_, BC_, D_, B_)                                     \
@@ -148,6 +209,7 @@ static torch::Tensor build_atom_bits(const torch::Tensor& pw, int BH, int L) {
 }
 
 torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths) {
+  check_arch_table();
   TORCH_CHECK(pw.is_cuda() && pw.is_contiguous() && pw.scalar_type() == torch::kBFloat16,
               "the write amplitudes must be a contiguous bf16 CUDA tensor");
   int64_t wsum = 0;
@@ -217,6 +279,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                                        c10::optional<torch::Tensor> s_in,
                                        c10::optional<torch::Tensor> s_out,
                                        c10::optional<torch::Tensor> page_tbl) {
+  check_arch_table();
   //: the write gain: per-token positive scalar, bf16, [B,H,L] -- spec 4.2.
   TORCH_CHECK(gw.is_cuda() && gw.is_contiguous() && gw.scalar_type() == torch::kBFloat16
                   && gw.dim() == 3 && gw.size(0) == v.size(0) && gw.size(1) == v.size(1)
@@ -288,6 +351,7 @@ __global__ void stamp_kernel(int* out) {
 }
 
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths) {
+  check_arch_table();
   auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();

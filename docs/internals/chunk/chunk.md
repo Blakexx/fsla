@@ -26,6 +26,26 @@ exercises the three-clause form), and three flat D=1 arms (the benchmark's
 in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 (measured −2.1..+2.2%, noise, no winner — one layout ships).
 
+## The closed-world arch refusal (R4's runtime half)
+
+`check_arch_table()` is the first statement of every entry that issues a launch
+(`union_table`, `forward_raw`, `stats`, `divide_pass`, `build_stamp`; `forward`
+needs none of its own because it is a composition of three of them). It refuses,
+once per process per device, a compute capability `arch_caps.cuh`'s `tabulated()`
+has no row for, a row whose REQUIRED clauses are false, and a row the driver
+disagrees with on the four FACT columns every arm's staging depth, CTA target and
+shared-memory fit was derived from.
+
+This is the half of `setup.py`'s rule R4 that cannot be a `static_assert`: the
+compile-time half fixes the table the binary was DERIVED from, and only a fact read
+off the device establishes that this is the device it was derived for. There is no
+single launcher in this TU to hang the check on, so the property is per entry and
+`tests/unit/test_closed_world_arch_gate.py` is what keeps a new entry from being
+added without it.
+
+The device is recorded as admitted only after it passes, so a refusal is raised on
+every call rather than once.
+
 ## Decay is not a feature of this kernel (retired 2026-08-13)
 
 The mass-clock decay phase was designed, built and measured on the ladder: the
