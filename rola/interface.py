@@ -320,6 +320,16 @@ def _validate_call(routes, v, decay) -> None:
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair, "
             "and the gateway is what derives their statistics from their tensors -- there is "
             "no supported way to assemble the bundle by hand.")
+    #: THE GAIN LAYOUT AGAINST THE ARM, structurally. `g_read` exists iff the
+    #: normalization is `raw` -- architecture §4.2 fixes it to 1 under `global`, so
+    #: production has no read-gain column there and a supplied one would be silently
+    #: ignored. Checked here rather than trusted from the gateway because the bundle
+    #: is hand-constructible.
+    if (routes.g_read is None) != (routes.normalization == "global"):
+        raise ValueError(
+            f"this bundle is normalization={routes.normalization!r} with g_read="
+            f"{'None' if routes.g_read is None else 'a tensor'}: g_read is None under "
+            "'global' (architecture §4.2 fixes it to 1) and a tensor under 'raw'")
     topology = routes.topology
     if not isinstance(v, torch.Tensor) or v.ndim != 4:
         raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")

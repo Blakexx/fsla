@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 WRITE_GAIN = 0
@@ -215,11 +216,73 @@ def project_side_gains(
     return gains
 
 
+class SideGain(nn.Module):
+    """The side-gain producer: one learned per-head projection, positively parameterized.
+
+    It sits beside the routers rather than on the layer because a side gain is a
+    ROUTING fact by both tests that separate the two. Its output SHAPE is defined by
+    the normalization arm -- ``g_read`` exists iff ``normalization == 'raw'`` -- so a
+    layer-owned gain would have to be told the routing arm to know its own columns.
+    And the gain is where architecture §4.2's per-level mass product lands: the
+    gateway folds the routing mass into what this returns, so gain and routing mass
+    are the same number by the time any consumer sees either.
+
+    Args:
+        num_heads / hidden_size: the head count and the source stream's width.
+        normalization: the recurrence's normalization arm.
+        config: the two-boolean :class:`GainConfig`, VALIDATED against
+            ``normalization`` here -- so an unbuildable layout fails at model build
+            and never inside a forward.
+        bias_init: place an all-zero-logit gain at this value, or ``None`` for a zero
+            bias (unit gain at zero logits).
+
+    A ``False`` side has no projection column at all, so an all-``False`` config
+    learns nothing and returns constants.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_heads: int,
+        hidden_size: int,
+        normalization: str,
+        config: GainConfig,
+        bias_init: float | None = None,
+    ) -> None:
+        super().__init__()
+        self.num_heads = int(num_heads)
+        self.hidden_size = int(hidden_size)
+        self.normalization = normalization
+        self.config = config.validate(normalization)
+        self.layout = self.config.layout
+        sides = len(self.layout)
+        self.gain_W = nn.Parameter(torch.empty(self.num_heads, sides, self.hidden_size))
+        if sides:
+            nn.init.kaiming_uniform_(
+                self.gain_W.view(self.num_heads * sides, self.hidden_size), a=5 ** 0.5)
+        bias_value = 0.0 if bias_init is None else init_side_gain_bias(bias_init)
+        self.gain_bias = nn.Parameter(torch.full((self.num_heads, sides), bias_value))
+
+    def forward(self, stream: torch.Tensor) -> dict[str, torch.Tensor | None]:
+        """``{'g_write': [B,T,H], 'g_read': [B,T,H] | None}`` over a ``[B,T,hidden]`` stream.
+
+        fp64 in, fp64 out; anything else projects in fp32 -- the same precision rule
+        the packed router's projection follows, so a bf16 training run still gets an
+        fp32 gain projection.
+        """
+        return project_side_gains(
+            stream, self.gain_W, self.gain_bias, normalization=self.normalization,
+            write_gain=self.config.write_gain, read_gain=self.config.read_gain,
+            projection_dtype=(torch.float64 if stream.dtype == torch.float64
+                              else torch.float32))
+
+
 __all__ = [
     "READ_GAIN",
     "READ_GAIN_UNDER_GLOBAL",
     "WRITE_GAIN",
     "GainConfig",
+    "SideGain",
     "gain_layout",
     "init_side_gain_bias",
     "project_side_gains",

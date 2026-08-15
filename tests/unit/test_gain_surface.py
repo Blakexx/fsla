@@ -25,7 +25,7 @@ import pytest
 import torch
 
 from rola.layers.rola import RoLA
-from rola.routing.side_gain import GainConfig, project_side_gains
+from rola.routing.side_gain import GainConfig, SideGain, project_side_gains
 
 _H, _DV = 2, 32
 _HIDDEN = _H * _DV
@@ -99,3 +99,50 @@ def test_a_missing_column_becomes_the_constant_one_and_global_still_has_no_read_
         assert gains["g_read"].shape == (2, 6, 3)
         assert (gains["g_read"] > 0).all()
 
+
+
+# --- the named producer ------------------------------------------------------
+
+@pytest.mark.parametrize("norm,sides", [("raw", 2), ("global", 1)])
+def test_the_side_gain_module_owns_the_layout_and_the_projection(norm, sides):
+    """`SideGain` is the gain half of the feature map as a MODULE, and it must be the
+    same function as the free projection it wraps -- same layout, same parameters,
+    same numbers -- so extracting it from the gateway's body moved code and not
+    semantics."""
+    torch.manual_seed(7)
+    module = SideGain(num_heads=3, hidden_size=_HIDDEN, normalization=norm,
+                      config=GainConfig.from_public(True, norm))
+    assert len(module.layout) == sides
+    assert module.gain_W.shape == (3, sides, _HIDDEN)
+    assert module.gain_bias.shape == (3, sides)
+
+    h = torch.randn(2, 6, _HIDDEN, dtype=torch.float64)
+    gains = module(h)
+    direct = project_side_gains(
+        h, module.gain_W, module.gain_bias, normalization=norm,
+        write_gain=module.config.write_gain, read_gain=module.config.read_gain,
+        projection_dtype=torch.float64)
+    assert torch.equal(gains["g_write"], direct["g_write"])
+    if norm == "global":
+        assert gains["g_read"] is None
+    else:
+        assert torch.equal(gains["g_read"], direct["g_read"])
+
+
+def test_the_side_gain_module_refuses_a_read_gain_under_global_at_construction():
+    """The ONE refusal stays construction-time: an unbuildable gain layout fails at
+    model build and never inside a forward."""
+    with pytest.raises(ValueError, match="read_gain=True"):
+        SideGain(num_heads=2, hidden_size=_HIDDEN, normalization="global",
+                 config=GainConfig(write_gain=True, read_gain=True))
+
+
+def test_the_side_gain_bias_init_places_the_zero_logit_gain():
+    """`bias_init` is the flagged model-level init decision, inverted through
+    `softplus` so an all-zero-logit gain starts where the caller asked."""
+    module = SideGain(num_heads=2, hidden_size=_HIDDEN, normalization="global",
+                      config=GainConfig.from_public(True, "global"), bias_init=1.0)
+    with torch.no_grad():
+        module.gain_W.zero_()
+    gains = module(torch.zeros(1, 3, _HIDDEN))
+    torch.testing.assert_close(gains["g_write"], torch.ones(1, 3, 2), rtol=1e-6, atol=1e-6)

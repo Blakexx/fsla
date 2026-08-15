@@ -248,7 +248,8 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
     gateway = RouteProducer(
         [producer], d_v=topology.d_v, num_heads=H, hidden_size=hidden_size,
         normalization=normalization)
-    parameters = {"producers.0.route_W": route_W, "gain_W": gain_W, "gain_bias": gain_bias}
+    parameters = {"producers.0.route_W": route_W, "side_gain.gain_W": gain_W,
+                  "side_gain.gain_bias": gain_bias}
     if route_bias is not None:
         parameters["producers.0.route_bias"] = route_bias
     streams = (x,) if x_w is None else (x, x_w)

@@ -133,7 +133,7 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
         out = produce_routing(
             x, None, torch.zeros(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim,
                                  device=x.device, dtype=x.dtype),
-            producer.route_W, producer.route_bias, layer.routes.gain_W, layer.routes.gain_bias,
+            producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W, layer.routes.side_gain.gain_bias,
             layer.topology, layer.normalization)
     zeros = sum(float((t == 0).float().mean()) * t.shape[-1] for t in out.write_levels)
     return zeros / sum(t.shape[-1] for t in out.write_levels)
@@ -447,8 +447,8 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     with torch.no_grad():
         v = layer.v_proj(x).view(1, T, _H, _DV)
         ro = produce_routing(
-            x, None, v, producer.route_W, producer.route_bias, layer.routes.gain_W,
-            layer.routes.gain_bias, layer.topology, "global")
+            x, None, v, producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W,
+            layer.routes.side_gain.gain_bias, layer.topology, "global")
         routes = RawRoutes(layer.topology, "global", ro.read_levels, ro.write_levels,
                            ro.g_read, ro.g_write)
         refusal = _chunk.unsupported(routes, None)
@@ -464,8 +464,8 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
     v2 = layer.v_proj(x).view(1, T, _H, _DV)
     with torch.enable_grad():
         ro2 = produce_routing(
-            x, None, v2, producer.route_W, producer.route_bias, layer.routes.gain_W,
-            layer.routes.gain_bias, layer.topology, "global")
+            x, None, v2, producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W,
+            layer.routes.side_gain.gain_bias, layer.topology, "global")
         out2, oracle_state2 = naive_rola(
             v2, ro2.read_levels, ro2.write_levels, ro2.g_read, ro2.g_write,
             layer.topology, _decay_config(layer), "global",
@@ -530,7 +530,7 @@ def _freeze_all_but(layer: RoLA, *keep_prefixes: str) -> None:
 def test_the_decay_dials_are_a_grad_requiring_operation_input():
     """Property, per the fix pass: a context where ONLY the decay source's `theta`
     requires grad (`v`, `g_read`, `g_write` and the read/write allocations do not,
-    because `v_proj`/the producer's `route_W`/the gateway's `gain_W`/`gain_bias` are
+    because `v_proj`/the producer's `route_W`/the gateway's `side_gain.gain_W`/`.gain_bias` are
     frozen and `x` does not require grad) IS a grad-requiring operation input,
     because the dials are handed straight to the operation as `decay=`.
 

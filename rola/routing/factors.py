@@ -48,7 +48,7 @@ import torch.nn as nn
 from rola.routing.budget import exact_support_count, touched_bitset_update
 from rola.routing.density import StaticDensity
 from rola.routing.producer import RouteSource
-from rola.routing.side_gain import GainConfig, init_side_gain_bias, project_side_gains
+from rola.routing.side_gain import GainConfig, SideGain
 from rola.routing.types import (
     LevelConfig,
     OpaqueRouting,
@@ -224,17 +224,12 @@ class RouteProducer(nn.Module):
             d_v=int(d_v))
         self.density = _declared_density(self.topology, producers, self.slots)
 
-        self.gain_config = (gain_config.validate(self.normalization) if gain_config is not None
-                            else GainConfig.from_public(gain, self.normalization).validate(
-                                self.normalization))
-        self.gain_sides = self.gain_config.layout
-        sides = len(self.gain_sides)
-        self.gain_W = nn.Parameter(torch.empty(self.num_heads, sides, self.hidden_size))
-        if sides:
-            nn.init.kaiming_uniform_(
-                self.gain_W.view(self.num_heads * sides, self.hidden_size), a=5 ** 0.5)
-        bias_value = 0.0 if gain_bias_init is None else init_side_gain_bias(gain_bias_init)
-        self.gain_bias = nn.Parameter(torch.full((self.num_heads, sides), bias_value))
+        self.side_gain = SideGain(
+            num_heads=self.num_heads, hidden_size=self.hidden_size,
+            normalization=self.normalization,
+            config=(gain_config if gain_config is not None
+                    else GainConfig.from_public(gain, self.normalization)),
+            bias_init=gain_bias_init)
 
     @property
     def d_v(self) -> int:
@@ -297,11 +292,7 @@ class RouteProducer(nn.Module):
         B, H = source.batch, self.num_heads
         read_levels, read_mass = _fold(tuple(read), B=B, H=H)
         write_levels, write_mass = _fold(tuple(write), B=B, H=H)
-        gains = project_side_gains(
-            read_stream, self.gain_W, self.gain_bias, normalization=self.normalization,
-            write_gain=self.gain_config.write_gain, read_gain=self.gain_config.read_gain,
-            projection_dtype=(torch.float64 if read_stream.dtype == torch.float64
-                              else torch.float32))
+        gains = self.side_gain(read_stream)
         # The write mass always rides the write channel: W scales the deposit under both
         # normalizations. The read mass matters only under `raw` -- under `global`, R
         # enters as num/den and a per-token scale common to every leaf cancels exactly.
