@@ -6,11 +6,7 @@ readme          = "README.md"
 license         = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors         = [{ name = "Blake Bottum" }]
-# NOTE (extraction E1(b)): `triton` IS a hard dependency, contrary to the design
-# doc's first pass. `rola/routing/entmax/production.py` is RoLA's own Triton
-# kernel -- the exact alpha=1.5 entmax / alpha=2 sparsemax producer that IS the
-# production sparse-routing path. It imports nothing from flash-linear-attention.
-dependencies    = ["torch", "einops", "triton"]
+dependencies    = ["torch", "einops"]
 keywords        = ["cuda", "attention", "linear-attention", "pytorch", "kernels"]
 classifiers     = [
   "Programming Language :: Python :: 3",
@@ -32,7 +28,7 @@ bench = ["matplotlib", "pandas"]
 # `entmax` (DeepSPIN) is the fp64 REFERENCE the routing gates are anchored to -- the
 # paper authors' own implementation, pure python with torch as its only dependency.
 # A TEST dependency and never a runtime one: `rola/routing/entmax/production.py` is
-# RoLA's own Triton producer and imports nothing from it, which
+# RoLA's own hand-CUDA producer and imports nothing from it, which
 # `tests/integration/test_production_levels.py` asserts rather than assumes.
 #
 # PINNED to `==1.3`: `rola/routing/entmax/PIN.json` records the version AND a digest

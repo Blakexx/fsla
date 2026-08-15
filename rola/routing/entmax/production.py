@@ -8,9 +8,14 @@ fixed-alpha VJP. It offers the same solve through two plan-level surfaces:
   V3's consumer and its fp64 oracle both consume. This is what the V3 producer calls.
 * ``production_routing_factors`` -- the bf16 tile-major ``RouteDescriptor`` arena ABI.
 
-and through two lowerings of one semantics: fused Triton on CUDA fp32, and the identical sorted
-closed form in torch for the domains Triton does not cover (CPU, fp64). Neither surface ever calls
-the reference; it is the test oracle, not a fallback.
+and through two lowerings of one semantics: hand-CUDA on fp32 CUDA tensors, and the identical
+sorted closed form in torch for the domains the kernels do not cover (CPU, fp64). Neither surface
+ever calls the reference; it is the test oracle, not a fallback.
+
+THE KERNELS ARE `csrc/rola/src/entmax/` -- `entmax.cu` for the union split, `factor.cu` for the
+independent per-side solves and the softmax pair. There is no Triton in this package and no torch
+fallback on CUDA: `rola.ops._ext` raises loudly if the wheel is missing
+(docs/internals/entmax/factor.md).
 """
 
 from __future__ import annotations
@@ -18,8 +23,6 @@ from __future__ import annotations
 from math import prod
 
 import torch
-import triton
-import triton.language as tl
 
 from rola.routing.topology import MAX_BRANCH_WIDTH
 from rola.routing.types import (
@@ -36,9 +39,14 @@ from rola.routing.types import (
 
 _SPARSE_ACTIVATIONS = {"entmax", "sparsemax"}
 _SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)
-_TRITON_FP32_MAX = tl.constexpr(3.4028234663852886e38)
-_TRITON_FP32_HALF_MAX = tl.constexpr(1.7014117331926443e38)
-_TRITON_ROUTE_TILE_SIZE = tl.constexpr(_ROUTE_TILE_SIZE_VALUE)
+
+#: The support word's token quantum, and the tile-major arena's lane count: one word is
+#: one tile, which is what lets a level's support and its values share a tile index.
+_WORD_TOKENS = 32
+
+
+def _cdiv(a: int, b: int) -> int:
+    return -(-a // b)
 
 
 def _production_alpha(alpha: float) -> float:
@@ -51,415 +59,30 @@ def _production_alpha(alpha: float) -> float:
     return alpha
 
 
-@triton.jit
-def _production_fwd_kernel(
-    z_ptr,
-    p_ptr,
-    p_second_ptr,
-    support_words_ptr,
-    mask_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    z_stream,
-    z_token,
-    z_col,
-    p_stream,
-    p_token,
-    p_col,
-    p_tile,
-    p_lane,
-    p_second_stream,
-    p_second_token,
-    p_second_col,
-    p_second_tile,
-    p_second_lane,
-    support_stream_stride,
-    support_word_stride,
-    support_col_stride,
-    m_stream,
-    m_token,
-    m_col,
-    ALPHA: tl.constexpr,
-    HAS_MASK: tl.constexpr,
-    WRITE_SECOND: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-    cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
-    cmask = cols < n_cols
-    valid = rmask[:, None] & cmask[None, :]
-    if HAS_MASK:
-        valid &= tl.load(
-            mask_ptr + stream * m_stream + token[:, None] * m_token + cols[None, :] * m_col,
-            mask=rmask[:, None] & cmask[None, :], other=0)
-    z = tl.load(z_ptr + stream * z_stream + token[:, None] * z_token + cols[None, :] * z_col,
-                mask=valid, other=0.0).to(tl.float32)
-    valid_count = tl.sum(valid.to(tl.int32), axis=1)[:, None]
-    has_valid = valid_count > 0
-    row_max = tl.max(tl.where(valid, z, float("-inf")), axis=1)[:, None]
-    row_max = tl.where(has_valid, row_max, 0.0)
-    z = tl.where(valid, z - row_max, 0.0)
+def _extension():
+    # NO FALLBACK, by policy: `rola.ops._ext` raises loudly if the wheel is missing.
+    from rola.ops._ext import extension
 
-    # Both supported activations have an exact threshold after sorting.  For
-    # sparsemax, tau_k = (sum(z[:k]) - 1) / k.  For alpha=1.5, solve
-    # sum((z[:k] - tau)^2) = 4 for its smaller root.  The greatest valid k
-    # defines the support, so no iterative tolerance enters the contract.
-    # This Triton toolchain corrupts bitonic-sort lanes containing infinities.
-    # A finite row-relative sentinel is strictly below every valid value and
-    # preserves the same ordering without poisoning the prefix scan.
-    row_min = tl.min(tl.where(valid, z, float("inf")), axis=1)[:, None]
-    sentinel = tl.where(has_valid, row_min - 1.0, -1.0)
-    sorted_z = tl.sort(tl.where(valid, z, sentinel), dim=1, descending=True)
-    sorted_valid = cols[None, :] < valid_count
-    prefix = tl.cumsum(sorted_z, axis=1)
-    prefix_sq = tl.cumsum(sorted_z * sorted_z, axis=1)
-    k = (cols[None, :] + 1).to(tl.float32)
-    if ALPHA == 2.0:
-        tau_candidates = (prefix - 1.0) / k
-        candidate = sorted_valid & (sorted_z > tau_candidates)
-    else:
-        discriminant = prefix * prefix - k * (prefix_sq - 4.0)
-        tau_candidates = (prefix - tl.sqrt(tl.maximum(discriminant, 0.0))) / k
-        candidate = sorted_valid & (discriminant >= 0.0) & (sorted_z > tau_candidates)
-    chosen_col = tl.max(tl.where(candidate, cols[None, :], -1), axis=1)[:, None]
-    tau = tl.sum(tl.where(cols[None, :] == chosen_col, tau_candidates, 0.0), axis=1)[:, None]
-    tau = tl.where(chosen_col >= 0, tau, 0.0)
-    semantic_support = valid & (z > tau)
-    base = (ALPHA - 1.0) * (z - tau)
-    base = tl.where(semantic_support, tl.maximum(base, 0.0), 0.0)
-    if ALPHA == 2.0:
-        p = base
-    else:
-        p = base * base
-
-    output_mask = rmask[:, None] & cmask[None, :]
-    p_offsets = tl.where(
-        TILE_MAJOR,
-        stream * p_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_tile
-        + cols[None, :] * p_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_lane,
-        stream * p_stream + token[:, None] * p_token + cols[None, :] * p_col,
-    )
-    tl.store(p_ptr + p_offsets, p,
-             mask=output_mask)
-    if WRITE_SECOND:
-        p_second_offsets = tl.where(
-            TILE_MAJOR,
-            stream * p_second_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_second_tile
-            + cols[None, :] * p_second_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_second_lane,
-            stream * p_second_stream + token[:, None] * p_second_token + cols[None, :] * p_second_col,
-        )
-        tl.store(
-            p_second_ptr + p_second_offsets,
-            p,
-            mask=output_mask,
-        )
-    # Scheduling support is defined at the native bf16 storage boundary, not
-    # by the pre-quantization semantic solve. This makes support and the route
-    # stream consumed by CUDA one authority. The packed word is a bitwise OR
-    # because every row contributes a unique token bit. Sum in int64: Triton's
-    # uint32 reduction may lower through a lossy accumulator at bit 31.
-    stored_support = semantic_support & (p.to(tl.bfloat16).to(tl.float32) != 0.0)
-    bit_values = tl.where(
-        stored_support,
-        tl.full((BLOCK_ROWS, BLOCK_COLS), 1, tl.int64) << (token[:, None] % 32),
-        tl.zeros((BLOCK_ROWS, BLOCK_COLS), tl.int64),
-    )
-    packed = tl.sum(bit_values, axis=0)
-    tl.store(
-        support_words_ptr + stream * support_stream_stride
-        + word * support_word_stride + cols * support_col_stride,
-        packed.to(tl.uint32).to(tl.int32, bitcast=True),
-        mask=cmask,
-    )
+    return extension()
 
 
-@triton.jit
-def _production_bwd_kernel(
-    p_ptr,
-    support_words_ptr,
-    mask_ptr,
-    dp_ptr,
-    dp_second_ptr,
-    dz_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    p_stream,
-    p_token,
-    p_col,
-    p_tile,
-    p_lane,
-    support_stream_stride,
-    support_word_stride,
-    support_col_stride,
-    m_stream,
-    m_token,
-    m_col,
-    dp_stream,
-    dp_token,
-    dp_col,
-    dp_tile,
-    dp_lane,
-    dp_second_stream,
-    dp_second_token,
-    dp_second_col,
-    dp_second_tile,
-    dp_second_lane,
-    dz_stream,
-    dz_token,
-    dz_col,
-    ALPHA: tl.constexpr,
-    HAS_MASK: tl.constexpr,
-    HAS_SECOND_DP: tl.constexpr,
-    ACCUMULATE: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-    cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
-    cmask = cols < n_cols
-    valid = rmask[:, None] & cmask[None, :]
-    if HAS_MASK:
-        valid &= tl.load(
-            mask_ptr + stream * m_stream + token[:, None] * m_token + cols[None, :] * m_col,
-            mask=rmask[:, None] & cmask[None, :], other=0)
-    p_offsets = tl.where(
-        TILE_MAJOR,
-        stream * p_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_tile
-        + cols[None, :] * p_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_lane,
-        stream * p_stream + token[:, None] * p_token + cols[None, :] * p_col,
-    )
-    p = tl.load(
-        p_ptr + p_offsets,
-        mask=valid,
-        other=0.0,
-    ).to(tl.float32)
-    support_words = tl.load(
-        support_words_ptr + stream * support_stream_stride
-        + word * support_word_stride + cols * support_col_stride,
-        mask=cmask,
-        other=0,
-    ).to(tl.uint32, bitcast=True)
-    support = (
-        (support_words >> (token[:, None] % 32))
-        & tl.full((BLOCK_ROWS, BLOCK_COLS), 1, tl.uint32)
-    ) != 0
-    if ALPHA == 2.0:
-        s = tl.where(valid & support, 1.0, 0.0)
-    else:
-        s = tl.where(valid & support, tl.sqrt(p), 0.0)
-    dp_offsets = tl.where(
-        TILE_MAJOR,
-        stream * dp_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * dp_tile
-        + cols[None, :] * dp_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * dp_lane,
-        stream * dp_stream + token[:, None] * dp_token + cols[None, :] * dp_col,
-    )
-    dp = tl.load(dp_ptr + dp_offsets,
-                 mask=valid, other=0.0).to(tl.float32)
-    if HAS_SECOND_DP:
-        dp_second_offsets = tl.where(
-            TILE_MAJOR,
-            stream * dp_second_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * dp_second_tile
-            + cols[None, :] * dp_second_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * dp_second_lane,
-            stream * dp_second_stream + token[:, None] * dp_second_token + cols[None, :] * dp_second_col,
-        )
-        dp += tl.load(
-            dp_second_ptr + dp_second_offsets,
-            mask=valid,
-            other=0.0,
-        ).to(tl.float32)
-    num = tl.sum(s * dp, axis=1)[:, None]
-    den = tl.sum(s, axis=1)[:, None]
-    den = tl.where(den > 0.0, den, 1.0)
-    dz = tl.where(valid, s * (dp - num / den), 0.0)
-    dz_ptrs = dz_ptr + stream * dz_stream + token[:, None] * dz_token + cols[None, :] * dz_col
-    if ACCUMULATE:
-        tl.atomic_add(dz_ptrs, dz, mask=rmask[:, None] & cmask[None, :])
-    else:
-        tl.store(dz_ptrs, dz, mask=rmask[:, None] & cmask[None, :])
-
-
-@triton.jit
-def _production_softmax_fwd_kernel(
-    z_ptr,
-    p_ptr,
-    p_second_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    z_stream,
-    z_token,
-    z_col,
-    p_stream,
-    p_token,
-    p_col,
-    p_tile,
-    p_lane,
-    p_second_stream,
-    p_second_token,
-    p_second_col,
-    p_second_tile,
-    p_second_lane,
-    WRITE_SECOND: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-    cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
-    cmask = cols < n_cols
-    mask = rmask[:, None] & cmask[None, :]
-    z = tl.load(
-        z_ptr + stream * z_stream + token[:, None] * z_token + cols[None, :] * z_col,
-        mask=mask,
-        other=float("-inf"),
-    ).to(tl.float32)
-    z = z - tl.max(z, axis=1)[:, None]
-    p = tl.exp(z)
-    p /= tl.sum(p, axis=1)[:, None]
-    p_offsets = tl.where(
-        TILE_MAJOR,
-        stream * p_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_tile
-        + cols[None, :] * p_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_lane,
-        stream * p_stream + token[:, None] * p_token + cols[None, :] * p_col,
-    )
-    tl.store(p_ptr + p_offsets, p, mask=mask)
-    if WRITE_SECOND:
-        p_second_offsets = tl.where(
-            TILE_MAJOR,
-            stream * p_second_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_second_tile
-            + cols[None, :] * p_second_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_second_lane,
-            stream * p_second_stream + token[:, None] * p_second_token + cols[None, :] * p_second_col,
-        )
-        tl.store(
-            p_second_ptr + p_second_offsets,
-            p,
-            mask=mask,
-        )
-
-
-@triton.jit
-def _production_softmax_bwd_kernel(
-    p_ptr,
-    dp_ptr,
-    dp_second_ptr,
-    dz_ptr,
-    n_streams,
-    tokens,
-    n_words,
-    n_cols,
-    p_stream,
-    p_token,
-    p_col,
-    p_tile,
-    p_lane,
-    dp_stream,
-    dp_token,
-    dp_col,
-    dp_tile,
-    dp_lane,
-    dp_second_stream,
-    dp_second_token,
-    dp_second_col,
-    dp_second_tile,
-    dp_second_lane,
-    dz_stream,
-    dz_token,
-    dz_col,
-    HAS_SECOND_DP: tl.constexpr,
-    ACCUMULATE: tl.constexpr,
-    TILE_MAJOR: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
-):
-    program = tl.program_id(0)
-    stream = program // n_words
-    word = program - stream * n_words
-    token = word * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-    cols = tl.arange(0, BLOCK_COLS)
-    rmask = (stream < n_streams) & (token < tokens)
-    cmask = cols < n_cols
-    mask = rmask[:, None] & cmask[None, :]
-    p_offsets = tl.where(
-        TILE_MAJOR,
-        stream * p_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * p_tile
-        + cols[None, :] * p_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * p_lane,
-        stream * p_stream + token[:, None] * p_token + cols[None, :] * p_col,
-    )
-    p = tl.load(
-        p_ptr + p_offsets,
-        mask=mask,
-        other=0.0,
-    ).to(tl.float32)
-    dp_offsets = tl.where(
-        TILE_MAJOR,
-        stream * dp_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * dp_tile
-        + cols[None, :] * dp_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * dp_lane,
-        stream * dp_stream + token[:, None] * dp_token + cols[None, :] * dp_col,
-    )
-    dp = tl.load(dp_ptr + dp_offsets, mask=mask, other=0.0).to(tl.float32)
-    if HAS_SECOND_DP:
-        dp_second_offsets = tl.where(
-            TILE_MAJOR,
-            stream * dp_second_stream + (token[:, None] // _TRITON_ROUTE_TILE_SIZE) * dp_second_tile
-            + cols[None, :] * dp_second_col + (token[:, None] % _TRITON_ROUTE_TILE_SIZE) * dp_second_lane,
-            stream * dp_second_stream + token[:, None] * dp_second_token + cols[None, :] * dp_second_col,
-        )
-        dp += tl.load(
-            dp_second_ptr + dp_second_offsets,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-    dz = p * (dp - tl.sum(p * dp, axis=1)[:, None])
-    dz_ptrs = dz_ptr + stream * dz_stream + token[:, None] * dz_token + cols[None, :] * dz_col
-    if ACCUMULATE:
-        tl.atomic_add(dz_ptrs, dz, mask=mask)
-    else:
-        tl.store(dz_ptrs, dz, mask=mask)
+def _one(width: int) -> list[int]:
+    """The single-level table a one-level launch takes: offsets are already in the
+    tensors' own `data_ptr`, because every caller here hands a level SLICE."""
+    return [width]
 
 
 def _launch_fwd(z, mask, alpha, *, tokens, n_streams):
     rows, cols = z.shape
-    block_rows = 32
-    block_cols = triton.next_power_of_2(cols)
     p = torch.empty_like(z)
-    n_words = triton.cdiv(tokens, block_rows)
     support_words = torch.empty(
-        (n_streams, n_words, cols), dtype=torch.int32, device=z.device)
+        (n_streams, _cdiv(tokens, _WORD_TOKENS), cols), dtype=torch.int32, device=z.device)
     if rows == 0:
         return p, support_words
-    _production_fwd_kernel[(n_streams * n_words,)](
-        z, p, p, support_words, mask,
-        n_streams, tokens, n_words, cols,
-        tokens * z.stride(0), z.stride(0), z.stride(1),
-        tokens * p.stride(0), p.stride(0), p.stride(1),
-        0, 0,
-        tokens * p.stride(0), p.stride(0), p.stride(1),
-        0, 0,
-        support_words.stride(0), support_words.stride(1), support_words.stride(2),
-        tokens * mask.stride(0), mask.stride(0), mask.stride(1),
-        ALPHA=float(alpha), HAS_MASK=True, WRITE_SECOND=False, TILE_MAJOR=False,
-        BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols,
-    )
+    _extension().entmax_factor_forward(
+        z.view(n_streams, tokens, cols), mask.view(n_streams, tokens, cols),
+        p.view(n_streams, tokens, cols), None, support_words,
+        [0], [0], [0], _one(cols), float(alpha))
     return p, support_words
 
 
@@ -482,27 +105,15 @@ class _ProductionFactorFn(torch.autograd.Function):
         p, support_words, mask = ctx.saved_tensors
         dp = dp.contiguous()
         rows, cols = p.shape
-        block_rows = 32
-        block_cols = triton.next_power_of_2(cols)
         dz = torch.empty_like(p)
         if rows == 0:
             return dz, None, None, None, None
-        _production_bwd_kernel[(ctx.n_streams * triton.cdiv(ctx.tokens, block_rows),)](
-            p, support_words, mask, dp, dp, dz,
-            ctx.n_streams, ctx.tokens, triton.cdiv(ctx.tokens, block_rows), cols,
-            ctx.tokens * p.stride(0), p.stride(0), p.stride(1),
-            0, 0,
-            support_words.stride(0), support_words.stride(1), support_words.stride(2),
-            ctx.tokens * mask.stride(0), mask.stride(0), mask.stride(1),
-            ctx.tokens * dp.stride(0), dp.stride(0), dp.stride(1),
-            0, 0,
-            ctx.tokens * dp.stride(0), dp.stride(0), dp.stride(1),
-            0, 0,
-            ctx.tokens * dz.stride(0), dz.stride(0), dz.stride(1),
-            ALPHA=ctx.alpha, HAS_MASK=True, HAS_SECOND_DP=False, ACCUMULATE=False, TILE_MAJOR=False,
-            BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols,
-        )
+        shape = (ctx.n_streams, ctx.tokens, cols)
+        _extension().entmax_factor_backward(
+            p.view(shape), support_words, mask.view(shape), dp.view(shape), None, dz.view(shape),
+            [0], [0], [0], _one(cols), False, ctx.alpha)
         return dz, None, None, None, None
+
 
 
 def production_factor(z, activation="entmax", alpha=1.5, mask=None):
@@ -534,7 +145,7 @@ def production_factor(z, activation="entmax", alpha=1.5, mask=None):
     else:
         tokens = z.shape[-2]
         n_streams = prod(z.shape[:-2])
-        support_shape = (*z.shape[:-2], triton.cdiv(tokens, 32), cols)
+        support_shape = (*z.shape[:-2], _cdiv(tokens, _WORD_TOKENS), cols)
     z_rows = z.reshape(n_streams * tokens, cols).contiguous()
     if mask is None:
         mask_rows = torch.ones_like(z_rows, dtype=torch.bool)
@@ -559,21 +170,9 @@ def _launch_factor_into(
     support_words: torch.Tensor,
     alpha: float,
 ) -> None:
-    n_streams, tokens = _arena_shape(logits)
-    cols = logits.shape[-1]
-    n_words = triton.cdiv(tokens, 32)
-    _production_fwd_kernel[(n_streams * n_words,)](
-        logits, output, output if output_second is None else output_second, support_words, logits,
-        n_streams, tokens, n_words, cols,
-        logits.stride(0), logits.stride(1), logits.stride(2),
-        *_value_strides(output),
-        *_value_strides(output if output_second is None else output_second),
-        support_words.stride(0), support_words.stride(1), support_words.stride(2),
-        logits.stride(0), logits.stride(1), logits.stride(2),
-        ALPHA=alpha, HAS_MASK=False, WRITE_SECOND=output_second is not None,
-        TILE_MAJOR=output.ndim == 4,
-        BLOCK_ROWS=32, BLOCK_COLS=triton.next_power_of_2(cols),
-    )
+    _extension().entmax_factor_forward(
+        logits, None, output, output_second, support_words,
+        [0], [0], [0], _one(logits.shape[-1]), float(alpha))
 
 
 def _launch_factor_backward_into_logits(
@@ -586,39 +185,9 @@ def _launch_factor_backward_into_logits(
     *,
     accumulate: bool,
 ) -> None:
-    n_streams, tokens = _arena_shape(d_logits)
-    cols = d_logits.shape[-1]
-    n_words = triton.cdiv(tokens, 32)
-    p_stream, p_token, p_col, p_tile, p_lane = _value_strides(output)
-    _production_bwd_kernel[(n_streams * n_words,)](
-        output, support_words, output, d_output,
-        d_output if d_output_second is None else d_output_second, d_logits,
-        n_streams, tokens, n_words, cols,
-        p_stream, p_token, p_col, p_tile, p_lane,
-        support_words.stride(0), support_words.stride(1), support_words.stride(2),
-        p_stream, p_token, p_col,
-        *_value_strides(d_output),
-        *_value_strides(d_output if d_output_second is None else d_output_second),
-        d_logits.stride(0), d_logits.stride(1), d_logits.stride(2),
-        ALPHA=alpha, HAS_MASK=False, HAS_SECOND_DP=d_output_second is not None,
-        ACCUMULATE=accumulate, TILE_MAJOR=output.ndim == 4, BLOCK_ROWS=32,
-        BLOCK_COLS=triton.next_power_of_2(cols),
-    )
-
-
-def _value_strides(values: torch.Tensor) -> tuple[int, int, int, int, int]:
-    """``(stream, token, col, tile, lane)`` strides for either route-value layout.
-
-    A tile-major arena slice is ``[BH, tiles, width, 32]`` and has no token stride of
-    its own (the kernel reconstructs the token from ``tile``/``lane``); a dense level
-    is ``[BH, T, width]`` and has no tile/lane strides. Deriving both from the tensor's
-    own rank keeps one launch site per kernel instead of one per layout.
-    """
-    if values.ndim == 4:
-        return (values.stride(0), 0, values.stride(2), values.stride(1), values.stride(3))
-    if values.ndim == 3:
-        return (values.stride(0), values.stride(1), values.stride(2), 0, 0)
-    raise ValueError(f"route values must be rank 3 (dense) or rank 4 (tile-major), got {values.ndim}")
+    _extension().entmax_factor_backward(
+        output, support_words, None, d_output, d_output_second, d_logits,
+        [0], [0], [0], _one(d_logits.shape[-1]), bool(accumulate), float(alpha))
 
 
 def _launch_union_fwd(
@@ -630,14 +199,7 @@ def _launch_union_fwd(
     write_output: torch.Tensor,
     alpha: float,
 ) -> None:
-    # The union entmax solve is a hand-CUDA + CUB kernel in `csrc/rola/src/entmax/entmax.cu`,
-    # not Triton: the Triton lowering measured 255 registers with spills and an
-    # uncontrollable `tl.sort` scratch, and a JIT violates the ahead-of-time
-    # build policy (docs/internals/entmax/entmax.md).  NO FALLBACK, by policy --
-    # `rola.ops._ext` raises loudly if the wheel is missing.
-    from rola.ops._ext import extension
-
-    extension().entmax_union_forward(
+    _extension().entmax_union_forward(
         read_source, write_source, midpoint, support_words, read_output, write_output,
         float(alpha))
 
@@ -655,10 +217,7 @@ def _launch_union_bwd(
     d_write_level: torch.Tensor,
     alpha: float,
 ) -> None:
-    # ===== TRACK E DISPATCH EDIT (see `_launch_union_fwd`) =====
-    from rola.ops._ext import extension
-
-    extension().entmax_union_backward(
+    _extension().entmax_union_backward(
         read_logits_level, write_logits_level, midpoint, support_words,
         read_output, write_output, d_read_output, d_write_output,
         d_read_level, d_write_level, float(alpha))
@@ -669,18 +228,8 @@ def _launch_softmax_into(
     output: torch.Tensor,
     output_second: torch.Tensor | None,
 ) -> None:
-    n_streams, tokens = _arena_shape(logits)
-    cols = logits.shape[-1]
-    n_words = triton.cdiv(tokens, 32)
-    _production_softmax_fwd_kernel[(n_streams * n_words,)](
-        logits, output, output if output_second is None else output_second,
-        n_streams, tokens, n_words, cols,
-        logits.stride(0), logits.stride(1), logits.stride(2),
-        *_value_strides(output),
-        *_value_strides(output if output_second is None else output_second),
-        WRITE_SECOND=output_second is not None, TILE_MAJOR=output.ndim == 4,
-        BLOCK_ROWS=32, BLOCK_COLS=triton.next_power_of_2(cols),
-    )
+    _extension().routing_softmax_forward(
+        logits, output, output_second, [0], [0], _one(logits.shape[-1]))
 
 
 def _launch_softmax_backward_into_logits(
@@ -691,20 +240,10 @@ def _launch_softmax_backward_into_logits(
     *,
     accumulate: bool,
 ) -> None:
-    n_streams, tokens = _arena_shape(d_logits)
-    cols = d_logits.shape[-1]
-    n_words = triton.cdiv(tokens, 32)
-    _production_softmax_bwd_kernel[(n_streams * n_words,)](
-        output, d_output, d_output if d_output_second is None else d_output_second, d_logits,
-        n_streams, tokens, n_words, cols,
-        *_value_strides(output),
-        *_value_strides(d_output),
-        *_value_strides(d_output if d_output_second is None else d_output_second),
-        d_logits.stride(0), d_logits.stride(1), d_logits.stride(2),
-        HAS_SECOND_DP=d_output_second is not None, ACCUMULATE=accumulate,
-        TILE_MAJOR=output.ndim == 4,
-        BLOCK_ROWS=32, BLOCK_COLS=triton.next_power_of_2(cols),
-    )
+    _extension().routing_softmax_backward(
+        output, d_output, d_output_second, d_logits,
+        [0], [0], _one(d_logits.shape[-1]), bool(accumulate))
+
 
 
 class _ProductionRoutingArenaFn(torch.autograd.Function):
@@ -731,14 +270,14 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             isinstance(level, IndependentRouting) and level.shares_solve for level in routing.levels)
         arena_shape = (
             n_streams,
-            triton.cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
+            _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
             routing.level_offsets[-1],
             _ROUTE_TILE_SIZE_VALUE,
         )
         read_arena = torch.zeros(arena_shape, dtype=torch.bfloat16, device=read_logits.device)
         write_arena = read_arena if fully_shared else torch.zeros_like(read_arena)
         support_words = torch.empty(
-            (n_streams, triton.cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
+            (n_streams, _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
              sum(width for width, offset in zip(routing.branches, routing.support_offsets) if offset >= 0)),
             dtype=torch.int32,
             device=read_logits.device,
@@ -897,7 +436,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
         n_streams, tokens = _arena_shape(read_logits)
         device = read_logits.device
         support_words = torch.empty(
-            (n_streams, triton.cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
+            (n_streams, _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
              sum(width for width, offset in zip(routing.branches, routing.support_offsets) if offset >= 0)),
             dtype=torch.int32,
             device=device,
@@ -1042,11 +581,11 @@ class _ProductionLevelsFn(torch.autograd.Function):
 
 
 # ---------------------------------------------------------------------------
-# Torch lowering of the SAME exact solve, for the domains Triton does not cover
+# Torch lowering of the SAME exact solve, for the domains the kernels do not cover
 # (CPU, and fp64 -- the oracle-equivalence gate projects fp64 logits end to end).
 #
 # This is a second *lowering* of the production semantics, not a fallback to the
-# reference: it computes the identical sorted closed form the Triton kernels do
+# reference: it computes the identical sorted closed form the CUDA kernels do
 # (row-max shift, descending sort, prefix/prefix-square scans, greatest valid k)
 # with the identical analytic fixed-alpha VJP. The fp64 bisection in
 # ``entmax/reference.py`` is reachable from no runtime path at all -- it is the
@@ -1126,10 +665,8 @@ def _torch_union_split(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     z = 0.5 * read_logits + 0.5 * write_logits
     values = _SortedEntmaxFn.apply(z, alpha)
-    # Support comes from the same `z > tau` bits `_sorted_solve` (and the CUDA union
-    # kernel's `semantic_support = valid & (z > tau)` -- it was the Triton union kernel
-    # until Track E replaced it, and the predicate is unchanged) compute, not from
-    # `values > 0`: the
+    # Support comes from the same `z > tau` bits `_sorted_solve` and the CUDA kernels'
+    # `semantic_support = valid & (z > tau)` compute, not from `values > 0`: the
     # two conventions agree everywhere except a genuinely-supported member whose amplitude
     # underflows fp32 to exactly 0 (alpha=1.5 squares `(z-tau)/2`, so `z-tau ~ 1e-25`
     # suffices) -- adversarial review Claim 2. Recomputed directly (no grad needed; support
@@ -1187,8 +724,8 @@ def production_routing_factor_levels(
     """Exact per-level ``(read, write)`` routing factors on the production solve.
 
     Returns one ``[BH, T, width_l]`` tensor per level-side -- the shape the producer
-    hands ``naive_rola`` and the consumer. Lowered to the fused Triton
-    kernels on CUDA fp32 and to the identical sorted closed form in torch elsewhere;
+    hands ``naive_rola`` and the consumer. Lowered to the hand-CUDA solve
+    on CUDA fp32 and to the identical sorted closed form in torch elsewhere;
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.
     """

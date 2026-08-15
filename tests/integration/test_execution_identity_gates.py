@@ -9,7 +9,7 @@ happens to read.
 
 That is not hypothetical. `workflows/perf-breakdown/REPORT.md` (iii) found the
 freeze-defining parity arm spending 4.9 ms/step in the Triton
-`_production_fwd_kernel` where the sparse-both arm spent 1.5 ms in the hand-CUDA
+`_production_fwd_kernel` (P73 S5's `factor_forward_kernel`) where the sparse-both arm spent 1.5 ms in the hand-CUDA
 `union_forward_kernel`, and it took a per-kernel profile at the L=16384 cell to
 notice. Nothing was WRONG -- both arms matched their oracles -- but nobody had
 written down which kernel each routing family is supposed to reach, so there was
@@ -21,13 +21,12 @@ This file writes it down. `_DISPATCH` is the map of record: routing family ->
 lowering is a deliberate edit to this table with a reason attached, and a
 *leak* is a test failure instead of a profiling anecdote.
 
-NOTE the map records that the independent (non-union) families are on TRITON. That
-is the current state of the tree, not an endorsement: there is no CUDA kernel for
-an independent entmax or a softmax (`csrc/rola/rola_api.cpp` exports only
-`entmax_union_forward`/`entmax_union_backward`), so kill-Triton compliance for the
-producer is unfinished work, not a regression. When those kernels land, this table
-is the thing that changes -- and the equivalence gates next door are what license
-the change.
+THE MAP'S NOTE ABOUT TRITON IS DISCHARGED (P73 S5). It used to record that the
+independent (non-union) families were on Triton and that the kill-Triton work was
+unfinished; `csrc/rola/src/entmax/factor.cu` now carries all four, `rola/` imports
+no Triton at all, and this table changed exactly as that note predicted it would --
+the routes are the same, the four names are new, and the fp64-oracle equivalence
+gates next door are what licensed the change.
 
 Method: `torch.profiler` with CUDA activities only, so the assertion is on kernels
 the GPU actually executed. Deliberately NOT a mock or a call counter on the Python
@@ -51,15 +50,19 @@ from rola.routing.types import (
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 
-# The kernels, by the name the profiler reports. Substrings, because the CUDA ones
-# are C++ templates (`union_forward_kernel<64, 2, true, float>`) and the Triton ones
-# carry a specialization suffix.
+# The kernels, by the name the profiler reports. Substrings, because all of them are
+# C++ templates (`union_forward_kernel<64, 2, true, float>`).
+#
+# P73 S5 renamed the last four: the independent and softmax solves were Triton
+# (`_production_fwd_kernel` and its three siblings) and are now the hand-CUDA
+# `factor.cu` family. The ROUTES this table pins are unchanged -- which arm each
+# routing family reaches, and which it must not -- so only the names moved.
 UNION_CUDA_FWD = "union_forward_kernel"
 UNION_CUDA_BWD = "union_backward_kernel"
-TRITON_ENTMAX_FWD = "_production_fwd_kernel"
-TRITON_ENTMAX_BWD = "_production_bwd_kernel"
-TRITON_SOFTMAX_FWD = "_production_softmax_fwd_kernel"
-TRITON_SOFTMAX_BWD = "_production_softmax_bwd_kernel"
+ENTMAX_CUDA_FWD = "factor_forward_kernel"
+ENTMAX_CUDA_BWD = "factor_backward_kernel"
+SOFTMAX_CUDA_FWD = "softmax_forward_kernel"
+SOFTMAX_CUDA_BWD = "softmax_backward_kernel"
 
 _WIDTH = 8
 _TOKENS = 64
@@ -70,28 +73,28 @@ _STREAMS = 2
 _DISPATCH = {
     "union": (
         ResolvedRouting((UnionRouting(1.5),), (_WIDTH,)),
-        [UNION_CUDA_FWD], [TRITON_ENTMAX_FWD, TRITON_SOFTMAX_FWD],
-        [UNION_CUDA_BWD], [TRITON_ENTMAX_BWD, TRITON_SOFTMAX_BWD],
+        [UNION_CUDA_FWD], [ENTMAX_CUDA_FWD, SOFTMAX_CUDA_FWD],
+        [UNION_CUDA_BWD], [ENTMAX_CUDA_BWD, SOFTMAX_CUDA_BWD],
     ),
     # THE PARITY ARM (bench_scaling's `v3` row): read dense / write sparse, untied.
     # This is the exact route the breakdown found on Triton.
     "independent_softmax_read_entmax_write": (
         ResolvedRouting(
             (IndependentRouting(False, SoftmaxActivation(), EntmaxActivation(1.5)),), (_WIDTH,)),
-        [TRITON_ENTMAX_FWD, TRITON_SOFTMAX_FWD], [UNION_CUDA_FWD],
-        [TRITON_ENTMAX_BWD, TRITON_SOFTMAX_BWD], [UNION_CUDA_BWD],
+        [ENTMAX_CUDA_FWD, SOFTMAX_CUDA_FWD], [UNION_CUDA_FWD],
+        [ENTMAX_CUDA_BWD, SOFTMAX_CUDA_BWD], [UNION_CUDA_BWD],
     ),
     "independent_entmax_shared_solve": (
         ResolvedRouting(
             (IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),), (_WIDTH,)),
-        [TRITON_ENTMAX_FWD], [UNION_CUDA_FWD, TRITON_SOFTMAX_FWD],
-        [TRITON_ENTMAX_BWD], [UNION_CUDA_BWD, TRITON_SOFTMAX_BWD],
+        [ENTMAX_CUDA_FWD], [UNION_CUDA_FWD, SOFTMAX_CUDA_FWD],
+        [ENTMAX_CUDA_BWD], [UNION_CUDA_BWD, SOFTMAX_CUDA_BWD],
     ),
     "independent_softmax_shared_solve": (
         ResolvedRouting(
             (IndependentRouting(True, SoftmaxActivation(), SoftmaxActivation()),), (_WIDTH,)),
-        [TRITON_SOFTMAX_FWD], [UNION_CUDA_FWD, TRITON_ENTMAX_FWD],
-        [TRITON_SOFTMAX_BWD], [UNION_CUDA_BWD, TRITON_ENTMAX_BWD],
+        [SOFTMAX_CUDA_FWD], [UNION_CUDA_FWD, ENTMAX_CUDA_FWD],
+        [SOFTMAX_CUDA_BWD], [UNION_CUDA_BWD, ENTMAX_CUDA_BWD],
     ),
 }
 
@@ -107,7 +110,7 @@ def _logits(routing, *, requires_grad=False):
 def observed_cuda_kernels(call) -> set[str]:
     """Every CUDA kernel name ONE call to ``call`` launches.
 
-    Warmed first: a Triton kernel's first call JITs, and the compile-time launches
+    Warmed first: the extension's first call carries one-time CUDA context work that
     would otherwise be attributed to the measured region.
     """
     call()
@@ -197,7 +200,7 @@ def test_the_identity_gate_has_teeth():
     assert union_kernels != independent_kernels, (
         "the union and independent routes ran indistinguishable kernel sets, so the "
         f"dispatch map cannot discriminate between them: {sorted(union_kernels)}")
-    assert not any(TRITON_ENTMAX_FWD in kernel for kernel in union_kernels)
+    assert not any(ENTMAX_CUDA_FWD in kernel for kernel in union_kernels)
     assert not any(UNION_CUDA_FWD in kernel for kernel in independent_kernels)
 
     # 3. the negative control: a name that must match NOTHING, proving `_assert_identity`

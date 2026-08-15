@@ -2,14 +2,17 @@
 
 Hand CUDA over CUB warp primitives: the α-entmax solve that turns per-token read
 and write LOGITS into route VALUES, a midpoint amplitude, and §4.1's packed
-per-leaf support bitmap. `entmax.cuh` is the host declaration pair
-(`union_forward` / `union_backward`); `entmax.cu` is the whole implementation —
-two kernels and their host dispatch.
+per-leaf support bitmap. `entmax.cuh` carries the host declaration pair
+(`union_forward` / `union_backward`) AND [the warp-row vocabulary](#warp-row) the
+whole entmax family speaks; `entmax.cu` is the union split's implementation — two
+kernels and their host dispatch.
+
+The family's other member is [`factor.md`](factor.md): the independent per-side
+solves, whose forward is this file's phases B/C/D fed one logit tensor.
 
 Design of record: this document.
 Gates: `tests/oracle/test_entmax_cuda_gates.py`, against the **fp64 oracle only** —
-the Triton kernel is a debugging diagnostic and is never asserted against
-(trackE.md §4).
+never kernel-vs-kernel (trackE.md §4).
 
 Symbols: a *stream* is one (batch, head)-like routing stream; a *token* is one row
 of the solve; `width` is the level's branch width and `col` indexes it; `LW` is the
@@ -88,10 +91,28 @@ The single address expression
 stream*s + tok*t + (tok>>5)*tile + col*c + (tok&31)*lane
 ```
 
-is correct for both, because `_value_strides` (host side) and `five()` (device side)
-already zero the members the layout does not use. **Layout is therefore data, not a
-codegen axis** — Triton needed a `tl.where(TILE_MAJOR, ...)` select and an axis for
-this.
+is correct for both, because `five()` already zeroes the members the layout does not
+use, deriving them from the tensor's own RANK. **Layout is therefore data, not a
+codegen axis** — the Triton lowering this replaced needed a `tl.where(TILE_MAJOR,
+...)` select and a specialization axis for it.
+
+## <a id="warp-row"></a>4.1 The warp-row vocabulary lives in the header
+
+`Strides`/`addr`, `store_value`/`load_value`, `Descending`, `Pair`/`PairAdd`,
+`bf16_nonzero`, `logical_warp_mask`, `five` and the block constants are declared in
+`entmax.cuh` rather than in either `.cu`, because `factor.cu`'s four kernels are the
+same machine over a different phase set and a second copy would be a second thing to
+keep in step.
+
+They sit behind `#ifdef __CUDACC__`. That guard is load-bearing and not defensive:
+`csrc/rola/rola_api.cpp` includes this header to reach the host declarations below,
+and it is compiled by the HOST compiler, which knows nothing of `__device__` or
+`__nv_bfloat16`.
+
+The namespace is NAMED (`rola::entmax::detail`), so moving these out of `entmax.cu`
+moved no mangled symbol and changed no generated code — `tools/ratify.py` reported
+"the source digest moved but NO ratified body did" across all 380 bodies at the
+move, which is the check that says so rather than the claim that it should.
 
 ## <a id="launch-shape"></a>5. Launch shape and the width class
 

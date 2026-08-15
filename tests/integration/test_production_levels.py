@@ -10,14 +10,13 @@ form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- th
 party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
 anywhere in this file's ground truth.
 
-**THE DEVICE LOWERING IS NOT ONE KERNEL, and this file's wording used to say "fused
-Triton" as though it were** (corrected at the thunder merge, 2026-08-02). Independent
-levels are still fused Triton; the UNION solve is a hand-CUDA + CUB kernel
-(`csrc/rola/src/entmax/entmax.cu`), and the Triton union kernel was deleted when it
-landed -- it was measured at 255 registers with spills and an uncontrollable `tl.sort`
-scratch, and a JIT is against the closed-world AOT policy. Everything below that says
-"the two lowerings" still means exactly what it meant, device against torch; what
-changed is WHICH BINARY the union rows were measured on, and the tie table was
+**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton
+(P73 S5). The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
+the independent per-side solves and the softmax pair are `csrc/rola/src/entmax/factor.cu`,
+ported off Triton for the closed-world AOT policy and for P65, which trains through
+them. Everything below that says "the two lowerings" still means exactly what it
+meant, device against torch; what changed over time is WHICH BINARY the rows were
+measured on, and the tie table was
 re-measured on the new one (see `_TIE_DIVERGENCE_BOUND`).
 
 Support is checked for **exact** set equality, never by threshold: entmax support is a
@@ -40,7 +39,7 @@ excluded from that hard assertion, and neither is a tolerance in disguise:
   without gating one boundary comparison against a second one that has no obligation
   to agree with it. It is instead gated on the two PRODUCTION lowerings against each
   other -- the SAME closed form computed by two different code paths (the fused
-  CUDA/CUB and Triton kernels vs the pure-torch fallback), both handed the SAME fp32
+  CUDA/CUB kernels vs the pure-torch lowering), both handed the SAME fp32
   inputs -- which must therefore agree on support exactly
   (`test_the_two_lowerings_agree_on_exact_ties`).
 """
@@ -283,7 +282,7 @@ def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 @pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
-def test_triton_lowering_matches_the_fp64_oracle(alpha, shape, kind):
+def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind):
     """CUDA fp32 lowering: exact same support, amplitudes and VJP as the closed-form oracle."""
     routing = _routings(alpha)[shape]
     read = _stress_logits(routing, kind, device="cuda", seed=17)
@@ -593,7 +592,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_the_two_lowerings_agree_directly(alpha, shape, kind):
-    """V9 item 2: torch vs Triton, DIRECTLY, on the ordinary fixtures.
+    """V9 item 2: torch vs the CUDA kernels, DIRECTLY, on the ordinary fixtures.
 
     Both lowerings are separately gated against the fp64 oracle above, so
     their mutual drift was only TRANSITIVELY bounded, at twice the oracle tolerance
@@ -679,3 +678,44 @@ def test_production_imports_nothing_from_the_reference_package():
         f"production.py imports from the reference package: {offending} -- the "
         "producer's own contract (module docstring, pyproject.toml) is that it "
         "imports nothing from it")
+
+
+def test_the_package_imports_no_triton_and_declares_none():
+    """P73 S5's RECEIPT, as a static fact about the tree rather than a claim in a doc.
+
+    `docs/build.md` says the dependencies are "`torch` and `einops`. Not
+    `transformers`, not `fla`, not `triton` -- the kernels are CUDA." That sentence
+    was FALSE for every level routed `IndependentRouting`, from the module that owned
+    the four Triton kernels this stage ported to `csrc/rola/src/entmax/factor.cu`.
+
+    Checked two ways, because they can fail independently: the IMPORT GRAPH (an AST
+    walk over every module under `rola/`, so a `triton` reachable at runtime cannot
+    hide behind a lazy import inside a function -- `ast.walk` sees those too), and the
+    DECLARATION (`pyproject.toml`'s `dependencies`, so a dependency nothing imports
+    cannot linger either). Revival of the kernels is git; the ledger row is
+    `docs/internals/DELETIONS.md`.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    offending: list[str] = []
+    for path in sorted((root / "rola").rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                if name == "triton" or name.startswith("triton."):
+                    offending.append(f"{path.relative_to(root)}:{node.lineno} imports {name}")
+    assert not offending, (
+        "the package still imports Triton, so `docs/build.md`'s no-triton claim is "
+        f"false: {offending}")
+
+    text = (root / "pyproject.toml").read_text()
+    declared = text.split("dependencies    = ", 1)[1].split("\n", 1)[0]
+    assert "triton" not in declared, (
+        f"pyproject.toml still declares a triton dependency: {declared}")

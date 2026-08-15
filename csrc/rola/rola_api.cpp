@@ -25,6 +25,7 @@
 
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
+#include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/chunk/chunk_api.cuh"
 
@@ -74,6 +75,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "union entmax forward: midpoint values, read/write routes, packed support");
   m.def("entmax_union_backward", &rola::entmax::union_backward,
         "union entmax VJP into read/write logits");
+
+  // ---- the producer's independent (per-side) solves ------------------------
+  //: One entry per direction per family, each covering as many LEVELS as the caller
+  //: groups into one width class -- docs/internals/entmax/factor.md#batched-levels
+  m.def("entmax_factor_forward", &rola::entmax::factor_forward,
+        "independent entmax forward over one or more levels: routes and packed support");
+  m.def("entmax_factor_backward", &rola::entmax::factor_backward,
+        "independent entmax VJP into the packed logits");
+  m.def("routing_softmax_forward", &rola::entmax::softmax_forward,
+        "softmax routing forward over one or more levels");
+  m.def("routing_softmax_backward", &rola::entmax::softmax_backward,
+        "softmax routing VJP into the packed logits");
 
   // ---- the T=1 decode path -------------------------------------------------
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce

@@ -16,7 +16,6 @@
 #include <cub/warp/warp_merge_sort.cuh>
 #include <cub/warp/warp_reduce.cuh>
 #include <cub/warp/warp_scan.cuh>
-#include <cuda_bf16.h>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -27,66 +26,6 @@
 namespace rola {
 namespace entmax {
 namespace detail {
-
-//: FROZEN (nine downstream consumers): one CTA owns exactly the 32 tokens of one
-//: support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass
-//: -- docs/internals/entmax/entmax.md#frozen-support-word
-constexpr int WORD_TOKENS = 32;
-constexpr int BLOCK_WARPS = 4;
-constexpr int WARP_SIZE = 32;
-constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
-//: With `BLOCK_THREADS`, this is `__launch_bounds__(128, 8)`: a 64-register target
-//: stated to ptxas so a regression becomes a compile-time allocation decision instead
-//: of a silent spill, which `tools/ratify.py` then fails the BUILD on.
-constexpr int MIN_BLOCKS_PER_SM = 8;
-
-//: `(stream, token, col, tile, lane)` -- ONE address expression serves both route-value
-//: layouts because the caller zeroes the members its layout does not use, which is why
-//: layout is data here -- docs/internals/entmax/entmax.md#strides
-struct Strides {
-  int64_t stream, token, col, tile, lane;
-};
-
-__device__ __forceinline__ int64_t addr(const Strides& s, int64_t stream, int64_t tok,
-                                        int64_t col) {
-  return stream * s.stream + tok * s.token + (tok >> 5) * s.tile + col * s.col
-         + (tok & 31) * s.lane;
-}
-
-template <typename T>
-__device__ __forceinline__ void store_value(T* p, int64_t off, float v);
-template <>
-__device__ __forceinline__ void store_value<float>(float* p, int64_t off, float v) {
-  p[off] = v;
-}
-template <>
-__device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
-  p[off] = __float2bfloat16(v);
-}
-
-template <typename T>
-__device__ __forceinline__ float load_value(const T* p, int64_t off);
-template <>
-__device__ __forceinline__ float load_value<float>(const float* p, int64_t off) {
-  return p[off];
-}
-template <>
-__device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16* p, int64_t off) {
-  return __bfloat162float(p[off]);
-}
-
-struct Descending {
-  __device__ __forceinline__ bool operator()(float a, float b) const { return a > b; }
-};
-
-struct Pair {
-  float p, q;
-};
-struct PairAdd {
-  __device__ __forceinline__ Pair operator()(const Pair& a, const Pair& b) const {
-    return {a.p + b.p, a.q + b.q};
-  }
-};
 
 //: The overflow-free read-write difference: two opposite-sign finite extrema overflow a
 //: raw subtraction while their midpoint stays representable, so the MAGNITUDE is clamped
@@ -112,10 +51,6 @@ __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* sat
 //: `logsigmoid` -- docs/internals/entmax/entmax.md#overflow-free-delta
 __device__ __forceinline__ float log_write_gate(float delta) {
   return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
-}
-
-__device__ __forceinline__ bool bf16_nonzero(float v) {
-  return __bfloat162float(__float2bfloat16(v)) != 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,12 +92,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
-  //: HAZARD logical-warp-mask -- docs/internals/entmax/entmax.md#logical-warp-mask
-  //: The member mask for every hand `__shfl_sync` below. It names exactly THIS logical
-  //: warp; a full `0xffffffff` deadlocks on a ragged support word at `LW < 32`.
-  const unsigned lmask = (LW == WARP_SIZE)
-                             ? 0xffffffffu
-                             : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const unsigned lmask = logical_warp_mask<LW>();
   const int logical = threadIdx.x / LW;  // logical warp id within the block
   const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
   char* slot = smem + warp * SLOT;
@@ -392,10 +322,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 
   const int lane = threadIdx.x % LW;
   const int logical = threadIdx.x / LW;
-  //: see the forward kernel: a full-warp mask deadlocks on ragged words with LW < 32.
-  const unsigned lmask = (LW == WARP_SIZE)
-                             ? 0xffffffffu
-                             : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
+  const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
 
@@ -484,11 +411,6 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 // (I2). One launch per union level. The (w_pad -> LW, IPT) table and why the launch
 // count is unchanged from the Triton lowering: docs/internals/entmax/entmax.md#launch-shape
 // ---------------------------------------------------------------------------
-Strides five(const torch::Tensor& t) {
-  if (t.dim() == 4) return {t.stride(0), 0, t.stride(2), t.stride(1), t.stride(3)};
-  return {t.stride(0), t.stride(1), t.stride(2), 0, 0};
-}
-
 template <typename OutT>
 void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Tensor& mid,
                     torch::Tensor& sup, torch::Tensor& rv, torch::Tensor& wv, double alpha) {
