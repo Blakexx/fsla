@@ -69,6 +69,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "variants, stateless first");
   m.def("chunk_arms", &rola::chunk::arms,
         "chunk consumer: the built arms with derived plan and geometry");
+  //: SCAN B, the reverse adjoint. It is registered at its STAGE-1 scope and says
+  //: so in its name: it emits the write-side terms that read the adjoint state a
+  //: chunk ENTERS with, and not yet the intra-chunk staircase or the digit
+  //: reduction. `chunk_backward` does not exist until it does.
+  m.def("chunk_scan_b_probe", &rola::chunk::scan_b_probe,
+        "chunk consumer, Scan B (stage 1): the inter-chunk write-side adjoint terms", py::arg("pr"),
+        py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
+        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
+  m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
+        "chunk consumer, Scan B: per-arm registers, spill bytes, shared bytes, "
+        "staging depth, CTA target and the arm's declared register floor");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,

@@ -150,13 +150,18 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 #: one instantiation shard (64 arms)        0.61 GB
 #: entmax.cu                                1.54 GB
 #: decode.cu                                2.89 GB
+#: chunk/backward.cu (1 arm)                2.75 GB
 #: ===================================== ==========
 #:
-#: 1.5 is not the largest of those and is not meant to be: only two translation units
-#: in the graph exceed it, so the worst concurrent footprint the formula admits here
-#: is 2x2.89 + 2x1.54 + 5x2x0.61 = 15 GB against 21 GB free. Sizing on ``decode.cu``
-#: instead would cost three compile waves for the eight shards to protect a case that
-#: cannot happen more than twice. RE-MEASURE THIS whenever the shard size changes.
+#: 1.5 is not the largest of those and is not meant to be: three translation units in
+#: the graph exceed it, so the worst concurrent footprint the formula admits here is
+#: 2x2.89 + 2x2.75 + 2x1.54 + 4x2x0.61 = 19.3 GB against 21 GB free. Sizing on
+#: ``decode.cu`` instead would cost three compile waves for the eight shards to
+#: protect a case that cannot happen more than three times. RE-MEASURE THIS whenever
+#: the shard size changes or a translation unit joins ``setup.py::SOURCES`` --
+#: ``chunk/backward.cu`` is the reason that clause is not decoration, and it is the
+#: SCAN'S OWN size rather than its arm count: at one arm it is already decode-class,
+#: so growing it to the forward's arm cross is a re-measurement and not a free axis.
 GB_PER_NVCC_THREAD = 1.5
 
 

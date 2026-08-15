@@ -136,6 +136,11 @@ __device__ __forceinline__ int first_set(uint32_t x) {
   return f ? f - 1 : kBallotLanes;
 }
 
+//: THE OTHER END OF THE SAME VOTE, for a caller that consumes its lanes from
+//: the high side.  `-1` for an empty vector, so "nowhere" compares BELOW every
+//: lane and needs no separate case, exactly as `kBallotLanes` compares above.
+__device__ __forceinline__ int last_set(uint32_t x) { return 31 - __clz((int)x); }
+
 // ----------------------------------------------------------------- operands
 
 using Frag = uint32_t[4];
@@ -150,6 +155,23 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
                : "r"(a));
+}
+
+//: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.  The contract is about
+//: MAPS and not about data: an accumulator spreads its two axes over the unit's
+//: lanes one way and a `k`-side operand spreads its two the other way, so a
+//: contraction over an accumulator's OWN m axis cannot read it without this.
+//: MEASURED, not read off the ISA -- the probe and the refuted alternative are
+//: in docs/internals/chunk/ops.md.
+__device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
+  static_assert(arch::kCaps.reg_transpose_b16,
+                "UNSUPPORTED ARCHITECTURE: without an in-register b16 tile "
+                "transpose the adjoint's channel contraction has to route its "
+                "operand through shared memory, which is a different algorithm "
+                "and not a slower arm of this one");
+  uint32_t d;
+  asm volatile("movmatrix.sync.aligned.m8n8.trans.b16 %0, %1;\n" : "=r"(d) : "r"(x));
+  return d;
 }
 
 //: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.  `kMmaM/N/K` is the shape

@@ -166,6 +166,38 @@ the gap is ANNOUNCED rather than taken silently.
                             contract and reads as such at the call site.
 ```
 
+### <a id="reg-transpose"></a>The register transpose, and the candidate it replaced
+
+`transpose_frag_b16(x)` transposes an 8x8 b16 tile where it already lies, across
+the issuing unit's own registers. It exists for exactly one caller: the adjoint's
+CHANNEL CONTRACTION (`backward.cuh`), whose `k` axis is `d_v` — the axis the fold
+accumulator carries on its `m` side. The contract is about MAPS, not about data.
+
+For `m16n8k16`, the accumulator spreads its two axes over the lanes as
+`(m = t/4 [+8], n = (t%4)*2 + {0,1})` and a `B` operand spreads its two as
+`(k = (t%4)*2 + {0,1} [+8], n = t/4)`. The two are the same matrix through a
+transposed lane map, so an accumulator can be an operand of a contraction over its
+own `m` axis only through this operation.
+
+**MEASURED, not read off the ISA.** A standalone probe loaded a known 16x8 matrix
+into a thread's registers using the accumulator map, fed it as `B` against
+`A = I16`, and read the mma's own output back:
+
+| candidate | verdict |
+|---|---|
+| the accumulator map already IS the `B` map | REFUTED: 112 of 128 elements differ, and the difference is exactly the transpose |
+| `movmatrix.sync.aligned.m8n8.trans.b16` | 0 of 128 differ. Two instructions per (16 `d_v` x 8 slot) tile, on top of the `pack_bf16x2` the readout already pays |
+| a shared-memory round trip through the padded buffers | not needed, not built |
+
+The capability is a REQUIRED clause of the baseline (`arch_caps.cuh`) rather than a
+selecting one, because the alternative is not a slower implementation of the same
+operation — it is a different algorithm, with a `BCg x d_v` staging buffer that
+does not fit beside the ring.
+
+The SASS gate needs no carve-out for it: `tools/chunk_sass_gate.py` forbids
+`LDL`/`STL`/`ATOM` anywhere and `IMAD.WIDE`/`I2F`/`F2I`/`MUFU` inside a loop body,
+and `MOVM` is in neither set.
+
 ### Operations this kernel does not have, and why not
 
 `warp_reduce` and a `publish`/`acquire` pair weaker than a full rendezvous are

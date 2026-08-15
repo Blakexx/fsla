@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "9f9cfe3d02fc1afc92eb58d1d8c0b64956678d727dceee8e5ca43740e11aee2e",
+  "csrc_sha256": "d6a5aa4e4c18ab852ae4503b9f6c95c8eb5f6d66d1c7a2e62194810df11e7f9f",
   "date": "2026-08-15"
  },
  "shards": {
@@ -41,6 +41,14 @@
   }
  },
  "entries": {
+  "sm_86:_ZN4rola5chunk13scan_b_kernelILi32ELi2ELi64ELi128EEEvPK13__nv_bfloat16S4_S4_S4_S4_S4_PKjPfS7_ii": {
+   "regs": 255,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "ff1d3464beec317354d359315ac5c41401c18eb5e4c07c0bee315a6e5a878ad6"
+  },
   "sm_86:_ZN4rola5chunk16compacted_kernelILi16ELi1ELi256ELi64ELb0ELb0EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiPKfS7_PKiPKhj": {
    "regs": 116,
    "spill_stores": 0,

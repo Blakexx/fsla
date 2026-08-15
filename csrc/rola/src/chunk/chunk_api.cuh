@@ -32,5 +32,12 @@ torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, c10::optional<to
                           double eps, at::ScalarType out);
 std::vector<int64_t> build_stamp(int64_t chunk, int64_t bc, std::vector<int64_t> widths);
 std::vector<std::vector<int64_t>> arms();
+//: SCAN B (csrc/rola/src/chunk/backward.cu), the reverse adjoint's stage-1
+//: surface: the terms it carries and the ones it does not are the header's.
+std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
+                                        torch::Tensor v, torch::Tensor dnum, torch::Tensor dden,
+                                        torch::Tensor tbl, int64_t chunk, int64_t bc,
+                                        std::vector<int64_t> widths);
+std::vector<std::vector<int64_t>> scan_b_census();
 
 }  // namespace rola::chunk

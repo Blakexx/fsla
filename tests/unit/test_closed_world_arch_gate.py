@@ -38,6 +38,12 @@ import torch
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CHUNK_CU = REPO / "csrc" / "rola" / "src" / "chunk" / "chunk.cu"
+#: The chunk COMPONENT is two translation units -- the forward's dispatch and
+#: the adjoint's -- and an entry's definition may live in either. The gate is
+#: per ENTRY, so the search is over the component rather than over one file;
+#: `check_arch_table` itself has one definition, in `chunk.cu`, which is what
+#: stops the second TU from carrying a copy that can drift.
+CHUNK_TUS = (CHUNK_CU, REPO / "csrc" / "rola" / "src" / "chunk" / "backward.cu")
 ARCH_CAPS = REPO / "csrc" / "rola" / "src" / "chunk" / "arch_caps.cuh"
 CHUNK_API = REPO / "csrc" / "rola" / "src" / "chunk" / "chunk_api.cuh"
 
@@ -69,7 +75,12 @@ def test_the_compile_time_half_is_a_table_and_a_static_assert():
 def test_the_runtime_half_refuses_an_untabulated_architecture():
     """``check_arch_table()`` keys on ``tabulated`` and on the driver's own numbers."""
     text = CHUNK_CU.read_text()
-    body = text[text.index("static void check_arch_table()"):]
+    #: ONE DEFINITION, in the forward's TU: the adjoint's TU declares it and calls
+    #: it, so there is exactly one copy of the refusal to check here.
+    assert text.count("void check_arch_table() {") == 1, (
+        "check_arch_table has more than one definition; a second copy is a second "
+        "thing that can drift from the capability table it checks")
+    body = text[text.index("void check_arch_table() {"):]
     body = body[:body.index("\n}\n") + 3]
     assert "denseref::arch::tabulated(cc)" in body, (
         "the runtime half must refuse an arch the TABLE does not carry -- an unbuilt "
@@ -87,14 +98,20 @@ def test_the_runtime_half_refuses_an_untabulated_architecture():
 def test_every_launching_entry_passes_the_gate_first(entry: str):
     """No entry that reaches a kernel can be called without the refusal running.
 
-    There is no single launcher in this TU to hang the check on -- the table pass,
-    the stats pass, the kernel and the divide are four independent entries -- so the
-    property is per entry, and this is what keeps a fifth from being added without it.
+    There is no single launcher to hang the check on -- the table pass, the stats
+    pass, the kernel, the divide and the adjoint's own entries are independent -- so
+    the property is per entry, and this is what keeps the next one from being added
+    without it, in either of the component's translation units.
     """
-    text = CHUNK_CU.read_text()
-    match = re.search(rf"^[\w:<>,\s&*]+?\b{entry}\(.*?\)\s*\{{\n(.*?)\n^\}}",
-                      text, re.M | re.S)
-    assert match, f"cannot find the definition of {entry} in chunk.cu"
+    match = None
+    for path in CHUNK_TUS:
+        match = re.search(rf"^[\w:<>,\s&*]+?\b{entry}\(.*?\)\s*\{{\n(.*?)\n^\}}",
+                          path.read_text(), re.M | re.S)
+        if match:
+            break
+    assert match, (
+        f"cannot find the definition of {entry} in "
+        f"{', '.join(p.name for p in CHUNK_TUS)}")
     first = next(line.strip() for line in match.group(1).splitlines() if line.strip())
     assert first == "check_arch_table();", (
         f"{entry} launches, so the closed-world arch refusal must be its FIRST "

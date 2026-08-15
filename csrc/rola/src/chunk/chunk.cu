@@ -26,7 +26,9 @@ namespace rola::chunk {
 //: as good as the facts it was closed over, and only a fact read off the DEVICE
 //: can establish that this is the device they were read for.
 //: docs/internals/chunk/arch_caps.md
-static void check_arch_table() {
+//: NOT TU-LOCAL: the adjoint's translation unit launches too, and a second
+//: copy of this refusal is a second thing that can drift from the table.
+void check_arch_table() {
   int dev = 0;
   C10_CUDA_CHECK(cudaGetDevice(&dev));
   //: ONCE PER PROCESS PER DEVICE, on the first launch rather than at import: a

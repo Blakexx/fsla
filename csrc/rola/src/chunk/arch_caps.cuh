@@ -19,10 +19,17 @@ struct Caps {
   // Each of these is a clause of the baseline structure.  `supported()` is
   // their conjunction; a false clause is an UNSUPPORTED architecture, not a
   // slower path.
-  bool async_copy;       // global->shared staging whose completion is a signal
-  bool tile_load;        // 8x8 b16 quads landed directly in MMA register order
-  bool mma_bf16_f32;     // tensor MAC, bf16 operands, fp32 accumulator
-  bool bf16_cvt_packed;  // two fp32 -> one b32 of two bf16, one instruction
+  bool async_copy;         // global->shared staging whose completion is a signal
+  bool tile_load;          // 8x8 b16 quads landed directly in MMA register order
+  bool mma_bf16_f32;       // tensor MAC, bf16 operands, fp32 accumulator
+  bool bf16_cvt_packed;    // two fp32 -> one b32 of two bf16, one instruction
+  bool reg_transpose_b16;  // an 8x8 b16 tile spread across the MMA unit's own
+                           // registers is transposed IN PLACE.  A clause of the
+                           // baseline because the adjoint's contraction runs
+                           // over the accumulator's OWN m axis, which puts the
+                           // accumulator on the k side, and the accumulator map
+                           // and the k-side map differ by exactly this
+                           // transpose (measured, docs/internals/chunk/ops.md).
 
   // ------------------------------------------------------------- RESIDENCY
   // Instruction facts about WHERE an accumulator lives and where an operand may
@@ -103,7 +110,8 @@ constexpr bool tabulated(int cc) {
 }
 
 // Field order, for every row below:
-//   cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed
+//   cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed,
+//                   reg_transpose_b16
 //      | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
 //                   mma_a_from_tmem
 //      | SELECTING: bf16_simd_arith, async_bulk_copy, warpgroup_mma,
@@ -113,15 +121,15 @@ constexpr bool tabulated(int cc) {
 //                   reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
 //                   driver_smem_reserve, tensor_f32_accum_pct
 constexpr Caps caps_of(int cc) {
-  return cc == 800   ? Caps{800,   true,  true,  true,  true,  true, true,   false,
-                          false, false, false, false, false, 32,   167936, 166912,
-                          128,   65536, 255,   256,   2048,  32,   1024,   100}
-         : cc == 870 ? Caps{870,   true,  true,  true,  true,  true, true,   false,
-                            false, false, false, false, false, 32,   167936, 166912,
-                            128,   65536, 255,   256,   1536,  16,   1024,   50}
-         : cc == 890 ? Caps{890,   true,  true,  true,  true,  true, true,   false,
-                            false, false, false, false, false, 32,   102400, 101376,
-                            128,   65536, 255,   256,   1536,  24,   1024,   50}
+  return cc == 800   ? Caps{800,   true,  true,  true,  true,  true, true,   true,   false,
+                          false, false, false, false, false, 32,   167936, 166912, 128,
+                          65536, 255,   256,   2048,  32,    1024, 100}
+         : cc == 870 ? Caps{870,   true,  true,  true,  true,  true, true,   true,   false,
+                            false, false, false, false, false, 32,   167936, 166912, 128,
+                            65536, 255,   256,   1536,  16,    1024, 50}
+         : cc == 890 ? Caps{890,   true,  true,  true,  true,  true, true,   true,   false,
+                            false, false, false, false, false, 32,   102400, 101376, 128,
+                            65536, 255,   256,   1536,  24,    1024, 50}
          : cc == 900
              // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds and
              // the residency derivation succeeds -- `wgmma` keeps a
@@ -130,12 +138,13 @@ constexpr Caps caps_of(int cc) {
              // missing is an IMPLEMENTATION: the built `mma`, `load_frag` and
              // carve are written for a 32-thread unit and a warpgroup unit is
              // 128.  A capability GAP, not a structural refusal.
-             ? Caps{900,  true, true,   true,   true, true,  false, false, false, true, true, true,
-                    true, 128,  233472, 232448, 128,  65536, 255,   256,   2048,  32,   1024, 100}
+             ? Caps{900,   true, true, true, true, true, true,   false,  false,
+                    false, true, true, true, true, 128,  233472, 232448, 128,
+                    65536, 255,  256,  2048, 32,   1024, 100}
              // sm_86: the local development part (GA102).
-             : Caps{860,   true,  true,  true,  true,  true, true,   false,
-                    false, false, false, false, false, 32,   102400, 101376,
-                    128,   65536, 255,   256,   1536,  16,   1024,   50};
+             : Caps{860,   true,  true,  true,  true,  true, true,   true,   false,
+                    false, false, false, false, false, 32,   102400, 101376, 128,
+                    65536, 255,   256,   1536,  16,    1024, 50};
 }
 
 //: The conjunction of the REQUIRED clauses.  There is no partial support.
@@ -144,7 +153,7 @@ constexpr Caps caps_of(int cc) {
 //: `design.cuh` from the residency facts, and an architecture that answers it a
 //: different way is a derivation rather than a refusal.
 constexpr bool supported(const Caps& c) {
-  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.bf16_cvt_packed;
+  return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.bf16_cvt_packed && c.reg_transpose_b16;
 }
 
 // ------------------------------------------------------------- DERIVATION
@@ -223,7 +232,8 @@ constexpr int caps_digest(const Caps& c) {
   return c.cc * 1000 + (int)c.async_copy * 1 + (int)c.tile_load * 2 + (int)c.mma_bf16_f32 * 4
          + (int)c.mma_b_from_regs * 8 + (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32
          + (int)c.async_bulk_copy * 64 + (int)c.warpgroup_mma * 128 + (int)c.mma_a_from_regs * 256
-         + (int)c.accum_in_tmem * 512 + (int)c.mma_a_from_tmem * 1024 + c.mma_unit_threads * 2;
+         + (int)c.accum_in_tmem * 512 + (int)c.mma_a_from_tmem * 1024
+         + (int)c.reg_transpose_b16 * 2048 + c.mma_unit_threads * 2;
 }
 
 }  // namespace arch
