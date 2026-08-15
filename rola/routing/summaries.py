@@ -1,6 +1,6 @@
 """The producer-epilogue ROUTING SUMMARY pass (docs/internals/summaries.md).
 
-This is the ONE statistic the runtime planner reads. It replaces the exact
+This is the ONE statistic the runtime reads about the realized routing. It replaces the exact
 per-``(owner, tile)`` census in the hot path: the census asks its question of every
 ``(tile, owner, leaf)`` cell, and this asks it of every ``(tile, owner)`` cell --
 ``O(BH * n_tiles * owners_total)``, which is the census's cost divided by ``BC``.
@@ -23,9 +23,9 @@ from math import prod
 import torch
 
 #: §6's MMA k-extent, and therefore the quantum every gathered extent is rounded up
-#: to. Mirrored from ``rola.planner.schedule.MMA_K_QUANTUM`` rather than imported: this
-#: module is deliberately free of any planner import (see :func:`summarize_routing`'s
-#: ``geometry`` argument for why), and :func:`summarize_routing` asserts the two agree
+#: to. Mirrored from ``rola.ops.paging.MMA_K_QUANTUM`` rather than imported: this
+#: module is deliberately free of any consumer-side import (see
+#: :func:`summarize_routing`'s ``geometry`` argument for why), and it asserts the two agree
 #: against the geometry it is handed, so a drift is a failure and not a silent one.
 MMA_K_QUANTUM = 16
 
@@ -126,11 +126,9 @@ def unpack_leaf_bitmap(words: torch.Tensor, N: int) -> torch.Tensor:
 def _pack_leaf_bitmap(flags: torch.Tensor) -> torch.Tensor:
     """Pack a trailing boolean axis into little-endian ``int32`` bit patterns.
 
-    A near-twin of ``rola.planner.schedule._pack_bits``, DUPLICATED deliberately: this
-    module is the producer epilogue and must not import the planner (see
-    :func:`summarize_routing`'s ``geometry`` argument), and the planner's copy is on
-    the data-plane side of a boundary the retirement is about to sharpen. Ten lines of
-    bit arithmetic with a gate on each side is the cheaper of the two couplings.
+    This module is the producer epilogue and must not import a consumer (see
+    :func:`summarize_routing`'s ``geometry`` argument). Ten lines of bit arithmetic
+    with a gate on each side is the cheaper of the two couplings.
     """
     *lead, n = flags.shape
     n_words = (n + _BITS_PER_WORD - 1) // _BITS_PER_WORD
@@ -241,12 +239,9 @@ def summarize_routing_reference_device(read_mask: tuple[torch.Tensor, ...],
     ``RoutingViews`` already holds and what the producer has in hand at its epilogue.
 
     ``geometry`` is the §3 owner rectangle
-    (:class:`rola.planner.schedule.OwnerGeometry`), passed as an ARGUMENT rather than
-    derived here. That is deliberate and it is the reason this module imports nothing
-    from the planner: the rectangle derivation has exactly one owner, a second
-    derivation of it would be a second authority, and a producer-side module that
-    imports the planner would make the routing package depend on the package that
-    depends on it.
+    (:class:`rola.routing.geometry.OwnerGeometry`), passed as an ARGUMENT rather than
+    derived here. That is deliberate: the rectangle derivation has exactly one owner,
+    and a second derivation of it would be a second authority.
 
     ``gamma`` is the cross-level collision correction, an argument for the
     same one-owner reason. **It is applied HERE, per ``(owner, tile)``, BEFORE the
@@ -450,8 +445,7 @@ def summarize_routing(read_amps: tuple[torch.Tensor, ...],
 
     ``geometry`` is the §3 owner rectangle, passed rather than derived for the reason
     :func:`summarize_routing_reference_device` gives: the rectangle has exactly one
-    owner, and a producer-side module that imported the planner would make the routing
-    package depend on the package that depends on it.
+    owner, and a second derivation of it would be a second authority.
 
     **THERE IS NO CPU PATH AND NO FALLBACK.** A call without the extension, or on CPU
     tensors, raises. :func:`summarize_routing_reference` exists and computes the same
@@ -550,8 +544,8 @@ def _assert_declared_density_is_realized(summaries: RoutingSummaries, density) -
     realized read-side zero fractions of 0.002056 and 0.001883 across the two levels.
 
     **Why it is debug-only, and why it exists anyway.** TODAY a false declaration can
-    only MIS-PRICE: ``build_schedule`` never reads it, so the executed schedule is the
-    realized one. Under §5.4's factored feeder the same declaration selects the DENSE
+    only MIS-PRICE: nothing the kernel executes reads it, so the launch runs on the
+    realized routing. Under §5.4's factored feeder the same declaration selects the DENSE
     feeder variant, which collapses the intersection -- at which point a false
     declaration is a correctness defect, not a rounding one. The assertion therefore
     changes character with the feeder and is written before it, not after.

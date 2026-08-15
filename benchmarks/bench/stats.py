@@ -6,8 +6,8 @@ Three gates decide that an arm regressed, and all three must fire (docs/measurem
 1. EFFECT SIZE -- :func:`bench.regression.threshold_ms`, derived from the cell's own
    measured spread.
 2. SIGNIFICANCE -- :func:`paired_verdict` below: an exact Wilcoxon signed-rank test
-   over the PER-ROUND differences. Paired, because the harness pays for pairing
-   (:mod:`bench.pairing` rule 1) and an unpaired test throws that away; exact,
+   over the PER-ROUND differences. Paired, because a harness that pays for pairing
+   is throwing that away with an unpaired test; exact,
    because the round counts here are single digits, where a normal approximation is
    an assumption rather than a shortcut.
 3. DEBOUNCE -- :func:`classify_flags`: a violation is a regression only once it has

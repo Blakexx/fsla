@@ -19,9 +19,9 @@ construction, so a mismatched source fails there and never inside a forward.
 live in the plan (measured, hard, free), CHOICES live in slots (user or learned,
 interchangeable), PREFERENCES live in optional losses (soft, opt-in, never load
 bearing). Decay's rate is a CHOICE. Setting :class:`ConstantDecay` high is a
-performance lever with no new mechanism behind it: the planner then OBSERVES fast
-forgetting in the realized routing and prices wider, cheaper executors for it, through
-exactly the door a learned source uses.
+performance lever with no new mechanism behind it: fast forgetting shows up in the
+realized routing as sparser write support, through exactly the door a learned source
+uses.
 
 **The clock this feeds is write-conditioned** (mass decay, never time decay). A leaf
 whose write amplitude is exactly zero ticks its clock by zero, so ``keep = (1 -
@@ -80,8 +80,8 @@ class ConstantDecay(DecaySource):
 
     No parameters and no gradient: the dials are buffers, so ``.to()``/``.half()`` move
     them and an optimizer never sees them. This is the performance lever -- a high
-    constant rate makes the state forget fast, which the planner observes in the
-    realized routing rather than being told.
+    constant rate makes the state forget fast, which shows up in the realized
+    routing rather than being declared.
     """
 
     def __init__(self, target_leaf_rate: float, *, widths: tuple[int, ...], num_heads: int) -> None:

@@ -4,12 +4,7 @@
 leaves is a rectangle only when `BC` aligns to the radix, and when it does the
 decomposition is UNIQUE. That is a fact about the ADDRESSING, not about any one
 kernel: `rola/routing/summaries.py`'s pass takes a geometry because the summary
-is stated per owner, and it is a producer-side module that may not import a
-consumer's planner.
-
-Extracted here at P67 D2-b. It lived in `rola/planner/schedule.py`, whose
-consumer retires; the summaries pass and its gate would have gone with it, and
-they are not the tiled consumer's. The move is VERBATIM.
+is stated per owner, and the addressing is not any one consumer's to own.
 """
 from __future__ import annotations
 
@@ -88,8 +83,8 @@ def owner_geometry(widths: tuple[int, ...], BC: int) -> OwnerGeometry:
     """Derive the §3 owner rectangle for ``BC`` over an MSB-first mixed radix.
 
     Raises loudly (no fallback, no silent re-alignment) when ``BC`` does not
-    produce an aligned rectangle. §6 makes ``BC`` a planner choice, so an
-    inadmissible ``BC`` is a planner defect, not a runtime condition.
+    produce an aligned rectangle. ``BC`` is a launch-geometry choice, so an
+    inadmissible ``BC`` is a caller defect, not a runtime condition.
     """
     if BC < 1:
         raise ValueError(f"BC must be >= 1, got {BC}")

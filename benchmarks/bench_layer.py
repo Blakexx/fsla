@@ -7,10 +7,10 @@ number requires the consumer wired into the layer." The consumer is now wired
 (`RoLA.select_execution_backend`), so this script is that number.
 
 **What is measured.** One `RoLA.forward` under `torch.no_grad()` on CUDA, which is
-the context in which the layer selects the plan-selected consumer -- projections,
-producer, per-step plan build, schedule build, kernel, output projection, glue. The
-same forward is then decomposed into PLANES by timing each component separately on
-the identical inputs, so the number is attributed rather than just reported.
+the context in which the layer reaches the kernel arm -- projections, producer,
+kernel, output projection, glue. The producer is then timed separately on the
+identical inputs, so the routing plane is attributed rather than just reported and
+the remainder is named as a residual.
 
 **What is NOT claimed.** V2 and V3 are DIFFERENT MODELS. V2 reads and writes its
 state through content-addressed `Q`/`K` at `d_qk = 16` on top of the same routed
@@ -35,13 +35,6 @@ import time
 import torch
 
 from rola import RoLA, RouteProducer, SimplexProducer, dense_routing, sparse_routing
-from rola.ops.consumer import _consumer_forward
-
-# `BC` is derived once, in closed form, over launch-static facts
-# (`rola.planner.derive.derive_bc`); `build_plan`/`build_schedule`/`plan_and_schedule`
-# in `rola.planner.schedule` take it as an argument rather than choosing among
-# candidates.
-from rola.planner.schedule import build_plan, build_schedule, plan_and_schedule
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -241,82 +234,30 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             with torch.no_grad():
                 ro = producer()
             read_levels, write_levels = ro.read, ro.write
-            g_read, g_write = ro.g_read, ro.g_write
-            decay = None if layer.decay is None else layer.decay()
-
-            def select():
-                return build_plan(layer.topology, layer.state_block,
-                                   normalization=norm, decay=decay_on)
-
-            plan = select()
-
-            def schedule_build():
-                return build_schedule(read_levels, write_levels, g_read, g_write, plan)
-
-            sched = schedule_build()
-
-            # THE plane the layer actually runs (planner increment, 2026-07-30):
-            # selection and the §4 schedule build sharing ONE pass over the routing
-            # tensors. `select` and `schedule` above are kept as separate rows so
-            # the split-path numbers this replaces stay comparable, but they are
-            # not a decomposition of `planner` -- `planner` is strictly less than
-            # their sum because the shared prefix is paid once, and the difference
-            # is the point of the increment.
-            def planner():
-                return plan_and_schedule(read_levels, write_levels, g_read, g_write,
-                                            layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on)
-
-            planner()
-
-            def consumer():
-                with torch.no_grad():
-                    return _consumer_forward(v, read_levels, write_levels, g_read, g_write,
-                                               plan, decay=decay, schedule=sched)
-
-            consumer()
 
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
             planes = {"total": _measure(whole_layer, reps, warmup)}
             peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30
-            for name, fn in (("producer", producer), ("planner", planner),
-                             ("select", select), ("schedule", schedule_build),
-                             ("consumer", consumer)):
-                planes[name] = _measure(fn, reps, warmup)
+            planes["producer"] = _measure(producer, reps, warmup)
             plane_ms = {name: stats["wall_ms"] for name, stats in planes.items()}
-            total_ms = plane_ms["total"]
-            producer_ms, select_ms = plane_ms["producer"], plane_ms["select"]
-            schedule_ms, consumer_ms = plane_ms["schedule"], plane_ms["consumer"]
-            planner_ms = plane_ms["planner"]
+            total_ms, producer_ms = plane_ms["total"], plane_ms["producer"]
 
             rows.append({
                 "version": "v3", "decay": "LeafMassDecay" if decay_on else "None",
                 "norm": norm, "router": router, "logit_gain": logit_gain,
                 "dtype": str(dtype).replace("torch.", ""),
                 "B": B, "H": H, "L": L, "d_v": d_v, "branches": list(branches),
-                "BC": layer.state_block,
                 "total_ms": round(total_ms, 4),
                 "producer_ms": round(producer_ms, 4),
-                "planner_ms": round(planner_ms, 4),
-                "select_ms": round(select_ms, 4),
-                "schedule_ms": round(schedule_ms, 4),
-                "consumer_ms": round(consumer_ms, 4),
-                "glue_ms": round(total_ms - producer_ms - planner_ms - consumer_ms, 4),
-                "glue_ms_split_path": round(
-                    total_ms - producer_ms - select_ms - schedule_ms - consumer_ms, 4),
-                # Explicitly labelled ARITHMETIC, not a measurement: what the same
-                # forward would cost if the per-step plan build were free. It is the
-                # upper bound on what any amortization policy could recover, and it
-                # is NOT a configuration this tree runs -- the per-step ruling stands.
-                "total_ms_minus_planner_counterfactual": round(total_ms - planner_ms, 4),
+                "consumer_ms": round(total_ms - producer_ms, 4),
                 "planes": {name: {k: round(v, 4) for k, v in stats.items()}
                            for name, stats in planes.items()},
                 "peak_alloc_gb": round(peak_gb, 4),
                 **_addressing(layer, branches, d_v, H, norm, read_levels, write_levels),
             })
             print(json.dumps(rows[-1]), flush=True)
-            layer = x = v = ro = read_levels = write_levels = sched = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
+            layer = x = v = ro = read_levels = write_levels = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
             torch.cuda.empty_cache()
     return rows
 
@@ -351,25 +292,15 @@ def main() -> None:
           f"{args.reps}) — router={args.router} logit_gain={args.logit_gain} ===")
     for r in rows:
         print(f"decay={r['decay']:14s} norm={r['norm']:7s} total={r['total_ms']:7.3f} | "
-              f"producer={r['producer_ms']:6.3f} planner={r['planner_ms']:6.3f} "
-              f"(split: select={r['select_ms']:6.3f} schedule={r['schedule_ms']:6.3f}) "
-              f"consumer={r['consumer_ms']:6.3f} "
-              f"(event {r['planes']['consumer']['event_ms']:5.3f}) "
-              f"glue={r['glue_ms']:7.3f} | peak={r['peak_alloc_gb']:.3f} GB | "
-              f"BC={r['BC']} "
+              f"producer={r['producer_ms']:6.3f} "
+              f"rest={r['consumer_ms']:6.3f} | peak={r['peak_alloc_gb']:.3f} GB "
               f"| A_r={r['A_r']}/{r['N']}")
     print("\nTIMES ABOVE ARE SYNCHRONIZED WALL-CLOCK. The `cuda.Event` median is carried per\n"
-          "plane in the JSON (`planes.<name>.event_ms`) and is quoted inline for the consumer,\n"
-          "the one plane that is GPU-bound. For the host-bound planes (`select`, `schedule`)\n"
-          "an event pair brackets a CPU stall rather than a kernel and is high-variance: the\n"
-          "same cell moved `select`'s event median between 7.9 and 12.4 ms across runs while\n"
-          "its consumer plane repeated to 1.141/1.141 ms.")
-    print("\nPLANE SUMS DO NOT ADD TO `total` BY CONSTRUCTION. Each plane is timed as its\n"
-          "own launch sequence, so per-plane launch and synchronization overhead is counted\n"
-          "in the plane AND absent from the fused whole-layer call; `glue` is the residual\n"
-          "(projections, rearranges, casts, dispatch) and may be negative when the planes\n"
-          "cost more measured apart than together. It is reported as a residual, not as an\n"
-          "independently measured quantity.")
+          "plane in the JSON (`planes.<name>.event_ms`).")
+    print("\n`rest` IS A RESIDUAL, NOT A MEASUREMENT. The producer plane is timed as its own\n"
+          "launch sequence, so its launch and synchronization overhead is counted in the\n"
+          "plane AND absent from the fused whole-layer call; `rest` is `total - producer`\n"
+          "(kernel, projections, rearranges, casts, dispatch) and is reported as a residual.")
     print("\nNOT A MATCHED RATIO. V2 and V3 are DIFFERENT MODELS: V2 addresses its state\n"
           "through content-addressed Q/K at d_qk=16 on top of the same routed hierarchy,\n"
           "V3 has no Q, no K and no feature map. What is matched here is (B, H, L, d_v,\n"

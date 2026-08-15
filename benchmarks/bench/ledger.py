@@ -16,7 +16,8 @@ Three properties are the reason this file exists rather than a markdown table:
   assembler. That is a hash, not a convention, so a comparison across an arch or
   across a probe redefinition is impossible rather than discouraged.
 * **THE STOPWATCH IS A FIELD.** `source` names the instrument
-  (:mod:`bench.pairing`); the regression rule filters on it, and legacy rows carry
+  (:data:`bench.regression.CANONICAL_INSTRUMENT`); the regression rule filters on
+  it, and legacy rows carry
   `probe_version: 0` so they can never enter a comparison with disciplined ones.
 
 `perf/ledger.jsonl merge=union` in `.gitattributes` is what makes append-only

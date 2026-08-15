@@ -9,7 +9,7 @@ carries the topology, the value width, the normalization arm and the producers t
 fill each level. ``decay`` is a decay SOURCE (:mod:`rola.routing.decay`), the slot that
 decides where the recurrence's forgetting rates come from. Everything else the layer
 used to take was either one of those two facts spelled out flat, or a launch decision
-the planner makes.
+the op makes.
 
 **Execution backends, and the rule that picks between them.** The layer has three, and
 the choice is STRUCTURAL -- decided before any of them runs:
@@ -21,10 +21,10 @@ the choice is STRUCTURAL -- decided before any of them runs:
 * ``'cuda'`` -- the chunk consumer, through :func:`rola.rola_op`.
 * ``'decode'`` -- the ``T = 1`` sibling kernel. At one token every selection decision is
   degenerate (no tile to choose, no split, a statistics population of one), so decode
-  bypasses selection ARCHITECTURALLY rather than running the planner on degenerate
-  inputs. It is a SIBLING of the tiled path, not a specialization: shared production
-  contract, own consumer, frozen config. Its envelope is its own: decode is BC-blind
-  and general in the topology, so it is never gated on the prefill matrix.
+  bypasses selection ARCHITECTURALLY rather than deciding it per step. It is a SIBLING
+  of the prefill path, not a specialization: shared production contract, own consumer,
+  frozen config. Its envelope is its own: decode is BC-blind and general in the
+  topology, so it is never gated on the prefill matrix.
 
 **The autograd trap this dispatch exists to close** (the layer-dispatch autograd gap):
 a forward-only kernel reachable from a gradient-requiring context does not raise. It
@@ -88,7 +88,7 @@ class RoLA(nn.Module):
         route_conv: the same, over the routing source stream.
         layer_idx: index into the recurrent cache.
         expert: :class:`rola.expert.PlanOverrides`. Everything it pins is an axis the
-            planner derives; it is quarantined because a caller pinning one is not
+            op decides; it is quarantined because a caller pinning one is not
             describing a model.
     """
 
@@ -118,18 +118,8 @@ class RoLA(nn.Module):
             validate_decay_source(decay, routes.topology, num_heads)
 
         from rola.expert import PlanOverrides
-        from rola.planner.derive import feasible_bc
 
         overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
-        # CONSTRUCTION TIME, NOT PLAN TIME. `feasible_bc` is the alignment-admissible set
-        # intersected with the instantiated ladder, and it raises with the topology's own
-        # diagnosis when the ladder cannot serve it at all. Resolving it here means a
-        # topology nothing implements, and an inadmissible expert pin, both fail on the
-        # line that chose them rather than inside a forward several frames away.
-        #: The `BC` ladder this topology can run on. An expert pin SHRINKS it to itself.
-        self.feasible_BC = feasible_bc(
-            routes.topology.widths,
-            **({} if overrides.state_block is None else {"pinned": overrides.state_block}))
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -151,7 +141,6 @@ class RoLA(nn.Module):
         # distinction the autograd trap turns on.
         self._execution_backend_counts = {"oracle": 0, "cuda": 0, "decode": 0}
         self.last_execution_backend: str | None = None
-        self.last_selected_plan = None
 
     # --- accessors ----------------------------------------------------------
 
@@ -167,16 +156,6 @@ class RoLA(nn.Module):
     @property
     def normalization(self) -> str:
         return self.routes.normalization
-
-    @property
-    def state_block(self) -> int:
-        """``BC``, the leafs one owner block owns -- pinned, or the largest feasible.
-
-        It is a PROPERTY rather than stored state because it is not a decision this
-        layer makes: the planner chooses it per launch from the feasible set, and an
-        expert pin is a set of one.
-        """
-        return self.feasible_BC[-1]
 
     @property
     def execution_backend_counts(self) -> dict[str, int]:
@@ -322,7 +301,6 @@ class RoLA(nn.Module):
                 routes, *operands).backend
             out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
                                  _arm="reference" if arm == "reference" else "kernel")
-            self.last_selected_plan = None
             backend = "oracle" if arm == "reference" else "cuda"
             # The reference arm is the fp64 oracle and returns fp64 whatever it was
             # handed; casting back is the caller's business because the caller is the
@@ -359,7 +337,6 @@ class RoLA(nn.Module):
         ``rola_op``.
         """
         out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
-        self.last_selected_plan = None
         return out
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------

@@ -601,76 +601,18 @@ class PageArena:
             committed_bytes=self.committed_bytes)
         return self.last_result
 
-
-    def plan(self, schedule, *, fresh: bool = True) -> PagingResult:
-        """:meth:`plan_exact`, with §4.1's atom condensation DERIVED from a schedule.
-
-        This is a CONVENIENCE over the primitive, not a second path: it computes exactly
-        the object :meth:`plan_exact` takes and then calls it. It exists because the
-        arena has one caller that holds a ``Schedule`` and not yet a
-        :class:`~rola.routing.summaries.RoutingSummaries`.
-
-        **ITS COST IS STATED RATHER THAN HIDDEN.** The condensation it derives here is
-        already produced -- exactly, canonically -- by the producer epilogue's summary
-        pass (§4.1: the per-leaf write bitmap is the canonical truth and every other
-        granularity CONDENSES from it). Deriving it again from ``schedule.write_amps``
-        repeats an ``O(BH * n_tiles * N)`` reduction the launch has already paid for. A
-        caller that has the summaries must pass ``summaries.atom_bitmap(N)`` to
-        :meth:`plan_exact` and skip this entirely; the duplication disappears with the
-        layer cut-over, and it is a duplication rather than a divergence because both
-        derivations compute the same union over tokens of the exact write support.
-        """
-        plan_obj = schedule.plan
-        if tuple(plan_obj.topology.widths) != self.widths:
-            raise ValueError("schedule topology does not match this arena")
-        if plan_obj.BC % MMA_K_QUANTUM:
-            raise ValueError(
-                f"the schedule plans BC={plan_obj.BC}, which is not a whole number of "
-                f"{MMA_K_QUANTUM}-leaf atoms (spec §1b)")
-        return self.plan_exact(atom_bitmap_from_schedule(schedule, self.keying),
-                               fresh=fresh)
-
     def wait(self) -> None:
         """The ONE event-wait §4.5 puts before the consumer launch.
 
-        Allocation and zero-init ran on the side stream while the schedule was being
-        built; this is where the consumer's stream joins them. It is a stream-to-stream
+        Allocation and zero-init ran on the side stream while the launch's operands
+        were being assembled; this is where the consumer's stream joins them. It is a stream-to-stream
         wait, not a host synchronization -- the host never learns when the zeroing
         finished, only that the consumer will not start before it did.
         """
         if self._ready is not None:
             torch.cuda.current_stream(self.device).wait_event(self._ready)
 
-    # -- dense bridges (the §7.3 boundary, crossed explicitly) -------------
-
-    def adopt_dense(self, state: torch.Tensor) -> None:
-        """Commit a slot for every atom of a dense ``[BH, N, cols]`` state.
-
-        The explicit bridge INTO the arena. It provisions the dense limit, so it is the
-        wrong thing to do at scale and exists for exactly one reason: a carried
-        continuation state produced by the unpaged path (or by the oracle) must be
-        loadable, and §7.1 defers to §7.3 on what should cross a call boundary. Named a
-        bridge rather than a mode so no measurement quotes it as the feature.
-        """
-        expected = (self.BH, self.N, self.cols)
-        if tuple(state.shape) != expected:
-            raise ValueError(f"dense state must be {expected}, got {tuple(state.shape)}")
-        # JOIN THE SIDE STREAM FIRST -- the same missing-wait class the postmerge
-        # fix closed before the consumer launch (H4d). The copies below run on the
-        # CALLER's stream, and a previous `plan_exact` may still be zeroing this
-        # very `_value_base` (and writing `_page_table`) on the side stream; without
-        # this join the two write streams race on the same bytes. Stream-to-stream,
-        # so it costs the host nothing.
-        self.wait()
-        self._allocator.reset()
-        first = self._allocator.take(self.logical_pages)
-        assert first == 0
-        self._commit(self.logical_pages)
-        table = torch.arange(self.logical_pages, dtype=torch.int32, device=self.device)
-        self._page_table.copy_(table.view(self.BH, self.keying.atoms_per_bh))
-        self._value_base.copy_(
-            state.reshape(self.logical_pages, MMA_K_QUANTUM, self.cols))
-        self.peak_pages = max(self.peak_pages, self.logical_pages)
+    # -- the dense bridge OUT (the §7.3 boundary, crossed explicitly) ------
 
     def materialize(self) -> torch.Tensor:
         """Gather the committed atoms back into a dense ``[BH, N, cols]`` state.
@@ -686,47 +628,6 @@ class PageArena:
         dense = torch.zeros_like(gathered)
         dense[present] = gathered[present]
         return dense.reshape(self.BH, self.N, self.cols)
-
-
-def atom_bitmap_from_schedule(schedule, keying: AtomKeying) -> torch.Tensor:
-    """``[BH, atoms_per_bh]`` bool: the atoms this schedule's WRITE support touches.
-
-    §4.1's derived atom granularity, condensed from the per-leaf write support -- a leaf
-    is written iff at SOME token EVERY level's digit for it is live on the write side,
-    which is an OR of ANDs and is why this is ``O(BH * n_tiles * N)`` however it is
-    spelled.
-
-    **KEYED ON THE LIVE DEPOSIT, never on the clock.** ``GRADIENT_PROOFS_WOLFRAM.md``
-    P5.20.5 finding 2 is binding: a storage path may flush a small live ``p_write`` to a
-    stored zero, giving ``c == 0`` (``keep == 1``) with a live deposit ``W != 0``. Such a
-    leaf is touched and must be resident. ``schedule.write_amps`` IS the live deposit and
-    the stored clock is not reachable from a ``Schedule`` at all, so the wrong tensor is
-    not merely discouraged here -- it is unreachable, exactly as it is in the §4 bitmap
-    builder.
-
-    Chunked over tiles so the transient never reaches ``O(L * N)``.
-    """
-    widths = tuple(schedule.plan.topology.widths)
-    amps = schedule.write_amps
-    BH, n_tiles = amps[0].shape[0], amps[0].shape[1]
-    N = keying.N
-    device = amps[0].device
-    live = torch.zeros((BH, N), dtype=torch.bool, device=device)
-    tiles_per_chunk = max(1, (1 << 24) // max(1, N))
-    for lo in range(0, n_tiles, tiles_per_chunk):
-        hi = min(lo + tiles_per_chunk, n_tiles)
-        block = None
-        for level, width in enumerate(widths):
-            # `[BH, tiles, BT, width] -> [BH, tiles*BT, 1..width..1]`, broadcast over the
-            # digit grid: the leaf id is the row-major flattening of it, so the AND over
-            # levels needs no index at all.
-            shape = [1] * len(widths)
-            shape[level] = width
-            token_live = (amps[level][:, lo:hi, :, :width] != 0).reshape(
-                BH, -1, *shape)
-            block = token_live if block is None else (block & token_live)
-        live |= block.reshape(BH, -1, N).any(dim=1)
-    return live.view(BH, keying.atoms_per_bh, MMA_K_QUANTUM).any(dim=-1)
 
 
 class _NullContext:
@@ -745,6 +646,5 @@ __all__ = [
     "ExtentAllocator",
     "PageArena",
     "PagingResult",
-    "atom_bitmap_from_schedule",
     "vmm_supported",
 ]

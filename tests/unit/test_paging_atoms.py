@@ -259,18 +259,24 @@ def test_an_owners_atoms_land_contiguous_in_the_common_case():
 
 
 @pytest.mark.parametrize("BC", _BCS, ids=_BC_IDS)
-def test_adopt_dense_and_materialize_round_trip_through_the_atom_layout(BC):
-    """The §7.3 bridges are LOSSLESS across the re-key, at every ``BC``.
+def test_a_fully_resident_arena_materializes_the_canonical_leaf_order(BC):
+    """The §7.3 bridge OUT is LOSSLESS across the re-key, at every ``BC``.
 
-    ``materialize`` after ``adopt_dense`` must be the identity: the atom layout is a
-    RESHAPE of the canonical leaf order, so a round trip that lost a byte would mean the
-    two disagree about which leaf a row is.
+    Admit every atom, write a dense state through the slots the table names, and
+    ``materialize`` must return it unchanged: the atom layout is a RESHAPE of the
+    canonical leaf order, so a round trip that lost a byte would mean the two disagree
+    about which leaf a row is. The write goes through ``page_table`` rather than
+    assuming an identity mapping, which keeps the claim about the LAYOUT rather than
+    about the allocator's cursor.
     """
     widths, cols, BH = (8, 16), 4, 2
     N = prod(widths)
     arena = _arena(widths=widths, BC=BC, cols=cols, BH=BH)
     dense = torch.arange(BH * N * cols, dtype=torch.float32).reshape(BH, N, cols)
-    arena.adopt_dense(dense)
+    arena.plan_exact(torch.ones((BH, N // MMA_K_QUANTUM), dtype=torch.bool))
+    arena.state.index_copy_(
+        0, arena.page_table.reshape(-1).long(),
+        dense.reshape(BH * N // MMA_K_QUANTUM, MMA_K_QUANTUM, cols))
     assert torch.equal(arena.materialize(), dense)
     assert arena.allocated_pages == arena.logical_pages
 

@@ -1,13 +1,16 @@
 """The CI regression layer: the judgement, over the record :mod:`bench.ledger` keeps.
 
 **WHAT IS SHARED AND WHAT IS NOT.** The methodology stays this repository's own --
-no library provides interleaved pairing, per-pair ratio IQRs, counter corroboration,
-or a committed statistics manifest (:mod:`bench.pairing` is where it lives). Storage
-and comparison are `perf/ledger.jsonl`: run this commit's latency per
-``(cell, arm)``, keep the RAW samples with the instrument that took them, and
-compare against the recorded baseline. A benchmark runner was tried in that role and
-removed on measurement -- its round schedule, not the kernel, set the number the gate
-read (`benchmarks/test_latency_regression.py`, third correction).
+no library provides per-pair ratio IQRs, counter corroboration, or a committed
+statistics manifest. Storage and comparison are `perf/ledger.jsonl`: run this
+commit's latency per ``(cell, arm)``, keep the RAW samples with the instrument that
+took them, and compare against the recorded baseline. A benchmark runner was tried
+in that role and removed on measurement -- its round schedule, not the kernel, set
+the number the gate read.
+
+:func:`settle_clocks` lives here for the same reason the threshold does: it is a
+PRECONDITION of a comparable number, not a property of any one fixture. A run that
+measured while the box was still ramping is not a run this layer can judge.
 
 **THE THRESHOLD IS DERIVED FROM THE CELL'S OWN MEASURED IQR, NEVER INVENTED.** A
 flat "fail at +5 %" is a number about nobody's hardware: on a cell whose IQR is 12 %
@@ -30,14 +33,18 @@ no username, no path, no account identifier** -- these files are published, and 
 fleet hostname is not a fact about the kernel.
 
 **AND IT NAMES THE STOPWATCH.** Every arm records the instrument it was measured
-with (:data:`bench.pairing.CANONICAL_INSTRUMENT`), and :func:`check_instrument`
+with (:data:`CANONICAL_INSTRUMENT`), and :func:`check_instrument`
 refuses a comparison across two of them. A threshold derived from one instrument's
 spread says nothing about another instrument's median.
 """
 from __future__ import annotations
 
 import json
+import shutil
 import statistics
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 import torch
@@ -76,12 +83,37 @@ def provenance() -> dict:
 
 
 def iqr(xs) -> float:
-    """The same order statistic :mod:`bench.pairing` reports, so a baseline's spread
+    """The same order statistic every recorded arm reports, so a baseline's spread
     and a run's spread are the same quantity."""
     xs = sorted(xs)
     n = len(xs)
     return xs[int(0.75 * n)] - xs[int(0.25 * n)]
 
+
+#: THE COMMITTED CHOICE. Device events, because the quantity every published claim
+#: is about is the kernel's own duration, and because it is the instrument the
+#: campaign's banked numbers were actually taken with -- that recipe lived only in a
+#: workflow document, so the tree and the record measured different quantities. It
+#: is one name in one place: changing it is a re-measurement of every committed
+#: baseline, which is what it should be.
+CANONICAL_INSTRUMENT = "cuda_events"
+
+def same_instrument(a: str, b: str, what: str) -> None:
+    """Refuse to compare two numbers taken with different stopwatches.
+
+    Not a warning. The gap between the instruments is not noise -- it is the launch
+    and sync cost one of them includes -- so a comparison across them reports that
+    difference as though it were a property of the kernel. The same refusal covers
+    ``ncu`` durations, which are taken under profiling conditions (replay, flushed
+    caches, base clocks) that no wall-clock instrument reproduces.
+    """
+    if a != b:
+        raise ValueError(
+            f"{what}: refusing to compare a number taken with instrument {a!r} "
+            f"against one taken with {b!r}. These are different quantities, not the "
+            f"same quantity measured twice. Re-measure the older side with the "
+            f"current instrument ({CANONICAL_INSTRUMENT!r}) and record it as a new "
+            f"measurement.")
 
 def summarize(times_ms, *, source: str | None = None) -> dict:
     """The three numbers a baseline entry carries, plus the stopwatch that took them.
@@ -89,8 +121,6 @@ def summarize(times_ms, *, source: str | None = None) -> dict:
     `source` defaults to the committed instrument rather than being optional-in-name-
     only: an entry with no stopwatch is an entry that cannot be checked against one.
     """
-    from bench.pairing import CANONICAL_INSTRUMENT
-
     return {"median_ms": round(statistics.median(times_ms), 6),
             "iqr_ms": round(iqr(times_ms), 6),
             "reps": len(times_ms),
@@ -104,14 +134,13 @@ def check_instrument(baseline_arm: dict, got_source: str, key: str) -> None:
     that is ALSO a refusal: the quantity it holds is unknown, which is exactly the
     state this check exists to end. Re-record it -- a baseline is a measurement.
     """
-    from bench.pairing import same_instrument
-
     was = baseline_arm.get("source")
     if was is None:
         raise ValueError(
             f"{key}'s committed baseline does not say which stopwatch took it, so "
             f"nothing can be compared against it. Re-record the baseline: "
-            f"flock /tmp/rola_gpu.lock python benchmarks/bench_regression.py --write")
+            f"a baseline is a measurement, so re-take it with the current "
+            f"instrument ({CANONICAL_INSTRUMENT!r}).")
     same_instrument(was, got_source, f"latency gate for {key}")
 
 
@@ -186,3 +215,147 @@ def write_baseline(arms: dict) -> None:
     BASELINE.write_text(json.dumps(
         {"provenance": provenance(), "alarm_sigma": ALARM_SIGMA, "arms": arms},
         indent=1, sort_keys=True) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# CLOCK-SETTLING PROTOCOL (item 0b)
+# ---------------------------------------------------------------------------
+
+def _nvidia_smi_clock_mhz(idx: int, field: str) -> float:
+    """One ``nvidia-smi`` clock field, in MHz, for device ``idx``.
+
+    Raises rather than returning a sentinel on failure: a settle routine that
+    cannot see the clock has to say so (`settle_clocks` catches this and reports
+    it), not proceed as though the box were settled.
+    """
+    out = subprocess.run(
+        ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits",
+         f"--id={idx}"],
+        capture_output=True, text=True, timeout=5, check=True)
+    return float(out.stdout.strip().splitlines()[0])
+
+
+def settle_clocks(
+    *,
+    #: Consecutive `clocks.sm` samples that must all agree before the box counts
+    #: as settled. JUDGMENT, not measured: chosen as "a handful of samples", not
+    #: swept against alternatives. `0a0b-instrument.md`'s own verification runs
+    #: (5 back-to-back gate invocations, 2026-08-01) settled in 0.9-1.2s at this
+    #: value every time, so it was never the binding constraint there -- a smaller
+    #: value was not shown to be unsafe, this one just was not tightened further.
+    hold_polls=4,
+    #: MEASURED, on this box (`0a0b-instrument.md`, 2026-08-01): a sustained fp16
+    #: matmul loop at 100% utilization holds 1710-1740 MHz continuously
+    #: (power/thermal-limited, not still ramping) -- `extraction.md`'s independent
+    #: "forcing 1740 MHz by hand" note agrees. This box idles at ~210-240 MHz
+    #: before the burn starts; the actual gate runs this settles
+    #: (`test_latency_regression.py -m bench`, 5 back-to-back invocations,
+    #: 2026-08-01) latched at 1845-1860 MHz -- a different, slightly higher
+    #: plateau than the isolated-burn measurement, not reconciled further here.
+    #: 30 MHz brackets both plateaus' observed jitter without being so tight the
+    #: poll never latches; not derived from a formal noise-floor measurement, so
+    #: treat as judgment inside an empirically-set order of magnitude.
+    plateau_tol_mhz=30.0,
+    #: JUDGMENT: fast enough that `hold_polls` samples land in ~0.6s (matching the
+    #: 0.9-1.2s settle times `0a0b-instrument.md` actually measured), slow enough
+    #: not to hammer `nvidia-smi` as a subprocess launch every tick. Not swept.
+    poll_interval_s=0.15,
+    #: JUDGMENT, a generous ceiling: every measured settle in
+    #: `0a0b-instrument.md`'s verification runs (5 back-to-back gate invocations,
+    #: 2026-08-01) finished in 0.9-1.2s, roughly 10x under this bound. Sized to
+    #: fail loudly on a genuinely stuck clock rather than to bound the common case.
+    timeout_s=12.0,
+    #: JUDGMENT: large enough that the `a @ b` burn loop keeps the SM saturated
+    #: between `nvidia-smi` polls (the failure mode this exists to avoid is the
+    #: clock relaxing between bursts -- see the "stop/query/restart" note below),
+    #: not picked from a sweep of matmul sizes against settle time or power draw.
+    matmul_n=4096,
+) -> dict:
+    """Ramp this box to a steady SM clock before ANY latency in this process is
+    timed -- the fix for the gate defect `extraction.md` "A GATE DEFECT FOUND ON THE
+    WAY" recorded rather than worked around.
+
+    **The defect.** The box idles at ~210-240 MHz of a ~2100 MHz rated max. The
+    baseline RECORDER (`bench_regression.py`'s 35 reps * 5 blocks * 7 processes)
+    ramps the clock as an incidental side effect of doing that much work; the
+    per-commit GATE (`test_latency_regression.py`, 11 reps, one process) does not do
+    enough work to ramp it the same way. The two sides of the comparison were
+    therefore starting from different clock states, and the two sub-millisecond
+    wave-quantized `topo-*` cells (`waves_per_multiprocessor = 0.53`, 128 CTAs over
+    80 SMs) are narrow enough for that gap alone to read as a regression.
+
+    **The target is a PLATEAU, not a fraction of the rated max.** The rated max
+    clock (`clocks.max.sm`) is a boost ceiling this card does not sustain under
+    continuous compute -- measured here at 100 % utilization it settles at
+    1710-1740 MHz, ~82 % of the 2100 MHz rating, and holds there (power/thermal
+    limited, not still ramping); `extraction.md`'s own "forcing 1740 MHz by hand"
+    note independently measured the same ceiling. A threshold expressed as a
+    fraction of `clocks.max.sm` is therefore unreachable and times out on every
+    call. The correct target is: the clock has STOPPED CHANGING, wherever it stops
+    -- so this polls `clocks.sm` while a continuous background load runs, and calls
+    it settled once the last `hold_polls` samples all fall within
+    `plateau_tol_mhz` of each other.
+
+    **The fix.** A background thread keeps issuing matmuls on the SAME device the
+    caller is about to time -- continuously, not start/stop per poll, because a
+    stop/query/restart cycle lets the clock relax between bursts and never
+    reflects the steady state the timed reps will actually run under. The main
+    thread polls `nvidia-smi` (a separate process; it does not contend with the
+    GIL the burn thread holds while launching kernels) until the plateau
+    criterion holds or `timeout_s` elapses.
+
+    **Reported, never silently skipped.** A box without `nvidia-smi`, or one whose
+    query fails, gets ``settled: False`` and a ``reason`` in the returned dict
+    instead of the routine pretending it settled a clock it never measured. Callers
+    print this dict so a flaky run says whether settling even ran, rather than
+    leaving the clock as an unstated variable the way the pre-existing gate did.
+    """
+    result: dict = {"settled": False}
+    if not torch.cuda.is_available():
+        result["reason"] = "no cuda device"
+        return result
+    idx = torch.cuda.current_device()
+    if shutil.which("nvidia-smi") is None:
+        result["reason"] = "nvidia-smi not found"
+        return result
+    try:
+        max_mhz = _nvidia_smi_clock_mhz(idx, "clocks.max.sm")
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
+        result["reason"] = f"could not query clocks.max.sm: {exc}"
+        return result
+
+    a = torch.randn(matmul_n, matmul_n, device="cuda", dtype=torch.float16)
+    b = torch.randn(matmul_n, matmul_n, device="cuda", dtype=torch.float16)
+    stop = threading.Event()
+
+    def _burn() -> None:
+        while not stop.is_set():
+            a @ b  # noqa: B018 -- async launch is the point; the result is unused
+
+    burner = threading.Thread(target=_burn, daemon=True)
+    burner.start()
+    try:
+        samples: list[float] = []
+        t0 = time.monotonic()
+        cur = 0.0
+        while time.monotonic() - t0 < timeout_s:
+            time.sleep(poll_interval_s)
+            try:
+                cur = _nvidia_smi_clock_mhz(idx, "clocks.sm")
+            except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
+                result["reason"] = f"could not query clocks.sm: {exc}"
+                return result
+            samples.append(cur)
+            window = samples[-hold_polls:]
+            if len(window) >= hold_polls and max(window) - min(window) <= plateau_tol_mhz:
+                result.update(settled=True, sm_mhz=cur, max_mhz=max_mhz,
+                              plateau_mhz=round(max(window) - min(window), 1),
+                              elapsed_s=round(time.monotonic() - t0, 3))
+                return result
+        result.update(reason="timeout", sm_mhz=cur, max_mhz=max_mhz,
+                      elapsed_s=round(time.monotonic() - t0, 3))
+        return result
+    finally:
+        stop.set()
+        burner.join(timeout=2.0)
+        torch.cuda.synchronize()

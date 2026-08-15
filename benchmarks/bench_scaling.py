@@ -84,17 +84,9 @@ import torch
 import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from bench.instruments import settle_clocks
+from bench.regression import settle_clocks
 from rola import RoLA, RouteProducer, SimplexProducer, sparse_routing
 from rola import state as rola_state
-from rola.expert import PlanOverrides
-from rola.ops.consumer import _consumer_forward
-
-# `BC` is derived once, in closed form, over launch-static facts
-# (`rola.planner.derive.derive_bc`); `plan_and_schedule`/`build_plan`/`build_schedule`
-# in `rola.planner.schedule` take it as an argument rather than choosing among
-# candidates, so there is no separate selection plane to reconstruct here.
-from rola.planner.schedule import build_plan, build_schedule, plan_and_schedule
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -115,10 +107,10 @@ def _measure(fn, reps: int, warmup: int) -> dict[str, float]:
     """Both instruments, per `wiring.md` §3.1.
 
     `event_ms` is the `cuda.Event` median -- right for a GPU-bound region.
-    `wall_ms` is the synchronized wall-clock median -- the honest one for the
-    host-bound planes (`planner`), where an event pair brackets a CPU stall rather
-    than a kernel and reports it with large variance. Both are carried on every
-    plane so neither is chosen silently.
+    `wall_ms` is the synchronized wall-clock median -- the honest one for a
+    host-bound plane, where an event pair brackets a CPU stall rather than a kernel
+    and reports it with large variance. Both are carried on every plane so neither is
+    chosen silently.
     """
     global _warmed
     if not _warmed:
@@ -267,7 +259,7 @@ def _addressing(branches, d_v, read_levels, write_levels) -> dict:
 
 
 def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, logit_gain,
-                paging, planes: bool, reps, warmup, state_block=None,
+                paging, planes: bool, reps, warmup,
                 arm="v3", cell_role="parity") -> dict:
     """`read_router`/`write_router` are independent (`'softmax'` = dense, `'entmax'`
     = exact entmax sparse), per the 2026-08-01 ruling: the freeze-defining parity
@@ -306,7 +298,6 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            #: reader of an old JSON beside a new one is comparing the same arm.
            "norm": "global", "decay": "None",
            "paging": paging, "P": 1, "P_role": "PRIMARY (spec §6.4)",
-           "requested_state_block": state_block,
            "dtype": "float32", "reps": reps, "warmup": warmup}
     try:
         torch.manual_seed(0)
@@ -317,7 +308,6 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization="global")
         layer = RoLA(
             hidden, H, routes, decay=None, layer_idx=0,
-            expert=PlanOverrides(state_block=state_block),
         ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
             with torch.no_grad():
@@ -334,15 +324,6 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         assert layer.last_execution_backend == "cuda", (
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
             "would be an oracle timing")
-        row["BC"] = layer.state_block
-        # `layer.last_selected_plan`/`layer.last_plan_axes` are re-derived here rather
-        # than read off the layer, since the private seam (`rola.interface._derive_plan`,
-        # exported as `rola.expert.derive_plan`) discards the `Plan` it computes.
-        from rola.expert import derive_plan
-
-        plan = derive_plan(
-            layer.routes(x), decay=None, expert=layer.expert, device=x.device)
-        row["BC_derived"] = plan.BC
         # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
         # engages only on a call that carries a state. The TIMED call above stays
         # stateless -- that is the row this benchmark reports -- and residency is read
@@ -395,13 +376,11 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         })
 
         if planes:
-            # Plane decomposition on the identical inputs the whole-layer call uses,
-            # same construction as `benchmark_rola_v3_layer.py`. `glue` is a RESIDUAL
-            # (total minus the planes), not an independent measurement: each plane is
-            # timed as its own launch sequence, so its launch/sync overhead is inside
-            # the plane and absent from the fused call, and the residual can go negative.
-            v = layer.v_proj(x).view(B, L, H, d_v)
-
+            # The ROUTING plane on the identical inputs the whole-layer call uses.
+            # `rest` is a RESIDUAL (total minus producer), not an independent
+            # measurement: the plane is timed as its own launch sequence, so its
+            # launch/sync overhead is inside the plane and absent from the fused call,
+            # and the residual can go negative.
             def producer():
                 with torch.no_grad():
                     return layer.routes(x)
@@ -409,42 +388,14 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             with torch.no_grad():
                 ro = producer()
             read_levels, write_levels = ro.read, ro.write
-            g_read, g_write = ro.g_read, ro.g_write
-            def planner():
-                return plan_and_schedule(read_levels, write_levels, g_read, g_write,
-                                            layer.topology, layer.state_block,
-                                            normalization="global", decay=False)
-
-            sel_plan, sched = planner()
-
-            def select_only():
-                return build_plan(layer.topology, layer.state_block,
-                                   normalization="global", decay=False)
-
-            def schedule_only():
-                return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)
-
-            def consumer():
-                with torch.no_grad():
-                    return _consumer_forward(v, read_levels, write_levels, g_read,
-                                               g_write, sel_plan, decay=None,
-                                               schedule=sched)
-
-            consumer()
-            plane_stats = {}
-            for name, fn in (("producer", producer), ("planner", planner),
-                             ("select", select_only), ("schedule", schedule_only),
-                             ("consumer", consumer)):
-                plane_stats[name] = _measure(fn, reps, warmup)
+            plane_stats = {"producer": _measure(producer, reps, warmup)}
             row["planes"] = {name: {k: round(v, 4) for k, v in s.items()}
                              for name, s in plane_stats.items()}
-            for name in ("producer", "planner", "select", "schedule", "consumer"):
-                row[f"{name}_ms"] = round(plane_stats[name]["wall_ms"], 4)
-            row["glue_ms"] = round(row["total_ms"] - row["producer_ms"]
-                                   - row["planner_ms"] - row["consumer_ms"], 4)
-            row["glue_basis"] = "RESIDUAL of total minus (producer, planner, consumer); may be negative"
+            row["producer_ms"] = round(plane_stats["producer"]["wall_ms"], 4)
+            row["rest_ms"] = round(row["total_ms"] - row["producer_ms"], 4)
+            row["rest_basis"] = "RESIDUAL of total minus producer; may be negative"
             row.update(_addressing(branches, d_v, read_levels, write_levels))
-            v = ro = read_levels = write_levels = sched = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
+            ro = read_levels = write_levels = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
         layer = x = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
     except torch.cuda.OutOfMemoryError as exc:
         row.update({"oom": True, "oom_stage": "forward-or-planes", "error": str(exc)[:200]})
@@ -480,16 +431,9 @@ def main() -> None:
                     help="scales route_W to sharpen an UNTRAINED exact-entmax router into a "
                          "real sparse support; the support is genuine, its LEVEL is a "
                          "synthetic stand-in for training and is labelled as such")
-    ap.add_argument("--state-block", type=int, default=None,
-                    help="`BC`, the leafs per owner block. Default None resolves to the "
-                         "innermost level's width -- the STRUCTURAL choice (`wiring.md` "
-                         "§1.2 item 1). At-scale topologies need it set explicitly because "
-                         "the consumer instantiates only BC in {16, 64} today and an "
-                         "innermost width outside that set is a launchability ceiling, "
-                         "not a dispatch condition.")
     ap.add_argument("--paging", action="store_true")
     ap.add_argument("--planes", action="store_true",
-                    help="decompose the V3 forward per plane (producer/planner/consumer)")
+                    help="time the routing plane separately from the rest of the forward")
     ap.add_argument("--arms", default="v3,v3_sparse_both,fa_flash,fa_efficient",
                     help="'v3' = the parity cell (--read-router/--write-router, default "
                          "dense-read/sparse-write). 'v3_sparse_both' = the SAME cell "
@@ -531,7 +475,6 @@ def main() -> None:
                                   logit_gain=args.logit_gain,
                                   paging=args.paging, planes=args.planes,
                                   reps=args.reps, warmup=args.warmup,
-                                  state_block=args.state_block,
                                   arm="v3", cell_role="parity (read-dense/write-sparse, "
                                   "the freeze-defining arm)")
             elif arm == "v3_sparse_both":
@@ -540,7 +483,6 @@ def main() -> None:
                                   logit_gain=args.logit_gain,
                                   paging=args.paging, planes=args.planes,
                                   reps=args.reps, warmup=args.warmup,
-                                  state_block=args.state_block,
                                   arm="v3_sparse_both",
                                   cell_role="DIAGNOSTIC: sparse-both (item 0's original "
                                   "cell; the easy regime, not the freeze arm)")

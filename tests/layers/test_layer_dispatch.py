@@ -39,8 +39,8 @@ Four properties, and they are the four the wiring increment claims:
 `rola.expert.PlanOverrides` (`state_block`/`mma_precision`/`max_physical_pages`).
 `BC` IS NOT A LAUNCH DECISION HERE ANY MORE. The kernel arm is the chunk consumer,
 whose `BC` is a slot tile inside a BUILT arm and comes from the manifest rather than
-from a per-launch derivation, so `last_selected_plan` is `None` on every arm and there
-is no plan geometry left for this file to assert. What it asserts instead is WHICH ARM
+from a per-launch derivation, so there is no launch geometry left for this file to
+assert and no attribute carrying one. What it asserts instead is WHICH ARM
 ran and why, which is the claim that survived: the module's conditions (training mode),
 the operation's (gradient reachability, device), and the ENVELOPE
 (`rola.interface.dispatch_for(...).no_kernel_arm` -- a configuration outside the built
@@ -235,9 +235,7 @@ def test_a_no_grad_cuda_context_takes_the_kernel_arm(decay):
 
     The launch geometry is NOT asserted here any more, and there is nothing left to
     assert it about: the kernel arm is the chunk consumer and its `BC` is a slot tile
-    inside a built arm, fixed by the manifest rather than derived per launch. So
-    `last_selected_plan` is `None` on every arm, which is the honest reading of "the
-    layer selects no plan" and is checked as such rather than left to be discovered.
+    inside a built arm, fixed by the manifest rather than derived per launch.
     """
     if decay == "leaf_mass":
         pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
@@ -252,7 +250,6 @@ def test_a_no_grad_cuda_context_takes_the_kernel_arm(decay):
         #: `no_kernel_arm is None` about every topology and assert nothing.
         envelope = dispatch_for(layer.routes(x), x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    assert layer.last_selected_plan is None
     assert envelope.no_kernel_arm is None, (
         "fixture rot: this topology must be a BUILT chunk arm for the row above to "
         "mean anything")
@@ -667,30 +664,15 @@ def test_cpu_tensors_take_the_oracle_because_no_cpu_lowering_exists():
     assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}
 
 
-def test_an_inadmissible_state_block_is_rejected_at_construction():
-    """`BC` is contract, and `owner_geometry` is its authority. 24 divides
-    `N = 128`? It does not -- and even a divisor that does not name a `BC`-aligned
-    rectangle must be refused at construction rather than at the first CUDA forward,
-    so the error names the configuration and not a launch."""
-    routes = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
-    with pytest.raises(ValueError):
-        RoLA(_HIDDEN, _H, routes, expert=PlanOverrides(state_block=24))
-    with pytest.raises(ValueError):
-        # 32 divides N=128 but implies c = 32/16 = 2 digits of level 0 (width 8) --
-        # aligned -- while 12 divides nothing: the second case is the alignment one.
-        RoLA(_HIDDEN, _H, routes, expert=PlanOverrides(state_block=12))
-
-
-#: RETIRED at P67 D2-b (ruling R-2): `test_the_default_state_block_is_the_LARGEST_
-#: FEASIBLE_BC_on_every_topology`. Its subject is `RoLA.state_block`/`feasible_BC`
-#: and `derive.{largest_feasible_bc, SUPPORTED_BC}` -- the tiled ladder, deleted in
-#: D2-c. The chunk arm's `BC` belongs to the built arm the manifest carries for a
-#: topology and is not host-selectable, so there is no ladder to take a largest
-#: member of and no feasible SET for a pin to shrink. The two claims that survive
-#: the ladder are held elsewhere: an inadmissible pin fails at CONSTRUCTION (the
-#: row above), and a pin the kernel arm cannot honor is refused BY NAME rather than
-#: silently ignored (`test_an_uninstantiated_but_aligned_state_block_is_refused_
-#: host_side`, below).
+#: RETIRED at P67 D2 (ruling R-2): the two rows whose subject was the layer's
+#: CONSTRUCTION-time `BC` ladder -- the largest-feasible default and the
+#: inadmissible-pin refusal. `RoLA.feasible_BC`/`state_block` and the `SUPPORTED_BC`
+#: ladder they read are the tiled consumer's, deleted in D2-c. The chunk arm's `BC`
+#: belongs to the built arm the manifest carries for a topology and is not
+#: host-selectable, so there is no ladder to take a largest member of, no feasible
+#: SET for a pin to shrink, and no admissibility question a constructor could answer.
+#: The claim that survives is that a pin the kernel arm cannot honor is refused BY
+#: NAME rather than silently ignored, and it is held one row below.
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +701,6 @@ def test_the_no_grad_dispatch_holds_on_a_deeper_built_arm(decay):
     assert envelope.no_kernel_arm is None, (
         "fixture rot: this topology must be a BUILT chunk arm")
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    assert layer.last_selected_plan is None
 
 
 @pytest.mark.cuda
@@ -727,8 +708,8 @@ def test_the_no_grad_dispatch_holds_on_a_deeper_built_arm(decay):
 def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     """H12 (coverage-closure): `state_block = 32`, a pin the kernel arm cannot honor.
 
-    32 is geometry-ALIGNED here, so construction accepts it -- `feasible_bc`'s
-    documented contract lets an expert pin an off-ladder geometry. The kernel arm is
+    Construction accepts any int, because the layer holds no `BC` ladder to check one
+    against. The kernel arm is
     the chunk consumer, whose `BC` is a slot tile inside a BUILT arm and is fixed by
     the manifest rather than chosen per launch, so the pin is over an axis this arm
     does not have. It must be REFUSED by a HOST-side check that names the contract --

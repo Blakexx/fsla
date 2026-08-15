@@ -4,7 +4,7 @@
 
 Linear attention's op takes ``(q, k, v)``. RoLA's takes ``(routes, v)``, where
 ``routes`` is the ``(q, k)`` pair AFTER the feature map -- the read-side and write-side
-simplices, their side gains, and the summary statistics the planner prices with. That
+simplices, their side gains, and the summary statistics a measurement prices with. That
 bundle is :class:`RouteFactors`, and the only way to obtain one is to call
 :class:`RouteProducer`.
 
@@ -160,52 +160,6 @@ class RouteFactors:
                 for level in range(len(self.write))}
             self.resident["touched_bits"] = bits
         return bits
-
-    def views(self):
-        """The folded ``[BH, T, width]`` view and its exact-nonzero masks.
-
-        Computed ONCE and shared by the summary pass and the schedule build, so the
-        fold copy and the masks are paid once per bundle rather than once per consumer.
-        """
-        views = self.resident.get("views")
-        if views is None:
-            from rola.planner.schedule import routing_views
-
-            views = routing_views(self.read, self.write, self.topology)
-            self.resident["views"] = views
-        return views
-
-    def summaries(self, *, BC: int, BT: int):
-        """The realized routing's summary statistics, at one stated granularity.
-
-        This is the pass over the amplitude tensors -- the one bandwidth term that
-        scales with tokens -- and it rides PRODUCTION, on the bundle, rather than the
-        planner: what the planner then does is host-side arithmetic over numbers that
-        are already resident.
-
-        The granularity is stated rather than hidden. ``BT`` is the FINEST instantiated
-        tile: ``candidate_frac`` and the quanta histogram are statistics OF A TILING and
-        are not ``BT``-invariant, so a finer tile's value under-prices a coarser one,
-        and §4.2 freezes the struct at one granularity instead of pretending otherwise.
-        ``BC`` is the finest feasible owner rectangle, by the same symmetry -- the pass
-        needs one owner geometry while selection reuses the histogram across the whole
-        feasible grid.
-        """
-        key = ("summaries", BC, BT)
-        summaries = self.resident.get(key)
-        if summaries is None:
-            from rola.routing.geometry import owner_geometry
-            from rola.routing.summaries import summarize_routing
-
-            views = self.views()
-            summaries = summarize_routing(
-                views.read_folded, views.write_folded,
-                owner_geometry(tuple(self.topology.widths), BC), BT,
-                # Every side the declaration marks full-support is asserted realized
-                # under the debug env flag -- a producer-author courtesy, never a guard.
-                density=self.density)
-            self.resident[key] = summaries
-        return summaries
 
 
 class RouteProducer(nn.Module):
@@ -410,7 +364,7 @@ def _fold_bth(tensor: torch.Tensor) -> torch.Tensor:
     """``[B, T, H, *] -> [B*H, T, *]`` (the convention every routing module uses).
 
     Held here rather than imported, on :func:`~rola.routing.summaries._pack_leaf_bitmap`'s
-    precedent: the routing side must not import the planner, and three lines of permute
+    precedent: the routing side must not import a consumer, and three lines of permute
     arithmetic with a gate on each side is the cheaper of the two couplings.
     """
     return tensor.permute(0, 2, 1, 3).reshape(

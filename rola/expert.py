@@ -3,18 +3,18 @@
 """The advanced surface. Nothing here is part of the contract.
 
 The public surface is the reduction theorem: linear attention, plus the one slot that
-makes it RoLA. Everything in this module is BELOW that line -- launch geometry, the
-derivation that fixes it, the plan objects, the seam the op is split at. They are
-exported because a serious consumer legitimately needs them (a gate that must ask for
-the exact numeric arm, a conformance test that must run a stale plan, a deployment that
-must cap an allocator) and reaching past a package into its privates is worse than a
-marked door.
+makes it RoLA. Everything in this module is BELOW that line -- the dispatch's own
+answer, the pins over axes the op otherwise decides, the producer-side statistics a
+measurement reads. They are exported because a serious consumer legitimately needs
+them (a gate that must ask for the exact numeric arm, a deployment that must pin the
+state's backing) and reaching past a package into its privates is worse than a marked
+door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
-these objects and pass them; do not assert on their fields. A ``Plan``'s geometry is
-the answer to "how should this launch run", and that answer moves with the machine it
-is derived for. The model facts a plan carries (``topology``, ``normalization``) are
-the exception and are stable, because they are not decisions.
+these objects and pass them; do not assert on their fields. What a :class:`Dispatch`
+reports is the answer to "how will this call run", and that answer moves with the
+machine and with the built matrix. The model facts it carries are the exception and
+are stable, because they are not decisions.
 
 Importing this module is a statement that you accept that. The op never requires it.
 """
@@ -25,36 +25,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from rola.interface import Dispatch, dispatch_for, requires_backward, select_backend
-from rola.interface import _derive_plan as derive_plan
-from rola.interface import _execute as execute
-from rola.planner.derive import MachineFacts, derive_bc, feasible_bc, largest_feasible_bc
-from rola.planner.schedule import (
-    Plan,
-    Schedule,
-    build_plan,
-    build_schedule,
-    plan_and_schedule,
-)
 from rola.routing.density import StaticDensity
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
     "Dispatch",
     "GainConfig",
-    "MachineFacts",
-    "Plan",
     "PlanOverrides",
-    "Schedule",
     "StaticDensity",
-    "build_plan",
-    "build_schedule",
-    "derive_bc",
-    "derive_plan",
     "dispatch_for",
-    "execute",
-    "feasible_bc",
-    "largest_feasible_bc",
-    "plan_and_schedule",
     "requires_backward",
     "select_backend",
 ]
@@ -62,13 +41,14 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class PlanOverrides:
-    """Pins over axes the planner would otherwise derive.
+    """Pins over axes the op would otherwise decide.
 
-    ``state_block`` (``BC``): the number of leafs one owner block owns -- the CTA's
-    resident state tile, and THE EXPERT PIN. An explicit value REPLACES
-    :func:`~rola.planner.derive.derive_bc`'s three ceilings rather than biasing them,
-    and it is still alignment-validated like any other member, which is what makes it a
-    pin over a derived axis and not an escape from one. ``None`` derives it.
+    ``state_block`` (``BC``): the number of leafs one owner block owns -- a CTA's
+    resident state tile. The chunk consumer's ``BC`` belongs to the built arm the
+    manifest carries for a topology and is NOT host-selectable, so any value other than
+    ``None`` is refused by name at the call rather than accepted and ignored: a knob
+    that silently does nothing is how a caller comes to believe a launch was shaped a
+    way it never was.
 
     ``mma_precision``: DEAD AXIS, retained as a declared restriction: ``"bf16"`` is
     the only value (bf16 storage, fp32 accumulation, fp64 reference as oracle); any
@@ -111,5 +91,5 @@ class PlanOverrides:
             return value
         raise TypeError(
             "the `expert` argument takes a rola.expert.PlanOverrides -- the marked advanced "
-            f"surface -- got {type(value).__name__}. Its axes are ones the planner derives; "
+            f"surface -- got {type(value).__name__}. Its axes are ones the op decides; "
             "pinning one is a deliberate act with a name.")

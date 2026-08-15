@@ -1,15 +1,16 @@
-"""The consumer benchmark harness, split by ROLE (design §6.9).
+"""The measurement RECORD and the judgement over it (design §6.9).
 
-Four modules, because the file they came from had four jobs in it and only one
-of them is the methodology:
+Three modules, because measuring has three jobs and only one of them is a fixture:
 
-* :mod:`bench.cells` -- WHAT is measured. Frozen, named, seeded fixtures plus the
-  committed statistics manifest. A cell is its constructor and its seed.
-* :mod:`bench.pairing` -- HOW it is measured. **The interleaved paired-arm engine.
-  This is THE methodology of every number this repository publishes**, and its
-  module docstring is where it is written down.
-* :mod:`bench.instruments` -- what is measured ABOUT it beyond wall time: the
-  gather's realized extents, the decay preamble's cost.
-* :mod:`bench.drivers` -- one thin function per QUESTION, holding no machinery of
-  its own. A driver that grows machinery is machinery that escaped review.
+* :mod:`bench.ledger` -- the record. `perf/ledger.jsonl`: one row per
+  ``(cell, arm)`` per commit, the RAW samples kept with the instrument that took
+  them and the provenance that makes a row replayable.
+* :mod:`bench.stats` -- the statistics. The paired signed-rank verdict and its
+  committed manifest, so a claim of "faster" is a test and not a pair of medians.
+* :mod:`bench.regression` -- the judgement. Per-cell thresholds derived from that
+  cell's own measured IQR, and the clock-settling precondition a comparable number
+  requires.
+
+WHAT is measured is not here: the fixtures and the timing driver belong to the arm
+being measured, and the chunk arm's harness is its own card.
 """

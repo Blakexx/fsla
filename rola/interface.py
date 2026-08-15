@@ -12,34 +12,21 @@ feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 it, because none of them are model facts: they are how the op runs, and the op decides
 how it runs.
 
-**The private seam.** Inside, the work splits in two:
+**How a launch is shaped is not a model fact**, and the reduction theorem is what the
+public surface is allowed to say -- so the arm, the state backing and the chunk
+matrix's admissibility are all decided inside, from the bundle and the operands.
+:mod:`rola.expert` is the quarantined door to what remains adjustable.
 
-``_derive_plan(routes, ...) -> Plan``
-    Derive the launch geometry. Everything it reads is launch-static -- the topology,
-    the cohort count, the device's own facts -- so it is host-side arithmetic over
-    :func:`~rola.planner.derive.derive_bc`'s three ceilings, never a pass over the
-    tensors.
-
-``_execute(plan, routes, v, ...)``
-    Build the §4 schedule from the realized masks and run the kernel.
-
-The seam is deliberately private: how a launch is shaped is not a model fact, and the
-reduction theorem is what the public surface is allowed to say. :mod:`rola.expert` is
-the quarantined door to it, and it is also what lets a conformance test drive
-``_execute`` with a SYNTHETIC plan -- a stale one, one straddling a boundary -- which
-is the adversarial handle a plan-derived-then-immediately-used pipeline would not have.
-
-**Why the boundary sits here** (the layer-dispatch autograd gap): a forward-only
-kernel reachable from a gradient-requiring context does not raise. It returns a
-perfectly good tensor with no ``grad_fn``, the graph is severed, and the symptom is
-``x.grad is None`` several files away. ``rola_op`` is the ONE place that rule is
-enforced: a call that wants a gradient runs the whole operation on ``naive_rola``,
-forward and backward from one graph; a call that does not reaches a CUDA consumer
-wrapped in an autograd node -- :class:`RoLAConsumer` for the tiled arm,
-:class:`ChunkConsumer` for the chunk one -- whose backward raises by name rather than
-severing anything. The dispatch above is the FIRST line of that defence and the nodes
-are the LAST: the dispatch decides, and the node is what makes a decision that was
-somehow bypassed loud instead of silent.
+**Why the autograd boundary sits here** (the layer-dispatch autograd gap): a
+forward-only kernel reachable from a gradient-requiring context does not raise. It
+returns a perfectly good tensor with no ``grad_fn``, the graph is severed, and the
+symptom is ``x.grad is None`` several files away. ``rola_op`` is the ONE place that
+rule is enforced: a call that wants a gradient runs the whole operation on
+``naive_rola``, forward and backward from one graph; a call that does not reaches the
+CUDA consumer wrapped in an autograd node -- :class:`ChunkConsumer` -- whose backward
+raises by name rather than severing anything. The dispatch is the FIRST line of that
+defence and the node is the LAST: the dispatch decides, and the node is what makes a
+decision that was somehow bypassed loud instead of silent.
 """
 
 from __future__ import annotations
@@ -50,21 +37,13 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from rola._state import RoLAState
-from rola.ops.consumer import _consumer_forward, sm_shared_bytes
 from rola.ops.naive import naive_rola
-from rola.planner.derive import MachineFacts, derive_bc
-from rola.planner.schedule import Plan, build_plan, build_schedule
 
 if TYPE_CHECKING:
-    from rola.planner.schedule import Schedule
     from rola.routing.factors import RouteFactors
     from rola.routing.types import DecayConfig
 
-__all__ = ["BackwardNotImplemented", "ChunkConsumer", "RoLAConsumer", "rola_op"]
-
-#: Tier-H facts, cached on the DEVICE they are facts about. No member can move within a
-#: process for a fixed device, and no routing statistic lives here.
-_MACHINE: dict[torch.device, MachineFacts] = {}
+__all__ = ["BackwardNotImplemented", "ChunkConsumer", "rola_op"]
 
 
 class BackwardNotImplemented(NotImplementedError):
@@ -133,7 +112,7 @@ def rola_op(
 
     ``expert``: :class:`rola.expert.PlanOverrides`, the quarantined advanced surface.
     It is a keyword argument with a default of ``None`` because the op does not need
-    it: every axis it pins is one the planner derives.
+    it: every axis it pins is one the op decides for itself.
     """
     _validate_call(routes, v, decay)
     if state is not None and type(state) is not RoLAState:
@@ -232,87 +211,6 @@ def _paging_preference(expert: Any) -> bool:
     from rola.expert import PlanOverrides
 
     return PlanOverrides.of(expert).paging is not False
-
-
-# ---------------------------------------------------------------------------
-# The private seam
-# ---------------------------------------------------------------------------
-
-
-def _derive_plan(
-    routes: RouteFactors,
-    *,
-    decay: DecayConfig = None,
-    expert: Any = None,
-    device: torch.device | None = None,
-) -> Plan:
-    """Derive this launch's geometry from launch-static facts.
-
-    Two tiers, and the split is what keeps the derivation a pure function of recorded
-    inputs rather than something that queries the machine ambiently: the model facts
-    come off the routing bundle, and tier H is measured once per device.
-    :func:`~rola.planner.derive.derive_bc` closes the form over them.
-    """
-    from rola.expert import PlanOverrides
-
-    overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
-    device = routes.device if device is None else device
-    topology = routes.topology
-    # THE MODEL FIELDS COME OFF THE BUNDLE, not from a second path out of the caller:
-    # one boolean computed twice by two different expressions is how the `decay` flag
-    # once came to disagree with itself.
-    return build_plan(
-        topology,
-        derive_bc(topology, _machine_facts(device), BH=routes.batch * routes.heads,
-                  decay=decay is not None, pinned=overrides.state_block),
-        normalization=routes.normalization, decay=decay is not None,
-        # Recorded beside the geometry it bounded: the plan carries the machine it was
-        # derived for rather than depending on the one it is replayed on.
-        sm_shared_bytes=sm_shared_bytes())
-
-
-def _execute(
-    plan: Plan,
-    routes: RouteFactors,
-    v: torch.Tensor,
-    *,
-    decay: DecayConfig = None,
-    initial_state: torch.Tensor | None = None,
-    schedule: Schedule | None = None,
-    paging=None,
-    continue_paging: bool = False,
-) -> tuple[torch.Tensor, Any, Schedule]:
-    """Run one plan over one routing bundle.
-
-    The schedule is assembled here, from the plan's tiling and the bundle's REALIZED
-    masks, so a synthetic plan is executable on its own -- which is what gives the
-    conformance families their adversarial handle. Nothing here re-decides anything:
-    a plan is obeyed exactly as given, and an impossible one raises out of the
-    kernel's own checks rather than being quietly repaired.
-    """
-    if schedule is None:
-        schedule = build_schedule(
-            routes.read, routes.write, routes.g_read, routes.g_write, plan,
-            views=routes.views())
-    return RoLAConsumer.apply(
-        v, routes.read, routes.write, routes.g_read, routes.g_write, plan,
-        dict(decay=decay, initial_state=initial_state, schedule=schedule, paging=paging,
-             continue_paging=continue_paging))
-
-
-def _machine_facts(device) -> MachineFacts:
-    """Tier H: the SM count and the binary's own arm carve, measured once per device.
-
-    Both are facts about the machine and the install, so they enter the derivation as
-    an INPUT and are cached on the device they describe -- never queried from inside
-    the formula, which is what keeps it replayable.
-    """
-    device = torch.device(device)
-    facts = _MACHINE.get(device)
-    if facts is None:
-        facts = MachineFacts.for_device(device)
-        _MACHINE[device] = facts
-    return facts
 
 
 # ---------------------------------------------------------------------------
@@ -450,32 +348,6 @@ def _any_requires_grad(obj: Any) -> bool:
     if isinstance(obj, (tuple, list)):
         return any(_any_requires_grad(item) for item in obj)
     return False
-
-
-class RoLAConsumer(torch.autograd.Function):
-    """The CUDA consumer as an autograd node whose backward refuses, loudly.
-
-    The node exists so the kernel's output is never a graph-severing leaf by accident.
-    ``rola_op`` guarantees this arm is only taken when no gradient is wanted, so
-    ``backward`` is unreachable through the public surface; if it is ever reached,
-    something called the private path directly, and a named exception is the correct
-    answer to that.
-    """
-
-    @staticmethod
-    def forward(ctx, v, read, write, g_read, g_write, plan, kwargs):  # type: ignore[override]
-        # Deliberately NOT `ctx.mark_non_differentiable`: marking the output would make
-        # `backward` unreachable, which is the same silence this class exists to break.
-        return _consumer_forward(v, read, write, g_read, g_write, plan, **kwargs)
-
-    @staticmethod
-    def backward(ctx, *grad_outputs):  # type: ignore[override]
-        raise BackwardNotImplemented(
-            "the RoLA CUDA consumer is forward-only: there is no native backward for it yet "
-            "(docs/open-work.md M-2). Reaching this means the consumer was invoked directly on "
-            "grad-requiring operands, bypassing `rola.rola_op`, which routes such calls to the "
-            "differentiable reference path instead. Call `rola_op`, or run under "
-            "`torch.no_grad()`.")
 
 
 class ChunkConsumer(torch.autograd.Function):

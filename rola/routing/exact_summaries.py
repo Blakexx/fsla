@@ -63,8 +63,7 @@ def _token_support_words(masks: tuple[torch.Tensor, ...], BT: int,
 
     The weights carry bit 31 as ``-2**31`` and the summed powers of two are
     DISJOINT, so every partial sum lies in ``[-2**31, 2**31 - 1]`` and the ``int32``
-    accumulation is exact with no wraparound to argue about -- the same argument
-    ``rola.planner.schedule._pack_token_bits`` makes for the same reason.
+    accumulation is exact with no wraparound to argue about.
     """
     if not 1 <= BT <= _TOKEN_BITS_PER_WORD:
         raise ValueError(

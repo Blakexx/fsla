@@ -112,7 +112,7 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
 #:   every level into `(mass, simplex)` and folds the mass into the side gain, so the
 #:   stored level is on the simplex whatever the producer returned.
 #: * `exact_zeros` is TRUE, which is the CONSERVATIVE reading: it means "may produce
-#:   zeros", so the planner measures this cell's density instead of substituting a
+#:   zeros", so this cell's density is MEASURED instead of substituted from a
 #:   closed form. A producer that knows better declares `dense_sides` and is trusted.
 #: * `support_differentiable` is FALSE, the assumption that never over-promises.
 #: * `kerneled` is TRUE, and it is the one that needs saying. The column means "the

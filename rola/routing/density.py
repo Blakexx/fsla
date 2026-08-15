@@ -29,24 +29,21 @@ class StaticDensity:
     from a measurement of the data (`rola/routing/activations.py`: *"No case list
     over activations may exist anywhere outside this module"*).
 
-    **Why this is an INPUT rather than something the planner derives from the
-    ``topology`` it already holds.** The topology states what the model's producer
-    will emit; the planner is handed tensors. Those agree in production (the
-    producer applies exactly the configured activation), and they deliberately do
-    NOT agree in the synthetic fixtures, where a support constructor imposes a
-    density the declared activation does not describe (``benchmarks/bench/cells.py``:
-    *"a synthetic cell's own sparsity comes from the support constructors"*, and
-    ``tests/unit/test_planner.py``'s scenarios build sparse tensors under a softmax
-    topology). Deriving the closed form from the tag alone would therefore price a
+    **Why this is an INPUT rather than something derived from the ``topology`` it
+    already holds.** The topology states what the model's producer will emit; a
+    measurement is handed tensors. Those agree in production (the producer applies
+    exactly the configured activation), and they deliberately do NOT agree in
+    synthetic fixtures, where a support constructor imposes a density the declared
+    activation does not describe. Deriving the closed form from the tag alone would therefore price a
     density those callers do not have. Passing it makes the claim the CALLER's --
     :class:`~rola.layers.RoLA` builds one from its own topology once, at
     construction -- and leaves every caller that does not pass one on the fully
     data-dependent pass, bit for bit.
 
-    **What a wrong declaration costs, stated exactly.** Only the COST MODEL: the
-    §4 schedule the kernel executes is built by :func:`build_schedule` from the
-    realized masks and never reads this object, so a side declared dense whose
-    realization has zeros can only mis-price a plan, never mis-execute one. The
+    **What a wrong declaration costs, stated exactly.** Only the COST MODEL: what
+    the kernel executes is derived from the realized masks and never reads this
+    object, so a side declared dense whose realization has zeros can only mis-price
+    a measurement, never mis-execute a launch. The
     one realistic way that happens is float underflow -- a softmax logit far
     enough below the row max that ``exp`` rounds to exactly ``0`` -- which shrinks
     the realized support without changing the activation's mathematics; the closed
@@ -63,10 +60,10 @@ class StaticDensity:
     substituted (declared) vs. measured (data-dependent) :class:`TileUnionStats`
     differ by ~2e-4 relative on ``mean_KI_candidate`` (0.4067078 vs 0.4066162)
     and ``mean_kisteps_candidate`` (0.2754822 vs 0.2754517); ``cost_per_token``
-    and the selected :class:`~rola.planner.schedule.Plan` were UNCHANGED at this
-    cell, i.e. the mispricing did not flip a plan here, consistent with "cost
-    model only, never mis-execute" above. There is no known upper bound on how
-    large a gain would be needed to flip a plan; this is one measured point, not
+    was UNCHANGED at this cell, i.e. the mispricing moved no decision here,
+    consistent with "cost model only, never mis-execute" above. There is no known
+    upper bound on how large a gain would be needed to move one; this is one
+    measured point, not
     a proof the mispricing is always inert. A caller that scales router logits
     by a large factor (an aggressive temperature/gain schedule, an
     ill-conditioned ``route_W`` init) should re-check this assumption for its
@@ -92,8 +89,8 @@ class StaticDensity:
         make the side's support the full rectangle and the closed form below does
         not apply. The per-LEVEL resolution is kept because §2.7's other planes
         (the producer's support machinery, the consumer's feeder specialization)
-        are per level; the planner's tile statistics are the one consumer of this
-        object for which only the conjunction is actionable.
+        are per level; the tile statistics are the one consumer of this object for
+        which only the conjunction is actionable.
         """
         if duty == "read":
             return all(self.read)

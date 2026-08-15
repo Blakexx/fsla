@@ -8,8 +8,8 @@ degenerate at one token (``BT``: nothing to tile; ``P``: nothing to split;
 statistics: a population of one), so the decode path bypasses selection
 *architecturally* — the config freezes at
 the prefill→decode boundary and per-step work is data plane only. Nothing here builds
-a ``Plan``, a ``Schedule`` or a set of tile bitmaps, and that is the point rather than
-an omission.
+a launch geometry or a set of tile bitmaps, and that is the point rather than an
+omission.
 
 **WHY THERE IS NO SCHEDULE.** At ``T = 1`` a leaf is in the read support iff every
 level's digit has a nonzero read amplitude, so the support is a Cartesian product and
@@ -159,7 +159,7 @@ def freeze_decode_config(
     """Build the carrier once, at the boundary.
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
-    reintroduce exactly the per-step planner §6b dissolves. CTAs whose row range starts
+    reintroduce exactly the per-step selection §6b dissolves. CTAs whose row range starts
     beyond the realized touched-row count read one L2 word and exit; that
     over-launching is the price of never reading a device value back to the host, which
     is the one thing a decode step must not do.
