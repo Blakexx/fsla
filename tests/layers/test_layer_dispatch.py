@@ -37,15 +37,14 @@ Four properties, and they are the four the wiring increment claims:
 `state_norm`, `paging`, `mma_precision`) are gone; a layer is now built from a
 `RouteProducer` (the feature-map slot) plus a decay SOURCE and a
 `rola.expert.PlanOverrides` (`state_block`/`mma_precision`/`max_physical_pages`).
-`BC` is now DERIVED, not selected: `rola.interface._derive_plan` calls
-`rola.planner.derive.derive_bc`, a closed form over the topology, the launch-static
-cohort count and `rola.interface._machine_facts(device)` (Tier H, cached per device).
-There is no plan-axes or evidence object any more -- `derive_bc` returns the `BC` int
-directly and nothing is retained beside the chosen `Plan` (`last_selected_plan`). The
-tests below that need the layer's derived `BC` independent of a forward call
-reconstruct it by hand, through `_derived_bc_for`, walking the SAME private seam
-(`_machine_facts`, `derive_bc`) `_derive_plan` calls internally on the identical
-routing bundle.
+`BC` IS NOT A LAUNCH DECISION HERE ANY MORE. The kernel arm is the chunk consumer,
+whose `BC` is a slot tile inside a BUILT arm and comes from the manifest rather than
+from a per-launch derivation, so `last_selected_plan` is `None` on every arm and there
+is no plan geometry left for this file to assert. What it asserts instead is WHICH ARM
+ran and why, which is the claim that survived: the module's conditions (training mode),
+the operation's (gradient reachability, device), and the ENVELOPE
+(`rola.interface.dispatch_for(...).no_kernel_arm` -- a configuration outside the built
+matrix dispatches to the oracle and says which clause refused it).
 """
 
 from __future__ import annotations
@@ -55,8 +54,10 @@ import torch
 import torch.utils.checkpoint as torch_checkpoint
 from conftest import build_layer, build_routes, produce_routing
 
+import rola
 from rola import RoLA, dense_routing, sparse_routing
 from rola.expert import PlanOverrides
+from rola.interface import dispatch_for
 from rola.planner.derive import GROUP_TOKENS, SUPPORTED_BC, largest_feasible_bc
 
 #: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
@@ -71,10 +72,14 @@ BF16_RTOL = 1e-2
 
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the V3 consumer is a CUDA kernel")
 
-#: `branches=[8, 16]`, `d_v=64`, `H=8` -- the Stage 0 matched cell, and the
-#: `(d_v, BC) = (64, 16)` instantiation the kernel actually compiles. `BC` is left
-#: at its default, which resolves to the innermost width 16.
-_BRANCHES = (8, 16)
+#: `branches=[16, 16]`, `d_v=64`, `H=8` -- a BUILT CHUNK ARM (`(C, BC, D, B) =
+#: (32, 64, 2, 16)` in the manifest), at the same `N = 256` as the Stage 0 matched
+#: cell it replaced. The cell moved with the unsupported-topology retirement: the
+#: flagship `(8, 16)` is NON-UNIFORM and now dispatches to the oracle, so a dispatch
+#: file fixtured on it could no longer assert the kernel arm at all. Its retirement is
+#: asserted on its own, below, rather than lost.
+#: Every `T` here is a multiple of the chunk `C = 32` for the same reason.
+_BRANCHES = (16, 16)
 _H, _DV = 8, 64
 _HIDDEN = _H * _DV
 
@@ -133,19 +138,6 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
             layer.topology, layer.normalization)
     zeros = sum(float((t == 0).float().mean()) * t.shape[-1] for t in out.write_levels)
     return zeros / sum(t.shape[-1] for t in out.write_levels)
-
-
-def _derived_bc_for(layer: RoLA, x: torch.Tensor, decay_config):
-    """Recompute the `BC` a forward would derive, on the SAME routing bundle -- the
-    private seam `rola.interface._derive_plan` walks internally, called by hand
-    because the layer's `Plan` is the only thing a forward retains."""
-    from rola.interface import _machine_facts
-    from rola.planner.derive import derive_bc
-
-    routes = layer.routes(x)
-    return derive_bc(routes.topology, _machine_facts(routes.device),
-                     BH=routes.batch * routes.heads, decay=decay_config is not None,
-                     pinned=layer.expert.state_block)
 
 
 def _summaries_for(layer: RoLA, x: torch.Tensor):
@@ -229,17 +221,14 @@ def test_grad_enabled_but_nothing_requiring_grad_is_not_a_grad_context():
 
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
-    """Property 2, asserted on the counter and on the stamped plan -- not on timing.
+def test_a_no_grad_cuda_context_takes_the_kernel_arm(decay):
+    """Property 2, asserted on the counter -- not on timing.
 
-    The plan the layer ran is recorded, so this also pins that the layer went
-    through the derivation (`_derived_bc_for` recomputes `derive_bc`'s own answer on
-    the identical routing bundle) rather than through a hand-written plan constant.
-
-    `plan.BC` is a member of the feasible set, and it is also EXACTLY the value
-    `derive_bc` gives on this bundle -- not merely in the feasible set, since the
-    derivation is a pure function of launch-static inputs and there is nothing left
-    for a forward to have chosen differently.
+    The launch geometry is NOT asserted here any more, and there is nothing left to
+    assert it about: the kernel arm is the chunk consumer and its `BC` is a slot tile
+    inside a built arm, fixed by the manifest rather than derived per launch. So
+    `last_selected_plan` is `None` on every arm, which is the honest reading of "the
+    layer selects no plan" and is checked as such rather than left to be discovered.
     """
     if decay == "leaf_mass":
         pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
@@ -250,13 +239,11 @@ def test_a_no_grad_cuda_context_takes_the_plan_selected_consumer(decay):
     with torch.no_grad():
         layer(x)
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    plan = layer.last_selected_plan
-    derived_bc = _derived_bc_for(layer, x, _decay_config(layer))
-    assert plan is not None
-    assert plan.BC in layer.feasible_BC
-    assert plan.decay is (decay == "leaf_mass")
-    assert plan.normalization == "global"
-    assert derived_bc == plan.BC
+    assert layer.last_selected_plan is None
+    envelope = dispatch_for(layer.routes(x), x)
+    assert envelope.no_kernel_arm is None, (
+        "fixture rot: this topology must be a BUILT chunk arm for the row above to "
+        "mean anything")
 
 
 @_CUDA
@@ -492,22 +479,37 @@ def test_a_cuda_produced_state_feeds_a_grad_context_oracle_step_at_the_ops_level
 
 
 @_CUDA
-def test_a_cuda_context_the_consumer_cannot_launch_raises_rather_than_using_the_oracle():
-    """Property 4. `d_v = 48` is outside the kernel's instantiated `{32, 64}` set.
+def test_a_d_v_outside_the_built_matrix_dispatches_to_the_oracle_and_says_so():
+    """Property 4, AS THE UNSUPPORTED-TOPOLOGY RETIREMENT LEFT IT (2026-08-14).
 
-    The dispatch deliberately does NOT test for this. Folding launchability into
-    `select_execution_backend` would convert a loud unsupported configuration into a
-    silent oracle-speed path -- the pattern spec §7.4.1 forbids -- so the
-    configuration must reach the kernel and be rejected there.
+    `d_v = 48` is outside the chunk consumer's built matrix, which carries `d_v = 64`
+    only. It used to reach the kernel and be refused there, on the reasoning that
+    folding launchability into the dispatch would turn a loud unsupported
+    configuration into a silent oracle-speed path. The retirement answers that
+    objection differently rather than ignoring it: the path is not SILENT. The arm is
+    the oracle, `no_kernel_arm` names the clause that refused, and the caller can ask
+    before the call. It is a labelled research surface, the same treatment an
+    unratified activation gets -- and it remains a real capability narrowing, which is
+    why the label exists at all.
+
+    The override is still loud, which is the other half: a caller who asks for the
+    kernel BY NAME on this configuration gets a refusal, not the oracle.
     """
     torch.manual_seed(19)
     layer = _layer(decay="none", head_v_dim=48)
     layer.eval()  # fix pass item 2: the CUDA path additionally requires eval mode
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
-    with torch.no_grad(), pytest.raises(RuntimeError, match="d_v"):
+    with torch.no_grad():
         layer(x)
-    assert layer.execution_backend_counts["oracle"] == 0, (
-        "an un-instantiated d_v silently fell back to the oracle instead of raising")
+    assert layer.execution_backend_counts == {"oracle": 1, "cuda": 0, "decode": 0}
+    routes = layer.routes(x)
+    with torch.no_grad():
+        envelope = dispatch_for(routes, x)
+    assert envelope.backend == "reference"
+    assert "d_v=48" in envelope.no_kernel_arm
+    v = torch.randn(1, 64, _H, 48, device="cuda")
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="d_v=48"):
+        rola.rola_op(routes, v, _arm="kernel")
 
 
 # ---------------------------------------------------------------------------
@@ -704,57 +706,51 @@ def test_the_default_state_block_is_the_LARGEST_FEASIBLE_BC_on_every_topology():
 
 
 # ---------------------------------------------------------------------------
-# H2 (coverage-closure): the dispatch + derivation properties on a topology where
-# BC = 64 -- the FLAGSHIP consumer instantiation -- is feasible. Every cell above
-# runs `_BRANCHES = [8, 16]`, whose feasible set is {16}, so the derivation and the
-# launch had never been exercised where the at-scale default lives
+# H2 (coverage-closure): the dispatch on a SECOND built geometry, deep rather than
+# shallow. Every cell above runs one two-level arm, so a dispatch that happened to
+# be right only at `D = 2` would pass the whole file
 # ([[capacity-fair-fa-comparison]]: small-regime-only gates invert).
 # ---------------------------------------------------------------------------
 
-_BC64_BRANCHES = (4, 8, 8)  # suffix 8*8 = 64 => feasible_BC includes 64, N = 256
+_DEEP_BRANCHES = (8, 8, 8, 8)  # the manifest's D=4, B=8 arm; N = 4096
 
 
 @pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @_CUDA
-def test_the_no_grad_dispatch_holds_on_a_BC64_feasible_topology(decay):
-    """The `test_a_no_grad_cuda_context_takes_the_plan_selected_consumer`
-    properties, on the topology whose feasible set contains the flagship BC."""
+def test_the_no_grad_dispatch_holds_on_a_deeper_built_arm(decay):
+    """`test_a_no_grad_cuda_context_takes_the_kernel_arm`'s property, at `D = 4`."""
     if decay == "leaf_mass":
         pytest.skip("decay routes to the oracle now (retired from the operator); covered by the decay-routing layer test")
     torch.manual_seed(7)
-    layer = _layer(decay=decay, branches=_BC64_BRANCHES)
+    layer = _layer(decay=decay, branches=_DEEP_BRANCHES)
     layer.eval()
-    assert 64 in layer.feasible_BC, "fixture rot: this topology must admit BC=64"
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
+        envelope = dispatch_for(layer.routes(x), x)
+    assert envelope.no_kernel_arm is None, (
+        "fixture rot: this topology must be a BUILT chunk arm")
     assert layer.execution_backend_counts == {"oracle": 0, "cuda": 1, "decode": 0}
-    plan = layer.last_selected_plan
-    derived_bc = _derived_bc_for(layer, x, _decay_config(layer))
-    assert plan is not None
-    assert plan.BC in layer.feasible_BC
-    assert plan.decay is (decay == "leaf_mass")
-    assert plan.normalization == "global"
-    assert derived_bc == plan.BC
+    assert layer.last_selected_plan is None
 
 
 @pytest.mark.cuda
 @_CUDA
 def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
-    """H12 (coverage-closure): `state_block = 32` on `_BRANCHES = [8, 16]`.
+    """H12 (coverage-closure): `state_block = 32`, a pin the kernel arm cannot honor.
 
-    32 is geometry-ALIGNED here (2 digits of the width-8 level), so construction
-    accepts it -- `feasible_bc`'s documented contract lets an expert pin an
-    off-ladder geometry. But the consumer instantiates `BC in {16, 64}` ONLY, so
-    the first CUDA forward must be refused by a HOST-side check that names the
-    contract -- never a device-side assert, which would poison the context for
-    every subsequent test in the process (the fleet-freeze failure mode). The
-    context-health probe after the raise is the second half of the claim.
+    32 is geometry-ALIGNED here, so construction accepts it -- `feasible_bc`'s
+    documented contract lets an expert pin an off-ladder geometry. The kernel arm is
+    the chunk consumer, whose `BC` is a slot tile inside a BUILT arm and is fixed by
+    the manifest rather than chosen per launch, so the pin is over an axis this arm
+    does not have. It must be REFUSED by a HOST-side check that names the contract --
+    never accepted and ignored, and never a device-side assert, which would poison the
+    context for every subsequent test in the process (the fleet-freeze failure mode).
+    The context-health probe after the raise is the second half of the claim.
 
-    The refusal comes from the DISPATCH TABLE's own lookup: a choice no row carries
-    resolves to nothing, and the message names the offending coordinates together
-    with every axis the matrix does carry. What is pinned here is that behaviour --
-    host-side, specific, and context-preserving -- not one axis's wording.
+    What is pinned here is that behaviour -- host-side, specific, and
+    context-preserving. A knob that silently does nothing is how a caller comes to
+    believe a launch was shaped a way it never was, which is the failure this closes.
     """
     layer = _layer(norm="global", decay="none")
     routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES)
@@ -763,8 +759,7 @@ def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
     ).to("cuda", torch.float32).eval()
     assert layer_32.feasible_BC == (32,)
     x = torch.randn(1, 32, _HIDDEN, device="cuda")
-    with pytest.raises(RuntimeError,
-                       match=r"no consumer instantiation to query at .*BC=32"), torch.no_grad():
+    with pytest.raises(NotImplementedError, match="state_block"), torch.no_grad():
         layer_32(x)
     # The refusal must be host-side: the CUDA context is still usable.
     assert float(torch.ones(4, device="cuda").sum()) == 4.0

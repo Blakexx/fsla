@@ -121,10 +121,10 @@ zero-page inertness gate) — so this admits at most a superset of what is carri
 It is deliberately NOT `PageArena.adopt_dense`, which commits the dense limit and
 would reintroduce the footprint the arena exists to avoid.
 
-The layer's ONE remaining legacy arm — the tiled consumer, for topologies the chunk
-arm has no built arm for — also takes raw tensors. It crosses the state object at its
-branch (`RoLA._dense_carry`) and nowhere deeper, and it keeps that crossing until the
-consumer itself is retired.
+There is no raw-tensor state crossing left in the layer. A topology the chunk arm has
+no built arm for dispatches to the reference arm, which crosses the state through this
+facade like any other reference-arm call ([`api.md` §1.1](../api.md#11-the-kernel-envelope)),
+so `_decode_step` is the only raw-tensor seam anywhere.
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 

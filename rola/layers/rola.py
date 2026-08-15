@@ -18,12 +18,13 @@ the choice is STRUCTURAL -- decided before any of them runs:
   dtype. It is fully differentiable and it is the ONLY implemented training path, which
   is not the same thing as a fallback: nothing degrades into it after a failure, and no
   configuration reaches it because something else declined.
-* ``'cuda'`` -- the plan-selected consumer, through :func:`rola.rola_op`.
+* ``'cuda'`` -- the chunk consumer, through :func:`rola.rola_op`.
 * ``'decode'`` -- the ``T = 1`` sibling kernel. At one token every selection decision is
   degenerate (no tile to choose, no split, a statistics population of one), so decode
   bypasses selection ARCHITECTURALLY rather than running the planner on degenerate
   inputs. It is a SIBLING of the tiled path, not a specialization: shared production
-  contract, own consumer, frozen config.
+  contract, own consumer, frozen config. Its envelope is its own: decode is BC-blind
+  and general in the topology, so it is never gated on the prefill matrix.
 
 **The autograd trap this dispatch exists to close** (`[[layer-dispatch-autograd-gap]]`):
 a forward-only kernel reachable from a gradient-requiring context does not raise. It
@@ -37,10 +38,18 @@ the same step on the oracle -- the value flowing downstream and the gradient tak
 come from two implementations agreeing only to a tolerance. Gating on training mode
 closes that structurally.
 
-**There is no silent degradation in the other direction either.** Once the CUDA backend
-is chosen, a configuration the consumer cannot run -- an un-instantiated tiling, an
-unrealized warp tile -- raises out of the planner, the op, or the kernel's own checks.
-It never falls back to the oracle.
+**THE KERNEL ENVELOPE IS THE BUILT CHUNK MATRIX** (the unsupported-topology
+retirement, 2026-08-14). Uniform widths, ``d_v = 64``, ``(D, B)`` in the manifest's
+combinations, ``T`` a multiple of the chunk. A configuration outside it -- a jagged
+topology, ``d_v = 32``, ``raw`` or per-state normalization, an unbuilt ``(D, B)`` --
+DISPATCHES to the oracle, exactly as decay and an unratified activation already do,
+and :attr:`~rola.interface.Dispatch.no_kernel_arm` names which clause refused it. That
+is a dispatch and not a degradation: nothing failed, the kernel was never asked, and
+the configuration is a labelled research surface rather than a broken one. It is also
+a REAL capability narrowing -- those shapes had a kernel and now have the oracle's
+throughput -- and ``docs/open-work.md`` carries the card that widens the matrix.
+A caller who overrules the dispatch (``rola_op(_arm="kernel")``) still gets a loud
+refusal: dispatch is not a lie, override is.
 """
 from __future__ import annotations
 
@@ -50,7 +59,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from rola.interface import rola_op, select_backend
+from rola.interface import dispatch_for, rola_op, select_backend
 from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
 from rola.routing.factors import RouteProducer
@@ -182,6 +191,14 @@ class RoLA(nn.Module):
         reentrant-checkpointing case that condition exists for. The other two conditions
         (gradient reachability, device) are the op's own, shared verbatim so the layer
         and the free function cannot drift into two slightly different answers.
+
+        THE MODULE'S CONDITIONS ONLY. Whether a topology has a built kernel arm at all
+        is the op's question, answered by :func:`~rola.interface.dispatch_for` at the
+        call site -- an ``'cuda'`` here means "nothing about this MODULE forces the
+        oracle", and a configuration outside the built chunk matrix still dispatches
+        there (the unsupported-topology retirement; this module's docstring states the
+        envelope). Keeping the two separate is what lets decode, whose envelope is its
+        own, be chosen from this answer without being gated on the prefill matrix.
         """
         if self.training:
             return "oracle"
@@ -279,8 +296,8 @@ class RoLA(nn.Module):
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         routes = self.routes(source)
         decay = None if self.decay is None else self.decay()
-        backend = self.select_execution_backend(
-            v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
+        operands = (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
+        backend = self.select_execution_backend(*operands)
         #: a state that carries CONTENTS, which is what makes a step a continuation.
         #: A bound-but-empty state is a fresh sequence, and takes the prefill arms.
         carrying = stateful and state.carries
@@ -288,31 +305,31 @@ class RoLA(nn.Module):
             raise RuntimeError("RoLA carried-state execution is inference-only")
 
         if backend == "cuda" and L == 1 and carrying:
+            #: decode is its own kernel family with its own envelope -- BC-blind, and
+            #: general in the topology -- so it is chosen from the module's answer and
+            #: never from the PREFILL matrix below.
             out = self._decode(routes, v, decay, state)
             backend = "decode"
-        elif backend == "cuda":
-            from rola.ops import chunk as _chunk_arm
-
-            if _chunk_arm.unsupported(routes, decay) is None:
-                #: the chunk consumer through the facade, which owns the state I/O:
-                #: the pages, the entry plane and the final one (docs/internals/state.md).
-                out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
-                                     _arm="kernel")
-                self.last_selected_plan = None
-            else:
-                out = self._tiled(routes, v, decay, state)
         else:
-            # The reference arm is the op, entire. `_arm` is how the layer contributes
-            # its training-mode condition, which is a property of a module and has no
-            # meaning for a free function.
+            #: ONE CALL, TWO ARMS, AND THE OP OWNS THE CHOICE BETWEEN THEM. The layer's
+            #: only contribution is `_arm="reference"`, its training-mode condition,
+            #: which is a property of a module and has no meaning for a free function.
+            #: Everything else -- gradient reachability, the device, an unratified
+            #: activation, and the BUILT CHUNK MATRIX -- is `dispatch_for`'s, asked
+            #: once so the counter below reports the arm that actually ran rather than
+            #: the one the module would have preferred.
+            arm = "reference" if backend == "oracle" else dispatch_for(
+                routes, *operands).backend
             out, state = rola_op(routes, v, decay, state=state, expert=self.expert,
-                                 _arm="reference")
+                                 _arm="reference" if arm == "reference" else "kernel")
             self.last_selected_plan = None
+            backend = "oracle" if arm == "reference" else "cuda"
             # The reference arm is the fp64 oracle and returns fp64 whatever it was
             # handed; casting back is the caller's business because the caller is the
             # one who knows why. Here that reason is `o_proj`, which holds the module's
             # working dtype. The carried state deliberately stays fp64 -- the state
-            # object is dtype-agnostic by design.
+            # object is dtype-agnostic by design. The kernel arm already hands back the
+            # operand dtype, where this is an exact no-op.
             out = out.to(v.dtype)
 
         self._execution_backend_counts[backend] += 1
@@ -331,31 +348,7 @@ class RoLA(nn.Module):
             projected = self.o_proj(out)
         return projected, state
 
-    # --- the two arms that need layer-owned state ----------------------------
-
-    def _tiled(self, routes, v, decay, state):
-        """The LEGACY tiled consumer, for topologies the chunk arm has no arm for.
-
-        The layer opens the seam here rather than calling `rola_op` because it REPORTS
-        the plan (`last_selected_plan` is the diagnostic a dispatch gate asserts on), and
-        a plan the op derived and discarded is a plan nothing can be asserted about.
-
-        This consumer takes and returns RAW TENSORS, so the state object is crossed at
-        this branch and nowhere deeper: `carried` came out of `materialize`, and the
-        final state goes back in as dense contents. It is the LAST arm that does: the
-        chunk consumer and decode both own their state I/O now, and this one keeps the
-        crossing until the consumer itself is retired.
-        """
-        from rola.expert import derive_plan, execute
-
-        carried = self._dense_carry(routes, state)
-        plan = derive_plan(routes, decay=decay, expert=self.expert, device=v.device)
-        self.last_selected_plan = plan
-        out, final_state, _schedule = execute(
-            plan, routes, v, decay=decay, initial_state=carried)
-        if state is not None:
-            state.adopt_dense_contents(final_state)
-        return out
+    # --- the arm that needs layer-owned state --------------------------------
 
     def _decode(self, routes, v, decay, state):
         """The ``T = 1`` sibling kernel, which owns its own state I/O.
@@ -368,18 +361,6 @@ class RoLA(nn.Module):
         out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
         self.last_selected_plan = None
         return out
-
-    def _dense_carry(self, routes, state):
-        """The `[B, H, N, cols]` entry state the LEGACY TILED arm takes, or `None`.
-
-        Also where an unbound state BINDS on that arm, which is why it is the state's
-        own seam and not a `materialize` call: the tiled consumer crosses the state
-        object at exactly this line and nowhere deeper. Decode used to share it and no
-        longer does -- it takes the state itself now (`rola/ops/decode.py`).
-        """
-        if state is None:
-            return None
-        return state._dense_entry(routes, paging=self.expert.paging is not False)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

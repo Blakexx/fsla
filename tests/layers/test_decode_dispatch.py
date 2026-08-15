@@ -34,11 +34,11 @@ from conftest import build_layer
 import rola
 from rola.expert import PlanOverrides
 
-#: `[8, 16]` at `d_v = 64` so the TILED arm lands on an instantiated `(BC, d_v)` --
-#: `BC` defaults to the innermost width, and `BC = 8` is not in the consumer's set.
-#: Decode itself is indifferent (it is BC-blind, and ran fine on the narrower fixture),
-#: but the rows that must reach the tiled kernel have to be launchable there.
-_HIDDEN, _H, _DV, _BRANCHES = 128, 2, 64, (8, 16)
+#: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
+#: PREFILL kernel can. Decode itself is indifferent (it is BC-blind and general in the
+#: topology, and ran fine on the narrower fixture); the fixture is shaped by the arm
+#: the contrast rows need, not by the arm under test.
+_HIDDEN, _H, _DV, _BRANCHES = 128, 2, 64, (16, 16)
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the decode fork is a CUDA kernel")
 
 #: Old `decay="none"`/`"leaf_mass"` -> the two shipped decay SOURCES `build_layer`
@@ -96,9 +96,14 @@ def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
         (True, False, True, 1, True, 'oracle'),
         # eval mode, no grad: the fork's own predicate decides
         (False, False, False, 1, True, 'decode'),
-        (False, False, False, 1, False, 'cuda'),
-        (False, False, False, 2, True, 'cuda'),
-        (False, False, False, 16, True, 'cuda'),
+        # ... and the PREFILL rows it is being distinguished from. `T` is a multiple
+        # of the chunk `C = 32` wherever the row must reach the kernel; `L = 1`
+        # uncarried cannot be, so it is an `oracle` row -- a one-token PREFILL is
+        # outside the built matrix and dispatches there, which is a different
+        # statement from `decode` and is exactly the distinction being drawn.
+        (False, False, False, 1, False, 'oracle'),
+        (False, False, False, 32, True, 'cuda'),
+        (False, False, False, 64, True, 'cuda'),
     ],
 )
 def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expected):

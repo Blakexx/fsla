@@ -26,6 +26,20 @@ exercises the three-clause form), and three flat D=1 arms (the benchmark's
 in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 (measured −2.1..+2.2%, noise, no winner — one layout ships).
 
+## The built matrix IS the kernel envelope (2026-08-14)
+
+`CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped
+being reachable from production it is the whole of what the package ships a kernel for.
+`rola.interface.dispatch_for` reads `rola.ops.chunk.unsupported` and sends everything
+outside the matrix to the fp64 reference arm, naming the clause that refused in
+`Dispatch.no_kernel_arm` — the same labelled-surface treatment decay and an unratified
+activation already get, and the same refusal wording, so there is one authority on what
+this kernel runs and it is this file's arm list. The envelope's user-facing statement,
+including what it costs, is [`docs/api.md` §1.1](../../api.md#11-the-kernel-envelope).
+
+The direct entries below still refuse loudly: a caller who asks for an unbuilt arm BY
+NAME gets `unbuilt arm: ...`, never the oracle. Dispatch is not a lie; an override is.
+
 ## The closed-world arch refusal (R4's runtime half)
 
 `check_arch_table()` is the first statement of every entry that issues a launch

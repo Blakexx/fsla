@@ -247,13 +247,18 @@ def test_the_decode_split_is_performance_only_under_drift():
 # ---------------------------------------------------------------------------
 
 def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
-    """oracle (train, bwd) -> tiled prefill (eval) -> decode step (eval) ->
+    """oracle (train, bwd) -> kernel prefill (eval) -> decode step (eval) ->
     oracle again (train, bwd), in ONE test — the layer-dispatch autograd-gap
     lesson says the seams between modes are where op-level suites go blind.
     Every grad-requiring leg asserts ``x.grad is not None`` (the fab325ae
     failure class); every eval leg asserts the counter of the arm it claims;
-    and the decode leg's output is cross-checked against one tiled prefill of
-    the whole sequence, which is the layer-level statement of the seam."""
+    and the decode leg's output is cross-checked against one prefill of the whole
+    sequence, which is the layer-level statement of the seam.
+
+    The topology and ``T`` are the BUILT chunk arm's: uniform widths and a multiple
+    of the chunk. A cell outside the built matrix dispatches to the oracle (the
+    unsupported-topology retirement), which would leave this walk no boundary to
+    cross — the same reason decay is not configured on this layer."""
     from conftest import build_layer
 
     import rola
@@ -263,10 +268,10 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     #: decay dropped from THIS layer (the decay retirement): a decay-configured layer
     #: routes every arm to the oracle, which would leave this walk no
     #: boundary to cross -- the decay routing has its own test below.
-    layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(8, 16),
+    layer = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(16, 16),
                         normalization="global", decay=None,
                         layer_idx=0).to(device, torch.float32)
-    T = 8
+    T = 32
 
     # LEG 1 — training: the oracle arm, forward AND backward.
     layer.train()
@@ -280,7 +285,7 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     grads = [p.grad for p in layer.parameters() if p.requires_grad]
     assert any(g_ is not None for g_ in grads), "no parameter received a gradient"
 
-    # LEG 2 — eval prefill: the tiled CUDA arm, carried state out.
+    # LEG 2 — eval prefill: the chunk CUDA arm, carried state out.
     layer.eval()
     x_seq = torch.randn(1, T + 1, 128, device=device)
     carried = rola.state()
@@ -288,18 +293,20 @@ def test_one_walk_crosses_every_dispatch_boundary_with_the_graph_alive():
     with torch.no_grad():
         layer(x_seq[:, :T], state=carried)
     after = dict(layer.execution_backend_counts)
-    assert after["cuda"] == before["cuda"] + 1, "the prefill leg did not take the tiled arm"
+    assert after["cuda"] == before["cuda"] + 1, "the prefill leg did not take the kernel arm"
 
-    # LEG 3 — eval decode: the decode arm, consuming the tiled state.
+    # LEG 3 — eval decode: the decode arm, consuming the kernel arm's state.
     before = after
     with torch.no_grad():
         y_dec, _ = layer(x_seq[:, T:T + 1], state=carried)
     after = dict(layer.execution_backend_counts)
     assert after["decode"] == before["decode"] + 1, "the step did not take the decode arm"
 
-    # The seam, stated at layer level: one tiled prefill of ALL T + 1 tokens
-    # must agree with prefill-T-then-decode-1 on the last token. The layer's
-    # default readout is the bf16 production arm, so the band is the bf16 one.
+    # The seam, stated at layer level: one prefill of ALL T + 1 tokens must agree
+    # with prefill-T-then-decode-1 on the last token. `T + 1` is not a multiple of
+    # the chunk, so that whole-sequence leg runs on the oracle — which makes it an
+    # INDEPENDENT reference for the seam rather than the same arm twice. The band is
+    # the bf16 family's, since the two legs under test are the bf16 production arms.
     from tests.tier1_semantics.test_consumer_vs_oracle import BF16_RTOL
 
     with torch.no_grad():

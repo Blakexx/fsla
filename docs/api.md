@@ -54,6 +54,35 @@ are not model facts — they are how the op RUNS, and the op decides how it runs
 call, from the routing it was actually given. They live behind
 [`rola.expert`](#6-the-expert-surface).
 
+### 1.1 The kernel envelope
+
+The kernel arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. A
+configuration outside it dispatches to the fp64 reference arm — a labelled research
+surface, not a fallback: nothing failed, the kernel was never asked, and
+`rola.expert.dispatch_for(routes, *operands).no_kernel_arm` names the clause that
+refused, before the call and in the refusal's own words.
+
+| axis | the built matrix | outside it |
+|---|---|---|
+| `d_v` | `64` | reference arm |
+| `normalization` | `"global"` | reference arm (`raw`, per-state) |
+| widths | uniform (`len(set(widths)) == 1`) | reference arm (a jagged topology) |
+| `(D, B)` | the manifest's combinations (`rola.ops.chunk`'s `chunk_arms()`) | reference arm |
+| `T` | a multiple of the chunk `C = 32` | reference arm |
+| `decay` | not implemented at all | reference arm |
+| an unratified activation | — | reference arm |
+
+**This is a real capability narrowing, and it is stated rather than softened.** Shapes
+outside the matrix — including the flagship `widths = (8, 16)`, which is refused for
+being non-uniform — had a kernel before the tiled consumer's retirement and now have
+the reference arm's throughput, which is the textbook recurrence in fp64 and orders of
+magnitude slower. The card that widens the matrix is in
+[`docs/open-work.md`](open-work.md).
+
+A caller who overrules the dispatch gets a refusal rather than the oracle:
+`rola_op(..., _arm="kernel")` on a configuration with no built arm raises by name.
+Dispatch is not a lie; an override is.
+
 `rola_op` is the **single autograd boundary**. A call that wants a gradient runs the
 whole operation on the differentiable reference, forward and backward from one graph; a
 call that does not reaches the CUDA consumer. It is one decision in one place because

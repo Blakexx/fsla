@@ -156,14 +156,32 @@ def rola_op(
     if (_arm or _backend_for(routes, *operands)) == "reference":
         return _reference_arm(routes, v, decay, state, paging=paging)
     # operator adoption (docs/internals/chunk/).
-    # loud: what it does not support yet is REFUSED with the card that will
-    # add it, never silently degraded (facade generic, implementation
-    # specific -- the API ruling).
+    #: THE OVERRIDE, AND ONLY THE OVERRIDE. `dispatch_for` has already sent every
+    #: bundle outside the built chunk matrix to the reference arm, so the only way to
+    #: arrive here with a refusal in hand is `_arm="kernel"` -- a caller overruling
+    #: the dispatch and asking for a kernel that does not exist for this shape. That
+    #: is refused by name, on the decay precedent: dispatch is not a lie, override is.
     from rola.ops import chunk as _chunk
 
     reason = _chunk.unsupported(routes, decay)
     if reason is not None:
-        raise NotImplementedError(f"chunk consumer (kernel arm): {reason}")
+        raise NotImplementedError(
+            f"chunk consumer (kernel arm): {reason}. The dispatch would have run this "
+            "on the reference arm; _arm=\"kernel\" asked for the kernel by name and "
+            "there is none for this configuration.")
+    #: THE EXPERT'S `BC` PIN IS AN AXIS THIS ARM DOES NOT HAVE. The chunk consumer's
+    #: `BC` is a slot tile INSIDE a built arm, fixed by the manifest and not
+    #: host-selectable, so a pin over it is refused by name rather than accepted and
+    #: ignored: a knob that silently does nothing is how a caller comes to believe a
+    #: launch was shaped a way it never was.
+    from rola.expert import PlanOverrides
+
+    if expert is not None and PlanOverrides.of(expert).state_block is not None:
+        raise NotImplementedError(
+            "chunk consumer (kernel arm): PlanOverrides(state_block=...) pins the "
+            "TILED consumer's owner block. The chunk arm's BC belongs to the built arm "
+            "the manifest carries for this topology and is not host-selectable; pass "
+            "state_block=None, or run the reference arm.")
     if state is None:
         #: no state object, no state I/O: both of the kernel's state pointers are
         #: null and the variant with none of it compiled in runs
@@ -310,10 +328,19 @@ class Dispatch:
     for them, so the call ran on the reference path as a LABELED RESEARCH SURFACE. It
     is a property of the CONFIGURATION, which is why it can be answered before the call
     and without a device.
+
+    ``no_kernel_arm`` is the OTHER way a call lands on the reference path with nothing
+    having gone wrong: the chunk consumer's own refusal for this bundle, in its own
+    words, or ``None`` when it has an arm. It is the answer to "why did my call run on
+    the oracle" for a topology outside the built matrix -- the same labelled-surface
+    treatment the unratified activations get, for the shape axes rather than the
+    activation ones. It is only ever set when the arm would otherwise have been the
+    kernel, which is also the only case in which the built matrix can be read.
     """
 
     backend: str
     not_kerneled: tuple[tuple[int, str, Any], ...]
+    no_kernel_arm: str | None = None
 
 
 def requires_backward(*tensors: Any) -> bool:
@@ -353,10 +380,33 @@ def select_backend(*operands: Any) -> str:
 
 
 def dispatch_for(routes: RouteFactors, *operands: Any) -> Dispatch:
-    """The arm the op will take for this bundle and these operands."""
+    """The arm the op will take for this bundle and these operands.
+
+    THE UNSUPPORTED-TOPOLOGY RETIREMENT (2026-08-14) is decided here, in the one
+    place, so the op and every caller that asks first get the same answer. The kernel
+    arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX: uniform
+    widths, ``d_v = 64``, ``(D, B)`` in the manifest's combinations, ``T`` a multiple
+    of the chunk. Everything outside it -- a jagged topology, ``d_v = 32``, ``raw`` or
+    per-state normalization, an unbuilt ``(D, B)`` -- DISPATCHES to the reference arm,
+    exactly as decay and an unratified activation already do, and is named in
+    ``no_kernel_arm`` rather than left to be inferred. This NARROWS the shipping
+    kernel envelope to the built matrix and the reference arm's throughput is the
+    price; ``docs/open-work.md`` carries the card that widens the matrix.
+
+    ``decay`` is not an argument here: a decay-configured call is routed by ``rola_op``
+    before this is consulted, so asking the chunk arm about it again would be a second
+    authority on the same retirement.
+    """
     not_kerneled = tuple(routes.topology.unratified_activations)
     backend = "reference" if not_kerneled else select_backend(*operands)
-    return Dispatch(backend=backend, not_kerneled=not_kerneled)
+    no_kernel_arm = None
+    if backend == "cuda":
+        from rola.ops import chunk as _chunk
+
+        no_kernel_arm = _chunk.unsupported(routes, None)
+        if no_kernel_arm is not None:
+            backend = "reference"
+    return Dispatch(backend=backend, not_kerneled=not_kerneled, no_kernel_arm=no_kernel_arm)
 
 
 def _backend_for(routes: RouteFactors, *operands: Any) -> str:
