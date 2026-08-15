@@ -53,9 +53,12 @@ never inferred.
 
 **Memory is reported on the same rows as latency**, because the curve's second axis
 is the point: `kv_cache_bytes` for attention (analytic, `2 * B * H * L * d_head *
-itemsize`, the bytes a decoder would have to keep), against V3's `resident_bytes`
-(measured, the state's own `PagingResult`, §7.1 committed pages) and `dense_state_bytes`
-(analytic, the provisioned `N`). `peak_alloc_gb` is torch's own peak for the whole
+itemsize`, the bytes a decoder would have to keep), against V3's `committed_bytes`
+(measured, the state's own `PagingResult` -- the bytes the CUDA driver MAPPED, which is
+the only quantity that states a saving; `allocated_bytes` beside it is what the arena
+handed out) and `dense_state_bytes` (analytic, the provisioned `N`). A pool smaller than
+one driver allocation granule commits its whole dense limit and saves nothing, which is
+why the dense counterfactual is on every row rather than implied. `peak_alloc_gb` is torch's own peak for the whole
 forward and is a THIRD, different quantity -- it includes activations and is reported
 separately rather than conflated with either.
 
@@ -235,7 +238,7 @@ def run_fa_cell(*, L, B, H, d_head, hidden, dtype, backend: str, reps, warmup) -
     return row
 
 
-def _addressing(branches, d_v, norm, read_levels, write_levels) -> dict:
+def _addressing(branches, d_v, read_levels, write_levels) -> dict:
     """§5.2's addressing columns; same definitions as `benchmark_rola_v3_layer.py`.
 
     `A_r` is a PRODUCT OF PER-LEVEL MEANS, exact at a dense operating point and an
@@ -251,7 +254,7 @@ def _addressing(branches, d_v, norm, read_levels, write_levels) -> dict:
     a_r, a_w = active(read_levels), active(write_levels)
     return {
         "N": N,
-        "state_floats_per_head": N * (d_v + int(norm == "global")),
+        "state_floats_per_head": N * (d_v + 1),  # the mass column is unconditional
         "address_space_bits": round(math.log2(N), 3),
         "address_space_basis": "RoLA addresses LEAFS: the space is N and it is FIXED in L",
         "routing_addressing_width": sum(branches),
@@ -264,7 +267,7 @@ def _addressing(branches, d_v, norm, read_levels, write_levels) -> dict:
 
 
 def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, logit_gain,
-                norm, decay_on, paging, planes: bool, reps, warmup, state_block=None,
+                paging, planes: bool, reps, warmup, state_block=None,
                 arm="v3", cell_role="parity") -> dict:
     """`read_router`/`write_router` are independent (`'softmax'` = dense, `'entmax'`
     = exact entmax sparse), per the 2026-08-01 ruling: the freeze-defining parity
@@ -295,22 +298,25 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "hidden": hidden, "branches": list(branches),
            "read_router": read_router, "write_router": write_router,
            "logit_gain": logit_gain,
-           "norm": norm, "decay": "LeafMassDecay" if decay_on else "None",
+           #: TWO DEAD AXES RETIRED (P67 S5). `normalization='raw'` is refused outright
+           #: by `validate_normalization` -- the mass column is unconditional -- and a
+           #: decay-configured layer dispatches every arm to the fp64 oracle, which the
+           #: `last_execution_backend` assert below would then fail. Both raised on their
+           #: first cell. The columns stay in the row, as the CONSTANTS they are, so a
+           #: reader of an old JSON beside a new one is comparing the same arm.
+           "norm": "global", "decay": "None",
            "paging": paging, "P": 1, "P_role": "PRIMARY (spec §6.4)",
            "requested_state_block": state_block,
            "dtype": "float32", "reps": reps, "warmup": warmup}
     try:
         torch.manual_seed(0)
-        from rola import LearnedDecay
-
         producer = SimplexProducer(
             tuple(branches), routing_tag(read_router, write_router),
             hidden_size=hidden, num_heads=H)
         routes = RouteProducer(
-            [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization=norm)
-        decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay_on else None
+            [producer], d_v=d_v, num_heads=H, hidden_size=hidden, normalization="global")
         layer = RoLA(
-            hidden, H, routes, decay=decay_source, layer_idx=0,
+            hidden, H, routes, decay=None, layer_idx=0,
             expert=PlanOverrides(state_block=state_block),
         ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
@@ -329,14 +335,13 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
             "would be an oracle timing")
         row["BC"] = layer.state_block
-        decay_config = None if layer.decay is None else layer.decay()
         # `layer.last_selected_plan`/`layer.last_plan_axes` are re-derived here rather
         # than read off the layer, since the private seam (`rola.interface._derive_plan`,
         # exported as `rola.expert.derive_plan`) discards the `Plan` it computes.
         from rola.expert import derive_plan
 
         plan = derive_plan(
-            layer.routes(x), decay=decay_config, expert=layer.expert, device=x.device)
+            layer.routes(x), decay=None, expert=layer.expert, device=x.device)
         row["BC_derived"] = plan.BC
         # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
         # engages only on a call that carries a state. The TIMED call above stays
@@ -353,22 +358,28 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
                 "dense-backed and there is no residency to report")
             stats_paging = carried._arena.last_result
         if stats_paging is not None:
+            # `allocated_*` is what the arena handed out; `committed_*` is what the CUDA
+            # driver MAPPED, and only the second states a saving. A pool smaller than one
+            # allocation granule commits its whole dense limit, so `dense_state_bytes` is
+            # on the row beside every fraction (docs/internals/paging/paging.md#granule).
             row.update({
                 "owners_total": stats_paging.owners_total,
                 "realized_owners": stats_paging.realized_owners,
-                "resident_pages": stats_paging.resident_pages,
+                "allocated_pages": stats_paging.allocated_pages,
+                "resident_pages": carried._arena.resident_pages,
                 "peak_pages": stats_paging.peak_pages,
-                "resident_bytes": stats_paging.resident_bytes,
+                "allocated_bytes": stats_paging.allocated_bytes,
+                "committed_bytes": stats_paging.committed_bytes,
                 "dense_state_bytes": stats_paging.dense_bytes,
-                "resident_fraction": round(stats_paging.resident_fraction, 6),
+                "allocated_fraction": round(stats_paging.allocated_fraction, 6),
+                "committed_fraction": round(stats_paging.committed_fraction, 6),
             })
         else:
             # Unpaged: the provisioned dense state IS the committed state. Analytic,
             # and labelled as such -- there is no page table to measure.
-            row["dense_state_bytes"] = (B * H * math.prod(branches)
-                                        * (d_v + int(norm == "global")) * 4)
-            row["resident_bytes"] = row["dense_state_bytes"]
-            row["resident_fraction"] = 1.0
+            row["dense_state_bytes"] = B * H * math.prod(branches) * (d_v + 1) * 4
+            row["committed_bytes"] = row["dense_state_bytes"]
+            row["committed_fraction"] = 1.0
             row["resident_basis"] = "analytic (paging off: every provisioned leaf is resident)"
 
         torch.cuda.synchronize()
@@ -399,18 +410,16 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
                 ro = producer()
             read_levels, write_levels = ro.read, ro.write
             g_read, g_write = ro.g_read, ro.g_write
-            decay = decay_config
-
             def planner():
                 return plan_and_schedule(read_levels, write_levels, g_read, g_write,
                                             layer.topology, layer.state_block,
-                                            normalization=norm, decay=decay_on)
+                                            normalization="global", decay=False)
 
             sel_plan, sched = planner()
 
             def select_only():
                 return build_plan(layer.topology, layer.state_block,
-                                   normalization=norm, decay=decay_on)
+                                   normalization="global", decay=False)
 
             def schedule_only():
                 return build_schedule(read_levels, write_levels, g_read, g_write, sel_plan)
@@ -418,7 +427,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             def consumer():
                 with torch.no_grad():
                     return _consumer_forward(v, read_levels, write_levels, g_read,
-                                               g_write, sel_plan, decay=decay,
+                                               g_write, sel_plan, decay=None,
                                                schedule=sched)
 
             consumer()
@@ -434,7 +443,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             row["glue_ms"] = round(row["total_ms"] - row["producer_ms"]
                                    - row["planner_ms"] - row["consumer_ms"], 4)
             row["glue_basis"] = "RESIDUAL of total minus (producer, planner, consumer); may be negative"
-            row.update(_addressing(branches, d_v, norm, read_levels, write_levels))
+            row.update(_addressing(branches, d_v, read_levels, write_levels))
             v = ro = read_levels = write_levels = sched = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
         layer = x = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
     except torch.cuda.OutOfMemoryError as exc:
@@ -471,8 +480,6 @@ def main() -> None:
                     help="scales route_W to sharpen an UNTRAINED exact-entmax router into a "
                          "real sparse support; the support is genuine, its LEVEL is a "
                          "synthetic stand-in for training and is labelled as such")
-    ap.add_argument("--norm", choices=("raw", "global"), default="global")
-    ap.add_argument("--decay", choices=("none", "leaf_mass"), default="none")
     ap.add_argument("--state-block", type=int, default=None,
                     help="`BC`, the leafs per owner block. Default None resolves to the "
                          "innermost level's width -- the STRUCTURAL choice (`wiring.md` "
@@ -522,7 +529,6 @@ def main() -> None:
                 row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
                                   read_router=args.read_router, write_router=args.write_router,
                                   logit_gain=args.logit_gain,
-                                  norm=args.norm, decay_on=(args.decay == "leaf_mass"),
                                   paging=args.paging, planes=args.planes,
                                   reps=args.reps, warmup=args.warmup,
                                   state_block=args.state_block,
@@ -532,7 +538,6 @@ def main() -> None:
                 row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
                                   read_router="entmax", write_router="entmax",
                                   logit_gain=args.logit_gain,
-                                  norm=args.norm, decay_on=(args.decay == "leaf_mass"),
                                   paging=args.paging, planes=args.planes,
                                   reps=args.reps, warmup=args.warmup,
                                   state_block=args.state_block,
@@ -563,7 +568,7 @@ def main() -> None:
             print(f"L={r['L']:7d} {r['arm']:14s} total={r['total_ms']:9.3f} ms "
                   f"(IQR {r['total_iqr_ms']:7.3f}) event={r['event_ms']:9.3f} "
                   f"peak={r['peak_alloc_gb']:.3f} GB "
-                  f"state/kv={r.get('resident_bytes', r.get('kv_cache_bytes', 0)) / 2 ** 20:8.2f} MiB")
+                  f"state/kv={r.get('committed_bytes', r.get('kv_cache_bytes', 0)) / 2 ** 20:8.2f} MiB")
     print("\nNOT A MATCHED-CAPACITY RATIO. Attention and RoLA are different architectures:\n"
           "attention's addressing is DATA-located over a token space that GROWS with L\n"
           "(content_addressing_width = d_head); RoLA's is GRID-located over a FIXED leaf\n"

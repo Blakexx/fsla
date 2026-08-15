@@ -173,6 +173,12 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     unpaged_ms = _median_ms(step(unpaged, dense_state), reps=reps, warmup=warmup)
 
     N = layer.topology.N
+    #: THE SAVINGS CLAIM IS THE DRIVER'S, AND IT IS ONLY MEANINGFUL WITH ITS POOL SIZE.
+    #: `allocated_*` is what the arena handed out; `committed_*` is what the CUDA driver
+    #: actually mapped, and the second is the number that states a saving. A pool smaller
+    #: than one allocation granule (2 MiB on this device) commits its whole dense limit in
+    #: a single mapping and saves NOTHING, so `dense_MiB` is printed beside every fraction
+    #: rather than left implicit (docs/internals/paging/paging.md#granule).
     return {
         "router": router, "logit_gain": logit_gain, "norm": norm,
         "decay": "leaf_mass" if decay else "none",
@@ -180,11 +186,14 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
         "BH": B * H, "L": L,
         "owners_total": stats.owners_total,
         "realized_owners": stats.realized_owners,
-        "resident_pages": stats.resident_pages,
+        "allocated_pages": stats.allocated_pages,
+        "resident_pages": arena.resident_pages,
         "peak_pages": stats.peak_pages,
-        "resident_MiB": stats.resident_bytes / _MiB,
+        "allocated_MiB": stats.allocated_bytes / _MiB,
+        "committed_MiB": stats.committed_bytes / _MiB,
         "dense_MiB": stats.dense_bytes / _MiB,
-        "resident_fraction": stats.resident_fraction,
+        "allocated_fraction": stats.allocated_fraction,
+        "committed_fraction": stats.committed_fraction,
         "plan_cold_ms": plan_cold_ms,
         "plan_warm_ms": plan_warm_ms,
         "paged_ms": paged_ms,
@@ -201,9 +210,13 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--head-v-dim", type=int, default=64)
-    #: Default is the wide cell: 16^4 = 65536 leaves, where `N` is far larger than
-    #: any step's realized owner set. `8,16` (the flagship) is the dense-limit cell.
-    ap.add_argument("--branches", default="16,16,16,16")
+    #: Default is the DEEPEST BUILT cell: `8^4 = 4096` leaves, where `N` is far larger
+    #: than any step's realized owner set. The paged backing lives on the chunk arm, and
+    #: the chunk arm is a BUILT MATRIX -- a topology outside it (`16,16,16,16`, which this
+    #: default used to be) falls to the legacy tiled consumer, whose state is dense
+    #: whatever the caller prefers, so there is no paged cell to measure at all. The
+    #: assert in `measure_residency` says so by name rather than reporting a dense row.
+    ap.add_argument("--branches", default="8,8,8,8")
     ap.add_argument("--router", choices=("softmax", "entmax"), default="entmax")
     ap.add_argument("--logit-gain", type=float, default=8.0)
     ap.add_argument("--json", default=None)
@@ -228,9 +241,10 @@ def main() -> None:
           f"router={args.router} logit_gain={args.logit_gain} ===")
     for r in rows:
         print(f"decay={r['decay']:9s} norm={r['norm']:7s} | "
-              f"owners {r['resident_pages']:6d}/{r['owners_total'] * r['BH']:6d} | "
-              f"resident {r['resident_MiB']:8.2f} MiB vs dense {r['dense_MiB']:8.2f} MiB "
-              f"({100 * r['resident_fraction']:5.1f}%) | "
+              f"atoms {r['resident_pages']:6d}/{r['owners_total'] * r['BH']:6d} | "
+              f"allocated {r['allocated_MiB']:8.2f} / committed {r['committed_MiB']:8.2f} "
+              f"vs dense {r['dense_MiB']:8.2f} MiB "
+              f"({100 * r['committed_fraction']:5.1f}% committed) | "
               f"plan[cold {r['plan_cold_ms']:6.3f} / warm {r['plan_warm_ms']:6.3f}] ms | "
               f"paged {r['paged_ms']:7.3f} vs unpaged {r['unpaged_ms']:7.3f} ms "
               f"({r['paging_overhead_pct']:+5.1f}%)")
