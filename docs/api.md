@@ -291,6 +291,22 @@ forward that pass could take would be a forward no backward can follow.
 `layer.execution_backend_counts` reports which of `oracle` / `cuda` / `decode` ran, which
 is a fact about the branch rather than an inference from a timing.
 
+### 4.1 The bf16 projection arm
+
+On CUDA with the (only) `mma_precision="bf16"` pin, `v_proj` and `o_proj` run as bf16
+GEMMs with weights cast per call, and `v` FLOWS bf16 straight into the op. Round-tripping
+it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
+downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
+narrows once, at the projection, rather than at the op boundary. The GEMMs use cuBLAS's
+fp32 compute type (the accumulate-in-fp32 ruling); the global
+reduced-precision-reduction knob is deliberately left alone, so this is the same
+environment the FlashAttention comparison arm runs in.
+
+A configured `value_conv` is the one structural exception: it runs in the module dtype,
+so `v` returns to `x.dtype` before it and the op re-narrows at its own boundary —
+exactly, the values being bf16-rounded already. `o_proj`'s operand cast is exact for the
+same reason: `y` leaves the kernel already bf16-rounded.
+
 ## 5. The expert surface
 
 `rola.expert` holds everything BELOW the contract line — the dispatch's own answer,

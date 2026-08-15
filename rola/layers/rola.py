@@ -229,15 +229,8 @@ class RoLA(nn.Module):
         B, L, _ = x.shape
         H = self.num_heads
 
-        # P09 matched-dtype family: on the kernel-bound bf16 arm both projections
-        # run as bf16 GEMMs (weights cast per call), and `v` FLOWS bf16 straight
-        # into the op -- round-tripping it through the module dtype was MEASURED
-        # to cost two elementwise casts per call (a v downcast + a y upcast,
-        # ~12-13% of a small cell's op time; workflows/perf/p09_bf16_family.md).
-        # A configured value_conv runs in the module dtype, so its presence is
-        # the one (structural) case where `v` returns to `x.dtype` here and the
-        # op re-narrows at its boundary -- exactly, the values being
-        # bf16-rounded already.
+        #: `v` FLOWS bf16 into the op on the bf16 arm; a configured `value_conv` is the
+        #: one case where it returns to the module dtype first (docs/api.md §4.1).
         bf16_proj = self._bf16_projection_active(x)
         if bf16_proj:
             v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
@@ -282,8 +275,6 @@ class RoLA(nn.Module):
                       else None)
         out = out.reshape(B, L, H * self.head_v_dim)
         if bf16_proj:
-            #: `out`'s VALUES are already bf16-rounded (y is cast post-divide in the
-            #: kernel), so this operand cast is exact.
             projected = nn.functional.linear(
                 out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         else:
