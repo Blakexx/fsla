@@ -108,9 +108,12 @@ def rola_op(
     it: every axis it pins is one the op decides for itself, except ``sparse_grid``,
     which is off until a plan rule exists to decide it.
 
-    A call outside the built envelope -- a gradient anywhere in it, a CPU operand, an
-    unratified activation, decay, a jagged topology, ``d_v != 64``, an unbuilt
-    ``(D, B)``, ``T`` off the chunk -- RAISES, naming the clause that has no arm.
+    A call outside the built envelope -- a CPU operand, an unratified activation,
+    decay, a jagged topology, ``d_v != 64``, an unbuilt ``(D, B)``, ``T`` off the
+    chunk -- RAISES, naming the clause that has no arm. A GRADIENT IS NO LONGER ONE
+    OF THEM: the two-pass reverse pass is built, so a grad-bearing call trains.
+    Carrying a gradient AND a ``state`` still raises -- training is stateless in v1
+    (P65 R-D).
     """
     _validate_call(routes, v, decay)
     if state is not None and type(state) is not RoLAState:
@@ -118,7 +121,7 @@ def rola_op(
             "rola_op's `state` argument is a rola.RoLAState from rola.state(), got "
             f"{type(state).__name__}. A raw tensor is not one: the state owns its own "
             "backing (dense or paged) and the shape it is bound to.")
-    require_envelope(routes, v, decay)
+    require_envelope(routes, v, decay, state)
     from rola.expert import PlanOverrides
     from rola.ops import chunk as _chunk
 
@@ -221,17 +224,41 @@ def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -
     return _chunk.unsupported(routes, decay, d_v=v.shape[-1])
 
 
-def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> None:
+def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
+                     state: Any = None) -> None:
     """Refuse anything the built arm cannot run. THE FAST-FAIL, in one place.
 
     There is no second arm to route to: the fp64 oracle is the executable spec, not a
     fallback, and a caller who wants it calls it (:func:`rola.ops.naive.naive_rola`).
+
+    **THE GRADIENT IS NO LONGER A CLAUSE HERE.** It was, while the operator was
+    forward-only; the two-pass backward is built and gated, so a grad-bearing call
+    now runs. What remains is the CONFIGURATION envelope, which refuses whether or
+    not a gradient is attached, plus one clause that exists only on the grad path:
+    a carried STATE. Training in v1 is stateless (P65 R-D) -- the state plane is
+    caller-owned and mutated in place, and `d initial_state` is not in the scans --
+    so `state=` and a gradient are mutually exclusive, by name, at the boundary
+    rather than silently.
     """
-    if requires_backward(*operands_of(routes, v, decay)):
+    grad = requires_backward(*operands_of(routes, v, decay))
+    if grad and state is not None:
         raise BackwardNotImplemented(
-            f"rola_op is forward-only and this call carries a gradient: "
-            f"{BACKWARD_ARRIVES_WITH}. Run under torch.no_grad() with the operands "
-            "detached.")
+            "rola_op trains STATELESS ONLY and this call carries both a gradient and "
+            "a state plane. The state is caller-owned and mutated in place, and the "
+            "reverse pass has no `d initial_state`: it rebuilds from zero. Detach the "
+            "operands for a stateful step, or drop `state=` to train.")
+    if grad and routes.device.type == "cuda":
+        from rola.ops import chunk as _chunk
+
+        #: THE REVERSE PASS' ARM MATRIX IS NARROWER THAN THE FORWARD'S, so a call
+        #: that would run forward and fail backward is refused HERE rather than
+        #: three launches later with the operands already consumed.
+        back = _chunk.backward_unsupported(routes, decay, d_v=v.shape[-1])
+        if back is not None:
+            raise BackwardNotImplemented(
+                f"rola_op can run this call but cannot differentiate it: {back}. Run "
+                "it under torch.no_grad() with the operands detached, or move to an "
+                "arm the reverse pass carries.")
     reason = envelope_refusal(routes, v, decay)
     if reason is not None:
         raise NotImplementedError(
@@ -326,6 +353,9 @@ class ChunkConsumer(torch.autograd.Function):
             #: byproducts are not graph tensors and ride beside them.
             ctx.save_for_backward(v, y)
             ctx.saved_plan = saved
+            #: the bundle, for its LAYOUTS alone: `backward` needs each level's width
+            #: and dtype to un-pack the digit gradients, and those are the bundle's.
+            ctx.saved_routes = call.packed.routes
         #: The state plane leaves through the payload rather than as a second output:
         #: it is the CALLER's allocation (the arena's, when paged), and an autograd
         #: node that returned it would stamp graph metadata onto storage the state
@@ -334,7 +364,49 @@ class ChunkConsumer(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *grad_outputs):  # type: ignore[override]
-        raise BackwardNotImplemented(
-            f"the RoLA chunk consumer is forward-only: {BACKWARD_ARRIVES_WITH}. Reaching "
-            "this means the kernel was invoked on grad-requiring operands, bypassing "
-            "`rola.rola_op`, which refuses them.")
+        """The two-pass reverse pass, returned in `RouteFactors.tensors()`' ORDER.
+
+        That ordering is load-bearing rather than incidental: `forward` receives the
+        operands flat and in exactly that order, so `backward` must return them the
+        same way or every gradient lands on the wrong tensor SILENTLY -- the shapes
+        agree. `tests/unit/test_interface.py` asserts the correspondence rather than
+        trusting it.
+
+        Everything the scans emit is fp32 in the kernels' layouts; each gradient is
+        narrowed to its operand's dtype and un-permuted to its public layout here,
+        because autograd requires `grad.dtype == input.dtype` and the packing that
+        produced the kernel layout was this node's own.
+        """
+        from rola.ops import chunk as _chunk
+
+        saved = getattr(ctx, "saved_plan", None)
+        if saved is None:
+            raise BackwardNotImplemented(
+                "the RoLA chunk consumer reached backward with no saved ctx: the "
+                "forward retains one only when the call carries a gradient, so this "
+                "node was applied outside a gradient context and then differentiated.")
+        v, y = ctx.saved_tensors
+        routes = ctx.saved_routes
+        dv, dpr, dpw, dgw, dm = _chunk.backward(saved, grad_outputs[0], y)
+
+        def _levels(packed_side, levels):
+            """`[B, H, T, sumW]` fp32 back to the per-level `[B, T, H, width_l]`."""
+            out, off = [], 0
+            for level in levels:
+                w = level.shape[-1]
+                out.append(packed_side[..., off:off + w].permute(0, 2, 1, 3)
+                           .to(level.dtype).contiguous())
+                off += w
+            return out
+
+        grads = [dv.permute(0, 2, 1, 3).to(v.dtype).contiguous()]
+        grads += _levels(dpr, routes.read)
+        grads += _levels(dpw, routes.write)
+        #: `g_read` does not exist on this surface, so the gains are the write gain
+        #: alone -- the same one clause `tensors()` builds.
+        grads.append(dgw.permute(0, 2, 1).to(routes.g_write.dtype).contiguous())
+        if routes.read_mass is not None:
+            #: SURPRISE 2: the m-carry is forward-exact but NOT gradient-neutral.
+            grads.append(dm.permute(0, 2, 1).to(routes.read_mass.dtype).contiguous())
+        #: the leading `None` is the `call` payload, which is not a tensor
+        return (None, *grads)

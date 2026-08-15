@@ -85,6 +85,33 @@ def unsupported(routes, decay, *, d_v: int) -> str | None:
     return None
 
 
+def scan_arms() -> set[tuple[int, int, int, int]]:
+    """The `(C, BC, D, B)` arms the two SCANS are built for -- read off the census,
+    not restated, so this cannot disagree with what shipped."""
+    return {tuple(row[:4]) for row in extension().chunk_scan_b_census()}
+
+
+def backward_unsupported(routes, decay, *, d_v: int) -> str | None:
+    """Why a GRAD-BEARING call has no arm, or None if it trains.
+
+    The forward's arm matrix is wider than the scans': the reverse pass carries the
+    pinned arm alone until it carries them all. A forward that runs and a backward
+    that does not is exactly the known-broken path this refuses at the boundary
+    instead of discovering three launches later.
+    """
+    reason = unsupported(routes, decay, d_v=d_v)
+    if reason is not None:
+        return reason
+    top = routes.topology
+    c, bc = arm(routes)
+    want = (c, bc, len(top.levels), top.levels[0].width)
+    if want not in scan_arms():
+        return (f"the reverse pass is not built for arm C={want[0]} BC={want[1]} "
+                f"depth={want[2]} width={want[3]}; it carries "
+                f"{sorted(scan_arms())} (docs/internals/chunk/backward.md)")
+    return None
+
+
 def _pack_side(levels) -> torch.Tensor:
     """The per-level `[B, T, H, width_l]` tuple as one `[B, H, T, sumW]` bf16 tensor.
 
@@ -161,6 +188,7 @@ class SavedForward:
     tbl: torch.Tensor | None = None
     den: torch.Tensor | None = None
     block_bits: torch.Tensor | None = None
+    vk: torch.Tensor | None = None
     #: the plan's non-tensor half: the arm, the topology, the readout constant and
     #: V's row stride, which the backward's launch needs and cannot re-derive.
     c: int = 0
@@ -177,23 +205,49 @@ class SavedForward:
                    for t in (self.pr, self.pw, self.gw, self.rm, self.tbl, self.den,
                              self.block_bits) if t is not None)
 
+    def kernel_v_is_the_callers(self, v: torch.Tensor) -> bool:
+        """Whether `vk` aliases the caller's `v` rather than being a repack of it --
+        the one field whose cost depends on the caller's dtype and contiguity."""
+        return self.vk is not None and self.vk.data_ptr() == v.data_ptr()
 
-def backward(saved: SavedForward, dy: torch.Tensor):
-    """The reverse pass over one saved forward. NOT WIRED YET.
 
-    The two scans exist as separate gated kernels before they exist as one
-    operator -- Scan B's skeleton is reachable as the extension's
-    `chunk_scan_b_probe` at its own stage's scope. This entry is the seam they
-    land behind, and it refuses BY NAME rather than returning something a caller
-    could mistake for a gradient.
+def backward(saved: SavedForward, dy: torch.Tensor, y: torch.Tensor):
+    """The reverse pass over one saved forward: `(dv, d_read, d_write, d_gw, d_m)`.
+
+    Three launches and no allocation of anything `O(N * L)`:
+
+    1. the SEEDS (`chunk_backward_seeds`) -- `dnum`, `dden`, and `dm = eps * dden`
+       when a read mass exists. The eps floor is additive, so all three are exact
+       and none of them branches on `den`;
+    2. SCAN A, which rebuilds the forward state from zero over the SAVED table and
+       emits the read side's digit gradient;
+    3. SCAN B, which walks the same tokens downward carrying the adjoint state and
+       emits `dv`, `d gw` and the write side's digit gradient.
+
+    The two scans associate their sums differently by construction -- each walks
+    its own partition -- so nothing here is bit-reproducible, and neither is the
+    fan-in that assembles the digit gradients (`docs/api.md`).
+
+    Everything returned is fp32, in the KERNEL's layouts. Narrowing to the
+    operands' dtypes and un-permuting to their public layouts is the caller's, and
+    :class:`rola.interface.ChunkConsumer` is the one caller.
     """
-    raise NotImplementedError(
-        "rola.ops.chunk.backward is the two-pass reverse pass' seam and it is not "
-        "wired: the forward SAVES its ctx (the union table, the packed sides, the "
-        "write gain, the read mass and the denominator) and Scan B's skeleton is "
-        "built and gated, but the scans do not yet emit a full cotangent set. Until "
-        "they do, rola_op refuses a grad-bearing call at the envelope and "
-        "ChunkConsumer.backward refuses one that bypassed it.")
+    if saved.tbl is None or saved.vk is None:
+        raise RuntimeError(
+            "rola.ops.chunk.backward was handed a ctx the forward never filled. The "
+            "forward populates it only when the call carries a gradient, so this is a "
+            "backward reached from an inference forward -- which cannot happen through "
+            "ChunkConsumer and means the node was bypassed.")
+    m = extension()
+    dyk = dy if dy.is_contiguous() else dy.contiguous()
+    seeds = m.chunk_backward_seeds(dyk, y, saved.den, saved.rm, saved.eps)
+    dnum, dden = seeds[0], seeds[1]
+    dm = seeds[2] if len(seeds) > 2 else None
+    args = (saved.pr, saved.pw, saved.gw, saved.vk, dnum, dden, saved.tbl,
+            saved.c, saved.bc, list(saved.widths))
+    (dpr,) = m.chunk_scan_a_probe(*args)
+    dv, _dw_slotsum, dgw, dpw = m.chunk_scan_b_probe(*args)
+    return dv, dpr, dpw, dgw, dm
 
 
 def stats(packed: PackedRoutes) -> torch.Tensor:
@@ -302,4 +356,8 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
         saved.c, saved.bc, saved.widths = c, bc, widths
         saved.eps = READOUT_EPS
         saved.v_row_bytes = vk.shape[2] * vk.shape[3] * vk.element_size()
+        #: THE KERNEL'S OWN V, not the caller's: the scans contract against exactly
+        #: the bytes the forward folded, and `v` is bf16-contiguous here whether or
+        #: not the caller's was.
+        saved.vk = vk
     return y, s_out

@@ -70,6 +70,13 @@ def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: s
     return layer.eval()
 
 
+#: THE PINNED ARM'S BRANCHES.  The reverse pass carries `(C=32, BC=128, D=2, B=64)`
+#: alone, and `BC` follows the topology, so a gradient claim has to be made at
+#: `(64, 64)` -- the default fixture's `(16, 16)` runs forward and is refused for
+#: training BY NAME, which is its own cell above.
+_TRAIN_BRANCHES = (64, 64)
+
+
 def _oracle(layer: RoLA, x: torch.Tensor, *, initial_state=None, want_state: bool = False):
     """`(y, final_state)` from the fp64 oracle, CALLED DIRECTLY over this layer's own
     projections and routing. `y` is projected through `o_proj` so it is comparable to
@@ -109,46 +116,87 @@ def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 1. Every route to a gradient refuses, and says the backward is coming
+# 1. THE AUTOGRAD GAP, CLOSED BY A GRADIENT RATHER THAN BY A REFUSAL
 # ---------------------------------------------------------------------------
+#: These cells asserted refusals for the whole life of the forward-only operator.
+#: The two-pass reverse pass is built and wired, so they assert the opposite --
+#: which is the same claim, satisfied the other way: a forward carrying a gradient
+#: must never return a fine-looking tensor whose graph is gone.
 
 
-@pytest.mark.parametrize("decay", ["none", "leaf_mass"])
 @pytest.mark.parametrize("router,gain", [("dense", 1.0), ("sparse", 8.0)])
 @_CUDA
-def test_a_grad_bearing_forward_refuses_instead_of_severing_the_graph(decay, router, gain):
-    """The autograd gap, closed by refusal. What must NOT happen is a forward that
-    returns a fine-looking tensor whose graph is gone -- and the reference arm that
-    used to absorb this case is exactly what the fast-fail retired."""
+def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(router, gain):
+    """THE GATE FLIPS. `x.grad is None` was the fleet-smoke failure this whole family
+    exists for; here the gradient must arrive, be finite, and reach the ROUTER's own
+    parameters -- which is the first loss-driven gradient the producer's CUDA
+    entmax/softmax backward kernels have ever seen (they were built and gated at P73
+    S5 but nothing could reach them while the consumer refused)."""
     torch.manual_seed(3)
-    layer = _layer(decay=decay, router=router, logit_gain=gain)
+    layer = _layer(decay="none", router=router, logit_gain=gain,
+                   branches=_TRAIN_BRANCHES)
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
+    out, _ = layer(x)
+    assert out.grad_fn is not None, "the layer returned a tensor with no graph on it"
+    out.sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all(), (
+        "x.grad is None or non-finite -- the layer-dispatch autograd gap, exactly")
+    #: EVERY PARAMETER ON THE OPERATION'S OWN PATH, named, because each one is a
+    #: DIFFERENT one of the five cotangents arriving: the router projection is
+    #: `d pr` and `d pw` through the producer's solve, the side gain is `d gw`, and
+    #: `v_proj` is `dv`. A gate that checked only `x.grad` would pass with four of
+    #: the five silently zero.
+    wanted = ("routes.producers.0.route_W", "routes.side_gain.gain_W",
+              "v_proj.weight", "o_proj.weight")
+    params = dict(layer.named_parameters())
+    for name in wanted:
+        param = params[name]
+        assert param.grad is not None, f"{name} received no gradient"
+        assert torch.isfinite(param.grad).all(), f"{name}'s gradient is not finite"
+        assert param.grad.abs().max() > 0, (
+            f"{name}'s gradient is identically zero -- the cotangent that reaches it "
+            f"is not being computed")
+    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
+
+
+@pytest.mark.parametrize("decay", ["leaf_mass"])
+@_CUDA
+def test_decay_still_refuses_a_grad_bearing_forward_by_name(decay):
+    """The reverse pass is UNDECAYED (P66 re-opens it), so a decayed grad-bearing
+    forward must still refuse -- and by the configuration clause, which is the op's,
+    not by a module-level gradient clause that no longer exists."""
+    torch.manual_seed(3)
+    layer = _layer(decay=decay)
+    x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
+    with pytest.raises((BackwardNotImplemented, NotImplementedError)):
         layer(x)
-    assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
 
 
 @_CUDA
-def test_training_mode_refuses_even_with_nothing_requiring_grad():
-    """Training mode is the MODULE's own clause and it is unconditional: reentrant
-    checkpointing runs its first pass under `no_grad` with `training` still True, and
-    that pass must refuse too rather than hand back a forward no backward can follow."""
+def test_training_mode_is_no_longer_a_clause_at_all():
+    """OLD: training mode refused unconditionally, because there was no training
+    path. There is one, so `.train()` is the ordinary case -- and the frozen-parameter
+    forward under `no_grad` that reentrant checkpointing takes as its first pass runs
+    on the kernel exactly as an eval forward does."""
     torch.manual_seed(5)
     layer = _layer(decay="none").train()
     for param in layer.parameters():
         param.requires_grad_(False)
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
-    with torch.no_grad(), pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
-        layer(x)
+    with torch.no_grad():
+        out, _ = layer(x)
+    assert torch.isfinite(out).all()
+    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
 
 
 @_CUDA
-def test_the_decay_dials_alone_are_a_grad_bearing_operation_input():
+def test_the_decay_dials_alone_are_still_a_grad_bearing_operation_input():
     """A context where ONLY the decay source's `theta` requires grad still carries a
-    gradient into the operation -- the dials are handed straight to it -- so it
-    refuses. `o_proj` staying trainable is what would have let a severed forward look
-    healthy: it sits downstream and re-attaches a graph whether or not the upstream
-    one was cut."""
+    gradient into the operation -- the dials are handed straight to it. Decay has no
+    reverse pass (P66), so this still refuses; what changed is WHICH clause speaks.
+    `o_proj` staying trainable is what would have let a severed forward look healthy:
+    it sits downstream and re-attaches a graph whether or not the upstream one was
+    cut."""
     torch.manual_seed(29)
     layer = _layer(decay="leaf_mass")
     for name, param in layer.named_parameters():
@@ -156,26 +204,29 @@ def test_the_decay_dials_alone_are_a_grad_bearing_operation_input():
             param.requires_grad_(False)
     x = torch.randn(1, 64, _HIDDEN, device="cuda")  # does not require grad
     assert torch.is_grad_enabled()
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
+    with pytest.raises((BackwardNotImplemented, NotImplementedError)):
         layer(x)
 
 
 @pytest.mark.parametrize("use_reentrant", [True, False])
 @_CUDA
-def test_checkpointing_a_training_mode_layer_refuses_under_both_modes(use_reentrant):
-    """Both checkpoint modes, both passes: the layer is in training mode and there is
-    no training path. Before the fast-fail this cell asserted the oracle ran twice."""
+def test_checkpointing_a_training_mode_layer_now_trains_under_both_modes(use_reentrant):
+    """Both checkpoint modes, both passes. Before the fast-fail this cell asserted the
+    oracle ran twice; under the fast-fail it asserted a refusal; now it asserts the
+    thing checkpointing is FOR -- the forward runs twice and the gradient arrives."""
     torch.manual_seed(31)
-    layer = _layer(decay="none").train()
+    layer = _layer(decay="none", branches=_TRAIN_BRANCHES).train()
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
 
     def run(inp):
         out, _ = layer(inp)
         return out
 
-    with pytest.raises(BackwardNotImplemented):
-        torch_checkpoint.checkpoint(run, x, use_reentrant=use_reentrant)
-    assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
+    out = torch_checkpoint.checkpoint(run, x, use_reentrant=use_reentrant)
+    out.sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    #: recomputation means the forward ran twice, which is the whole mechanism
+    assert layer.execution_backend_counts["cuda"] == 2
 
 
 def test_cpu_operands_refuse_because_there_is_no_cpu_lowering():

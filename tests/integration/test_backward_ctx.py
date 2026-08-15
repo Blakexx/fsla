@@ -240,13 +240,16 @@ def test_saving_the_ctx_costs_a_constant_and_not_a_fraction_of_the_launch():
         f"{large * 1e3:.3f} ms call)")
 
 
-def test_both_backward_seams_refuse_by_name():
-    from rola.interface import BackwardNotImplemented, ChunkConsumer
+def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_empty_ctx():
+    """OLD: both seams refused by name, because the scans did not yet emit a full
+    cotangent set. They do, so the seams CARRY the gradient -- and what is left to
+    refuse is the one state neither can compute from: a ctx the forward never
+    filled, which is an inference forward being differentiated."""
+    from rola.interface import ChunkConsumer
     from rola.ops import chunk as _chunk
 
-    with pytest.raises(NotImplementedError, match="not wired"):
-        _chunk.backward(_chunk.SavedForward(), torch.zeros(1))
+    with pytest.raises(RuntimeError, match="never filled"):
+        _chunk.backward(_chunk.SavedForward(), torch.zeros(1), torch.zeros(1))
     y, _, _ = _forward_saving(1, 64, 2, (64, 64))
-    with pytest.raises(BackwardNotImplemented):
-        y.sum().backward()
+    y.sum().backward()
     assert ChunkConsumer.backward is not None

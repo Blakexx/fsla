@@ -80,8 +80,13 @@ def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
 
 #: The refusal each out-of-envelope row must carry, by the clause that refused it.
 _REFUSALS = {
+    #: DECODE's clauses, and they are decode's ALONE now: the single-token arm is
+    #: forward-only and has no autograd node, while prefill trains.
     "refuses-training": (BackwardNotImplemented, "TRAINING mode"),
-    "refuses-grad": (BackwardNotImplemented, "native backward"),
+    "refuses-grad": (BackwardNotImplemented, "DECODE step carrying a gradient"),
+    #: PREFILL trains, but statelessly (P65 R-D): a carried state and a gradient are
+    #: mutually exclusive, and that is what a grad-bearing one-token PREFILL now hits.
+    "refuses-stateless": (BackwardNotImplemented, "STATELESS ONLY"),
     "refuses-chunk": (NotImplementedError, "multiple of the chunk"),
 }
 
@@ -91,12 +96,16 @@ _REFUSALS = {
 @pytest.mark.parametrize(
     "training,grad_enabled,requires_grad,L,carried,expected",
     [
-        # training mode wins under any wrapper -- including the reentrant checkpointing
-        # shape (training=True under no_grad), which is why that is its own row.
+        # training mode wins on the DECODE fork under any wrapper -- including the
+        # reentrant checkpointing shape (training=True under no_grad), which is why
+        # that is its own row. It reaches decode only when a state is CARRIED.
         (True, True, True, 1, True, "refuses-training"),
-        (True, True, True, 1, False, "refuses-training"),
         (True, False, True, 1, True, "refuses-training"),
-        # eval, but a gradient reaches the operation: refused before any fork.
+        # an UNCARRIED one-token call is a degenerate PREFILL, which trains -- but
+        # statelessly, and a state object is bound here, so R-D's clause is what
+        # speaks. A different sentence from decode's, which is the point.
+        (True, True, True, 1, False, "refuses-stateless"),
+        # eval, but a gradient reaches the operation: decode has no node to attach.
         (False, True, True, 1, True, "refuses-grad"),
         (False, True, False, 1, True, "refuses-grad"),
         # eval mode, no grad: the fork's own predicate decides

@@ -298,11 +298,14 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
                         layer_idx=0).to(device, torch.float32)
     T = 32
 
-    # LEG 1 — training: refused, and nothing ran.
+    # LEG 1 — training on an arm the REVERSE PASS does not carry: refused by name,
+    # and nothing ran. (Training mode itself is no longer a clause; the reverse pass
+    # carries the pinned arm alone, and this fixture's (16, 16) is not it. A forward
+    # that runs and a backward that does not is what this refusal prevents.)
     layer.train()
     x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
     before = dict(layer.execution_backend_counts)
-    with pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
+    with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
         layer(x1)
     assert dict(layer.execution_backend_counts) == before
 
@@ -337,10 +340,12 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     assert rel < BF16_RTOL, (
         f"the layer-level prefill/decode seam moved the last token by {rel:.3e}")
 
-    # LEG 4 — a grad-bearing eval step on a fresh sequence: also refused, and by the
-    # gradient clause rather than the training one.
+    # LEG 4 — a grad-bearing eval step on a fresh sequence: refused by the SAME
+    # arm-narrowing clause as leg 1, which is the point: whether the module is in
+    # training mode has stopped mattering, and what decides is whether the reverse
+    # pass carries this arm.
     x4 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
+    with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
         layer(x4)
 
 

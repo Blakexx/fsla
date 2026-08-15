@@ -36,7 +36,6 @@ import torch.nn as nn
 from einops import rearrange
 
 from rola.interface import (
-    BACKWARD_ARRIVES_WITH,
     BackwardNotImplemented,
     operands_of,
     requires_backward,
@@ -164,21 +163,48 @@ class RoLA(nn.Module):
         return dict(self._execution_backend_counts)
 
     def validate_execution_envelope(self, *operation_inputs) -> None:
-        """THE MODULE'S CLAUSES: training mode, and a gradient reaching the operation.
+        """THE MODULE'S CLAUSES.
 
-        Both refuse, because neither has a backward to be followed by. The
-        configuration clauses are the op's (:func:`rola.interface.require_envelope`),
-        asked separately so decode -- whose envelope is its own -- is never gated on
-        the prefill matrix.
+        BOTH OF THEM ARE GONE. Training mode and a gradient reaching the operation
+        each refused because neither had a backward to be followed by; the two-pass
+        reverse pass is built and wired, so a training-mode forward with grad-bearing
+        operands is now the ordinary case and this method has nothing module-level
+        left to refuse.
+
+        The CONFIGURATION clauses were never here -- they are the op's
+        (:func:`rola.interface.require_envelope`), asked separately so decode, whose
+        envelope is its own, is never gated on the prefill matrix. That separation is
+        why the arm-narrowing refusal the reverse pass adds lands there and not here.
+
+        WHAT SURVIVES IS THE DECODE PATH'S, and it is asked THERE: the single-token
+        sibling kernel is forward-only and always was, so a continuation step
+        carrying a gradient must still refuse by name rather than hand back a
+        graphless tensor. Asking it here would have gated prefill on decode's
+        limitation, which is the coupling this method was split to avoid.
+        """
+        return None
+
+    def validate_decode_envelope(self, *operation_inputs) -> None:
+        """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
+
+        `decode_forward` is a bare extension call with no autograd node on it, so a
+        grad-bearing continuation step would return a tensor whose graph is severed
+        and say nothing -- the layer-dispatch autograd gap, on the one path that
+        still has it. Training mode alone is enough: reentrant checkpointing runs its
+        first pass under `no_grad` with `training` still True, and a decode step
+        taken there must refuse too.
         """
         if self.training:
             raise BackwardNotImplemented(
-                f"RoLA is in TRAINING mode and there is no training path: "
-                f"{BACKWARD_ARRIVES_WITH}. Call `.eval()` for inference.")
+                "the RoLA DECODE arm is forward-only and this layer is in TRAINING "
+                "mode. Single-token continuation has no reverse pass -- the two-pass "
+                "backward is the chunk arm's -- so call `.eval()` for inference, or "
+                "take the prefill arm.")
         if requires_backward(*[t for t in operation_inputs if t is not None]):
             raise BackwardNotImplemented(
-                f"a RoLA forward carrying a gradient: {BACKWARD_ARRIVES_WITH}. Run "
-                "under torch.no_grad(), or freeze the operands.")
+                "a RoLA DECODE step carrying a gradient: the single-token arm is "
+                "forward-only and has no autograd node, so this would sever the "
+                "graph silently. Run under torch.no_grad(), or freeze the operands.")
 
     def _bf16_projection_active(self, x: torch.Tensor) -> bool:
         """Whether this call's v/o projections run as bf16 GEMMs (P09 family).
@@ -257,7 +283,10 @@ class RoLA(nn.Module):
 
         if L == 1 and carrying:
             #: decode's envelope is its own -- BC-blind, general in the topology -- so
-            #: it is never asked the PREFILL matrix's questions.
+            #: it is never asked the PREFILL matrix's questions.  Its GRADIENT clause
+            #: is its own too, and is asked here rather than above so that prefill,
+            #: which now trains, is not gated on decode's forward-only-ness.
+            self.validate_decode_envelope(*operands_of(routes, v, decay))
             out = self._decode(routes, v, decay, state)
             backend = "decode"
         else:

@@ -413,16 +413,19 @@ def test_the_expert_argument_refuses_a_lookalike():
 # ---------------------------------------------------------------------------
 
 
-def test_training_mode_alone_refuses():
-    """The condition the op cannot own: reentrant checkpointing runs its first pass
-    under `no_grad()` with the module still training, so a predicate keyed only on
-    gradient reachability would admit the kernel there and hand back a forward whose
-    backward does not exist.
-    """
-    from rola.interface import BackwardNotImplemented
+def test_training_mode_alone_is_no_longer_a_refusal():
+    """OLD: training mode refused unconditionally, because reentrant checkpointing
+    runs its first pass under `no_grad()` with the module still training and there
+    was no backward for that forward to be followed by. There is one now, so the
+    module-level clause is gone and what speaks is the CONFIGURATION -- here, the
+    device, since this fixture is CPU-and-fp64.
 
+    Training mode survives as a clause on the DECODE fork alone
+    (`RoLA.validate_decode_envelope`), which is still forward-only; the dispatch
+    table in `tests/integration/test_decode_dispatch.py` is where that is asserted.
+    """
     layer = rola.RoLA(_routes()).double().train()
-    with torch.no_grad(), pytest.raises(BackwardNotImplemented, match="TRAINING mode"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
 

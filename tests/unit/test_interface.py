@@ -63,6 +63,24 @@ def test_the_layer_and_the_op_ask_the_same_question():
     assert layer_module.operands_of is operands_of
 
 
+def _built_arm(requires_grad: bool = True):
+    """A bundle on a BUILT arm and on the device -- what a gradient test needs.
+
+    `_tiny_routing` is `d_v = 16`, which the chunk matrix has no arm for; a gradient
+    claim has to be made where the kernel actually runs.
+    """
+    torch.manual_seed(5)
+    B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 128, (64, 64)
+    gateway = build_routes(hidden_size=hidden, num_heads=H, widths=widths,
+                           routing=_dense_routing()).to("cuda")
+    x = torch.randn(B, T, hidden, device="cuda", requires_grad=requires_grad)
+    routes = gateway(x)
+    v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=requires_grad)
+    from rola.ops import chunk as _chunk
+    assert _chunk.unsupported(routes, None, d_v=d_v) is None, "fixture must be a BUILT arm"
+    return v, routes, x, gateway
+
+
 # --- the tripwire ------------------------------------------------------------
 
 #: RETIRED at P67 D2-b: the two `RoLAConsumer` rows (the named refusal, and the
@@ -72,13 +90,17 @@ def test_the_layer_and_the_op_ask_the_same_question():
 #: its twins, written against `ChunkConsumer` and asserting the same two things.
 
 
-def test_the_chunk_node_refuses_a_gradient_by_name_instead_of_severing_the_graph():
+def test_the_chunk_node_refuses_a_ctx_the_forward_never_filled():
     """`rola.ops.chunk.run` is a bare extension call, so an arm that reached it from a
     gradient-requiring context would hand back a tensor with no `grad_fn` and no
-    error. `require_envelope` is what prevents that; this node is what makes a
-    bypassed refusal loud."""
-    with pytest.raises(BackwardNotImplemented, match="forward-only"):
-        ChunkConsumer.backward(None, None)
+    error. The node closes that gap, and now that its backward COMPUTES, the loud
+    line moves to the one state that cannot be computed from: a backward reached with
+    no saved ctx, which is the forward having retained nothing because it carried no
+    gradient."""
+    class _NoCtx:
+        saved_plan = None
+    with pytest.raises(BackwardNotImplemented, match="no saved ctx"):
+        ChunkConsumer.backward(_NoCtx(), None)
 
 
 def test_the_chunk_node_does_not_mark_its_output_non_differentiable():
@@ -116,28 +138,32 @@ def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 def test_the_kernel_arm_never_returns_a_grad_fn_less_tensor_from_a_grad_context():
-    """The claim in the form the layer-dispatch autograd gap states it.
+    """THE GATE FLIPS. This is the layer-dispatch autograd gap's own claim, and for
+    the whole life of the operator it was satisfied by RAISING. The two-pass reverse
+    pass is built, so it is now satisfied the other way: the call runs, the output
+    carries a `grad_fn`, and a backward through it reaches the operands.
 
-    Inside a grad-enabled context with grad-requiring operands, a call must RAISE.
-    What it must NOT do is return a good-looking tensor whose graph is gone."""
-    v, routes = _tiny_routing(requires_grad=True, device="cuda")
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
-        rola.rola_op(routes, v)
+    What it must still never do -- and never could -- is return a good-looking tensor
+    whose graph is gone."""
+    v, routes, _x, _g = _built_arm()
+    y, _ = rola.rola_op(routes, v)
+    assert y.grad_fn is not None, "the op returned a tensor with no graph on it"
+    y.sum().backward()
+    assert v.grad is not None and torch.isfinite(v.grad).all()
 
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_the_node_is_what_makes_a_bypassed_refusal_loud_rather_than_silent():
-    """The last line, exercised: `ChunkConsumer.run` is the op's refusal BYPASSED.
+def test_the_node_is_what_carries_the_graph_when_the_facade_is_bypassed():
+    """The last line, exercised: `ChunkConsumer.run` is the op's facade BYPASSED.
 
-    The kernel then runs on grad-requiring operands -- exactly the case
-    `require_envelope` exists to prevent -- and the node is the whole of what stands
-    between a severed graph and an error. `grad_fn` present is the node having
-    attached; the named raise is it refusing. Without the wrapper both assertions read
-    the other way round: no `grad_fn`, no error, and `v.grad is None` several files
-    away."""
+    The kernel runs on grad-requiring operands with no `require_envelope` in front
+    of it, and the node is the whole of what stands between a severed graph and a
+    working one. `grad_fn` present is the node having attached; the gradient
+    arriving is it computing. Without the wrapper both assertions read the other way
+    round: no `grad_fn`, no error, and `v.grad is None` several files away."""
     torch.manual_seed(5)
-    B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 32, (8, 8)
+    B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 128, (64, 64)
     gateway = build_routes(
         hidden_size=hidden, num_heads=H, widths=widths,
         routing=_dense_routing()).to("cuda")
@@ -151,8 +177,10 @@ def test_the_node_is_what_makes_a_bypassed_refusal_loud_rather_than_silent():
     assert y.grad_fn is not None, (
         "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "
         "graph is severed and nothing said so")
-    with pytest.raises(BackwardNotImplemented, match="forward-only"):
-        y.sum().backward()
+    y.sum().backward()
+    assert v.grad is not None and torch.isfinite(v.grad).all()
+    assert x.grad is not None and torch.isfinite(x.grad).all(), (
+        "the gradient stopped at the routing bundle instead of reaching the producer")
 
 
 # --- the envelope, end to end ------------------------------------------------
@@ -187,13 +215,14 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     return v, routes
 
 
-def test_a_grad_requiring_call_is_refused_and_says_where_the_backward_comes_from():
-    """The whole point. There is no differentiable arm behind this surface, so the
-    call that wants one is told which milestone brings it rather than being handed a
-    ~1000x-slower oracle nobody asked for."""
+def test_a_grad_requiring_call_is_no_longer_refused_for_being_one():
+    """OLD: a grad-bearing call was told which milestone brought the backward. That
+    milestone landed, so the gradient is not a clause any more -- what refuses this
+    CPU bundle is the DEVICE, and the distinction matters because a caller reading
+    "unsupported" has to know which wall they hit."""
     v, routes = _tiny_routing(requires_grad=True)
     assert requires_backward(v, *routes.tensors()) is True
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
+    with pytest.raises(NotImplementedError, match="CUDA kernel"):
         rola.rola_op(routes, v)
 
 
@@ -231,14 +260,59 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
 
 
 def test_the_two_refusal_clauses_are_told_apart_by_which_one_speaks():
-    """Grad on: the backward clause. Grad off: whatever the CONFIGURATION says. Both
-    are refusals, and a caller must be able to tell which one it hit -- otherwise
-    "unsupported" is one undifferentiated wall."""
+    """The CONFIGURATION clause speaks whether or not a gradient is attached -- that
+    is what "the gradient stopped being an envelope clause" means, and it is a
+    stronger statement than the old pair: the same sentence must come back both
+    times, so a caller cannot be told two different things about one bundle."""
     v, routes = _tiny_routing(requires_grad=True)
-    with pytest.raises(BackwardNotImplemented, match="native backward"):
+    with pytest.raises(NotImplementedError, match="CUDA kernel"):
         rola.rola_op(routes, v)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
         rola.rola_op(routes, v)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_training_is_stateless_and_a_carried_state_says_so_by_name():
+    """P65 R-D, at the boundary. The state plane is caller-owned and mutated in
+    place, and the reverse pass rebuilds from zero -- there is no `d initial_state`
+    for a carried state to receive. So `state=` and a gradient are mutually
+    exclusive, and the refusal names which of the two to drop rather than producing
+    a gradient that silently ignores the carry."""
+    v, routes, _x, _g = _built_arm()
+    state = rola.state()
+    with pytest.raises(BackwardNotImplemented, match="STATELESS ONLY"):
+        rola.rola_op(routes, v, state=state)
+    #: and with the gradient off it is admitted, so the clause is the GRADIENT's and
+    #: not a ban on carrying state
+    with torch.no_grad():
+        rola.rola_op(routes, v.detach(), state=state)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_backward_returns_gradients_in_the_bundles_own_tensor_order():
+    """THE ORDERING IS LOAD-BEARING AND IS ASSERTED, NOT TRUSTED.
+
+    `forward` receives the operands flat, in `RouteFactors.tensors()`' order, so
+    `backward` must return them in that same order. Every one of them has a
+    DIFFERENT shape from its neighbours only sometimes -- the read and write levels
+    of one topology have the same shape -- so a transposed pair would land each
+    gradient on the wrong tensor with no error anywhere. The check is that each
+    operand's `.grad` matches its own shape and dtype, and that the read and write
+    sides are not exchanged: perturbing one read level must move only read-level
+    gradients."""
+    v, routes, _x, _g = _built_arm()
+    operands = routes.tensors()
+    y, _ = rola.rola_op(routes, v)
+    #: the bundle's tensors are the producer's OUTPUTS, so they are not leaves and
+    #: `.grad` would be empty; the cotangents are asked for directly.
+    grads = torch.autograd.grad(y.sum(), (v, *operands), allow_unused=False)
+    for i, (operand, g) in enumerate(zip((v, *operands), grads)):
+        assert g is not None, f"operand {i} received no gradient"
+        assert g.shape == operand.shape, f"operand {i} shape mismatch: {g.shape}"
+        assert g.dtype == operand.dtype, f"operand {i} dtype mismatch: {g.dtype}"
+        assert torch.isfinite(g).all(), f"operand {i} gradient is not finite"
 
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():

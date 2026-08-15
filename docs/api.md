@@ -406,3 +406,26 @@ replaces the adversarial use they enabled: a conformance family drives
 - **No silent second path.** Every arm is chosen from a property of the configuration or
   of the operands, before the call, and named in the exception when a configuration
   cannot run. Nothing degrades into anything after a failure.
+
+## Gradients are not bitwise reproducible
+
+`rola_op` trains, and its gradients are **not** run-to-run deterministic. Both scans
+assemble their outputs through fp32 `atomicAdd` fan-ins whose order is the
+scheduler's, and the two scans walk DIFFERENT partitions of the token axis by
+construction — each closes its chunks by its own walk — so nothing about the reverse
+pass is bit-reproducible even on identical inputs on identical hardware. The forward
+already had this property through the same fan-ins; the backward inherits it in a
+worse regime (more contributors, narrower destinations).
+
+Two consequences, stated rather than discovered:
+
+* a training run cannot be reproduced bit-for-bit by re-running it, only
+  statistically;
+* a gate on a gradient must be a tolerance, never an equality.
+
+**Training is STATELESS.** A call carrying both a gradient and a `state=` plane is
+refused by name: the state is caller-owned and mutated in place, and the reverse
+pass has no `d initial_state` — it rebuilds from zero. **Decode has no reverse pass
+at all**, so a grad-bearing single-token continuation is refused too. And the
+reverse pass carries a NARROWER arm matrix than the forward: a grad-bearing call on
+an arm it does not carry is refused at the boundary rather than three launches later.
