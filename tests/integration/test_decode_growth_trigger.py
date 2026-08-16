@@ -38,7 +38,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.decode import DecodeWorkspace, _growth_probe_launch, _write_atom_bitmap
+from rola.ops.decode import DecodeScratch, _growth_probe_launch, _write_atom_bitmap
 from rola.ops.paging import PageArena
 from tests.integration.test_decode_paging import (
     _ARMS,
@@ -60,7 +60,7 @@ def _probe(fixture, config, arena):
     """The trigger's answer, and the workspace it ran on."""
     _v, _read, write, _g = _f32(fixture)
     BH = fixture["B"] * fixture["H"]
-    workspace = DecodeWorkspace.build(config, BH, torch.device("cuda"))
+    workspace = DecodeScratch.build(config, BH, torch.device("cuda"))
     _growth_probe_launch(write, config, arena.page_table, workspace)
     workspace.growth_host.copy_(workspace.growth_any)
     fired = bool(workspace.growth_host[0])

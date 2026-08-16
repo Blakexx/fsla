@@ -42,8 +42,8 @@ from rola.routing.types import Topology
 __all__ = [
     "C_DECODE_ROWS_PER_CTA",
     "C_DECODE_TARGET_CTAS_PER_SM",
-    "DecodeWorkspace",
-    "FrozenDecodeConfig",
+    "DecodePlan",
+    "DecodeScratch",
     "admit_growth",
     "decode_forward",
     "decode_step_gated",
@@ -62,8 +62,12 @@ C_DECODE_TARGET_CTAS_PER_SM = 12  # 2 waves x the design's 6 CTAs/SM residency e
 
 
 @dataclass(frozen=True, slots=True)
-class FrozenDecodeConfig:
-    """Frozen at the prefill→decode boundary, immutable for the sequence.
+class DecodePlan:
+    """The T=1 seam's plan: stats -> plan -> kernel, same as the chunk arm.
+
+    The growth probe is decode's stats pass; this object is what those stats
+    (plus the topology) derive once at the prefill->decode boundary; the
+    kernels consume it. Immutable for the sequence.
 
     ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
     the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
@@ -117,7 +121,7 @@ def freeze_decode_config(
     eps: float = READOUT_EPS,
     n_split: int | None = None,
     mma_precision: str,
-) -> FrozenDecodeConfig:
+) -> DecodePlan:
     """Build the carrier once, at the boundary.
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
@@ -157,7 +161,7 @@ def freeze_decode_config(
         cap = max(1, math.ceil(sms * C_DECODE_TARGET_CTAS_PER_SM / max(1, BH)))
         n_split = min(max(1, math.ceil(m_ceiling / C_DECODE_ROWS_PER_CTA)), cap)
 
-    return FrozenDecodeConfig(
+    return DecodePlan(
         D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
         level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
         d_v=int(d_v), has_decay=decay,
@@ -166,7 +170,7 @@ def freeze_decode_config(
 
 
 @dataclass(slots=True)
-class DecodeWorkspace:
+class DecodeScratch:
     """Per-sequence scratch, allocated once and reused across steps.
 
     Rebuilt (not resized) whenever the shape key moves. ``ctr`` is zeroed exactly once
@@ -200,11 +204,11 @@ class DecodeWorkspace:
     key: tuple = field(default=())
 
     @staticmethod
-    def build(config: FrozenDecodeConfig, BH: int, device) -> DecodeWorkspace:
+    def build(config: DecodePlan, BH: int, device) -> DecodeScratch:
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
-        return DecodeWorkspace(
+        return DecodeScratch(
             bits=torch.empty(4 * BH * config.n_words, **i32),
             pc_coarse=torch.empty(BH, config.n_groups + 1, **i32),
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
@@ -219,7 +223,7 @@ class DecodeWorkspace:
             key=(BH, config.N, config.n_words, config.n_groups, config.n_split, config.cols,
                  torch.device(device)))
 
-    def matches(self, config: FrozenDecodeConfig, BH: int, device) -> bool:
+    def matches(self, config: DecodePlan, BH: int, device) -> bool:
         return self.key == (BH, config.N, config.n_words, config.n_groups, config.n_split,
                             config.cols, torch.device(device))
 
@@ -261,12 +265,12 @@ def _guard_no_grad(operands) -> None:
 #: The workspace map holds its states WEAKLY: a dropped sequence must drop its scratch,
 #: and two concurrent sequences must never share a buffer
 #: (docs/internals/decode/decode.md#host-carrier).
-_CARRIERS: dict[tuple, FrozenDecodeConfig] = {}
+_CARRIERS: dict[tuple, DecodePlan] = {}
 _WORKSPACES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _carrier(topology, *, d_v: int, decay: bool, BH: int, device,
-             mma_precision: str) -> FrozenDecodeConfig:
+             mma_precision: str) -> DecodePlan:
     key = (tuple(topology.widths), d_v, decay, BH, torch.device(device), mma_precision)
     config = _CARRIERS.get(key)
     if config is None:
@@ -287,7 +291,7 @@ def _prepare(routes, v: torch.Tensor, decay, expert, state):
                       device=routes.device, mma_precision=overrides.mma_precision)
     workspace = _WORKSPACES.get(state)
     if workspace is None or not workspace.matches(config, BH, routes.device):
-        workspace = DecodeWorkspace.build(config, BH, routes.device)
+        workspace = DecodeScratch.build(config, BH, routes.device)
     #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
     #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
     #: re-widens here and the cast is exact, the values being bf16-rounded already.
@@ -387,8 +391,8 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     return y, state
 
 
-def _growth_probe_launch(write_levels, config: FrozenDecodeConfig, page_table: torch.Tensor,
-                         workspace: DecodeWorkspace) -> None:
+def _growth_probe_launch(write_levels, config: DecodePlan, page_table: torch.Tensor,
+                         workspace: DecodeScratch) -> None:
     """Does this step deposit into an atom the page table does not map? ASKED, not read.
 
     THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``workspace.atom_bits``
@@ -411,7 +415,7 @@ def _growth_probe_launch(write_levels, config: FrozenDecodeConfig, page_table: t
         level_spans=list(config.level_span))
 
 
-def _write_atom_bitmap(write_levels, config: FrozenDecodeConfig) -> torch.Tensor:
+def _write_atom_bitmap(write_levels, config: DecodePlan) -> torch.Tensor:
     """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY.
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
@@ -434,14 +438,14 @@ def _decode_step(
     write_levels: tuple[torch.Tensor, ...],
     g_read: torch.Tensor | None,
     g_write: torch.Tensor,
-    config: FrozenDecodeConfig,
+    config: DecodePlan,
     state: torch.Tensor,
     *,
     decay=None,
-    workspace: DecodeWorkspace | None = None,
+    workspace: DecodeScratch | None = None,
     page_table: torch.Tensor | None = None,
     gate: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, DecodeWorkspace]:
+) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
     """The RAW-TENSOR launch, in place on ``state``. The prefill arm's sibling.
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
@@ -492,7 +496,7 @@ def _decode_step(
         plane = state
 
     if workspace is None or not workspace.matches(config, BH, v.device):
-        workspace = DecodeWorkspace.build(config, BH, v.device)
+        workspace = DecodeScratch.build(config, BH, v.device)
 
     amp_read = [_fold(t).float() for t in read_levels]
     amp_write = [_fold(t).float() for t in write_levels]
@@ -544,7 +548,7 @@ class _TopologyShim:
 
     __slots__ = ("widths", "d_v", "D")
 
-    def __init__(self, config: FrozenDecodeConfig):
+    def __init__(self, config: DecodePlan):
         self.widths = config.widths
         self.d_v = config.d_v
         self.D = config.D

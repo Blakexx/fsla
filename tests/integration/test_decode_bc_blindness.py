@@ -33,7 +33,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import FrozenDecodeConfig, _decode_step, freeze_decode_config
+from rola.ops.decode import DecodePlan, _decode_step, freeze_decode_config
 from tests.oracle.instantiation import CHUNK_ARMS
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
@@ -57,9 +57,9 @@ def test_no_field_of_the_frozen_carrier_names_bc():
     field added there would be invisible to the numeric gate below until something
     started reading it.
     """
-    names = {f.name.lower() for f in dataclasses.fields(FrozenDecodeConfig)}
+    names = {f.name.lower() for f in dataclasses.fields(DecodePlan)}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
-        f"FrozenDecodeConfig has acquired a BC-shaped field: {sorted(names)}")
+        f"DecodePlan has acquired a BC-shaped field: {sorted(names)}")
 
 
 @pytest.mark.parametrize("widths", [(8, 16), (4, 4, 4), (64, 64)])

@@ -710,14 +710,14 @@ the module's own check exists for a direct caller.
 
 ## <a id="host-carrier"></a>38. The kernel-layout carrier and the workspace
 
-`FrozenDecodeConfig` answers "what shape is the launch?" — widths, mixed-radix strides,
+`DecodePlan` answers "what shape is the launch?" — widths, mixed-radix strides,
 spans, row offsets, word and group counts, `d_v`, the normalization and decay arms,
 `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a field:
 owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]` block
 across many tokens, and with one token there is nothing to amortize, so the decode
 kernels are BC-blind by construction.
 
-`DecodeWorkspace` is per-sequence scratch, allocated once and rebuilt (never resized)
+`DecodeScratch` is per-sequence scratch, allocated once and rebuilt (never resized)
 when the shape key moves. `ctr` is zeroed exactly once at build: the last-arriving CTA of
 every step resets it, so no `memset` launch ever stands between two decode steps and the
 whole step stays capturable in a CUDA graph.
