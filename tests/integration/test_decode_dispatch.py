@@ -164,7 +164,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     same class of failure (two implementations behind one call) that the layer's guard
     exists to prevent, pointed the other way.
     """
-    from rola.ops.decode import _decode_step, freeze_decode_config
+    from rola.ops.decode import _decode_step, derive_decode_geometry
     from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
     device = "cuda"
@@ -172,8 +172,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in widths))
-    config = freeze_decode_config(topology, d_v=d_v, decay=False, BH=1, device=device,
-                                  mma_precision="bf16")
+    config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=1, device=device)
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)
@@ -249,62 +248,3 @@ def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     with pytest.raises(NotImplementedError, match="decay"):
         _step(layer, cache, device, L=L, grad_enabled=False)
     assert layer.execution_backend_counts == before
-
-
-# ---------------------------------------------------------------------------
-# the precision pin crosses the boundary (coverage-closure H9 -> terminal cycle)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.cuda
-@_CUDA
-def test_the_frozen_decode_config_carries_the_layers_precision_pin():
-    """The L == 1 fork must not drop ``mma_precision`` at the freeze boundary.
-
-    Before this gate the carrier had NO ``mma_precision`` field and the layer's pin
-    was silently dropped at ``L == 1`` (coverage-closure H9, report-only). The decode
-    GEMV is scalar fp32 for every pin — the field selects nothing today — but the
-    boundary must CARRY the pin so nothing downstream can disagree with the layer
-    (the feeder-flags lesson, same class).
-
-    REPOINTED (P71-B): the carrier is memoized in ``rola.ops.decode`` by its own KEY
-    (a frozen object is a function of its key, and a state is a paged tensor that does
-    not know about launch machinery), so the pin is read out of ``_CARRIERS``. The
-    claim is unchanged.
-
-    P26: ``mma_precision`` is a dead axis -- ``PlanOverrides`` and
-    ``freeze_decode_config`` both accept only ``"bf16"`` (a second, ``"tf32x3"``,
-    pin used to be exercised here to prove the carrier does not re-hardcode a
-    default; there is no second value left to try, so
-    ``test_freeze_decode_config_refuses_an_unknown_precision`` below is what proves
-    the carrier does not silently coerce an off-pin value instead).
-    """
-    device = "cuda"
-    layer = build_layer(
-        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        normalization="global", layer_idx=0,
-    ).to(device, torch.float32)
-    layer.eval()
-    cache = _prime(layer, device)
-    before = layer.execution_backend_counts
-    _step(layer, cache, device, grad_enabled=False)
-    after = layer.execution_backend_counts
-    assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
-    from rola.ops.decode import _CARRIERS
-
-    frozen = [c for c in _CARRIERS.values() if c.widths == _BRANCHES and c.d_v == _DV]
-    assert frozen, "the decode fork ran but froze no carrier"
-    assert all(c.mma_precision == "bf16" for c in frozen), (
-        "the layer's bf16 pin was dropped at the boundary: a frozen carrier says "
-        f"{[c.mma_precision for c in frozen]}")
-
-
-def test_freeze_decode_config_refuses_an_unknown_precision():
-    """The carrier validates the pin at the freeze, not downstream of it."""
-    from rola.ops.decode import freeze_decode_config
-    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
-                                 write=SoftmaxActivation())
-    topology = Topology(levels=tuple(routing.at(w) for w in _BRANCHES))
-    with pytest.raises(ValueError, match="mma_precision"):
-        freeze_decode_config(topology, d_v=_DV, decay=False, BH=1,
-                             device="cpu", mma_precision="fp16")

@@ -33,7 +33,7 @@ import pytest
 import torch
 
 from rola.ops import chunk as _chunk
-from rola.ops.decode import _decode_step, freeze_decode_config
+from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.naive import naive_rola
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
@@ -133,8 +133,8 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
         topology, decay, "global", output_final_state=True)
 
-    config = freeze_decode_config(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
-                                  device=device, mma_precision="bf16")
+    config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
+                                  device=device)
     state = state.reshape(_B, _H, config.N, config.cols).clone()
     workspace, cold_seen = None, False
     for s in range(steps):
@@ -179,8 +179,8 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
 
-    config = freeze_decode_config(topology, d_v=_DV, decay=True, BH=_B * _H,
-                                  device=device, mma_precision="bf16")
+    config = derive_decode_geometry(topology, d_v=_DV, decay=True, BH=_B * _H,
+                                  device=device)
     state, ref_state = m0.float().clone(), m0
     workspace, errors = None, {}
     for s in range(1, max(_CHECKPOINTS) + 1):
@@ -222,8 +222,8 @@ def test_the_decode_split_is_performance_only_under_drift():
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = g._topology(_WIDTHS)
     configs = {
-        f"n_split={n}": freeze_decode_config(topology, d_v=_DV, decay=False, BH=_B * _H, device=device,
-            n_split=n, mma_precision="bf16")
+        f"n_split={n}": derive_decode_geometry(topology, d_v=_DV, decay=False, BH=_B * _H, device=device,
+            n_split=n)
         for n in (1, 3, 8)
     }
     N, cols = topology.N, _DV + 1

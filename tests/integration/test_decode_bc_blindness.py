@@ -33,7 +33,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import DecodePlan, _decode_step, freeze_decode_config
+from rola.ops.decode import DecodeGeometry, _decode_step, derive_decode_geometry
 from tests.oracle.instantiation import CHUNK_ARMS
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
@@ -57,9 +57,9 @@ def test_no_field_of_the_frozen_carrier_names_bc():
     field added there would be invisible to the numeric gate below until something
     started reading it.
     """
-    names = {f.name.lower() for f in dataclasses.fields(DecodePlan)}
+    names = {f.name.lower() for f in dataclasses.fields(DecodeGeometry)}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
-        f"DecodePlan has acquired a BC-shaped field: {sorted(names)}")
+        f"DecodeGeometry has acquired a BC-shaped field: {sorted(names)}")
 
 
 @pytest.mark.parametrize("widths", [(8, 16), (4, 4, 4), (64, 64)])
@@ -89,12 +89,11 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
         # handed to decode; on the chunk arm it belongs to the built arm and is
         # not host-selectable at all, so the loop now varies the number a prefill
         # COULD have run at and asserts, as before, that there is no channel
-        # through which it could reach the frozen carrier. `freeze_decode_config`
+        # through which it could reach the frozen carrier. `derive_decode_geometry`
         # is called inside the loop for exactly that reason: it must be a pure
         # function of the topology, the normalization arm and the device.
         assert BC in _BCS
-        config = freeze_decode_config(topology, d_v=d_v, decay=False, BH=B * H, device=device,
-                                      mma_precision="bf16")
+        config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
         configs.append(config)
         state = m0.clone()
         y, state, _ = _decode_step(v, read_levels, write_levels, g_read, g_write,

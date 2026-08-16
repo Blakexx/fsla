@@ -56,7 +56,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, _write_atom_bitmap, freeze_decode_config
+from rola.ops.decode import _decode_step, _write_atom_bitmap, derive_decode_geometry
 from rola.ops.naive import naive_rola
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 
@@ -122,9 +122,9 @@ def _f32(fixture):
 
 
 def _config(widths, fixture):
-    return freeze_decode_config(
+    return derive_decode_geometry(
         _topology(widths), d_v=_DV, decay=False,
-        BH=fixture["B"] * fixture["H"], device="cuda", mma_precision="bf16")
+        BH=fixture["B"] * fixture["H"], device="cuda")
 
 
 def _leaf_support(levels, widths):

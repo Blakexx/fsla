@@ -42,9 +42,6 @@ _KERNEL_FAMILIES = [f for f in FAMILIES if f.source != "producer"]
 
 
 def _tolerance(family):
-    # P26: `mma_precision` is a dead axis (bf16 is the only storage format the
-    # kernel arm has), so the tf32x3-exact arm's tolerance went with it. Every
-    # family runs bf16-vs-fp64-oracle at the one bf16 family bound.
     del family
     return BF16_RTOL
 

@@ -44,10 +44,6 @@ class PlanOverrides:
     that silently does nothing is how a caller comes to believe a launch was shaped a
     way it never was.
 
-    ``mma_precision``: DEAD AXIS, retained as a declared restriction: ``"bf16"`` is
-    the only value (bf16 storage, fp32 accumulation, fp64 reference as oracle); any
-    other value is a hard refusal. A gate needing more precision runs the fp64
-    reference path.
 
     ``paging``: the state's BACKING, and the expert overrides the MAPPING ONLY.
     A stateful call pages by default -- one page is one MMA atom, pages are admitted
@@ -58,14 +54,9 @@ class PlanOverrides:
     whose only value is the default is a knob that lies about being a decision.
     """
 
-    mma_precision: str = "bf16"
     paging: bool | None = None
 
     def __post_init__(self) -> None:
-        if self.mma_precision != "bf16":
-            raise ValueError(
-                "mma_precision is a dead axis: 'bf16' is the only value (the fp64 "
-                f"reference path is the precision escape), got {self.mma_precision!r}")
         if self.paging is not None and type(self.paging) is not bool:
             raise TypeError(f"paging must be None or a bool, got {self.paging!r}")
         if self.paging is True:

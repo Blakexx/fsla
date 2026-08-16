@@ -704,13 +704,13 @@ not import one.
 
 ## <a id="forward-only"></a>37. Forward only, and the guard is defence in depth
 
-The decode kernels have no backward. The layer's `validate_execution_envelope` already
+The decode kernels have no backward. The layer's decode envelope check already
 refuses training mode and gradient reachability before the decode fork is reached, so
 the module's own check exists for a direct caller.
 
 ## <a id="host-carrier"></a>38. The kernel-layout carrier and the workspace
 
-`DecodePlan` answers "what shape is the launch?" — widths, mixed-radix strides,
+`DecodeGeometry` answers "what shape is the launch?" — widths, mixed-radix strides,
 spans, row offsets, word and group counts, `d_v`, the normalization and decay arms,
 `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a field:
 owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]` block

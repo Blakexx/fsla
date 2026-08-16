@@ -129,7 +129,7 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 `rola.ops.decode.decode_forward(routes, v, state, decay=..., expert=...)` takes and
 returns the state exactly as `rola_op` does. Three things live behind that seam:
 
-* **The frozen carrier and the scratch** (`DecodePlan`, `DecodeScratch`)
+* **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`)
   are MEMOIZED IN `rola.ops.decode`, not on the state — launch machinery fails the
   membership test. The carrier is a pure function of its key (widths, `d_v`, the decay
   arm, `BH`, device, the precision pin), so a plain module-level dict is exactly

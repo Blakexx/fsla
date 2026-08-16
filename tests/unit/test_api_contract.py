@@ -425,7 +425,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from rola.layer import RoLA;"
             "from rola.interface import rola_op, require_envelope;"
             "from rola.ops.chunk import CHUNK_TOKENS, run, stats, unsupported;"
-            "from rola.ops.decode import freeze_decode_config;"
+            "from rola.ops.decode import derive_decode_geometry;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `benchmarks/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"

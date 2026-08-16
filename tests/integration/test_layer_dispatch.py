@@ -29,11 +29,6 @@ from rola.expert import PlanOverrides
 from rola.interface import BackwardNotImplemented, envelope_refusal
 from rola.ops.naive import naive_rola
 
-#: P26: `mma_precision` is a dead axis (bf16 is the only value `PlanOverrides`
-#: accepts). Every kernel-vs-oracle comparison in this file therefore runs
-#: bf16-vs-fp64-oracle, and the bound is the bf16 family bound
-#: (`tests/oracle/tolerances.py:BF16_RTOL`), quoted at its value rather than
-#: imported so that loosening it here would be a visible edit to this file.
 BF16_RTOL = 1e-2
 
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the RoLA arm is a CUDA kernel")

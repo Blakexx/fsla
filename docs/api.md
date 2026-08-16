@@ -352,7 +352,7 @@ is a fact about the branch rather than an inference from a timing.
 
 ### 4.1 The bf16 projection arm
 
-On CUDA with the (only) `mma_precision="bf16"` pin, `v_proj` and `o_proj` run as bf16
+On CUDA, `v_proj` and `o_proj` run as bf16
 GEMMs with weights cast per call, and `v` FLOWS bf16 straight into the op. Round-tripping
 it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
 downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
@@ -379,7 +379,7 @@ layer = rola.RoLA(routes, expert=PlanOverrides())
 
 | name | what it is |
 |---|---|
-| `PlanOverrides` | the pins: `state_block`, `mma_precision`, `paging` |
+| `PlanOverrides` | the pins: `paging` |
 | `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | whether a call has an arm, asked before making it — the refusing clause in its own words, or `None`. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
@@ -395,7 +395,7 @@ rather than being ignored.** `state_block` (`BC`) is not
 host-selectable: the chunk arm's `BC` belongs to the built arm the manifest carries
 for a topology, so any value but `None` is refused at the call — a knob that
 silently does nothing is how a caller comes to believe a launch was shaped a way it
-never was. `mma_precision` has one legal value, `"bf16"`; the precision escape is
+never was.
 the fp64 reference path. `paging` overrides the MAPPING only: `None` is the paged
 default, `False` pins the dense plane the bit-identity gate compares against, and
 `True` is refused because paging is on by default and bitwise invisible.

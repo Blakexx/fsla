@@ -173,28 +173,6 @@ class RoLA(nn.Module):
         """How many forwards took each backend, since construction. Read-only view."""
         return dict(self._execution_backend_counts)
 
-    def validate_execution_envelope(self, *operation_inputs) -> None:
-        """THE MODULE'S CLAUSES.
-
-        BOTH OF THEM ARE GONE. Training mode and a gradient reaching the operation
-        each refused because neither had a backward to be followed by; the two-pass
-        reverse pass is built and wired, so a training-mode forward with grad-bearing
-        operands is now the ordinary case and this method has nothing module-level
-        left to refuse.
-
-        The CONFIGURATION clauses were never here -- they are the op's
-        (:func:`rola.interface.require_envelope`), asked separately so decode, whose
-        envelope is its own, is never gated on the prefill matrix. That separation is
-        why the arm-narrowing refusal the reverse pass adds lands there and not here.
-
-        WHAT SURVIVES IS THE DECODE PATH'S, and it is asked THERE: the single-token
-        sibling kernel is forward-only and always was, so a continuation step
-        carrying a gradient must still refuse by name rather than hand back a
-        graphless tensor. Asking it here would have gated prefill on decode's
-        limitation, which is the coupling this method was split to avoid.
-        """
-        return None
-
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
 
@@ -216,18 +194,6 @@ class RoLA(nn.Module):
                 "a RoLA DECODE step carrying a gradient: the single-token arm is "
                 "forward-only and has no autograd node, so this would sever the "
                 "graph silently. Run under torch.no_grad(), or freeze the operands.")
-
-    def _bf16_projection_active(self, x: torch.Tensor) -> bool:
-        """Whether this call's v/o projections run as bf16 GEMMs (P09 family).
-
-        The GEMMs run with bf16 operands and cuBLAS's fp32 compute type (the
-        accumulate-in-fp32 ruling; the global reduced-precision-reduction knob is
-        deliberately not touched -- this is the same environment the FA comparison arm
-        runs in).
-        """
-        return x.is_cuda and self.expert.mma_precision == "bf16"
-
-    # --- forward -------------------------------------------------------------
 
     def forward(
         self,
@@ -264,7 +230,7 @@ class RoLA(nn.Module):
 
         #: `v` FLOWS bf16 into the op on the bf16 arm; a configured `value_conv` is the
         #: one case where it returns to the module dtype first (docs/api.md §4.1).
-        bf16_proj = self._bf16_projection_active(x)
+        bf16_proj = x.is_cuda
         if bf16_proj:
             v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
             if self.value_conv is not None:
@@ -287,7 +253,6 @@ class RoLA(nn.Module):
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         routes = self.routes(source)
         decay = None if self.decay is None else self.decay()
-        self.validate_execution_envelope(*operands_of(routes, v, decay))
         #: a state that carries CONTENTS, which is what makes a step a continuation.
         #: A bound-but-empty state is a fresh sequence, and takes the prefill arm.
         carrying = stateful and state.carries
