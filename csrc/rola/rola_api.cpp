@@ -26,6 +26,7 @@
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
+#include "src/entmax/producer.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/chunk/chunk_api.cuh"
 
@@ -119,6 +120,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "softmax routing forward over one or more levels");
   m.def("routing_softmax_backward", &rola::entmax::softmax_backward,
         "softmax routing VJP into the packed logits");
+
+  // ---- the fused producer --------------------------------------------------
+  //: The PROBE alone is registered: it is the shipped, ratified kernel the projection
+  //: gates read, reached from tests only -- docs/internals/entmax/producer.md#probe
+  m.def("producer_probe", &rola::entmax::producer_probe,
+        "fused producer probe: the tile GEMM's fp32 logits, emitted");
 
   // ---- the T=1 decode path -------------------------------------------------
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
