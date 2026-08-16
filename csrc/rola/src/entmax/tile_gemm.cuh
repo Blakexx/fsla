@@ -26,7 +26,14 @@ constexpr int MMA_M = 16;
 constexpr int MMA_N = 8;
 constexpr int MMA_K = 16;
 constexpr int TILE_K = 64;
-constexpr int M_TILES = WORD_TOKENS / MMA_M;
+//: A CTA may own SEVERAL support words -- the freeze is that a word is never SPLIT
+//: across CTAs, not that a CTA owns one -- and `WORDS` is how many. It is the GEMM's M
+//: axis, so it is the knob that amortizes the `W` staging
+//: -- docs/internals/entmax/tile_gemm.md#m-axis
+template <int WORDS>
+struct MTiles {
+  static constexpr int value = WORDS * WORD_TOKENS / MMA_M;
+};
 //: `NT` is bounded by the widest packed router one CTA can hold; the host refuses more.
 constexpr int MAX_N_TILES_PER_WARP = 8;
 constexpr int MAX_PACKED_COLUMNS = MAX_N_TILES_PER_WARP * GEMM_WARPS * MMA_N;
@@ -59,7 +66,7 @@ __device__ __forceinline__ __nv_bfloat16 to_bf16(const void* p, int64_t i, bool 
 //: ONE CTA TILE. `xs`/`ws` are the K-block staging buffers and `out` the fp32 tile; the
 //: caller ALIASES them (the staging is dead once the last `mma` retires) and inserts the
 //: barrier -- docs/internals/entmax/tile_gemm.md#smem-alias
-template <int NT>
+template <int WORDS, int NT>
 __device__ __forceinline__ void tile_gemm(const void* __restrict__ x, bool x_bf16,
                                           int64_t x_token_stride, int64_t x_origin,
                                           const void* __restrict__ w, bool w_bf16, int64_t w_origin,
@@ -72,6 +79,8 @@ __device__ __forceinline__ void tile_gemm(const void* __restrict__ x, bool x_bf1
   const int group = lane >> 2;
   const int in_group = lane & 3;
 
+  constexpr int M_TILES = MTiles<WORDS>::value;
+  constexpr int CTA_TOKENS = WORDS * WORD_TOKENS;
   float acc[NT][M_TILES][4];
 #pragma unroll
   for (int t = 0; t < NT; ++t)
@@ -87,7 +96,7 @@ __device__ __forceinline__ void tile_gemm(const void* __restrict__ x, bool x_bf1
   //: whole, so staging its columns is work nothing reads.
   const int ws_columns = (columns + MMA_N - 1) & ~(MMA_N - 1);
   for (int kb = 0; kb < hidden; kb += TILE_K) {
-    for (int row = warp; row < WORD_TOKENS; row += GEMM_WARPS) {
+    for (int row = warp; row < CTA_TOKENS; row += GEMM_WARPS) {
       const bool live_row = row < rows;
       for (int k = lane; k < TILE_K; k += WARP_SIZE)
         xs[row * XS_STRIDE + k] =

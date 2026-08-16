@@ -28,24 +28,37 @@ namespace detail {
 //: The two staging regions ALIAS: `xs`/`ws` are dead once the last `mma` retires, and the
 //: fp32 tile is written after the barrier that ends the K loop.
 struct TileSmem {
-  int columns, tile_stride;
+  int columns, tile_stride, words;
   __device__ __forceinline__ __nv_bfloat16* xs(char* p) const { return (__nv_bfloat16*)p; }
+  //: PAST THE WHOLE `xs` REGION, whose extent is `words` support words and not one.
   __device__ __forceinline__ __nv_bfloat16* ws(char* p) const {
-    return (__nv_bfloat16*)(p + WORD_TOKENS * XS_STRIDE * (int)sizeof(__nv_bfloat16));
+    return (__nv_bfloat16*)(p + words * WORD_TOKENS * XS_STRIDE * (int)sizeof(__nv_bfloat16));
   }
   __device__ __forceinline__ float* tile(char* p) const { return (float*)p; }
 };
 
 inline int staged_columns(int columns) { return (columns + MMA_N - 1) & ~(MMA_N - 1); }
 
-inline int64_t tile_smem_bytes(int columns) {
-  const int64_t staging =
-      (int64_t)WORD_TOKENS * XS_STRIDE * 2 + (int64_t)staged_columns(columns) * WS_STRIDE * 2;
-  const int64_t tile = (int64_t)WORD_TOKENS * columns * 4;
+inline int64_t tile_smem_bytes(int columns, int words) {
+  const int64_t staging = (int64_t)words * WORD_TOKENS * XS_STRIDE * 2
+                          + (int64_t)staged_columns(columns) * WS_STRIDE * 2;
+  const int64_t tile = (int64_t)words * WORD_TOKENS * columns * 4;
   return staging > tile ? staging : tile;
 }
 
-template <int NT>
+//: THE M AXIS, chosen structurally and not by threshold: the most support words whose
+//: fp32 tile still fits the 48 KB block and whose accumulator stays inside the register
+//: budget (`words * NT <= 8` register quadruples per lane)
+//: -- docs/internals/entmax/tile_gemm.md#m-axis
+inline int words_per_cta(int columns, int nt) {
+  int words = 1;
+  while (words < 4 && tile_smem_bytes(columns, words * 2) <= 48 * 1024
+         && (words * 2) * nt <= MAX_N_TILES_PER_WARP)
+    words *= 2;
+  return words;
+}
+
+template <int WORDS, int NT>
 __global__ __launch_bounds__(GEMM_THREADS, 2) void producer_probe_kernel(
     const void* __restrict__ x, bool x_bf16, const void* __restrict__ w, bool w_bf16,
     const float* __restrict__ bias, float* __restrict__ logits, int tokens, int hidden,
@@ -55,10 +68,10 @@ __global__ __launch_bounds__(GEMM_THREADS, 2) void producer_probe_kernel(
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
-  const int token0 = blockIdx.x * WORD_TOKENS;
-  const int rows = min(WORD_TOKENS, tokens - token0);
+  const int token0 = blockIdx.x * WORDS * WORD_TOKENS;
+  const int rows = min(WORDS * WORD_TOKENS, tokens - token0);
 
-  tile_gemm<NT>(x, x_bf16, x_token_stride, sb * x_batch_stride + (int64_t)token0 * x_token_stride,
+  tile_gemm<WORDS, NT>(x, x_bf16, x_token_stride, sb * x_batch_stride + (int64_t)token0 * x_token_stride,
                 w, w_bf16, sh * w_head_stride, bias == nullptr ? nullptr : bias + sh * columns,
                 hidden, columns, rows, layout.xs(smem), layout.ws(smem), layout.tile(smem),
                 layout.tile_stride);
@@ -104,17 +117,25 @@ void producer_probe(const torch::Tensor& x, const torch::Tensor& route_W,
     bias = route_bias->data_ptr<float>();
   }
 
-  detail::TileSmem layout{columns, columns};
-  const int64_t smem = detail::tile_smem_bytes(columns);
+  detail::TileSmem layout{columns, columns, 0};
   const int n_tiles = (columns + detail::MMA_N - 1) / detail::MMA_N;
   const int nt = (n_tiles + detail::GEMM_WARPS - 1) / detail::GEMM_WARPS;
-  dim3 grid((tokens + detail::WORD_TOKENS - 1) / detail::WORD_TOKENS, batch * heads);
+  const int words = detail::words_per_cta(columns, nt);
+  layout.words = words;
+  const int64_t smem = detail::tile_smem_bytes(columns, words);
+  const int cta_tokens = words * detail::WORD_TOKENS;
+  dim3 grid((tokens + cta_tokens - 1) / cta_tokens, batch * heads);
   auto stream = at::cuda::getCurrentCUDAStream();
   const at::cuda::CUDAGuard guard(x.device());
   const detail::Strides sout{logits.stride(0), logits.stride(2), logits.stride(1), logits.stride(3),
                              0, 0};
+  int_switch<1, 2, 4>(words, "fused producer support words per CTA", [&](auto WORDS) {
   int_switch<1, 2, 3, 4, 5, 6, 7, 8>(nt, "fused producer n-tiles per warp", [&](auto NT) {
-    auto kernel = detail::producer_probe_kernel<decltype(NT)::value>;
+    constexpr int kWords = decltype(WORDS)::value, kNT = decltype(NT)::value;
+    if constexpr (kWords * kNT > detail::MAX_N_TILES_PER_WARP) {
+      TORCH_CHECK(false, "unreachable: words_per_cta bounds the accumulator");
+    } else {
+    auto kernel = detail::producer_probe_kernel<kWords, kNT>;
     if (smem > 48 * 1024)
       C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                           (int)smem));
@@ -122,6 +143,8 @@ void producer_probe(const torch::Tensor& x, const torch::Tensor& route_W,
         x.data_ptr(), x.scalar_type() == torch::kBFloat16, route_W.data_ptr(),
         route_W.scalar_type() == torch::kBFloat16, bias, logits.data_ptr<float>(), tokens, hidden,
         columns, heads, x.stride(0), x.stride(1), route_W.stride(0), layout, sout);
+    }
+  });
   });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

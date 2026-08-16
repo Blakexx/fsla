@@ -31,6 +31,38 @@ L2-resident, which is what makes that affordable.
 The N axis is the CTA's whole packed router width: `NT` n-tiles of `MMA_N = 8` per warp
 over `GEMM_WARPS = 8` warps, so `NT = ceil(C / 64)` and `MAX_PACKED_COLUMNS = 512`.
 
+<a id="m-axis"></a>
+## The M axis: how many support words one CTA owns
+
+`WORD_TOKENS = 32` is frozen because a support word must not be SPLIT across CTAs — not
+because a CTA must own only one. `WORDS` is how many it owns, and it is the GEMM's M
+axis. Two constraints bound it, and `words_per_cta` picks the largest value satisfying
+both, structurally:
+
+* the fp32 logit tile `WORDS*32 x C` must fit the 48 KB block;
+* the accumulator `WORDS*NT` register quadruples per lane must stay inside the budget.
+
+### What M is actually worth here — measured, and it is not what it looks like
+
+The obvious story is "M = 32 starves the GEMM's arithmetic intensity, so raise it". The
+measurement refutes it. At the pinned `hidden = 512, H = 8, B*T = 4096`:
+
+| C | `(WORDS, NT, M_TILES)` | fragment loads per `mma` | probe TFLOP/s | probe / cuBLAS bf16 |
+|---|---|---|---|---|
+| 64 | (4, 1, 8) | 4.25 | 7.16 | 5.55x |
+| 128 | (2, 2, 4) | 2.50 | 11.55 | 3.86x |
+| 256 | (2, 4, 4) | 1.50 | 15.98 | 3.32x |
+| 257 | (1, 5, 2) | 1.80 | 12.37 | 4.93x |
+
+`C = 64` runs the LARGEST M tile (128 tokens) and is the SLOWEST. The quantity that
+tracks throughput is the fragment-load-to-`mma` ratio, `4/NT + 2/M_TILES`: an `A`
+fragment is reused across the n-tiles and a `B` fragment across the m-tiles, so a
+register tile that is long in one direction and thin in the other reloads operands
+instead of multiplying them. Throughput is monotone in that ratio across all four cells.
+
+The fix is therefore a BALANCED and LARGER register tile (`NT ~ M_TILES`, both bigger),
+which is a bigger accumulator budget and a pipelined K loop — not a bigger M.
+
 <a id="accumulator"></a>
 ## The accumulator is a register array, so `NT` is a template parameter
 
