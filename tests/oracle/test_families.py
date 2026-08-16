@@ -15,12 +15,12 @@ by catching any exception, so a family that started being refused for a differen
 reason than it declares fails instead of passing quietly. The FACADE half -- the
 refusal reaching a caller -- is gated where a real `RouteFactors` exists to pass
 (`tests/integration/test_layer_dispatch.py`, `tests/unit/test_interface.py`); a
-hand-built fixture cannot reach `rola_op`, which refuses any bundle the gateway
+hand-built fixture cannot reach `rola_op`, which refuses any bundle the producer
 did not derive. The family's regime cell is proven either way -- non-vacuity is a
 fact about the FIXTURE, and it is what the census join is built on.
 
 The oracle is CALLED here, never dispatched to. The producer-source families run
-in ``test_producer_families.py`` (they drive the real gateway and the kernel arm
+in ``test_producer_families.py`` (they drive the real producer and the kernel arm
 against the oracle).
 """
 from __future__ import annotations

@@ -471,7 +471,7 @@ def test_g6_sixty_four_chained_steps(widths, decay):
 def _chunk_prefill(widths, d_v, B, T, H, generator, device):
     """Run the PRODUCTION prefill arm over ``T`` tokens; return what decode needs.
 
-    A hand-built bundle and not the gateway: the fixture plants a specific density on
+    A hand-built bundle and not the producer: the fixture plants a specific density on
     each side, which a producer cannot be asked for. The envelope is asserted rather
     than assumed -- a fixture that drifted out of the built matrix would otherwise be
     silently served by nothing at all.

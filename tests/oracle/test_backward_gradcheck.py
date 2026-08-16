@@ -58,7 +58,7 @@ KAPPA = 4.0
 def _bundle(T: int, seed: int, *, mass: bool, gain: float, device="cuda"):
     """A hand-built `RouteFactors` on the pinned arm, with every operand a LEAF.
 
-    Built directly rather than through a gateway: the claim here is about the
+    Built directly rather than through a producer: the claim here is about the
     operator's own five cotangents, and a producer in front of it would fold them
     together before anything could be compared per input.
     """

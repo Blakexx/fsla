@@ -257,7 +257,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
 #: the GATEWAY refuses to produce an unratified activation's routing at all
 #: (`rola/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
 #: registering `("entmax", 1.75)` does not make the producer able to emit it), and
-#: `rola_op` refuses any bundle the gateway did not derive
+#: `rola_op` refuses any bundle the producer did not derive
 #: (`tests/unit/test_api_contract.py`), so no bundle carrying an unratified
 #: activation can reach any arm. The DISPATCH half -- an unratified activation goes
 #: to the reference arm and is named in `Dispatch.not_kerneled` -- is the row

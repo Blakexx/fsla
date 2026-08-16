@@ -192,10 +192,10 @@ def test_stats_through_the_host_seam():
     from rola.routing.producer import union_routing
 
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=_H, widths=(16, 16),
+    producer = build_routes(hidden_size=64, num_heads=_H, widths=(16, 16),
                            routing=union_routing(1)).cuda()
     x = torch.randn(_B, _T, 64, device="cuda")
-    routes = gateway(x)
+    routes = producer(x)
     bits = chunk.stats(chunk.pack(routes))
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(bits.bool(), _oracle_bitmap(routes.write, (16, 16)))

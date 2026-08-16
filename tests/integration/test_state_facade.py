@@ -47,7 +47,7 @@ _HIDDEN, _H, _DV, _WIDTHS, _T = 64, 2, 64, (16, 16), 128
 _DENSE = PlanOverrides(paging=False)
 
 
-def _gateway(seed=0, widths=_WIDTHS):
+def _producer(seed=0, widths=_WIDTHS):
     torch.manual_seed(seed)
     return build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=widths,
                         routing=union_routing(1)).cuda()
@@ -90,17 +90,17 @@ def test_a_stateless_call_returns_no_state():
     compiled into it, so a facade that quietly manufactured a state would price every
     stateless forward at the full state's bandwidth.
     """
-    gateway, (x, v) = _gateway(), _inputs()
+    producer, (x, v) = _producer(), _inputs()
     with torch.no_grad():
-        y, state = rola.rola_op(gateway(x), v)
+        y, state = rola.rola_op(producer(x), v)
     assert state is None
     assert y.shape == v.shape
 
 
 def test_a_raw_tensor_is_not_a_state():
-    gateway, (x, v) = _gateway(), _inputs()
+    producer, (x, v) = _producer(), _inputs()
     with torch.no_grad(), pytest.raises(TypeError, match="rola.RoLAState"):
-        rola.rola_op(gateway(x), v, state=torch.zeros(1))
+        rola.rola_op(producer(x), v, state=torch.zeros(1))
 
 
 def test_an_unbuilt_strategy_is_refused_by_name():
@@ -125,15 +125,15 @@ def test_two_chained_halves_are_one_whole_sequence(expert):
     `atomicAdd` over owner blocks. Nothing is dropped either way, which is what the
     envelopes bound.
     """
-    gateway, (x, v) = _gateway(seed=3), _inputs(seed=3)
+    producer, (x, v) = _producer(seed=3), _inputs(seed=3)
     half = _T // 2
     with torch.no_grad():
         chained = rola.state()
-        y1, chained = rola.rola_op(gateway(x[:, :half]), v[:, :half], state=chained,
+        y1, chained = rola.rola_op(producer(x[:, :half]), v[:, :half], state=chained,
                                    expert=expert)
-        y2, chained = rola.rola_op(gateway(x[:, half:]), v[:, half:], state=chained,
+        y2, chained = rola.rola_op(producer(x[:, half:]), v[:, half:], state=chained,
                                    expert=expert)
-        routes = gateway(x)
+        routes = producer(x)
         whole = rola.state()
         y, whole = rola.rola_op(routes, v, state=whole, expert=expert)
 
@@ -163,9 +163,9 @@ def test_the_two_backings_compute_the_same_call():
     version, and what it adds is that the two backings are reachable through the public
     surface and are invisible in the answer.
     """
-    gateway, (x, v) = _gateway(seed=5), _inputs(seed=5)
+    producer, (x, v) = _producer(seed=5), _inputs(seed=5)
     with torch.no_grad():
-        routes = gateway(x)
+        routes = producer(x)
         paged, dense = rola.state(), rola.state()
         y_p, paged = rola.rola_op(routes, v, state=paged)
         y_d, dense = rola.rola_op(routes, v, state=dense, expert=_DENSE)
@@ -182,14 +182,14 @@ def test_the_two_backings_compute_the_same_call():
 @pytest.mark.parametrize("expert", [None, _DENSE], ids=["paged", "dense"])
 def test_a_clone_is_independent(expert):
     """`clone()` is EAGER: the copy shares nothing, in either backing."""
-    gateway, (x, v) = _gateway(seed=7), _inputs(seed=7)
+    producer, (x, v) = _producer(seed=7), _inputs(seed=7)
     with torch.no_grad():
         state = rola.state()
-        _y, state = rola.rola_op(gateway(x), v, state=state, expert=expert)
+        _y, state = rola.rola_op(producer(x), v, state=state, expert=expert)
         copy = state.clone()
         snapshot = copy.materialize().clone()
         assert torch.equal(snapshot, state.materialize()), "the clone is not a copy"
-        rola.rola_op(gateway(x), v, state=state, expert=expert)
+        rola.rola_op(producer(x), v, state=state, expert=expert)
 
     assert torch.equal(snapshot, copy.materialize()), (
         "mutating the original moved the clone: the copy shares its backing")
@@ -208,11 +208,11 @@ def test_a_bound_state_carries_the_shape_it_bound_and_nothing_else():
     them -- a widths/normalization interview would be a second contract to keep in
     step with the first, and a wrong-shaped call fails where the bytes are addressed
     exactly as it does for a tensor."""
-    gateway, (x, v) = _gateway(seed=11), _inputs(seed=11)
+    producer, (x, v) = _producer(seed=11), _inputs(seed=11)
     state = rola.state()
     assert not state.bound and state.shape is None
     with torch.no_grad():
-        rola.rola_op(gateway(x), v, state=state)
+        rola.rola_op(producer(x), v, state=state)
     assert state.shape == (2, _H, prod(_WIDTHS), _DV + 1)
     assert state.device == torch.device("cuda", torch.cuda.current_device())
     assert state.dtype is torch.float32
@@ -223,13 +223,13 @@ def test_a_call_the_state_was_not_bound_by_fails_where_the_bytes_are():
     """The named accepted hazard, gated at its real edge: a DIFFERENT-SHAPED call
     against a bound state raises (the addressing cannot be satisfied), and it raises
     from the shape machinery rather than from a policy interview."""
-    gateway, (x, v) = _gateway(seed=11), _inputs(seed=11)
-    other = _gateway(seed=12, widths=(64, 64))
+    producer, (x, v) = _producer(seed=11), _inputs(seed=11)
+    other = _producer(seed=12, widths=(64, 64))
     x2 = torch.randn(2, _T, _HIDDEN, device="cuda")
     v2 = torch.randn(2, _T, _H, 64, device="cuda")
     with torch.no_grad():
         state = rola.state()
-        rola.rola_op(gateway(x), v, state=state)
+        rola.rola_op(producer(x), v, state=state)
         with pytest.raises(RuntimeError):
             rola.rola_op(other(x2), v2, state=state)
 
@@ -292,10 +292,10 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
     def scripted_arm_for(D, B):
         return (32, forced["BC"])
 
-    gateway = _gateway(seed=11, widths=widths)
+    producer = _producer(seed=11, widths=widths)
     x, v = _inputs(seed=11, T=64)
     with torch.no_grad():
-        first, second = gateway(x[:, :32]), gateway(x[:, 32:])
+        first, second = producer(x[:, :32]), producer(x[:, 32:])
 
     def chain(expert):
         state = rola.state()

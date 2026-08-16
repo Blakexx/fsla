@@ -747,9 +747,9 @@ class Topology:
             self.activation(level, duty), owner=f"Topology.levels[{level}].{duty}")
 
     def duty_simplex_output(self, level: int, duty: str) -> bool:
-        """Whether that cell arrives at the gateway already on the simplex.
+        """Whether that cell's own map already lands on the simplex.
 
-        THE gateway's licence to skip a level's mass fold. It is a routing-form
+        THE fold's licence to skip a level. It is a routing-form
         question and not only an activation one, because a routing form may hand a
         duty a share of a solve rather than the whole of it.
         """

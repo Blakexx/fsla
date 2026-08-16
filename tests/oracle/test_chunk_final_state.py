@@ -331,23 +331,23 @@ def test_the_state_travels_through_the_host_seam():
 
     widths, T = (16, 16), 64
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=2, widths=widths,
+    producer = build_routes(hidden_size=64, num_heads=2, widths=widths,
                            routing=union_routing(1)).cuda()
     x = torch.randn(2, T, 64, device="cuda")
 
-    y_full, s_full = chunk.run(chunk.pack(gateway(x)), torch.randn(2, T, 2, _DV, device="cuda"),
+    y_full, s_full = chunk.run(chunk.pack(producer(x)), torch.randn(2, T, 2, _DV, device="cuda"),
                                want_state=True)
     assert s_full.shape == (4, prod(widths) // MMA_K_QUANTUM, MMA_K_QUANTUM, _COLS)
     assert s_full.dtype == torch.float32
 
-    y_stateless, none = chunk.run(chunk.pack(gateway(x)), torch.randn(2, T, 2, _DV, device="cuda"))
+    y_stateless, none = chunk.run(chunk.pack(producer(x)), torch.randn(2, T, 2, _DV, device="cuda"))
     assert none is None and y_stateless.shape == y_full.shape
 
     v = torch.randn(2, T, 2, _DV, device="cuda")
     half = T // 2
-    _, s1 = chunk.run(chunk.pack(gateway(x[:, :half])), v[:, :half], want_state=True)
-    _, s2 = chunk.run(chunk.pack(gateway(x[:, half:])), v[:, half:], state_in=s1, want_state=True)
-    _, s_whole = chunk.run(chunk.pack(gateway(x)), v, want_state=True)
+    _, s1 = chunk.run(chunk.pack(producer(x[:, :half])), v[:, :half], want_state=True)
+    _, s2 = chunk.run(chunk.pack(producer(x[:, half:])), v[:, half:], state_in=s1, want_state=True)
+    _, s_whole = chunk.run(chunk.pack(producer(x)), v, want_state=True)
     assert torch.equal(s_whole, s2), (
         f"the seam's continuation differs by {(s_whole - s2).abs().max().item():.3e}")
 

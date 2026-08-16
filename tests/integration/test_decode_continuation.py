@@ -64,7 +64,7 @@ _HIDDEN, _H, _DV, _WIDTHS, _T, _S, _B = 64, 2, 64, (16, 16), 128, 6, 2
 _DENSE = PlanOverrides(paging=False)
 
 
-def _gateway(seed=0):
+def _producer(seed=0):
     torch.manual_seed(seed)
     return build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
                         routing=union_routing(1)).cuda()
@@ -124,27 +124,27 @@ def _state_envelope(state, routes, steps):
 
 
 @torch.no_grad()
-def _run(gateway, x, v, *, expert=None):
+def _run(producer, x, v, *, expert=None):
     """Prefill on the chunk arm, then `S` decode steps, all on ONE state object.
 
     Under `no_grad` because carried-state execution is inference-only end to end -- the
     layer refuses it outright and the decode op's own guard refuses it again
-    (the layer-dispatch autograd gap). The gateway's parameters require grad, so this
+    (the layer-dispatch autograd gap). The producer's parameters require grad, so this
     is the same context a served model runs in, not a convenience.
     """
     state = rola.state()
-    y_pre, state = rola.rola_op(gateway(x[:, :_T]), v[:, :_T], state=state, expert=expert)
+    y_pre, state = rola.rola_op(producer(x[:, :_T]), v[:, :_T], state=state, expert=expert)
     ys = [y_pre]
     for step in range(_S):
         token = slice(_T + step, _T + step + 1)
-        y, state = decode_forward(gateway(x[:, token]), v[:, token], state, expert=expert)
+        y, state = decode_forward(producer(x[:, token]), v[:, token], state, expert=expert)
         ys.append(y)
     return torch.cat([t.double() for t in ys], dim=1), state
 
 
 @torch.no_grad()
-def _oracle(gateway, x, v):
-    routes = gateway(x)
+def _oracle(producer, x, v):
+    routes = producer(x)
     return naive_rola(v.double(), routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
                       routes.topology, None, routes.normalization, output_final_state=True)
 
@@ -153,7 +153,7 @@ def _oracle(gateway, x, v):
 # the fixture's own precondition
 # ---------------------------------------------------------------------------
 
-def test_the_gateway_is_token_wise_so_the_whole_sequence_is_its_own_prefix():
+def test_the_producer_is_token_wise_so_the_whole_sequence_is_its_own_prefix():
     """Slicing the STREAM and slicing the ROUTING are the same object.
 
     Stated as a gate rather than assumed, because every cell below compares a chained
@@ -162,9 +162,9 @@ def test_the_gateway_is_token_wise_so_the_whole_sequence_is_its_own_prefix():
     tokens (a convolution, an attention) would make this file's whole construction
     invalid rather than merely inaccurate, and it would do so silently.
     """
-    gateway = _gateway()
+    producer = _producer()
     x, _v = _inputs()
-    full, head = gateway(x), gateway(x[:, :_T])
+    full, head = producer(x), producer(x[:, :_T])
     for level, (a, b) in enumerate(zip(full.read, head.read)):
         assert torch.equal(a[:, :_T], b), f"read level {level} is not token-wise"
     for level, (a, b) in enumerate(zip(full.write, head.write)):
@@ -186,16 +186,16 @@ def test_a_prefilled_sequence_continues_through_decode_steps(backing):
     disagreed with the chunk arm's, or an admission that dropped a deposit would each
     show up here and nowhere else.
     """
-    gateway = _gateway()
+    producer = _producer()
     x, v = _inputs()
     expert = None if backing == "paged" else _DENSE
-    y, state = _run(gateway, x, v, expert=expert)
+    y, state = _run(producer, x, v, expert=expert)
     assert state.paged is (backing == "paged"), "the backing under test is not the one bound"
 
-    y_ref, state_ref = _oracle(gateway, x, v)
+    y_ref, state_ref = _oracle(producer, x, v)
     got = state.materialize().double()
     with torch.no_grad():
-        bound = _state_bound(gateway(x), v, _T)
+        bound = _state_bound(producer(x), v, _T)
     excess = float(((got - state_ref).abs() - bound).max())
     assert excess <= 0.0, f"the chained state left its derived bound by {excess:.3e}"
     scale = max(1e-30, float(y_ref.abs().max()))
@@ -212,13 +212,13 @@ def test_the_two_backings_compute_the_same_continuation():
     `test_decode_paging.py`'s claim 2, and the STATE is compared exactly where the
     arm allows it.
     """
-    gateway = _gateway(seed=3)
+    producer = _producer(seed=3)
     x, v = _inputs(seed=3)
-    y_paged, paged = _run(gateway, x, v)
-    y_dense, dense = _run(gateway, x, v, expert=_DENSE)
+    y_paged, paged = _run(producer, x, v)
+    y_dense, dense = _run(producer, x, v, expert=_DENSE)
     assert paged.paged and not dense.paged
 
-    routes = gateway(x[:, :_T])
+    routes = producer(x[:, :_T])
     state_p, state_d = paged.materialize().double(), dense.materialize().double()
     bound = _state_envelope(state_d, routes, _S)
     assert float((state_p - state_d).abs().max()) <= bound
@@ -238,16 +238,16 @@ def test_a_decoded_sequence_continues_back_onto_the_chunk_arm():
     caller's business: the arena a decode step grew is the arena the chunk launch
     resolves through, with no re-admission and no copy.
     """
-    gateway = _gateway(seed=5)
+    producer = _producer(seed=5)
     x, v = _inputs(seed=5)
-    y, state = _run(gateway, x, v)
+    y, state = _run(producer, x, v)
     resident = int(state.bound and (state.page_table >= 0).sum())
 
     tail = slice(_T + _S, None)
-    x2 = torch.randn(_B, _chunk.arm(gateway(x[:, :_T]))[0], _HIDDEN, device="cuda")
+    x2 = torch.randn(_B, _chunk.arm(producer(x[:, :_T]))[0], _HIDDEN, device="cuda")
     v2 = torch.randn(_B, x2.shape[1], _H, _DV, device="cuda")
     with torch.no_grad():
-        y2, state = rola.rola_op(gateway(x2), v2, state=state)
+        y2, state = rola.rola_op(producer(x2), v2, state=state)
     assert state.paged, "the chunk continuation abandoned the paged backing"
     assert int((state._arena.page_table >= 0).sum()) >= resident, (
         "the chunk continuation dropped atoms the decode steps had grown")
@@ -255,14 +255,14 @@ def test_a_decoded_sequence_continues_back_onto_the_chunk_arm():
     #: the oracle over the WHOLE thing: prefill, the decode steps, then the chunk tail.
     x_all = torch.cat([x, x2], dim=1)
     v_all = torch.cat([v, v2], dim=1)
-    _y_ref, state_ref = _oracle(gateway, x_all, v_all)
+    _y_ref, state_ref = _oracle(producer, x_all, v_all)
     got = state.materialize().double()
     with torch.no_grad():
         #: the bf16 half of the bound covers the PREFILL and the chunk TAIL alike; the
         #: `S` decode tokens sit between them and are fp32 throughout, so charging them
         #: the operand rounding too is the safe direction and is stated rather than
         #: quietly taken.
-        bound = _state_bound(gateway(x_all), v_all, x_all.shape[1])
+        bound = _state_bound(producer(x_all), v_all, x_all.shape[1])
     excess = float(((got - state_ref).abs() - bound).max())
     assert excess <= 0.0, (
         f"the decode->chunk continuation left its derived bound by {excess:.3e}")
@@ -280,7 +280,7 @@ def test_a_decode_step_on_a_state_that_carries_nothing_is_refused_by_name():
     state is a degenerate PREFILL and belongs on the other arm -- which is exactly the
     predicate `RoLA.forward` uses (`tests/integration/test_decode_dispatch.py`).
     """
-    gateway = _gateway(seed=7)
+    producer = _producer(seed=7)
     x, v = _inputs(seed=7)
     with pytest.raises(RuntimeError, match="carries nothing"):
-        decode_forward(gateway(x[:, :1]), v[:, :1], rola.state())
+        decode_forward(producer(x[:, :1]), v[:, :1], rola.state())

@@ -278,7 +278,7 @@ def _validate_call(routes, v, decay) -> None:
             "invariants are checked either way.")
     #: THE GAIN LAYOUT AGAINST THE ARM, structurally: the readout is a ratio, which fixes
     #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
-    #: than trusted from the gateway because the bundle is hand-constructible.
+    #: than trusted from the producer because the bundle is hand-constructible.
     if routes.g_read is not None:
         raise ValueError(
             "this bundle carries a g_read tensor: the readout is a ratio, so g_read := 1 "

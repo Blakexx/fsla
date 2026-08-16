@@ -102,7 +102,7 @@ class Cell:
             routes = layer.routes(x[:, :self.T])
         packed = chunk_arm.pack(routes)
         c, bc = chunk_arm.arm(routes)
-        return {"cell": self, "layer": layer, "gateway": layer.routes, "x": x, "v": v,
+        return {"cell": self, "layer": layer, "producer": layer.routes, "x": x, "v": v,
                 "routes": routes, "packed": packed, "C": c, "BC": bc,
                 #: `v_prefill` is the operand in the CELL's dtype, which is what the layer
                 #: and the op facade take; `v_kernel` is the bf16 contiguous form the raw

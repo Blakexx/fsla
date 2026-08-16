@@ -354,10 +354,10 @@ def test_the_seam_reaches_the_sparse_grid():
     from rola.routing.producer import union_routing
 
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=2, widths=(64, 64),
+    producer = build_routes(hidden_size=64, num_heads=2, widths=(64, 64),
                            routing=union_routing(1)).cuda()
     x = torch.randn(2, 64, 64, device="cuda")
-    routes = gateway(x)
+    routes = producer(x)
     v = torch.randn(2, 64, 2, _DV, device="cuda")
     y_full, _ = chunk.run(chunk.pack(routes), v)
     y_sparse, _ = chunk.run(chunk.pack(routes), v, sparse_grid=True)

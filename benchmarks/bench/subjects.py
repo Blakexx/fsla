@@ -134,18 +134,18 @@ def decode_step(fx) -> Arm:
     few steps at these widths, so the timed reps price a steady-state step and not the
     admission that precedes it -- which the warmup launches are what guarantee.
     """
-    cell, gateway = fx["cell"], fx["layer"].routes
+    cell, producer = fx["cell"], fx["layer"].routes
     if cell.decode_steps == 0:
         raise ValueError(f"{cell.name} is a prefill-only cell; it has no decode subject")
     state = rola.state()
     with torch.no_grad():
-        _, state = rola.rola_op(gateway(fx["x"][:, :cell.T]), fx["v_prefill"], state=state)
+        _, state = rola.rola_op(producer(fx["x"][:, :cell.T]), fx["v_prefill"], state=state)
     token = fx["x"][:, cell.T:cell.T + 1]
     v_token = fx["v"][:, cell.T:cell.T + 1].contiguous()
 
     def call():
         with torch.no_grad():
-            y, _ = decode_forward(gateway(token), v_token, state)
+            y, _ = decode_forward(producer(token), v_token, state)
         return y
 
     return Arm(name="decode_step", call=call)
@@ -177,7 +177,7 @@ def prefill_decode(fx) -> Arm:
     priced -- a continuation that reuses a warm state measures the steps only, which is
     the `decode_step` subject and is already on the roster.
     """
-    cell, gateway = fx["cell"], fx["layer"].routes
+    cell, producer = fx["cell"], fx["layer"].routes
     if cell.decode_steps == 0:
         raise ValueError(f"{cell.name} is a prefill-only cell; it has no continuation")
     x, v = fx["x"], fx["v"]
@@ -185,10 +185,10 @@ def prefill_decode(fx) -> Arm:
     def call():
         with torch.no_grad():
             state = rola.state()
-            y, state = rola.rola_op(gateway(x[:, :cell.T]), fx["v_prefill"], state=state)
+            y, state = rola.rola_op(producer(x[:, :cell.T]), fx["v_prefill"], state=state)
             for step in range(cell.decode_steps):
                 token = slice(cell.T + step, cell.T + step + 1)
-                y, state = decode_forward(gateway(x[:, token]), v[:, token].contiguous(),
+                y, state = decode_forward(producer(x[:, token]), v[:, token].contiguous(),
                                           state)
         return y
 

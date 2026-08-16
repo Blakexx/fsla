@@ -76,7 +76,7 @@ pytestmark = [
 ]
 
 #: A built arm (`D = 2, B = 16`) at a chunk-multiple `T`, driven through the real
-#: gateway. MEASURED: at this cell the realized entmax write side admits EVERY
+#: producer. MEASURED: at this cell the realized entmax write side admits EVERY
 #: atom — unstructured sparsity at any real `T` reaches the whole leaf space, and
 #: only a structurally confined write support produces absent atoms. Nothing here
 #: depends on partial residency: the ordering, lifetime and allocator-reuse claims
@@ -87,7 +87,7 @@ _WIDTHS, _DV, _T, _H = (16, 16), 64, 64, 2
 
 
 def _cell():
-    """`(routes, v)` from the real gateway — `rola_op` refuses any other bundle."""
+    """`(routes, v)` from the real producer — `rola_op` refuses any other bundle."""
     from rola import union_routing
     from tests.conftest import build_routes
 

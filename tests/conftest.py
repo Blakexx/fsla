@@ -155,7 +155,7 @@ def poison_torch_memory(request):
 # -----------------------------------------------------------------------------
 #
 # The public surface is the reduction theorem: a feature map, and linear attention.
-# Assembling one is three lines -- producers, the gateway, the layer -- and every test
+# Assembling one is three lines -- producers, the producer, the layer -- and every test
 # that needs a model needs the same three, so they live here rather than being spelled
 # out per file. A test that is ABOUT construction (validation, refusal, the expert pin)
 # calls the real constructors directly; these are for the tests that need a model to
