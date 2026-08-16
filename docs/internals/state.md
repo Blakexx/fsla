@@ -11,6 +11,14 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count;
 which is the page granule; **slot** = the physical page an atom is mapped to;
 `BC` = leaves one owner block owns.
 
+## The two axes: strategy vs backing
+
+``strategy`` is the write-semantics (aliasing) contract; the backing is
+storage mechanics the plan chooses at bind. Orthogonal; all four cells
+coherent; dense x cow legal-but-degenerate (full-plane copy per advance).
+The dense-vs-paged bit-identity gate is the backing-invisibility claim
+made mechanical.
+
 ## <a id="one-object"></a>1. A PAGED TENSOR, and one predicate
 
 ```python

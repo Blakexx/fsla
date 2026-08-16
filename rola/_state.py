@@ -55,7 +55,17 @@ class RoLAState:
     governs what a write does to this object's own storage. ``"mutable"`` is the built
     one -- the call writes in place and returns THIS object. Changing it is
     :meth:`clone`, never a mode flip on a live object.
+    TWO INDEPENDENT AXES, never conflated. ``strategy`` is the WRITE-SEMANTICS
+    contract -- what an advance does to existing references ("mutable": in
+    place, old references alias the result; "cow", when built: writes never
+    overwrite, every returned state stays valid, resubmission is branching).
+    The BACKING (dense plane vs paged arena) is storage mechanics -- chosen by
+    the plan at bind, priced in footprint, and semantically invisible (the
+    dense-vs-paged torch.equal gate is that claim). All four combinations are
+    coherent; dense x cow is legal-but-degenerate (no table -> a full-plane
+    copy per advance).
     """
+
 
     __slots__ = ("strategy", "_shape", "_device", "_paging", "_arena", "_plane",
                  "__weakref__")
