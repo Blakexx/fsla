@@ -204,21 +204,21 @@ _HIDDEN, _H, _T, _B = 64, 2, 128, 2
 
 
 def _sequence():
-    """A prefilled paged state, its gateway and a stream of decode tokens."""
+    """A prefilled paged state, its producer and a stream of decode tokens."""
     import rola
     from rola.routing.producer import union_routing
     from tests.conftest import build_routes
 
     torch.manual_seed(7)
-    gateway = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
-                           routing=union_routing()).cuda()
+    producer = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
+                           routing=union_routing(1)).cuda()
     torch.manual_seed(507)
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
         state = rola.state()
-        _y, state = rola.rola_op(gateway(x[:, :_T]), v[:, :_T], state=state)
-    return gateway, x, v, state
+        _y, state = rola.rola_op(producer(x[:, :_T]), v[:, :_T], state=state)
+    return producer, x, v, state
 
 
 def _static(routes, v):
@@ -259,9 +259,9 @@ def _capture(static, static_v, state):
 @torch.no_grad()
 def test_the_captured_step_is_the_eager_step_bit_for_bit():
     """Same kernels, same order, same bytes -- the capture owes exactly this."""
-    gateway, x, v, state = _sequence()
+    producer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
-    routes = gateway(x[:, token])
+    routes = producer(x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)
@@ -289,9 +289,9 @@ def test_the_captured_step_is_the_eager_step_bit_for_bit():
 @torch.no_grad()
 def test_a_growth_step_lands_under_the_graph_by_replay():
     """The replay is SELF-CORRECTING: no-op, admit, replay, and it is the eager answer."""
-    gateway, x, v, state = _sequence()
+    producer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
-    routes = gateway(x[:, token])
+    routes = producer(x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)

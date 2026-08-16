@@ -24,18 +24,15 @@ import torch
 
 import rola
 from rola.routing.factors import RouteFactors
-from rola.routing.producer import ProducedRoutes
 
 
 def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
-    producer = rola.SimplexProducer(
-        widths, rola.dense_routing() if routing is None else routing,
-        hidden_size=hidden, num_heads=heads, **kwargs)
-    return rola.RouteGateway([producer], num_heads=heads, hidden_size=hidden)
+    levels = [rola.dense_routing(w) if routing is None else routing.at(w) for w in widths]
+    return rola.RouteProducer(levels, hidden_size=hidden, num_heads=heads, **kwargs)
 
 
-def _x(gateway, *, B=2, T=6, dtype=torch.float64):
-    return torch.randn(B, T, gateway.hidden_size, dtype=dtype)
+def _x(producer, *, B=2, T=6, dtype=torch.float64):
+    return torch.randn(B, T, producer.hidden_size, dtype=dtype)
 
 
 def _admitted(routes, v) -> None:
@@ -69,8 +66,8 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     legitimate thing to do and a fixture that plants a specific routing pattern does
     exactly that.
     """
-    gateway = _routes()
-    factors = gateway(_x(gateway))
+    producer = _routes()
+    factors = producer(_x(producer))
     hand_built = RouteFactors(
         topology=factors.topology, normalization=factors.normalization,
         read=factors.read, write=factors.write, g_read=factors.g_read,
@@ -94,11 +91,11 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     refusal is the observation.
 
     Deliberately NOT among them: unit-sum-ness. It is a device reduction per level per
-    call, it is the gateway's own output contract, and conformance fixtures plant
+    call, it is the producer's own output contract, and conformance fixtures plant
     non-canonical amplitudes on purpose.
     """
-    gateway = _routes()
-    f = gateway(_x(gateway))
+    producer = _routes()
+    f = producer(_x(producer))
     fields = dict(topology=f.topology, normalization=f.normalization,
                   read=list(f.read), write=list(f.write), g_read=f.g_read,
                   g_write=f.g_write)
@@ -121,8 +118,8 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
     """PLANTED VIOLATION: hand the op the tensors directly, as the old signature did."""
-    gateway = _routes()
-    factors = gateway(_x(gateway))
+    producer = _routes()
+    factors = producer(_x(producer))
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="RouteFactors"):
         rola.rola_op(factors.read, v)
@@ -139,8 +136,8 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
     the bundle does pin is `[B, T, H]`, and a `v` that disagrees there is refused
     with the expected prefix in the message rather than handed to a kernel.
     """
-    gateway = _routes()
-    factors = gateway(_x(gateway))
+    producer = _routes()
+    factors = producer(_x(producer))
     with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
         rola.rola_op(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
     #: the control: the same call at a width the bundle never declared is admitted.
@@ -152,80 +149,6 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
 # ---------------------------------------------------------------------------
 
 
-def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
-    """U02, mechanically: the consumer eats tensors and cannot tell what produced them.
-
-    The duck below shares no base class, no tag and no metadata with the shipped
-    producer -- it is a plain module returning simplices. It must produce a bundle the
-    op accepts, and its levels must be OPAQUE: the topology reads the opaque registry
-    row for them, which is the only thing being foreign costs it.
-    """
-    class Uniform(torch.nn.Module):
-        widths = (4,)
-
-        def forward(self, source):
-            B, T = source.batch, source.tokens
-            level = torch.full((B, T, 2, 4), 0.25, dtype=source.read.dtype)
-            return ProducedRoutes(read=(level,), write=(level.clone(),))
-
-    gateway = rola.RouteGateway(
-        [Uniform()], num_heads=2, hidden_size=32)
-    factors = gateway(_x(gateway))
-    assert type(gateway.topology.levels[0].routing).__name__ == "OpaqueRouting", (
-        "a producer that names no activation must take the opaque registry row")
-    v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
-    _admitted(factors, v)
-    assert torch.isfinite(_oracle(factors, v)).all()
-
-
-def test_a_foreign_producers_mass_is_still_folded_because_it_declares_no_simplex():
-    """THE TOOTH under the ``simplex_output`` skip (P73 S2, ruling R2).
-
-    The gateway omits a level's ``sum`` where the topology DECLARES the map lands on
-    the simplex. An opaque cell declares no such thing, so the generic fold must still
-    run for it -- and this row fails, in every one of its assertions, the moment the
-    skip is applied unconditionally rather than on the column.
-
-    The two sides take the mass differently and both are pinned here: the WRITE side
-    applies it, because the decay clock is defined on the stored level; the READ side
-    carries it in ``read_mass``, because the readout is a ratio (P73 S4).
-
-    PLANTED VIOLATION: a duck whose levels carry mass 2 apiece.
-    """
-    class Heavy(torch.nn.Module):
-        widths = (4, 4)
-
-        def forward(self, source):
-            B, T = source.batch, source.tokens
-            level = torch.full((B, T, 2, 4), 0.5, dtype=source.read.dtype)
-            return ProducedRoutes(read=(level, level.clone()),
-                                  write=(level.clone(), level.clone()))
-
-    gateway = rola.RouteGateway([Heavy()], num_heads=2, hidden_size=32)
-    assert not any(gateway.topology.duty_simplex_output(level, duty)
-                   for level, duty in gateway.topology.duty_cells())
-    x = _x(gateway)
-    factors = gateway(x)
-    for level in factors.write:
-        torch.testing.assert_close(
-            level, torch.full_like(level, 0.25), rtol=0, atol=0,
-            msg="an opaque write level must be STORED as the simplex, not as the "
-                "producer returned it")
-    for level, simplex in zip(factors.read, factors.read_simplex()):
-        torch.testing.assert_close(level, torch.full_like(level, 0.5), rtol=0, atol=0)
-        torch.testing.assert_close(simplex, torch.full_like(simplex, 0.25), rtol=0, atol=0)
-    #: mass 2 per level over two levels, so the read column carries the product 4.
-    torch.testing.assert_close(
-        factors.read_mass, torch.full_like(factors.read_mass, 4.0), rtol=0, atol=0)
-    from rola.routing.side_gain import project_side_gains
-
-    raw = project_side_gains(
-        x, gateway.side_gain.gain_W, gateway.side_gain.gain_bias,
-        projection_dtype=x.dtype)["g_write"]
-    #: mass 2 per level over two levels, so the write gain must carry the product 4.
-    torch.testing.assert_close(factors.g_write, raw * 4.0, rtol=1e-12, atol=1e-12)
-
-
 def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
     """The skip's licence is a ROUTING-FORM question (P73 S2, ruling R2).
 
@@ -234,9 +157,9 @@ def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
     activation's row alone would skip a fold that is not an identity, so the read
     cell's answer must be ``False`` while its own activation's column is ``True``.
     """
-    union = rola.RouteGateway(
-        [rola.SimplexProducer((4, 4), rola.union_routing(1.5), hidden_size=32, num_heads=2)],
-        num_heads=2, hidden_size=32).topology
+    union = rola.RouteProducer(
+        [rola.union_routing(4, 1.5), rola.union_routing(4, 1.5)],
+        hidden_size=32, num_heads=2).topology
     dense = _routes().topology
     assert [union.duty_simplex_output(l, d) for l, d in union.duty_cells()] == [
         False, True, False, True]
@@ -244,44 +167,60 @@ def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
     assert all(dense.duty_simplex_output(l, d) for l, d in dense.duty_cells())
 
 
-def test_a_producer_whose_output_is_malformed_is_named_with_its_level():
-    """A merged or multi-level producer fails as one unit; the gateway holds the level
-    map, so the gateway is what can say which level's data was involved.
+def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
+    """U02, mechanically: THE BUNDLE IS THE WHOLE CONTRACT.
 
-    PLANTED VIOLATION: a duck that returns the wrong width.
+    The duck below shares no base class, no tag and no metadata with the shipped
+    producer -- it is a plain module returning a bundle. It must be admitted by the op
+    and accepted by the layer's slot, and its levels must be OPAQUE: the topology reads
+    the opaque registry row for them, which is the only thing being foreign costs it.
     """
-    class Wrong(torch.nn.Module):
-        widths = (4, 4)
+    from rola.routing.types import OpaqueRouting, Topology
 
-        def forward(self, source):
-            B, T = source.batch, source.tokens
-            good = torch.full((B, T, 2, 4), 0.25, dtype=source.read.dtype)
-            bad = torch.full((B, T, 2, 3), 1 / 3, dtype=source.read.dtype)
-            return ProducedRoutes(read=(good, bad), write=(good, good))
+    class Uniform(torch.nn.Module):
+        hidden_size, num_heads, normalization = 32, 2, "global"
+        topology = Topology(levels=(OpaqueRouting(width=4),))
 
-    gateway = rola.RouteGateway([Wrong()], num_heads=2, hidden_size=32)
-    with pytest.raises(ValueError, match=r"level 1"):
-        gateway(_x(gateway))
+        def forward(self, stream):
+            B, T = stream.shape[0], stream.shape[1]
+            level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
+            return RouteFactors(
+                topology=self.topology, normalization=self.normalization,
+                read=(level,), write=(level.clone(),), g_read=None,
+                g_write=torch.ones(B, T, 2, dtype=stream.dtype))
+
+    producer = Uniform()
+    assert type(producer.topology.levels[0]).__name__ == "OpaqueRouting", (
+        "a producer that names no activation must take the opaque registry row")
+    factors = producer(_x(producer))
+    v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
+    _admitted(factors, v)
+    assert torch.isfinite(_oracle(factors, v)).all()
+    assert rola.RoLA(producer, d_v=8).topology is producer.topology, (
+        "the layer's slot is structural, so a foreign producer occupies it unwrapped")
 
 
-def test_a_producer_that_declares_no_widths_is_refused_at_construction():
+def test_a_slot_that_declares_none_of_what_the_layer_reads_is_refused_at_construction():
     """Construction-time validation, so an unbuildable model fails on the line that
-    built it rather than inside a forward several frames away."""
-    with pytest.raises(TypeError, match="widths"):
-        rola.RouteGateway([torch.nn.Identity()], num_heads=2, hidden_size=32)
+    built it rather than inside a forward several frames away.
+
+    PLANTED VIOLATION: a callable that declares nothing.
+    """
+    with pytest.raises(TypeError, match="hidden_size"):
+        rola.RoLA(torch.nn.Identity())
 
 
-def test_one_producer_covers_many_levels_and_the_gateway_keeps_their_order():
-    """Batching across levels is a PRODUCER's business: one instance, one solve, and the
-    level order is the order the widths were declared in."""
-    gateway = _routes(widths=(4, 6))
-    assert gateway.topology.widths == (4, 6)
-    factors = gateway(_x(gateway))
+def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
+    """One solve group, one instance, and the level order is the order the widths
+    were declared in."""
+    producer = _routes(widths=(4, 6))
+    assert producer.topology.widths == (4, 6)
+    factors = producer(_x(producer))
     assert [tuple(level.shape[-1:]) for level in factors.read] == [(4,), (6,)]
 
 
 # ---------------------------------------------------------------------------
-# Packing belongs to the gateway
+# Packing belongs to the producer
 # ---------------------------------------------------------------------------
 
 
@@ -300,33 +239,13 @@ def test_the_public_layout_is_a_view_and_not_a_materialization():
     that is materialized. What survives, and is what a caller of this surface is
     owed, is that the public tensors are views.
     """
-    gateway = _routes(widths=(4, 6))
-    factors = gateway(_x(gateway))
+    producer = _routes(widths=(4, 6))
+    factors = producer(_x(producer))
     for level, public in enumerate(factors.read):
         assert not public.is_contiguous(), f"level {level}'s public tensor was materialized"
         assert public._base is not None, (
             f"level {level}'s public tensor owns its storage; the solve's layout was "
             "copied out instead of being viewed")
-
-
-def test_the_stored_levels_are_simplices_and_the_mass_went_to_the_gain():
-    """The mass fold is the gateway's, and it is loss-free for the readout: the stored
-    level sums to one and the magnitude it lost is on the side gain."""
-    class Doubled(torch.nn.Module):
-        widths = (4,)
-
-        def forward(self, source):
-            B, T = source.batch, source.tokens
-            level = torch.full((B, T, 2, 4), 0.5, dtype=source.read.dtype)  # sums to 2
-            return ProducedRoutes(read=(level,), write=(level.clone(),))
-
-    gateway = rola.RouteGateway([Doubled()], num_heads=2, hidden_size=32,
-                                 gain=False)
-    factors = gateway(_x(gateway))
-    ones = torch.ones(2, 6, 2, dtype=torch.float64)
-    assert torch.allclose(factors.write[0].sum(-1), ones)
-    assert torch.allclose(factors.g_write, 2 * ones), (
-        "the write mass must ride the write channel, not vanish")
 
 
 # ---------------------------------------------------------------------------
@@ -352,11 +271,11 @@ def test_a_constant_decay_source_has_no_parameters_and_reaches_the_target_rate()
 
 def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
     """PLANTED VIOLATION: the right source, the wrong widths."""
-    gateway = _routes(widths=(4, 4))
+    producer = _routes(widths=(4, 4))
     with pytest.raises(ValueError, match="widths"):
-        rola.RoLA(gateway,
+        rola.RoLA(producer,
                   decay=rola.LearnedDecay(widths=(4, 6), num_heads=2))
-    rola.RoLA(gateway, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
+    rola.RoLA(producer, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +322,9 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
 
 def test_the_expert_argument_refuses_a_lookalike():
     """PLANTED VIOLATION: a dict that happens to have the right keys."""
-    gateway = _routes()
+    producer = _routes()
     with pytest.raises(TypeError, match="PlanOverrides"):
-        rola.RoLA(gateway, expert={"state_block": 16})
+        rola.RoLA(producer, expert={"state_block": 16})
 
 
 # ---------------------------------------------------------------------------

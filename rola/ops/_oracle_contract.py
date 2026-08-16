@@ -28,9 +28,8 @@ from rola.routing.types import DecayConfig, LeafMassDecay, Topology
 #: simplex.
 #:
 #: THIS IS A SEMANTIC SLACK, NOT A FLOATING-POINT ONE, which is why it is named
-#: here instead of defaulting quietly inside the check. A caller may hand the
-#: oracle levels that have been through a bf16 storage round-trip -- that is the
-#: quantization boundary `write_levels_stored` exists to exercise -- and bf16
+#: here instead of defaulting quietly inside the check. The oracle is fed the STORED
+#: form, which is bf16, and bf16
 #: carries about 8 mantissa bits, so a width-256 simplex's per-entry rounding
 #: accumulates to a few parts in 1e3 across the sum. `5e-3` covers that and
 #: nothing more: an input that is genuinely unnormalized (a missing softmax, a
@@ -57,7 +56,6 @@ def validate_inputs(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    write_levels_stored: tuple[torch.Tensor, ...],
     g_read: torch.Tensor | None,
     g_write: torch.Tensor,
     topology: Topology,
@@ -81,18 +79,6 @@ def validate_inputs(
                     f"{name}[{level}] must have shape [B,T,H,width_l]=({B},{T},{H},{width}), "
                     f"got {tuple(factors.shape)}"
                 )
-    write_levels_stored = tuple(write_levels_stored)
-    if len(write_levels_stored) != topology.D:
-        raise ValueError(
-            "write_levels_stored must contain one tensor per level "
-            f"(D={topology.D}), got {len(write_levels_stored)}"
-        )
-    for level, (factors, width) in enumerate(zip(write_levels_stored, widths)):
-        if tuple(factors.shape) != (B, T, H, width):
-            raise ValueError(
-                f"write_levels_stored[{level}] must have shape [B,T,H,width_l]="
-                f"({B},{T},{H},{width}), got {tuple(factors.shape)}"
-            )
     if tuple(g_write.shape) != (B, T, H):
         raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
     if torch.any(g_write <= 0):

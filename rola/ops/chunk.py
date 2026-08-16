@@ -6,11 +6,12 @@ does not (the facade stays generic; capabilities return through the paging
 and backward work, not
 through silent degradation).
 
-The packing performed here is torch glue, and it happens ONCE per call
-(`pack` -> `PackedRoutes`), so every entry a call makes reads the same bytes.
-It is still scheduled for deletion -- the producer's epilogue is where a
-`[B, H, T, sumW]` bf16 side is eventually emitted directly -- and the seam's
-shape does not change when it goes.
+The packing performed here happens ONCE per call (`pack` -> `PackedRoutes`), so
+every entry a call makes reads the same bytes. On the shipped path it is a
+VIEW: the producer's solve writes the `[B, H, T, sumW]` bf16 side directly and
+`_side_plane` reconstructs it from the levels' strides
+(docs/internals/chunk/chunk.md#the-side-plane). The copy survives for the sides
+that are not already that layout -- a hand-built bundle, a foreign producer.
 """
 from __future__ import annotations
 
@@ -112,13 +113,46 @@ def backward_unsupported(routes, decay, *, d_v: int) -> str | None:
     return None
 
 
+def _side_plane(levels) -> torch.Tensor | None:
+    """The `[B, H, T, sumW]` bf16 plane these levels are already views OF, or None.
+
+    A STRIDE fact, not a provenance one: the levels are the plane iff each is the
+    window of one bf16 allocation whose layout is exactly this side's, which is
+    checkable and is what a hand-built bundle either satisfies or does not
+    (docs/internals/chunk/chunk.md#the-side-plane).
+    """
+    batch, tokens, heads, _ = levels[0].shape
+    widths = [level.shape[-1] for level in levels]
+    total = sum(widths)
+    want = (heads * tokens * total, total, tokens * total, 1)
+    base = levels[0]
+    offset = 0
+    for level, width in zip(levels, widths):
+        if (level.dtype is not torch.bfloat16
+                or level.untyped_storage().data_ptr() != base.untyped_storage().data_ptr()
+                or level.stride() != want
+                or level.storage_offset() != base.storage_offset() + offset):
+            return None
+        offset += width
+    span = base.storage_offset() + batch * heads * tokens * total
+    if span * base.element_size() > base.untyped_storage().nbytes():
+        return None
+    return base.as_strided((batch, heads, tokens, total),
+                           (heads * tokens * total, tokens * total, total, 1),
+                           base.storage_offset())
+
+
 def _pack_side(levels) -> torch.Tensor:
     """The per-level `[B, T, H, width_l]` tuple as one `[B, H, T, sumW]` bf16 tensor.
 
     ONE destination and one pass per level: concatenating in the public layout
     materializes an intermediate no kernel reads, and the transpose and the
-    narrowing are then a second pass over it.
+    narrowing are then a second pass over it. A side that is already the plane skips
+    all of it -- the producer emits this layout.
     """
+    plane = _side_plane(levels)
+    if plane is not None:
+        return plane
     batch, tokens, heads, _ = levels[0].shape
     widths = [level.shape[-1] for level in levels]
     packed = torch.empty((batch, heads, tokens, sum(widths)),

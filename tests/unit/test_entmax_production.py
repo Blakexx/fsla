@@ -168,20 +168,20 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
         assert isinstance(level, IndependentRouting)
         if level.shares_solve:
             d_write_logits[:, :, span] = _stored_activation_vjp(
-                level.write_activation, read_values,
+                level.write, read_values,
                 read_gradient + write_gradient, support)
         elif level.tied:
             d_write_logits[:, :, span] = (
                 _stored_activation_vjp(
-                    level.read_activation, read_values, read_gradient, support)
+                    level.read, read_values, read_gradient, support)
                 + _stored_activation_vjp(
-                    level.write_activation, write_values, write_gradient, support)
+                    level.write, write_values, write_gradient, support)
             )
         else:
             d_read_logits[:, :, span] = _stored_activation_vjp(
-                level.read_activation, read_values, read_gradient, support)
+                level.read, read_values, read_gradient, support)
             d_write_logits[:, :, span] = _stored_activation_vjp(
-                level.write_activation, write_values, write_gradient, support)
+                level.write, write_values, write_gradient, support)
     return d_read_logits, d_write_logits
 
 
@@ -257,8 +257,7 @@ def test_production_factor_empty_rows_preserve_autograd_contract():
     assert z.grad is not None and z.grad.shape == z.shape
 
     routing = ResolvedRouting(
-        (IndependentRouting(False, EntmaxActivation(1.5), SoftmaxActivation()),) * 2,
-        (4, 4),
+        (IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),) * 2,
     )
     read_logits = torch.empty(
         1, 0, routing.packed_logit_width, device="cuda", dtype=torch.float32, requires_grad=True)
@@ -273,7 +272,7 @@ def test_production_factor_empty_rows_preserve_autograd_contract():
     (descriptor.read_values.float().sum() + descriptor.write_values.float().sum()).backward()
     assert read_logits.grad is not None and write_logits.grad is not None
 
-    union_routing = ResolvedRouting((UnionRouting(2.0),), (4,))
+    union_routing = ResolvedRouting((UnionRouting(width=4, alpha=2.0),))
     read_logits = torch.empty(1, 0, 4, device="cuda", dtype=torch.float32, requires_grad=True)
     write_logits = torch.empty_like(read_logits, requires_grad=True)
     union = production_routing_factors(read_logits, write_logits, union_routing)
@@ -297,11 +296,8 @@ def test_production_routing_width_limit_rejects_before_jit():
     with pytest.raises(ValueError, match="branch width must be <= 256"):
         production_factor(too_wide, "entmax", alpha=1.5)
 
-    with pytest.raises(ValueError, match="branch width must be <= 256"):
-        ResolvedRouting(
-            (IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()),),
-            (257,),
-        )
+    with pytest.raises(ValueError, match="width must be <= 256"):
+        IndependentRouting(width=257, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
 @pytest.mark.parametrize("alpha", [1.25, 1.8])
@@ -315,11 +311,10 @@ def test_production_factor_rejects_unsupported_alpha(alpha):
 def test_production_writes_compact_tile_major_bf16_and_one_support_arena(alpha):
     routing = ResolvedRouting(
         (
-            IndependentRouting(False, EntmaxActivation(alpha), SoftmaxActivation()),
-            UnionRouting(alpha),
-            IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()),
+            IndependentRouting(width=3, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
+            UnionRouting(width=5, alpha=alpha),
+            IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
-        (3, 5, 2),
     )
     read_logits = _logits(routing, seed=31)
     write_logits = _logits(routing, seed=32)
@@ -346,10 +341,9 @@ def test_production_writes_compact_tile_major_bf16_and_one_support_arena(alpha):
 def test_production_independent_forward_matches_reference_and_vjp_matches_stored_contract(alpha):
     routing = ResolvedRouting(
         (
-            IndependentRouting(False, EntmaxActivation(alpha), SoftmaxActivation()),
-            IndependentRouting(False, SoftmaxActivation(), EntmaxActivation(alpha)),
+            IndependentRouting(width=4, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
+            IndependentRouting(width=4, read=SoftmaxActivation(), write=EntmaxActivation(alpha)),
         ),
-        (4, 4),
     )
     read_base = _logits(routing, tokens=33, seed=44)
     write_base = _logits(routing, tokens=33, seed=45)
@@ -387,8 +381,8 @@ def test_production_independent_forward_matches_reference_and_vjp_matches_stored
 
 def test_production_tied_values_alias_only_for_a_whole_shared_plan():
     shared_routing = ResolvedRouting(
-        (IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),) * 2,
-        (4, 4),
+        (IndependentRouting(width=4, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
+                            tied=True),) * 2,
     )
     logits = _logits(shared_routing, tokens=7).requires_grad_()
     descriptor = production_routing_factors(logits, logits, shared_routing)
@@ -407,10 +401,10 @@ def test_production_tied_values_alias_only_for_a_whole_shared_plan():
 
     mixed_routing = ResolvedRouting(
         (
-            IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),
-            IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()),
+            IndependentRouting(width=4, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
+                              tied=True),
+            IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
-        (4, 4),
     )
     mixed_logits = _logits(mixed_routing, tokens=7)
     mixed = production_routing_factors(mixed_logits, mixed_logits, mixed_routing)
@@ -423,7 +417,7 @@ def test_production_tied_values_alias_only_for_a_whole_shared_plan():
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 def test_production_union_forward_matches_reference_and_vjp_matches_stored_contract(alpha):
     gen = torch.Generator(device="cuda").manual_seed(82)
-    routing = ResolvedRouting((UnionRouting(alpha),), (4,))
+    routing = ResolvedRouting((UnionRouting(width=4, alpha=alpha),))
     read_base = torch.randn(
         2, 33, 4, device="cuda", dtype=torch.float32, generator=gen)
     write_base = torch.randn(
@@ -476,7 +470,7 @@ def test_production_union_handles_near_max_logits_and_vjp(alpha, relationship):
     write_base = read_base.detach().clone()
     if relationship == "opposite":
         write_base = -write_base
-    routing = ResolvedRouting((UnionRouting(alpha),), (4,))
+    routing = ResolvedRouting((UnionRouting(width=4, alpha=alpha),))
     read_production = read_base.detach().clone().requires_grad_()
     write_production = write_base.detach().clone().requires_grad_()
     read_reference = read_production.detach().clone().to(torch.float64).requires_grad_()
@@ -520,12 +514,12 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
     gen = torch.Generator(device="cuda").manual_seed(97)
     routing = ResolvedRouting(
         (
-            IndependentRouting(False, SoftmaxActivation(), EntmaxActivation(2.0)),
-            IndependentRouting(False, EntmaxActivation(1.5), SoftmaxActivation()),
-            IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),
-            UnionRouting(2.0),
+            IndependentRouting(width=2, read=SoftmaxActivation(), write=EntmaxActivation(2.0)),
+            IndependentRouting(width=3, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
+            IndependentRouting(width=5, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
+                              tied=True),
+            UnionRouting(width=4, alpha=2.0),
         ),
-        (2, 3, 5, 4),
     )
     read_logits = torch.randn(
         1, 33, routing.packed_logit_width, device="cuda", dtype=torch.float32, generator=gen)
@@ -546,8 +540,8 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
     _assert_support_matches_stored_descriptor(descriptor)
 
     narrow_routing = ResolvedRouting(
-        (IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),),
-        (2,),
+        (IndependentRouting(width=2, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
+                            tied=True),),
     )
     narrow_logits = torch.tensor(
         [[[0.0, 1.99998]]], device="cuda", dtype=torch.float32)
@@ -573,9 +567,9 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     from rola.routing.entmax.production import production_routing_factor_levels
 
     torch.manual_seed(5)
-    routing = ResolvedRouting(levels=(UnionRouting(alpha),
-                                      IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
-                              branches=(8, 8))
+    routing = ResolvedRouting(levels=(
+        UnionRouting(width=8, alpha=alpha),
+        IndependentRouting(width=8, read=SoftmaxActivation(), write=SoftmaxActivation())))
     both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda",
                        requires_grad=True)
     sides = (both[:, :, routing.packed_logit_width:], both[:, :, :routing.packed_logit_width])
@@ -732,17 +726,17 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
         _Plan.issue = counting
         try:
             read = torch.randn(2, 64, routing.packed_logit_width, device="cuda")
-            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing)
+            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing, torch.bfloat16)
         finally:
             _Plan.issue = original
         return counted[0]
 
-    uniform = ResolvedRouting((UnionRouting(1.5), UnionRouting(1.5), UnionRouting(1.5)),
-                              (4, 4, 4))
+    uniform = ResolvedRouting((UnionRouting(width=4, alpha=1.5), UnionRouting(width=4, alpha=1.5),
+                              UnionRouting(width=4, alpha=1.5)))
     assert launches(uniform, (4, 4, 4)) == 1, (
         "three union levels of one width class must solve in ONE launch")
 
-    mixed = ResolvedRouting((UnionRouting(1.5), UnionRouting(1.5)), (4, 64))
+    mixed = ResolvedRouting((UnionRouting(width=4, alpha=1.5), UnionRouting(width=64, alpha=1.5)))
     assert launches(mixed, (4, 64)) == 2, (
         "levels of different width classes must NOT share a launch: the sort and the "
         "prefix scan associate differently per class")

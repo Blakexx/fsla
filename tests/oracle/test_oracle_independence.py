@@ -28,13 +28,12 @@ import torch
 from rola.ops.naive import _leaf_capacity, _radix_strides, naive_rola
 from rola.routing.types import (
     IndependentRouting,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
 )
 
 _ROUTING = IndependentRouting(
-    tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
+    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 #: Every shape the two derivations must agree on: depth 1-4 (the validated range) over
 #: widths spanning 1, the powers of two, and non-powers that make a stride product
@@ -43,7 +42,7 @@ _WIDTH_VALUES = (1, 2, 3, 4, 7, 8, 16, 17, 32, 64, 256)
 
 
 def _topology(widths):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
+    return Topology(levels=tuple(_ROUTING.at(w) for w in widths))
 
 
 # ---------------------------------------------------------------------------

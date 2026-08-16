@@ -22,14 +22,13 @@ import torch
 
 from rola.routing.types import (
     IndependentRouting,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
 )
 
 #: The routing every fixture here is built over: untied softmax on both sides.
 _ROUTING = IndependentRouting(
-    tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
+    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
 #: How many token segments the output charge below is taken over. Eight is the
@@ -73,7 +72,7 @@ def _output_charge(y, y_ref):
 
 
 def _topology(widths):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
+    return Topology(levels=tuple(_ROUTING.at(w) for w in widths))
 
 
 def _simplex(shape, p_nonzero, generator, device):

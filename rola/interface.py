@@ -81,7 +81,7 @@ def rola_op(
     """Run RoLA over one routing bundle and one value stream.
 
     ``routes``: a :class:`~rola.routing.factors.RouteFactors`, from
-    :class:`~rola.routing.factors.RouteGateway` or built directly. Anything else is
+    :class:`~rola.routing.producer.RouteProducer` or built directly. Anything else is
     refused by type: the routing sides are the feature-mapped ``(q, k)`` pair and a
     loose tuple of tensors is not one.
     ``v``: ``[B, T, H, d_v]``. THE VALUE WIDTH IS READ HERE, off ``v``: the routing
@@ -257,11 +257,11 @@ def _validate_call(routes, v, decay) -> None:
         raise TypeError(
             "rola_op's first argument must be a RouteFactors bundle, got "
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
-            "build one with RouteGateway, or construct a RouteFactors directly -- its "
+            "build one with RouteProducer, or construct a RouteFactors directly -- its "
             "invariants are checked either way.")
     #: THE GAIN LAYOUT AGAINST THE ARM, structurally: the readout is a ratio, which fixes
     #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
-    #: than trusted from the gateway because the bundle is hand-constructible.
+    #: than trusted from the producer because the bundle is hand-constructible.
     if routes.g_read is not None:
         raise ValueError(
             "this bundle carries a g_read tensor: the readout is a ratio, so g_read := 1 "

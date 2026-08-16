@@ -4,8 +4,10 @@
 
     RoLA(routes, d_v=..., decay=..., layer_idx=...)
 
-``routes`` is a :class:`~rola.routing.factors.RouteGateway` -- the feature map, which
-carries the topology, the normalization arm and the producers that fill each level.
+``routes`` is the feature-map slot: any callable producing a
+:class:`~rola.routing.factors.RouteFactors` bundle that also declares the topology and
+the normalization arm. :class:`~rola.routing.producer.RouteProducer` is the one this
+package ships.
 It also carries ``hidden_size`` and ``num_heads``, so the layer reads them off it.
 ``d_v`` is the per-head value width, which is the LAYER's: it sizes ``v_proj`` and
 ``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
@@ -43,7 +45,6 @@ from rola.interface import (
 )
 from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
-from rola.routing.factors import RouteGateway
 
 if TYPE_CHECKING:
     from rola._state import RoLAState
@@ -73,9 +74,11 @@ class RoLA(nn.Module):
     """Routed linear attention.
 
     Args:
-        routes: the feature-map slot -- a :class:`~rola.routing.factors.RouteGateway`.
-            It owns the topology (levels, widths), the normalization arm and the side
-            gains, because those are facts about the map rather than about the layer
+        routes: the feature-map slot -- any callable returning a
+            :class:`~rola.routing.factors.RouteFactors`, typically a
+            :class:`~rola.routing.producer.RouteProducer`. It owns the topology (levels,
+            widths), the normalization arm and the side gains, because those are facts
+            about the map rather than about the layer
             wrapping it, and it owns ``hidden_size``/``num_heads``, which the layer
             reads off it rather than taking a second declaration of.
         d_v: per-head value width -- the width of the state each leaf holds. It sizes
@@ -95,7 +98,7 @@ class RoLA(nn.Module):
 
     def __init__(
         self,
-        routes: RouteGateway,
+        routes,
         *,
         d_v: int = 64,
         decay=None,
@@ -105,11 +108,19 @@ class RoLA(nn.Module):
         expert=None,
     ) -> None:
         super().__init__()
-        if type(routes) is not RouteGateway:
+        #: THE PRODUCER IS A DUCK, so this is a STRUCTURAL check and not an isinstance
+        #: one: the layer reads four facts off the slot and calls it, and anything that
+        #: answers those four and returns a well-formed bundle is a feature map. The
+        #: check exists so a missing attribute is named here rather than surfacing as an
+        #: AttributeError inside a forward.
+        missing = [name for name in ("hidden_size", "num_heads", "topology", "normalization")
+                   if not hasattr(routes, name)]
+        if missing or not callable(routes):
             raise TypeError(
-                "RoLA's `routes` argument is the feature-map slot and must be a "
-                f"rola.RouteGateway, got {type(routes).__name__}. It is what carries the "
-                "topology and the producers that fill each level.")
+                "RoLA's `routes` argument is the feature-map slot: a callable producing a "
+                "RouteFactors bundle, which also declares hidden_size, num_heads, topology "
+                f"and normalization. {type(routes).__name__} is missing {missing or ['__call__']}. "
+                "rola.RouteProducer is the one this package ships.")
         hidden_size = routes.hidden_size
         num_heads = routes.num_heads
         if type(d_v) is not int or d_v < 1:

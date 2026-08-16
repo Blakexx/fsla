@@ -146,7 +146,7 @@ _NON_MID_REGIME: frozenset[tuple] = frozenset(
 #: Cross terms that ARE covered, because a family pins both coordinates. All
 #: four come from the producer sweeps, the only families that carry a non-mid
 #: regime onto an off-mid instantiation: `producer/swept-gain` runs the real
-#: gateway at the flat-routing arm (`D = 1, B = 64`) and
+#: producer at the flat-routing arm (`D = 1, B = 64`) and
 #: `producer/swept-gain-d64` at `(D = 2, B = 64)`, and both carry `swept`
 #: density and `coherent` routing there.
 _EXCEPTIONS: frozenset[tuple] = frozenset({

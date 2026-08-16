@@ -155,7 +155,7 @@ def poison_torch_memory(request):
 # -----------------------------------------------------------------------------
 #
 # The public surface is the reduction theorem: a feature map, and linear attention.
-# Assembling one is three lines -- producers, the gateway, the layer -- and every test
+# Assembling one is three lines -- producers, the producer, the layer -- and every test
 # that needs a model needs the same three, so they live here rather than being spelled
 # out per file. A test that is ABOUT construction (validation, refusal, the expert pin)
 # calls the real constructors directly; these are for the tests that need a model to
@@ -165,14 +165,13 @@ def poison_torch_memory(request):
 def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
                  normalization="global", gain=True, bias=False,
                  gain_bias_init=None, gain_config=None):
-    """One :class:`rola.RouteGateway` over one simplex producer covering every level."""
-    from rola import RouteGateway, SimplexProducer, dense_routing
+    """One :class:`rola.RouteProducer` covering every level in ``widths``."""
+    from rola import dense_routing
+    from rola.routing.producer import RouteProducer
 
-    producer = SimplexProducer(
-        tuple(widths), dense_routing() if routing is None else routing,
-        hidden_size=hidden_size, num_heads=num_heads, bias=bias)
-    return RouteGateway(
-        [producer], num_heads=num_heads, hidden_size=hidden_size,
+    levels = [dense_routing(w) if routing is None else routing.at(w) for w in widths]
+    return RouteProducer(
+        levels, hidden_size=hidden_size, num_heads=num_heads, bias=bias,
         normalization=normalization, gain=gain, gain_bias_init=gain_bias_init,
         gain_config=gain_config)
 
@@ -199,32 +198,63 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 
 
 # -----------------------------------------------------------------------------
-# Driving the gateway from bare parameter tensors
+# Driving the producer from bare parameter tensors
 # -----------------------------------------------------------------------------
 #
 # The low-level producer gates in tests/oracle/test_producer.py and
 # tests/integration/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
 # is what lets them isolate a backward-through-every-tensor gate. The production
-# orchestration is `SimplexProducer`/`RouteGateway` -- nn.Module methods over
-# nn.Parameters -- so `produce_routing` builds that pair and runs it under
+# orchestration is `RouteProducer` -- an nn.Module over nn.Parameters -- so
+# `produce_routing` builds one and runs it under
 # `torch.nn.utils.stateless.functional_call` with the caller's tensors standing
 # in for its parameters. The graph reaches the caller's leaves and the numerics
-# are the REAL gateway's, not a second derivation of them.
+# are the REAL producer's, not a second derivation of them.
 
 
 def resolved_routing_from_topology(topology):
     """A `ResolvedRouting` over a `Topology`'s own levels -- exactly what
-    `SimplexProducer.__init__` builds for itself
-    (`self.routing = ResolvedRouting(levels=self.levels, branches=self.widths)`)."""
+    `RouteProducer.__init__` builds for itself
+    (`self.routing = ResolvedRouting(levels=self.levels)`)."""
     from rola.routing.types import ResolvedRouting
 
-    return ResolvedRouting(
-        levels=tuple(level.routing for level in topology.levels), branches=topology.widths)
+    return ResolvedRouting(levels=topology.levels)
+
+
+def fuse_gain_columns(route_W, gain_W):
+    """`route_W` with `gain_W` as its trailing columns -- THE fused parameter's layout.
+
+    THE GAIN'S WEIGHT IS `route_W`'s TRAILING SPAN. `gain_W` arrives in its own
+    `[H, sides, hidden]` layout because that is what these gates hold; defined once here
+    so a gate that needs the pre-fold gain builds the same tensor the producer runs on.
+    """
+    return torch.cat([route_W, gain_W.transpose(-1, -2)], dim=-1)
+
+
+def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
+    """`g_write` BEFORE the mass fold, through the library's own two pieces.
+
+    Not a second implementation: the projection is `_packed_router_logits`' gain span
+    and the nonlinearity is `SideGain`, which is exactly what the producer composes --
+    what the producer does NOT expose is the value between them, which is what a fold
+    gate has to see.
+    """
+    from rola.routing.projection import _packed_router_logits
+    from rola.routing.side_gain import GainConfig, SideGain
+
+    columns = gain_W.shape[1]
+    _, _, gain_logits = _packed_router_logits(
+        x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None, h_w=None,
+        projection_dtype=x.dtype, gain_columns=columns)
+    gain = SideGain(num_heads=gain_W.shape[0], config=GainConfig.from_public(bool(columns)))
+    with torch.no_grad():
+        gain.gain_bias.copy_(gain_bias)
+    return gain(gain_logits, batch=x.shape[0], tokens=x.shape[1], dtype=x.dtype,
+                device=x.device)
 
 
 def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology, normalization):
-    """The gateway, run over bare parameter tensors -> a plain namespace.
+    """The producer, run over bare parameter tensors -> a plain namespace.
 
     ``v`` is accepted (matching the call sites) and unused: callers need it only
     afterwards, to run the oracle. The return carries the field names those gates
@@ -234,21 +264,19 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
 
     from torch.func import functional_call
 
-    from rola.routing.factors import RouteGateway
-    from rola.routing.producer import SimplexProducer
+    from rola.routing.producer import RouteProducer
 
     H, hidden_size, _ = route_W.shape
-    producer = SimplexProducer(
-        topology.widths, tuple(level.routing for level in topology.levels),
-        hidden_size=hidden_size, num_heads=H, bias=route_bias is not None)
-    gateway = RouteGateway(
-        [producer], num_heads=H, hidden_size=hidden_size, normalization=normalization)
-    parameters = {"producers.0.route_W": route_W, "side_gain.gain_W": gain_W,
+    producer = RouteProducer(
+        topology.levels, hidden_size=hidden_size, num_heads=H,
+        normalization=normalization, bias=route_bias is not None)
+    parameters = {"route_W": fuse_gain_columns(route_W, gain_W),
                   "side_gain.gain_bias": gain_bias}
     if route_bias is not None:
-        parameters["producers.0.route_bias"] = route_bias
+        parameters["route_bias"] = torch.cat(
+            [route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
     streams = (x,) if x_w is None else (x, x_w)
-    routes = functional_call(gateway, parameters, streams)
+    routes = functional_call(producer, parameters, streams)
 
     return SimpleNamespace(
         read_levels=routes.read_simplex(), write_levels=routes.write,

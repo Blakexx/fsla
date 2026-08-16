@@ -62,7 +62,7 @@ import time
 
 import torch
 
-from rola import RoLA, RouteGateway, SimplexProducer, dense_routing, union_routing
+from rola import RoLA, RouteProducer, dense_routing, union_routing
 from rola import state as rola_state
 from rola.expert import PlanOverrides
 from rola.ops import chunk as chunk_arm
@@ -87,11 +87,10 @@ def _median_ms(fn, *, reps: int, warmup: int) -> float:
 def _layer(*, hidden, H, d_v, branches, router, norm, decay, dense_pin=False, seed=0):
     from rola import LearnedDecay
 
-    routing = union_routing(1.5) if router == "entmax" else dense_routing()
+    template = union_routing(1, 1.5) if router == "entmax" else dense_routing(1)
     torch.manual_seed(seed)
-    producer = SimplexProducer(tuple(branches), routing, hidden_size=hidden, num_heads=H)
-    routes = RouteGateway(
-        [producer], num_heads=H, hidden_size=hidden, normalization=norm)
+    levels = [template.at(w) for w in branches]
+    routes = RouteProducer(levels, hidden_size=hidden, num_heads=H, normalization=norm)
     decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay else None
     layer = RoLA(
         routes, d_v=d_v, decay=decay_source, layer_idx=0,
@@ -109,7 +108,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
                    norm=norm, decay=decay)
     if logit_gain != 1.0:
         with torch.no_grad():
-            layer.routes.producers[0].route_W.mul_(logit_gain)
+            layer.routes.route_W.mul_(logit_gain)
     x = torch.randn(B, L, hidden, device="cuda")
 
     def step(module, carried):

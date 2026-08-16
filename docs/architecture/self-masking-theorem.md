@@ -135,15 +135,16 @@ This precondition is not luck: mass decay is fixed by the semantics authority
 outside the sanctioned design. But the dependency must travel with the theorem,
 because several other decisions now rest on the theorem.
 
-**A second, narrower precondition** appears in the oracle's own signature: the
-clock reads `write_levels_stored`, which *defaults* to `write_levels` but may be
-passed as a separately quantized tensor (`naive.py:181-188`). The theorem holds
-whenever the stored representation has the **same zero set** as the trained one.
-A quantization that turned an exact zero into a denormal — or a nonzero into a
-zero — would break the coupling in (a) above. Any storage-precision boundary on
-the write levels must therefore preserve exact zeros; that is a constraint on the
-design of such a boundary, and it belongs with the theorem because it is not
-visible from the boundary's own side.
+**A second, narrower precondition** is the storage boundary itself. The clock reads
+the STORED write levels -- there is one representation, bf16, and both the oracle and
+the kernel are fed it -- so the theorem holds exactly while the stored representation
+has the **same zero set** as the trained one. A quantization that turned an exact zero
+into a denormal, or a nonzero into a zero, would break the coupling in (a) above. That
+is why the solve WRITES the stored form rather than being rounded into it afterwards:
+the exact structural zeros the entmax closed form produces are written as zeros, so the
+zero set is preserved by construction rather than by a check. Any future
+storage-precision boundary on the write levels inherits the same constraint, and it
+belongs with the theorem because it is not visible from the boundary's own side.
 
 ## 5. The three standing consequences
 

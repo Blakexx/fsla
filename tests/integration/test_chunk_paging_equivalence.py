@@ -494,12 +494,12 @@ def test_the_arena_travels_through_the_host_seam():
 
     widths, T = (16, 16), 64
     torch.manual_seed(0)
-    gateway = build_routes(hidden_size=64, num_heads=2, widths=widths,
-                           routing=union_routing()).cuda()
+    producer = build_routes(hidden_size=64, num_heads=2, widths=widths,
+                           routing=union_routing(1)).cuda()
     x = torch.randn(2, T, 64, device="cuda")
     v = torch.randn(2, T, 2, _DV, device="cuda")
 
-    routes = gateway(x)
+    routes = producer(x)
     BC = 128  # the arm `rola.ops.chunk` pins for this topology
     y_dense, dense = chunk.run(chunk.pack(routes), v, want_state=True)
     y_control, _ = chunk.run(chunk.pack(routes), v, want_state=True)

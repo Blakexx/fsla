@@ -34,7 +34,7 @@ import time
 
 import torch
 
-from rola import RoLA, RouteGateway, SimplexProducer, dense_routing, union_routing
+from rola import RoLA, RouteProducer, dense_routing, union_routing
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -190,11 +190,10 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             torch.manual_seed(0)
             from rola import LearnedDecay
 
-            routing = union_routing(1.5) if side == "sparse" else dense_routing()
-            producer = SimplexProducer(
-                tuple(branches), routing, hidden_size=hidden, num_heads=H)
-            routes = RouteGateway(
-                [producer], num_heads=H, hidden_size=hidden, normalization=norm)
+            template = union_routing(1, 1.5) if side == "sparse" else dense_routing(1)
+            levels = [template.at(w) for w in branches]
+            routes = RouteProducer(
+                levels, hidden_size=hidden, num_heads=H, normalization=norm)
             decay_source = (LearnedDecay(widths=routes.widths, num_heads=H)
                             if decay_on else None)
             layer = RoLA(
@@ -206,7 +205,7 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
             layer.eval()
             if logit_gain != 1.0:
                 with torch.no_grad():
-                    producer.route_W.mul_(logit_gain)
+                    routes.route_W.mul_(logit_gain)
             for param in layer.parameters():
                 param.requires_grad_(False)
             x = torch.randn(B, L, hidden, device="cuda", dtype=dtype)

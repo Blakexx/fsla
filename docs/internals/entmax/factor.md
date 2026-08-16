@@ -136,3 +136,29 @@ arithmetic each row performs is the arithmetic the per-level loop performed.
 
 The host `build_table` refuses a mixed-class table rather than padding to the
 largest, and the caller (`production.py`) is what groups the plan walk into tables.
+
+## <a id="stored-form"></a>5. The stored form is what the solve WRITES
+
+The routing factors have exactly one consumer -- the chunk operator -- and it reads
+`bf16`. So `OutT` is `__nv_bfloat16` on the shipped path and the solve writes the stored
+representation directly; there is no fp32 plane and no narrowing pass between them. The
+union arm and the independent/softmax arms are both instantiated for it
+(`entmax.cu::union_forward`, `factor.cu::check_values`), and the value dtype is read off
+the output tensor rather than templated at the host entry, so the choice is one
+allocation in `rola/routing/entmax/production.py`.
+
+**Why writing bf16 is not the same as rounding to bf16.** The solve's amplitudes come
+from a closed form whose zeros are structural: an entry outside the support is assigned
+exactly `0`, and an entry inside it is `((alpha-1)(z-tau))^2` clamped at zero, which is
+nonzero whenever the support test passed at fp32. Writing that value narrowed to bf16
+preserves both directions of the support test -- `0` stays `0`, and a positive fp32
+value below bf16's smallest subnormal cannot arise, because the smallest amplitude the
+solve can produce and still call supported is bounded away from it by the threshold
+arithmetic. That identity is the self-masking theorem's storage precondition
+(`docs/architecture/self-masking-theorem.md`) and it is gated without tolerance by
+`tests/integration/test_production_levels.py::test_the_stored_form_preserves_the_support_exactly`
+over four stress fixtures x four routing shapes x two alphas.
+
+`stored_dtype=torch.float32` exists for one purpose: a FIDELITY gate that wants the
+solve's own arithmetic without the storage quantization on top of it. It is a test-side
+argument; no runtime path passes it.

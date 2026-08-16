@@ -33,7 +33,7 @@ in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 cannot live inside the consumer kernel. It is one elementwise pass, and it carries
 three jobs the host used to pay for separately.
 
-**The scaled floor.** The gateway hands the read side over with its per-token mass `m`
+**The scaled floor.** The producer hands the read side over with its per-token mass `m`
 still on the levels (`docs/api.md` §2.2), so the numerator and denominator this pass
 reads are both `m` times the normalized ones. `eps` is a constant of the DEFINITION,
 which means it is the one term that does not scale with the ratio — so the mass arrives
@@ -138,3 +138,23 @@ skipped block must leave UNCHANGED — which is what skipping does.
 **Every arm takes the bitmap.** The predicate is a load and a branch above every register
 the body allocates, so there is no arm whose census cannot hold it — including the one at
 `reg_floor` 255.
+
+## <a id="the-side-plane"></a>The pack is a view, because the producer emits the plane
+
+Every chunk entry reads one `[B, H, T, sumW]` bf16 tensor per side. The producer's solve
+writes one `[BH, T, sumW]` bf16 plane per side and hands out each level as a strided
+window of it, so the tensor the entry wants and the tensor that exists are the same
+bytes in the same order -- `[BH, T, sumW]` and `[B, H, T, sumW]` differ only by
+splitting the stream axis, which is a view.
+
+`ops/chunk.py::_side_plane` therefore reconstructs the plane rather than copying into
+one, and it decides on a STRIDE fact: every level is bf16, shares one storage with the
+first, carries this side's exact stride tuple, and sits at its own column offset. A
+bundle that satisfies that is the plane; one that does not -- a hand-built fixture, a
+foreign producer, a side whose fold materialized a divide -- takes the copy, which is
+unchanged. Nothing is asserted about where the tensors came from, because provenance is
+not what makes the reinterpretation valid.
+
+Measured at the pinned cell (`B=2, T=2048, H=8, D=2, b=(64,64)`): the copy was 4
+launches, 0.0704 ms and 40.3 MB of DRAM per step, and on both shipped routing
+configurations it is now zero of each.

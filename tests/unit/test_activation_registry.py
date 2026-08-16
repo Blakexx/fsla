@@ -31,7 +31,6 @@ from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     LeafMassDecay,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
     UnionRouting,
@@ -93,7 +92,7 @@ def test_an_unknown_tag_is_a_hard_panic_at_config_construction():
     with pytest.raises(UnknownActivation):
         EntmaxActivation(1.25)
     with pytest.raises(UnknownActivation):
-        UnionRouting(alpha=3.0)
+        UnionRouting(width=4, alpha=3.0)
 
 
 def test_the_admissible_alphas_are_read_off_the_registry_not_listed_twice():
@@ -137,8 +136,7 @@ def test_the_public_constructors_take_no_property_metadata():
 
 def _topology(read, write, *, width=4, tied=True):
     return Topology(
-        levels=(LevelConfig(width=width, routing=IndependentRouting(
-            tied=tied, read_activation=read, write_activation=write)),))
+        levels=(IndependentRouting(width=width, tied=tied, read=read, write=write),))
 
 
 def test_per_level_and_per_duty_configuration_is_addressable_as_a_grid():
@@ -184,13 +182,13 @@ def test_an_activation_with_a_row_is_configurable_without_widening_an_isinstance
         support_differentiable=True, kerneled=False)
     try:
         routing = IndependentRouting(
-            tied=False, read_activation=_Future(), write_activation=_Future())
+            width=4, tied=False, read=_Future(), write=_Future())
         assert routing.activation("read").tag == ("future_family", None)
     finally:
         del ACTIVATION_REGISTRY[("future_family", None)]
 
     with pytest.raises(UnknownActivation):
-        IndependentRouting(tied=False, read_activation=_Future(), write_activation=_Future())
+        IndependentRouting(width=4, tied=False, read=_Future(), write=_Future())
 
 
 def test_mass_decay_accepts_every_ratified_activation():
@@ -207,15 +205,15 @@ def test_union_routing_demands_exact_zeros_for_the_intersection_guarantee():
         support_differentiable=True, kerneled=False)
     try:
         with pytest.raises(ValueError, match="exact_zeros"):
-            UnionRouting(alpha=1.75)
+            UnionRouting(width=4, alpha=1.75)
     finally:
         del ACTIVATION_REGISTRY[tag]
 
 
 def test_two_exact_zero_sides_still_require_one_shared_solve():
     with pytest.raises(ValueError, match="exact_zeros"):
-        IndependentRouting(tied=False, read_activation=entmax(1.5),
-                           write_activation=entmax(1.5))
+        IndependentRouting(width=4, tied=False, read=entmax(1.5),
+                           write=entmax(1.5))
 
 
 # --- the not-kerneled surface ------------------------------------------------
@@ -259,7 +257,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
 #: the GATEWAY refuses to produce an unratified activation's routing at all
 #: (`rola/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
 #: registering `("entmax", 1.75)` does not make the producer able to emit it), and
-#: `rola_op` refuses any bundle the gateway did not derive
+#: `rola_op` refuses any bundle the producer did not derive
 #: (`tests/unit/test_api_contract.py`), so no bundle carrying an unratified
 #: activation can reach any arm. The DISPATCH half -- an unratified activation goes
 #: to the reference arm and is named in `Dispatch.not_kerneled` -- is the row

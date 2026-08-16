@@ -46,10 +46,10 @@ def _bundle(B, T, H, widths, seed=11):
     either way and a producer would add a graph this file is not measuring."""
     from rola.routing.factors import RouteFactors
     from rola.routing.producer import union_routing
-    from rola.routing.types import LevelConfig, Topology
+    from rola.routing.types import Topology
 
     g = torch.Generator(device="cuda").manual_seed(seed)
-    topology = Topology(levels=tuple(LevelConfig(w, union_routing(1.5)) for w in widths))
+    topology = Topology(levels=tuple(union_routing(w, 1.5) for w in widths))
 
     def side():
         out = []

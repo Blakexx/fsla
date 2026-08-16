@@ -20,6 +20,7 @@ from rola.routing.activations import (
     validate_alpha,
 )
 from rola.routing.topology import (
+    validate_level_width,
     validate_routing_shape,
 )
 
@@ -235,18 +236,29 @@ class RouteDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class IndependentRouting:
-    """Per-side routing with independently specified value activations."""
+    """One routing LEVEL: its branch width and its two per-duty activations.
 
-    tied: bool
-    read_activation: RoutingActivation
-    write_activation: RoutingActivation
+    THE LEVEL'S WHOLE SPEC IS THIS OBJECT. ``width`` lives here rather than in a
+    separate wrapper because every derived quantity a plan needs -- ``N``, the packed
+    router width, the logit offsets, the topology -- is a function of the level LIST,
+    and a list whose width and whose operator arrive in two different containers can be
+    assembled inconsistently. The activations stay width-free registry keys: an
+    activation is a function on a row of any length, so a width on one would be a
+    second place the same number lives.
+    """
+
+    width: int
+    read: RoutingActivation
+    write: RoutingActivation
+    tied: bool = False
 
     def __post_init__(self) -> None:
+        validate_level_width(self.width, owner="IndependentRouting")
         if type(self.tied) is not bool:
             raise TypeError(f"IndependentRouting.tied must be bool, got {self.tied!r}")
         for name, activation in (
-            ("read_activation", self.read_activation),
-            ("write_activation", self.write_activation),
+            ("read", self.read),
+            ("write", self.write),
         ):
             # Admission is a REGISTRY lookup, not an isinstance list. An isinstance
             # list would be a second closed world, and a variant with a ratified row
@@ -255,8 +267,8 @@ class IndependentRouting:
             # property the per-duty surface is built to give.
             activation_properties(activation, owner=f"IndependentRouting.{name}")
         if (
-            activation_properties(self.read_activation).exact_zeros
-            and activation_properties(self.write_activation).exact_zeros
+            activation_properties(self.read).exact_zeros
+            and activation_properties(self.write).exact_zeros
             and not self.shares_solve
         ):
             raise ValueError(
@@ -275,15 +287,19 @@ class IndependentRouting:
         has to remember the spelling of.
         """
         if duty == "read":
-            return self.read_activation
+            return self.read
         if duty == "write":
-            return self.write_activation
+            return self.write
         raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+
+    def at(self, width: int) -> IndependentRouting:
+        """This level's operator choice at another branch width."""
+        return IndependentRouting(width=width, read=self.read, write=self.write, tied=self.tied)
 
     @property
     def shares_solve(self) -> bool:
         """Whether tied logits and equal activations make one solve exact."""
-        return self.tied and self.read_activation == self.write_activation
+        return self.tied and self.read == self.write
 
     def duty_simplex_output(self, duty: str) -> bool:
         """Whether this cell's own output already lands on the simplex.
@@ -305,9 +321,11 @@ class UnionRouting:
     by its row and a future non-zero-capable one is refused by its row.
     """
 
+    width: int
     alpha: float = 1.5
 
     def __post_init__(self) -> None:
+        validate_level_width(self.width, owner="UnionRouting")
         alpha = validate_alpha(self.alpha, owner="UnionRouting")
         object.__setattr__(self, "alpha", alpha)
         if not properties_for(("entmax", alpha), owner="UnionRouting").exact_zeros:
@@ -326,6 +344,10 @@ class UnionRouting:
         if duty not in ("read", "write"):
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return EntmaxActivation(self.alpha)
+
+    def at(self, width: int) -> UnionRouting:
+        """This level's operator choice at another branch width."""
+        return UnionRouting(width=width, alpha=self.alpha)
 
     def duty_simplex_output(self, duty: str) -> bool:
         """Whether this cell's own output already lands on the simplex.
@@ -347,26 +369,29 @@ class ResolvedRouting:
     """Validated routing topology and packed projection layout for one RoLA plan."""
 
     levels: tuple[LevelRouting, ...]
-    branches: tuple[int, ...]
 
     def __post_init__(self) -> None:
         levels = tuple(self.levels)
-        branches = tuple(self.branches)
         if not levels:
             raise ValueError("ResolvedRouting.levels must be nonempty")
-        if len(branches) != len(levels):
-            raise ValueError(
-                f"ResolvedRouting.branches must have D={len(levels)} entries, got {len(branches)}")
-        validate_routing_shape(branches, owner="ResolvedRouting")
         for level in levels:
             if type(level) not in (IndependentRouting, UnionRouting):
                 raise TypeError(f"ResolvedRouting.levels contains an invalid level: {level!r}")
-        if any(type(branch) is not int for branch in branches):
-            raise TypeError(f"ResolvedRouting.branches must contain exact ints, got {branches!r}")
+        branches = tuple(level.width for level in levels)
+        validate_routing_shape(branches, owner="ResolvedRouting")
         if any(branch < 2 for branch in branches):
-            raise ValueError(f"ResolvedRouting.branches entries must be >= 2, got {branches!r}")
+            raise ValueError(f"ResolvedRouting branch widths must be >= 2, got {branches!r}")
         object.__setattr__(self, "levels", levels)
-        object.__setattr__(self, "branches", branches)
+
+    @property
+    def branches(self) -> tuple[int, ...]:
+        """One branch width per level -- READ OFF the levels, never carried beside them.
+
+        Every packed-layout property below is a function of this tuple, and the level
+        list is where a width is declared; a second stored copy is a second place the
+        same number can be wrong.
+        """
+        return tuple(level.width for level in self.levels)
 
     @property
     def D(self) -> int:
@@ -482,7 +507,7 @@ class ResolvedRouting:
         """Exact-zero capability for every level on the read side."""
         return tuple(
             True if isinstance(level, UnionRouting)
-            else activation_properties(level.read_activation).exact_zeros
+            else activation_properties(level.read).exact_zeros
             for level in self.levels
         )
 
@@ -491,7 +516,7 @@ class ResolvedRouting:
         """Exact-zero capability for every level on the write side."""
         return tuple(
             True if isinstance(level, UnionRouting)
-            else activation_properties(level.write_activation).exact_zeros
+            else activation_properties(level.write).exact_zeros
             for level in self.levels
         )
 
@@ -632,16 +657,27 @@ class OpaqueActivation:
 class OpaqueRouting:
     """The routing tag of a level produced by a foreign producer.
 
-    It carries no configuration -- there is nothing for the library to configure,
-    because the producer owns the map. Both duties report the opaque activation, so
+    It carries the level's WIDTH and nothing else -- there is no operator for the
+    library to configure, because the producer owns the map, but the width is a
+    structural fact the topology derives ``N`` and the radix strides from. Both duties
+    report the opaque activation, so
     every rule that quantifies over ``(level, duty)`` cells covers a foreign level
     without having to know it is one.
     """
+
+    width: int
+
+    def __post_init__(self) -> None:
+        validate_level_width(self.width, owner="OpaqueRouting")
 
     def activation(self, duty: str) -> OpaqueActivation:
         if duty not in ("read", "write"):
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return OpaqueActivation()
+
+    def at(self, width: int) -> OpaqueRouting:
+        """The same opaque declaration at another branch width."""
+        return OpaqueRouting(width=width)
 
     def duty_simplex_output(self, duty: str) -> bool:
         """The opaque row's column: a foreign producer's output is never vouched for."""
@@ -649,27 +685,6 @@ class OpaqueRouting:
 
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting | OpaqueRouting
-
-
-@dataclass(frozen=True, slots=True)
-class LevelConfig:
-    """One routing level: its branch width and routing tag."""
-
-    width: int
-    routing: LevelRouting
-
-    def __post_init__(self) -> None:
-        if type(self.width) is not int:
-            raise TypeError(f"LevelConfig.width must be an exact int, got {self.width!r}")
-        if self.width < 1:
-            # The contract states only the upper bound (``width <= 256``); a width < 1
-            # is not a modeling choice, it makes N/radix_strides ill-defined
-            # (division by zero), so it is rejected as a structural invariant.
-            raise ValueError(f"LevelConfig.width must be >= 1, got {self.width}")
-        if type(self.routing) not in (IndependentRouting, UnionRouting, OpaqueRouting):
-            raise TypeError(
-                "LevelConfig.routing must be IndependentRouting, UnionRouting or "
-                f"OpaqueRouting, got {self.routing!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,13 +703,16 @@ class Topology:
     from here by five consumers that all had ``v`` in hand.
     """
 
-    levels: tuple[LevelConfig, ...]
+    levels: tuple[LevelRouting, ...]
 
     def __post_init__(self) -> None:
         levels = tuple(self.levels)
         for index, level in enumerate(levels):
-            if type(level) is not LevelConfig:
-                raise TypeError(f"Topology.levels[{index}] must be a LevelConfig, got {level!r}")
+            if type(level) not in (IndependentRouting, UnionRouting, OpaqueRouting):
+                raise TypeError(
+                    f"Topology.levels[{index}] must be an IndependentRouting, UnionRouting "
+                    f"or OpaqueRouting -- the level's whole spec, width included -- "
+                    f"got {level!r}")
         validate_routing_shape(tuple(level.width for level in levels), owner="Topology")
         object.__setattr__(self, "levels", levels)
 
@@ -721,7 +739,7 @@ class Topology:
 
     def activation(self, level: int, duty: str):
         """The activation configured for one `(level, duty)` cell."""
-        return self.levels[level].routing.activation(duty)
+        return self.levels[level].activation(duty)
 
     def activation_properties(self, level: int, duty: str) -> ActivationProperties:
         """That cell's registry row -- the ONLY source of activation properties."""
@@ -729,13 +747,13 @@ class Topology:
             self.activation(level, duty), owner=f"Topology.levels[{level}].{duty}")
 
     def duty_simplex_output(self, level: int, duty: str) -> bool:
-        """Whether that cell arrives at the gateway already on the simplex.
+        """Whether that cell's own map already lands on the simplex.
 
-        THE gateway's licence to skip a level's mass fold. It is a routing-form
+        THE fold's licence to skip a level. It is a routing-form
         question and not only an activation one, because a routing form may hand a
         duty a share of a solve rather than the whole of it.
         """
-        return self.levels[level].routing.duty_simplex_output(duty)
+        return self.levels[level].duty_simplex_output(duty)
 
     def duty_cells(self) -> tuple[tuple[int, str], ...]:
         """Every `(level, duty)` cell, so a rule can quantify over the whole grid

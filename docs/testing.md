@@ -48,8 +48,9 @@ Three promises a caller can rely on:
   caller's business; a reference that rounded itself to an operand's precision
   would make an accuracy gate compare against a rounded reference.
 * **An input the output does not depend on gets `None`, not a manufactured
-  zero.** `write_levels_stored` is the standing case: the spec detaches the
-  clock, so it never receives a gradient.
+  zero** -- autograd's ordinary answer, and the oracle states nothing else. A
+  test that wants a zero asserts `grad is None` and supplies the zero itself;
+  a manufactured graph edge is exactly what a coerced zero would hide.
 * **The address map is the oracle's own**, derived from the widths rather than
   imported from `Topology`, so a wrong stride convention cannot agree with
   itself in every gate the repository has.
@@ -262,7 +263,7 @@ reason:
   tail, support cardinality). Axis-DEFINED, never naive random: independent
   per-token sampling manufactures anti-structure exactly where realized
   routing is coincident.
-* **producer** — the REAL entmax gateway at swept input gains (realized
+* **producer** — the REAL entmax producer at swept input gains (realized
   density 1.00 → 0.10, monotone, asserted), because some correlations only
   realized routing produces. (The stale-plan family drove `rola.expert`'s
   derive/execute seam with a plan priced on a distribution 4x dead; that seam no

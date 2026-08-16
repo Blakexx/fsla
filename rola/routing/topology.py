@@ -5,6 +5,26 @@ MAX_ROUTING_DEPTH = 4
 MAX_BRANCH_WIDTH = 256
 
 
+def validate_level_width(width, *, owner="routing level") -> int:
+    """Validate ONE level's branch width, where the level's own spec declares it.
+
+    The per-level bound and the whole-list bound are separate checks because the width
+    now arrives with the level object, one at a time, before any list of them exists:
+    a level config that cannot be built is refused at its own constructor rather than
+    at the assembly that would have collected it. ``validate_routing_shape`` remains
+    the depth check and the list-wide restatement of this one.
+    """
+    if type(width) is not int:
+        raise TypeError(f"{owner}.width must be an exact int, got {width!r}")
+    if width < 1:
+        # The contract states only the upper bound; a width < 1 is not a modeling
+        # choice, it makes N and the radix strides ill-defined.
+        raise ValueError(f"{owner}.width must be >= 1, got {width}")
+    if width > MAX_BRANCH_WIDTH:
+        raise ValueError(f"{owner}.width must be <= {MAX_BRANCH_WIDTH}, got {width}")
+    return width
+
+
 def validate_routing_shape(branches, *, owner="routing") -> tuple[int, ...]:
     """Validate the production routing-tree depth and per-level width limits."""
     branches = tuple(branches)

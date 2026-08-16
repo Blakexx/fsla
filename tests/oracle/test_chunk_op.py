@@ -148,7 +148,7 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
     """WHICH bundles carry it, pinned at the seam the kernel reads (P73 S4).
 
     A bit-identity row on ``y`` would pass just as well if the column never left the
-    gateway. This one watches ``read_mass`` arrive at the packing, and pins both
+    producer. This one watches ``read_mass`` arrive at the packing, and pins both
     answers: the union read duty is the one cell the registry does not declare on the
     simplex, so it is the one cell that carries a mass. The carried bundle must still
     satisfy the fp64 oracle's own input contract through :meth:`read_simplex`.
@@ -161,10 +161,10 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
     assert dense.read_mass is None and _chunk.pack(dense).rm is None
 
     torch.manual_seed(7)
-    gateway = build_routes(hidden_size=128, num_heads=2, widths=(64, 64),
-                           routing=union_routing(1.5)).cuda()
+    producer = build_routes(hidden_size=128, num_heads=2, widths=(64, 64),
+                           routing=union_routing(64, 1.5)).cuda()
     with torch.no_grad():
-        routes = gateway(torch.randn(1, 256, 128, device="cuda"))
+        routes = producer(torch.randn(1, 256, 128, device="cuda"))
     assert routes.read_mass is not None and float(routes.read_mass.min()) > 0
     packed = _chunk.pack(routes)
     assert packed.rm is not None and packed.rm.dtype is torch.float32

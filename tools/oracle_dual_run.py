@@ -188,6 +188,33 @@ def _routing_cells():
 # THE OLD/NEW SIDE (whichever library is on sys.path)
 # ---------------------------------------------------------------------------
 
+
+def _levels(types, widths):
+    """One softmax routing level per width, built against EITHER side's config shape.
+
+    THE TOOL SUPPLIES THE INPUTS FOR BOTH SIDES, so a dual run spanning a commit that
+    moved the configuration surface has to speak both spellings -- and it selects
+    between them on a STRUCTURAL fact (does the level config carry its own width?),
+    never on a version string, because a version string is a claim and a dataclass field
+    is a fact. P74 retired the `LevelConfig(width, routing)` wrapper by moving the width
+    onto the routing form itself; before it, the wrapper is what `Topology` takes.
+
+    The oracle takes ALREADY-NORMALIZED simplices, so the activation choice never
+    reaches it -- softmax is here because a topology requires one, and matching Tier 1
+    keeps the two matrices talking about the same object.
+    """
+    import dataclasses
+
+    dense = types.SoftmaxActivation()
+    fields = {field.name for field in dataclasses.fields(types.IndependentRouting)}
+    if "width" in fields:
+        return tuple(
+            types.IndependentRouting(width=w, read=dense, write=dense) for w in widths)
+    routing = types.IndependentRouting(
+        tied=False, read_activation=dense, write_activation=dense)
+    return tuple(types.LevelConfig(w, routing) for w in widths)
+
+
 def _call(fn, **kwargs):
     """Call `fn` with the arguments it actually accepts, and only those.
 
@@ -260,21 +287,9 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
     memory (the backward retains one graph per token) and must not be able to
     change what is measured.
     """
+    import rola.routing.types as types
     from rola.ops.naive import naive_rola
-    from rola.routing.types import (
-        IndependentRouting,
-        LeafMassDecay,
-        LevelConfig,
-        SoftmaxActivation,
-        Topology,
-    )
-
-    #: The same routing the Tier 1 matrix uses. The oracle takes ALREADY-NORMALIZED
-    #: simplices, so the activation choice never reaches it -- it is here because
-    #: `Topology` requires one, and matching Tier 1 keeps the two matrices talking
-    #: about the same object.
-    routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
-                                 write_activation=SoftmaxActivation())
+    from rola.routing.types import LeafMassDecay, Topology
 
     out: dict[str, torch.Tensor] = {}
     g = torch.Generator().manual_seed(SEED + 2)
@@ -308,9 +323,7 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
                     #: the same question through two spellings -- which is the
                     #: mechanism `_call` exists for.
                     topo = _call(
-                        Topology,
-                        levels=tuple(LevelConfig(w, routing) for w in widths),
-                        d_v=d_v)
+                        Topology, levels=_levels(types, widths), d_v=d_v)
                     read = tuple(simplex((B, T, H, w)) for w in widths)
                     write = tuple(simplex((B, T, H, w)) for w in widths)
                     v = torch.randn(B, T, H, d_v, generator=g, dtype=torch.float64)
@@ -338,9 +351,17 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
                         v=v, g_read=g_read, g_write=g_write, read=read,
                         write=write, stored=stored,
                         dials=None if decay is None else decay.dials)
-                    y, state = naive_rola(
-                        v, read, write, g_read, g_write, topo, decay,
-                        normalization, write_levels_stored=stored,
+                    #: BOUND BY SIGNATURE for the same reason `topo` is: the stored
+                    #: clock left the oracle's signature when the producer began
+                    #: emitting the stored form. The old side is handed it and detaches
+                    #: it; the new side does not have the parameter and never sees it.
+                    #: Either way `stored` is an operand the output does not depend on,
+                    #: so both sides must record `None` for its gradient -- which is the
+                    #: comparison that proves the removal changed nothing.
+                    y, state = _call(
+                        naive_rola, v=v, read_levels=read, write_levels=write,
+                        g_read=g_read, g_write=g_write, topology=topo, decay=decay,
+                        normalization=normalization, write_levels_stored=stored,
                         output_final_state=True)
                     out[f"{name}/y"] = y
                     out[f"{name}/state"] = state

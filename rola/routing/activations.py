@@ -34,11 +34,11 @@ with a ROW, and the row is the only place the properties live.
 | `support_differentiable` | does gradient flow through the support boundary? |
 | `kerneled` | has the CUDA consumer been RATIFIED for this activation? |
 
-`normalized` and `simplex_output` are asked on opposite sides of the gateway's mass
+`normalized` and `simplex_output` are asked on opposite sides of the producer's mass
 fold and are NOT duplicates. `normalized` is a promise about what the BUNDLE carries
 and is satisfiable BY the fold, so an opaque cell answers it `True`. `simplex_output`
-is a claim about the PRODUCER's own arithmetic, and it is what licenses the gateway to
-skip the fold, so an opaque cell answers it `False` -- reading `normalized` for that
+is a claim about the PRODUCER's own arithmetic, and it is what licenses the fold to be
+skipped, so an opaque cell answers it `False` -- reading `normalized` for that
 decision would be circular (the fold would be skipped on the strength of a promise the
 fold is what keeps).
 
@@ -123,14 +123,14 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
         support_differentiable=False, kerneled=True),
 }
 
-#: THE ROW FOR A CELL WE DID NOT SOLVE. A producer is duck-typed
-#: (:class:`rola.routing.producer.LevelProducer`), so a level may be filled by a map
-#: this table has never heard of. Such a cell is `opaque`, and its row states the
-#: honest position of every column:
+#: THE ROW FOR A CELL WE DID NOT SOLVE. A producer is duck-typed -- anything callable
+#: returning a :class:`~rola.routing.factors.RouteFactors` -- so a level may be filled
+#: by a map this table has never heard of. Such a cell is `opaque`, and its row states
+#: the honest position of every column:
 #:
-#: * `normalized` is TRUE because the gateway normalizes what it stores: it factors
-#:   every level into `(mass, simplex)` and folds the mass into the side gain, so the
-#:   stored level is on the simplex whatever the producer returned.
+#: * `normalized` is TRUE because the fold normalizes what it stores: it factors every
+#:   level into `(mass, simplex)` and moves the mass onto the side gain, so the stored
+#:   level is on the simplex whatever the map returned.
 #: * `simplex_output` is FALSE, and it is the column that keeps the line above honest:
 #:   a foreign producer's own output is exactly the thing this package cannot vouch
 #:   for, so an opaque cell always pays the generic fold.

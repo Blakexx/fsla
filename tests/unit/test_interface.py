@@ -71,14 +71,14 @@ def _built_arm(requires_grad: bool = True):
     """
     torch.manual_seed(5)
     B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 128, (64, 64)
-    gateway = build_routes(hidden_size=hidden, num_heads=H, widths=widths,
+    producer = build_routes(hidden_size=hidden, num_heads=H, widths=widths,
                            routing=_dense_routing()).to("cuda")
     x = torch.randn(B, T, hidden, device="cuda", requires_grad=requires_grad)
-    routes = gateway(x)
+    routes = producer(x)
     v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=requires_grad)
     from rola.ops import chunk as _chunk
     assert _chunk.unsupported(routes, None, d_v=d_v) is None, "fixture must be a BUILT arm"
-    return v, routes, x, gateway
+    return v, routes, x, producer
 
 
 # --- the tripwire ------------------------------------------------------------
@@ -164,11 +164,11 @@ def test_the_node_is_what_carries_the_graph_when_the_facade_is_bypassed():
     round: no `grad_fn`, no error, and `v.grad is None` several files away."""
     torch.manual_seed(5)
     B, T, H, d_v, hidden, widths = 1, 32, 1, 64, 128, (64, 64)
-    gateway = build_routes(
+    producer = build_routes(
         hidden_size=hidden, num_heads=H, widths=widths,
         routing=_dense_routing()).to("cuda")
     x = torch.randn(B, T, hidden, device="cuda", requires_grad=True)
-    routes = gateway(x)
+    routes = producer(x)
     v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=True)
     from rola.ops import chunk as _chunk
 
@@ -189,9 +189,10 @@ def _dense_routing():
     from rola.routing.types import IndependentRouting
 
     return IndependentRouting(
+        width=1,
         tied=True,
-        read_activation=rola.SoftmaxActivation(),
-        write_activation=rola.SoftmaxActivation())
+        read=rola.SoftmaxActivation(),
+        write=rola.SoftmaxActivation())
 
 
 def _tiny_routing(requires_grad: bool, device: str = "cpu"):
@@ -199,18 +200,18 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
     carrying only `topology`/`normalization`. New: `rola_op` takes a
-    `RouteFactors`, obtainable only from `RouteGateway`, so the fixture builds
+    `RouteFactors`, obtainable only from `RouteProducer`, so the fixture builds
     one -- `requires_grad` on the source stream `x` reaches every tensor the
-    gateway derives (read/write levels, gains), exactly as `requires_grad` on the
+    producer derives (read/write levels, gains), exactly as `requires_grad` on the
     five loose tensors used to.
     """
     torch.manual_seed(3)
     B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
-    gateway = build_routes(
+    producer = build_routes(
         hidden_size=hidden, num_heads=H, widths=(w,), routing=_dense_routing()
     ).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
-    routes = gateway(x)
+    routes = producer(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
     return v, routes
 
@@ -329,12 +330,12 @@ def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
     gradient off and the operands on the device, an in-matrix bundle must actually be
     ADMITTED. Asserting only the refusals would let the arm rot behind them."""
     torch.manual_seed(5)
-    gateway = build_routes(hidden_size=32, num_heads=1, widths=(8, 8),
+    producer = build_routes(hidden_size=32, num_heads=1, widths=(8, 8),
                            routing=_dense_routing()).to("cuda")
     x = torch.randn(1, 32, 32, device="cuda")
     v = torch.randn(1, 32, 1, 64, device="cuda")
     with torch.no_grad():
-        routes = gateway(x)
+        routes = producer(x)
         assert envelope_refusal(routes, v) is None
         require_envelope(routes, v)
 

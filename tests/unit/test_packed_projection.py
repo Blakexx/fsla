@@ -8,10 +8,10 @@ from rola.routing.types import IndependentRouting, ResolvedRouting, SoftmaxActiv
 def _routing_for_untied(levels, untied_levels, branch):
     return ResolvedRouting(
         tuple(
-            IndependentRouting(level not in untied_levels, SoftmaxActivation(), SoftmaxActivation())
+            IndependentRouting(width=branch, tied=level not in untied_levels,
+                               read=SoftmaxActivation(), write=SoftmaxActivation())
             for level in range(levels)
         ),
-        (branch,) * levels,
     )
 
 
@@ -109,8 +109,8 @@ def test_packed_router_matches_separate_projection_and_gradients(untied_levels, 
 
 def test_packed_router_rejects_plan_shape_mismatches():
     routing = ResolvedRouting(
-        (IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()), UnionRouting()),
-        (2, 3),
+        (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
+         UnionRouting(width=3)),
     )
     h = torch.randn(1, 2, 3)
     # Both levels untied -> slot widths (2, 3, 2, 3), so 10 stored columns.
@@ -196,8 +196,9 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(
             h, route_W, routing, route_bias=route_bias, h_w=h_w,
             projection_dtype=torch.float32, token_major=token_major)
 
-    flat = project(False)
-    major = project(True)
+    #: the third return is the gain span, absent here (`gain_columns` defaults to 0).
+    flat = project(False)[:2]
+    major = project(True)[:2]
     for side, (flat_side, major_side) in enumerate(zip(flat, major)):
         assert major_side.shape == (batch, tokens, heads, routing.packed_logit_width), (
             f"side {side}: token-major must be [B, T, H, W], got {tuple(major_side.shape)}")

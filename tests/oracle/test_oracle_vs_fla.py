@@ -47,7 +47,6 @@ from rola.ops.naive import naive_rola
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
 )
@@ -59,7 +58,7 @@ pytestmark = pytest.mark.skipif(
            "Set ROLA_FLA_CROSSCHECK=1 to run it.")
 
 _ROUTING = IndependentRouting(
-    tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
+    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 #: The bound, and it is float32's rather than a fitted number: FLA accumulates in
 #: float32, whose unit roundoff is 6e-8, over a sum of `N <= 64` leaves. The
@@ -80,7 +79,7 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
     for width in widths:
         N *= width
     g = torch.Generator().manual_seed(31)
-    topology = Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
+    topology = Topology(levels=tuple(_ROUTING.at(w) for w in widths))
 
     def simplex(width):
         x = torch.rand(B, T, H, width, generator=g, dtype=torch.float64) + 1e-3

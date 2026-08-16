@@ -1,221 +1,245 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The producer interface, and the simplex producer this package ships.
+"""The shipped route producer: one module, one bundle out.
 
-RoLA is linear attention under a structured feature map, so the feature map is the
-one slot the public surface has. A PRODUCER fills that slot for one or more routing
-levels: it turns a source stream into the read-side and write-side simplices those
-levels route with. :class:`LevelProducer` is the whole contract, and it is DUCK-TYPED
--- the library never asks what a producer is, only that its outputs are well formed
-(``docs/api.md``). Correctness is producer-blind by construction: support bits are
-derived from the returned tensors, never from anything a producer says about
-itself.
+RoLA is linear attention under a structured feature map, so the feature map is the one
+slot the public surface has. **THE DUCK IS THE BUNDLE.** A producer is anything callable
+that turns a source stream into a well-formed
+:class:`~rola.routing.factors.RouteFactors`; the library never asks what a producer is,
+and correctness is producer-blind by construction, because every support bit is derived
+from the returned tensors and never from anything a producer says about itself
+(``docs/api.md``). There is no per-level producer tier, no assembly gateway and no
+registration: those were three boundaries where one is load-bearing.
 
-**The interface, in full.**
+:class:`RouteProducer` is the one this package ships. It owns the whole job --
 
-``widths``   one branch width per level the producer covers, in its own order.
-``forward``  one call producing EVERY level the producer covers.
+    projection -> per-level solves -> mass fold -> side gain -> bundle
 
-**One call per producer.** The gateway calls each producer once, with every level
-that producer covers, and places the results in the slots the list assigned them. A
-producer covering several levels is therefore how a model gets ONE launch across them:
-:class:`SimplexProducer` takes a width tuple and runs the whole group through one
-packed projection and one batched solve, which is the shape every shipped model uses.
-Cross-producer batching -- a `fuse` protocol letting the gateway merge two producers'
-launches -- is deliberately NOT built: the prize is launch overhead across at most four
-levels, nobody has measured it to matter, and the machinery (merge, scatter, a
-bit-identity gate) is real. Revisit if a measurement asks for it; the docket entry for
-this span records the design that was worked out and set down.
+-- because every one of those steps is a function of the SAME level list, and splitting
+them across modules bought a negotiation protocol (which module computes the gain, who
+packs which columns) whose only content was that the split existed.
 
-**The gateway owns packing.** A producer returns amplitudes in the plain documented
-layout, one ``[B, T, H, width_l]`` tensor per level, and knows nothing about how the
-kernel wants them arranged. Turning those into the folded view the op consumes is the
-gateway's job and lives in one place.
-
-**The shipped producer.** :class:`SimplexProducer` learns a packed per-head router
-projection and solves it with the exact production entmax/softmax closed form
-(``entmax/production.py``). It is a duck like any other: it implements this interface
-and gets no privileged path.
+**THE LEVEL LIST IS THE CONFIGURATION.** ``RouteProducer([IndependentRouting(width=64,
+read=softmax(), write=entmax(1.5)), ...], hidden_size=512, num_heads=8)``: each element
+is one level's WHOLE spec, width included, outermost level first. Depth, leaf count,
+packed router width, logit offsets and the topology are all DERIVED from that list --
+none of them is a second input that could disagree with it. A uniform stack is spelled
+with :func:`uniform`; there is no broadcast sugar, because a broadcast is a rule the
+reader has to know before they can read the widths off the call.
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
 from rola.routing.entmax.production import production_routing_factor_levels
+from rola.routing.factors import RouteFactors
 from rola.routing.projection import _packed_router_logits
+from rola.routing.side_gain import GainConfig, SideGain
 from rola.routing.types import (
+    EntmaxActivation,
     IndependentRouting,
     LevelRouting,
     ResolvedRouting,
     SoftmaxActivation,
+    Topology,
     UnionRouting,
+    validate_normalization,
 )
 
 __all__ = [
-    "LevelProducer",
-    "ProducedRoutes",
-    "RouteSource",
-    "SimplexProducer",
+    "RouteProducer",
     "dense_routing",
+    "split_routing",
+    "uniform",
     "union_routing",
 ]
 
 
-def dense_routing() -> IndependentRouting:
-    """Softmax on both duties, untied -- the full-support level."""
-    return IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
-                              write_activation=SoftmaxActivation())
+def dense_routing(width: int) -> IndependentRouting:
+    """Softmax on both duties, untied -- the full-support level, at ``width``."""
+    return IndependentRouting(width=width, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
-def union_routing(alpha: float = 1.5) -> UnionRouting:
+def union_routing(width: int, alpha: float = 1.5) -> UnionRouting:
     """One exact entmax solve determining a shared support, split across duties."""
-    return UnionRouting(alpha)
+    return UnionRouting(width=width, alpha=alpha)
 
 
-@dataclass(frozen=True, slots=True)
-class RouteSource:
-    """Everything a producer is given, for every level it covers.
+def split_routing(width: int, alpha: float = 1.5, *,
+                  sparse_duty: str = "write") -> IndependentRouting:
+    """The alternating scheme's level: entmax on one duty, softmax on the other.
 
-    ``read``/``write`` are ``[B, T, hidden_size]`` source streams; they are the SAME
-    tensor object whenever the model does not split them, which a producer may use to
-    take a single-projection path.
+    Named because the split-level scheme is a configuration the campaign runs and the
+    support-symmetry argument is about -- not because the producer has a code path for
+    it. It is two registry keys in a level config, like every other level.
     """
-
-    read: torch.Tensor
-    write: torch.Tensor
-
-    @property
-    def batch(self) -> int:
-        return self.read.shape[0]
-
-    @property
-    def tokens(self) -> int:
-        return self.read.shape[1]
-
-    @property
-    def shared_stream(self) -> bool:
-        return self.write is self.read
+    if sparse_duty not in ("read", "write"):
+        raise ValueError(f"sparse_duty must be 'read' or 'write', got {sparse_duty!r}")
+    sparse, dense = EntmaxActivation(alpha), SoftmaxActivation()
+    return IndependentRouting(
+        width=width,
+        read=sparse if sparse_duty == "read" else dense,
+        write=sparse if sparse_duty == "write" else dense)
 
 
-@dataclass(frozen=True, slots=True)
-class ProducedRoutes:
-    """One producer's answer, in ITS OWN level order.
+def uniform(depth: int, level: LevelRouting) -> list[LevelRouting]:
+    """``depth`` levels all spelled the same way -- the uniform stack, written once.
 
-    ``read``/``write``: one ``[B, T, H, width_l]`` tensor per covered level. They need
-    not be unit-sum -- the gateway factors each level into ``(mass, simplex)`` and
-    folds the mass into the side gain, which is where the architecture puts a
-    per-level magnitude.
+    Replaces the broadcast a single routing tag used to get: a list is what the producer
+    takes, so the way to say "the same thing D times" is to build the list, not to teach
+    the constructor a second admissible shape for its first argument.
     """
-
-    read: tuple[torch.Tensor, ...]
-    write: tuple[torch.Tensor, ...]
-
-
-class LevelProducer(nn.Module):
-    """The feature-map slot's contract. Subclass it, or duck-type it.
-
-    Subclassing buys nothing but the name: a module that declares ``widths`` and
-    returns a well-formed :class:`ProducedRoutes` satisfies the gateway without
-    inheriting anything.
-    """
-
-    #: One branch width per covered level, in the order ``forward`` returns them.
-    widths: tuple[int, ...] = ()
-
-    def forward(self, source: RouteSource) -> ProducedRoutes:  # pragma: no cover - abstract
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement forward(source) -> ProducedRoutes")
+    if type(depth) is not int or depth < 1:
+        raise ValueError(f"uniform depth must be a positive exact int, got {depth!r}")
+    return [level] * depth
 
 
-class SimplexProducer(LevelProducer):
-    """The shipped producer: a learned packed router projection and an exact solve.
+class RouteProducer(nn.Module):
+    """The shipped producer: a learned packed router projection, exact solves, one bundle.
 
-    ONE producer may cover SEVERAL levels, and that is how a model gets one launch
-    across them: the covered levels share one packed projection and one batched solve,
-    dispatched per level inside the kernel without a privileged level. A model whose
-    levels all use this producer therefore pays one GEMM and one solve for the whole
-    topology, which is what the shipped configurations do.
+    ONE projection and one batched solve group cover EVERY level: the levels share a
+    packed ``route_W`` and are dispatched per level inside the kernel with no privileged
+    level, so a model pays one GEMM and one solve group for the whole topology.
 
     Args:
-        widths: the branch width ``b_l`` of each level this producer fills -- an int
-            for one level, a tuple for several.
-        routing: the routing tag for those levels -- :func:`dense_routing`,
-            :func:`union_routing`, or any ``IndependentRouting``/``UnionRouting``. One
-            tag broadcasts to every covered level; a sequence gives per-level control.
-            The tag names activations from the closed registry
-            (``rola/routing/activations.py``); users never supply property metadata.
+        levels: one :class:`~rola.routing.types.IndependentRouting` or
+            :class:`~rola.routing.types.UnionRouting` per routing level, outermost
+            first. Each carries its own ``width``; :func:`uniform` builds a uniform
+            stack. The tags name activations from the closed registry
+            (``rola/routing/activations.py``) -- users never supply property metadata.
         hidden_size / num_heads: the source stream's width and the head count.
+        normalization: ``'global'`` or ``'raw'`` -- the recurrence's normalization arm.
         bias: a learned bias on the routing projection.
+        gain: whether the write-side gain is a learned projection. ``False`` removes the
+            column rather than pinning it to 1, so no dead parameter is optimized.
+        gain_bias_init: initialize the gain bias so an all-zero-logit gain starts at
+            this value. ``None`` leaves it at zero (unit gain at zero logits).
+        gain_config: the research surface behind ``gain``, reachable from
+            :mod:`rola.expert` and deliberately not part of the contract.
+
+    Construction validates the whole assembly, so an unbuildable model fails here and
+    never inside a forward.
     """
 
     def __init__(
         self,
-        widths: int | tuple[int, ...],
-        routing: LevelRouting | list | tuple | None = None,
+        levels,
         *,
         hidden_size: int,
         num_heads: int,
+        normalization: str = "global",
         bias: bool = False,
+        gain: bool = True,
+        gain_bias_init: float | None = None,
+        gain_config: GainConfig | None = None,
     ) -> None:
         super().__init__()
-        _widths = (widths,) if type(widths) is int else tuple(widths)
-        if not _widths or any(type(width) is not int for width in _widths):
+        if isinstance(levels, (IndependentRouting, UnionRouting)):
             raise TypeError(
-                f"SimplexProducer widths must be an exact int or a tuple of them, got {widths!r}")
-        if routing is None:
-            routing = dense_routing()
-        _levels = (tuple(routing) if isinstance(routing, (list, tuple))
-                   else (routing,) * len(_widths))
-        if len(_levels) != len(_widths):
-            raise ValueError(
-                f"SimplexProducer got {len(_levels)} routing tags for {len(_widths)} widths")
+                "RouteProducer takes a LIST of level configs, one per routing level, and "
+                f"got a single {type(levels).__name__}. A one-level model is `[level]`; a "
+                "uniform stack is `uniform(D, level)`.")
+        _levels = tuple(levels)
+        if not _levels:
+            raise ValueError("RouteProducer needs at least one routing level")
+        for index, level in enumerate(_levels):
+            if type(level) not in (IndependentRouting, UnionRouting):
+                raise TypeError(
+                    f"levels[{index}] must be an IndependentRouting or UnionRouting carrying "
+                    f"its own width, got {level!r}")
         if type(hidden_size) is not int or hidden_size < 1:
             raise ValueError(f"hidden_size must be a positive exact int, got {hidden_size!r}")
         if type(num_heads) is not int or num_heads < 1:
             raise ValueError(f"num_heads must be a positive exact int, got {num_heads!r}")
+
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.bias = bool(bias)
-        self.levels = tuple(_levels)
-        self.widths = tuple(_widths)
-        self.routing = ResolvedRouting(levels=self.levels, branches=self.widths)
+        self.normalization = validate_normalization(normalization)
+        self.levels = _levels
+        #: The two derived views of ONE list: `routing` is the packed-projection layout
+        #: the solve reads, `topology` is the routing contract the bundle and the
+        #: consumer read. Both are functions of `levels` alone, so neither can disagree
+        #: with the other about a width.
+        self.routing = ResolvedRouting(levels=self.levels)
+        self.topology = Topology(levels=self.levels)
 
-        self.route_W = nn.Parameter(
-            torch.empty(num_heads, hidden_size, self.routing.packed_router_width))
+        self.side_gain = SideGain(
+            num_heads=num_heads,
+            config=(gain_config if gain_config is not None else GainConfig.from_public(gain)),
+            bias_init=gain_bias_init)
+        #: ONE PARAMETER, and the gain's columns are its trailing span. The gain is a
+        #: function of the read stream and so are the routing logits, so a second
+        #: `[hidden -> H]` projection was a second GEMM and a second cast of the whole
+        #: source stream for one column per head.
+        columns = self.routing.packed_router_width + self.side_gain.columns
+        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, columns))
         _init_packed_router(self.route_W)
         if self.bias:
-            self.route_bias = nn.Parameter(
-                torch.zeros(num_heads, self.routing.packed_router_width))
+            self.route_bias = nn.Parameter(torch.zeros(num_heads, columns))
         else:
             self.register_parameter("route_bias", None)
 
-    # --- the activation tags the topology answers from ------------------------
-
     @property
-    def level_routing(self) -> tuple[LevelRouting, ...]:
-        """The routing tag of each level this producer covers."""
-        return self.levels
+    def widths(self) -> tuple[int, ...]:
+        """One branch width per level, in level order."""
+        return self.topology.widths
 
     # --- production ----------------------------------------------------------
 
-    def forward(self, source: RouteSource) -> ProducedRoutes:
-        x = source.read
-        x_w = None if source.shared_stream else source.write
-        B, _, hidden = x.shape
-        if hidden != self.hidden_size:
-            raise ValueError(
-                f"SimplexProducer was built for hidden_size={self.hidden_size} but the source "
-                f"stream is {hidden} wide")
-        H = self.num_heads
-        read_bh, write_bh = self._solve(x, x_w)
+    def forward(
+        self,
+        read_stream: torch.Tensor,
+        write_stream: torch.Tensor | None = None,
+    ) -> RouteFactors:
+        """One source stream in, one validated :class:`RouteFactors` out.
 
-        read = tuple(_unfold_bth(level, B, H) for level in read_bh)
-        write = tuple(_unfold_bth(level, B, H) for level in write_bh)
-        return ProducedRoutes(read=read, write=write)
+        ``read_stream``/``write_stream`` are ``[B, T, hidden_size]``; passing only one
+        means both duties read the same stream, which takes the single-projection path.
+        """
+        if not isinstance(read_stream, torch.Tensor) or read_stream.ndim != 3:
+            raise ValueError(
+                "read_stream must be [B, T, hidden_size], got "
+                f"{getattr(read_stream, 'shape', type(read_stream).__name__)}")
+        if read_stream.shape[-1] != self.hidden_size:
+            raise ValueError(
+                f"read_stream is {read_stream.shape[-1]} wide but this RouteProducer was "
+                f"built for hidden_size={self.hidden_size}")
+        if write_stream is not None and write_stream.shape != read_stream.shape:
+            raise ValueError("write_stream must have the same shape as read_stream")
+
+        B, T, _ = read_stream.shape
+        H = self.num_heads
+        read_bh, write_bh, gain_logits = self._solve(read_stream, write_stream)
+
+        #: THE READ MASS IS CARRIED, NOT APPLIED: the readout is a ratio, so a per-token
+        #: scale common to every leaf cancels between numerator and denominator, and the
+        #: consumer that takes it scales the readout's floor by it instead of paying a
+        #: pass over the levels. The WRITE mass is APPLIED, because the decay clock is
+        #: defined on the stored level; it rides the write gain.
+        read_levels, read_mass = _fold(read_bh, B=B, H=H, skip=self._skip("read"),
+                                       carry_mass=True)
+        write_levels, write_mass = _fold(write_bh, B=B, H=H, skip=self._skip("write"),
+                                         carry_mass=False)
+        gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_stream.dtype,
+                               device=read_stream.device)
+        return RouteFactors(
+            topology=self.topology, normalization=self.normalization,
+            read=read_levels, write=write_levels, g_read=None,
+            g_write=gains["g_write"] if write_mass is None else gains["g_write"] * write_mass,
+            read_mass=read_mass)
+
+    def _skip(self, duty: str) -> tuple[bool, ...]:
+        """The levels whose fold is an identity, from the topology's declared columns.
+
+        A DECLARATION, never a measurement: a runtime ``sum(...) == 1`` test would be
+        the very reduction the skip exists to delete, and would make the bundle's
+        arithmetic depend on its data rather than on its configuration.
+        """
+        return tuple(self.topology.duty_simplex_output(level, duty)
+                     for level in range(self.topology.D))
 
     def _project(self, x: torch.Tensor, x_w: torch.Tensor | None):
         """Packed router logits in the domain the caller's dtype selects.
@@ -240,11 +264,13 @@ class SimplexProducer(LevelProducer):
         cuda_solve = x.is_cuda and projection_dtype is torch.float32
         return _packed_router_logits(
             x, self.route_W, self.routing, route_bias=self.route_bias, h_w=x_w,
-            projection_dtype=projection_dtype, token_major=cuda_solve)
+            projection_dtype=projection_dtype, token_major=cuda_solve,
+            gain_columns=self.side_gain.columns)
 
     def _solve(self, x: torch.Tensor, x_w: torch.Tensor | None):
-        read_logits, write_logits = self._project(x, x_w)
-        return production_routing_factor_levels(read_logits, write_logits, self.routing)
+        read_logits, write_logits, gain_logits = self._project(x, x_w)
+        read, write = production_routing_factor_levels(read_logits, write_logits, self.routing)
+        return read, write, gain_logits
 
 
 # --- helpers ----------------------------------------------------------------
@@ -266,16 +292,36 @@ def _init_packed_router(W: nn.Parameter) -> None:
     W.data.copy_(wt.view(H, cols, hidden).transpose(-1, -2))
 
 
-def _unfold_bth(tensor: torch.Tensor, B: int, H: int) -> torch.Tensor:
-    """``[B*H, T, width] -> [B, T, H, width]``, the public factor layout, as a VIEW.
+def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int, skip: tuple[bool, ...],
+          carry_mass: bool):
+    """Factor every level into ``(simplex, mass)`` and return the mass product, or ``None``.
 
-    Deliberately not made contiguous. The solve emits ``[BH, T, width]``, which is
-    already the layout the kernel's view wants; materializing the plain layout here and
-    folding it back downstream is an inverse copy pair that costs a measured 2.8% of the
-    step at ``L = 4096``. Returning a view keeps the fold free -- the permute the gateway
-    applies is exactly this one undone -- while the public tensors still read as
-    ``[B, T, H, width_l]`` for every consumer that wants them that way.
+    ``skip[l]`` is the topology's DECLARED ``simplex_output`` for that cell, never a
+    runtime test: a ``sum(...) == 1`` check is the reduction the skip exists to delete.
+    ``carry_mass`` leaves the mass ON the levels and returns the product for the caller
+    to apply -- legal only where the consumer's use of the levels is homogeneous of
+    degree zero. What the two duties then do with it, and the one consequence for the
+    decay clock: ``docs/api.md`` section 2.2.
+
+    The divide runs in the solve's ``[BH, T, width]`` domain because the public
+    ``[B, T, H, width]`` layout is a permute of it and only one of the two can be the
+    materialized tensor.
     """
-    T, width = tensor.shape[1], tensor.shape[2]
-    return tensor.reshape(B, H, T, width).permute(0, 2, 1, 3)
-
+    normalized: list[torch.Tensor] = []
+    mass_product: torch.Tensor | None = None
+    for folded, unit_sum in zip(levels, skip):
+        if not unit_sum:
+            #: THE SUM IS AT LEAST fp32, whatever the level is stored in: a width-256
+            #: sum of bf16 addends accumulated in bf16 loses three digits of the mass
+            #: the readout's floor is scaled by, and an fp64 level's sum must not be
+            #: narrowed to buy that. The addends stay stored -- only the accumulator is
+            #: widened -- so this reads the plane once and materializes nothing.
+            mass = folded.sum(dim=-1, dtype=torch.promote_types(folded.dtype, torch.float32))
+            if not carry_mass:
+                folded = folded / mass.unsqueeze(-1).to(folded.dtype)
+            mass_product = mass if mass_product is None else mass_product * mass
+        width = folded.shape[-1]
+        normalized.append(folded.reshape(B, H, -1, width).permute(0, 2, 1, 3))
+    if mass_product is None:
+        return tuple(normalized), None
+    return tuple(normalized), mass_product.reshape(B, H, -1).permute(0, 2, 1)

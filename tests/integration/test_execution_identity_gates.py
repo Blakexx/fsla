@@ -72,7 +72,7 @@ _STREAMS = 2
 #                    required backward kernels, forbidden backward kernels)
 _DISPATCH = {
     "union": (
-        ResolvedRouting((UnionRouting(1.5),), (_WIDTH,)),
+        ResolvedRouting((UnionRouting(width=_WIDTH, alpha=1.5),)),
         [UNION_CUDA_FWD], [ENTMAX_CUDA_FWD, SOFTMAX_CUDA_FWD],
         [UNION_CUDA_BWD], [ENTMAX_CUDA_BWD, SOFTMAX_CUDA_BWD],
     ),
@@ -80,19 +80,22 @@ _DISPATCH = {
     # This is the exact route the breakdown found on Triton.
     "independent_softmax_read_entmax_write": (
         ResolvedRouting(
-            (IndependentRouting(False, SoftmaxActivation(), EntmaxActivation(1.5)),), (_WIDTH,)),
+            (IndependentRouting(width=_WIDTH, read=SoftmaxActivation(),
+                                write=EntmaxActivation(1.5)),)),
         [ENTMAX_CUDA_FWD, SOFTMAX_CUDA_FWD], [UNION_CUDA_FWD],
         [ENTMAX_CUDA_BWD, SOFTMAX_CUDA_BWD], [UNION_CUDA_BWD],
     ),
     "independent_entmax_shared_solve": (
         ResolvedRouting(
-            (IndependentRouting(True, EntmaxActivation(1.5), EntmaxActivation(1.5)),), (_WIDTH,)),
+            (IndependentRouting(width=_WIDTH, tied=True, read=EntmaxActivation(1.5),
+                                write=EntmaxActivation(1.5)),)),
         [ENTMAX_CUDA_FWD], [UNION_CUDA_FWD, SOFTMAX_CUDA_FWD],
         [ENTMAX_CUDA_BWD], [UNION_CUDA_BWD, SOFTMAX_CUDA_BWD],
     ),
     "independent_softmax_shared_solve": (
         ResolvedRouting(
-            (IndependentRouting(True, SoftmaxActivation(), SoftmaxActivation()),), (_WIDTH,)),
+            (IndependentRouting(width=_WIDTH, tied=True, read=SoftmaxActivation(),
+                                write=SoftmaxActivation()),)),
         [SOFTMAX_CUDA_FWD], [UNION_CUDA_FWD, ENTMAX_CUDA_FWD],
         [SOFTMAX_CUDA_BWD], [UNION_CUDA_BWD, ENTMAX_CUDA_BWD],
     ),
