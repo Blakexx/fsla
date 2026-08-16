@@ -96,9 +96,10 @@ def backward_unsupported(routes, decay, *, d_v: int) -> str | None:
     """Why a GRAD-BEARING call has no arm, or None if it trains.
 
     The forward's arm matrix is wider than the scans': the reverse pass carries the
-    pinned arm alone until it carries them all. A forward that runs and a backward
-    that does not is exactly the known-broken path this refuses at the boundary
-    instead of discovering three launches later.
+    TRAINABLE topologies (`tools/gen_shards.py`'s `SCAN_ARMS`), not every arm the
+    forward can infer at. A forward that runs and a backward that does not is
+    exactly the known-broken path this refuses at the boundary instead of
+    discovering three launches later.
     """
     reason = unsupported(routes, decay, d_v=d_v)
     if reason is not None:

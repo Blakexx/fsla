@@ -244,7 +244,9 @@ the register file holds. It is FALSIFIABLE rather than asserted: the build fails
 nonzero `localSizeBytes`, so a floor set too low cannot ship quietly. The values are the
 measured census of this body, which carries the cook's cursor and the staircase's
 thresholds on top of rung 5A's set. ONE floor serves both state variants — see the
-carried-state section for the row that briefly existed and why it went.
+carried-state section for the row that briefly existed and why it went. It does NOT
+serve the two SCANS: their live set falls at a different rate in `BC`, so they
+declare their own (`reg_floor_scan`; [backward.md](backward.md#reg-floor-scan)).
 
 ## The two streams: cook, form, walk
 

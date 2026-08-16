@@ -14,9 +14,9 @@ one arriving from the future.
 
 ## <a id="stage-1-scope"></a>What is built here, and what is not
 
-This component is at **stage one** of the backward's build and carries exactly the
-terms whose residency and whose new primitive had to be measured before anything
-else was written:
+This component is Scan B, and it carries every write-side term. The order below is
+the order they were built in, which is the order their residency and their new
+primitive had to be measured in:
 
 | carried | the design's term |
 |---|---|
@@ -28,16 +28,15 @@ else was written:
 | the CHANNEL CONTRACTION `⟨dS_a[s,:], v[j,:]⟩ + dz_a[s]`, reduced over slots — **`sum_s dW`, not `d gw`** | (A.18), inter-chunk part |
 | **`d gw` COMPLETE**, inter and intra | (A.11) |
 | the `d_v` Gram `Gd'` with the R-b ones column | (A.19), repaired |
-| the PER-SLOT `dW`, a quarter of the slots at a time | (A.18)+(A.19) |
+| the PER-SLOT `dW`, one pass of the slots at a time | (A.18)+(A.19) |
 | **`d pw` COMPLETE** — the write side's leave-one-out digit reduction | (A.10) |
 
 Not carried, and named so that nothing reads as an omission: `d pr` (A.9), which
-needs the FORWARD state and is therefore Scan A's — Scan B owns `dS`, Scan A owns
-`S`, and neither owns both. `rola.ops.chunk.backward` refuses by name until Scan A
-lands beside this.
+needs the FORWARD state and is therefore [Scan A](#scan-a)'s — Scan B owns `dS`,
+Scan A owns `S`, and neither owns both.
 
-**So Scan B is whole**: every gradient the reverse pass owes — `dv`, `d gw`,
-`d pw` — is emitted and gated.
+**So Scan B is whole**: every gradient the reverse pass owes it — `dv`, `d gw`,
+`d pw` — is emitted and gated, at every arm in [the list](#arms).
 
 ## <a id="digit-reduction"></a>The write side's digit reduction is in lane
 
@@ -48,27 +47,86 @@ gradient. At depth two the leave-one-out factor is simply the OTHER level's
 amplitude, and the two digit gradients differ ONLY in that choice, which is what
 the gate's non-vacuity row exchanges.
 
-The slots are walked a QUARTER at a time, and the quarter is chosen so the digit
-structure falls out of the geometry rather than being computed:
+The slots are walked ONE PASS at a time, and a pass is chosen so the digit
+structure falls out of the geometry rather than being computed. Every
+`(token, inner digit)` cell of a pass is held by **exactly one lane**, so the
+inner level's gradient needs no reduction at all — the fan-in is `C * B` adds per
+block, the minimum the destination admits — and the outer level's sums over the
+lane's slot run (two shuffles) and then over the four units, which the fan-in
+does. The law that makes both true at every arm is [the pass law](#pass-law).
 
-* a quarter is `BCg / 4` slots, which is half an inner-level span, so **a quarter
-  fixes the outer digit** (`o = p / 2`) and two quarters cover the inner one;
-* within a quarter, a lane's accumulator entries carry two inner digits and two
-  write tokens, and every `(token, inner digit)` cell is held by **exactly one
-  lane**. So the inner level's gradient needs NO reduction at all — the fan-in is
-  `C * B` adds per block, which is the minimum the destination admits;
-* the outer level's gradient sums over the lane's slot run (two shuffles) and then
-  over the four units, which the fan-in does.
+**The pass index is a compile-time constant and that is load-bearing.** `u0` and
+`u1` are indexed by the pass' own digit class; a runtime index into a register
+array is a stack frame, and leaving the loop rolled cost exactly that — 352 bytes
+of frame at zero spill, which is local memory rather than register pressure.
+Unrolling it returned both arches to a zero-byte frame.
 
-Both are asserted structurally rather than assumed: `kDepth == 2`,
-`kOuterSpan * kInnerSpan == BCg`, and `kInnerSpan == 2 * (BCg / 4)`. A topology
-that breaks any of them does not compile, instead of mis-reducing quietly.
+## <a id="pass-law"></a>The pass law
 
-**The quarter index is a compile-time constant and that is load-bearing.** `u0`
-and `u1` are indexed by the quarter's own digit class; a runtime index into a
-register array is a stack frame, and leaving the loop rolled cost exactly that —
-352 bytes of frame at zero spill, which is local memory rather than register
-pressure. Unrolling it returned both arches to a zero-byte frame.
+A pass' width is **structural, not `BC`-derived**. Each unit consumes an eight-row
+`d_v` tile of the transposed adjoint state through one `ldmatrix`, and there are
+`kUnits = 4` of them, so
+
+    kPassSlots = kUnits * kMmaN = 32          slots per pass
+    P          = BCg / kPassSlots             passes per block
+    unit run   = slots [32p + 8g, 32p + 8g + 8),   p compile-time, g = the unit
+
+`BCg / 4 == 32` **only at `BC = 128`**, which is the whole of the retired "quarter"
+language: at `BCg = 64` a pass is half the block, at 32 it is the block.
+
+Slots inside a block are ordered outer-major (`slot = od * kInnerSpan + i`), and
+`kInnerSpan` is a multiple of eight at every legal arm (a level's span is either
+`B >= 8` or the whole block). A unit's run is eight-aligned, so it lies inside ONE
+outer digit — which is what lets the outer amplitude be a scalar over the pass'
+accumulator — and covers eight CONSECUTIVE inner digits, one per lane pair.
+
+The pass index then factors, per unit, into an inner-digit class and an outer
+digit:
+
+    CLS = min(P, max(1, kInnerSpan / 32))     distinct classes a unit visits
+    ODU = P / CLS                             distinct outer digits a unit visits
+    cls = p % CLS      (compile-time: the register index)
+    od  = (32p + 8g) / kInnerSpan             (runtime: a fan-in COLUMN only)
+    i1  = (32*cls + 8g) % kInnerSpan + (lane & 3) * 2
+
+`od` may be runtime because it is never a register index; `cls` is compile-time
+because `p` is, which is what keeps `u0`/`u1` out of a stack frame.
+
+**A digit array is carried across passes only where its index recurs.** A class
+recurs `ODU` times and an outer digit `CLS` times, so
+
+    u1 : (ODU > 1 ? CLS : 1) * MTOK * 4 registers
+    u0 : (CLS > 1 ? ODU : 1) * MTOK * 2 registers   (absent entirely at D = 1)
+
+and where the carry is absent the fan-in issues inside the pass loop, with the same
+total atomic count. The arms as built:
+
+| arm | BCg | inner | outer | P | CLS | ODU | u1 | u0 | `pw0` bytes |
+|---|---|---|---|---|---|---|---|---|---|
+| (32,128,2,64) pinned | 128 | 64 | 2 | 4 | 2 | 2 | 16 | 8 | 256 |
+| (32,128,2,256) scale | 128 | 128 | 1 | 4 | 4 | 1 | 8 | 4 | 128 |
+| (32,64,2,8) | 64 | 8 | 8 | 2 | 1 | 2 | 8 | 4 | 1,024 |
+| (32,64,2,16) | 64 | 16 | 4 | 2 | 1 | 2 | 8 | 4 | 512 |
+| (32,64,1,64) | 64 | 64 | 1 | 2 | 2 | — | 8 | 0 | 0 |
+| (32,64,1,256) | 64 | 64 | 1 | 2 | 2 | — | 8 | 0 | 0 |
+
+The pinned row is the construction's self-check: `P=4, CLS=2, ODU=2` is the
+retired quarter carve exactly, which is why the generalization could be gated on
+the pinned arm's numbers not moving.
+
+**The fan-in column carries `off_at`.** A level the block spans WHOLE contributes
+no block offset, so `col_base(D-1) + i1` was right at the pinned arm and is wrong
+wherever the innermost level is spanned partially (`(32,64,1,256)`,
+`(32,128,2,256)`): four blocks would fan into one block's columns. The column is
+`col_base(D-1) + off_at(D-1, blk) + i1`, which is the same spelling the coefficient
+production already used.
+
+**Depth one deletes the outer level; it does not weight it by one.** At `D = 1`
+level zero IS the innermost, `kOuterSpan = 1`, and `spw0` would otherwise read the
+inner amplitudes back as an outer factor — a silent squaring. `u0`, `spw0` and the
+outer fan-in do not exist there, and the inner level's leave-one-out product is
+empty. `GeomB` takes `(D, B)` for exactly this: `pw0_bytes` is a digit-shaped
+buffer, and both its SIZE and its place in the carve are the topology's.
 
 ## <a id="no-reversed-table"></a>Why the walk needs no reversed table
 
@@ -162,10 +220,11 @@ transposed — `[slot][channel]` rather than the accumulator's `[channel][slot]`
 because (A.18)'s `k` axis is `d_v`, which is the carve's own axis, so no unit can
 finish the contraction from its own registers. Writing each unit's 16 channels into
 a shared `[slots][d_v]` plane makes the writes DISJOINT (no cross-unit sum at all)
-and lets every unit then read all 64 channels for a quarter of the slots. Carved a
-quarter of the slots at a time — `[BCg/4][d_v + kPadE]` bf16 = 4,608 B — it fits
-inside this window beside `dz` (512 B) with room over, so the whole per-slot `dW`
-phase costs no shared memory beyond what `dv` already owns.
+and lets every unit then read all 64 channels for one pass of the slots. Carved a
+pass at a time — `[kPassSlots + kMmaN][d_v + kPadE]` bf16 = 5,760 B, a CONSTANT,
+since the pass width is the mma carve's and not `BC`'s — it fits inside this window
+beside `dz` with room over at every arm, so the whole per-slot `dW` phase costs no
+shared memory beyond what `dv` already owns.
 
 ## <a id="two-grams"></a>Two Grams, one buffer
 
@@ -293,11 +352,24 @@ costs `kMassTiles * 4 = 16` registers per lane to carry one slot's worth of
 information, and it is free in the forward because the mma is already issued.
 
 Scan B cannot afford it beside the adjoint state, and does not need it. `dz` is a
-per-SLOT quantity and this arm has exactly as many slots per group as threads
-(`BCg == kGroupThreads`, asserted), so it is a **scalar** and its fold is a dot
-product of the chunk's staged `dden` row against this thread's column of the `R`
-panel. Fifteen registers back, and `dz` lands in the layout the digit reduction
-wants rather than one it would have to be transposed out of.
+per-SLOT quantity, so it is a **scalar** whose fold is a dot product of the chunk's
+staged `dden` row against its slot's column of the `R` panel. Fifteen registers
+back, and `dz` lands in the layout the digit reduction wants rather than one it
+would have to be transposed out of.
+
+**`T = kGroupThreads / BCg` threads share a slot** (asserted: a slot's threads must
+be a whole lane group). Thread `(slot, part)` folds the `C / T` read entries of its
+segment and the segment totals meet in one `__shfl_xor` butterfly of `log2 T` steps
+over ADJACENT lanes — intra-warp by construction, because `slot = gtid / T` puts a
+slot's threads in one lane quad. `T = 1` is the degenerate case and reproduces the
+one-slot-per-thread form exactly.
+
+The butterfly **collapses** rather than broadcasts: part zero keeps the total and
+the others are zeroed. `dz` is an accumulator carried across chunks, so a broadcast
+total would be re-summed `T` times at the next fold; with the collapse the
+invariant "a slot's value is the sum over its `T` threads" holds at every chunk
+boundary, and the warp-wide `dzs` reduction that feeds `d gw` needs no predicate at
+all — the four warps still partition `BCg` exactly.
 
 That was not a preference. With the slot Gram and `dv`'s intra term added, the
 mma-carried mass column put sm_80's allocator four bytes over its bound; every
@@ -349,17 +421,21 @@ its correctness is a **schedule** fact. An arithmetic gate can only reach a sche
 through a reference that replays the partition, and that reference stops being
 writable the moment two blocks of one head are live on different tokens: each block
 then closes its chunks at different tokens, so "the" partition does not exist. The
-stage-1 numeric rows dodge this by making every token fully live or fully dead on a
+numeric batteries dodge this by making every token fully live or fully dead on a
 side, which makes every block's partition the same one — a real cell, and not the
-general case.
+general case. Where the plan has NO table rows (a block spanning the whole slot
+space, e.g. `(32,64,2,8)`), the clause is empty and every token is a member: the
+partition is the dense one however sparse the amplitudes are, and the batteries
+read `entries` off the census to know which case they are in.
 
 `walk_probe_kernel` runs the walk **alone** and emits what it published: per
 `(bh, block, token)`, the ordinal of the chunk that gathered the token and its
 position in that chunk's list, one plane per side, plus the causal threshold each
 read entry carries. The sentinel is `-1`, so *"gathered exactly once"* is a
 checkable claim rather than a covering one. It takes the union table and nothing
-else, because the walk reads no amplitude — a probe that took one would be gating a
-wider surface than the schedule it is named for.
+else — plus the head batch, which the table cannot carry when the plan builds no
+rows at all — because the walk reads no amplitude: a probe that took one would be
+gating a wider surface than the schedule it is named for.
 
 The walk itself is a **component**, `Descent`, not a closure inside Scan B: a probe
 that re-implemented the closing rule would be gating its own copy. Both kernels
@@ -424,10 +500,33 @@ The ctx is taken on `needs_input_grad`, so an inference call retains nothing.
 `tests/integration/test_backward_ctx.py` asserts the retained set equals the closed
 form exactly — not that it grows slowly, which a regression could hide in.
 
-## <a id="arms"></a>The arm list, and why it is one
+## <a id="reg-floor-scan"></a>The scans declare their own register floor
 
-`SCAN_B_ARMS_X` carries the pinned production arm alone. The forward's arm cross is
-not owed until the scan carries every term, and it is not free: this translation
-unit already peaks at 2.75 GB per `cicc` at ONE arm, which is decode-class, so
-growing it is a re-measurement of `tools/build_flags.py`'s job formula and not a
-free axis. It is a translation unit of its own for the same reason `factor.cu` is.
+`reg_floor` is the FORWARD's measured live set and falls steeply with `BC`: 236 at
+`BC = 128`, 168 at 64, 136 at 32. The scans' does not. Halving `BC` halves the
+adjoint state (`dst[NDV][4]`, 32 registers) and nothing else — every other term is
+`C`-shaped — so the reverse pass falls about forty registers where the forward
+falls sixty-eight. Declaring one floor for both would put the `BC = 64` backward on
+a 168-register budget with a 210-219 live set, which is a SPILL rather than a
+refusal: the build would go green and only the census would notice.
+
+So `reg_floor_scan(BC)` is a second declaration — 200 / 224 / 236 at `BC` 32 / 64 /
+128 — and the parity clause is restated as `kScanBCtaTarget <= kCtaTarget`: the
+scans may run at their forward's occupancy or below it, never above. The intent the
+equality carried (nobody moves an arm's residency without deciding to) is enforced
+by the CENSUS instead, which carries both the declared floor and the budget that
+target admits, per arm, and whose gate asserts the measured live set fits inside
+it. The pair is what a review reads.
+
+## <a id="arms"></a>The arm list
+
+`SCAN_B_ARMS_X` is GENERATED, from `tools/gen_shards.py`'s `SCAN_ARMS` — the same
+generator that owns the forward's `CHUNK_ARMS`, which is what makes "every scan arm
+has a forward arm" a check at generation time rather than a hope. The scans' list is
+the narrower one: it carries the campaign's TRAINABLE topologies, and
+`rola.ops.chunk.backward_unsupported` refuses the difference at the facade rather
+than three launches later.
+
+It is not free to widen. This translation unit peaks at 2.75 GB per `cicc`, which is
+decode-class, so an arm added here is a re-measurement of `tools/build_flags.py`'s
+job formula. It is a translation unit of its own for the same reason `factor.cu` is.
