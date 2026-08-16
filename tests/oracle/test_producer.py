@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import produce_routing, resolved_routing_from_topology
+from conftest import produce_routing, raw_side_gain, resolved_routing_from_topology
 
 from rola.ops.naive import naive_rola
 from rola.routing.types import (
@@ -106,9 +106,8 @@ def test_softmax_level_mass_is_identically_one():
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
     out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
-    from rola.routing.side_gain import project_side_gains
-    gains = project_side_gains(x, gain_W, gain_bias, projection_dtype=torch.float64)
-    torch.testing.assert_close(out.g_write, gains["g_write"], rtol=1e-10, atol=1e-10)
+    raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved_routing_from_topology(topology))
+    torch.testing.assert_close(out.g_write, raw["g_write"], rtol=1e-10, atol=1e-10)
 
 
 def test_union_mass_fold_is_an_exact_identity_at_fp64():
@@ -125,7 +124,6 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
     """
     from rola.routing.projection import _packed_router_logits
     from rola.routing.reference import routing_factor_levels
-    from rola.routing.side_gain import project_side_gains
 
     topology = Topology(
         levels=(
@@ -140,10 +138,10 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
 
     out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
 
-    read_logits, write_logits = _packed_router_logits(
+    read_logits, write_logits, _ = _packed_router_logits(
         x, route_W, resolved, route_bias=None, h_w=None, projection_dtype=torch.float64)
     reads_raw, writes_raw = routing_factor_levels(read_logits, write_logits, resolved)
-    gains_raw = project_side_gains(x, gain_W, gain_bias, projection_dtype=torch.float64)
+    gains_raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved)
 
     def unfold(tensor):
         T, width = tensor.shape[1], tensor.shape[2]

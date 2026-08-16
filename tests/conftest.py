@@ -221,6 +221,38 @@ def resolved_routing_from_topology(topology):
     return ResolvedRouting(levels=topology.levels)
 
 
+def fuse_gain_columns(route_W, gain_W):
+    """`route_W` with `gain_W` as its trailing columns -- THE fused parameter's layout.
+
+    THE GAIN'S WEIGHT IS `route_W`'s TRAILING SPAN. `gain_W` arrives in its own
+    `[H, sides, hidden]` layout because that is what these gates hold; defined once here
+    so a gate that needs the pre-fold gain builds the same tensor the producer runs on.
+    """
+    return torch.cat([route_W, gain_W.transpose(-1, -2)], dim=-1)
+
+
+def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
+    """`g_write` BEFORE the mass fold, through the library's own two pieces.
+
+    Not a second implementation: the projection is `_packed_router_logits`' gain span
+    and the nonlinearity is `SideGain`, which is exactly what the producer composes --
+    what the producer does NOT expose is the value between them, which is what a fold
+    gate has to see.
+    """
+    from rola.routing.projection import _packed_router_logits
+    from rola.routing.side_gain import GainConfig, SideGain
+
+    columns = gain_W.shape[1]
+    _, _, gain_logits = _packed_router_logits(
+        x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None, h_w=None,
+        projection_dtype=x.dtype, gain_columns=columns)
+    gain = SideGain(num_heads=gain_W.shape[0], config=GainConfig.from_public(bool(columns)))
+    with torch.no_grad():
+        gain.gain_bias.copy_(gain_bias)
+    return gain(gain_logits, batch=x.shape[0], tokens=x.shape[1], dtype=x.dtype,
+                device=x.device)
+
+
 def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology, normalization):
     """The producer, run over bare parameter tensors -> a plain namespace.
 
@@ -238,10 +270,11 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
     producer = RouteProducer(
         topology.levels, hidden_size=hidden_size, num_heads=H,
         normalization=normalization, bias=route_bias is not None)
-    parameters = {"route_W": route_W, "side_gain.gain_W": gain_W,
+    parameters = {"route_W": fuse_gain_columns(route_W, gain_W),
                   "side_gain.gain_bias": gain_bias}
     if route_bias is not None:
-        parameters["route_bias"] = route_bias
+        parameters["route_bias"] = torch.cat(
+            [route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
     streams = (x,) if x_w is None else (x, x_w)
     routes = functional_call(producer, parameters, streams)
 

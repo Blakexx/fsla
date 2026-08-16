@@ -166,18 +166,21 @@ class RouteProducer(nn.Module):
         self.routing = ResolvedRouting(levels=self.levels)
         self.topology = Topology(levels=self.levels)
 
-        self.route_W = nn.Parameter(
-            torch.empty(num_heads, hidden_size, self.routing.packed_router_width))
-        _init_packed_router(self.route_W)
-        if self.bias:
-            self.route_bias = nn.Parameter(
-                torch.zeros(num_heads, self.routing.packed_router_width))
-        else:
-            self.register_parameter("route_bias", None)
         self.side_gain = SideGain(
-            num_heads=num_heads, hidden_size=hidden_size,
+            num_heads=num_heads,
             config=(gain_config if gain_config is not None else GainConfig.from_public(gain)),
             bias_init=gain_bias_init)
+        #: ONE PARAMETER, and the gain's columns are its trailing span. The gain is a
+        #: function of the read stream and so are the routing logits, so a second
+        #: `[hidden -> H]` projection was a second GEMM and a second cast of the whole
+        #: source stream for one column per head.
+        columns = self.routing.packed_router_width + self.side_gain.columns
+        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, columns))
+        _init_packed_router(self.route_W)
+        if self.bias:
+            self.route_bias = nn.Parameter(torch.zeros(num_heads, columns))
+        else:
+            self.register_parameter("route_bias", None)
 
     @property
     def widths(self) -> tuple[int, ...]:
@@ -207,9 +210,9 @@ class RouteProducer(nn.Module):
         if write_stream is not None and write_stream.shape != read_stream.shape:
             raise ValueError("write_stream must have the same shape as read_stream")
 
-        B = read_stream.shape[0]
+        B, T, _ = read_stream.shape
         H = self.num_heads
-        read_bh, write_bh = self._solve(read_stream, write_stream)
+        read_bh, write_bh, gain_logits = self._solve(read_stream, write_stream)
 
         #: THE READ MASS IS CARRIED, NOT APPLIED: the readout is a ratio, so a per-token
         #: scale common to every leaf cancels between numerator and denominator, and the
@@ -220,7 +223,8 @@ class RouteProducer(nn.Module):
                                        carry_mass=True)
         write_levels, write_mass = _fold(write_bh, B=B, H=H, skip=self._skip("write"),
                                          carry_mass=False)
-        gains = self.side_gain(read_stream)
+        gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_stream.dtype,
+                               device=read_stream.device)
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,
             read=read_levels, write=write_levels, g_read=None,
@@ -260,11 +264,13 @@ class RouteProducer(nn.Module):
         cuda_solve = x.is_cuda and projection_dtype is torch.float32
         return _packed_router_logits(
             x, self.route_W, self.routing, route_bias=self.route_bias, h_w=x_w,
-            projection_dtype=projection_dtype, token_major=cuda_solve)
+            projection_dtype=projection_dtype, token_major=cuda_solve,
+            gain_columns=self.side_gain.columns)
 
     def _solve(self, x: torch.Tensor, x_w: torch.Tensor | None):
-        read_logits, write_logits = self._project(x, x_w)
-        return production_routing_factor_levels(read_logits, write_logits, self.routing)
+        read_logits, write_logits, gain_logits = self._project(x, x_w)
+        read, write = production_routing_factor_levels(read_logits, write_logits, self.routing)
+        return read, write, gain_logits
 
 
 # --- helpers ----------------------------------------------------------------

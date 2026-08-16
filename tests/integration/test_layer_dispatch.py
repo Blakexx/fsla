@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.utils.checkpoint as torch_checkpoint
-from conftest import build_layer, build_routes, produce_routing
+from conftest import build_layer, build_routes
 from einops import rearrange
 
 import rola
@@ -96,15 +96,10 @@ def _oracle(layer: RoLA, x: torch.Tensor, *, initial_state=None, want_state: boo
 def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     """Realized exact-zero fraction of the router's write allocations, so a test
     that claims to exercise a sparse fixture can prove the fixture is sparse."""
-    producer = layer.routes
     with torch.no_grad():
-        out = produce_routing(
-            x, None, torch.zeros(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim,
-                                 device=x.device, dtype=x.dtype),
-            producer.route_W, producer.route_bias, layer.routes.side_gain.gain_W,
-            layer.routes.side_gain.gain_bias, layer.topology, layer.normalization)
-    zeros = sum(float((t == 0).float().mean()) * t.shape[-1] for t in out.write_levels)
-    return zeros / sum(t.shape[-1] for t in out.write_levels)
+        write = layer.routes(x).write
+    zeros = sum(float((t == 0).float().mean()) * t.shape[-1] for t in write)
+    return zeros / sum(t.shape[-1] for t in write)
 
 
 def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
@@ -146,7 +141,7 @@ def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(ro
     #: `d pr` and `d pw` through the producer's solve, the side gain is `d gw`, and
     #: `v_proj` is `dv`. A gate that checked only `x.grad` would pass with four of
     #: the five silently zero.
-    wanted = ("routes.route_W", "routes.side_gain.gain_W",
+    wanted = ("routes.route_W", "routes.side_gain.gain_bias",
               "v_proj.weight", "o_proj.weight")
     params = dict(layer.named_parameters())
     for name in wanted:

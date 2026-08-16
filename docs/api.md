@@ -151,6 +151,12 @@ wrapping it. It does NOT own `d_v`: the value width is the width of the state ea
 holds, which is a fact about the value stream — the layer sizes `v_proj`/`o_proj` with
 it and the op reads it off `v.shape[-1]` at call time.
 
+**The side gain is COLUMNS OF THE ROUTER GEMM.** The gain is a function of the read
+stream and so are the routing logits, so `route_W` carries both: the routing slots
+first, the gain's span last. One parameter, one cast of the source stream, one
+projection. `gain=False` removes the column rather than pinning it, so a disabled gain
+is a narrower parameter and not a parameter with an identically zero gradient.
+
 **The side gains are routing's, and they ride the bundle.** Two things put them there
 rather than on the layer. Their SHAPE is defined by the normalization arm — `g_read`
 exists iff `normalization == 'raw'` — so a layer-owned gain producer would have to be
