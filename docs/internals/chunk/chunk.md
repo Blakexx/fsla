@@ -135,6 +135,6 @@ different and does skip: an unmapped atom is already a no-op in the epilogue, an
 slot either was zero-initialised on admission or is carried from a previous call, which a
 skipped block must leave UNCHANGED — which is what skipping does.
 
-**An arm with no persistent variant is refused by name, never downgraded.** Serving the
-full grid to a caller who asked for the sparse one is how a measurement gets attributed to a
-launch that never ran; `launch_variant` raises instead, and names the arm.
+**Every arm takes the bitmap.** The predicate is a load and a branch above every register
+the body allocates, so there is no arm whose census cannot hold it — including the one at
+`reg_floor` 255.

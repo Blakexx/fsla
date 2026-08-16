@@ -1,20 +1,22 @@
-"""The sparse grid computes what the full grid computes.
+"""The liveness exit computes what the launch without it computes.
 
-The persistent launch skips blocks. Two claims have to hold for that to be an
-optimization rather than a semantic change, and they are gated differently
-because the operator's own arithmetic is not reproducible against itself:
+Every CTA reads one byte and exits when its block contributes nothing. Two
+claims have to hold for that to be an optimization rather than a semantic
+change, and they are gated differently because the operator's own arithmetic is
+not reproducible against itself:
 
 **`s_out` IS BIT-IDENTITY, and it is the real gate.** Each atom of the state
 plane is stored by exactly one CTA through a plain store -- no atomics, no
-ordering freedom -- so the two launches must agree byte for byte on every
-backing and every call class. Any difference is a bug.
+ordering freedom -- so the launch that was handed a bitmap and the launch that
+was handed none must agree byte for byte on every backing and every call class.
+Any difference is a bug.
 
 **`y` and `den` ARE NOT.** The per-block fan-in is a global `atomicAdd`, so the
-summation order is the hardware scheduler's and the FULL grid is not bit-identical
-against ITSELF run to run. A bit-identity gate on `y` would therefore be a gate on
-the scheduler. Two gates replace it: a DETERMINISTIC cell where `y` has exactly one
-contributor per token and bit-identity IS available, and a distribution gate on the
-general cell whose bound is the full grid's own measured run-to-run spread.
+summation order is the hardware scheduler's and the no-bitmap launch is not
+bit-identical against ITSELF run to run. A bit-identity gate on `y` would therefore be
+a gate on the scheduler. Two gates replace it: a DETERMINISTIC cell where `y` has
+exactly one contributor per token and bit-identity IS available, and a distribution
+gate on the general cell whose bound is the no-bitmap launch's own measured spread.
 
 Vocabulary, defined here and used unqualified below: `D` = level count; `B` = one
 uniform level width; `N = B ** D` = leaves; `BC` = the launch's block width in
@@ -23,7 +25,7 @@ leaves; `blocks = N // BC`; `C` = the chunk (32 tokens); `L`/`T` = tokens;
 granule; `rho` = the live-block fraction; `y` = the operator's output;
 `den` = the global denominator plane.
 
-**The structural claim carries the exactness, not the numeric gate.** A skipped
+**The structural claim carries the exactness, not the numeric gate.** An exited
 block's contribution is the exact additive identity: its accumulators are
 initialised to `+0.0`, are only ever written inside the liveness gates, and
 `x + (+0.0)` is the identity in round-to-nearest for every `x` a zero-initialised
@@ -49,10 +51,10 @@ _ATOM = 16
 _COLS = _DV + 1
 
 #: PRE-REGISTERED, before any run: the relative bound the distribution gate falls
-#: back to when the full grid's own spread reads exactly zero on the device under
-#: test. A zero spread is a SCHEDULING ARTIFACT, not a contract -- the persistent
-#: grid changes the schedule by construction -- so it must never be promoted into
-#: a bit-identity gate. The value is the relative spread the full grid measured on
+#: back to when the no-bitmap launch's own spread reads exactly zero on the device
+#: under test. A zero spread is a SCHEDULING ARTIFACT, not a contract -- exiting
+#: dead CTAs changes the schedule by construction -- so it must never be promoted
+#: into a bit-identity gate. The value is the relative spread measured on
 #: sm_86 (workflows/p68-sparse-grid/s0_measurement.md 3.4: 4.1e-07 at L=64,
 #: 4.6e-07 at L=256), rounded up.
 _SIGMA_FLOOR_REL = 1e-06
@@ -150,14 +152,14 @@ def test_the_final_state_is_bit_identical_dense(bc, live):
     bh, L = 4, 64
     pr, pw, gw, v = _routing(bh, L, live, bc, seed=live * 31 + bc)
     tbl, bits = _bits(pr, pw, v, bc, L)
-    full, pers = _dense_plane(bh, float("nan")), _dense_plane(bh, float("nan"))
-    _launch(pr, pw, gw, v, tbl, bc, s_out=full)
-    _launch(pr, pw, gw, v, tbl, bc, bits=bits, s_out=pers)
-    assert not full.isnan().any(), "the FULL grid left the dense plane partly unwritten"
-    assert not pers.isnan().any(), (
-        "the persistent grid left poison in the dense state plane: a block was "
-        "skipped whose atoms it owed a store")
-    assert torch.equal(full, pers)
+    bare, exit_ = _dense_plane(bh, float("nan")), _dense_plane(bh, float("nan"))
+    _launch(pr, pw, gw, v, tbl, bc, s_out=bare)
+    _launch(pr, pw, gw, v, tbl, bc, bits=bits, s_out=exit_)
+    assert not bare.isnan().any(), "the no-bitmap launch left the plane partly unwritten"
+    assert not exit_.isnan().any(), (
+        "the liveness exit left poison in the dense state plane: a block exited "
+        "whose atoms it owed a store")
+    assert torch.equal(bare, exit_)
 
 
 @pytest.mark.parametrize("bc", [64, 128])
@@ -192,7 +194,7 @@ def test_the_final_state_is_bit_identical_on_a_continuation(bc):
     n_pers, d_pers = _launch(pr, pw, gw, v, tbl, bc, bits=bits, s_in=s_in, s_out=pers,
                              page_tbl=page_tbl)
     assert torch.equal(full, pers)
-    _assert_within_the_full_grids_spread(
+    _assert_within_the_bare_launchs_spread(
         n_full, d_full, n_pers, d_pers,
         lambda: _launch(pr, pw, gw, v, tbl, bc, s_in=s_in, s_out=s_in.clone(),
                         page_tbl=page_tbl))
@@ -222,12 +224,12 @@ def test_a_single_live_block_is_bit_identical(bc):
     assert torch.equal(d_full, d_pers), "the denominator differs on a one-contributor cell"
 
 
-def _assert_within_the_full_grids_spread(n_full, d_full, n_pers, d_pers, again):
+def _assert_within_the_bare_launchs_spread(n_full, d_full, n_pers, d_pers, again):
     """The distribution gate: the instrument is established, then applied.
 
-    The bound is the FULL grid's own run-to-run spread on identical inputs -- the
-    only honest one, since the persistent grid changes a schedule that the full
-    grid does not reproduce against itself either. `_SIGMA_FLOOR_REL` is the
+    The bound is the no-bitmap launch's own run-to-run spread on identical inputs
+    -- the only honest one, since exiting dead CTAs changes a schedule that the
+    bare launch does not reproduce against itself either. `_SIGMA_FLOOR_REL` is the
     pre-registered fallback for a device on which that spread reads zero, and is
     NOT a licence to be looser than the instrument: the bound is the larger of the
     two, and a zero spread is recorded rather than promoted to bit-identity.
@@ -244,16 +246,16 @@ def _assert_within_the_full_grids_spread(n_full, d_full, n_pers, d_pers, again):
     got_n = float((n_pers - n_full).abs().max())
     got_d = float((d_pers - d_full).abs().max())
     assert got_n <= bound_n, (
-        f"the numerator moved {got_n:.3e}, outside the full grid's own spread "
+        f"the numerator moved {got_n:.3e}, outside the bare launch's own spread "
         f"{spread_n:.3e} (bound {bound_n:.3e})")
     assert got_d <= bound_d, (
-        f"the denominator moved {got_d:.3e}, outside the full grid's own spread "
+        f"the denominator moved {got_d:.3e}, outside the bare launch's own spread "
         f"{spread_d:.3e} (bound {bound_d:.3e})")
 
 
 @pytest.mark.parametrize("bc", [64, 128])
 @pytest.mark.parametrize("live,split", [(4, False), (16, False), (8, True), (64, False)])
-def test_y_stays_inside_the_full_grids_own_spread(bc, live, split):
+def test_y_stays_inside_the_bare_launchs_own_spread(bc, live, split):
     """The general cell, across densities and with the sides split.
 
     `split` gives the two sides disjoint level-0 supports, so blocks are read-live
@@ -268,7 +270,7 @@ def test_y_stays_inside_the_full_grids_own_spread(bc, live, split):
         _assert_it_skips(bits)
     n_full, d_full = _launch(pr, pw, gw, v, tbl, bc)
     n_pers, d_pers = _launch(pr, pw, gw, v, tbl, bc, bits=bits)
-    _assert_within_the_full_grids_spread(n_full, d_full, n_pers, d_pers,
+    _assert_within_the_bare_launchs_spread(n_full, d_full, n_pers, d_pers,
                                          lambda: _launch(pr, pw, gw, v, tbl, bc))
 
 
@@ -280,8 +282,8 @@ def test_y_stays_inside_the_full_grids_own_spread(bc, live, split):
 def test_a_bitmap_that_skips_everything_is_caught_by_every_gate(bc):
     """THE PLANTED VIOLATION. A gate that cannot be shown failing is decoration.
 
-    An all-dead bitmap is the maximal skip: the work loop then runs no block at
-    all. `y`, `den` and the dense state plane must each move far outside what the
+    An all-dead bitmap is the maximal skip: every CTA then exits at its first
+    statement. `y`, `den` and the dense state plane must each move far outside what the
     gates above allow -- if any of them did not, that gate was passing on
     something other than the property it names.
     """
@@ -302,7 +304,7 @@ def test_a_bitmap_that_skips_everything_is_caught_by_every_gate(bc):
     _launch(pr, pw, gw, v, tbl, bc, s_out=full_plane, page_tbl=page_tbl)
     _launch(pr, pw, gw, v, tbl, bc, bits=dead, s_out=none_plane, page_tbl=page_tbl)
     assert not torch.equal(full_plane, none_plane), (
-        "a launch that ran no block wrote the same paged state as one that ran "
+        "a launch whose every CTA exited wrote the same paged state as one that ran "
         "every block: the bit-identity gate would pass on an unwritten plane")
     dense = _dense_plane(bh, float("nan"))
     _launch(pr, pw, gw, v, tbl, bc, bits=dead, s_out=dense)
@@ -315,17 +317,22 @@ def test_a_bitmap_that_skips_everything_is_caught_by_every_gate(bc):
 # the refusals
 # ---------------------------------------------------------------------------
 
-def test_an_arm_without_the_work_loop_refuses_by_name():
-    """`(C=64, BC=128, D=2, B=64)` carries no persistent variant: its register
-    census does not hold the work loop. Serving it the full grid instead would
-    attribute a measurement to a launch that never ran, so it raises."""
-    bh, L, bc = 2, 64, 128
+def test_the_arm_that_carried_no_work_loop_takes_the_bitmap(): 
+    """`(C=64, BC=128, D=2, B=64)` declares `reg_floor` 255 -- the ISA's whole
+    per-thread budget, which is why the work loop it used to need excluded it. The
+    exit is a load and a branch above every register the body allocates, so the arm
+    that could not hold a loop holds this: it runs, and it agrees byte for byte."""
+    bh, L, bc = 4, 64, 128
     pr, pw, gw, v = _routing(bh, L, 4, bc, seed=99)
     m = extension()
     tbl = m.chunk_union_table(pr, pw, v, 64, bc, _WIDTHS)
     bits = m.chunk_block_bits(tbl, bc, _WIDTHS, L, None)
-    with pytest.raises(RuntimeError, match="sparse grid is not built"):
-        m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, None, None, None, bits)
+    _assert_it_skips(bits)
+    page_tbl, bare = _paged(pw, bh)
+    exit_ = bare.clone()
+    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, None, bare, page_tbl, None)
+    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, None, exit_, page_tbl, bits)
+    assert torch.equal(bare, exit_)
 
 
 def test_a_bitmap_built_for_another_arm_is_refused():
@@ -340,11 +347,10 @@ def test_a_bitmap_built_for_another_arm_is_refused():
         m.chunk_forward_raw(pr, pw, gw, v, tbl64, _C, 64, _WIDTHS, None, None, None, bits128)
 
 
-def test_the_seam_reaches_the_sparse_grid():
-    """`rola.ops.chunk.run(sparse_grid=True)` -- the packing the facade calls.
-
-    The plan's choice travels through the seam, and the seam's own permute-and-cast
-    is exactly the step a hand-built fixture skips.
+def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
+    """`rola.ops.chunk.run` -- the packing the facade calls, and the reachability
+    claim. The liveness reduction is not a plan choice any more: there is no flag
+    to set, so the gate is that a bitmap of the right grain ARRIVES at the launch.
     """
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
@@ -359,10 +365,41 @@ def test_the_seam_reaches_the_sparse_grid():
     x = torch.randn(2, 64, 64, device="cuda")
     routes = gateway(x)
     v = torch.randn(2, 64, 2, _DV, device="cuda")
-    y_full, _ = chunk.run(chunk.pack(routes), v)
-    y_sparse, _ = chunk.run(chunk.pack(routes), v, sparse_grid=True)
-    scale = float(y_full.abs().max())
-    assert float((y_sparse - y_full).abs().max()) <= _SIGMA_FLOOR_REL * max(scale, 1.0)
+    seen = _spy_on_the_launch(chunk)
+    try:
+        y, _ = chunk.run(chunk.pack(routes), v)
+    finally:
+        chunk.extension = seen.pop("restore")
+    bits = seen["bits"]
+    assert bits is not None and bits.dtype is torch.uint8, (
+        f"the seam handed the launch {bits!r} rather than a liveness bitmap")
+    assert bits.shape == (2 * 2, _N // chunk.arm(routes)[1]), (
+        f"the bitmap reaching the launch is {tuple(bits.shape)}, not this arm's grain")
+    assert float(y.abs().max()) > 0
+
+
+def _spy_on_the_launch(chunk_mod):
+    """Records the `block_bits` argument the seam passes to `chunk_forward_raw`.
+
+    A bit-identity gate passes just as well if the bitmap never left the seam;
+    this watches the value arrive, which is the property the flag's deletion put
+    at risk.
+    """
+    real = chunk_mod.extension
+    m = real()
+    seen: dict = {"restore": real, "bits": "never called"}
+
+    class Shim:
+        def __getattr__(self, name):
+            return getattr(m, name)
+
+        def chunk_forward_raw(self, *a):
+            seen["bits"] = a[-1]
+            return m.chunk_forward_raw(*a)
+
+    shim = Shim()
+    chunk_mod.extension = lambda: shim
+    return seen
 
 
 def _sparse_bundle(B, T, H, live_d0, seed=11):
@@ -392,18 +429,16 @@ def _sparse_bundle(B, T, H, live_d0, seed=11):
 
 
 @pytest.mark.parametrize("paging", [False, True])
-def test_the_facade_reaches_the_sparse_grid_and_the_state_is_bit_identical(paging):
-    """R5: `PlanOverrides(sparse_grid=True)` is the persistent grid, THROUGH `rola_op`.
-
-    P68 measured the win and left it unreachable -- `sparse_grid` existed only on
-    `rola.ops.chunk.run`, which the facade never set. This row is the reachability
-    claim and the correctness claim in one: the same call, expert-pinned both ways,
-    must agree on `s_out` BYTE FOR BYTE (the module docstring's real gate -- each
-    atom has exactly one storing CTA, so there is no ordering freedom to hide in),
-    on the dense plane and on the paged one alike.
+def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
+    """THROUGH `rola_op`, on both backings: the facade's call (which always builds
+    the bitmap) and a raw launch handed none must agree on `s_out` BYTE FOR BYTE --
+    each atom has exactly one storing CTA, so there is no ordering freedom to hide
+    in. This is the s_out gate re-anchored: its arms are the exit and its absence,
+    on the one kernel.
     """
     import rola
     from rola.expert import PlanOverrides
+    from rola.ops import chunk
 
     B, T, H, live = 1, 64, 2, 4
     routes = _sparse_bundle(B, T, H, live)
@@ -413,41 +448,22 @@ def test_the_facade_reaches_the_sparse_grid_and_the_state_is_bit_identical(pagin
     assert touched == live, f"the fixture's level-0 support is {touched}, not {live}"
     assert touched * _WIDTHS[1] < _N, "every block is live; there is nothing to skip"
 
-    planes = []
-    for sparse_grid in (False, True):
-        state = rola.state()
-        with torch.no_grad():
-            rola.rola_op(routes, v, state=state,
-                         expert=PlanOverrides(paging=None if paging else False,
-                                              sparse_grid=sparse_grid))
-        planes.append(state.materialize().clone())
-    assert torch.equal(*planes), (
-        "the facade's sparse grid and its full grid disagree on the carried state")
+    state = rola.state()
+    with torch.no_grad():
+        rola.rola_op(routes, v, state=state,
+                     expert=PlanOverrides(paging=None if paging else False))
+    through_the_facade = state.materialize().clone()
 
-
-def test_the_expert_pin_is_what_the_launch_actually_receives():
-    """THE TOOTH under the row above: a bit-identity gate on `s_out` passes just as
-    well if the flag never left the facade. This one watches the value arrive.
-    """
-    import rola
-    from rola.expert import PlanOverrides
-    from rola.ops import chunk
-
-    routes = _sparse_bundle(1, 64, 2, 4)
-    v = torch.randn(1, 64, 2, _DV, device="cuda")
-    seen, run = [], chunk.run
-
-    def spy(packed, value, **kwargs):
-        seen.append(kwargs.get("sparse_grid"))
-        return run(packed, value, **kwargs)
-
-    chunk.run = spy
-    try:
-        with torch.no_grad():
-            for pin in (None, False, True):
-                rola.rola_op(routes, v, expert=PlanOverrides(sparse_grid=pin))
-            rola.rola_op(routes, v)
-    finally:
-        chunk.run = run
-    assert seen == [False, False, True, False], (
-        f"the expert's sparse_grid pin did not arrive at the launch: {seen}")
+    packed = chunk.pack(routes)
+    c, bc = chunk.arm(routes)
+    m = extension()
+    tbl = m.chunk_union_table(packed.pr, packed.pw, v.to(torch.bfloat16).contiguous(),
+                              c, bc, list(_WIDTHS))
+    bare = chunk.state_plane(routes, d_v=_DV)
+    m.chunk_forward_raw(packed.pr, packed.pw, packed.gw,
+                        v.to(torch.bfloat16).contiguous(), tbl, c, bc, list(_WIDTHS),
+                        None, bare, None, None)
+    assert torch.equal(through_the_facade,
+                       bare.reshape(through_the_facade.shape)), (
+        "the facade's liveness exit and a launch handed no bitmap disagree on the "
+        "carried state")

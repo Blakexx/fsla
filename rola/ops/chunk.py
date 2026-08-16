@@ -187,7 +187,6 @@ class SavedForward:
     rm: torch.Tensor | None = None
     tbl: torch.Tensor | None = None
     den: torch.Tensor | None = None
-    block_bits: torch.Tensor | None = None
     vk: torch.Tensor | None = None
     #: the plan's non-tensor half: the arm, the topology, the readout constant and
     #: V's row stride, which the backward's launch needs and cannot re-derive.
@@ -202,8 +201,8 @@ class SavedForward:
         op's own output and operand, alive either way, so neither is counted here
         and neither is stored here."""
         return sum(t.numel() * t.element_size()
-                   for t in (self.pr, self.pw, self.gw, self.rm, self.tbl, self.den,
-                             self.block_bits) if t is not None)
+                   for t in (self.pr, self.pw, self.gw, self.rm, self.tbl, self.den)
+                   if t is not None)
 
     def kernel_v_is_the_callers(self, v: torch.Tensor) -> bool:
         """Whether `vk` aliases the caller's `v` rather than being a repack of it --
@@ -285,7 +284,7 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
 
 
 def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = None,
-        want_state: bool = False, arena=None, sparse_grid: bool = False,
+        want_state: bool = False, arena=None,
         saved: SavedForward | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
 
@@ -306,12 +305,9 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
     (docs/internals/paging/paging.md). Dense is `arena=None`, where the slot IS
     the atom.
 
-    `sparse_grid` runs the launch over LIVE BLOCKS ONLY: a block-grain liveness
-    reduction over this call's union table, then a fixed persistent grid whose
-    work loop skips the dead ones. It is the PLAN's choice and never a density
-    heuristic inside the kernel -- the reduction costs a launch of its own, so it
-    pays where the dead-block count is large and not where it is not
-    (docs/internals/chunk/chunk_kernel.md#work-loop).
+    A block-grain liveness bitmap is reduced over this call's union table on
+    EVERY call, and a block whose byte says it contributes nothing exits before it
+    touches anything (docs/internals/chunk/chunk_kernel.md#liveness-exit).
 
     `saved` is an OUT PARAMETER on the state plane's own rule: a
     :class:`SavedForward` the caller hands in when this call carries a gradient,
@@ -338,8 +334,7 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
         page_tbl = arena.page_table
         s_out = arena.state if want_state else None
     tbl = m.chunk_union_table(pr, pw, vk, c, bc, list(widths))
-    bits = (m.chunk_block_bits(tbl, bc, list(widths), routes.tokens, page_tbl)
-            if sparse_grid else None)
+    bits = m.chunk_block_bits(tbl, bc, list(widths), routes.tokens, page_tbl)
     num, den = m.chunk_forward_raw(pr, pw, gw, vk, tbl, c, bc, list(widths), state_in, s_out,
                                    page_tbl, bits)
     #: THE READ MASS RIDES INTO THE FLOOR. `packed.rm` is the per-token scale the read
@@ -352,7 +347,7 @@ def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = N
     #: same launches in the same order; what differs is only what stays alive.
     if saved is not None:
         saved.pr, saved.pw, saved.gw, saved.rm = pr, pw, gw, packed.rm
-        saved.tbl, saved.den, saved.block_bits = tbl, den, bits
+        saved.tbl, saved.den = tbl, den
         saved.c, saved.bc, saved.widths = c, bc, widths
         saved.eps = READOUT_EPS
         saved.v_row_bytes = vk.shape[2] * vk.shape[3] * vk.element_size()

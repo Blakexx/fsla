@@ -333,13 +333,12 @@ REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
 #: The chunk kernel's mangled template arguments, in DECLARATION order:
-#: `compacted_kernel<int C, int D, int B, int BC, bool STATE, bool PERSIST>`. Note
+#: `compacted_kernel<int C, int D, int B, int BC, bool STATE>`. Note
 #: that this is not the arm list's tuple order (`(C, BC, D, B)`), and that is exactly
 #: why the mangled name is decoded in ONE place: the manifest key is what the
 #: assembler saw, and every consumer of it -- the census's per-key grouping, the
 #: hot-loop gate's reporting, the fatbin gate's ownership check -- goes through here.
-CHUNK_TPL = re.compile(
-    r"compacted_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELb(\d)ELb(\d)E")
+CHUNK_TPL = re.compile(r"compacted_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -348,12 +347,12 @@ def parse_shape(mangled: str) -> dict | None:
     if not m:
         return None
     return dict(C=int(m.group(1)), D=int(m.group(2)), B=int(m.group(3)),
-                BC=int(m.group(4)), state=m.group(5) == "1", persist=m.group(6) == "1")
+                BC=int(m.group(4)), state=m.group(5) == "1")
 
 
 def arm_of_shape(shape: dict) -> tuple:
-    """The generator's arm tuple `(C, BC, D, B, STATE, PERSIST)` for a decoded shape."""
-    return (shape["C"], shape["BC"], shape["D"], shape["B"], shape["state"], shape["persist"])
+    """The generator's arm tuple `(C, BC, D, B, STATE)` for a decoded shape."""
+    return (shape["C"], shape["BC"], shape["D"], shape["B"], shape["state"])
 
 
 def shard_of_key(mangled: str) -> str:

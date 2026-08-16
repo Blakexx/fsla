@@ -427,8 +427,8 @@ formed together. And the page table, when there is one, is OR-condensed over the
 It consumes an artifact that ALREADY EXISTS. The `BC`-grain union table is built for the
 launch anyway, with exactly the rows the consumer's clause pointers address, so this is a
 pure reduction and not a second producer pass. It is nonetheless a SEPARATE LAUNCH, on the
-union table's own rule: a per-call cost the sparse grid pays is reported on its own line
-and never folded into a kernel delta.
+union table's own rule: a per-call cost is reported on its own line and never folded
+into a kernel delta. It runs on EVERY call.
 
 **Why three bits and not one predicate.** `READ` and `WRITE` are exact at the block's own
 grain — a block is an aligned digit-range rectangle, so any combination of digits live at
@@ -445,57 +445,33 @@ out. The dense backing carries no residency map, and the bit is then ZERO everyw
 rather than guessed — the host's dense predicate is weakened to compensate, which is a
 recorded weakening rather than a hidden one.
 
-## The work loop, and where it opens
+## The liveness exit
 
-<a id="work-loop"></a>**`PERSIST` compiles the sparse grid's work loop in or out**, on exactly the
-rule the carried state's I/O follows: a call that hands over no liveness bitmap runs the
-kernel that has no loop in it at all, launched one CTA per block as it always was. With a
-bitmap the grid is FIXED — this arm's resident CTAs times the device's SM count, capped at
-the block count — and the loop strides over the block axis, testing one byte per work item
-and skipping the dead ones. `bh` stays on `blockIdx.y` in both, which is what keeps every
-`bh`-keyed base (`v`, the amplitude planes, `o`, `den`, the table rows) a launch constant.
+<a id="liveness-exit"></a>**One byte, read before anything else, and the CTA returns.**
+The grid is `(blocks, BH)` — one CTA per block, which is the launch this kernel has
+always had — and a block whose liveness byte says it contributes nothing exits at the
+kernel's first statement, before the shared-memory carve, before any addressing and
+before any barrier. The predicate is CTA-uniform by construction (`blockIdx` alone), so
+no rendezvous can be left half-arrived. A null bitmap runs every block.
 
-**Why an axis and not a runtime null test.** A loop is not free: its back edge holds live
-everything computed above it. Measured, a runtime loop around the hoisted setup cost +20 to
-+34 registers and spilled five instantiations inside the main loop; the same body with the
-loop degenerated to one iteration cost +2. Compiling the loop out restores the full-grid
-kernel exactly, so the launch that does not use the feature does not pay for it — which is
-the same reason `STATE` is an axis.
+**Why not a persistent grid over live blocks only.** That was P68's shape: a fixed grid
+of about this arm's resident CTAs with a work loop striding the block axis. P68b measured
+the two apart on the same binary — only the grid shape moving — and the loop itself cost
++0.36 % to +4.43 % at `ρ = 1` while the machine-sized grid cost +13 % to +47 %. The whole
+dense loss was launch-shape quantization: `ceil(kCtaTarget · sm_count / BH)` put 256 CTAs
+on a 240-CTA machine at `BC = 64`, and at `BC = 128` a span of 5 did not divide 32 blocks,
+leaving a 9.4 % longest-pole imbalance. Dispatching a dead CTA and returning from it costs
+1–4 % against never dispatching it, and it costs nothing at density. The hardware balances
+the grid; the loop could not.
 
-**The loop opens ABOVE the addressing, and that is deliberate.** Everything from the
-shared-memory carve down — the operand addresses, the fan-in's rows, the production
-geometry, the amplitude columns, the clause rows, the accumulators and every cursor — is
-re-derived per work item rather than hoisted, because hoisting is precisely what puts a
-value on the back edge. It is the same trade the state I/O already takes: the atom index is
-derived inside each state block so that nothing about it is live across the main loop.
+**What the exit costs.** A per-CTA constant, not a per-item one: one dependent global load
+with the branch immediately on it. Measured 2.3 ns per CTA — 4.43 % of the smallest dense
+cell (`BC=64, L=64, N=4096`), 0.36 % of the largest, and falling with every axis that
+grows. Registers are unmoved: the byte is consumed and the branch taken above everything
+the body allocates.
 
-**The one hazard the loop introduces is the asynchronous copy pipeline.** The steady loop
-issues a `cp.async` group per super-chunk and only ever waits at `STAGES - 2`, so up to
-`STAGES - 1` groups are still in flight when it breaks. A one-shot CTA exits and those
-copies are discarded; under the loop they land in the V ring slots the NEXT work item is
-already staging into. `rendezvous()` does not fence them — `__syncthreads` orders shared
-memory accesses, not outstanding asynchronous copies — so each item ends with
-`stage_wait<0>()` before its barrier, and only when another item follows.
-
-**The regime is measured, and the plan is what respects it.** On sm_86 at
-`BH = 32`, `N = 4096`, the persistent grid beats the full one by 12–47 % of kernel
-time at `ρ ≤ 0.125` and LOSES by 13–47 % at `ρ = 1`, crossing over near
-`ρ* ≈ 0.25`. The loss at high density is not tail quantization: it is serialization
-— a CTA's work items cannot overlap each other's prologues and epilogues the way
-the hardware overlaps whole CTAs across waves, and the re-use fence drains the
-copy pipeline between every pair. So the sparse grid is a PLAN CHOICE, taken by
-handing the launch a bitmap, and there is no density test anywhere in the kernel
-or the dispatch. The full-grid path is unaffected either way, because it is a
-different compiled variant.
-
-**An arm the loop does not fit carries no persistent variant.** Five do not, for two measured reasons the generator states. `(C=64, BC=128, D=2, B=64)`
-declares `reg_floor` 255, the ISA's whole per-thread budget; a loop counter added to it
-spills inside the main loop whatever else is trimmed. The four `C=16, BC=64` arms have the
-shortest super-chunk loop and the lowest register floor in the manifest, and `ptxas`
-answers the loop's added pressure by sinking `(bh)`-keyed widening multiplies INTO that
-loop, where the addressing discipline forbids them. The answer to a configuration a
-strategy costs too much on is a different configuration, never a special-cased path, so
-those arms run the full grid and asking one for the sparse grid is refused by name. The
-set is the generator's (`CHUNK_NO_PERSIST`), a measured declaration of the same kind as
-`reg_floor` and falsifiable the same way: the spill manifest and the SASS gate both fail
-on an arm listed as fitting that does not.
+**The regime, measured** (sm_86, `BH = 32`, `N = 4096`, kernel time, the liveness
+reduction charged on its own line): the exit wins 12–30 % at `ρ ≤ 0.125`, 3–15 % at
+`ρ = 0.25`, 3–9 % at `ρ = 0.5`, and reads −1.2 % to +4.4 % at `ρ = 1`. There is no
+crossover to respect and therefore no plan choice to make: the bitmap is built on every
+call and there is no density test anywhere in the kernel, the dispatch or the seam.
