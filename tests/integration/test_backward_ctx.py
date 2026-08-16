@@ -168,8 +168,14 @@ def test_the_ctx_is_linear_in_the_token_axis():
     assert by_t[128] == 2 * by_t[64] and by_t[256] == 4 * by_t[64], by_t
 
 
-def _paired_wall(B, T, H, widths, reps=80):
+def _paired_wall(B, T, H, widths, reps=240):
     """`(median paired difference, median plain call)` in seconds.
+
+    `reps` sizes the ESTIMATOR, never a tolerance: the statistic is a median of
+    per-iteration differences on the order of a microsecond, taken with
+    `perf_counter` around a device sync, and 80 of them left that median moving by
+    several microseconds run to run — enough to trip the ratio below on noise. No
+    bound here has been widened.
 
     PAIRED DIFFERENCING, not a difference of aggregates. The two arms alternate
     inside one iteration and the statistic is the median of the PER-ITERATION

@@ -29,9 +29,9 @@ asserts every member of every generated file maps back to that file.
 
 **WHY AN ARM LIST AND NOT AN AXIS CROSS.** The level plan's geometry law admits only
 certain `(C, BC, D, B)` tuples as built arms, so a cross product would name
-unbuildable combinations. The axes that ARE crossed are the carried state's I/O
-(`compacted_kernel`'s `STATE`) and the launch shape (`PERSIST`), because each is
-compiled in or out of an arm rather than being a geometry of its own.
+unbuildable combinations. The axis that IS crossed is the carried state's I/O
+(`compacted_kernel`'s `STATE`), because it is compiled in or out of an arm rather
+than being a geometry of its own.
 
 Usage:
 
@@ -88,13 +88,9 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has {total} built instantiations —
-{narms} arms crossed with the carried state's I/O and the launch shape, the exact set
-`chunk_forward` can select, no more and no fewer. Five arms carry no work-loop
-variant, each for a measured reason `tools/gen_shards.py` states: one is at the
-ISA's whole per-thread register budget and spills once a loop counter is added,
-and four have the shortest super-chunk loop in the manifest, into which `ptxas`
-sinks address arithmetic the SASS gate forbids there. They are split across **{nshards} shards of {per} arms**,
+`compacted_kernel<C, BC, D, B, STATE>` has {total} built instantiations —
+{narms} arms crossed with the carried state's I/O, the exact set `chunk_forward`
+can select, no more and no fewer. They are split across **{nshards} shards of {per} arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -115,8 +111,8 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ARM_PERSIST_BUILT` (which arms carry the work-loop variant) and
-`CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
+list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
@@ -171,47 +167,13 @@ CHUNK_PER_SHARD = 8
 #: because the state is not a geometry.
 CHUNK_STATE = (False, True)
 
-#: THE LAUNCH-SHAPE AXIS, on the same rule: `compacted_kernel`'s `PERSIST` compiles
-#: the sparse grid's work loop in or out, so a call that hands over no liveness
-#: bitmap runs the kernel that has no loop in it at all.  It is an axis rather than
-#: a runtime branch because a loop is not free: its back edge holds every hoisted
-#: address live, MEASURED at +20 to +34 registers on the saturated arms.
-CHUNK_PERSIST = (False, True)
-
-#: THE ARMS THE WORK LOOP DOES NOT FIT, and this is a MEASURED DECLARATION of the
-#: same kind as `reg_floor` -- falsifiable in both directions, because the spill
-#: manifest and `tools/chunk_sass_gate.py` fail on any arm listed as fitting that
-#: does not.  The answer to a configuration a strategy costs too much on is a
-#: different configuration, never a special-cased path: these arms run the full
-#: grid, and asking one for the sparse grid is refused BY NAME
-#: (docs/internals/chunk/chunk.md#run-table).  Two measurements put them here:
-#:
-#: * `(64, 128, 2, 64)` declares `reg_floor` 255, the ISA's whole per-thread
-#:   budget, so it has no register left for a loop counter and SPILLS 66-122
-#:   bytes inside the main loop -- a bare grid-stride loop with no predicate and
-#:   no fence still spills it.
-#: * the four `C = 16, BC = 64` arms have the shortest super-chunk loop and the
-#:   lowest register floor in the manifest (128), and `ptxas` answers the work
-#:   loop's added pressure by SINKING three of the `(bh)`-keyed widening
-#:   multiplies INTO that loop, where the addressing discipline forbids them.
-#:   `C = 16` is a measured chunk-length axis, not the pinned production length.
-CHUNK_NO_PERSIST = ((64, 128, 2, 64),
-                    (16, 64, 2, 8), (16, 64, 2, 16), (16, 64, 2, 64), (16, 64, 1, 256))
-
-
-def chunk_persist(arm) -> bool:
-    """Whether this arm's work-loop variant is built."""
-    return tuple(arm[:4]) not in CHUNK_NO_PERSIST
-
-
 def _variants(arm) -> tuple:
-    return tuple((s, pz) for s in CHUNK_STATE for pz in CHUNK_PERSIST
-                 if not pz or chunk_persist(arm))
+    return CHUNK_STATE
 
 
 def chunk_rows() -> tuple:
-    """Every built chunk instantiation: an arm crossed with the two kernel axes."""
-    return tuple((*a, s, pz) for a in CHUNK_ARMS for (s, pz) in _variants(a))
+    """Every built chunk instantiation: an arm crossed with the state axis."""
+    return tuple((*a, s) for a in CHUNK_ARMS for s in _variants(a))
 
 
 def chunk_atom_arms() -> tuple:
@@ -226,7 +188,7 @@ def chunk_atom_arms() -> tuple:
 
 
 def chunk_canonical(a) -> str:
-    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]} STATE={_b(a[4])} PERSIST={_b(a[5])}"
+    return f"C={a[0]} BC={a[1]} D={a[2]} B={a[3]} STATE={_b(a[4])}"
 
 
 def chunk_members_sha256(rows) -> str:
@@ -237,14 +199,14 @@ def chunk_members_sha256(rows) -> str:
 def chunk_shards() -> dict:
     """The partition, still BY ARM: every kernel variant of an arm rides the same
     shard, so a shard is one slice of the geometry and not part of one."""
-    return {f"chunk_s{i}": [(*a, s, pz) for a in CHUNK_ARMS[i * CHUNK_PER_SHARD:
-                                                            (i + 1) * CHUNK_PER_SHARD]
-                            for (s, pz) in _variants(a)]
+    return {f"chunk_s{i}": [(*a, s) for a in CHUNK_ARMS[i * CHUNK_PER_SHARD:
+                                                        (i + 1) * CHUNK_PER_SHARD]
+                            for s in _variants(a)]
             for i in range((len(CHUNK_ARMS) + CHUNK_PER_SHARD - 1) // CHUNK_PER_SHARD)}
 
 
 def chunk_targs(a) -> str:
-    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}, {_b(a[4])}, {_b(a[5])}"
+    return f"{a[0]}, {a[1]}, {a[2]}, {a[3]}, {_b(a[4])}"
 
 
 def chunk_arms_inc() -> str:
@@ -260,13 +222,6 @@ def chunk_arms_inc() -> str:
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
         lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
-    lines.append("\n// Which arms carry the work-loop variant -- the projection of\n"
-                 "// CHUNK_NO_PERSIST, so the dispatch and the shards cannot disagree\n"
-                 "// about what was built.\n"
-                 "#define CHUNK_ARM_PERSIST_BUILT(C_, BC_, D_, B_) \\\n")
-    lines.append("  (" + " && ".join(
-        f"!((C_) == {a[0]} && (BC_) == {a[1]} && (D_) == {a[2]} && (B_) == {a[3]})"
-        for a in CHUNK_NO_PERSIST) + ")\n")
     atoms = chunk_atom_arms()
     lines.append("\n// The STATS pass' arms -- (D, B) only, the projection of the\n"
                  "// list above (residency is keyed to the invariant quantum, not BC).\n"

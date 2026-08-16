@@ -57,23 +57,11 @@ class PlanOverrides:
     ``None`` (the default) is that default; ``False`` pins the DENSE plane, which is
     what the bit-identity gate compares against; ``True`` is REFUSED, because a knob
     whose only value is the default is a knob that lies about being a decision.
-
-    ``sparse_grid``: run the chunk launch over LIVE BLOCKS ONLY -- a block-grain
-    liveness reduction over the call's union table, then a persistent grid whose work
-    loop skips the dead ones (``docs/internals/chunk/chunk_kernel.md#work-loop``).
-    ``None`` (the default) is OFF, and it is off because nothing yet DECIDES it: the
-    reduction costs a launch of its own, so it pays where the dead-block count is large
-    and loses where it is not, and the automatic rule -- a liveness popcount against a
-    per-arm density knee -- is not built. ``True`` is the explicit expert choice to pay
-    for it; ``False`` pins it off. It is the one axis on this object the op does not
-    yet decide for itself, so pinning it is how a measured win becomes reachable at all
-    rather than a second opinion about a decision already made.
     """
 
     state_block: int | None = None
     mma_precision: str = "bf16"
     paging: bool | None = None
-    sparse_grid: bool | None = None
 
     def __post_init__(self) -> None:
         if self.state_block is not None and type(self.state_block) is not int:
@@ -90,9 +78,6 @@ class PlanOverrides:
                 "to turn on: pass paging=None (or omit it) for the paged backing, or "
                 "paging=False to pin the dense plane. The expert overrides the MAPPING "
                 "only (docs/internals/state.md).")
-        if self.sparse_grid is not None and type(self.sparse_grid) is not bool:
-            raise TypeError(
-                f"sparse_grid must be None or a bool, got {self.sparse_grid!r}")
 
     @classmethod
     def of(cls, value: Any) -> PlanOverrides:

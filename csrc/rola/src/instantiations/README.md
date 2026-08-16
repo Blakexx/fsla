@@ -10,13 +10,9 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE, PERSIST>` has 74 built instantiations —
-21 arms crossed with the carried state's I/O and the launch shape, the exact set
-`chunk_forward` can select, no more and no fewer. Five arms carry no work-loop
-variant, each for a measured reason `tools/gen_shards.py` states: one is at the
-ISA's whole per-thread register budget and spills once a loop counter is added,
-and four have the shortest super-chunk loop in the manifest, into which `ptxas`
-sinks address arithmetic the SASS gate forbids there. They are split across **3 shards of 8 arms**,
+`compacted_kernel<C, BC, D, B, STATE>` has 42 built instantiations —
+21 arms crossed with the carried state's I/O, the exact set `chunk_forward`
+can select, no more and no fewer. They are split across **3 shards of 8 arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
 
@@ -37,8 +33,8 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ARM_PERSIST_BUILT` (which arms carry the work-loop variant) and
-`CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
+list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
@@ -61,6 +57,6 @@ and Y were re-measured" a provable claim.
 
 | shard | members |
 |---|---|
-| `chunk_s0.cu` | 28 |
-| `chunk_s1.cu` | 28 |
-| `chunk_s2.cu` | 18 |
+| `chunk_s0.cu` | 16 |
+| `chunk_s1.cu` | 16 |
+| `chunk_s2.cu` | 10 |

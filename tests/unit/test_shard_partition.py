@@ -74,7 +74,7 @@ gen_shards = pytest.importorskip("gen_shards")
 #: `<C, BC, D, B, STATE>` off a committed shard's own text.
 _ARM = re.compile(
     r"template cudaError_t launch_chunk_arm<"
-    r"(\d+), (\d+), (\d+), (\d+), (true|false), (true|false)>")
+    r"(\d+), (\d+), (\d+), (\d+), (true|false)>")
 
 
 def _committed() -> dict[str, list[tuple]]:
@@ -86,8 +86,8 @@ def _committed() -> dict[str, list[tuple]]:
     """
     out: dict[str, list[tuple]] = {}
     for path in sorted(SHARD_DIR.glob("chunk_s*.cu")):
-        rows = [(int(c), int(bc), int(d), int(b), state == "true", persist == "true")
-                for c, bc, d, b, state, persist in _ARM.findall(path.read_text())]
+        rows = [(int(c), int(bc), int(d), int(b), state == "true")
+                for c, bc, d, b, state in _ARM.findall(path.read_text())]
         assert rows, f"{path.name} instantiates no chunk arm"
         out[path.stem] = rows
     assert out, f"no chunk shards in {SHARD_DIR}"
@@ -104,13 +104,10 @@ def test_membership_is_a_function_of_the_arm_list_alone():
     for name, rows in committed.items():
         index = int(name.removeprefix("chunk_s"))
         block = gen_shards.CHUNK_ARMS[index * per_shard:(index + 1) * per_shard]
-        expected = [(*arm, state, persist) for arm in block
-                    for state in gen_shards.CHUNK_STATE
-                    for persist in gen_shards.CHUNK_PERSIST
-                    if not persist or gen_shards.chunk_persist(arm)]
+        expected = [(*arm, state) for arm in block for state in gen_shards.CHUNK_STATE]
         assert rows == expected, (
             f"{name}.cu's members are not block {index} of CHUNK_ARMS crossed "
-            "with the state and launch-shape axes, in declaration order")
+            "with the state axis, in declaration order")
         for row in rows:
             assert row not in seen, f"{row} is instantiated in {seen[row]} and {name}"
             seen[row] = name
@@ -119,21 +116,16 @@ def test_membership_is_a_function_of_the_arm_list_alone():
 
 
 def test_every_variant_of_an_arm_shares_a_shard():
-    """A shard is one slice of the GEOMETRY. The carried state's I/O and the
-    launch shape are compiled in or out of the same arm, so splitting them across
-    shards would make a shard part of one geometry — and would let one variant be
-    dropped while its twins stayed, which no membership hash over arms would
-    notice. An arm whose register census does not hold the work loop carries no
-    persistent variant at all, and that absence is the generator's declaration
-    rather than a shard's accident."""
+    """A shard is one slice of the GEOMETRY. The carried state's I/O is compiled
+    in or out of the same arm, so splitting the two variants across shards would
+    make a shard part of one geometry — and would let one variant be dropped while
+    its twin stayed, which no membership hash over arms would notice."""
     for name, rows in _committed().items():
-        by_arm: dict[tuple, set[tuple]] = {}
-        for *arm, state, persist in rows:
-            by_arm.setdefault(tuple(arm), set()).add((state, persist))
+        by_arm: dict[tuple, set] = {}
+        for *arm, state in rows:
+            by_arm.setdefault(tuple(arm), set()).add(state)
         for arm, variants in by_arm.items():
-            want = {(s, pz) for s in gen_shards.CHUNK_STATE for pz in gen_shards.CHUNK_PERSIST
-                    if not pz or gen_shards.chunk_persist(arm)}
-            assert variants == want, (
+            assert variants == set(gen_shards.CHUNK_STATE), (
                 f"{name}.cu carries arm {arm} at variants {sorted(variants)} only")
 
 
