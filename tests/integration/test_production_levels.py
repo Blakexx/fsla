@@ -567,6 +567,37 @@ def _run_producer(params, topology, normalization):
 
 
 @_CUDA
+def test_the_projection_lands_inside_its_bf16_output_envelope():
+    """THE PROJECTION half of the seam split, gated numerically against fp64.
+
+    cuBLAS's mainloop is opaque, so this does not mirror its arithmetic -- it bounds the
+    DECLARED class, which is bf16 operands / fp32 accumulate / bf16 OUT. Two terms of the
+    same order, and the fp32 accumulation (`2^-24` per step) is not one of them:
+
+        dz <= 2 * 2^-8 * max sum_k |x_k| |W_k|      (the operands, before cancellation)
+            + 2^-8 * max|z|                          (the output)
+
+    This is the `dz` every downstream envelope is built from, so it is asserted here
+    rather than measured once and quoted. TEETH: an operand or output class one binary
+    place coarser than declared doubles the left-hand side and fails it; fp32 output
+    would sit orders of magnitude under it.
+    """
+    topology = _producer_topology(1.5)
+    params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
+    read_logits, write_logits = _production_logits(topology, params)
+    assert read_logits.dtype is torch.bfloat16
+
+    oracle_params = {name: tensor.to(torch.float64) for name, tensor in params.items()}
+    read64, write64 = _production_logits(topology, oracle_params)
+    assert read64.dtype is torch.float64
+
+    floor = _logit_floor(params, read64, write64)
+    for got, want in ((read_logits, read64), (write_logits, write64)):
+        error = float((_flat64(got) - want).abs().max())
+        assert error <= floor, f"logit error {error:.5f} outside the derived floor {floor:.5f}"
+
+
+@_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
     """THE SOLVE GATE, at the seam the oracle-precision doctrine puts it at.
@@ -630,6 +661,15 @@ def _project_under(producer, parameters, x):
     return functional_call(_Projection(producer), named, (x,))
 
 
+def _logit_floor(params, read64, write64) -> float:
+    """The declared class's bound on the logit error: operand term + output term."""
+    x = params["x"].double().abs()
+    weight = fuse_gain_columns(params["route_W"], params["gain_W"]).double().abs()
+    operands = float(torch.einsum("bld,hdc->blhc", x, weight).max())
+    scale = max(float(read64.abs().max()), float(write64.abs().max()))
+    return 2.0 * 2.0 ** -8 * operands + 2.0 ** -8 * scale
+
+
 def _production_logits(topology, params):
     """The `(read, write)` logits the shipped producer computes for these parameters."""
     H, hidden_size, _ = params["route_W"].shape
@@ -684,8 +724,8 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     oracle = _run_producer(oracle_params, topology, "global")
 
     #: THE ENVELOPE RE-DERIVES with the projection's operand class, it is not widened.
-    #: The two arms are handed logits differing by the bf16 output quantization,
-    #: `dz <= 2^-8 * max|z|`; `tau` is a mean of supported logits so it moves by at most
+    #: The two arms are handed logits differing by the projection's declared class
+    #: (`_logit_floor`); `tau` is a mean of supported logits so it moves by at most
     #: the same, and both entmax specializations have `|dp/dz| <= 1` on support
     #: (`d/dz ((z-tau)/2)^2 = sqrt(p) <= 1` at alpha 1.5, `= 1` at alpha 2). So the
     #: amplitude envelope is `2*dz` on top of the stored form's own tolerance --
@@ -696,8 +736,8 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     #: member entering at a raw amplitude of ~0 can normalize to any fraction at all when
     #: the whole row's mass is comparably small. The bound on such a row is a bound on
     #: the FLIPPED MASS, which is what the accounting below reports.
-    logit_scale = max(float(read_logits.abs().max()), float(write_logits.abs().max()))
-    envelope = 2.0 * 2.0 ** -8 * logit_scale
+    envelope = 2.0 * _logit_floor(production_params, read_logits.double(),
+                                  write_logits.double())
 
     flips = elements = 0
     flipped_mass = 0.0
