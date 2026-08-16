@@ -34,15 +34,16 @@ Two surfaces, because the two steps of the decomposition have different contract
 * `--surface oracle` -- `naive_rola` itself, FORWARD AND BACKWARD. Compared BY
   BIT-IDENTITY (P2): both sides run fp64 on identical inputs, so a rewrite that only
   nearly reproduces the old one has changed the definition. Declared exceptions are
-  named on the command line (exact key, or a `fnmatch` pattern such as
-  `*/dstored0`) and asserted individually; anything undeclared is a failure.
+  named on the command line (exact key, or a `fnmatch` pattern) and asserted
+  individually; anything undeclared is a failure.
 
 **THE BACKWARD HALF IS P3, AND IT IS NOT OPTIONAL.** A seeded VJP per cell over every
 operand, with `None` recorded as `None` rather than coerced to zeros -- because the
 oracle's `.detach()` at the clock is its literal spec, and the difference between "no
 gradient" and "a zero gradient" is precisely what a manufactured graph edge hides. The
-stored clock is passed as a DISTINCT tensor for the same reason: aliased to the
-deposit it trains through, it cannot be observed at all.
+clock's detachment is observed through the WRITE levels, which under the bf16-bundle
+ruling are the stored form: the `clock` mutant removes the `.detach()` and the write
+levels' gradient moves.
 
 **P5, NON-VACUITY.** `--mutate` injects a known defect into the NEW side and the run
 must FAIL. A protocol that cannot fail is not a protocol, and this one is the gate
@@ -142,7 +143,14 @@ DEFAULT_CHUNKS = 16
 #: what stands between a quiet oracle change and every Tier 1 claim in the tree. The
 #: precedent is real: the `oracle` surface was UNRUNNABLE for a window after `raw`
 #: died and nothing said so.
-MINIMUM_COMPARISONS = {"oracle": 640, "producer": 162}
+#:
+#: LOWERED ONCE, at P74-S4, from `oracle` 640 to 512: the `write_levels_stored`
+#: operand left the oracle's signature under R1 (the producer emits the stored form),
+#: and the 128 `*/dstored{0,1}` gradients it contributed were `None` on both sides by
+#: construction. The shim that kept passing it existed to span exactly the P74 python
+#: commits and is gone with it; what remains is the same matrix minus a vacuous
+#: operand, which is why this is a legitimate shrink and not a lost row.
+MINIMUM_COMPARISONS = {"oracle": 512, "producer": 162}
 
 
 # ---------------------------------------------------------------------------
@@ -190,29 +198,14 @@ def _routing_cells():
 
 
 def _levels(types, widths):
-    """One softmax routing level per width, built against EITHER side's config shape.
-
-    THE TOOL SUPPLIES THE INPUTS FOR BOTH SIDES, so a dual run spanning a commit that
-    moved the configuration surface has to speak both spellings -- and it selects
-    between them on a STRUCTURAL fact (does the level config carry its own width?),
-    never on a version string, because a version string is a claim and a dataclass field
-    is a fact. P74 retired the `LevelConfig(width, routing)` wrapper by moving the width
-    onto the routing form itself; before it, the wrapper is what `Topology` takes.
+    """One softmax routing level per width.
 
     The oracle takes ALREADY-NORMALIZED simplices, so the activation choice never
     reaches it -- softmax is here because a topology requires one, and matching Tier 1
     keeps the two matrices talking about the same object.
     """
-    import dataclasses
-
     dense = types.SoftmaxActivation()
-    fields = {field.name for field in dataclasses.fields(types.IndependentRouting)}
-    if "width" in fields:
-        return tuple(
-            types.IndependentRouting(width=w, read=dense, write=dense) for w in widths)
-    routing = types.IndependentRouting(
-        tied=False, read_activation=dense, write_activation=dense)
-    return tuple(types.LevelConfig(w, routing) for w in widths)
+    return tuple(types.IndependentRouting(width=w, read=dense, write=dense) for w in widths)
 
 
 def _call(fn, **kwargs):
@@ -341,28 +334,13 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
                         continue
                     name = (f"{'x'.join(map(str, widths))}-dv{d_v}-{normalization}-"
                             f"{'decay' if decay_on else 'nodecay'}-T{T}")
-                    #: The stored clock is a DISTINCT tensor, not the default
-                    #: alias of `write`. It is the one input the spec says must
-                    #: receive no gradient (`c = stop_gradient(...)`), and it
-                    #: cannot be observed at all while it is the same object the
-                    #: deposit trains through.
-                    stored = tuple(level.clone() for level in write)
                     operands = _differentiable(
                         v=v, g_read=g_read, g_write=g_write, read=read,
-                        write=write, stored=stored,
-                        dials=None if decay is None else decay.dials)
-                    #: BOUND BY SIGNATURE for the same reason `topo` is: the stored
-                    #: clock left the oracle's signature when the producer began
-                    #: emitting the stored form. The old side is handed it and detaches
-                    #: it; the new side does not have the parameter and never sees it.
-                    #: Either way `stored` is an operand the output does not depend on,
-                    #: so both sides must record `None` for its gradient -- which is the
-                    #: comparison that proves the removal changed nothing.
+                        write=write, dials=None if decay is None else decay.dials)
                     y, state = _call(
                         naive_rola, v=v, read_levels=read, write_levels=write,
                         g_read=g_read, g_write=g_write, topology=topo, decay=decay,
-                        normalization=normalization, write_levels_stored=stored,
-                        output_final_state=True)
+                        normalization=normalization, output_final_state=True)
                     out[f"{name}/y"] = y
                     out[f"{name}/state"] = state
                     out.update(_backward(name, y, state, operands))
@@ -500,9 +478,9 @@ def apply_mutant(kind: str) -> None:
 def _excepted(key: str, exceptions) -> bool:
     """A declared P2 exception matches by exact key or by `fnmatch` pattern.
 
-    Patterns exist because an exception is usually a QUANTITY (`*/dstored0`, every
-    cell's stored-clock gradient) rather than one cell, and ninety-six spellings of
-    the same declaration is a declaration nobody reads.
+    Patterns exist because an exception is usually a QUANTITY -- one gradient across
+    every cell -- rather than one cell, and ninety-six spellings of the same
+    declaration is a declaration nobody reads.
     """
     return any(key == e or fnmatch.fnmatch(key, e) for e in exceptions)
 

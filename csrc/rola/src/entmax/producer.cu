@@ -28,7 +28,7 @@ namespace detail {
 //: The two staging regions ALIAS: `xs`/`ws` are dead once the last `mma` retires, and the
 //: fp32 tile is written after the barrier that ends the K loop.
 struct TileSmem {
-  int columns, ws_stride, tile_stride;
+  int columns, tile_stride;
   __device__ __forceinline__ __nv_bfloat16* xs(char* p) const { return (__nv_bfloat16*)p; }
   __device__ __forceinline__ __nv_bfloat16* ws(char* p) const {
     return (__nv_bfloat16*)(p + WORD_TOKENS * XS_STRIDE * (int)sizeof(__nv_bfloat16));
@@ -36,11 +36,11 @@ struct TileSmem {
   __device__ __forceinline__ float* tile(char* p) const { return (float*)p; }
 };
 
-inline int ws_stride_for(int columns) { return (columns + 7) & ~7; }
+inline int staged_columns(int columns) { return (columns + MMA_N - 1) & ~(MMA_N - 1); }
 
 inline int64_t tile_smem_bytes(int columns) {
-  const int64_t staging = (int64_t)WORD_TOKENS * XS_STRIDE * 2 + (int64_t)TILE_K
-                                                                     * ws_stride_for(columns) * 2;
+  const int64_t staging =
+      (int64_t)WORD_TOKENS * XS_STRIDE * 2 + (int64_t)staged_columns(columns) * WS_STRIDE * 2;
   const int64_t tile = (int64_t)WORD_TOKENS * columns * 4;
   return staging > tile ? staging : tile;
 }
@@ -60,8 +60,8 @@ __global__ __launch_bounds__(GEMM_THREADS, 2) void producer_probe_kernel(
 
   tile_gemm<NT>(x, x_bf16, x_token_stride, sb * x_batch_stride + (int64_t)token0 * x_token_stride,
                 w, w_bf16, sh * w_head_stride, bias == nullptr ? nullptr : bias + sh * columns,
-                hidden, columns, rows, layout.xs(smem), layout.ws(smem), layout.ws_stride,
-                layout.tile(smem), layout.tile_stride);
+                hidden, columns, rows, layout.xs(smem), layout.ws(smem), layout.tile(smem),
+                layout.tile_stride);
   __syncthreads();
 
   const float* tile = layout.tile(smem);
@@ -104,7 +104,7 @@ void producer_probe(const torch::Tensor& x, const torch::Tensor& route_W,
     bias = route_bias->data_ptr<float>();
   }
 
-  detail::TileSmem layout{columns, detail::ws_stride_for(columns), columns};
+  detail::TileSmem layout{columns, columns};
   const int64_t smem = detail::tile_smem_bytes(columns);
   const int n_tiles = (columns + detail::MMA_N - 1) / detail::MMA_N;
   const int nt = (n_tiles + detail::GEMM_WARPS - 1) / detail::GEMM_WARPS;

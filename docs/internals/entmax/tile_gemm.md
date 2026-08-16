@@ -53,6 +53,29 @@ block inside the default 48 KB and off the dynamic-shared-memory opt-in.
 `XS_STRIDE = TILE_K + 8` pads the `A`-fragment reads so the eight rows one lane group
 touches land in eight distinct banks.
 
+<a id="staging"></a>
+## The staging loops, and the two instruction costs they used to pay
+
+The first version of this component staged both operands through a flat
+`for (e = tid; e < elems; e += THREADS)` loop and read the `B` fragment out of a
+row-major `ws`. Measured with `ncu` at the pinned cell, it executed **224 M**
+instructions against **2.16 M** tensor instructions — 104 non-tensor instructions per
+`mma` — at 53% of SM issue throughput and only 58.7 MB of DRAM. The kernel was
+instruction-bound, not bandwidth-bound, and two costs dominated:
+
+1. **A 32-bit integer division per staged element.** `e / ws_stride` against a *runtime*
+   divisor is a ~20-instruction sequence, and `W` staging is 512 elements per thread per
+   CTA. The loops are now nested `(k over warps, c over lanes)` with power-of-two or
+   constant strides, so no division survives.
+2. **Four 16-bit shared loads and a pack per `mma`.** A `B` fragment wants two `k`
+   values that are adjacent in `k`; row-major `ws` puts them a column stride apart. `ws`
+   is therefore **column-major** `[column][k]` with `WS_STRIDE = TILE_K + 2`, so one
+   fragment is one 32-bit load.
+
+`WS_STRIDE = 34` is chosen so its half, 17, is odd: the transposing store (consecutive
+lanes writing consecutive columns) then lands in 32 distinct banks, and the fragment read
+stays low-conflict.
+
 <a id="ragged-tile"></a>
 ## The ragged tile carries zeros, it does not branch
 
