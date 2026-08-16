@@ -48,10 +48,11 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import produce_routing, resolved_routing_from_topology
+from conftest import fuse_gain_columns, produce_routing, resolved_routing_from_topology
 
 import rola.routing.producer as production_path
 from rola.routing.entmax.production import production_routing_factor_levels
+from rola.routing.producer import RouteProducer
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
     EntmaxActivation,
@@ -196,14 +197,16 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     raise ValueError(kind)
 
 
-def _assert_levels_match(actual, expected, *, gradient=False, stored=False):
+def _assert_levels_match(actual, expected, *, gradient=False, stored=False, extra_atol=0.0):
+    """``extra_atol`` is a DERIVED term the caller states, never a loosened constant."""
     if stored:
         rtol, atol = _STORED_RTOL, _STORED_ATOL
     elif gradient:
         rtol, atol = _PRODUCTION_GRAD_RTOL, _PRODUCTION_GRAD_ATOL
     else:
         rtol, atol = _PRODUCTION_RTOL, _PRODUCTION_ATOL
-    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol, check_dtype=False)
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol + extra_atol,
+                               check_dtype=False)
 
 
 def _assert_support_identical(actual: torch.Tensor, expected: torch.Tensor, label: str) -> None:
@@ -564,12 +567,146 @@ def _run_producer(params, topology, normalization):
 
 
 @_CUDA
-@pytest.mark.parametrize("alpha", [1.5, 2.0])
-def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
-    """`produce_routing` end to end: production solve vs fp64 oracle solve.
+def test_the_projection_lands_inside_its_bf16_output_envelope():
+    """THE PROJECTION half of the seam split, gated numerically against fp64.
 
-    Support sets must match EXACTLY on every zero-capable side (entmax support is
-    discrete); amplitudes and side gains carry the production tolerance.
+    cuBLAS's mainloop is opaque, so this does not mirror its arithmetic -- it bounds the
+    DECLARED class, which is bf16 operands / fp32 accumulate / bf16 OUT. Two terms of the
+    same order, and the fp32 accumulation (`2^-24` per step) is not one of them:
+
+        dz <= 2 * 2^-8 * max sum_k |x_k| |W_k|      (the operands, before cancellation)
+            + 2^-8 * max|z|                          (the output)
+
+    This is the `dz` every downstream envelope is built from, so it is asserted here
+    rather than measured once and quoted. TEETH: an operand or output class one binary
+    place coarser than declared doubles the left-hand side and fails it; fp32 output
+    would sit orders of magnitude under it.
+    """
+    topology = _producer_topology(1.5)
+    params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
+    read_logits, write_logits = _production_logits(topology, params)
+    assert read_logits.dtype is torch.bfloat16
+
+    oracle_params = {name: tensor.to(torch.float64) for name, tensor in params.items()}
+    read64, write64 = _production_logits(topology, oracle_params)
+    assert read64.dtype is torch.float64
+
+    floor = _logit_floor(params, read64, write64)
+    for got, want in ((read_logits, read64), (write_logits, write64)):
+        error = float((_flat64(got) - want).abs().max())
+        assert error <= floor, f"logit error {error:.5f} outside the derived floor {floor:.5f}"
+
+
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
+    """THE SOLVE GATE, at the seam the oracle-precision doctrine puts it at.
+
+    The projection is a bf16-operand tensor-core GEMM whose arithmetic no reference can
+    mirror, so it is gated NUMERICALLY elsewhere and the solve is gated EXACTLY here:
+    the reference solve is fed the PRODUCTION LOGITS -- the very tensor the kernel read --
+    and the support sets must agree BITWISE. bf16 -> fp32 and bf16 -> fp64 are both exact
+    widenings, so the two solves see the same real numbers and nothing but solve
+    precision can separate them; entmax support is a discrete object, so "the same
+    numbers in" has to mean "the same set out".
+    """
+    topology = _producer_topology(alpha)
+    resolved = resolved_routing_from_topology(topology)
+    params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
+
+    H, hidden_size, _ = params["route_W"].shape
+    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H,
+                             normalization="global")
+    parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
+                  "side_gain.gain_bias": params["gain_bias"]}
+    read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
+    assert read_logits.dtype is torch.bfloat16, (
+        "the shipped projection emits bf16 logits; this gate is meaningless against any "
+        "other dtype")
+
+    kernel_read, kernel_write = production_routing_factor_levels(
+        read_logits, write_logits, producer.routing)
+    reference_read, reference_write = oracle_factor_levels(
+        _flat64(read_logits), _flat64(write_logits), producer.routing)
+
+    for level in range(topology.D):
+        if resolved.read_level_can_zero[level]:
+            _assert_support_identical(
+                kernel_read[level], reference_read[level], f"read {level}")
+        if resolved.write_level_can_zero[level]:
+            _assert_support_identical(
+                kernel_write[level], reference_write[level], f"write {level}")
+        _assert_levels_match(kernel_read[level], reference_read[level], stored=True)
+        _assert_levels_match(kernel_write[level], reference_write[level], stored=True)
+
+
+def _project_under(producer, parameters, x):
+    """`RouteProducer._project` alone, under the caller's parameter tensors.
+
+    The seam gate needs the LOGITS the shipped forward computes and nothing that happens
+    after them, so the projection is run as its own module rather than reconstructed --
+    reconstructing it is how a gate ends up measuring a second implementation.
+    """
+    from torch.func import functional_call
+
+    class _Projection(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, stream):
+            return self.inner._project(stream, None)
+
+    named = {f"inner.{name}": value for name, value in parameters.items()}
+    return functional_call(_Projection(producer), named, (x,))
+
+
+def _logit_floor(params, read64, write64) -> float:
+    """The declared class's bound on the logit error: operand term + output term."""
+    x = params["x"].double().abs()
+    weight = fuse_gain_columns(params["route_W"], params["gain_W"]).double().abs()
+    operands = float(torch.einsum("bld,hdc->blhc", x, weight).max())
+    scale = max(float(read64.abs().max()), float(write64.abs().max()))
+    return 2.0 * 2.0 ** -8 * operands + 2.0 ** -8 * scale
+
+
+def _production_logits(topology, params):
+    """The `(read, write)` logits the shipped producer computes for these parameters."""
+    H, hidden_size, _ = params["route_W"].shape
+    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H,
+                             normalization="global")
+    parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
+                  "side_gain.gain_bias": params["gain_bias"]}
+    read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
+    return read_logits, write_logits
+
+
+def _flat64(logits: torch.Tensor) -> torch.Tensor:
+    """The token-major plane the kernel reads, as the flat fp64 plane a reference takes.
+
+    Both steps are EXACT: a permute moves no bits, and bf16 -> fp64 is a widening.
+    """
+    return logits.permute(0, 2, 1, 3).reshape(
+        logits.shape[0] * logits.shape[2], logits.shape[1], logits.shape[3]).double()
+
+
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, capsys):
+    """`produce_routing` end to end: the shipped path against a wholly fp64 one.
+
+    THIS IS PURPOSE-2 ACCOUNTING, and the doctrine says so. The two arms differ in the
+    PROJECTION's operand class (bf16 operands on the tensor cores against fp64), so a
+    logit near a threshold can land on either side of it and the support sets are not
+    the same object. The flip count is therefore REPORTED, not asserted -- the exact
+    claim about the solve lives in
+    `test_the_solve_seam_is_exact_on_the_production_logits`, where the reference is fed
+    the production logits.
+
+    What IS asserted is the amplitudes at the stored tolerance, and that assertion
+    bounds the flips it does not count: a member crossing the threshold enters with an
+    amplitude of ~0 (entmax's `((z - tau)/2)^2` is continuous at the boundary), so a
+    flip large enough to matter is a flip large enough to fail this.
     """
     topology = _producer_topology(alpha)
     resolved = resolved_routing_from_topology(topology)
@@ -578,6 +715,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
         topology, dtype=torch.float32, device="cuda", sides=1)
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
 
+    read_logits, write_logits = _production_logits(topology, production_params)
     production = _run_producer(production_params, topology, "global")
     #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.routing.producer`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
@@ -585,20 +723,53 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
         production_path, "production_routing_factor_levels", oracle_factor_levels)
     oracle = _run_producer(oracle_params, topology, "global")
 
-    for level in range(topology.D):
-        if resolved.read_level_can_zero[level]:
-            _assert_support_identical(
-                production.read_levels[level], oracle.read_levels[level], f"read {level}")
-        if resolved.write_level_can_zero[level]:
-            _assert_support_identical(
-                production.write_levels[level], oracle.write_levels[level], f"write {level}")
-        _assert_levels_match(production.read_levels[level], oracle.read_levels[level],
-                             stored=True)
-        _assert_levels_match(production.write_levels[level], oracle.write_levels[level],
-                             stored=True)
+    #: THE ENVELOPE RE-DERIVES with the projection's operand class, it is not widened.
+    #: The two arms are handed logits differing by the projection's declared class
+    #: (`_logit_floor`); `tau` is a mean of supported logits so it moves by at most
+    #: the same, and both entmax specializations have `|dp/dz| <= 1` on support
+    #: (`d/dz ((z-tau)/2)^2 = sqrt(p) <= 1` at alpha 1.5, `= 1` at alpha 2). So the
+    #: amplitude envelope is `2*dz` on top of the stored form's own tolerance --
+    #: ON ROWS WHOSE SUPPORT SET DID NOT MOVE.
+    #:
+    #: A row whose support DID move is excluded from the envelope and counted instead,
+    #: and that is not a dodge: `read_simplex()` divides by the row's own mass, so a
+    #: member entering at a raw amplitude of ~0 can normalize to any fraction at all when
+    #: the whole row's mass is comparably small. The bound on such a row is a bound on
+    #: the FLIPPED MASS, which is what the accounting below reports.
+    envelope = 2.0 * _logit_floor(production_params, read_logits.double(),
+                                  write_logits.double())
 
-    _assert_levels_match(production.g_write, oracle.g_write)
+    flips = elements = 0
+    flipped_mass = 0.0
+    for level in range(topology.D):
+        for got, want, zeroable in (
+            (production.read_levels[level], oracle.read_levels[level],
+             resolved.read_level_can_zero[level]),
+            (production.write_levels[level], oracle.write_levels[level],
+             resolved.write_level_can_zero[level]),
+        ):
+            want = want.to(got.dtype)
+            if not zeroable:
+                _assert_levels_match(got, want, stored=True, extra_atol=envelope)
+                continue
+            moved = (got != 0) != (want != 0)
+            flips += int(moved.sum())
+            elements += got.numel()
+            flipped_mass = max(flipped_mass, float((got * moved).abs().max()),
+                               float((want * moved).abs().max()))
+            settled = ~moved.any(dim=-1, keepdim=True).expand_as(got)
+            _assert_levels_match(got[settled], want[settled], stored=True,
+                                 extra_atol=envelope)
+
+    #: `softplus` is 1-Lipschitz and the gain logit is a column of the SAME projection,
+    #: so the gain's envelope is `dz` exactly -- half the amplitudes'.
+    _assert_levels_match(production.g_write, oracle.g_write, extra_atol=envelope / 2.0)
     assert production.g_read is None and oracle.g_read is None
+    with capsys.disabled():
+        print(f"\n  FLIP ACCOUNTING alpha={alpha}: {flips} support flips in {elements} "
+              f"zero-capable elements ({flips / max(elements, 1):.3e}), greatest flipped "
+              f"amplitude {flipped_mass:.4f}, between the shipped bf16-operand projection "
+              f"and a wholly fp64 one")
 
 
 # ---------------------------------------------------------------------------

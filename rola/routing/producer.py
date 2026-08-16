@@ -244,11 +244,20 @@ class RouteProducer(nn.Module):
     def _project(self, x: torch.Tensor, x_w: torch.Tensor | None):
         """Packed router logits in the domain the caller's dtype selects.
 
-        fp64 in, fp64 out (the oracle-equivalence gate runs the whole layer there);
-        anything else projects in fp32, which is the precision guard a bf16 training
-        run must still get on its routing logits.
+        fp64 in, fp64 out (the oracle-equivalence gate runs the whole layer there). On
+        CUDA the projection is **bf16 operands, fp32 accumulate, bf16 out** -- the
+        industry-standard class, ruled in P74 -- which is a tensor-core GEMM rather than
+        the fp32 SIMT one, measured 2.76x faster at the pinned cell. The solve widens
+        each logit in-register, so nothing in the tree ever narrows a solved value to buy
+        it. Off CUDA there are no tensor cores to reach, so the torch lowering keeps
+        fp32.
         """
-        projection_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
+        if x.dtype == torch.float64:
+            projection_dtype = torch.float64
+        elif x.is_cuda:
+            projection_dtype = torch.bfloat16
+        else:
+            projection_dtype = torch.float32
         #: TOKEN-MAJOR `[B, T, H, W]` for the hand-CUDA solve: that is the sgemm's own
         #: output order, so the head axis is free here and the solve addresses `b` and
         #: `h` as two strides; the flat `[B*H, T, W]` form costs a whole pass over the
@@ -261,7 +270,7 @@ class RouteProducer(nn.Module):
         #: swaps in -- reads a level by slicing, with no stride tuple to read a head
         #: axis through, so handing them the flat plane is what keeps this an
         #: implementation choice rather than a change to what a reference accepts.
-        cuda_solve = x.is_cuda and projection_dtype is torch.float32
+        cuda_solve = projection_dtype is torch.bfloat16
         return _packed_router_logits(
             x, self.route_W, self.routing, route_bias=self.route_bias, h_w=x_w,
             projection_dtype=projection_dtype, token_major=cuda_solve,

@@ -56,9 +56,9 @@ __device__ __forceinline__ float log_write_gate(float delta) {
 // ---------------------------------------------------------------------------
 // FORWARD
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, bool ALPHA15, typename OutT>
+template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forward_kernel(
-    const float* __restrict__ read_logits, const float* __restrict__ write_logits,
+    const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
     float* __restrict__ midpoint_values, int32_t* __restrict__ support_words,
     OutT* __restrict__ read_values, OutT* __restrict__ write_values, int tokens, int heads,
     LevelTable table, Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
@@ -142,8 +142,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
       const bool valid = col < width;
-      const float r = valid ? read_logits[addr_split(sr, sb, sh, token, logit_base + col)] : 0.0f;
-      const float w = valid ? write_logits[addr_split(sw, sb, sh, token, logit_base + col)] : 0.0f;
+      const float r =
+          valid ? load_value(read_logits, addr_split(sr, sb, sh, token, logit_base + col)) : 0.0f;
+      const float w =
+          valid ? load_value(write_logits, addr_split(sw, sb, sh, token, logit_base + col)) : 0.0f;
       midpoint[i] = 0.5f * r + 0.5f * w;
       bool sat = false;
       delta[i] = overflow_free_delta(r, w, &sat);
@@ -322,13 +324,13 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 // The Jacobian derivation, the exact-zero argument, and the two MEASURED spill trades
 // that made this kernel re-read rather than stage: docs/internals/entmax/entmax.md#backward
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, bool ALPHA15, typename OutT>
+template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
-    const float* __restrict__ read_logits, const float* __restrict__ write_logits,
+    const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
     const float* __restrict__ midpoint_values, const int32_t* __restrict__ support_words,
     const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
     const OutT* __restrict__ d_read, const OutT* __restrict__ d_write,
-    float* __restrict__ d_read_logits, float* __restrict__ d_write_logits, int tokens, int heads,
+    LogitT* __restrict__ d_read_logits, LogitT* __restrict__ d_write_logits, int tokens, int heads,
     LevelTable table, Strides sr, Strides sw, Strides smid, Strides srv, Strides swv, Strides sdr,
     Strides sdw, Strides sdrl, Strides sdwl, Strides ssup) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
@@ -409,8 +411,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const float dw =
           valid ? load_value(d_write, addr(sdw, stream, token, value_base + col)) : 0.0f;
       const float dlw = wv * (dw - dot);
-      const float r = valid ? read_logits[addr_split(sr, sb, sh, token, logit_base + col)] : 0.0f;
-      const float w = valid ? write_logits[addr_split(sw, sb, sh, token, logit_base + col)] : 0.0f;
+      const float r =
+          valid ? load_value(read_logits, addr_split(sr, sb, sh, token, logit_base + col)) : 0.0f;
+      const float w =
+          valid ? load_value(write_logits, addr_split(sw, sb, sh, token, logit_base + col)) : 0.0f;
       bool sat = false;
       const float delta = overflow_free_delta(r, w, &sat);
       if (sat) saturated_mask |= (1u << i);
@@ -447,8 +451,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
       const float mid = midpoint_values[addr(smid, stream, token, midpoint_base + col)];
       const float si = sup ? (ALPHA15 ? sqrtf(mid) : 1.0f) : 0.0f;
       const float d_ml = si * (d_mid[i] - num / den);
-      d_read_logits[addr_split(sdrl, sb, sh, token, logit_base + col)] = 0.5f * d_ml + d_delta[i];
-      d_write_logits[addr_split(sdwl, sb, sh, token, logit_base + col)] = 0.5f * d_ml - d_delta[i];
+      store_value(d_read_logits, addr_split(sdrl, sb, sh, token, logit_base + col),
+                  0.5f * d_ml + d_delta[i]);
+      store_value(d_write_logits, addr_split(sdwl, sb, sh, token, logit_base + col),
+                  0.5f * d_ml - d_delta[i]);
     }
   }
 }
@@ -458,7 +464,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 // (I2). One launch per union level. The (w_pad -> LW, IPT) table and why the launch
 // count is unchanged from the Triton lowering: docs/internals/entmax/entmax.md#launch-shape
 // ---------------------------------------------------------------------------
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Tensor& mid,
                     torch::Tensor& sup, torch::Tensor& rv, torch::Tensor& wv,
                     const LevelTable& table, int levels, int w_pad, int heads, double alpha) {
@@ -480,9 +486,10 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(a15, [&](auto A15) {
-          union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+          union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
+                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
+                  mid.data_ptr<float>(),
                   sup.data_ptr<int32_t>(), (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens,
                   heads, table, five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv),
                   five(wv), five(sup));
@@ -491,7 +498,7 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const torch::Tensor& mid,
                      const torch::Tensor& sup, const torch::Tensor& rv, const torch::Tensor& wv,
                      const torch::Tensor& dr, const torch::Tensor& dw, torch::Tensor& drl,
@@ -511,12 +518,13 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(a15, [&](auto A15) {
-          union_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+          union_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  rl.data_ptr<float>(), wl.data_ptr<float>(), mid.data_ptr<float>(),
-                  sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
-                  (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), drl.data_ptr<float>(),
-                  dwl.data_ptr<float>(), tokens, heads, table, five_logits(rl, heads),
+                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
+                  mid.data_ptr<float>(), sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(),
+                  (const OutT*)wv.data_ptr(), (const OutT*)dr.data_ptr(),
+                  (const OutT*)dw.data_ptr(), (LogitT*)drl.data_ptr(), (LogitT*)dwl.data_ptr(),
+                  tokens, heads, table, five_logits(rl, heads),
                   five_logits(wl, heads), five(mid), five(rv), five(wv), five(dr), five(dw),
                   five_logits(drl, heads), five_logits(dwl, heads), five(sup));
         });
@@ -534,8 +542,9 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
                    const std::vector<int64_t>& midpoint_offsets,
                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                    int64_t heads, double alpha) {
-  TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
-              "union entmax requires fp32 CUDA logits");
+  detail::check_logits(read_logits);
+  TORCH_CHECK(read_logits.scalar_type() == write_logits.scalar_type(),
+              "read/write routing logits must share a dtype");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
   TORCH_CHECK(read_values.scalar_type() == write_values.scalar_type(),
               "read/write route values must share a dtype");
@@ -543,16 +552,12 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
       detail::build_table(logit_offsets, value_offsets, support_offsets, widths, midpoint_offsets);
   const int levels = (int)widths.size(), w_pad = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(read_logits.device());
-  if (read_values.scalar_type() == torch::kFloat32)
-    detail::launch_forward<float>(read_logits, write_logits, midpoint_values, support_words,
-                                  read_values, write_values, table, levels, w_pad, (int)heads,
-                                  alpha);
-  else if (read_values.scalar_type() == torch::kBFloat16)
-    detail::launch_forward<__nv_bfloat16>(read_logits, write_logits, midpoint_values, support_words,
-                                          read_values, write_values, table, levels, w_pad,
-                                          (int)heads, alpha);
-  else
-    TORCH_CHECK(false, "route values must be fp32 or bf16");
+  detail::logit_value_switch(
+      read_logits.scalar_type(), read_values.scalar_type(), [&](auto L, auto V) {
+        detail::launch_forward<decltype(L), decltype(V)>(
+            read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
+            table, levels, w_pad, (int)heads, alpha);
+      });
 }
 
 void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
@@ -565,23 +570,21 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
                     const std::vector<int64_t>& midpoint_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                     int64_t heads, double alpha) {
-  TORCH_CHECK(read_logits.is_cuda() && read_logits.scalar_type() == torch::kFloat32,
-              "union entmax backward requires fp32 CUDA logits");
+  detail::check_logits(read_logits);
+  TORCH_CHECK(read_logits.scalar_type() == d_read_logits.scalar_type(),
+              "the union VJP writes logit gradients in the logits' own dtype");
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
   const auto table =
       detail::build_table(logit_offsets, value_offsets, support_offsets, widths, midpoint_offsets);
   const int levels = (int)widths.size(), w_pad = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(read_logits.device());
-  if (read_values.scalar_type() == torch::kFloat32)
-    detail::launch_backward<float>(read_logits, write_logits, midpoint_values, support_words,
-                                   read_values, write_values, d_read, d_write, d_read_logits,
-                                   d_write_logits, table, levels, w_pad, (int)heads, alpha);
-  else if (read_values.scalar_type() == torch::kBFloat16)
-    detail::launch_backward<__nv_bfloat16>(
-        read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
-        d_read, d_write, d_read_logits, d_write_logits, table, levels, w_pad, (int)heads, alpha);
-  else
-    TORCH_CHECK(false, "route values must be fp32 or bf16");
+  detail::logit_value_switch(
+      read_logits.scalar_type(), read_values.scalar_type(), [&](auto L, auto V) {
+        detail::launch_backward<decltype(L), decltype(V)>(
+            read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
+            d_read, d_write, d_read_logits, d_write_logits, table, levels, w_pad, (int)heads,
+            alpha);
+      });
 }
 
 }  // namespace entmax

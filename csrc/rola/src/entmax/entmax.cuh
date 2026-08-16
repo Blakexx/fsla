@@ -89,6 +89,19 @@ __device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int
   p[off] = __float2bfloat16(v);
 }
 
+//: The ACCUMULATING store, for the tied backward's second contribution. bf16 device
+//: atomics are sm_80+, which the closed-world arch set already is.
+template <typename T>
+__device__ __forceinline__ void add_value(T* p, int64_t off, float v);
+template <>
+__device__ __forceinline__ void add_value<float>(float* p, int64_t off, float v) {
+  atomicAdd(p + off, v);
+}
+template <>
+__device__ __forceinline__ void add_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
+  atomicAdd(p + off, __float2bfloat16(v));
+}
+
 template <typename T>
 __device__ __forceinline__ float load_value(const T* p, int64_t off);
 template <>
@@ -211,6 +224,42 @@ inline LevelTable build_table(const std::vector<int64_t>& logit_off,
   return table;
 }
 
+}  // namespace detail
+#endif  // __CUDACC__
+
+//: TWO DTYPE AXES, ONE CALL: the LOGIT plane's and the route values'. Both are bf16 on
+//: the shipped path -- the router GEMM emits bf16 operands' bf16 output and the consumer
+//: reads bf16 -- and fp32 on the gates that want the solve's arithmetic without either
+//: storage quantization -- docs/internals/entmax/factor.md#logit-dtype
+#ifdef __CUDACC__
+namespace detail {
+//: THE LOGIT PLANE IS bf16 ON THE SHIPPED PATH -- the router GEMM runs bf16 operands on
+//: the tensor cores and its output is bf16, so widening it would be the pass the
+//: `LogitT` template exists to delete -- docs/internals/entmax/factor.md#logit-dtype
+inline void check_logits(const torch::Tensor& logits) {
+  TORCH_CHECK(logits.is_cuda(), "routing logits must be CUDA");
+  TORCH_CHECK(logits.scalar_type() == torch::kFloat32 || logits.scalar_type() == torch::kBFloat16,
+              "routing logits must be fp32 or bf16");
+}
+
+template <typename Body>
+inline void logit_value_switch(at::ScalarType logit, at::ScalarType value, Body&& body) {
+  TORCH_CHECK(logit == torch::kFloat32 || logit == torch::kBFloat16,
+              "routing logits must be fp32 or bf16");
+  TORCH_CHECK(value == torch::kFloat32 || value == torch::kBFloat16,
+              "route values must be fp32 or bf16");
+  if (logit == torch::kFloat32) {
+    if (value == torch::kFloat32)
+      body(float{}, float{});
+    else
+      body(float{}, __nv_bfloat16{});
+  } else {
+    if (value == torch::kFloat32)
+      body(__nv_bfloat16{}, float{});
+    else
+      body(__nv_bfloat16{}, __nv_bfloat16{});
+  }
+}
 }  // namespace detail
 #endif  // __CUDACC__
 

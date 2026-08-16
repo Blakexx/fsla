@@ -30,9 +30,9 @@ namespace detail {
 // ---------------------------------------------------------------------------
 // FORWARD -- the threshold-after-sort solve
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, bool ALPHA15, typename OutT>
+template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forward_kernel(
-    const float* __restrict__ logits, const bool* __restrict__ mask, OutT* __restrict__ values,
+    const LogitT* __restrict__ logits, const bool* __restrict__ mask, OutT* __restrict__ values,
     OutT* __restrict__ values_second, int32_t* __restrict__ support_words, int tokens, int heads,
     LevelTable table, Strides sz, Strides smask, Strides sv, Strides sv2, Strides ssup) {
   constexpr int W_PAD = LW * IPT;
@@ -116,7 +116,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
         valid_mask |= (1u << i);
         ++local_valid;
       }
-      z[i] = valid ? logits[addr_split(sz, sb, sh, token, logit_base + col)] : 0.0f;
+      z[i] = valid ? load_value(logits, addr_split(sz, sb, sh, token, logit_base + col)) : 0.0f;
     }
     //: A masked row can be EMPTY, so the member count is a per-row reduction and not
     //: `width`; `production_factor`'s empty-row autograd contract is exactly this case.
@@ -257,11 +257,11 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
 // the union backward's measured spill trade, and the same `IPT`-sized arrays would apply
 // here -- docs/internals/entmax/factor.md#backward
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, bool ALPHA15, typename OutT>
+template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backward_kernel(
     const OutT* __restrict__ values, const int32_t* __restrict__ support_words,
     const bool* __restrict__ mask, const OutT* __restrict__ d_values,
-    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens, int heads,
+    const OutT* __restrict__ d_values_second, LogitT* __restrict__ d_logits, int tokens, int heads,
     bool accumulate, LevelTable table, Strides sv, Strides ssup, Strides smask, Strides sdv,
     Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
@@ -342,11 +342,11 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
           dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
         dz = s * (dp - shift);
       }
-      float* out = d_logits + addr_split(sdz, sb, sh, token, logit_base + col);
+      const int64_t out = addr_split(sdz, sb, sh, token, logit_base + col);
       if (accumulate)
-        atomicAdd(out, dz);
+        add_value(d_logits, out, dz);
       else
-        *out = dz;
+        store_value(d_logits, out, dz);
     }
   }
 }
@@ -354,9 +354,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
 // ---------------------------------------------------------------------------
 // SOFTMAX -- the full-support level (`dense_routing`). No threshold, no support word.
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, typename OutT>
+template <int LW, int IPT, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forward_kernel(
-    const float* __restrict__ logits, OutT* __restrict__ values, OutT* __restrict__ values_second,
+    const LogitT* __restrict__ logits, OutT* __restrict__ values, OutT* __restrict__ values_second,
     int tokens, int heads, LevelTable table, Strides sz, Strides sv, Strides sv2) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
@@ -398,7 +398,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
-      e[i] = (col < width) ? logits[addr_split(sz, sb, sh, token, logit_base + col)] : -INFINITY;
+      e[i] = (col < width) ? load_value(logits, addr_split(sz, sb, sh, token, logit_base + col))
+                           : -INFINITY;
       local_max = fmaxf(local_max, e[i]);
     }
     float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
@@ -425,10 +426,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
   }
 }
 
-template <int LW, int IPT, typename OutT>
+template <int LW, int IPT, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_backward_kernel(
     const OutT* __restrict__ values, const OutT* __restrict__ d_values,
-    const OutT* __restrict__ d_values_second, float* __restrict__ d_logits, int tokens, int heads,
+    const OutT* __restrict__ d_values_second, LogitT* __restrict__ d_logits, int tokens, int heads,
     bool accumulate, LevelTable table, Strides sv, Strides sdv, Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
@@ -488,11 +489,11 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
       if (d_values_second != nullptr)
         dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
       const float dz = p * (dp - dot);
-      float* out = d_logits + addr_split(sdz, sb, sh, token, logit_base + col);
+      const int64_t out = addr_split(sdz, sb, sh, token, logit_base + col);
       if (accumulate)
-        atomicAdd(out, dz);
+        add_value(d_logits, out, dz);
       else
-        *out = dz;
+        store_value(d_logits, out, dz);
     }
   }
 }
@@ -502,7 +503,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
 // The level table's entries are the caller's grouping: same class, same alpha, same
 // dtype -- docs/internals/entmax/factor.md#batched-levels
 // ---------------------------------------------------------------------------
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tensor>& mask,
                            torch::Tensor& values, const c10::optional<torch::Tensor>& values_second,
                            torch::Tensor& support, const LevelTable& table, int levels, int klass,
@@ -519,9 +520,10 @@ void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torc
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(alpha == 1.5, [&](auto A15) {
-          factor_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+          factor_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  logits.data_ptr<float>(), ptr_or_null<const bool>(mask), (OutT*)values.data_ptr(),
+                  (const LogitT*)logits.data_ptr(), ptr_or_null<const bool>(mask),
+                  (OutT*)values.data_ptr(),
                   ptr_or_null<OutT>(values_second), support.data_ptr<int32_t>(), tokens, heads,
                   table, five_logits(logits, heads), five_or_zero(mask), five(values),
                   five_or_zero(values_second), five(support));
@@ -530,7 +532,7 @@ void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torc
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& support,
                             const c10::optional<torch::Tensor>& mask, const torch::Tensor& d_values,
                             const c10::optional<torch::Tensor>& d_values_second,
@@ -548,11 +550,11 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(alpha == 1.5, [&](auto A15) {
-          factor_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, OutT>
+          factor_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
                   (const OutT*)values.data_ptr(), support.data_ptr<int32_t>(),
                   ptr_or_null<const bool>(mask), (const OutT*)d_values.data_ptr(),
-                  ptr_or_null<const OutT>(d_values_second), d_logits.data_ptr<float>(), tokens,
+                  ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens,
                   heads, accumulate, table, five(values), five(support), five_or_zero(mask),
                   five(d_values), five_or_zero(d_values_second), five_logits(d_logits, heads));
         });
@@ -560,7 +562,7 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                             const c10::optional<torch::Tensor>& values_second,
                             const LevelTable& table, int levels, int klass, int heads) {
@@ -575,16 +577,16 @@ void launch_softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
         constexpr int kWPad = decltype(WPAD)::value;
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        softmax_forward_kernel<kLaneWidth, kItemsPerThread, OutT>
-            <<<grid, BLOCK_THREADS, 0, stream>>>(logits.data_ptr<float>(), (OutT*)values.data_ptr(),
-                                                 ptr_or_null<OutT>(values_second), tokens, heads,
-                                                 table, five_logits(logits, heads), five(values),
-                                                 five_or_zero(values_second));
+        softmax_forward_kernel<kLaneWidth, kItemsPerThread, LogitT, OutT>
+            <<<grid, BLOCK_THREADS, 0, stream>>>(
+                (const LogitT*)logits.data_ptr(), (OutT*)values.data_ptr(),
+                ptr_or_null<OutT>(values_second), tokens, heads, table, five_logits(logits, heads),
+                five(values), five_or_zero(values_second));
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename OutT>
+template <typename LogitT, typename OutT>
 void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values,
                              const c10::optional<torch::Tensor>& d_values_second,
                              torch::Tensor& d_logits, const LevelTable& table, int levels,
@@ -600,10 +602,11 @@ void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d
         constexpr int kWPad = decltype(WPAD)::value;
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        softmax_backward_kernel<kLaneWidth, kItemsPerThread, OutT>
+        softmax_backward_kernel<kLaneWidth, kItemsPerThread, LogitT, OutT>
             <<<grid, BLOCK_THREADS, 0, stream>>>(
                 (const OutT*)values.data_ptr(), (const OutT*)d_values.data_ptr(),
-                ptr_or_null<const OutT>(d_values_second), d_logits.data_ptr<float>(), tokens, heads,
+                ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens,
+                heads,
                 accumulate, table, five(values), five(d_values), five_or_zero(d_values_second),
                 five_logits(d_logits, heads));
       });
@@ -625,8 +628,7 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
                     const std::vector<int64_t>& value_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                     int64_t heads, double alpha) {
-  TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == torch::kFloat32,
-              "independent entmax requires fp32 CUDA logits");
+  detail::check_logits(logits);
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
   TORCH_CHECK(support_offsets.size() == widths.size(),
               "the entmax forward writes a support word per level");
@@ -634,13 +636,12 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
   const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(logits.device());
-  if (values.scalar_type() == torch::kFloat32)
-    detail::launch_factor_forward<float>(logits, mask, values, values_second, support_words, table,
-                                         (int)widths.size(), klass, (int)heads, alpha);
-  else
-    detail::launch_factor_forward<__nv_bfloat16>(logits, mask, values, values_second, support_words,
-                                                 table, (int)widths.size(), klass, (int)heads,
-                                                 alpha);
+  detail::logit_value_switch(
+      logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+        detail::launch_factor_forward<decltype(L), decltype(V)>(
+            logits, mask, values, values_second, support_words, table, (int)widths.size(), klass,
+            (int)heads, alpha);
+      });
 }
 
 void factor_backward(const torch::Tensor& values, const torch::Tensor& support_words,
@@ -651,8 +652,7 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
                      const std::vector<int64_t>& support_offsets,
                      const std::vector<int64_t>& widths, bool accumulate, int64_t heads,
                      double alpha) {
-  TORCH_CHECK(d_logits.is_cuda() && d_logits.scalar_type() == torch::kFloat32,
-              "independent entmax backward writes fp32 CUDA logit gradients");
+  detail::check_logits(d_logits);
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
   TORCH_CHECK(support_offsets.size() == widths.size(),
               "the entmax backward reads a support word per level");
@@ -662,14 +662,12 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
   const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(d_logits.device());
-  if (values.scalar_type() == torch::kFloat32)
-    detail::launch_factor_backward<float>(values, support_words, mask, d_values, d_values_second,
-                                          d_logits, table, (int)widths.size(), klass, (int)heads,
-                                          accumulate, alpha);
-  else
-    detail::launch_factor_backward<__nv_bfloat16>(
-        values, support_words, mask, d_values, d_values_second, d_logits, table, (int)widths.size(),
-        klass, (int)heads, accumulate, alpha);
+  detail::logit_value_switch(
+      d_logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+        detail::launch_factor_backward<decltype(L), decltype(V)>(
+            values, support_words, mask, d_values, d_values_second, d_logits, table,
+            (int)widths.size(), klass, (int)heads, accumulate, alpha);
+      });
 }
 
 void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
@@ -677,18 +675,15 @@ void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                      const std::vector<int64_t>& logit_offsets,
                      const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
                      int64_t heads) {
-  TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == torch::kFloat32,
-              "softmax routing requires fp32 CUDA logits");
+  detail::check_logits(logits);
   detail::check_values(values, values_second);
   const auto table = detail::build_table(logit_offsets, value_offsets, {}, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(logits.device());
-  if (values.scalar_type() == torch::kFloat32)
-    detail::launch_softmax_forward<float>(logits, values, values_second, table, (int)widths.size(),
-                                          klass, (int)heads);
-  else
-    detail::launch_softmax_forward<__nv_bfloat16>(logits, values, values_second, table,
-                                                  (int)widths.size(), klass, (int)heads);
+  detail::logit_value_switch(logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+    detail::launch_softmax_forward<decltype(L), decltype(V)>(
+        logits, values, values_second, table, (int)widths.size(), klass, (int)heads);
+  });
 }
 
 void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values,
@@ -696,21 +691,18 @@ void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values
                       const std::vector<int64_t>& logit_offsets,
                       const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
                       bool accumulate, int64_t heads) {
-  TORCH_CHECK(d_logits.is_cuda() && d_logits.scalar_type() == torch::kFloat32,
-              "softmax routing backward writes fp32 CUDA logit gradients");
+  detail::check_logits(d_logits);
   detail::check_values(values, d_values_second);
   TORCH_CHECK(d_values.scalar_type() == values.scalar_type(),
               "cotangents must share the route values' dtype");
   const auto table = detail::build_table(logit_offsets, value_offsets, {}, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(d_logits.device());
-  if (values.scalar_type() == torch::kFloat32)
-    detail::launch_softmax_backward<float>(values, d_values, d_values_second, d_logits, table,
-                                           (int)widths.size(), klass, (int)heads, accumulate);
-  else
-    detail::launch_softmax_backward<__nv_bfloat16>(values, d_values, d_values_second, d_logits,
-                                                   table, (int)widths.size(), klass, (int)heads,
-                                                   accumulate);
+  detail::logit_value_switch(d_logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+    detail::launch_softmax_backward<decltype(L), decltype(V)>(
+        values, d_values, d_values_second, d_logits, table, (int)widths.size(), klass, (int)heads,
+        accumulate);
+  });
 }
 
 }  // namespace entmax

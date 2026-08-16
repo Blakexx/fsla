@@ -21,7 +21,35 @@ Symbols are `entmax.md`'s: a *stream* is one (batch, head)-like routing stream, 
 it, `LW` the logical warp width, `IPT` the items per lane (`W_PAD = LW * IPT`),
 `tau` the threshold, *support* the set of columns above it.
 
-## <a id="provenance"></a>1. Where these came from, and what that constrains
+## <a id="logit-dtype"></a>
+## The logit plane's dtype is a template axis
+
+`LogitT` is `float` or `__nv_bfloat16`, and every kernel in this family widens a logit to
+fp32 **in register** before it does any arithmetic. The solve is unchanged; what changed
+is the plane it reads.
+
+**Why bf16 is the shipped one.** The router GEMM runs bf16 operands on the tensor cores,
+where cuBLAS's output is bf16 — there is no bf16-operand / fp32-output GEMM to ask for.
+Measured on GA102 at the pinned cell (`B=2, T=2048, hidden=512, H=8, C=257`): fp32 SIMT
+0.4516 ms against bf16 tensor core 0.1638 ms, **2.76x**, and the class ratio on a clean
+8192³ GEMM is 69.9 against 23.9 TFLOP/s. Widening the plane back to fp32 before the
+solve would cost ~0.055 ms and one launch, which is why the widening is a register
+operation inside these kernels instead of a pass over memory.
+
+**What it does NOT relax.** The support-exactness bar binds the SOLVE, and the solve
+still runs in fp32 on whatever it is handed. What the bf16 plane changes is the LOGITS,
+and that change is gated at the seam: the reference solve is fed the production logits
+and the support sets must agree bitwise
+(`tests/integration/test_production_levels.py::test_the_solve_seam_is_exact_on_the_production_logits`).
+The support difference against a wholly-fp64 projection is purpose-2 accounting and is
+reported, not gated.
+
+**The gradient rides the same plane.** `d_logits` is `LogitT` too — autograd requires a
+cotangent in the input's dtype, and a fp32 gradient plane feeding a bf16 GEMM backward
+would be a widening with nothing on the other end of it. The tied backward's accumulating
+store is `add_value`, which is a bf16 device atomic on the closed-world arch set (sm_80+).
+
+<a id="provenance"></a>1. Where these came from, and what that constrains
 
 These four were Triton (`rola/routing/entmax/production.py`'s
 `_production_fwd_kernel`, `_production_bwd_kernel` and their softmax pair) until
