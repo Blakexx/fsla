@@ -133,9 +133,16 @@ class RouteFactors:
         #: takes, but a simplex is a per-level claim, and the levels the topology already
         #: declares on it are returned untouched so this is exactly the bundle a
         #: mass-carrying one would have been.
+        #:
+        #: THE QUOTIENT IS AT LEAST fp32: a bf16 quotient of a bf16 sum of bf16 addends
+        #: is three roundings where one is forced, and every consumer of this widens
+        #: anyway. A level already wider than fp32 keeps its own width.
+        def divided(level: torch.Tensor) -> torch.Tensor:
+            wide = torch.promote_types(level.dtype, torch.float32)
+            return level.to(wide) / level.sum(dim=-1, keepdim=True, dtype=wide)
+
         return tuple(
-            level if self.topology.duty_simplex_output(index, "read")
-            else level / level.sum(dim=-1, keepdim=True)
+            level if self.topology.duty_simplex_output(index, "read") else divided(level)
             for index, level in enumerate(self.read))
 
     def tensors(self) -> tuple[torch.Tensor, ...]:

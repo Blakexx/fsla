@@ -117,7 +117,6 @@ def naive_rola(
     decay: DecayConfig,
     normalization: str,
     *,
-    write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     eps: float = READOUT_EPS,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
@@ -132,13 +131,11 @@ def naive_rola(
     ``g_read := 1`` there and production has no read-gain projection to supply
     one), a ``Topology``, and a ``DecayConfig`` (``None`` or ``LeafMassDecay``).
 
-    ``write_levels`` feeds the deposit ``W`` and trains normally. ``write_levels_stored``
-    is the (optionally separately quantized) representation the ``LeafMassDecay``
-    clock reads (``c[t,s] = stop_gradient(prod_l p_write_stored[...])``);
-    it defaults to ``write_levels`` itself, i.e. no separate storage boundary,
-    since the bf16 storage/quantization numerics audit is explicit `TODO`
-    item 4) and out of scope for this oracle. Passing a distinct, separately
-    quantized tensor here is how a caller exercises that boundary once it exists.
+    ``write_levels`` feeds the deposit ``W`` and trains normally, AND is what the
+    ``LeafMassDecay`` clock reads (``c[t,s] = stop_gradient(prod_l p_write[...])``).
+    There is no second, separately quantized clock input: the producer emits the
+    stored form, so the levels handed here ARE the stored representation and a
+    parameter for emulating one would be a second spelling of the same tensor.
 
     Returns ``(y, final_state)`` with ``y: [B,T,H,d_v]`` and, if
     ``output_final_state``, ``final_state: [B,H,N,d_v(+1)]`` (the ``+1`` column
@@ -153,16 +150,13 @@ def naive_rola(
     it is the caller who knows why.
 
     AN INPUT THE OUTPUT DOES NOT DEPEND ON GETS ``None`` FOR ITS GRADIENT, which
-    is autograd's ordinary answer and this function states nothing else.
-    ``write_levels_stored`` is the standing case: the clock is
-    ``stop_gradient``-ed by the spec, so it never receives one. A test that wants
-    a zero there asserts ``grad is None`` and supplies the zero itself.
+    is autograd's ordinary answer and this function states nothing else. A test that
+    wants a zero asserts ``grad is None`` and supplies the zero itself.
     """
     validate_normalization(normalization)
     write_levels = tuple(write_levels)
-    write_levels_stored = write_levels if write_levels_stored is None else tuple(write_levels_stored)
     B, T, H, d_v = validate_inputs(
-        v, read_levels, write_levels, write_levels_stored, g_read, g_write, topology, decay, normalization
+        v, read_levels, write_levels, g_read, g_write, topology, decay, normalization
     )
     #: DERIVED HERE, not read off `topology`. The oracle's address map is its own
     #: (see `_radix_strides`); `topology` supplies the SHAPE (`widths`), which is
@@ -175,7 +169,6 @@ def naive_rola(
     v64 = v.to(torch.float64)
     read64 = tuple(level.to(torch.float64) for level in read_levels)
     write64 = tuple(level.to(torch.float64) for level in write_levels)
-    stored64 = tuple(level.to(torch.float64) for level in write_levels_stored)
     validate_simplex("read_levels", read64)
     validate_simplex("write_levels", write64)
 
@@ -204,7 +197,7 @@ def naive_rola(
     else:
         dials = tuple(dial.to(device=v.device, dtype=torch.float64) for dial in decay.dials)
         rate = _leaf_product(dials, strides, N)                       # [H,N]
-        c = _leaf_product(stored64, strides, N).detach()              # [B,T,H,N]
+        c = _leaf_product(write64, strides, N).detach()               # [B,T,H,N]
         keep = torch.pow(1.0 - rate, c)
 
     #: The state, in the layout it is handed back in: one row per leaf, `d_v`

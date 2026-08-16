@@ -512,14 +512,17 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
 
 
 class _ProductionLevelsFn(torch.autograd.Function):
-    """Solve a routing plan into per-level dense fp32 factors (V3's consumer contract).
+    """Solve a routing plan into per-level dense ``[BH, T, width_l]`` factors.
 
     Structurally the same plan walk as ``_ProductionRoutingArenaFn`` -- the same
-    kernels, the same shared/tied/union dispatch, the same packed support -- with the
-    bf16 tile-major arena replaced by one dense ``[BH, T, width_l]`` fp32 tensor per
-    level-side. The consumer and its fp64 oracle (`naive.naive_rola`) both take dense
-    levels; the arena is the V2 chunk kernel's ABI, and routing through it would force
-    a bf16 round trip that no consumer asks for.
+    kernels, the same shared/tied/union dispatch, the same packed support -- against one
+    dense plane per side rather than the tile-major arena the V2 chunk ABI takes.
+
+    ``stored_dtype`` is the STORED form (docs/internals/entmax/factor.md#stored-form):
+    ``bfloat16`` is what the consumer reads and therefore what the producer emits, and
+    the solve writes it directly rather than through a narrowing pass. ``float32``
+    exists for a gate that wants the solve's own arithmetic without the storage
+    quantization on top of it.
 
     Read and write are always distinct allocations, even where one solve serves both
     (``shares_solve``): the kernels already write a second output and accumulate a
@@ -528,7 +531,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, read_logits, write_logits, routing):
+    def forward(ctx, read_logits, write_logits, routing, stored_dtype):
         n_streams, tokens = _arena_shape(read_logits)
         device = read_logits.device
         support_words = torch.empty(
@@ -539,19 +542,18 @@ class _ProductionLevelsFn(torch.autograd.Function):
         )
         empty_launch = n_streams == 0 or tokens == 0
         heads = _heads(read_logits)
-        #: ONE PLANE PER SIDE, sliced into levels. The levels stay separate fp32
-        #: `[BH, T, width_l]` tensors -- the contract is unchanged, and each is still a
-        #: distinct graph output -- but they now live at their own columns of one
-        #: allocation, which is what lets the levels of a width class share a launch
-        #: (docs/internals/entmax/factor.md#batched-levels) and what turns D
-        #: allocations per side into one.
+        #: ONE PLANE PER SIDE, sliced into levels. Each level is still a distinct graph
+        #: output, at its own columns of one allocation -- which is what lets the levels
+        #: of a width class share a launch
+        #: (docs/internals/entmax/factor.md#batched-levels), and what makes the whole
+        #: side ONE contiguous tensor in the layout the consumer reads.
         #:
         #: UNINITIALIZED: a dense level is exactly the tokens, and every solve writes
         #: every element of one (unlike the tile-major arena, whose tail lanes past
         #: `tokens` no kernel touches).
         packed_width = routing.level_offsets[-1]
         read_plane = torch.empty(
-            (n_streams, tokens, packed_width), dtype=torch.float32, device=device)
+            (n_streams, tokens, packed_width), dtype=stored_dtype, device=device)
         write_plane = torch.empty_like(read_plane)
         union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
                         if isinstance(level, UnionRouting)]
@@ -636,7 +638,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
         d_write_logits = torch.zeros_like(d_read_logits)
         n_streams, tokens = ctx.logits_shape[:2]
         if n_streams == 0 or tokens == 0:
-            return d_read_logits, d_write_logits, None
+            return d_read_logits, d_write_logits, None, None
 
         union_index = 0
         for index, level in enumerate(routing.levels):
@@ -694,7 +696,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                     _launch_softmax_backward_into_logits(
                         output, d_output, None, target, accumulate=level.tied and not first)
                 first = False
-        return d_read_logits, d_write_logits, None
+        return d_read_logits, d_write_logits, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +839,8 @@ def production_routing_factor_levels(
     read_logits: torch.Tensor,
     write_logits: torch.Tensor,
     routing: ResolvedRouting,
+    *,
+    stored_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
     """Exact per-level ``(read, write)`` routing factors on the production solve.
 
@@ -852,6 +856,13 @@ def production_routing_factor_levels(
     second one as it lies (it addresses ``b`` and ``h`` as two strides); the torch
     lowering flattens it first, which is the transpose this seam exists to avoid paying
     on the shipped path and does not mind paying on the oracle's.
+
+    ``stored_dtype`` selects the CUDA solve's output format, and its default is the
+    STORED form: the consumer reads bf16 and nothing else reads these at all, so the
+    kernel writes bf16 and no narrowing pass exists. ``float32`` is for a gate that
+    wants the solve's arithmetic without the storage quantization on it. It does not
+    reach the torch lowering, whose domains (CPU, fp64) are the ones where the stored
+    form is not the question.
     """
     if not isinstance(routing, ResolvedRouting):
         raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
@@ -872,7 +883,7 @@ def production_routing_factor_levels(
         #: explicit stride tuple, so a packed projection's half-slice -- and its head
         #: axis -- are addressable as they stand, and materializing either is a whole
         #: extra pass over the side.
-        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing)
+        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing, stored_dtype)
         return tuple(outputs[:routing.D]), tuple(outputs[routing.D:])
     return _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
 

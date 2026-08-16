@@ -726,7 +726,7 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
         _Plan.issue = counting
         try:
             read = torch.randn(2, 64, routing.packed_logit_width, device="cuda")
-            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing)
+            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing, torch.bfloat16)
         finally:
             _Plan.issue = original
         return counted[0]

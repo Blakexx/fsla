@@ -32,13 +32,9 @@ the staging in a way worth stating, because it changes what a pass means:
 
 RETIRED WITH THEIR SUBJECTS, both already inert before this commit:
 
-* **M2**, the decay-clock mutant (`write_levels_stored` at bf16 -- the
-  exponent-amplification argument that makes "the clock stays fp32" a checked
-  property). Decay is retired from the operator: there is no clock in the kernel
-  arm to pin, and `write_levels_stored` was an argument of the retired tiled
-  entry. It
-  was `pytest.skip`-ed at the decay retirement, so its removal changes nothing
-  that ran.
+* **M2**, the decay-clock mutant. Decay is retired from the operator, so there is
+  no clock in the kernel arm to pin, and it was `pytest.skip`-ed at that
+  retirement -- its removal changes nothing that ran.
 * **the decay arm** of the family-budget and T-scaling rows, for the same
   reason. The T-scaling row's UNDECAYED arm was skipped along with it and only
   the decay one had cause, so this commit turns a skip back into a running

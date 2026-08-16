@@ -305,9 +305,14 @@ def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int, skip: tuple[bool,
     mass_product: torch.Tensor | None = None
     for folded, unit_sum in zip(levels, skip):
         if not unit_sum:
-            mass = folded.sum(dim=-1)
+            #: THE SUM IS AT LEAST fp32, whatever the level is stored in: a width-256
+            #: sum of bf16 addends accumulated in bf16 loses three digits of the mass
+            #: the readout's floor is scaled by, and an fp64 level's sum must not be
+            #: narrowed to buy that. The addends stay stored -- only the accumulator is
+            #: widened -- so this reads the plane once and materializes nothing.
+            mass = folded.sum(dim=-1, dtype=torch.promote_types(folded.dtype, torch.float32))
             if not carry_mass:
-                folded = folded / mass.unsqueeze(-1)
+                folded = folded / mass.unsqueeze(-1).to(folded.dtype)
             mass_product = mass if mass_product is None else mass_product * mass
         width = folded.shape[-1]
         normalized.append(folded.reshape(B, H, -1, width).permute(0, 2, 1, 3))

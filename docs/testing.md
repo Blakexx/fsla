@@ -48,8 +48,9 @@ Three promises a caller can rely on:
   caller's business; a reference that rounded itself to an operand's precision
   would make an accuracy gate compare against a rounded reference.
 * **An input the output does not depend on gets `None`, not a manufactured
-  zero.** `write_levels_stored` is the standing case: the spec detaches the
-  clock, so it never receives a gradient.
+  zero** -- autograd's ordinary answer, and the oracle states nothing else. A
+  test that wants a zero asserts `grad is None` and supplies the zero itself;
+  a manufactured graph edge is exactly what a coerced zero would hide.
 * **The address map is the oracle's own**, derived from the widths rather than
   imported from `Topology`, so a wrong stride convention cannot agree with
   itself in every gate the repository has.

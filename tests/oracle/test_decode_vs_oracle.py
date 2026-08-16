@@ -130,7 +130,7 @@ def _u32(t):
 
 
 def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
-          n_split=None, nonzero_m0=True, steps=1, quantize_stored=False):
+          n_split=None, nonzero_m0=True, steps=1, stored_bf16=False):
     """Build one fixture, run the oracle and decode, return everything both produced."""
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -141,7 +141,14 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     read_levels, write_levels, g_reads, g_writes, vs = [], [], [], [], []
     for _ in range(steps):
         read_levels.append(tuple(_simplex((B, 1, H, w), p_read, generator, device) for w in widths))
-        write_levels.append(tuple(_simplex((B, 1, H, w), p_write, generator, device) for w in widths))
+        write = tuple(_simplex((B, 1, H, w), p_write, generator, device) for w in widths)
+        #: ONE representation, and it is the STORED one: the producer emits bf16, so
+        #: the clock and the deposit read the same tensor and a flushed amplitude is
+        #: absent from both. Rounding here, before either side is called, is what makes
+        #: that identity the fixture rather than an argument.
+        if stored_bf16:
+            write = tuple(t.to(torch.bfloat16).to(t.dtype) for t in write)
+        write_levels.append(write)
         g_writes.append(torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=generator) + 0.5)
         g_reads.append(None if norm == "global"
                        else torch.rand(B, 1, H, device=device, dtype=torch.float64,
@@ -161,13 +168,9 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     ref_state = initial_state
     y_refs = []
     for s in range(steps):
-        stored = None
-        if quantize_stored:
-            stored = tuple(t.to(torch.bfloat16).to(torch.float64) for t in write_levels[s])
         y_ref, ref_state = naive_rola(
             vs[s], read_levels[s], write_levels[s], g_reads[s], g_writes[s], topology,
-            decay, norm, write_levels_stored=stored,
-            initial_state=ref_state, output_final_state=True)
+            decay, norm, initial_state=ref_state, output_final_state=True)
         y_refs.append(y_ref)
 
     # ---- decode ---------------------------------------------------------------
@@ -178,14 +181,11 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     workspace = None
     y_outs = []
     for s in range(steps):
-        stored = None
-        if quantize_stored:
-            stored = tuple(t.to(torch.bfloat16).to(torch.float32) for t in write_levels[s])
         y, state, workspace = _decode_step(
             vs[s].float(), tuple(t.float() for t in read_levels[s]),
             tuple(t.float() for t in write_levels[s]),
             None if g_reads[s] is None else g_reads[s].float(), g_writes[s].float(),
-            config, state, decay=decay, write_levels_stored=stored, workspace=workspace)
+            config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
 
     return dict(y=y_outs, state=state, y_ref=y_refs, state_ref=ref_state, config=config,
@@ -383,16 +383,17 @@ def test_g4_decay_hot_dials(widths):
     _assert_oracle(_case(widths, 64, 2, 3, "global", 0.6, 0.5, seed=606, decay_dials=dials))
 
 
-def test_g4_decay_with_a_quantized_clock():
-    """The clock is the STORED write allocation, the deposit is the LIVE one.
+def test_g4_decay_on_the_stored_write_representation():
+    """The clock and the deposit read ONE representation, and it is the bf16 one.
 
-    A leaf whose stored amplitude flushed to zero has ``keep == 1`` with a live deposit,
-    and decode must still deposit it — the clock may not gate membership.
+    An amplitude that flushed to zero in storage is absent from the deposit AND from
+    the clock, so ``keep == 1`` there with nothing deposited — the regime the shipped
+    producer actually hands decode, run against the oracle on the same tensors.
     """
     generator = torch.Generator(device="cuda").manual_seed(31337)
     dials = _decay_dials((8, 16), 3, generator, "cuda")
     _assert_oracle(_case((8, 16), 64, 2, 3, "global", 0.5, 0.4, seed=808,
-                         decay_dials=dials, quantize_stored=True))
+                         decay_dials=dials, stored_bf16=True))
 
 
 # ---------------------------------------------------------------------------

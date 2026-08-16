@@ -61,6 +61,7 @@ from rola.routing.types import (
     Topology,
     UnionRouting,
 )
+from tests.oracle.tolerances import BF16_RTOL
 
 # Identical to `tests/ops/test_rola_entmax_production.py`'s -- the same solve against
 # the same oracle, so the same numbers. Never loosened.
@@ -68,6 +69,17 @@ _PRODUCTION_RTOL = 2e-5
 _PRODUCTION_ATOL = 2e-6
 _PRODUCTION_GRAD_RTOL = 5e-5
 _PRODUCTION_GRAD_ATOL = 5e-6
+
+#: THE SEAM: a comparison that crosses the STORAGE boundary carries the bf16 operand
+#: term and nothing else. `u_bf16 = 2^-8 = 3.9e-3` per requantization; `BF16_RTOL`
+#: is that budget, derived once in `tests/oracle/tolerances.py`, and it is the same
+#: number every kernel-vs-oracle gate in the tree uses. The ABSOLUTE floor is that
+#: relative bound applied to a simplex entry's own scale (<= 1). Measured worst here:
+#: 3.58e-3 relative, 1.91e-3 absolute, both at alpha=1.5. SUPPORT carries no
+#: tolerance across this seam at all -- the solve writes exact zeros as zeros, so the
+#: set is identical or the storage broke the self-masking theorem's precondition.
+_STORED_RTOL = BF16_RTOL
+_STORED_ATOL = BF16_RTOL
 
 #: Union tie-gradient divergence bound: the measured worst case is 4.44% of
 #: elements (write side, alpha=1.5, `union`), and this carries ~1.35x headroom.
@@ -184,9 +196,13 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     raise ValueError(kind)
 
 
-def _assert_levels_match(actual, expected, *, gradient=False):
-    rtol = _PRODUCTION_GRAD_RTOL if gradient else _PRODUCTION_RTOL
-    atol = _PRODUCTION_GRAD_ATOL if gradient else _PRODUCTION_ATOL
+def _assert_levels_match(actual, expected, *, gradient=False, stored=False):
+    if stored:
+        rtol, atol = _STORED_RTOL, _STORED_ATOL
+    elif gradient:
+        rtol, atol = _PRODUCTION_GRAD_RTOL, _PRODUCTION_GRAD_ATOL
+    else:
+        rtol, atol = _PRODUCTION_RTOL, _PRODUCTION_ATOL
     torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol, check_dtype=False)
 
 
@@ -231,7 +247,7 @@ def _check_against_oracle(
     oracle_write = logits_write.detach().clone().to(torch.float64).requires_grad_()
 
     reads, writes = production_routing_factor_levels(
-        production_read, production_write, routing)
+        production_read, production_write, routing, stored_dtype=torch.float32)
     oracle_reads, oracle_writes = oracle_factor_levels(oracle_read, oracle_write, routing)
 
     assert len(reads) == len(writes) == routing.D
@@ -317,7 +333,8 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
 
     cpu_read = read.detach().cpu().requires_grad_()
     cpu_write = write.detach().cpu().requires_grad_()
-    cuda_reads, cuda_writes = production_routing_factor_levels(read, write, routing)
+    cuda_reads, cuda_writes = production_routing_factor_levels(
+        read, write, routing, stored_dtype=torch.float32)
     cpu_reads, cpu_writes = production_routing_factor_levels(cpu_read, cpu_write, routing)
     for level in range(routing.D):
         if routing.read_level_can_zero[level]:
@@ -478,7 +495,8 @@ def test_the_solve_never_reaches_the_reference_cuda(monkeypatch):
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cuda", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cuda", seed=32).requires_grad_()
-    reads, writes = production_routing_factor_levels(read, write, routing)
+    reads, writes = production_routing_factor_levels(
+        read, write, routing, stored_dtype=torch.float32)
     sum(level.sum() for level in (*reads, *writes)).backward()
     assert read.grad is not None and write.grad is not None
 
@@ -574,8 +592,10 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha):
         if resolved.write_level_can_zero[level]:
             _assert_support_identical(
                 production.write_levels[level], oracle.write_levels[level], f"write {level}")
-        _assert_levels_match(production.read_levels[level], oracle.read_levels[level])
-        _assert_levels_match(production.write_levels[level], oracle.write_levels[level])
+        _assert_levels_match(production.read_levels[level], oracle.read_levels[level],
+                             stored=True)
+        _assert_levels_match(production.write_levels[level], oracle.write_levels[level],
+                             stored=True)
 
     _assert_levels_match(production.g_write, oracle.g_write)
     assert production.g_read is None and oracle.g_read is None
@@ -616,7 +636,8 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
         "the two lowerings must be handed bit-identical inputs, or this measures the "
         "fixture rather than the port")
 
-    cuda_reads, cuda_writes = production_routing_factor_levels(cuda_read, cuda_write, routing)
+    cuda_reads, cuda_writes = production_routing_factor_levels(
+        cuda_read, cuda_write, routing, stored_dtype=torch.float32)
     cpu_reads, cpu_writes = production_routing_factor_levels(cpu_read, cpu_write, routing)
     for level in range(routing.D):
         if routing.read_level_can_zero[level]:
@@ -719,3 +740,36 @@ def test_the_package_imports_no_triton_and_declares_none():
     declared = text.split("dependencies    = ", 1)[1].split("\n", 1)[0]
     assert "triton" not in declared, (
         f"pyproject.toml still declares a triton dependency: {declared}")
+
+
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize(
+    "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
+def test_the_stored_form_preserves_the_support_exactly(alpha, shape, kind):
+    """THE STORAGE BOUNDARY'S ONE OBLIGATION, and it carries no tolerance.
+
+    The solve WRITES bf16 rather than being rounded into it afterwards, so an exact
+    structural zero is written as a zero and a supported member is written as a nonzero
+    bf16. If either direction failed, the self-masking theorem's precondition
+    (`docs/architecture/self-masking-theorem.md`, the storage precondition) would break:
+    a manufactured nonzero gives a leaf a clock with no deposit, and a flushed member
+    silently leaves the support the routing chose.
+
+    The AMPLITUDES are not compared here -- that is the seam the bf16 budget covers, and
+    it is gated in this file's oracle rows. This row is the discrete half alone.
+    """
+    routing = _routings(alpha)[shape]
+    read = _stress_logits(routing, kind, device="cuda", seed=17).requires_grad_()
+    write = _stress_logits(routing, kind, device="cuda", seed=18).requires_grad_()
+    exact_reads, exact_writes = production_routing_factor_levels(
+        read, write, routing, stored_dtype=torch.float32)
+    stored_reads, stored_writes = production_routing_factor_levels(
+        read, write, routing, stored_dtype=torch.bfloat16)
+    for level in range(routing.D):
+        assert stored_reads[level].dtype is torch.bfloat16
+        _assert_support_identical(
+            stored_reads[level], exact_reads[level], f"{shape}/{kind} read {level}")
+        _assert_support_identical(
+            stored_writes[level], exact_writes[level], f"{shape}/{kind} write {level}")

@@ -138,3 +138,23 @@ skipped block must leave UNCHANGED — which is what skipping does.
 **An arm with no persistent variant is refused by name, never downgraded.** Serving the
 full grid to a caller who asked for the sparse one is how a measurement gets attributed to a
 launch that never ran; `launch_variant` raises instead, and names the arm.
+
+## <a id="the-side-plane"></a>The pack is a view, because the producer emits the plane
+
+Every chunk entry reads one `[B, H, T, sumW]` bf16 tensor per side. The producer's solve
+writes one `[BH, T, sumW]` bf16 plane per side and hands out each level as a strided
+window of it, so the tensor the entry wants and the tensor that exists are the same
+bytes in the same order -- `[BH, T, sumW]` and `[B, H, T, sumW]` differ only by
+splitting the stream axis, which is a view.
+
+`ops/chunk.py::_side_plane` therefore reconstructs the plane rather than copying into
+one, and it decides on a STRIDE fact: every level is bf16, shares one storage with the
+first, carries this side's exact stride tuple, and sits at its own column offset. A
+bundle that satisfies that is the plane; one that does not -- a hand-built fixture, a
+foreign producer, a side whose fold materialized a divide -- takes the copy, which is
+unchanged. Nothing is asserted about where the tensors came from, because provenance is
+not what makes the reinterpretation valid.
+
+Measured at the pinned cell (`B=2, T=2048, H=8, D=2, b=(64,64)`): the copy was 4
+launches, 0.0704 ms and 40.3 MB of DRAM per step, and on both shipped routing
+configurations it is now zero of each.

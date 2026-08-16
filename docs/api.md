@@ -117,6 +117,15 @@ accretion nowhere to land.
 RouteFactors(topology, normalization, read, write, g_read, g_write, read_mass=None)
 ```
 
+**The stored form is bf16.** The routing sides have one consumer, and it reads bf16, so
+that is what the shipped producer's solve WRITES -- there is no fp32 plane between the
+solve and the operator, and no narrowing pass. `read_simplex()` divides in at least
+fp32 whatever the levels are stored in, because a bf16 quotient of a bf16 sum is three
+roundings where one is forced. The bundle's own invariant is only that every level
+shares ONE dtype, so a bundle in any dtype is legal; bf16 is what the shipped producer
+emits and what every kernel-vs-oracle tolerance in the tree is derived against
+(`tests/oracle/tolerances.py`).
+
 `RouteFactors` is the op's first operand and the whole producer contract: **any callable
 returning a well-formed one is a producer.** There is no producer base class, no
 per-level tier and no assembly gateway — none of them was a boundary anything checked.

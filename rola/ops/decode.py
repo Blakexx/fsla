@@ -438,7 +438,6 @@ def _decode_step(
     state: torch.Tensor,
     *,
     decay=None,
-    write_levels_stored: tuple[torch.Tensor, ...] | None = None,
     workspace: DecodeWorkspace | None = None,
     page_table: torch.Tensor | None = None,
     gate: torch.Tensor | None = None,
@@ -455,7 +454,6 @@ def _decode_step(
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
     """
     _guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
-                    *(write_levels_stored or ()),
                     *(decay.dials if decay is not None else ())))
 
     if v.dim() != 4:
@@ -502,22 +500,11 @@ def _decode_step(
     amp_clock = None
     dials = None
     if decay is not None:
-        stored = write_levels_stored if write_levels_stored is not None else write_levels
-        for level, (s, w) in enumerate(zip(stored, write_levels)):
-            # `stored != 0 => live != 0`, checked rather than assumed — the same
-            # precondition `build_clock_stream` enforces, for the same reason: a
-            # storage path that manufactures a nonzero from a zero would give a leaf a
-            # clock (hence decay) with no deposit, an O(1) survival error on a path
-            # with no other equivalence check.
-            if bool(((s != 0) & (w == 0)).any()):
-                raise ValueError(
-                    f"write_levels_stored[{level}] is nonzero where write_levels[{level}] is "
-                    "zero; quantization may only flush toward zero, never manufacture a "
-                    "nonzero, and the clock's write-conditioned quiescence depends on it")
-        # The clock is `c[t, s] = prod_l p_write_stored[t, d_l(s)]` — a pure
-        # product of the STORED allocations with no side gain: `g_write` scales the
-        # deposit, not the clock.
-        amp_clock = [_fold(t).float() for t in stored]
+        # The clock is `c[t, s] = prod_l p_write[t, d_l(s)]` — a pure product of the
+        # STORED allocations with no side gain: `g_write` scales the deposit, not the
+        # clock. The levels handed in ARE the stored form, so `stored != 0 => live != 0`
+        # holds by identity rather than by check.
+        amp_clock = [_fold(t).float() for t in write_levels]
         dials = leaf_rate_dials(decay, _TopologyShim(config)).to(v.device).float()
 
     y = extension().rola_decode_forward(

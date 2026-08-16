@@ -351,9 +351,17 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
                         v=v, g_read=g_read, g_write=g_write, read=read,
                         write=write, stored=stored,
                         dials=None if decay is None else decay.dials)
-                    y, state = naive_rola(
-                        v, read, write, g_read, g_write, topo, decay,
-                        normalization, write_levels_stored=stored,
+                    #: BOUND BY SIGNATURE for the same reason `topo` is: the stored
+                    #: clock left the oracle's signature when the producer began
+                    #: emitting the stored form. The old side is handed it and detaches
+                    #: it; the new side does not have the parameter and never sees it.
+                    #: Either way `stored` is an operand the output does not depend on,
+                    #: so both sides must record `None` for its gradient -- which is the
+                    #: comparison that proves the removal changed nothing.
+                    y, state = _call(
+                        naive_rola, v=v, read_levels=read, write_levels=write,
+                        g_read=g_read, g_write=g_write, topology=topo, decay=decay,
+                        normalization=normalization, write_levels_stored=stored,
                         output_final_state=True)
                     out[f"{name}/y"] = y
                     out[f"{name}/state"] = state
