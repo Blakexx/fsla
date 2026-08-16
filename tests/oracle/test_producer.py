@@ -24,7 +24,6 @@ from conftest import produce_routing, resolved_routing_from_topology
 from rola.ops.naive import naive_rola
 from rola.routing.types import (
     IndependentRouting,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
     UnionRouting,
@@ -37,11 +36,12 @@ _D_V = 5
 
 def _topology(mixed: bool = False) -> Topology:
     levels = [
-        LevelConfig(4, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
-        LevelConfig(6, UnionRouting(1.5)),
+        IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
+        UnionRouting(width=6, alpha=1.5),
     ]
     if mixed:
-        levels.append(LevelConfig(3, IndependentRouting(True, SoftmaxActivation(), SoftmaxActivation())))
+        levels.append(IndependentRouting(
+            width=3, read=SoftmaxActivation(), write=SoftmaxActivation(), tied=True))
     return Topology(levels=tuple(levels))
 
 
@@ -101,7 +101,7 @@ def test_softmax_level_mass_is_identically_one():
     the producer's mass-fold (`_split_level_mass`) must be a no-op for them, so
     an all-softmax topology's g_write must equal its raw projected gain exactly
     (up to floating point), not scaled by any level mass."""
-    levels = (LevelConfig(4, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),)
+    levels = (IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),)
     topology = Topology(levels=levels)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
@@ -129,8 +129,8 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
 
     topology = Topology(
         levels=(
-            LevelConfig(4, UnionRouting(1.5)),
-            LevelConfig(5, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
+            UnionRouting(width=4, alpha=1.5),
+            IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
     )
     B, L, H, dm = 2, 6, 3, 7

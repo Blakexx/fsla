@@ -262,7 +262,7 @@ reason:
   tail, support cardinality). Axis-DEFINED, never naive random: independent
   per-token sampling manufactures anti-structure exactly where realized
   routing is coincident.
-* **producer** — the REAL entmax gateway at swept input gains (realized
+* **producer** — the REAL entmax producer at swept input gains (realized
   density 1.00 → 0.10, monotone, asserted), because some correlations only
   realized routing produces. (The stale-plan family drove `rola.expert`'s
   derive/execute seam with a plan priced on a distribution 4x dead; that seam no

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import torch
 
-from rola import RoLA, RouteGateway, SimplexProducer, dense_routing, union_routing
+from rola import RoLA, RouteProducer, dense_routing, union_routing
 from rola.ops import chunk as chunk_arm
 
 MANIFEST = Path(__file__).resolve().parents[1] / "cells" / "chunk_manifest.json"
@@ -78,12 +78,12 @@ class Cell:
         `seed + 500`, so changing `T` does not move the parameters.
         """
         torch.manual_seed(self.seed)
-        routing = union_routing(self.alpha) if self.alpha is not None else dense_routing()
-        producer = SimplexProducer(tuple(self.widths), routing,
-                                   hidden_size=self.hidden_size, num_heads=self.H)
-        gateway = RouteGateway([producer], num_heads=self.H,
-                               hidden_size=self.hidden_size, normalization="global")
-        layer = RoLA(gateway, d_v=self.d_v, decay=None, layer_idx=0)
+        template = (union_routing(1, self.alpha) if self.alpha is not None
+                   else dense_routing(1))
+        levels = [template.at(w) for w in self.widths]
+        producer = RouteProducer(levels, hidden_size=self.hidden_size, num_heads=self.H,
+                                 normalization="global")
+        layer = RoLA(producer, d_v=self.d_v, decay=None, layer_idx=0)
         layer = layer.to("cuda", self.torch_dtype).eval()
         if self.logit_gain != 1.0:
             with torch.no_grad():

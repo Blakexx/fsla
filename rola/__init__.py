@@ -11,12 +11,12 @@ and everything else is linear attention's own contract.
     rola_op(routes, v, decay)
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``v`` is
-the value stream, ``decay`` is the recurrence dial. Build the bundle through the
-gateway, whose list of producers is the feature map:
+the value stream, ``decay`` is the recurrence dial. The bundle comes from a producer,
+and a producer is ANY callable that returns one; the shipped one takes the routing
+LEVELS, each carrying its own width:
 
-    producer = SimplexProducer((64, 64), union_routing(1.5),
-                               hidden_size=1024, num_heads=8)
-    routes = RouteGateway([producer], num_heads=8, hidden_size=1024)
+    routes = RouteProducer(uniform(2, union_routing(64, alpha=1.5)),
+                           hidden_size=1024, num_heads=8)
     layer = RoLA(routes, d_v=64, decay=LearnedDecay(widths=routes.widths, num_heads=8))
 
 **No public name says `v3`.** This repository IS that generation; encoding it in the
@@ -30,11 +30,11 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteGateway`, `RouteFactors`, `LevelProducer`, `SimplexProducer`, `dense_routing`, `union_routing` | STABLE |
+| feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `union_routing`, `uniform` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA` | STABLE |
 | state | `state()`, `RoLAState` | STABLE |
-| configuration | `Topology`, `LevelConfig`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `UnionRouting` | STABLE |
+| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `UnionRouting` | STABLE |
 | oracle | `naive_rola` | STABLE signature, EXACT semantics — it is the definition |
 """
 
@@ -48,20 +48,18 @@ from rola.interface import rola_op
 from rola.layer import RoLA
 from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
-from rola.routing.factors import RouteFactors, RouteGateway
+from rola.routing.factors import RouteFactors
 from rola.routing.producer import (
-    LevelProducer,
-    ProducedRoutes,
-    RouteSource,
-    SimplexProducer,
+    RouteProducer,
     dense_routing,
+    split_routing,
+    uniform,
     union_routing,
 )
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     LeafMassDecay,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
     UnionRouting,
@@ -72,14 +70,12 @@ from rola.routing.types import (
 __all__ = [
     # the op — the single autograd boundary (rola/interface.py)
     "rola_op",
-    # the feature map: the gateway, its bundle, and the producers that fill it
-    "RouteGateway",
+    # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
-    "LevelProducer",
-    "ProducedRoutes",
-    "RouteSource",
-    "SimplexProducer",
+    "RouteProducer",
     "dense_routing",
+    "split_routing",
+    "uniform",
     "union_routing",
     # the decay-source slot — where the recurrence's rates come from
     "DecaySource",
@@ -95,7 +91,6 @@ __all__ = [
     "naive_rola",
     # configuration
     "Topology",
-    "LevelConfig",
     "IndependentRouting",
     "UnionRouting",
     "SoftmaxActivation",

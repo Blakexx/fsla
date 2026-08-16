@@ -112,7 +112,7 @@ def entmax_solve(fx) -> Arm:
     The logits are drawn once from the cell's seed and held: what is priced is the SOLVE,
     not the projection that produced them.
     """
-    producer = fx["layer"].routes.producers[0]
+    producer = fx["layer"].routes
     routing = producer.routing
     cell = fx["cell"]
     g = torch.Generator(device="cuda").manual_seed(cell.seed + 900)

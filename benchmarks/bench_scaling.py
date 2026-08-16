@@ -84,7 +84,7 @@ import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from bench.regression import settle_clocks
-from rola import RoLA, RouteGateway, SimplexProducer, union_routing
+from rola import RoLA, RouteProducer, union_routing
 from rola import state as rola_state
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
@@ -282,8 +282,9 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
             return entmax(1.5) if router == "entmax" else softmax()
 
         if read_router == "entmax" and write_router == "entmax":
-            return union_routing(1.5)
-        return IndependentRouting(False, activation(read_router), activation(write_router))
+            return union_routing(1, 1.5)
+        return IndependentRouting(width=1, tied=False, read=activation(read_router),
+                                  write=activation(write_router))
 
     row = {"arm": arm, "cell_role": cell_role, "L": L, "B": B, "H": H, "d_v": d_v,
            "hidden": hidden, "branches": list(branches),
@@ -299,17 +300,16 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "dtype": "float32", "reps": reps, "warmup": warmup}
     try:
         torch.manual_seed(0)
-        producer = SimplexProducer(
-            tuple(branches), routing_tag(read_router, write_router),
-            hidden_size=hidden, num_heads=H)
-        routes = RouteGateway(
-            [producer], num_heads=H, hidden_size=hidden, normalization="global")
+        template = routing_tag(read_router, write_router)
+        levels = [template.at(w) for w in branches]
+        routes = RouteProducer(
+            levels, hidden_size=hidden, num_heads=H, normalization="global")
         layer = RoLA(
             routes, d_v=d_v, decay=None, layer_idx=0,
         ).to("cuda", torch.float32).eval()
         if logit_gain != 1.0:
             with torch.no_grad():
-                producer.route_W.mul_(logit_gain)
+                routes.route_W.mul_(logit_gain)
         for param in layer.parameters():
             param.requires_grad_(False)
         x = torch.randn(B, L, hidden, device="cuda", dtype=torch.float32)

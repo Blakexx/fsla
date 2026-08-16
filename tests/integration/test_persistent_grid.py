@@ -355,7 +355,7 @@ def test_the_seam_reaches_the_sparse_grid():
 
     torch.manual_seed(0)
     gateway = build_routes(hidden_size=64, num_heads=2, widths=(64, 64),
-                           routing=union_routing()).cuda()
+                           routing=union_routing(1)).cuda()
     x = torch.randn(2, 64, 64, device="cuda")
     routes = gateway(x)
     v = torch.randn(2, 64, 2, _DV, device="cuda")
@@ -373,11 +373,11 @@ def _sparse_bundle(B, T, H, live_d0, seed=11):
     """
     from rola.routing.factors import RouteFactors
     from rola.routing.producer import union_routing
-    from rola.routing.types import LevelConfig, Topology
+    from rola.routing.types import Topology
 
     g = torch.Generator(device="cuda").manual_seed(seed)
     topology = Topology(levels=tuple(
-        LevelConfig(width, union_routing(1.5)) for width in _WIDTHS))
+        union_routing(width, 1.5) for width in _WIDTHS))
 
     def side():
         level0 = torch.zeros(B, T, H, _WIDTHS[0], device="cuda")

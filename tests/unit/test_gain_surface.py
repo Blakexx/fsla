@@ -44,17 +44,17 @@ def test_the_public_flag_is_the_only_gain_parameter_on_the_route_producer():
     signature. The fine-grained combinations stay reachable via `gain_config`.
 
     MIGRATED (API-contract break, 2026-08-05): `gain` moved off `RoLA.__init__`
-    onto `RouteGateway.__init__` -- it is a fact about the feature map's side
+    onto `RouteProducer.__init__` -- it is a fact about the feature map's side
     gains, not about the layer wrapping it (`RoLA`'s own signature carries no gain
     knob at all any more)."""
     import inspect
 
-    from rola.routing.factors import RouteGateway
+    from rola.routing.producer import RouteProducer
 
     layer_parameters = inspect.signature(RoLA.__init__).parameters
     assert not any(name in layer_parameters for name in ("gain", "write_gain", "read_gain"))
 
-    parameters = inspect.signature(RouteGateway.__init__).parameters
+    parameters = inspect.signature(RouteProducer.__init__).parameters
     assert "gain" in parameters and parameters["gain"].default is True
     assert not any(name in parameters for name in ("write_gain", "read_gain"))
 

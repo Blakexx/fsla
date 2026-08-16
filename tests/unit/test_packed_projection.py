@@ -8,10 +8,10 @@ from rola.routing.types import IndependentRouting, ResolvedRouting, SoftmaxActiv
 def _routing_for_untied(levels, untied_levels, branch):
     return ResolvedRouting(
         tuple(
-            IndependentRouting(level not in untied_levels, SoftmaxActivation(), SoftmaxActivation())
+            IndependentRouting(width=branch, tied=level not in untied_levels,
+                               read=SoftmaxActivation(), write=SoftmaxActivation())
             for level in range(levels)
         ),
-        (branch,) * levels,
     )
 
 
@@ -109,8 +109,8 @@ def test_packed_router_matches_separate_projection_and_gradients(untied_levels, 
 
 def test_packed_router_rejects_plan_shape_mismatches():
     routing = ResolvedRouting(
-        (IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()), UnionRouting()),
-        (2, 3),
+        (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
+         UnionRouting(width=3)),
     )
     h = torch.randn(1, 2, 3)
     # Both levels untied -> slot widths (2, 3, 2, 3), so 10 stored columns.

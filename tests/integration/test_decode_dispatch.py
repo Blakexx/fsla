@@ -165,13 +165,13 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     exists to prevent, pointed the other way.
     """
     from rola.ops.decode import _decode_step, freeze_decode_config
-    from rola.routing.types import IndependentRouting, LevelConfig, SoftmaxActivation, Topology
+    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
     device = "cuda"
     widths, d_v = (8, 16), 64
-    routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
-                                 write_activation=SoftmaxActivation())
-    topology = Topology(levels=tuple(LevelConfig(w, routing) for w in widths))
+    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+                                 write=SoftmaxActivation())
+    topology = Topology(levels=tuple(routing.at(w) for w in widths))
     config = freeze_decode_config(topology, d_v=d_v, decay=False, BH=1, device=device,
                                   mma_precision="bf16")
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
@@ -301,10 +301,10 @@ def test_the_frozen_decode_config_carries_the_layers_precision_pin():
 def test_freeze_decode_config_refuses_an_unknown_precision():
     """The carrier validates the pin at the freeze, not downstream of it."""
     from rola.ops.decode import freeze_decode_config
-    from rola.routing.types import IndependentRouting, LevelConfig, SoftmaxActivation, Topology
-    routing = IndependentRouting(tied=False, read_activation=SoftmaxActivation(),
-                                 write_activation=SoftmaxActivation())
-    topology = Topology(levels=tuple(LevelConfig(w, routing) for w in _BRANCHES))
+    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+                                 write=SoftmaxActivation())
+    topology = Topology(levels=tuple(routing.at(w) for w in _BRANCHES))
     with pytest.raises(ValueError, match="mma_precision"):
         freeze_decode_config(topology, d_v=_DV, decay=False, BH=1,
                              device="cpu", mma_precision="fp16")

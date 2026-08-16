@@ -71,12 +71,12 @@ def test_packed_router_logits_matches_fp64_oracle_support(seed):
     # directly as the `IndependentRouting` the old mapping produced.
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_HEADS, d_v=_HEAD_V_DIM, widths=_BRANCHES,
-        routing=IndependentRouting(False, softmax(), entmax(1.5)),
+        routing=IndependentRouting(width=1, tied=False, read=softmax(), write=entmax(1.5)),
         normalization="global", decay=None,
     ).to("cuda", torch.float32).eval()
     for p in layer.parameters():
         p.requires_grad_(False)
-    producer = layer.routes.producers[0]
+    producer = layer.routes
     routing = resolved_routing_from_topology(layer.topology)
     h = torch.randn(1, _LENGTH, _HIDDEN, device="cuda", dtype=torch.float32)
 

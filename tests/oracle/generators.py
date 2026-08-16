@@ -23,7 +23,6 @@ from rola.routing.factors import RouteFactors
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
-    LevelConfig,
     SoftmaxActivation,
     Topology,
 )
@@ -39,11 +38,11 @@ from tests.oracle.families import Family
 TOKEN_WORD = CHUNK_TOKENS
 
 _ROUTING = IndependentRouting(
-    tied=False, read_activation=SoftmaxActivation(), write_activation=SoftmaxActivation())
+    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
 def _topology(widths):
-    return Topology(levels=tuple(LevelConfig(w, _ROUTING) for w in widths))
+    return Topology(levels=tuple(_ROUTING.at(w) for w in widths))
 
 
 def _simplex(shape, p_nonzero, gen, device):

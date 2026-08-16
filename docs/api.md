@@ -11,9 +11,8 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 ```python
 import rola
 
-producer = rola.SimplexProducer((64, 64), rola.union_routing(1.5),
-                                hidden_size=1024, num_heads=8)
-routes   = rola.RouteGateway([producer], num_heads=8, hidden_size=1024)
+routes   = rola.RouteProducer(rola.uniform(2, rola.union_routing(64, alpha=1.5)),
+                              hidden_size=1024, num_heads=8)
 decay    = rola.LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8)
 
 layer = rola.RoLA(routes, d_v=64, decay=decay, layer_idx=0).cuda().eval()
@@ -112,77 +111,60 @@ accretion nowhere to land.
 
 ## 2. The feature map
 
-### 2.1 The gateway
+### 2.1 The bundle IS the contract
 
 ```python
-RouteGateway(producers, *, num_heads, hidden_size, normalization='global',
-             gain=True, gain_bias_init=None, gain_config=None) -> RouteFactors
+RouteFactors(topology, normalization, read, write, g_read, g_write, read_mass=None)
 ```
 
-`RouteGateway` is how a MODEL obtains a `RouteFactors`: it runs each producer once,
-places its levels in the slots the list assigned, folds each level into
-`(mass, simplex)`, and routes the mass to the channel that duty takes it on (§2.2). Construction validates the
-whole assembly — widths in range, a buildable topology, a gain layout consistent with
-the normalization arm — so an unbuildable model fails on the line that built it.
+`RouteFactors` is the op's first operand and the whole producer contract: **any callable
+returning a well-formed one is a producer.** There is no producer base class, no
+per-level tier and no assembly gateway — none of them was a boundary anything checked.
+What is checked is the bundle's own invariants, and they are STRUCTURAL rather than
+provenance-based.
 
 **The bundle is a record of tensors, and it is constructible.** Its fields are the
 stored levels, the side gains, the read mass and the topology they are shaped by —
-nothing else,
-and in particular no declaration a caller could pair with tensors that do not describe
-it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the
-provenance: one level per topology level at that level's width, one shared `[B, T, H]`
-prefix, one device, one dtype, `g_read` present iff the arm is `raw`, `g_write` and
-(when present) `read_mass` shaped `[B, T, H]`. A test that plants a specific routing pattern builds one directly and is
-held to exactly those invariants. Unit-sum-ness is deliberately not among them: it is a
-device reduction per level per call, it is the gateway's own output guarantee, and
-conformance fixtures plant non-canonical amplitudes on purpose. The op still type-gates
-on the class, so handing it bare tensors is still a clean refusal.
+nothing else, and in particular no declaration a caller could pair with tensors that do
+not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
+the provenance: one level per topology level at that level's width, one shared
+`[B, T, H]` prefix, one device, one dtype, `g_read` present iff the arm is `raw`,
+`g_write` and (when present) `read_mass` shaped `[B, T, H]`. A test that plants a
+specific routing pattern builds one directly and is held to exactly those invariants.
+Unit-sum-ness is deliberately not among them: it is a device reduction per level per
+call, it is the shipped producer's own output guarantee, and conformance fixtures plant
+non-canonical amplitudes on purpose. The op still type-gates on the class, so handing it
+bare tensors is still a clean refusal.
 
-The gateway also owns the topology (`routes.topology`, `routes.widths`) and the
+A producer also owns the topology (`routes.topology`, `routes.widths`) and the
 normalization arm, because both are facts about the map rather than about the layer
 wrapping it. It does NOT own `d_v`: the value width is the width of the state each leaf
 holds, which is a fact about the value stream — the layer sizes `v_proj`/`o_proj` with
 it and the op reads it off `v.shape[-1]` at call time.
 
-**The side gains are routing's, and they ride the bundle** (`SideGain`, constructed by
-the gateway). Two things put them there rather than on the layer. Their SHAPE is
-defined by the normalization arm — `g_read` exists iff `normalization == 'raw'` — so a
-layer-owned gain producer would have to be told the routing arm in order to know its
-own columns, which is the coupling running backwards. And the gain is where the
-per-level mass product lands: the gateway folds each level's mass into it, so the gain
-and the routing mass are the same number by the time any consumer sees either, and
-splitting the ownership would give the layer half of a product the gateway computes
-the other half of. They ride the bundle rather than arriving as a third op argument
-because `RouteFactors.tensors()` is the autograd-reachability enumeration, and an
-operand outside that flat list is invisible to autograd — the exact failure the single
-autograd boundary exists to make impossible.
+**The side gains are routing's, and they ride the bundle.** Two things put them there
+rather than on the layer. Their SHAPE is defined by the normalization arm — `g_read`
+exists iff `normalization == 'raw'` — so a layer-owned gain producer would have to be
+told the routing arm in order to know its own columns, which is the coupling running
+backwards. And the gain is where the per-level mass product lands: the producer folds
+each level's mass into it, so the gain and the routing mass are the same number by the
+time any consumer sees either. They ride the bundle rather than arriving as a third op
+argument because `RouteFactors.tensors()` is the autograd-reachability enumeration, and
+an operand outside that flat list is invisible to autograd — the exact failure the
+single autograd boundary exists to make impossible.
 
-### 2.2 The producer interface
+### 2.2 The mass fold, and what each duty does with it
 
-A producer fills one or more routing levels. The interface is duck-typed — the library
-never asks what a producer is, only that its output is well formed:
-
-| member | required | meaning |
-|---|---|---|
-| `widths` | yes | one branch width per level it covers, in its own order |
-| `forward(source) -> ProducedRoutes` | yes | ONE call producing every level it covers |
-| `level_routing` | no | per-level routing tag, so the topology can answer the activation questions the dispatch asks |
-
-`source` is a `RouteSource` carrying the `[B, T, hidden_size]` read and write streams
-(the same object when the model does not split them). `ProducedRoutes` carries one
-`[B, T, H, width_l]` tensor per level per side.
-
-Levels need not be unit-sum: the gateway factors each into `(mass, simplex)`. The two
-sides then take the mass differently, because the two duties use their levels
-differently. The WRITE side APPLIES it — the stored level is the simplex and the
-magnitude folds into `g_write`, which is where a per-level magnitude belongs, and the
-decay clock is defined on the stored level. The READ side CARRIES it — the readout is a
-ratio, so a per-token scale common to every leaf is homogeneous of degree zero through
-it, and `RouteFactors.read` is stored with the mass still on it while
-`RouteFactors.read_mass` holds the per-token product (`None` when there is none).
-`RouteFactors.read_simplex()` divides it back out for every consumer defined on the
-simplex instead: the fp64 oracle and its input contract, the decode arm, the reference
-recurrence.
+Levels need not be unit-sum: each is factored into `(mass, simplex)`. The two sides then
+take the mass differently, because the two duties use their levels differently. The
+WRITE side APPLIES it — the stored level is the simplex and the magnitude folds into
+`g_write`, which is where a per-level magnitude belongs, and the decay clock is defined
+on the stored level. The READ side CARRIES it — the readout is a ratio, so a per-token
+scale common to every leaf is homogeneous of degree zero through it, and
+`RouteFactors.read` is stored with the mass still on it while `RouteFactors.read_mass`
+holds the per-token product (`None` when there is none). `RouteFactors.read_simplex()`
+divides it back out for every consumer defined on the simplex instead: the fp64 oracle
+and its input contract, the decode arm, the reference recurrence.
 
 **The read mass reaches the readout as a scaled floor.** The one term that does not
 scale with a ratio is its floor, so it is handed over pre-scaled: the consumer computes
@@ -204,22 +186,14 @@ and it would make the bundle's arithmetic depend on its data rather than on its
 configuration. It is asked per *duty* and not per *activation*, because a routing form
 may hand one duty a share of a solve rather than the whole of it — union routing's read
 half is exactly that, so it answers `False` while the entmax it names answers `True`.
-An opaque (foreign-producer) cell answers `False` and always pays the generic fold.
-Measured across the shipped census (`D` in 1..4, fp32 and fp64), every cell answering
+A FOREIGN producer folds its own mass, because it returns the finished bundle: the
+opaque row's `simplex_output = False` is what keeps `normalized` from being read
+circularly for a cell nobody vouched for, and it reaches the shipped fold only through
+a topology a foreign producer declared. Measured across the shipped census (`D` in 1..4, fp32 and fp64), every cell answering
 `True` has `max |sum − 1| ≤ 2.4e-7` in fp32 and `≤ 4.4e-16` in fp64.
 
-**Batching is a producer's business.** The gateway calls each producer once, with every
-level that producer covers. A producer covering several levels is therefore how a model
-gets one launch across them — `SimplexProducer` takes a width tuple and runs the whole
-group through one packed projection and one batched solve, which is what every shipped
-configuration does. Batching across two *different* producers is not built: the prize is
-launch overhead at `D <= 4` levels, nobody has measured it to matter, and the machinery
-(a merge protocol, a scatter, a bit-identity gate) is real. It is a revisit-if-measured
-decision, not an oversight.
-
-**The gateway owns packing.** A producer returns the plain documented layout and knows
-nothing about how the kernel wants its tensors arranged. The solve emits `[BH, T, width]`,
-which is already what the kernel's view wants, and the public layout is a permute of it —
+**The producer owns packing.** The solve emits `[BH, T, width]`, which is already what
+the kernel's view wants, and the public `[B, T, H, width_l]` layout is a permute of it —
 so exactly one of the two can be the materialized tensor, and it is the kernel's. The
 public tensors are views. Materializing the public layout instead and folding it back is
 an inverse copy pair. It was priced at 2.82 % of the whole step at `L = 4096`
@@ -230,40 +204,74 @@ the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 ### 2.3 The shipped producer
 
 ```python
-SimplexProducer(widths, routing=dense_routing(), *, hidden_size, num_heads,
-                bias=False)
+RouteProducer(levels, *, hidden_size, num_heads, normalization='global',
+              bias=False, gain=True, gain_bias_init=None, gain_config=None)
 ```
 
 A learned packed per-head router projection, solved with the exact production
-entmax/softmax closed form. `routing` is the tag vocabulary directly:
-`dense_routing()` (softmax on both duties), `union_routing(alpha)` (one exact entmax
-solve determining a shared support that the two duties split), or any
-`IndependentRouting` / `UnionRouting` you build yourself. One tag broadcasts across the
-covered levels; a sequence gives per-level control.
+entmax/softmax closed form, folded, gained, and returned as one bundle. Construction
+validates the whole assembly — widths in range, a buildable topology, a gain layout
+consistent with the normalization arm — so an unbuildable model fails on the line that
+built it.
+
+**`levels` is the configuration, and it is a LIST.** One entry per routing level,
+outermost first, each carrying that level's WHOLE spec:
+
+```python
+IndependentRouting(width, read, write, tied=False)   # per-duty activations
+UnionRouting(width, alpha=1.5)                       # one solve, support split
+```
+
+Depth, leaf count `N`, the packed router width, the per-level logit offsets and the
+topology are all DERIVED from that list. None of them is a second input, so none of them
+can disagree with it. The four spellings the shipped configurations use:
+
+```python
+dense_routing(width)                      # softmax on both duties
+union_routing(width, alpha=1.5)           # one exact entmax solve, shared support
+split_routing(width, alpha, sparse_duty)  # entmax one duty, softmax the other
+uniform(depth, level)                     # `depth` levels spelled the same way
+```
+
+`uniform` is a list builder, not a broadcast: a producer takes a list and nothing else,
+because a broadcast is a rule the reader has to know before they can read the widths off
+the call.
+
+**Every level is one launch group, not one launch each.** The levels share a packed
+`route_W` and are dispatched per level inside the solve kernel with no privileged level,
+so a model pays one GEMM and one solve group for the whole topology. Levels sharing an
+operator, an alpha, a width class and an operand set share a single launch; levels that
+do not are genuinely different `(operator, source, destination)` triples and issue
+separately.
 
 Activation *properties* are never supplied by a caller — they come from the closed
 registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller could
 supply is metadata a caller could supply wrong, and a validator reading it would be
-checking a claim instead of a fact.
+checking a claim instead of a fact. Activations stay width-free: an activation is a
+function on a row of any length, so a width on one would be a second place the same
+number lives.
 
 ### 2.4 Foreign producers
 
-Any module satisfying the interface works, with no registration and no tier. This is
-sound because no producer-specific execution path exists: the consumer eats tensors and
-cannot tell what produced them — no producer identity reaches the kernel's parameters at
-all. Support bits are computed FROM the tensors, so a foreign producer changes nothing
-about correctness. Its only cost is inside its own module.
+Any callable returning a well-formed bundle works, with no registration and no tier.
+This is sound because no producer-specific execution path exists: the consumer eats
+tensors and cannot tell what produced them — no producer identity reaches the kernel's
+parameters at all. Support bits are computed FROM the tensors, so a foreign producer
+changes nothing about correctness. Its only cost is inside its own module. The layer's
+`routes` slot checks STRUCTURE for the same reason: callable, plus the four facts the
+layer reads (`hidden_size`, `num_heads`, `topology`, `normalization`).
 
 A level filled by a producer that does not name one of our activations is *opaque*: it
-reads the `("opaque", None)` registry row, whose columns are argued in
-`rola/routing/activations.py`. What that costs it is the activation questions the
-topology can answer about it — ratification, in particular — and nothing else.
+declares `OpaqueRouting(width)` and reads the `("opaque", None)` registry row, whose
+columns are argued in `rola/routing/activations.py`. What that costs it is the
+activation questions the topology can answer about it — ratification, in particular —
+and nothing else.
 
 ### 2.5 The one modelling consequence to know
 
-The decay clock is defined on the STORED (normalized) level. A producer whose write-side
+The decay clock is defined on the STORED (normalized) level. A level whose write-side
 mass differs from 1 has therefore moved magnitude out of the clock and into `g_write`.
-That is the defined semantics rather than a defect, but it is a choice a producer author
+That is the defined semantics rather than a defect, but it is a choice a level's author
 is making, so it is stated here rather than buried.
 
 ## 3. The decay-source slot
@@ -312,7 +320,7 @@ pair, `conv_rings` `None` when no convolution is configured. See §1.2; a bare
 `RoLAState` is refused rather than adopted.
 
 `routes` is the only positional argument, and it is the only declaration of
-`hidden_size`/`num_heads`: the layer reads both off the gateway rather than taking a
+`hidden_size`/`num_heads`: the layer reads both off the producer rather than taking a
 second copy to check against. `d_v` is the per-head value width — the layer's, because
 it sizes `v_proj`/`o_proj`; the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
 take a MODULE

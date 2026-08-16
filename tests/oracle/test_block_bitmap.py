@@ -62,7 +62,7 @@ _GRAINS = sorted({(a[2], a[3], a[1]) for a in extension().chunk_arms()})
 _SUPPORTS = {"sparse": 0.15, "mixed": 0.7, "dense": 1.0}
 
 _ROUTING = IndependentRouting(
-    tied=False, read_activation=SoftmaxActivation(), write_activation=EntmaxActivation(1.5))
+    width=1, tied=False, read=SoftmaxActivation(), write=EntmaxActivation(1.5))
 
 _B, _T, _H, _DV, _C = 2, 64, 2, 64, 32
 

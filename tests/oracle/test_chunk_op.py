@@ -162,7 +162,7 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
 
     torch.manual_seed(7)
     gateway = build_routes(hidden_size=128, num_heads=2, widths=(64, 64),
-                           routing=union_routing(1.5)).cuda()
+                           routing=union_routing(64, 1.5)).cuda()
     with torch.no_grad():
         routes = gateway(torch.randn(1, 256, 128, device="cuda"))
     assert routes.read_mass is not None and float(routes.read_mass.min()) > 0

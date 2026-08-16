@@ -33,7 +33,7 @@ in-kernel flat-routing baseline, N=B≤256).  The swizzle axis is RETIRED
 cannot live inside the consumer kernel. It is one elementwise pass, and it carries
 three jobs the host used to pay for separately.
 
-**The scaled floor.** The gateway hands the read side over with its per-token mass `m`
+**The scaled floor.** The producer hands the read side over with its per-token mass `m`
 still on the levels (`docs/api.md` §2.2), so the numerator and denominator this pass
 reads are both `m` times the normalized ones. `eps` is a constant of the DEFINITION,
 which means it is the one term that does not scale with the ratio — so the mass arrives

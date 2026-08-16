@@ -2,7 +2,7 @@
 
 Some correlations only real routing produces (token coherence inherited from the
 hidden stream, read-write coincidence from the shared projection), so these
-families drive the REAL gateway — ``RouteGateway`` over ``union_routing`` —
+families drive the REAL producer — ``RouteProducer`` over ``union_routing`` —
 rather than a sampler, and the gain on the hidden stream is the knob that sweeps
 the realized density, exactly as it does in training.
 
@@ -47,7 +47,7 @@ pytestmark = [
 
 
 def _producer_and_stream(family):
-    """The gateway, and a temporally COHERENT hidden stream (AR(1), phi = 0.95):
+    """The producer, and a temporally COHERENT hidden stream (AR(1), phi = 0.95):
     coherence is a property realized routing inherits from its input, so the
     input has to carry it."""
     from rola import union_routing
@@ -57,7 +57,7 @@ def _producer_and_stream(family):
     torch.manual_seed(c["seed"])
     producer = build_routes(
         hidden_size=64, num_heads=c["H"], widths=c["widths"],
-        routing=union_routing(1.5), normalization=c["norm"]).cuda()
+        routing=union_routing(1, alpha=1.5), normalization=c["norm"]).cuda()
     B, T = c["B"], c["T"]
     gen = torch.Generator(device="cuda").manual_seed(c["seed"] + 1)
     eps = torch.randn(B, T, 64, device="cuda", generator=gen)

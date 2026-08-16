@@ -141,9 +141,8 @@ the feature map. `docs/api.md` is the contract in full.
 ```python
 import rola
 
-producer = rola.SimplexProducer((8, 8), rola.union_routing(1.5),
-                                hidden_size=512, num_heads=8)
-routes   = rola.RouteGateway([producer], num_heads=8, hidden_size=512)
+routes   = rola.RouteProducer(rola.uniform(2, rola.union_routing(8, alpha=1.5)),
+                              hidden_size=512, num_heads=8)
 
 factors = routes(hidden_states)          # the (q, k) pair, after the feature map
 y, state = rola.rola_op(factors, v)

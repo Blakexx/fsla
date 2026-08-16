@@ -211,7 +211,7 @@ def _sequence():
 
     torch.manual_seed(7)
     gateway = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS,
-                           routing=union_routing()).cuda()
+                           routing=union_routing(1)).cuda()
     torch.manual_seed(507)
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")

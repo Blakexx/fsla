@@ -127,18 +127,18 @@ def routing_factor_levels(
             assert isinstance(level, IndependentRouting)
             if level.shares_solve:
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation, mask=None)
+                    write_level, level.write, mask=None)
                 read_factor = write_factor
             elif level.tied:
                 read_factor, _ = _activation_factors(
-                    write_level, level.read_activation, mask=None)
+                    write_level, level.read, mask=None)
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation, mask=None)
+                    write_level, level.write, mask=None)
             else:
                 read_factor, _ = _activation_factors(
-                    read_level, level.read_activation, mask=None)
+                    read_level, level.read, mask=None)
                 write_factor, _ = _activation_factors(
-                    write_level, level.write_activation, mask=None)
+                    write_level, level.write, mask=None)
         reads.append(read_factor)
         writes.append(write_factor)
 

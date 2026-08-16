@@ -189,9 +189,10 @@ def _dense_routing():
     from rola.routing.types import IndependentRouting
 
     return IndependentRouting(
+        width=1,
         tied=True,
-        read_activation=rola.SoftmaxActivation(),
-        write_activation=rola.SoftmaxActivation())
+        read=rola.SoftmaxActivation(),
+        write=rola.SoftmaxActivation())
 
 
 def _tiny_routing(requires_grad: bool, device: str = "cpu"):
@@ -199,18 +200,18 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
     carrying only `topology`/`normalization`. New: `rola_op` takes a
-    `RouteFactors`, obtainable only from `RouteGateway`, so the fixture builds
+    `RouteFactors`, obtainable only from `RouteProducer`, so the fixture builds
     one -- `requires_grad` on the source stream `x` reaches every tensor the
-    gateway derives (read/write levels, gains), exactly as `requires_grad` on the
+    producer derives (read/write levels, gains), exactly as `requires_grad` on the
     five loose tensors used to.
     """
     torch.manual_seed(3)
     B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
-    gateway = build_routes(
+    producer = build_routes(
         hidden_size=hidden, num_heads=H, widths=(w,), routing=_dense_routing()
     ).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
-    routes = gateway(x)
+    routes = producer(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
     return v, routes
 

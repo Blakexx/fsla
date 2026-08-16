@@ -49,7 +49,7 @@ _DECAY = {"none": None, "leaf_mass": "learned"}
 
 
 def _routing_for(router: str):
-    return dense_routing() if router == "dense" else union_routing(1.5)
+    return dense_routing(1) if router == "dense" else union_routing(1, 1.5)
 
 
 def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: str = "cuda",
@@ -66,7 +66,7 @@ def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: s
         # epsilon floor or a top-k stand-in); only its LEVEL is a synthetic stand-in
         # for training.
         with torch.no_grad():
-            layer.routes.producers[0].route_W.mul_(logit_gain)
+            layer.routes.route_W.mul_(logit_gain)
     return layer.eval()
 
 
@@ -96,7 +96,7 @@ def _oracle(layer: RoLA, x: torch.Tensor, *, initial_state=None, want_state: boo
 def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     """Realized exact-zero fraction of the router's write allocations, so a test
     that claims to exercise a sparse fixture can prove the fixture is sparse."""
-    producer = layer.routes.producers[0]
+    producer = layer.routes
     with torch.no_grad():
         out = produce_routing(
             x, None, torch.zeros(x.shape[0], x.shape[1], layer.num_heads, layer.head_v_dim,
@@ -146,7 +146,7 @@ def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(ro
     #: `d pr` and `d pw` through the producer's solve, the side gain is `d gw`, and
     #: `v_proj` is `dv`. A gate that checked only `x.grad` would pass with four of
     #: the five silently zero.
-    wanted = ("routes.producers.0.route_W", "routes.side_gain.gain_W",
+    wanted = ("routes.route_W", "routes.side_gain.gain_W",
               "v_proj.weight", "o_proj.weight")
     params = dict(layer.named_parameters())
     for name in wanted:
@@ -285,7 +285,7 @@ def test_the_routing_is_re_measured_every_step_not_cached():
     with torch.no_grad():
         layer(x)
         dense = _support_fraction(layer, x)
-        layer.routes.producers[0].route_W.mul_(16.0)
+        layer.routes.route_W.mul_(16.0)
         layer(x)
         sharp = _support_fraction(layer, x)
     assert layer.execution_backend_counts == {"cuda": 2, "decode": 0}
@@ -464,7 +464,7 @@ def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance():
     and no precision excuse. `y` is held to the oracle at the bf16 family bound."""
     torch.manual_seed(23)
     kw = dict(hidden_size=_HIDDEN, num_heads=_H, d_v=64, widths=(16, 16),
-              routing=dense_routing(), normalization="global", decay=None, layer_idx=0)
+              routing=dense_routing(1), normalization="global", decay=None, layer_idx=0)
     layer = build_layer(**kw).to("cuda", torch.float32).eval()
     x = torch.randn(1, 96, _HIDDEN, device="cuda")
     reference, _ = _oracle(layer, x)

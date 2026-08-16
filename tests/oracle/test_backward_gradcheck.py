@@ -64,7 +64,7 @@ def _bundle(T: int, seed: int, *, mass: bool, gain: float, device="cuda"):
     """
     from rola.routing.factors import RouteFactors
     from rola.routing.producer import union_routing
-    from rola.routing.types import LevelConfig, Topology
+    from rola.routing.types import Topology
 
     g = torch.Generator(device=device).manual_seed(seed)
 
@@ -82,7 +82,7 @@ def _bundle(T: int, seed: int, *, mass: bool, gain: float, device="cuda"):
               + 0.5).requires_grad_()
     v = torch.randn(1, T, 1, DV, device=device, generator=g,
                     dtype=torch.float64).requires_grad_()
-    topology = Topology(levels=tuple(LevelConfig(W, union_routing(1.5))
+    topology = Topology(levels=tuple(union_routing(W, 1.5)
                                      for _ in range(D)))
     routes = RouteFactors(read=tuple(read), write=tuple(write), g_read=None, g_write=gw,
                           read_mass=rm, topology=topology, normalization="global")
@@ -117,9 +117,9 @@ def test_the_oracles_autograd_equals_finite_differences():
     dev = "cuda"
     T, w, d = 4, 4, 2
     from rola.routing.producer import union_routing
-    from rola.routing.types import LevelConfig, Topology
+    from rola.routing.types import Topology
 
-    topo = Topology(levels=tuple(LevelConfig(w, union_routing(1.5)) for _ in range(d)))
+    topo = Topology(levels=tuple(union_routing(w, 1.5) for _ in range(d)))
 
     def y_of(*flat):
         read = list(flat[:d])

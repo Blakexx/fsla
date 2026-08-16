@@ -56,7 +56,6 @@ from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
     EntmaxActivation,
     IndependentRouting,
-    LevelConfig,
     ResolvedRouting,
     SoftmaxActivation,
     Topology,
@@ -115,24 +114,24 @@ _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="fused producti
 def _routings(alpha: float) -> dict[str, ResolvedRouting]:
     """Every structural level shape the V3 producer can hand the solve."""
     return {
-        "union": ResolvedRouting((UnionRouting(alpha),), (6,)),
+        "union": ResolvedRouting((UnionRouting(width=6, alpha=alpha),)),
         "shared_solve": ResolvedRouting(
             (
-                IndependentRouting(True, EntmaxActivation(alpha), EntmaxActivation(alpha)),
-                IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()),
+                IndependentRouting(width=4, read=EntmaxActivation(alpha),
+                                   write=EntmaxActivation(alpha), tied=True),
+                IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
             ),
-            (4, 5),
         ),
         "mixed_per_level": ResolvedRouting(
             (
-                IndependentRouting(False, EntmaxActivation(alpha), SoftmaxActivation()),
-                IndependentRouting(True, SoftmaxActivation(), EntmaxActivation(alpha)),
-                UnionRouting(alpha),
+                IndependentRouting(width=3, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
+                IndependentRouting(width=5, read=SoftmaxActivation(),
+                                   write=EntmaxActivation(alpha), tied=True),
+                UnionRouting(width=4, alpha=alpha),
             ),
-            (3, 5, 4),
         ),
         "dense_only": ResolvedRouting(
-            (IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation()),), (4,)),
+            (IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),)),
     }
 
 
@@ -511,9 +510,10 @@ def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
 def _producer_topology(alpha: float) -> Topology:
     return Topology(
         levels=(
-            LevelConfig(4, IndependentRouting(True, EntmaxActivation(alpha), EntmaxActivation(alpha))),
-            LevelConfig(6, UnionRouting(alpha)),
-            LevelConfig(3, IndependentRouting(False, SoftmaxActivation(), SoftmaxActivation())),
+            IndependentRouting(width=4, read=EntmaxActivation(alpha),
+                               write=EntmaxActivation(alpha), tied=True),
+            UnionRouting(width=6, alpha=alpha),
+            IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
     )
 
