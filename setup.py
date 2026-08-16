@@ -381,7 +381,6 @@ SOURCES = [
     "csrc/rola/src/decode/decode.cu",
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",
-    "csrc/rola/src/entmax/producer.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     "csrc/rola/src/chunk/chunk.cu",
     "csrc/rola/src/chunk/backward.cu",

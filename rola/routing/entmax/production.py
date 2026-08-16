@@ -38,6 +38,13 @@ from rola.routing.types import (
 )
 
 _SPARSE_ACTIVATIONS = {"entmax", "sparsemax"}
+
+#: THE LOGIT PLANE'S ADMISSIBLE DTYPES. `bfloat16` is what the shipped projection emits
+#: (bf16 operands on the tensor cores, fp32 accumulate, bf16 out); `float32` is the gate
+#: domain that wants the solve's arithmetic without the projection's output quantization.
+#: The kernels take either through one `LogitT` template and widen in-register
+#: (docs/internals/entmax/factor.md#logit-dtype).
+_SOLVE_LOGIT_DTYPES = (torch.float32, torch.bfloat16)
 _SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)
 
 #: The support word's token quantum, and the tile-major arena's lane count: one word is
@@ -343,8 +350,9 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
         n_streams, tokens = _arena_shape(read_logits)
         if read_logits.shape != write_logits.shape:
             raise ValueError("read/write routing logits must have identical shapes")
-        if read_logits.dtype != torch.float32 or write_logits.dtype != torch.float32:
-            raise TypeError("production routing arenas require fp32 logits")
+        if read_logits.dtype not in _SOLVE_LOGIT_DTYPES or write_logits.dtype != read_logits.dtype:
+            raise TypeError(
+                f"production routing arenas require {_SOLVE_LOGIT_DTYPES} logits of one dtype")
         if not read_logits.is_cuda or not write_logits.is_cuda:
             raise RuntimeError("production routing arenas are CUDA-only")
         if read_logits.device != write_logits.device:
@@ -431,6 +439,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
         ctx.save_for_backward(read_arena, write_arena, support_words, *union_state)
         ctx.routing = routing
         ctx.logits_shape = read_logits.shape
+        ctx.logits_dtype = read_logits.dtype
         ctx.midpoint_offsets = midpoint_offsets
         ctx.mark_non_differentiable(support_words)
         return read_arena, write_arena, support_words
@@ -449,7 +458,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
         if d_write is None:
             d_write = torch.zeros_like(write_arena)
         d_read_logits = torch.zeros(
-            ctx.logits_shape, dtype=torch.float32, device=read_arena.device)
+            ctx.logits_shape, dtype=ctx.logits_dtype, device=read_arena.device)
         d_write_logits = torch.zeros_like(d_read_logits)
         union_index = 0
         n_streams, tokens = ctx.logits_shape[:2]
@@ -617,6 +626,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
         ctx.save_for_backward(*read_levels, *write_levels, support_words, *union_state)
         ctx.routing = routing
         ctx.logits_shape = read_logits.shape
+        ctx.logits_dtype = read_logits.dtype
         ctx.midpoint_offsets = midpoint_offsets
         return (*read_levels, *write_levels)
 
@@ -634,7 +644,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
             read_logits = write_logits = midpoints = None
 
         d_read_logits = torch.zeros(
-            ctx.logits_shape, dtype=torch.float32, device=support_words.device)
+            ctx.logits_shape, dtype=ctx.logits_dtype, device=support_words.device)
         d_write_logits = torch.zeros_like(d_read_logits)
         n_streams, tokens = ctx.logits_shape[:2]
         if n_streams == 0 or tokens == 0:
@@ -850,7 +860,15 @@ def production_routing_factor_levels(
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.
 
-    LOGITS ARRIVE IN EITHER LAYOUT: flat ``[BH, T, packed_logit_width]``, or the
+    LOGITS ARRIVE IN EITHER DTYPE AND EITHER LAYOUT. ``bfloat16`` is what the shipped
+    projection emits -- bf16 operands on the tensor cores, fp32 accumulate, bf16 out,
+    which is the only shape cuBLAS offers and 2.76x the fp32 SIMT GEMM at the pinned cell
+    -- and ``float32`` is the gate domain that wants the solve's arithmetic without the
+    projection's output quantization. The kernels take either through one ``LogitT``
+    template and widen each logit IN REGISTER, so no pass over the plane exists in either
+    direction (docs/internals/entmax/factor.md#logit-dtype).
+
+    LAYOUT: flat ``[BH, T, packed_logit_width]``, or the
     TOKEN-MAJOR ``[B, T, H, packed_logit_width]`` the packed router GEMM writes without
     a transpose. The OUTPUT layout is the same either way. Only the CUDA solve reads the
     second one as it lies (it addresses ``b`` and ``h`` as two strides); the torch
@@ -878,7 +896,7 @@ def production_routing_factor_levels(
     if read_logits.device != write_logits.device or read_logits.dtype != write_logits.dtype:
         raise ValueError("read/write logits must share one device and dtype")
 
-    if read_logits.is_cuda and read_logits.dtype == torch.float32:
+    if read_logits.is_cuda and read_logits.dtype in _SOLVE_LOGIT_DTYPES:
         #: NOT `.contiguous()`: every solve entry below reads the logits through an
         #: explicit stride tuple, so a packed projection's half-slice -- and its head
         #: axis -- are addressable as they stand, and materializing either is a whole
