@@ -299,15 +299,18 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     T = 32
 
     # LEG 1 — training on an arm the REVERSE PASS does not carry: refused by name,
-    # and nothing ran. (Training mode itself is no longer a clause; the reverse pass
-    # carries the pinned arm alone, and this fixture's (16, 16) is not it. A forward
-    # that runs and a backward that does not is what this refusal prevents.)
-    layer.train()
+    # and nothing ran. ((16, 16) TRAINS since the scan generalization, so the
+    # refusal fixture moves to the deep (16, 16, 16) — forward-built, no backward.
+    # A forward that runs and a backward that does not is what this refusal prevents.)
+    deep = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(16, 16, 16),
+                       normalization="global", decay=None,
+                       layer_idx=0).to(device, torch.float32)
+    deep.train()
     x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    before = dict(layer.execution_backend_counts)
+    before = dict(deep.execution_backend_counts)
     with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
-        layer(x1)
-    assert dict(layer.execution_backend_counts) == before
+        deep(x1)
+    assert dict(deep.execution_backend_counts) == before
 
     # LEG 2 — eval prefill: the chunk CUDA arm, carried state out.
     layer.eval()
