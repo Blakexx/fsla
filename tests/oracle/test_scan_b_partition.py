@@ -47,14 +47,14 @@ import pytest
 import torch
 
 from rola.ops._ext import extension, is_available
+from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm
 
 pytestmark = pytest.mark.skipif(
     not is_available() or not torch.cuda.is_available(),
     reason="the descending walk is a CUDA kernel")
 
-C, BC, D, W = 32, 128, 2, 64
+C = 32
 DV = 64
-N = W ** D
 K_WINDOW = 65536
 TOK_BITS = 32
 
@@ -93,10 +93,8 @@ def _plan(d: int, w: int, bc: int) -> dict:
                                   for l in range(clauses)])
 
 
-PLAN = _plan(D, W, BC)
-
-
-def _liveness_from_table(tbl: torch.Tensor, T: int) -> tuple[torch.Tensor, torch.Tensor]:
+def _liveness_from_table(plan: dict, bh: int, tbl: torch.Tensor,
+                        T: int) -> tuple[torch.Tensor, torch.Tensor]:
     """`[BH, blocks, T]` bools per side, decoded out of the packed union table.
 
     This is the walk's ACTUAL input, so decoding it (rather than re-deriving
@@ -104,8 +102,12 @@ def _liveness_from_table(tbl: torch.Tensor, T: int) -> tuple[torch.Tensor, torch
     table builder, which has gates of its own.
     """
     tok_words = (T + TOK_BITS - 1) // TOK_BITS
-    ent = PLAN["entries"]
-    bh = tbl.numel() // (2 * ent * tok_words)
+    ent = plan["entries"]
+    #: A PLAN WITH NO TABLE ROWS spans the whole slot space, so its clause is empty
+    #: and every token is a member of every block -- there is nothing to decode.
+    if ent == 0:
+        ones = torch.ones(bh, plan["blocks"], T, dtype=torch.bool)
+        return ones, ones.clone()
     words = tbl.view(bh, 2, ent, tok_words).cpu()
     bit = torch.arange(TOK_BITS, dtype=torch.int64)
     #: word -> bits, then trimmed to T: the last word's padding lanes are not tokens
@@ -113,9 +115,9 @@ def _liveness_from_table(tbl: torch.Tensor, T: int) -> tuple[torch.Tensor, torch
     unpacked = unpacked.reshape(bh, 2, ent, tok_words * TOK_BITS)[..., :T]
     out = []
     for side in (0, 1):
-        per_block = torch.ones(bh, PLAN["blocks"], T, dtype=torch.bool)
-        for blk in range(PLAN["blocks"]):
-            for row in PLAN["rows"](blk):
+        per_block = torch.ones(bh, plan["blocks"], T, dtype=torch.bool)
+        for blk in range(plan["blocks"]):
+            for row in plan["rows"](blk):
                 per_block[:, blk] &= unpacked[:, side, row]
         out.append(per_block)
     return out[0], out[1]
@@ -192,7 +194,7 @@ def _reference(live_r: np.ndarray, live_w: np.ndarray, T: int):
 
 # ------------------------------------------------------------------- the fixtures
 
-def _inputs(T: int, seed: int, slot_frac: float, tok_frac: float):
+def _inputs(a: Arm, T: int, seed: int, slot_frac: float, tok_frac: float):
     """Amplitudes whose ZERO PATTERN differs per block.
 
     A level column is dropped per token, so the surviving leaf set — and hence
@@ -201,8 +203,8 @@ def _inputs(T: int, seed: int, slot_frac: float, tok_frac: float):
     """
     dev = "cuda"
     g = torch.Generator(device=dev).manual_seed(seed)
-    pr = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
-    pw = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
+    pr = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
+    pw = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
     pr[torch.rand(pr.shape, device=dev, generator=g) > slot_frac] = 0.0
     pw[torch.rand(pw.shape, device=dev, generator=g) > slot_frac] = 0.0
     dead = torch.rand(T, device=dev, generator=g) > tok_frac
@@ -212,12 +214,13 @@ def _inputs(T: int, seed: int, slot_frac: float, tok_frac: float):
     return tuple(t.to(torch.bfloat16).contiguous() for t in (pr, pw, v))
 
 
-def _probe(T: int, seed: int, slot_frac: float, tok_frac: float):
+def _probe(a: Arm, T: int, seed: int, slot_frac: float, tok_frac: float):
     m = extension()
-    pr, pw, v = _inputs(T, seed, slot_frac, tok_frac)
-    tbl = m.chunk_union_table(pr, pw, v, C, BC, [W] * D)
-    stampR, stampW, jout, nchunk = m.chunk_walk_probe(tbl, C, BC, [W] * D, T)
-    live_r, live_w = _liveness_from_table(tbl, T)
+    pr, pw, v = _inputs(a, T, seed, slot_frac, tok_frac)
+    widths = [a.W] * a.D
+    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    stampR, stampW, jout, nchunk = m.chunk_walk_probe(tbl, a.C, a.BC, widths, T, 1)
+    live_r, live_w = _liveness_from_table(_plan(a.D, a.W, a.BC), stampR.shape[0], tbl, T)
     return (stampR.cpu(), stampW.cpu(), jout.cpu(), nchunk.cpu(), live_r, live_w)
 
 
@@ -237,8 +240,12 @@ CELLS = [
     pytest.param(K_WINDOW + 2 * C, 0.5, 1.0, id="across a K-window line"),
 ]
 
-IDS = [p.id for p in CELLS]
-ARGS = [p.values for p in CELLS]
+IDS = [p.id for p in CELLS[:-1]]
+ARGS = [p.values for p in CELLS[:-1]]
+#: the window-line cut is a property of the WALK, which reads the table and nothing
+#: arm-shaped; at 65,536 tokens it runs once, at the pinned arm.
+WINDOW_ARGS = [p.values for p in CELLS[-1:]]
+WINDOW_IDS = [p.id for p in CELLS[-1:]]
 
 
 def _each_block(nchunk):
@@ -247,12 +254,16 @@ def _each_block(nchunk):
             yield b, blk
 
 
+@pytest.mark.parametrize("arm", ARMS, ids=str)
 @pytest.mark.parametrize("T,slot_frac,tok_frac", ARGS, ids=IDS)
-def test_the_descending_partition_is_the_closing_rules(T, slot_frac, tok_frac):
+def test_the_descending_partition_is_the_closing_rules(arm, T, slot_frac, tok_frac):
     """CLAIM 1. Token for token, per block, against the closing rule simulated on
     the host from the table's own bits -- at liveness that differs across blocks,
     which is the case no arithmetic reference can replay."""
-    sR, sW, sJ, nchunk, live_r, live_w = _probe(T, 11, slot_frac, tok_frac)
+    _claim_one(*_probe(arm, T, 11, slot_frac, tok_frac), T)
+
+
+def _claim_one(sR, sW, sJ, nchunk, live_r, live_w, T):
     for b, blk in _each_block(nchunk):
         lr = live_r[b, blk].numpy()
         lw = live_w[b, blk].numpy()
@@ -268,11 +279,12 @@ def test_the_descending_partition_is_the_closing_rules(T, slot_frac, tok_frac):
                 f"moving and a small one is a list ordering.")
 
 
+@pytest.mark.parametrize("arm", ARMS, ids=str)
 @pytest.mark.parametrize("T,slot_frac,tok_frac", ARGS, ids=IDS)
-def test_every_live_token_is_gathered_exactly_once(T, slot_frac, tok_frac):
+def test_every_live_token_is_gathered_exactly_once(arm, T, slot_frac, tok_frac):
     """CLAIM 2, and the SECOND OPINION: the gathered set and the table's live set
     are the same set, and no two tokens of a block share a (chunk, position)."""
-    sR, sW, _, nchunk, live_r, live_w = _probe(T, 11, slot_frac, tok_frac)
+    sR, sW, _, nchunk, live_r, live_w = _probe(arm, T, 11, slot_frac, tok_frac)
     for name, stamp, live in (("read", sR, live_r), ("write", sW, live_w)):
         gathered = stamp >= 0
         assert torch.equal(gathered, live), (
@@ -287,8 +299,9 @@ def test_every_live_token_is_gathered_exactly_once(T, slot_frac, tok_frac):
                 f"block {blk}: the lists overlap, so the sum double-counts")
 
 
+@pytest.mark.parametrize("arm", ARMS, ids=str)
 @pytest.mark.parametrize("T,slot_frac,tok_frac", ARGS, ids=IDS)
-def test_the_thresholds_are_self_consistent_with_the_published_lists(T, slot_frac, tok_frac):
+def test_the_thresholds_are_self_consistent_with_the_published_lists(arm, T, slot_frac, tok_frac):
     """CLAIM 3, with NO reference: `J(i)` and the list ordering recomputed from the
     kernel's OWN stamps.
 
@@ -298,7 +311,7 @@ def test_the_thresholds_are_self_consistent_with_the_published_lists(T, slot_fra
     by one is the intra-chunk term reading its own token's write or dropping it,
     and no gate on the inter-chunk part can see it.
     """
-    sR, sW, sJ, nchunk, _, _ = _probe(T, 11, slot_frac, tok_frac)
+    sR, sW, sJ, nchunk, _, _ = _probe(arm, T, 11, slot_frac, tok_frac)
     for b, blk in _each_block(nchunk):
         rs, ws, js = (x[b, blk].numpy() for x in (sR, sW, sJ))
         rlive, wlive = rs >= 0, ws >= 0
@@ -318,6 +331,10 @@ def test_the_thresholds_are_self_consistent_with_the_published_lists(T, slot_fra
         for name, stamp, livemask in (("read", rs, rlive), ("write", ws, wlive)):
             pos = stamp[livemask] % C
             ch = stamp[livemask] // C
+            #: a block live nowhere publishes no list at all, and an empty list is
+            #: ascending -- the claim it fails is CLAIM 2's coverage, not this one
+            if pos.size == 0:
+                continue
             #: tokens ascend, so positions must ascend WITHIN a chunk and restart
             #: at zero at each chunk -- the ascending-lists claim every downstream
             #: reuse of the forward's code rests on
@@ -326,12 +343,20 @@ def test_the_thresholds_are_self_consistent_with_the_published_lists(T, slot_fra
                 f"block {blk} does not publish an ascending {name} list")
 
 
+@pytest.mark.parametrize("T,slot_frac,tok_frac", WINDOW_ARGS, ids=WINDOW_IDS)
+def test_the_walk_cuts_at_every_window_line(T, slot_frac, tok_frac):
+    """The one cut with no forward counterpart, at the pinned arm: an index-list
+    entry is 16 bits, so a chunk may not span two K-windows."""
+    sR, sW, sJ, nchunk, live_r, live_w = _probe(PINNED, T, 11, slot_frac, tok_frac)
+    _claim_one(sR, sW, sJ, nchunk, live_r, live_w, T)
+
+
 def test_the_partition_gate_is_not_vacuous():
     """A gate that cannot fail is not a gate. A walk that closes one entry early
     is the smallest structural error available, and claim 1's comparison must
     reject it."""
     T = 256
-    sR, _, _, nchunk, live_r, live_w = _probe(T, 11, 0.5, 1.0)
+    sR, _, _, nchunk, live_r, live_w = _probe(PINNED, T, 11, 0.5, 1.0)
     disagreed = 0
     for b, blk in _each_block(nchunk):
         lr, lw = live_r[b, blk].numpy(), live_w[b, blk].numpy()

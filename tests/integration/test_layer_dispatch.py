@@ -65,11 +65,14 @@ def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: s
     return layer.eval()
 
 
-#: THE PINNED ARM'S BRANCHES.  The reverse pass carries `(C=32, BC=128, D=2, B=64)`
-#: alone, and `BC` follows the topology, so a gradient claim has to be made at
-#: `(64, 64)` -- the default fixture's `(16, 16)` runs forward and is refused for
-#: training BY NAME, which is its own cell above.
+#: THE TRAINABLE BRANCHES.  The reverse pass carries a topology when the census
+#: does (`rola.ops.chunk.scan_arms`), and `BC` follows the topology: `(64, 64)` is
+#: the pinned arm at `BC = 128`, `(16, 16)` the `BC = 64` one -- where a slot is
+#: shared by two threads and the per-slot dW runs two passes rather than four. A
+#: gradient claim is made at BOTH, because the layer is where the dispatch picks
+#: the arm and an arm nobody drove end to end is an unrun path.
 _TRAIN_BRANCHES = (64, 64)
+_TRAIN_TOPOLOGIES = [(64, 64), (16, 16)]
 
 
 def _oracle(layer: RoLA, x: torch.Tensor, *, initial_state=None, want_state: bool = False):
@@ -114,17 +117,18 @@ def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
 #: must never return a fine-looking tensor whose graph is gone.
 
 
+@pytest.mark.parametrize("branches", _TRAIN_TOPOLOGIES, ids=lambda b: f"W{b[0]}")
 @pytest.mark.parametrize("router,gain", [("dense", 1.0), ("sparse", 8.0)])
 @_CUDA
-def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(router, gain):
+def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(router, gain,
+                                                                             branches):
     """THE GATE FLIPS. `x.grad is None` was the fleet-smoke failure this whole family
     exists for; here the gradient must arrive, be finite, and reach the ROUTER's own
     parameters -- which is the first loss-driven gradient the producer's CUDA
     entmax/softmax backward kernels have ever seen (they were built and gated at P73
     S5 but nothing could reach them while the consumer refused)."""
     torch.manual_seed(3)
-    layer = _layer(decay="none", router=router, logit_gain=gain,
-                   branches=_TRAIN_BRANCHES)
+    layer = _layer(decay="none", router=router, logit_gain=gain, branches=branches)
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
     out, _ = layer(x)
     assert out.grad_fn is not None, "the layer returned a tensor with no graph on it"

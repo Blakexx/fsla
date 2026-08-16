@@ -8,6 +8,8 @@ everything that enumerates it is GENERATED from that definition:
   with them, exactly once in the whole fatbin, that many device kernels);
 * `csrc/rola/src/instantiations/chunk_arms.inc` -- the X-macro the kernel header
   walks, plus the stats pass' `(D, B)` projection of the same list;
+* `csrc/rola/src/instantiations/scan_arms.inc` -- the X-macro `backward.cu` walks,
+  the two scans' own (narrower) arm list;
 * `csrc/rola/src/instantiations/README.md` -- the layout, regenerated with them.
 
 Three independent enumerations of one set is the drift shape this project has already
@@ -116,6 +118,11 @@ list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
+`scan_arms.inc` carries `SCAN_B_ARMS_X`, the X-macro `../chunk/backward.cu` walks
+for the two scans' dispatch, launchers and census. It is a subset of the same arm
+list, checked at generation time: a backward arm whose forward is not built could
+not run a training step.
+
 ## The partition
 
 A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel
@@ -158,8 +165,25 @@ CHUNK_ARMS: tuple = (
     # the FLAT-ROUTING baseline arms (D = 1; N = B <= 256 by the manifest --
     # the benchmark's in-kernel flat control):
     (32, 64, 1, 64), (32, 64, 1, 256), (16, 64, 1, 256),
+    # the SCALE rung (N = 65536), whose backward runs at the pinned arm's residency:
+    (32, 128, 2, 256),
 )
 CHUNK_PER_SHARD = 8
+
+#: THE ARMS THE TWO SCANS ARE BUILT FOR -- the reverse pass' own list, and a
+#: SUBSET of `CHUNK_ARMS`: a backward whose forward is not built could not run a
+#: training step. It is narrower than the forward's because the scans carry the
+#: campaign's TRAINABLE topologies, not every arm the forward can infer at
+#: (`rola/ops/chunk.py:backward_unsupported` refuses the difference).
+SCAN_ARMS: tuple = (
+    (32, 128, 2, 64),
+    (32, 128, 2, 256),
+    (32, 64, 2, 8),
+    (32, 64, 2, 16),
+    (32, 64, 1, 64),
+    (32, 64, 1, 256),
+)
+assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 
 #: THE STATE AXIS, and BOTH values are built.  The carried state's I/O is compiled
 #: in or out (`compacted_kernel`'s `STATE`), so an arm is TWO kernels and the
@@ -233,6 +257,22 @@ def chunk_arms_inc() -> str:
     return "".join(lines)
 
 
+def scan_arms_inc() -> str:
+    """The two scans' arms macro, EMITTED: `backward.cu` walks it for the dispatch,
+    the launcher, the probe entries and the census, so the reverse pass' arm set has
+    one owner exactly as the forward's does."""
+    lines = [BANNER,
+             "// Included by ../chunk/backward.cu; the X-macro over every\n",
+             "// (C, BC, D, B) arm the two scans are built for.\n",
+             "// clang-format off\n",
+             "#define SCAN_B_ARMS_X(X) \\\n"]
+    for i, a in enumerate(SCAN_ARMS):
+        tail = "" if i == len(SCAN_ARMS) - 1 else " \\"
+        lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
+    lines.append("// clang-format on\n")
+    return "".join(lines)
+
+
 def chunk_shard_source(name: str, rows: list) -> str:
     arms = rows
     body = [
@@ -292,6 +332,7 @@ def generated() -> dict[str, str]:
     out = {f"{name}.cu": chunk_shard_source(name, arms)
            for name, arms in sorted(chunk_shards().items())}
     out["chunk_arms.inc"] = chunk_arms_inc()
+    out["scan_arms.inc"] = scan_arms_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)
     out["README.md"] = readme()

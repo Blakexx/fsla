@@ -48,18 +48,20 @@ own sum cancelled.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 import torch
 
 from rola.ops._ext import extension, is_available
+from rola.ops.chunk import scan_arms
 
 pytestmark = pytest.mark.skipif(
     not is_available() or not torch.cuda.is_available(),
     reason="the chunk consumer's Scan B is a CUDA kernel")
 
-C, BC, D, W = 32, 128, 2, 64
+C = 32
 DV = 64
-N = W ** D
 EPS32 = 2.0 ** -24
 #: ONE bf16 ULP, RELATIVE. bf16 carries 8 significand bits, so the unit roundoff is
 #: `2 ** -8` and two correctly-rounded values either side of a boundary differ by
@@ -72,16 +74,92 @@ ULP_BF16_PAIR = 2.0 ** -7
 K_WINDOW = 65536
 
 
+#: THE ARM AXIS. Read off the census, so a widened scan matrix widens this
+#: battery by collection rather than by anybody remembering to add a row.
+@dataclass(frozen=True)
+class Arm:
+    C: int
+    BC: int
+    D: int
+    W: int
+
+    @property
+    def N(self) -> int:
+        return self.W ** self.D
+
+    def digits(self, dev):
+        """slot -> its digit at each level, most-significant level first."""
+        s = torch.arange(self.N, device=dev)
+        return [(s // (self.W ** (self.D - 1 - l))) % self.W for l in range(self.D)]
+
+    def __str__(self) -> str:
+        return f"C{self.C}BC{self.BC}D{self.D}W{self.W}"
+
+
+ARMS = [Arm(*a) for a in sorted(scan_arms())]
+PINNED = Arm(32, 128, 2, 64)
+
+
+def _table_entries(a: Arm) -> int:
+    """The level plan's table rows per side at this arm, READ OFF THE CENSUS."""
+    for row in extension().chunk_scan_b_census():
+        if tuple(row[:4]) == (a.C, a.BC, a.D, a.W):
+            return row[11]
+    raise AssertionError(f"no scan census row for arm {a}")
+
+
+def _walk_liveness(a: Arm, live_r, live_w):
+    """The liveness THE WALK SEES, which is the union table's and not the test's.
+
+    A block whose plan has ZERO table entries spans the whole slot space, so its
+    clause is empty and every token is a member of it: the walk gathers all of
+    them and the partition is the dense one however sparse the amplitudes are.
+    Where there are entries, this bundle's rows are dense across every digit, so
+    a token is a member exactly when it is live.
+    """
+    if _table_entries(a):
+        return live_r, live_w
+    ones = torch.ones_like(live_r)
+    return ones, ones.clone()
+
+
 def _rb(x: torch.Tensor) -> torch.Tensor:
     """The operand as the kernel holds it: bf16, read back in fp32."""
     return x.to(torch.bfloat16).to(torch.float32)
 
 
-def _inputs(T: int, seed: int, live_r: torch.Tensor, live_w: torch.Tensor):
+def _chain(p, idx, digs, W):
+    """The level chain in the kernel's own order: bf16 after every multiply."""
+    out = _rb(p[idx][:, digs[0]])
+    for l in range(1, len(digs)):
+        out = _rb(out * p[idx][:, l * W + digs[l]])
+    return out
+
+
+def _leave_one_out(p, idx, digs, W, swap: bool):
+    """(A.10)'s per-level factor: the product of the OTHER levels' amplitudes --
+    exact at the zeros entmax puts there, which `W / p_l` would not be. `swap`
+    returns the level's OWN amplitude instead, the alternative implementation the
+    budget has to be able to reject."""
+    amps = [p[idx][:, l * W + digs[l]] for l in range(len(digs))]
+    out = []
+    for l in range(len(digs)):
+        if swap:
+            out.append(amps[l])
+            continue
+        f = torch.ones_like(amps[l])
+        for k in range(len(digs)):
+            if k != l:
+                f = f * amps[k]
+        out.append(f)
+    return out
+
+
+def _inputs(a: Arm, T: int, seed: int, live_r: torch.Tensor, live_w: torch.Tensor):
     dev = "cuda"
     g = torch.Generator(device=dev).manual_seed(seed)
-    pr = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
-    pw = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
+    pr = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
+    pw = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
     pr[0, 0][~live_r] = 0.0
     pw[0, 0][~live_w] = 0.0
     gw = torch.rand(1, 1, T, device=dev, generator=g) + 0.5
@@ -116,11 +194,11 @@ def _partition(live_r, live_w, T) -> list[list[int]]:
     return chunks
 
 
-def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
+def _reference(a, pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
     """`(dv, dwsum)` and each one's BOUND -- the rounded reference and its budget."""
     dev = "cuda"
-    s = torch.arange(N, device=dev)
-    d0, d1 = s // W, s % W
+    N, W, D, BC = a.N, a.W, a.D, a.BC
+    digs = a.digits(dev)
     prf, pwf, gwf = _rb(pr)[0, 0], _rb(pw)[0, 0], _rb(gw)[0, 0]
     vf, dnf, ddf = _rb(v)[0, :, 0], _rb(dnum)[0, 0], _rb(dden)[0, 0]
 
@@ -132,8 +210,7 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
         #: THE WRITE PANEL IS UNGAINED, as the kernel produces it; the gain is a
         #: per-token scale applied once at the readout's store, so it multiplies
         #: `dv` and never the level product `d gw` contracts against.
-        return (_rb(prf[idx][:, d0] * prf[idx][:, W + d1]),
-                _rb(pwf[idx][:, d0] * pwf[idx][:, W + d1]))
+        return _chain(prf, idx, digs, W), _chain(pwf, idx, digs, W)
 
     dS = torch.zeros(N, DV, device=dev)
     dz = torch.zeros(N, device=dev)
@@ -206,12 +283,18 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
         aWc = (vf[idx].abs() @ adS.T) + adz[None, :] + Gdp.abs().T @ Rc.abs()
         #: (A.10): the leave-one-out product is the OTHER level's amplitude, never
         #: `W / pw_l` -- exact at the zeros entmax puts there.
-        pw0, pw1 = pwf[idx][:, d0], pwf[idx][:, W + d1]
         gram_abs = Gdp.abs().T @ Rc.abs()
-        pairs = ((0, pw0, d0), (1, pw1, d1)) if swap_loo else ((0, pw1, d0), (1, pw0, d1))
-        for lv, loo, dig in pairs:
+        loos = _leave_one_out(pwf, idx, digs, W, swap_loo)
+        for lv, (loo, dig) in enumerate(zip(loos, digs)):
             gain = gwf[idx, None]
-            wgt = dWc * loo * gain
+            #: OFF THE WRITE SUPPORT THE KERNEL EMITS NOTHING, because a token with no
+            #: support is not a write entry and is never gathered. At two levels or
+            #: more the leave-one-out factor is already exactly zero there and this
+            #: changes nothing; at ONE level it is the empty product, and the mask is
+            #: what states the contract instead of asserting a term the operator's
+            #: producer discards anyway (an entmax Jacobian is supported on its own
+            #: support) -- docs/internals/chunk/backward.md#pass-law
+            wgt = dWc * loo * gain * wl[:, None]
             #: A DIGIT CLASS IS A SUM, so the scatter must ACCUMULATE: `N / W` slots
             #: land on each column and an advanced-index assignment would keep the
             #: last one.
@@ -222,8 +305,8 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
             #: the class's `N / W` slots reassociate, the `N / BC` block partials the
             #: fan-in adds reassociate, and the Gram's bf16 store is the same
             #: rounding floor `dv` carries.
-            bnd = ((n_inter + N // W + N // BC) * EPS32 * (aWc * loo.abs() * gain.abs())
-                   + ULP_BF16_PAIR * gram_abs * loo.abs() * gain.abs())
+            bnd = (((n_inter + N // W + N // BC) * EPS32 * (aWc * loo.abs() * gain.abs())
+                    + ULP_BF16_PAIR * gram_abs * loo.abs() * gain.abs()) * wl[:, None])
             acc_b = torch.zeros(len(ch), D * W, device=dev, dtype=bnd.dtype)
             acc_b.scatter_add_(1, col, bnd)
             out["bdpw"].index_add_(0, idx, acc_b)
@@ -234,11 +317,12 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_w, swap_loo=False):
     return out
 
 
-def _run(inputs):
+def _run(a: Arm, inputs):
     m = extension()
     pr, pw, gw, v, dnum, dden = inputs
-    tbl = m.chunk_union_table(pr, pw, v, C, BC, [W] * D)
-    return m.chunk_scan_b_probe(pr, pw, gw, v, dnum, dden, tbl, C, BC, [W] * D)
+    widths = [a.W] * a.D
+    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    return m.chunk_scan_b_probe(pr, pw, gw, v, dnum, dden, tbl, a.C, a.BC, widths)
 
 
 def _liveness(T: int, frac: float | None, seed: int):
@@ -268,15 +352,35 @@ CELLS = [
     pytest.param(K_WINDOW + 2 * C, None, id="across a K-window line"),
 ]
 
+#: THE WINDOW-LINE CELL IS THE WALK'S, and the walk is an arm-blind component
+#: (`Descent`, shared with the partition probe), so it runs at one arm rather
+#: than paying its 65,536 tokens once per arm.
+CELLS_PER_ARM = CELLS[:-1]
 
-@pytest.mark.parametrize("T,frac", [(p.values[0], p.values[1]) for p in CELLS],
-                         ids=[p.id for p in CELLS])
-def test_scan_b_matches_the_rounded_reference(T, frac):
+
+@pytest.mark.parametrize("arm", ARMS, ids=str)
+@pytest.mark.parametrize("T,frac", [(p.values[0], p.values[1]) for p in CELLS_PER_ARM],
+                         ids=[p.id for p in CELLS_PER_ARM])
+def test_scan_b_matches_the_rounded_reference(arm, T, frac):
+    _scan_b_cell(arm, T, frac)
+
+
+@pytest.mark.parametrize("T,frac", [(p.values[0], p.values[1]) for p in CELLS[-1:]],
+                         ids=[p.id for p in CELLS[-1:]])
+def test_the_descending_walk_crosses_a_window_line(T, frac):
+    _scan_b_cell(PINNED, T, frac)
+
+
+def _scan_b_cell(a: Arm, T, frac):
     live_r, live_w = _liveness(T, frac, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
-    chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    dv_k, dws_k, dgw_k, dpw_k = _run(inputs)
-    ref = _reference(*inputs, chunks, T, live_w)
+    inputs = _inputs(a, T, 3, live_r, live_w)
+    wr, ww = _walk_liveness(a, live_r, live_w)
+    chunks = _partition(wr.tolist(), ww.tolist(), T)
+    dv_k, dws_k, dgw_k, dpw_k = _run(a, inputs)
+    #: the WALK's write liveness, not the bundle's: the two unweighted terms
+    #: (`sum_s dW` and, at one level, the digit gradient) are emitted for every
+    #: GATHERED entry, and which tokens those are is the union table's answer.
+    ref = _reference(a, *inputs, chunks, T, ww)
 
     for name, got, want, bound in (("dv", dv_k[0, 0], ref["dv"], ref["bdv"]),
                                    ("sum_s dW", dws_k[0, 0], ref["dwsum"], ref["bdwsum"]),
@@ -285,7 +389,7 @@ def test_scan_b_matches_the_rounded_reference(T, frac):
         err = (got - want).abs()
         worst = (err / bound.clamp_min(torch.finfo(torch.float32).tiny)).max().item()
         assert worst <= 1.0, (
-            f"Scan B's {name} left the reassociation budget at T={T} frac={frac}: "
+            f"Scan B's {name} left the reassociation budget at arm {a} T={T} frac={frac}: "
             f"worst |err| / bound = {worst:.3f}; max |err| = {err.max():.3e} against a "
             f"bound of {bound.max():.3e}. The reference rounds every operand where the "
             f"kernel rounds it, so nothing but summation ORDER is allowed to separate "
@@ -304,10 +408,10 @@ def test_d_pw_rejects_the_swapped_leave_one_out():
     """
     T = 96
     live_r, live_w = _liveness(T, None, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
+    inputs = _inputs(PINNED, T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    ref = _reference(*inputs, chunks, T, live_w)
-    swapped = _reference(*inputs, chunks, T, live_w, swap_loo=True)["dpw"]
+    ref = _reference(PINNED, *inputs, chunks, T, live_w)
+    swapped = _reference(PINNED, *inputs, chunks, T, live_w, swap_loo=True)["dpw"]
     assert ((swapped - ref["dpw"]).abs() > ref["bdpw"]).any(), (
         "the d pw budget accepts the two levels' leave-one-out factors exchanged, so "
         "it is not gating (A.10)'s product at all")
@@ -324,9 +428,9 @@ def test_d_gw_rejects_the_unweighted_slot_sum():
     """
     T = 96
     live_r, live_w = _liveness(T, None, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
+    inputs = _inputs(PINNED, T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    ref = _reference(*inputs, chunks, T, live_w)
+    ref = _reference(PINNED, *inputs, chunks, T, live_w)
     assert ((ref["dwsum"] - ref["dgw"]).abs() > ref["bdgw"]).any(), (
         "the d gw budget accepts the UNWEIGHTED slot sum of dW, so it cannot see the "
         "one term (A.11) adds and is not gating a gain gradient at all")
@@ -337,9 +441,9 @@ def test_the_budget_is_not_vacuous():
     of the state and the same bound must reject it."""
     T = 96
     live_r, live_w = _liveness(T, None, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
+    inputs = _inputs(PINNED, T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    ref = _reference(*inputs, chunks, T, live_w)
+    ref = _reference(PINNED, *inputs, chunks, T, live_w)
     bound = ref["bdv"]
     #: the smallest STRUCTURAL wrong answer available: one chunk's entry adjoint
     #: taken from the wrong side of its own fold.
@@ -361,16 +465,30 @@ def test_the_probe_census_is_spill_free_and_leaves_the_arm_where_it_was():
     m = extension()
     rows = m.chunk_scan_b_census()
     assert rows, "Scan B reports no built arm"
-    for c, bc, d, b, regs, local, smem, stages, ctas, floor in rows:
+    for c, bc, d, b, regs, local, smem, stages, ctas, floor, budget, entries in rows:
         assert regs > 0, f"the census could not read arm ({c},{bc},{d},{b})"
         assert local == 0, (
             f"Scan B spills {local} bytes at arm ({c},{bc},{d},{b}): the adjoint state and "
             f"the gradient accumulator do not fit beside each other, so the carve has to "
             f"change (shared residency, or a pass split over d_v) rather than the budget")
+        #: THE FLOOR MODEL, MADE FALSIFIABLE PER ARM: the declared floor picks the CTA
+        #: target, the target fixes the budget, and the measured live set has to fit
+        #: inside it. A row that spills is caught above; a row that fits only because
+        #: this part is generous is caught here.
+        assert regs <= budget, (
+            f"arm ({c},{bc},{d},{b}) holds {regs} registers against a budget of {budget} "
+            f"at {ctas} CTAs -- the declared floor {floor} bought a residency the live "
+            f"set cannot pay for")
         forward = [a for a in m.chunk_arms() if tuple(a[:4]) == (c, bc, d, b)]
         assert forward, f"Scan B is built for an arm the forward is not: ({c},{bc},{d},{b})"
-        assert ctas == forward[0][9], (
+        #: THE SCANS MAY RUN BELOW THE FORWARD'S OCCUPANCY, NEVER ABOVE IT: the reverse
+        #: pass' live set does not fall with `BC` the way the forward's does, so the
+        #: two floors are separate declarations and the PAIR is what the review reads.
+        assert ctas <= forward[0][9], (
             f"Scan B reaches {ctas} CTAs where its forward reaches {forward[0][9]} at arm "
             f"({c},{bc},{d},{b})")
         assert stages >= 2, "the wait/issue order needs two staging groups"
-        assert regs <= 255 and floor > 0
+        #: `entries == 0` is the legal answer for a block that spans the whole slot
+        #: space -- there is no group to test membership in, so the plan builds no
+        #: table row for it.
+        assert regs <= 255 and floor > 0 and entries >= 0

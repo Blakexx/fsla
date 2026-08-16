@@ -13,6 +13,7 @@
 #include <array>
 #include <vector>
 
+#include "../instantiations/scan_arms.inc"
 #include "backward.cuh"
 
 namespace rola::chunk {
@@ -22,14 +23,9 @@ namespace rola::chunk {
 //: translation unit cannot drift from the capability table it checks.
 void check_arch_table();
 
-//: THE ARMS SCAN B IS BUILT FOR.  One, deliberately: the pinned production arm
-//: (`rola/ops/chunk.py`'s `_PIN_C`/`_PIN_BC` at depth two, width 64).  The
-//: forward's arm cross is not owed here until the scan carries every term.
-#define SCAN_B_ARMS_X(X) X(32, 128, 2, 64)
-
 template <int C, int BC, int D, int B>
 static cudaError_t launch_scan_b_arm(const ScanBParams& p, cudaStream_t stream) {
-  constexpr size_t sm = GeomB<C, BC>::bytes;
+  constexpr size_t sm = GeomB<C, BC, D, B>::bytes;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e = cudaFuncSetAttribute(
@@ -44,17 +40,24 @@ static cudaError_t launch_scan_b_arm(const ScanBParams& p, cudaStream_t stream) 
   return cudaGetLastError();
 }
 
+//: THE CENSUS ROW CARRIES BOTH HALVES OF THE FLOOR CLAIM: the DECLARED live set
+//: the CTA target was derived from, and the BUDGET that target actually admits.
+//: A row where the measured `numRegs` exceeds the budget is a spill waiting for a
+//: different part -- docs/internals/chunk/backward.md#reg-floor-scan
 template <int C, int BC, int D, int B>
-static std::array<int64_t, 6> scan_b_census_arm() {
+static std::array<int64_t, 8> scan_b_census_arm() {
   cudaFuncAttributes a{};
   if (cudaFuncGetAttributes(&a, scan_b_kernel<C, D, B, BC>) != cudaSuccess)
-    return {-1, -1, -1, -1, -1, -1};
+    return {-1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.localSizeBytes,
-          (int64_t)GeomB<C, BC>::bytes,
-          (int64_t)GeomB<C, BC>::stages,
-          (int64_t)kScanBCtaTarget<C, BC>,
-          (int64_t)reg_floor(C, BC)};
+          (int64_t)GeomB<C, BC, D, B>::bytes,
+          (int64_t)GeomB<C, BC, D, B>::stages,
+          (int64_t)kScanBCtaTarget<C, BC, D, B>,
+          (int64_t)reg_floor_scan(BC),
+          (int64_t)denseref::arch::reg_budget(denseref::arch::kCaps, threads_for(BC),
+                                              kScanBCtaTarget<C, BC, D, B>),
+          (int64_t)LevelPlan<D, B, BC>::entries};
 }
 
 static bool is_arm(const std::vector<int64_t>& widths, int64_t D, int64_t B) {
@@ -123,7 +126,7 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
 #undef SCAN_B_DISPATCH_X
   TORCH_CHECK(false, "Scan B is not built for arm chunk=", chunk, " BC=", bc,
               " depth=", widths.size(),
-              ": the backward carries the pinned arm alone until the scan is whole.");
+              ": no scan is built for it (rola/ops/chunk.py's scan_arms()).");
 }
 
 //: THE SEEDS, IN ONE ELEMENTWISE PASS -- the mirror of `divide_pass`, and the
@@ -242,7 +245,7 @@ std::vector<torch::Tensor> scan_a_probe(torch::Tensor pr, torch::Tensor pw, torc
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                      \
     const long want = (long)BH * 2 * LevelPlan<D_, B__, BC_>::entries * tok_words(L);             \
     TORCH_CHECK(tbl.numel() == want, "the union table was built for a different arm");            \
-    constexpr size_t sm = GeomB<C_, BC_>::bytes;                                                  \
+    constexpr size_t sm = GeomB<C_, BC_, D_, B__>::bytes;                                                  \
     static bool configured = false;                                                               \
     if (!configured) {                                                                            \
       C10_CUDA_CHECK(cudaFuncSetAttribute(scan_a_kernel<C_, D_, B__, BC_>,                        \
@@ -273,23 +276,26 @@ std::vector<torch::Tensor> scan_a_probe(torch::Tensor pr, torch::Tensor pw, torc
 //: than the schedule.  Three int32 planes `[BH, blocks, L]` come back, `-1` where
 //: no chunk gathered the token.
 std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t bc,
-                                      std::vector<int64_t> widths, int64_t L) {
+                                      std::vector<int64_t> widths, int64_t L, int64_t BH) {
   check_arch_table();
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(L > 0 && L % chunk == 0, "L must be a positive multiple of the chunk");
+  //: THE BATCH COMES FROM THE CALLER, not from the table's extent: a plan whose
+  //: blocks span the whole slot space builds NO table rows, so a zero-element
+  //: table is legal and carries no batch to divide out.
+  TORCH_CHECK(BH > 0, "the head-batch is the caller's, and it is positive");
   auto opts = torch::TensorOptions().dtype(torch::kInt32).device(tbl.device());
 #define WALK_PROBE_DISPATCH_X(C_, BC_, D_, B__)                                             \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                \
     using LP = LevelPlan<D_, B__, BC_>;                                                     \
     const long per = 2L * LP::entries * tok_words((int)L);                                  \
-    TORCH_CHECK(tbl.numel() % per == 0, "the union table was built for a different arm");   \
-    const long BH = tbl.numel() / per;                                                      \
+    TORCH_CHECK(tbl.numel() == BH * per, "the union table was built for a different arm"); \
     auto stampR = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                   \
     auto stampW = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                   \
     auto jout = torch::full({BH, (long)LP::blocks, (long)L}, -1, opts);                     \
     auto nchunk = torch::zeros({BH, (long)LP::blocks}, opts);                               \
-    constexpr size_t sm = (size_t)GeomB<C_, BC_>::idx_slot                                  \
+    constexpr size_t sm = (size_t)GeomB<C_, BC_, D_, B__>::idx_slot                                  \
                           + 2 * kFormWords * sizeof(uint32_t) + kCookSlots * sizeof(int);   \
     const dim3 grid((unsigned)LP::blocks, (unsigned)BH);                                    \
     walk_probe_kernel<C_, D_, B__, BC_><<<grid, threads_for(BC_), sm,                       \

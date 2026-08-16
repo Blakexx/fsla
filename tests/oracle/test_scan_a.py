@@ -40,14 +40,14 @@ import pytest
 import torch
 
 from rola.ops._ext import extension, is_available
+from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm, _chain, _leave_one_out, _walk_liveness
 
 pytestmark = pytest.mark.skipif(
     not is_available() or not torch.cuda.is_available(),
     reason="Scan A is a CUDA kernel")
 
-C, BC, D, W = 32, 128, 2, 64
+C = 32
 DV = 64
-N = W ** D
 EPS32 = 2.0 ** -24
 ULP_BF16_PAIR = 2.0 ** -7
 K_WINDOW = 65536
@@ -57,11 +57,11 @@ def _rb(x: torch.Tensor) -> torch.Tensor:
     return x.to(torch.bfloat16).to(torch.float32)
 
 
-def _inputs(T: int, seed: int, live_r: torch.Tensor, live_w: torch.Tensor):
+def _inputs(a: Arm, T: int, seed: int, live_r: torch.Tensor, live_w: torch.Tensor):
     dev = "cuda"
     g = torch.Generator(device=dev).manual_seed(seed)
-    pr = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
-    pw = torch.rand(1, 1, T, D * W, device=dev, generator=g) + 0.25
+    pr = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
+    pw = torch.rand(1, 1, T, a.D * a.W, device=dev, generator=g) + 0.25
     pr[0, 0][~live_r] = 0.0
     pw[0, 0][~live_w] = 0.0
     gw = torch.rand(1, 1, T, device=dev, generator=g) + 0.5
@@ -90,18 +90,22 @@ def _partition(live_r, live_w, T) -> list[list[int]]:
     return chunks
 
 
-def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_r):
+def _reference(a, pr, pw, gw, v, dnum, dden, chunks, T, live_r):
     """`d pr` and its bound, from the rounded reference."""
     dev = "cuda"
-    s = torch.arange(N, device=dev)
-    d0, d1 = s // W, s % W
+    N, W, D, BC = a.N, a.W, a.D, a.BC
+    digs = a.digits(dev)
     prf, pwf, gwf = _rb(pr)[0, 0], _rb(pw)[0, 0], _rb(gw)[0, 0]
     vf, dnf, ddf = _rb(v)[0, :, 0], _rb(dnum)[0, 0], _rb(dden)[0, 0]
 
     def coeffs(idx):
         #: the write panel is GAINED in this scan: its fold deposits `Wc` itself
-        return (_rb(prf[idx][:, d0] * prf[idx][:, W + d1]),
-                _rb(_rb(pwf[idx][:, d0] * gwf[idx, None]) * pwf[idx][:, W + d1]))
+        #: the WRITE panel is GAINED in this scan, and the gain folds into the
+        #: LEADING amplitude -- after the first level, before the rest of the chain.
+        w = gwf[idx, None]
+        for l in range(D):
+            w = _rb(w * pwf[idx][:, l * W + digs[l]])
+        return _chain(prf, idx, digs, W), w
 
     S = torch.zeros(N, DV, device=dev)
     z = torch.zeros(N, device=dev)
@@ -122,17 +126,19 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_r):
         Gdp = _rb(dnf[idx] @ vf[idx].T + ddf[idx][:, None]) * stair
         dRc = (dnf[idx] @ Sb.T) + ddf[idx][:, None] * z[None, :] + Gdp @ Wc
         aRc = (dnf[idx].abs() @ aS.T) + ddf[idx].abs()[:, None] * az[None, :] + Gdp.abs() @ Wc.abs()
-        pr0, pr1 = prf[idx][:, d0], prf[idx][:, W + d1]
         gram_abs = Gdp.abs() @ Wc.abs()
-        #: (A.9)'s leave-one-out product is the OTHER level's amplitude, and there
-        #: is NO gain on this side.
-        for lv, loo, dig in ((0, pr1, d0), (1, pr0, d1)):
+        #: (A.9)'s leave-one-out product is the product of the OTHER levels'
+        #: amplitudes, and there is NO gain on this side.  The liveness factor is
+        #: the mirror of Scan B's: off the READ support nothing is gathered, so
+        #: nothing is emitted -- vacuous above one level, the statement itself at one.
+        rl = live_r[idx].float()[:, None]
+        for lv, (loo, dig) in enumerate(zip(_leave_one_out(prf, idx, digs, W, False), digs)):
             col = (lv * W + dig).unsqueeze(0).expand(len(ch), -1)
             acc = torch.zeros(len(ch), D * W, device=dev)
-            acc.scatter_add_(1, col, dRc * loo)
+            acc.scatter_add_(1, col, dRc * loo * rl)
             out["dpr"].index_add_(0, idx, acc)
-            bnd = ((n_inter + N // W + N // BC) * EPS32 * (aRc * loo.abs())
-                   + ULP_BF16_PAIR * gram_abs * loo.abs())
+            bnd = (((n_inter + N // W + N // BC) * EPS32 * (aRc * loo.abs())
+                    + ULP_BF16_PAIR * gram_abs * loo.abs()) * rl)
             accb = torch.zeros(len(ch), D * W, device=dev)
             accb.scatter_add_(1, col, bnd)
             out["bdpr"].index_add_(0, idx, accb)
@@ -143,11 +149,12 @@ def _reference(pr, pw, gw, v, dnum, dden, chunks, T, live_r):
     return out
 
 
-def _run(inputs):
+def _run(a: Arm, inputs):
     m = extension()
     pr, pw, gw, v, dnum, dden = inputs
-    tbl = m.chunk_union_table(pr, pw, v, C, BC, [W] * D)
-    return m.chunk_scan_a_probe(pr, pw, gw, v, dnum, dden, tbl, C, BC, [W] * D)
+    widths = [a.W] * a.D
+    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    return m.chunk_scan_a_probe(pr, pw, gw, v, dnum, dden, tbl, a.C, a.BC, widths)
 
 
 def _liveness(T: int, frac: float | None, seed: int):
@@ -175,17 +182,33 @@ CELLS = [
 ]
 
 
-@pytest.mark.parametrize("T,frac", [p.values for p in CELLS], ids=[p.id for p in CELLS])
-def test_scan_a_matches_the_rounded_reference(T, frac):
+#: the window-line cell is the walk's, and `Ascent` is arm-blind: it runs at one arm.
+CELLS_PER_ARM = CELLS[:-1]
+
+
+@pytest.mark.parametrize("arm", ARMS, ids=str)
+@pytest.mark.parametrize("T,frac", [p.values for p in CELLS_PER_ARM],
+                         ids=[p.id for p in CELLS_PER_ARM])
+def test_scan_a_matches_the_rounded_reference(arm, T, frac):
+    _scan_a_cell(arm, T, frac)
+
+
+@pytest.mark.parametrize("T,frac", [p.values for p in CELLS[-1:]], ids=[p.id for p in CELLS[-1:]])
+def test_the_ascending_walk_crosses_a_window_line(T, frac):
+    _scan_a_cell(PINNED, T, frac)
+
+
+def _scan_a_cell(a: Arm, T, frac):
     live_r, live_w = _liveness(T, frac, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
-    chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    (dpr_k,) = _run(inputs)
-    ref = _reference(*inputs, chunks, T, live_r)
+    inputs = _inputs(a, T, 3, live_r, live_w)
+    wr, ww = _walk_liveness(a, live_r, live_w)
+    chunks = _partition(wr.tolist(), ww.tolist(), T)
+    (dpr_k,) = _run(a, inputs)
+    ref = _reference(a, *inputs, chunks, T, wr)
     err = (dpr_k[0, 0] - ref["dpr"]).abs()
     worst = (err / ref["bdpr"].clamp_min(torch.finfo(torch.float32).tiny)).max().item()
     assert worst <= 1.0, (
-        f"Scan A's d pr left its derived budget at T={T} frac={frac}: worst "
+        f"Scan A's d pr left its derived budget at arm {a} T={T} frac={frac}: worst "
         f"|err| / bound = {worst:.3f}; max |err| = {err.max():.3e} against a bound of "
         f"{ref['bdpr'].max():.3e}. The reference rounds every operand where the kernel "
         f"rounds it, so only summation ORDER and the Gram's one rounding flip may "
@@ -198,16 +221,20 @@ def test_d_pr_rejects_the_swapped_leave_one_out():
     them is not gating the product at all."""
     T = 96
     live_r, live_w = _liveness(T, None, seed=7)
-    inputs = _inputs(T, 3, live_r, live_w)
+    inputs = _inputs(PINNED, T, 3, live_r, live_w)
     chunks = _partition(live_r.tolist(), live_w.tolist(), T)
-    ref = _reference(*inputs, chunks, T, live_r)
+    ref = _reference(PINNED, *inputs, chunks, T, live_r)
     swapped = _swapped_reference(*inputs, chunks, T)
     assert ((swapped - ref["dpr"]).abs() > ref["bdpr"]).any(), (
         "the d pr budget accepts the two levels' leave-one-out factors exchanged")
 
 
 def _swapped_reference(pr, pw, gw, v, dnum, dden, chunks, T):
+    """The PINNED arm's alternative implementation: the two levels' leave-one-out
+    factors exchanged. Depth two is where the two differ only in that choice, which
+    is what makes it the rejection the budget has to be able to make."""
     dev = "cuda"
+    N, W, D = PINNED.N, PINNED.W, PINNED.D
     s = torch.arange(N, device=dev)
     d0, d1 = s // W, s % W
     prf, pwf, gwf = _rb(pr)[0, 0], _rb(pw)[0, 0], _rb(gw)[0, 0]
@@ -240,4 +267,11 @@ def test_scan_a_census_is_spill_free():
     disagree about the arm."""
     m = extension()
     rows = m.chunk_scan_b_census()
-    assert rows and rows[0][5] == 0, "Scan B's census must stay spill-free beside Scan A"
+    assert rows, "the scans report no built arm"
+    for row in rows:
+        assert row[5] == 0, (
+            f"arm {tuple(row[:4])} spills {row[5]} bytes: the two scans share one "
+            f"geometry, so a spill in either is a carve that has to change")
+        assert row[4] <= row[10], (
+            f"arm {tuple(row[:4])} holds {row[4]} registers against a budget of "
+            f"{row[10]}")

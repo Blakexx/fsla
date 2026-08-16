@@ -246,7 +246,15 @@ def test_saving_the_ctx_costs_a_constant_and_not_a_fraction_of_the_launch():
         f"{large * 1e3:.3f} ms call)")
 
 
-def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_empty_ctx():
+#: THE TRAINABLE TOPOLOGIES, read off the census. `(64, 64)` is the pinned arm's;
+#: `(16, 16)` is a `BC = 64` one, where a slot is shared by two threads and the
+#: per-slot dW runs two passes instead of four -- the two axes the seam has to
+#: carry beside the pinned one.
+_SEAM_TOPOLOGIES = [(64, 64), (16, 16)]
+
+
+@pytest.mark.parametrize("widths", _SEAM_TOPOLOGIES, ids=lambda w: f"W{w[0]}")
+def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_empty_ctx(widths):
     """OLD: both seams refused by name, because the scans did not yet emit a full
     cotangent set. They do, so the seams CARRY the gradient -- and what is left to
     refuse is the one state neither can compute from: a ctx the forward never
@@ -256,6 +264,6 @@ def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_empty_ctx()
 
     with pytest.raises(RuntimeError, match="never filled"):
         _chunk.backward(_chunk.SavedForward(), torch.zeros(1), torch.zeros(1))
-    y, _, _ = _forward_saving(1, 64, 2, (64, 64))
+    y, _, _ = _forward_saving(1, 64, 2, widths)
     y.sum().backward()
     assert ChunkConsumer.backward is not None

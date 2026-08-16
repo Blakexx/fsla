@@ -32,15 +32,27 @@ import torch
 
 import rola
 from rola.interface import BackwardNotImplemented  # noqa: F401  (documents the seam)
-from rola.ops._ext import is_available
+from rola.ops._ext import extension, is_available
+from rola.ops.chunk import scan_arms
 from rola.ops.naive import naive_rola
 
 pytestmark = pytest.mark.skipif(
     not is_available() or not torch.cuda.is_available(),
     reason="the reverse pass is a CUDA kernel")
 
-#: THE PINNED ARM the reverse pass carries.
-C, D, W, DV = 32, 2, 64, 64
+#: THE CHUNK AND THE VALUE WIDTH, which are single-valued across the built matrix.
+C, DV = 32, 64
+
+#: THE TOPOLOGIES THE REVERSE PASS CARRIES, read off the census rather than
+#: restated: `(D, W)` for every built scan arm, so a widened scan matrix widens
+#: this battery by collection and cannot ship ungated. `BC` is not a coordinate
+#: here -- `rola.ops.chunk` picks it from the manifest, which is the whole point
+#: of gating the FACADE rather than the probe entry.
+TOPOLOGIES = sorted({(d, w) for (_c, _bc, d, w) in scan_arms()})
+
+#: THE PINNED TOPOLOGY, for the rows whose claim is about a term rather than an
+#: arm (the m-carry identity, the vacuity row, the retention receipt).
+PIN_D, PIN_W = 2, 64
 
 #: ONE TOLERANCE, PUBLISHED, AND THE SAME FOR EVERY OUTPUT.
 #:
@@ -55,7 +67,8 @@ C, D, W, DV = 32, 2, 64, 64
 KAPPA = 4.0
 
 
-def _bundle(T: int, seed: int, *, mass: bool, gain: float, device="cuda"):
+def _bundle(T: int, seed: int, *, mass: bool, gain: float, D: int = PIN_D,
+            W: int = PIN_W, device="cuda"):
     """A hand-built `RouteFactors` on the pinned arm, with every operand a LEAF.
 
     Built directly rather than through a producer: the claim here is about the
@@ -161,11 +174,12 @@ CELLS = [
 ]
 
 
+@pytest.mark.parametrize("D,W", TOPOLOGIES, ids=[f"D{d}W{w}" for d, w in TOPOLOGIES])
 @pytest.mark.parametrize("T,gain", [p.values for p in CELLS],
                          ids=[p.id for p in CELLS])
-def test_every_cotangent_matches_the_oracles(T, gain):
+def test_every_cotangent_matches_the_oracles(T, gain, D, W):
     mass = False
-    routes, v = _bundle(T, seed=11, mass=mass, gain=gain)
+    routes, v = _bundle(T, seed=11, mass=mass, gain=gain, D=D, W=W)
     inputs = (v, *routes.tensors())
     names = (["v"] + ["read"] * D + ["write"] * D + ["g_write"]
              + (["read_mass"] if mass else []))
@@ -214,7 +228,7 @@ def test_every_cotangent_matches_the_oracles(T, gain):
         worst = err / max(floor, torch.finfo(torch.float64).tiny)
         assert worst <= KAPPA, (
             f"d {name} is {worst:.2f}x its rounded-reference floor (kappa={KAPPA}) "
-            f"at T={T} gain={gain}. ||err|| = {err:.3e} against a "
+            f"at T={T} gain={gain} D={D} W={W}. ||err|| = {err:.3e} against a "
             f"floor of {floor:.3e}. The floor is the SAME oracle run with the "
             f"operands rounded the way the kernel holds them, so it bounds what is "
             f"REPRESENTABLE; anything far above it is algorithmic.")
@@ -323,9 +337,26 @@ def test_the_backward_retains_o_of_l_and_nothing_o_of_n(scale):
         f"array shows up here as a term.")
 
 
+def _chunk_arm(routes) -> tuple[int, int, int, int]:
+    from rola.ops.chunk import arm as _arm
+    c, bc = _arm(routes)
+    widths = tuple(l.width for l in routes.topology.levels)
+    return (c, bc, len(widths), widths[0])
+
+
+def _census_entries(c, bc, d, b) -> int:
+    for row in extension().chunk_scan_b_census():
+        if tuple(row[:4]) == (c, bc, d, b):
+            return row[11]
+    raise AssertionError(f"no scan census row for arm ({c},{bc},{d},{b})")
+
+
 def _expected_per_token(routes) -> float:
     sumw = sum(level.shape[-1] for level in routes.read)
-    entries = 2 * (W // 2)          # the pinned arm's table rows per side
+    #: the arm's own table rows per side, READ OFF THE CENSUS rather than
+    #: restated -- the level plan's `entries` is the kernel's number, not a
+    #: formula this file gets to keep a second copy of.
+    entries = _census_entries(*_chunk_arm(routes))
     per = (2 * sumw * 2)            # pr, pw : bf16
     per += 2                        # gw : bf16
     per += 4                        # rm : fp32

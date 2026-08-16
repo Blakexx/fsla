@@ -93,14 +93,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_walk_probe", &rola::chunk::walk_probe,
         "chunk consumer, Scan B: the descending walk's per-token chunk/position "
         "stamps and causal thresholds, both sides",
-        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("L"));
+        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("L"),
+        py::arg("BH"));
   //: SCAN A: the forward rebuild and the READ side's digit gradient, `d pr`.
   m.def("chunk_scan_a_probe", &rola::chunk::scan_a_probe, "chunk consumer, Scan A: d pr",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
   m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
-        "chunk consumer, Scan B: per-arm registers, spill bytes, shared bytes, "
-        "staging depth, CTA target and the arm's declared register floor");
+        "chunk consumer, the two scans: per-arm registers, spill bytes, shared "
+        "bytes, staging depth, CTA target, the declared scan register floor, the "
+        "budget that target admits, and the level plan's table entries");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,

@@ -10,8 +10,8 @@ regenerate-and-diff gate all disagree with it immediately, and CI fails.
 
 ## What is here
 
-`compacted_kernel<C, BC, D, B, STATE>` has 42 built instantiations —
-21 arms crossed with the carried state's I/O, the exact set `chunk_forward`
+`compacted_kernel<C, BC, D, B, STATE>` has 44 built instantiations —
+22 arms crossed with the carried state's I/O, the exact set `chunk_forward`
 can select, no more and no fewer. They are split across **3 shards of 8 arms**,
 whole-program (no `-rdc`), so the compile parallelizes and a ratchet refusal scopes
 to one shard's slice of the manifest.
@@ -38,6 +38,11 @@ list. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
+`scan_arms.inc` carries `SCAN_B_ARMS_X`, the X-macro `../chunk/backward.cu` walks
+for the two scans' dispatch, launchers and census. It is a subset of the same arm
+list, checked at generation time: a backward arm whose forward is not built could
+not run a training step.
+
 ## The partition
 
 A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel
@@ -59,4 +64,4 @@ and Y were re-measured" a provable claim.
 |---|---|
 | `chunk_s0.cu` | 16 |
 | `chunk_s1.cu` | 16 |
-| `chunk_s2.cu` | 10 |
+| `chunk_s2.cu` | 12 |

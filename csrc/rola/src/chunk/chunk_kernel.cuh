@@ -542,6 +542,15 @@ constexpr int reg_floor(int C, int BC) {
                                  : 255);
 }
 
+//: THE SCANS' OWN FLOOR, and it is a SEPARATE declaration because the reverse
+//: pass' live set does not fall with `BC` the way the forward's does: the state
+//: halves, the chunk-shaped terms do not.  Measured at `C = 32`, the only chunk
+//: the scans are built at; every row is falsified per arm by the census' spill
+//: and budget gates -- docs/internals/chunk/backward.md#reg-floor-scan
+constexpr int reg_floor_scan(int BC) {
+  return BC >= 256 ? reg_floor_scan(BC / 2) : BC <= 32 ? 200 : BC <= 64 ? 224 : 236;
+}
+
 template <int C, int BC>
 struct Geom {
   //: the swizzle AXIS is retired (receipt: noise).  The padded layout is THE layout;

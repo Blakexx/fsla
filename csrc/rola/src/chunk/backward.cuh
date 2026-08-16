@@ -24,13 +24,24 @@ struct ScanBParams {
   int v_row_bytes;
 };
 
+//: THE PER-SLOT dW PASS WIDTH.  Each unit consumes an eight-row operand tile of
+//: the transposed state, so a pass covers `kUnits` such tiles -- a STRUCTURAL
+//: constant of the mma carve, independent of `BC`.  It is the whole of the pass
+//: law -- docs/internals/chunk/backward.md#pass-law
+static constexpr int kPassSlots = kUnits * kMmaN;
+
 //: SCAN B'S GEOMETRY.  It is NOT `Geom`: the ring carries TWO value-shaped
 //: panels (`dnum` gathered by the read list, V by the write list), there is no
 //: Gram, and there is a cross-unit window the forward has no term for.
-template <int C, int BC>
+template <int C, int BC, int D, int B>
 struct GeomB {
   static constexpr int GRP = groups_for(BC);
   static constexpr int BCg = BC / GRP;
+  //: THE GEOMETRY TAKES THE TOPOLOGY because two of its buffers are digit-shaped:
+  //: `spw0` is one column per outer digit the block spans, and there is no outer
+  //: level at all at depth one.
+  static constexpr int kInnerSpan = LevelPlan<D, B, BC>::span_at(D - 1);
+  static constexpr int kOuterSpan = BC / kInnerSpan;
   static constexpr int LdV = kD + kPadE;
   static constexpr int LdS = BCg + kPadE;
   static constexpr int LdG = C + kPadE;
@@ -52,9 +63,10 @@ struct GeomB {
   //: ungained so `d gw` can read the level product alone, and the gain is applied
   //: once, on the readout's token axis -- docs/internals/chunk/backward.md#dw-slotsum
   static constexpr int gain_bytes = C * (int)sizeof(float);
-  //: the OUTER level's amplitudes for this block's two digits, per write entry --
-  //: the leave-one-out factor the inner level's digit gradient is weighted by
-  static constexpr int pw0_bytes = 2 * C * (int)sizeof(float);
+  //: the OUTER level's amplitudes for this block's digits, per write entry -- the
+  //: leave-one-out factor the inner level's digit gradient is weighted by.  At
+  //: depth one there is no outer level and the buffer does not exist.
+  static constexpr int pw0_bytes = (D >= 2 ? kOuterSpan : 0) * C * (int)sizeof(float);
   //: THE READOUT WINDOW IS TWO THINGS IN SEQUENCE, and it is sized for the
   //: larger: `dv`'s fp32 staging until the drain frees it, then `dz` published
   //: per slot for `d gw`'s token-major reduction.  They never overlap, so the
@@ -62,14 +74,14 @@ struct GeomB {
   //: transposed adjoint state -- is carved to fit here as well:
   //: docs/internals/chunk/backward.md#readout-window
   static constexpr int dz_bytes = BCg * (int)sizeof(float);
-  //: THE TRANSPOSED ADJOINT STATE, a QUARTER of the slots at a time.  (A.18)'s k
+  //: THE TRANSPOSED ADJOINT STATE, ONE PASS of the slots at a time.  (A.18)'s k
   //: axis is `d_v`, which is the carve's own axis, so no unit can finish the
   //: contraction from its own registers; each writes its 16 channels here, the
   //: writes are DISJOINT, and every unit then reads all `d_v` for its own slots.
   //: The row count carries `kMmaN` of pad because `ldmatrix` reads sixteen rows
   //: from an eight-row tile's base -- docs/internals/chunk/backward.md#readout-window
   static constexpr int LdDs = kD + kPadE;
-  static constexpr int DsRows = BCg / 4 + kMmaN;
+  static constexpr int DsRows = kPassSlots + kMmaN;
   static constexpr int ds_bytes = DsRows * LdDs * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static constexpr int late_bytes = dz_bytes + ds_bytes;
@@ -83,16 +95,18 @@ struct GeomB {
   static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16) + GRP * win_bytes
                                + grad_bytes + dden_bytes + gain_bytes + pw0_bytes + gram_bytes
                                + (1 + kAheadExtra) * idx_slot + form_bytes;
-  static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor(C, BC));
+  static constexpr int stages =
+      design::stages_for(slot, fixed, threads_for(BC), reg_floor_scan(BC));
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
 //: THE CTA TARGET SCAN B IS BOUND AT, and it is checked against the forward's at
-//: the instantiation site: a backward that resident-fewer CTAs than its forward
-//: would move the arm's occupancy without anybody deciding to.
-template <int C, int BC>
+//: the instantiation site: a backward resident at MORE CTAs than its forward
+//: would be a launch bound nothing measured, and the two targets are carried per
+//: arm in the census so neither moves unnoticed.
+template <int C, int BC, int D, int B>
 constexpr int kScanBCtaTarget =
-    design::cta_target((int)GeomB<C, BC>::bytes, threads_for(BC), reg_floor(C, BC));
+    design::cta_target((int)GeomB<C, BC, D, B>::bytes, threads_for(BC), reg_floor_scan(BC));
 
 //: THE FORM, DESCENDING.  `form_impl`'s body with the token axis walked the
 //: other way: `formLow` is the LOWEST word formed, so the ring holds
@@ -335,7 +349,7 @@ __global__ __launch_bounds__(threads_for(BC)) void walk_probe_kernel(
     const uint32_t* __restrict__ tbl, int* __restrict__ stampR, int* __restrict__ stampW,
     int* __restrict__ jout, int* __restrict__ nchunk, int L) {
   using LP = LevelPlan<D, B, BC>;
-  using G = GeomB<C, BC>;
+  using G = GeomB<C, BC, D, B>;
   constexpr int kThreads = threads_for(BC);
 
   const int tid = threadIdx.x;
@@ -418,14 +432,14 @@ __global__ __launch_bounds__(threads_for(BC)) void walk_probe_kernel(
 //: SCAN B.  One CTA per (bh, block), full grid: the sparse grid and the carried
 //: state are not axes of the skeleton.
 template <int C, int D, int B, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void scan_b_kernel(
+__global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) void scan_b_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
     const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum,
     float* __restrict__ dgw, float* __restrict__ dpw, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
-  using G = GeomB<C, BC>;
+  using G = GeomB<C, BC, D, B>;
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);
   constexpr int kGroupWarps = kGroupThreads / 32;
@@ -436,11 +450,10 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   static_assert(C <= 255, "a causal threshold is one byte, chunk-relative");
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory maximum");
-  static_assert(kScanBCtaTarget<C, BC> == kCtaTarget<C, BC>,
-                "SCAN B MOVED THE ARM'S OCCUPANCY: its shared-memory carve reaches a "
-                "different CTA target than the forward's, so the two halves of one "
-                "training step would run at different residencies. Re-carve rather "
-                "than accept it.");
+  static_assert(kScanBCtaTarget<C, BC, D, B> <= kCtaTarget<C, BC>,
+                "SCAN B RESIDENT ABOVE ITS FORWARD: the reverse pass may run at the "
+                "forward's occupancy or below it, never above -- a launch bound "
+                "nothing measured. The pair is carried per arm in the census.");
   constexpr int STAGES = G::stages;
   constexpr int AHEAD = STAGES - 1 + kAheadExtra;
   constexpr int IRING = AHEAD + 2;
@@ -485,13 +498,22 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
                 "must be a whole number of eight coefficients");
   static_assert(kLeadPerThr == 1 || kFastSpan % kLeadPerThr == 0,
                 "a thread's outer run crosses a fast-level boundary");
-  //: THE DIGIT REDUCTION IS WRITTEN FOR THE TWO-LEVEL ARM, and says so rather
-  //: than mis-reducing a topology it was not derived for.
-  static_assert(kDepth == 2, "the write-side digit reduction is the two-level form");
   static_assert(kOuterSpan * kInnerSpan == BCg, "the block is a rectangle in digit space");
-  static_assert(kInnerSpan == 2 * (BCg / 4),
-                "a quarter of the slots must be half an inner-level span, so a quarter "
-                "fixes the outer digit and two quarters cover the inner one");
+  //: THE PASS LAW.  A pass is `kPassSlots` slots wide and a unit's eight-slot run
+  //: inside it must sit in ONE outer digit, which is what makes the outer
+  //: amplitude a scalar over the pass' accumulator -- docs/internals/chunk/backward.md#pass-law
+  constexpr int kPassCount = BCg / kPassSlots;
+  constexpr int kSpanClasses = kInnerSpan / kPassSlots >= 1 ? kInnerSpan / kPassSlots : 1;
+  constexpr int kDigitClasses = kPassCount < kSpanClasses ? kPassCount : kSpanClasses;
+  constexpr int kOuterPerUnit = kPassCount / kDigitClasses;
+  static_assert(BCg % kPassSlots == 0, "the slot axis must be a whole number of passes");
+  static_assert(kInnerSpan % kMmaN == 0, "a unit's slot run must lie inside one outer digit");
+  static_assert(kDigitClasses * kOuterPerUnit == kPassCount,
+                "the pass index must factor into an inner class and an outer digit");
+  //: A DIGIT ARRAY IS CARRIED ONLY WHERE ITS INDEX RECURS ACROSS PASSES; where it
+  //: does not, the fan-in issues inside the pass and the registers are never live.
+  constexpr int kU1Slots = kOuterPerUnit > 1 ? kDigitClasses : 1;
+  constexpr int kU0Slots = kDigitClasses > 1 ? kOuterPerUnit : 1;
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -533,7 +555,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   float* sdd = sgrad + kUnits * C;
   float* sgw = sdd + C;
   float* spw0 = sgw + C;
-  char* sidx = reinterpret_cast<char*>(spw0 + 2 * C);
+  char* sidx = reinterpret_cast<char*>(spw0) + G::pw0_bytes;
   //: THE READOUT WINDOW, RE-READ.  `so` stages `dv` until the drain frees it;
   //: `sdz` then publishes the entry mass column for `d gw` in the same bytes.
   //: One region, two phases, a barrier between --
@@ -544,7 +566,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
   static_assert((2 * C * LdS + C * G::LdG) % 8 == 0, "the fp32 region must start 16-byte aligned");
-  static_assert((G::win_bytes / (int)sizeof(float) + kUnits * C + C + C + 2 * C) % 4 == 0,
+  static_assert((G::win_bytes + (kUnits * C + C + C) * (int)sizeof(float) + G::pw0_bytes) % 16 == 0,
                 "the index ring must start 16-byte aligned");
   static_assert(G::win_bytes >= G::late_bytes,
                 "the readout window must cover every phase that overlays it");
@@ -599,17 +621,22 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #pragma unroll
     for (int e = 0; e < 4; ++e) dst[j][e] = 0.f;
 
-  //: THE ADJOINT MASS COLUMN, ONE SLOT PER THREAD.  The forward rides its mass
-  //: channel on the value mma, which spends a 16-row m quantum to carry ONE real
-  //: row -- sixteen registers per lane for one slot's worth of information. Scan
-  //: B cannot afford that beside the adjoint state, and it does not need to: `dz`
-  //: is a per-SLOT quantity and there are exactly as many slots as threads, so it
-  //: is a scalar and its fold is a dot product over the chunk's read entries.
-  //: The digit reduction wants it in this layout too.
-  //: docs/internals/chunk/backward.md#mass-column
-  static_assert(BCg == kGroupThreads,
-                "the adjoint mass column is one slot per thread, so a group's slice "
-                "must be exactly its thread count");
+  //: THE ADJOINT MASS COLUMN, `kSlotThreads` THREADS PER SLOT.  The forward rides
+  //: its mass channel on the value mma, which spends a 16-row m quantum to carry
+  //: ONE real row -- sixteen registers per lane for one slot's worth of
+  //: information. Scan B cannot afford that beside the adjoint state, and it does
+  //: not need to: `dz` is a per-SLOT quantity, so it is a scalar whose fold is a
+  //: segment of the dot product over the chunk's read entries.  The segment total
+  //: is COLLAPSED onto `mpart == 0`, which keeps the accumulator a single sum
+  //: across chunks -- docs/internals/chunk/backward.md#mass-column
+  static_assert(kGroupThreads % BCg == 0,
+                "a slot's threads must be a whole lane group, so the segment "
+                "reduction is one butterfly over adjacent lanes");
+  constexpr int kSlotThreads = kGroupThreads / BCg;
+  constexpr int kFoldRun = C / kSlotThreads;
+  static_assert(kFoldRun * kSlotThreads == C, "a slot's threads must cut the chunk evenly");
+  const int mslot = gtid / kSlotThreads;
+  const int mpart = gtid % kSlotThreads;
   float dz_s = 0.f;
 
   // ---- global -> shared staging: V by the WRITE list, dnum by the READ list --
@@ -853,13 +880,15 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         sgw[tid] = tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
                                   gather_ptr(gWrite, (uint32_t)iwrite(dc)[tid] * 2u + winG)))
                             : 0.f;
+        if constexpr (kDepth >= 2) {
 #pragma unroll
-        for (int o = 0; o < kOuterSpan; ++o) {
-          const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winP0;
-          spw0[o * C + tid] =
-              tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
-                             gather_ptr(pWrite, (uint32_t)iwrite(dc)[tid] * kPRowB + col)))
-                       : 0.f;
+          for (int o = 0; o < kOuterSpan; ++o) {
+            const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winP0;
+            spw0[o * C + tid] =
+                tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                               gather_ptr(pWrite, (uint32_t)iwrite(dc)[tid] * kPRowB + col)))
+                         : 0.f;
+          }
         }
       }
     }
@@ -1097,7 +1126,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
     //: is what every write-side term reads.  The fold updates it at the end of the
     //: iteration, so this is the entry value, and it goes into the window the
     //: readout has just given up.
-    sdz[gtid] = dz_s;
+    if (mpart == 0) sdz[mslot] = dz_s;
 
     rendezvous();  // (2b') the entry mass column is visible
 
@@ -1208,38 +1237,77 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
     rendezvous();  // (2e) the d_v Gram is visible
 
-    // ---- THE PER-SLOT dW, A QUARTER OF THE SLOTS AT A TIME -------------------
+    // ---- THE PER-SLOT dW, ONE PASS OF THE SLOTS AT A TIME --------------------
     //: `u1` is the INNER level's digit gradient and needs no reduction at all:
-    //: quarter `p` fixes the outer digit, and each `(token, inner digit)` cell is
-    //: held by exactly one lane.  `u0` is the OUTER level's and reduces over the
-    //: lane's slot run and then over the units.
-    float u1[2][MTOK][4];
-    float u0[kOuterSpan][MTOK][2];
-#pragma unroll
-    for (int c = 0; c < 2; ++c)
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
-#pragma unroll
-    for (int o = 0; o < kOuterSpan; ++o)
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+    //: a pass fixes each unit's outer digit, and each `(token, inner digit)` cell
+    //: is held by exactly one lane.  `u0` is the OUTER level's and reduces over
+    //: the lane's slot run and then over the units.
+    float u1[kU1Slots][MTOK][4];
+    float u0[kU0Slots][MTOK][2];
 
     if (liveW) {
-      //: THE QUARTER INDEX IS COMPILE-TIME, and that is not a scheduling
-      //: preference: `u0`/`u1` are indexed by the quarter's own digit class, and a
-      //: runtime index into a register array is a stack frame -- the same rule the
-      //: forward's clause scalars are written to.
+      //: THE INNER-LEVEL FAN-IN, at one class' digit base.  A whole level's block
+      //: offset is zero, a partial one's is not, so the column carries `off_at`.
+      auto emit_u1 = [&](int i1, const float(&a1)[MTOK][4]) {
+        const uint32_t col =
+            (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + i1) * 4) + winPw;
 #pragma unroll
-      for (int pq = 0; pq < 4; ++pq) {
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
+            if (tk < nw)
+              fan_in_add(
+                  reinterpret_cast<float*>(gather_ptr(
+                      dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
+                  sgw[tk] * a1[m][e]);
+          }
+      };
+      //: THE OUTER LEVEL sums over this lane's slot run first -- two shuffles --
+      //: and then over the units, which the fan-in does.
+      auto emit_u0 = [&](int od, float(&a0)[MTOK][2]) {
+        const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + od) * 4) + winPw;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int hh = 0; hh < 2; ++hh) {
+#pragma unroll
+            for (int b2 = 1; b2 < 4; b2 <<= 1)
+              a0[m][hh] += __shfl_xor_sync(0xFFFFFFFFu, a0[m][hh], b2);
+            const int tk = m * 16 + (lane >> 2) + hh * 8;
+            if ((lane & 3) == 0 && tk < nw)
+              fan_in_add(reinterpret_cast<float*>(
+                             gather_ptr(dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col)),
+                         sgw[tk] * a0[m][hh]);
+          }
+      };
+      if constexpr (kOuterPerUnit > 1) {
+#pragma unroll
+        for (int c = 0; c < kU1Slots; ++c)
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
+      }
+      if constexpr (kDepth >= 2 && kDigitClasses > 1) {
+#pragma unroll
+        for (int o = 0; o < kU0Slots; ++o)
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+      }
+      //: THE PASS INDEX IS COMPILE-TIME, and that is not a scheduling preference:
+      //: `u0`/`u1` are indexed by the pass' own digit class, and a runtime index
+      //: into a register array is a stack frame -- the same rule the forward's
+      //: clause scalars are written to.
+#pragma unroll
+      for (int pq = 0; pq < kPassCount; ++pq) {
         //: EACH UNIT WRITES ITS OWN CHANNELS, so the writes are disjoint and the
         //: cross-unit sum (A.18)'s k axis would otherwise force does not exist.
 #pragma unroll
-        for (int q = 0; q < BCg / 4 / kMmaN; ++q) {
-          const int nq = pq * (BCg / 4 / kMmaN) + q;
+        for (int q = 0; q < kPassSlots / kMmaN; ++q) {
+          const int nq = pq * (kPassSlots / kMmaN) + q;
           const int row = q * kMmaN + (lane & 3) * 2;
           const int col = dv0 + (lane >> 2);
           sds[row * G::LdDs + col] = __float2bfloat16_rn(dst[nq][0]);
@@ -1273,7 +1341,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #pragma unroll
           for (int kk = 0; kk < MTOK; ++kk) {
             uint32_t br[4];
-            load_frag_t(br, ADDR_S(brF, kk * 16, (pq * (BCg / 4) + gwarp * 8) / 8));
+            load_frag_t(br, ADDR_S(brF, kk * 16, (pq * kPassSlots + gwarp * 8) / 8));
 #pragma unroll
             for (int m = 0; m < MTOK; ++m) {
               uint32_t ag[4];
@@ -1283,7 +1351,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
           }
         }
         //: the ENTRY mass column, one value per slot, added where `dW` wants it.
-        const int s0 = pq * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+        const int s0 = pq * kPassSlots + gwarp * 8 + (lane & 3) * 2;
 #pragma unroll
         for (int m = 0; m < MTOK; ++m) {
           acc[m][0] += sdz[s0];
@@ -1293,71 +1361,66 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         }
 
         // ---- the digit reduction, in lane --------------------------------------
-        const int cls = pq & 1, od = pq >> 1;
-        const int i1 = cls * (kInnerSpan / 2) + gwarp * 8 + (lane & 3) * 2;
+        const int cls = pq % kDigitClasses, oi = pq / kDigitClasses;
+        const int od = (pq * kPassSlots + gwarp * 8) / kInnerSpan;
+        const int i1 = (cls * kPassSlots + gwarp * 8) % kInnerSpan + (lane & 3) * 2;
+        const int c1 = kOuterPerUnit > 1 ? cls : 0;
+        const int o1 = kDigitClasses > 1 ? oi : 0;
+        if constexpr (kOuterPerUnit == 1) {
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) u1[0][m][e] = 0.f;
+        }
+        if constexpr (kDepth >= 2 && kDigitClasses == 1) {
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int hh = 0; hh < 2; ++hh) u0[0][m][hh] = 0.f;
+        }
 #pragma unroll
         for (int m = 0; m < MTOK; ++m) {
           const int t0 = m * 16 + (lane >> 2);
-          const float w0 = spw0[od * C + t0], w1 = spw0[od * C + t0 + 8];
-          u1[cls][m][0] += acc[m][0] * w0;
-          u1[cls][m][1] += acc[m][1] * w0;
-          u1[cls][m][2] += acc[m][2] * w1;
-          u1[cls][m][3] += acc[m][3] * w1;
-          const uint32_t pcol = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 2) + winPc;
-          const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
-              gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0] * kPRowB + pcol));
-          const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
-              gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0 + 8] * kPRowB + pcol));
-          u0[od][m][0] +=
-              acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
-              + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
-          u0[od][m][1] +=
-              acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
-              + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+          //: AT DEPTH ONE THE INNER LEVEL IS LEVEL ZERO: there is no other level to
+          //: leave out, so the digit gradient carries no outer factor at all.
+          const float w0 = kDepth >= 2 ? spw0[od * C + t0] : 1.f;
+          const float w1 = kDepth >= 2 ? spw0[od * C + t0 + 8] : 1.f;
+          u1[c1][m][0] += acc[m][0] * w0;
+          u1[c1][m][1] += acc[m][1] * w0;
+          u1[c1][m][2] += acc[m][2] * w1;
+          u1[c1][m][3] += acc[m][3] * w1;
+          if constexpr (kDepth >= 2) {
+            const uint32_t pcol =
+                (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + i1) * 2)
+                + winPc;
+            const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
+                gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0] * kPRowB + pcol));
+            const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
+                gather_ptr(pWrite, (uint32_t)iwrite(dc)[t0 + 8] * kPRowB + pcol));
+            u0[o1][m][0] +=
+                acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
+                + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
+            u0[o1][m][1] +=
+                acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
+                + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+          }
         }
+        if constexpr (kOuterPerUnit == 1) emit_u1(i1, u1[0]);
+        if constexpr (kDepth >= 2 && kDigitClasses == 1) emit_u0(od, u0[0]);
         rendezvous();
       }
 
-      // ---- the write side's digit gradients leave here ------------------------
-      //: THE INNER LEVEL NEEDS NO REDUCTION: every `(token, digit)` cell is held
-      //: by exactly one lane, so the fan-in is `C * B` adds per block and that is
-      //: the minimum the destination admits.
+      //: THE CARRIED HALVES LEAVE HERE, each at the digit its own index names.
+      if constexpr (kOuterPerUnit > 1) {
 #pragma unroll
-      for (int cls = 0; cls < 2; ++cls)
+        for (int c = 0; c < kU1Slots; ++c)
+          emit_u1((c * kPassSlots + gwarp * 8) % kInnerSpan + (lane & 3) * 2, u1[c]);
+      }
+      if constexpr (kDepth >= 2 && kDigitClasses > 1) {
 #pragma unroll
-        for (int m = 0; m < MTOK; ++m) {
-          const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
-          const uint32_t col = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 4) + winPw;
-#pragma unroll
-          for (int e = 0; e < 4; ++e) {
-            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
-            if (tk < nw)
-              fan_in_add(
-                  reinterpret_cast<float*>(gather_ptr(
-                      dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
-                  sgw[tk] * u1[cls][m][e]);
-          }
-        }
-      //: THE OUTER LEVEL sums over this lane's slot run first -- two shuffles --
-      //: and then over the units, which the fan-in does.
-#pragma unroll
-      for (int o = 0; o < kOuterSpan; ++o)
-#pragma unroll
-        for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-          for (int hh = 0; hh < 2; ++hh) {
-#pragma unroll
-            for (int b2 = 1; b2 < 4; b2 <<= 1)
-              u0[o][m][hh] += __shfl_xor_sync(0xFFFFFFFFu, u0[o][m][hh], b2);
-            const int tk = m * 16 + (lane >> 2) + hh * 8;
-            if ((lane & 3) == 0 && tk < nw) {
-              const uint32_t col =
-                  (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 4) + winPw;
-              fan_in_add(reinterpret_cast<float*>(
-                             gather_ptr(dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col)),
-                         sgw[tk] * u0[o][m][hh]);
-            }
-          }
+        for (int o = 0; o < kU0Slots; ++o)
+          emit_u0((o * kDigitClasses * kPassSlots + gwarp * 8) / kInnerSpan, u0[o]);
+      }
     }
 
     if (liveR) {
@@ -1377,12 +1440,17 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
           mma(dst[2 * nj + 1], a, &b[2]);
         }
       }
-      //: dz's OWN FOLD: this thread's slot against the chunk's read entries.  The
-      //: R panel's rows past `nr` are identically zero and so is `sdd` there, so
-      //: the run is the whole chunk and needs no bound.
-      const __nv_bfloat16* rcol = sr + gtid;
+      //: dz's OWN FOLD: this thread's segment of its slot's column against the
+      //: chunk's read entries.  The R panel's rows past `nr` are identically zero
+      //: and so is `sdd` there, so the run is the whole chunk and needs no bound.
+      const __nv_bfloat16* rcol = sr + mslot;
+      const int i0 = mpart * kFoldRun;
 #pragma unroll
-      for (int i = 0; i < C; ++i) dz_s += sdd[i] * __bfloat162float(rcol[i * LdS]);
+      for (int i = 0; i < kFoldRun; ++i)
+        dz_s += sdd[i0 + i] * __bfloat162float(rcol[(i0 + i) * LdS]);
+#pragma unroll
+      for (int b2 = 1; b2 < kSlotThreads; b2 <<= 1) dz_s += __shfl_xor_sync(0xFFFFFFFFu, dz_s, b2);
+      if (mpart != 0) dz_s = 0.f;
     }
 
     rendezvous();  // (3) `so`/`sgrad` are free and the panels are dead
@@ -1404,20 +1472,20 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 //: inclusive `S`/`z` over the chunk collapses the design's (A.14)+(A.15) into one
 //: masked contraction -- docs/internals/chunk/backward.md#scan-a
 template <int C, int D, int B, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void scan_a_kernel(
+__global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) void scan_a_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
     const uint32_t* __restrict__ tbl, float* __restrict__ dpr, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
-  using G = GeomB<C, BC>;
+  using G = GeomB<C, BC, D, B>;
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);
   constexpr int kGroupWarps = kGroupThreads / 32;
   constexpr int BCg = BC / GROUPS;
   static_assert(GROUPS == 1, "Scan A is written for the one-group carve");
-  static_assert(kScanBCtaTarget<C, BC> == kCtaTarget<C, BC>,
-                "the two halves of one training step must run at one residency");
+  static_assert(kScanBCtaTarget<C, BC, D, B> <= kCtaTarget<C, BC>,
+                "neither half of a training step may be resident above the forward");
   constexpr int STAGES = G::stages;
   constexpr int AHEAD = STAGES - 1 + kAheadExtra;
   constexpr int IRING = AHEAD + 2;
@@ -1448,9 +1516,17 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   constexpr int kTailPerThr = kInnerSpan / kThrPerLead;
   constexpr int kTailVec = (kTailPerThr * 2) / 16;
   constexpr int kFastSpan = kDepth >= 2 ? LP::span_at(kDepth - 2) : 1;
-  static_assert(kDepth == 2, "the read-side digit reduction is the two-level form");
-  static_assert(kInnerSpan == 2 * (BCg / 4),
-                "a quarter of the slots must be half an inner-level span");
+  static_assert(kOuterSpan * kInnerSpan == BCg, "the block is a rectangle in digit space");
+  constexpr int kPassCount = BCg / kPassSlots;
+  constexpr int kSpanClasses = kInnerSpan / kPassSlots >= 1 ? kInnerSpan / kPassSlots : 1;
+  constexpr int kDigitClasses = kPassCount < kSpanClasses ? kPassCount : kSpanClasses;
+  constexpr int kOuterPerUnit = kPassCount / kDigitClasses;
+  static_assert(BCg % kPassSlots == 0, "the slot axis must be a whole number of passes");
+  static_assert(kInnerSpan % kMmaN == 0, "a unit's slot run must lie inside one outer digit");
+  static_assert(kDigitClasses * kOuterPerUnit == kPassCount,
+                "the pass index must factor into an inner class and an outer digit");
+  constexpr int kU1Slots = kOuterPerUnit > 1 ? kDigitClasses : 1;
+  constexpr int kU0Slots = kDigitClasses > 1 ? kOuterPerUnit : 1;
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -1496,7 +1572,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   //: the inner level's digit gradient is weighted by.  There is no gain on this
   //: side: `g_read` does not exist.
   float* spr0 = sdd + C + C;
-  char* sidx = reinterpret_cast<char*>(spr0 + 2 * C);
+  char* sidx = reinterpret_cast<char*>(spr0) + G::pw0_bytes;
   uint32_t* sfR = reinterpret_cast<uint32_t*>(sidx + IRING * G::idx_slot);
   uint32_t* sfW = sfR + kFormWords;
   int* scook = reinterpret_cast<int*>(sfW + kFormWords);
@@ -1561,9 +1637,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
   const int gn0 = (gwarp % NSPLIT) * NPW;
 
   //: THE FORWARD STATE, transposed exactly as the forward carries it, and its mass
-  //: column as ONE SLOT PER THREAD for the same reason Scan B's adjoint is:
+  //: column carved over slots exactly as Scan B's adjoint is:
   //: docs/internals/chunk/backward.md#mass-column
-  static_assert(BCg == kGroupThreads, "one slot per thread");
+  static_assert(kGroupThreads % BCg == 0, "a slot's threads must be a whole lane group");
+  constexpr int kSlotThreads = kGroupThreads / BCg;
+  constexpr int kFoldRun = C / kSlotThreads;
+  static_assert(kFoldRun * kSlotThreads == C, "a slot's threads must cut the chunk evenly");
+  const int mslot = gtid / kSlotThreads;
+  const int mpart = gtid % kSlotThreads;
   float st[NDV][4];
 #pragma unroll
   for (int j = 0; j < NDV; ++j)
@@ -1710,19 +1791,21 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         sdd[tid] = tid < nr ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
                                   gather_ptr(ddenPlane, (uint32_t)iread(dc)[tid] * 2u + winG)))
                             : 0.f;
+        if constexpr (kDepth >= 2) {
 #pragma unroll
-        for (int o = 0; o < kOuterSpan; ++o) {
-          const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winPc;
-          spr0[o * C + tid] = tid < nr
-                                  ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
-                                        gather_ptr(pRead, (uint32_t)iread(dc)[tid] * kPRowB + col)))
-                                  : 0.f;
+          for (int o = 0; o < kOuterSpan; ++o) {
+            const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winPc;
+            spr0[o * C + tid] =
+                tid < nr ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+                               gather_ptr(pRead, (uint32_t)iread(dc)[tid] * kPRowB + col)))
+                         : 0.f;
+          }
         }
       }
     }
     //: `z` AS THIS CHUNK ENTERS IT: the fold updates it at the end, so this is the
     //: mass every read entry of this chunk sees before its own writes land.
-    sz[gtid] = z_s;
+    if (mpart == 0) sz[mslot] = z_s;
 
     stage_wait<STAGES - 2>();
     rendezvous();
@@ -1782,28 +1865,63 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 
     rendezvous();
 
-    // ---- THE PER-SLOT dR, A QUARTER OF THE SLOTS AT A TIME --------------------
-    float u1[2][MTOK][4];
-    float u0[kOuterSpan][MTOK][2];
-#pragma unroll
-    for (int c = 0; c < 2; ++c)
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
-#pragma unroll
-    for (int o = 0; o < kOuterSpan; ++o)
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+    // ---- THE PER-SLOT dR, ONE PASS OF THE SLOTS AT A TIME ---------------------
+    float u1[kU1Slots][MTOK][4];
+    float u0[kU0Slots][MTOK][2];
 
     if (liveR) {
+      auto emit_u1 = [&](int i1, const float(&a1)[MTOK][4]) {
+        const uint32_t col =
+            (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + i1) * 4) + winPw;
 #pragma unroll
-      for (int pq = 0; pq < 4; ++pq) {
+        for (int m = 0; m < MTOK; ++m)
 #pragma unroll
-        for (int q = 0; q < BCg / 4 / kMmaN; ++q) {
-          const int nq = pq * (BCg / 4 / kMmaN) + q;
+          for (int e = 0; e < 4; ++e) {
+            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
+            if (tk < nr)
+              fan_in_add(
+                  reinterpret_cast<float*>(gather_ptr(
+                      dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
+                  a1[m][e]);
+          }
+      };
+      auto emit_u0 = [&](int od, float(&a0)[MTOK][2]) {
+        const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + od) * 4) + winPw;
+#pragma unroll
+        for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+          for (int hh = 0; hh < 2; ++hh) {
+#pragma unroll
+            for (int b2 = 1; b2 < 4; b2 <<= 1)
+              a0[m][hh] += __shfl_xor_sync(0xFFFFFFFFu, a0[m][hh], b2);
+            const int tk = m * 16 + (lane >> 2) + hh * 8;
+            if ((lane & 3) == 0 && tk < nr)
+              fan_in_add(reinterpret_cast<float*>(
+                             gather_ptr(dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col)),
+                         a0[m][hh]);
+          }
+      };
+      if constexpr (kOuterPerUnit > 1) {
+#pragma unroll
+        for (int c = 0; c < kU1Slots; ++c)
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) u1[c][m][e] = 0.f;
+      }
+      if constexpr (kDepth >= 2 && kDigitClasses > 1) {
+#pragma unroll
+        for (int o = 0; o < kU0Slots; ++o)
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
+      }
+#pragma unroll
+      for (int pq = 0; pq < kPassCount; ++pq) {
+#pragma unroll
+        for (int q = 0; q < kPassSlots / kMmaN; ++q) {
+          const int nq = pq * (kPassSlots / kMmaN) + q;
           const int row = q * kMmaN + (lane & 3) * 2;
           const int col = dv0 + (lane >> 2);
           sds[row * G::LdDs + col] = __float2bfloat16_rn(st[nq][0]);
@@ -1837,7 +1955,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
 #pragma unroll
           for (int kk = 0; kk < MTOK; ++kk) {
             uint32_t bwv[4];
-            load_frag_t(bwv, ADDR_S(bwF, kk * 16, (pq * (BCg / 4) + gwarp * 8) / 8));
+            load_frag_t(bwv, ADDR_S(bwF, kk * 16, (pq * kPassSlots + gwarp * 8) / 8));
 #pragma unroll
             for (int m = 0; m < MTOK; ++m) {
               uint32_t ag[4];
@@ -1848,7 +1966,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         }
         //: the ENTRY mass: `dden[i] * z_a[s]`, an OUTER product of a per-read-token
         //: value and a per-slot one, which is why it is not a broadcast.
-        const int s0 = pq * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+        const int s0 = pq * kPassSlots + gwarp * 8 + (lane & 3) * 2;
 #pragma unroll
         for (int m = 0; m < MTOK; ++m) {
           const int t0 = m * 16 + (lane >> 2);
@@ -1859,66 +1977,63 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
         }
 
         // ---- the digit reduction, in lane, and with NO gain --------------------
-        const int cls = pq & 1, od = pq >> 1;
-        const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
+        const int cls = pq % kDigitClasses, oi = pq / kDigitClasses;
+        const int od = (pq * kPassSlots + gwarp * 8) / kInnerSpan;
+        const int i1 = (cls * kPassSlots + gwarp * 8) % kInnerSpan + (lane & 3) * 2;
+        const int c1 = kOuterPerUnit > 1 ? cls : 0;
+        const int o1 = kDigitClasses > 1 ? oi : 0;
+        if constexpr (kOuterPerUnit == 1) {
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) u1[0][m][e] = 0.f;
+        }
+        if constexpr (kDepth >= 2 && kDigitClasses == 1) {
+#pragma unroll
+          for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+            for (int hh = 0; hh < 2; ++hh) u0[0][m][hh] = 0.f;
+        }
 #pragma unroll
         for (int m = 0; m < MTOK; ++m) {
           const int t0 = m * 16 + (lane >> 2);
-          const float w0 = spr0[od * C + t0], w1 = spr0[od * C + t0 + 8];
-          u1[cls][m][0] += acc[m][0] * w0;
-          u1[cls][m][1] += acc[m][1] * w0;
-          u1[cls][m][2] += acc[m][2] * w1;
-          u1[cls][m][3] += acc[m][3] * w1;
-          const uint32_t pcol = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 2) + winPc;
-          const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
-              gather_ptr(pRead, (uint32_t)iread(dc)[t0] * kPRowB + pcol));
-          const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
-              gather_ptr(pRead, (uint32_t)iread(dc)[t0 + 8] * kPRowB + pcol));
-          u0[od][m][0] +=
-              acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
-              + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
-          u0[od][m][1] +=
-              acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
-              + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+          const float w0 = kDepth >= 2 ? spr0[od * C + t0] : 1.f;
+          const float w1 = kDepth >= 2 ? spr0[od * C + t0 + 8] : 1.f;
+          u1[c1][m][0] += acc[m][0] * w0;
+          u1[c1][m][1] += acc[m][1] * w0;
+          u1[c1][m][2] += acc[m][2] * w1;
+          u1[c1][m][3] += acc[m][3] * w1;
+          if constexpr (kDepth >= 2) {
+            const uint32_t pcol =
+                (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + i1) * 2)
+                + winPc;
+            const uint32_t p0 = *reinterpret_cast<const uint32_t*>(
+                gather_ptr(pRead, (uint32_t)iread(dc)[t0] * kPRowB + pcol));
+            const uint32_t p1 = *reinterpret_cast<const uint32_t*>(
+                gather_ptr(pRead, (uint32_t)iread(dc)[t0 + 8] * kPRowB + pcol));
+            u0[o1][m][0] +=
+                acc[m][0] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p0))
+                + acc[m][1] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p0 >> 16)));
+            u0[o1][m][1] +=
+                acc[m][2] * __bfloat162float(__ushort_as_bfloat16((unsigned short)p1))
+                + acc[m][3] * __bfloat162float(__ushort_as_bfloat16((unsigned short)(p1 >> 16)));
+          }
         }
+        if constexpr (kOuterPerUnit == 1) emit_u1(i1, u1[0]);
+        if constexpr (kDepth >= 2 && kDigitClasses == 1) emit_u0(od, u0[0]);
         rendezvous();
       }
 
-      // ---- the read side's digit gradients leave here -------------------------
+      if constexpr (kOuterPerUnit > 1) {
 #pragma unroll
-      for (int cls = 0; cls < 2; ++cls)
+        for (int c = 0; c < kU1Slots; ++c)
+          emit_u1((c * kPassSlots + gwarp * 8) % kInnerSpan + (lane & 3) * 2, u1[c]);
+      }
+      if constexpr (kDepth >= 2 && kDigitClasses > 1) {
 #pragma unroll
-        for (int m = 0; m < MTOK; ++m) {
-          const int i1 = cls * (BCg / 4) + gwarp * 8 + (lane & 3) * 2;
-          const uint32_t col = (uint32_t)((LP::col_base(kDepth - 1) + i1) * 4) + winPw;
-#pragma unroll
-          for (int e = 0; e < 4; ++e) {
-            const int tk = m * 16 + (lane >> 2) + (e >> 1) * 8;
-            if (tk < nr)
-              fan_in_add(
-                  reinterpret_cast<float*>(gather_ptr(
-                      dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col + (uint32_t)((e & 1) * 4))),
-                  u1[cls][m][e]);
-          }
-        }
-#pragma unroll
-      for (int o = 0; o < kOuterSpan; ++o)
-#pragma unroll
-        for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-          for (int hh = 0; hh < 2; ++hh) {
-#pragma unroll
-            for (int b2 = 1; b2 < 4; b2 <<= 1)
-              u0[o][m][hh] += __shfl_xor_sync(0xFFFFFFFFu, u0[o][m][hh], b2);
-            const int tk = m * 16 + (lane >> 2) + hh * 8;
-            if ((lane & 3) == 0 && tk < nr) {
-              const uint32_t col =
-                  (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 4) + winPw;
-              fan_in_add(reinterpret_cast<float*>(
-                             gather_ptr(dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col)),
-                         u0[o][m][hh]);
-            }
-          }
+        for (int o = 0; o < kU0Slots; ++o)
+          emit_u0((o * kDigitClasses * kPassSlots + gwarp * 8) / kInnerSpan, u0[o]);
+      }
     }
 
     rendezvous();
@@ -1937,11 +2052,15 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC>)) void sca
           mma(st[2 * nj + 1], a, &b[2]);
         }
       }
-      //: the mass column's fold, one slot per thread: the literal one against this
-      //: thread's column of the W panel.  Rows past `nw` are identically zero.
-      const __nv_bfloat16* wcol = sw + gtid;
+      //: the mass column's fold: the literal one against this thread's segment of
+      //: its slot's column of the W panel.  Rows past `nw` are identically zero.
+      const __nv_bfloat16* wcol = sw + mslot;
+      const int i0 = mpart * kFoldRun;
 #pragma unroll
-      for (int i = 0; i < C; ++i) z_s += __bfloat162float(wcol[i * LdS]);
+      for (int i = 0; i < kFoldRun; ++i) z_s += __bfloat162float(wcol[(i0 + i) * LdS]);
+#pragma unroll
+      for (int b2 = 1; b2 < kSlotThreads; b2 <<= 1) z_s += __shfl_xor_sync(0xFFFFFFFFu, z_s, b2);
+      if (mpart != 0) z_s = 0.f;
     }
 
     rendezvous();
