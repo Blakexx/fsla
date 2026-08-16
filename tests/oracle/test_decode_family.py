@@ -344,12 +344,13 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
         f"the layer-level prefill/decode seam moved the last token by {rel:.3e}")
 
     # LEG 4 — a grad-bearing eval step on a fresh sequence: refused by the SAME
-    # arm-narrowing clause as leg 1, which is the point: whether the module is in
-    # training mode has stopped mattering, and what decides is whether the reverse
-    # pass carries this arm.
+    # arm-narrowing clause as leg 1 (on the deep layer, since (16,16) now trains),
+    # which is the point: whether the module is in training mode has stopped
+    # mattering, and what decides is whether the reverse pass carries this arm.
+    deep.eval()
     x4 = torch.randn(1, T, 128, device=device, requires_grad=True)
     with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
-        layer(x4)
+        deep(x4)
 
 
 def test_a_decay_configured_layer_refuses_every_prefill_arm():
