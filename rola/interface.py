@@ -45,10 +45,8 @@ BACKWARD_ARRIVES_WITH = (
     "the backward arrives with the native backward (docs/open-work.md W9); until then "
     "there is no training path through this surface")
 
-
 class BackwardNotImplemented(NotImplementedError):
     """Raised when a gradient is demanded of the forward-only kernel surface."""
-
 
 @dataclass
 class _ChunkCall:
@@ -64,11 +62,9 @@ class _ChunkCall:
     arena: Any
     plane: torch.Tensor | None
 
-
 # ---------------------------------------------------------------------------
 # The public op
 # ---------------------------------------------------------------------------
-
 
 def rola_op(
     routes: RouteFactors,
@@ -120,18 +116,10 @@ def rola_op(
             f"{type(state).__name__}. A raw tensor is not one: the state owns its own "
             "backing (dense or paged) and the shape it is bound to.")
     require_envelope(routes, v, decay, state)
-    from rola.expert import PlanOverrides
     from rola.ops import chunk as _chunk
 
     paging = _paging_preference(expert)
-    #: The chunk arm's `BC` is fixed by the manifest, not host-selectable, so an
-    #: expert pin over it is refused BY NAME rather than accepted and ignored.
-    if expert is not None and PlanOverrides.of(expert).state_block is not None:
-        raise NotImplementedError(
-            "chunk consumer (kernel arm): PlanOverrides(state_block=...) pins the "
-            "TILED consumer's owner block. The chunk arm's BC belongs to the built arm "
-            "the manifest carries for this topology and is not host-selectable; pass "
-            "state_block=None.")
+    
     #: ONE packing per call, and every entry below reads it: the stats pass and the
     #: launch want the same bytes in the same layout.
     packed = _chunk.pack(routes)
@@ -149,7 +137,6 @@ def rola_op(
     state._kernel_commit(plane)
     return y, state
 
-
 def _paging_preference(expert: Any) -> bool:
     """Whether a state bound by this call gets a PAGED backing. Default: yes.
 
@@ -163,16 +150,13 @@ def _paging_preference(expert: Any) -> bool:
 
     return PlanOverrides.of(expert).paging is not False
 
-
 # ---------------------------------------------------------------------------
 # The envelope
 # ---------------------------------------------------------------------------
 
-
 def operands_of(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> tuple:
     """Every tensor the OPERATION consumes, flat -- the predicate's argument list."""
     return (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
-
 
 def requires_backward(*tensors: Any) -> bool:
     """Whether a call over these operands must produce a differentiable result.
@@ -186,7 +170,6 @@ def requires_backward(*tensors: Any) -> bool:
     if not torch.is_grad_enabled():
         return False
     return any(_any_requires_grad(t) for t in tensors)
-
 
 def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
     """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
@@ -205,7 +188,6 @@ def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -
     from rola.ops import chunk as _chunk
 
     return _chunk.unsupported(routes, decay, d_v=v.shape[-1])
-
 
 def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
                      state: Any = None) -> None:
@@ -249,7 +231,6 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
             f"{reason}. Nothing else is reachable through this surface "
             "(docs/api.md §1).")
 
-
 def _validate_call(routes, v, decay) -> None:
     from rola.routing.factors import RouteFactors as _RouteFactors
 
@@ -282,14 +263,12 @@ def _validate_call(routes, v, decay) -> None:
     if decay is not None:
         decay.validate_against(topology)
 
-
 def _any_requires_grad(obj: Any) -> bool:
     if isinstance(obj, torch.Tensor):
         return obj.requires_grad
     if isinstance(obj, (tuple, list)):
         return any(_any_requires_grad(item) for item in obj)
     return False
-
 
 class ChunkConsumer(torch.autograd.Function):
     """The CHUNK consumer as an autograd node whose backward refuses, loudly.

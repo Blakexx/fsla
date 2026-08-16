@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.utils.checkpoint as torch_checkpoint
-from conftest import build_layer, build_routes
+from conftest import build_layer
 from einops import rearrange
 
 import rola
@@ -427,32 +427,8 @@ def test_a_token_count_off_the_chunk_refuses():
 
 @pytest.mark.cuda
 @_CUDA
-def test_an_uninstantiated_but_aligned_state_block_is_refused_host_side():
-    """`state_block = 32` pins an axis the chunk arm does not have. It must be REFUSED
-    by a HOST-side check that names the contract -- never a device-side assert, which
-    would poison the context for every subsequent test in the process (the
-    fleet-freeze failure mode). The context-health probe after the raise is the second
-    half of the claim."""
-    layer = _layer(decay="none")
-    routes_32 = build_routes(hidden_size=_HIDDEN, num_heads=_H, widths=_BRANCHES)
-    layer_32 = RoLA(
-        routes_32, expert=PlanOverrides(state_block=32), layer_idx=0,
-    ).to("cuda", torch.float32).eval()
-    x = torch.randn(1, 32, _HIDDEN, device="cuda")
-    with pytest.raises(NotImplementedError, match="state_block"), torch.no_grad():
-        layer_32(x)
-    assert float(torch.ones(4, device="cuda").sum()) == 4.0
-    with torch.no_grad():
-        layer(x)
-    assert layer.execution_backend_counts["cuda"] == 1
 
 
-# ---------------------------------------------------------------------------
-# 5. Paging is invisible on the arm that has two backings
-# ---------------------------------------------------------------------------
-
-
-@_CUDA
 def test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance():
     """The backing is the STATE's, so the two arms are two states: the same carried
     state through either backing, `torch.equal`, because the state path has no atomic

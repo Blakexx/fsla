@@ -38,7 +38,6 @@ __all__ = [
 class PlanOverrides:
     """Pins over axes the op would otherwise decide.
 
-    ``state_block`` (``BC``): the number of leafs one owner block owns -- a CTA's
     resident state tile. The chunk consumer's ``BC`` belongs to the built arm the
     manifest carries for a topology and is NOT host-selectable, so any value other than
     ``None`` is refused by name at the call rather than accepted and ignored: a knob
@@ -59,13 +58,10 @@ class PlanOverrides:
     whose only value is the default is a knob that lies about being a decision.
     """
 
-    state_block: int | None = None
     mma_precision: str = "bf16"
     paging: bool | None = None
 
     def __post_init__(self) -> None:
-        if self.state_block is not None and type(self.state_block) is not int:
-            raise TypeError(f"state_block must be None or an exact int, got {self.state_block!r}")
         if self.mma_precision != "bf16":
             raise ValueError(
                 "mma_precision is a dead axis: 'bf16' is the only value (the fp64 "
