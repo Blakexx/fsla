@@ -22,6 +22,7 @@
 #include <torch/types.h>
 
 #ifdef __CUDACC__
+#include <cub/warp/warp_merge_sort.cuh>
 #include <cuda_bf16.h>
 #endif
 
@@ -115,6 +116,75 @@ __device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16* 
 
 struct Descending {
   __device__ __forceinline__ bool operator()(float a, float b) const { return a > b; }
+};
+
+//: THE ROW SORT. Phase B needs one token's row in descending order; `RowSort` is the ONE
+//: entry point, and which network it lowers to is decided by the WIDTH CLASS at compile
+//: time -- the same axis `int_switch` already derives `(LW, IPT)` from.
+//:
+//: EXACTNESS IS INDEPENDENT OF THE CHOICE. A sort is a PERMUTATION, and the phases
+//: downstream read the sorted sequence only through its prefix sums and its rank-k value.
+//: Both are invariant to how EQUAL keys are ordered, so `tau` is bit-identical across the
+//: two networks and against the merge sort that preceded them, on every non-NaN row
+//: -- docs/internals/entmax/entmax.md#row-sort
+//:
+//: THE SPLIT IS A MEASURED REGISTER-BUDGET FACT, not a tuning knob. The register network
+//: keeps all `IPT` keys plus a shuffle temporary live across the whole network, against
+//: this family's 64-register `__launch_bounds__`. At `IPT <= 4` that fits and the network
+//: wins by 14-19%; at `IPT = 8` (`W_PAD = 256`) it does not, and MEASURED it LOSES 13% to
+//: the merge sort, which parks the row in shared memory instead of in registers.
+//: -- docs/internals/entmax/entmax.md#row-sort
+template <int LW, int IPT>
+struct RowSort {
+  using Merge = cub::WarpMergeSort<float, IPT, LW>;
+  static constexpr bool kInRegisters = IPT <= 4;
+  //: Shared bytes per PHYSICAL warp. Zero for the register network, which is the whole
+  //: point of it: at `IPT <= 4` the solve's only shared memory is the epilogue's staging.
+  static constexpr int kSlotBytes =
+      kInRegisters ? 0 : (WARP_SIZE / LW) * (int)sizeof(typename Merge::TempStorage);
+
+  //: The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout the prefix
+  //: walk and its `WarpScan` association require. Partner distances below `IPT` are
+  //: intra-register; at or above it the whole `IPT` block moves as one, because the
+  //: network's direction bit then lies above every item bit and is uniform across the lane.
+  __device__ __forceinline__ static void sort(float (&keys)[IPT], int lane, unsigned lmask,
+                                              char* slot, int logical_in_warp) {
+    if constexpr (!kInRegisters) {
+      Merge(reinterpret_cast<typename Merge::TempStorage*>(slot)[logical_in_warp])
+          .Sort(keys, Descending());
+      return;
+    }
+    constexpr int N = LW * IPT;
+    const int base = lane * IPT;
+#pragma unroll
+    for (int k = 2; k <= N; k <<= 1) {
+#pragma unroll
+      for (int j = k >> 1; j >= IPT; j >>= 1) {
+        const bool low = (base & j) == 0;
+        const bool desc = (base & k) == 0;
+#pragma unroll
+        for (int i = 0; i < IPT; ++i) {
+          const float other = __shfl_xor_sync(lmask, keys[i], j / IPT, LW);
+          const bool swap = low ? (desc == (keys[i] < other)) : (desc == (other < keys[i]));
+          keys[i] = swap ? other : keys[i];
+        }
+      }
+#pragma unroll
+      for (int j = (k >> 1) < IPT ? (k >> 1) : (IPT >> 1); j > 0; j >>= 1) {
+#pragma unroll
+        for (int i = 0; i < IPT; ++i) {
+          if ((i & j) != 0) continue;
+          const int p = i | j;
+          const bool desc = ((base + i) & k) == 0;
+          const bool swap = desc == (keys[i] < keys[p]);
+          const float a = swap ? keys[p] : keys[i];
+          const float b = swap ? keys[i] : keys[p];
+          keys[i] = a;
+          keys[p] = b;
+        }
+      }
+    }
+  }
 };
 
 struct Pair {

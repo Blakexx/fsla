@@ -215,6 +215,114 @@ not flag.
 `WarpMergeSort::TempStorage` is `4 + 4*W_PAD` bytes, i.e. NOT a multiple of its own
 alignment.
 
+Since the row sort became `RowSort` (§7.1), `SORT_BYTES` is `RowSort<LW, IPT>::kSlotBytes`,
+which is **zero** for the register network. At `W_PAD <= 128` the slot is therefore the
+staging alone and the alias is vacuous; at `W_PAD = 256` it is the arrangement above,
+unchanged.
+
+## <a id="row-sort"></a>7.1 `RowSort` — the row sort, and why there are two networks
+
+Phase B needs one token's row in descending order. `RowSort<LW, IPT>::sort` is the ONE
+entry point; which network it lowers to is decided by the WIDTH CLASS at compile time —
+the same axis `int_switch` already derives `(LW, IPT)` from, so this is not a new
+dispatch axis, it is the existing one.
+
+| `W_PAD` | `IPT` | network | why |
+|---|---|---|---|
+| 2 – 128 | 1, 2, 4 | register-resident bitonic, shuffles only, zero shared memory | 14–22% faster |
+| 256 | 8 | `cub::WarpMergeSort` | the register network loses 13% at this `IPT` |
+
+### The bitonic network
+
+The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout the prefix
+walk and its `WarpScan` association require (§9). A standard bitonic network compares
+indices differing in one bit, so the partner distance `j` splits the stages in two:
+
+- `j < IPT` — partner is another ITEM of the same lane: a register compare-exchange, no
+  shuffle at all.
+- `j >= IPT` — partner is another lane, `lane ^ (j/IPT)`, and the WHOLE `IPT` block moves
+  together. The direction bit `k` is then strictly above every item bit, so `desc` is
+  uniform across the lane and no per-item direction is needed.
+
+`W_PAD = 64` is 21 stages, 15 of them cross-lane; the merge sort it replaces staged the
+row through shared memory once per merge round.
+
+### Why the split is a register-budget fact and not a tuning knob
+
+The network keeps all `IPT` keys plus a shuffle temporary live across its whole depth,
+against this family's 64-register `__launch_bounds__(128, 8)`. At `IPT <= 4` that fits.
+At `IPT = 8` the kernel already carries `midpoint[8] + delta[8] + keys[8] + part[8]` and
+the network's temporaries do not, so ptxas trades them for rematerialization; MEASURED,
+the register network runs the `W_PAD = 256` solve at 0.4004 ms against the merge sort's
+0.3543 ms. The merge sort parks the row in shared memory instead of in registers, which
+is exactly the right trade once registers are the binding constraint. So the wide class
+keeps it, and its SASS is byte-identical to what it was before `RowSort` existed.
+
+### Exactness is independent of the choice
+
+**A sort is a PERMUTATION.** The phases downstream read the sorted row only through
+(i) the prefix sums `P_k`, `Q_k` and (ii) the value `z_k` at each rank. Both are invariant
+under permutation of EQUAL-valued elements — the top-`k` multiset is the same whichever
+tied element is placed at rank `k`, so `P_k`/`Q_k` are the same floats and `z_k` is the
+same float — hence `k*` is the same and `tau` is the same. `best_col` does differ between
+tie orders, but it is consumed only as `chosen >= 0`, i.e. as a boolean. Downstream,
+support is `value > tau` on UNSORTED columns, so a tied cluster is jointly in or jointly
+out.
+
+**Consequence: no network has to reproduce another's tie-breaking.** The two networks
+here, and the merge sort that preceded both, are interchangeable at the bit.
+
+MEASURED, not merely argued: 1560 cases / 5040 output tensors — every padded-width class,
+both alphas, both logit and value dtypes, masked and unmasked, across random, tie-cluster,
+one-ulp, all-equal and extreme-magnitude row families — digest-compared between a
+merge-sort binary and this one. Zero mismatches. The standing gate is
+`tests/unit/test_entmax_row_sort.py`, which asserts the tie-sensitive quantity (the
+support set) at `rtol=0` and carries its own vacuity and teeth rows.
+
+NOT covered, and stated: NaN keys. `>` is not a strict weak ordering on NaN, so no
+sorting network — merge or bitonic — has defined output there. The kernel was already
+unspecified on a NaN row (a NaN logit makes `row_max` NaN and every shifted key NaN);
+that is unchanged.
+
+## <a id="support-certificate"></a>7.2 The support certificate (derived, NOT shipped)
+
+P74 lever 3 asked whether the sort could be replaced by a PARTIAL selection: sort only a
+top-`m` prefix, and certify from the algorithm's own stopping condition that no element
+beyond it can enter the support. The certificate exists and is exact. It is recorded here
+because it is a property of the solve worth knowing, and because the measurement that
+killed it is worth not repeating.
+
+Write `z_1 >= ... >= z_W` for the sorted shifted keys (`z_1 = 0` exactly), `P_k`, `Q_k`
+for the prefix sums, and `cand(k)` for the kernel's candidate predicate at rank `k`.
+
+**Lemma A — `cand` is a monotone prefix property.**
+For alpha 2, `cand(k) <=> g(k) := 1 + k*z_k - P_k > 0`, and
+`g(k+1) - g(k) = k(z_{k+1} - z_k) <= 0`, so `g` is non-increasing.
+For alpha 1.5, `cand(k) <=> G(k) := sum_{i<=k}(z_i - z_k)^2 < 4` (the `disc >= 0` clause is
+implied), and `G` is non-decreasing because `z_i - z_{k+1} >= z_i - z_k >= 0` for `i <= k`.
+Either way `{k : cand(k)} = {1..k*}` exactly, and `k* >= 1` always.
+
+**Lemma B — the certificate is a pure VALUE bound.**
+Using `P_k >= z_1 + (k-1) z_k` with `z_1 = 0`: for alpha 2, `g(k) <= 1 + z_k`, so `cand(k)`
+requires `z_k > -1`; for alpha 1.5, `G(k) >= z_k^2`, so `cand(k)` requires `z_k > -2`.
+Hence with `c = |{ j : z_j > B }|`, `B = -1` / `-2`, no rank beyond `c` can be a candidate,
+and running the kernel's own arithmetic over ranks `1..c` yields exactly `k*` and `tau`.
+
+The certificate needs neither the prefix sums nor a convergence test nor a grow-on-demand
+loop — only `row_max`, which phase B already has — so `c` is exact and known BEFORE the
+sort. Generalized: `P_k >= P_m + (k-m) z_k` gives `cand(k) => z_k > tau_m` for any
+`m <= k*`, i.e. the kernel's own `tau_m` is a self-improving cut.
+
+**Why it is not shipped.** MEASURED on production logits at the pinned cell
+(`union_routing(1.5)`, widths 64, the untrained router the campaign runs): realized support
+is 28.2 of 64, but `c` is **63.7 of 64** — the midpoint spread is under 2.0, so the bound
+excludes almost nothing. The bootstrapped cut reaches 29 at best, and only by paying a
+second selection stage plus a cross-lane COMPACTION through shared memory — which is the
+cost the register network exists to delete. Selection only starts paying at routing gain
+>= 4, a sharpness the shipped router does not have. Its win is also entirely
+density-conditional, where the bitonic network's cost depends on `W_PAD` alone and never on
+the data.
+
 ## <a id="logical-warp-mask"></a>8. HAZARD — the logical-warp member mask
 
 ```cpp

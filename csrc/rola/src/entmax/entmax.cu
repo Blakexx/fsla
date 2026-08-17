@@ -13,7 +13,6 @@
 // The Triton history that forced hand CUDA, the phase-by-phase walk, the backward's
 // Jacobian derivation and its measured spill trades: docs/internals/entmax/entmax.md
 
-#include <cub/warp/warp_merge_sort.cuh>
 #include <cub/warp/warp_reduce.cuh>
 #include <cub/warp/warp_scan.cuh>
 
@@ -67,16 +66,15 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
 
-  using WarpSort = cub::WarpMergeSort<float, IPT, LW>;
   using WarpScanP = cub::WarpScan<Pair, LW>;
   using WarpRedF = cub::WarpReduce<float, LW>;
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
-  //: One per-physical-warp slot serves the sort scratch and then the support-word
-  //: staging. `SLOT` rounds to 16 B because `WarpMergeSort::TempStorage` is
-  //: `4 + 4*W_PAD` bytes, not a multiple of its own alignment.
-  constexpr int SORT_BYTES = (WARP_SIZE / LW) * (int)sizeof(typename WarpSort::TempStorage);
+  //: One per-physical-warp slot serves the row sort's scratch and then the support-word
+  //: staging. `RowSort::kSlotBytes` is ZERO for the register network, so at `IPT <= 4` the
+  //: slot is the staging alone -- docs/internals/entmax/entmax.md#row-sort
+  constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
@@ -88,15 +86,12 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
   static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
   static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
-  static_assert(SORT_BYTES >= STAGE_BYTES || STAGE_BYTES <= SLOT, "stage must fit its slot");
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
   const unsigned lmask = logical_warp_mask<LW>();
   const int logical = threadIdx.x / LW;  // logical warp id within the block
   const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
-  char* slot = smem + warp * SLOT;
-  auto& sort_store = reinterpret_cast<typename WarpSort::TempStorage*>(slot)[logical_in_warp];
   typename WarpScanP::TempStorage scan_store;
   typename WarpRedF::TempStorage red_store;
   typename WarpRedU::TempStorage redu_store;
@@ -175,9 +170,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       //: value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
       keys[i] = valid ? midpoint[i] : (row_min - row_max) - 1.0f;
     }
-    //: A sort is a PERMUTATION, so striped input is fine and CUB's blocked output is
-    //: what the prefix walk wants -- docs/internals/entmax/entmax.md#forward-phases
-    WarpSort(sort_store).Sort(keys, Descending());
+    //: A sort is a PERMUTATION, so striped input is fine and the blocked output is what
+    //: the prefix walk wants -- docs/internals/entmax/entmax.md#forward-phases
+    RowSort<LW, IPT>::sort(keys, lane, lmask, smem + warp * SLOT, logical_in_warp);
 
     // ---- PHASE C: tau. prefix/prefix_sq/tau_candidates/candidate/chosen_col all
     //      COLLAPSE TO SCALARS -- none is ever materialized full width. ----
