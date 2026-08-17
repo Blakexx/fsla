@@ -1649,10 +1649,9 @@ enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 //: `kAtomLeaves` leaves and the owner rectangle is `BC` of them -- so the write
 //: side is voted at the ATOM grain and each owner row is the OR of the atom rows
 //: inside it.  The digits are read once and voted once; nothing is evaluated twice.
-//: docs/internals/chunk/chunk_kernel.md#the-facts-pass
-//:
 //: Its cost does not depend on `BC`: a lane reads its token's amplitude row once
 //: per level that has entries, whatever the spans partition it into.
+//: docs/internals/chunk/chunk_kernel.md#the-facts-pass
 template <int D, int B, int BC, int MASK>
 __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
                                    const __nv_bfloat16* __restrict__ pwrite,
