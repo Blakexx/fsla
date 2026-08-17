@@ -6,22 +6,29 @@ does not (the facade stays generic; capabilities return through the paging
 and backward work, not
 through silent degradation).
 
-The packing performed here happens ONCE per call (`pack` -> `PackedRoutes`), so
-every entry a call makes reads the same bytes. On the shipped path it is a
-VIEW: the producer's solve writes the `[B, H, T, sumW]` bf16 side directly and
-`_side_plane` reconstructs it from the levels' strides
-(docs/internals/chunk/chunk.md#the-side-plane). The copy survives for the sides
-that are not already that layout -- a hand-built bundle, a foreign producer.
+Launch arguments arrive as a :class:`~rola.facts.plan.ChunkPlan` that the chunk DAG
+built (:mod:`rola.facts.chunk_dag`). What lives here is the family's primitive
+BODIES -- the arm, the envelope, the packing, the state plane -- and the launch that
+reads the plan; the DAG declares which of them a call class runs and in what order.
+
+The packing happens ONCE per call, so every entry reads the same bytes. On the
+shipped path it is a VIEW: the producer's solve writes the `[B, H, T, sumW]` bf16
+side directly and `_side_plane` reconstructs it from the levels' strides
+(docs/internals/chunk/chunk.md#the-side-plane). The copy survives for the sides that
+are not already that layout -- a hand-built bundle, a foreign producer.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from rola.ops._ext import extension
-from rola.ops.constants import READOUT_EPS
 from rola.ops.paging import MMA_K_QUANTUM
+
+if TYPE_CHECKING:
+    from rola.facts.plan import ChunkPlan
 
 #: THE CHUNK LENGTH -- the operator's token quantum. `T` must be a multiple of it,
 #: and shaping a sequence to it is the CALLER's job, which is why this is public
@@ -34,7 +41,7 @@ CHUNK_TOKENS = 32
 _PIN_C, _PIN_BC = CHUNK_TOKENS, 128
 
 
-def _pack(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
+def packed_copy(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
     """`view` as a contiguous `dtype` tensor, in ONE copy.
 
     `.to(dtype)` preserves a permuted view's strides, so `.to(dtype).contiguous()`
@@ -143,7 +150,7 @@ def _side_plane(levels) -> torch.Tensor | None:
                            base.storage_offset())
 
 
-def _pack_side(levels) -> torch.Tensor:
+def pack_side(levels) -> torch.Tensor:
     """The per-level `[B, T, H, width_l]` tuple as one `[B, H, T, sumW]` bf16 tensor.
 
     ONE destination and one pass per level: concatenating in the public layout
@@ -163,39 +170,6 @@ def _pack_side(levels) -> torch.Tensor:
         packed[:, :, :, offset:offset + width].copy_(level.permute(0, 2, 1, 3))
         offset += width
     return packed
-
-
-@dataclass(frozen=True, slots=True)
-class PackedRoutes:
-    """One call's routing bundle in the KERNEL's layout, materialized ONCE.
-
-    The bundle's public layout is `[B, T, H, width_l]` per level; every chunk entry
-    reads `[B, H, T, sumW]` bf16 per side. Both the stats pass and the launch need
-    exactly that, so it is built once per call and carried, rather than derived at
-    each entry from the bundle that outlives them.
-
-    `routes` rides along because the launch's non-tensor facts -- the topology, the
-    device, `T` -- are the bundle's and are not recoverable from the packed tensors.
-    """
-
-    routes: object
-    pr: torch.Tensor
-    pw: torch.Tensor
-    gw: torch.Tensor
-    rm: torch.Tensor | None
-
-
-def pack(routes) -> PackedRoutes:
-    """THE packing, and the only one: `routes` in the layout the kernels read."""
-    mass = routes.read_mass
-    return PackedRoutes(
-        routes=routes,
-        pr=_pack_side(routes.read),
-        pw=_pack_side(routes.write),
-        gw=_pack(routes.g_write.permute(0, 2, 1)),
-        #: fp32, because it scales the readout's floor and `eps` is an fp32 definition
-        #: constant; bf16 here would quantize the floor, not the amplitudes.
-        rm=None if mass is None else _pack(mass.permute(0, 2, 1), torch.float32))
 
 
 @dataclass(slots=True)
@@ -284,19 +258,6 @@ def backward(saved: SavedForward, dy: torch.Tensor, y: torch.Tensor):
     return dv, dpr, dpw, dgw, dm
 
 
-def stats(packed: PackedRoutes) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
-
-    The page plan's input (docs/internals/paging/stats.md).  It is keyed to the
-    16-leaf quantum and not to `BC`, so it is a property of the routing alone and
-    is legitimately taken BEFORE an arm is chosen -- which is what lets residency
-    be an OUTPUT of the plan rather than a consequence of it.  Device-side: no
-    host synchronization happens here.
-    """
-    widths = [l.width for l in packed.routes.topology.levels]
-    return extension().chunk_stats(packed.pw, widths)
-
-
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
 
@@ -318,76 +279,37 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     return build(shape, device=routes.device, dtype=torch.float32)
 
 
-def run(packed: PackedRoutes, v: torch.Tensor, state_in: torch.Tensor | None = None,
-        want_state: bool = False, arena=None,
-        saved: SavedForward | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """`(y [B,T,H,d_v], final state or None)` through table pass, kernel, divide.
+def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
+    """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
 
-    `packed` is this call's :func:`pack` -- the routing already in the kernels'
-    layout, so a stateful call's stats pass and its launch read the same bytes
-    instead of each building their own copy of them.
+    The page plan's input (docs/internals/paging/stats.md). It is keyed to the
+    16-leaf quantum and not to `BC`, so it is a property of the routing alone and is
+    legitimately taken BEFORE an arm is chosen -- which is what lets residency be an
+    OUTPUT of the plan rather than a consequence of it. Device-side: no host
+    synchronization happens here.
+    """
+    return extension().chunk_stats(write_plane, list(widths))
 
-    `state_in` is a plane of the call's backing, or `None` for a fresh sequence;
-    `want_state` asks for the carried state back. A call that asks for neither
-    runs the kernel variant with no state I/O compiled into it at all
-    (docs/internals/chunk/chunk_kernel.md), so it pays nothing for the feature.
 
-    `arena` is a `PageArena` already planned over this call's write set: it makes
-    the backing PAGED, so the plane is its `[slots, 16, cols]` storage and its
-    table resolves each atom to a slot. The two backings are ONE kernel and one
-    base translation -- an atom with no slot is skipped, which is exact rather
-    than defensive because the plan's bitmap is the write set exactly
-    (docs/internals/paging/paging.md). Dense is `arena=None`, where the slot IS
-    the atom.
+def execute(plan: ChunkPlan) -> tuple[torch.Tensor, torch.Tensor]:
+    """`(y [B,T,H,d_v], den)` -- the consumer launch and the divide, over one plan.
 
-    A block-grain liveness bitmap is reduced over this call's union table on
-    EVERY call, and a block whose byte says it contributes nothing exits before it
-    touches anything (docs/internals/chunk/chunk_kernel.md#liveness-exit).
+    Every launch argument is a plan field: nothing is derived, chosen or re-packed
+    here, which is the whole of what the facts engine bought.
 
-    `saved` is an OUT PARAMETER on the state plane's own rule: a
-    :class:`SavedForward` the caller hands in when this call carries a gradient,
-    filled with the `O(L)` byproducts the reverse pass replays from. `None` -- the
-    inference call -- retains nothing and is byte-for-byte the call this was.
+    A block-grain liveness bitmap was reduced over this call's union table, and a
+    block whose byte says it contributes nothing exits before it touches anything
+    (docs/internals/chunk/chunk_kernel.md#liveness-exit).
     """
     m = extension()
-    routes = packed.routes
-    widths = tuple(l.width for l in routes.topology.levels)
-    c, bc = _arm_for(len(widths), widths[0])
-    pr, pw, gw = packed.pr, packed.pw, packed.gw
-    #: THE KERNEL TAKES V AS THE CALLER HOLDS IT: token-major, and bf16 because that
-    #: is the operand dtype the consumer reads. A caller already holding that pays
-    #: nothing here; the gather is by write-list token either way, so the row stride
-    #: costs the kernel no coalescing.
-    vk = v if v.dtype is torch.bfloat16 and v.is_contiguous() else _pack(v)
-    if arena is None:
-        page_tbl = None
-        s_out = state_plane(routes, d_v=v.shape[-1]) if want_state else None
-    else:
-        #: the admission's table write and slot zeroing ran on the arena's side
-        #: stream; this is the one wait that puts them before the launch.
-        arena.wait()
-        page_tbl = arena.page_table
-        s_out = arena.state if want_state else None
-    tbl = m.chunk_union_table(pr, pw, vk, c, bc, list(widths))
-    bits = m.chunk_block_bits(tbl, bc, list(widths), routes.tokens, page_tbl)
-    num, den = m.chunk_forward_raw(pr, pw, gw, vk, tbl, c, bc, list(widths), state_in, s_out,
-                                   page_tbl, bits)
-    #: THE READ MASS RIDES INTO THE FLOOR. `packed.rm` is the per-token scale the read
+    num, den = m.chunk_forward_raw(
+        plan.read_plane, plan.write_plane, plan.g_write, plan.v, plan.union_table,
+        plan.arm.c, plan.arm.bc, list(plan.widths), plan.state_in, plan.state_out,
+        plan.page_table, plan.block_bits)
+    #: THE READ MASS RIDES INTO THE FLOOR. `read_mass` is the per-token scale the read
     #: levels still carry, so numerator and denominator are both `m` times the
     #: normalized ones; passing `eps * m` makes the divide `m*num / (m*(den + eps))`,
     #: which is the defined readout exactly rather than to within a scaled floor.
-    y = m.chunk_divide_pass(num, den, packed.rm, READOUT_EPS, v.dtype)
-    #: THE CTX IS FILLED HERE OR NOWHERE. Every field is a reference to something
-    #: this call already built, so a saving call and an inference call issue the
-    #: same launches in the same order; what differs is only what stays alive.
-    if saved is not None:
-        saved.pr, saved.pw, saved.gw, saved.rm = pr, pw, gw, packed.rm
-        saved.tbl, saved.den = tbl, den
-        saved.c, saved.bc, saved.widths = c, bc, widths
-        saved.eps = READOUT_EPS
-        saved.v_row_bytes = vk.shape[2] * vk.shape[3] * vk.element_size()
-        #: THE KERNEL'S OWN V, not the caller's: the scans contract against exactly
-        #: the bytes the forward folded, and `v` is bf16-contiguous here whether or
-        #: not the caller's was.
-        saved.vk = vk
-    return y, s_out
+    y = m.chunk_divide_pass(num, den, plan.read_mass, plan.eps, plan.y_dtype)
+    return y, den
+
