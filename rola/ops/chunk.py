@@ -8,16 +8,16 @@ through silent degradation).
 
 THE SPLIT: what crosses the EXTENSION BOUNDARY lives here -- the consumer launch, the
 readout divide, the seeds, the two scans and the un-packing. What a DAG walk produces
-or decides lives in the library: the fact primitives in :mod:`rola.facts` (the
+or decides lives in the library: the fact primitives in :mod:`rola.engine.facts` (the
 packing, the write-atom bitmap, the state plane, the arm censuses), the pure folds in
-:mod:`rola.rules` (the arm, the envelope, retention), and the order in
-:mod:`rola.dags` (docs/internals/facts/facts.md).
+:mod:`rola.engine.rules` (the arm, the envelope, retention), and the order in
+:mod:`rola.engine.dags` (docs/internals/engine/engine.md).
 
 Launch arguments therefore arrive already decided, as a
-:class:`~rola.facts.plan.ChunkPlan` that the chunk DAG built
-(:mod:`rola.dags.chunk_dag`), and the reverse pass's as the
-:class:`~rola.facts.plan.BackwardPlan` that holds it by reference
-(:mod:`rola.dags.backward_dag`).
+:class:`~rola.engine.plan.ChunkPlan` that the chunk DAG built
+(:mod:`rola.engine.dags.chunk_dag`), and the reverse pass's as the
+:class:`~rola.engine.plan.BackwardPlan` that holds it by reference
+(:mod:`rola.engine.dags.backward_dag`).
 """
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ import torch
 from rola.ops._ext import extension
 
 if TYPE_CHECKING:
-    from rola.facts.plan import BackwardPlan, ChunkPlan
-    from rola.facts.types import Seeds
+    from rola.engine.plan import BackwardPlan, ChunkPlan
+    from rola.engine.types import Seeds
 
 
 def backward_seeds(plan: BackwardPlan, dy: torch.Tensor, y: torch.Tensor):

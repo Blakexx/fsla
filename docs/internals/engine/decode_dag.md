@@ -1,6 +1,6 @@
 # The decode family's DAG — M3 and M4
 
-`rola/dags/decode_dag.py`. The kernel-side page is
+`rola/engine/dags/decode_dag.py`. The kernel-side page is
 [`internals/decode/decode.md`](../decode/decode.md); this one is the HOST side — what
 the step's facts are, in what order they are found, and which of the framework's
 declarations carry the two properties a decode step lives or dies by: it must be
@@ -71,7 +71,7 @@ whatever synchronization it already has, through `growth_pending` and `admit_gro
 ## <a id="capturable"></a>4. `capturable` is a declaration, not a hope
 
 Every node of the step declares `capturable=True`, and
-`rola.facts.runner.validate_capturable` refuses the tuple at import if one does not. A
+`rola.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
 node cannot declare both `capturable` and `host_sync`: reading a device value on the host
 is precisely what a capture forbids, and the two attributes are one claim written from
 two ends.
@@ -83,7 +83,7 @@ the declaration is TRUE of a real capture.
 
 ## <a id="host-carrier"></a>5. The carrier and the scratch, and why each is memoized the way it is
 
-`DecodeGeometry` (`rola/facts/plan.py`) answers "what shape is the launch?" — widths,
+`DecodeGeometry` (`rola/engine/plan.py`) answers "what shape is the launch?" — widths,
 mixed-radix strides, spans, row offsets, word and group counts, `d_v`, the normalization
 and decay arms, `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT
 a field: owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]`

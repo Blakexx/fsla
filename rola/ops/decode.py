@@ -3,7 +3,7 @@
 
 """The T=1 decode family's BODIES: the geometry, the scratch, the folds, the launches.
 
-The decode DAG (:mod:`rola.dags.decode_dag`) declares these as nodes and composes the
+The decode DAG (:mod:`rola.engine.dags.decode_dag`) declares these as nodes and composes the
 step; the facade lives there with it. What is here is one function per thing that is
 done, and the raw-tensor entry :func:`_decode_step` is those same functions in the
 step's order, for a caller holding tensors rather than a bundle.
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 import torch
 
-from rola.facts.plan import DecodeGeometry, DecodePlan
+from rola.engine.plan import DecodeGeometry, DecodePlan
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials

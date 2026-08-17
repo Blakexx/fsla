@@ -54,7 +54,7 @@ CHUNK_TOKENS = 32
 BUILT_TOPOLOGIES: frozenset[tuple[int, int]] = frozenset(
     (D, B) for (C, _BC, D, B) in CHUNK_ARMS if C == CHUNK_TOKENS)
 
-#: The value width the whole built matrix is compiled at (`rola.rules.envelope.arm_envelope`).
+#: The value width the whole built matrix is compiled at (`rola.engine.rules.envelope.arm_envelope`).
 BUILT_DV = 64
 
 
@@ -105,7 +105,7 @@ def instantiation_of(config: Mapping[str, Any]) -> dict[str, Any]:
     return {"D": len(widths), "B": widths[0], "paging": bool(config["paging"])}
 
 
-#: The clauses `rola.rules.envelope.arm_envelope` refuses on, each paired with the
+#: The clauses `rola.engine.rules.envelope.arm_envelope` refuses on, each paired with the
 #: substring its production message carries. The mirror below answers with a
 #: clause NAME rather than with prose, so the two can be compared without one
 #: file having to restate the other's wording -- a comparison on wording would
@@ -124,7 +124,7 @@ REFUSAL_CLAUSES: Mapping[str, str] = {
 def kernel_refusal(config: Mapping[str, Any]) -> str | None:
     """The clause on which the chunk arm refuses this config, or None if it runs.
 
-    A pure-CPU MIRROR of `rola.rules.envelope.arm_envelope`, clause for clause and in
+    A pure-CPU MIRROR of `rola.engine.rules.envelope.arm_envelope`, clause for clause and in
     the same order, so `families.py` can stay device-free while still knowing
     which arm each family executes on. A mirror can drift, so it is not trusted:
     a CUDA row in `test_families.py` asserts this clause is the one production

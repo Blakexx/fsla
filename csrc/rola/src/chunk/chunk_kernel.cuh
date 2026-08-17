@@ -1636,7 +1636,7 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
 constexpr int kFactsThreads = 128;
 
 //: THE CALL CLASSES THIS PASS IS SPECIALIZED OVER -- the prefill half of the four
-//: (`rola/facts/types.py`'s `Mask`).  Decode's two never reach this kernel and are
+//: (`rola/engine/types.py`'s `Mask`).  Decode's two never reach this kernel and are
 //: not instantiated for it, so an unmatched value is the int_switch's refusal.
 enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 

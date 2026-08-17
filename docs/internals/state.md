@@ -82,7 +82,7 @@ place and returns THE SAME OBJECT.
 The backing is chosen at BIND time and is not a per-call flag:
 
 * **paged** (the default for every stateful call) — a `PageArena`. The call's exact
-  atom bitmap (`rola.facts.planes.atom_bits`, the kernel's own write set) is planned into
+  atom bitmap (`rola.engine.facts.planes.atom_bits`, the kernel's own write set) is planned into
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
@@ -133,7 +133,7 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`rola.dags.decode_dag.decode_forward(routes, v, state, decay=..., expert=...)` takes
+`rola.engine.dags.decode_dag.decode_forward(routes, v, state, decay=..., expert=...)` takes
 and returns the state exactly as `rola_op` does. Three things live behind that seam:
 
 * **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`) are the

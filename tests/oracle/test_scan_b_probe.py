@@ -53,8 +53,8 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from rola.facts.manifest import scan_arms
-from rola.facts.types import Mask
+from rola.engine.facts.manifest import scan_arms
+from rola.engine.types import Mask
 from rola.ops._ext import extension, is_available
 
 pytestmark = pytest.mark.skipif(

@@ -1,6 +1,6 @@
 # The rule layer
 
-Mirror of `rola/rules/`. This page explains WHY the layer exists and how its folds
+Mirror of `rola/engine/rules/`. This page explains WHY the layer exists and how its folds
 connect to the DAGs; the code is the authoritative statement of what each one decides.
 
 Symbols: `C` chunk tokens, `BC` owner block, `D` routing depth, `B` uniform level
@@ -39,7 +39,7 @@ band-2 node a DAG walks it as. The function keeps its ordinary signature, and it
 PARAMETER NAMES are the fact names, refused at declaration if they disagree, so the
 adapter from the fact bag to the fold is a lookup rather than a convention.
 
-Everything in `rola/rules/` carries that marker, and `tests/unit/test_facts_rules.py`
+Everything in `rola/engine/rules/` carries that marker, and `tests/unit/test_facts_rules.py`
 is what makes "everything" a fact: a function landing here unmarked fails the battery.
 The contract the marker stands for cannot be machine-checked, which is exactly why it
 is declared —
@@ -70,7 +70,7 @@ by oversight:
 
 * `arm_envelope` / `envelope` / `backward_envelope` / `training_envelope` are called by
   `validate_context`, which runs BEFORE the walk's first node so that no refusal can
-  arrive with the operands already consumed ([`facts.md` §7](facts.md#refusals)).
+  arrive with the operands already consumed ([`engine.md` §7](engine.md#refusals)).
   Placing them in the tuple would move a refusal after work.
 * `retention` is called at the autograd boundary, which is the only moment the
   retention decision exists: `needs_input_grad` is a property of the node's

@@ -229,7 +229,7 @@ growth steps by orders of magnitude.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
-With no host read inside it the step is capturable, and `rola.dags.decode_dag.decode_step_gated`
+With no host read inside it the step is capturable, and `rola.engine.dags.decode_dag.decode_step_gated`
 is that entry: the same kernels in the same order as `decode_forward` minus the verdict
 read. The CALLER owns the verdict, at whatever synchronization it already has (a decode
 loop syncs once per token to sample):
@@ -689,7 +689,7 @@ The expansion's arm selection is not this check; it is structural and lives in
 
 ---
 
-# Part C — the host side (`rola/ops/decode.py`, `rola/dags/decode_dag.py`)
+# Part C — the host side (`rola/ops/decode.py`, `rola/engine/dags/decode_dag.py`)
 
 The step's ORDER, the two memo disciplines and the capturability declaration are the
 DAG's page ([`facts/decode_dag.md`](../facts/decode_dag.md)); what follows is what the
@@ -742,5 +742,5 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `rola.facts.planes.atom_bits` produces for the chunk arm and the same one the probe
+object `rola.engine.facts.planes.atom_bits` produces for the chunk arm and the same one the probe
 condenses, reached by neither's route.

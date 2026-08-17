@@ -6,11 +6,11 @@ A DAG is a literal ordered tuple of nodes and **the order in the tuple IS the
 execution order**, chosen by the DAG's author. `needs` exists to make that order
 CHECKABLE and readable, not to compute it: :func:`validate_dag` refuses a DAG whose
 node reads a fact no earlier node produced, at import time rather than at launch
-(docs/internals/facts/facts.md).
+(docs/internals/engine/engine.md).
 
 A RULE is a band-2 node: a pure host fold from facts to a decision, declared with
 :func:`rule` so the discipline is mechanically visible rather than conventional
-(docs/internals/facts/rules.md).
+(docs/internals/engine/rules.md).
 
 Memoization is a node ATTRIBUTE here rather than a per-site convention: `pure_of`
 names the facts a pure host derivation is a function OF, and `per_state` binds a
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from rola.facts.types import Mask
+from rola.engine.types import Mask
 
 _STREAMS = ("host", "main", "side")
 
@@ -46,11 +46,11 @@ class Node:
     #: host and allocates nothing per step.
     capturable: bool
     #: this node exists to be an independent second derivation for a gate, and no
-    #: shipped DAG may contain it (docs/internals/facts/decode_dag.md).
+    #: shipped DAG may contain it (docs/internals/engine/decode_dag.md).
     reference_only: bool
     memo: Any = field(compare=False)
     #: the band-2 fold this node adapts, or None for a band-1 fact node. Its presence
-    #: IS the rule marker: `rola/rules/` is the set of functions that carry one.
+    #: IS the rule marker: `rola/engine/rules/` is the set of functions that carry one.
     pure: Callable[..., Any] | None = None
 
     def __call__(self, facts: dict) -> Any:
@@ -104,9 +104,9 @@ def rule(*, gives: tuple[str, ...], needs: tuple[str, ...],
 
     **A rule may read a fact's SHAPE, DTYPE, DEVICE and PRESENCE, and never its
     CONTENTS. It issues no launch and allocates nothing.** That contract is not
-    machine-checkable, which is exactly why the marker exists: `rola/rules/` holds
+    machine-checkable, which is exactly why the marker exists: `rola/engine/rules/` holds
     functions carrying it and nothing else, so the discipline is reviewable by
-    listing a directory (docs/internals/facts/rules.md).
+    listing a directory (docs/internals/engine/rules.md).
 
     The decorated function keeps its plain signature -- a rule is called directly,
     with values, which is what makes it testable with no device present -- and gains
@@ -171,7 +171,7 @@ def validate_capturable(dag: tuple[Node, ...], name: str) -> None:
 
     Structural, not measured: a node that reads a device value on the host, or that
     allocates per step, breaks a capture whether or not today's fixture notices
-    (docs/internals/facts/decode_dag.md).
+    (docs/internals/engine/decode_dag.md).
     """
     bad = [step.name for step in dag if not step.capturable]
     if bad:

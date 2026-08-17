@@ -10,7 +10,7 @@ prefill->decode continuation across one carried state.
 A subject is a factory: it takes a built cell fixture and returns a
 :class:`bench.pairing.Arm` whose call issues exactly the launch being priced. Everything
 the launch does NOT pay for -- the union table, the packed sides, the state plane, the
-routing -- is the fixture's :class:`~rola.facts.plan.ChunkPlan`, built once by the chunk
+routing -- is the fixture's :class:`~rola.engine.plan.ChunkPlan`, built once by the chunk
 DAG at `Cell.build()` and read off here: outside every timed callable, as before, and
 now identical by construction to what a real call hands the same entries.
 """
@@ -20,8 +20,8 @@ import torch
 
 import rola
 from bench.pairing import Arm
-from rola.dags.decode_dag import decode_forward
-from rola.facts.types import Mask
+from rola.engine.dags.decode_dag import decode_forward
+from rola.engine.types import Mask
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.routing.entmax.production import production_routing_factor_levels

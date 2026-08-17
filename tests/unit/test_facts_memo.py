@@ -13,8 +13,8 @@ import gc
 
 import pytest
 
-from rola.facts.runner import Node, node, run, validate_dag
-from rola.facts.types import Mask
+from rola.engine.runner import Node, node, run, validate_dag
+from rola.engine.types import Mask
 
 
 def _counting(**kwargs):
@@ -128,7 +128,7 @@ def test_a_supplied_fact_short_circuits_its_producer():
 def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
     """The shipped DAG is validated at import; this is that check made visible, plus
     the two properties a reader would otherwise have to trust."""
-    from rola.dags.chunk_dag import CHUNK_DAG
+    from rola.engine.dags.chunk_dag import CHUNK_DAG
 
     assert all(isinstance(step, Node) for step in CHUNK_DAG)
     joins = [step for step in CHUNK_DAG if step.waits]
@@ -164,7 +164,7 @@ def test_the_decode_step_is_declared_capturable_end_to_end():
     proves the claim is a property of the DECLARATION, so a node added to the step
     without the attribute fails here rather than at someone's first `graph.replay()`.
     """
-    from rola.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, read_verdict
+    from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, read_verdict
 
     assert all(step.capturable for step in DECODE_STEP)
     assert not any(step.host_sync for step in DECODE_STEP)
@@ -181,9 +181,9 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     set. Splicing it into a shipped DAG would make the gate compare the probe against
     itself, and `validate_dag` is where that is refused.
     """
-    from rola.dags.backward_dag import BACKWARD_DAG
-    from rola.dags.chunk_dag import CHUNK_DAG
-    from rola.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, write_atom_bitmap
+    from rola.engine.dags.backward_dag import BACKWARD_DAG
+    from rola.engine.dags.chunk_dag import CHUNK_DAG
+    from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, write_atom_bitmap
 
     assert write_atom_bitmap.reference_only
     for dag in (CHUNK_DAG, BACKWARD_DAG, DECODE_STEP, DECODE_VERDICT):
@@ -193,7 +193,7 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
 
 
 def test_the_decode_dag_is_walkable_and_masks_the_growth_band_off_the_dense_step():
-    from rola.dags.decode_dag import DECODE_STEP, growth_probe
+    from rola.engine.dags.decode_dag import DECODE_STEP, growth_probe
 
     assert all(isinstance(step, Node) for step in DECODE_STEP)
     assert growth_probe.masks == (Mask.M4,), (

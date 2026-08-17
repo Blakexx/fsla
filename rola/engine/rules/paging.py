@@ -6,13 +6,13 @@ AdmissionRule is the one rule that splits (design.md §B2.3): everything that MO
 BYTES is the arena's node, and the placement arithmetic -- the extent alignment and
 the all-or-nothing ceiling -- is this fold. The reset-vs-union half stays at the
 arena, because the reset CLEARS THE PAGE TABLE and the table is what sizes the run
-this rule then places (docs/internals/facts/rules.md).
+this rule then places (docs/internals/engine/rules.md).
 """
 from __future__ import annotations
 
 from typing import Any
 
-from rola.facts.runner import rule
+from rola.engine import rule
 
 
 @rule(gives=("paging",), needs=("expert",))

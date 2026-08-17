@@ -192,7 +192,7 @@ def chunk_launch(routes, v, *, state_in=None, want_state=False, arena=None):
     The kernel arm's driver for tests that are about the arm rather than about the
     facade: `rola.rola_op` reaches the same plan through the same DAG.
     """
-    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
     from rola.ops.chunk import execute
 
     plan = build_chunk_plan(ChunkContext(routes=routes, v=v, state_in=state_in,

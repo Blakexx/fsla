@@ -7,14 +7,13 @@ refusal TEXT the op can carry. They are four because the call sites need them at
 different moments -- the arm matrix, the operand facts around it, the reverse pass's
 narrower matrix, and the one clause that exists only on the grad path -- and folding
 them into one would evaluate clauses a caller has not reached yet
-(docs/internals/facts/rules.md).
+(docs/internals/engine/rules.md).
 """
 from __future__ import annotations
 
 from typing import Any
 
-from rola.facts.runner import rule
-from rola.facts.types import Arm
+from rola.engine import Arm, rule
 
 
 @rule(gives=("arm_envelope",),

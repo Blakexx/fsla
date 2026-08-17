@@ -46,7 +46,7 @@ one on a default (paged) state, one on a state pinned dense with
 `PlanOverrides(paging=False)` -- which is the comparison the old paged/unpaged layer
 pair was reaching for, with both arms now doing the same state I/O. The isolated
 plane is `PageArena.plan_exact` over the kernel's OWN exact atom bitmap
-(`rola.facts.planes.atom_bits`), which is what the facade plans with.
+(`rola.engine.facts.planes.atom_bits`), which is what the facade plans with.
 
 Vocabulary: `N` = leaf count = `prod_l width_l`; `BC` = leaves per owner;
 `owners_total` = `N / BC`; `BH` = `batch * heads`; `cols` = `d_v` plus one mass
@@ -64,9 +64,9 @@ import torch
 
 from rola import RoLA, RouteProducer, dense_routing, union_routing
 from rola import state as rola_state
+from rola.engine.facts import planes
+from rola.engine.facts.call import arm_of, widths_of
 from rola.expert import PlanOverrides
-from rola.facts import planes
-from rola.facts.call import arm_of, widths_of
 
 _MiB = 1024 * 1024
 

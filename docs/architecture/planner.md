@@ -20,11 +20,11 @@ enforced it, and a tree with no cost model should say WHY it has none.
 `BC` — the leaves one owner block owns — is no longer derived per launch,
 because it is no longer a host-selectable quantity at all. It is a property of
 the BUILT ARM: `tools/gen_shards.py` owns one matrix of `(C, BC, D, B)` tuples,
-emits it as `instantiations/chunk_arms.inc`, and `rola/rules/arm.py` picks the
+emits it as `instantiations/chunk_arms.inc`, and `rola/engine/rules/arm.py` picks the
 arm for a topology out of the binary's own `chunk_arms()` list by a fixed
 preference order over MEASURED arms (`_PIN_C`, `_PIN_BC`, falling back to the
 largest built `BC` for that `(D, B)`). A topology with no built arm gets no
-kernel: `rola.rules.envelope` names the refusing clause and `rola_op` raises it
+kernel: `rola.engine.rules.envelope` names the refusing clause and `rola_op` raises it
 ([`../api.md`](../api.md) §1.1, the built envelope).
 
 That is the same category of answer the old derivation gave, taken one step
@@ -40,7 +40,7 @@ silently ignored, because a pin over an axis the binary fixes would be inert.
 
 1. **Structure, not thresholds.** An axis is dispatched on a structural fact —
    a tile count, a level count, a built arm — never on a threshold over a
-   measured value. The refusal clauses in `rola.rules.envelope` are all of the
+   measured value. The refusal clauses in `rola.engine.rules.envelope` are all of the
    first kind.
 2. **A feasibility refusal is loud.** A topology outside the built matrix gets a
    named refusal and a reference execution, never a silently substituted arm.
@@ -48,7 +48,7 @@ silently ignored, because a pin over an axis the binary fixes would be inert.
 3. **Exact routing statistics are MEASUREMENT instruments, not planner inputs.**
    The census and the union statistics that answered "what did this routing do"
    were bench instruments no dispatch path reached; they were deleted with the
-   planner, and the surviving statistics surface (`rola.facts.planes.atom_bits`, the
+   planner, and the surviving statistics surface (`rola.engine.facts.planes.atom_bits`, the
    write-atom set the page plan consumes) keeps the same discipline — it is
    keyed to the 16-leaf quantum, not to `BC`, so it is a fact about the routing
    alone and is legitimately taken BEFORE an arm is chosen.

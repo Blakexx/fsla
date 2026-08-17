@@ -3,7 +3,7 @@
 """RetentionRule -- whether this call keeps a reverse-pass ctx."""
 from __future__ import annotations
 
-from rola.facts.runner import rule
+from rola.engine import rule
 
 
 @rule(gives=("retained",), needs=("grad",))

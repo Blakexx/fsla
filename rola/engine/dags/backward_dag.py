@@ -4,9 +4,9 @@
 
 THE BACKWARD FINDS NO FACTS. Every fact its nodes read is one the forward already
 produced, so this DAG's plan is an INPUT rather than its terminal output: it is
-handed the :class:`~rola.facts.plan.BackwardPlan` the grad-bearing forward retained,
+handed the :class:`~rola.engine.plan.BackwardPlan` the grad-bearing forward retained,
 and what its walk produces is the operand-layout gradient list
-(docs/internals/facts/backward_dag.md).
+(docs/internals/engine/backward_dag.md).
 
 The two scans are the reason the DAG exists in this shape: they read the SAME facts
 and neither reads the other's, which the `needs` edges now state. They are still
@@ -15,20 +15,18 @@ stage claims none.
 
 Nodes are declared over both masks because GRAD IS NOT A MASK: it is a retention
 decision the forward already made, and a call that reaches here retained a plan
-(docs/internals/facts/facts.md §4).
+(docs/internals/engine/engine.md §4).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rola import rules
-from rola.facts.runner import node, run, validate_dag
-from rola.facts.types import Seeds
+from rola.engine import Seeds, node, rules, run, validate_dag
 
 if TYPE_CHECKING:
     import torch
 
-    from rola.facts.plan import BackwardPlan
+    from rola.engine import BackwardPlan
 
 _SEEDS = ("plan", "dy", "y", "v", "call_class")
 

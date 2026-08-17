@@ -40,8 +40,8 @@ from math import prod
 import pytest
 import torch
 
-from rola.facts import planes
-from rola.facts.types import Mask
+from rola.engine.facts import planes
+from rola.engine.types import Mask
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM

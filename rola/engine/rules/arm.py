@@ -3,8 +3,7 @@
 """ArmRule -- the `(C, BC)` arm a topology runs on, derived from the manifest."""
 from __future__ import annotations
 
-from rola.facts.runner import rule
-from rola.facts.types import Arm
+from rola.engine import Arm, rule
 
 #: THE CHUNK LENGTH -- the operator's token quantum. `T` must be a multiple of it,
 #: and shaping a sequence to it is the CALLER's job, which is why this is public

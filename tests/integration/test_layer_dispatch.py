@@ -66,7 +66,7 @@ def _layer(*, norm: str = "global", decay: str, router: str = "dense", device: s
 
 
 #: THE TRAINABLE BRANCHES.  The reverse pass carries a topology when the census
-#: does (`rola.facts.manifest.scan_arms`), and `BC` follows the topology: `(64, 64)` is
+#: does (`rola.engine.facts.manifest.scan_arms`), and `BC` follows the topology: `(64, 64)` is
 #: the pinned arm at `BC = 128`, `(16, 16)` the `BC = 64` one -- where a slot is
 #: shared by two threads and the per-slot dW runs two passes rather than four. A
 #: gradient claim is made at BOTH, because the layer is where the dispatch picks
@@ -344,7 +344,7 @@ def test_a_kernel_produced_state_feeds_an_oracle_step_at_the_ops_level():
     """The two write the same object, so the oracle can CONTINUE from a kernel state.
     Called at the ops level because that is the only place the oracle lives: the
     layer has one arm."""
-    from rola.rules.arm import CHUNK_TOKENS
+    from rola.engine.rules.arm import CHUNK_TOKENS
 
     torch.manual_seed(41)
     layer = _layer(decay="none")

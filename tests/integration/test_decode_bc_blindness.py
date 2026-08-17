@@ -33,7 +33,7 @@ import math
 import pytest
 import torch
 
-from rola.facts.plan import DecodeGeometry
+from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from tests.oracle.instantiation import CHUNK_ARMS
 from tests.oracle.oracle_fixtures import _simplex, _topology

@@ -7,7 +7,7 @@ dtype, device and PRESENCE but never its contents. That is what makes this batte
 possible at all: it feeds plain tuples, ints and a fake manifest, calls no kernel and
 touches no device, and it must pass under `CUDA_VISIBLE_DEVICES=""`. Before P75 the
 run table was reachable only through a launch and the arm only through a built
-extension (docs/internals/facts/rules.md).
+extension (docs/internals/engine/rules.md).
 
 The run-table rows are the DERIVATION, not a spot check: every one of the eight
 liveness bytes is asserted against every row of `chunk.md#run-table`, and the row
@@ -24,10 +24,8 @@ from pathlib import Path
 import pytest
 import torch
 
-import rola.rules as rules_pkg
-from rola.facts.runner import Node
-from rola.facts.types import Arm, CallClass, Mask
-from rola.rules import (
+import rola.engine.rules as rules_pkg
+from rola.engine.rules import (
     admission,
     arm,
     arm_envelope,
@@ -40,10 +38,12 @@ from rola.rules import (
     run_table,
     training_envelope,
 )
+from rola.engine.runner import Node
+from rola.engine.types import Arm, CallClass, Mask
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: A manifest as `rola.facts.manifest.chunk_arms` publishes it: `(C, BC, D, B)` rows.
+#: A manifest as `rola.engine.facts.manifest.chunk_arms` publishes it: `(C, BC, D, B)` rows.
 #: Fake, and deliberately so -- the rule's input is the census, so a test that read
 #: the real one would only prove the binary agrees with itself.
 _MANIFEST = ((32, 64, 2, 16), (32, 128, 2, 64), (32, 64, 2, 64), (32, 64, 3, 8),
@@ -55,12 +55,12 @@ _MANIFEST = ((32, 64, 2, 16), (32, 128, 2, 64), (32, 64, 2, 64), (32, 64, 3, 8),
 # ---------------------------------------------------------------------------
 
 def _rule_modules():
-    return [importlib.import_module(f"rola.rules.{info.name}")
+    return [importlib.import_module(f"rola.engine.rules.{info.name}")
             for info in pkgutil.iter_modules(rules_pkg.__path__)]
 
 
 def test_every_function_under_rules_is_a_declared_rule():
-    """THE MARKER IS THE INVENTORY. `rola/rules/` holds band-2 folds and nothing
+    """THE MARKER IS THE INVENTORY. `rola/engine/rules/` holds band-2 folds and nothing
     else, so an ordinary helper landing here -- one that could launch, allocate or
     read a tensor's contents unnoticed -- fails by being unmarked."""
     unmarked = []
@@ -73,7 +73,7 @@ def test_every_function_under_rules_is_a_declared_rule():
             if not isinstance(getattr(obj, "node", None), Node):
                 unmarked.append(f"{module.__name__}.{name}")
     assert not unmarked, (
-        f"{unmarked} live under rola/rules/ without the `rule` marker; a rule "
+        f"{unmarked} live under rola/engine/rules/ without the `rule` marker; a rule "
         "declares its facts and its band, and an unmarked function declares nothing")
 
 
@@ -95,7 +95,7 @@ def test_a_rule_declares_the_host_band_and_no_memo():
 def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
     """The adapter from the fact bag to the fold is a LOOKUP, so the parameter names
     are the fact names -- checked at declaration rather than at the walk."""
-    from rola.facts.runner import rule
+    from rola.engine.runner import rule
 
     with pytest.raises(ValueError, match="parameter names are the FACT names"):
         @rule(gives=("arm",), needs=("widths", "manifest"))
@@ -106,7 +106,7 @@ def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
 def test_a_rule_runs_as_a_node_over_a_fact_bag():
     """Rules are NODES, not a phase: the same fold a caller invokes with values is
     what the walk runs, and `.node` is the one it walks."""
-    from rola.facts.runner import run
+    from rola.engine.runner import run
 
     facts = run((mask.node, arm.node), {"call_class": CallClass(False, False, False, False),
                                         "widths": (64, 64), "manifest": _MANIFEST})

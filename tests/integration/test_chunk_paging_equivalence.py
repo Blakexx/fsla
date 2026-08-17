@@ -19,7 +19,7 @@ owner block; `owners = N / BC`.
 
 1. *Bit identity.* One call dense and one paged over the same routing and the
    same `v`, with the arena planned from the kernel's own exact write bitmap
-   (`rola.facts.planes.atom_bits` -> `PageArena.plan_exact`). `y` is equal and the
+   (`rola.engine.facts.planes.atom_bits` -> `PageArena.plan_exact`). `y` is equal and the
    states are equal once the paged pages are gathered back through the table.
    The gather sends an absent atom to zeros, which is the same thing the dense
    plane holds there, because the bitmap is the write set EXACTLY -- an atom
@@ -50,7 +50,7 @@ from math import prod
 import pytest
 import torch
 
-from rola.facts import planes
+from rola.engine.facts import planes
 from rola.ops._ext import extension
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 

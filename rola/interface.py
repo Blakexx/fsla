@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from rola import rules
 from rola._state import RoLAState
-from rola.facts.call import arm_refusal, backward_refusal
-from rola.facts.operands import operands_of, requires_backward
+from rola.engine import rules
+from rola.engine.facts.call import arm_refusal, backward_refusal
+from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
     from rola.routing.factors import RouteFactors
@@ -97,7 +97,7 @@ def rola_op(
     Carrying a gradient AND a ``state`` still raises -- training is stateless in v1
     (P65 R-D).
     """
-    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
 
     plan = build_chunk_plan(ChunkContext(
         routes=routes, v=v, decay=decay, state=state, expert=expert,
@@ -117,7 +117,7 @@ def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -
 
     THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
     before calling and get the sentence the refusal will carry. It is a CALLER of the
-    rule layer: the sentences are :mod:`rola.rules.envelope`'s and this function reads
+    rule layer: the sentences are :mod:`rola.engine.rules.envelope`'s and this function reads
     the facts they fold. The clauses that exist only on the grad path are
     :func:`require_envelope`'s.
     """
@@ -182,7 +182,7 @@ class ChunkConsumer(torch.autograd.Function):
 
     @staticmethod
     def run(plan, v):
-        """``y`` -- one :class:`~rola.facts.plan.ChunkPlan` executed through the node.
+        """``y`` -- one :class:`~rola.engine.plan.ChunkPlan` executed through the node.
 
         ``v`` is passed beside the plan rather than on it because it is this node's
         own OPERAND and autograd owns its versioning; ``plan.v`` is the kernel's
@@ -199,7 +199,7 @@ class ChunkConsumer(torch.autograd.Function):
     def forward(ctx, plan, v, *operands):  # type: ignore[override]
         # Deliberately NOT `ctx.mark_non_differentiable`: marking the output would make
         # `backward` unreachable, which is the same silence this class exists to break.
-        from rola.facts.plan import BackwardPlan
+        from rola.engine.plan import BackwardPlan
         from rola.ops import chunk as _chunk
 
         y, den = _chunk.execute(plan)
@@ -223,17 +223,17 @@ class ChunkConsumer(torch.autograd.Function):
     def backward(ctx, *grad_outputs):  # type: ignore[override]
         """The two-pass reverse pass: ONE walk of the backward DAG over the ctx.
 
-        The ctx IS the forward's plan (:class:`~rola.facts.plan.BackwardPlan`), so
+        The ctx IS the forward's plan (:class:`~rola.engine.plan.BackwardPlan`), so
         there is nothing to re-derive and nothing to thread here -- the seeds, the two
         scans and the un-packing are declared nodes over that plan
-        (:mod:`rola.dags.backward_dag`), and the routing bundle the un-packing needs
+        (:mod:`rola.engine.dags.backward_dag`), and the routing bundle the un-packing needs
         for its layouts is the plan's own.
 
         What comes back is ordered by `RouteFactors.tensors()`, which `forward`'s flat
         argument list is also ordered by; `tests/unit/test_interface.py` asserts that
         correspondence rather than trusting it.
         """
-        from rola.dags.backward_dag import run_backward
+        from rola.engine.dags.backward_dag import run_backward
 
         plan = getattr(ctx, "saved_plan", None)
         if plan is None:

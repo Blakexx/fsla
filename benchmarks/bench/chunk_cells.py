@@ -26,8 +26,8 @@ from pathlib import Path
 import torch
 
 from rola import RoLA, RouteProducer, dense_routing, union_routing
-from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
-from rola.facts import planes
+from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
+from rola.engine.facts import planes
 
 MANIFEST = Path(__file__).resolve().parents[1] / "cells" / "chunk_manifest.json"
 

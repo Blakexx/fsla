@@ -139,7 +139,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     reached, so the admitted case is asserted too -- and asserted through a real
     entry, because the entry is where the call site is.
     """
-    from rola.facts.types import Mask
+    from rola.engine.types import Mask
     from rola.ops._ext import extension
 
     major, minor = torch.cuda.get_device_capability()

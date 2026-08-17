@@ -20,8 +20,8 @@ from math import prod
 
 import torch
 
-from rola.facts.types import MMA_K_QUANTUM
-from rola.rules.paging import admission
+from rola.engine.rules.paging import admission
+from rola.engine.types import MMA_K_QUANTUM
 
 #: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
 #: ``(slot << _LOG2_ATOM_LEAVES | row)``, and the shift must be an expression in the
@@ -238,11 +238,11 @@ class ExtentAllocator:
         self._next = 0
 
     def take(self, count: int) -> int:
-        """Advance the cursor over the run :func:`rola.rules.paging.admission` placed.
+        """Advance the cursor over the run :func:`rola.engine.rules.paging.admission` placed.
 
         The PLACEMENT -- the extent alignment and the all-or-nothing ceiling -- is the
         rule; what is left here is the one mutation, which is why this class holds a
-        cursor and no policy (docs/internals/facts/rules.md).
+        cursor and no policy (docs/internals/engine/rules.md).
         """
         first = admission(self._next, self.capacity, self.extent_atoms, count)
         if count > 0:
@@ -532,7 +532,7 @@ class PageArena:
         """The PLANNED-EXACT-ASYNC admission, from the atom condensation.
 
         ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- the per-leaf write set
-        condensed to the atom quantum, as :func:`rola.facts.planes.atom_bits` publishes it. It
+        condensed to the atom quantum, as :func:`rola.engine.facts.planes.atom_bits` publishes it. It
         is the EXACT set of atoms this call touches on the write side, so the pool is
         SIZED rather than grown and there is nothing for an allocator to discover.
 

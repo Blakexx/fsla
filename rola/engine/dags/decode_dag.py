@@ -5,7 +5,7 @@
 M3 (decode-dense) and M4 (decode-paged) are ONE tuple: M3 is M4 with the growth band
 masked out. A GROWTH STEP IS NOT A THIRD GRAPH -- it is this same tuple walked twice
 around an admission, which is what makes the replay self-correcting and the step
-capturable (docs/internals/facts/decode_dag.md).
+capturable (docs/internals/engine/decode_dag.md).
 """
 from __future__ import annotations
 
@@ -14,10 +14,15 @@ from typing import Any
 
 import torch
 
-from rola import rules
-from rola.facts.plan import DecodePlan
-from rola.facts.runner import node, run, validate_capturable, validate_dag
-from rola.facts.types import Mask
+from rola.engine import (
+    DecodePlan,
+    Mask,
+    node,
+    rules,
+    run,
+    validate_capturable,
+    validate_dag,
+)
 from rola.ops import decode as bodies
 
 _SEEDS = ("routes", "v", "decay", "state", "expert")

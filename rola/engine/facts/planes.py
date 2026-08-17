@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.facts.types import MMA_K_QUANTUM, Mask
+from rola.engine import MMA_K_QUANTUM, Mask
 from rola.ops._ext import extension
 
 
@@ -112,8 +112,8 @@ def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
     call that wants both takes them from the chunk DAG's own node in one launch, and
     nothing on a measured path comes through here.
     """
-    from rola.facts import manifest as census
-    from rola.rules.arm import arm as arm_rule
+    from rola.engine.facts import manifest as census
+    from rola.engine.rules.arm import arm as arm_rule
 
     widths = tuple(widths)
     arm = arm_rule(widths, census.chunk_arms())

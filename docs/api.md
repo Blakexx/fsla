@@ -68,7 +68,7 @@ the no-fallback rule forbids.
 | `d_v` | `64` | refused |
 | `normalization` | `"global"` | refused |
 | widths | uniform (`len(set(widths)) == 1`) | refused (a jagged topology) |
-| `(D, B)` | the manifest's combinations (`rola.facts.manifest`'s `chunk_arms()`) | refused |
+| `(D, B)` | the manifest's combinations (`rola.engine.facts.manifest`'s `chunk_arms()`) | refused |
 | `T` | a multiple of the chunk `C = 32` | refused |
 | `decay` | not implemented in the chunk arm (decode has it) | refused |
 | an unratified activation | — | refused |
@@ -406,7 +406,7 @@ default, `False` pins the dense plane the bit-identity gate compares against, an
 now a property of the built arm rather than of a per-launch derivation, so there is
 no launch-shaping object for a caller to hold, synthesize or staleness-test. What
 replaces the adversarial use they enabled: a conformance family drives
-the envelope's own rule (`rola.rules.envelope`) directly and declares the refusal
+the envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and
 `envelope_refusal` answers the same question a synthetic plan used to be built to probe.
 

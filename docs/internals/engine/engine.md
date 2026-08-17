@@ -1,8 +1,9 @@
-# The facts engine
+# The engine
 
-Mirror of `rola/facts/`. This page explains WHY the structure is shaped as it is and
-how its pieces connect; the code is the authoritative statement of how each body
-works. What is DECIDED from facts is [the rule layer's page](rules.md).
+Mirror of `rola/engine/` — the umbrella's ROOT (the runner, the value types, the
+plans) and its `facts/` domain. This page explains WHY the structure is shaped as it
+is and how its pieces connect; the code is the authoritative statement of how each
+body works. What is DECIDED from facts is [the rule layer's page](rules.md).
 
 Symbols: `B` batch, `T` tokens, `H` heads, `D` routing depth, `N` leaf count, `d_v`
 value width, `C` chunk tokens, `BC` owner block, `BH = B*H`.
@@ -35,29 +36,38 @@ those five under one declaration.
 
 ## <a id="the-split-rule"></a>2. What lives where
 
-Three packages, and one sentence decides which:
+ONE umbrella package with three domains under it, and one sentence decides what is in
+it at all:
 
 > **What crosses the EXTENSION BOUNDARY lives in `rola/ops/`. What a DAG walk produces
-> or decides lives in the library.**
+> or decides lives in `rola/engine/`.**
 
-* `rola/facts/` — band 1 and the shared value types, BODIES INCLUDED. The packing and
-  the write-atom bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the
-  operand list (`operands.py`), the adapters that read those facts off a routing
-  bundle (`call.py`), the declared nodes over them (`nodes.py`), the value types
-  (`types.py`), the plans (`plan.py`) and the runner (`runner.py`). A fact primitive
-  is not a wrapper that defers its logic elsewhere; the primitive IS here.
-* `rola/rules/` — band 2, one declared fold per decision.
-* `rola/dags/` — the per-family compositions: the tuple, its context, its terminal
-  node.
+* `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
+  framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
+  `validate_capturable`), the value types (`types.py`) and the per-family plans
+  (`plan.py`).
+* `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
+  bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the operand list
+  (`operands.py`), the adapters that read those facts off a routing bundle
+  (`call.py`) and the declared nodes over them (`nodes.py`). A fact primitive is not a
+  wrapper that defers its logic elsewhere; the primitive IS here.
+* `rola/engine/rules/` — band 2, one declared fold per decision.
+* `rola/engine/dags/` — the per-family compositions: the tuple, its context, its
+  terminal node.
 * `rola/ops/` — the launches and the bodies around them. `chunk.py` is `execute`, the
   seeds, the two scans and the un-packing; `decode.py` is the geometry, the scratch,
   the folds, the probe and `execute`, plus `_decode_step` — those same bodies in the
   step's order for a caller holding tensors rather than a bundle.
 
-`rola/facts/__init__.py` re-exports the DEVICE-FREE core only, and that is a layering
-statement rather than a convenience: `rola.rules` reads `runner` and `types` and must
-never acquire a dependency on the extension by importing the package. The primitives
-that DO reach the extension are imported by module.
+**A domain reaches the core through the ROOT, never through a sibling domain.**
+`rola/engine/__init__.py` re-exports the core for exactly that: `from rola.engine
+import rule` is the import a rule module writes, so `rule` is a property of the engine
+rather than of whichever domain happened to define it. The core itself imports no
+domain, which is what keeps that re-export from being a cycle; `rola/engine/facts/`
+re-exports nothing, because a domain that is also a route to something it does not own
+is the mis-homing this layout removes. `rola.engine.rules` therefore never acquires a
+dependency on the extension: the primitives that DO reach it are `rola.engine.facts`
+modules, imported by module.
 
 ## <a id="a-dag-is-code"></a>3. A DAG is code
 

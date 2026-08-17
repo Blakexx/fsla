@@ -1,8 +1,8 @@
 # The chunk family's DAG
 
-Mirror of `rola/dags/chunk_dag.py` and the chunk half of `rola/facts/nodes.py`.
+Mirror of `rola/engine/dags/chunk_dag.py` and the chunk half of `rola/engine/facts/nodes.py`.
 Framework vocabulary — masks, seeds, the fact bag, the Join — is
-[the facts engine's page](facts.md); the band-2 folds this tuple walks are
+[the engine's page](engine.md); the band-2 folds this tuple walks are
 [the rule layer's](rules.md).
 
 Symbols: `C` chunk tokens, `BC` owner block, `N` leaf count, `BH = B*H`, atom = 16

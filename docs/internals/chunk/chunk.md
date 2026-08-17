@@ -56,7 +56,7 @@ the consumer accepts.
 
 `CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped
 being reachable from production it is the whole of what the package ships a kernel for.
-`rola.interface.envelope_refusal` reads `rola.rules.envelope`, and everything
+`rola.interface.envelope_refusal` reads `rola.engine.rules.envelope`, and everything
 outside the matrix is REFUSED by the clause that names it — the same treatment decay
 and an unratified activation get, in the same words, so there is one authority on what
 this kernel runs and it is this file's arm list. The envelope's user-facing statement,
@@ -107,7 +107,7 @@ built — `chunk_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `
 routing. What a skipped block would have cost differs by call class and by backing, and a
 call class here is the PRESENCE of the three launch arguments — the entry-state plane, the
 exit-state plane and the page table — never the engagement bits the facade classifies with
-(`rola/facts/types.py`'s `CallClass`), because it is the argument that decides the cost:
+(`rola/engine/types.py`'s `CallClass`), because it is the argument that decides the cost:
 
 | call class | `s_in` | `s_out` | `page_tbl` | rule |
 |---|---|---|---|---|

@@ -4,7 +4,7 @@
 
 M1 (prefill-stateless) and M2 (prefill-stateful) are ONE tuple: M1 is M2 with the
 residency band masked out, which is what makes the two readable against each other
-(docs/internals/facts/chunk_dag.md).
+(docs/internals/engine/chunk_dag.md).
 """
 from __future__ import annotations
 
@@ -14,11 +14,8 @@ from typing import Any
 
 import torch
 
-from rola import rules
-from rola.facts import nodes
-from rola.facts.plan import ChunkPlan
-from rola.facts.runner import node, run, validate_dag
-from rola.facts.types import SUPPLIABLE
+from rola.engine import SUPPLIABLE, ChunkPlan, node, rules, run, validate_dag
+from rola.engine.facts import nodes
 
 _SEEDS = ("routes", "v", "decay", "state", "expert", "want_state", "given_state_in",
           "given_arena")
@@ -86,7 +83,7 @@ if set(nodes.facts_tables.gives) != {"union_table", "atom_bits"}:
         "the union table and the atom bitmap came apart. They are ONE pass over the "
         "amplitude planes -- the plane is read once and voted at both grains -- so a "
         "DAG that produces them from two nodes has re-read it and paid the bytes "
-        "twice (docs/internals/facts/chunk_dag.md).")
+        "twice (docs/internals/engine/chunk_dag.md).")
 
 
 def validate_context(ctx: ChunkContext) -> None:

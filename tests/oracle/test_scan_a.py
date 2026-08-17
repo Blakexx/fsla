@@ -39,7 +39,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.facts.types import Mask
+from rola.engine.types import Mask
 from rola.ops._ext import extension, is_available
 from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm, _chain, _leave_one_out, _walk_liveness
 

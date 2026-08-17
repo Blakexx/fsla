@@ -5,7 +5,7 @@
 A plan holds two kinds of field and no third: a HOST field is some rule's verdict,
 and a TENSOR field is a reference to a terminal fact. A field that is neither means
 something is still being decided at the launch site, which is the condition the facts
-engine exists to remove (docs/internals/facts/facts.md).
+engine exists to remove (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import torch
 
-from rola.facts.types import Arm, CallClass
+from rola.engine.types import Arm, CallClass
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,7 @@ class DecodeGeometry:
 
     It is the config half of :class:`DecodePlan` rather than a field of it because the
     per-shape memo key is over this alone -- the terminal facts beside it are per-step
-    and never cached (docs/internals/facts/decode_dag.md).
+    and never cached (docs/internals/engine/decode_dag.md).
 
     ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
     the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
@@ -122,7 +122,7 @@ class BackwardPlan:
 
     The reverse pass finds no facts of its own -- every fact it reads is one the
     forward already produced, so its plan IS the forward's plan, held by reference
-    (docs/internals/facts/backward_dag.md). `den` is the second field because it is
+    (docs/internals/engine/backward_dag.md). `den` is the second field because it is
     the forward's OUTPUT rather than one of its launch arguments: `execute` returns
     it, so it cannot be a `ChunkPlan` field without either un-freezing the plan or
     building the plan after the launch it configures. It is fed here, at retention

@@ -19,7 +19,7 @@ exactly one CTA and the bitmaps are bit ballots. The facts are captured by recor
 the extension RETURNED during the call -- the op's own union table, block bitmap and
 atom bitmap, not a second derivation of them -- which is what makes the comparison
 independent of whatever host structure produced the launch arguments
-(docs/internals/facts/facts.md).
+(docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ def _run_cell(cell) -> dict[str, torch.Tensor]:
 
     from math import prod
 
-    from rola.facts.call import arm_of as chunk_arm
+    from rola.engine.facts.call import arm_of as chunk_arm
 
     out = {f"{name}/y": y,
            f"{name}/owners": torch.tensor(prod(widths) // chunk_arm(routes)[1])}

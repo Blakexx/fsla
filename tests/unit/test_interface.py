@@ -76,7 +76,7 @@ def _built_arm(requires_grad: bool = True):
     x = torch.randn(B, T, hidden, device="cuda", requires_grad=requires_grad)
     routes = producer(x)
     v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=requires_grad)
-    from rola.facts.call import arm_refusal
+    from rola.engine.facts.call import arm_refusal
     assert arm_refusal(routes, None, d_v=d_v) is None, "fixture must be a BUILT arm"
     return v, routes, x, producer
 
@@ -170,10 +170,10 @@ def test_the_node_is_what_carries_the_graph_when_the_facade_is_bypassed():
     x = torch.randn(B, T, hidden, device="cuda", requires_grad=True)
     routes = producer(x)
     v = torch.randn(B, T, H, d_v, device="cuda", requires_grad=True)
-    from rola.facts.call import arm_refusal
+    from rola.engine.facts.call import arm_refusal
 
     assert arm_refusal(routes, None, d_v=v.shape[-1]) is None, "fixture must be a BUILT arm"
-    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
 
     y = ChunkConsumer.run(build_chunk_plan(ChunkContext(routes=routes, v=v)), v)
     assert y.grad_fn is not None, (

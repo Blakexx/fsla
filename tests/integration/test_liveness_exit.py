@@ -37,8 +37,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.facts import planes
-from rola.facts.types import Mask
+from rola.engine.facts import planes
+from rola.engine.types import Mask
 from rola.ops._ext import extension
 
 pytestmark = [
@@ -358,7 +358,7 @@ def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
     from conftest import build_routes, chunk_launch
 
-    from rola.facts.call import arm_of
+    from rola.engine.facts.call import arm_of
     from rola.ops import chunk
     from rola.routing.producer import union_routing
 
@@ -440,9 +440,9 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
     on the one kernel.
     """
     import rola
+    from rola.engine.facts import planes
+    from rola.engine.facts.call import arm_of
     from rola.expert import PlanOverrides
-    from rola.facts import planes
-    from rola.facts.call import arm_of
 
     B, T, H, live = 1, 64, 2, 4
     routes = _sparse_bundle(B, T, H, live)

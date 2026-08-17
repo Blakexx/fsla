@@ -3,7 +3,7 @@
 """What the OPERATION consumes, and whether it must be differentiable.
 
 Two facts about one call's operands, read before any decision folds them: the flat
-operand list, and the grad bit the call class carries (docs/internals/facts/facts.md).
+operand list, and the grad bit the call class carries (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 

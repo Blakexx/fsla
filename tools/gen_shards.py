@@ -174,7 +174,7 @@ CHUNK_PER_SHARD = 8
 #: SUBSET of `CHUNK_ARMS`: a backward whose forward is not built could not run a
 #: training step. It is narrower than the forward's because the scans carry the
 #: campaign's TRAINABLE topologies, not every arm the forward can infer at
-#: (`rola/rules/envelope.py:backward_envelope` refuses the difference).
+#: (`rola/engine/rules/envelope.py:backward_envelope` refuses the difference).
 SCAN_ARMS: tuple = (
     (32, 128, 2, 64),
     (32, 128, 2, 256),
@@ -186,7 +186,7 @@ SCAN_ARMS: tuple = (
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 
 #: THE FACTS PASS' CALL-CLASS AXIS: the prefill half of the four masks
-#: (`rola/facts/types.py`), and both values are built.  The stateless class compiles
+#: (`rola/engine/types.py`), and both values are built.  The stateless class compiles
 #: no atom-grain emission at all; within the stateful one, a call with no arena to
 #: admit into is a runtime-null output skip and not a third value.  Decode's two
 #: masks never reach this kernel and are not instantiated for it.

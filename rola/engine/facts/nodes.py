@@ -5,17 +5,16 @@
 Nodes are typed on facts and not on any one family's context, which is what lets a
 DAG share them. These are BAND 1 -- a node may launch and may allocate -- and each
 body is the smallest thing that produces its fact, over the packing and manifest
-primitives beside it (docs/internals/facts/facts.md).
+primitives beside it (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
 import torch
 
-from rola.facts import manifest as census
-from rola.facts import planes
-from rola.facts.operands import operands_of, requires_backward
-from rola.facts.runner import node
-from rola.facts.types import CallClass, Mask
+from rola.engine import CallClass, Mask, node
+from rola.engine.facts import manifest as census
+from rola.engine.facts import planes
+from rola.engine.facts.operands import operands_of, requires_backward
 from rola.ops._ext import extension
 
 

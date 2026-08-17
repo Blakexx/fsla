@@ -200,7 +200,7 @@ class RoLAState:
         happens here is `plan_exact` on the arena's side stream -- one device-to-host
         size read, no other synchronization. The DAG's Join is what puts the
         admission before the block bitmap and the launch
-        (docs/internals/facts/chunk_dag.md#the-join).
+        (docs/internals/engine/chunk_dag.md#the-join).
 
         `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
         extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by
@@ -253,7 +253,7 @@ class RoLAState:
         case to serve and nothing to admit: the step's own device probe answers whether
         it writes an atom the table does not map, and the admission that answer calls
         for is :meth:`_decode_entry_arena`, between two walks of the step
-        (docs/internals/facts/decode_dag.md#the-two-masks).
+        (docs/internals/engine/decode_dag.md#the-two-masks).
 
         Dense states hand back a VIEW of their own plane, which is what makes the
         kernel's in-place update the state's update.

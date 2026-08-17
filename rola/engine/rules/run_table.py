@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rola.facts.runner import rule
+from rola.engine import rule
 
 
 @rule(gives=("run_table",), needs=("state_in", "state_out", "page_table"))

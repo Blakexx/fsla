@@ -484,10 +484,10 @@ partial, so the live accumulator is 8 registers rather than 128.
 
 ## <a id="ctx-contract"></a>The ctx the forward hands over
 
-`rola.facts.plan.BackwardPlan` — the forward's `ChunkPlan` held BY REFERENCE, plus
+`rola.engine.plan.BackwardPlan` — the forward's `ChunkPlan` held BY REFERENCE, plus
 `den`. The reverse pass finds no facts of its own, so there is no second object to
 keep in step with the plan: what the forward configured is what the backward reads
-(docs/internals/facts/backward_dag.md).
+(docs/internals/engine/backward_dag.md).
 
 What it replays from is `O(L)` with a per-topology constant: the packed read and
 write sides, the write gain, the read mass, the denominator and the union table.
@@ -536,7 +536,7 @@ it. The pair is what a review reads.
 generator that owns the forward's `CHUNK_ARMS`, which is what makes "every scan arm
 has a forward arm" a check at generation time rather than a hope. The scans' list is
 the narrower one: it carries the campaign's TRAINABLE topologies, and
-`rola.rules.envelope.backward_envelope` refuses the difference at the facade rather
+`rola.engine.rules.envelope.backward_envelope` refuses the difference at the facade rather
 than three launches later.
 
 It is not free to widen. This translation unit peaks at 2.75 GB per `cicc`, which is

@@ -44,7 +44,7 @@ from math import prod
 import pytest
 import torch
 
-from rola.facts import planes
+from rola.engine.facts import planes
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM
@@ -178,8 +178,8 @@ def test_the_bitmap_is_bc_free():
     arm, `torch.equal` on the bitmap. A bitmap that moved with `BC` would move
     residency with the arm, which is the overlap the plan is built to keep.
     """
-    from rola.facts import manifest as census
-    from rola.facts.types import Mask
+    from rola.engine.facts import manifest as census
+    from rola.engine.types import Mask
 
     D, B = 2, 64
     widths = (B,) * D
@@ -209,8 +209,8 @@ def test_the_stateless_call_class_cannot_be_asked_for_the_bitmap():
     The stateless variant compiles no atom-grain emission, so asking it for the bitmap
     is a refusal and never a silently absent fact.
     """
-    from rola.facts import manifest as census
-    from rola.facts.types import Mask
+    from rola.engine.facts import manifest as census
+    from rola.engine.types import Mask
 
     D, B = 2, 64
     widths = (B,) * D
@@ -223,7 +223,7 @@ def test_the_stateless_call_class_cannot_be_asked_for_the_bitmap():
 
 
 def test_stats_through_the_host_seam():
-    """`rola.facts.planes.atom_bits` on the packed write plane -- the facade's own path.
+    """`rola.engine.facts.planes.atom_bits` on the packed write plane -- the facade's own path.
 
     A real producer's `RouteFactors` rather than hand-built tensors, because the
     permute-and-cast between the bundle's layout and the kernel's is exactly the

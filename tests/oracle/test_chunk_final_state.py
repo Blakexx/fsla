@@ -77,7 +77,7 @@ _COLS = _DV + 1
 _ROUTING = IndependentRouting(
     width=1, tied=False, read=SoftmaxActivation(), write=EntmaxActivation(1.5))
 
-#: `(widths, C, BC)`. The first five are what `rola.rules.arm.arm` picks for
+#: `(widths, C, BC)`. The first five are what `rola.engine.rules.arm.arm` picks for
 #: those topologies; `BC = 256` is the TWO-GROUP arm, which no pinned preference
 #: reaches and which is the one shape where the epilogue's staging buffer, its
 #: atom count and its barriers are per-group rather than per-CTA.

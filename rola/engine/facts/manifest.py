@@ -5,7 +5,7 @@
 A fact about the build rather than about the call, and the only input an arm or
 envelope decision has that is not the call's own. It is READ, never restated -- a
 second copy of the matrix in python is a second source that agrees until it does not
-(docs/internals/facts/facts.md).
+(docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 

@@ -32,12 +32,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.facts.call import arm_refusal
+from rola.engine.facts.call import arm_refusal
+from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.naive import naive_rola
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
-from rola.rules.arm import CHUNK_TOKENS
 from tests.oracle import generators as g
 from tests.oracle.test_decode_vs_oracle import DECODE_RTOL
 
@@ -48,7 +48,7 @@ pytestmark = [
 
 #: P67 D2-b: the prefill leg runs on the CHUNK arm, whose built manifest is
 #: uniform-width, so the family's topology is a built `(D, B)` and its prefill
-#: length is a multiple of `rola.rules.arm.CHUNK_TOKENS`. DECODE's own envelope
+#: length is a multiple of `rola.engine.rules.arm.CHUNK_TOKENS`. DECODE's own envelope
 #: is unchanged -- it is BC-blind and topology-general -- so that is a
 #: constraint the PREFILL puts on the fixture, not one decode acquired.
 _WIDTHS, _DV, _B, _H = (16, 16), 64, 2, 2
@@ -96,7 +96,7 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
 
     P67 D2-b: the prefill leg was the TILED consumer over a RAGGED `T = 33`.
     The chunk arm has no ragged tail -- `T` must be a multiple of
-    `rola.rules.arm.CHUNK_TOKENS` or the dispatch routes the call to the fp64
+    `rola.engine.rules.arm.CHUNK_TOKENS` or the dispatch routes the call to the fp64
     oracle -- so the handoff-through-a-partial-tile half of this claim has no
     kernel left to be made against and does not survive. What does survive, and
     is what the seam is about, is that the state the PRODUCTION prefill arm

@@ -46,7 +46,7 @@ import numpy as np
 import pytest
 import torch
 
-from rola.facts.types import Mask
+from rola.engine.types import Mask
 from rola.ops._ext import extension, is_available
 from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm
 

@@ -2,20 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """The per-family compositions: one DAG each, read top to bottom.
 
-A DAG is a literal ordered tuple of band-1 fact nodes (:mod:`rola.facts.nodes`) and
-band-2 rules (:mod:`rola.rules`), walked once by :func:`rola.facts.runner.run`; its
+A DAG is a literal ordered tuple of band-1 fact nodes (:mod:`rola.engine.facts.nodes`) and
+band-2 rules (:mod:`rola.engine.rules`), walked once by :func:`rola.engine.runner.run`; its
 terminal node folds what the walk produced into the family's PLAN, and the kernels
-read only the plan (docs/internals/facts/facts.md).
+read only the plan (docs/internals/engine/engine.md).
 """
 
-from rola.dags.backward_dag import BACKWARD_DAG, run_backward
-from rola.dags.chunk_dag import (
+from rola.engine.dags.backward_dag import BACKWARD_DAG, run_backward
+from rola.engine.dags.chunk_dag import (
     CHUNK_DAG,
     ChunkContext,
     build_chunk_plan,
     validate_context,
 )
-from rola.dags.decode_dag import (
+from rola.engine.dags.decode_dag import (
     DECODE_STEP,
     DECODE_VERDICT,
     DecodeContext,

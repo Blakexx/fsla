@@ -47,8 +47,8 @@ DV = 64
 
 
 def _plan(routes, v):
-    """This call's :class:`~rola.facts.plan.ChunkPlan` -- what the node executes."""
-    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+    """This call's :class:`~rola.engine.plan.ChunkPlan` -- what the node executes."""
+    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
 
     return build_chunk_plan(ChunkContext(routes=routes, v=v))
 
@@ -278,7 +278,7 @@ def _paired_wall(B, T, H, widths, reps=240):
     together and cancels. Comparing two independently-taken minima does not
     cancel it, and reads as a signal exactly when the interference is uneven.
     """
-    from rola.facts.plan import BackwardPlan
+    from rola.engine.plan import BackwardPlan
     from rola.ops import chunk as _chunk
 
     routes = _bundle(B, T, H, widths)

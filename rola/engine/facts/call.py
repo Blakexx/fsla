@@ -5,17 +5,17 @@
 The rules fold VALUES -- that is what makes them testable with no device present --
 so something has to read those values off the objects a caller actually holds. This
 is that adapter and nothing else: it finds facts and applies one rule each, and it
-decides nothing of its own (docs/internals/facts/facts.md).
+decides nothing of its own (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from rola import rules
-from rola.facts import manifest
+from rola.engine import rules
+from rola.engine.facts import manifest
 
 if TYPE_CHECKING:
-    from rola.facts.types import Arm
+    from rola.engine import Arm
 
 
 def widths_of(routes) -> tuple[int, ...]:
@@ -33,7 +33,7 @@ def arm_of(routes) -> Arm | None:
 
 
 def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
-    """The facts :func:`rola.rules.envelope.arm_envelope` folds, for this call.
+    """The facts :func:`rola.engine.rules.envelope.arm_envelope` folds, for this call.
 
     `d_v` is the value stream's per-head width, which is a fact about the operand and
     not about the routing -- the caller reads it off `v` and states it here. The arm

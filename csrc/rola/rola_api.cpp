@@ -35,7 +35,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // ---- the chunk consumer, the adopted operator ---------------------------
   //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-grain
   //: write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
-  //: (`rola/facts/types.py`'s M1/M2), which is compiled in; `atoms` is the
+  //: (`rola/engine/types.py`'s M1/M2), which is compiled in; `atoms` is the
   //: runtime-null output skip within the stateful class.
   m.def("chunk_facts", &rola::chunk::facts,
         "chunk consumer: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),

@@ -16,8 +16,9 @@ import math
 import torch
 from conftest import chunk_launch
 
-from rola.facts import planes
-from rola.facts.call import arm_of, arm_refusal
+from rola.engine.facts import planes
+from rola.engine.facts.call import arm_of, arm_refusal
+from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.naive import naive_rola
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from rola.routing.factors import RouteFactors
@@ -27,7 +28,6 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
-from rola.rules.arm import CHUNK_TOKENS
 from tests.oracle.families import Family
 
 #: The operator's token quantum, re-exported so a family fixture and the
@@ -258,7 +258,7 @@ class Case:
         oracle's ``[B, H, N, cols]`` state layout.
 
         The state plane's atom-major `[BH, N/16, 16, cols]` shape is the dense
-        `[BH, N, cols]` one byte for byte (`rola.facts.planes.state_plane`), so
+        `[BH, N, cols]` one byte for byte (`rola.engine.facts.planes.state_plane`), so
         both crossings here are reshapes and neither is a repack.
         """
         assert self.refusal is None, (

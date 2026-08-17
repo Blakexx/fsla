@@ -3,7 +3,7 @@
 Mirror doc for `atom_bitmap_kernel` and for the atom-grain half of
 `chunk_facts_tables` (`csrc/rola/src/chunk/chunk_kernel.cuh`), their launchers
 (`chunk_launch.cuh`), the `facts` torch entry (`chunk.cu`) and its host callers
-(`rola/facts/nodes.py`'s `facts_tables` node, `rola/facts/planes.py`). The page
+(`rola/engine/facts/nodes.py`'s `facts_tables` node, `rola/engine/facts/planes.py`). The page
 arena that consumes the bitmap is `paging.md`; the addressing it keys is
 `AtomKeying` in `rola/ops/paging.py`.
 
@@ -107,7 +107,7 @@ The BITMAP carries no `BC` although the entry does: its reduction's arm list is
 `(D, B)` alone, derived from the consumer's arm list by projection
 (`tools/gen_shards.py`), so the same routing gives the same residency at every
 built arm — which is what makes residency an OUTPUT of the plan instead of a
-consequence of it. Asking for the bitmap ALONE (`rola/facts/planes.py`'s
+consequence of it. Asking for the bitmap ALONE (`rola/engine/facts/planes.py`'s
 `atom_bits`, off the measured paths) therefore names an arm and discards a union
 table; the shipped path asks for both at once, which is the point of the pass.
 

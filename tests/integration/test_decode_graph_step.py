@@ -37,7 +37,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.factors import RouteFactors

@@ -67,7 +67,7 @@ architectures.
 atom-major view of `[BH, N, d_v+1]`, byte for byte, with the last column the mass
 channel global normalization divides by. PAGED is `[slots, 16, d_v+1]` — the same
 page, as many of them as the plan committed. The caller allocates either one
-(`rola.facts.planes.state_plane`, or a `PageArena`'s storage), because a carried
+(`rola.engine.facts.planes.state_plane`, or a `PageArena`'s storage), because a carried
 state is the caller's object. `d_v + 1 = 65` is 260 bytes and not sixteen-byte
 aligned, so nothing here vectorizes; the accesses are plain floats, coalesced
 across the group.
@@ -431,7 +431,7 @@ reading them once instead of twice is the whole of this fusion. The plane is
 on.
 
 **`MASK` is the CALL CLASS, never a bool per fact.** It carries two of the four masks
-(`rola/facts/types.py`) — the stateless prefill class compiles no atom-grain emission at
+(`rola/engine/types.py`) — the stateless prefill class compiles no atom-grain emission at
 all, so a stateless call pays exactly what a call with no residency to plan should pay.
 Within the stateful class, whether there is an arena to admit into is a runtime-null
 OUTPUT skip: a null atom table, one predicate outside the loops, no second arm. The

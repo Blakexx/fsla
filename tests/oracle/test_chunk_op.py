@@ -153,7 +153,7 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
     simplex, so it is the one cell that carries a mass. The carried bundle must still
     satisfy the fp64 oracle's own input contract through :meth:`read_simplex`.
     """
-    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
     from rola.ops._oracle_contract import validate_simplex
     from rola.routing.producer import union_routing
 

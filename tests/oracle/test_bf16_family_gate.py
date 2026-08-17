@@ -70,7 +70,7 @@ import math
 import pytest
 import torch
 
-from rola.facts.call import arm_refusal
+from rola.engine.facts.call import arm_refusal
 from rola.ops.naive import naive_rola
 from rola.routing.factors import RouteFactors
 from tests.oracle.oracle_fixtures import _output_charge, _simplex, _topology
@@ -175,7 +175,7 @@ def _family_errors(*a, **k) -> tuple[float, float]:
 #: the widths moved to the ones the manifest builds.
 _FAMILY_CELLS = [(8, 8), (16, 16, 16), (8, 8, 8, 8)]
 
-#: `T` must be a multiple of the operator's chunk (`rola.rules.arm.CHUNK_TOKENS`).
+#: `T` must be a multiple of the operator's chunk (`rola.engine.rules.arm.CHUNK_TOKENS`).
 #: `37` -- the tiled file's deliberately ragged length -- has no kernel arm now.
 _T = 64
 

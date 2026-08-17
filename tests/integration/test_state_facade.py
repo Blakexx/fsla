@@ -34,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from conftest import build_layer, build_routes  # noqa: E402
 
 import rola  # noqa: E402
+from rola.engine.facts.call import arm_of  # noqa: E402
 from rola.expert import PlanOverrides  # noqa: E402
-from rola.facts.call import arm_of  # noqa: E402
 from rola.routing.producer import union_routing  # noqa: E402
 
 pytestmark = [
@@ -271,7 +271,7 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
     The retired `test_layer_paging.py` made it of a layer-held arena, forcing
     the decision through the function that made it. The arena is the STATE's now, and the
     chunk arm's `(C, BC)` is ArmRule's verdict over the built manifest -- so what this
-    scripts is the MANIFEST, the rule's own input, read through `rola.facts.manifest` by
+    scripts is the MANIFEST, the rule's own input, read through `rola.engine.facts.manifest` by
     the facade (which needs `BC` for the arena's extent policy) and by the DAG's
     `manifest` node alike. Scripting the fact rather than the fold is the same move
     against the same seam, and it leaves the rule exactly as it ships.
@@ -283,7 +283,7 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
     `test_chunk_paging_equivalence.py` makes the ABI-level version of the byte claim; this
     one is about the object's lifecycle across the flip.
     """
-    from rola.facts import manifest as manifest_module
+    from rola.engine.facts import manifest as manifest_module
 
     widths = (64, 64)  # the topology the built matrix gives more than one BC
     #: PINNED PER CALL, not per invocation of the seam: the census is read several times

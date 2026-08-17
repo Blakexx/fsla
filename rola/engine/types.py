@@ -3,7 +3,7 @@
 """The facts engine's value types: the call class, the mask it selects, the arm.
 
 Every fact is an immutable value. Tensor-valued facts are held by REFERENCE and
-nothing here allocates (docs/internals/facts/facts.md).
+nothing here allocates (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class Mask(IntEnum):
     """DECODE_PAGED -- one token onto an arena: the probe, the gate and the admission.
 
     A GROWTH STEP IS NOT A MASK. It is M4 run twice around an admission, which is why
-    the growth path selects no different subgraph (docs/internals/facts/decode_dag.md).
+    the growth path selects no different subgraph (docs/internals/engine/decode_dag.md).
     """
 
 
@@ -72,12 +72,12 @@ class CallClass:
     These are ENGAGEMENT bits: `state_in` says this call was handed a state to
     continue, which is a different question from whether an entry-state TENSOR reaches
     the launch. The latter is `residency`'s answer, and it is what the skip predicate
-    folds (`rola/rules/run_table.py`).
+    folds (`rola/engine/rules/run_table.py`).
 
-    The mask these bits select is :func:`rola.rules.mask.mask` -- a rule, not a
+    The mask these bits select is :func:`rola.engine.rules.mask.mask` -- a rule, not a
     property here: a decision folded from a fact belongs to band 2 wherever it is
     written, and one written as a method on the fact is a rule that no listing of
-    `rola/rules/` would show.
+    `rola/engine/rules/` would show.
     """
 
     state_in: bool
