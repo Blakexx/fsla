@@ -480,9 +480,7 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torc
   //: the call class off the POINTERS, the same reading `launch_variant` takes: this
   //: composition asks for no residency facts, so the class governs nothing but which
   //: variant of the facts pass runs.
-  const int64_t mask = (s_in.has_value() || s_out.has_value() || page_tbl.has_value())
-                           ? kPrefillStateful
-                           : kPrefillStateless;
+  const int64_t mask = (s_in || s_out || page_tbl) ? kPrefillStateful : kPrefillStateless;
   auto tbl = facts(pr, pw, chunk, bc, widths, mask, false).first;
   auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl, block_bits);
   return divide_pass(nd[0], nd[1], read_mass, eps, out);
