@@ -523,10 +523,9 @@ void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torc
           factor_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
                   (const LogitT*)logits.data_ptr(), ptr_or_null<const bool>(mask),
-                  (OutT*)values.data_ptr(),
-                  ptr_or_null<OutT>(values_second), support.data_ptr<int32_t>(), tokens, heads,
-                  table, five_logits(logits, heads), five_or_zero(mask), five(values),
-                  five_or_zero(values_second), five(support));
+                  (OutT*)values.data_ptr(), ptr_or_null<OutT>(values_second),
+                  support.data_ptr<int32_t>(), tokens, heads, table, five_logits(logits, heads),
+                  five_or_zero(mask), five(values), five_or_zero(values_second), five(support));
         });
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -606,9 +605,8 @@ void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d
             <<<grid, BLOCK_THREADS, 0, stream>>>(
                 (const OutT*)values.data_ptr(), (const OutT*)d_values.data_ptr(),
                 ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens,
-                heads,
-                accumulate, table, five(values), five(d_values), five_or_zero(d_values_second),
-                five_logits(d_logits, heads));
+                heads, accumulate, table, five(values), five(d_values),
+                five_or_zero(d_values_second), five_logits(d_logits, heads));
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -636,12 +634,11 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
   const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(logits.device());
-  detail::logit_value_switch(
-      logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
-        detail::launch_factor_forward<decltype(L), decltype(V)>(
-            logits, mask, values, values_second, support_words, table, (int)widths.size(), klass,
-            (int)heads, alpha);
-      });
+  detail::logit_value_switch(logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+    detail::launch_factor_forward<decltype(L), decltype(V)>(
+        logits, mask, values, values_second, support_words, table, (int)widths.size(), klass,
+        (int)heads, alpha);
+  });
 }
 
 void factor_backward(const torch::Tensor& values, const torch::Tensor& support_words,
@@ -662,12 +659,11 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
   const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths);
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(d_logits.device());
-  detail::logit_value_switch(
-      d_logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
-        detail::launch_factor_backward<decltype(L), decltype(V)>(
-            values, support_words, mask, d_values, d_values_second, d_logits, table,
-            (int)widths.size(), klass, (int)heads, accumulate, alpha);
-      });
+  detail::logit_value_switch(d_logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
+    detail::launch_factor_backward<decltype(L), decltype(V)>(
+        values, support_words, mask, d_values, d_values_second, d_logits, table, (int)widths.size(),
+        klass, (int)heads, accumulate, alpha);
+  });
 }
 
 void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
@@ -681,8 +677,8 @@ void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(logits.device());
   detail::logit_value_switch(logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
-    detail::launch_softmax_forward<decltype(L), decltype(V)>(
-        logits, values, values_second, table, (int)widths.size(), klass, (int)heads);
+    detail::launch_softmax_forward<decltype(L), decltype(V)>(logits, values, values_second, table,
+                                                             (int)widths.size(), klass, (int)heads);
   });
 }
 
@@ -699,9 +695,9 @@ void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values
   const int klass = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(d_logits.device());
   detail::logit_value_switch(d_logits.scalar_type(), values.scalar_type(), [&](auto L, auto V) {
-    detail::launch_softmax_backward<decltype(L), decltype(V)>(
-        values, d_values, d_values_second, d_logits, table, (int)widths.size(), klass, (int)heads,
-        accumulate);
+    detail::launch_softmax_backward<decltype(L), decltype(V)>(values, d_values, d_values_second,
+                                                              d_logits, table, (int)widths.size(),
+                                                              klass, (int)heads, accumulate);
   });
 }
 

@@ -488,8 +488,7 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
         bool_switch(a15, [&](auto A15) {
           union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
-                  mid.data_ptr<float>(),
+                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(), mid.data_ptr<float>(),
                   sup.data_ptr<int32_t>(), (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens,
                   heads, table, five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv),
                   five(wv), five(sup));
@@ -520,11 +519,10 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
         bool_switch(a15, [&](auto A15) {
           union_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
               <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
-                  mid.data_ptr<float>(), sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(),
-                  (const OutT*)wv.data_ptr(), (const OutT*)dr.data_ptr(),
-                  (const OutT*)dw.data_ptr(), (LogitT*)drl.data_ptr(), (LogitT*)dwl.data_ptr(),
-                  tokens, heads, table, five_logits(rl, heads),
+                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(), mid.data_ptr<float>(),
+                  sup.data_ptr<int32_t>(), (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
+                  (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), (LogitT*)drl.data_ptr(),
+                  (LogitT*)dwl.data_ptr(), tokens, heads, table, five_logits(rl, heads),
                   five_logits(wl, heads), five(mid), five(rv), five(wv), five(dr), five(dw),
                   five_logits(drl, heads), five_logits(dwl, heads), five(sup));
         });
@@ -554,9 +552,9 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
   const at::cuda::CUDAGuard guard(read_logits.device());
   detail::logit_value_switch(
       read_logits.scalar_type(), read_values.scalar_type(), [&](auto L, auto V) {
-        detail::launch_forward<decltype(L), decltype(V)>(
-            read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
-            table, levels, w_pad, (int)heads, alpha);
+        detail::launch_forward<decltype(L), decltype(V)>(read_logits, write_logits, midpoint_values,
+                                                         support_words, read_values, write_values,
+                                                         table, levels, w_pad, (int)heads, alpha);
       });
 }
 
@@ -578,13 +576,13 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
       detail::build_table(logit_offsets, value_offsets, support_offsets, widths, midpoint_offsets);
   const int levels = (int)widths.size(), w_pad = detail::padded_width((int)widths[0]);
   const at::cuda::CUDAGuard guard(read_logits.device());
-  detail::logit_value_switch(
-      read_logits.scalar_type(), read_values.scalar_type(), [&](auto L, auto V) {
-        detail::launch_backward<decltype(L), decltype(V)>(
-            read_logits, write_logits, midpoint_values, support_words, read_values, write_values,
-            d_read, d_write, d_read_logits, d_write_logits, table, levels, w_pad, (int)heads,
-            alpha);
-      });
+  detail::logit_value_switch(read_logits.scalar_type(), read_values.scalar_type(),
+                             [&](auto L, auto V) {
+                               detail::launch_backward<decltype(L), decltype(V)>(
+                                   read_logits, write_logits, midpoint_values, support_words,
+                                   read_values, write_values, d_read, d_write, d_read_logits,
+                                   d_write_logits, table, levels, w_pad, (int)heads, alpha);
+                             });
 }
 
 }  // namespace entmax
