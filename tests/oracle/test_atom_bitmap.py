@@ -203,6 +203,25 @@ def test_the_bitmap_is_bc_free():
 
 
 
+def test_the_stateless_call_class_cannot_be_asked_for_the_bitmap():
+    """PLANTED: the class and the outputs must agree, or a call gets an unwritten table.
+
+    The stateless variant compiles no atom-grain emission, so asking it for the bitmap
+    is a refusal and never a silently absent fact.
+    """
+    from rola.facts import manifest as census
+    from rola.facts.types import Mask
+
+    D, B = 2, 64
+    widths = (B,) * D
+    _, write, _ = _fixture(widths, 0.35, seed=17)
+    packed = _pack(write)
+    c, bc = next((int(c), int(bc)) for (c, bc, d, b) in census.chunk_arms()
+                 if d == D and b == B)
+    with pytest.raises(RuntimeError, match="stateful call's fact"):
+        extension().chunk_facts(packed, packed, c, bc, list(widths), Mask.M1, True)
+
+
 def test_stats_through_the_host_seam():
     """`rola.facts.planes.atom_bits` on the packed write plane -- the facade's own path.
 
