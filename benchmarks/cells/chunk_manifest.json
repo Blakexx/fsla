@@ -46,14 +46,14 @@
   "live_atoms": 64,
   "logit_gain": 1.0,
   "name": "chunk-decode-w16",
-  "read_nonzero": 13111,
+  "read_nonzero": 13112,
   "seed": 4,
   "widths": [
    16,
    16
   ],
-  "write_nonzero": 13111,
-  "write_support_frac": 0.800232
+  "write_nonzero": 13112,
+  "write_support_frac": 0.800293
  },
  "chunk-deep-D4-w8": {
   "B": 2,
@@ -74,7 +74,7 @@
   "live_atoms": 4096,
   "logit_gain": 8.0,
   "name": "chunk-deep-D4-w8",
-  "read_nonzero": 65167,
+  "read_nonzero": 65162,
   "seed": 3,
   "widths": [
    8,
@@ -82,8 +82,8 @@
    8,
    8
   ],
-  "write_nonzero": 65167,
-  "write_support_frac": 0.248592
+  "write_nonzero": 65162,
+  "write_support_frac": 0.248573
  },
  "chunk-dense-D2": {
   "B": 2,
@@ -132,14 +132,14 @@
   "live_atoms": 4096,
   "logit_gain": 1.0,
   "name": "chunk-p73-pinned",
-  "read_nonzero": 1845217,
+  "read_nonzero": 1845262,
   "seed": 0,
   "widths": [
    64,
    64
   ],
-  "write_nonzero": 1845217,
-  "write_support_frac": 0.439934
+  "write_nonzero": 1845262,
+  "write_support_frac": 0.439945
  },
  "chunk-sparse-gain8": {
   "B": 2,
@@ -160,13 +160,13 @@
   "live_atoms": 4096,
   "logit_gain": 8.0,
   "name": "chunk-sparse-gain8",
-  "read_nonzero": 48308,
+  "read_nonzero": 48296,
   "seed": 1,
   "widths": [
    64,
    64
   ],
-  "write_nonzero": 48308,
-  "write_support_frac": 0.04607
+  "write_nonzero": 48296,
+  "write_support_frac": 0.046059
  }
 }
