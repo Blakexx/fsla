@@ -341,11 +341,21 @@ def test_the_run_table_reads_presence_and_never_a_tensor():
         _PRESENT, _PRESENT, _PRESENT)
 
 
-def test_no_rule_touched_the_extension():
-    """DEVICE-FREE IS THE CLAIM, and this is it measured rather than asserted: the
-    battery must not have resolved the compiled extension at all."""
+@pytest.fixture(scope="module", autouse=True)
+def _extension_calls_at_start():
     from rola.ops._ext import extension
 
     info = extension.cache_info()
-    assert info.hits == 0 and info.misses == 0, (
+    return info.hits + info.misses
+
+
+def test_no_rule_touched_the_extension(_extension_calls_at_start):
+    """DEVICE-FREE IS THE CLAIM, and this is it measured rather than asserted: the
+    battery must not have resolved the compiled extension at all. A DELTA from this
+    module's start, because a shared pytest process may already have loaded the
+    extension for another file's tests."""
+    from rola.ops._ext import extension
+
+    info = extension.cache_info()
+    assert info.hits + info.misses == _extension_calls_at_start, (
         f"the rule battery called into the extension ({info})")
