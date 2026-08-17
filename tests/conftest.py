@@ -1,7 +1,12 @@
 import inspect
+import os
 import pathlib
 import sys
 from unittest.mock import patch
+
+# Set before torch can initialize CUDA: expandable segments stop fragmentation from
+# pushing RESERVED memory past the allocator cap below (the gradcheck lesson).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import pytest
 import torch
