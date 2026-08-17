@@ -15,7 +15,7 @@ stage claims none.
 
 Nodes are declared over both masks because GRAD IS NOT A MASK: it is a retention
 decision the forward already made, and a call that reaches here retained a plan
-(docs/internals/facts/facts.md §3).
+(docs/internals/facts/facts.md §4).
 """
 from __future__ import annotations
 

@@ -1,8 +1,9 @@
 # The chunk family's DAG
 
-Mirror of `rola/facts/chunk_dag.py` and the chunk half of `rola/facts/nodes.py`.
+Mirror of `rola/dags/chunk_dag.py` and the chunk half of `rola/facts/nodes.py`.
 Framework vocabulary — masks, seeds, the fact bag, the Join — is
-[the facts engine's page](facts.md).
+[the facts engine's page](facts.md); the band-2 folds this tuple walks are
+[the rule layer's](rules.md).
 
 Symbols: `C` chunk tokens, `BC` owner block, `N` leaf count, `BH = B*H`, atom = 16
 consecutive leaves in canonical order (the page granule).
@@ -10,10 +11,12 @@ consecutive leaves in canonical order (the page granule).
 ## <a id="the-two-masks"></a>1. M1 and M2 are one tuple
 
 ```
-paging_preference   -> paging                        @host
+paging_preference   -> paging                        @host  RULE
 topology            -> widths, d_v                   @host
 classify_call       -> call_class                    @host
-select_arm          -> arm                           @host
+mask                -> mask                          @host  RULE
+manifest            -> manifest                      @host
+arm                 -> arm                           @host  RULE
 pack_planes         -> read/write plane, g_write, read_mass   @main
 atom_bits           -> atom_bits                     @main   [M2]
 residency           -> state_in, arena               @side   [M2] host_sync
@@ -30,8 +33,14 @@ M1 (prefill-stateless) is M2 (prefill-stateful) with the residency band masked o
 plane is not allocated and the kernel variant with no state I/O compiled into it is
 the one that runs, so a stateless call pays nothing for the feature.
 
-The critical path is `pack_planes -> union_table -> block_bits -> execute`. The arm,
-the topology and the call class are host-only and sit on the parallel front.
+The critical path is `pack_planes -> union_table -> block_bits -> execute`. The three
+rules, the topology, the manifest and the call class are host-only and sit on the
+parallel front — which is why band 2 costs nothing: no rule is ever on the critical
+path.
+
+The mask is a FACT the MaskRule produces, and the runner reads it rather than the call
+class: the band a node belongs to is a decision, and the walk consults the decision.
+Every node before that rule runs under every mask by construction.
 
 ## <a id="the-absent-arm-edge"></a>2. `atom_bits` has no `arm` edge
 

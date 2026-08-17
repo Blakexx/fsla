@@ -82,7 +82,7 @@ place and returns THE SAME OBJECT.
 The backing is chosen at BIND time and is not a per-call flag:
 
 * **paged** (the default for every stateful call) — a `PageArena`. The call's exact
-  atom bitmap (`rola.ops.chunk.atom_bits`, the kernel's own write set) is planned into
+  atom bitmap (`rola.facts.planes.atom_bits`, the kernel's own write set) is planned into
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.

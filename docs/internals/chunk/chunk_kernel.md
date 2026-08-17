@@ -67,7 +67,7 @@ architectures.
 atom-major view of `[BH, N, d_v+1]`, byte for byte, with the last column the mass
 channel global normalization divides by. PAGED is `[slots, 16, d_v+1]` — the same
 page, as many of them as the plan committed. The caller allocates either one
-(`rola.ops.chunk.state_plane`, or a `PageArena`'s storage), because a carried
+(`rola.facts.planes.state_plane`, or a `PageArena`'s storage), because a carried
 state is the caller's object. `d_v + 1 = 65` is 260 bytes and not sixteen-byte
 aligned, so nothing here vectorizes; the accesses are plain floats, coalesced
 across the group.

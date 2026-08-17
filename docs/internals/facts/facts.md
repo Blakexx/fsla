@@ -2,7 +2,7 @@
 
 Mirror of `rola/facts/`. This page explains WHY the structure is shaped as it is and
 how its pieces connect; the code is the authoritative statement of how each body
-works.
+works. What is DECIDED from facts is [the rule layer's page](rules.md).
 
 Symbols: `B` batch, `T` tokens, `H` heads, `D` routing depth, `N` leaf count, `d_v`
 value width, `C` chunk tokens, `BC` owner block, `BH = B*H`.
@@ -18,10 +18,12 @@ Context  ->  DAG  ->  Plan  ->  execute(plan)
 
 * a **Context** (`ChunkContext`) is a frozen record of the RAW inputs — the routing
   bundle, `v`, the decay dial, the state, the expert overrides. Nothing derived.
-* a **DAG** is an ordered tuple of declared nodes. Nodes may launch, may allocate, and
-  produce FACTS: what is true about this call.
-* a **Plan** is the DAG's terminal fact set — host verdicts plus references to the
-  terminal tensor facts, and no third kind of field.
+* a **DAG** is an ordered tuple of declared nodes in THREE BANDS. Band 1 nodes may
+  launch and may allocate, and produce FACTS: what is true about this call. Band 2
+  nodes are RULES — pure host folds from facts to decisions, which launch nothing and
+  allocate nothing ([`rules.md`](rules.md)). They are interleaved, not phased.
+* a **Plan** is band 3: the DAG's terminal fact set — the rules' verdicts plus
+  references to the terminal tensor facts, and no third kind of field.
 * `execute(plan)` reads the plan and nothing else. A launch site that decides
   anything is the condition this engine exists to remove.
 
@@ -31,7 +33,32 @@ host order, the chunk seam's ad-hoc argument threading, the decode geometry obje
 the state's residency entry, and the arena's side-stream/event pattern. The engine is
 those five under one declaration.
 
-## <a id="a-dag-is-code"></a>2. A DAG is code
+## <a id="the-split-rule"></a>2. What lives where
+
+Three packages, and one sentence decides which:
+
+> **What crosses the EXTENSION BOUNDARY lives in `rola/ops/`. What a DAG walk produces
+> or decides lives in the library.**
+
+* `rola/facts/` — band 1 and the shared value types, BODIES INCLUDED. The packing and
+  the write-atom bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the
+  operand list (`operands.py`), the adapters that read those facts off a routing
+  bundle (`call.py`), the declared nodes over them (`nodes.py`), the value types
+  (`types.py`), the plans (`plan.py`) and the runner (`runner.py`). A fact primitive
+  is not a wrapper that defers its logic elsewhere; the primitive IS here.
+* `rola/rules/` — band 2, one declared fold per decision.
+* `rola/dags/` — the per-family compositions: the tuple, its context, its terminal
+  node.
+* `rola/ops/` — the launches. `chunk.py` is `execute`, the seeds, the two scans and
+  the un-packing: the functions whose whole content is an extension call and the
+  narrowing around it.
+
+`rola/facts/__init__.py` re-exports the DEVICE-FREE core only, and that is a layering
+statement rather than a convenience: `rola.rules` reads `runner` and `types` and must
+never acquire a dependency on the extension by importing the package. The primitives
+that DO reach the extension are imported by module.
+
+## <a id="a-dag-is-code"></a>3. A DAG is code
 
 There is no graph library and no topological sort. A DAG is a literal tuple and
 **the order in the tuple IS the execution order**, chosen by the DAG's author for an
@@ -42,22 +69,23 @@ surprise.
 
 The runner is the whole execution model:
 
-* a node whose mask does not contain the call class is SKIPPED, and its facts are
+* a node whose mask does not contain the call's MASK — the MaskRule's own output,
+  read as a fact — is SKIPPED, and its facts are
   seeded null — the runtime-null output skip;
 * a node whose facts are already in the bag is skipped, which is how a SUPPLIED fact
   short-circuits every node upstream of it;
 * otherwise its needs are asserted present and it is called.
 
-## <a id="masks"></a>3. Masks, and why not per-fact bools
+## <a id="masks"></a>4. Masks, and why not per-fact bools
 
-Specialization is per CALL CLASS. `CallClass` folds a call into four bits and those
-bits select one mask; the chunk family has two (`M1` prefill-stateless, `M2`
+Specialization is per CALL CLASS. `CallClass` folds a call into four bits, and the
+MaskRule folds those bits into one mask; the chunk family has two (`M1` prefill-stateless, `M2`
 prefill-stateful) and the decode family will name the other two. A bool per fact
 would be `2^n` specializations of everything downstream, so intra-mask variation is
 carried as a null plan FIELD instead — `read_mass is None`, `state_in is None` — which
 is free and costs no hot-loop register.
 
-## <a id="the-suppliable-set"></a>4. The suppliable set is closed
+## <a id="the-suppliable-set"></a>5. The suppliable set is closed
 
 Production is the sole pluggable node. A caller may substitute the routing bundle and
 the packed amplitude planes it stands for; everything DOWNSTREAM of that boundary —
@@ -69,7 +97,7 @@ fact is exactly what the two-purposes doctrine forbids.
 The round trip through DRAM at that boundary is not a cost to engineer away; it IS
 the pluggability seam.
 
-## <a id="streams-and-the-join"></a>5. Streams, the join, and the one host read
+## <a id="streams-and-the-join"></a>6. Streams, the join, and the one host read
 
 Node metadata declares the discipline the arena implements:
 
@@ -82,7 +110,7 @@ Node metadata declares the discipline the arena implements:
 Where a Join sits is a correctness fact, not a scheduling preference: see
 [the chunk DAG's page](chunk_dag.md#the-join).
 
-## <a id="memoization"></a>6. Memoization is a node attribute
+## <a id="memoization"></a>7. Memoization is a node attribute
 
 Not a per-site convention:
 
@@ -96,7 +124,7 @@ Not a per-site convention:
 
 A memo key that is not one of the node's own inputs is refused at declaration.
 
-## <a id="refusals"></a>7. Refusals are one call at the head
+## <a id="refusals"></a>8. Refusals are one call at the head
 
 Each kernel family has ONE `validate_context(ctx)`, run immediately after the context
 is built and before any fact node. It consolidates the operand-type refusals, the
@@ -108,7 +136,7 @@ unreachable by construction.
 Every refusal names the clause that has no arm, and the message texts are gated
 (`tests/unit/test_api_contract.py`).
 
-## <a id="the-plan"></a>8. What a plan may hold
+## <a id="the-plan"></a>9. What a plan may hold
 
 A host field is some rule's verdict; a tensor field is a reference to a terminal
 fact. **No plan field may be `O(N * L)`.** The two-pass reverse pass rebuilds the
@@ -130,7 +158,7 @@ A plan is also not always a walk's OUTPUT. The backward family's plan is its INP
 the forward's, held by reference — because the reverse pass finds no facts of its own
 ([`backward_dag.md`](backward_dag.md)).
 
-## <a id="neutrality"></a>9. The neutrality gate
+## <a id="neutrality"></a>10. The neutrality gate
 
 `tools/chunk_identity_capture.py` captures `y`, the returned state plane and the
 facts themselves — the union table, the block bitmap, the atom bitmap — off a fixed

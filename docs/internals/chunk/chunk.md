@@ -55,7 +55,7 @@ the consumer accepts.
 
 `CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped
 being reachable from production it is the whole of what the package ships a kernel for.
-`rola.interface.envelope_refusal` reads `rola.ops.chunk.unsupported`, and everything
+`rola.interface.envelope_refusal` reads `rola.rules.envelope`, and everything
 outside the matrix is REFUSED by the clause that names it — the same treatment decay
 and an unratified activation get, in the same words, so there is one authority on what
 this kernel runs and it is this file's arm list. The envelope's user-facing statement,
@@ -117,7 +117,7 @@ exit-state plane and the page table — never the engagement bits the facade cla
 | fresh state-out, paged | absent | present | present | `W` |
 | state-out, dense | either | present | absent | always run |
 
-`run_table(state_in, state_out, paged)` derives a `uint8` TRUTH TABLE over the byte's three
+`run_table(state_in, state_out, paged)` derives a `uint32` TRUTH TABLE over the byte's three
 bits by evaluating that rule for each of the eight values, so the rule is written once in
 readable form and the mask is derived, never hand-authored. The kernel's whole predicate is
 then one shift and one AND, with no branching taxonomy and no call-class knowledge in it.
@@ -160,7 +160,7 @@ window of it, so the tensor the entry wants and the tensor that exists are the s
 bytes in the same order -- `[BH, T, sumW]` and `[B, H, T, sumW]` differ only by
 splitting the stream axis, which is a view.
 
-`ops/chunk.py::_side_plane` therefore reconstructs the plane rather than copying into
+`facts/planes.py::_side_plane` therefore reconstructs the plane rather than copying into
 one, and it decides on a STRIDE fact: every level is bf16, shares one storage with the
 first, carries this side's exact stride tuple, and sits at its own column offset. A
 bundle that satisfies that is the plane; one that does not -- a hand-built fixture, a

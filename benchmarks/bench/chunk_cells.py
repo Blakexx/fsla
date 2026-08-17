@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 
 from rola import RoLA, RouteProducer, dense_routing, union_routing
+from rola.facts.call import arm_of
 from rola.ops import chunk as chunk_arm
 
 MANIFEST = Path(__file__).resolve().parents[1] / "cells" / "chunk_manifest.json"
@@ -101,7 +102,7 @@ class Cell:
         with torch.no_grad():
             routes = layer.routes(x[:, :self.T])
         packed = chunk_arm.pack(routes)
-        c, bc = chunk_arm.arm(routes)
+        c, bc = arm_of(routes)
         return {"cell": self, "layer": layer, "producer": layer.routes, "x": x, "v": v,
                 "routes": routes, "packed": packed, "C": c, "BC": bc,
                 #: `v_prefill` is the operand in the CELL's dtype, which is what the layer

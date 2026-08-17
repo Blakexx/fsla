@@ -756,5 +756,5 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `rola.ops.chunk.atom_bits` produces for the chunk arm and the same one the probe
+object `rola.facts.planes.atom_bits` produces for the chunk arm and the same one the probe
 condenses, reached by neither's route.

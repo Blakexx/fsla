@@ -3,7 +3,7 @@
 Mirror doc for `atom_table_kernel` / `atom_bitmap_kernel`
 (`csrc/rola/src/chunk/chunk_kernel.cuh`), their launchers
 (`chunk_launch.cuh`), the `stats` torch entry (`chunk.cu`) and its host caller
-(`rola/ops/chunk.py`). The page arena that consumes the bitmap is
+(`rola/facts/planes.py`). The page arena that consumes the bitmap is
 `paging.md`; the addressing it keys is `AtomKeying` in `rola/ops/paging.py`.
 
 Vocabulary, defined once: `D` = level count; `B` = one uniform level width;

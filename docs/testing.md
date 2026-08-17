@@ -131,7 +131,7 @@ closes it, at the same tolerance and over the same three lengths (measured slope
 consumer's token quantum, chosen per launch by reading the realized routing, and
 gated by fixtures built long enough to force the wide arm. Both the axis and its
 kernel retired in P67 D2 ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
-chunk arm's token quantum is `CHUNK_TOKENS = 32`, a build fact, and `T` not being a
+chunk arm's token quantum is `rola.rules.arm.CHUNK_TOKENS = 32`, a build fact, and `T` not being a
 multiple of it is a named refusal rather than a second formulation to gate.
 
 ### Tolerance discipline
@@ -455,6 +455,16 @@ memo key that is not one of the node's own inputs. It also pins the shipped chun
 DAG's two placement facts: the atom bitmap has no arm edge, and the Join is upstream
 of the block bitmap. These were conventions reachable only through a launch before
 the engine named them.
+
+**`tests/unit/test_facts_rules.py`** runs the same way and holds the RULE layer: every
+band-2 fold fed plain values -- tuples, ints, a fake manifest, a `torch.device` -- and
+asserted on its decision, plus the marker sweep that makes `rola/rules/` an inventory
+rather than a folder (an unmarked function there fails). The run table is the case that
+was unreachable without a device at all: it is derived over all eight liveness bytes
+against every row of `chunk.md#run-table`, and the row LINES are matched against that
+document, so a doc edit and a rule edit cannot drift apart. It must pass under
+`CUDA_VISIBLE_DEVICES=""`, and it asserts that the battery never resolved the compiled
+extension.
 
 **`tests/integration/test_backward_ctx.py`** became a host-structure gate as well as a
 memory one when the backward's ctx became the forward's plan HELD BY REFERENCE: the

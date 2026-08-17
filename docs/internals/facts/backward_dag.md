@@ -1,6 +1,6 @@
 # The backward family's DAG
 
-Mirror of `rola/facts/backward_dag.py`, `BackwardPlan` in `rola/facts/plan.py`, and
+Mirror of `rola/dags/backward_dag.py`, `BackwardPlan` in `rola/facts/plan.py`, and
 the reverse-pass bodies in `rola/ops/chunk.py`. Framework vocabulary — masks, seeds,
 the fact bag, the Join — is [the facts engine's page](facts.md); what the two scans
 COMPUTE is [the backward's own page](../chunk/backward.md).

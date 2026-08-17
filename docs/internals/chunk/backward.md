@@ -536,7 +536,7 @@ it. The pair is what a review reads.
 generator that owns the forward's `CHUNK_ARMS`, which is what makes "every scan arm
 has a forward arm" a check at generation time rather than a hope. The scans' list is
 the narrower one: it carries the campaign's TRAINABLE topologies, and
-`rola.ops.chunk.backward_unsupported` refuses the difference at the facade rather
+`rola.rules.envelope.backward_envelope` refuses the difference at the facade rather
 than three launches later.
 
 It is not free to widen. This translation unit peaks at 2.75 GB per `cicc`, which is
