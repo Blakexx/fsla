@@ -20,9 +20,9 @@ import torch
 
 import rola
 from bench.pairing import Arm
+from rola.dags.decode_dag import decode_forward
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
-from rola.ops.decode import decode_forward
 from rola.routing.entmax.production import production_routing_factor_levels
 
 
