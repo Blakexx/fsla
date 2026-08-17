@@ -6,9 +6,13 @@ row here PLANTS the violation its gate exists to catch and requires the refusal,
 rows that can have one carry a positive control beside them so a gate that refuses
 EVERYTHING cannot pass by refusing.
 
-**No row launches a kernel.** The subjects are the harness's own preconditions, which are
-host-side by construction; the one row that needs a real `flock` takes it in a
-subprocess.
+Every DISCIPLINE row is host-side by construction, and the one that needs a real
+`flock` takes it in a subprocess. The BUILD-PATH rows at the bottom are the exception
+and the reason they exist: this file once passed identically on a tree whose bench
+package could not import the names it calls, because nothing here had ever built a
+fixture or a subject closure. A harness gate that never runs the harness is the same
+defect as a discipline gate that never refuses, so the build path is exercised for
+real -- one fixture on the smallest registered cell, and one launch per subject.
 """
 from __future__ import annotations
 
@@ -18,9 +22,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 from bench import chunk_baseline
-from bench.chunk_cells import CELLS, GROUPS, MANIFEST
+from bench.chunk_cells import CELLS, GROUPS, MANIFEST, cell_manifest
 from bench.discipline import TIERS, Run, _ancestor_holding, require_gpu_lock
 from bench.pairing import WARMUP_LAUNCHES, Arm, PairedResult, measure_arm
 from bench.regression import CANONICAL_INSTRUMENT
@@ -376,3 +381,102 @@ def test_a_measured_iqr_above_the_resolution_is_the_one_that_binds():
                                      resolution_ms=1e-9)
     assert verdict["floored_at_resolution"] is False
     assert verdict["spread_ms"] == pytest.approx(0.01)
+
+
+# ---------------------------------------------------------------------------
+# THE BUILD PATH -- the fixture and every subject closure, actually constructed
+# ---------------------------------------------------------------------------
+
+#: The cell every build-path row runs on: the SMALLEST registered cell, and the only
+#: one that carries the decode subjects -- so one fixture covers the whole roster and
+#: therefore, through `test_every_subject_has_a_driver_in_its_own_tier`, every driver
+#: under `benchmarks/unit/` and `benchmarks/integration/`.
+SMOKE_CELL = "chunk-decode-w16"
+
+_needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(),
+                                 reason="the build path launches kernels")
+
+
+def test_the_smoke_cell_is_the_one_that_covers_the_whole_roster():
+    """The coverage claim, gated rather than asserted in a comment: a registry edit that
+    moves the decode subjects off this cell leaves rows below exercising a subset."""
+    assert set(applicable(CELLS[SMOKE_CELL])) == set(SUBJECTS)
+    smallest = min(CELLS.values(), key=lambda c: c.B * (c.T + c.decode_steps) * c.H * c.N)
+    assert smallest.name == SMOKE_CELL
+
+
+@pytest.fixture(scope="module")
+def smoke_fixture():
+    """ONE built fixture for the whole section -- `bench.driver.build_arm`'s own rule.
+
+    Building it is itself the first assertion: `Cell.build()` is where the routing is
+    produced and the launch operands are packed, so a bench package that no longer
+    matches the library's surface cannot get past this line.
+    """
+    return CELLS[SMOKE_CELL].build()
+
+
+@_needs_cuda
+def test_the_fixture_carries_the_launch_operands_the_subjects_read(smoke_fixture):
+    plan = smoke_fixture["plan"]
+    assert plan.read_plane.dtype is torch.bfloat16
+    assert plan.write_plane.shape == plan.read_plane.shape
+    assert plan.g_write.shape[0] == CELLS[SMOKE_CELL].B
+    assert (plan.arm.c, plan.arm.bc) == (smoke_fixture["C"], smoke_fixture["BC"])
+
+
+@_needs_cuda
+@pytest.mark.parametrize("subject", sorted(SUBJECTS))
+def test_every_subject_factory_builds_and_its_closure_launches(subject, smoke_fixture):
+    """PLANTED BY HISTORY: the bench package calling names the library deleted.
+
+    The factory is where the packed operands are read off and the closure is where the
+    launch happens, so both halves are exercised -- ONE call each, because this is a
+    smoke row and not a measurement.
+    """
+    arm = SUBJECTS[subject](smoke_fixture)
+    assert arm.name and callable(arm.call)
+    arm.call()
+    torch.cuda.synchronize()
+
+
+@_needs_cuda
+def test_the_manifest_statistics_are_realized_from_the_built_fixture(smoke_fixture):
+    """The `realized()` path -- the write-atom bitmap and the support counts -- run for
+    real and checked against the fixture they claim to describe.
+
+    NOT against the committed row: `check_manifest` is the drift gate and it is failing
+    on this tree for a reason that predates and outlives this file (the producer's
+    realized support has moved under four of the six committed cells). What is gated
+    here is that the CODE those numbers come from executes and describes THIS fixture --
+    the support count is the routing's own, which the packing carries through
+    unchanged, and the live-atom count is the bitmap launch's.
+    """
+    got = cell_manifest(CELLS[SMOKE_CELL], smoke_fixture)
+    routes = smoke_fixture["routes"]
+    assert got["read_nonzero"] == sum(int((level != 0).sum()) for level in routes.read)
+    assert got["write_nonzero"] == sum(int((level != 0).sum()) for level in routes.write)
+    assert 0 < got["live_atoms"] <= got["atoms_total"] == got["N"] // 16 * got["BH"]
+
+    #: The STRUCTURAL half of the committed row is still a pin: a cell whose geometry or
+    #: arm moved is a cell nobody's published number applies to, drift in the producer's
+    #: support notwithstanding.
+    committed = json.loads(MANIFEST.read_text())[SMOKE_CELL]
+    for field in ("N", "BH", "C", "BC", "atoms_total", "amplitudes_total", "T", "B"):
+        assert got[field] == committed[field], field
+
+
+@_needs_cuda
+def test_the_paging_bench_measures_a_residency_row_end_to_end():
+    """`benchmarks/bench_paging.py` is a driver of its own and reads the same bitmap.
+
+    The smallest cell the bench can express (`L` a multiple of the chunk quantum, one
+    batch, two heads), at one rep: what is gated is that the row BUILDS, not what it
+    measures.
+    """
+    import bench_paging
+
+    row = bench_paging.measure_residency(
+        B=1, L=64, H=2, d_v=64, branches=(16, 16), router="entmax", logit_gain=8.0,
+        norm="global", decay=False, reps=1, warmup=1)
+    assert row["paged_ms"] > 0.0 and row["plan_cold_ms"] > 0.0
