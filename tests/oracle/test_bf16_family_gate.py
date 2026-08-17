@@ -45,7 +45,7 @@ amplitude cast.** The tiled gate read a SCHEDULE's `read_token_bits` at a
 planted sub-bf16-subnormal amplitude and asserted the liveness bit was set while
 the stored coefficient was a hard zero -- support decided strictly above the
 cast. The chunk arm builds no read-side support bitmap at all (it multiplies
-through the cast amplitudes; residency is a WRITE-side fact from `chunk_stats`,
+through the cast amplitudes; residency is a WRITE-side fact from the facts pass,
 gated in `tests/oracle/test_atom_bitmap.py`), so there is no support
 decision for the cast to sit above. What survives, and is kept below, is the
 half that is still checkable and is why the claim mattered: a live leaf whose

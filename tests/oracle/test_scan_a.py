@@ -39,6 +39,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.facts.types import Mask
 from rola.ops._ext import extension, is_available
 from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm, _chain, _leave_one_out, _walk_liveness
 
@@ -153,7 +154,7 @@ def _run(a: Arm, inputs):
     m = extension()
     pr, pw, gw, v, dnum, dden = inputs
     widths = [a.W] * a.D
-    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    tbl = m.chunk_facts(pr, pw, a.C, a.BC, widths, Mask.M1, False)[0]
     return m.chunk_scan_a_probe(pr, pw, gw, v, dnum, dden, tbl, a.C, a.BC, widths)
 
 

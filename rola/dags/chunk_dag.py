@@ -70,23 +70,23 @@ CHUNK_DAG = (
     nodes.manifest,
     rules.arm.node,
     nodes.pack_planes,
-    nodes.atom_bits,
-    nodes.residency,
     nodes.pack_v,
+    nodes.facts_tables,
+    nodes.residency,
     nodes.join,
     nodes.backing,
-    nodes.union_table,
     nodes.block_bits,
     build_plan,
 )
 
 validate_dag(CHUNK_DAG, _SEEDS)
 
-if "arm" in nodes.atom_bits.needs:
+if set(nodes.facts_tables.gives) != {"union_table", "atom_bits"}:
     raise ValueError(
-        "the atom bitmap acquired an `arm` edge. It is keyed to the 16-leaf quantum "
-        "and to nothing else, which is what lets the admission overlap the arm's own "
-        "work; an edge here would silently destroy that overlap.")
+        "the union table and the atom bitmap came apart. They are ONE pass over the "
+        "amplitude planes -- the plane is read once and voted at both grains -- so a "
+        "DAG that produces them from two nodes has re-read it and paid the bytes "
+        "twice (docs/internals/facts/chunk_dag.md).")
 
 
 def validate_context(ctx: ChunkContext) -> None:

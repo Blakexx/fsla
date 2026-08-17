@@ -124,7 +124,7 @@ def test_the_composed_entry_is_only_gated_entries():
     body = re.search(r"^torch::Tensor forward\(.*?\)\s*\{\n(.*?)\n^\}", text, re.M | re.S)
     assert body, "cannot find the definition of forward in chunk.cu"
     called = set(re.findall(r"(\w+)\(", body.group(1)))
-    assert called <= {"union_table", "forward_raw", "divide_pass"}, (
+    assert called <= {"facts", "forward_raw", "divide_pass"}, (
         "forward has grown a call of its own; either it launches, in which case it "
         f"needs the gate as its first statement, or say which of {sorted(called)} is "
         "gated")
@@ -139,6 +139,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     reached, so the admitted case is asserted too -- and asserted through a real
     entry, because the entry is where the call site is.
     """
+    from rola.facts.types import Mask
     from rola.ops._ext import extension
 
     major, minor = torch.cuda.get_device_capability()
@@ -154,7 +155,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     c, bc, d, b = (int(x) for x in arms[0][:4])
     bh, tokens = 1, c
     pw = torch.zeros(1, 1, tokens, d * b, dtype=torch.bfloat16, device="cuda")
-    bits = extension().chunk_stats(pw, [b] * d)
+    bits = extension().chunk_facts(pw, pw, c, bc, [b] * d, Mask.M2, True)[1]
     assert bits.shape[0] == bh
 
 

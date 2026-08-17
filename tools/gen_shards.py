@@ -7,7 +7,7 @@ everything that enumerates it is GENERATED from that definition:
   carrying `CHUNK_PER_SHARD` arms' explicit instantiations of the host launcher (and
   with them, exactly once in the whole fatbin, that many device kernels);
 * `csrc/rola/src/instantiations/chunk_arms.inc` -- the X-macro the kernel header
-  walks, plus the stats pass' `(D, B)` projection of the same list;
+  walks;
 * `csrc/rola/src/instantiations/scan_arms.inc` -- the X-macro `backward.cu` walks,
   the two scans' own (narrower) arm list;
 * `csrc/rola/src/instantiations/README.md` -- the layout, regenerated with them.
@@ -99,7 +99,8 @@ to one shard's slice of the manifest.
 Each shard carries, for its arms: an explicit instantiation of the host launcher
 `launch_chunk_arm` (which is what pulls in the device kernel, exactly once in the
 whole fatbin) and one of `query_chunk_census_arm`. Shard 0 additionally carries the
-union-table and stats arms, which are keyed to the topology rather than to `C`. The
+facts-pass and stats-reduction arms, which are keyed to the topology rather than to
+`C`. The
 launcher's DEFINITION lives in `../chunk/chunk_launch.cuh`, which `chunk.cu` must
 not include — that is what stops the dispatch translation unit from satisfying an
 arm by re-instantiating it locally, which would leave the build green and nothing
@@ -113,8 +114,7 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
-list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 
@@ -185,6 +185,13 @@ SCAN_ARMS: tuple = (
 )
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 
+#: THE FACTS PASS' CALL-CLASS AXIS: the prefill half of the four masks
+#: (`rola/facts/types.py`), and both values are built.  The stateless class compiles
+#: no atom-grain emission at all; within the stateful one, a call with no arena to
+#: admit into is a runtime-null output skip and not a third value.  Decode's two
+#: masks never reach this kernel and are not instantiated for it.
+CHUNK_MASKS = (1, 2)
+
 #: THE STATE AXIS, and BOTH values are built.  The carried state's I/O is compiled
 #: in or out (`compacted_kernel`'s `STATE`), so an arm is TWO kernels and the
 #: dispatch picks between them on the call's pointers; the ARM LIST is unchanged,
@@ -201,7 +208,7 @@ def chunk_rows() -> tuple:
 
 
 def chunk_atom_arms() -> tuple:
-    """The STATS pass' arm list: `(D, B)` and nothing else.
+    """The STATS pass' REDUCTION arm list: `(D, B)` and nothing else.
 
     Residency is keyed to the invariant 16-leaf quantum, never to `BC`, so the
     stats pass has no `C` and no `BC` axis and its list is a projection of
@@ -246,13 +253,6 @@ def chunk_arms_inc() -> str:
     for i, a in enumerate(CHUNK_ARMS):
         tail = "" if i == len(CHUNK_ARMS) - 1 else " \\"
         lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
-    atoms = chunk_atom_arms()
-    lines.append("\n// The STATS pass' arms -- (D, B) only, the projection of the\n"
-                 "// list above (residency is keyed to the invariant quantum, not BC).\n"
-                 "#define CHUNK_ATOM_ARMS_X(X) \\\n")
-    for i, a in enumerate(atoms):
-        tail = "" if i == len(atoms) - 1 else " \\"
-        lines.append(f"  X({a[0]}, {a[1]}){tail}\n")
     lines.append("// clang-format on\n")
     return "".join(lines)
 
@@ -298,21 +298,23 @@ def chunk_shard_source(name: str, rows: list) -> str:
         body.append(
             f"template std::array<int64_t, 9> query_chunk_census_arm<{chunk_targs(a)}>();\n")
     if name == "chunk_s0":
-        body.append("\n//: the union-table arms (one per topology x BC) ride shard 0.\n")
+        body.append("\n//: the FACTS-PASS arms (one per topology x BC x call class) ride\n"
+                    "//: shard 0.\n")
         tables = sorted({(a[2], a[3], a[1]) for a in CHUNK_ARMS})
         for (d, b, bc) in tables:
-            body.append(f"template cudaError_t launch_chunk_table_arm<{d}, {b}, {bc}>(\n"
-                        "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
-                        "    cudaStream_t);\n")
+            for mask in CHUNK_MASKS:
+                body.append(f"template cudaError_t launch_chunk_facts_arm<{d}, {b}, {bc}, "
+                            f"{mask}>(\n"
+                            "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, uint32_t*,\n"
+                            "    int, int, cudaStream_t);\n")
         body.append("\n//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the\n"
                     "//: table it reduces.\n")
         for (d, b, bc) in tables:
             body.append(f"template cudaError_t launch_chunk_block_bitmap_arm<{d}, {b}, {bc}>(\n"
                         "    const uint32_t*, const int32_t*, uint8_t*, int, int, cudaStream_t);\n")
-        body.append("\n//: the STATS arms (one per topology) ride shard 0 with them.\n")
-        for (d, b) in chunk_atom_arms():
-            body.append(f"template cudaError_t launch_chunk_atom_table_arm<{d}, {b}>(\n"
-                        "    const __nv_bfloat16*, uint32_t*, int, int, cudaStream_t);\n")
+        body.append("\n//: the STATS pass' REDUCTION arms (one per topology) ride shard 0\n"
+                    "//: with them -- keyed (D, B) alone, which is the atom bitmap's\n"
+                    "//: BC-blindness stated as an instantiation list.\n")
         for (d, b) in chunk_atom_arms():
             body.append(f"template cudaError_t launch_chunk_atom_bitmap_arm<{d}, {b}>(\n"
                         "    const uint32_t*, uint8_t*, int, int, cudaStream_t);\n")

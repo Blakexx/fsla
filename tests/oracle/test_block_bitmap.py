@@ -40,6 +40,8 @@ from math import prod
 import pytest
 import torch
 
+from rola.facts import planes
+from rola.facts.types import Mask
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM
@@ -91,9 +93,8 @@ def _bits(read, write, widths, bc, page_tbl=None):
         assert torch.equal(flat != 0, flat.to(torch.bfloat16) != 0), (
             "fixture amplitudes flushed to zero in bf16; the comparison would be "
             "about the cast, not about the bitmap")
-    B, T, H = read[0].shape[:3]
-    v = torch.zeros((B, T, H, _DV), device="cuda", dtype=torch.bfloat16)
-    tbl = extension().chunk_union_table(pr, pw, v, _C, bc, list(widths))
+    T = read[0].shape[1]
+    tbl = extension().chunk_facts(pr, pw, _C, bc, list(widths), Mask.M1, False)[0]
     return extension().chunk_block_bits(tbl, bc, list(widths), T, page_tbl)
 
 
@@ -144,7 +145,7 @@ def test_write_bit_agrees_with_the_atom_bitmap(grain):
     widths = (B,) * D
     read, write = _fixture(widths, 0.3, seed=D * 77 + B + bc)
     bits = _bits(read, write, widths, bc)
-    atoms = extension().chunk_stats(_pack(write), list(widths)).bool()
+    atoms = planes.atom_bits(_pack(write), widths).bool()
     condensed = atoms.view(_B * _H, prod(widths) // bc, bc // MMA_K_QUANTUM).any(dim=-1)
     assert torch.equal((bits & WRITE).bool(), condensed), (
         "the block-grain WRITE bit and the atom-grain bitmap disagree; two "

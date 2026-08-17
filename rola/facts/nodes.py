@@ -58,16 +58,21 @@ def pack_planes(f):
                                                          torch.float32))
 
 
-@node(gives=("atom_bits",), needs=("write_plane", "widths", "state", "paging"),
-      stream="main", masks=(Mask.M2,))
-def atom_bits(f):
-    """THE ABSENT `arm` EDGE IS THE POINT: the bitmap is keyed to the 16-leaf
-    quantum, so residency is an OUTPUT of the plan rather than a consequence of it
-    and the admission may run concurrently with the arm's own work."""
+@node(gives=("union_table", "atom_bits"),
+      needs=("read_plane", "write_plane", "arm", "widths", "mask", "state", "paging"),
+      stream="main")
+def facts_tables(f):
+    """BOTH ROW SETS IN ONE PASS over the amplitude planes, which is why the atom
+    bitmap is a SECOND OUTPUT here and not a second launch.
+
+    The published bitmap stays keyed to the 16-leaf quantum whatever arm this pass
+    carries -- its reduction is instantiated `(D, B)` alone -- so residency is still
+    an OUTPUT of the plan rather than a consequence of it.
+    """
     state = f["state"]
-    if state is None or not state._wants_pages(f["paging"]):
-        return None
-    return planes.atom_bits(f["write_plane"], f["widths"])
+    atoms = state is not None and state._wants_pages(f["paging"])
+    return extension().chunk_facts(f["read_plane"], f["write_plane"], *f["arm"],
+                                   list(f["widths"]), int(f["mask"]), atoms)
 
 
 @node(gives=("state_in", "arena"),
@@ -107,13 +112,6 @@ def backing(f):
         return None, (planes.state_plane(f["routes"], d_v=f["d_v"]) if want_state
                       else None)
     return arena.page_table, (arena.state if want_state else None)
-
-
-@node(gives=("union_table",),
-      needs=("read_plane", "write_plane", "v_packed", "arm", "widths"), stream="main")
-def union_table(f):
-    return extension().chunk_union_table(f["read_plane"], f["write_plane"],
-                                         f["v_packed"], *f["arm"], list(f["widths"]))
 
 
 @node(gives=("block_bits",),

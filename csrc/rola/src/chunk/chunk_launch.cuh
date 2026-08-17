@@ -45,29 +45,25 @@ cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream) {
   return cudaGetLastError();
 }
 
-template <int D, int B, int BC>
-cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
-                                   int BH, int L, cudaStream_t stream) {
-  constexpr int kTblThreads = 128;
-  constexpr int kTblWarps = kTblThreads / kBallotLanes;
+//: ONE PASS, BOTH ROW SETS.  `MASK` is the CALL CLASS and never a bool per fact:
+//: the stateless class compiles no atom-grain emission at all, and within the
+//: stateful one a call with no arena to admit into hands a null atom table -- the
+//: runtime-null OUTPUT skip, not a second arm.
+template <int D, int B, int BC, int MASK>
+cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
+                                   uint32_t* atom_tbl, int BH, int L, cudaStream_t stream) {
+  constexpr int kTblWarps = kFactsThreads / kBallotLanes;
+  //: the variant with no atom-grain emission compiled in, handed an atom table,
+  //: would return it unwritten: the class and the pointers must agree.
+  if (MASK == kPrefillStateless && atom_tbl != nullptr) return cudaErrorInvalidValue;
   const dim3 grid((unsigned)((tok_words(L) + kTblWarps - 1) / kTblWarps), (unsigned)BH);
-  union_table_kernel<D, B, BC><<<grid, kTblThreads, 0, stream>>>(pr, pw, tbl, L);
+  chunk_facts_tables<D, B, BC, MASK><<<grid, kFactsThreads, 0, stream>>>(pr, pw, tbl, atom_tbl, L);
   return cudaGetLastError();
 }
 
-//: THE STATS PASS' TWO LAUNCHES, one host entry.  The arm is (D, B) alone: the
-//: atom rectangle is `kAtomLeaves` by construction, so residency is BC-free and
-//: this arm list is smaller than the consumer's (docs/internals/paging/stats.md).
-template <int D, int B>
-cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, int BH, int L,
-                                        cudaStream_t stream) {
-  constexpr int kTblThreads = 128;
-  constexpr int kTblWarps = kTblThreads / kBallotLanes;
-  const dim3 grid((unsigned)((tok_words(L) + kTblWarps - 1) / kTblWarps), (unsigned)BH);
-  atom_table_kernel<D, B><<<grid, kTblThreads, 0, stream>>>(pw, tbl, L);
-  return cudaGetLastError();
-}
-
+//: THE STATS PASS' REDUCTION ARM, keyed (D, B) alone: the atom rectangle is
+//: `kAtomLeaves` by construction, so residency is BC-free and this arm list is
+//: smaller than the consumer's (docs/internals/paging/stats.md).
 template <int D, int B>
 cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
                                          cudaStream_t stream) {

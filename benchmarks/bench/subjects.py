@@ -21,6 +21,7 @@ import torch
 import rola
 from bench.pairing import Arm
 from rola.dags.decode_dag import decode_forward
+from rola.facts.types import Mask
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.routing.entmax.production import production_routing_factor_levels
@@ -48,14 +49,20 @@ def chunk_forward(fx) -> Arm:
     return Arm(name="chunk_forward_raw", call=call)
 
 
-def chunk_stats(fx) -> Arm:
-    """The atom-grain write bitmap: the page plan's input, taken before an arm exists."""
-    m, write_plane, widths = extension(), fx["plan"].write_plane, _widths(fx)
+def chunk_facts(fx) -> Arm:
+    """The facts pass: the union table and the atom-grain write bitmap, one pass.
+
+    Priced under the STATEFUL call class with the bitmap asked for -- the most a
+    prefill call pays here. The stateless class is the same launch with the
+    atom-grain emission compiled out.
+    """
+    m, plan, widths = extension(), fx["plan"], _widths(fx)
+    pr, pw, c, bc = plan.read_plane, plan.write_plane, fx["C"], fx["BC"]
 
     def call():
-        return m.chunk_stats(write_plane, widths)
+        return m.chunk_facts(pr, pw, c, bc, widths, Mask.M2, True)
 
-    return Arm(name="chunk_stats", call=call)
+    return Arm(name="chunk_facts", call=call)
 
 
 def chunk_block_bits(fx) -> Arm:
@@ -194,7 +201,7 @@ def prefill_decode(fx) -> Arm:
 #: THE UNIT ROSTER: one entry per custom kernel, mirroring the oracle tests.
 UNIT = {
     "chunk_forward": chunk_forward,
-    "chunk_stats": chunk_stats,
+    "chunk_facts": chunk_facts,
     "chunk_block_bits": chunk_block_bits,
     "divide_pass": divide_pass,
     "backward_seeds": backward_seeds,

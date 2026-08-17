@@ -18,22 +18,23 @@ mask                -> mask                          @host  RULE
 manifest            -> manifest                      @host
 arm                 -> arm                           @host  RULE
 pack_planes         -> read/write plane, g_write, read_mass   @main
-atom_bits           -> atom_bits                     @main   [M2]
-residency           -> state_in, arena               @side   [M2] host_sync
 pack_v              -> v_packed                      @main
+facts_tables        -> union_table, atom_bits        @main
+residency           -> state_in, arena               @side   [M2] host_sync
 join                                                 @main   [M2] waits
 backing             -> page_table, state_out         @host
-union_table         -> union_table                   @main
 block_bits          -> block_bits                    @main
 build_plan          -> plan                          @host
 ```
 
 M1 (prefill-stateless) is M2 (prefill-stateful) with the residency band masked out:
-`atom_bits`, `residency` and `join` do not run and their facts are null. The state
-plane is not allocated and the kernel variant with no state I/O compiled into it is
-the one that runs, so a stateless call pays nothing for the feature.
+`residency` and `join` do not run and their facts are null, and `facts_tables` runs
+under the call class that compiles the atom-grain emission out, so `atom_bits` is
+null. The state plane is not allocated and the kernel variant with no state I/O
+compiled into it is the one that runs, so a stateless call pays nothing for the
+feature.
 
-The critical path is `pack_planes -> union_table -> block_bits -> execute`. The three
+The critical path is `pack_planes -> facts_tables -> block_bits -> execute`. The three
 rules, the topology, the manifest and the call class are host-only and sit on the
 parallel front — which is why band 2 costs nothing: no rule is ever on the critical
 path.
@@ -42,14 +43,32 @@ The mask is a FACT the MaskRule produces, and the runner reads it rather than th
 class: the band a node belongs to is a decision, and the walk consults the decision.
 Every node before that rule runs under every mask by construction.
 
-## <a id="the-absent-arm-edge"></a>2. `atom_bits` has no `arm` edge
+## <a id="the-absent-arm-edge"></a>2. One pass, both row sets, and a BC-free bitmap
 
-The atom bitmap is keyed to the 16-leaf quantum and to nothing else, so it is a
-property of the routing alone and is legitimately taken BEFORE an arm is chosen.
-That is what makes residency an OUTPUT of the plan rather than a consequence of it,
-and it is why the admission can run concurrently with the arm's own work. **A DAG
-that gave `atom_bits` an `arm` edge would silently destroy that overlap**, so the
-absence is asserted at import rather than left to a reader's care.
+The union table and the atom bitmap are ONE node because they are one pass over the
+amplitude planes: the plane is `BH · T · sumW · 2` bytes, it is the pass' whole cost,
+and two nodes would read it twice
+([`chunk_kernel.md#the-facts-pass`](../chunk/chunk_kernel.md#the-facts-pass)). The
+node's `gives` is asserted at import to carry both facts, because a DAG that split
+them again would pay those bytes back silently.
+
+What must not follow from the shared pass is a bitmap that moves with the arm. The
+published bitmap is keyed to the 16-leaf quantum and to nothing else, so the same
+routing is the same residency at every built `BC` — that is what makes residency an
+OUTPUT of the plan rather than a consequence of it. The atom rows are voted under
+`LevelPlan<D, B, 16>` inside a `BC`-templated pass and their reduction is instantiated
+`(D, B)` alone, and
+`tests/oracle/test_atom_bitmap.py::test_the_bitmap_is_bc_free` holds the property
+where it now lives: on the FACT, at every built arm.
+
+**The ordering this buys and the ordering it costs.** `facts_tables` feeds
+`residency`, so the pass now sits BEFORE the admission rather than straddling it. The
+one host synchronization of the sequence is `plan_exact`'s size read, and the pass is
+enqueued ahead of it — so the device is working through the facts pass while the host
+blocks, which is the larger of the two windows. What is given up is the smaller one:
+the admission's own side-stream launches no longer overlap a main-stream table pass.
+The trade is stated as a measurement, not as an argument: `perf/ledger.jsonl` carries
+the pass at two token counts, and the saving is the one that grows with `T`.
 
 ## <a id="the-join"></a>3. The Join sits before the block bitmap
 

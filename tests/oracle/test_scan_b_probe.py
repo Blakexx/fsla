@@ -54,6 +54,7 @@ import pytest
 import torch
 
 from rola.facts.manifest import scan_arms
+from rola.facts.types import Mask
 from rola.ops._ext import extension, is_available
 
 pytestmark = pytest.mark.skipif(
@@ -321,7 +322,7 @@ def _run(a: Arm, inputs):
     m = extension()
     pr, pw, gw, v, dnum, dden = inputs
     widths = [a.W] * a.D
-    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    tbl = m.chunk_facts(pr, pw, a.C, a.BC, widths, Mask.M1, False)[0]
     return m.chunk_scan_b_probe(pr, pw, gw, v, dnum, dden, tbl, a.C, a.BC, widths)
 
 

@@ -6,12 +6,15 @@
 #include <torch/extension.h>
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace rola::chunk {
 
-torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, int64_t chunk,
-                          int64_t bc, std::vector<int64_t> widths);
+std::pair<torch::Tensor, c10::optional<torch::Tensor>> facts(torch::Tensor pr, torch::Tensor pw,
+                                                             int64_t chunk, int64_t bc,
+                                                             std::vector<int64_t> widths,
+                                                             int64_t mask, bool atoms);
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
                                        int64_t bc, std::vector<int64_t> widths,
@@ -25,7 +28,6 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torc
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl,
                       c10::optional<torch::Tensor> block_bits);
-torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths);
 torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> widths, int64_t L,
                          c10::optional<torch::Tensor> page_tbl);
 torch::Tensor divide_pass(torch::Tensor num, torch::Tensor den, c10::optional<torch::Tensor> mass,

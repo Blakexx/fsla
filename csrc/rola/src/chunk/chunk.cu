@@ -12,8 +12,10 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
+#include "../dispatch_switch.cuh"
 #include "chunk_kernel.cuh"
 
 namespace rola::chunk {
@@ -101,12 +103,9 @@ static uint32_t run_table(bool state_in, bool state_out, bool paged) {
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
 template <int C, int BC, int D, int B, bool STATE>
 cudaError_t launch_chunk_arm(const ChunkParams& p, cudaStream_t stream);
-template <int D, int B, int BC>
-cudaError_t launch_chunk_table_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
-                                   int BH, int L, cudaStream_t stream);
-template <int D, int B>
-cudaError_t launch_chunk_atom_table_arm(const __nv_bfloat16* pw, uint32_t* tbl, int BH, int L,
-                                        cudaStream_t stream);
+template <int D, int B, int BC, int MASK>
+cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
+                                   uint32_t* atom_tbl, int BH, int L, cudaStream_t stream);
 template <int D, int B>
 cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
                                          cudaStream_t stream);
@@ -124,18 +123,39 @@ static cudaError_t launch_variant(const ChunkParams& p, cudaStream_t stream) {
                : launch_chunk_arm<C, BC, D, B, false>(p, stream);
 }
 
-//: THE TABLE, AS A TENSOR: `[B*H, 2, entries, L/32]` of packed bits, sides apart
-//: because the cook wants them apart.  It is a SEPARATE ENTRY POINT so that its
-//: cost is reported on its own line and never folded into a kernel delta.
+//: THE FACTS, AS TENSORS: the union table `[B*H, 2, entries, L/32]` of packed bits,
+//: sides apart because the cook wants them apart, and -- when this call has
+//: residency to plan -- the atom-grain write bitmap `[B*H, N/16]` the page plan
+//: admits from.  ONE PASS over the amplitude planes emits both row sets; the
+//: atom-grain TABLE is a transient, allocated and freed here, because nothing else
+//: asks for it.  The bitmap's own launch stays keyed `(D, B)`, so the published fact
+//: is BC-free however this pass was templated (docs/internals/paging/stats.md).
 template <int D, int B, int BC>
-static torch::Tensor build_table(const torch::Tensor& pr, const torch::Tensor& pw, int BH, int L) {
+static std::pair<torch::Tensor, c10::optional<torch::Tensor>> build_facts(const torch::Tensor& pr,
+                                                                          const torch::Tensor& pw,
+                                                                          int BH, int L, int mask,
+                                                                          bool atoms) {
+  using AP = LevelPlan<D, B, kAtomLeaves>;
   constexpr int E = LevelPlan<D, B, BC>::entries;
+  const auto stream = at::cuda::getCurrentCUDAStream();
   auto tbl = torch::empty({BH, 2, E, tok_words(L)}, pr.options().dtype(torch::kInt32));
-  C10_CUDA_CHECK((launch_chunk_table_arm<D, B, BC>(
-      reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),
-      reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),
-      reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
-  return tbl;
+  auto atom_tbl =
+      atoms ? torch::empty({BH, (long)AP::entries, tok_words(L)}, pr.options().dtype(torch::kInt32))
+            : torch::Tensor();
+  int_switch<kPrefillStateless, kPrefillStateful>(
+      mask, "the chunk facts pass' call class", [&](auto MASK) {
+        C10_CUDA_CHECK((launch_chunk_facts_arm<D, B, BC, decltype(MASK)::value>(
+            reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),
+            reinterpret_cast<uint32_t*>(tbl.data_ptr()),
+            atoms ? reinterpret_cast<uint32_t*>(atom_tbl.data_ptr()) : nullptr, BH, L, stream)));
+      });
+  if (!atoms) return {tbl, c10::nullopt};
+  auto bits = torch::empty({BH, (long)AP::blocks}, pr.options().dtype(torch::kUInt8));
+  C10_CUDA_CHECK((launch_chunk_atom_bitmap_arm<D, B>(
+      reinterpret_cast<const uint32_t*>(atom_tbl.data_ptr()),
+      reinterpret_cast<uint8_t*>(bits.data_ptr()), BH, L, stream)));
+  return {tbl, bits};
 }
 
 //: THE RATIO, IN ONE ELEMENTWISE PASS.  It cannot be in the kernel: `den[t]` is
@@ -229,80 +249,58 @@ static bool is_arm(const std::vector<int64_t>& widths, int64_t D, int64_t B) {
   return true;
 }
 
-static void check_inputs(const torch::Tensor& pr, const torch::Tensor& pw, const torch::Tensor& v,
-                         int64_t chunk, const std::vector<int64_t>& widths) {
-  TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
-  TORCH_CHECK(pr.is_contiguous() && pw.is_contiguous());
+//: THE AMPLITUDE HALF, which the facts pass needs and the consumer needs too: the
+//: planes carry the problem's `[B, H, L]` addressing, so nothing about the token
+//: schedule has to be read off the value stream.
+static void check_planes(const torch::Tensor& pr, const torch::Tensor& pw,
+                         const std::vector<int64_t>& widths) {
+  TORCH_CHECK(pr.is_cuda() && pr.is_contiguous() && pw.is_contiguous());
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16);
-  TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,L,H,64]");
   int64_t wsum = 0;
   for (auto w : widths) wsum += w;
   TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 4 && pr.size(3) == wsum,
               "expect packed amplitudes [B,H,L,sum(widths)]");
+  const int64_t L = pr.size(2);
+  TORCH_CHECK(L <= kMaxGatherL && L * wsum * 2 < (1L << 32),
+              "a gathered displacement is 32 bits; this launch's would not "
+              "fit (L=",
+              L, ")");
+}
+
+static void check_inputs(const torch::Tensor& pr, const torch::Tensor& pw, const torch::Tensor& v,
+                         int64_t chunk, const std::vector<int64_t>& widths) {
+  check_planes(pr, pw, widths);
+  TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
+  TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,L,H,64]");
   const int B = v.size(0), L = v.size(1), H = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
   TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   //: the widest gathered rows are the fp32 output (kD*4 B), the packed amplitudes
   //: (sum(widths)*2 B) and V's own token row (H*kD*2 B, because V is token-major);
   //: every gathered displacement must zero-extend from 32 bits.
-  TORCH_CHECK((long)L <= kMaxGatherL && (long)L * wsum * 2 < (1L << 32)
-                  && (long)L * H * kD * 2 < (1L << 32),
+  TORCH_CHECK((long)L * H * kD * 2 < (1L << 32),
               "a gathered displacement is 32 bits; this launch's would not "
               "fit (L=",
               L, ")");
 }
 
-torch::Tensor union_table(torch::Tensor pr, torch::Tensor pw, torch::Tensor v, int64_t chunk,
-                          int64_t bc, std::vector<int64_t> widths) {
+std::pair<torch::Tensor, c10::optional<torch::Tensor>> facts(torch::Tensor pr, torch::Tensor pw,
+                                                             int64_t chunk, int64_t bc,
+                                                             std::vector<int64_t> widths,
+                                                             int64_t mask, bool atoms) {
   check_arch_table();
-  check_inputs(pr, pw, v, chunk, widths);
-  const int BH = v.size(0) * v.size(2), L = v.size(1);
-#define CHUNK_TABLE_X(C_, BC_, D_, B_)                                     \
-  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_))                     \
-    return build_table<D_, B_, BC_>(pr, pw, BH, L);
-  CHUNK_ARMS_X(CHUNK_TABLE_X)
-#undef CHUNK_TABLE_X
+  check_planes(pr, pw, widths);
+  TORCH_CHECK(!atoms || mask == kPrefillStateful,
+              "the atom-grain write bitmap is a stateful call's fact: it was asked for "
+              "under call class ",
+              mask);
+  const int BH = (int)(pr.size(0) * pr.size(1)), L = (int)pr.size(2);
+#define CHUNK_FACTS_X(C_, BC_, D_, B_)                    \
+  if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B_)) \
+    return build_facts<D_, B_, BC_>(pr, pw, BH, L, (int)mask, atoms);
+  CHUNK_ARMS_X(CHUNK_FACTS_X)
+#undef CHUNK_FACTS_X
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
-}
-
-//: THE STATS PASS: the EXACT set of atoms this call's routing writes, as
-//: `[BH, N/16]` uint8 -- the argument the planner admits pages from.  Two
-//: launches on one stream and no host synchronization; the atom-grain table is a
-//: TRANSIENT, allocated and freed here, because nothing else asks for it.
-//:
-//: NO `C` AND NO `BC`.  The atom rectangle is the invariant quantum, so the
-//: bitmap is BC-free and may be taken BEFORE the plan picks a `BC`.  Only the
-//: WRITE side is built: reads of never-written atoms are inert
-//: (docs/internals/paging/stats.md).
-template <int D, int B>
-static torch::Tensor build_atom_bits(const torch::Tensor& pw, int BH, int L) {
-  using LP = LevelPlan<D, B, kAtomLeaves>;
-  const auto stream = at::cuda::getCurrentCUDAStream();
-  auto tbl = torch::empty({BH, (long)LP::entries, tok_words(L)}, pw.options().dtype(torch::kInt32));
-  auto bits = torch::empty({BH, (long)LP::blocks}, pw.options().dtype(torch::kUInt8));
-  C10_CUDA_CHECK((launch_chunk_atom_table_arm<D, B>(
-      reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),
-      reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, stream)));
-  C10_CUDA_CHECK((launch_chunk_atom_bitmap_arm<D, B>(
-      reinterpret_cast<const uint32_t*>(tbl.data_ptr()),
-      reinterpret_cast<uint8_t*>(bits.data_ptr()), BH, L, stream)));
-  return bits;
-}
-
-torch::Tensor stats(torch::Tensor pw, std::vector<int64_t> widths) {
-  check_arch_table();
-  TORCH_CHECK(pw.is_cuda() && pw.is_contiguous() && pw.scalar_type() == torch::kBFloat16,
-              "the write amplitudes must be a contiguous bf16 CUDA tensor");
-  int64_t wsum = 0;
-  for (auto w : widths) wsum += w;
-  TORCH_CHECK(pw.dim() == 4 && pw.size(3) == wsum,
-              "expect packed write amplitudes [B,H,L,sum(widths)]");
-  const int BH = (int)(pw.size(0) * pw.size(1)), L = (int)pw.size(2);
-#define CHUNK_STATS_X(D_, B_)                                                      \
-  if (is_arm(widths, D_, B_)) return build_atom_bits<D_, B_>(pw, BH, L);
-  CHUNK_ATOM_ARMS_X(CHUNK_STATS_X)
-#undef CHUNK_STATS_X
-  TORCH_CHECK(false, "unbuilt stats arm: depth=", widths.size());
 }
 
 //: THE STATE PLANE, in either backing.  DENSE is `[BH, N/16, 16, d_v+1]` fp32
@@ -479,7 +477,13 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torc
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl,
                       c10::optional<torch::Tensor> block_bits) {
-  auto tbl = union_table(pr, pw, v, chunk, bc, widths);
+  //: the call class off the POINTERS, the same reading `launch_variant` takes: this
+  //: composition asks for no residency facts, so the class governs nothing but which
+  //: variant of the facts pass runs.
+  const int64_t mask = (s_in.has_value() || s_out.has_value() || page_tbl.has_value())
+                           ? kPrefillStateful
+                           : kPrefillStateless;
+  auto tbl = facts(pr, pw, chunk, bc, widths, mask, false).first;
   auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl, block_bits);
   return divide_pass(nd[0], nd[1], read_mass, eps, out);
 }

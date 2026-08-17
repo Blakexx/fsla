@@ -12,12 +12,13 @@ arrive as extern template declarations satisfied by the instantiation shards
 leave the build green with nothing sharded.
 
 Entries (all bound in `rola_api.cpp` with the `chunk_` prefix, private seam
-only): `union_table` (the schedule producer — one packed bit-row per (head,
-side, table entry)), `block_bits` (the block-grain liveness reduction over that
-table), `forward_raw` (the readout's `d_v+1` columns, undivided), `forward`
-(table + kernel + divide), `divide_pass`, `build_stamp` (device-side build
-identity: magic + form words, then the census row), `arms` (the built manifest
-with derived geometry).
+only): `facts` (the schedule producer — one packed bit-row per (head, side,
+table entry) — and, under the stateful call class with an arena to admit into,
+the atom-grain write bitmap out of the same pass), `block_bits` (the
+block-grain liveness reduction over that table), `forward_raw` (the readout's
+`d_v+1` columns, undivided), `forward` (facts + kernel + divide),
+`divide_pass`, `build_stamp` (device-side build identity: magic + form words,
+then the census row), `arms` (the built manifest with derived geometry).
 
 The arm set is the generator-owned `CHUNK_ARMS_X` macro
 (`../instantiations/chunk_arms.inc`, emitted by `tools/gen_shards.py` — one
@@ -68,7 +69,7 @@ NAME gets `unbuilt arm: ...`, never the oracle. Dispatch is not a lie; an overri
 ## The closed-world arch refusal (R4's runtime half)
 
 `check_arch_table()` is the first statement of every entry that issues a launch
-(`union_table`, `forward_raw`, `stats`, `divide_pass`, `build_stamp`; `forward`
+(`facts`, `forward_raw`, `divide_pass`, `build_stamp`; `forward`
 needs none of its own because it is a composition of three of them). It refuses,
 once per process per device, a compute capability `arch_caps.cuh`'s `tabulated()`
 has no row for, a row whose REQUIRED clauses are false, and a row the driver

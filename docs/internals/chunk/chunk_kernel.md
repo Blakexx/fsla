@@ -5,7 +5,7 @@ single geometry authority — spans, entries, clause count, the mixed-radix
 block→entry map, all-int), `Geom` (SMEM layout and the derived staging depth),
 the compacted kernel (form/consume schedule, per-side compaction, K-windows as
 folded displacements, level-generic produce with the decoupled write gain) and
-the union-table kernel.
+the facts pass that builds its schedule.
 
 Where its reasons live: the ladder repo's rung ladder (5A→6G) is the
 derivation record — seven refuted alternative designs, the placement/mutual-
@@ -411,6 +411,39 @@ delta; the deep arms are G4's — `(16,16,16)` and `(8,8,8,8)` at the flagship's
 partial one, so the three-clause form and the two-scalar upper chain are both exercised.
 The list itself is GENERATED: `tools/gen_shards.py` owns it, and the `.inc` include is the
 whole of the kernel's knowledge of it.
+
+## The facts pass, one launch over the amplitude planes
+
+<a id="the-facts-pass"></a>**`chunk_facts_tables<D, B, BC, MASK>` emits BOTH ballot
+row sets from one pass.** A lockstep unit takes thirty-two consecutive tokens, one per
+lane, and votes once per entry; the vote IS the word, so nothing is packed afterwards
+and nothing is zeroed first. A token past the end reads token zero and votes dead —
+its bit has no consumer, and reading in range is what keeps the unit converged.
+
+The two row sets are the same expression at two grains. The OWNER rows, both sides,
+come out of `LevelPlan<D, B, BC>` and are what the consumer's clause pointers address.
+The ATOM rows, write side only, come out of `LevelPlan<D, B, kAtomLeaves>` and are what
+the atom bitmap reduces into residency (`docs/internals/paging/stats.md`). A lane's
+amplitude row is a fact about the token and not about any block geometry — the packed
+column layout is the widths policy's — so the two grains read the SAME bytes, and
+reading them once instead of twice is the whole of this fusion. The plane is
+`BH · L · sumW · 2` bytes and it grows with `T`; that is the axis the saving is stated
+on.
+
+**`MASK` is the CALL CLASS, never a bool per fact.** It carries two of the four masks
+(`rola/facts/types.py`) — the stateless prefill class compiles no atom-grain emission at
+all, so a stateless call pays exactly what a call with no residency to plan should pay.
+Within the stateful class, whether there is an arena to admit into is a runtime-null
+OUTPUT skip: a null atom table, one predicate outside the loops, no second arm. The
+host selects the class with `int_switch` over the instantiated set
+(`docs/internals/dispatch_switch.md`), so an unmatched value is a refusal.
+
+**The published atom bitmap stays BC-free.** The transient atom TABLE acquires this
+pass' `BC` in its instantiation; the bitmap that reduces it does not — its launch is
+keyed `(D, B)` alone, and only the input stride it reads is this template's. That is
+what keeps residency an OUTPUT of the plan rather than a consequence of it, and it is
+gated by `tests/oracle/test_atom_bitmap.py::test_the_bitmap_is_bc_free`, which requires
+the same bitmap at every built `BC` of a topology.
 
 ## The liveness epilogue, at the launch's block grain
 

@@ -46,6 +46,7 @@ import numpy as np
 import pytest
 import torch
 
+from rola.facts.types import Mask
 from rola.ops._ext import extension, is_available
 from tests.oracle.test_scan_b_probe import ARMS, PINNED, Arm
 
@@ -218,7 +219,7 @@ def _probe(a: Arm, T: int, seed: int, slot_frac: float, tok_frac: float):
     m = extension()
     pr, pw, v = _inputs(a, T, seed, slot_frac, tok_frac)
     widths = [a.W] * a.D
-    tbl = m.chunk_union_table(pr, pw, v, a.C, a.BC, widths)
+    tbl = m.chunk_facts(pr, pw, a.C, a.BC, widths, Mask.M1, False)[0]
     stampR, stampW, jout, nchunk = m.chunk_walk_probe(tbl, a.C, a.BC, widths, T, 1)
     live_r, live_w = _liveness_from_table(_plan(a.D, a.W, a.BC), stampR.shape[0], tbl, T)
     return (stampR.cpu(), stampW.cpu(), jout.cpu(), nchunk.cpu(), live_r, live_w)

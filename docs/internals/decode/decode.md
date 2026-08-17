@@ -271,7 +271,7 @@ an event, 0.093 ms against 0.152 (medians of 15 x 100). The host must wait for t
 either way, and the event path adds a record and a query on top of the wait the copy
 already performs.
 
-**Why not the prefill arm's stats pass.** `chunk_stats` reduces over a
+**Why not the prefill arm's stats pass.** The facts pass reduces over a
 `[BH, T, sum_l width_l]` routing stream; at a population of one that launch would be pure
 overhead, and it would be a THIRD derivation of a set the step's own expansion already
 holds. The reference derivation `_write_atom_bitmap` keeps for the gate costs `D - 1`

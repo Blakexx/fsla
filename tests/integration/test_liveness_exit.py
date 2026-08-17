@@ -37,6 +37,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.facts import planes
+from rola.facts.types import Mask
 from rola.ops._ext import extension
 
 pytestmark = [
@@ -90,7 +92,7 @@ def _routing(bh, L, live_blocks, bc, seed, *, split_sides=False):
 
 def _bits(pr, pw, v, bc, L, page_tbl=None):
     m = extension()
-    tbl = m.chunk_union_table(pr, pw, v, _C, bc, _WIDTHS)
+    tbl = m.chunk_facts(pr, pw, _C, bc, _WIDTHS, Mask.M1, False)[0]
     return tbl, m.chunk_block_bits(tbl, bc, _WIDTHS, L, page_tbl)
 
 
@@ -125,10 +127,10 @@ def _paged(pw, bh):
 
     The plan's bitmap is the write set exactly (that is P67's guarantee, and what
     makes skipping an unmapped atom exact rather than defensive), so the arena is
-    modelled here by admitting precisely the atoms `chunk_stats` names and zeroing
+    modelled here by admitting precisely the atoms the facts pass names and zeroing
     them, which is what admission does.
     """
-    atoms = extension().chunk_stats(pw, _WIDTHS).bool()
+    atoms = planes.atom_bits(pw, _WIDTHS).bool()
     slot = torch.full((bh, _N // _ATOM), -1, device="cuda", dtype=torch.int32)
     n = int(atoms.sum())
     slot[atoms] = torch.arange(n, device="cuda", dtype=torch.int32)
@@ -325,7 +327,7 @@ def test_the_arm_that_carried_no_work_loop_takes_the_bitmap():
     bh, L, bc = 4, 64, 128
     pr, pw, gw, v = _routing(bh, L, 4, bc, seed=99)
     m = extension()
-    tbl = m.chunk_union_table(pr, pw, v, 64, bc, _WIDTHS)
+    tbl = m.chunk_facts(pr, pw, 64, bc, _WIDTHS, Mask.M1, False)[0]
     bits = m.chunk_block_bits(tbl, bc, _WIDTHS, L, None)
     _assert_it_skips(bits)
     page_tbl, bare = _paged(pw, bh)
@@ -340,8 +342,8 @@ def test_a_bitmap_built_for_another_arm_is_refused():
     bh, L = 2, 64
     pr, pw, gw, v = _routing(bh, L, 4, 64, seed=5)
     m = extension()
-    tbl64 = m.chunk_union_table(pr, pw, v, _C, 64, _WIDTHS)
-    tbl128 = m.chunk_union_table(pr, pw, v, _C, 128, _WIDTHS)
+    tbl64 = m.chunk_facts(pr, pw, _C, 64, _WIDTHS, Mask.M1, False)[0]
+    tbl128 = m.chunk_facts(pr, pw, _C, 128, _WIDTHS, Mask.M1, False)[0]
     bits128 = m.chunk_block_bits(tbl128, 128, _WIDTHS, L, None)
     with pytest.raises(RuntimeError, match="built for a different arm"):
         m.chunk_forward_raw(pr, pw, gw, v, tbl64, _C, 64, _WIDTHS, None, None, None, bits128)
@@ -460,8 +462,7 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
     gw = planes.packed_copy(routes.g_write.permute(0, 2, 1))
     c, bc = arm_of(routes)
     m = extension()
-    tbl = m.chunk_union_table(pr, pw, v.to(torch.bfloat16).contiguous(),
-                              c, bc, list(_WIDTHS))
+    tbl = m.chunk_facts(pr, pw, c, bc, list(_WIDTHS), Mask.M1, False)[0]
     bare = planes.state_plane(routes, d_v=_DV)
     m.chunk_forward_raw(pr, pw, gw,
                         v.to(torch.bfloat16).contiguous(), tbl, c, bc, list(_WIDTHS),

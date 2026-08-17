@@ -19,7 +19,8 @@ to one shard's slice of the manifest.
 Each shard carries, for its arms: an explicit instantiation of the host launcher
 `launch_chunk_arm` (which is what pulls in the device kernel, exactly once in the
 whole fatbin) and one of `query_chunk_census_arm`. Shard 0 additionally carries the
-union-table and stats arms, which are keyed to the topology rather than to `C`. The
+facts-pass and stats-reduction arms, which are keyed to the topology rather than to
+`C`. The
 launcher's DEFINITION lives in `../chunk/chunk_launch.cuh`, which `chunk.cu` must
 not include — that is what stops the dispatch translation unit from satisfying an
 arm by re-instantiating it locally, which would leave the build green and nothing
@@ -33,8 +34,7 @@ list before anything compiles, and `python tools/fatbin_entries.py --check` refu
 a built binary carrying an unresolved `launch_chunk_arm` after the link.
 
 `chunk_arms.inc` carries the X-macro `../chunk/chunk_kernel.cuh` walks to build its
-dispatch, plus `CHUNK_ATOM_ARMS_X`, the stats pass' `(D, B)` projection of the same
-list. It comes out of the same arm list as the shards, so the dispatch and the
+dispatch. It comes out of the same arm list as the shards, so the dispatch and the
 shards cannot enumerate different sets — which is the whole reason this generator
 exists.
 

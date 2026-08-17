@@ -1,10 +1,18 @@
 # The stats pass — the exact atom-grain write bitmap
 
-Mirror doc for `atom_table_kernel` / `atom_bitmap_kernel`
-(`csrc/rola/src/chunk/chunk_kernel.cuh`), their launchers
-(`chunk_launch.cuh`), the `stats` torch entry (`chunk.cu`) and its host caller
-(`rola/facts/planes.py`). The page arena that consumes the bitmap is
-`paging.md`; the addressing it keys is `AtomKeying` in `rola/ops/paging.py`.
+Mirror doc for `atom_bitmap_kernel` and for the atom-grain half of
+`chunk_facts_tables` (`csrc/rola/src/chunk/chunk_kernel.cuh`), their launchers
+(`chunk_launch.cuh`), the `facts` torch entry (`chunk.cu`) and its host callers
+(`rola/facts/nodes.py`'s `facts_tables` node, `rola/facts/planes.py`). The page
+arena that consumes the bitmap is `paging.md`; the addressing it keys is
+`AtomKeying` in `rola/ops/paging.py`.
+
+**The atom rows are not a pass of their own.** They are voted in the same launch
+that builds the owner-grain union table, out of the same amplitude row, because the
+plane is the byte cost and it grows with `T`
+(`docs/internals/chunk/chunk_kernel.md#the-facts-pass`). What is keyed to the atom
+quantum — and therefore free of the launch's `BC` — is the ROW GRAIN and the
+reduction below, not the pass.
 
 Vocabulary, defined once: `D` = level count; `B` = one uniform level width;
 `N = B^D` = leaves; `L` = tokens; `BH` = batch*heads; `BC` = leaves per owner
@@ -77,23 +85,31 @@ CTA-UNIFORM (one warp reads the flags behind a barrier and publishes one answer)
 so no lane can leave a `rendezvous` alone. This makes the DENSE routing the
 cheap case rather than the expensive one.
 
-Rejected alternates, recorded: fusing the reduction into the table pass (the
-table is token-word parallel, the reduction is atom parallel with a cross-word
-OR — fusing needs a grid-wide reduction or atomics into the bitmap), and
-token-scatter (enumerate each token's live digit combinations and OR them in:
-beautiful under sparsity, worst-case dense, and it makes the cost a routing
-property rather than a plan property).
+Rejected alternates, recorded: fusing the REDUCTION into the facts pass (the pass
+is token-word parallel, the reduction is atom parallel with a cross-word OR —
+fusing needs a grid-wide reduction or atomics into the bitmap, and nothing in this
+engine takes a grid barrier), and token-scatter (enumerate each token's live digit
+combinations and OR them in: beautiful under sparsity, worst-case dense, and it
+makes the cost a routing property rather than a plan property). The row-BUILDING
+half is a different question and it did fuse: it shares the facts pass' grid, its
+lane-per-token geometry and its side of the residency dependency
+(`docs/internals/chunk/chunk_kernel.md#the-facts-pass`).
 
 ## The contract
 
-`stats(pw, widths) -> [BH, N/16] uint8` — write side only, because reads of
-never-written atoms are inert. Two launches on the current stream, no host
+`facts(pr, pw, chunk, bc, widths, mask, atoms) -> (tbl, bits | None)`, with
+`bits` the `[BH, N/16]` uint8 write-side bitmap — write side only, because reads
+of never-written atoms are inert. Two launches on the current stream, no host
 synchronization, and the atom-grain table is a transient allocated and freed
-inside the entry. There is no `C` and no `BC` in the signature: the bitmap is
-`BC`-free, which is what lets it be taken BEFORE the plan picks an arm and makes
-residency an OUTPUT of the plan instead of a consequence of it. The arm list is
-`(D, B)` alone and is derived from the consumer's arm list by projection
-(`tools/gen_shards.py`), so the two cannot name different topologies.
+inside the entry.
+
+The BITMAP carries no `BC` although the entry does: its reduction's arm list is
+`(D, B)` alone, derived from the consumer's arm list by projection
+(`tools/gen_shards.py`), so the same routing gives the same residency at every
+built arm — which is what makes residency an OUTPUT of the plan instead of a
+consequence of it. Asking for the bitmap ALONE (`rola/facts/planes.py`'s
+`atom_bits`, off the measured paths) therefore names an arm and discards a union
+table; the shipped path asks for both at once, which is the point of the pass.
 
 **Who reads it, and what rests on its exactness.** `PageArena.plan_exact` admits
 a slot for each of its atoms, and the chunk consumer then resolves every atom

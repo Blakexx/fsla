@@ -44,6 +44,7 @@ from math import prod
 import pytest
 import torch
 
+from rola.facts import planes
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM
@@ -104,7 +105,7 @@ def _kernel_bitmap(write, widths):
     assert torch.equal(flat != 0, flat.to(torch.bfloat16) != 0), (
         "fixture amplitudes flushed to zero in bf16; the comparison would be "
         "about the cast, not about the bitmap")
-    return extension().chunk_stats(packed, list(widths)).bool()
+    return planes.atom_bits(packed, widths).bool()
 
 
 def _oracle_bitmap(write, widths):
@@ -167,14 +168,38 @@ def test_two_token_cross_product_is_excluded():
     assert torch.equal(bits, _oracle_bitmap(write, widths))
 
 
-#: RETIRED at P67 D2-b: `test_the_bitmap_is_bc_free`. It ran ONE routing through
-#: two `Plan` `BC` values and required the same bitmap -- a claim about the
-#: reference, since the kernel takes no `BC` at all, and `Plan` is deleted. The
-#: property itself is not lost and is asserted where a `BC` still exists to vary:
-#: `tests/integration/test_chunk_paging_equivalence.py::
-#: test_the_same_routing_is_the_same_residency_at_every_built_BC` plans an arena
-#: from this bitmap at every built `BC` and requires the same page count and the
-#: same state, which is the same statement against the arms that ship.
+def test_the_bitmap_is_bc_free():
+    """THE PUBLISHED FACT CARRIES NO BLOCK GRAIN, at every built `BC` of a topology.
+
+    The pass that emits the atom rows is templated on `BC` -- it emits the owner
+    block's rows in the same launch -- so the 16-leaf keying of the atom rows is a
+    property of the CODE and this is what holds it: one routing through every built
+    arm, `torch.equal` on the bitmap. A bitmap that moved with `BC` would move
+    residency with the arm, which is the overlap the plan is built to keep.
+    """
+    from rola.facts import manifest as census
+    from rola.facts.types import Mask
+
+    D, B = 2, 64
+    widths = (B,) * D
+    _, write, _ = _fixture(widths, 0.35, seed=4242)
+    packed = _pack(write)
+    bcs = sorted({int(bc) for (c, bc, d, b) in census.chunk_arms() if d == D and b == B})
+    assert len(bcs) > 1, "this topology has one built BC; the claim needs two to vary"
+    first = None
+    for bc in bcs:
+        c = min(int(c) for (c, bc_, d, b) in census.chunk_arms()
+                if d == D and b == B and bc_ == bc)
+        bits = extension().chunk_facts(packed, packed, c, bc, list(widths), Mask.M2,
+                                       True)[1]
+        if first is None:
+            first, first_bc = bits, bc
+            continue
+        assert torch.equal(bits, first), (
+            f"the atom bitmap differs between BC={first_bc} and BC={bc}: the "
+            f"published residency fact has acquired the owner block's grain")
+    assert torch.equal(first.bool(), _oracle_bitmap(write, widths))
+
 
 
 def test_stats_through_the_host_seam():
@@ -188,7 +213,6 @@ def test_stats_through_the_host_seam():
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
     from conftest import build_routes
 
-    from rola.facts import planes
     from rola.routing.producer import union_routing
 
     torch.manual_seed(0)

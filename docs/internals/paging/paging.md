@@ -44,7 +44,7 @@ plane bound the 32-bit displacement form owes the caller.
 The pool is sized EXACTLY, not grown: the popcount of the atom condensation is the
 number of atoms this call will touch, so the arena knows its own footprint before the
 consumer launches, and there is nothing to discover. The condensation comes from the
-call's own arm and never from a second derivation — `chunk_stats` at `T > 1`
+call's own arm and never from a second derivation — the facts pass at `T > 1`
 ([`stats.md`](stats.md)), the decode growth probe's published `atom_bits` at `T = 1`
 ([`decode/decode_expand.md` §7](../decode/decode_expand.md#growth-probe)) — and both are EXACT rather
 than a bound, which is what makes `resident == realized` a fact instead of a hope.

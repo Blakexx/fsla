@@ -134,11 +134,14 @@ def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
     joins = [step for step in CHUNK_DAG if step.waits]
     reads = [step for step in CHUNK_DAG if step.host_sync]
     assert len(joins) == 1 and len(reads) == 1
-    atom = next(step for step in CHUNK_DAG if step.name == "atom_bits")
-    assert "arm" not in atom.needs, (
-        "the atom bitmap acquired an arm edge; residency would stop being an output "
-        "of the plan and the admission's overlap would go silently")
+    tables = next(step for step in CHUNK_DAG if step.name == "facts_tables")
+    assert set(tables.gives) == {"union_table", "atom_bits"}, (
+        "the union table and the atom bitmap came apart; they are one pass over the "
+        "amplitude plane and two nodes would read it twice")
     order = [step.name for step in CHUNK_DAG]
+    assert order.index("facts_tables") < order.index("residency"), (
+        "the facts pass moved past the admission it feeds; the atom bitmap IS the "
+        "page plan's input")
     assert order.index("join") < order.index("block_bits"), (
         "the Join moved past the block bitmap, which reads the page table the "
         "admission writes")

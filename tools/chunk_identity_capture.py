@@ -30,22 +30,36 @@ import torch
 
 
 class _Recorder:
-    """The extension module, recording every tensor the FACT entries returned."""
+    """The extension module, recording every tensor the FACT entries returned.
 
-    _WATCHED = ("chunk_stats", "chunk_union_table", "chunk_block_bits")
+    Recording is keyed by the FACT and never by the entry that produced it, which is
+    what lets one reference file gate a change to the ENTRY surface: a fused facts pass
+    and the two entries it replaces are comparable exactly because both are asked for
+    the union table and the atom bitmap BY NAME.
+    """
+
+    #: entry -> the facts its return positions carry, in order.
+    _WATCHED = {"chunk_stats": ("atom_bits",),
+                "chunk_union_table": ("union_table",),
+                "chunk_facts": ("union_table", "atom_bits"),
+                "chunk_block_bits": ("block_bits",)}
 
     def __init__(self, module):
         self._module = module
-        self.calls: list[tuple[str, tuple]] = []
+        self.facts: dict[str, torch.Tensor] = {}
 
     def __getattr__(self, name):
         entry = getattr(self._module, name)
         if name not in self._WATCHED:
             return entry
+        facts = self._WATCHED[name]
 
         def recorded(*args, **kwargs):
             out = entry(*args, **kwargs)
-            self.calls.append((name, out if isinstance(out, tuple) else (out,)))
+            tensors = out if isinstance(out, (tuple, list)) else (out,)
+            for fact, tensor in zip(facts, tensors):
+                if tensor is not None:
+                    self.facts[fact] = tensor
             return out
 
         return recorded
@@ -64,7 +78,12 @@ def _cells():
     """`(name, widths, routing, hidden, heads, tokens, paging)` -- the pinned set."""
     from rola.routing.producer import dense_routing, union_routing
 
-    for widths, hidden, heads in (((64,), 128, 2), ((64, 64), 128, 2), ((16, 16), 64, 2)):
+    #: THE ATOM COVERAGE IS THE CELL SET'S JOB: both backings, the flat `D = 1` arm
+    #: whose leaf space is one level, and the DEEP arms, whose atom rectangle spans
+    #: levels the owner block does not.
+    for widths, hidden, heads in (((64,), 128, 2), ((256,), 128, 2), ((64, 64), 128, 2),
+                                  ((16, 16), 64, 2), ((16, 16, 16), 64, 2),
+                                  ((8, 8, 8, 8), 64, 2)):
         for routing_name, routing in (("dense", dense_routing(widths[0])),
                                       ("union", union_routing(widths[0], 1.5))):
             for mode in ("stateless", "paged", "dense_state"):
@@ -102,9 +121,8 @@ def _run_cell(cell) -> dict[str, torch.Tensor]:
            f"{name}/owners": torch.tensor(prod(widths) // chunk_arm(routes)[1])}
     if state is not None:
         out[f"{name}/state"] = state.materialize()
-    for index, (entry, tensors) in enumerate(recorder.calls):
-        for slot, tensor in enumerate(tensors):
-            out[f"{name}/{index}.{entry}.{slot}"] = tensor
+    for fact, tensor in recorder.facts.items():
+        out[f"{name}/{fact}"] = tensor
     return out
 
 

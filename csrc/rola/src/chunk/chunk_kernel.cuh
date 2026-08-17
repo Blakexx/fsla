@@ -1631,19 +1631,39 @@ __global__ __launch_bounds__(threads_for(BC), (kCtaTarget<C, BC>)) void compacte
 #undef ADDRT_DV
 }
 
-// ------------------------------------------------------- the union table
-//: THE TABLE IS BUILT ONCE FOR THE WHOLE GRID.  A lockstep unit takes thirty-two
-//: consecutive tokens, one per lane, and votes once per entry; the vote IS the
-//: word, so nothing is packed afterwards and nothing is zeroed first.
+// ------------------------------------------------------- the facts tables
+//: one warp per token word, four warps per CTA.
+constexpr int kFactsThreads = 128;
+
+//: THE CALL CLASSES THIS PASS IS SPECIALIZED OVER -- the prefill half of the four
+//: (`rola/facts/types.py`'s `Mask`).  Decode's two never reach this kernel and are
+//: not instantiated for it, so an unmatched value is the int_switch's refusal.
+enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
+
+//: THE TABLES ARE BUILT ONCE FOR THE WHOLE GRID, BOTH ROW SETS IN ONE PASS.  A
+//: lockstep unit takes thirty-two consecutive tokens, one per lane, and votes once
+//: per entry; the vote IS the word, so nothing is packed afterwards and nothing is
+//: zeroed first.
+//:
+//: The two grains are one partition refining another -- the atom rectangle is
+//: `kAtomLeaves` leaves and the owner rectangle is `BC` of them -- so the write
+//: side is voted at the ATOM grain and each owner row is the OR of the atom rows
+//: inside it.  The digits are read once and voted once; nothing is evaluated twice.
+//: docs/internals/chunk/chunk_kernel.md#the-facts-pass
 //:
 //: Its cost does not depend on `BC`: a lane reads its token's amplitude row once
 //: per level that has entries, whatever the spans partition it into.
-template <int D, int B, int BC>
-__global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
+template <int D, int B, int BC, int MASK>
+__global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
                                    const __nv_bfloat16* __restrict__ pwrite,
-                                   uint32_t* __restrict__ tbl, int L) {
+                                   uint32_t* __restrict__ tbl, uint32_t* __restrict__ atom_tbl,
+                                   int L) {
   using LP = LevelPlan<D, B, BC>;
+  using AP = LevelPlan<D, B, kAtomLeaves>;
   constexpr int kWtot = LP::col_base(LP::depth);
+  static_assert(kWtot == AP::col_base(AP::depth),
+                "both grains read the SAME amplitude row: the packed column layout is "
+                "the widths policy's and carries no block geometry");
   const int tokWords = tok_words(L);
   const int w = blockIdx.x * (blockDim.x / kBallotLanes) + (threadIdx.x >> 5);
   const int lane = threadIdx.x & 31;
@@ -1658,81 +1678,106 @@ __global__ void union_table_kernel(const __nv_bfloat16* __restrict__ pread,
   //: address is formed ONCE and afterwards only advanced, by a stride that is
   //: itself 64-bit -- so no `pointer + int` widening multiply reaches a body.
   const long entryStride = tokWords;
-  uint32_t* const outBase[2] = {tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * entryStride + w,
-                                tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w};
-  const __nv_bfloat16* const ampBase[2] = {pread + off, pwrite + off};
+  const __nv_bfloat16* const ampRead = pread + off;
+  const __nv_bfloat16* const ampWrite = pwrite + off;
 
-  //: one stanza per level, spans from the plan -- a whole level emits
-  //: nothing, exactly as its clause is not evaluated.  Amp row layout is
+#define ROLA_FACTS_VOTE(P_, SPAN_) \
+  lane_ballot(real && (or_run<SPAN_>(P_) & kBf16MagnitudeMask) != 0u)
+
+  //: one stanza per level, spans from the plan -- a whole level emits nothing,
+  //: exactly as its clause is not evaluated.  Amp row layout is
   //: [level 0 | level 1 | ...], each `width(l)` wide.
-#pragma unroll
-  for (int side = 0; side < 2; ++side) {
-    uint32_t* out = outBase[side];
-#define ROLA_TABLE_LEVEL(L_)                                                   \
-    if constexpr (L_ < LP::depth) {                                            \
-      const __nv_bfloat16 *p = ampBase[side] + LP::col_base(L_);               \
-      constexpr int kSpan = LP::span_at(L_);                                   \
-      constexpr int kEnt = LP::entries_at(L_);                                 \
-      _Pragma("unroll") for (int e = 0; e < kEnt; ++e) {                       \
-        const uint32_t v = or_run<kSpan>(p);                                   \
-        const uint32_t vote =                                                  \
-            lane_ballot(real && (v & kBf16MagnitudeMask) != 0u);               \
-        if (lane == 0) *out = vote;                                            \
-        p += kSpan;                                                            \
-        out += entryStride;                                                    \
-      }                                                                        \
-    }
-    ROLA_TABLE_LEVEL(0)
-    ROLA_TABLE_LEVEL(1)
-    ROLA_TABLE_LEVEL(2)
-    ROLA_TABLE_LEVEL(3)
-#undef ROLA_TABLE_LEVEL
+#define ROLA_FACTS_LEVEL(PLAN_, BASE_, OUT_, L_)                                \
+  if constexpr (L_ < D && PLAN_::entries_at(L_) > 0) {                          \
+    const __nv_bfloat16* p = (BASE_) + PLAN_::col_base(L_);                     \
+    constexpr int kSpan = PLAN_::span_at(L_);                                   \
+    _Pragma("unroll") for (int e = 0; e < PLAN_::entries_at(L_); ++e) {         \
+      const uint32_t vote = ROLA_FACTS_VOTE(p, kSpan);                          \
+      if (lane == 0) *(OUT_) = vote;                                            \
+      p += kSpan;                                                               \
+      (OUT_) += entryStride;                                                    \
+    }                                                                           \
   }
+
+  //: the write side at BOTH grains.  An owner entry's digit run is a whole number
+  //: of atom runs, so its ballot is the OR of theirs -- bit for bit, because the
+  //: magnitude test distributes over the run's OR.
+#define ROLA_FACTS_LEVEL_BOTH(L_)                                               \
+  if constexpr (L_ < D && AP::entries_at(L_) > 0) {                             \
+    constexpr int kSpanA = AP::span_at(L_);                                     \
+    constexpr int kEntA = AP::entries_at(L_);                                   \
+    constexpr int kEntU = LP::entries_at(L_);                                   \
+    constexpr int kOwners = kEntU > 0 ? kEntU : 1;                              \
+    constexpr int kGroup = kEntA / kOwners;                                     \
+    static_assert(kEntU == 0                                                    \
+                      || (kGroup * kOwners == kEntA                             \
+                          && LP::span_at(L_) == kSpanA * kGroup),               \
+                  "the atom rectangle must REFINE the owner rectangle at every "  \
+                  "level, or an owner row is not the OR of atom rows");          \
+    const __nv_bfloat16* p = ampWrite + AP::col_base(L_);                       \
+    _Pragma("unroll") for (int u = 0; u < kOwners; ++u) {                      \
+      uint32_t owner = 0;                                                       \
+      _Pragma("unroll") for (int g = 0; g < kGroup; ++g) {                      \
+        const uint32_t vote = ROLA_FACTS_VOTE(p, kSpanA);                       \
+        if (lane == 0) *aout = vote;                                            \
+        owner |= vote;                                                          \
+        p += kSpanA;                                                            \
+        aout += entryStride;                                                    \
+      }                                                                         \
+      if constexpr (kEntU > 0) {                                                \
+        if (lane == 0) *out = owner;                                            \
+        out += entryStride;                                                     \
+      }                                                                         \
+    }                                                                           \
+  } else if constexpr (L_ < D) {                                                \
+    static_assert(LP::entries_at(L_) == 0,                                      \
+                  "a level the ATOM grain spans whole cannot have owner rows: "  \
+                  "the owner rectangle is the coarser partition");               \
+  }
+
+  {
+    uint32_t* out = tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * entryStride + w;
+    ROLA_FACTS_LEVEL(LP, ampRead, out, 0)
+    ROLA_FACTS_LEVEL(LP, ampRead, out, 1)
+    ROLA_FACTS_LEVEL(LP, ampRead, out, 2)
+    ROLA_FACTS_LEVEL(LP, ampRead, out, 3)
+  }
+
+  //: THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what
+  //: keys residency, and reads of never-written atoms are inert.  A stateless call
+  //: compiles none of this, so it pays a stateless call's price; a stateful call
+  //: with no arena to admit into is the runtime-null OUTPUT skip, and takes the
+  //: owner-grain emission alone -- which is the cheaper one when nothing needs the
+  //: finer rows.
+  if constexpr (MASK == kPrefillStateful) {
+    if (atom_tbl != nullptr) {
+      uint32_t* out = tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w;
+      uint32_t* aout = atom_tbl + ((long)blockIdx.y * AP::entries) * entryStride + w;
+      ROLA_FACTS_LEVEL_BOTH(0)
+      ROLA_FACTS_LEVEL_BOTH(1)
+      ROLA_FACTS_LEVEL_BOTH(2)
+      ROLA_FACTS_LEVEL_BOTH(3)
+      return;
+    }
+  }
+  {
+    uint32_t* out = tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w;
+    ROLA_FACTS_LEVEL(LP, ampWrite, out, 0)
+    ROLA_FACTS_LEVEL(LP, ampWrite, out, 1)
+    ROLA_FACTS_LEVEL(LP, ampWrite, out, 2)
+    ROLA_FACTS_LEVEL(LP, ampWrite, out, 3)
+  }
+#undef ROLA_FACTS_LEVEL_BOTH
+#undef ROLA_FACTS_LEVEL
+#undef ROLA_FACTS_VOTE
 }
 
 // ------------------------------------------------------- the atom-grain stats
-//: THE STATS PASS.  Two kernels that answer ONE question: which atoms does this
-//: call's routing WRITE?  The answer keys the state's residency, so it is taken
-//: at the invariant quantum (`kAtomLeaves`) and never at `BC` -- the derivation,
-//: the exactness argument and the rejected coarser reductions are in
-//: docs/internals/paging/stats.md.
-template <int D, int B>
-__global__ void atom_table_kernel(const __nv_bfloat16* __restrict__ pwrite,
-                                  uint32_t* __restrict__ tbl, int L) {
-  using LP = LevelPlan<D, B, kAtomLeaves>;
-  constexpr int kWtot = LP::col_base(LP::depth);
-  const int tokWords = tok_words(L);
-  const int w = blockIdx.x * (blockDim.x / kBallotLanes) + (threadIdx.x >> 5);
-  const int lane = threadIdx.x & 31;
-  if (w >= tokWords) return;  // a whole lockstep unit leaves together
-  const int t = w * kTokBits + lane;
-  const bool real = t < L;
-  const long off = (long)blockIdx.y * L * kWtot + (long)(real ? t : 0) * kWtot;
-
-  const long entryStride = tokWords;
-  uint32_t* out = tbl + ((long)blockIdx.y * LP::entries) * entryStride + w;
-  const __nv_bfloat16* const ampBase = pwrite + off;
-
-#define ROLA_ATOM_TABLE_LEVEL(L_)                                              \
-  if constexpr (L_ < LP::depth) {                                              \
-    const __nv_bfloat16* p = ampBase + LP::col_base(L_);                       \
-    constexpr int kSpan = LP::span_at(L_);                                     \
-    constexpr int kEnt = LP::entries_at(L_);                                   \
-    _Pragma("unroll") for (int e = 0; e < kEnt; ++e) {                          \
-      const uint32_t v = or_run<kSpan>(p);                                     \
-      const uint32_t vote = lane_ballot(real && (v & kBf16MagnitudeMask) != 0u); \
-      if (lane == 0) *out = vote;                                              \
-      p += kSpan;                                                              \
-      out += entryStride;                                                      \
-    }                                                                          \
-  }
-  ROLA_ATOM_TABLE_LEVEL(0)
-  ROLA_ATOM_TABLE_LEVEL(1)
-  ROLA_ATOM_TABLE_LEVEL(2)
-  ROLA_ATOM_TABLE_LEVEL(3)
-#undef ROLA_ATOM_TABLE_LEVEL
-}
-
+//: THE STATS PASS' REDUCTION.  Which atoms does this call's routing WRITE?  The
+//: answer keys the state's residency, so it is taken at the invariant quantum
+//: (`kAtomLeaves`) and never at `BC` -- the derivation, the exactness argument and
+//: the rejected coarser reductions are in docs/internals/paging/stats.md.
+//:
 //: how many threads and how much of the token axis one CTA of the reduction
 //: holds resident.  The tile is a RESIDENCY quantity, not an axis: it bounds the
 //: shared word stream so the CTA's footprint is independent of `L`.

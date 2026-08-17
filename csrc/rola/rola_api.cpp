@@ -33,8 +33,14 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // ---- the chunk consumer, the adopted operator ---------------------------
-  m.def("chunk_union_table", &rola::chunk::union_table,
-        "chunk consumer: the precomputed membership union table");
+  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-grain
+  //: write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
+  //: (`rola/facts/types.py`'s M1/M2), which is compiled in; `atoms` is the
+  //: runtime-null output skip within the stateful class.
+  m.def("chunk_facts", &rola::chunk::facts,
+        "chunk consumer: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
+        py::arg("pw"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("mask"),
+        py::arg("atoms"));
   //: the state plane is the CALLER'S, on both sides; absent on both is a fresh
   //: sequence whose carried state nobody asked for -- what a stateless forward
   //: passes, and the null the kernel's epilogue is skipped by.  A page table
@@ -51,8 +57,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("out") = torch::kFloat32, py::arg("s_in") = py::none(),
         py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
         py::arg("block_bits") = py::none());
-  m.def("chunk_stats", &rola::chunk::stats,
-        "chunk consumer: the exact atom-grain write bitmap the page plan admits from");
   //: the sparse grid's predicate INPUT: three liveness facts per (bh, block),
   //: reduced from the union table this call already built. The predicate OVER
   //: them is the dispatch's, because it differs by call class and by backing.

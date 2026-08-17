@@ -127,7 +127,7 @@ def _dense(fixture, widths, C, BC, *, s_in=None):
 
 def _bitmap(fixture, widths):
     """The kernel's own EXACT atom-grain write bitmap for this routing."""
-    return extension().chunk_stats(_packed(fixture)[1], list(widths)).bool()
+    return planes.atom_bits(_packed(fixture)[1], widths).bool()
 
 
 def _arena(widths, BC, BH):

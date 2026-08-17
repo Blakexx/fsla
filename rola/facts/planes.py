@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.facts.types import MMA_K_QUANTUM
+from rola.facts.types import MMA_K_QUANTUM, Mask
 from rola.ops._ext import extension
 
 
@@ -102,10 +102,20 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
 def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
     """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
 
-    The page plan's input (docs/internals/paging/stats.md). It is keyed to the
-    16-leaf quantum and not to `BC`, so it is a property of the routing alone and is
-    legitimately taken BEFORE an arm is chosen -- which is what lets residency be an
-    OUTPUT of the plan rather than a consequence of it. Device-side: no host
-    synchronization happens here.
+    The page plan's input (docs/internals/paging/stats.md). It is keyed to the 16-leaf
+    quantum and not to `BC`, so the bitmap this returns is the same tensor at every
+    built arm -- which is what lets residency be an OUTPUT of the plan rather than a
+    consequence of it. Device-side: no host synchronization happens here.
+
+    ASKING FOR IT ALONE BUILDS THE UNION TABLE TOO, because both row sets come out of
+    one pass over the plane (docs/internals/chunk/chunk_kernel.md#the-facts-pass); a
+    call that wants both takes them from the chunk DAG's own node in one launch, and
+    nothing on a measured path comes through here.
     """
-    return extension().chunk_stats(write_plane, list(widths))
+    from rola.facts import manifest as census
+    from rola.rules.arm import arm as arm_rule
+
+    widths = tuple(widths)
+    arm = arm_rule(widths, census.chunk_arms())
+    return extension().chunk_facts(write_plane, write_plane, *arm, list(widths),
+                                   int(Mask.M2), True)[1]

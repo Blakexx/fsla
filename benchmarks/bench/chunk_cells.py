@@ -200,10 +200,9 @@ def realized(cell: Cell, fx: dict | None = None) -> dict:
     """
     fx = cell.build() if fx is None else fx
     plan = fx["plan"]
-    #: The bitmap is taken from the PRIMITIVE, not off the plan: the DAG's `atom_bits`
-    #: node is masked out on a stateless call (it exists to size a page admission, and
-    #: these cells bind no state), so `plan` carries no bitmap to read. Same launch and
-    #: same argument as the node's own body -- `chunk_stats(write_plane, widths)`.
+    #: The bitmap is taken from the PRIMITIVE, not off the plan: these cells bind no
+    #: state, so the facts pass ran with the atom-grain emission skipped and `plan`
+    #: carries no bitmap to read. This is the same reduction over the same plane.
     live = planes.atom_bits(plan.write_plane, plan.widths).bool()
     return {
         "N": cell.N,
