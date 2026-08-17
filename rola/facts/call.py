@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from rola import rules
-from rola.facts.manifest import chunk_arms, scan_arms
+from rola.facts import manifest
 
 if TYPE_CHECKING:
     from rola.facts.types import Arm
@@ -29,7 +29,7 @@ def arm_of(routes) -> Arm | None:
     The facade needs `BC` before the launch, because the page arena's extent policy
     is stated in owners; it is the one launch parameter that leaves the plan.
     """
-    return rules.arm(widths_of(routes), chunk_arms())
+    return rules.arm(widths_of(routes), manifest.chunk_arms())
 
 
 def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
@@ -42,7 +42,7 @@ def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
     """
     widths = widths_of(routes)
     return (widths, d_v, routes.normalization, decay, routes.tokens,
-            rules.arm(widths, chunk_arms()))
+            rules.arm(widths, manifest.chunk_arms()))
 
 
 def arm_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
@@ -54,4 +54,4 @@ def backward_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
     """Why a GRAD-BEARING call has no arm, or None if it trains."""
     clauses = envelope_clauses(routes, decay, d_v=d_v)
     return rules.backward_envelope(rules.arm_envelope(*clauses), clauses[0],
-                                   clauses[-1], scan_arms())
+                                   clauses[-1], manifest.scan_arms())

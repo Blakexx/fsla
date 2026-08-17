@@ -270,9 +270,11 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
 
     The retired `test_layer_paging.py` made it of a layer-held arena, forcing
     the decision through the function that made it. The arena is the STATE's now, and the
-    chunk arm's `(C, BC)` comes from `rola.ops.chunk._arm_for` -- the one function both
-    the facade (which needs `BC` for the arena's extent policy) and the launch read -- so
-    scripting THAT is the same move against the same seam, not a reach around it.
+    chunk arm's `(C, BC)` is ArmRule's verdict over the built manifest -- so what this
+    scripts is the MANIFEST, the rule's own input, read through `rola.facts.manifest` by
+    the facade (which needs `BC` for the arena's extent policy) and by the DAG's
+    `manifest` node alike. Scripting the fact rather than the fold is the same move
+    against the same seam, and it leaves the rule exactly as it ships.
 
     Two calls on one live state at two built `BC`s must: keep the SAME arena object (a
     rebuild would mean residency was keyed to the tile), let the state's extent policy
@@ -281,16 +283,20 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
     `test_chunk_paging_equivalence.py` makes the ABI-level version of the byte claim; this
     one is about the object's lifecycle across the flip.
     """
-    from rola.ops import chunk as chunk_module
+    from rola.facts import manifest as manifest_module
 
     widths = (64, 64)  # the topology the built matrix gives more than one BC
-    #: PINNED PER CALL, not per invocation of the seam: `_arm_for` is read several times
+    #: PINNED PER CALL, not per invocation of the seam: the census is read several times
     #: inside one `rola_op` (the refusal check, the facade's extent policy, the launch),
     #: and all of those must agree or the call would plan one arm and launch another.
     forced = {"BC": 64}
+    built = manifest_module.chunk_arms()
 
-    def scripted_arm_for(D, B):
-        return (32, forced["BC"])
+    def scripted_arms():
+        """The built matrix with this topology's OTHER arms withheld, so the rule has
+        exactly one to prefer and the pin cannot outvote the script."""
+        return tuple(row for row in built
+                     if row[1] == forced["BC"] or (row[0], row[2], row[3]) != (32, 2, 64))
 
     producer = _producer(seed=11, widths=widths)
     x, v = _inputs(seed=11, T=64)
@@ -308,7 +314,7 @@ def test_a_BC_flip_over_a_live_state_neither_rebuilds_the_arena_nor_moves_a_byte
             rola.rola_op(second, v[:, 32:], state=state, expert=expert)
         return state, arena, bc
 
-    monkeypatch.setattr(chunk_module, "_arm_for", scripted_arm_for)
+    monkeypatch.setattr(manifest_module, "chunk_arms", scripted_arms)
     paged, arena_after_first, bc_after_first = chain(None)
     dense, _, _ = chain(_DENSE)
 
