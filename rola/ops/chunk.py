@@ -205,6 +205,20 @@ class SavedForward:
     eps: float = 0.0
     v_row_bytes: int = 0
 
+    @staticmethod
+    def of(plan: ChunkPlan, den: torch.Tensor) -> SavedForward:
+        """The ctx a grad-bearing call keeps, off the plan it just ran.
+
+        Every field is a reference to something the call already built, so a saving
+        call and an inference call issue the same launches in the same order; what
+        differs is only what stays alive.
+        """
+        return SavedForward(
+            pr=plan.read_plane, pw=plan.write_plane, gw=plan.g_write,
+            rm=plan.read_mass, tbl=plan.union_table, den=den, vk=plan.v,
+            c=plan.arm.c, bc=plan.arm.bc, widths=plan.widths, eps=plan.eps,
+            v_row_bytes=plan.v_row_bytes)
+
     def retained_bytes(self) -> int:
         """What a grad-bearing call costs OVER an inference one. `y` and `v` are the
         op's own output and operand, alive either way, so neither is counted here

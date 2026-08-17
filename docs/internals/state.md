@@ -82,7 +82,7 @@ place and returns THE SAME OBJECT.
 The backing is chosen at BIND time and is not a per-call flag:
 
 * **paged** (the default for every stateful call) — a `PageArena`. The call's exact
-  atom bitmap (`rola.ops.chunk.stats`, the kernel's own write set) is planned into
+  atom bitmap (`rola.ops.chunk.atom_bits`, the kernel's own write set) is planned into
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
@@ -102,14 +102,13 @@ whichever backing the state bound.
 the oracle, for a cross-arm hand-off and for a test. **Never on a measured path**:
 allocating `[B, H, N, cols]` is exactly what paging exists to avoid.
 
-## <a id="host-order"></a>4. The host order of a stateful kernel call
+## <a id="backing-policy"></a>4. What the state contributes to a kernel call
 
-```
-stats(routes)         -> atom bitmap        # BC-free, so it precedes the arm
-state._kernel_entry   -> plan_exact on the arena's SIDE STREAM, one size read
-chunk.run             -> union table, arena.wait(), launch, divide
-state._kernel_commit  -> the final plane is the state's
-```
+The ORDER of a stateful call is the chunk DAG's and is stated there
+([`facts/chunk_dag.md` §4](facts/chunk_dag.md#host-order)). What is the STATE's own
+is this: `_kernel_entry` plans the call's atoms into slots and hands back
+`(s_in, arena)`, and `_kernel_commit` takes the final plane for a dense-backed state
+(a paged one already owns its own).
 
 `plan_exact`'s single device-to-host size read is the only host synchronization in
 the sequence, and it is the read that also SIZES the admission. A fresh state plans

@@ -254,11 +254,7 @@ class ChunkConsumer(torch.autograd.Function):
             #: operand and output and autograd owns their versioning; the O(L)
             #: byproducts are not graph tensors and ride beside them.
             ctx.save_for_backward(v, y)
-            ctx.saved_plan = _chunk.SavedForward(
-                pr=plan.read_plane, pw=plan.write_plane, gw=plan.g_write,
-                rm=plan.read_mass, tbl=plan.union_table, den=den, vk=plan.v,
-                c=plan.arm.c, bc=plan.arm.bc, widths=plan.widths, eps=plan.eps,
-                v_row_bytes=plan.v_row_bytes)
+            ctx.saved_plan = _chunk.SavedForward.of(plan, den)
             #: the bundle, for its LAYOUTS alone: `backward` needs each level's width
             #: and dtype to un-pack the digit gradients, and those are the bundle's.
             ctx.saved_routes = plan.routes

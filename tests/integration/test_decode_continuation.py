@@ -81,7 +81,7 @@ def _state_bound(routes, v, prefill):
 
     The instrument `test_chunk_final_state.py` derives, extended across the seam by the
     one fact that distinguishes the two arms: the chunk consumer narrows its operands to
-    bf16 (`chunk.run`'s four `.to(torch.bfloat16)` casts), and decode has no MMA and
+    bf16 (the chunk DAG's packing casts), and decode has no MMA and
     never leaves fp32. So a leaf's state is a sum of `T + S` fp64-exact terms of which
     only the first `prefill` were rounded to bf16 on the way in:
 

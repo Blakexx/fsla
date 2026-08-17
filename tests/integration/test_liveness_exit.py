@@ -348,13 +348,13 @@ def test_a_bitmap_built_for_another_arm_is_refused():
 
 
 def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
-    """`rola.ops.chunk.run` -- the packing the facade calls, and the reachability
+    """`rola.ops.chunk.execute` -- the launch the facade reaches, and the reachability
     claim. The liveness reduction is not a plan choice any more: there is no flag
     to set, so the gate is that a bitmap of the right grain ARRIVES at the launch.
     """
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-    from conftest import build_routes
+    from conftest import build_routes, chunk_launch
 
     from rola.ops import chunk
     from rola.routing.producer import union_routing
@@ -367,7 +367,7 @@ def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
     v = torch.randn(2, 64, 2, _DV, device="cuda")
     seen = _spy_on_the_launch(chunk)
     try:
-        y, _ = chunk.run(chunk.pack(routes), v)
+        y, _ = chunk_launch(routes, v)
     finally:
         chunk.extension = seen.pop("restore")
     bits = seen["bits"]
@@ -454,13 +454,14 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
                      expert=PlanOverrides(paging=None if paging else False))
     through_the_facade = state.materialize().clone()
 
-    packed = chunk.pack(routes)
+    pr, pw = chunk.pack_side(routes.read), chunk.pack_side(routes.write)
+    gw = chunk.packed_copy(routes.g_write.permute(0, 2, 1))
     c, bc = chunk.arm(routes)
     m = extension()
-    tbl = m.chunk_union_table(packed.pr, packed.pw, v.to(torch.bfloat16).contiguous(),
+    tbl = m.chunk_union_table(pr, pw, v.to(torch.bfloat16).contiguous(),
                               c, bc, list(_WIDTHS))
     bare = chunk.state_plane(routes, d_v=_DV)
-    m.chunk_forward_raw(packed.pr, packed.pw, packed.gw,
+    m.chunk_forward_raw(pr, pw, gw,
                         v.to(torch.bfloat16).contiguous(), tbl, c, bc, list(_WIDTHS),
                         None, bare, None, None)
     assert torch.equal(through_the_facade,

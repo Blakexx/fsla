@@ -91,7 +91,7 @@ def _built_arm(requires_grad: bool = True):
 
 
 def test_the_chunk_node_refuses_a_ctx_the_forward_never_filled():
-    """`rola.ops.chunk.run` is a bare extension call, so an arm that reached it from a
+    """`rola.ops.chunk.execute` is a bare extension call, so an arm that reached it from a
     gradient-requiring context would hand back a tensor with no `grad_fn` and no
     error. The node closes that gap, and now that its backward COMPUTES, the loud
     line moves to the one state that cannot be computed from: a backward reached with
@@ -116,7 +116,7 @@ def test_the_chunk_node_does_not_mark_its_output_non_differentiable():
 
 
 def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
-    """`chunk.run` has ONE caller in the package, and it is inside the autograd node.
+    """`chunk.execute` has ONE caller in the package, and it is inside the autograd node.
 
     A second call site would be a path to the kernel with no node on it, which is the
     gap the node exists to close; asserted structurally because the failure it guards
@@ -124,7 +124,7 @@ def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
     package = pathlib.Path(rola.__path__[0])
     callers = sorted(
         str(path.relative_to(package)) for path in package.rglob("*.py")
-        if "_chunk.run(" in path.read_text() or "chunk.run(" in path.read_text())
+        if "chunk.execute(" in path.read_text())
     assert callers == ["interface.py"], (
         f"the chunk kernel is reached from {callers}; every path to it must go through "
         "ChunkConsumer")
@@ -132,7 +132,7 @@ def test_the_kernel_arm_reaches_the_chunk_kernel_only_through_the_node():
     tree = ast.parse(source)
     node = next(n for n in ast.walk(tree)
                 if isinstance(n, ast.ClassDef) and n.name == "ChunkConsumer")
-    assert "_chunk.run(" in ast.get_source_segment(source, node)
+    assert "_chunk.execute(" in ast.get_source_segment(source, node)
 
 
 @pytest.mark.cuda
@@ -173,7 +173,9 @@ def test_the_node_is_what_carries_the_graph_when_the_facade_is_bypassed():
     from rola.ops import chunk as _chunk
 
     assert _chunk.unsupported(routes, None, d_v=v.shape[-1]) is None, "fixture must be a BUILT arm"
-    y, _ = ChunkConsumer.run(_chunk.pack(routes), v)
+    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+
+    y = ChunkConsumer.run(build_chunk_plan(ChunkContext(routes=routes, v=v)), v)
     assert y.grad_fn is not None, (
         "the kernel arm returned a grad_fn-less tensor inside a grad context -- the "
         "graph is severed and nothing said so")

@@ -19,7 +19,7 @@ owner block; `owners = N / BC`.
 
 1. *Bit identity.* One call dense and one paged over the same routing and the
    same `v`, with the arena planned from the kernel's own exact write bitmap
-   (`rola.ops.chunk.stats` -> `PageArena.plan_exact`). `y` is equal and the
+   (`rola.ops.chunk.atom_bits` -> `PageArena.plan_exact`). `y` is equal and the
    states are equal once the paged pages are gathered back through the table.
    The gather sends an absent atom to zeros, which is the same thing the dense
    plane holds there, because the bitmap is the write set EXACTLY -- an atom
@@ -479,7 +479,7 @@ def test_the_arena_commits_exactly_the_plan_s_demand_through_a_real_launch():
 # ---------------------------------------------------------------------------
 
 def test_the_arena_travels_through_the_host_seam():
-    """`rola.ops.chunk.run(..., arena=...)` on a producer's own bundle.
+    """The chunk plan carrying an arena, on a producer's own bundle.
 
     The seam is what a facade will call: it takes the arena, waits on its
     admission stream and hands the kernel the table and the paged plane. The
@@ -488,7 +488,7 @@ def test_the_arena_travels_through_the_host_seam():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from conftest import build_routes
+    from conftest import build_routes, chunk_launch
 
     from rola.routing.producer import union_routing
 
@@ -501,11 +501,12 @@ def test_the_arena_travels_through_the_host_seam():
 
     routes = producer(x)
     BC = 128  # the arm `rola.ops.chunk` pins for this topology
-    y_dense, dense = chunk.run(chunk.pack(routes), v, want_state=True)
-    y_control, _ = chunk.run(chunk.pack(routes), v, want_state=True)
+    y_dense, dense = chunk_launch(routes, v, want_state=True)
+    y_control, _ = chunk_launch(routes, v, want_state=True)
     arena = _arena(widths, BC, routes.batch * routes.heads)
-    arena.plan_exact(chunk.stats(chunk.pack(routes)).bool())
-    y_paged, plane = chunk.run(chunk.pack(routes), v, want_state=True, arena=arena)
+    arena.plan_exact(chunk.atom_bits(chunk.pack_side(routes.write),
+                                     routes.topology.widths).bool())
+    y_paged, plane = chunk_launch(routes, v, want_state=True, arena=arena)
 
     assert plane is arena.state
     assert torch.equal(dense.view(-1, prod(widths), _COLS), arena.materialize())

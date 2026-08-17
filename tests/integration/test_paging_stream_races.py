@@ -23,7 +23,7 @@ are all unchanged, so the discipline claim survives its executor whole and only 
 launch it brackets moves. It is now driven through `rola_op(state=rola.state())` — the production
 sequence — rather than through a private entry, which makes the ordering claim
 one about what SHIPS: the facade runs the stats pass, `RoLAState._kernel_entry`
-plans the arena on its side stream, and `rola.ops.chunk.run` issues the single
+plans the arena on its side stream, and the chunk DAG's Join issues the single
 `wait()` that puts the admission before the kernel.
 
 Three cells:
