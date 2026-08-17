@@ -444,17 +444,20 @@ Both run in the CPU line. They read files; they never touch a device.
 
 ## The host-structure gates
 
-The facts engine's DAG framework is host-only, so its battery is too.
+The engine's DAG framework is host-only, so its battery is too.
 
 **`tests/unit/test_facts_memo.py`** runs with no CUDA, no extension and no kernel.
-It holds the two caches a node may declare — `pure_of`'s plain dict and
-`per_state`'s `WeakKeyDictionary`, including the weakness itself (a dropped sequence
-drops its buffers) — and the structural refusals that fire at DAG declaration: a need
-that arrives later than its reader, a second Join, a second device-to-host read, a
-memo key that is not one of the node's own inputs. It also pins the shipped chunk
-DAG's two placement facts: the atom bitmap has no arm edge, and the Join is upstream
-of the block bitmap. These were conventions reachable only through a launch before
-the engine named them.
+It holds the caches the engine may declare — `pure_of`'s plain dict and `per_state`'s
+`WeakKeyDictionary`, including the weakness itself (a dropped sequence drops its
+buffers), plus the PRIMITIVE-level census cache, which is neither: the build census is
+read once however many folds ask for it, and what it returns is immutable, because a
+shared cached value a caller could mutate would not be a fact. It also holds the
+structural refusals that fire at DAG declaration: a need that arrives later than its
+reader, a second Join, a second device-to-host read, a memo key that is not one of the
+node's own inputs. And it pins the shipped chunk DAG's placement facts: the union table
+and the atom bitmap come from ONE node, that node runs before the admission it feeds,
+and the Join is upstream of the block bitmap. These were conventions reachable only
+through a launch before the engine named them.
 
 It also holds the decode family's two STRUCTURAL declarations, which is where they can
 be held without a device: every node of `DECODE_STEP` declares `capturable` and none
