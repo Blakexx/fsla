@@ -456,6 +456,16 @@ DAG's two placement facts: the atom bitmap has no arm edge, and the Join is upst
 of the block bitmap. These were conventions reachable only through a launch before
 the engine named them.
 
+It also holds the decode family's two STRUCTURAL declarations, which is where they can
+be held without a device: every node of `DECODE_STEP` declares `capturable` and none
+declares `host_sync` (so a node added to the captured recipe that reads the device on
+the host fails here, not at some caller's first `graph.replay()`), and no shipped DAG
+contains a `reference_only` node — `write_atom_bitmap`, the growth gate's independent
+second derivation, is declared and refused by `validate_dag`, which is what keeps that
+independence from being wired away. The CAPTURE ITSELF is
+`tests/integration/test_decode_graph_step.py`'s; this is the declaration that must agree
+with it.
+
 **`tests/unit/test_facts_rules.py`** runs the same way and holds the RULE layer: every
 band-2 fold fed plain values -- tuples, ints, a fake manifest, a `torch.device` -- and
 asserted on its decision, plus the marker sweep that makes `rola/rules/` an inventory
