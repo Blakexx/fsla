@@ -39,17 +39,13 @@ spread says nothing about another instrument's median.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import statistics
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 import torch
-
-BASELINE = Path(__file__).resolve().parents[1] / "cells" / "latency_baseline.json"
 
 #: The one free choice. A one-sided 3-sigma alarm: ~0.1 % false alarm per cell per
 #: run. Everything else about the threshold is that cell's measured spread.
@@ -195,26 +191,6 @@ def classify(history, candidate, *, paired_diffs=None) -> dict:
             "baseline_median_ms": base_median, "baseline_iqr_ms": base_iqr,
             "n_history": len(window), "debounce": debounce,
             "significance": significance}
-
-
-def load_baseline() -> dict:
-    if not BASELINE.exists():
-        raise SystemExit(
-            f"no committed latency baseline at {BASELINE}; record one with\n"
-            f"    flock /tmp/rola_gpu.lock python benchmarks/bench_regression.py --write")
-    return json.loads(BASELINE.read_text())
-
-
-def write_baseline(arms: dict) -> None:
-    """A baseline is a MEASUREMENT, recorded whole with its provenance.
-
-    Never a partial update: half a baseline taken on one machine and half on another
-    would compare two runs that were never comparable, and nothing in the file would
-    say so.
-    """
-    BASELINE.write_text(json.dumps(
-        {"provenance": provenance(), "alarm_sigma": ALARM_SIGMA, "arms": arms},
-        indent=1, sort_keys=True) + "\n")
 
 
 # ---------------------------------------------------------------------------
