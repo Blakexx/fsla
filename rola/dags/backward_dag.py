@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rola import rules
 from rola.facts.runner import node, run, validate_dag
 from rola.facts.types import Seeds
 
@@ -68,6 +69,7 @@ def unpack(f):
 
 
 BACKWARD_DAG = (
+    rules.mask.node,
     backward_seeds,
     scan_a,
     scan_b,

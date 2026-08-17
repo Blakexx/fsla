@@ -48,7 +48,7 @@ DV = 64
 
 def _plan(routes, v):
     """This call's :class:`~rola.facts.plan.ChunkPlan` -- what the node executes."""
-    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
 
     return build_chunk_plan(ChunkContext(routes=routes, v=v))
 

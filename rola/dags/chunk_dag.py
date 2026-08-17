@@ -14,6 +14,7 @@ from typing import Any
 
 import torch
 
+from rola import rules
 from rola.facts import nodes
 from rola.facts.plan import ChunkPlan
 from rola.facts.runner import node, run, validate_dag
@@ -62,10 +63,12 @@ def build_plan(f):
 
 
 CHUNK_DAG = (
-    nodes.paging_preference,
+    rules.paging_preference.node,
     nodes.topology,
     nodes.classify_call,
-    nodes.select_arm,
+    rules.mask.node,
+    nodes.manifest,
+    rules.arm.node,
     nodes.pack_planes,
     nodes.atom_bits,
     nodes.residency,

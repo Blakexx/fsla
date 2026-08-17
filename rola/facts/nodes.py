@@ -3,20 +3,26 @@
 """The primitive library: one declared node each, typed on the FACTS.
 
 Nodes are typed on facts and not on any one family's context, which is what lets a
-DAG share them (docs/internals/facts/facts.md). Each body is the smallest thing that
-produces its fact; the derivations it calls stay where they are implemented.
+DAG share them. These are BAND 1 -- a node may launch and may allocate -- and each
+body is the smallest thing that produces its fact, over the packing and manifest
+primitives beside it (docs/internals/facts/facts.md).
 """
 from __future__ import annotations
 
+import torch
+
+from rola.facts import manifest as census
+from rola.facts import planes
+from rola.facts.operands import operands_of, requires_backward
 from rola.facts.runner import node
-from rola.facts.types import Arm, CallClass, Mask
+from rola.facts.types import CallClass, Mask
+from rola.ops._ext import extension
 
 
-@node(gives=("paging",), needs=("expert",))
-def paging_preference(f):
-    from rola.interface import _paging_preference
-
-    return _paging_preference(f["expert"])
+@node(gives=("manifest",))
+def manifest(f):
+    """What this binary was BUILT for -- the arm decision's only non-call input."""
+    return census.chunk_arms()
 
 
 @node(gives=("widths", "d_v"), needs=("routes", "v"))
@@ -29,8 +35,6 @@ def topology(f):
       needs=("routes", "v", "decay", "state", "given_state_in", "given_arena",
              "want_state", "paging"))
 def classify_call(f):
-    from rola.interface import operands_of, requires_backward
-
     state, given_arena = f["state"], f["given_arena"]
     return CallClass(
         state_in=f["given_state_in"] is not None or state is not None,
@@ -40,28 +44,18 @@ def classify_call(f):
         grad=requires_backward(*operands_of(f["routes"], f["v"], f["decay"])))
 
 
-@node(gives=("arm",), needs=("routes",))
-def select_arm(f):
-    from rola.ops.chunk import arm
-
-    return Arm(*arm(f["routes"]))
-
-
 @node(gives=("read_plane", "write_plane", "g_write", "read_mass"), needs=("routes",),
       stream="main")
 def pack_planes(f):
-    import torch
-
-    from rola.ops.chunk import pack_side, packed_copy
-
     routes = f["routes"]
     mass = routes.read_mass
-    return (pack_side(routes.read),
-            pack_side(routes.write),
-            packed_copy(routes.g_write.permute(0, 2, 1)),
+    return (planes.pack_side(routes.read),
+            planes.pack_side(routes.write),
+            planes.packed_copy(routes.g_write.permute(0, 2, 1)),
             #: fp32, because it scales the readout's floor and `eps` is an fp32
             #: definition constant; bf16 here would quantize the floor.
-            None if mass is None else packed_copy(mass.permute(0, 2, 1), torch.float32))
+            None if mass is None else planes.packed_copy(mass.permute(0, 2, 1),
+                                                         torch.float32))
 
 
 @node(gives=("atom_bits",), needs=("write_plane", "widths", "state", "paging"),
@@ -70,12 +64,10 @@ def atom_bits(f):
     """THE ABSENT `arm` EDGE IS THE POINT: the bitmap is keyed to the 16-leaf
     quantum, so residency is an OUTPUT of the plan rather than a consequence of it
     and the admission may run concurrently with the arm's own work."""
-    from rola.ops.chunk import atom_bits as build
-
     state = f["state"]
     if state is None or not state._wants_pages(f["paging"]):
         return None
-    return build(f["write_plane"], f["widths"])
+    return planes.atom_bits(f["write_plane"], f["widths"])
 
 
 @node(gives=("state_in", "arena"),
@@ -94,12 +86,8 @@ def residency(f):
 def pack_v(f):
     """THE KERNEL TAKES V AS THE CALLER HOLDS IT: token-major, and bf16 because that
     is the operand dtype the consumer reads."""
-    import torch
-
-    from rola.ops.chunk import packed_copy
-
     v = f["v"]
-    return v if v.dtype is torch.bfloat16 and v.is_contiguous() else packed_copy(v)
+    return v if v.dtype is torch.bfloat16 and v.is_contiguous() else planes.packed_copy(v)
 
 
 @node(needs=("arena",), stream="main", masks=(Mask.M2,), waits=("residency",))
@@ -114,19 +102,16 @@ def join(f):
 
 @node(gives=("page_table", "state_out"), needs=("arena", "want_state", "routes", "d_v"))
 def backing(f):
-    from rola.ops.chunk import state_plane
-
     arena, want_state = f["arena"], f["want_state"]
     if arena is None:
-        return None, (state_plane(f["routes"], d_v=f["d_v"]) if want_state else None)
+        return None, (planes.state_plane(f["routes"], d_v=f["d_v"]) if want_state
+                      else None)
     return arena.page_table, (arena.state if want_state else None)
 
 
 @node(gives=("union_table",),
       needs=("read_plane", "write_plane", "v_packed", "arm", "widths"), stream="main")
 def union_table(f):
-    from rola.ops._ext import extension
-
     return extension().chunk_union_table(f["read_plane"], f["write_plane"],
                                          f["v_packed"], *f["arm"], list(f["widths"]))
 
@@ -134,7 +119,5 @@ def union_table(f):
 @node(gives=("block_bits",),
       needs=("union_table", "arm", "widths", "routes", "page_table"), stream="main")
 def block_bits(f):
-    from rola.ops._ext import extension
-
     return extension().chunk_block_bits(f["union_table"], f["arm"].bc, list(f["widths"]),
                                         f["routes"].tokens, f["page_table"])

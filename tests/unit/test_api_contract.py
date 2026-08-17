@@ -424,8 +424,11 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "import rola;"
             "from rola.layer import RoLA;"
             "from rola.interface import rola_op, require_envelope;"
-            "from rola.ops.chunk import CHUNK_TOKENS, atom_bits, execute, unsupported;"
-            "from rola.facts.chunk_dag import ChunkContext, build_chunk_plan;"
+            "from rola.ops.chunk import execute;"
+            "from rola.facts.planes import atom_bits;"
+            "from rola.rules.arm import CHUNK_TOKENS;"
+            "from rola.rules.envelope import arm_envelope;"
+            "from rola.dags.chunk_dag import ChunkContext, build_chunk_plan;"
             "from rola.ops.decode import derive_decode_geometry;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `benchmarks/` or `tests/` tree.

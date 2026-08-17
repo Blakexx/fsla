@@ -103,20 +103,33 @@ them justified only by a quality measurement showing decay matters at scale.
 The liveness epilogue (`chunk_block_bits`, reducing the union table this call already
 built — `chunk_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `READ`,
 `WRITE`, `STATE`. It does not emit a verdict, because the verdict is not a property of the
-routing. What a skipped block would have cost differs by call class and by backing:
+routing. What a skipped block would have cost differs by call class and by backing, and a
+call class here is the PRESENCE of the three launch arguments — the entry-state plane, the
+exit-state plane and the page table — never the engagement bits the facade classifies with
+(`rola/facts/types.py`'s `CallClass`), because it is the argument that decides the cost:
 
-| call class | rule |
-|---|---|
-| stateless `y`-only | `R && W` |
-| state-in `y`-only, paged | `R && (W \| S)` |
-| state-in `y`-only, dense | `R` |
-| state-out, paged | `(R && (W \| S)) \| W` |
-| state-out, dense | always run |
+| call class | `s_in` | `s_out` | `page_tbl` | rule |
+|---|---|---|---|---|
+| stateless `y`-only | absent | absent | absent | `R && W` |
+| state-in `y`-only, paged | present | absent | present | `R && (W \| S)` |
+| state-in `y`-only, dense | present | absent | absent | `R` |
+| continued state-out, paged | present | present | present | `(R && (W \| S)) \| W` |
+| fresh state-out, paged | absent | present | present | `W` |
+| state-out, dense | either | present | absent | always run |
 
 `run_table(state_in, state_out, paged)` derives a `uint8` TRUTH TABLE over the byte's three
 bits by evaluating that rule for each of the eight values, so the rule is written once in
 readable form and the mask is derived, never hand-authored. The kernel's whole predicate is
 then one shift and one AND, with no branching taxonomy and no call-class knowledge in it.
+The eighth argument triple — a page table with no state at all — is refused at the binding
+before the derivation is reached, and derives the stateless row in any case.
+
+**The two paged state-out rows differ, and the difference is the entry state.** A CONTINUED
+sequence may hold value in a block it does not write this call, and only a read of that
+block's carried state can produce it — hence the `S` term. A FRESH one has no entry plane
+to read, so a block that writes nothing has nothing any read could observe, and the
+predicate collapses to `W`. Both are sound; the fresh row is simply tighter, and a
+derivation that gave it the continued row's rule would run blocks that are provably inert.
 
 **Why each row is what it is.** A skipped block's contribution to `y` and to `den` is the
 exact additive identity, not a negligible one: its mass accumulator is initialised to `+0.0`

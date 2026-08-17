@@ -356,6 +356,7 @@ def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
     from conftest import build_routes, chunk_launch
 
+    from rola.facts.call import arm_of
     from rola.ops import chunk
     from rola.routing.producer import union_routing
 
@@ -373,7 +374,7 @@ def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
     bits = seen["bits"]
     assert bits is not None and bits.dtype is torch.uint8, (
         f"the seam handed the launch {bits!r} rather than a liveness bitmap")
-    assert bits.shape == (2 * 2, _N // chunk.arm(routes)[1]), (
+    assert bits.shape == (2 * 2, _N // arm_of(routes)[1]), (
         f"the bitmap reaching the launch is {tuple(bits.shape)}, not this arm's grain")
     assert float(y.abs().max()) > 0
 
@@ -438,7 +439,8 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
     """
     import rola
     from rola.expert import PlanOverrides
-    from rola.ops import chunk
+    from rola.facts import planes
+    from rola.facts.call import arm_of
 
     B, T, H, live = 1, 64, 2, 4
     routes = _sparse_bundle(B, T, H, live)
@@ -454,13 +456,13 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
                      expert=PlanOverrides(paging=None if paging else False))
     through_the_facade = state.materialize().clone()
 
-    pr, pw = chunk.pack_side(routes.read), chunk.pack_side(routes.write)
-    gw = chunk.packed_copy(routes.g_write.permute(0, 2, 1))
-    c, bc = chunk.arm(routes)
+    pr, pw = planes.pack_side(routes.read), planes.pack_side(routes.write)
+    gw = planes.packed_copy(routes.g_write.permute(0, 2, 1))
+    c, bc = arm_of(routes)
     m = extension()
     tbl = m.chunk_union_table(pr, pw, v.to(torch.bfloat16).contiguous(),
                               c, bc, list(_WIDTHS))
-    bare = chunk.state_plane(routes, d_v=_DV)
+    bare = planes.state_plane(routes, d_v=_DV)
     m.chunk_forward_raw(pr, pw, gw,
                         v.to(torch.bfloat16).contiguous(), tbl, c, bc, list(_WIDTHS),
                         None, bare, None, None)

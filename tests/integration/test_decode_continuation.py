@@ -45,7 +45,7 @@ from conftest import build_routes  # noqa: E402
 
 import rola  # noqa: E402
 from rola.expert import PlanOverrides  # noqa: E402
-from rola.ops import chunk as _chunk  # noqa: E402
+from rola.facts.call import arm_of  # noqa: E402
 from rola.ops.decode import decode_forward  # noqa: E402
 from rola.ops.naive import _leaf_product, _radix_strides, naive_rola  # noqa: E402
 from rola.routing.producer import union_routing  # noqa: E402
@@ -119,7 +119,7 @@ def _state_envelope(state, routes, steps):
     :func:`_state_bound`, which is why the cross-backing cell uses this one and the
     oracle cells use that one.
     """
-    n = routes.tokens // _chunk.arm(routes)[0] + steps
+    n = routes.tokens // arm_of(routes)[0] + steps
     return n * n * torch.finfo(torch.float32).eps * float(state.abs().max())
 
 
@@ -222,7 +222,7 @@ def test_the_two_backings_compute_the_same_continuation():
     state_p, state_d = paged.materialize().double(), dense.materialize().double()
     bound = _state_envelope(state_d, routes, _S)
     assert float((state_p - state_d).abs().max()) <= bound
-    owners = prod(_WIDTHS) // _chunk.arm(routes)[1]
+    owners = prod(_WIDTHS) // arm_of(routes)[1]
     y_bound = owners * owners * torch.finfo(torch.float32).eps * float(y_dense.abs().max())
     assert float((y_paged - y_dense).abs().max()) <= y_bound
 
@@ -244,7 +244,7 @@ def test_a_decoded_sequence_continues_back_onto_the_chunk_arm():
     resident = int(state.bound and (state.page_table >= 0).sum())
 
     tail = slice(_T + _S, None)
-    x2 = torch.randn(_B, _chunk.arm(producer(x[:, :_T]))[0], _HIDDEN, device="cuda")
+    x2 = torch.randn(_B, arm_of(producer(x[:, :_T]))[0], _HIDDEN, device="cuda")
     v2 = torch.randn(_B, x2.shape[1], _H, _DV, device="cuda")
     with torch.no_grad():
         y2, state = rola.rola_op(producer(x2), v2, state=state)

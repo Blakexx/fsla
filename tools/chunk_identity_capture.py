@@ -96,7 +96,7 @@ def _run_cell(cell) -> dict[str, torch.Tensor]:
 
     from math import prod
 
-    from rola.ops.chunk import arm as chunk_arm
+    from rola.facts.call import arm_of as chunk_arm
 
     out = {f"{name}/y": y,
            f"{name}/owners": torch.tensor(prod(widths) // chunk_arm(routes)[1])}

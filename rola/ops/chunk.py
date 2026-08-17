@@ -1,4 +1,4 @@
-"""The CHUNK consumer's execution path (operator adoption; docs/internals/chunk/) -- the kernel arm.
+"""The CHUNK consumer's LAUNCHES (operator adoption; docs/internals/chunk/) -- the kernel arm.
 
 `rola_op`'s facade is untouched: this module is the private seam's kernel-arm
 implementation, opinionated about what it supports and LOUD about what it
@@ -6,19 +6,18 @@ does not (the facade stays generic; capabilities return through the paging
 and backward work, not
 through silent degradation).
 
-Launch arguments arrive as a :class:`~rola.facts.plan.ChunkPlan` that the chunk DAG
-built (:mod:`rola.facts.chunk_dag`), and the reverse pass's as the
-:class:`~rola.facts.plan.BackwardPlan` that holds it by reference
-(:mod:`rola.facts.backward_dag`). What lives here is the family's primitive BODIES --
-the arm, the envelope, the packing, the state plane, the seeds, the two scans and the
-un-packing -- and the launches that read a plan; the DAGs declare which of them a call
-class runs and in what order.
+THE SPLIT: what crosses the EXTENSION BOUNDARY lives here -- the consumer launch, the
+readout divide, the seeds, the two scans and the un-packing. What a DAG walk produces
+or decides lives in the library: the fact primitives in :mod:`rola.facts` (the
+packing, the write-atom bitmap, the state plane, the arm censuses), the pure folds in
+:mod:`rola.rules` (the arm, the envelope, retention), and the order in
+:mod:`rola.dags` (docs/internals/facts/facts.md).
 
-The packing happens ONCE per call, so every entry reads the same bytes. On the
-shipped path it is a VIEW: the producer's solve writes the `[B, H, T, sumW]` bf16
-side directly and `_side_plane` reconstructs it from the levels' strides
-(docs/internals/chunk/chunk.md#the-side-plane). The copy survives for the sides that
-are not already that layout -- a hand-built bundle, a foreign producer.
+Launch arguments therefore arrive already decided, as a
+:class:`~rola.facts.plan.ChunkPlan` that the chunk DAG built
+(:mod:`rola.dags.chunk_dag`), and the reverse pass's as the
+:class:`~rola.facts.plan.BackwardPlan` that holds it by reference
+(:mod:`rola.dags.backward_dag`).
 """
 from __future__ import annotations
 
@@ -27,152 +26,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from rola.ops._ext import extension
-from rola.ops.paging import MMA_K_QUANTUM
 
 if TYPE_CHECKING:
     from rola.facts.plan import BackwardPlan, ChunkPlan
     from rola.facts.types import Seeds
-
-#: THE CHUNK LENGTH -- the operator's token quantum. `T` must be a multiple of it,
-#: and shaping a sequence to it is the CALLER's job, which is why this is public
-#: rather than only reachable through a refusal message.
-CHUNK_TOKENS = 32
-
-#: The pinned plan: a fixed preference order over MEASURED arms, never a tuned
-#: heuristic. It generalizes only by falling back to the largest built BC when the
-#: pinned one is not in this topology's manifest.
-_PIN_C, _PIN_BC = CHUNK_TOKENS, 128
-
-
-def packed_copy(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
-    """`view` as a contiguous `dtype` tensor, in ONE copy.
-
-    `.to(dtype)` preserves a permuted view's strides, so `.to(dtype).contiguous()`
-    walks the tensor twice; an already-contiguous destination fuses the transpose
-    and the narrowing into the one copy that is actually needed.
-    """
-    return torch.empty(view.shape, dtype=dtype, device=view.device).copy_(view)
-
-
-def _arm_for(D: int, B: int):
-    """The manifest arm this topology runs, or None."""
-    arms = [tuple(a[:4]) for a in extension().chunk_arms()]
-    bcs = [bc for (c, bc, d, b) in arms if d == D and b == B and c == _PIN_C]
-    if not bcs:
-        return None
-    return (_PIN_C, _PIN_BC if _PIN_BC in bcs else max(bcs))
-
-
-def arm(routes) -> tuple[int, int]:
-    """`(C, BC)` -- the built arm this routing runs on. Refused topologies have none.
-
-    The facade needs `BC` before the launch, because the page arena's extent policy
-    is stated in owners; it is the one launch parameter that leaves this module.
-    """
-    widths = tuple(l.width for l in routes.topology.levels)
-    return _arm_for(len(widths), widths[0])
-
-
-def unsupported(routes, decay, *, d_v: int) -> str | None:
-    """Why the chunk arm refuses this call, or None if it runs.
-
-    `d_v` is the value stream's per-head width, which is a fact about `v` and not
-    about the routing -- the caller reads it off the operand and states it here.
-    """
-    top = routes.topology
-    widths = tuple(l.width for l in top.levels)
-    if d_v != 64:
-        return f"d_v={d_v}; the chunk matrix is built at d_v=64"
-    if routes.normalization != "global":
-        return f"normalization={routes.normalization!r}; the chunk consumer is global-only"
-    if decay is not None:
-        return "decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); use the reference arm"
-    if len(set(widths)) != 1:
-        return f"widths={widths}; the built manifest is uniform-width"
-    if _arm_for(len(widths), widths[0]) is None:
-        return f"topology (D={len(widths)}, B={widths[0]}) has no built arm in the manifest"
-    if routes.tokens % _PIN_C:
-        return f"T={routes.tokens} is not a multiple of the chunk C={_PIN_C}"
-    return None
-
-
-def scan_arms() -> set[tuple[int, int, int, int]]:
-    """The `(C, BC, D, B)` arms the two SCANS are built for -- read off the census,
-    not restated, so this cannot disagree with what shipped."""
-    return {tuple(row[:4]) for row in extension().chunk_scan_b_census()}
-
-
-def backward_unsupported(routes, decay, *, d_v: int) -> str | None:
-    """Why a GRAD-BEARING call has no arm, or None if it trains.
-
-    The forward's arm matrix is wider than the scans': the reverse pass carries the
-    TRAINABLE topologies (`tools/gen_shards.py`'s `SCAN_ARMS`), not every arm the
-    forward can infer at. A forward that runs and a backward that does not is
-    exactly the known-broken path this refuses at the boundary instead of
-    discovering three launches later.
-    """
-    reason = unsupported(routes, decay, d_v=d_v)
-    if reason is not None:
-        return reason
-    top = routes.topology
-    c, bc = arm(routes)
-    want = (c, bc, len(top.levels), top.levels[0].width)
-    if want not in scan_arms():
-        return (f"the reverse pass is not built for arm C={want[0]} BC={want[1]} "
-                f"depth={want[2]} width={want[3]}; it carries "
-                f"{sorted(scan_arms())} (docs/internals/chunk/backward.md)")
-    return None
-
-
-def _side_plane(levels) -> torch.Tensor | None:
-    """The `[B, H, T, sumW]` bf16 plane these levels are already views OF, or None.
-
-    A STRIDE fact, not a provenance one: the levels are the plane iff each is the
-    window of one bf16 allocation whose layout is exactly this side's, which is
-    checkable and is what a hand-built bundle either satisfies or does not
-    (docs/internals/chunk/chunk.md#the-side-plane).
-    """
-    batch, tokens, heads, _ = levels[0].shape
-    widths = [level.shape[-1] for level in levels]
-    total = sum(widths)
-    want = (heads * tokens * total, total, tokens * total, 1)
-    base = levels[0]
-    offset = 0
-    for level, width in zip(levels, widths):
-        if (level.dtype is not torch.bfloat16
-                or level.untyped_storage().data_ptr() != base.untyped_storage().data_ptr()
-                or level.stride() != want
-                or level.storage_offset() != base.storage_offset() + offset):
-            return None
-        offset += width
-    span = base.storage_offset() + batch * heads * tokens * total
-    if span * base.element_size() > base.untyped_storage().nbytes():
-        return None
-    return base.as_strided((batch, heads, tokens, total),
-                           (heads * tokens * total, tokens * total, total, 1),
-                           base.storage_offset())
-
-
-def pack_side(levels) -> torch.Tensor:
-    """The per-level `[B, T, H, width_l]` tuple as one `[B, H, T, sumW]` bf16 tensor.
-
-    ONE destination and one pass per level: concatenating in the public layout
-    materializes an intermediate no kernel reads, and the transpose and the
-    narrowing are then a second pass over it. A side that is already the plane skips
-    all of it -- the producer emits this layout.
-    """
-    plane = _side_plane(levels)
-    if plane is not None:
-        return plane
-    batch, tokens, heads, _ = levels[0].shape
-    widths = [level.shape[-1] for level in levels]
-    packed = torch.empty((batch, heads, tokens, sum(widths)),
-                         dtype=torch.bfloat16, device=levels[0].device)
-    offset = 0
-    for level, width in zip(levels, widths):
-        packed[:, :, :, offset:offset + width].copy_(level.permute(0, 2, 1, 3))
-        offset += width
-    return packed
 
 
 def backward_seeds(plan: BackwardPlan, dy: torch.Tensor, y: torch.Tensor):
@@ -261,39 +118,6 @@ def unpack_grads(plan: BackwardPlan, dv, d_read, d_write, d_gain, d_mass,
     return grads
 
 
-def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
-    """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
-
-    The ATOM-MAJOR view of `[BH, N, d_v+1]`, byte for byte: leaves are stored in
-    canonical order, so the reshape between the two is free and the kernel's
-    per-atom addressing and a reader's per-leaf one describe the same bytes.
-
-    Allocation is the caller's, not the kernel entry's -- which is what lets a
-    carried state be handed straight back in. It is uninitialized because the
-    dense plane is written WHOLE: the owner blocks tile the leaf space exactly,
-    so every atom is stored by exactly one CTA.
-    """
-    widths = tuple(l.width for l in routes.topology.levels)
-    n = 1
-    for w in widths:
-        n *= w
-    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1)
-    build = torch.zeros if zeros else torch.empty
-    return build(shape, device=routes.device, dtype=torch.float32)
-
-
-def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
-
-    The page plan's input (docs/internals/paging/stats.md). It is keyed to the
-    16-leaf quantum and not to `BC`, so it is a property of the routing alone and is
-    legitimately taken BEFORE an arm is chosen -- which is what lets residency be an
-    OUTPUT of the plan rather than a consequence of it. Device-side: no host
-    synchronization happens here.
-    """
-    return extension().chunk_stats(write_plane, list(widths))
-
-
 def execute(plan: ChunkPlan) -> tuple[torch.Tensor, torch.Tensor]:
     """`(y [B,T,H,d_v], den)` -- the consumer launch and the divide, over one plan.
 
@@ -315,4 +139,3 @@ def execute(plan: ChunkPlan) -> tuple[torch.Tensor, torch.Tensor]:
     #: which is the defined readout exactly rather than to within a scaled floor.
     y = m.chunk_divide_pass(num, den, plan.read_mass, plan.eps, plan.y_dtype)
     return y, den
-

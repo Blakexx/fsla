@@ -35,7 +35,7 @@ from conftest import build_layer, build_routes  # noqa: E402
 
 import rola  # noqa: E402
 from rola.expert import PlanOverrides  # noqa: E402
-from rola.ops import chunk as _chunk  # noqa: E402
+from rola.facts.call import arm_of  # noqa: E402
 from rola.routing.producer import union_routing  # noqa: E402
 
 pytestmark = [
@@ -61,7 +61,7 @@ def _inputs(seed=0, T=_T, B=2):
 
 def _envelope(y, routes):
     """The most `y` can move under a reassociation of the fan-in's atomics."""
-    n = prod(routes.topology.widths) // _chunk.arm(routes)[1]
+    n = prod(routes.topology.widths) // arm_of(routes)[1]
     return n * n * torch.finfo(torch.float32).eps * float(y.abs().max())
 
 
@@ -75,7 +75,7 @@ def _state_envelope(state, routes):
     the difference is bounded by the reassociation of that many fp32 additions --
     DERIVED here from the arm, exactly as the paging suite derives `y`'s.
     """
-    chunks = routes.tokens // _chunk.arm(routes)[0]
+    chunks = routes.tokens // arm_of(routes)[0]
     return chunks * chunks * torch.finfo(torch.float32).eps * float(state.abs().max())
 
 

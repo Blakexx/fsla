@@ -114,11 +114,8 @@ def test_a_masked_out_node_leaves_its_facts_null():
     a mask split, so a skipped band's facts must be PRESENT and null rather than
     absent -- a downstream node reads them either way."""
 
-    class _Class:
-        mask = Mask.M1
-
     skipped, calls = _counting(gives=("arena",), masks=(Mask.M2,))
-    facts = run((skipped,), {"call_class": _Class()})
+    facts = run((skipped,), {"mask": Mask.M1})
     assert facts["arena"] is None and not calls
 
 
@@ -131,7 +128,7 @@ def test_a_supplied_fact_short_circuits_its_producer():
 def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
     """The shipped DAG is validated at import; this is that check made visible, plus
     the two properties a reader would otherwise have to trust."""
-    from rola.facts.chunk_dag import CHUNK_DAG
+    from rola.dags.chunk_dag import CHUNK_DAG
 
     assert all(isinstance(step, Node) for step in CHUNK_DAG)
     joins = [step for step in CHUNK_DAG if step.waits]

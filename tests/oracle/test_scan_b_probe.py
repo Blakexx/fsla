@@ -53,8 +53,8 @@ from dataclasses import dataclass
 import pytest
 import torch
 
+from rola.facts.manifest import scan_arms
 from rola.ops._ext import extension, is_available
-from rola.ops.chunk import scan_arms
 
 pytestmark = pytest.mark.skipif(
     not is_available() or not torch.cuda.is_available(),

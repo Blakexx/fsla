@@ -15,6 +15,13 @@ if TYPE_CHECKING:
     import torch
 
 
+#: the MMA k-extent, and the page granule. The Python mirror of
+#: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
+#: ``constexpr`` cannot supply here; :meth:`rola.ops.paging.PageArena.__init__` checks
+#: it against the atom geometry it addresses.
+MMA_K_QUANTUM = 16
+
+
 class Mask(IntEnum):
     """The call classes a DAG specializes over -- never a per-fact bool.
 
@@ -54,19 +61,21 @@ class Seeds(NamedTuple):
 class CallClass:
     """What KIND of call this is, in the bits every downstream decision folds.
 
-    These four bits are also the `run_table` truth table's input triple plus the
-    retention bit, which is why the plan carries the class rather than the byte
-    (`csrc/rola/src/chunk/chunk.cu`, docs/internals/chunk/chunk.md#the-run-table).
+    These are ENGAGEMENT bits: `state_in` says this call was handed a state to
+    continue, which is a different question from whether an entry-state TENSOR reaches
+    the launch. The latter is `residency`'s answer, and it is what the skip predicate
+    folds (`rola/rules/run_table.py`).
+
+    The mask these bits select is :func:`rola.rules.mask.mask` -- a rule, not a
+    property here: a decision folded from a fact belongs to band 2 wherever it is
+    written, and one written as a method on the fact is a rule that no listing of
+    `rola/rules/` would show.
     """
 
     state_in: bool
     state_out: bool
     paged: bool
     grad: bool
-
-    @property
-    def mask(self) -> Mask:
-        return Mask.M2 if (self.state_in or self.state_out or self.paged) else Mask.M1
 
 
 #: THE SUPPLIABLE SET IS CLOSED. A caller may substitute production -- the routing

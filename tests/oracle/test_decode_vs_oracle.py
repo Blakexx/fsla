@@ -30,7 +30,7 @@ That took one gate with it and improved another:
 
 * **G5** — decode against the TILED consumer at ``T = 1`` — RETIRES. Its subject was
   the second prefill kernel as a cross-check, and the chunk arm cannot run ``T = 1``
-  at all (``T`` must be a multiple of ``rola.ops.chunk.CHUNK_TOKENS``). What G5
+  at all (``T`` must be a multiple of ``rola.rules.arm.CHUNK_TOKENS``). What G5
   actually established beyond the oracle rows was consumer-to-consumer agreement, and
   after D2 there is one prefill consumer.
 * **G7** — the prefill/decode seam — is now graded against the fp64 ORACLE over the
@@ -68,7 +68,7 @@ DECODE_RTOL = BF16_RTOL
 def _chunk_tokens() -> int:
     """The prefill arm's token quantum. Imported through the function so this
     module stays importable without the extension for a collection-only run."""
-    from rola.ops.chunk import CHUNK_TOKENS
+    from rola.rules.arm import CHUNK_TOKENS
 
     return CHUNK_TOKENS
 
@@ -470,7 +470,7 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
     than assumed -- a fixture that drifted out of the built matrix would otherwise be
     silently served by nothing at all.
     """
-    from rola.ops import chunk as _chunk
+    from rola.facts.call import arm_refusal
 
     topology = _topology(widths)
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
@@ -482,7 +482,7 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
         read=tuple(t.float() for t in read_levels),
         write=tuple(t.float() for t in write_levels),
         g_read=None, g_write=g_write.float())
-    refusal = _chunk.unsupported(routes, None, d_v=d_v)
+    refusal = arm_refusal(routes, None, d_v=d_v)
     assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
     from conftest import chunk_launch
 

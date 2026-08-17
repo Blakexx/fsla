@@ -31,9 +31,9 @@ import pytest
 import torch
 
 import rola
+from rola.facts.manifest import scan_arms
 from rola.interface import BackwardNotImplemented  # noqa: F401  (documents the seam)
 from rola.ops._ext import extension, is_available
-from rola.ops.chunk import scan_arms
 from rola.ops.naive import naive_rola
 
 pytestmark = pytest.mark.skipif(
@@ -325,7 +325,7 @@ def test_the_backward_retains_o_of_l_and_nothing_o_of_n(scale):
     from rola.routing.factors import RouteFactors
     rts = RouteFactors(read=tuple(kr), write=tuple(kw), g_read=None, g_write=kg,
                        read_mass=km, topology=routes.topology, normalization="global")
-    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
     from rola.facts.plan import BackwardPlan
 
     plan = build_chunk_plan(ChunkContext(
@@ -342,7 +342,7 @@ def test_the_backward_retains_o_of_l_and_nothing_o_of_n(scale):
 
 
 def _chunk_arm(routes) -> tuple[int, int, int, int]:
-    from rola.ops.chunk import arm as _arm
+    from rola.facts.call import arm_of as _arm
     c, bc = _arm(routes)
     widths = tuple(l.width for l in routes.topology.levels)
     return (c, bc, len(widths), widths[0])

@@ -20,11 +20,8 @@ from math import prod
 
 import torch
 
-#: the MMA k-extent, and the page granule. The Python mirror of
-#: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
-#: ``constexpr`` cannot supply here; :meth:`PageArena.__init__` checks it against the
-#: atom geometry it addresses.
-MMA_K_QUANTUM = 16
+from rola.facts.types import MMA_K_QUANTUM
+from rola.rules.paging import admission
 
 #: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
 #: ``(slot << _LOG2_ATOM_LEAVES | row)``, and the shift must be an expression in the
@@ -241,33 +238,15 @@ class ExtentAllocator:
         self._next = 0
 
     def take(self, count: int) -> int:
-        """Reserve ``count`` slots, ALIGNED to an extent when a fresh one is opened.
+        """Advance the cursor over the run :func:`rola.rules.paging.admission` placed.
 
-        Returns the first slot. **ALL OR NOTHING**: a demand the ceiling cannot serve
-        RAISES, naming the demand and the arena size, and leaves the allocator
-        untouched. There is no partial grant -- the capped mode that consumed one was
-        deleted, because a prefix grant silently computes a different function.
-
-        The alignment rule is one line and is the whole policy: a batch that fits the
-        current extent's remainder goes there (so small admissions do not waste a whole
-        extent), and a batch that does not starts a new extent (so a large admission --
-        an owner's ``QPO`` atoms, or a decode step's pre-growth run -- is contiguous
-        rather than straddling). Both branches are STRUCTURAL: they compare a count
-        against a remainder, never a size against a threshold.
+        The PLACEMENT -- the extent alignment and the all-or-nothing ceiling -- is the
+        rule; what is left here is the one mutation, which is why this class holds a
+        cursor and no policy (docs/internals/facts/rules.md).
         """
-        if count <= 0:
-            return self._next
-        remainder = (-self._next) % self.extent_atoms
-        first = (self._next + remainder if (remainder and count > remainder)
-                 else self._next)
-        if first + count > self.capacity:
-            raise RuntimeError(
-                f"the page arena cannot serve this launch: {count} new atoms demanded, "
-                f"{self.capacity - first} free in an arena of {self.capacity} atoms. "
-                "The arena grants ALL or refuses -- there is no partial grant and no "
-                "dropped write. The capacity IS the dense limit, so a demand it cannot "
-                "serve was not derived from this arena's own keying.")
-        self._next = first + count
+        first = admission(self._next, self.capacity, self.extent_atoms, count)
+        if count > 0:
+            self._next = first + count
         return first
 
 
@@ -553,7 +532,7 @@ class PageArena:
         """The PLANNED-EXACT-ASYNC admission, from the atom condensation.
 
         ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- the per-leaf write set
-        condensed to the atom quantum, as :func:`rola.ops.chunk.atom_bits` publishes it. It
+        condensed to the atom quantum, as :func:`rola.facts.planes.atom_bits` publishes it. It
         is the EXACT set of atoms this call touches on the write side, so the pool is
         SIZED rather than grown and there is nothing for an allocator to discover.
 

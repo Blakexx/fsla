@@ -1,12 +1,16 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The DAG framework: a declared node, the structural check, and the walk.
+"""The DAG framework: a declared node, a declared rule, the structural check, the walk.
 
 A DAG is a literal ordered tuple of nodes and **the order in the tuple IS the
 execution order**, chosen by the DAG's author. `needs` exists to make that order
 CHECKABLE and readable, not to compute it: :func:`validate_dag` refuses a DAG whose
 node reads a fact no earlier node produced, at import time rather than at launch
 (docs/internals/facts/facts.md).
+
+A RULE is a band-2 node: a pure host fold from facts to a decision, declared with
+:func:`rule` so the discipline is mechanically visible rather than conventional
+(docs/internals/facts/rules.md).
 
 Memoization is a node ATTRIBUTE here rather than a per-site convention: `pure_of`
 names the facts a pure host derivation is a function OF, and `per_state` binds a
@@ -15,7 +19,7 @@ device allocation to the lifetime of the one sequence that owns it.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -39,6 +43,9 @@ class Node:
     pure_of: tuple[str, ...]
     per_state: bool
     memo: Any = field(compare=False)
+    #: the band-2 fold this node adapts, or None for a band-1 fact node. Its presence
+    #: IS the rule marker: `rola/rules/` is the set of functions that carry one.
+    pure: Callable[..., Any] | None = None
 
     def __call__(self, facts: dict) -> Any:
         return self.fn(facts)
@@ -79,6 +86,41 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
     return declare
 
 
+def rule(*, gives: tuple[str, ...], needs: tuple[str, ...]) -> Callable[[Callable], Callable]:
+    """Declare a RULE: a pure host fold from facts to a decision.
+
+    **A rule may read a fact's SHAPE, DTYPE, DEVICE and PRESENCE, and never its
+    CONTENTS. It issues no launch and allocates nothing.** That contract is not
+    machine-checkable, which is exactly why the marker exists: `rola/rules/` holds
+    functions carrying it and nothing else, so the discipline is reviewable by
+    listing a directory (docs/internals/facts/rules.md).
+
+    The decorated function keeps its plain signature -- a rule is called directly,
+    with values, which is what makes it testable with no device present -- and gains
+    `.node`, the band-2 node a DAG walks it as. The parameter names ARE the fact
+    names, refused here if they disagree, so the adapter is a lookup and not a
+    convention.
+    """
+
+    def declare(fn: Callable[..., Any]) -> Callable[..., Any]:
+        from inspect import signature
+
+        params = tuple(signature(fn).parameters)
+        if params != tuple(needs):
+            raise ValueError(
+                f"{fn.__name__}: the rule reads {list(needs)} but its parameters are "
+                f"{list(params)}; a rule's parameter names are the FACT names it folds")
+
+        def walk(facts: dict) -> Any:
+            return fn(**{name: facts[name] for name in needs})
+
+        walk.__name__ = fn.__name__
+        fn.node = replace(node(gives=gives, needs=needs)(walk), pure=fn)
+        return fn
+
+    return declare
+
+
 def validate_dag(dag: tuple[Node, ...], seeds: tuple[str, ...]) -> None:
     """Refuse a DAG that is not walkable in its own order. Import-time, per DAG."""
     available = set(seeds)
@@ -104,8 +146,8 @@ def validate_dag(dag: tuple[Node, ...], seeds: tuple[str, ...]) -> None:
 def run(dag: tuple[Node, ...], facts: dict) -> dict:
     """Walk `dag` in order over the seeded fact bag, and return it."""
     for step in dag:
-        call_class = facts.get("call_class")
-        if call_class is not None and call_class.mask not in step.masks:
+        mask = facts.get("mask")
+        if mask is not None and mask not in step.masks:
             facts.update({name: None for name in step.gives if name not in facts})
             continue
         if step.gives and all(name in facts for name in step.gives):

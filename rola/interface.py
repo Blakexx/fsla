@@ -23,7 +23,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from rola import rules
 from rola._state import RoLAState
+from rola.facts.call import arm_refusal, backward_refusal
+from rola.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
     from rola.routing.factors import RouteFactors
@@ -94,7 +97,7 @@ def rola_op(
     Carrying a gradient AND a ``state`` still raises -- training is stateless in v1
     (P65 R-D).
     """
-    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
 
     plan = build_chunk_plan(ChunkContext(
         routes=routes, v=v, decay=decay, state=state, expert=expert,
@@ -105,57 +108,23 @@ def rola_op(
     state._kernel_commit(plan.state_out)
     return y, state
 
-def _paging_preference(expert: Any) -> bool:
-    """Whether a state bound by this call gets a PAGED backing. Default: yes.
-
-    The expert may set ``paging=False`` and only False -- ``paging=True`` is refused
-    by :class:`rola.expert.PlanOverrides` itself, because there is nothing to turn on.
-    That is the "expert overrides the MAPPING only" ruling, made mechanical.
-    """
-    if expert is None:
-        return True
-    from rola.expert import PlanOverrides
-
-    return PlanOverrides.of(expert).paging is not False
-
 # ---------------------------------------------------------------------------
 # The envelope
 # ---------------------------------------------------------------------------
-
-def operands_of(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> tuple:
-    """Every tensor the OPERATION consumes, flat -- the predicate's argument list."""
-    return (v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
-
-def requires_backward(*tensors: Any) -> bool:
-    """Whether a call over these operands must produce a differentiable result.
-
-    Evaluated on the tensors the OPERATION consumes -- ``v``, the routing factors, the
-    side gains, the decay dials -- and never on a module's parameters. A
-    frozen-parameter forward under ``torch.no_grad()`` has no graph to sever and
-    correctly takes the kernel; a dial-only unfrozen finetune has exactly one
-    grad-requiring operand and must not.
-    """
-    if not torch.is_grad_enabled():
-        return False
-    return any(_any_requires_grad(t) for t in tensors)
 
 def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
     """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
 
     THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
-    before calling and get the sentence the refusal will carry. The gradient and
-    device clauses are facts about the operands rather than the configuration and live
-    in :func:`require_envelope` beside them.
+    before calling and get the sentence the refusal will carry. It is a CALLER of the
+    rule layer: the sentences are :mod:`rola.rules.envelope`'s and this function reads
+    the facts they fold. The clauses that exist only on the grad path are
+    :func:`require_envelope`'s.
     """
-    unratified = tuple(routes.topology.unratified_activations)
-    if unratified:
-        return (f"unratified activations {unratified}; no kernel was measured for them "
-                "(docs/ratification.md)")
-    if routes.device.type != "cuda":
-        return f"the operands are on {routes.device}; the arm is a CUDA kernel"
-    from rola.ops import chunk as _chunk
-
-    return _chunk.unsupported(routes, decay, d_v=v.shape[-1])
+    reason = rules.envelope(tuple(routes.topology.unratified_activations), routes.device)
+    if reason is not None:
+        return reason
+    return arm_refusal(routes, decay, d_v=v.shape[-1])
 
 def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
                      state: Any = None) -> None:
@@ -174,19 +143,14 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
     rather than silently.
     """
     grad = requires_backward(*operands_of(routes, v, decay))
-    if grad and state is not None:
-        raise BackwardNotImplemented(
-            "rola_op trains STATELESS ONLY and this call carries both a gradient and "
-            "a state plane. The state is caller-owned and mutated in place, and the "
-            "reverse pass has no `d initial_state`: it rebuilds from zero. Detach the "
-            "operands for a stateful step, or drop `state=` to train.")
+    stateless = rules.training_envelope(grad, state)
+    if stateless is not None:
+        raise BackwardNotImplemented(stateless)
     if grad and routes.device.type == "cuda":
-        from rola.ops import chunk as _chunk
-
         #: THE REVERSE PASS' ARM MATRIX IS NARROWER THAN THE FORWARD'S, so a call
         #: that would run forward and fail backward is refused HERE rather than
         #: three launches later with the operands already consumed.
-        back = _chunk.backward_unsupported(routes, decay, d_v=v.shape[-1])
+        back = backward_refusal(routes, decay, d_v=v.shape[-1])
         if back is not None:
             raise BackwardNotImplemented(
                 f"rola_op can run this call but cannot differentiate it: {back}. Run "
@@ -198,13 +162,6 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
             f"rola_op runs the BUILT envelope only and there is no arm for this call: "
             f"{reason}. Nothing else is reachable through this surface "
             "(docs/api.md §1).")
-
-def _any_requires_grad(obj: Any) -> bool:
-    if isinstance(obj, torch.Tensor):
-        return obj.requires_grad
-    if isinstance(obj, (tuple, list)):
-        return any(_any_requires_grad(item) for item in obj)
-    return False
 
 class ChunkConsumer(torch.autograd.Function):
     """The CHUNK consumer as an autograd node whose backward refuses, loudly.
@@ -250,7 +207,7 @@ class ChunkConsumer(torch.autograd.Function):
         #: is that condition rather than a guess at it: an inference call retains
         #: nothing, so the two-pass activation cost is paid by training alone
         #: (docs/internals/chunk/backward.md).
-        if any(ctx.needs_input_grad):
+        if rules.retention(any(ctx.needs_input_grad)):
             #: `v` and `y` ride `save_for_backward` because they are this node's own
             #: operand and output and autograd owns their versioning; the O(L)
             #: byproducts are not graph tensors and ride beside them.
@@ -269,14 +226,14 @@ class ChunkConsumer(torch.autograd.Function):
         The ctx IS the forward's plan (:class:`~rola.facts.plan.BackwardPlan`), so
         there is nothing to re-derive and nothing to thread here -- the seeds, the two
         scans and the un-packing are declared nodes over that plan
-        (:mod:`rola.facts.backward_dag`), and the routing bundle the un-packing needs
+        (:mod:`rola.dags.backward_dag`), and the routing bundle the un-packing needs
         for its layouts is the plan's own.
 
         What comes back is ordered by `RouteFactors.tensors()`, which `forward`'s flat
         argument list is also ordered by; `tests/unit/test_interface.py` asserts that
         correspondence rather than trusting it.
         """
-        from rola.facts.backward_dag import run_backward
+        from rola.dags.backward_dag import run_backward
 
         plan = getattr(ctx, "saved_plan", None)
         if plan is None:

@@ -16,8 +16,8 @@ import math
 import torch
 from conftest import chunk_launch
 
-from rola.ops import chunk as _chunk
-from rola.ops.chunk import CHUNK_TOKENS
+from rola.facts import planes
+from rola.facts.call import arm_of, arm_refusal
 from rola.ops.naive import naive_rola
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from rola.routing.factors import RouteFactors
@@ -27,6 +27,7 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
 )
+from rola.rules.arm import CHUNK_TOKENS
 from tests.oracle.families import Family
 
 #: The operator's token quantum, re-exported so a family fixture and the
@@ -144,7 +145,7 @@ class Case:
         #: mirror exists so `families.py` stays device-free, and this is the
         #: line that makes a drift between them observable
         #: (`test_family_meta.py` asserts the two agree for every family).
-        self.refusal = _chunk.unsupported(self.bundle, self.decay, d_v=self.d_v)
+        self.refusal = arm_refusal(self.bundle, self.decay, d_v=self.d_v)
 
     # -- generators ---------------------------------------------------------
 
@@ -257,7 +258,7 @@ class Case:
         oracle's ``[B, H, N, cols]`` state layout.
 
         The state plane's atom-major `[BH, N/16, 16, cols]` shape is the dense
-        `[BH, N, cols]` one byte for byte (`rola.ops.chunk.state_plane`), so
+        `[BH, N, cols]` one byte for byte (`rola.facts.planes.state_plane`), so
         both crossings here are reshapes and neither is a repack.
         """
         assert self.refusal is None, (
@@ -268,12 +269,12 @@ class Case:
                     self.B * self.H, self.N // MMA_K_QUANTUM, MMA_K_QUANTUM, self.cols))
         arena = None
         if self.paging:
-            arena = PageArena(widths=self.widths, BC=_chunk.arm(self.bundle)[1],
+            arena = PageArena(widths=self.widths, BC=arm_of(self.bundle)[1],
                               cols=self.cols, BH=self.B * self.H,
                               device=torch.device("cuda"))
             #: the arena is planned from the KERNEL's own exact write bitmap,
             #: so residency is an output of the routing and not a guess about it.
-            arena.plan_exact(_chunk.atom_bits(_chunk.pack_side(self.bundle.write),
+            arena.plan_exact(planes.atom_bits(planes.pack_side(self.bundle.write),
                                               self.widths))
         y, plane = chunk_launch(self.bundle, self._f32["v"], state_in=s_in,
                                 want_state=True, arena=arena)

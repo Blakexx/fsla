@@ -70,7 +70,7 @@ import math
 import pytest
 import torch
 
-from rola.ops import chunk as _chunk
+from rola.facts.call import arm_refusal
 from rola.ops.naive import naive_rola
 from rola.routing.factors import RouteFactors
 from tests.oracle.oracle_fixtures import _output_charge, _simplex, _topology
@@ -142,7 +142,7 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
         read=tuple(t.to(torch.float32) for t in quantized(read_levels)),
         write=tuple(t.to(torch.float32) for t in quantized(write_levels)),
         g_read=None, g_write=g_write.to(torch.float32))
-    refusal = _chunk.unsupported(routes, None, d_v=d_v)
+    refusal = arm_refusal(routes, None, d_v=d_v)
     assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
     from conftest import chunk_launch
 
@@ -175,7 +175,7 @@ def _family_errors(*a, **k) -> tuple[float, float]:
 #: the widths moved to the ones the manifest builds.
 _FAMILY_CELLS = [(8, 8), (16, 16, 16), (8, 8, 8, 8)]
 
-#: `T` must be a multiple of the operator's chunk (`rola.ops.chunk.CHUNK_TOKENS`).
+#: `T` must be a multiple of the operator's chunk (`rola.rules.arm.CHUNK_TOKENS`).
 #: `37` -- the tiled file's deliberately ragged length -- has no kernel arm now.
 _T = 64
 

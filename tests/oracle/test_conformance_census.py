@@ -158,7 +158,7 @@ _EXCEPTIONS: frozenset[tuple] = frozenset({
 #:
 #: `tail = ragged` is empty at EVERY instantiation, and that is an envelope
 #: fact rather than a coverage gap: the chunk arm's token quantum is
-#: `rola.ops.chunk.CHUNK_TOKENS`, and a `T` that is not a multiple of it has no
+#: `rola.rules.arm.CHUNK_TOKENS`, and a `T` that is not a multiple of it has no
 #: kernel at all — the call is REFUSED. So the ragged regime is oracle-graded by
 #: construction, never kernel-covered. `stratified/ragged` and
 #: `stratified/ragged-raw-decay` still run: they hold the ragged SEMANTICS
