@@ -116,9 +116,19 @@ state and replays the schedule from the union table rather than from per-chunk
 snapshots, and that claim is a property of the plan's field list rather than an
 accident of what the forward happened to keep.
 
+That rule is load-bearing in a way it was not before the backward's ctx became a
+plan REFERENCE: a grad-bearing call now keeps the whole plan alive until the reverse
+pass runs, so a field added for the forward's convenience is retained for free.
+`tests/integration/test_backward_ctx.py` walks the retained plans field by field and
+holds each to a closed form of its own — a field with no term there fails by name.
+
 Two facts are also OPERANDS and the engine does not pretend otherwise: the union
 table is read by the consumer kernel as its schedule and by the block bitmap as data,
 and the state-out plane is both a launch argument and the call's result.
+
+A plan is also not always a walk's OUTPUT. The backward family's plan is its INPUT —
+the forward's, held by reference — because the reverse pass finds no facts of its own
+([`backward_dag.md`](backward_dag.md)).
 
 ## <a id="neutrality"></a>9. The neutrality gate
 

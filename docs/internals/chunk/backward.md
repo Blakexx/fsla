@@ -484,21 +484,33 @@ partial, so the live accumulator is 8 registers rather than 128.
 
 ## <a id="ctx-contract"></a>The ctx the forward hands over
 
-`rola.ops.chunk.SavedForward`. Everything in it is `O(L)` with a per-topology
-constant: the packed read and write sides, the write gain, the read mass, the
-denominator, the union table, the liveness bitmap when the launch used one, and the
-plan's scalars. The state, the per-chunk compaction lists, the causal thresholds
-and the numerator are absent by construction — the backward rebuilds the first and
-replays the rest.
+`rola.facts.plan.BackwardPlan` — the forward's `ChunkPlan` held BY REFERENCE, plus
+`den`. The reverse pass finds no facts of its own, so there is no second object to
+keep in step with the plan: what the forward configured is what the backward reads
+(docs/internals/facts/backward_dag.md).
+
+What it replays from is `O(L)` with a per-topology constant: the packed read and
+write sides, the write gain, the read mass, the denominator and the union table.
+The state, the per-chunk compaction lists, the causal thresholds and the numerator
+are absent by construction — the backward rebuilds the first and replays the rest.
 
 The union table is the ONE byproduct inherited by save rather than by replay:
 rebuilding it is a second launch over the whole amplitude plane for a bit-identical
 answer, and it is the seam the schedule is replayed from. `entries` is a SUM over
 levels, never a product, so the table does not grow with `N`.
 
+`retained_bytes()` counts that replay set, which is what a grad-bearing call costs
+over an inference one. The plan reference also pins the forward's `block_bits` —
+`[BH, N / BC]` BYTES, carrying no `T` at all, 64 of them at the pinned arm — and
+`v`, which is the op's own operand and was pinned before this too. Both are named in
+`tests/integration/test_backward_ctx.py`; neither is folded into the closed form,
+because a term with no `L` in it would make that a number no closed form matches.
+
 The ctx is taken on `needs_input_grad`, so an inference call retains nothing.
 `tests/integration/test_backward_ctx.py` asserts the retained set equals the closed
-form exactly — not that it grows slowly, which a regression could hide in.
+form exactly — not that it grows slowly, which a regression could hide in — and
+asserts it PER FIELD, walked off the plans, so a field arriving on the plan for the
+forward's sake cannot be retained silently.
 
 ## <a id="reg-floor-scan"></a>The scans declare their own register floor
 

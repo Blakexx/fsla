@@ -326,11 +326,12 @@ def test_the_backward_retains_o_of_l_and_nothing_o_of_n(scale):
     rts = RouteFactors(read=tuple(kr), write=tuple(kw), g_read=None, g_write=kg,
                        read_mass=km, topology=routes.topology, normalization="global")
     from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+    from rola.facts.plan import BackwardPlan
 
     plan = build_chunk_plan(ChunkContext(
         routes=rts, v=kv.to(torch.bfloat16).contiguous()))
     _y, den = _chunk.execute(plan)
-    saved = _chunk.SavedForward.of(plan, den)
+    saved = BackwardPlan(forward=plan, den=den)
     per_token = saved.retained_bytes() / T
     #: the closed form: two `sumW` bf16 planes, the gain, the mass, the denominator,
     #: and the union table's `2 * entries * ceil(T/32)` words -- all per token.

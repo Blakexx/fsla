@@ -456,6 +456,14 @@ DAG's two placement facts: the atom bitmap has no arm edge, and the Join is upst
 of the block bitmap. These were conventions reachable only through a launch before
 the engine named them.
 
+**`tests/integration/test_backward_ctx.py`** became a host-structure gate as well as a
+memory one when the backward's ctx became the forward's plan HELD BY REFERENCE: the
+retained set is now a field list maintained for the forward's sake, so the sum
+matching its closed form no longer implies each field does. It walks every tensor the
+ctx pins off the two plan dataclasses, refuses BY NAME a field it has no term for, and
+holds each to a closed form in `T`, `sumW`, `entries` or `N` — none of which contains
+`N * T`. A field arriving on `ChunkPlan` and being retained for free fails here.
+
 **`tools/chunk_identity_capture.py`** is not a battery but the gate a host refactor
 claiming neutrality answers to. `capture` on the parent tree, `verify` on the
 refactored one: `y`, the returned state plane, the union table, the block bitmap and
