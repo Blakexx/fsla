@@ -17,14 +17,14 @@ std::pair<torch::Tensor, c10::optional<torch::Tensor>> facts(torch::Tensor pr, t
                                                              int64_t mask, bool atoms);
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
-                                       int64_t bc, std::vector<int64_t> widths,
+                                       int64_t bc, std::vector<int64_t> widths, int64_t run_table,
                                        c10::optional<torch::Tensor> s_in,
                                        c10::optional<torch::Tensor> s_out,
                                        c10::optional<torch::Tensor> page_tbl,
                                        c10::optional<torch::Tensor> block_bits);
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
                       int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
-                      c10::optional<torch::Tensor> read_mass, at::ScalarType out,
+                      int64_t run_table, c10::optional<torch::Tensor> read_mass, at::ScalarType out,
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl,
                       c10::optional<torch::Tensor> block_bits);

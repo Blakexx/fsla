@@ -51,6 +51,7 @@ import pytest
 import torch
 
 from rola.engine.facts import planes
+from rola.engine.rules.run_table import run_table
 from rola.ops._ext import extension
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 
@@ -113,7 +114,8 @@ def _dense_plane(widths, BH):
 
 def _launch(fixture, widths, C, BC, *, s_in=None, s_out=None, page_tbl=None, eps=1e-6):
     pr, pw, gw, vk = _packed(fixture)
-    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, None,
+    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps,
+                                  run_table(s_in, s_out, page_tbl), None,
                                   torch.float32, s_in, s_out, page_tbl)
     return y.permute(0, 2, 1, 3)
 

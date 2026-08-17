@@ -79,26 +79,6 @@ void check_arch_table() {
   admitted.insert(dev);
 }
 
-//: THE SKIP PREDICATE, DERIVED FROM THE RULE rather than hand-authored as a
-//: mask: a truth table over the liveness byte's three bits, one host constant
-//: per call class (docs/internals/chunk/chunk.md#run-table).
-static uint32_t run_table(bool state_in, bool state_out, bool paged) {
-  uint32_t table = 0;
-  for (uint32_t v = 0; v < 8; ++v) {
-    const bool R = (v & 1u) != 0, W = (v & 2u) != 0, S = (v & 4u) != 0;
-    //: `y` needs a read entry AND something for it to read: this call's own
-    //: write, or a carried state the block may hold.  Without a residency map
-    //: the dense backing cannot witness the latter and must assume it.
-    bool run = R && (W || (state_in && (paged ? S : true)));
-    //: the state epilogue stores this block's atoms.  Paged, an unwritten block
-    //: must leave its slot UNCHANGED, which is what skipping does; dense, the
-    //: plane is `torch::empty` and is written WHOLE, so nothing may be skipped.
-    if (state_out) run = run || (paged ? W : true);
-    if (run) table |= 1u << v;
-  }
-  return table;
-}
-
 //: the arm surface, DECLARED only -- definitions live in the instantiation
 //: shards (chunk_s*.cu).  chunk.cu must never define one locally.
 template <int C, int BC, int D, int B, bool STATE>
@@ -395,7 +375,7 @@ torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> wid
 
 std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                        torch::Tensor v, torch::Tensor tbl, int64_t chunk,
-                                       int64_t bc, std::vector<int64_t> widths,
+                                       int64_t bc, std::vector<int64_t> widths, int64_t run_table,
                                        c10::optional<torch::Tensor> s_in,
                                        c10::optional<torch::Tensor> s_out,
                                        c10::optional<torch::Tensor> page_tbl,
@@ -458,8 +438,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
                    o.data_ptr<float>(), den.data_ptr<float>(),                 \
                    sIn,             sOut,             pageTbl,                 \
                    blockBits,                                                  \
-                   run_table(sIn != nullptr, sOut != nullptr,                   \
-                             pageTbl != nullptr),                              \
+                   (uint32_t)run_table,                                        \
                    BH,              L,                                         \
                    H * kD * (int)sizeof(__nv_bfloat16)};                        \
     const auto stream_ = at::cuda::getCurrentCUDAStream();                     \
@@ -473,7 +452,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
 
 torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torch::Tensor v,
                       int64_t chunk, int64_t bc, std::vector<int64_t> widths, double eps,
-                      c10::optional<torch::Tensor> read_mass, at::ScalarType out,
+                      int64_t run_table, c10::optional<torch::Tensor> read_mass, at::ScalarType out,
                       c10::optional<torch::Tensor> s_in, c10::optional<torch::Tensor> s_out,
                       c10::optional<torch::Tensor> page_tbl,
                       c10::optional<torch::Tensor> block_bits) {
@@ -482,7 +461,8 @@ torch::Tensor forward(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw, torc
   //: variant of the facts pass runs.
   const int64_t mask = (s_in || s_out || page_tbl) ? kPrefillStateful : kPrefillStateless;
   auto tbl = facts(pr, pw, chunk, bc, widths, mask, false).first;
-  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, s_in, s_out, page_tbl, block_bits);
+  auto nd = forward_raw(pr, pw, gw, v, tbl, chunk, bc, widths, run_table, s_in, s_out, page_tbl,
+                        block_bits);
   return divide_pass(nd[0], nd[1], read_mass, eps, out);
 }
 

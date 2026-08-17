@@ -24,8 +24,14 @@ residency           -> state_in, arena               @side   [M2] host_sync
 join                                                 @main   [M2] waits
 backing             -> page_table, state_out         @host
 block_bits          -> block_bits                    @main
+run_table           -> run_table                     @host  RULE
 build_plan          -> plan                          @host
 ```
+
+`run_table` sits last before the terminal node rather than beside `backing`, which
+produces two of the three presences it folds: a host rule placed between `backing` and
+`block_bits` would step into the middle of the enqueue stream for no reason, and this
+one has no consumer until the plan is built.
 
 M1 (prefill-stateless) is M2 (prefill-stateful) with the residency band masked out:
 `residency` and `join` do not run and their facts are null, and `facts_tables` runs

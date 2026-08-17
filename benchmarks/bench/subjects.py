@@ -44,7 +44,8 @@ def chunk_forward(fx) -> Arm:
 
     def call():
         return m.chunk_forward_raw(plan.read_plane, plan.write_plane, plan.g_write, v,
-                                   tbl, c, bc, widths, None, None, None, None)
+                                   tbl, c, bc, widths, plan.run_table, None, None, None,
+                                   None)
 
     return Arm(name="chunk_forward_raw", call=call)
 
@@ -81,7 +82,7 @@ def _numerator(fx):
     m, plan = extension(), fx["plan"]
     return m.chunk_forward_raw(plan.read_plane, plan.write_plane, plan.g_write,
                                fx["v_kernel"], plan.union_table, fx["C"], fx["BC"],
-                               _widths(fx), None, None, None, None)
+                               _widths(fx), plan.run_table, None, None, None, None)
 
 
 def divide_pass(fx) -> Arm:

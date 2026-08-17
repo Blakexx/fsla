@@ -4,9 +4,9 @@
 
 The rule is written once, in readable form, and the mask is DERIVED by evaluating it
 over all eight bit values; the kernel's whole predicate is then one shift and one AND
-(docs/internals/chunk/chunk.md#run-table). The production derivation is still
-`csrc/rola/src/chunk/chunk.cu`'s; this fold is gated against the same five-row rule
-and moves under the ABI in P75 stage 6 (design.md §H.2).
+(docs/internals/chunk/chunk.md#run-table). This fold is the ONE derivation and the
+`uint32` is a launch argument: the table a call PLANS is the table it RUNS, which a
+second derivation behind the extension boundary could not promise.
 
 The three inputs are PRESENCE facts -- the entry-state plane, the exit-state plane and
 the page table, each a tensor or None -- and never the call class's engagement bits.

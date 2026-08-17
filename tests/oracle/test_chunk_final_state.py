@@ -57,6 +57,7 @@ from math import prod
 import pytest
 import torch
 
+from rola.engine.rules.run_table import run_table
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides, naive_rola
 from rola.ops.paging import MMA_K_QUANTUM
@@ -128,7 +129,8 @@ def _kernel(fixture, widths, C, BC, *, state_in=None, want_state=True, eps=1e-6)
     gw = g_write.permute(0, 2, 1).to(torch.bfloat16).contiguous()
     vk = v.to(torch.bfloat16).contiguous()
     out = _plane(widths, B, H) if want_state else None
-    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps, None,
+    y = extension().chunk_forward(pr, pw, gw, vk, C, BC, list(widths), eps,
+                                  run_table(state_in, out, None), None,
                                   torch.float32, state_in, out, None)
     return y.permute(0, 2, 1, 3), out
 

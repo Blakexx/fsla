@@ -38,6 +38,7 @@ import pytest
 import torch
 
 from rola.engine.facts import planes
+from rola.engine.rules.run_table import run_table
 from rola.engine.types import Mask
 from rola.ops._ext import extension
 
@@ -97,7 +98,8 @@ def _bits(pr, pw, v, bc, L, page_tbl=None):
 
 
 def _launch(pr, pw, gw, v, tbl, bc, *, bits=None, s_in=None, s_out=None, page_tbl=None):
-    return extension().chunk_forward_raw(pr, pw, gw, v, tbl, _C, bc, _WIDTHS, s_in, s_out,
+    return extension().chunk_forward_raw(pr, pw, gw, v, tbl, _C, bc, _WIDTHS,
+                                         run_table(s_in, s_out, page_tbl), s_in, s_out,
                                          page_tbl, bits)
 
 
@@ -332,8 +334,9 @@ def test_the_arm_that_carried_no_work_loop_takes_the_bitmap():
     _assert_it_skips(bits)
     page_tbl, bare = _paged(pw, bh)
     exit_ = bare.clone()
-    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, None, bare, page_tbl, None)
-    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, None, exit_, page_tbl, bits)
+    table = run_table(None, bare, page_tbl)
+    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, table, None, bare, page_tbl, None)
+    m.chunk_forward_raw(pr, pw, gw, v, tbl, 64, bc, _WIDTHS, table, None, exit_, page_tbl, bits)
     assert torch.equal(bare, exit_)
 
 
@@ -346,7 +349,8 @@ def test_a_bitmap_built_for_another_arm_is_refused():
     tbl128 = m.chunk_facts(pr, pw, _C, 128, _WIDTHS, Mask.M1, False)[0]
     bits128 = m.chunk_block_bits(tbl128, 128, _WIDTHS, L, None)
     with pytest.raises(RuntimeError, match="built for a different arm"):
-        m.chunk_forward_raw(pr, pw, gw, v, tbl64, _C, 64, _WIDTHS, None, None, None, bits128)
+        m.chunk_forward_raw(pr, pw, gw, v, tbl64, _C, 64, _WIDTHS,
+                            run_table(None, None, None), None, None, None, bits128)
 
 
 def test_the_seam_hands_the_launch_a_bitmap_on_every_call():
@@ -466,7 +470,7 @@ def test_the_facade_agrees_with_the_launch_that_was_handed_no_bitmap(paging):
     bare = planes.state_plane(routes, d_v=_DV)
     m.chunk_forward_raw(pr, pw, gw,
                         v.to(torch.bfloat16).contiguous(), tbl, c, bc, list(_WIDTHS),
-                        None, bare, None, None)
+                        run_table(None, bare, None), None, bare, None, None)
     assert torch.equal(through_the_facade,
                        bare.reshape(through_the_facade.shape)), (
         "the facade's liveness exit and a launch handed no bitmap disagree on the "

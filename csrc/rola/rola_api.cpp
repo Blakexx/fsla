@@ -46,14 +46,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: passes, and the null the kernel's epilogue is skipped by.  A page table
   //: makes that plane PAGED (`[slots, 16, d_v+1]`); without one it is the dense
   //: `[BH, N/16, 16, d_v+1]` plane, where a slot IS its atom.
+  //: `run_table` is the CALLER'S skip table, folded on the host from the three
+  //: presences above (`rola/engine/rules/run_table.py`).  An entry that re-derived
+  //: it would be a second source for it.
   m.def("chunk_forward_raw", &rola::chunk::forward_raw,
         "chunk consumer: the readout's d_v+1 columns, undivided", py::arg("pr"), py::arg("pw"),
         py::arg("gw"), py::arg("v"), py::arg("tbl"), py::arg("chunk"), py::arg("bc"),
-        py::arg("widths"), py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
-        py::arg("page_tbl") = py::none(), py::arg("block_bits") = py::none());
+        py::arg("widths"), py::arg("run_table"), py::arg("s_in") = py::none(),
+        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
+        py::arg("block_bits") = py::none());
   m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("chunk"), py::arg("bc"),
-        py::arg("widths"), py::arg("eps"), py::arg("read_mass") = py::none(),
+        py::arg("widths"), py::arg("eps"), py::arg("run_table"), py::arg("read_mass") = py::none(),
         py::arg("out") = torch::kFloat32, py::arg("s_in") = py::none(),
         py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
         py::arg("block_bits") = py::none());

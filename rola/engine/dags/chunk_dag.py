@@ -44,7 +44,7 @@ class ChunkContext:
 @node(gives=("plan",),
       needs=("call_class", "arm", "widths", "d_v", "v", "v_packed", "routes",
              "read_plane", "write_plane", "g_write", "read_mass", "union_table",
-             "block_bits", "page_table", "state_in", "state_out"))
+             "block_bits", "page_table", "state_in", "state_out", "run_table"))
 def build_plan(f):
     from rola.ops.constants import READOUT_EPS
 
@@ -52,7 +52,8 @@ def build_plan(f):
     return ChunkPlan(
         call_class=f["call_class"], arm=f["arm"], widths=f["widths"], d_v=f["d_v"],
         v_row_bytes=v_packed.shape[2] * v_packed.shape[3] * v_packed.element_size(),
-        eps=READOUT_EPS, y_dtype=f["v"].dtype, routes=f["routes"],
+        eps=READOUT_EPS, run_table=f["run_table"], y_dtype=f["v"].dtype,
+        routes=f["routes"],
         read_plane=f["read_plane"], write_plane=f["write_plane"],
         g_write=f["g_write"], read_mass=f["read_mass"], v=v_packed,
         union_table=f["union_table"], block_bits=f["block_bits"],
@@ -73,6 +74,7 @@ CHUNK_DAG = (
     nodes.join,
     nodes.backing,
     nodes.block_bits,
+    rules.run_table.node,
     build_plan,
 )
 

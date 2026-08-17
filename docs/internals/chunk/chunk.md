@@ -118,12 +118,22 @@ exit-state plane and the page table — never the engagement bits the facade cla
 | fresh state-out, paged | absent | present | present | `W` |
 | state-out, dense | either | present | absent | always run |
 
-`run_table(state_in, state_out, paged)` derives a `uint32` TRUTH TABLE over the byte's three
-bits by evaluating that rule for each of the eight values, so the rule is written once in
-readable form and the mask is derived, never hand-authored. The kernel's whole predicate is
-then one shift and one AND, with no branching taxonomy and no call-class knowledge in it.
-The eighth argument triple — a page table with no state at all — is refused at the binding
-before the derivation is reached, and derives the stateless row in any case.
+`rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
+`uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
+eight values, so the rule is written once in readable form and the mask is derived, never
+hand-authored. The kernel's whole predicate is then one shift and one AND, with no branching
+taxonomy and no call-class knowledge in it. The eighth argument triple — a page table with
+no state at all — is refused at the binding before the derivation is reached, and derives
+the stateless row in any case.
+
+**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule, its
+`uint32` is a `ChunkPlan` field, and both consumer entries (`chunk_forward_raw`,
+`chunk_forward`) take it as a launch argument beside the bitmap it predicates over. The
+kernel reads `ChunkParams::run_table` and derives nothing: a second derivation behind the
+extension boundary could not promise that the table a call PLANS is the table it RUNS, and
+the five rows above could only be exercised through a launch. They are now device-free unit
+cells over all eight liveness bytes × all six rows (`tests/unit/test_facts_rules.py`), and
+`tests/unit/test_facts_rules.py` transcribes the rows above and holds the doc and the rule to each other.
 
 **The two paged state-out rows differ, and the difference is the entry state.** A CONTINUED
 sequence may hold value in a block it does not write this call, and only a read of that

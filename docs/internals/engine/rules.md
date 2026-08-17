@@ -75,9 +75,10 @@ by oversight:
 * `retention` is called at the autograd boundary, which is the only moment the
   retention decision exists: `needs_input_grad` is a property of the node's
   invocation, not of the plan the walk built.
-* `run_table`'s consumer is still `chunk.cu`'s own derivation. The fold is written,
-  gated against the documented rule over all eight liveness bytes, and moves under the
-  ABI in the stage that changes one.
+* `run_table` IS in the chunk tuple, last before the terminal node, so it folds after
+  `backing` has produced the three presences it reads and without stepping between two
+  launches. Its `uint32` is a `ChunkPlan` field and a launch argument
+  ([`chunk.md#run-table`](../chunk/chunk.md#run-table)).
 
 ## <a id="derive-never-author"></a>4. Derive; never hand-author the derived artefact
 

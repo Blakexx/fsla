@@ -31,6 +31,10 @@ class ChunkPlan:
     d_v: int
     v_row_bytes: int
     eps: float
+    #: the block-skip truth table over the liveness byte's three bits, one `uint32`
+    #: per call class -- RunTableRule's verdict, and a launch argument like every
+    #: other one (`rola/engine/rules/run_table.py`).
+    run_table: int
     #: the OPERAND's dtype, which the divide narrows `y` back to. `v` below is the
     #: kernel's own bf16-contiguous copy and cannot answer for it.
     y_dtype: torch.dtype

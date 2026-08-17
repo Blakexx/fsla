@@ -131,8 +131,8 @@ def execute(plan: ChunkPlan) -> tuple[torch.Tensor, torch.Tensor]:
     m = extension()
     num, den = m.chunk_forward_raw(
         plan.read_plane, plan.write_plane, plan.g_write, plan.v, plan.union_table,
-        plan.arm.c, plan.arm.bc, list(plan.widths), plan.state_in, plan.state_out,
-        plan.page_table, plan.block_bits)
+        plan.arm.c, plan.arm.bc, list(plan.widths), plan.run_table, plan.state_in,
+        plan.state_out, plan.page_table, plan.block_bits)
     #: THE READ MASS RIDES INTO THE FLOOR. `read_mass` is the per-token scale the read
     #: levels still carry, so numerator and denominator are both `m` times the
     #: normalized ones; passing `eps * m` makes the divide `m*num / (m*(den + eps))`,
