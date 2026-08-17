@@ -7,9 +7,12 @@ and backward work, not
 through silent degradation).
 
 Launch arguments arrive as a :class:`~rola.facts.plan.ChunkPlan` that the chunk DAG
-built (:mod:`rola.facts.chunk_dag`). What lives here is the family's primitive
-BODIES -- the arm, the envelope, the packing, the state plane -- and the launch that
-reads the plan; the DAG declares which of them a call class runs and in what order.
+built (:mod:`rola.facts.chunk_dag`), and the reverse pass's as the
+:class:`~rola.facts.plan.BackwardPlan` that holds it by reference
+(:mod:`rola.facts.backward_dag`). What lives here is the family's primitive BODIES --
+the arm, the envelope, the packing, the state plane, the seeds, the two scans and the
+un-packing -- and the launches that read a plan; the DAGs declare which of them a call
+class runs and in what order.
 
 The packing happens ONCE per call, so every entry reads the same bytes. On the
 shipped path it is a VIEW: the producer's solve writes the `[B, H, T, sumW]` bf16
@@ -19,7 +22,6 @@ are not already that layout -- a hand-built bundle, a foreign producer.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -28,7 +30,8 @@ from rola.ops._ext import extension
 from rola.ops.paging import MMA_K_QUANTUM
 
 if TYPE_CHECKING:
-    from rola.facts.plan import ChunkPlan
+    from rola.facts.plan import BackwardPlan, ChunkPlan
+    from rola.facts.types import Seeds
 
 #: THE CHUNK LENGTH -- the operator's token quantum. `T` must be a multiple of it,
 #: and shaping a sequence to it is the CALLER's job, which is why this is public
@@ -172,104 +175,90 @@ def pack_side(levels) -> torch.Tensor:
     return packed
 
 
-@dataclass(slots=True)
-class SavedForward:
-    """THE CTX CONTRACT: what the forward hands the backward, and nothing else.
+def backward_seeds(plan: BackwardPlan, dy: torch.Tensor, y: torch.Tensor):
+    """`(dnum, dden, dm)` -- the readout divide's own reverse, over one retained plan.
 
-    Everything here is `O(L)` with a per-topology constant, and that is the claim
-    the whole two-pass design rests on: the backward REBUILDS the state and
-    REPLAYS the schedule, so no per-chunk snapshot and nothing of size `O(N * L)`
-    is retained. The state, the per-chunk compaction lists, the causal thresholds
-    and the numerator are absent by construction. The union table is the ONE
-    forward byproduct inherited by save rather than by replay: rebuilding it would
-    be a second launch over the whole amplitude plane for a bit-identical answer,
-    and it is the seam the schedule is replayed from
-    (docs/internals/chunk/backward.md).
-
-    Populated only when the call carries a gradient; on an inference call these
-    tensors are freed with the launch exactly as they were before this existed.
+    `dm = eps * dden` exists exactly when the bundle carries a read mass. The eps
+    floor is ADDITIVE, so all three are exact and none of them branches on `den`.
     """
-
-    pr: torch.Tensor | None = None
-    pw: torch.Tensor | None = None
-    gw: torch.Tensor | None = None
-    rm: torch.Tensor | None = None
-    tbl: torch.Tensor | None = None
-    den: torch.Tensor | None = None
-    vk: torch.Tensor | None = None
-    #: the plan's non-tensor half: the arm, the topology, the readout constant and
-    #: V's row stride, which the backward's launch needs and cannot re-derive.
-    c: int = 0
-    bc: int = 0
-    widths: tuple[int, ...] = ()
-    eps: float = 0.0
-    v_row_bytes: int = 0
-
-    @staticmethod
-    def of(plan: ChunkPlan, den: torch.Tensor) -> SavedForward:
-        """The ctx a grad-bearing call keeps, off the plan it just ran.
-
-        Every field is a reference to something the call already built, so a saving
-        call and an inference call issue the same launches in the same order; what
-        differs is only what stays alive.
-        """
-        return SavedForward(
-            pr=plan.read_plane, pw=plan.write_plane, gw=plan.g_write,
-            rm=plan.read_mass, tbl=plan.union_table, den=den, vk=plan.v,
-            c=plan.arm.c, bc=plan.arm.bc, widths=plan.widths, eps=plan.eps,
-            v_row_bytes=plan.v_row_bytes)
-
-    def retained_bytes(self) -> int:
-        """What a grad-bearing call costs OVER an inference one. `y` and `v` are the
-        op's own output and operand, alive either way, so neither is counted here
-        and neither is stored here."""
-        return sum(t.numel() * t.element_size()
-                   for t in (self.pr, self.pw, self.gw, self.rm, self.tbl, self.den)
-                   if t is not None)
-
-    def kernel_v_is_the_callers(self, v: torch.Tensor) -> bool:
-        """Whether `vk` aliases the caller's `v` rather than being a repack of it --
-        the one field whose cost depends on the caller's dtype and contiguity."""
-        return self.vk is not None and self.vk.data_ptr() == v.data_ptr()
-
-
-def backward(saved: SavedForward, dy: torch.Tensor, y: torch.Tensor):
-    """The reverse pass over one saved forward: `(dv, d_read, d_write, d_gw, d_m)`.
-
-    Three launches and no allocation of anything `O(N * L)`:
-
-    1. the SEEDS (`chunk_backward_seeds`) -- `dnum`, `dden`, and `dm = eps * dden`
-       when a read mass exists. The eps floor is additive, so all three are exact
-       and none of them branches on `den`;
-    2. SCAN A, which rebuilds the forward state from zero over the SAVED table and
-       emits the read side's digit gradient;
-    3. SCAN B, which walks the same tokens downward carrying the adjoint state and
-       emits `dv`, `d gw` and the write side's digit gradient.
-
-    The two scans associate their sums differently by construction -- each walks
-    its own partition -- so nothing here is bit-reproducible, and neither is the
-    fan-in that assembles the digit gradients (`docs/api.md`).
-
-    Everything returned is fp32, in the KERNEL's layouts. Narrowing to the
-    operands' dtypes and un-permuting to their public layouts is the caller's, and
-    :class:`rola.interface.ChunkConsumer` is the one caller.
-    """
-    if saved.tbl is None or saved.vk is None:
-        raise RuntimeError(
-            "rola.ops.chunk.backward was handed a ctx the forward never filled. The "
-            "forward populates it only when the call carries a gradient, so this is a "
-            "backward reached from an inference forward -- which cannot happen through "
-            "ChunkConsumer and means the node was bypassed.")
-    m = extension()
+    fwd = plan.forward
     dyk = dy if dy.is_contiguous() else dy.contiguous()
-    seeds = m.chunk_backward_seeds(dyk, y, saved.den, saved.rm, saved.eps)
-    dnum, dden = seeds[0], seeds[1]
-    dm = seeds[2] if len(seeds) > 2 else None
-    args = (saved.pr, saved.pw, saved.gw, saved.vk, dnum, dden, saved.tbl,
-            saved.c, saved.bc, list(saved.widths))
-    (dpr,) = m.chunk_scan_a_probe(*args)
-    dv, _dw_slotsum, dgw, dpw = m.chunk_scan_b_probe(*args)
-    return dv, dpr, dpw, dgw, dm
+    out = extension().chunk_backward_seeds(dyk, y, plan.den, fwd.read_mass, fwd.eps)
+    return out[0], out[1], (out[2] if len(out) > 2 else None)
+
+
+def _scan_operands(plan: BackwardPlan, seeds: Seeds) -> tuple:
+    """THE SCANS' SHARED ABI, spelled ONCE and read off the plan.
+
+    Both scans take the same ten arguments because they walk the same schedule from
+    the same tables in opposite directions (docs/internals/chunk/backward.md). What
+    made that a hazard was the tuple being hand-built at the call site, where the two
+    could drift apart by an edit to one of them.
+    """
+    fwd = plan.forward
+    return (fwd.read_plane, fwd.write_plane, fwd.g_write, fwd.v, seeds.dnum,
+            seeds.dden, fwd.union_table, fwd.arm.c, fwd.arm.bc, list(fwd.widths))
+
+
+def scan_a(plan: BackwardPlan, seeds: Seeds) -> torch.Tensor:
+    """SCAN A: the read side's digit gradient, fp32 in the kernel's layout.
+
+    It rebuilds the forward state from zero over the RETAINED union table -- no
+    per-chunk snapshot is read, because none was kept -- and is independent of
+    :func:`scan_b`, which the backward DAG declares.
+    """
+    (d_read,) = extension().chunk_scan_a_probe(*_scan_operands(plan, seeds))
+    return d_read
+
+
+def scan_b(plan: BackwardPlan, seeds: Seeds):
+    """SCAN B: `(dv, d_gain, d_write)`, fp32 in the kernels' layouts.
+
+    It walks the same tokens downward carrying the adjoint state. Its slot-sum
+    output is a probe byproduct that the operand gradients do not read.
+
+    The two scans associate their sums differently by construction -- each walks its
+    own partition -- so nothing either returns is bit-reproducible, and neither is
+    the fan-in that assembles the digit gradients (`docs/api.md`).
+    """
+    dv, _slot_sum, d_gain, d_write = extension().chunk_scan_b_probe(
+        *_scan_operands(plan, seeds))
+    return dv, d_gain, d_write
+
+
+def unpack_grads(plan: BackwardPlan, dv, d_read, d_write, d_gain, d_mass,
+                 *, v_dtype: torch.dtype) -> list[torch.Tensor]:
+    """The scans' fp32 kernel layouts back to the OPERANDS', in `tensors()`' order.
+
+    That order is load-bearing rather than incidental: the autograd node receives the
+    operands flat and in exactly that order, so a gradient list ordered any other way
+    lands every gradient on the wrong tensor SILENTLY -- the shapes agree
+    (`tests/unit/test_interface.py`). Each gradient is narrowed to its operand's dtype
+    and un-permuted to its public layout because autograd requires
+    `grad.dtype == input.dtype`, and the packing that produced the kernel layout was
+    the node's own.
+    """
+    routes = plan.forward.routes
+
+    def levels(packed_side, side):
+        out, off = [], 0
+        for level in side:
+            w = level.shape[-1]
+            out.append(packed_side[..., off:off + w].permute(0, 2, 1, 3)
+                       .to(level.dtype).contiguous())
+            off += w
+        return out
+
+    grads = [dv.permute(0, 2, 1, 3).to(v_dtype).contiguous()]
+    grads += levels(d_read, routes.read)
+    grads += levels(d_write, routes.write)
+    #: `g_read` does not exist on this surface, so the gains are the write gain
+    #: alone -- the same one clause `tensors()` builds.
+    grads.append(d_gain.permute(0, 2, 1).to(routes.g_write.dtype).contiguous())
+    if routes.read_mass is not None:
+        #: SURPRISE 2: the m-carry is forward-exact but NOT gradient-neutral.
+        grads.append(d_mass.permute(0, 2, 1).to(routes.read_mass.dtype).contiguous())
+    return grads
 
 
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:

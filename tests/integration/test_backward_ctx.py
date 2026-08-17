@@ -14,14 +14,19 @@ in, but that it equals a closed form with no `N` in it at all. A per-chunk state
 snapshot, a boundary-cursor array or a materialized numerator would each break that
 equality by a term this file names.
 
-Three claims:
+Four claims:
 
 1. *An inference call retains nothing.* The ctx is taken on `needs_input_grad`, so
    a forward with no gradient in it is the call it was before the ctx existed --
    asserted on the allocator, not on the code.
 2. *A grad-bearing call retains exactly the `O(L)` set.* Measured against the
    closed form, across a `T` sweep and across topologies whose `N` differs by 64x.
-3. *Saving does not slow the forward.* Paired, alternating, warm: the ctx is a set
+3. *No RETAINED FIELD is `O(N * L)`, one by one and exhaustively.* Since the ctx
+   became the forward's plan held by reference, the retained set is a field list
+   somebody else maintains; the sum matching its closed form no longer implies each
+   field does, so every tensor the ctx pins is walked off the plans, named, and held
+   to a term of its own.
+4. *Saving does not slow the forward.* Paired, alternating, warm: the ctx is a set
    of references to tensors the call already built, so the wall must not move.
 """
 from __future__ import annotations
@@ -132,7 +137,7 @@ def test_the_ctx_is_exactly_the_predicted_O_L_set(T):
     got = saved.retained_bytes()
     #: the block width is the ARM's, not this file's: `entries` is a function of
     #: it, and a topology can pin a different one.
-    want = _predicted_bytes(B, T, H, widths, _entries(widths, saved.bc))
+    want = _predicted_bytes(B, T, H, widths, _entries(widths, saved.forward.arm.bc))
     assert got == want, (
         f"the ctx holds {got} bytes where the O(L) contract predicts {want} at T={T}. "
         f"A difference here is a TERM, not noise: a per-chunk state snapshot, a "
@@ -150,8 +155,9 @@ def test_the_ctx_does_not_grow_with_the_leaf_count():
     for widths in ((8, 8), (16, 16), (64, 64)):
         y, _, _ = _forward_saving(B, T, H, widths)
         saved = y.grad_fn.saved_plan
-        seen[math.prod(widths)] = (saved.retained_bytes(),
-                                   _predicted_bytes(B, T, H, widths, _entries(widths, saved.bc)))
+        seen[math.prod(widths)] = (
+            saved.retained_bytes(),
+            _predicted_bytes(B, T, H, widths, _entries(widths, saved.forward.arm.bc)))
     for n, (got, want) in seen.items():
         assert got == want, f"N={n}: ctx {got} bytes against a predicted {want}"
     ns = sorted(seen)
@@ -173,6 +179,89 @@ def test_the_ctx_is_linear_in_the_token_axis():
     assert by_t[128] == 2 * by_t[64] and by_t[256] == 4 * by_t[64], by_t
 
 
+def _retained_tensors(saved) -> dict:
+    """EVERY tensor the ctx pins, by name -- the plan's own fields and the forward
+    plan's, walked off the dataclasses rather than restated.
+
+    The walk is what makes the closed forms below exhaustive: a field ADDED to either
+    plan appears here without this file being edited, and a field with no term in
+    `_TERMS` fails by name instead of hiding inside an aggregate that still happens to
+    match. `routes` is skipped as the one non-tensor field that holds tensors: they are
+    the operation's own operands, on the graph and alive whether or not a ctx is taken.
+    """
+    out = {}
+    for owner in (saved, saved.forward):
+        for name in owner.__slots__:
+            if name == "routes":
+                continue
+            value = getattr(owner, name)
+            if isinstance(value, torch.Tensor):
+                out[name] = value
+    return out
+
+
+#: THE CLOSED FORM OF EVERY RETAINED FIELD, and the point of writing them per field
+#: rather than as one sum: NONE OF THEM CONTAINS `N * T`. Six are linear in `T` with a
+#: per-topology constant, one (`block_bits`) is linear in `N` with no `T` at all, and
+#: there is no third kind. A per-chunk state snapshot, a boundary cursor array or a
+#: retained numerator would each be a term in `N * T` and has nowhere to hide here.
+_TERMS = {
+    "read_plane": lambda g: g["BH"] * g["T"] * g["sumW"] * 2,
+    "write_plane": lambda g: g["BH"] * g["T"] * g["sumW"] * 2,
+    "g_write": lambda g: g["BH"] * g["T"] * 2,
+    "union_table": lambda g: g["BH"] * 2 * g["entries"] * g["words"] * 4,
+    "den": lambda g: g["BH"] * g["T"] * 4,
+    #: the kernel's bf16 copy of `v`, which `SavedForward.vk` pinned too and which
+    #: `retained_bytes` has never counted: `v` is the op's own operand.
+    "v": lambda g: g["BH"] * g["T"] * DV * 2,
+    #: the ONE field the plan reference pins that the old ctx did not. `[BH, N / BC]`
+    #: bytes -- it carries no `T`, so no closed form in `T` can absorb it and it is
+    #: named here instead of folded into `retained_bytes`.
+    "block_bits": lambda g: g["BH"] * (g["N"] // g["BC"]),
+}
+
+
+@pytest.mark.parametrize("T", [64, 256])
+@pytest.mark.parametrize("widths", [(16, 16), (64, 64)])
+def test_no_retained_field_is_O_of_N_times_L(T, widths):
+    """THE `O(N * L)` GATE, PER FIELD. `retained_bytes` is a sum, and a sum can match
+    a closed form while a field inside it grows on an axis the form does not carry.
+    This asserts each field separately, against a term written in `T`, `sumW`,
+    `entries` or `N` -- and asserts the naming is EXHAUSTIVE, so the failure mode a
+    plan reference introduces (a field arriving on the plan for the forward's sake and
+    being retained for free) is a named failure rather than a silence.
+    """
+    B, H = 1, 2
+    y, _, _ = _forward_saving(B, T, H, widths)
+    saved = y.grad_fn.saved_plan
+    bc = saved.forward.arm.bc
+    g = {"BH": B * H, "T": T, "sumW": sum(widths), "words": (T + 31) // 32,
+         "entries": _entries(widths, bc), "N": math.prod(widths), "BC": bc}
+    held = _retained_tensors(saved)
+    assert set(held) == set(_TERMS), (
+        f"the ctx pins {sorted(set(held) - set(_TERMS))} with no closed form and is "
+        f"missing {sorted(set(_TERMS) - set(held))}. A retained field with no term is "
+        f"the two-pass claim being made about a set that is no longer the retained one.")
+    for name, tensor in held.items():
+        got = tensor.numel() * tensor.element_size()
+        assert got == _TERMS[name](g), (
+            f"{name} holds {got} bytes where its term says {_TERMS[name](g)} at "
+            f"T={T}, widths={widths}")
+    #: THE `T` AXIS, MEASURED PER FIELD rather than read off the lambdas: doubling `T`
+    #: at a fixed topology must double every field that carries `T` and must leave the
+    #: one `N`-carrying field alone. A field in `N * T` would double HERE and grow with
+    #: `N` in the sweep above, which is the pair of facts no term of `_TERMS` has.
+    y2, _, _ = _forward_saving(B, 2 * T, H, widths)
+    doubled = _retained_tensors(y2.grad_fn.saved_plan)
+    for name, tensor in held.items():
+        was = tensor.numel() * tensor.element_size()
+        now = doubled[name].numel() * doubled[name].element_size()
+        want = was if name == "block_bits" else 2 * was
+        assert now == want, (
+            f"{name} went {was} -> {now} bytes when T went {T} -> {2 * T}; the term "
+            f"says {want}")
+
+
 def _paired_wall(B, T, H, widths, reps=240):
     """`(median paired difference, median plain call)` in seconds.
 
@@ -189,6 +278,7 @@ def _paired_wall(B, T, H, widths, reps=240):
     together and cancels. Comparing two independently-taken minima does not
     cancel it, and reads as a signal exactly when the interference is uneven.
     """
+    from rola.facts.plan import BackwardPlan
     from rola.ops import chunk as _chunk
 
     routes = _bundle(B, T, H, widths)
@@ -198,7 +288,7 @@ def _paired_wall(B, T, H, widths, reps=240):
     def once(save):
         y, den = _chunk.execute(plan)
         if save:
-            _chunk.SavedForward.of(plan, den)
+            BackwardPlan(forward=plan, den=den)
         return y
 
     for _ in range(20):  # the first arm in a cold process bears the clock ramp
@@ -261,16 +351,24 @@ _SEAM_TOPOLOGIES = [(64, 64), (16, 16)]
 
 
 @pytest.mark.parametrize("widths", _SEAM_TOPOLOGIES, ids=lambda w: f"W{w[0]}")
-def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_empty_ctx(widths):
+def test_both_backward_seams_now_carry_a_gradient_and_refuse_only_an_absent_ctx(widths):
     """OLD: both seams refused by name, because the scans did not yet emit a full
     cotangent set. They do, so the seams CARRY the gradient -- and what is left to
-    refuse is the one state neither can compute from: a ctx the forward never
-    filled, which is an inference forward being differentiated."""
-    from rola.interface import ChunkConsumer
-    from rola.ops import chunk as _chunk
+    refuse is the one state neither can compute from: an inference forward being
+    differentiated.
 
-    with pytest.raises(RuntimeError, match="never filled"):
-        _chunk.backward(_chunk.SavedForward(), torch.zeros(1), torch.zeros(1))
+    That refusal moved with the ctx. A HALF-FILLED ctx no longer exists to check
+    for: the ctx is the forward's own plan held by reference, and a plan that ran is
+    a plan whose fields are all present, so the reachable state is the ctx being
+    ABSENT and it is refused at the node.
+    """
+    from rola.interface import BackwardNotImplemented, ChunkConsumer
+
+    class _NoCtx:
+        saved_plan = None
+
+    with pytest.raises(BackwardNotImplemented, match="no saved ctx"):
+        ChunkConsumer.backward(_NoCtx(), torch.zeros(1))
     y, _, _ = _forward_saving(1, 64, 2, widths)
     y.sum().backward()
     assert ChunkConsumer.backward is not None

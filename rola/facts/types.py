@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    import torch
 
 
 class Mask(IntEnum):
@@ -31,6 +34,20 @@ class Arm(NamedTuple):
 
     c: int
     bc: int
+
+
+class Seeds(NamedTuple):
+    """The reverse pass's SEED cotangents -- what the readout's divide hands the scans.
+
+    `dm` is the read mass's own gradient and is `None` exactly when the bundle carries
+    no mass: a runtime-null output skip, not a mask. Nothing here is RETAINED -- the
+    seeds are built from `dy` inside the backward and die with it, which is why they
+    are a fact of the walk and not a field of anything the forward keeps.
+    """
+
+    dnum: torch.Tensor
+    dden: torch.Tensor
+    dm: torch.Tensor | None
 
 
 @dataclass(frozen=True, slots=True)

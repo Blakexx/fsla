@@ -242,6 +242,7 @@ class ChunkConsumer(torch.autograd.Function):
     def forward(ctx, plan, v, *operands):  # type: ignore[override]
         # Deliberately NOT `ctx.mark_non_differentiable`: marking the output would make
         # `backward` unreachable, which is the same silence this class exists to break.
+        from rola.facts.plan import BackwardPlan
         from rola.ops import chunk as _chunk
 
         y, den = _chunk.execute(plan)
@@ -254,57 +255,35 @@ class ChunkConsumer(torch.autograd.Function):
             #: operand and output and autograd owns their versioning; the O(L)
             #: byproducts are not graph tensors and ride beside them.
             ctx.save_for_backward(v, y)
-            ctx.saved_plan = _chunk.SavedForward.of(plan, den)
-            #: the bundle, for its LAYOUTS alone: `backward` needs each level's width
-            #: and dtype to un-pack the digit gradients, and those are the bundle's.
-            ctx.saved_routes = plan.routes
+            #: THE CTX IS THE PLAN, BY REFERENCE, plus the one thing the forward
+            #: produced rather than configured. RETENTION IS THE WHOLE DIFFERENCE
+            #: between this call and an inference one: no fact is re-derived, no
+            #: tensor is copied and no launch is added here.
+            ctx.saved_plan = BackwardPlan(forward=plan, den=den)
         return y
 
     @staticmethod
     def backward(ctx, *grad_outputs):  # type: ignore[override]
-        """The two-pass reverse pass, returned in `RouteFactors.tensors()`' ORDER.
+        """The two-pass reverse pass: ONE walk of the backward DAG over the ctx.
 
-        That ordering is load-bearing rather than incidental: `forward` receives the
-        operands flat and in exactly that order, so `backward` must return them the
-        same way or every gradient lands on the wrong tensor SILENTLY -- the shapes
-        agree. `tests/unit/test_interface.py` asserts the correspondence rather than
-        trusting it.
+        The ctx IS the forward's plan (:class:`~rola.facts.plan.BackwardPlan`), so
+        there is nothing to re-derive and nothing to thread here -- the seeds, the two
+        scans and the un-packing are declared nodes over that plan
+        (:mod:`rola.facts.backward_dag`), and the routing bundle the un-packing needs
+        for its layouts is the plan's own.
 
-        Everything the scans emit is fp32 in the kernels' layouts; each gradient is
-        narrowed to its operand's dtype and un-permuted to its public layout here,
-        because autograd requires `grad.dtype == input.dtype` and the packing that
-        produced the kernel layout was this node's own.
+        What comes back is ordered by `RouteFactors.tensors()`, which `forward`'s flat
+        argument list is also ordered by; `tests/unit/test_interface.py` asserts that
+        correspondence rather than trusting it.
         """
-        from rola.ops import chunk as _chunk
+        from rola.facts.backward_dag import run_backward
 
-        saved = getattr(ctx, "saved_plan", None)
-        if saved is None:
+        plan = getattr(ctx, "saved_plan", None)
+        if plan is None:
             raise BackwardNotImplemented(
                 "the RoLA chunk consumer reached backward with no saved ctx: the "
                 "forward retains one only when the call carries a gradient, so this "
                 "node was applied outside a gradient context and then differentiated.")
         v, y = ctx.saved_tensors
-        routes = ctx.saved_routes
-        dv, dpr, dpw, dgw, dm = _chunk.backward(saved, grad_outputs[0], y)
-
-        def _levels(packed_side, levels):
-            """`[B, H, T, sumW]` fp32 back to the per-level `[B, T, H, width_l]`."""
-            out, off = [], 0
-            for level in levels:
-                w = level.shape[-1]
-                out.append(packed_side[..., off:off + w].permute(0, 2, 1, 3)
-                           .to(level.dtype).contiguous())
-                off += w
-            return out
-
-        grads = [dv.permute(0, 2, 1, 3).to(v.dtype).contiguous()]
-        grads += _levels(dpr, routes.read)
-        grads += _levels(dpw, routes.write)
-        #: `g_read` does not exist on this surface, so the gains are the write gain
-        #: alone -- the same one clause `tensors()` builds.
-        grads.append(dgw.permute(0, 2, 1).to(routes.g_write.dtype).contiguous())
-        if routes.read_mass is not None:
-            #: SURPRISE 2: the m-carry is forward-exact but NOT gradient-neutral.
-            grads.append(dm.permute(0, 2, 1).to(routes.read_mass.dtype).contiguous())
         #: the leading `None` is the plan, which is not a tensor
-        return (None, *grads)
+        return (None, *run_backward(plan, grad_outputs[0], y, v))
