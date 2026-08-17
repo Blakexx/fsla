@@ -149,6 +149,17 @@ Not a per-site convention:
 
 A memo key that is not one of the node's own inputs is refused at declaration.
 
+There is a third kind and it is deliberately NOT a node attribute: a PRIMITIVE whose
+answer is a function of the loaded binary rather than of any fact declares its own
+caching, at the primitive. `rola/engine/facts/manifest.py`'s two census reads are the
+whole of that class — `chunk_arms()` and `scan_arms()` are `functools.cache`d — and
+the reason it cannot be `pure_of` is structural rather than stylistic: the census node
+has no `needs` to key a memo by, and four of the five sites that read the census are
+direct calls from `facts/call.py` and `facts/planes.py` that no node memo reaches. The
+cached values are immutable (a tuple and a `frozenset`) because a shared value a
+caller could mutate would not be a fact, and `.cache_clear()` is the escape hatch a
+test that scripts a manifest uses.
+
 ## <a id="refusals"></a>8. Refusals are one call at the head
 
 Each kernel family has ONE `validate_context(ctx)`, run immediately after the context

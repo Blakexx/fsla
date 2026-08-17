@@ -125,6 +125,59 @@ def test_a_supplied_fact_short_circuits_its_producer():
     assert facts["read_plane"] == "supplied" and not calls
 
 
+@pytest.fixture
+def census(monkeypatch):
+    """The manifest primitive over a COUNTING stand-in for the extension.
+
+    Device-free by the same argument as the rest of this file: the census is a fact
+    about the loaded binary, and what is under test is how many times it is read.
+    """
+    from rola.engine.facts import manifest
+
+    reads: list[str] = []
+
+    class _Ext:
+        def chunk_arms(self):
+            reads.append("chunk")
+            return [(32, 128, 2, 64, 0, 0, 0, 0, 0)]
+
+        def chunk_scan_b_census(self):
+            reads.append("scan")
+            return [(32, 128, 2, 64)]
+
+    manifest.chunk_arms.cache_clear()
+    manifest.scan_arms.cache_clear()
+    monkeypatch.setattr(manifest, "extension", _Ext)
+    yield manifest, reads
+    manifest.chunk_arms.cache_clear()
+    manifest.scan_arms.cache_clear()
+
+
+def test_the_build_census_is_read_once_however_many_folds_ask_for_it(census):
+    """A PRIMITIVE declares its caching. The census is a function of the loaded
+    binary and of nothing else, and it has five call sites -- the chunk DAG's node,
+    three adapters in `facts/call.py` and the bitmap-alone helper -- so a per-site
+    memo would be five of them agreeing by hand."""
+    manifest, reads = census
+
+    for _ in range(4):
+        assert manifest.chunk_arms() == ((32, 128, 2, 64),)
+        assert manifest.scan_arms() == frozenset({(32, 128, 2, 64)})
+
+    assert reads == ["chunk", "scan"], (
+        f"the census was read {len(reads)} times for one binary: {reads}")
+
+
+def test_a_cached_census_is_immutable(census):
+    """A shared cached value a caller could mutate would not be a fact. The scan
+    census is a frozenset for exactly this reason and not for a typing preference."""
+    manifest, _ = census
+
+    with pytest.raises(AttributeError):
+        manifest.scan_arms().add((32, 64, 2, 16))
+    assert isinstance(manifest.chunk_arms(), tuple)
+
+
 def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
     """The shipped DAG is validated at import; this is that check made visible, plus
     the two properties a reader would otherwise have to trust."""

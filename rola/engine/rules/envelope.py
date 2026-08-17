@@ -60,7 +60,7 @@ def envelope(unratified: tuple[str, ...], device) -> str | None:
 @rule(gives=("backward_envelope",),
       needs=("arm_envelope", "widths", "arm", "scan_manifest"))
 def backward_envelope(arm_envelope: str | None, widths: tuple[int, ...], arm: Arm,
-                      scan_manifest: set[tuple[int, int, int, int]]) -> str | None:
+                      scan_manifest: frozenset[tuple[int, int, int, int]]) -> str | None:
     """Why a GRAD-BEARING call has no arm, or None if it trains.
 
     The forward's arm matrix is wider than the scans': a forward that runs and a
