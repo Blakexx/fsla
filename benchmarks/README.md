@@ -4,12 +4,13 @@ The methodology, the instruments and the record are `docs/measurement.md`; the l
 is `docs/testing.md`. This file is the map.
 
 **`benchmarks/unit/` — one driver per custom kernel, and the roster is the oracle tests'.**
-The chunk forward, the stats pass, the block bits, the divide, the backward seeds, the
+The chunk forward, the facts pass, the block bits, the divide, the backward seeds, the
 entmax solves and the decode step each get one driver, because a bench roster that does
 not match the correctness roster is a roster with kernels nobody measures. Each driver
-prices exactly one launch: everything the launch does not pay for — the union table, the
-packed sides, the state plane, the routing — is built outside the timed callable, so a
-row is attributable to the kernel it names.
+prices exactly one launch: everything the launch does not pay for — the packed sides,
+the state plane, the routing — is built outside the timed callable, so a row is
+attributable to the kernel it names. The facts pass is one launch that emits two facts,
+so it is one row: the union table is priced there and nowhere else.
 
 **`benchmarks/integration/` — the compositions the unit rows cannot be summed into.**
 The whole layer step (projections, producer, kernel, readout, output projection) and the
