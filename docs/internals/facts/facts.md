@@ -49,9 +49,10 @@ Three packages, and one sentence decides which:
 * `rola/rules/` — band 2, one declared fold per decision.
 * `rola/dags/` — the per-family compositions: the tuple, its context, its terminal
   node.
-* `rola/ops/` — the launches. `chunk.py` is `execute`, the seeds, the two scans and
-  the un-packing: the functions whose whole content is an extension call and the
-  narrowing around it.
+* `rola/ops/` — the launches and the bodies around them. `chunk.py` is `execute`, the
+  seeds, the two scans and the un-packing; `decode.py` is the geometry, the scratch,
+  the folds, the probe and `execute`, plus `_decode_step` — those same bodies in the
+  step's order for a caller holding tensors rather than a bundle.
 
 `rola/facts/__init__.py` re-exports the DEVICE-FREE core only, and that is a layering
 statement rather than a convenience: `rola.rules` reads `runner` and `types` and must
@@ -78,12 +79,18 @@ The runner is the whole execution model:
 
 ## <a id="masks"></a>4. Masks, and why not per-fact bools
 
-Specialization is per CALL CLASS. `CallClass` folds a call into four bits, and the
-MaskRule folds those bits into one mask; the chunk family has two (`M1` prefill-stateless, `M2`
-prefill-stateful) and the decode family will name the other two. A bool per fact
-would be `2^n` specializations of everything downstream, so intra-mask variation is
-carried as a null plan FIELD instead — `read_mass is None`, `state_in is None` — which
-is free and costs no hot-loop register.
+Specialization is per CALL CLASS, and the set is CLOSED AT FOUR: `M1`
+prefill-stateless and `M2` prefill-stateful for the chunk family, `M3` decode-dense and
+`M4` decode-paged for the decode family. Each family has its own MaskRule over its own
+facts — `mask` folds `CallClass`'s four bits, `decode_mask` folds the one bit a decode
+step has — and a mask earns its name only by selecting a DIFFERENT node set. A growth
+step does not: it is `M4` walked twice around an admission
+([`decode_dag.md` §1](decode_dag.md#the-two-masks)).
+
+A bool per fact would be `2^n` specializations of everything downstream, so intra-mask
+variation is carried as a null plan FIELD instead — `read_mass is None`,
+`state_in is None`, a dense step's `gate is None` — which is free and costs no hot-loop
+register.
 
 ## <a id="the-suppliable-set"></a>5. The suppliable set is closed
 
@@ -104,8 +111,16 @@ Node metadata declares the discipline the arena implements:
 * `stream="side"` — issued on the arena's side stream.
 * `waits=(...)` — a Join. **There is exactly one Join per DAG** and `validate_dag`
   asserts it, because a second event would be a second synchronization discipline.
-* `host_sync=True` — the ONE node permitted a device-to-host read. A capturable
-  region asserts no node declares it.
+* `host_sync=True` — the ONE node permitted a device-to-host read.
+* `capturable=True` — this node may stand inside a CUDA-graph capture: it reads no
+  device value on the host and allocates nothing per step. Declaring it beside
+  `host_sync` is refused; the two are one claim written from two ends, and
+  `validate_capturable` refuses a captured recipe holding a node without it
+  ([`decode_dag.md` §4](decode_dag.md#capturable)).
+* `reference_only=True` — this node is a GATE's independent second derivation of a
+  fact the shipped path derives its own way. `validate_dag` refuses any DAG containing
+  one, which is what keeps that independence from being deleted by a well-meaning
+  wiring ([`decode_dag.md` §6](decode_dag.md#reference-only)).
 
 Where a Join sits is a correctness fact, not a scheduling preference: see
 [the chunk DAG's page](chunk_dag.md#the-join).

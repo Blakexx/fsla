@@ -154,13 +154,13 @@ settled writes atoms that are already resident. So the order per step is a QUEST
 then, only if the answer is yes, `rola_op`'s order at `L = 1`:
 
 ```
-_growth_probe_launch(routes.write) ->  one kernel: anything new? and, either way, the
+growth_probe(amp_write) ->  one kernel: anything new? and, either way, the
                                        step's write-ATOM set and the reduced verdict
 growth_host.copy_(growth_any)      ->  async into pinned; the event records on it
-_decode_step(gate=growth_any)      ->  ENQUEUED BEHIND THE VERDICT, gated on it
+execute(plan, gate=growth_any)     ->  ENQUEUED BEHIND THE VERDICT, gated on it
 verdict.synchronize()              ->  the wait, now spent on the launches above
   no  -> done                      ->  the walk ran, against the residency it had
-  yes -> state._decode_entry       ->  plan_exact(workspace.atom_bits, fresh=False)
+  yes -> state._decode_entry_arena ->  plan_exact(scratch.atom_bits, fresh=False)
          arena.wait()              ->  the ONE event the launch waits on
          _decode_step              ->  the walk, resolving through the grown table
 ```
@@ -229,7 +229,7 @@ growth steps by orders of magnitude.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
-With no host read inside it the step is capturable, and `rola.ops.decode.decode_step_gated`
+With no host read inside it the step is capturable, and `rola.dags.decode_dag.decode_step_gated`
 is that entry: the same kernels in the same order as `decode_forward` minus the verdict
 read. The CALLER owns the verdict, at whatever synchronization it already has (a decode
 loop syncs once per token to sample):
@@ -689,7 +689,11 @@ The expansion's arm selection is not this check; it is structural and lives in
 
 ---
 
-# Part C — the host side (`rola/ops/decode.py`)
+# Part C — the host side (`rola/ops/decode.py`, `rola/dags/decode_dag.py`)
+
+The step's ORDER, the two memo disciplines and the capturability declaration are the
+DAG's page ([`facts/decode_dag.md`](../facts/decode_dag.md)); what follows is what the
+KERNELS impose on the host.
 
 ## <a id="decay-domain"></a>36. Decode's decay domain is strictly larger, as a consequence
 
@@ -708,27 +712,9 @@ The decode kernels have no backward. The layer's decode envelope check already
 refuses training mode and gradient reachability before the decode fork is reached, so
 the module's own check exists for a direct caller.
 
-## <a id="host-carrier"></a>38. The kernel-layout carrier and the workspace
+## <a id="probe-blocking-read"></a>38. The probe's read is ASYNCHRONOUS, and the gate is why it can be
 
-`DecodeGeometry` answers "what shape is the launch?" — widths, mixed-radix strides,
-spans, row offsets, word and group counts, `d_v`, the normalization and decay arms,
-`eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a field:
-owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]` block
-across many tokens, and with one token there is nothing to amortize, so the decode
-kernels are BC-blind by construction.
-
-`DecodeScratch` is per-sequence scratch, allocated once and rebuilt (never resized)
-when the shape key moves. `ctr` is zeroed exactly once at build: the last-arriving CTA of
-every step resets it, so no `memset` launch ever stands between two decode steps and the
-whole step stays capturable in a CUDA graph.
-
-Both the carrier and the workspace are memoized in the MODULE and appear on no public
-signature, for the same reason the chunk arm's tables do not: they are how the step runs,
-not what it computes.
-
-## <a id="probe-blocking-read"></a>39. The probe's read is ASYNCHRONOUS, and the gate is why it can be
-
-`_growth_probe_launch` publishes the verdict into `growth_any`; the eager path copies that
+`growth_probe` publishes the verdict into `growth_any`; the eager path copies that
 one `[1]` int32 into a workspace-owned PINNED buffer asynchronously, records an event, and
 enqueues the GATED step before waiting on it. Blocking was the measured choice while the
 read stood IN FRONT of the step (0.093 ms against 0.152 for an event, RTX 3090, medians of
@@ -743,7 +729,7 @@ The kernel expands the write side with `decode_expand.cu`'s OWN `expand_side`, o
 same amplitude pointers the step itself uses, and ANDs the 16-deep condensation against
 `page_table >= 0`.
 
-## <a id="second-derivation"></a>40. `_write_atom_bitmap` is the gate's independent second derivation
+## <a id="second-derivation"></a>39. `_write_atom_bitmap` is the gate's independent second derivation
 
 The shipped path derives the write-atom set on the device (the probe publishes it), so
 `_write_atom_bitmap` has no production caller and is not meant to acquire one. It

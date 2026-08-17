@@ -142,3 +142,61 @@ def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
     assert order.index("join") < order.index("block_bits"), (
         "the Join moved past the block bitmap, which reads the page table the "
         "admission writes")
+
+
+# ---------------------------------------------------------------------------
+# the decode family's two structural declarations
+# ---------------------------------------------------------------------------
+
+def test_a_capturable_node_may_not_read_the_device_on_the_host():
+    """The two attributes are one claim, so declaring both is refused at declaration."""
+    with pytest.raises(ValueError, match="cannot be capturable"):
+        node(gives=("grow",), host_sync=True, capturable=True)(lambda f: True)
+
+
+def test_the_decode_step_is_declared_capturable_end_to_end():
+    """THE CAPTURABILITY CLAIM, structurally: no host read, and every node says so.
+
+    `tests/integration/test_decode_graph_step.py` proves a real capture replays; this
+    proves the claim is a property of the DECLARATION, so a node added to the step
+    without the attribute fails here rather than at someone's first `graph.replay()`.
+    """
+    from rola.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, read_verdict
+
+    assert all(step.capturable for step in DECODE_STEP)
+    assert not any(step.host_sync for step in DECODE_STEP)
+    assert [step for step in DECODE_VERDICT if step.host_sync] == [read_verdict]
+    #: and the verdict read is the LAST node: it is enqueued behind the launches it
+    #: reads the answer of, which is the whole of P67-a's host order.
+    assert DECODE_VERDICT[-1] is read_verdict
+
+
+def test_a_reference_only_node_is_refused_by_every_shipped_dag():
+    """§H.7's hand-written warning, made mechanical.
+
+    `write_atom_bitmap` is the gate's independent second derivation of the write-atom
+    set. Splicing it into a shipped DAG would make the gate compare the probe against
+    itself, and `validate_dag` is where that is refused.
+    """
+    from rola.dags.backward_dag import BACKWARD_DAG
+    from rola.dags.chunk_dag import CHUNK_DAG
+    from rola.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, write_atom_bitmap
+
+    assert write_atom_bitmap.reference_only
+    for dag in (CHUNK_DAG, BACKWARD_DAG, DECODE_STEP, DECODE_VERDICT):
+        assert not any(step.reference_only for step in dag)
+    with pytest.raises(ValueError, match="second derivation"):
+        validate_dag((write_atom_bitmap,), ("routes", "geometry"))
+
+
+def test_the_decode_dag_is_walkable_and_masks_the_growth_band_off_the_dense_step():
+    from rola.dags.decode_dag import DECODE_STEP, growth_probe
+
+    assert all(isinstance(step, Node) for step in DECODE_STEP)
+    assert growth_probe.masks == (Mask.M4,), (
+        "the growth probe is the paged backing's own stats pass; asking it of a dense "
+        "step would launch a probe against a page table that does not exist")
+    order = [step.name for step in DECODE_STEP]
+    assert order.index("growth_probe") < order.index("execute"), (
+        "the step reads the probe's verdict on the device, so the probe must be "
+        "enqueued ahead of it")

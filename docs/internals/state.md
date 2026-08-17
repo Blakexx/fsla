@@ -133,30 +133,28 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`rola.ops.decode.decode_forward(routes, v, state, decay=..., expert=...)` takes and
-returns the state exactly as `rola_op` does. Three things live behind that seam:
+`rola.dags.decode_dag.decode_forward(routes, v, state, decay=..., expert=...)` takes
+and returns the state exactly as `rola_op` does. Three things live behind that seam:
 
-* **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`)
-  are MEMOIZED IN `rola.ops.decode`, not on the state — launch machinery fails the
-  membership test. The carrier is a pure function of its key (widths, `d_v`, the decay
-  arm, `BH`, device), so a plain module-level dict is exactly
-  right: identical keys are the identical frozen object. The workspace is scratch
-  belonging to ONE live state, so it is keyed by the state object in a
-  `WeakKeyDictionary` — a dropped sequence drops its scratch, and two concurrent
-  sequences can never share a buffer.
+* **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`) are the
+  decode DAG's own memoized nodes, not the state's — launch machinery fails the
+  membership test. The ORDER and the two memo disciplines are that DAG's page
+  ([`facts/decode_dag.md` §5](facts/decode_dag.md#host-carrier)); what the state owes
+  them is only its identity, which is what the `per_state` table is keyed on.
 * **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
   or a VIEW of the dense plane — the view is what makes the kernel's in-place update
   the state's update. Dense and paged compute the same bytes
   ([`decode/decode.md` §4](decode/decode.md#paged-address)).
 * **Growth is CONDITIONAL, and the condition arrives from the device.** `_decode_entry`
-  takes the step's write-atom bitmap or `None`. A bitmap means the device growth probe
-  found an atom this step writes that the table does not map, and the entry plans it
-  with `plan_exact(..., fresh=False)` — residency becomes the UNION and the launch waits
-  on the one event. `None` means there is nothing to admit, and the entry hands back the
-  residency the state already has without touching the arena at all
+  admits nothing: it hands back the residency the state already has. When the device
+  growth probe finds an atom this step writes that the table does not map,
+  `_decode_entry_arena` plans it with `plan_exact(..., fresh=False)` — residency becomes
+  the UNION and the launch waits on the one event — and the step is walked again
   ([`decode/decode.md` §4b](decode/decode.md#growth)).
 
-A decode step CONTINUES, so `_decode_entry` refuses a state that carries nothing —
+A decode step CONTINUES, so `_require_carrying` refuses a state that carries nothing —
+asked once by the decode family's `validate_context` before the step's first launch, and
+again at `_decode_entry` for a caller reaching the seam directly.
 there is no prefill at one token and no entry state to read. That is a computational
 impossibility and not a policy, which is the only kind of refusal this surface has.
 

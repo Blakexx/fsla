@@ -15,7 +15,7 @@ from rola.rules.envelope import (
     envelope,
     training_envelope,
 )
-from rola.rules.mask import mask
+from rola.rules.mask import decode_mask, mask
 from rola.rules.paging import admission, paging_preference
 from rola.rules.retention import retention
 from rola.rules.run_table import run_table
@@ -26,6 +26,7 @@ __all__ = [
     "arm",
     "arm_envelope",
     "backward_envelope",
+    "decode_mask",
     "envelope",
     "mask",
     "paging_preference",

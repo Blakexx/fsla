@@ -1,17 +1,18 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""The T=1 decode op -- the frozen-config carrier, the workspace, and the guard.
+"""The T=1 decode family's BODIES: the geometry, the scratch, the folds, the launches.
 
-    decode_forward(routes, v, state, decay=..., expert=...) -> (y, state)
+The decode DAG (:mod:`rola.dags.decode_dag`) declares these as nodes and composes the
+step; the facade lives there with it. What is here is one function per thing that is
+done, and the raw-tensor entry :func:`_decode_step` is those same functions in the
+step's order, for a caller holding tensors rather than a bundle.
 
-The `T = 1` sibling of `rola_op`: one token, no schedule, no selection. The bypass is
-architectural rather than a cheap default (docs/internals/decode/decode.md#no-stage-2),
-the support is a Kronecker product the kernel expands exactly
-(docs/internals/decode/decode.md#kronecker-support), decode's decay domain is strictly
-larger than the chunk arm's as a CONSEQUENCE
-(docs/internals/decode/decode.md#decay-domain), and the carrier and the workspace are
-Part C of the same page.
+The bypass is architectural rather than a cheap default
+(docs/internals/decode/decode.md#no-stage-2), the support is a Kronecker product the
+kernel expands exactly (docs/internals/decode/decode.md#kronecker-support), and decode's
+decay domain is strictly larger than the chunk arm's as a CONSEQUENCE
+(docs/internals/decode/decode.md#decay-domain).
 
 FORWARD ONLY. The decode kernels have no backward; the guard below is defence in depth
 behind the layer's own envelope check (docs/internals/decode/decode.md#forward-only).
@@ -19,20 +20,16 @@ behind the layer's own envelope check (docs/internals/decode/decode.md#forward-o
 PAGED AND DENSE ARE ONE WALK: the page granule is the ATOM, which is what makes the
 paged address BC-free, so the whole difference is one indirection resolved once per
 touched atom (docs/internals/decode/decode.md#the-atom).
-
-GROWTH IS THE STEP'S OWN NEW WORK, and most steps have none -- the step asks on the
-DEVICE first, because the admission costs several times the launch it precedes
-(docs/internals/decode/decode.md#growth).
 """
 
 from __future__ import annotations
 
 import math
-import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
+from rola.facts.plan import DecodeGeometry, DecodePlan
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
@@ -42,13 +39,12 @@ from rola.routing.types import Topology
 __all__ = [
     "C_DECODE_ROWS_PER_CTA",
     "C_DECODE_TARGET_CTAS_PER_SM",
-    "DecodeGeometry",
     "DecodeScratch",
-    "admit_growth",
-    "decode_forward",
-    "decode_step_gated",
     "derive_decode_geometry",
-    "growth_pending",
+    "execute",
+    "fold_operands",
+    "growth_probe",
+    "step_plane",
 ]
 
 
@@ -59,46 +55,6 @@ __all__ = [
 #: sweep at the at-scale cell and an occupancy-oracle query on the shipped footprint.
 C_DECODE_ROWS_PER_CTA = 256
 C_DECODE_TARGET_CTAS_PER_SM = 12  # 2 waves x the design's 6 CTAs/SM residency estimate
-
-
-@dataclass(frozen=True, slots=True)
-class DecodeGeometry:
-    """The T=1 seam's plan: stats -> plan -> kernel, same as the chunk arm.
-
-    The growth probe is decode's stats pass; this object is what those stats
-    (plus the topology) derive once at the prefill->decode boundary; the
-    kernels consume it. Immutable for the sequence.
-
-    ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
-    the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
-    token there is nothing to amortize, and the decode kernels are BC-blind by
-    construction (``tests/integration/test_decode_bc_blindness.py`` asserts
-    byte-identical decode output under prefill ``BC`` in ``{16, 32, 64}``).
-    """
-
-    D: int
-    widths: tuple[int, ...]
-    leaf_stride: tuple[int, ...]     # prod(widths[l+1:]) — the leaf mixed radix
-    level_span: tuple[int, ...]      # prod(widths[l:])   — the expansion's copy geometry
-    level_row_offset: tuple[int, ...]
-    n_words: int
-    n_groups: int
-    d_v: int
-    has_decay: bool
-    eps: float
-    n_split: int
-
-    @property
-    def N(self) -> int:
-        return self.level_span[0]
-
-    @property
-    def cols(self) -> int:
-        return self.d_v + 1  # the mass column is unconditional (raw is dead)
-
-    @property
-    def total_rows(self) -> int:
-        return sum(self.widths)
 
 
 def derive_decode_geometry(
@@ -157,10 +113,9 @@ def derive_decode_geometry(
 class DecodeScratch:
     """Per-sequence scratch, allocated once and reused across steps.
 
-    Rebuilt (not resized) whenever the shape key moves. ``ctr`` is zeroed exactly once
-    here: the last-arriving CTA of every step resets it, so no ``memset`` launch ever
-    stands between two decode steps and the whole step stays capturable in a CUDA
-    graph.
+    ``ctr`` is zeroed exactly once here: the last-arriving CTA of every step resets it,
+    so no ``memset`` launch ever stands between two decode steps and the whole step
+    stays capturable in a CUDA graph.
     """
 
     bits: torch.Tensor
@@ -185,7 +140,6 @@ class DecodeScratch:
     #: condensed on the device from the expansion the verdict was read off. A growth
     #: step admits from THIS -- the host derives nothing: docs/internals/decode/decode.md#growth
     atom_bits: torch.Tensor
-    key: tuple = field(default=())
 
     @staticmethod
     def build(config: DecodeGeometry, BH: int, device) -> DecodeScratch:
@@ -203,13 +157,7 @@ class DecodeScratch:
             growth_host=torch.empty(1, dtype=torch.int32, pin_memory=cuda),
             verdict=torch.cuda.Event() if cuda else None,
             atom_bits=torch.empty(BH, config.N // MMA_K_QUANTUM, dtype=torch.bool,
-                                  device=device),
-            key=(BH, config.N, config.n_words, config.n_groups, config.n_split, config.cols,
-                 torch.device(device)))
-
-    def matches(self, config: DecodeGeometry, BH: int, device) -> bool:
-        return self.key == (BH, config.N, config.n_words, config.n_groups, config.n_split,
-                            config.cols, torch.device(device))
+                                  device=device))
 
 
 def _fold(t: torch.Tensor) -> torch.Tensor:
@@ -233,7 +181,12 @@ def _fold_scalar(t: torch.Tensor) -> torch.Tensor:
     return t.permute(0, 2, 1).reshape(B * H).contiguous()
 
 
-def _guard_no_grad(operands) -> None:
+def fold_levels(levels) -> list[torch.Tensor]:
+    """The per-level amplitude stream the kernels read: ``[BH, width_l]`` fp32."""
+    return [_fold(t).float() for t in levels]
+
+
+def guard_no_grad(operands) -> None:
     if not torch.is_grad_enabled():
         return
     if any(t is not None and torch.is_tensor(t) and t.requires_grad for t in operands):
@@ -246,152 +199,120 @@ def _guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-#: The workspace map holds its states WEAKLY: a dropped sequence must drop its scratch,
-#: and two concurrent sequences must never share a buffer
-#: (docs/internals/decode/decode.md#host-carrier).
-_GEOMETRIES: dict[tuple, DecodeGeometry] = {}
-_WORKSPACES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+def fold_operands(read_levels, write_levels, g_write: torch.Tensor, v: torch.Tensor,
+                  decay, config: DecodeGeometry):
+    """``(amp_read, amp_write, amp_clock, dials, g_write, v)`` -- the step's operands.
 
+    Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's scope --
+    a ``[BH, width]`` object with no measured pressure). A bf16-projected ``v`` widens
+    here and the cast is exact, the values being bf16-rounded already.
 
-def _carrier(topology, *, d_v: int, decay: bool, BH: int, device) -> DecodeGeometry:
-    key = (tuple(topology.widths), d_v, decay, BH, torch.device(device))
-    config = _GEOMETRIES.get(key)
-    if config is None:
-        config = derive_decode_geometry(
-            topology, d_v=d_v, decay=decay, BH=BH, device=device)
-        _GEOMETRIES[key] = config
-    return config
-
-
-def _prepare(routes, v: torch.Tensor, decay, expert, state):
-    """The carrier, the scratch and the step's operand set -- shared by both entries."""
-    BH = routes.batch * routes.heads
-    config = _carrier(routes.topology, d_v=v.shape[-1], decay=decay is not None, BH=BH,
-        device=routes.device)
-    workspace = _WORKSPACES.get(state)
-    if workspace is None or not workspace.matches(config, BH, routes.device):
-        workspace = DecodeScratch.build(config, BH, routes.device)
-    #: Decode is an fp32 boundary by contract (out of the P09 bf16-memory family's
-    #: scope -- a `[BH, width]` object with no measured pressure). A bf16-projected `v`
-    #: re-widens here and the cast is exact, the values being bf16-rounded already.
-    step = dict(v=v.to(torch.float32), read_levels=routes.read_simplex(),
-                write_levels=routes.write, g_read=routes.g_read, g_write=routes.g_write,
-                config=config, decay=decay, workspace=workspace)
-    return config, workspace, step
-
-
-def decode_step_gated(routes, v: torch.Tensor, state, *, decay=None, expert=None):
-    """ONE decode step with NO host participation -- the CAPTURE-SAFE entry.
-
-    Same kernels in the same order as :func:`decode_forward`, minus the verdict read:
-    the step is gated on the probe's device-side answer, so a step whose write set is
-    not resident is a NO-OP that leaves the state exactly as the admission needs it.
-    The CALLER owns the verdict, at whatever synchronization it already has:
-
-        y, state = decode_step_gated(...)   # or graph.replay()
-        if growth_pending(state):
-            admit_growth(state)
-            y, state = decode_step_gated(...)   # or graph.replay(); now it runs
-
-    A REPLAY IS SELF-CORRECTING because the probe re-runs inside it: after the
-    admission its verdict is 0 and the same captured graph performs the step.
-    docs/internals/decode/decode.md#capture
+    ``amp_clock`` IS ``amp_write``: the clock is ``c[t, s] = prod_l p_write[t, d_l(s)]``,
+    a pure product of the STORED allocations with no side gain (``g_write`` scales the
+    deposit, not the clock), so ``stored != 0 => live != 0`` holds by identity rather
+    than by check (docs/internals/decode/decode.md#detached-clock).
     """
-    config, workspace, step = _prepare(routes, v, decay, expert, state)
-    if not state.paged:
-        plane, page_table, _ = state._decode_entry(routes, None)
-        y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
-        return y, state
-    _growth_probe_launch(routes.write, config, state.page_table, workspace)
-    plane, page_table, _ = state._decode_entry(routes, None)
-    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table,
-                                            gate=workspace.growth_any, **step)
-    return y, state
+    amp_write = fold_levels(write_levels)
+    amp_clock = amp_write if decay is not None else None
+    dials = (leaf_rate_dials(decay, config).to(v.device).float() if decay is not None
+             else None)
+    return (fold_levels(read_levels), amp_write, amp_clock, dials,
+            _fold_scalar(g_write).float(), _fold(v).float())
 
 
-def growth_pending(state) -> bool:
-    """Did the last gated step skip itself for want of an atom? ONE 4-byte read."""
-    workspace = _WORKSPACES.get(state)
-    if workspace is None or not state.paged:
-        return False
-    workspace.growth_host.copy_(workspace.growth_any)
-    return bool(workspace.growth_host[0])
+def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
+               state: torch.Tensor, page_table: torch.Tensor | None) -> torch.Tensor:
+    """The plane the kernel indexes, and the per-step agreement checks that find it.
 
-
-def admit_growth(state) -> None:
-    """Admit the pending step's write atoms, from the probe's own condensation."""
-    workspace = _WORKSPACES.get(state)
-    if workspace is None:
-        raise RuntimeError("admit_growth wants the workspace a gated step leaves behind")
-    arena = state._decode_entry_arena(workspace.atom_bits)
-    arena.wait()
-
-
-def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
-    """ONE decode step over a routing bundle and a carried state -- the whole surface.
-
-    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`; ``v`` is
-    ``[B, 1, H, d_v]``; ``state`` is a :class:`~rola.RoLAState` that CARRIES
-    (a step continues a sequence, so an empty state has nothing to decode from).
-    Returns ``(y, state)`` -- ``y`` shaped ``[B, 1, H, d_v]`` and the SAME state
-    object, updated in place, exactly as :func:`rola.rola_op` returns it.
-
-    The launch machinery -- the frozen carrier and the scratch -- is memoized in this
-    MODULE and never appears here, for the same reason the chunk arm's tables do not:
-    it is how the step runs, not what it computes. The backing is likewise invisible,
-    and its growth is handled below (docs/internals/decode/decode.md#growth).
+    The two backings have ONE shape rule each. Under a table the plane holds only the
+    slots a plan committed, so its leading extent is the arena's and not ``BH``; without
+    one the plane IS the leaf space. Both are handed to the ABI in the shape the kernel
+    indexes, so the reshape below is the whole difference.
     """
-    config, workspace, step = _prepare(routes, v, decay, expert, state)
-    if not state.paged:
-        plane, page_table, _ = state._decode_entry(routes, None)
-        y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
-        return y, state
+    if v.dim() != 4:
+        raise ValueError(f"v must be [B, 1, H, d_v], got {tuple(v.shape)}")
+    B, _T, H, d_v = v.shape
+    BH = B * H
+    if d_v != config.d_v:
+        raise ValueError(f"v's d_v={d_v} disagrees with the frozen config's {config.d_v}")
+    if g_read is not None:
+        raise ValueError(
+            "normalization='global' fixes g_read := 1 (raw is dead); pass g_read=None")
+    if (decay is not None) != config.has_decay:
+        raise ValueError(
+            f"the frozen config says has_decay={config.has_decay} but decay is "
+            f"{'absent' if decay is None else 'present'}; the config is frozen for the "
+            "sequence and the decay arm is part of it")
+    if page_table is None:
+        if state.shape != (B, H, config.N, config.cols):
+            raise ValueError(
+                f"state must be [B, H, N, d_v + 1] = "
+                f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
+        return state.reshape(BH, config.N, config.cols)
+    if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):
+        raise ValueError(
+            f"under a page table the state is the arena's plane, "
+            f"[slots, {MMA_K_QUANTUM}, d_v + 1], got {tuple(state.shape)}")
+    if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
+        raise ValueError(
+            f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "
+            f"{(BH, config.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
+    return state
 
-    #: THE HOST ORDER, and the whole of P67-a: the step is ENQUEUED BEHIND ITS OWN
-    #: VERDICT, gated so that a growth step is a device-side no-op, and the host's wait
-    #: for the 4-byte flag is spent on the launches instead of in front of them
-    #: (docs/internals/decode/decode.md#the-gate).
-    _growth_probe_launch(routes.write, config, state.page_table, workspace)
-    workspace.growth_host.copy_(workspace.growth_any, non_blocking=True)
-    workspace.verdict.record()
-    plane, page_table, arena = state._decode_entry(routes, None)
-    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table,
-                                            gate=workspace.growth_any, **step)
-    workspace.verdict.synchronize()
-    if not bool(workspace.growth_host[0]):
-        return y, state
 
-    #: The gated step deposited nothing and read nothing, so the state is exactly where
-    #: the admission needs it. `atom_bits` is the probe's own condensation -- the host
-    #: derives no support (docs/internals/decode/decode.md#second-derivation).
-    plane, page_table, arena = state._decode_entry(routes, workspace.atom_bits)
-    arena.wait()
-    y, _, _WORKSPACES[state] = _decode_step(state=plane, page_table=page_table, **step)
-    return y, state
-
-
-def _growth_probe_launch(write_levels, config: DecodeGeometry, page_table: torch.Tensor,
-                         workspace: DecodeScratch) -> None:
+def growth_probe(amp_write, config: DecodeGeometry, page_table: torch.Tensor,
+                 scratch: DecodeScratch) -> None:
     """Does this step deposit into an atom the page table does not map? ASKED, not read.
 
-    THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``workspace.atom_bits``
+    THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``scratch.atom_bits``
     and IS what a growth step admits, so the write-atom set is derived exactly once per
     step, on the device. The verdict lands in ``growth_any``, which the step reads on the
     device (docs/internals/decode/decode.md#the-gate) and the host reads after enqueueing
     it.
     """
-    amp_write = [_fold(t).float() for t in write_levels]
     extension().rola_decode_growth_probe(
         amp_write=amp_write,
         page_table=page_table,
-        bits=workspace.bits,
-        growth=workspace.growth,
-        growth_any=workspace.growth_any,
-        probe_ctr=workspace.probe_ctr,
-        atom_bits=workspace.atom_bits,
+        bits=scratch.bits,
+        growth=scratch.growth,
+        growth_any=scratch.growth_any,
+        probe_ctr=scratch.probe_ctr,
+        atom_bits=scratch.atom_bits,
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span))
+
+
+def execute(plan: DecodePlan) -> torch.Tensor:
+    """THE LAUNCH, in place on ``plan.state_plane``. Returns ``y`` as ``[B, 1, H, d_v]``.
+
+    Every touched row has exactly one owning CTA, warp and lane, so the update needs no
+    atomic and is bitwise reproducible.
+    """
+    config, H = plan.config, plan.heads
+    y = extension().rola_decode_forward(
+        amp_read=plan.amp_read,
+        amp_write=plan.amp_write,
+        amp_clock=plan.amp_clock,
+        dials=plan.dials,
+        g_write=plan.g_write,
+        v=plan.v,
+        state=plan.state_plane,
+        bits=plan.scratch.bits,
+        pc_coarse=plan.scratch.pc_coarse,
+        ws=plan.scratch.ws,
+        ctr=plan.scratch.ctr,
+        level_widths=list(config.widths),
+        level_strides=list(config.leaf_stride),
+        level_spans=list(config.level_span),
+        level_row_offsets=list(config.level_row_offset),
+        heads=H,
+        n_split=config.n_split,
+        eps=config.eps,
+        page_table=plan.page_table,
+        gate=plan.gate,
+    )
+    return y.view(plan.v.shape[0] // H, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
 def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
@@ -425,109 +346,25 @@ def _decode_step(
     page_table: torch.Tensor | None = None,
     gate: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
-    """The RAW-TENSOR launch, in place on ``state``. The prefill arm's sibling.
+    """The RAW-TENSOR entry: the step's own bodies, in the step's order.
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
     ``g_write`` is ``[B, 1, H]`` and ``g_read`` is the same or ``None`` under the
     global arm. ``state`` is the dense ``[B, H, N, d_v + 1]`` plane, or the arena's
-    ``[slots, 16, d_v + 1]`` one under ``page_table``; either is UPDATED IN PLACE --
-    every touched row has exactly one owning CTA, warp and lane, so the update needs no
-    atomic and is bitwise reproducible.
+    ``[slots, 16, d_v + 1]`` one under ``page_table``.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
     """
-    _guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
-                    *(decay.dials if decay is not None else ())))
-
-    if v.dim() != 4:
-        raise ValueError(f"v must be [B, 1, H, d_v], got {tuple(v.shape)}")
-    B, _T, H, d_v = v.shape
-    BH = B * H
-    if d_v != config.d_v:
-        raise ValueError(f"v's d_v={d_v} disagrees with the frozen config's {config.d_v}")
-    if g_read is not None:
-        raise ValueError(
-            "normalization='global' fixes g_read := 1 (raw is dead); pass g_read=None")
-    if (decay is not None) != config.has_decay:
-        raise ValueError(
-            f"the frozen config says has_decay={config.has_decay} but decay is "
-            f"{'absent' if decay is None else 'present'}; the config is frozen for the "
-            "sequence and the decay arm is part of it")
-    #: The two backings, and the ONE shape rule each. Under a table the plane holds only
-    #: the slots a plan committed, so its leading extent is the arena's and not `BH`;
-    #: without one the plane IS the leaf space. Both are handed to the ABI in the shape
-    #: the kernel indexes, so the reshape below is the whole difference.
-    if page_table is None:
-        if state.shape != (B, H, config.N, config.cols):
-            raise ValueError(
-                f"state must be [B, H, N, d_v + 1] = "
-                f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
-        plane = state.reshape(BH, config.N, config.cols)
-    else:
-        if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):
-            raise ValueError(
-                f"under a page table the state is the arena's plane, "
-                f"[slots, {MMA_K_QUANTUM}, d_v + 1], got {tuple(state.shape)}")
-        if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
-            raise ValueError(
-                f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "
-                f"{(BH, config.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
-        plane = state
-
-    if workspace is None or not workspace.matches(config, BH, v.device):
+    guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
+                   *(decay.dials if decay is not None else ())))
+    plane = step_plane(v, config, g_read, decay, state, page_table)
+    BH = v.shape[0] * v.shape[2]
+    if workspace is None:
         workspace = DecodeScratch.build(config, BH, v.device)
-
-    amp_read = [_fold(t).float() for t in read_levels]
-    amp_write = [_fold(t).float() for t in write_levels]
-
-    amp_clock = None
-    dials = None
-    if decay is not None:
-        # The clock is `c[t, s] = prod_l p_write[t, d_l(s)]` — a pure product of the
-        # STORED allocations with no side gain: `g_write` scales the deposit, not the
-        # clock. The levels handed in ARE the stored form, so `stored != 0 => live != 0`
-        # holds by identity rather than by check.
-        amp_clock = [_fold(t).float() for t in write_levels]
-        dials = leaf_rate_dials(decay, _TopologyShim(config)).to(v.device).float()
-
-    y = extension().rola_decode_forward(
-        amp_read=amp_read,
-        amp_write=amp_write,
-        amp_clock=amp_clock,
-        dials=dials,
-        g_write=_fold_scalar(g_write).float(),
-        v=_fold(v).float(),
-        state=plane,
-        bits=workspace.bits,
-        pc_coarse=workspace.pc_coarse,
-        ws=workspace.ws,
-        ctr=workspace.ctr,
-        level_widths=list(config.widths),
-        level_strides=list(config.leaf_stride),
-        level_spans=list(config.level_span),
-        level_row_offsets=list(config.level_row_offset),
-        heads=H,
-        n_split=config.n_split,
-        eps=config.eps,
-        page_table=page_table,
-        gate=gate,
-    )
-    return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous(), state, workspace
-
-
-class _TopologyShim:
-    """The two attributes ``leaf_rate_dials`` reads, off the frozen config.
-
-    ``leaf_rate_dials`` is REUSED rather than reimplemented — it is the one place the
-    fp64→fp32 dial cast is re-checked for the ``delta < 1`` strictness the kernel's
-    ``log1pf(-rate)`` depends on, and a second copy is a second thing that can drift.
-    It wants a topology; the frozen config carries what it reads, and a shim is
-    cheaper than making the decode path carry a ``Topology`` it uses for nothing else.
-    """
-
-    __slots__ = ("widths", "d_v", "D")
-
-    def __init__(self, config: DecodeGeometry):
-        self.widths = config.widths
-        self.d_v = config.d_v
-        self.D = config.D
+    amp_read, amp_write, amp_clock, dials, g, folded_v = fold_operands(
+        read_levels, write_levels, g_write, v, decay, config)
+    y = execute(DecodePlan(
+        config=config, heads=v.shape[2], amp_read=amp_read, amp_write=amp_write,
+        amp_clock=amp_clock, dials=dials, g_write=g, v=folded_v, state_plane=plane,
+        page_table=page_table, scratch=workspace, gate=gate))
+    return y, state, workspace

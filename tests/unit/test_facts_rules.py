@@ -32,6 +32,7 @@ from rola.rules import (
     arm,
     arm_envelope,
     backward_envelope,
+    decode_mask,
     envelope,
     mask,
     paging_preference,
@@ -127,6 +128,18 @@ def test_the_mask_is_m1_exactly_when_no_state_bit_is_engaged(state_in, state_out
     engaged = state_in or state_out or paged
     assert mask(CallClass(state_in, state_out, paged, grad)) is (Mask.M2 if engaged
                                                                  else Mask.M1)
+
+
+@pytest.mark.parametrize("paged", [False, True])
+def test_the_decode_mask_is_the_backing_and_nothing_else(paged):
+    """A GROWTH STEP IS NOT A MASK. M4 is walked twice around an admission, so the
+    only thing that selects a different node set at T = 1 is dense vs paged."""
+    assert decode_mask(paged) is (Mask.M4 if paged else Mask.M3)
+
+
+def test_the_four_masks_are_the_four_call_classes():
+    """The set is CLOSED at four: prefill and decode, each over its two backings."""
+    assert [m.name for m in Mask] == ["M1", "M2", "M3", "M4"]
 
 
 # ---------------------------------------------------------------------------
