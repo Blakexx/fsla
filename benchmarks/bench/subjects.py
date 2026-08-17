@@ -10,7 +10,9 @@ prefill->decode continuation across one carried state.
 A subject is a factory: it takes a built cell fixture and returns a
 :class:`bench.pairing.Arm` whose call issues exactly the launch being priced. Everything
 the launch does NOT pay for -- the union table, the packed sides, the state plane, the
-routing -- is built here, once, outside the timed callable.
+routing -- is the fixture's :class:`~rola.facts.plan.ChunkPlan`, built once by the chunk
+DAG at `Cell.build()` and read off here: outside every timed callable, as before, and
+now identical by construction to what a real call hands the same entries.
 """
 from __future__ import annotations
 
@@ -25,13 +27,7 @@ from rola.routing.entmax.production import production_routing_factor_levels
 
 
 def _widths(fx) -> list:
-    return [level.width for level in fx["routes"].topology.levels]
-
-
-def _union_table(fx):
-    packed = fx["packed"]
-    return extension().chunk_union_table(packed.pr, packed.pw, fx["v_kernel"],
-                                         fx["C"], fx["BC"], _widths(fx))
+    return list(fx["plan"].widths)
 
 
 def chunk_forward(fx) -> Arm:
@@ -41,23 +37,23 @@ def chunk_forward(fx) -> Arm:
     other two subjects on this roster, and a row that contains all three cannot be
     attributed to any of them.
     """
-    m, packed = extension(), fx["packed"]
-    tbl, widths, v = _union_table(fx), _widths(fx), fx["v_kernel"]
+    m, plan = extension(), fx["plan"]
+    tbl, widths, v = plan.union_table, _widths(fx), fx["v_kernel"]
     c, bc = fx["C"], fx["BC"]
 
     def call():
-        return m.chunk_forward_raw(packed.pr, packed.pw, packed.gw, v, tbl, c, bc,
-                                   widths, None, None, None, None)
+        return m.chunk_forward_raw(plan.read_plane, plan.write_plane, plan.g_write, v,
+                                   tbl, c, bc, widths, None, None, None, None)
 
     return Arm(name="chunk_forward_raw", call=call)
 
 
 def chunk_stats(fx) -> Arm:
     """The atom-grain write bitmap: the page plan's input, taken before an arm exists."""
-    m, packed, widths = extension(), fx["packed"], _widths(fx)
+    m, write_plane, widths = extension(), fx["plan"].write_plane, _widths(fx)
 
     def call():
-        return m.chunk_stats(packed.pw, widths)
+        return m.chunk_stats(write_plane, widths)
 
     return Arm(name="chunk_stats", call=call)
 
@@ -65,7 +61,7 @@ def chunk_stats(fx) -> Arm:
 def chunk_block_bits(fx) -> Arm:
     """The block-grain liveness reduction the sparse grid launches over."""
     m, widths = extension(), _widths(fx)
-    tbl, bc, tokens = _union_table(fx), fx["BC"], fx["routes"].tokens
+    tbl, bc, tokens = fx["plan"].union_table, fx["BC"], fx["routes"].tokens
 
     def call():
         return m.chunk_block_bits(tbl, bc, widths, tokens, None)
@@ -75,33 +71,33 @@ def chunk_block_bits(fx) -> Arm:
 
 def _numerator(fx):
     """One forward's `(num, den)`, for the two readout subjects to consume."""
-    m, packed = extension(), fx["packed"]
-    return m.chunk_forward_raw(packed.pr, packed.pw, packed.gw, fx["v_kernel"],
-                               _union_table(fx), fx["C"], fx["BC"], _widths(fx),
-                               None, None, None, None)
+    m, plan = extension(), fx["plan"]
+    return m.chunk_forward_raw(plan.read_plane, plan.write_plane, plan.g_write,
+                               fx["v_kernel"], plan.union_table, fx["C"], fx["BC"],
+                               _widths(fx), None, None, None, None)
 
 
 def divide_pass(fx) -> Arm:
     """The readout ratio: one elementwise pass that also narrows and transposes."""
-    m, packed = extension(), fx["packed"]
+    m, read_mass = extension(), fx["plan"].read_mass
     num, den = _numerator(fx)
     out_dtype = fx["cell"].torch_dtype
 
     def call():
-        return m.chunk_divide_pass(num, den, packed.rm, READOUT_EPS, out_dtype)
+        return m.chunk_divide_pass(num, den, read_mass, READOUT_EPS, out_dtype)
 
     return Arm(name="chunk_divide_pass", call=call)
 
 
 def backward_seeds(fx) -> Arm:
     """The readout's backward seeds -- the one reverse-pass entry that is wired."""
-    m, packed = extension(), fx["packed"]
+    m, read_mass = extension(), fx["plan"].read_mass
     num, den = _numerator(fx)
-    y = m.chunk_divide_pass(num, den, packed.rm, READOUT_EPS, torch.float32)
+    y = m.chunk_divide_pass(num, den, read_mass, READOUT_EPS, torch.float32)
     dy = torch.randn_like(y)
 
     def call():
-        return m.chunk_backward_seeds(dy, y, den, packed.rm, READOUT_EPS)
+        return m.chunk_backward_seeds(dy, y, den, read_mass, READOUT_EPS)
 
     return Arm(name="chunk_backward_seeds", call=call)
 

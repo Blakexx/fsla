@@ -65,7 +65,8 @@ import torch
 from rola import RoLA, RouteProducer, dense_routing, union_routing
 from rola import state as rola_state
 from rola.expert import PlanOverrides
-from rola.ops import chunk as chunk_arm
+from rola.facts import planes
+from rola.facts.call import arm_of, widths_of
 
 _MiB = 1024 * 1024
 
@@ -134,8 +135,14 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     # does paging cost", because the whole-layer delta at these sizes is dominated
     # by launch noise (see the module docstring).
     arena = paged_state._arena
+    #: The bitmap comes from the PRIMITIVE rather than from a plan: this bench has no
+    #: value stream of its own -- the layer builds `v` internally -- so there is no
+    #: chunk call to plan here, and `atom_bits` is a fact about the write side alone.
+    #: Same launch the DAG's own node issues, on the same packed write plane.
     with torch.no_grad():
-        bitmap = chunk_arm.stats(layer.routes(x)).bool()
+        routes = layer.routes(x)
+        bitmap = planes.atom_bits(planes.pack_side(routes.write),
+                                  widths_of(routes)).bool()
 
     # COLD is what the FIRST call of a sequence pays (full reset, replan, republish);
     # WARM is what every continuation pays (`fresh=False`, so a repeat of the same
@@ -179,7 +186,9 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     return {
         "router": router, "logit_gain": logit_gain, "norm": norm,
         "decay": "leaf_mass" if decay else "none",
-        "branches": list(branches), "N": N, "BC": layer.state_block,
+        #: `BC` is the ARM's, and the arm is a manifest fact: the layer carries no
+        #: owner-block pin any more (the `state_block` retirement).
+        "branches": list(branches), "N": N, "BC": arm_of(routes).bc,
         "BH": B * H, "L": L,
         "owners_total": stats.owners_total,
         "realized_owners": stats.realized_owners,

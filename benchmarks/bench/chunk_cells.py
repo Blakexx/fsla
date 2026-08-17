@@ -26,8 +26,8 @@ from pathlib import Path
 import torch
 
 from rola import RoLA, RouteProducer, dense_routing, union_routing
-from rola.facts.call import arm_of
-from rola.ops import chunk as chunk_arm
+from rola.dags.chunk_dag import ChunkContext, build_chunk_plan
+from rola.facts import planes
 
 MANIFEST = Path(__file__).resolve().parents[1] / "cells" / "chunk_manifest.json"
 
@@ -99,17 +99,22 @@ class Cell:
         v = torch.randn((self.B, total, self.H, self.d_v), device="cuda",
                         dtype=self.torch_dtype, generator=g)
 
+        #: `v_prefill` is the operand in the CELL's dtype, which is what the layer and
+        #: the op facade take; `v_kernel` is the bf16 contiguous form the raw kernel
+        #: entries require, narrowed once here rather than inside a timed callable
+        #: where it would be priced as part of the launch.
+        v_prefill = v[:, :self.T].contiguous()
+        #: THE PLAN IS THE FIXTURE'S PACKING, and it is the production one: every
+        #: launch argument a subject reads -- the packed sides, the write gain, the
+        #: read mass, the arm, the union table -- is a field the chunk DAG produced
+        #: for a real call, not a bench-local rebuild that could drift from it.
+        #: Built here, once, so nothing it costs lands inside a timed callable.
         with torch.no_grad():
             routes = layer.routes(x[:, :self.T])
-        packed = chunk_arm.pack(routes)
-        c, bc = arm_of(routes)
+            plan = build_chunk_plan(ChunkContext(routes=routes, v=v_prefill))
         return {"cell": self, "layer": layer, "producer": layer.routes, "x": x, "v": v,
-                "routes": routes, "packed": packed, "C": c, "BC": bc,
-                #: `v_prefill` is the operand in the CELL's dtype, which is what the layer
-                #: and the op facade take; `v_kernel` is the bf16 contiguous form the raw
-                #: kernel entries require, narrowed once here rather than inside a timed
-                #: callable where it would be priced as part of the launch.
-                "v_prefill": v[:, :self.T].contiguous(),
+                "routes": routes, "plan": plan, "C": plan.arm.c, "BC": plan.arm.bc,
+                "v_prefill": v_prefill,
                 "v_kernel": v[:, :self.T].to(torch.bfloat16).contiguous()}
 
 
@@ -194,16 +199,20 @@ def realized(cell: Cell, fx: dict | None = None) -> dict:
     manifest diffs on a routing change and never on a reduction order.
     """
     fx = cell.build() if fx is None else fx
-    packed = fx["packed"]
-    live = chunk_arm.stats(packed).bool()
+    plan = fx["plan"]
+    #: The bitmap is taken from the PRIMITIVE, not off the plan: the DAG's `atom_bits`
+    #: node is masked out on a stateless call (it exists to size a page admission, and
+    #: these cells bind no state), so `plan` carries no bitmap to read. Same launch and
+    #: same argument as the node's own body -- `chunk_stats(write_plane, widths)`.
+    live = planes.atom_bits(plan.write_plane, plan.widths).bool()
     return {
         "N": cell.N,
         "BH": cell.B * cell.H,
         "C": fx["C"],
         "BC": fx["BC"],
-        "read_nonzero": int((packed.pr != 0).sum()),
-        "write_nonzero": int((packed.pw != 0).sum()),
-        "amplitudes_total": int(packed.pw.numel()),
+        "read_nonzero": int((plan.read_plane != 0).sum()),
+        "write_nonzero": int((plan.write_plane != 0).sum()),
+        "amplitudes_total": int(plan.write_plane.numel()),
         "live_atoms": int(live.sum()),
         "atoms_total": int(live.numel()),
     }
