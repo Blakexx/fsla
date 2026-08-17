@@ -140,7 +140,7 @@ returns the state exactly as `rola_op` does. Three things live behind that seam:
 * **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`)
   are MEMOIZED IN `rola.ops.decode`, not on the state — launch machinery fails the
   membership test. The carrier is a pure function of its key (widths, `d_v`, the decay
-  arm, `BH`, device, the precision pin), so a plain module-level dict is exactly
+  arm, `BH`, device), so a plain module-level dict is exactly
   right: identical keys are the identical frozen object. The workspace is scratch
   belonging to ONE live state, so it is keyed by the state object in a
   `WeakKeyDictionary` — a dropped sequence drops its scratch, and two concurrent

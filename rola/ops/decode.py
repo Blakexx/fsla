@@ -87,15 +87,6 @@ class DecodeGeometry:
     has_decay: bool
     eps: float
     n_split: int
-    #: The layer's numeric-format pin, carried across the boundary so the carrier can
-    #: never silently disagree with the layer that froze it (coverage-closure H9: the
-    #: field was missing and the pin was dropped at ``L == 1``). At ``T = 1`` there is
-    #: no MMA — the decode GEMV is scalar fp32 for EVERY pin, which is exact for both
-    #: formats' contracts (fp32 accumulate is what the tiled consumer's tf32x3 and
-    #: bf16 arms share; only their OPERAND format differs, and a GEMV has no operand
-    #: tile to format). So the field selects nothing today; it exists so the pin is
-    #: carried, validated, and checkable, and so a future decode kernel
-    #: inherits it instead of re-plumbing the boundary.
 
     @property
     def N(self) -> int:
