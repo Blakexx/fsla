@@ -37,13 +37,13 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from rola.dags.decode_dag import decode_forward
 from rola.interface import (
     BackwardNotImplemented,
     operands_of,
     requires_backward,
     rola_op,
 )
-from rola.ops.decode import decode_forward
 from rola.routing.decay import validate_decay_source
 
 if TYPE_CHECKING:

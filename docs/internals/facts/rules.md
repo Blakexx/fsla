@@ -57,9 +57,13 @@ reads exactly whether each is there.
 
 There is no second executor and no rule pass. Band 2 runs INTERLEAVED with band 1 in
 the one walk — `paging_preference` at the head, `mask` the moment the call class
-exists, `arm` the moment the manifest and the topology do — and every one of them sits
-on the DAG's parallel front, never on its critical path. That is why the layer costs
-nothing.
+exists, `arm` the moment the manifest and the topology do, `decode_mask` the moment the
+step's backing does — and every one of them sits on the DAG's parallel front, never on
+its critical path. That is why the layer costs nothing.
+
+A rule is capturable by its own contract — it reads no contents, launches nothing and
+allocates nothing — so `rule` declares it so, and a rule on a captured recipe needs no
+further argument.
 
 Three of the folds are not in a DAG tuple, and each for a stated reason rather than
 by oversight:

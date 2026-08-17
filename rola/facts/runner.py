@@ -42,6 +42,12 @@ class Node:
     host_sync: bool
     pure_of: tuple[str, ...]
     per_state: bool
+    #: this node may stand inside a CUDA-graph capture: it reads no device value on the
+    #: host and allocates nothing per step.
+    capturable: bool
+    #: this node exists to be an independent second derivation for a gate, and no
+    #: shipped DAG may contain it (docs/internals/facts/decode_dag.md).
+    reference_only: bool
     memo: Any = field(compare=False)
     #: the band-2 fold this node adapts, or None for a band-1 fact node. Its presence
     #: IS the rule marker: `rola/rules/` is the set of functions that carry one.
@@ -66,6 +72,7 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
          stream: str = "host", masks: tuple[Mask, ...] = (Mask.M1, Mask.M2),
          waits: tuple[str, ...] = (), host_sync: bool = False,
          pure_of: tuple[str, ...] = (), per_state: bool = False,
+         capturable: bool = False, reference_only: bool = False,
          ) -> Callable[[Callable], Node]:
     """Declare a node. `host_sync` marks the ONE node permitted a device-to-host read."""
 
@@ -78,15 +85,21 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
             raise ValueError(
                 f"{fn.__name__}: pure_of names {sorted(set(pure_of) - set(needs))} it "
                 f"does not read; a memo key that is not an input is not a key")
+        if capturable and host_sync:
+            raise ValueError(
+                f"{fn.__name__}: a host_sync node reads a device value on the host, "
+                f"which is exactly what a capture forbids; it cannot be capturable")
         return Node(fn=fn, name=fn.__name__, gives=tuple(gives), needs=tuple(needs),
                     stream=stream, masks=tuple(masks), waits=tuple(waits),
                     host_sync=host_sync, pure_of=tuple(pure_of), per_state=per_state,
+                    capturable=capturable, reference_only=reference_only,
                     memo=WeakKeyDictionary() if per_state else {})
 
     return declare
 
 
-def rule(*, gives: tuple[str, ...], needs: tuple[str, ...]) -> Callable[[Callable], Callable]:
+def rule(*, gives: tuple[str, ...], needs: tuple[str, ...],
+         masks: tuple[Mask, ...] = (Mask.M1, Mask.M2)) -> Callable[[Callable], Callable]:
     """Declare a RULE: a pure host fold from facts to a decision.
 
     **A rule may read a fact's SHAPE, DTYPE, DEVICE and PRESENCE, and never its
@@ -115,7 +128,11 @@ def rule(*, gives: tuple[str, ...], needs: tuple[str, ...]) -> Callable[[Callabl
             return fn(**{name: facts[name] for name in needs})
 
         walk.__name__ = fn.__name__
-        fn.node = replace(node(gives=gives, needs=needs)(walk), pure=fn)
+        #: A rule reads no tensor CONTENTS, issues no launch and allocates nothing, so
+        #: every rule is capturable by its own contract -- there is nothing else for it
+        #: to be.
+        fn.node = replace(
+            node(gives=gives, needs=needs, masks=masks, capturable=True)(walk), pure=fn)
         return fn
 
     return declare
@@ -141,6 +158,27 @@ def validate_dag(dag: tuple[Node, ...], seeds: tuple[str, ...]) -> None:
     syncs = [step.name for step in dag if step.host_sync]
     if len(syncs) > 1:
         raise ValueError(f"{syncs}: at most one device-to-host read per DAG")
+    enumerated = [step.name for step in dag if step.reference_only]
+    if enumerated:
+        raise ValueError(
+            f"{enumerated}: a reference_only node is a gate's INDEPENDENT second "
+            f"derivation of a fact the shipped path derives its own way. Walking one "
+            f"here would delete that independence, which is the whole of its value.")
+
+
+def validate_capturable(dag: tuple[Node, ...], name: str) -> None:
+    """Refuse a recipe that could not stand inside a CUDA-graph capture.
+
+    Structural, not measured: a node that reads a device value on the host, or that
+    allocates per step, breaks a capture whether or not today's fixture notices
+    (docs/internals/facts/decode_dag.md).
+    """
+    bad = [step.name for step in dag if not step.capturable]
+    if bad:
+        raise ValueError(
+            f"{name} is the captured recipe and {bad} is/are not declared capturable: "
+            f"a host read or a per-step allocation inside the captured region is what "
+            f"this declaration exists to refuse.")
 
 
 def run(dag: tuple[Node, ...], facts: dict) -> dict:

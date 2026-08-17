@@ -15,12 +15,28 @@ from rola.dags.chunk_dag import (
     build_chunk_plan,
     validate_context,
 )
+from rola.dags.decode_dag import (
+    DECODE_STEP,
+    DECODE_VERDICT,
+    DecodeContext,
+    admit_growth,
+    decode_forward,
+    decode_step_gated,
+    growth_pending,
+)
 
 __all__ = [
     "BACKWARD_DAG",
     "CHUNK_DAG",
+    "DECODE_STEP",
+    "DECODE_VERDICT",
     "ChunkContext",
+    "DecodeContext",
+    "admit_growth",
     "build_chunk_plan",
+    "decode_forward",
+    "decode_step_gated",
+    "growth_pending",
     "run_backward",
     "validate_context",
 ]

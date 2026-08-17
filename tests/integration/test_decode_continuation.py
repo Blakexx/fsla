@@ -44,9 +44,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from conftest import build_routes  # noqa: E402
 
 import rola  # noqa: E402
+from rola.dags.decode_dag import decode_forward  # noqa: E402
 from rola.expert import PlanOverrides  # noqa: E402
 from rola.facts.call import arm_of  # noqa: E402
-from rola.ops.decode import decode_forward  # noqa: E402
 from rola.ops.naive import _leaf_product, _radix_strides, naive_rola  # noqa: E402
 from rola.routing.producer import union_routing  # noqa: E402
 from tests.oracle.test_decode_vs_oracle import DECODE_RTOL  # noqa: E402

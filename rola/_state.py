@@ -233,17 +233,11 @@ class RoLAState:
         if self._arena is None:
             self._plane = plane
 
-    def _decode_entry(self, routes, bitmap: torch.Tensor | None):
-        """`(plane, page_table, arena)` for one decode step, with its atoms committed.
+    def _require_carrying(self) -> None:
+        """A decode step CONTINUES; refuse a state with nothing to continue from.
 
-        A step CONTINUES a sequence, so unlike :meth:`_kernel_entry` there is no fresh
-        case to serve: the state carries, and the only question is whether this step
-        writes an atom that is not resident yet. `plan_exact(..., fresh=False)` answers
-        it -- residency becomes the UNION, admission is total, and the one size read it
-        costs is the only host synchronization in the step.
-
-        Dense states hand back a VIEW of their own plane, which is what makes the
-        kernel's in-place update the state's update.
+        Asked by the decode family's `validate_context` before that step's first
+        launch, and again at the seam below for a caller that reaches it directly.
         """
         if not self.carries:
             raise RuntimeError(
@@ -251,19 +245,28 @@ class RoLAState:
                 "at T = 1 there is no prefill to run and no entry state to read. Run the "
                 "sequence's first tokens through rola_op and step from the state it "
                 "returns.")
+
+    def _decode_entry(self, routes):
+        """`(plane, page_table)` for one decode step, over the residency it already has.
+
+        A step CONTINUES a sequence, so unlike :meth:`_kernel_entry` there is no fresh
+        case to serve and nothing to admit: the step's own device probe answers whether
+        it writes an atom the table does not map, and the admission that answer calls
+        for is :meth:`_decode_entry_arena`, between two walks of the step
+        (docs/internals/facts/decode_dag.md#the-two-masks).
+
+        Dense states hand back a VIEW of their own plane, which is what makes the
+        kernel's in-place update the state's update.
+        """
+        self._require_carrying()
         if self._arena is not None:
-            #: `bitmap` is `None` when the growth probe says nothing is new. Admission
-            #: runs on the ARENA's side stream, so `decode_forward`'s `arena.wait()` is
-            #: what orders it before the launch (docs/internals/state.md#host-order).
-            if bitmap is not None:
-                self._arena.plan_exact(bitmap, fresh=False)
-            return self._arena.state, self._arena.page_table, self._arena
-        return self._plane.view(self._shape), None, None
+            return self._arena.state, self._arena.page_table
+        return self._plane.view(self._shape), None
 
     def _decode_entry_arena(self, bitmap: torch.Tensor):
         """Admit `bitmap`'s atoms into the carried arena and hand it back.
 
-        The gated step's half of :meth:`_decode_entry`: the step has already run as a
+        The growth half of :meth:`_decode_entry`: the gated step has already run as a
         no-op, so admission is all that is left before it is replayed
         (docs/internals/decode/decode.md#capture). The arena's own plane and table are
         untouched objects -- the base never moves and the table is written in place --

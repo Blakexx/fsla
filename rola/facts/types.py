@@ -34,6 +34,14 @@ class Mask(IntEnum):
     """PREFILL_STATELESS -- `state_in=0 state_out=0 paged=0`."""
     M2 = 2
     """PREFILL_STATEFUL -- `state_out=1`, `state_in` and `paged` free."""
+    M3 = 3
+    """DECODE_DENSE -- one token onto a dense plane: no probe, no gate, no admission."""
+    M4 = 4
+    """DECODE_PAGED -- one token onto an arena: the probe, the gate and the admission.
+
+    A GROWTH STEP IS NOT A MASK. It is M4 run twice around an admission, which is why
+    the growth path selects no different subgraph (docs/internals/facts/decode_dag.md).
+    """
 
 
 class Arm(NamedTuple):

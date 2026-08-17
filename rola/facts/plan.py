@@ -51,6 +51,72 @@ class ChunkPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class DecodeGeometry:
+    """The T=1 seam's CONFIG half: what the topology and `d_v` fix for the sequence.
+
+    It is the config half of :class:`DecodePlan` rather than a field of it because the
+    per-shape memo key is over this alone -- the terminal facts beside it are per-step
+    and never cached (docs/internals/facts/decode_dag.md).
+
+    ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
+    the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
+    token there is nothing to amortize, and the decode kernels are BC-blind by
+    construction (``tests/integration/test_decode_bc_blindness.py`` asserts
+    byte-identical decode output under prefill ``BC`` in ``{16, 32, 64}``).
+    """
+
+    D: int
+    widths: tuple[int, ...]
+    leaf_stride: tuple[int, ...]     # prod(widths[l+1:]) — the leaf mixed radix
+    level_span: tuple[int, ...]      # prod(widths[l:])   — the expansion's copy geometry
+    level_row_offset: tuple[int, ...]
+    n_words: int
+    n_groups: int
+    d_v: int
+    has_decay: bool
+    eps: float
+    n_split: int
+
+    @property
+    def N(self) -> int:
+        return self.level_span[0]
+
+    @property
+    def cols(self) -> int:
+        return self.d_v + 1  # the mass column is unconditional (raw is dead)
+
+    @property
+    def total_rows(self) -> int:
+        return sum(self.widths)
+
+
+@dataclass(frozen=True, slots=True)
+class DecodePlan:
+    """Everything one decode launch reads, and nothing it does not.
+
+    NO FIELD IS DERIVED AT THE LAUNCH SITE. `gate` is an input and never a mode: it is
+    the `[1]` int32 the growth probe reduces into, present exactly on a paged step, and
+    the kernel's own conditional is what makes a growth step a device-side no-op
+    (docs/internals/decode/decode.md#the-gate).
+    """
+
+    config: DecodeGeometry
+    heads: int
+    amp_read: list[torch.Tensor]
+    amp_write: list[torch.Tensor]
+    #: the DETACHED clock, which is the write allocations themselves and carries no side
+    #: gain (docs/internals/decode/decode.md#detached-clock); `None` without decay.
+    amp_clock: list[torch.Tensor] | None
+    dials: torch.Tensor | None
+    g_write: torch.Tensor
+    v: torch.Tensor
+    state_plane: torch.Tensor
+    page_table: torch.Tensor | None
+    scratch: object
+    gate: torch.Tensor | None
+
+
+@dataclass(frozen=True, slots=True)
 class BackwardPlan:
     """THE CTX CONTRACT: a REFERENCE to the forward's plan, plus the one output kept.
 
