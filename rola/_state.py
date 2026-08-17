@@ -196,11 +196,11 @@ class RoLAState:
                       paging: bool, BC: int):
         """`(s_in, arena)` for the kernel arm, with this call's pages committed.
 
-        The host order (docs/internals/state.md#host-order): the caller has already run the
-        stats pass, so the only thing that happens here before the launch is
-        `plan_exact` on the arena's side stream -- one device-to-host size read, no
-        other synchronization. The launch's `arena.wait()` (in `rola.ops.chunk.run`)
-        is what puts the admission before the kernel.
+        The chunk DAG has already run the atom-bitmap pass, so the only thing that
+        happens here is `plan_exact` on the arena's side stream -- one device-to-host
+        size read, no other synchronization. The DAG's Join is what puts the
+        admission before the block bitmap and the launch
+        (docs/internals/facts/chunk_dag.md#the-join).
 
         `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
         extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by

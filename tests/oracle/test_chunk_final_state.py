@@ -57,7 +57,6 @@ from math import prod
 import pytest
 import torch
 
-from rola.ops import chunk
 from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides, naive_rola
 from rola.ops.paging import MMA_K_QUANTUM
@@ -314,7 +313,7 @@ def test_a_zero_entry_state_is_the_absent_one(arm):
 # ---------------------------------------------------------------------------
 
 def test_the_state_travels_through_the_host_seam():
-    """`rola.ops.chunk.run(routes, v, state_in, want_state)` on a real bundle.
+    """The chunk plan carrying `state_in` / `want_state`, on a real bundle.
 
     A producer's `RouteFactors` rather than hand-built tensors, because the
     packing between the bundle's layout and the kernel's -- and the plane the
@@ -325,7 +324,7 @@ def test_the_state_travels_through_the_host_seam():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from conftest import build_routes
+    from conftest import build_routes, chunk_launch
 
     from rola.routing.producer import union_routing
 
@@ -335,19 +334,19 @@ def test_the_state_travels_through_the_host_seam():
                            routing=union_routing(1)).cuda()
     x = torch.randn(2, T, 64, device="cuda")
 
-    y_full, s_full = chunk.run(chunk.pack(producer(x)), torch.randn(2, T, 2, _DV, device="cuda"),
-                               want_state=True)
+    y_full, s_full = chunk_launch(producer(x), torch.randn(2, T, 2, _DV, device="cuda"),
+                                  want_state=True)
     assert s_full.shape == (4, prod(widths) // MMA_K_QUANTUM, MMA_K_QUANTUM, _COLS)
     assert s_full.dtype == torch.float32
 
-    y_stateless, none = chunk.run(chunk.pack(producer(x)), torch.randn(2, T, 2, _DV, device="cuda"))
+    y_stateless, none = chunk_launch(producer(x), torch.randn(2, T, 2, _DV, device="cuda"))
     assert none is None and y_stateless.shape == y_full.shape
 
     v = torch.randn(2, T, 2, _DV, device="cuda")
     half = T // 2
-    _, s1 = chunk.run(chunk.pack(producer(x[:, :half])), v[:, :half], want_state=True)
-    _, s2 = chunk.run(chunk.pack(producer(x[:, half:])), v[:, half:], state_in=s1, want_state=True)
-    _, s_whole = chunk.run(chunk.pack(producer(x)), v, want_state=True)
+    _, s1 = chunk_launch(producer(x[:, :half]), v[:, :half], want_state=True)
+    _, s2 = chunk_launch(producer(x[:, half:]), v[:, half:], state_in=s1, want_state=True)
+    _, s_whole = chunk_launch(producer(x), v, want_state=True)
     assert torch.equal(s_whole, s2), (
         f"the seam's continuation differs by {(s_whole - s2).abs().max().item():.3e}")
 

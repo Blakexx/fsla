@@ -442,6 +442,29 @@ that a broken glob cannot make the file pass by checking nothing.
 
 Both run in the CPU line. They read files; they never touch a device.
 
+## The host-structure gates
+
+The facts engine's DAG framework is host-only, so its battery is too.
+
+**`tests/unit/test_facts_memo.py`** runs with no CUDA, no extension and no kernel.
+It holds the two caches a node may declare — `pure_of`'s plain dict and
+`per_state`'s `WeakKeyDictionary`, including the weakness itself (a dropped sequence
+drops its buffers) — and the structural refusals that fire at DAG declaration: a need
+that arrives later than its reader, a second Join, a second device-to-host read, a
+memo key that is not one of the node's own inputs. It also pins the shipped chunk
+DAG's two placement facts: the atom bitmap has no arm edge, and the Join is upstream
+of the block bitmap. These were conventions reachable only through a launch before
+the engine named them.
+
+**`tools/chunk_identity_capture.py`** is not a battery but the gate a host refactor
+claiming neutrality answers to. `capture` on the parent tree, `verify` on the
+refactored one: `y`, the returned state plane, the union table, the block bitmap and
+the atom bitmap over a fixed cell set, compared with `torch.equal`. It records what
+the extension RETURNED during a `rola_op` call rather than re-deriving anything, so
+it cannot pass by agreeing with itself. `y` is the one exception and only where the
+topology spans more than one owner block, since its fan-in is an fp32 atomic
+reduction and is not bit-reproducible run to run.
+
 ## Running it
 
 ```bash

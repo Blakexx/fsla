@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 
 import torch
+from conftest import chunk_launch
 
 from rola.ops import chunk as _chunk
 from rola.ops.chunk import CHUNK_TOKENS
@@ -272,9 +273,10 @@ class Case:
                               device=torch.device("cuda"))
             #: the arena is planned from the KERNEL's own exact write bitmap,
             #: so residency is an output of the routing and not a guess about it.
-            arena.plan_exact(_chunk.stats(_chunk.pack(self.bundle)))
-        y, plane = _chunk.run(_chunk.pack(self.bundle), self._f32["v"], state_in=s_in,
-                              want_state=True, arena=arena)
+            arena.plan_exact(_chunk.atom_bits(_chunk.pack_side(self.bundle.write),
+                                              self.widths))
+        y, plane = chunk_launch(self.bundle, self._f32["v"], state_in=s_in,
+                                want_state=True, arena=arena)
         state = arena.materialize() if arena is not None else plane
         return y, state.reshape(self.B, self.H, self.N, self.cols)
 

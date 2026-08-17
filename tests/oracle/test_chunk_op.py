@@ -153,12 +153,13 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
     simplex, so it is the one cell that carries a mass. The carried bundle must still
     satisfy the fp64 oracle's own input contract through :meth:`read_simplex`.
     """
-    from rola.ops import chunk as _chunk
+    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
     from rola.ops._oracle_contract import validate_simplex
     from rola.routing.producer import union_routing
 
-    dense, _ = _bundle(T=256)
-    assert dense.read_mass is None and _chunk.pack(dense).rm is None
+    dense, dense_v = _bundle(T=256)
+    dense_plan = build_chunk_plan(ChunkContext(routes=dense, v=dense_v))
+    assert dense.read_mass is None and dense_plan.read_mass is None
 
     torch.manual_seed(7)
     producer = build_routes(hidden_size=128, num_heads=2, widths=(64, 64),
@@ -166,9 +167,11 @@ def test_only_a_duty_off_the_simplex_carries_a_read_mass_to_the_kernel():
     with torch.no_grad():
         routes = producer(torch.randn(1, 256, 128, device="cuda"))
     assert routes.read_mass is not None and float(routes.read_mass.min()) > 0
-    packed = _chunk.pack(routes)
-    assert packed.rm is not None and packed.rm.dtype is torch.float32
-    torch.testing.assert_close(packed.rm, routes.read_mass.permute(0, 2, 1), rtol=0, atol=0)
+    plan = build_chunk_plan(ChunkContext(
+        routes=routes, v=torch.randn(1, 256, 2, 64, device="cuda")))
+    assert plan.read_mass is not None and plan.read_mass.dtype is torch.float32
+    torch.testing.assert_close(plan.read_mass, routes.read_mass.permute(0, 2, 1),
+                               rtol=0, atol=0)
     validate_simplex("read_levels", routes.read_simplex())
     with pytest.raises(ValueError, match="must sum to 1"):
         validate_simplex("read_levels", routes.read)

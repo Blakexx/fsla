@@ -178,7 +178,7 @@ def test_two_token_cross_product_is_excluded():
 
 
 def test_stats_through_the_host_seam():
-    """`rola.ops.chunk.stats(routes)` -- the packing the facade will call.
+    """`rola.ops.chunk.atom_bits` on the packed write plane -- the facade's own path.
 
     A real producer's `RouteFactors` rather than hand-built tensors, because the
     permute-and-cast between the bundle's layout and the kernel's is exactly the
@@ -196,6 +196,6 @@ def test_stats_through_the_host_seam():
                            routing=union_routing(1)).cuda()
     x = torch.randn(_B, _T, 64, device="cuda")
     routes = producer(x)
-    bits = chunk.stats(chunk.pack(routes))
+    bits = chunk.atom_bits(chunk.pack_side(routes.write), routes.topology.widths)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(bits.bool(), _oracle_bitmap(routes.write, (16, 16)))

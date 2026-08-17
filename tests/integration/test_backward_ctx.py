@@ -41,6 +41,13 @@ pytestmark = pytest.mark.skipif(
 DV = 64
 
 
+def _plan(routes, v):
+    """This call's :class:`~rola.facts.plan.ChunkPlan` -- what the node executes."""
+    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
+
+    return build_chunk_plan(ChunkContext(routes=routes, v=v))
+
+
 def _bundle(B, T, H, widths, seed=11):
     """A dense `RouteFactors`, built directly -- the bundle's invariants are checked
     either way and a producer would add a graph this file is not measuring."""
@@ -94,25 +101,23 @@ def _forward_saving(B, T, H, widths):
     which is exactly the bypass `ChunkConsumer.backward` exists to catch.
     """
     from rola.interface import ChunkConsumer
-    from rola.ops import chunk as _chunk
 
     routes = _bundle(B, T, H, widths)
     for level in routes.read + routes.write:
         level.requires_grad_(True)
     v = torch.randn(B, T, H, DV, device="cuda", requires_grad=True)
-    y, _ = ChunkConsumer.run(_chunk.pack(routes), v)
+    y = ChunkConsumer.run(_plan(routes, v), v)
     return y, routes, v
 
 
 def test_an_inference_call_retains_nothing():
     from rola.interface import ChunkConsumer
-    from rola.ops import chunk as _chunk
 
     B, T, H, widths = 1, 128, 2, (64, 64)
     routes = _bundle(B, T, H, widths)
     v = torch.randn(B, T, H, DV, device="cuda")
     with torch.no_grad():
-        y, _ = ChunkConsumer.run(_chunk.pack(routes), v)
+        y = ChunkConsumer.run(_plan(routes, v), v)
     torch.cuda.synchronize()
     assert y.grad_fn is None or not hasattr(y.grad_fn, "saved_plan"), (
         "an inference call took a ctx; the two-pass activation cost must be paid by "
@@ -188,10 +193,12 @@ def _paired_wall(B, T, H, widths, reps=240):
 
     routes = _bundle(B, T, H, widths)
     v = torch.randn(B, T, H, DV, device="cuda")
-    packed = _chunk.pack(routes)
+    plan = _plan(routes, v)
 
     def once(save):
-        y, _ = _chunk.run(packed, v, saved=_chunk.SavedForward() if save else None)
+        y, den = _chunk.execute(plan)
+        if save:
+            _chunk.SavedForward.of(plan, den)
         return y
 
     for _ in range(20):  # the first arm in a cold process bears the clock ramp

@@ -17,7 +17,7 @@ P67 D2-b RE-ANCHORED this file onto the chunk arm, and the re-anchor SIMPLIFIED
 the staging in a way worth stating, because it changes what a pass means:
 
 * the narrowing used to be STAGED, with quantizers applied to the tiled
-  consumer's fp32 inputs. `rola.ops.chunk.run` casts the routing sides and `v`
+  consumer's fp32 inputs. The chunk DAG casts the routing sides and `v`
   to bf16 itself, so on this arm the narrowing IS what the kernel does and the
   budget row MEASURES it rather than emulating it. `q_amps`/`q_v` at bf16 would
   be no-ops and are gone. What remains staged is `q_y` -- the kernel hands back
@@ -144,8 +144,10 @@ def _family_run(widths, d_v, B, T, H, p_read, p_write, *, seed,
         g_read=None, g_write=g_write.to(torch.float32))
     refusal = _chunk.unsupported(routes, None, d_v=d_v)
     assert refusal is None, f"the fixture left the built chunk matrix: {refusal}"
-    y, state = _chunk.run(
-        _chunk.pack(routes), v.to(torch.float32), want_state=True,
+    from conftest import chunk_launch
+
+    y, state = chunk_launch(
+        routes, v.to(torch.float32), want_state=True,
         state_in=initial_state.to(torch.float32).reshape(
             B * H, topology.N // 16, 16, cols))
     if q_y is not None:

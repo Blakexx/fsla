@@ -484,7 +484,9 @@ def _chunk_prefill(widths, d_v, B, T, H, generator, device):
         g_read=None, g_write=g_write.float())
     refusal = _chunk.unsupported(routes, None, d_v=d_v)
     assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
-    y, plane = _chunk.run(_chunk.pack(routes), v.float(), want_state=True)
+    from conftest import chunk_launch
+
+    y, plane = chunk_launch(routes, v.float(), want_state=True)
     return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
                 g_read=None, g_write=g_write, v=v, y=y,
                 state=plane.reshape(B, H, topology.N, d_v + 1))

@@ -19,7 +19,6 @@ tests and ratification call directly; it is not an arm of this op.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -47,20 +46,6 @@ BACKWARD_ARRIVES_WITH = (
 
 class BackwardNotImplemented(NotImplementedError):
     """Raised when a gradient is demanded of the forward-only kernel surface."""
-
-@dataclass
-class _ChunkCall:
-    """The non-tensor half of a chunk launch, and the plane it hands back.
-
-    Everything :func:`rola.ops.chunk.run` needs that autograd must NOT see as an
-    operand, plus the out-parameter the state plane returns through.
-    """
-
-    packed: Any
-    state_in: torch.Tensor | None
-    want_state: bool
-    arena: Any
-    plane: torch.Tensor | None
 
 # ---------------------------------------------------------------------------
 # The public op
@@ -109,32 +94,15 @@ def rola_op(
     Carrying a gradient AND a ``state`` still raises -- training is stateless in v1
     (P65 R-D).
     """
-    _validate_call(routes, v, decay)
-    if state is not None and type(state) is not RoLAState:
-        raise TypeError(
-            "rola_op's `state` argument is a rola.RoLAState from rola.state(), got "
-            f"{type(state).__name__}. A raw tensor is not one: the state owns its own "
-            "backing (dense or paged) and the shape it is bound to.")
-    require_envelope(routes, v, decay, state)
-    from rola.ops import chunk as _chunk
+    from rola.facts.chunk_dag import ChunkContext, build_chunk_plan
 
-    paging = _paging_preference(expert)
-    
-    #: ONE packing per call, and every entry below reads it: the stats pass and the
-    #: launch want the same bytes in the same layout.
-    packed = _chunk.pack(routes)
+    plan = build_chunk_plan(ChunkContext(
+        routes=routes, v=v, decay=decay, state=state, expert=expert,
+        want_state=state is not None))
+    y = ChunkConsumer.run(plan, v)
     if state is None:
-        #: No state object, no state I/O: the variant with none of it compiled in
-        #: runs (docs/internals/chunk/chunk_kernel.md#state-axis).
-        y, _ = ChunkConsumer.run(packed, v)
         return y, None
-    # THE HOST ORDER is why these four lines are not folded into `chunk.run`
-    # (docs/internals/state.md#host-order).
-    atom_bits = _chunk.stats(packed) if state._wants_pages(paging) else None
-    s_in, arena = state._kernel_entry(
-        routes, atom_bits, d_v=v.shape[-1], paging=paging, BC=_chunk.arm(routes)[1])
-    y, plane = ChunkConsumer.run(packed, v, state_in=s_in, want_state=True, arena=arena)
-    state._kernel_commit(plane)
+    state._kernel_commit(plan.state_out)
     return y, state
 
 def _paging_preference(expert: Any) -> bool:
@@ -231,38 +199,6 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
             f"{reason}. Nothing else is reachable through this surface "
             "(docs/api.md §1).")
 
-def _validate_call(routes, v, decay) -> None:
-    from rola.routing.factors import RouteFactors as _RouteFactors
-
-    if type(routes) is not _RouteFactors:
-        raise TypeError(
-            "rola_op's first argument must be a RouteFactors bundle, got "
-            f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
-            "build one with RouteProducer, or construct a RouteFactors directly -- its "
-            "invariants are checked either way.")
-    #: THE GAIN LAYOUT AGAINST THE ARM, structurally: the readout is a ratio, which fixes
-    #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
-    #: than trusted from the producer because the bundle is hand-constructible.
-    if routes.g_read is not None:
-        raise ValueError(
-            "this bundle carries a g_read tensor: the readout is a ratio, so g_read := 1 "
-            "under the self-normalizing readout, and there is no read-gain column")
-    topology = routes.topology
-    if not isinstance(v, torch.Tensor) or v.ndim != 4:
-        raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")
-    #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
-    #: and the routing carries no value geometry, so there is nothing to agree with;
-    #: what must match the bundle is the token addressing, `[B, T, H]`.
-    expected = (routes.batch, routes.tokens, routes.heads)
-    if tuple(v.shape[:3]) != expected:
-        raise ValueError(
-            f"v must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
-            f"bundle, got {tuple(v.shape)}")
-    if v.device != routes.device:
-        raise ValueError(f"v is on {v.device} but the routing bundle is on {routes.device}")
-    if decay is not None:
-        decay.validate_against(topology)
-
 def _any_requires_grad(obj: Any) -> bool:
     if isinstance(obj, torch.Tensor):
         return obj.requires_grad
@@ -273,7 +209,7 @@ def _any_requires_grad(obj: Any) -> bool:
 class ChunkConsumer(torch.autograd.Function):
     """The CHUNK consumer as an autograd node whose backward refuses, loudly.
 
-    ``rola.ops.chunk.run`` is a bare extension call: reached from a gradient-requiring
+    ``rola.ops.chunk.execute`` is a bare extension call: reached from a gradient-requiring
     context it returns a perfectly good tensor with no ``grad_fn``, and the symptom is
     ``x.grad is None`` several files away (the layer-dispatch autograd gap).
     :func:`require_envelope` is what keeps that from happening; this node is what makes
@@ -282,46 +218,46 @@ class ChunkConsumer(torch.autograd.Function):
 
     ``forward`` takes the routing tensors it does not read. That is the mechanism, not
     an oversight: autograd inspects the FLAT argument list for grad-requiring tensors,
-    so an operand passed inside the ``call`` payload would be invisible to it and the
-    node would attach to nothing. Everything the operation consumes is therefore passed
+    so an operand passed inside the plan would be invisible to it and the node would
+    attach to nothing. Everything the operation consumes is therefore passed
     positionally, and :meth:`run` is the one place that is assembled.
     """
 
     @staticmethod
-    def run(packed, v, *, state_in=None, want_state=False, arena=None):
-        """``(y, final state or None)`` -- ``rola.ops.chunk.run`` through the node."""
-        call = _ChunkCall(packed=packed, state_in=state_in, want_state=want_state,
-                          arena=arena, plane=None)
-        y = ChunkConsumer.apply(call, v, *packed.routes.tensors())
-        return y, call.plane
+    def run(plan, v):
+        """``y`` -- one :class:`~rola.facts.plan.ChunkPlan` executed through the node.
+
+        ``v`` is passed beside the plan rather than on it because it is this node's
+        own OPERAND and autograd owns its versioning; ``plan.v`` is the kernel's
+        bf16-contiguous copy of it, which is a fact.
+
+        The final state plane is ``plan.state_out`` and does not come back through
+        this call: it is the CALLER's allocation (the arena's, when paged), and an
+        autograd node that returned it would stamp graph metadata onto storage the
+        state object owns and reuses across steps.
+        """
+        return ChunkConsumer.apply(plan, v, *plan.routes.tensors())
 
     @staticmethod
-    def forward(ctx, call, v, *operands):  # type: ignore[override]
+    def forward(ctx, plan, v, *operands):  # type: ignore[override]
         # Deliberately NOT `ctx.mark_non_differentiable`: marking the output would make
         # `backward` unreachable, which is the same silence this class exists to break.
         from rola.ops import chunk as _chunk
 
+        y, den = _chunk.execute(plan)
         #: THE CTX IS TAKEN ON THE GRADIENT'S OWN CONDITION, and `needs_input_grad`
         #: is that condition rather than a guess at it: an inference call retains
         #: nothing, so the two-pass activation cost is paid by training alone
         #: (docs/internals/chunk/backward.md).
-        saved = _chunk.SavedForward() if any(ctx.needs_input_grad) else None
-        y, call.plane = _chunk.run(
-            call.packed, v, state_in=call.state_in, want_state=call.want_state,
-            arena=call.arena, saved=saved)
-        if saved is not None:
+        if any(ctx.needs_input_grad):
             #: `v` and `y` ride `save_for_backward` because they are this node's own
             #: operand and output and autograd owns their versioning; the O(L)
             #: byproducts are not graph tensors and ride beside them.
             ctx.save_for_backward(v, y)
-            ctx.saved_plan = saved
+            ctx.saved_plan = _chunk.SavedForward.of(plan, den)
             #: the bundle, for its LAYOUTS alone: `backward` needs each level's width
             #: and dtype to un-pack the digit gradients, and those are the bundle's.
-            ctx.saved_routes = call.packed.routes
-        #: The state plane leaves through the payload rather than as a second output:
-        #: it is the CALLER's allocation (the arena's, when paged), and an autograd
-        #: node that returned it would stamp graph metadata onto storage the state
-        #: object owns and reuses across steps.
+            ctx.saved_routes = plan.routes
         return y
 
     @staticmethod
@@ -370,5 +306,5 @@ class ChunkConsumer(torch.autograd.Function):
         if routes.read_mass is not None:
             #: SURPRISE 2: the m-carry is forward-exact but NOT gradient-neutral.
             grads.append(dm.permute(0, 2, 1).to(routes.read_mass.dtype).contiguous())
-        #: the leading `None` is the `call` payload, which is not a tensor
+        #: the leading `None` is the plan, which is not a tensor
         return (None, *grads)

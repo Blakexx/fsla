@@ -251,7 +251,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
 #: activation_rather_than_running_it`. Its subject was the retired tiled arm's own
 #: activation check -- a refusal at its private entry, so that a caller who
 #: bypassed the dispatch could not launch something nobody measured. The chunk arm
-#: has no such entry to bypass (`chunk.run` has exactly one caller and it is inside
+#: has no such entry to bypass (`chunk.execute` has exactly one caller and it is inside
 #: the autograd node, asserted structurally in `tests/unit/test_interface.py`), and
 #: the path the check guarded is closed at BOTH ends by rows that already exist:
 #: the GATEWAY refuses to produce an unratified activation's routing at all
