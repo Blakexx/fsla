@@ -60,7 +60,8 @@ pytestmark = [
 ]
 
 #: The built stats arms: `(D, B)`, the projection of the chunk arm list that
-#: `tools/gen_shards.py` emits as `CHUNK_ATOM_ARMS_X`. Depths 2-4 are the sweep
+#: `tools/gen_shards.py`'s `chunk_atom_arms()` keys the bitmap's reduction to --
+#: residency is BC-free, so the list is shorter than the consumer's. Depths 2-4 are the sweep
 #: the design asks for; the two `D = 1` arms are the flat-routing baselines,
 #: carried because they are built and because `D = 1` is the shape with no upper
 #: prefix at all -- the reduction's degenerate carve.

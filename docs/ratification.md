@@ -17,17 +17,18 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**147 entries per architecture**, measured on the current tree: **67 for the chunk
-consumer** — 42 `compacted_kernel` (one per built `(C, BC, D, B)` arm crossed with
-the state axis), plus its table passes (11 `union_table_kernel`, 7
-`atom_table_kernel`, 7 `atom_bitmap_kernel`) — plus 16 `decode_gemv_kernel`
-(`DV x D x DECAY`) and 32 each of `union_forward_kernel` and
-`union_backward_kernel`. It was 179 over seven shards, of which 32 entries were the
-tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>` product carried by four of them;
-that arm retired in P67 D2 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
+**444 entries per architecture**, measured on the current tree: **108 for the chunk
+family** — 44 `compacted_kernel` (one per built `(C, BC, D, B)` arm crossed with the
+state axis), 24 `chunk_facts_tables` (12 `(D, B, BC)` crossed with the two prefill
+call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel`, 6
+`walk_probe_kernel` and the reverse pass' 14 (6 `scan_a_kernel`, 6 `scan_b_kernel`,
+2 `seed_kernel`) — plus 16 `decode_gemv_kernel` (`DV x D x DECAY`) and the
+entmax solves' 320. The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
+product that four shards once carried retired in P67 D2
+([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
 the closed-world codegen surface carries no `#define` this gate has to pin. Two
-ratified architectures (`sm_80`, `sm_86`) make **294 entries total**. The manifest is
+ratified architectures (`sm_80`, `sm_86`) make **888 entries total**. The manifest is
 the authority on the count and no comment restates it independently. The mangled
 name is the key because it is exact, stable, and encodes every template argument
 — an entry cannot be silently re-pointed at a different instantiation by a rename

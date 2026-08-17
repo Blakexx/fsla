@@ -33,15 +33,14 @@ class _Recorder:
     """The extension module, recording every tensor the FACT entries returned.
 
     Recording is keyed by the FACT and never by the entry that produced it, which is
-    what lets one reference file gate a change to the ENTRY surface: a fused facts pass
-    and the two entries it replaces are comparable exactly because both are asked for
-    the union table and the atom bitmap BY NAME.
+    what lets one reference file gate a change to the ENTRY SURFACE and not only to a
+    host path: two trees emitting the same facts through different entries compare,
+    because the key names the fact. A capture against a tree whose entry names differ
+    is taken with THIS file run against that tree's binary.
     """
 
     #: entry -> the facts its return positions carry, in order.
-    _WATCHED = {"chunk_stats": ("atom_bits",),
-                "chunk_union_table": ("union_table",),
-                "chunk_facts": ("union_table", "atom_bits"),
+    _WATCHED = {"chunk_facts": ("union_table", "atom_bits"),
                 "chunk_block_bits": ("block_bits",)}
 
     def __init__(self, module):
