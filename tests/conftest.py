@@ -19,6 +19,11 @@ _BENCHMARKS = pathlib.Path(__file__).resolve().parents[1] / "benchmarks"
 if _BENCHMARKS.is_dir() and str(_BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(_BENCHMARKS))
 
+# The GPU also drives the WSL display: a test process at the memory cap freezes the
+# machine, not just the run. The cap turns an oversized run into a loud OOM instead.
+if torch.cuda.is_available():
+    torch.cuda.set_per_process_memory_fraction(0.70)
+
 try:
     from torch.compiler import is_compiling
 except ImportError:
