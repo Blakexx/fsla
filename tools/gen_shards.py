@@ -174,7 +174,7 @@ CHUNK_PER_SHARD = 8
 #: SUBSET of `CHUNK_ARMS`: a backward whose forward is not built could not run a
 #: training step. It is narrower than the forward's because the scans carry the
 #: campaign's TRAINABLE topologies, not every arm the forward can infer at
-#: (`rola/ops/chunk.py:backward_unsupported` refuses the difference).
+#: (`rola/rules/envelope.py:backward_envelope` refuses the difference).
 SCAN_ARMS: tuple = (
     (32, 128, 2, 64),
     (32, 128, 2, 256),

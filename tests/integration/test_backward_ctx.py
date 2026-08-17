@@ -211,8 +211,8 @@ _TERMS = {
     "g_write": lambda g: g["BH"] * g["T"] * 2,
     "union_table": lambda g: g["BH"] * 2 * g["entries"] * g["words"] * 4,
     "den": lambda g: g["BH"] * g["T"] * 4,
-    #: the kernel's bf16 copy of `v`, which `SavedForward.vk` pinned too and which
-    #: `retained_bytes` has never counted: `v` is the op's own operand.
+    #: the kernel's bf16 copy of `v`, which `retained_bytes` has never counted:
+    #: `v` is the op's own operand and is alive either way.
     "v": lambda g: g["BH"] * g["T"] * DV * 2,
     #: the ONE field the plan reference pins that the old ctx did not. `[BH, N / BC]`
     #: bytes -- it carries no `T`, so no closed form in `T` can absorb it and it is
