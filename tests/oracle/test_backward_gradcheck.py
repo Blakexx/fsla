@@ -178,6 +178,13 @@ CELLS = [
 @pytest.mark.parametrize("T,gain", [p.values for p in CELLS],
                          ids=[p.id for p in CELLS])
 def test_every_cotangent_matches_the_oracles(T, gain, D, W):
+    #: The scale arm's fp64 oracle needs more than a 12 GB card holds under the
+    #: conftest's 70% cap; those cells are RENTAL-TIER (docs/testing.md), not local.
+    #: The bound is the measured OOM frontier: N*T fp64 state+grads ~ 8 bytes each.
+    if (W ** D) * T > 4_000_000 and (torch.cuda.get_device_properties(0).total_memory
+                                     < 24 * 2**30):
+        pytest.skip(f"N={W**D}, T={T}: fp64-oracle cell exceeds this card; "
+                    "rental-tier -- run on >=24GB (the A100 list)")
     mass = False
     routes, v = _bundle(T, seed=11, mass=mass, gain=gain, D=D, W=W)
     inputs = (v, *routes.tensors())
