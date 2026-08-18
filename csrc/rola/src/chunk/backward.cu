@@ -88,16 +88,21 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
   const int B_ = (int)v.size(0), L = (int)v.size(1), H = (int)v.size(2);
   const int BH = B_ * H;
   auto opts = v.options().dtype(torch::kFloat32);
-  //: BOTH OUTPUTS ARE FAN-IN TARGETS, so the identity of the sum has to be there
-  //: before the first block contributes.
-  auto dv = torch::zeros({B_, H, (long)L, (long)kD}, opts);
+  //: EVERY OUTPUT IS A FAN-IN TARGET, so the identity of the sum has to be there
+  //: before the first block contributes -- none of them may be left uninitialized
+  //: for the scan to overwrite.  They are therefore zeroed TOGETHER, as slices of
+  //: one arena: four fills of one buffer each is four launches of the same total
+  //: bytes -- docs/internals/chunk/backward.md#the-fan-in-arena
+  const long nv = (long)BH * L * kD, nt = (long)BH * L, np = (long)BH * L * pw.size(-1);
+  auto arena = torch::zeros({nv + nt + nt + np}, opts);
+  auto dv = arena.narrow(0, 0, nv).view({B_, H, (long)L, (long)kD});
   //: NOT `d gw`: this is `sum_s dW[j,s]`, unweighted, which has d gw's shape and
   //: not its value -- docs/internals/chunk/backward.md#dw-slotsum
-  auto dwsum = torch::zeros({B_, H, (long)L}, opts);
-  auto dgw = torch::zeros({B_, H, (long)L}, opts);
+  auto dwsum = arena.narrow(0, nv, nt).view({B_, H, (long)L});
+  auto dgw = arena.narrow(0, nv + nt, nt).view({B_, H, (long)L});
   //: the write-side DIGIT gradients, one column per level-digit of the packed
-  //: amplitude row -- a fan-in destination, so it starts at the identity.
-  auto dpw = torch::zeros({B_, H, (long)L, pw.size(-1)}, opts);
+  //: amplitude row.
+  auto dpw = arena.narrow(0, nv + 2 * nt, np).view({B_, H, (long)L, pw.size(-1)});
 #define SCAN_B_DISPATCH_X(C_, BC_, D_, B__)                                                    \
   if (chunk == C_ && bc == BC_ && is_arm(widths, D_, B__)) {                                   \
     const long want = (long)BH * 2 * LevelPlan<D_, B__, BC_>::entries * tok_words(L);          \

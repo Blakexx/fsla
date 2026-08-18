@@ -83,6 +83,19 @@ def scan_b(plan: BackwardPlan, seeds: Seeds):
     return dv, d_gain, d_write
 
 
+def _to_operand(src: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """One re-layout-and-cast pass over `src`, into a fresh contiguous operand.
+
+    `src.to(dtype).contiguous()` is TWO passes, because the cast preserves the
+    source's physical order and the re-layout is then a second copy over data
+    that is already in the target dtype
+    (docs/internals/engine/backward_dag.md#the-order).
+    """
+    out = torch.empty(src.shape, dtype=dtype, device=src.device)
+    out.copy_(src)
+    return out
+
+
 def unpack_grads(plan: BackwardPlan, dv, d_read, d_write, d_gain, d_mass,
                  *, v_dtype: torch.dtype) -> list[torch.Tensor]:
     """The scans' fp32 kernel layouts back to the OPERANDS', in `tensors()`' order.
@@ -101,20 +114,20 @@ def unpack_grads(plan: BackwardPlan, dv, d_read, d_write, d_gain, d_mass,
         out, off = [], 0
         for level in side:
             w = level.shape[-1]
-            out.append(packed_side[..., off:off + w].permute(0, 2, 1, 3)
-                       .to(level.dtype).contiguous())
+            out.append(_to_operand(packed_side[..., off:off + w].permute(0, 2, 1, 3),
+                                   level.dtype))
             off += w
         return out
 
-    grads = [dv.permute(0, 2, 1, 3).to(v_dtype).contiguous()]
+    grads = [_to_operand(dv.permute(0, 2, 1, 3), v_dtype)]
     grads += levels(d_read, routes.read)
     grads += levels(d_write, routes.write)
     #: `g_read` does not exist on this surface, so the gains are the write gain
     #: alone -- the same one clause `tensors()` builds.
-    grads.append(d_gain.permute(0, 2, 1).to(routes.g_write.dtype).contiguous())
+    grads.append(_to_operand(d_gain.permute(0, 2, 1), routes.g_write.dtype))
     if routes.read_mass is not None:
         #: SURPRISE 2: the m-carry is forward-exact but NOT gradient-neutral.
-        grads.append(d_mass.permute(0, 2, 1).to(routes.read_mass.dtype).contiguous())
+        grads.append(_to_operand(d_mass.permute(0, 2, 1), routes.read_mass.dtype))
     return grads
 
 
