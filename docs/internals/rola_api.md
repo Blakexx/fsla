@@ -51,9 +51,22 @@ that.
 | group | entries |
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
+| producer per-side solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the chunk consumer (the prefill arm) | `chunk_facts`, `chunk_block_bits`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
-| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
+| the chunk consumer's reverse pass | `chunk_backward_seeds`, `chunk_scan_a_probe`, `chunk_scan_b_probe`, `chunk_walk_probe`, `chunk_scan_a_census`, `chunk_scan_b_census` |
+| the backward LADDER's rung 0 | `chunk_rung0_pass1`, `chunk_rung0_pass2`, `chunk_rung0_census` |
+| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_growth_probe`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
+
+The two scans carry a census EACH. They share a geometry and not a live set, so one row
+for both would be a floor claim about a kernel nobody measured
+([`chunk/backward.md`](chunk/backward.md#reg-floor-scan)).
+
+The rung-0 entries are the backward LADDER's rather than the production path's, and
+their names say so: rung 0 is the dense two-pass backward on per-slot coefficients — no
+routing, no mass column, no write gain ([`chunk/ladder_r0.md`](chunk/ladder_r0.md)).
+Nothing under `rola/` calls them; they are reached from `tests/oracle/test_ladder_r0.py`
+and from the bench roster, which is what a ladder rung is for.
 
 Two of the decode entries are gates rather than operations, and their docstrings say
 so: `rola_decode_capacity` reports the decode path's maximum level width, which must be

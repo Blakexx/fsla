@@ -51,8 +51,10 @@ mamba-ssm require the same thing for the same reason.
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
 5. **Compile.** `ninja`. The chunk consumer's 74 kernel instantiations are spread
-   over three generated translation units (`csrc/rola/src/instantiations/`, 5
-   generated files in all), so the matrix parallelizes across `MAX_JOBS` processes
+   over three generated translation units (`csrc/rola/src/instantiations/`, 7
+   generated files in all -- the shards, the three arm macros the kernel headers
+   walk, and the README that documents them), so the matrix parallelizes across
+   `MAX_JOBS` processes
    instead of serializing inside one `cicc`.
 6. **The fatbin gate.** `tools/fatbin_entries.py --check` reads the built `.so` and
    requires exactly one device entry per instantiation per architecture, each in
@@ -82,16 +84,17 @@ MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
 The dominant term a single translation unit imposes is measured: one `nvcc` process
 holding the whole matrix at 512 arms took 411 s of wall and 4.4 GB of resident set,
 with no way to spend a second core on it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
-the same five translation units the build does (three chunk shards, `decode.cu`,
-`entmax.cu`), which a content-addressed compiler cache turns into hits.
+the same eight translation units the build does (three chunk shards, `decode.cu`,
+`entmax.cu`, `factor.cu`, `backward.cu` and the backward ladder's `ladder_r0.cu`),
+which a content-addressed compiler cache turns into hits.
 
 The two clean rebuilds are byte-identical in every entry point's SASS
 (`tools/sass_bodies.py`), so those numbers are the same binary twice.
 
 ## <a id="sccache"></a>The nvcc invocations are cached (sccache)
 
-The remaining floor the section above names -- "the ratification compiles the
-same ten translation units the build does" -- is now a compiler-cache hit
+The remaining floor the section above names -- the ratification compiling the
+same translation units the build does -- is now a compiler-cache hit
 instead of a second cold compile. `tools/sccache_pin.json` pins an exact
 [sccache](https://github.com/mozilla/sccache) build (version, release asset,
 tarball and binary sha256, verified against upstream's published `.sha256`);

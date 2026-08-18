@@ -315,6 +315,22 @@ it cannot express the spec's detachment, and the insurance harness holds the
 clock constant explicitly to demonstrate exactly that. When the native
 backward lands (M-2), its kernel-VJP gates plug into these same families.
 
+**The reverse pass' own kernels** are gated one battery each, because they are separate
+launches with separate failure modes: `test_scan_a.py` and `test_scan_b_probe.py` hold
+each scan against a ROUNDED reference — one that rounds every operand where the kernel
+rounds it, so only summation order may separate them — inside a DERIVED per-element
+budget whose teeth are a planted wrong reference beside it; `test_scan_b_partition.py`
+gates the descending walk as a SCHEDULE, through the `chunk_walk_probe` entry, because
+no arithmetic reference reaches where a chunk falls once two blocks of one head are
+live on different tokens.
+
+**The backward LADDER's rung 0** (`test_ladder_r0.py`) is gated against TWO references
+and neither alone: an fp64 autograd oracle — the eleven-line recurrence, no chunking and
+no rounding, so it states WHAT the kernel computes — and a rounded reference in the
+scans' own style, which is what makes the budget tight. A kernel that agrees with its
+own restatement and not with the recurrence has restated itself, and separating those
+two outcomes is the whole reason for the pair.
+
 ## The three meta-tests — RETIRED WITH THE MATRIX, and where each claim went
 
 The retired `test_meta.py` held them, and it went with the table they
