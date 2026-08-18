@@ -219,6 +219,18 @@ def _cells() -> dict[str, Cell]:
              alpha=1.5, dtype="fp32", seed=4, decode_steps=8,
              note="prefill + 8 carried single-token steps: the decode and "
                   "continuation cell"),
+
+        #: **THE LA-CONTROL DECODE CELL.** `D = 1` at width 256 with dense routing on
+        #: both duties: structurally a linear-attention step -- one flat state, no
+        #: levels to expand, dense read/write -- on our own stack, at
+        #: `chunk-decode-w16`'s exact B/T/H/d_v/dtype and the SAME `N = 256`. The pair
+        #: isolates ROUTING'S OWN decode premium: the (16, 16) arm addresses the same
+        #: 256 states through two 16-wide factors where a d_qk=16 LA head addresses 16,
+        #: so any per-step gap is the price of that 16x addressability and nothing else.
+        Cell(name="chunk-decode-la-w256", widths=(256,), B=2, T=128, H=2, hidden=128,
+             alpha=None, dtype="fp32", seed=10, decode_steps=8,
+             note="D=1 flat dense at N=256: the internal LA-control for the routed "
+                  "decode cell"),
     ]
     return {c.name: c for c in cs}
 

@@ -111,6 +111,33 @@
   "write_nonzero": 3788,
   "write_support_frac": 0.0289
  },
+ "chunk-decode-la-w256": {
+  "B": 2,
+  "BC": 64,
+  "BH": 4,
+  "C": 32,
+  "H": 2,
+  "N": 256,
+  "T": 128,
+  "alpha": null,
+  "amplitudes_total": 131072,
+  "atoms_total": 64,
+  "d_v": 64,
+  "decode_steps": 8,
+  "dtype": "fp32",
+  "hidden": 128,
+  "live_atom_frac": 1.0,
+  "live_atoms": 64,
+  "logit_gain": 1.0,
+  "name": "chunk-decode-la-w256",
+  "read_nonzero": 131072,
+  "seed": 10,
+  "widths": [
+   256
+  ],
+  "write_nonzero": 131072,
+  "write_support_frac": 1.0
+ },
  "chunk-decode-w16": {
   "B": 2,
   "BC": 64,
