@@ -470,9 +470,8 @@ def test_the_manifest_statistics_are_realized_from_the_built_fixture(smoke_fixtu
 def test_the_paging_bench_measures_a_residency_row_end_to_end():
     """`benchmarks/bench_paging.py` is a driver of its own and reads the same bitmap.
 
-    The smallest cell the bench can express (`L` a multiple of the chunk quantum, one
-    batch, two heads), at one rep: what is gated is that the row BUILDS, not what it
-    measures.
+    The smallest cell the bench can express (two chunks of tokens, one batch, two
+    heads), at one rep: what is gated is that the row BUILDS, not what it measures.
     """
     import bench_paging
 

@@ -46,7 +46,7 @@ def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
     never re-derives one.
     """
     widths = widths_of(routes)
-    return (widths, d_v, routes.normalization, decay, routes.tokens,
+    return (widths, d_v, routes.normalization, decay,
             rules.arm(widths, manifest.chunk_arms()))
 
 

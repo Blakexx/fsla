@@ -23,7 +23,7 @@ set, and none could be exercised without a device.
 |---|---|---|
 | `mask` | `CallClass` | which subgraph — M1 or M2 |
 | `arm` | `widths`, the manifest | `Arm = (C, BC)`, or none |
-| `arm_envelope` | `widths`, `d_v`, normalization, decay, `T`, `arm` | the arm matrix's refusal, or None |
+| `arm_envelope` | `widths`, `d_v`, normalization, decay, `arm` | the arm matrix's refusal, or None |
 | `envelope` | unratified activations, device | the operand-side refusal, or None |
 | `backward_envelope` | `arm_envelope`, `widths`, `arm`, the scan census | the reverse pass's refusal, or None |
 | `training_envelope` | grad, state | the stateless-training refusal, or None |

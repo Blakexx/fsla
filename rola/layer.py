@@ -24,7 +24,7 @@ BC-blind and general in the topology, so it is never gated on the prefill matrix
 **THE BUILT ENVELOPE IS THE WHOLE SURFACE** (docs/api.md §1). Everything outside it
 raises: training mode and any grad-bearing call (the backward arrives with the native
 backward), a CPU device, decay, a jagged topology, ``d_v != 64``, an unbuilt
-``(D, B)``, ``T`` off the chunk. The layer's own clause is ``self.training``, which
+``(D, B)``. The layer's own clause is ``self.training``, which
 has no meaning for a free function -- reentrant checkpointing runs its first pass under
 ``torch.no_grad()`` with ``module.training`` still ``True``, and that pass must refuse
 too rather than produce a forward no backward can follow.

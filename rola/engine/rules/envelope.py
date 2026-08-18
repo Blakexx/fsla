@@ -17,9 +17,9 @@ from rola.engine import Arm, rule
 
 
 @rule(gives=("arm_envelope",),
-      needs=("widths", "d_v", "normalization", "decay", "tokens", "arm"))
+      needs=("widths", "d_v", "normalization", "decay", "arm"))
 def arm_envelope(widths: tuple[int, ...], d_v: int, normalization: str, decay: Any,
-                 tokens: int, arm: Arm | None) -> str | None:
+                 arm: Arm | None) -> str | None:
     """Why the chunk arm refuses this call, or None if it runs.
 
     `d_v` is the value stream's per-head width, which is a fact about `v` and not
@@ -35,8 +35,6 @@ def arm_envelope(widths: tuple[int, ...], d_v: int, normalization: str, decay: A
         return f"widths={widths}; the built manifest is uniform-width"
     if arm is None:
         return f"topology (D={len(widths)}, B={widths[0]}) has no built arm in the manifest"
-    if tokens % arm.c:
-        return f"T={tokens} is not a multiple of the chunk C={arm.c}"
     return None
 
 

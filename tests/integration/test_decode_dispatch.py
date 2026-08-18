@@ -57,10 +57,7 @@ def _layer(device, *, norm="global", decay="none"):
 
 
 def _prime(layer, device, *, prefill=32):
-    """Run a prefill so the next call has a carried state — the decode precondition.
-
-    `prefill` is a multiple of the chunk `C = 32`: the prefill itself has to be an
-    in-envelope call."""
+    """Run a prefill so the next call has a carried state — the decode precondition."""
     state = rola.state()
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     with torch.no_grad():
@@ -88,7 +85,6 @@ _REFUSALS = {
     #: PREFILL trains, but statelessly (P65 R-D): a carried state and a gradient are
     #: mutually exclusive, and that is what a grad-bearing one-token PREFILL now hits.
     "refuses-stateless": (BackwardNotImplemented, "STATELESS ONLY"),
-    "refuses-chunk": (NotImplementedError, "multiple of the chunk"),
 }
 
 
@@ -111,12 +107,11 @@ _REFUSALS = {
         (False, True, False, 1, True, "refuses-grad"),
         # eval mode, no grad: the fork's own predicate decides
         (False, False, False, 1, True, "decode"),
-        # ... and the PREFILL rows it is being distinguished from. `T` is a multiple
-        # of the chunk `C = 32` wherever the row must reach the kernel; a one-token
-        # UNCARRIED call is a degenerate prefill, outside the built matrix, and is
-        # refused -- a different statement from `decode` and exactly the distinction
-        # being drawn.
-        (False, False, False, 1, False, "refuses-chunk"),
+        # ... and the PREFILL rows it is being distinguished from. A one-token
+        # UNCARRIED call is a degenerate prefill and it RUNS: prefill takes any `T`,
+        # so what separates this row from the `decode` one above it is the carried
+        # state alone, which is exactly the distinction being drawn.
+        (False, False, False, 1, False, "cuda"),
         (False, False, False, 32, True, "cuda"),
         (False, False, False, 64, True, "cuda"),
     ],

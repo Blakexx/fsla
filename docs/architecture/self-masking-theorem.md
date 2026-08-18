@@ -162,7 +162,7 @@ the engine's granularity coarsening legal:
   ([`paging/paging.md`](../internals/paging/paging.md), the atom re-key);
 - **chunk unions** over a chunk's tokens are an OR, deliberately coarser than the
   per-token AND (the `BT` token tile the tiled consumer took this union over is
-  retired; the chunk arm's token quantum is what takes it now);
+  retired; the chunk arm's super-chunk is what takes it now);
 - the **block rectangle** is the granularity of a visit: every leaf of the block
   is resident for the whole visit whether or not the visit's support names it, so a
   leaf outside the support is read, multiplied by an exactly-zero coefficient, and

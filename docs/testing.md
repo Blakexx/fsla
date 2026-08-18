@@ -131,8 +131,10 @@ closes it, at the same tolerance and over the same three lengths (measured slope
 consumer's token quantum, chosen per launch by reading the realized routing, and
 gated by fixtures built long enough to force the wide arm. Both the axis and its
 kernel retired in P67 D2 ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
-chunk arm's token quantum is `rola.engine.rules.arm.CHUNK_TOKENS = 32`, a build fact, and `T` not being a
-multiple of it is a named refusal rather than a second formulation to gate.
+chunk arm's chunk `rola.engine.rules.arm.CHUNK_TOKENS = 32` is a build fact and not a
+second formulation to gate. It is a CEILING on one super-chunk's gathered entries,
+not a quantum the caller lands on, so `T` is an ordinary length axis here:
+the ragged lengths are an ordinary cell of it.
 
 ### Tolerance discipline
 

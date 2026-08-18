@@ -155,21 +155,8 @@ _EXCEPTIONS: frozenset[tuple] = frozenset({
 })
 
 #: MID-instantiation cells that are nonetheless empty, each with its reason.
-#:
-#: `tail = ragged` is empty at EVERY instantiation, and that is an envelope
-#: fact rather than a coverage gap: the chunk arm's token quantum is
-#: `rola.engine.rules.arm.CHUNK_TOKENS`, and a `T` that is not a multiple of it has no
-#: kernel at all — the call is REFUSED. So the ragged regime is oracle-graded by
-#: construction, never kernel-covered. `stratified/ragged` and
-#: `stratified/ragged-raw-decay` still run: they hold the ragged SEMANTICS
-#: against the oracle and pin the named refusal, which is what remains to hold.
-#: The off-mid ragged cells are already covered by the cross-term rule; these
-#: three are the mid-instantiation ones the rule does not reach.
-_EXTRAS: frozenset[tuple] = frozenset({
-    ("D", 2, "tail", "ragged"),
-    ("B", 8, "tail", "ragged"),
-    ("paging", False, "tail", "ragged"),
-})
+#: There are none: every mid-instantiation regime cell is carried by a family.
+_EXTRAS: frozenset[tuple] = frozenset()
 
 EXPECTED_EMPTY: frozenset[tuple] = frozenset(
     (ia, ivalue, ra, rvalue)
@@ -204,7 +191,7 @@ def test_the_join_has_the_size_its_rule_implies():
     `D` kept its three off-mid values.
     """
     assert len(_OFF_MID_INSTANTIATION) * len(_NON_MID_REGIME) == 70
-    assert len(EXPECTED_EMPTY) == 70 - len(_EXCEPTIONS) + len(_EXTRAS) == 69
+    assert len(EXPECTED_EMPTY) == 70 - len(_EXCEPTIONS) + len(_EXTRAS) == 66
 
 
 @pytest.mark.parametrize("cell", sorted(_EXCEPTIONS | _EXTRAS, key=str), ids=str)

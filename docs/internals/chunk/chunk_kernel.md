@@ -333,6 +333,16 @@ in the next chunk and make the partition depend on the packing — an implementa
 the sizing model does not have. So the loop runs on the CUT, and the counts appear only in
 the per-lane test that produces it.
 
+**`T` IS AN ORDINARY LENGTH, AND THAT FALLS OUT OF THE SAME RULE.** A super-chunk also
+closes when the token axis runs out, so the last one of any call is simply a super-chunk
+that closed short — the same object a sparsely-routed chunk in the middle of a long
+sequence already produces, with the same empty-Gram-row buffer tail, the same zeroed
+panel rows and the same undrained output rows. Nothing about the walk, the fold or the
+epilogue is keyed to `C` dividing `L`: the form masks the final word's non-existent
+tokens (`tailMask`), the facts pass votes a past-the-end token dead, and every gather
+and scatter is by token index. `Descent` closes on the same law from the other end, so
+the reverse pass takes a ragged call too.
+
 **THE CLOSING RULE HAS ONE IMPLEMENTATION.** It lives in `Ascent`, a component in
 this file, and the forward drives it through four one-line lambdas. Scan A drives
 the same object: its partition is its OWN (a chunk boundary is an association of a

@@ -248,13 +248,12 @@ static void check_planes(const torch::Tensor& pr, const torch::Tensor& pw,
 }
 
 static void check_inputs(const torch::Tensor& pr, const torch::Tensor& pw, const torch::Tensor& v,
-                         int64_t chunk, const std::vector<int64_t>& widths) {
+                         const std::vector<int64_t>& widths) {
   check_planes(pr, pw, widths);
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
   TORCH_CHECK(v.dim() == 4 && v.size(3) == kD, "expect V [B,L,H,64]");
   const int B = v.size(0), L = v.size(1), H = v.size(2);
   TORCH_CHECK(pr.size(0) == B && pr.size(1) == H && pr.size(2) == L);
-  TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   //: the widest gathered rows are the fp32 output (kD*4 B), the packed amplitudes
   //: (sum(widths)*2 B) and V's own token row (H*kD*2 B, because V is token-major);
   //: every gathered displacement must zero-extend from 32 bits.
@@ -389,7 +388,7 @@ std::vector<torch::Tensor> forward_raw(torch::Tensor pr, torch::Tensor pw, torch
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   TORCH_CHECK(v.is_cuda() && v.scalar_type() == torch::kBFloat16 && v.is_contiguous());
-  check_inputs(pr, pw, v, chunk, widths);
+  check_inputs(pr, pw, v, widths);
   const int B = v.size(0), L = v.size(1), H = v.size(2);
   //: The accumulator is zeroed, not merely allocated: the fan-in ADDS, so the
   //: identity of the sum has to be there before the first contribution.
