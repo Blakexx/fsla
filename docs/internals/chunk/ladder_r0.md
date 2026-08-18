@@ -461,20 +461,38 @@ instead of adding would pass everything else. The bar is the EVEN share, `0.3 / 
 and not an absolute: at the 512-block scale arm an even contributor carries 0.2 % of
 the total and an absolute floor would call a healthy lattice vacuous.
 
-**There is no bit-identity control at this rung, and that is a statement rather than an
-omission.** Rung b2 could be gated `torch.equal` against b1's binary at the one-block
-cell, because the carve changed the ADDRESSING and not the arithmetic. b3 changed the
-OPERAND FORMAT on both sides: the coefficient is now a product formed in kernel and the
-gradient a sum over slots taken in a different order, so a one-block dense cell SHOULD
-move, and hunting an identity there would be hunting an impossible one. The control is
-the ORACLE, at every arm.
+**Rung b4's own gate is three statements rather than one tolerance**, and they are the
+executable form of [why skipping is exact](#skipped-is-zero): `dv` against the DENSE
+fp64 oracle with no allowance for the skipping at all, both digit gradients against it
+ON THE SUPPORT, and EXACTLY ZERO off the support — asserted as an exact equality,
+because a column whose amplitude is zero is a column no block that owns it gathered the
+token for. The cell is checked to be non-vacuous first, and a separate row asserts of
+the cell that the BLOCKS DISAGREE about which tokens they gather; without it a replay
+and a dense walk would be indistinguishable. The rounded reference runs per block over
+that block's own ascending and descending partitions, written out from the same closing
+rule the walk runs.
 
-The second gate is the KERNEL-SIDE planted fault, and it is chosen so the LATTICE is
-what it tests: the digit column formed from the slot's offset WITHIN the block instead
-of from its absolute slot — `sbase % BC` — which is the `off_at` defect
-`backward.md#pass-law` records against the shipped code. At a one-block arm the block
-base is zero and the fault is invisible; everywhere else every block fans into block
-zero's columns.
+**What bit-identity can mean here is bounded by the fan-in, and the bound is measured
+rather than assumed.** `fan_in_add` assembles as `RED`, a non-returning atomic, so an
+output element taking more than one contribution has the hardware's summation order and
+two runs of the SAME binary differ in the last bits;
+`test_the_single_contributor_outputs_are_reproducible` asserts the other half — an
+element with exactly one contributor must not move between runs. Against rung b3's
+binary at the fully live cells, rung b4 agreed BIT FOR BIT on every single-contributor
+output and differed on the rest by no more than b3 differs from itself, which is the
+statement that the replay is arithmetically inert where it has nothing to skip.
+
+Two KERNEL-SIDE planted faults, each chosen so that one axis is what it tests:
+
+* rung b3's is the LATTICE's: the digit column formed from the slot's offset WITHIN the
+  block instead of from its absolute slot — `sbase % BC`, the `off_at` defect
+  `backward.md#pass-law` records against the shipped code. At a one-block arm the block
+  base is zero and the fault is invisible; everywhere else every block fans into block
+  zero's columns;
+* rung b4's is the REPLAY's: a block reads its NEIGHBOUR's clause row, so it skips
+  tokens that are live for it. A dense cell cannot see it — every clause row is all
+  ones there — and the arms whose lattice tests no clause do not instantiate it at all,
+  so the signature is every clause-bearing arm failing and every dense row green.
 
 The census (`chunk_rung0_census`) carries both halves of the floor claim per arm and
 per pass — the declared live set and the budget its target admits — and the gate
@@ -487,4 +505,7 @@ that agree on the block width and differ on the digit geometry are different ker
 and a census keyed on `(C, BC)` would have collapsed them. The gate also asserts the
 peak against the DECLARED floor and not only against the budget — the floor is the
 number `cta_target` is derived from, so a peak above it is a residency claim nobody
-measured.
+measured. That is why rung b4 MOVED the floor, 176 to 192, rather than letting a peak of
+190 sit above it: the move is a re-measurement with its own residency check attached
+(two CTAs at 128 threads, one at 256, eight warps per SM either way) and not an
+accommodation.
