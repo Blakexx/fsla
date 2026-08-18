@@ -281,6 +281,21 @@ strength of a 4,608-byte estimate; that figure used the V panel's row stride
 (`kD + kPadE`) where the Gram's is `C + kPadE`, and with the real number no alias
 into `so` is needed at all.)
 
+## <a id="the-fan-in-arena"></a>Every output starts at the identity, in one fill
+
+`dv`, `dwsum`, `d gw` and `d pw` are all reached through `fan_in_add`, from blocks
+whose order is not determined. There is no output the scan writes WHOLE, so there
+is no output whose zeroing a store could absorb and none that could be left
+uninitialized: the identity of the sum must be in memory before the first block
+contributes, and a grid-wide barrier between an in-kernel zero and the first
+accumulate does not exist.
+
+What the shape of that requirement does leave free is the LAUNCH count. The four
+are slices of one fp32 arena, so the identity arrives in one fill of the same total
+bytes rather than four fills of a quarter each — the bytes are irreducible, the
+three extra launches are not. Scan A's `d pr` is its only output and is already one
+fill.
+
 ## <a id="dw-slotsum"></a>The second output is `sum_s dW`, and that is NOT `d gw`
 
 The probe returns `dv` and a per-token plane that the kernel used to call `dgw`.

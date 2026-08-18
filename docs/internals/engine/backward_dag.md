@@ -75,3 +75,12 @@ tensor silently — the shapes agree. `tests/unit/test_interface.py` asserts the
 correspondence. The narrowing to each operand's dtype and the un-permute to its
 public layout happen here because autograd requires `grad.dtype == input.dtype` and
 the packing that produced the kernel layout was the node's own.
+
+Both happen in ONE device pass per operand, and the spelling is what decides that.
+`view.to(dtype).contiguous()` is TWO: `to` preserves the source's physical order, so
+`contiguous` then copies again over data already in the target dtype — a
+bf16-to-bf16 re-layout buying nothing. Allocating the destination and copying the
+permuted view into it fuses the gather and the cast into a single kernel, which is
+why `_to_operand` exists rather than the fluent chain. Six operands at two passes
+each plus the mass column is thirteen copies; one pass each is seven, and the
+results are bit-identical.
