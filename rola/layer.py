@@ -263,7 +263,7 @@ class RoLA(nn.Module):
             #: is its own too, and is asked here rather than above so that prefill,
             #: which now trains, is not gated on decode's forward-only-ness.
             self.validate_decode_envelope(*operands_of(routes, v, decay))
-            out = self._decode(routes, v, decay, state)
+            out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
             backend = "decode"
         else:
             out, state = rola_op(routes, v, decay, state=state, expert=self.expert)
@@ -281,19 +281,6 @@ class RoLA(nn.Module):
         else:
             projected = self.o_proj(out)
         return projected, (state, conv_rings)
-
-    # --- the arm that needs layer-owned state --------------------------------
-
-    def _decode(self, routes, v, decay, state):
-        """The ``T = 1`` sibling kernel, which owns its own state I/O.
-
-        The layer's only contribution is the plan overrides; the carrier, the scratch,
-        the backing and its growth all live behind ``decode_forward``
-        (``docs/internals/decode/decode.md``), exactly as the chunk arm's tables live behind
-        ``rola_op``.
-        """
-        out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
-        return out
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 
