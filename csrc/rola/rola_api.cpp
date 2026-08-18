@@ -134,6 +134,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
   //: contract, own consumer, frozen config. Two of its three entries are capacity GATES rather
   //: than operations -- docs/internals/rola_api.md#registered-entries
+  //: The step's OPERAND PASS: every per-token operand widened, normalized where the
+  //: producer did not already leave the level on the simplex, and published into the
+  //: sequence's own scratch. Bound rather than folded into either kernel because the
+  //: growth probe consumes the folded write side before the step's own kernels run --
+  //: docs/internals/rola_api.md#decode-fold
+  m.def("rola_decode_fold", &rola::decode::rola_decode_fold,
+        "RoLA T=1 decode operand fold: widen, normalize and publish every per-token "
+        "operand into the sequence's scratch, in one launch.",
+        py::arg("read"), py::arg("write"), py::arg("g_write"), py::arg("v"), py::arg("amp_read"),
+        py::arg("amp_write"), py::arg("g_out"), py::arg("v_out"), py::arg("normalize"));
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
         py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"), py::arg("dials"),

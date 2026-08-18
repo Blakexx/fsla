@@ -25,6 +25,16 @@ namespace decode {
 int64_t rola_decode_capacity();
 int64_t rola_decode_producer_width_mirror();
 
+//: THE OPERAND PASS, bound separately because it is not a mode of the step: the growth
+//: probe consumes the folded write side before the step's own kernels exist, so the fold
+//: cannot live inside either of them without one backing or one mask losing it. Its
+//: destinations are the sequence's own scratch, which is what lets ONE launch replace the
+//: whole torch operand chain inside a capture: docs/internals/decode/decode_fold.md
+void rola_decode_fold(std::vector<at::Tensor> read, std::vector<at::Tensor> write,
+                      at::Tensor g_write, at::Tensor v, std::vector<at::Tensor> amp_read,
+                      std::vector<at::Tensor> amp_write, at::Tensor g_out, at::Tensor v_out,
+                      std::vector<int64_t> normalize);
+
 at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
                                c10::optional<std::vector<at::Tensor>> amp_clock,
                                c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v,
