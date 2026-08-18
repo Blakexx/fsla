@@ -234,8 +234,14 @@ class RoLAState:
         return None, arena
 
     def _kernel_commit(self, plane: torch.Tensor) -> None:
-        """Take the kernel's final-state plane. Paged states already own theirs."""
-        if self._arena is None:
+        """Take a FRESH dense plane; a continuation has nothing to take.
+
+        Paged states already own the arena's plane, and a dense CONTINUATION launched
+        with `s_out` aliased onto its own plane, so the update landed in place. The one
+        call that moves a reference here is the one that BOUND a dense state
+        (docs/internals/state.md#the-dense-continuation).
+        """
+        if self._arena is None and self._plane is None:
             self._plane = plane
 
     def _require_carrying(self) -> None:

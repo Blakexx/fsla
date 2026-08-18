@@ -107,8 +107,38 @@ allocating `[B, H, N, cols]` is exactly what paging exists to avoid.
 The ORDER of a stateful call is the chunk DAG's and is stated there
 ([`engine/chunk_dag.md` §4](engine/chunk_dag.md#host-order)). What is the STATE's own
 is this: `_kernel_entry` plans the call's atoms into slots and hands back
-`(s_in, arena)`, and `_kernel_commit` takes the final plane for a dense-backed state
-(a paged one already owns its own).
+`(s_in, arena)`, and `_kernel_commit` takes the final plane for a state that just BOUND
+a dense backing — a paged state owns the arena's plane, and a dense continuation was
+launched into its own.
+
+### <a id="the-dense-continuation"></a>The continuation advances IN PLACE, in either backing
+
+`s_out` and `s_in` are ONE plane for a continued sequence, in either backing, so a
+stateful chain allocates one plane for the SEQUENCE and not one per call. The design
+reason it is worth stating: a second whole-written `[BH, N, d_v + 1]` fp32 plane is
+hundreds of megabytes at the parity curve's `N`, it scales with the growth axis, and a
+transient whose only job is to be swapped in buys nothing the caller can observe.
+
+**What makes it safe is the CTA structure, not a convention.** The owner blocks tile the
+leaf space exactly, so each atom belongs to exactly one CTA and, inside it, to one slot
+group: `chunk_kernel.cuh`'s `atom_first()` is `blockIdx.y`, the block's BC-aligned leaf
+base and the group's offset, and the entry fold and the store epilogue iterate the SAME
+`kAtoms` from the SAME base. The entry fold runs ONCE, in the prologue, before the first
+super-chunk is staged; the store runs ONCE, in the epilogue, after the last drain. So no
+CTA ever reads an atom another CTA may already have stored, and no CTA reads its own
+after storing it. Nothing in the walk between them touches the plane — which is why a
+short or ragged final super-chunk changes none of this: the state fold sits outside the
+chunk walk entirely.
+
+**The cost is that no stateful call is transactional.** A launch that faults part way
+through the grid leaves the plane part advanced, in either backing. Recovering a
+pre-call state is `clone()` before the call, and a caller who needs that guarantee is
+paying for the second plane deliberately rather than on every call.
+
+Two consequences follow and are stated where they belong: a dense continuation can SKIP
+blocks, because a skipped block leaves its own atoms carrying what they held
+([`chunk/chunk.md#run-table`](chunk/chunk.md#run-table)), and a FRESH dense bind cannot —
+its plane is uninitialized and is written whole.
 
 `plan_exact`'s single device-to-host size read is the only host synchronization in
 the sequence, and it is the read that also SIZES the admission. A fresh state plans

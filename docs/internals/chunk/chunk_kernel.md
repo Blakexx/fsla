@@ -141,6 +141,18 @@ fragments to the entry state is precisely the oracle's `initial_cache` seeding
 and no other term changes. The fragments are SET, never accumulated: they are
 provably zero at that point in the prologue.
 
+**`s_out` MAY BE `s_in`, and the CTA structure is why.** A continued sequence hands
+the same plane in and out in either backing (`state.md#the-dense-continuation`).
+`atom_first()` is `blockIdx.y`, the block's BC-aligned leaf base and the group's
+offset, so each atom has exactly one owner group in exactly one CTA; the entry fold
+and the store epilogue iterate the same `kAtoms` from that same base. The fold is the
+prologue, before the first super-chunk is staged, and the store is the epilogue, after
+the last drain — read once, store once, one CTA, and nothing between them touches the
+plane. No CTA can read an atom another has already stored, and none reads its own
+after storing it, so the two pointers being equal is inert. That is a property of the
+launch, not of the backing: a short final super-chunk moves the walk and not the state
+fold, which sits outside it.
+
 <a id="base-translation"></a>**The base translation: dense and paged are ONE kernel.** Per atom the kernel
 resolves `slot = page_tbl ? page_tbl[atom] : atom` and addresses
 `plane + slot * 16 * cols`. A null table is the dense plane, where a slot IS its

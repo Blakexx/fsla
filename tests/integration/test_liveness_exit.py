@@ -147,9 +147,9 @@ def _paged(pw, bh):
 @pytest.mark.parametrize("bc", [64, 128])
 @pytest.mark.parametrize("live", [1, 4, 16])
 def test_the_final_state_is_bit_identical_dense(bc, live):
-    """Dense `s_out`, poisoned: the plane must be written WHOLE and identically.
+    """A FRESH dense `s_out`, poisoned: the plane must be written WHOLE and identically.
 
-    The dense backing's predicate skips nothing, precisely because this plane is
+    The fresh dense row's predicate skips nothing, precisely because this plane is
     written whole by construction. Poisoning it makes that a fact the test can
     see rather than an argument: a survivor is a block whose atoms nobody stored.
     """
@@ -164,6 +164,38 @@ def test_the_final_state_is_bit_identical_dense(bc, live):
         "the liveness exit left poison in the dense state plane: a block exited "
         "whose atoms it owed a store")
     assert torch.equal(bare, exit_)
+
+
+@pytest.mark.parametrize("bc", [64, 128])
+@pytest.mark.parametrize("live", [1, 4])
+def test_the_final_state_is_bit_identical_on_a_dense_continuation(bc, live):
+    """The dense IN-PLACE row, `R | W`: a skipped block leaves its own atoms carrying.
+
+    A continuation hands one plane in and out, so a dead block that stores nothing
+    ends holding exactly what it carried -- which is what makes the row skippable at
+    all, and what the bare launch (which runs every block and folds nothing into a
+    dead one) must reproduce byte for byte.
+    """
+    bh, L = 4, 64
+    pr, pw, gw, v = _routing(bh, L, live, bc, seed=live * 41 + bc + 5)
+    g = torch.Generator(device="cuda").manual_seed(bc * 3 + live)
+    carried = torch.randn((bh, _N // _ATOM, _ATOM, _COLS), device="cuda", generator=g)
+    tbl, bits = _bits(pr, pw, v, bc, L)
+    _assert_it_skips(bits)
+    bare, exit_ = carried.clone(), carried.clone()
+    _launch(pr, pw, gw, v, tbl, bc, s_in=bare, s_out=bare)
+    _launch(pr, pw, gw, v, tbl, bc, bits=bits, s_in=exit_, s_out=exit_)
+    assert torch.equal(bare, exit_), "the exit and the bare launch left different states"
+    #: THE CARRY-THROUGH, stated directly. A block's leaves are `bc` consecutive in
+    #: canonical order, so its atoms are `bc // 16` consecutive rows of the plane.
+    dead = (bits == 0).repeat_interleave(bc // _ATOM, dim=1)
+    assert dead.any() and not dead.all(), "the cell has no dead blocks, or no live ones"
+    assert torch.equal(exit_[dead], carried[dead]), (
+        "a skipped block's carried atoms moved; the in-place row's whole premise is "
+        "that skipping leaves them")
+    assert not torch.equal(exit_[~dead], carried[~dead]), (
+        "no live block advanced the state; this cell would pass on a launch that "
+        "never ran")
 
 
 @pytest.mark.parametrize("bc", [64, 128])
@@ -300,9 +332,10 @@ def test_a_bitmap_that_skips_everything_is_caught_by_every_gate(bc):
     assert float(n_full.abs().max()) > 0 and float(d_full.abs().max()) > 0
     assert not torch.equal(n_full, n_none) and not torch.equal(d_full, d_none)
     assert float((n_none - n_full).abs().max()) > _SIGMA_FLOOR_REL * float(n_full.abs().max())
-    #: the state plane's own teeth, and they belong on the PAGED backing: the
+    #: the state plane's own teeth, and they belong on the PAGED backing: the FRESH
     #: dense predicate is `always run`, so a bitmap cannot defeat that gate at all
-    #: -- which is the property, not a hole in the test.
+    #: -- which is the property, not a hole in the test. The dense CONTINUATION's
+    #: predicate can be defeated, and its own cell above is where that is shown.
     page_tbl, full_plane = _paged(pw, bh)
     none_plane = full_plane.clone()
     _launch(pr, pw, gw, v, tbl, bc, s_out=full_plane, page_tbl=page_tbl)

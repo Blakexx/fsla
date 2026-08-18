@@ -186,7 +186,8 @@ file per pair rather than one table over all of them:
 
 | file | the pair it relates |
 |---|---|
-| `test_chunk_paging_equivalence.py` | paged vs dense backing — bit identity, continuation, absent-atom inertness, residency at every built `BC`, a fragmented non-monotone slot arena, the plan's exact demand through a real launch |
+| `test_chunk_paging_equivalence.py` | paged vs dense backing — bit identity, a continuation and a three-call chain, absent-atom inertness, residency at every built `BC`, a fragmented non-monotone slot arena, the plan's exact demand through a real launch |
+| `test_chunk_dense_inplace.py` | the dense continuation's one plane vs the double-buffer form it replaced — the aliasing isolated from the `R \| W` skip row, ragged and aligned chains, both terms of the row given teeth |
 | `test_chunk_final_state.py` | the register-resident state against its stored plane, and the leaf-order law |
 | `test_decode_bc_blindness.py` | one decode step across prefill arms that differ in `BC` |
 | `test_decode_paging.py`, `test_page_arena_vmm.py`, `test_atom_bitmap.py` | the backing's own structures |

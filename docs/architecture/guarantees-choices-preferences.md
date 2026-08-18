@@ -66,8 +66,12 @@ same week.
   exists to catch the *unknowable*, and a review finding that the author could
   have self-caught is an author failure.
 
-**Known non-guarantees, stated so nobody assumes them.** The output `y` is **not**
-bit-reproducible run to run: split-K uses non-deterministic atomics, and two runs
+**Known non-guarantees, stated so nobody assumes them.** A stateful call is **not**
+transactional, in either backing: a continuation advances its carried state IN PLACE,
+so a launch that fails part way through leaves that state part advanced rather than as
+it was. Recovering a pre-call state is `clone()` before the call
+([`../internals/state.md`](../internals/state.md#the-dense-continuation)). The output
+`y` is **not** bit-reproducible run to run: split-K uses non-deterministic atomics, and two runs
 of the unchanged code differ by ~`5e-7` max-abs at the parity cell. The **state**
 *is* byte-equal and is gated as such. Every `y` comparison in this repository is
 therefore reported against a measured same-order floor. Converting `y` to

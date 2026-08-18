@@ -299,14 +299,17 @@ _DOC_ROWS = (
     ("| fresh state-out, paged | absent | present | present | `W` |",
      [(None, _PRESENT, _PRESENT)],
      lambda R, W, S: W),
-    ("| state-out, dense | either | present | absent | always run |",
-     [(None, _PRESENT, None), (_PRESENT, _PRESENT, None)],
+    ("| continued state-out, dense | present | present | absent | `R \\| W` |",
+     [(_PRESENT, _PRESENT, None)],
+     lambda R, W, S: R or W),
+    ("| fresh state-out, dense | absent | present | absent | always run |",
+     [(None, _PRESENT, None)],
      lambda R, W, S: True),
 )
 
 
 def test_the_documented_rows_are_the_rows_the_document_carries():
-    """The five-row prose became an executable fixture, and this is the tie that
+    """The seven-row prose became an executable fixture, and this is the tie that
     keeps it one: a doc edit that changes a rule fails here."""
     doc = (ROOT / "docs" / "internals" / "chunk" / "chunk.md").read_text()
     missing = [row for row, _triples, _rule in _DOC_ROWS if row not in doc]
@@ -328,7 +331,7 @@ def test_the_run_table_derives_every_bit_value_of_every_row(row, triples, predic
 
 
 def test_every_argument_triple_is_covered_by_a_row_or_refused_upstream():
-    """Eight triples, six rows: the one triple no row carries is a page table with no
+    """Eight triples, seven rows: the one triple no row carries is a page table with no
     state, which the binding refuses before the derivation is reached -- and which
     derives the stateless row regardless, so nothing depends on the refusal."""
     covered = {t for _row, triples, _rule in _DOC_ROWS for t in triples}

@@ -123,9 +123,10 @@ class ChunkConsumer(torch.autograd.Function):
         bf16-contiguous copy of it, which is a fact.
 
         The final state plane is ``plan.state_out`` and does not come back through
-        this call: it is the CALLER's allocation (the arena's, when paged), and an
-        autograd node that returned it would stamp graph metadata onto storage the
-        state object owns and reuses across steps.
+        this call: it is the CALLER's allocation -- the arena's when paged, and the
+        carried plane itself on any continuation -- and an autograd node that returned
+        it would stamp graph metadata onto storage the state object owns and reuses
+        across steps.
         """
         return ChunkConsumer.apply(plan, v, *plan.routes.tensors())
 

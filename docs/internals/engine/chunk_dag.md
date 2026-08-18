@@ -33,6 +33,11 @@ produces two of the three presences it folds: a host rule placed between `backin
 `block_bits` would step into the middle of the enqueue stream for no reason, and this
 one has no consumer until the plan is built.
 
+`backing` READS `state_in`, which is why it sits below `residency` rather than beside
+it: a CONTINUATION's two state planes are one plane, so the exit plane is the entry
+plane and only a fresh dense bind allocates
+([`state.md`](../state.md#the-dense-continuation)).
+
 M1 (prefill-stateless) is M2 (prefill-stateful) with the residency band masked out:
 `residency` and `join` do not run and their facts are null, and `facts_tables` runs
 under the call class that compiles the atom-grain emission out, so `atom_bits` is

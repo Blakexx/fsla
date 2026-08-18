@@ -156,6 +156,31 @@ def test_two_chained_halves_are_one_whole_sequence(expert):
     assert rel < 1e-2, f"the continuation's y left the bf16 family band: rel={rel:.3e}"
 
 
+@pytest.mark.parametrize("expert", [None, _DENSE], ids=["paged", "dense"])
+def test_a_continuation_advances_ONE_plane_and_allocates_no_other(expert):
+    """The facade's own statement of the in-place law, in either backing.
+
+    A continued sequence's storage is bound ONCE. The claim is on the STORAGE, not on
+    the object: `rola_op` returns the same `RoLAState` either way, and the property
+    that costs a caller anything is whether the BYTES behind it are replaced -- so this
+    reads the data pointer, which is the only thing a footprint depends on
+    (`docs/internals/state.md#the-dense-continuation`). The lengths are ragged, so the
+    claim covers a call that does not land on the chunk.
+    """
+    producer = _producer(seed=17)
+    with torch.no_grad():
+        s, pointers = rola.state(), []
+        for i, T in enumerate((36, 19, 45)):
+            x, v = _inputs(seed=17 + i, T=T)
+            _y, s = rola.rola_op(producer(x), v, state=s, expert=expert)
+            pointers.append((s._arena.state if s.paged else s._plane).data_ptr())
+    assert s.paged == (expert is None), "the expert's backing pin was not honoured"
+    assert len(set(pointers)) == 1, (
+        f"the continuation moved its storage across the chain: {pointers}. A dense "
+        f"call that allocates a second plane is double-buffering the sequence")
+    assert float(s.materialize().abs().max()) > 0, "the chain ended on an empty state"
+
+
 def test_the_two_backings_compute_the_same_call():
     """One routing, two states, one of them pinned dense. The state is `torch.equal`.
 

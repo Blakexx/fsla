@@ -33,11 +33,12 @@ def run_table(state_in: Any, state_out: Any, page_table: Any) -> int:
         #: write, or a carried state the block may hold. Without a residency map the
         #: dense backing cannot witness the latter and must assume it.
         run = R and (W or (carries_in and (S if paged else True)))
-        #: the state epilogue stores this block's atoms. Paged, an unwritten block
-        #: must leave its slot UNCHANGED, which is what skipping does; dense, the
-        #: plane is uninitialized and is written WHOLE, so nothing may be skipped.
+        #: the state epilogue stores this block's atoms. An unwritten block must end
+        #: holding what it carried in, which is what skipping leaves: a paged slot
+        #: unchanged, and a dense CONTINUATION's plane too, since it is updated in
+        #: place. A FRESH dense plane is uninitialized and is written WHOLE.
         if stores_out:
-            run = run or (W if paged else True)
+            run = run or (W if (paged or carries_in) else True)
         if run:
             table |= 1 << v
     return table

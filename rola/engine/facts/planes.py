@@ -86,9 +86,11 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     per-atom addressing and a reader's per-leaf one describe the same bytes.
 
     Allocation is the caller's, not the kernel entry's -- which is what lets a
-    carried state be handed straight back in. It is uninitialized because the
-    dense plane is written WHOLE: the owner blocks tile the leaf space exactly,
-    so every atom is stored by exactly one CTA.
+    carried state be handed straight back in, and a CONTINUATION does exactly that
+    rather than reaching here at all (docs/internals/state.md#the-dense-continuation).
+    A FRESH bind is the one call that allocates, and it is uninitialized because that
+    plane is written WHOLE: the owner blocks tile the leaf space exactly, so every
+    atom is stored by exactly one CTA.
     """
     widths = tuple(level.width for level in routes.topology.levels)
     n = 1

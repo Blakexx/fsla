@@ -116,7 +116,8 @@ exit-state plane and the page table — never the engagement bits the facade cla
 | state-in `y`-only, dense | present | absent | absent | `R` |
 | continued state-out, paged | present | present | present | `(R && (W \| S)) \| W` |
 | fresh state-out, paged | absent | present | present | `W` |
-| state-out, dense | either | present | absent | always run |
+| continued state-out, dense | present | present | absent | `R \| W` |
+| fresh state-out, dense | absent | present | absent | always run |
 
 `rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
 `uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
@@ -131,8 +132,8 @@ the stateless row in any case.
 `chunk_forward`) take it as a launch argument beside the bitmap it predicates over. The
 kernel reads `ChunkParams::run_table` and derives nothing: a second derivation behind the
 extension boundary could not promise that the table a call PLANS is the table it RUNS, and
-the five rows above could only be exercised through a launch. They are now device-free unit
-cells over all eight liveness bytes × all six rows (`tests/unit/test_facts_rules.py`), and
+the seven rows above could only be exercised through a launch. They are now device-free unit
+cells over all eight liveness bytes × all seven rows (`tests/unit/test_facts_rules.py`), and
 `tests/unit/test_facts_rules.py` transcribes the rows above and holds the doc and the rule to each other.
 
 **The two paged state-out rows differ, and the difference is the entry state.** A CONTINUED
@@ -151,13 +152,23 @@ then discards it, so it is provably inert. A carried entry state breaks that arg
 is what `S` restores where a page table can witness it; the dense backing has no residency
 map, so its predicate degrades to `R` and says so.
 
-**The dense state-out row is the one that cannot skip at all.** The dense `s_out` plane is
-allocated uninitialised precisely because it is written WHOLE — the owner blocks tile the
-leaf space exactly, so every atom is stored by exactly one CTA. Skipping a block there
-would leave that block's atoms as garbage in the returned state. The paged backing is
-different and does skip: an unmapped atom is already a no-op in the epilogue, and a mapped
-slot either was zero-initialised on admission or is carried from a previous call, which a
-skipped block must leave UNCHANGED — which is what skipping does.
+**The two dense state-out rows differ for the same reason the paged pair does, and the
+carry-through is what separates them.** A dense CONTINUATION updates its plane IN PLACE:
+`s_out` IS `s_in`, one plane and no swap (`state.md#the-dense-continuation`). A skipped
+block therefore leaves its own atoms holding what it carried in, which is both the paged
+unchanged-slot semantics and the exact final state of a block this call never writes into.
+What the dense backing still cannot do is WITNESS residency — with no page table there is
+no `S` to read — so the `y` term must assume the block carries and degrades to `R`, and the
+store term is `W`; together, `R | W`. That is the paged continued row with `S` forced true,
+which is precisely what having no residency map means.
+
+**The dense FRESH row is the one that cannot skip at all.** A fresh bind has no entry plane,
+and its `s_out` is allocated uninitialised precisely because it is written WHOLE — the owner
+blocks tile the leaf space exactly, so every atom is stored by exactly one CTA. Skipping a
+block there would leave that block's atoms as garbage in the returned state. The paged
+backing never has that problem: an unmapped atom is already a no-op in the epilogue, and a
+mapped slot either was zero-initialised on admission or is carried from a previous call,
+which a skipped block must leave UNCHANGED — which is what skipping does.
 
 **Every arm takes the bitmap.** The predicate is a load and a branch above every register
 the body allocates, so there is no arm whose census cannot hold it — including the one at

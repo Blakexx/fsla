@@ -23,7 +23,10 @@ owner block; `owners = N / BC`.
    states are equal once the paged pages are gathered back through the table.
    The gather sends an absent atom to zeros, which is the same thing the dense
    plane holds there, because the bitmap is the write set EXACTLY -- an atom
-   outside it was never deposited into.
+   outside it was never deposited into. The claim is made on a CHAIN as well as
+   on one call: both backings continue in place, so a sequence advanced over
+   several calls (ragged lengths included) is compared at every step, which is
+   where an in-place update could accumulate what one call would not show.
 
 2. *A zero page is inert* (the design's E.4). Force an atom the routing never
    writes to be resident, and nothing moves: not `y`, not one bit of the state.
@@ -52,6 +55,7 @@ import torch
 
 from rola.engine.facts import planes
 from rola.engine.rules.run_table import run_table
+from rola.engine.types import Mask
 from rola.ops._ext import extension
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 
@@ -232,6 +236,63 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(arm):
         f"{(s2 - p2).abs().max().item():.3e}")
     _assert_y(y1_dense, y1_paged, y1_control, widths, BC, "the first half's y differs")
     _assert_y(y2_dense, y2_paged, y2_dense, widths, BC, "the second half's y differs")
+
+
+def _chained(fixtures, widths, C, BC, *, arena=None):
+    """A chain of calls through ONE carried state, in whichever backing, WITH the exit.
+
+    Both backings continue in place -- the arena always did, the dense plane does now
+    (`state.md#the-dense-continuation`) -- so the two arms differ in the page
+    translation and in the skip row their argument triple derives, and in nothing
+    else. The liveness bitmap is passed because the shipped seam passes it: comparing
+    the two backings without it would compare a pair of tables neither one runs.
+    Returns the state after EVERY call, because a divergence seen only at the end has
+    already been summed over.
+    """
+    m = extension()
+    BH = fixtures[0][3].shape[0] * fixtures[0][3].shape[2]
+    plane = None if arena is not None else _dense_plane(widths, BH)
+    steps = []
+    for i, fixture in enumerate(fixtures):
+        pr, pw, gw, vk = _packed(fixture)
+        if arena is not None:
+            arena.plan_exact(_bitmap(fixture, widths), fresh=i == 0)
+            arena.wait()
+        s_out = arena.state if arena is not None else plane
+        s_in = None if i == 0 else s_out
+        page_tbl = None if arena is None else arena.page_table
+        union = m.chunk_facts(pr, pw, C, BC, list(widths), int(Mask.M2), False)[0]
+        bits = m.chunk_block_bits(union, BC, list(widths), vk.shape[1], page_tbl)
+        y = m.chunk_forward(pr, pw, gw, vk, C, BC, list(widths), 1e-6,
+                            run_table(s_in, s_out, page_tbl), None, torch.float32,
+                            s_in, s_out, page_tbl, bits)
+        state = (arena.materialize() if arena is not None
+                 else plane.view(BH, prod(widths), _COLS).clone())
+        steps.append((y.permute(0, 2, 1, 3), state))
+    return steps
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: f"{'x'.join(map(str, a[0]))}-C{a[1]}-BC{a[2]}")
+def test_a_three_call_chain_is_bit_identical_across_the_two_backings(arm):
+    """The CHAIN, not one seam -- and the state compared at every step of it.
+
+    A sequence advanced over several calls is what a carried state is FOR, and it is
+    where an in-place update could accumulate a difference the single-seam cell above
+    would never reach. The lengths are off the chunk on purpose: a ragged call in the
+    middle of a chain must leave the state fold exactly where an aligned one does.
+    """
+    widths, C, BC = arm
+    BH = 2 * 2
+    fixtures = [_fixture(widths, T=T, support=0.5, seed=57 + 11 * i)
+                for i, T in enumerate((36, 64, 19))]
+    dense = _chained(fixtures, widths, C, BC)
+    paged = _chained(fixtures, widths, C, BC, arena=_arena(widths, BC, BH))
+    for i, ((y_d, s_d), (y_p, s_p)) in enumerate(zip(dense, paged)):
+        assert torch.equal(s_d, s_p), (
+            f"call {i} of the chain: the states differ across the backings by "
+            f"{(s_d - s_p).abs().max().item():.3e} over {int((s_d != s_p).sum())} elements")
+        _assert_y(y_d, y_p, y_d, widths, BC, f"call {i} of the chain: y differs")
+    assert (dense[-1][1] != 0).any(), "the chain ended on an empty state"
 
 
 # ---------------------------------------------------------------------------

@@ -104,13 +104,24 @@ def join(f):
         arena.wait()
 
 
-@node(gives=("page_table", "state_out"), needs=("arena", "want_state", "routes", "d_v"))
+@node(gives=("page_table", "state_out"),
+      needs=("arena", "state_in", "want_state", "routes", "d_v"))
 def backing(f):
+    """The two state planes a launch is given -- and for a CONTINUATION they are ONE.
+
+    A continued sequence advances its state IN PLACE, in either backing: the arena has
+    always handed the same plane in and out, and the dense one does now
+    (docs/internals/state.md#the-dense-continuation). Only a FRESH dense bind allocates,
+    and that plane is uninitialized because it is written whole.
+    """
     arena, want_state = f["arena"], f["want_state"]
-    if arena is None:
-        return None, (planes.state_plane(f["routes"], d_v=f["d_v"]) if want_state
-                      else None)
-    return arena.page_table, (arena.state if want_state else None)
+    if arena is not None:
+        return arena.page_table, (arena.state if want_state else None)
+    if not want_state:
+        return None, None
+    state_in = f["state_in"]
+    return None, (planes.state_plane(f["routes"], d_v=f["d_v"]) if state_in is None
+                  else state_in)
 
 
 @node(gives=("block_bits",),
