@@ -62,10 +62,6 @@ def _case(*, decay_on: bool, normalization: str = "global", seed: int = 7):
     write = tuple(simplex(w) for w in WIDTHS)
     for index, (r, w) in enumerate(zip(read, write)):
         operands[f"read{index}"], operands[f"write{index}"] = r, w
-    g_read = None
-    if normalization == "raw":
-        g_read = (torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5).requires_grad_(True)
-        operands["g_read"] = g_read
     decay = None
     if decay_on:
         dials = tuple((torch.rand(H, w, generator=g, dtype=torch.float64) * 0.3 + 0.1
@@ -77,7 +73,7 @@ def _case(*, decay_on: bool, normalization: str = "global", seed: int = 7):
     def run(write_override=None):
         return naive_rola(
             operands["v"], read, write if write_override is None else write_override,
-            g_read, operands["g_write"], topology, decay, normalization,
+            None, operands["g_write"], topology, decay, normalization,
             output_final_state=True)
 
     return operands, write, run

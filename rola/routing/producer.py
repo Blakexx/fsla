@@ -110,7 +110,8 @@ class RouteProducer(nn.Module):
             stack. The tags name activations from the closed registry
             (``rola/routing/activations.py``) -- users never supply property metadata.
         hidden_size / num_heads: the source stream's width and the head count.
-        normalization: ``'global'`` or ``'raw'`` -- the recurrence's normalization arm.
+        normalization: the recurrence's normalization arm; ``'global'`` is the one
+            value, and any other is refused by name rather than coerced.
         bias: a learned bias on the routing projection.
         gain: whether the write-side gain is a learned projection. ``False`` removes the
             column rather than pinning it to 1, so no dead parameter is optimized.

@@ -271,7 +271,7 @@ class RoLA(nn.Module):
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 
     def get_stats(self):
-        cols = self.head_v_dim + int(self.normalization != "raw")
+        cols = self.head_v_dim + 1  # the mass column is unconditional
         return {
             "d_v": self.head_v_dim,
             "n_heads": self.num_heads,

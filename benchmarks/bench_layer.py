@@ -128,7 +128,7 @@ def _content_addressing_width(layer) -> int:
     return 0
 
 
-def _addressing(layer, branches, d_v, H, norm, read_levels, write_levels) -> dict:
+def _addressing(layer, branches, d_v, H, read_levels, write_levels) -> dict:
     """The architecture's addressing columns, plus the realized support.
 
     Addressing entropy is defined STRUCTURALLY and matching on it is normative:
@@ -167,7 +167,7 @@ def _addressing(layer, branches, d_v, H, norm, read_levels, write_levels) -> dic
     a_r, a_w = active(read_levels), active(write_levels)
     return {
         "N": N,
-        "state_floats_per_head": N * (d_v + int(norm == "global")),
+        "state_floats_per_head": N * (d_v + 1),  # the mass column is unconditional
         "address_space_bits": round(math.log2(N), 3),
         "routing_addressing_width": sum(branches),
         "content_addressing_width": _content_addressing_width(layer),
@@ -185,79 +185,81 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
     side = "sparse" if router == "entmax" else "dense"
     rows: list[dict] = []
 
-    for decay_on in (False, True):
-        for norm in ("raw", "global"):
-            torch.manual_seed(0)
-            from rola import LearnedDecay
+    #: TWO DEAD AXES RETIRED, the same pair P67 S5 retired from `bench_scaling.py`
+    #: and this file was never swept for. `normalization='raw'` is refused outright by
+    #: `validate_normalization` -- the mass column is unconditional -- and a
+    #: decay-configured layer is refused by the chunk arm (`arm_envelope`), so it
+    #: dispatches to the reference and the `last_execution_backend` assert below then
+    #: fails. Both raised on their first cell. The columns stay in the row, as the
+    #: CONSTANTS they are, so a reader of an old JSON beside a new one is comparing
+    #: the same arm.
+    torch.manual_seed(0)
+    template = union_routing(1, 1.5) if side == "sparse" else dense_routing(1)
+    levels = [template.at(w) for w in branches]
+    routes = RouteProducer(
+        levels, hidden_size=hidden, num_heads=H, normalization="global")
+    layer = RoLA(
+        routes, d_v=d_v, decay=None, layer_idx=0,
+    ).to("cuda", dtype)
+    # The CUDA path additionally
+    # requires eval mode. This script measures inference-path cost, so eval
+    # is correct here, not incidental.
+    layer.eval()
+    if logit_gain != 1.0:
+        with torch.no_grad():
+            routes.route_W.mul_(logit_gain)
+    for param in layer.parameters():
+        param.requires_grad_(False)
+    x = torch.randn(B, L, hidden, device="cuda", dtype=dtype)
 
-            template = union_routing(1, 1.5) if side == "sparse" else dense_routing(1)
-            levels = [template.at(w) for w in branches]
-            routes = RouteProducer(
-                levels, hidden_size=hidden, num_heads=H, normalization=norm)
-            decay_source = (LearnedDecay(widths=routes.widths, num_heads=H)
-                            if decay_on else None)
-            layer = RoLA(
-                routes, d_v=d_v, decay=decay_source, layer_idx=0,
-            ).to("cuda", dtype)
-            # The CUDA path additionally
-            # requires eval mode. This script measures inference-path cost, so eval
-            # is correct here, not incidental.
-            layer.eval()
-            if logit_gain != 1.0:
-                with torch.no_grad():
-                    routes.route_W.mul_(logit_gain)
-            for param in layer.parameters():
-                param.requires_grad_(False)
-            x = torch.randn(B, L, hidden, device="cuda", dtype=dtype)
+    def whole_layer():
+        with torch.no_grad():
+            return layer(x)
 
-            def whole_layer():
-                with torch.no_grad():
-                    return layer(x)
+    # One untimed call to (a) fault in the template instantiation this cell
+    # needs and (b) publish `last_execution_backend`, which is the assertion
+    # that this row measures the prefill kernel and not the decode one.
+    whole_layer()
+    assert layer.last_execution_backend == "cuda", (
+        f"the cell did not take the CUDA backend; it took "
+        f"{layer.last_execution_backend!r}, so this row measures the wrong kernel")
 
-            # One untimed call to (a) fault in the template instantiation this cell
-            # needs and (b) publish `last_execution_backend`, which is the assertion
-            # that this row measures the prefill kernel and not the decode one.
-            whole_layer()
-            assert layer.last_execution_backend == "cuda", (
-                f"cell decay={decay_on} norm={norm} did not take the CUDA backend; it took "
-                f"{layer.last_execution_backend!r}, so this row measures the wrong kernel")
+    # Plane decomposition, on the identical inputs the whole-layer call uses.
+    v = layer.v_proj(x)
+    v = v.view(B, L, H, d_v)
 
-            # Plane decomposition, on the identical inputs the whole-layer call uses.
-            v = layer.v_proj(x)
-            v = v.view(B, L, H, d_v)
+    def producer():
+        with torch.no_grad():
+            return layer.routes(x)
 
-            def producer():
-                with torch.no_grad():
-                    return layer.routes(x)
+    with torch.no_grad():
+        ro = producer()
+    read_levels, write_levels = ro.read, ro.write
 
-            with torch.no_grad():
-                ro = producer()
-            read_levels, write_levels = ro.read, ro.write
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    planes = {"total": _measure(whole_layer, reps, warmup)}
+    peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30
+    planes["producer"] = _measure(producer, reps, warmup)
+    plane_ms = {name: stats["wall_ms"] for name, stats in planes.items()}
+    total_ms, producer_ms = plane_ms["total"], plane_ms["producer"]
 
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
-            planes = {"total": _measure(whole_layer, reps, warmup)}
-            peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30
-            planes["producer"] = _measure(producer, reps, warmup)
-            plane_ms = {name: stats["wall_ms"] for name, stats in planes.items()}
-            total_ms, producer_ms = plane_ms["total"], plane_ms["producer"]
-
-            rows.append({
-                "version": "v3", "decay": "LeafMassDecay" if decay_on else "None",
-                "norm": norm, "router": router, "logit_gain": logit_gain,
-                "dtype": str(dtype).replace("torch.", ""),
-                "B": B, "H": H, "L": L, "d_v": d_v, "branches": list(branches),
-                "total_ms": round(total_ms, 4),
-                "producer_ms": round(producer_ms, 4),
-                "consumer_ms": round(total_ms - producer_ms, 4),
-                "planes": {name: {k: round(v, 4) for k, v in stats.items()}
-                           for name, stats in planes.items()},
-                "peak_alloc_gb": round(peak_gb, 4),
-                **_addressing(layer, branches, d_v, H, norm, read_levels, write_levels),
-            })
-            print(json.dumps(rows[-1]), flush=True)
-            layer = x = v = ro = read_levels = write_levels = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
-            torch.cuda.empty_cache()
+    rows.append({
+        "version": "v3", "decay": "None",
+        "norm": "global", "router": router, "logit_gain": logit_gain,
+        "dtype": str(dtype).replace("torch.", ""),
+        "B": B, "H": H, "L": L, "d_v": d_v, "branches": list(branches),
+        "total_ms": round(total_ms, 4),
+        "producer_ms": round(producer_ms, 4),
+        "consumer_ms": round(total_ms - producer_ms, 4),
+        "planes": {name: {k: round(v, 4) for k, v in stats.items()}
+                   for name, stats in planes.items()},
+        "peak_alloc_gb": round(peak_gb, 4),
+        **_addressing(layer, branches, d_v, H, read_levels, write_levels),
+    })
+    print(json.dumps(rows[-1]), flush=True)
+    layer = x = v = ro = read_levels = write_levels = None  # drop the refs before empty_cache(); `del` would unbind names a closure reads
+    torch.cuda.empty_cache()
     return rows
 
 

@@ -12,16 +12,16 @@ audited: the leaf address map (``_leaf_product``), the gate values
 
 Normalization uses the ONES-COLUMN trick rather than a second recurrence. The
 mass state is what you get by running the same recurrence on a value vector of
-all ones, so it is not a separate object: ``v`` gains a column of ones under
-``normalization="global"``, the state carries ``d_v + 1`` columns, and the last
-one IS the mass. One recurrence, one state, one readout -- and the state's
-layout is then literally the ``[B,H,N,d_v+1]`` cache both backends exchange.
+all ones, so it is not a separate object: ``v`` gains a column of ones, the
+state carries ``d_v + 1`` columns, and the last one IS the mass. One recurrence,
+one state, one readout -- and the state's layout is then literally the
+``[B,H,N,d_v+1]`` cache both backends exchange.
 
 Implements the recurrence exactly. There is no Q/K, no feature map, and
 no privileged routing level here -- every level is an ordinary mixed-radix
 routing level, and the oracle consumes already-materialized per-level, per-side
-routing allocations (``p_read``, ``p_write``) plus one positive side gain per
-side (``g_read``, ``g_write``). Computing those allocations from a
+routing allocations (``p_read``, ``p_write``) plus the positive write-side gain
+(``g_write``). Computing those allocations from a
 projected hidden state is PRODUCER scope and
 is out of scope here.
 
@@ -125,11 +125,11 @@ def naive_rola(
 
     There is no ``q``, no ``k``, and no feature map anywhere in this function.
     Inputs are per-level per-side routing allocations (already normalized
-    simplices, one tensor per level, shape ``[B,T,H,width_l]``), one positive
-    side gain per side (``g_read``/``g_write``, shape ``[B,T,H]``; ``g_read``
-    must be ``None`` under ``normalization="global"``: the readout is a ratio, which fixes
-    ``g_read := 1`` there and production has no read-gain projection to supply
-    one), a ``Topology``, and a ``DecayConfig`` (``None`` or ``LeafMassDecay``).
+    simplices, one tensor per level, shape ``[B,T,H,width_l]``), the positive
+    write-side gain (``g_write``, shape ``[B,T,H]``; ``g_read`` must be ``None``:
+    the readout is a ratio, which fixes ``g_read := 1`` and production has no
+    read-gain projection to supply one), a ``Topology``, and a ``DecayConfig``
+    (``None`` or ``LeafMassDecay``).
 
     ``write_levels`` feeds the deposit ``W`` and trains normally, AND is what the
     ``LeafMassDecay`` clock reads (``c[t,s] = stop_gradient(prod_l p_write[...])``).
@@ -138,8 +138,8 @@ def naive_rola(
     parameter for emulating one would be a second spelling of the same tensor.
 
     Returns ``(y, final_state)`` with ``y: [B,T,H,d_v]`` and, if
-    ``output_final_state``, ``final_state: [B,H,N,d_v(+1)]`` (the ``+1`` column
-    carries the global-normalization mass state; absent for ``raw``).
+    ``output_final_state``, ``final_state: [B,H,N,d_v+1]`` (the last column
+    carries the mass state the ratio readout divides by).
 
     BOTH OUTPUTS ARE ``float64``, WHATEVER THE INPUTS WERE. Inputs of any dtype
     are accepted and cast up; nothing is cast back down. This is the fp64 oracle,
@@ -156,7 +156,7 @@ def naive_rola(
     validate_normalization(normalization)
     write_levels = tuple(write_levels)
     B, T, H, d_v = validate_inputs(
-        v, read_levels, write_levels, g_read, g_write, topology, decay, normalization
+        v, read_levels, write_levels, g_read, g_write, topology, decay
     )
     #: DERIVED HERE, not read off `topology`. The oracle's address map is its own
     #: (see `_radix_strides`); `topology` supplies the SHAPE (`widths`), which is
@@ -164,7 +164,6 @@ def naive_rola(
     widths = topology.widths
     N = _leaf_capacity(widths)
     strides = _radix_strides(widths)
-    normalized = normalization == "global"
 
     v64 = v.to(torch.float64)
     read64 = tuple(level.to(torch.float64) for level in read_levels)
@@ -173,20 +172,15 @@ def naive_rola(
     validate_simplex("write_levels", write64)
 
     g_write64 = g_write.to(torch.float64)
-    #: The readout is a ratio, so `g_read := 1` under global normalization and the literal
-    #: statement of that is a tensor of ones and the recurrence has no second form.
-    g_read64 = (torch.ones((B, T, H), device=v.device, dtype=torch.float64)
-                if normalized else g_read.to(torch.float64))
 
     #: THE ONES COLUMN. The mass state is the same recurrence run on a value of
-    #: all ones, so it is a COLUMN of the value, not a second state. `[B,T,H,d_v+1]`
-    #: under global normalization, `[B,T,H,d_v]` otherwise.
+    #: all ones, so it is a COLUMN of the value, not a second state. `[B,T,H,d_v+1]`.
     deposit_value = torch.cat(
-        (v64, torch.ones((B, T, H, 1), device=v.device, dtype=torch.float64)), dim=-1
-    ) if normalized else v64
+        (v64, torch.ones((B, T, H, 1), device=v.device, dtype=torch.float64)), dim=-1)
 
-    #: The read and write allocations, materialized per leaf. `[B,T,H,N]`.
-    R = g_read64[..., None] * _leaf_product(read64, strides, N)
+    #: The read and write allocations, materialized per leaf. `[B,T,H,N]`. The
+    #: readout is a ratio, which fixes `g_read := 1`, so the read side carries none.
+    R = _leaf_product(read64, strides, N)
     W = g_write64[..., None] * _leaf_product(write64, strides, N)
 
     #: The gate. `keep[t,s] = (1 - rate[s]) ** c[t,s]` -- a DIAGONAL gate, which is
@@ -201,9 +195,9 @@ def naive_rola(
         keep = torch.pow(1.0 - rate, c)
 
     #: The state, in the layout it is handed back in: one row per leaf, `d_v`
-    #: columns of value plus, when normalized, the ones column's mass.
+    #: columns of value plus the ones column's mass.
     state = initial_cache(
-        initial_state, B=B, H=H, N=N, d_v=d_v, norm=normalization, device=v.device
+        initial_state, B=B, H=H, N=N, d_v=d_v, device=v.device
     )
 
     outputs = []
@@ -212,8 +206,7 @@ def naive_rola(
         state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]
         # o[t,:] = sum_s R[t,s] * S[t,s,:], inclusive read-after-write
         readout = torch.einsum("bhn,bhnv->bhv", R[:, t], state)
-        outputs.append(
-            readout[..., :d_v] / (readout[..., d_v:] + eps) if normalized else readout)
+        outputs.append(readout[..., :d_v] / (readout[..., d_v:] + eps))
 
     y = (torch.stack(outputs, dim=1) if outputs
          else v64.new_zeros((B, 0, H, d_v)))

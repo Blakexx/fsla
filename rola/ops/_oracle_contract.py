@@ -60,9 +60,8 @@ def validate_inputs(
     g_write: torch.Tensor,
     topology: Topology,
     decay: DecayConfig,
-    normalization: str,
 ) -> tuple[int, int, int, int]:
-    """Shapes, domains and the normalization mode's own rule. Returns `(B, T, H, d_v)`."""
+    """Shapes and domains. Returns `(B, T, H, d_v)`."""
     if v.ndim != 4:
         raise ValueError(f"v must have shape [B,T,H,d_v], got {tuple(v.shape)}")
     B, T, H, d_v = v.shape
@@ -83,20 +82,12 @@ def validate_inputs(
         raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
     if torch.any(g_write <= 0):
         raise ValueError("g_write must be strictly positive: g_write[t] > 0")
-    if normalization == "global":
-        if g_read is not None:
-            raise ValueError(
-                "normalization='global' fixes g_read := 1; production has no "
-                "read-gain projection in global cells, so a supplied g_read would be silently "
-                "ignored -- pass g_read=None"
-            )
-    else:
-        if g_read is None:
-            raise ValueError("normalization='raw' requires an explicit g_read")
-        if tuple(g_read.shape) != (B, T, H):
-            raise ValueError(f"g_read must have shape [B,T,H]={(B, T, H)}, got {tuple(g_read.shape)}")
-        if torch.any(g_read <= 0):
-            raise ValueError("g_read must be strictly positive: g_read[t] > 0")
+    if g_read is not None:
+        raise ValueError(
+            "normalization='global' fixes g_read := 1; production has no "
+            "read-gain projection in global cells, so a supplied g_read would be silently "
+            "ignored -- pass g_read=None"
+        )
     if decay is not None:
         if not isinstance(decay, LeafMassDecay):
             raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")
@@ -110,11 +101,10 @@ def validate_inputs(
 
 
 def initial_cache(
-    initial_state: torch.Tensor | None, *, B: int, H: int, N: int, d_v: int, norm: str, device
+    initial_state: torch.Tensor | None, *, B: int, H: int, N: int, d_v: int, device
 ) -> torch.Tensor:
-    """The carried state a run starts from, `[B,H,N,d_v + (norm == "global")]` fp64."""
-    width = d_v + int(norm == "global")
-    expected = (B, H, N, width)
+    """The carried state a run starts from, `[B,H,N,d_v+1]` fp64 (the mass column)."""
+    expected = (B, H, N, d_v + 1)
     if initial_state is None:
         return torch.zeros(expected, device=device, dtype=torch.float64)
     if not isinstance(initial_state, torch.Tensor) or tuple(initial_state.shape) != expected:

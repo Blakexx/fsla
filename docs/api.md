@@ -137,7 +137,8 @@ stored levels, the side gains, the read mass and the topology they are shaped by
 nothing else, and in particular no declaration a caller could pair with tensors that do
 not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
 the provenance: one level per topology level at that level's width, one shared
-`[B, T, H]` prefix, one device, one dtype, `g_read` present iff the arm is `raw`,
+`[B, T, H]` prefix, one device, one dtype, `g_read` absent (the ratio readout fixes
+`g_read := 1`, so a supplied column would be silently ignored),
 `g_write` and (when present) `read_mass` shaped `[B, T, H]`. A test that plants a
 specific routing pattern builds one directly and is held to exactly those invariants.
 Unit-sum-ness is deliberately not among them: it is a device reduction per level per
@@ -157,13 +158,14 @@ first, the gain's span last. One parameter, one cast of the source stream, one
 projection. `gain=False` removes the column rather than pinning it, so a disabled gain
 is a narrower parameter and not a parameter with an identically zero gradient.
 
-**The side gains are routing's, and they ride the bundle.** Two things put them there
-rather than on the layer. Their SHAPE is defined by the normalization arm — `g_read`
-exists iff `normalization == 'raw'` — so a layer-owned gain producer would have to be
-told the routing arm in order to know its own columns, which is the coupling running
-backwards. And the gain is where the per-level mass product lands: the producer folds
+**The side gain is routing's, and it rides the bundle.** Two things put it there
+rather than on the layer. Its SHAPE is defined by the normalization arm — the ratio
+readout fixes `g_read := 1`, so the write side carries the only gain column there is —
+so a layer-owned gain producer would have to be told the routing arm in order to know
+its own columns, which is the coupling running backwards. And the gain is where the
+per-level mass product lands: the producer folds
 each level's mass into it, so the gain and the routing mass are the same number by the
-time any consumer sees either. They ride the bundle rather than arriving as a third op
+time any consumer sees either. It rides the bundle rather than arriving as a third op
 argument because `RouteFactors.tensors()` is the autograd-reachability enumeration, and
 an operand outside that flat list is invisible to autograd — the exact failure the
 single autograd boundary exists to make impossible.

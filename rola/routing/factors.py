@@ -159,6 +159,5 @@ class RouteFactors:
 
     def tensors(self) -> tuple[torch.Tensor, ...]:
         """Every tensor the OPERATION consumes, for the gradient-reachability predicate."""
-        gains = (self.g_write,) if self.g_read is None else (self.g_read, self.g_write)
         mass = () if self.read_mass is None else (self.read_mass,)
-        return (*self.read, *self.write, *gains, *mass)
+        return (*self.read, *self.write, self.g_write, *mass)
