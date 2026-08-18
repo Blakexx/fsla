@@ -120,6 +120,18 @@ class RouteFactors:
     def device(self) -> torch.device:
         return self.read[0].device
 
+    def read_needs_normalization(self) -> tuple[bool, ...]:
+        """Per read level: is it still off the simplex? THE PREDICATE, stated once.
+
+        :meth:`read_simplex` divides exactly these levels and the decode fold normalizes
+        exactly these levels inside its kernel; two sites folding one question from the
+        same facts is one divergence waiting to happen.
+        """
+        if self.read_mass is None:
+            return (False,) * len(self.read)
+        return tuple(not self.topology.duty_simplex_output(index, "read")
+                     for index in range(len(self.read)))
+
     def read_simplex(self) -> tuple[torch.Tensor, ...]:
         """The read levels on the simplex -- ``read`` with :attr:`read_mass` divided out.
 
@@ -141,9 +153,9 @@ class RouteFactors:
             wide = torch.promote_types(level.dtype, torch.float32)
             return level.to(wide) / level.sum(dim=-1, keepdim=True, dtype=wide)
 
-        return tuple(
-            level if self.topology.duty_simplex_output(index, "read") else divided(level)
-            for index, level in enumerate(self.read))
+        return tuple(divided(level) if needs else level
+                     for level, needs in zip(self.read, self.read_needs_normalization(),
+                                             strict=True))
 
     def tensors(self) -> tuple[torch.Tensor, ...]:
         """Every tensor the OPERATION consumes, for the gradient-reachability predicate."""

@@ -179,7 +179,11 @@ scale common to every leaf is homogeneous of degree zero through it, and
 `RouteFactors.read` is stored with the mass still on it while `RouteFactors.read_mass`
 holds the per-token product (`None` when there is none). `RouteFactors.read_simplex()`
 divides it back out for every consumer defined on the simplex instead: the fp64 oracle
-and its input contract, the decode arm, the reference recurrence.
+and its input contract, the reference recurrence. The decode arm is defined on the
+simplex too, and divides INSIDE its operand fold off the same predicate --
+`RouteFactors.read_needs_normalization()`, which `read_simplex` reads as well -- because
+a decode step's whole budget is launches
+([`internals/decode/decode_fold.md`](internals/decode/decode_fold.md)).
 
 **The read mass reaches the readout as a scaled floor.** The one term that does not
 scale with a ratio is its floor, so it is handed over pre-scaled: the consumer computes

@@ -40,10 +40,15 @@ so on the second walk its verdict is 0 and the step it had skipped performs.
 
 `fold_operands` stands ahead of `growth_probe` because the probe reads `amp_write` — the
 step's write amplitudes are folded ONCE and the probe, the detached clock and the step
-itself all read the same tensors. `amp_clock` IS `amp_write`: the clock is a pure product
-of the stored allocations with no side gain
+itself all read the same tensors. That ordering is also why the fold is a NODE and not
+part of either kernel ([`decode/decode_fold.md`](../decode/decode_fold.md)). `amp_clock`
+IS `amp_write`: the clock is a pure product of the stored allocations with no side gain
 ([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so a second fold would
 be a second derivation of one fact.
+
+The node reads `scratch` because the fold's DESTINATIONS are the sequence's own buffers:
+one launch, no allocation, the same addresses on every replay — which is what the
+`capturable` declaration on it amounts to in practice.
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the frozen config,
 the plane's extent against the backing, the page table's against `[BH, N/16]`. They are

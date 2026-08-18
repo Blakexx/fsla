@@ -81,12 +81,19 @@ def scratch(f):
 
 
 @node(gives=("amp_read", "amp_write", "amp_clock", "dials", "g_write", "v_folded"),
-      needs=("routes", "v", "decay", "geometry"), stream="main", masks=_DECODE,
-      capturable=True)
+      needs=("routes", "v", "decay", "geometry", "scratch"), stream="main",
+      masks=_DECODE, capturable=True)
 def fold_operands(f):
+    """The step's OPERAND PASS: one launch, into the scratch the sequence already owns.
+
+    The read levels arrive RAW and the simplex normalization happens INSIDE the fold:
+    `read_simplex` is a reduction and a divide per level, and what this node exists to
+    be is one launch (docs/internals/decode/decode_fold.md).
+    """
     routes = f["routes"]
-    return bodies.fold_operands(routes.read_simplex(), routes.write, routes.g_write,
-                                f["v"], f["decay"], f["geometry"])
+    return bodies.fold_operands(routes.read, routes.write, routes.g_write, f["v"],
+                                f["decay"], f["geometry"], f["scratch"],
+                                normalize=routes.read_needs_normalization())
 
 
 @node(gives=("gate",), needs=("amp_write", "geometry", "state", "scratch"),

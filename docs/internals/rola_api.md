@@ -116,6 +116,17 @@ meaning it has no business holding ([`paging/vmm_owner.md`](paging/vmm_owner.md)
 `target_chunk_bytes` defaults to 64 MiB at this boundary; the arena overrides it with the
 device's own allocation granularity, which is the finest commitment the driver admits.
 
+## <a id="decode-fold"></a>7a. `rola_decode_fold` — the step's operand pass
+
+Bound as its own entry for the same reason the probe below is: it is a STAGE of the
+step's order, not a mode of it. The growth probe consumes the folded write side before
+either of the step's own kernels exists, and the dense backing runs no probe at all, so a
+fold living inside either kernel would leave one caller or one mask without it. Its
+destinations are the sequence's `DecodeScratch` buffers, passed IN rather than returned,
+which is what lets one launch replace the whole torch operand chain inside a CUDA-graph
+capture. Its contract, and the DECLARED summation order its normalization is held to, are
+[`decode/decode_fold.md`](decode/decode_fold.md).
+
 ## <a id="growth-probe"></a>7b. `rola_decode_growth_probe` — bound beside the step
 
 The probe is registered as its own entry rather than as an argument to
