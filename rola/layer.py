@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from rola.engine import PlanOverrides
 from rola.engine.dags.decode_dag import decode_forward
 from rola.interface import (
     BackwardNotImplemented,
@@ -127,8 +128,6 @@ class RoLA(nn.Module):
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
         if decay is not None:
             validate_decay_source(decay, routes.topology, num_heads)
-
-        from rola.expert import PlanOverrides
 
         overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
 
