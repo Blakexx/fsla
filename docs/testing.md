@@ -77,7 +77,7 @@ defect that the run MUST fail on -- a protocol that cannot fail is not a
 protocol.
 
 **THE RUN MUST PROVE IT COMPARED.** Every verdict is gated on a per-surface floor
-(`MINIMUM_COMPARISONS`: `oracle` 640, `producer` 162) and a run below it fails RED
+(`MINIMUM_COMPARISONS`: `oracle` 512, `producer` 162) and a run below it fails RED
 rather than reporting PASS over whatever survived. This is not hypothetical
 bookkeeping: the `oracle` surface was UNRUNNABLE for a window after `raw` died --
 the matrix emitted a `raw` row, `naive_rola` refused it, and the run aborted in emit
