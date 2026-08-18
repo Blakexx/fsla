@@ -228,15 +228,11 @@ class RoLA(nn.Module):
         B, L, _ = x.shape
         H = self.num_heads
 
-        #: `v` FLOWS bf16 into the op on the bf16 arm; a configured `value_conv` is the
-        #: one case where it returns to the module dtype first (docs/api.md §4.1).
-        bf16_proj = x.is_cuda
-        if bf16_proj:
-            v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
-            if self.value_conv is not None:
-                v = v.to(x.dtype)
-        else:
-            v = self.v_proj(x)
+        #: `v` FLOWS bf16 into the op; a configured `value_conv` is the one case where it
+        #: returns to the module dtype first (docs/api.md §4.1).
+        v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
+        if self.value_conv is not None:
+            v = v.to(x.dtype)
         #: The rings ARE part of the recurrence: a continuation that dropped them would
         #: restart the causal conv from zeros and compute a different function for the
         #: first `conv_size - 1` tokens of every step.
@@ -275,11 +271,8 @@ class RoLA(nn.Module):
                       if self.value_conv is not None or self.route_conv is not None
                       else None)
         out = out.reshape(B, L, H * self.head_v_dim)
-        if bf16_proj:
-            projected = nn.functional.linear(
-                out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
-        else:
-            projected = self.o_proj(out)
+        projected = nn.functional.linear(
+            out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         return projected, (state, conv_rings)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------

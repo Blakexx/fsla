@@ -352,8 +352,11 @@ is a fact about the branch rather than an inference from a timing.
 
 ### 4.1 The bf16 projection arm
 
-On CUDA, `v_proj` and `o_proj` run as bf16
-GEMMs with weights cast per call, and `v` FLOWS bf16 straight into the op. Round-tripping
+`v_proj` and `o_proj` run as bf16 GEMMs
+with weights cast per call, and `v` FLOWS bf16 straight into the op. The arm is
+UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
+non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
+value. Round-tripping
 it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
 downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
 narrows once, at the projection, rather than at the op boundary. The GEMMs use cuBLAS's
