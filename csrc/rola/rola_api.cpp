@@ -115,21 +115,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: both would be a floor claim about a kernel nobody measured.
   m.def("chunk_scan_a_census", &rola::chunk::scan_a_census,
         "chunk consumer, Scan A: the same eight columns, measured on Scan A's kernel");
-  //: THE LADDER'S RUNGS 0-1: the dense two-pass backward on PER-SLOT coefficients,
-  //: carrying the mass column.  It is not the production path and says so in its
-  //: name -- no routing, no write gain, contiguous chunks
+  //: THE LADDER'S RUNGS 0-3: the two-pass backward on ROUTED coefficients, carrying
+  //: the mass column.  It is not the production path and says so in its name -- no
+  //: write gain, no compaction, contiguous chunks
   //: (docs/internals/chunk/ladder_r0.md).
   m.def("chunk_rung0_pass1", &rola::chunk::rung0_pass1,
-        "backward ladder rung 1, pass 1: the ascending rebuild's per-slot dR", py::arg("w"),
-        py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("chunk"), py::arg("bc"));
+        "backward ladder rung 3, pass 1: the ascending rebuild's per-level d pr", py::arg("pr"),
+        py::arg("pw"), py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("chunk"),
+        py::arg("bc"), py::arg("depth"), py::arg("width"));
   m.def("chunk_rung0_pass2", &rola::chunk::rung0_pass2,
-        "backward ladder rung 1, pass 2: the descending adjoint's dv and per-slot dW", py::arg("r"),
-        py::arg("w"), py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("chunk"),
-        py::arg("bc"));
+        "backward ladder rung 3, pass 2: the descending adjoint's dv and per-level d pw",
+        py::arg("pr"), py::arg("pw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
+        py::arg("chunk"), py::arg("bc"), py::arg("depth"), py::arg("width"));
   m.def("chunk_rung0_census", &rola::chunk::rung0_census,
-        "backward ladder rung 0: per (arm, pass) registers, spill bytes, shared "
-        "bytes, staging depth, CTA target, the declared register floor, the budget "
-        "that target admits, and the ring slot's bytes");
+        "backward ladder rung 3: per (arm, pass) -- the arm being (C, BC, D, B) now that "
+        "the topology is a compiled axis -- registers, spill bytes, shared bytes, staging "
+        "depth, CTA target, the declared register floor, the budget that target admits, "
+        "the ring slot's bytes and the thread count");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,

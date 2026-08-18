@@ -18,35 +18,39 @@ namespace rola::chunk {
 
 void check_arch_table();
 
-template <int C, int BC>
+template <int C, int BC, int D, int Bw>
 static cudaError_t launch_rung0_pass1(const Rung0Params& p, cudaStream_t stream) {
   constexpr size_t sm = GeomR0<C, BC, false>::bytes;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e = cudaFuncSetAttribute(
-        rung0_pass1_kernel<C, BC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
+        rung0_pass1_kernel<C, BC, D, Bw>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  const dim3 grid((unsigned)(p.N / BC), (unsigned)p.BH);
-  rung0_pass1_kernel<C, BC><<<grid, r0_threads_for(BC), sm, stream>>>(
-      p.w, p.v, p.dnum, p.dden, p.dr, p.L, p.N, p.v_row_bytes);
+  //: THE LATTICE IS COMPILED at rung b3: `N = Bw^D` is the arm's own geometry and
+  //: not a plane width the caller hands in.
+  const dim3 grid((unsigned)(DigitR0<D, Bw, BC, GeomR0<C, BC, false>::BCg>::slots / BC),
+                  (unsigned)p.BH);
+  rung0_pass1_kernel<C, BC, D, Bw><<<grid, r0_threads_for(BC), sm, stream>>>(
+      p.pr, p.pw, p.v, p.dnum, p.dden, p.dpr, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
-template <int C, int BC>
+template <int C, int BC, int D, int Bw>
 static cudaError_t launch_rung0_pass2(const Rung0Params& p, cudaStream_t stream) {
   constexpr size_t sm = GeomR0<C, BC, true>::bytes;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e = cudaFuncSetAttribute(
-        rung0_pass2_kernel<C, BC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
+        rung0_pass2_kernel<C, BC, D, Bw>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  const dim3 grid((unsigned)(p.N / BC), (unsigned)p.BH);
-  rung0_pass2_kernel<C, BC><<<grid, r0_threads_for(BC), sm, stream>>>(
-      p.r, p.w, p.v, p.dnum, p.dden, p.dv, p.dw, p.L, p.N, p.v_row_bytes);
+  const dim3 grid((unsigned)(DigitR0<D, Bw, BC, GeomR0<C, BC, true>::BCg>::slots / BC),
+                  (unsigned)p.BH);
+  rung0_pass2_kernel<C, BC, D, Bw><<<grid, r0_threads_for(BC), sm, stream>>>(
+      p.pr, p.pw, p.v, p.dnum, p.dden, p.dv, p.dpw, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -62,7 +66,7 @@ static std::array<int64_t, 9> rung0_census_arm(K kernel) {
           (int64_t)denseref::arch::reg_budget(denseref::arch::kCaps, r0_threads_for(BC),
                                               kR0CtaTarget<C, BC, PASS2>),
           (int64_t)GeomR0<C, BC, PASS2>::slot,
-          //: THE TWELFTH COLUMN.  The CTA target alone stopped being the residency
+          //: THE THREAD COUNT.  The CTA target alone stopped being the residency
           //: statement when the block gained groups: what the carve holds constant is
           //: WARPS PER SM, and at `BC = 128` that is one CTA of eight where `BC = 64`
           //: runs two of four -- docs/internals/chunk/ladder_r0.md#the-group-threshold
@@ -71,12 +75,13 @@ static std::array<int64_t, 9> rung0_census_arm(K kernel) {
 
 static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
                            const torch::Tensor& dnum, const torch::Tensor& dden, int64_t chunk,
-                           int64_t bc) {
+                           int64_t depth, int64_t width) {
   TORCH_CHECK(w.is_cuda() && w.is_contiguous() && w.scalar_type() == torch::kBFloat16
-                  && w.dim() == 3 && w.size(2) % bc == 0 && w.size(2) >= bc,
-              "the ladder's coefficients are a contiguous bf16 [BH, L, N] plane whose "
-              "slot space is a whole number of blocks: at this rung the slot panel is "
-              "the identity and there are no digits");
+                  && w.dim() == 3 && w.size(2) == depth * width,
+              "the ladder's coefficients are PER LEVEL at rung b3: a contiguous bf16 "
+              "[BH, L, D*B] amplitude plane, one packed block of B columns per level. "
+              "Got a last dimension of ",
+              w.size(2), " where D*B = ", depth * width);
   TORCH_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == torch::kBFloat16
                   && v.dim() == 4 && v.size(3) == kD,
               "V must be a contiguous bf16 [B, L, H, 64] tensor");
@@ -97,94 +102,106 @@ static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
   TORCH_CHECK(w.size(1) % chunk == 0,
               "the ladder's chunks are contiguous and whole: L must be a multiple of C "
               "(the ragged tail is rung b6)");
-  //: THE GATHER BOUND, and it is the SLOT plane's now rather than the value plane's:
-  //: every coefficient and per-slot-gradient address is a 32-bit displacement from a
-  //: block's own base, and the widest row is the fp32 gradient's `N * 4` bytes.
+  //: THE GATHER BOUND, on the AMPLITUDE plane now: every amplitude and digit-gradient
+  //: address is a 32-bit displacement from a batch-head's own base, and the widest row
+  //: is the fp32 digit gradient's `D * B * 4` bytes. The per-slot planes it used to be
+  //: taken against are gone, which is why this bound got `N / (D*B)` times looser.
   TORCH_CHECK(w.size(1) * w.size(2) * (int64_t)sizeof(float) < (int64_t)1 << 32,
-              "L * N overruns the 32-bit gather displacement the addressing law is "
+              "L * D * B overruns the 32-bit gather displacement the addressing law is "
               "written on: L=",
-              w.size(1), " N=", w.size(2));
+              w.size(1), " D*B=", w.size(2));
 }
 
-std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::Tensor dnum,
-                                       torch::Tensor dden, int64_t chunk, int64_t bc) {
+std::vector<torch::Tensor> rung0_pass1(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
+                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
+                                       int64_t bc, int64_t depth, int64_t width) {
   check_arch_table();
-  check_operands(w, v, dnum, dden, chunk, bc);
-  const int BH = (int)w.size(0), L = (int)w.size(1), N = (int)w.size(2);
-  //: `dR` is SLOT-DISJOINT over the block lattice -- a block owns its own columns and
-  //: writes every one of them exactly once -- so it is allocated, never filled.
-  auto dr = torch::empty({(long)BH, (long)L, (long)N}, w.options().dtype(torch::kFloat32));
-#define R0_PASS1_X(C_, BC_)                                                                    \
-  if (chunk == C_ && bc == BC_) {                                                              \
-    Rung0Params p{nullptr,                                                                     \
-                  reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()),                        \
+  check_operands(pw, v, dnum, dden, chunk, depth, width);
+  TORCH_CHECK(
+      pr.sizes() == pw.sizes() && pr.is_contiguous() && pr.scalar_type() == torch::kBFloat16,
+      "the read amplitudes share the write side's plane shape");
+  const int BH = (int)pw.size(0), L = (int)pw.size(1), P = (int)pw.size(2);
+  //: THE READ SIDE'S DIGIT GRADIENT IS A FAN-IN NOW, and that is rung b3's own
+  //: change: a DIGIT is shared across the block lattice where a SLOT was not, so
+  //: pass 1 acquires its first `RED` and its arena needs the identity before the
+  //: first contribution -- one allocation-wide fill, never one per contributing
+  //: block -- docs/internals/chunk/ladder_r0.md#fan-in
+  auto dpr = torch::zeros({(long)BH, (long)L, (long)P}, pw.options().dtype(torch::kFloat32));
+#define R0_PASS1_X(C_, BC_, D_, B_)                                                            \
+  if (chunk == C_ && bc == BC_ && depth == D_ && width == B_) {                                \
+    Rung0Params p{reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),                       \
+                  reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
                   reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
-                  dr.data_ptr<float>(),                                                        \
+                  dpr.data_ptr<float>(),                                                       \
                   nullptr,                                                                     \
                   nullptr,                                                                     \
                   BH,                                                                          \
                   L,                                                                           \
-                  N,                                                                           \
                   (int)(v.size(2) * kD * (long)sizeof(__nv_bfloat16))};                        \
-    C10_CUDA_CHECK((launch_rung0_pass1<C_, BC_>(p, at::cuda::getCurrentCUDAStream())));         \
-    return {dr};                                                                                \
+    C10_CUDA_CHECK((launch_rung0_pass1<C_, BC_, D_, B_>(p, at::cuda::getCurrentCUDAStream()))); \
+    return {dpr};                                                                              \
   }
   LADDER_R0_ARMS_X(R0_PASS1_X)
 #undef R0_PASS1_X
-  TORCH_CHECK(false, "the backward ladder is not built for chunk=", chunk, " BC=", bc);
+  TORCH_CHECK(false, "the backward ladder is not built for chunk=", chunk, " BC=", bc, " D=", depth,
+              " B=", width);
 }
 
-std::vector<torch::Tensor> rung0_pass2(torch::Tensor r, torch::Tensor w, torch::Tensor v,
+std::vector<torch::Tensor> rung0_pass2(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
                                        torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
-                                       int64_t bc) {
+                                       int64_t bc, int64_t depth, int64_t width) {
   check_arch_table();
-  check_operands(w, v, dnum, dden, chunk, bc);
-  TORCH_CHECK(r.sizes() == w.sizes() && r.is_contiguous() && r.scalar_type() == torch::kBFloat16,
-              "the read coefficients share the write side's plane shape");
-  const int BH = (int)w.size(0), L = (int)w.size(1), N = (int)w.size(2);
-  auto opts = w.options().dtype(torch::kFloat32);
-  //: THE ONE FAN-IN TARGET, and the ONE fill.  `dv` contracts over the whole slot
-  //: space, so every block holds a partial and the arena carries the identity BEFORE
-  //: the first contribution -- one allocation-wide fill, never one per output.
+  check_operands(pw, v, dnum, dden, chunk, depth, width);
+  TORCH_CHECK(
+      pr.sizes() == pw.sizes() && pr.is_contiguous() && pr.scalar_type() == torch::kBFloat16,
+      "the read amplitudes share the write side's plane shape");
+  const int BH = (int)pw.size(0), L = (int)pw.size(1), P = (int)pw.size(2);
+  auto opts = pw.options().dtype(torch::kFloat32);
+  //: BOTH of pass 2's outputs fan in.  `dv` contracts over the whole slot space and
+  //: `d pw` over the digits a block's slots share with every other block's, so each
+  //: carries the identity BEFORE the first contribution.
   auto dv = torch::zeros({(long)BH, (long)L, (long)kD}, opts);
-  auto dwo = torch::empty({(long)BH, (long)L, (long)N}, opts);
-#define R0_PASS2_X(C_, BC_)                                                                    \
-  if (chunk == C_ && bc == BC_) {                                                              \
-    Rung0Params p{reinterpret_cast<const __nv_bfloat16*>(r.data_ptr()),                        \
-                  reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()),                        \
+  auto dpw = torch::zeros({(long)BH, (long)L, (long)P}, opts);
+#define R0_PASS2_X(C_, BC_, D_, B_)                                                            \
+  if (chunk == C_ && bc == BC_ && depth == D_ && width == B_) {                                \
+    Rung0Params p{reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),                       \
+                  reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
                   reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
                   nullptr,                                                                     \
                   dv.data_ptr<float>(),                                                        \
-                  dwo.data_ptr<float>(),                                                       \
+                  dpw.data_ptr<float>(),                                                       \
                   BH,                                                                          \
                   L,                                                                           \
-                  N,                                                                           \
                   (int)(v.size(2) * kD * (long)sizeof(__nv_bfloat16))};                        \
-    C10_CUDA_CHECK((launch_rung0_pass2<C_, BC_>(p, at::cuda::getCurrentCUDAStream())));         \
-    return {dv, dwo};                                                                           \
+    C10_CUDA_CHECK((launch_rung0_pass2<C_, BC_, D_, B_>(p, at::cuda::getCurrentCUDAStream()))); \
+    return {dv, dpw};                                                                          \
   }
   LADDER_R0_ARMS_X(R0_PASS2_X)
 #undef R0_PASS2_X
-  TORCH_CHECK(false, "the backward ladder is not built for chunk=", chunk, " BC=", bc);
+  TORCH_CHECK(false, "the backward ladder is not built for chunk=", chunk, " BC=", bc, " D=", depth,
+              " B=", width);
 }
 
 std::vector<std::vector<int64_t>> rung0_census() {
   check_arch_table();
   std::vector<std::vector<int64_t>> out;
-#define R0_CENSUS_X(C_, BC_)                                                              \
-  {                                                                                       \
-    std::vector<int64_t> p1{C_, BC_, 1};                                                  \
-    for (auto x : rung0_census_arm<C_, BC_, false>(rung0_pass1_kernel<C_, BC_>))           \
-      p1.push_back(x);                                                                    \
-    out.push_back(p1);                                                                    \
-    std::vector<int64_t> p2{C_, BC_, 2};                                                  \
-    for (auto x : rung0_census_arm<C_, BC_, true>(rung0_pass2_kernel<C_, BC_>))            \
-      p2.push_back(x);                                                                    \
-    out.push_back(p2);                                                                    \
+  //: THE ROW NAMES THE WHOLE ARM, `(C, BC, D, B, pass)`: rung b3 made the topology a
+  //: compiled axis, so two rows that agree on `(C, BC)` and differ on `(D, B)` are
+  //: different kernels and a census keyed on the block width alone would collapse them.
+#define R0_CENSUS_X(C_, BC_, D_, B_)                                                            \
+  {                                                                                             \
+    std::vector<int64_t> p1{C_, BC_, D_, B_, 1};                                                \
+    for (auto x : rung0_census_arm<C_, BC_, false>(rung0_pass1_kernel<C_, BC_, D_, B_>))        \
+      p1.push_back(x);                                                                          \
+    out.push_back(p1);                                                                          \
+    std::vector<int64_t> p2{C_, BC_, D_, B_, 2};                                                \
+    for (auto x : rung0_census_arm<C_, BC_, true>(rung0_pass2_kernel<C_, BC_, D_, B_>))         \
+      p2.push_back(x);                                                                          \
+    out.push_back(p2);                                                                          \
   }
   LADDER_R0_ARMS_X(R0_CENSUS_X)
 #undef R0_CENSUS_X

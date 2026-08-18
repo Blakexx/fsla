@@ -1,25 +1,27 @@
-// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNGS 0-2: the dense
-// chunked linear-attention backward, written in RoLA's own quantities as a
-// two-pass pair.  Pass 1 ascends, rebuilding the state and its mass column from
-// zero and emitting the read side's per-slot cotangent; pass 2 descends, carrying
-// both adjoints and emitting the value cotangent and the write side's per-slot
-// one.  The slot space is carved into blocks and `dv`'s partials fan in across
-// them.  Dense routing, contiguous chunks, no write gain, no digits -- those are
-// later rungs.  docs/internals/chunk/ladder_r0.md
+// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNGS 0-3: the chunked
+// linear-attention backward on ROUTED coefficients, written in RoLA's own
+// quantities as a two-pass pair.  Pass 1 ascends, rebuilding the state and its mass
+// column from zero and emitting the READ side's per-level digit gradient; pass 2
+// descends, carrying both adjoints and emitting the value cotangent and the WRITE
+// side's.  The slot space is carved into blocks; `dv` and both digit gradients fan
+// in across them.  The operands are PER LEVEL and the Kronecker product is formed
+// in kernel.  Contiguous chunks, no write gain, no compaction -- those are later
+// rungs.  docs/internals/chunk/ladder_r0.md
 #pragma once
 
 #include "chunk_kernel.cuh"
 
 namespace rola::chunk {
 
-//: The ladder's launch arguments.  The coefficients are PER SLOT: at this rung the
-//: slot panel is the identity, so there is no digit arithmetic and no producer.
-//: `N` is the SLOT SPACE and it is a runtime width, not a compiled axis -- the
-//: block lattice `N / BC` is the grid's own x extent.
+//: The ladder's launch arguments.  The coefficients are PER LEVEL -- `[BH, L, D*Bw]`
+//: amplitude rows, one packed block of `Bw` columns per level -- and so are the two
+//: gradients they carry.  The slot space `N = Bw^D` is a COMPILED quantity now, not a
+//: runtime width: the block lattice `N / BC` is the grid's x extent and the digit
+//: structure a block sees is the geometry it is instantiated at.
 struct Rung0Params {
-  const __nv_bfloat16 *r, *w, *v, *dnum, *dden;
-  float *dr, *dv, *dw;
-  int BH, L, N, v_row_bytes;
+  const __nv_bfloat16 *pr, *pw, *v, *dnum, *dden;
+  float *dpr, *dv, *dpw;
+  int BH, L, v_row_bytes;
 };
 
 //: THE RUNG'S LIVE REGISTER SET, one measured DECLARATION for both passes and
@@ -81,6 +83,89 @@ template <int C, int BC, bool PASS2>
 constexpr int kR0CtaTarget =
     design::cta_target((int)GeomR0<C, BC, PASS2>::bytes, r0_threads_for(BC), reg_floor_r0());
 
+//: THE DIGIT STRUCTURE A UNIT SEES, and it is the whole of rung b3's geometry.
+//: Slots are canonical-leaf-ordered, `s = od * Bw^(D-1) + ...`, so at depth two
+//: `od = s / Bw` and `i1 = s % Bw`.  A block's slots are a contiguous `BC`-aligned
+//: run, a group's a contiguous `BCg`-aligned one, and a UNIT's a contiguous run of
+//: `BCg / kUnits` -- so each of those is a rectangle in digit space and the level a
+//: digit belongs to is a compile-time property of the offset, never a division.
+//:
+//: `spo` is how many of a unit's slots share one outer digit and `opu` how many
+//: outer digits its run covers; exactly one of the two is 1 at every legal arm,
+//: because `Bw >= 8` and a unit's run is a power of two.  `npo` converts that into
+//: the accumulator's own axis: `n` counts eight-slot mma tiles, and `npo` of them
+//: sit under one outer digit -- docs/internals/chunk/ladder_r0.md#the-digit-geometry
+template <int D, int Bw, int BC, int BCg>
+struct DigitR0 {
+  static_assert(D >= 1 && D <= 2, "the ladder's digit gradients are built to depth two");
+  static_assert((Bw & (Bw - 1)) == 0 && Bw >= 8, "one uniform power-of-two width, at least eight");
+  static constexpr long slots = ipowl(Bw, D);
+  static_assert(slots >= BC && slots % BC == 0, "the slot space must be a whole number of blocks");
+  //: the packed amplitude row: level `l` owns columns `[l*Bw, (l+1)*Bw)`.
+  static constexpr int cols = D * Bw;
+  static constexpr int inner_base = (D - 1) * Bw;
+  static constexpr int unit_run = BCg / kUnits;
+  static constexpr int spo = unit_run < Bw ? unit_run : Bw;
+  static constexpr int opu = unit_run / spo;
+  static constexpr int npo = spo / kMmaN;
+  static_assert(opu * spo == unit_run && npo * kMmaN == spo,
+                "a unit's slot run must be a whole number of outer digits, each a whole "
+                "number of mma tiles");
+  //: THE OUTER ACCUMULATOR'S DEPTH.  It exists only at depth two: at depth one there
+  //: is no other level to leave out, so the outer level is DELETED rather than
+  //: weighted by one -- docs/internals/chunk/backward.md#digit-reduction
+  static constexpr int u0_slots = D >= 2 ? opu : 1;
+  static constexpr uint32_t row_bytes_p = (uint32_t)(cols * (int)sizeof(__nv_bfloat16));
+  static constexpr uint32_t row_bytes_d = (uint32_t)(cols * (int)sizeof(float));
+};
+
+//: THE KRONECKER EXPANSION, IN KERNEL.  A thread owns one token row and an
+//: EIGHT-SLOT run of its group's panel.  The run is eight-aligned and `Bw >= 8`, so
+//: it lies inside ONE outer digit and covers eight CONSECUTIVE inner ones -- which is
+//: why the product is one splat times one vec8 and never a per-slot gather, and why
+//: the expansion costs one `mul_bf16x2` per two slots.  The panel it fills is
+//: byte-for-byte the panel rung b2 staged, so nothing downstream of it moved.
+template <int C, int BCg, int LdS, int D, int Bw>
+struct ExpandR0 {
+  static constexpr int gran = BCg / 8;
+  static constexpr int rows = kGroupThreads / gran;
+  static constexpr int passes = C / rows;
+  static_assert(BCg % 8 == 0 && kGroupThreads % gran == 0 && C % rows == 0,
+                "an expansion pass must cover the panel's rows exactly");
+  static_assert((LdS * (int)sizeof(__nv_bfloat16)) % 16 == 0,
+                "the panel's row pitch must keep an eight-slot run sixteen-byte aligned");
+  int row;
+  uint32_t dstOff;
+  uint32_t colInnerB, colOuterB;
+
+  __device__ __forceinline__ void init(int gtid, int sbase) {
+    row = gtid / gran;
+    const int g0 = (gtid % gran) * 8;
+    dstOff = (uint32_t)((row * LdS + g0) * (int)sizeof(__nv_bfloat16));
+    const int s = sbase + g0;
+    colInnerB = (uint32_t)(((D - 1) * Bw + (s % Bw)) * (int)sizeof(__nv_bfloat16));
+    colOuterB = (uint32_t)((s / Bw) * (int)sizeof(__nv_bfloat16));
+  }
+
+  __device__ __forceinline__ void emit(char* panel, const void* plane, uint32_t tok0) const {
+    constexpr uint32_t kRowB = (uint32_t)(D * Bw * (int)sizeof(__nv_bfloat16));
+    constexpr int kPassB = rows * LdS * (int)sizeof(__nv_bfloat16);
+#pragma unroll
+    for (int p = 0; p < passes; ++p) {
+      const uint32_t rowB = (tok0 + (uint32_t)(row + p * rows)) * kRowB;
+      __align__(16) uint32_t a[4];
+      *reinterpret_cast<uint4*>(a) = load_vec16(gather_ptr(plane, rowB + colInnerB));
+      if constexpr (D >= 2) {
+        const uint32_t up = splat_bf16x2(
+            *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(plane, rowB + colOuterB)));
+#pragma unroll
+        for (int e = 0; e < 4; ++e) a[e] = mul_bf16x2(up, a[e]);
+      }
+      store_vec16(panel + dstOff + p * kPassB, *reinterpret_cast<const uint4*>(a));
+    }
+  }
+};
+
 //: A [C, COLS] tile of a contiguous plane, staged asynchronously.  The ladder's chunks
 //: are contiguous token runs, so a tile's rows are the plane's own and the schedule
 //: contributes no gather.
@@ -113,6 +198,107 @@ struct TileStage {
   }
 };
 
+//: THE DIGIT REDUCTION, IN LANE -- ONE component, driven by both passes, because
+//: (A.9) and (A.10) differ only in which side's amplitudes they leave out:
+//:
+//:   d_p_{D-1}[t, i1] = sum_{s : i1(s) = i1} dX[t,s] * p_0[t, od(s)]      (INNER)
+//:   d_p_0[t, od]     = sum_{s : od(s) = od} dX[t,s] * p_{D-1}[t, i1(s)]  (OUTER)
+//:
+//: THE PER-SLOT GRADIENT NEVER LEAVES A REGISTER, which is the whole of rung b3 on
+//: the output side.  The leave-one-out factor is the OTHER level's amplitude and
+//: never `X / p_l` -- under exact entmax both are zero off the support and the
+//: division is `0/0` with no epsilon that does not invent a gradient
+//: (docs/internals/chunk/backward.md#digit-reduction).
+//:
+//: The INNER digit is the lane's own slot pair, so its gradient needs NO reduction
+//: at all: one fan-in per slot, the minimum the destination admits.  The OUTER one
+//: sums over the slots of the unit's run that share its digit -- the lane's two,
+//: then two shuffles over `lane & 3`, then the `npo` mma tiles the unroll already
+//: visits -- and what remains, across units, groups and blocks, is the fan-in's,
+//: exactly as `dv`'s was at rung b2.
+//:
+//: AT DEPTH ONE THE OUTER LEVEL IS DELETED, not weighted by one: level zero IS the
+//: innermost, its leave-one-out product is empty, and `u0` does not exist.
+template <int BC, int BCg, int D, int Bw, int MTOK, int NSLOT>
+__device__ __forceinline__ void r0_emit_digits(const float (&acc)[MTOK][NSLOT][4],
+                                               const void* pPlane, void* dPlane, uint32_t tokBase,
+                                               int sbase, int lane) {
+  using DG = DigitR0<D, Bw, BC, BCg>;
+  //: THE SLOT TILE IS THE OUTER LOOP AND THE TOKEN THE INNER ONE, and the order was
+  //: MEASURED rather than reasoned: the token-outer form shares one destination row
+  //: base across every access a (token, half) makes and looks strictly cheaper in
+  //: address arithmetic, but it holds the whole `acc` column live across the emit and
+  //: cost 19 registers and 22 % of pass 1's wall at the pinned arm (162 regs / 2.548 ms
+  //: against 143 / 2.087). The slot-outer form retires `acc[.][n]` a tile at a time.
+  //: -- docs/internals/chunk/ladder_r0.md#the-emit-order
+  //: THE LEAVE-ONE-OUT FACTORS ARE READ WHERE THEY ARE USED, and hoisting them to the
+  //: top of the visit was BUILT AND REFUTED: it costs 38 registers and moves the wall
+  //: by +1.2 % on pass 1 and -4.4 % on pass 2 at the pinned arm. The emit is not
+  //: latency-bound -- docs/internals/chunk/ladder_r0.md#the-hoisted-leave-one-out
+  [[maybe_unused]] float fo[DG::u0_slots][MTOK][2];
+  [[maybe_unused]] float u0[DG::u0_slots][MTOK][2];
+  //: the OUTER amplitude is constant over a unit's `spo` slots, so it is read once per
+  //: (outer digit, token) rather than once per slot tile.
+  if constexpr (D >= 2) {
+#pragma unroll
+    for (int o = 0; o < DG::u0_slots; ++o) {
+      const uint32_t cOut = (uint32_t)(((sbase + o * DG::spo) / Bw) * (int)sizeof(__nv_bfloat16));
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+          const uint32_t tk = tokBase + (uint32_t)(m * kMmaM + (lane >> 2) + h * 8);
+          fo[o][m][h] = __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
+              gather_ptr(pPlane, tk * DG::row_bytes_p + cOut)));
+          u0[o][m][h] = 0.f;
+        }
+    }
+  }
+#pragma unroll
+  for (int n = 0; n < NSLOT; ++n) {
+    const int o = n / DG::npo;
+    const int i1 = DG::inner_base + ((sbase + n * kMmaN) % Bw) + (lane & 3) * 2;
+    const uint32_t cInD = (uint32_t)(i1 * (int)sizeof(float));
+#pragma unroll
+    for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        const uint32_t tk = tokBase + (uint32_t)(m * kMmaM + (lane >> 2) + h * 8);
+        const float a0 = acc[m][n][2 * h], a1 = acc[m][n][2 * h + 1];
+        float f = 1.f;
+        if constexpr (D >= 2) f = fo[o][m][h];
+        float* p = reinterpret_cast<float*>(gather_ptr(dPlane, tk * DG::row_bytes_d + cInD));
+        fan_in_add(p, a0 * f);
+        fan_in_add(p + 1, a1 * f);
+        if constexpr (D >= 2) {
+          const uint32_t q = *reinterpret_cast<const uint32_t*>(gather_ptr(
+              pPlane, tk * DG::row_bytes_p + (uint32_t)(i1 * (int)sizeof(__nv_bfloat16))));
+          u0[o][m][h] += a0 * __bfloat162float(__ushort_as_bfloat16((unsigned short)q))
+                         + a1 * __bfloat162float(__ushort_as_bfloat16((unsigned short)(q >> 16)));
+        }
+      }
+  }
+  if constexpr (D >= 2) {
+#pragma unroll
+    for (int o = 0; o < DG::u0_slots; ++o) {
+      const uint32_t cOut = (uint32_t)(((sbase + o * DG::spo) / Bw) * (int)sizeof(float));
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+          float x = u0[o][m][h];
+#pragma unroll
+          for (int b2 = 1; b2 < 4; b2 <<= 1) x += __shfl_xor_sync(0xFFFFFFFFu, x, b2);
+          if ((lane & 3) == 0) {
+            const uint32_t tk = tokBase + (uint32_t)(m * kMmaM + (lane >> 2) + h * 8);
+            fan_in_add(reinterpret_cast<float*>(gather_ptr(dPlane, tk * DG::row_bytes_d + cOut)),
+                       x);
+          }
+        }
+    }
+  }
+}
+
 #define R0_ADDR(b_, ld_, R_, g_) ((b_) + (uint32_t)(((R_) * (ld_) + (g_) * 8) * 2))
 
 //: THE MASS SEED'S SEAT, in the `dnum` panel's row pad: entry `i` at row `i / 8`,
@@ -144,15 +330,19 @@ static constexpr uint32_t kOnesFrag = 0x3F803F80u;
 //: its token is at or before the read entry's.
 #define R0_STAIR(v_, tc_, tr_) ((tc_) <= (tr_) ? (v_) : 0.f)
 
-//: PASS 1 -- the ascending rebuild.  It carries `S` and its mass column `z`, and
-//: emits `dR[i,s] = <dnum_i, S_a[s,:]> + dden_i z_a[s] + sum_{j<=i} W[j,s] Gd'[i,j]`
-//: with `Gd'[i,j] = <dnum_i, v_j> + dden_i`.
-template <int C, int BC>
+//: PASS 1 -- the ascending rebuild.  It carries `S` and its mass column `z`, forms
+//: `dR[i,s] = <dnum_i, S_a[s,:]> + dden_i z_a[s] + sum_{j<=i} W[j,s] Gd'[i,j]` with
+//: `Gd'[i,j] = <dnum_i, v_j> + dden_i`, and emits its DIGIT REDUCTION (A.9).  The
+//: write panel is the Kronecker product of `pw`'s levels, expanded in kernel; `pr`
+//: is read only at the emit, where it supplies the leave-one-out factor.
+template <int C, int BC, int D, int Bw>
 __global__ __launch_bounds__(r0_threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
-rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16* __restrict__ v,
+rung0_pass1_kernel(const __nv_bfloat16* __restrict__ pread,
+                   const __nv_bfloat16* __restrict__ pwrite, const __nv_bfloat16* __restrict__ v,
                    const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
-                   float* __restrict__ dr, int L, int N, int v_row_bytes) {
+                   float* __restrict__ dpr, int L, int v_row_bytes) {
   using G = GeomR0<C, BC, false>;
+  using DG = DigitR0<D, Bw, BC, G::BCg>;
   constexpr int kThreads = r0_threads_for(BC);
   constexpr int kWarps = kThreads / 32;
   constexpr int GRP = G::GRP, BCg = G::BCg;
@@ -206,8 +396,13 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
       pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kD);
   const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)bh * L * kD);
   const __nv_bfloat16* const ddPlane = pin_address(dden + (long)bh * L);
-  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)bh * L * N + slot0);
-  float* const drPlane = pin_address(dr + (long)bh * L * N + slot0);
+  //: THE AMPLITUDE PLANES ARE NOT SLICED BY THE BLOCK.  A block's slots are a
+  //: rectangle in digit space, so what it needs is a COLUMN RANGE per level, and the
+  //: range is a compile-time function of the slot base -- carried in the expansion's
+  //: and the emit's own offsets rather than folded into the base.
+  const __nv_bfloat16* const pwPlane = pin_address(pwrite + (long)bh * L * DG::cols);
+  const __nv_bfloat16* const prPlane = pin_address(pread + (long)bh * L * DG::cols);
+  float* const dprPlane = pin_address(dpr + (long)bh * L * DG::cols);
 
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
@@ -223,6 +418,9 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
   r0_dden_seats<LdV, MTOK>(ddM, lane >> 2, 16);
 
   constexpr uint32_t kGrpS = (uint32_t)(C * LdS * (int)sizeof(__nv_bfloat16));
+  //: THE UNIT'S FIRST SLOT, hoisted: it is the digit geometry's own base and does not
+  //: move with the chunk.
+  const int sbaseU = (int)slot0 + warp * (BCg / kUnits);
   const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn);
   const uint32_t swB = smem_addr(sw) + (uint32_t)grp * kGrpS;
   const uint32_t sgF = smem_addr(sg) + offFg;
@@ -249,18 +447,21 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
   //: group over its own slot slice, which is why the two carry different thread
   //: counts and the coefficient one is indexed by the in-group thread.
   TileStage<C, kD, LdV, kThreads> stV;
-  TileStage<C, BCg, LdS, kGroupThreads> stS;
+  //: THE COEFFICIENT PANEL IS PRODUCED, NOT STAGED.  Its bytes, its pitch and its
+  //: place in the ring are byte-for-byte rung b2's; what changed is that the ring
+  //: slot is filled by the expansion out of `D` amplitude columns instead of by
+  //: `cp.async` out of `BCg` per-slot ones.
+  ExpandR0<C, BCg, LdS, D, Bw> exW;
   stV.init(tid);
-  stS.init(gtid);
+  exW.init(gtid, (int)slot0);
   constexpr uint32_t kVSlotB = (uint32_t)(C * LdV * 2);
   constexpr uint32_t kSSlotB = (uint32_t)(GRP * C * LdS * 2);
   constexpr uint32_t kVRingB = (uint32_t)STAGES * kVSlotB;
   constexpr uint32_t kSRingB = (uint32_t)STAGES * kSSlotB;
   const uint32_t vRowB = (uint32_t)v_row_bytes;
   constexpr uint32_t kDnRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
-  const uint32_t kSRowB = (uint32_t)(N * (int)sizeof(__nv_bfloat16));
-  const uint32_t kDrRowB = (uint32_t)(N * (int)sizeof(float));
   uint32_t stgV = 0, cmpV = 0, stgS = 0, cmpS = 0;
+  char* const swThis = reinterpret_cast<char*>(sw) + (size_t)grp * kGrpS;
 
   const int NC = L / C;
   auto stage_chunk = [&](int c) {
@@ -268,7 +469,7 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
       const uint32_t tok0 = (uint32_t)(c * C);
       stV.issue(svB + stgV, vPlane, tok0, vRowB);
       stV.issue(sdnB + stgV, dnPlane, tok0, kDnRowB);
-      stS.issue(swB + stgS, wPlane, tok0, kSRowB);
+      exW.emit(swThis + stgS, pwPlane, tok0);
       if (tid < C) sdn[(stgV >> 1) + R0_DDEN(LdV, tid)] = ddPlane[(int)tok0 + tid];
     }
     stgV += kVSlotB;
@@ -410,22 +611,9 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
           acc[m][n][3] += d1 * zac[n][1];
         }
       }
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int n = 0; n < NSLOT; ++n) {
-          const uint32_t colB =
-              (uint32_t)(((n0 + n) * kMmaN + (lane & 3) * 2) * (int)sizeof(float));
-          const int t0 = m * 16 + (lane >> 2);
-          float* p0 = reinterpret_cast<float*>(
-              gather_ptr(drPlane, (tokBase + (uint32_t)t0) * kDrRowB + colB));
-          float* p1 = reinterpret_cast<float*>(
-              gather_ptr(drPlane, (tokBase + (uint32_t)(t0 + 8)) * kDrRowB + colB));
-          store_f32(p0 + 0, acc[m][n][0]);
-          store_f32(p0 + 1, acc[m][n][1]);
-          store_f32(p1 + 0, acc[m][n][2]);
-          store_f32(p1 + 1, acc[m][n][3]);
-        }
+      //: (A.9), THE READ SIDE'S DIGIT REDUCTION.  `dR` is consumed here and never
+      //: stored: what leaves the kernel is `D` columns per token, not `BCg`.
+      r0_emit_digits<BC, BCg, D, Bw, MTOK, NSLOT>(acc, prPlane, dprPlane, tokBase, sbaseU, lane);
     }
 
     // ---- the fold: S^T += V^T . W, and z += 1^T . W --------------------------
@@ -459,16 +647,19 @@ rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16*
 }
 
 //: PASS 2 -- the descending adjoint.  It carries `dS` and its mass column `dz`, and
-//: emits `dv[j,:] = sum_s W[j,s] dS_after[j,s,:]` and
+//: emits `dv[j,:] = sum_s W[j,s] dS_after[j,s,:]` and the DIGIT REDUCTION (A.10) of
 //: `dW[j,s] = <dS_a[s,:], v_j> + dz_a[s] + sum_{i>=j} R[i,s] Gd'[i,j]`.  `dv` is a
-//: value-channel quantity and the mass column does not enter it.
-template <int C, int BC>
+//: value-channel quantity and the mass column does not enter it.  Both panels are
+//: Kronecker products expanded in kernel; `pw` also supplies the write side's
+//: leave-one-out factor at the emit.
+template <int C, int BC, int D, int Bw>
 __global__ __launch_bounds__(r0_threads_for(BC), (kR0CtaTarget<C, BC, true>)) void
-rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16* __restrict__ wcoef,
-                   const __nv_bfloat16* __restrict__ v, const __nv_bfloat16* __restrict__ dnum,
-                   const __nv_bfloat16* __restrict__ dden, float* __restrict__ dv,
-                   float* __restrict__ dw, int L, int N, int v_row_bytes) {
+rung0_pass2_kernel(const __nv_bfloat16* __restrict__ pread,
+                   const __nv_bfloat16* __restrict__ pwrite, const __nv_bfloat16* __restrict__ v,
+                   const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
+                   float* __restrict__ dv, float* __restrict__ dpw, int L, int v_row_bytes) {
   using G = GeomR0<C, BC, true>;
+  using DG = DigitR0<D, Bw, BC, G::BCg>;
   constexpr int kThreads = r0_threads_for(BC);
   constexpr int kWarps = kThreads / 32;
   constexpr int GRP = G::GRP, BCg = G::BCg;
@@ -518,10 +709,10 @@ rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16*
       pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kD);
   const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)bh * L * kD);
   const __nv_bfloat16* const ddPlane = pin_address(dden + (long)bh * L);
-  const __nv_bfloat16* const rPlane = pin_address(rcoef + (long)bh * L * N + slot0);
-  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)bh * L * N + slot0);
+  const __nv_bfloat16* const prPlane = pin_address(pread + (long)bh * L * DG::cols);
+  const __nv_bfloat16* const pwPlane = pin_address(pwrite + (long)bh * L * DG::cols);
   float* const dvPlane = pin_address(dv + (long)bh * L * kD);
-  float* const dwPlane = pin_address(dw + (long)bh * L * N + slot0);
+  float* const dpwPlane = pin_address(dpw + (long)bh * L * DG::cols);
 
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
@@ -539,6 +730,9 @@ rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16*
   r0_dden_seats<LdV, MTOK>(ddK, (lane & 3) * 2, 16);
 
   constexpr uint32_t kGrpS = (uint32_t)(C * LdS * (int)sizeof(__nv_bfloat16));
+  //: THE UNIT'S FIRST SLOT, hoisted: it is the digit geometry's own base and does not
+  //: move with the chunk.
+  const int sbaseU = (int)slot0 + warp * (BCg / kUnits);
   const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn);
   const uint32_t srB = smem_addr(sr) + (uint32_t)grp * kGrpS;
   const uint32_t swB = smem_addr(sw) + (uint32_t)grp * kGrpS;
@@ -563,19 +757,19 @@ rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16*
     for (int e = 0; e < 4; ++e) dzc[n][e] = 0.f;
 
   TileStage<C, kD, LdV, kThreads> stV;
-  TileStage<C, BCg, LdS, kGroupThreads> stS;
+  ExpandR0<C, BCg, LdS, D, Bw> ex;
   stV.init(tid);
-  stS.init(gtid);
+  ex.init(gtid, (int)slot0);
   constexpr uint32_t kVSlotB = (uint32_t)(C * LdV * 2);
   constexpr uint32_t kSSlotB = (uint32_t)(GRP * C * LdS * 2);
   constexpr uint32_t kVRingB = (uint32_t)STAGES * kVSlotB;
   constexpr uint32_t kSRingB = (uint32_t)STAGES * kSSlotB;
   const uint32_t vRowB = (uint32_t)v_row_bytes;
   constexpr uint32_t kDnRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
-  const uint32_t kSRowB = (uint32_t)(N * (int)sizeof(__nv_bfloat16));
   constexpr uint32_t kDvRowB = (uint32_t)(kD * (int)sizeof(float));
-  const uint32_t kDwRowB = (uint32_t)(N * (int)sizeof(float));
   uint32_t stgV = 0, cmpV = 0, stgS = 0, cmpS = 0;
+  char* const srThis = reinterpret_cast<char*>(sr) + (size_t)grp * kGrpS;
+  char* const swThis = reinterpret_cast<char*>(sw) + (size_t)grp * kGrpS;
 
   const int NC = L / C;
   auto stage_chunk = [&](int c) {
@@ -583,8 +777,8 @@ rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16*
       const uint32_t tok0 = (uint32_t)(c * C);
       stV.issue(svB + stgV, vPlane, tok0, vRowB);
       stV.issue(sdnB + stgV, dnPlane, tok0, kDnRowB);
-      stS.issue(srB + stgS, rPlane, tok0, kSRowB);
-      stS.issue(swB + stgS, wPlane, tok0, kSRowB);
+      ex.emit(srThis + stgS, prPlane, tok0);
+      ex.emit(swThis + stgS, pwPlane, tok0);
       if (tid < C) sdn[(stgV >> 1) + R0_DDEN(LdV, tid)] = ddPlane[(int)tok0 + tid];
     }
     stgV += kVSlotB;
@@ -813,22 +1007,9 @@ rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16*
           acc[m][n][2] += dzc[n][0];
           acc[m][n][3] += dzc[n][1];
         }
-#pragma unroll
-      for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-        for (int n = 0; n < NSLOT; ++n) {
-          const uint32_t colB =
-              (uint32_t)(((n0 + n) * kMmaN + (lane & 3) * 2) * (int)sizeof(float));
-          const int t0 = m * 16 + (lane >> 2);
-          float* p0 = reinterpret_cast<float*>(
-              gather_ptr(dwPlane, (tokBase + (uint32_t)t0) * kDwRowB + colB));
-          float* p1 = reinterpret_cast<float*>(
-              gather_ptr(dwPlane, (tokBase + (uint32_t)(t0 + 8)) * kDwRowB + colB));
-          store_f32(p0 + 0, acc[m][n][0]);
-          store_f32(p0 + 1, acc[m][n][1]);
-          store_f32(p1 + 0, acc[m][n][2]);
-          store_f32(p1 + 1, acc[m][n][3]);
-        }
+      //: (A.10), THE WRITE SIDE'S DIGIT REDUCTION.  Same component as pass 1's, with
+      //: the write amplitudes supplying the leave-one-out factor.
+      r0_emit_digits<BC, BCg, D, Bw, MTOK, NSLOT>(acc, pwPlane, dpwPlane, tokBase, sbaseU, lane);
     }
 
     // ---- the fold: dS^T += dnum^T . R, and dz += dden^T . R ------------------

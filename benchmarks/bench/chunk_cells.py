@@ -199,12 +199,14 @@ def _cells() -> dict[str, Cell]:
         #: against the pinned cell's 32, and `nblk = N / BC` is the growth axis every
         #: fan-in design has to answer on.
         #:
-        #: `B = 1, H = 2, T = 512` and not the pinned cell's shape, and the reason is
-        #: arithmetic rather than taste: the LADDER's coefficients are PER SLOT (it has
-        #: no digit gradients until rung b3), so its operand planes are `[BH, T, N]` bf16
-        #: and its per-slot gradients `[BH, T, N]` fp32 -- 134 MB and 268 MB apiece here,
-        #: where the pinned cell's `B2 H8 T2048` would ask for 4.3 GB and 8.6 GB. The
-        #: cell is sized so the LATTICE is at scale and the plane is not.
+        #: `B = 1, H = 2, T = 512` and not the pinned cell's shape. The reason was
+        #: arithmetic at rung b2 and is HISTORY at b3: the ladder's coefficients were
+        #: PER SLOT then, so its operand planes were `[BH, T, N]` bf16 and its gradients
+        #: `[BH, T, N]` fp32 -- 134 MB and 268 MB apiece here, where `B2 H8 T2048` would
+        #: have asked for 4.3 GB and 8.6 GB. Rung b3's per-level planes are `[BH, T, 512]`
+        #: and the constraint is gone; the shape is KEPT so that b2's and b3's receipts on
+        #: this cell are the same measurement, which is what makes the operand change
+        #: attributable. The cell is sized so the LATTICE is at scale and the plane is not.
         Cell(name="chunk-bwd-splitk", widths=(256, 256), B=1, T=512, H=2, hidden=512,
              alpha=1.5, seed=9,
              note="N = 65536 at BC = 128: a 512-block lattice, the split-K fan-in's "

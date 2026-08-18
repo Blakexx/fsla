@@ -158,63 +158,50 @@ def scan_b(fx) -> Arm:
 
 
 def _rung0_operands(fx):
-    """The ladder's operands, expanded from THIS cell's own routing.
+    """The ladder's operands, which at rung b3 are THIS CELL'S OWN PACKED AMPLITUDES.
 
-    The ladder's coefficients are PER SLOT (digit gradients are rung b3), so the packed
-    amplitudes are multiplied out into the Kronecker product over the cell's WHOLE slot
-    space -- `N`, not one block. That is rung b2's own subject: the block lattice is
-    `N / BC` blocks and `dv`'s partials fan in across it. The write side carries its
-    gain, because the ladder has no separate gain to carry it. Built here, outside the
-    timed callable, exactly as the union table and the packed sides are for every other
-    subject.
+    Rung b2 expanded them here, outside the timed callable, into a `[BH, T, N]`
+    Kronecker product, because the kernel consumed per-slot coefficients. Rung b3
+    consumes the PER-LEVEL FACTORS themselves -- `[BH, T, D*B]`, the forward consumer's
+    own operand form -- so the expansion is DELETED rather than moved, and the plane
+    the subject hands over goes from 65,536 columns to 512 at the split-K cell.
 
-    The expansion multiplies IN PLACE, one level at a time: at the split-K cell the
-    plane is `[BH, T, 65536]` and a functional fold would hold three of them at once.
+    The write side carries its GAIN, because the ladder has no separate gain output
+    (that is rung b5). ONE LEVEL ABSORBS IT: `g[j] * prod_l pw_l[j, d_l]` is the same
+    coefficient with the gain folded into level zero's amplitudes, so what the kernel
+    expands is unchanged and no gain axis enters the kernel.
     """
-    plan, widths = fx["plan"], _widths(fx)
+    plan = fx["plan"]
     bh, tokens = plan.read_plane.shape[0] * plan.read_plane.shape[1], plan.read_plane.shape[2]
-    n = fx["cell"].N
-    pr = plan.read_plane.reshape(bh, tokens, -1).float()
+    widths = _widths(fx)
+    pr = plan.read_plane.reshape(bh, tokens, -1).contiguous()
     pw = plan.write_plane.reshape(bh, tokens, -1).float()
-    gain = plan.g_write.reshape(bh, tokens, 1).float()
-    slot = torch.arange(n, device=pr.device)
-
-    def expand(packed, seed):
-        #: a leaf's digits are its mixed-radix expansion over the slot space in the
-        #: leaf-order law's own order, so slot `s` of block `b` is leaf `b * BC + s`.
-        out = seed.expand(bh, tokens, n).clone()
-        place, off = n, 0
-        for w in widths:
-            place //= w
-            out.mul_(packed[:, :, off + (slot // place) % w])
-            off += w
-        return out.to(torch.bfloat16).contiguous()
-
-    one = torch.ones(bh, tokens, 1, device=pr.device)
+    pw[:, :, :widths[0]] *= plan.g_write.reshape(bh, tokens, 1).float()
     dnum, dden = _seeds(fx)
-    return {"r": expand(pr, one), "w": expand(pw, gain), "v": fx["v_kernel"],
+    return {"pr": pr, "pw": pw.to(torch.bfloat16).contiguous(), "v": fx["v_kernel"],
             "dnum": dnum.reshape(bh, tokens, 64).contiguous(),
             "dden": dden.reshape(bh, tokens).contiguous(),
-            "c": fx["C"], "bc": fx["BC"]}
+            "c": fx["C"], "bc": fx["BC"], "d": len(widths), "b": widths[0]}
 
 
 def rung0_pass1(fx) -> Arm:
-    """THE LADDER, RUNG 1, PASS 1: the ascending rebuild's per-slot `dR`."""
+    """THE LADDER, RUNG 3, PASS 1: the ascending rebuild's per-level `d pr`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass1(o["w"], o["v"], o["dnum"], o["dden"], o["c"], o["bc"])
+        return m.chunk_rung0_pass1(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["c"],
+                                   o["bc"], o["d"], o["b"])
 
     return Arm(name="rung0_pass1", call=call)
 
 
 def rung0_pass2(fx) -> Arm:
-    """THE LADDER, RUNG 1, PASS 2: the descending adjoint's `dv` and per-slot `dW`."""
+    """THE LADDER, RUNG 3, PASS 2: the descending adjoint's `dv` and per-level `d pw`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass2(o["r"], o["w"], o["v"], o["dnum"], o["dden"], o["c"],
-                                   o["bc"])
+        return m.chunk_rung0_pass2(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["c"],
+                                   o["bc"], o["d"], o["b"])
 
     return Arm(name="rung0_pass2", call=call)
 
@@ -362,7 +349,11 @@ def applicable(cell) -> list:
     rung0_only = ("rung0_pass1", "rung0_pass2")
     arm = _arm_of(cell)
     has_scan = arm is not None and (*arm, len(cell.widths), cell.widths[0]) in gen_shards.SCAN_ARMS
-    has_rung0 = arm in gen_shards.LADDER_R0_ARMS and cell.T % (arm[0] if arm else 1) == 0
+    #: rung b3 made the TOPOLOGY a compiled axis, so a ladder arm is the whole
+    #: `(C, BC, D, B)` and not the block width alone.
+    has_rung0 = (arm is not None
+                 and (*arm, len(cell.widths), cell.widths[0]) in gen_shards.LADDER_R0_ARMS
+                 and cell.T % arm[0] == 0)
     out = []
     for name in SUBJECTS:
         if name in decode_only and cell.decode_steps == 0:

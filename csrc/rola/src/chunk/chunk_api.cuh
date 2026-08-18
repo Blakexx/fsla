@@ -50,14 +50,16 @@ std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t 
                                       std::vector<int64_t> widths, int64_t L, int64_t BH);
 std::vector<std::vector<int64_t>> scan_b_census();
 std::vector<std::vector<int64_t>> scan_a_census();
-//: THE BACKWARD LADDER'S RUNGS 0-1 (csrc/rola/src/chunk/ladder_r0.cu): the dense
-//: two-pass backward on per-slot coefficients, with the mass column and the
-//: self-normalizing readout's adjoint -- no routing, no gains, no ragged tail.
-std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::Tensor dnum,
-                                       torch::Tensor dden, int64_t chunk, int64_t bc);
-std::vector<torch::Tensor> rung0_pass2(torch::Tensor r, torch::Tensor w, torch::Tensor v,
+//: THE BACKWARD LADDER'S RUNGS 0-3 (csrc/rola/src/chunk/ladder_r0.cu): the two-pass
+//: backward on ROUTED coefficients -- per-level amplitudes in, per-level digit
+//: gradients out, with the mass column and the self-normalizing readout's adjoint.
+//: No write gain, no compaction, no ragged tail.
+std::vector<torch::Tensor> rung0_pass1(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
                                        torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
-                                       int64_t bc);
+                                       int64_t bc, int64_t depth, int64_t width);
+std::vector<torch::Tensor> rung0_pass2(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
+                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
+                                       int64_t bc, int64_t depth, int64_t width);
 std::vector<std::vector<int64_t>> rung0_census();
 
 }  // namespace rola::chunk

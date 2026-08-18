@@ -190,20 +190,16 @@ SCAN_ARMS: tuple = (
 )
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 
-#: THE BACKWARD LADDER'S ARMS -- `(C, BC)` and nothing else. The ladder is the DENSE
-#: two-pass backward: a topology reaches it only through `N`, which is a runtime plane
-#: width and not a compiled axis, so the list carries no `(D, B)`. `(32, 64)` is the
-#: head-to-head arm -- where a scan arm's `N` equals its `BC`, so the ladder and the
-#: shipped scans run the same ONE-BLOCK cell and their walls compare; `(16, 64)` is
-#: the second point on the chunk axis; `(32, 128)` is the SHIPPED block width, the one
-#: the pinned and the scale cells both resolve to, and the one rung b2's carve buys.
-LADDER_R0_ARMS: tuple = (
-    (32, 64),
-    (16, 64),
-    (32, 128),
-)
-assert {(c, bc) for c, bc in LADDER_R0_ARMS} <= {(a[0], a[1]) for a in CHUNK_ARMS}, \
-    "a rung-0 arm's (C, BC) must be a shape the consumer is built at"
+#: THE BACKWARD LADDER'S ARMS. Rung b3 made the TOPOLOGY a compiled axis: the ladder
+#: consumes per-level amplitudes and emits per-level digit gradients, so `(D, B)` is
+#: the digit geometry a unit's slot run is carved by, and `N = B^D` stopped being a
+#: runtime plane width. The list is therefore `SCAN_ARMS` -- every geometry the
+#: shipped reverse pass is built for, so that every ladder receipt is head to head
+#: with a scan receipt at the same one -- plus `(16, 64, 2, 16)`, which is the second
+#: point on the CHUNK axis and has no scan of its own.
+LADDER_R0_ARMS: tuple = SCAN_ARMS + ((16, 64, 2, 16),)
+assert set(LADDER_R0_ARMS) <= set(CHUNK_ARMS), \
+    "a rung-0 arm must be a geometry the consumer is built at"
 
 #: THE FACTS PASS' CALL-CLASS AXIS: the prefill half of the four masks
 #: (`rola/engine/types.py`), and both values are built.  The stateless class compiles
@@ -299,12 +295,12 @@ def ladder_r0_arms_inc() -> str:
     forward's and the scans' do."""
     lines = [BANNER,
              "// Included by ../chunk/ladder_r0.cuh; the X-macro over every\n",
-             "// (C, BC) arm the backward ladder's rung 0 is built for.\n",
+             "// (C, BC, D, B) arm the backward ladder's rung 0 is built for.\n",
              "// clang-format off\n",
              "#define LADDER_R0_ARMS_X(X) \\\n"]
     for i, a in enumerate(LADDER_R0_ARMS):
         tail = "" if i == len(LADDER_R0_ARMS) - 1 else " \\"
-        lines.append(f"  X({a[0]}, {a[1]}){tail}\n")
+        lines.append(f"  X({a[0]}, {a[1]}, {a[2]}, {a[3]}){tail}\n")
     lines.append("// clang-format on\n")
     return "".join(lines)
 
