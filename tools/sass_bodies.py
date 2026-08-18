@@ -32,15 +32,10 @@ namespace (`rola::decode::detail`, `rola::entmax::detail`), so those names are a
 function of source content and toolchain only -- build the two trees anywhere, side by
 side or one checked out over the other.
 
-One OTHER file still puts kernels in an anonymous namespace and remains
-path-dependent by name: `decode_expand.cu`'s `decode_expand_kernel` (1/arch). It is not
-in the RATIFIED manifest, so it never gates a build or a ratification and a comparison
-over the ratified set is unaffected either way -- but a full whole-binary dump (this
-tool's normal mode) will still show up to 2 absences across two differently-pathed
-builds. Not a false verdict: `--compare` reports them as present-only-on-one-side,
-which is the true state of that name, not a body difference. Filter it out (or check
-one tree out over the other, still the simplest way to get a clean 0/0/0) if a
-whole-binary comparison must stay quiet about it too.
+`decode_expand.cu` is on the same rule (`rola::decode::detail`; it became ratified
+when the decode unification added the file to the manifest), so NO kernel in the
+binary carries an anonymous-namespace name and a whole-binary dump is path-stable
+too.
 
 **A WRITTEN MAP CARRIES THE HASHER'S VERSION, AND A MISMATCH IS REFUSED.** What is
 hashed is a property of the SCANNER, not of the binary: widening the capture once
@@ -67,7 +62,7 @@ Usage:
 
 Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
 version-stamp note above. They no longer need to have been built at the same path
-(P19) except for the five still-anonymous, unratified kernel names noted above.
+(P19; completed by `decode_expand.cu`'s move to `rola::decode::detail`).
 """
 from __future__ import annotations
 

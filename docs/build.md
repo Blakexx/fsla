@@ -187,16 +187,12 @@ Verified non-vacuously: master built in a fresh worktree fails exactly as descri
 above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
 its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-One other file's anonymous-namespace kernel block is unaffected and still
-path-dependent by name (`decode_expand.cu`'s `decode_expand_kernel`) — P19 was scoped
-to the two files the ratified manifest actually certifies through this discriminator.
-It was never in the ratified manifest to begin with (which holds 147 entries/arch
-against the full SASS scan's 153: the six-entry difference is `decode_expand`'s two
-arms and its two growth-probe entries, and the chunk arm's path-independent
-`stamp_kernel` and `divide_kernel`), so its residual
-path-dependence shows up only in a raw `sass_bodies.py` dump, never in a build or a
-ratification gate. A worktree build no longer fails, and a same-tip SASS comparison
-across paths is 0-differing over every ratified entry.
+`decode_expand.cu`'s kernel block is `rola::decode::detail` on the same rule (it
+became ratified when the decode unification added the file to the manifest, which is
+what promotes the naming from hygiene to a gate requirement), so NO kernel in the
+binary carries an anonymous-namespace name: every ratified name is a function of
+source content and toolchain only, a worktree build passes the post-build gates, and
+a same-tip SASS comparison across paths is 0-differing over the whole matrix.
 
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
 changes the assembled code of 1,073 of the 1,228 entries then present, which under the

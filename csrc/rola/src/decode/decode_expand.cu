@@ -19,7 +19,7 @@
 
 namespace rola {
 namespace decode {
-namespace {
+namespace detail {
 
 //: `IN_SMEM` is a STRUCTURE-DRIVEN arm, not a threshold: `n_words` is a topology fact
 //: and the SMEM budget a hardware fact, both admitted as branch inputs by spec I2. The
@@ -103,7 +103,7 @@ __global__ __launch_bounds__(kDecodeThreads) void decode_growth_probe_kernel(Dec
   }
 }
 
-}  // namespace
+}  // namespace detail
 
 //: The probe's staged write row set plus, on the SMEM arm, the recursion's ping-pong
 //: pair. Its ONE published map is its OUTPUT and lands in `probe_bits`, so it never holds
@@ -120,9 +120,9 @@ void launch_decode_growth_probe(const DecodeParams& p, int64_t smem_budget) {
   const size_t smem = decode_probe_smem_bytes(p.total_rows, p.n_words, in_smem);
   auto stream = at::cuda::getCurrentCUDAStream();
   if (in_smem) {
-    decode_growth_probe_kernel<true><<<p.BH, kDecodeThreads, smem, stream>>>(p);
+    detail::decode_growth_probe_kernel<true><<<p.BH, kDecodeThreads, smem, stream>>>(p);
   } else {
-    decode_growth_probe_kernel<false><<<p.BH, kDecodeThreads, smem, stream>>>(p);
+    detail::decode_growth_probe_kernel<false><<<p.BH, kDecodeThreads, smem, stream>>>(p);
   }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
