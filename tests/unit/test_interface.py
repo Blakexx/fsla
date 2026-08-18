@@ -22,12 +22,11 @@ import torch
 from conftest import build_routes
 
 import rola
+from rola.expert import envelope_refusal, require_envelope
 from rola.interface import (
     BackwardNotImplemented,
     ChunkConsumer,
-    envelope_refusal,
     operands_of,
-    require_envelope,
     requires_backward,
 )
 

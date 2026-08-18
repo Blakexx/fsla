@@ -423,8 +423,9 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             # Everything the CUDA prefill path resolves, imported by name.
             "import rola;"
             "from rola.layer import RoLA;"
-            "from rola.interface import rola_op, require_envelope;"
+            "from rola.interface import rola_op;"
             "from rola.ops.chunk import execute;"
+            "from rola.engine.facts.call import require_envelope;"
             "from rola.engine.facts.planes import atom_bits;"
             "from rola.engine.rules.arm import CHUNK_TOKENS;"
             "from rola.engine.rules.envelope import arm_envelope;"

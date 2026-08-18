@@ -18,6 +18,7 @@ import pytest
 import torch
 
 import rola
+import rola.expert
 from rola.routing.activations import (
     ACTIVATION_COLUMNS,
     ACTIVATION_REGISTRY,
@@ -240,7 +241,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
         assert topology.unratified_activations == (
             (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
 
-        refusal = rola.interface.envelope_refusal(
+        refusal = rola.expert.envelope_refusal(
             _StubBundle(topology), torch.zeros(1, 1, 1, 64))
         assert "unratified activations" in refusal and "entmax" in refusal
     finally:

@@ -44,13 +44,15 @@ it at all:
 
 * `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
-  `validate_capturable`), the value types (`types.py`) and the per-family plans
+  `validate_capturable`), the value types and the refusal every no-backward clause
+  raises — `BackwardNotImplemented` — (`types.py`) and the per-family plans
   (`plan.py`).
 * `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
   bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the operand list
-  (`operands.py`), the adapters that read those facts off a routing bundle
-  (`call.py`) and the declared nodes over them (`nodes.py`). A fact primitive is not a
-  wrapper that defers its logic elsewhere; the primitive IS here.
+  (`operands.py`), the adapters that read those facts off a routing bundle and the
+  envelope authority they fold into — `envelope_refusal` and `require_envelope`
+  (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
+  a wrapper that defers its logic elsewhere; the primitive IS here.
 * `rola/engine/rules/` — band 2, one declared fold per decision.
 * `rola/engine/dags/` — the per-family compositions: the tuple, its context, its
   terminal node.
@@ -171,6 +173,13 @@ unreachable by construction.
 
 Every refusal names the clause that has no arm, and the message texts are gated
 (`tests/unit/test_api_contract.py`).
+
+The envelope half of that call is `facts/call.py`'s `require_envelope`, and it is
+reached DOWNWARD: the engine composes the rule layer's clauses over its own adapters
+and the facade calls the engine, never the reverse. `envelope_refusal` beside it is the
+same composition without the raise, which is what lets a caller ask before calling —
+`rola.expert` re-exports it as the public address (`docs/api.md` §4.1), and that
+re-export is the only direction the dependency runs.
 
 ## <a id="the-plan"></a>9. What a plan may hold
 

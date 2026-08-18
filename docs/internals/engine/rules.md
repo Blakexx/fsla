@@ -68,10 +68,13 @@ further argument.
 Three of the folds are not in a DAG tuple, and each for a stated reason rather than
 by oversight:
 
-* `arm_envelope` / `envelope` / `backward_envelope` / `training_envelope` are called by
-  `validate_context`, which runs BEFORE the walk's first node so that no refusal can
+* `arm_envelope` / `envelope` / `backward_envelope` / `training_envelope` are composed
+  by `facts/call.py`'s `envelope_refusal` and `require_envelope`, which
+  `validate_context` calls BEFORE the walk's first node so that no refusal can
   arrive with the operands already consumed ([`engine.md` §7](engine.md#refusals)).
-  Placing them in the tuple would move a refusal after work.
+  Placing them in the tuple would move a refusal after work. The composition is an
+  ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
+  fact values, so it carries no `rule` marker and could not live here (§2).
 * `retention` is called at the autograd boundary, which is the only moment the
   retention decision exists: `needs_input_grad` is a property of the node's
   invocation, not of the plan the walk built.
