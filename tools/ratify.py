@@ -210,7 +210,7 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: expands it -- and the decode/entmax keys now name the symbols that are actually in
 #: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
 STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu", "entmax/factor.cu",
-                  "chunk/backward.cu")
+                  "chunk/backward.cu", "chunk/ladder_r0.cu")
 
 
 def shard_paths() -> list[Path]:

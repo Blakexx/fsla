@@ -110,6 +110,101 @@ def backward_seeds(fx) -> Arm:
     return Arm(name="chunk_backward_seeds", call=call)
 
 
+def _seeds(fx):
+    """The readout seeds, built once OUTSIDE every timed callable.
+
+    Both scans and the ladder's rung 0 read `dnum`, and neither pays for it: it is the
+    reverse pass' own first launch and has a subject of its own.
+    """
+    m, plan = extension(), fx["plan"]
+    num, den = _numerator(fx)
+    y = m.chunk_divide_pass(num, den, plan.read_mass, READOUT_EPS, torch.float32)
+    dy = torch.randn_like(y)
+    return m.chunk_backward_seeds(dy, y, den, plan.read_mass, READOUT_EPS)[:2]
+
+
+def _scan_operands(fx):
+    plan, (dnum, dden) = fx["plan"], _seeds(fx)
+    return (plan.read_plane, plan.write_plane, plan.g_write, fx["v_kernel"], dnum, dden,
+            plan.union_table, fx["C"], fx["BC"], _widths(fx))
+
+
+def scan_a(fx) -> Arm:
+    """SCAN A's launch: the ascending rebuild and the read side's digit gradient.
+
+    The shipped reverse pass is two independent launches, so it is two subjects: a row
+    containing both could be attributed to neither.
+    """
+    m, operands = extension(), _scan_operands(fx)
+
+    def call():
+        return m.chunk_scan_a_probe(*operands)
+
+    return Arm(name="scan_a", call=call)
+
+
+def scan_b(fx) -> Arm:
+    """SCAN B's launch: the descending adjoint -- `dv`, `d gw` and `d pw`."""
+    m, operands = extension(), _scan_operands(fx)
+
+    def call():
+        return m.chunk_scan_b_probe(*operands)
+
+    return Arm(name="scan_b", call=call)
+
+
+def _rung0_operands(fx):
+    """The ladder's rung-0 operands, expanded from THIS cell's own routing.
+
+    Rung 0's coefficients are PER SLOT, so the packed amplitudes are multiplied out into
+    the Kronecker product ONE BLOCK wide -- the slot run a single CTA of the shipped
+    scans owns, at the same `(C, BC)`. The write side carries its gain, because rung 0
+    has no separate gain to carry it. Built here, outside the timed callable, exactly as
+    the union table and the packed sides are for every other subject.
+    """
+    plan, widths, bc = fx["plan"], _widths(fx), fx["BC"]
+    bh, tokens = plan.read_plane.shape[0] * plan.read_plane.shape[1], plan.read_plane.shape[2]
+    pr = plan.read_plane.reshape(bh, tokens, -1).float()
+    pw = plan.write_plane.reshape(bh, tokens, -1).float()
+    gain = plan.g_write.reshape(bh, tokens, 1).float()
+    slot = torch.arange(bc, device=pr.device)
+
+    def expand(packed, out):
+        #: a leaf's digits are its mixed-radix expansion over the FULL slot space, and
+        #: block zero's leaves are the first `bc` of them by the leaf-order law.
+        place, off = fx["cell"].N, 0
+        for w in widths:
+            place //= w
+            out = out * packed[:, :, off + (slot // place) % w]
+            off += w
+        return out.to(torch.bfloat16).contiguous()
+
+    ones = torch.ones(bh, tokens, bc, device=pr.device)
+    return {"r": expand(pr, ones), "w": expand(pw, gain * ones), "v": fx["v_kernel"],
+            "dnum": _seeds(fx)[0].reshape(bh, tokens, 64).contiguous(),
+            "c": fx["C"], "bc": bc}
+
+
+def rung0_pass1(fx) -> Arm:
+    """THE LADDER, RUNG 0, PASS 1: the ascending rebuild's per-slot `dR`."""
+    m, o = extension(), _rung0_operands(fx)
+
+    def call():
+        return m.chunk_rung0_pass1(o["w"], o["v"], o["dnum"], o["c"], o["bc"])
+
+    return Arm(name="rung0_pass1", call=call)
+
+
+def rung0_pass2(fx) -> Arm:
+    """THE LADDER, RUNG 0, PASS 2: the descending adjoint's `dv` and per-slot `dW`."""
+    m, o = extension(), _rung0_operands(fx)
+
+    def call():
+        return m.chunk_rung0_pass2(o["r"], o["w"], o["v"], o["dnum"], o["c"], o["bc"])
+
+    return Arm(name="rung0_pass2", call=call)
+
+
 def entmax_solve(fx) -> Arm:
     """The producer's batched multi-level solve, on this cell's own routing.
 
@@ -208,6 +303,10 @@ UNIT = {
     "backward_seeds": backward_seeds,
     "entmax_solve": entmax_solve,
     "decode_step": decode_step,
+    "scan_a": scan_a,
+    "scan_b": scan_b,
+    "rung0_pass1": rung0_pass1,
+    "rung0_pass2": rung0_pass2,
 }
 
 #: THE INTEGRATION ROSTER: compositions the unit rows cannot be summed into.
@@ -218,9 +317,32 @@ INTEGRATION = {
 
 SUBJECTS = {**UNIT, **INTEGRATION}
 
-#: Which subjects a cell can carry. The decode subjects need a cell that continues; every
-#: other subject runs on every cell.
+#: The reverse pass' NARROWER arm matrix, mirrored here as a topology set: the scans
+#: carry the campaign's trainable topologies, so a cell outside them has no scan launch
+#: to price (`rola.engine.rules.envelope.backward_envelope` refuses the same difference
+#: at the facade). `(D, B)` alone, because the arm rule fixes `(C, BC)` from them.
+SCAN_TOPOLOGIES = frozenset({(2, 64), (2, 256), (2, 8), (2, 16), (1, 64), (1, 256)})
+
+#: Rung 0's chunks are contiguous and WHOLE -- the ragged tail is a later rung -- so a
+#: cell whose token count is not a multiple of the chunk carries no rung-0 launch.
+R0_CHUNK = 32
+
+
+#: Which subjects a cell can carry. The decode subjects need a cell that continues, the
+#: scan subjects need a topology the reverse pass is built for, and rung 0 needs a whole
+#: number of chunks; every other subject runs on every cell.
 def applicable(cell) -> list:
     decode_only = ("decode_step", "prefill_decode")
-    return [name for name in SUBJECTS
-            if cell.decode_steps > 0 or name not in decode_only]
+    scan_only = ("scan_a", "scan_b")
+    rung0_only = ("rung0_pass1", "rung0_pass2")
+    has_scan = (len(cell.widths), cell.widths[0]) in SCAN_TOPOLOGIES
+    out = []
+    for name in SUBJECTS:
+        if name in decode_only and cell.decode_steps == 0:
+            continue
+        if name in scan_only and not has_scan:
+            continue
+        if name in rung0_only and cell.T % R0_CHUNK:
+            continue
+        out.append(name)
+    return out

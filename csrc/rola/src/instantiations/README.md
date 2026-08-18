@@ -43,6 +43,11 @@ for the two scans' dispatch, launchers and census. It is a subset of the same ar
 list, checked at generation time: a backward arm whose forward is not built could
 not run a training step.
 
+`ladder_r0_arms.inc` carries `LADDER_R0_ARMS_X`, the backward ladder's rung-0 pair.
+Rung 0 is the DENSE two-pass backward, so its arms are `(C, BC)` alone — the slot
+space is the block and a topology is not one of its axes — and each `(C, BC)` is
+checked at generation time against a shape the consumer is built at.
+
 ## The partition
 
 A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel

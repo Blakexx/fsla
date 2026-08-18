@@ -262,17 +262,33 @@ def _swapped_reference(pr, pw, gw, v, dnum, dden, chunks, T):
     return out
 
 
-def test_scan_a_census_is_spill_free():
-    """Scan A shares Scan B's geometry, so it must share its residency: a scan that
-    ran at a different occupancy would make the two halves of one training step
-    disagree about the arm."""
+def test_scan_a_census_is_spill_free_and_leaves_the_arm_where_it_was():
+    """SCAN A'S OWN ROW, in the twelve-column form Scan B's census is read in.
+
+    The two scans share a GEOMETRY, not a live set: `cudaFuncGetAttributes` is a
+    property of a kernel, so a floor claim carried by only one of them is a claim
+    about the other that nothing measures. Every clause Scan B's census gate makes is
+    made here against Scan A's own registers.
+    """
     m = extension()
-    rows = m.chunk_scan_b_census()
-    assert rows, "the scans report no built arm"
-    for row in rows:
-        assert row[5] == 0, (
-            f"arm {tuple(row[:4])} spills {row[5]} bytes: the two scans share one "
-            f"geometry, so a spill in either is a carve that has to change")
-        assert row[4] <= row[10], (
-            f"arm {tuple(row[:4])} holds {row[4]} registers against a budget of "
-            f"{row[10]}")
+    rows = m.chunk_scan_a_census()
+    assert rows, "Scan A reports no built arm"
+    assert [tuple(r[:4]) for r in rows] == [tuple(r[:4]) for r in m.chunk_scan_b_census()], (
+        "the two scans are built for one arm list, so their censuses enumerate it once")
+    for c, bc, d, b, regs, local, smem, stages, ctas, floor, budget, entries in rows:
+        assert regs > 0, f"the census could not read arm ({c},{bc},{d},{b})"
+        assert local == 0, (
+            f"Scan A spills {local} bytes at arm ({c},{bc},{d},{b}): the forward state and "
+            f"the per-slot accumulator do not fit beside each other, so the carve has to "
+            f"change rather than the budget")
+        assert regs <= budget, (
+            f"arm ({c},{bc},{d},{b}) holds {regs} registers against a budget of {budget} "
+            f"at {ctas} CTAs -- the declared floor {floor} bought a residency the live "
+            f"set cannot pay for")
+        forward = [a for a in m.chunk_arms() if tuple(a[:4]) == (c, bc, d, b)]
+        assert forward, f"Scan A is built for an arm the forward is not: ({c},{bc},{d},{b})"
+        assert ctas <= forward[0][9], (
+            f"Scan A reaches {ctas} CTAs where its forward reaches {forward[0][9]} at arm "
+            f"({c},{bc},{d},{b})")
+        assert stages >= 2, "the wait/issue order needs two staging groups"
+        assert regs <= 255 and floor > 0 and entries >= 0 and smem > 0

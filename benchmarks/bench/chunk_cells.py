@@ -170,6 +170,28 @@ def _cells() -> dict[str, Cell]:
              note="dense routing at T = N = 4096: the local N=L anchor for the "
                   "worst-case O(L*N) parity regime"),
 
+        #: **THE REVERSE PASS' SECOND POINT.** Widths `(16, 16)` at `T = 2048`: the arm
+        #: `(32, 64, 2, 16)`, `N = 256`, which is the grid-starved regime the backward
+        #: profile's second cell was taken in and where the two scans' overlap is
+        #: unambiguous. `chunk-decode-w16` shares the widths and is NOT it -- that cell is
+        #: `T = 128, H = 2, fp32`, three constructor fields away.
+        Cell(name="chunk-bwd-smalln", widths=(16, 16), B=2, T=2048, H=8, hidden=512,
+             alpha=1.5, seed=7,
+             note="the reverse pass' second point: N=256 at T=2048, the profile's "
+                  "small-N cell"),
+
+        #: **THE LADDER'S HEAD-TO-HEAD CELL.** Widths `(8, 8)` at `T = 2048`: the arm
+        #: `(32, 64, 2, 8)`, where `N = BC` and the block lattice is therefore ONE block.
+        #: That is the only shape at which the backward ladder's rung 0 -- dense, one
+        #: block, no carve -- and the shipped scans run the SAME problem over the same
+        #: grid, so it is where their walls compare rather than merely coexist. Dense on
+        #: both duties, because rung 0 has no support to exploit and a sparse cell would
+        #: price the scans' compaction against a kernel that has none.
+        Cell(name="chunk-bwd-dense-N64", widths=(8, 8), B=2, T=2048, H=8, hidden=512,
+             alpha=None, seed=8,
+             note="N = BC = 64, dense: the one shape where rung 0 and the shipped "
+                  "scans run the same problem"),
+
         #: **THE DEEP-ARM CELL.** `D = 4` at width 8 -- the deepest topology the built
         #: manifest carries, and the one the paging bench uses for the same reason. It
         #: moves the level count while `N = 4096` is held identical to the pinned cell's,

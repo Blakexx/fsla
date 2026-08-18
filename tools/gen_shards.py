@@ -123,6 +123,11 @@ for the two scans' dispatch, launchers and census. It is a subset of the same ar
 list, checked at generation time: a backward arm whose forward is not built could
 not run a training step.
 
+`ladder_r0_arms.inc` carries `LADDER_R0_ARMS_X`, the backward ladder's rung-0 pair.
+Rung 0 is the DENSE two-pass backward, so its arms are `(C, BC)` alone — the slot
+space is the block and a topology is not one of its axes — and each `(C, BC)` is
+checked at generation time against a shape the consumer is built at.
+
 ## The partition
 
 A shard is a contiguous slice of `CHUNK_ARMS` of `CHUNK_PER_SHARD` arms, every kernel
@@ -184,6 +189,19 @@ SCAN_ARMS: tuple = (
     (32, 64, 1, 256),
 )
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
+
+#: THE BACKWARD LADDER'S RUNG-0 ARMS -- `(C, BC)` and nothing else. Rung 0 is the
+#: DENSE two-pass backward: the slot space IS the block (`N = BC`, one block, no
+#: carve), so a topology is not one of its axes and its list carries no `(D, B)`.
+#: Its head-to-head arm is the scans' `(C = 32, BC = 64)`, which is where a scan
+#: arm's `N` equals its `BC` and the two therefore run the same dense cell; `C = 16`
+#: is the second point on the chunk axis.
+LADDER_R0_ARMS: tuple = (
+    (32, 64),
+    (16, 64),
+)
+assert {(c, bc) for c, bc in LADDER_R0_ARMS} <= {(a[0], a[1]) for a in CHUNK_ARMS}, \
+    "a rung-0 arm's (C, BC) must be a shape the consumer is built at"
 
 #: THE FACTS PASS' CALL-CLASS AXIS: the prefill half of the four masks
 #: (`rola/engine/types.py`), and both values are built.  The stateless class compiles
@@ -273,6 +291,22 @@ def scan_arms_inc() -> str:
     return "".join(lines)
 
 
+def ladder_r0_arms_inc() -> str:
+    """The rung-0 arms macro, EMITTED: `ladder_r0.cu` walks it for the dispatch, the
+    launchers and the census, so the ladder's arm set has one owner exactly as the
+    forward's and the scans' do."""
+    lines = [BANNER,
+             "// Included by ../chunk/ladder_r0.cuh; the X-macro over every\n",
+             "// (C, BC) arm the backward ladder's rung 0 is built for.\n",
+             "// clang-format off\n",
+             "#define LADDER_R0_ARMS_X(X) \\\n"]
+    for i, a in enumerate(LADDER_R0_ARMS):
+        tail = "" if i == len(LADDER_R0_ARMS) - 1 else " \\"
+        lines.append(f"  X({a[0]}, {a[1]}){tail}\n")
+    lines.append("// clang-format on\n")
+    return "".join(lines)
+
+
 def chunk_shard_source(name: str, rows: list) -> str:
     arms = rows
     body = [
@@ -335,6 +369,7 @@ def generated() -> dict[str, str]:
            for name, arms in sorted(chunk_shards().items())}
     out["chunk_arms.inc"] = chunk_arms_inc()
     out["scan_arms.inc"] = scan_arms_inc()
+    out["ladder_r0_arms.inc"] = ladder_r0_arms_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)
     out["README.md"] = readme()

@@ -58,6 +58,26 @@ static std::array<int64_t, 8> scan_b_census_arm() {
           (int64_t)LevelPlan<D, B, BC>::entries};
 }
 
+//: SCAN A'S OWN CENSUS ROW.  The two scans share a geometry but not a kernel, so
+//: they do not share a measured live set: a floor claim carried by only one of them
+//: is a claim about the other that nothing checks --
+//: docs/internals/chunk/backward.md#reg-floor-scan
+template <int C, int BC, int D, int B>
+static std::array<int64_t, 8> scan_a_census_arm() {
+  cudaFuncAttributes a{};
+  if (cudaFuncGetAttributes(&a, scan_a_kernel<C, D, B, BC>) != cudaSuccess)
+    return {-1, -1, -1, -1, -1, -1, -1, -1};
+  return {a.numRegs,
+          (int64_t)a.localSizeBytes,
+          (int64_t)GeomB<C, BC, D, B>::bytes,
+          (int64_t)GeomB<C, BC, D, B>::stages,
+          (int64_t)kScanBCtaTarget<C, BC, D, B>,
+          (int64_t)reg_floor_scan(BC),
+          (int64_t)denseref::arch::reg_budget(denseref::arch::kCaps, threads_for(BC),
+                                              kScanBCtaTarget<C, BC, D, B>),
+          (int64_t)LevelPlan<D, B, BC>::entries};
+}
+
 static bool is_arm(const std::vector<int64_t>& widths, int64_t D, int64_t B) {
   if ((int64_t)widths.size() != D) return false;
   for (auto w : widths)
@@ -315,6 +335,20 @@ std::vector<std::vector<int64_t>> scan_b_census() {
   }
   SCAN_B_ARMS_X(SCAN_B_CENSUS_X)
 #undef SCAN_B_CENSUS_X
+  return out;
+}
+
+std::vector<std::vector<int64_t>> scan_a_census() {
+  check_arch_table();
+  std::vector<std::vector<int64_t>> out;
+#define SCAN_A_CENSUS_X(C_, BC_, D_, B__)                                    \
+  {                                                                          \
+    std::vector<int64_t> row{C_, BC_, D_, B__};                              \
+    for (auto x : scan_a_census_arm<C_, BC_, D_, B__>()) row.push_back(x);   \
+    out.push_back(row);                                                      \
+  }
+  SCAN_B_ARMS_X(SCAN_A_CENSUS_X)
+#undef SCAN_A_CENSUS_X
   return out;
 }
 
