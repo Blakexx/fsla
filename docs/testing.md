@@ -449,7 +449,10 @@ The engine's DAG framework is host-only, so its battery is too.
 **`tests/unit/test_facts_memo.py`** runs with no CUDA, no extension and no kernel.
 It holds the caches the engine may declare — `pure_of`'s plain dict and `per_state`'s
 `WeakKeyDictionary`, including the weakness itself (a dropped sequence drops its
-buffers), plus the PRIMITIVE-level census cache, which is neither: the build census is
+buffers) and the TRANSIENTS-ONLY discipline over it (every shipped `per_state` node
+declares every non-`state` need a memo key, and its body runs against a state that
+raises on any attribute read, so nothing about the sequence can enter what is cached),
+plus the PRIMITIVE-level census cache, which is neither: the build census is
 read once however many folds ask for it, and what it returns is immutable, because a
 shared cached value a caller could mutate would not be a fact. It also holds the
 structural refusals that fire at DAG declaration: a need that arrives later than its

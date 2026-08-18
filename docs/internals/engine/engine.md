@@ -151,6 +151,15 @@ Not a per-site convention:
 
 A memo key that is not one of the node's own inputs is refused at declaration.
 
+**A `per_state` cache holds REBUILDABLE TRANSIENTS ONLY**, and the state is its KEY
+rather than one of its inputs: every other need is a declared memo key, so what is
+cached is a function of facts a rebuild has, and the body never reads the sequence at
+all. That is what makes the handle-IS-the-sequence invariant survive caching — two
+handles onto one geometry get interchangeable objects, and a fork or a rollback
+inherits nothing through a cache (`docs/internals/state.md` §9.1).
+`tests/unit/test_facts_memo.py` drives every shipped `per_state` node with a state that
+raises on any attribute read, so the property is proven per node rather than declared.
+
 There is a third kind and it is deliberately NOT a node attribute: a PRIMITIVE whose
 answer is a function of the loaded binary rather than of any fact declares its own
 caching, at the primitive. `rola/engine/facts/manifest.py`'s two census reads are the

@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 
 import pytest
+import torch
 
 from rola.engine.runner import Node, node, run, validate_dag
 from rola.engine.types import Mask
@@ -78,6 +79,87 @@ def test_a_dropped_sequence_drops_its_scratch():
     del sequence
     gc.collect()
     assert len(probe.memo) == 0, "the scratch outlived the sequence that owned it"
+
+
+#: THE FACT BAG each shipped `per_state` node is driven with by the discipline gate
+#: below. A node arriving with no bag fails there BY NAME, which is what makes the
+#: discipline a gate rather than a habit.
+def _decode_scratch_facts():
+    from rola.ops.decode import derive_decode_geometry
+
+    class _Topology:
+        widths = (4, 4)
+
+    return {"geometry": derive_decode_geometry(_Topology(), d_v=64, decay=False, BH=2,
+                                               device="cpu"),
+            "BH": 2, "device": "cpu"}
+
+
+PER_STATE_FACTS = {"scratch": _decode_scratch_facts}
+
+
+def _shipped_per_state_nodes() -> list[Node]:
+    from rola.engine.dags.backward_dag import BACKWARD_DAG
+    from rola.engine.dags.chunk_dag import CHUNK_DAG
+    from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT
+
+    seen: dict[int, Node] = {}
+    for dag in (CHUNK_DAG, BACKWARD_DAG, DECODE_STEP, DECODE_VERDICT):
+        seen.update({id(step): step for step in dag if step.per_state})
+    return list(seen.values())
+
+
+class _Poison:
+    """A sequence whose every attribute read is a failure."""
+
+    def __getattr__(self, item):
+        raise AssertionError(f"a per_state node read the sequence: state.{item}")
+
+
+def test_a_per_state_node_reads_the_state_as_a_KEY_and_never_as_an_INPUT():
+    """THE DISCIPLINE: a `per_state` cache holds REBUILDABLE TRANSIENTS and nothing else.
+
+    Two halves, and together they are the claim. STRUCTURALLY, every need but `state`
+    is a declared memo key, so the cached object is a function of facts a rebuild
+    has -- a need that is not a key is an input the memo cannot see change.
+    FUNCTIONALLY, the body runs with the state replaced by an object that raises on
+    any attribute read, so nothing about the sequence can enter what is cached, and
+    two objects built for one geometry are interchangeable BY CONSTRUCTION rather than
+    by inspection.
+
+    The CROSS-STEP half -- that a reused object carries nothing from one step to the
+    next -- is not assertable without a device and is gated where a real step runs:
+    `DecodeScratch`'s counters are self-resetting and
+    `tests/integration/test_decode_graph_step.py` replays a captured step across an
+    admission against eager. This file is device-free by charter, and running one pair
+    of steps here would sample one geometry where the poison probe covers every field.
+    """
+    nodes = _shipped_per_state_nodes()
+    assert nodes, "no shipped node is per_state; this gate lost its subject"
+
+    for step in nodes:
+        assert set(step.needs) - {"state"} == set(step.pure_of), (
+            f"{step.name} reads "
+            f"{sorted(set(step.needs) - {'state'} - set(step.pure_of))} without "
+            "declaring it a memo key: a per_state cache may hold only what a rebuild "
+            "from the declared keys would produce")
+        assert step.name in PER_STATE_FACTS, (
+            f"{step.name} is a new per_state node with no bag in PER_STATE_FACTS; "
+            "declare one so the transients-only discipline is proven for it too")
+
+        facts = PER_STATE_FACTS[step.name]()
+        one = step({**facts, "state": _Poison()})
+        two = step({**facts, "state": _Poison()})
+
+        assert type(one) is type(two)
+        for name in one.__slots__:
+            a, b = getattr(one, name), getattr(two, name)
+            assert type(a) is type(b), f"{step.name}.{name}"
+            if isinstance(a, torch.Tensor):
+                assert (a.shape, a.dtype, a.device) == (b.shape, b.dtype, b.device), (
+                    f"{step.name}.{name} is not a function of the declared keys")
+                assert a.data_ptr() != b.data_ptr(), (
+                    f"{step.name}.{name} is SHARED between two sequences' objects")
 
 
 def test_a_memo_key_that_is_not_an_input_is_refused():
