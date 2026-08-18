@@ -16,11 +16,15 @@ now identical by construction to what a real call hands the same entries.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 
 import rola
 from bench.pairing import Arm
 from rola.engine.dags.decode_dag import decode_forward
+from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.engine.types import Mask
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
@@ -317,32 +321,45 @@ INTEGRATION = {
 
 SUBJECTS = {**UNIT, **INTEGRATION}
 
-#: The reverse pass' NARROWER arm matrix, mirrored here as a topology set: the scans
-#: carry the campaign's trainable topologies, so a cell outside them has no scan launch
-#: to price (`rola.engine.rules.envelope.backward_envelope` refuses the same difference
-#: at the facade). `(D, B)` alone, because the arm rule fixes `(C, BC)` from them.
-SCAN_TOPOLOGIES = frozenset({(2, 64), (2, 256), (2, 8), (2, 16), (1, 64), (1, 256)})
-
-#: Rung 0's chunks are contiguous and WHOLE -- the ragged tail is a later rung -- so a
-#: cell whose token count is not a multiple of the chunk carries no rung-0 launch.
-R0_CHUNK = 32
+#: THE BUILT ARM LISTS, READ FROM THE GENERATOR THAT OWNS THEM. The reverse pass'
+#: matrix is narrower than the forward's and the ladder's is narrower still, so a cell
+#: outside either carries no launch to price. Taken from `tools/gen_shards.py` rather
+#: than restated here: a second copy of an arm list is the drift shape this project has
+#: already been bitten by, and that module is pure host Python with no device in it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import gen_shards  # noqa: E402
 
 
-#: Which subjects a cell can carry. The decode subjects need a cell that continues, the
-#: scan subjects need a topology the reverse pass is built for, and rung 0 needs a whole
-#: number of chunks; every other subject runs on every cell.
+#: The arm rule's own preference order (`rola.engine.rules.arm`), applied to the built
+#: matrix: one chunk length, the pinned block width where the topology has it and the
+#: largest built one otherwise.
+def _arm_of(cell) -> tuple[int, int] | None:
+    depth, width = len(cell.widths), cell.widths[0]
+    bcs = [bc for (c, bc, d, b) in gen_shards.CHUNK_ARMS
+           if d == depth and b == width and c == CHUNK_TOKENS]
+    if not bcs:
+        return None
+    return (CHUNK_TOKENS, 128 if 128 in bcs else max(bcs))
+
+
+#: Which subjects a cell can carry. The decode subjects need a cell that continues; the
+#: scan subjects and the ladder's need an arm their own matrix is built for, and rung 0
+#: needs a whole number of chunks besides -- its chunks are contiguous and WHOLE, and
+#: the ragged tail is a later rung. Every other subject runs on every cell.
 def applicable(cell) -> list:
     decode_only = ("decode_step", "prefill_decode")
     scan_only = ("scan_a", "scan_b")
     rung0_only = ("rung0_pass1", "rung0_pass2")
-    has_scan = (len(cell.widths), cell.widths[0]) in SCAN_TOPOLOGIES
+    arm = _arm_of(cell)
+    has_scan = arm is not None and (*arm, len(cell.widths), cell.widths[0]) in gen_shards.SCAN_ARMS
+    has_rung0 = arm in gen_shards.LADDER_R0_ARMS and cell.T % (arm[0] if arm else 1) == 0
     out = []
     for name in SUBJECTS:
         if name in decode_only and cell.decode_steps == 0:
             continue
         if name in scan_only and not has_scan:
             continue
-        if name in rung0_only and cell.T % R0_CHUNK:
+        if name in rung0_only and not has_rung0:
             continue
         out.append(name)
     return out
