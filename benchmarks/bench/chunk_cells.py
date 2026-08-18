@@ -159,6 +159,17 @@ def _cells() -> dict[str, Cell]:
              alpha=None, seed=2,
              note="softmax routing: the dense end of the distribution space"),
 
+        #: **THE DENSE N=L ANCHOR.** The dense constructor at `T = N = 4096`: the
+        #: worst-case O(L*N) regime the parity claim is stated in, on the pinned cell's
+        #: own geometry and duty pair (softmax read AND softmax write -- the d1-analog on
+        #: the square topology). The rental measures N = L = 65536; this cell is the
+        #: LOCAL anchor and the curve's second point, so the at-scale number is an
+        #: extrapolation from two constructed fixtures rather than from one.
+        Cell(name="chunk-dense-NL4096", widths=(64, 64), B=2, T=4096, H=8, hidden=512,
+             alpha=None, seed=6,
+             note="dense routing at T = N = 4096: the local N=L anchor for the "
+                  "worst-case O(L*N) parity regime"),
+
         #: **THE DEEP-ARM CELL.** `D = 4` at width 8 -- the deepest topology the built
         #: manifest carries, and the one the paging bench uses for the same reason. It
         #: moves the level count while `N = 4096` is held identical to the pinned cell's,

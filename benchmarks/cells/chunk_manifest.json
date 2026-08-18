@@ -113,6 +113,34 @@
   "write_nonzero": 1048576,
   "write_support_frac": 1.0
  },
+ "chunk-dense-NL4096": {
+  "B": 2,
+  "BC": 128,
+  "BH": 16,
+  "C": 32,
+  "H": 8,
+  "N": 4096,
+  "T": 4096,
+  "alpha": null,
+  "amplitudes_total": 8388608,
+  "atoms_total": 4096,
+  "d_v": 64,
+  "decode_steps": 0,
+  "dtype": "bf16",
+  "hidden": 512,
+  "live_atom_frac": 1.0,
+  "live_atoms": 4096,
+  "logit_gain": 1.0,
+  "name": "chunk-dense-NL4096",
+  "read_nonzero": 8388608,
+  "seed": 6,
+  "widths": [
+   64,
+   64
+  ],
+  "write_nonzero": 8388608,
+  "write_support_frac": 1.0
+ },
  "chunk-p73-pinned": {
   "B": 2,
   "BC": 128,
