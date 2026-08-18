@@ -12,15 +12,25 @@ So it is checked once, at adoption, against a naive GLA loop written by someone
 else: `fla.ops.gla.naive.naive_recurrent_gla` (flash-linear-attention 0.4.2).
 Under plain-GLA settings the two are the same function under a renaming:
 
-    FLA          ours
-    K            N          key dim  <->  leaf address space
-    q_i * scale  R[t]       read allocation x read gain
-    k_i          W[t]       write allocation x write gain
-    exp(gk_i)    keep[t]    the diagonal gate
-    h            state      one row per key / per leaf
+    FLA               ours
+    K                 N              key dim  <->  leaf address space
+    q_i * scale       R[t]           read allocation (`g_read := 1`)
+    k_i               W[t]           write allocation x write gain
+    v_i               [v[t], 1]      the value, plus the ones column
+    exp(gk_i)         keep[t]        the diagonal gate
+    h                 state          one row per key / per leaf
+    o_i[:d_v]/o_i[d_v]  y[t]         the ratio readout
 
 FLA scales `q` by `K ** -0.5` internally, so `q = R * sqrt(N)` is what makes the
 two readouts the same expression rather than the same shape.
+
+**THE ONES COLUMN ENTERS AS DATA, WHICH IS WHY IT DOES NOT WEAKEN THE CHECK.**
+`global` is the only normalization the repository has, and its mass state is the
+same recurrence run on a value of all ones -- so FLA is handed a `d_v+1`-wide
+value and still computes the un-normalized recurrence it always did. The ratio
+is then formed HERE, from FLA's own output, at the oracle's `READOUT_EPS`: the
+oracle's divide is checked against an independently computed one rather than
+trusted. The part under test is still the part that is not ours.
 
 **FLA IS NOT A STANDING DEPENDENCY, AND THIS TEST IS SKIPPED BY DEFAULT.** The
 decomposition's rule is naive torch references only, from third parties, and one
@@ -29,12 +39,21 @@ to the routine suite would be taking on exactly the coupling the pin machinery
 exists to prevent. Its job is to catch a transcription error ONCE. Set
 `ROLA_FLA_CROSSCHECK=1` to run it.
 
-MEASURED AT ADOPTION (2026-08-05, fla 0.4.2), over decay on/off x widths
-`(8,8)` and `(4,4,4)`: worst `2.98e-08` on the output and `5.96e-08` on the
-final state, against outputs of magnitude ~0.2 -- i.e. agreement at float32's
-own resolution. The floor is FLA's, not ours: `naive_recurrent_gla` casts its
-operands to float32 and accumulates there. Our own oracle-vs-oracle contracts
-are bit-identical in fp64; nothing here loosens them.
+**THE ENV GATE HID TEN DAYS OF UNRUNNABILITY, AND THAT IS THIS FILE'S OWN RISK
+CLASS.** The check was written against the `raw` normalization; when `raw` died
+(2026-08-06) the oracle began refusing it by name, and a test nothing runs by
+default kept reporting a skip instead of a failure. A default-off anchor is only
+as good as the sweep that remembers it exists -- the same rot the dual-run tool
+records on its `oracle` surface for the same window and the same cause.
+
+MEASURED AT ADOPTION (2026-08-05, re-measured on the global form 2026-08-17,
+fla 0.4.2), over decay on/off x widths `(8,8)` and `(4,4,4)`: worst `2.98e-07`
+on the output and `5.96e-08` on the final state, against readouts of magnitude
+~2.8 and a state of magnitude ~0.3 -- i.e. agreement at float32's own resolution.
+The floor is FLA's, not ours: `naive_recurrent_gla` casts its operands to
+float32 and accumulates there, and the ratio then divides by a denominator
+carrying that same float32 error. Our own oracle-vs-oracle contracts are
+bit-identical in fp64; nothing here loosens them.
 """
 from __future__ import annotations
 
@@ -43,6 +62,7 @@ import os
 import pytest
 import torch
 
+from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
 from rola.routing.types import (
     IndependentRouting,
@@ -62,10 +82,10 @@ _ROUTING = IndependentRouting(
 
 #: The bound, and it is float32's rather than a fitted number: FLA accumulates in
 #: float32, whose unit roundoff is 6e-8, over a sum of `N <= 64` leaves. The
-#: measured worst is 2.98e-08 against outputs of magnitude ~0.2, so `1e-5`
+#: measured worst is 2.98e-07 against readouts of magnitude ~2.8, so `1e-5`
 #: relative leaves two decades of headroom while still being far tighter than any
 #: transcription error could hide in -- an off-by-one index or a gate applied on
-#: the wrong side of the deposit moves the result by O(1), not by 1e-8.
+#: the wrong side of the deposit moves the result by O(1), not by 1e-7.
 FLOAT32_FLOOR = 1e-5
 
 
@@ -88,16 +108,13 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
     read = tuple(simplex(w) for w in widths)
     write = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, d_v, generator=g, dtype=torch.float64)
-    g_read = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
     g_write = torch.rand(B, T, H, generator=g, dtype=torch.float64) + 0.5
     decay = None
     if decay_on:
         decay = LeafMassDecay(dials=tuple(
             torch.rand(H, w, generator=g, dtype=torch.float64) * 0.3 + 0.1 for w in widths))
 
-    #: `raw` and never `global`: the ones column is OURS, and the point of this
-    #: test is the part that is not.
-    y, state = naive_rola(v, read, write, g_read, g_write, topology, decay, "raw",
+    y, state = naive_rola(v, read, write, None, g_write, topology, decay, "global",
                           output_final_state=True)
 
     #: The renaming, built from the same inputs by the same rules the oracle uses
@@ -117,7 +134,7 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
             out = picked if out is None else out * picked
         return out
 
-    R = g_read[..., None] * leaves(read)
+    R = leaves(read)
     W = g_write[..., None] * leaves(write)
     if decay is None:
         keep = torch.ones(B, T, H, N, dtype=torch.float64)
@@ -125,18 +142,21 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
         rate = leaves(tuple(decay.dials))
         keep = torch.pow(1.0 - rate, leaves(write))
 
+    deposit_value = torch.cat((v, torch.ones(B, T, H, 1, dtype=torch.float64)), dim=-1)
+
     o, h = fla_naive.naive_recurrent_gla(
         q=(R * (N ** 0.5)).to(torch.float32),
         k=W.to(torch.float32),
-        v=v.to(torch.float32),
+        v=deposit_value.to(torch.float32),
         gk=torch.log(keep).to(torch.float32),
         output_final_state=True)
+    readout = o[..., :d_v] / (o[..., d_v:] + READOUT_EPS)
 
     #: NON-VACUITY: a comparison against an all-zero reference passes for free.
-    assert float(o.abs().max()) > 1e-3, "FLA's output is ~0; the fixture is degenerate"
+    assert float(readout.abs().max()) > 1e-3, "FLA's output is ~0; the fixture is degenerate"
 
     scale = max(float(y.abs().max()), 1.0)
-    delta_y = float((y.to(torch.float32) - o).abs().max())
+    delta_y = float((y.to(torch.float32) - readout).abs().max())
     delta_h = float((state.to(torch.float32) - h).abs().max())
     assert delta_y <= FLOAT32_FLOOR * scale, (
         f"the oracle's recurrence and FLA's naive GLA disagree by {delta_y:.3e} on "
