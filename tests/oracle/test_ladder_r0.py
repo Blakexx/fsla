@@ -842,3 +842,47 @@ def test_the_skipped_work_contributed_exactly_zero(arm):
             f"the compacted {name} emitted {off:.3e} off the support at arm {arm}: a "
             f"column whose amplitude is zero is a column no block that owns it gathered "
             f"the token for, so the kernel must write EXACTLY the identity there")
+
+
+def _digit_is_owned(arm):
+    """True when every digit's slots lie inside ONE mma unit's run, so the digit
+    gradient takes exactly one contribution and its value is a function of the inputs
+    rather than of an atomic order.
+
+    At depth one the digit IS the slot, so a digit's single slot is trivially inside
+    one unit. At depth two the INNER digit's slots are `Bw` apart and a unit's run is
+    `BCg / kUnits` wide, so they are spread across every unit of every group of every
+    block -- the digit gradient fans in even at a ONE-BLOCK cell, which is exactly why
+    rung b3's own planted fault had to be a lattice fault rather than a store-for-add
+    one."""
+    return arm[2] == 1
+
+
+@pytest.mark.parametrize("arm", ARMS, ids=str)
+def test_the_single_contributor_outputs_are_reproducible(arm):
+    """THE DETERMINISM GATE, and it is what makes any bit-identity claim about this
+    kernel readable.
+
+    `fan_in_add` assembles as `RED` -- a non-returning atomic -- so wherever an output
+    element takes more than one contribution the SUMMATION ORDER is the hardware's and
+    two runs of the SAME binary differ in the last bits. Wherever an element takes
+    exactly one, the answer is a function of the inputs alone and two runs must agree
+    BIT FOR BIT. This asserts the second half, which is the half a comparison against
+    another binary can be made on: rung b4 was checked against rung b3's binary at the
+    fully live cells and agreed exactly on every one of these outputs, while the
+    fan-in-carried ones disagreed by no more than b3 disagrees with ITSELF.
+    """
+    inputs = _inputs(arm, 4 * arm[0], seed=61)
+    a, b = _run(arm, inputs), _run(arm, inputs)
+    for name, x, y in (("d_pr", a[0], b[0]), ("dv", a[1], b[1]), ("d_pw", a[2], b[2])):
+        #: `dv` contracts the whole slot space, so its one contributor per (token,
+        #: channel) exists only where the lattice is one block AND the block is one
+        #: group -- a unit owns a disjoint sixteen of the channels, so within that it
+        #: never shares.
+        one = _digit_is_owned(arm) if name != "dv" else (
+            arm[3] ** arm[2] == arm[1] and arm[1] < 128)
+        if one:
+            assert torch.equal(x, y), (
+                f"{name} at arm {arm} has ONE contributor per element and still moved "
+                f"between two runs: something in this path is order-dependent that is "
+                f"not the fan-in")
