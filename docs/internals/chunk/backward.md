@@ -585,6 +585,15 @@ by the CENSUS instead, which carries both the declared floor and the budget that
 target admits, per arm, and whose gate asserts the measured live set fits inside
 it. The pair is what a review reads.
 
+**THE TWO SCANS CARRY ONE FLOOR AND TWO CENSUSES**, and the second is not a
+duplicate: `cudaFuncGetAttributes` is a property of a KERNEL, so a row taken on Scan
+B says nothing about Scan A's registers, its spill or its stack frame. They share a
+geometry — the same `GeomB`, the same declared floor, the same CTA target — and
+sharing a geometry is precisely what makes a divergence in the MEASURED live set the
+thing a review has to be able to see. `scan_a_census` mirrors `scan_b_census` column
+for column, and `tests/oracle/test_scan_a.py` reads it in the same twelve-column form
+`test_scan_b_probe.py` reads Scan B's.
+
 ## <a id="arms"></a>The arm list
 
 `SCAN_B_ARMS_X` is GENERATED, from `tools/gen_shards.py`'s `SCAN_ARMS` — the same

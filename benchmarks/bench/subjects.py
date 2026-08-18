@@ -2,8 +2,9 @@
 
 **THE TAXONOMY (ruling 2026-08-14).** The UNIT subjects mirror the oracle-test roster one
 for one -- the chunk forward, the stats pass, the block bits, the decode step, the entmax
-solves, the divide and the backward seeds -- because a bench roster that does not match
-the correctness roster is a roster with kernels nobody measures. The INTEGRATION subjects
+solves, the divide, the backward seeds and the two reverse scans -- because a bench
+roster that does not match the correctness roster is a roster with kernels nobody
+measures. The INTEGRATION subjects
 are compositions the unit rows cannot add up to: the whole layer step, and the
 prefill->decode continuation across one carried state.
 
@@ -16,11 +17,15 @@ now identical by construction to what a real call hands the same entries.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 
 import rola
 from bench.pairing import Arm
 from rola.engine.dags.decode_dag import decode_forward
+from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.engine.types import Mask
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
@@ -108,6 +113,49 @@ def backward_seeds(fx) -> Arm:
         return m.chunk_backward_seeds(dy, y, den, read_mass, READOUT_EPS)
 
     return Arm(name="chunk_backward_seeds", call=call)
+
+
+def _seeds(fx):
+    """The readout seeds, built once OUTSIDE every timed callable.
+
+    Both scans read `dnum` and `dden`, and neither pays for them: they are the reverse
+    pass' own first launch and have a subject of their own.
+    """
+    m, plan = extension(), fx["plan"]
+    num, den = _numerator(fx)
+    y = m.chunk_divide_pass(num, den, plan.read_mass, READOUT_EPS, torch.float32)
+    dy = torch.randn_like(y)
+    return m.chunk_backward_seeds(dy, y, den, plan.read_mass, READOUT_EPS)[:2]
+
+
+def _scan_operands(fx):
+    plan, (dnum, dden) = fx["plan"], _seeds(fx)
+    return (plan.read_plane, plan.write_plane, plan.g_write, fx["v_kernel"], dnum, dden,
+            plan.union_table, fx["C"], fx["BC"], _widths(fx))
+
+
+def scan_a(fx) -> Arm:
+    """SCAN A's launch: the ascending rebuild and the read side's digit gradient.
+
+    The shipped reverse pass is two independent launches, so it is two subjects: a row
+    containing both could be attributed to neither.
+    """
+    m, operands = extension(), _scan_operands(fx)
+
+    def call():
+        return m.chunk_scan_a_probe(*operands)
+
+    return Arm(name="scan_a", call=call)
+
+
+def scan_b(fx) -> Arm:
+    """SCAN B's launch: the descending adjoint -- `dv`, `d gw` and `d pw`."""
+    m, operands = extension(), _scan_operands(fx)
+
+    def call():
+        return m.chunk_scan_b_probe(*operands)
+
+    return Arm(name="scan_b", call=call)
 
 
 def entmax_solve(fx) -> Arm:
@@ -208,6 +256,8 @@ UNIT = {
     "backward_seeds": backward_seeds,
     "entmax_solve": entmax_solve,
     "decode_step": decode_step,
+    "scan_a": scan_a,
+    "scan_b": scan_b,
 }
 
 #: THE INTEGRATION ROSTER: compositions the unit rows cannot be summed into.
@@ -218,9 +268,40 @@ INTEGRATION = {
 
 SUBJECTS = {**UNIT, **INTEGRATION}
 
-#: Which subjects a cell can carry. The decode subjects need a cell that continues; every
-#: other subject runs on every cell.
+#: THE BUILT ARM LISTS, READ FROM THE GENERATOR THAT OWNS THEM. The reverse pass'
+#: matrix is narrower than the forward's, so a cell outside it carries no scan launch to
+#: price. Taken from `tools/gen_shards.py` rather than restated here: a second copy of an
+#: arm list is the drift shape this project has already been bitten by, and that module
+#: is pure host Python with no device in it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import gen_shards  # noqa: E402
+
+
+#: The arm rule's own preference order (`rola.engine.rules.arm`), applied to the built
+#: matrix: one chunk length, the pinned block width where the topology has it and the
+#: largest built one otherwise.
+def _arm_of(cell) -> tuple[int, int] | None:
+    depth, width = len(cell.widths), cell.widths[0]
+    bcs = [bc for (c, bc, d, b) in gen_shards.CHUNK_ARMS
+           if d == depth and b == width and c == CHUNK_TOKENS]
+    if not bcs:
+        return None
+    return (CHUNK_TOKENS, 128 if 128 in bcs else max(bcs))
+
+
+#: Which subjects a cell can carry. The decode subjects need a cell that continues; the
+#: scan subjects need an arm their own matrix is built for. Every other subject runs on
+#: every cell.
 def applicable(cell) -> list:
     decode_only = ("decode_step", "prefill_decode")
-    return [name for name in SUBJECTS
-            if cell.decode_steps > 0 or name not in decode_only]
+    scan_only = ("scan_a", "scan_b")
+    arm = _arm_of(cell)
+    has_scan = arm is not None and (*arm, len(cell.widths), cell.widths[0]) in gen_shards.SCAN_ARMS
+    out = []
+    for name in SUBJECTS:
+        if name in decode_only and cell.decode_steps == 0:
+            continue
+        if name in scan_only and not has_scan:
+            continue
+        out.append(name)
+    return out

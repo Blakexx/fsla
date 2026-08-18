@@ -170,6 +170,39 @@ def _cells() -> dict[str, Cell]:
              note="dense routing at T = N = 4096: the local N=L anchor for the "
                   "worst-case O(L*N) parity regime"),
 
+        #: **THE REVERSE PASS' SECOND POINT.** Widths `(16, 16)` at `T = 2048`: the arm
+        #: `(32, 64, 2, 16)`, `N = 256`, which is the grid-starved regime the backward
+        #: profile's second cell was taken in and where the two scans' overlap is
+        #: unambiguous. `chunk-decode-w16` shares the widths and is NOT it -- that cell is
+        #: `T = 128, H = 2, fp32`, three constructor fields away.
+        Cell(name="chunk-bwd-smalln", widths=(16, 16), B=2, T=2048, H=8, hidden=512,
+             alpha=1.5, seed=7,
+             note="the reverse pass' second point: N=256 at T=2048, the profile's "
+                  "small-N cell"),
+
+        #: **THE ONE-BLOCK BACKWARD CELL.** Widths `(8, 8)` at `T = 2048`: the arm
+        #: `(32, 64, 2, 8)`, where `N = BC` and the block lattice is therefore ONE
+        #: block -- the scans' walls carry no fan-in and no lattice term, so a
+        #: regression here is a regression in a scan's own body rather than in the grid
+        #: it is spread over. Dense on both duties: a sparse cell would fold the
+        #: compaction's price into the same row.
+        Cell(name="chunk-bwd-dense-N64", widths=(8, 8), B=2, T=2048, H=8, hidden=512,
+             alpha=None, seed=8,
+             note="N = BC = 64, dense: the one-block lattice, the scans' bodies "
+                  "with no fan-in term"),
+
+        #: **THE BACKWARD'S SPLIT-K CELL.** Widths `(256, 256)` -- the arm
+        #: `(32, 128, 2, 256)`, `N = 65536`, the scale geometry, and a block lattice of
+        #: 512. It is where the reverse pass' fan-in is stated at the depth the campaign
+        #: actually runs: `dv` takes 512 partial contributions per (bh, token, channel)
+        #: against the pinned cell's 32, and `nblk = N / BC` is the growth axis every
+        #: fan-in design has to answer on. `B = 1, H = 2, T = 512`: the cell is sized so
+        #: the LATTICE is at scale and the operand plane is not.
+        Cell(name="chunk-bwd-splitk", widths=(256, 256), B=1, T=512, H=2, hidden=512,
+             alpha=1.5, seed=9,
+             note="N = 65536 at BC = 128: a 512-block lattice, the split-K fan-in's "
+                  "own depth"),
+
         #: **THE DEEP-ARM CELL.** `D = 4` at width 8 -- the deepest topology the built
         #: manifest carries, and the one the paging bench uses for the same reason. It
         #: moves the level count while `N = 4096` is held identical to the pinned cell's,

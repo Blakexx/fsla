@@ -49,5 +49,6 @@ std::vector<torch::Tensor> backward_seeds(torch::Tensor dy, torch::Tensor y, tor
 std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t bc,
                                       std::vector<int64_t> widths, int64_t L, int64_t BH);
 std::vector<std::vector<int64_t>> scan_b_census();
+std::vector<std::vector<int64_t>> scan_a_census();
 
 }  // namespace rola::chunk

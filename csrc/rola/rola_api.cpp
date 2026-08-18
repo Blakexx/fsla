@@ -108,9 +108,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
         py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
   m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
-        "chunk consumer, the two scans: per-arm registers, spill bytes, shared "
+        "chunk consumer, Scan B: per-arm registers, spill bytes, shared "
         "bytes, staging depth, CTA target, the declared scan register floor, the "
         "budget that target admits, and the level plan's table entries");
+  //: SCAN A'S OWN ROW.  The scans share a geometry, not a live set: one census for
+  //: both would be a floor claim about a kernel nobody measured.
+  m.def("chunk_scan_a_census", &rola::chunk::scan_a_census,
+        "chunk consumer, Scan A: the same eight columns, measured on Scan A's kernel");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,
