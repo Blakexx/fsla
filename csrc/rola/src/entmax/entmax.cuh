@@ -128,11 +128,11 @@ struct Descending {
 //: two networks and against the merge sort that preceded them, on every non-NaN row
 //: -- docs/internals/entmax/entmax.md#row-sort
 //:
-//: THE SPLIT IS A MEASURED REGISTER-BUDGET FACT, not a tuning knob. The register network
-//: keeps all `IPT` keys plus a shuffle temporary live across the whole network, against
-//: this family's 64-register `__launch_bounds__`. At `IPT <= 4` that fits and the network
-//: wins by 14-19%; at `IPT = 8` (`W_PAD = 256`) it does not, and MEASURED it LOSES 13% to
-//: the merge sort, which parks the row in shared memory instead of in registers.
+//: THE SPLIT IS A COMPLEXITY-CLASS FACT, not a tuning knob and not a register wall: a
+//: bitonic network is Theta(N log^2 N) -- 204 compare-exchanges per lane at `W_PAD = 256`
+//: against the merge sort's ~64 -- and the crossover between the two classes sits at
+//: `W_PAD = 128`. Below it the shuffle-only network wins 14-19%; at `IPT = 8` it LOSES
+//: 10-14% at EVERY register budget (64 to 174, zero spills throughout; probed 2026-08-17).
 //: -- docs/internals/entmax/entmax.md#row-sort
 template <int LW, int IPT>
 struct RowSort {

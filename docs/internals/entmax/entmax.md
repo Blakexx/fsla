@@ -230,7 +230,7 @@ dispatch axis, it is the existing one.
 | `W_PAD` | `IPT` | network | why |
 |---|---|---|---|
 | 2 – 128 | 1, 2, 4 | register-resident bitonic, shuffles only, zero shared memory | 14–22% faster |
-| 256 | 8 | `cub::WarpMergeSort` | the register network loses 13% at this `IPT` |
+| 256 | 8 | `cub::WarpMergeSort` | the bitonic's Theta(N log^2 N) work loses 10-14% at every register budget |
 
 ### The bitonic network
 
@@ -247,16 +247,22 @@ indices differing in one bit, so the partner distance `j` splits the stages in t
 `W_PAD = 64` is 21 stages, 15 of them cross-lane; the merge sort it replaces staged the
 row through shared memory once per merge round.
 
-### Why the split is a register-budget fact and not a tuning knob
+### Why the split is a complexity-class fact and not a tuning knob
 
-The network keeps all `IPT` keys plus a shuffle temporary live across its whole depth,
-against this family's 64-register `__launch_bounds__(128, 8)`. At `IPT <= 4` that fits.
-At `IPT = 8` the kernel already carries `midpoint[8] + delta[8] + keys[8] + part[8]` and
-the network's temporaries do not, so ptxas trades them for rematerialization; MEASURED,
-the register network runs the `W_PAD = 256` solve at 0.4004 ms against the merge sort's
-0.3543 ms. The merge sort parks the row in shared memory instead of in registers, which
-is exactly the right trade once registers are the binding constraint. So the wide class
-keeps it, and its SASS is byte-identical to what it was before `RowSort` existed.
+The first explanation shipped here -- that the bitonic spills against the 64-register
+`__launch_bounds__(128, 8)` -- was measured false by the 2026-08-17 unification probe
+(`workflows/p74-producer/rowsort_unify.md`): the bitonic compiles with ZERO spills at 64
+registers and at every raised budget to 174, and it loses at all of them (best variant
++10.3%, 86x the probe's noise band; a hybrid with one shared-memory exchange stage loses
+more, and its elaborate form converges to `cub::WarpMergeSort` itself).
+
+The honest wall is arithmetic: a bitonic network is Theta(N log^2 N) -- 204
+compare-exchanges per lane at `W_PAD = 256` -- against the merge sort's
+Theta(N log N) at ~64 per lane. Deleting the merge sort's 145 shared-memory ops and its
+barrier buys back ~800 ALU instructions of extra comparison work, and the gap grows as
+log N. The measured crossover (-13.7% at `W_PAD = 64`, -1.6% at 128, +10..14% at 256) is
+where the two complexity classes cross, not a lucky boundary. So the wide class keeps
+the merge sort, and its SASS is byte-identical to what it was before `RowSort` existed.
 
 ### Exactness is independent of the choice
 
