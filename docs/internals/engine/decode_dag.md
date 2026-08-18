@@ -31,24 +31,23 @@ so on the second walk its verdict is 0 and the step it had skipped performs.
 | `decode_mask` (rule) | `mask` | host | both |
 | `geometry` | `geometry` | host, `pure_of` | both |
 | `scratch` | `scratch` | host, `per_state` | both |
-| `fold_operands` | `amp_read`, `amp_write`, `amp_clock`, `dials`, `g_write`, `v_folded` | main | both |
 | `growth_probe` | `gate` | main | M4 |
 | `backing` | `carried_plane`, `page_table` | main | both |
 | `state_plane` | `state_plane` | main | both |
-| `build_plan` | `plan` | host | both |
-| `execute` | `y` | main | both |
+| `build_plan` | `plan` | main | both |
+| `step` | `y` | main | both |
 
-`fold_operands` stands ahead of `growth_probe` because the probe reads `amp_write` — the
-step's write amplitudes are folded ONCE and the probe, the detached clock and the step
-itself all read the same tensors. That ordering is also why the fold is a NODE and not
-part of either kernel ([`decode/decode_fold.md`](../decode/decode_fold.md)). `amp_clock`
-IS `amp_write`: the clock is a pure product of the stored allocations with no side gain
-([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so a second fold would
-be a second derivation of one fact.
+**THERE IS NO OPERAND NODE.** The step's per-token operands are folded inside the step
+kernel, from the producer's own views, and the growth probe folds its own write side the
+same way ([`decode/decode_fold.md`](../decode/decode_fold.md)). So a dense step is ONE
+launch and a paged step is two, and neither of them has a stage whose only output is a
+widened copy of an input. The detached clock is the write allocation itself
+([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so it is not a stream
+of its own either.
 
-The node reads `scratch` because the fold's DESTINATIONS are the sequence's own buffers:
-one launch, no allocation, the same addresses on every replay — which is what the
-`capturable` declaration on it amounts to in practice.
+`build_plan` carries a stream because the decay arm's `dials` are derived there: a per-HEAD
+constant, and the one operand the step kernel does not fold. Everything else on the plan is
+a view the producer already holds.
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the frozen config,
 the plane's extent against the backing, the page table's against `[BH, N/16]`. They are

@@ -209,7 +209,7 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: a NAMED namespace, so its mangled name does not depend on which translation unit
 #: expands it -- and the decode/entmax keys now name the symbols that are actually in
 #: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
-STANDALONE_TUS = ("decode/decode.cu", "decode/decode_fold.cu", "entmax/entmax.cu",
+STANDALONE_TUS = ("decode/decode.cu", "decode/decode_expand.cu", "entmax/entmax.cu",
                   "entmax/factor.cu", "chunk/backward.cu")
 
 

@@ -158,7 +158,10 @@ def test_a_per_state_node_reads_the_state_as_a_KEY_and_never_as_an_INPUT():
             if isinstance(a, torch.Tensor):
                 assert (a.shape, a.dtype, a.device) == (b.shape, b.dtype, b.device), (
                     f"{step.name}.{name} is not a function of the declared keys")
-                assert a.data_ptr() != b.data_ptr(), (
+                #: A ZERO-ELEMENT buffer owns no bytes, so "shared" is not a property
+                #: it can have -- torch gives every empty tensor the null pointer.
+                #: Asserting distinctness there would be asserting an allocator detail.
+                assert a.numel() == 0 or a.data_ptr() != b.data_ptr(), (
                     f"{step.name}.{name} is SHARED between two sequences' objects")
 
 
@@ -335,6 +338,6 @@ def test_the_decode_dag_is_walkable_and_masks_the_growth_band_off_the_dense_step
         "the growth probe is the paged backing's own stats pass; asking it of a dense "
         "step would launch a probe against a page table that does not exist")
     order = [step.name for step in DECODE_STEP]
-    assert order.index("growth_probe") < order.index("execute"), (
+    assert order.index("growth_probe") < order.index("step"), (
         "the step reads the probe's verdict on the device, so the probe must be "
         "enqueued ahead of it")

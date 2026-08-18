@@ -132,42 +132,41 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
   // ---- the T=1 decode path -------------------------------------------------
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
-  //: contract, own consumer, frozen config. Two of its three entries are capacity GATES rather
-  //: than operations -- docs/internals/rola_api.md#registered-entries
-  //: The step's OPERAND PASS: every per-token operand widened, normalized where the
-  //: producer did not already leave the level on the simplex, and published into the
-  //: sequence's own scratch. Bound rather than folded into either kernel because the
-  //: growth probe consumes the folded write side before the step's own kernels run --
-  //: docs/internals/rola_api.md#decode-fold
-  m.def("rola_decode_fold", &rola::decode::rola_decode_fold,
-        "RoLA T=1 decode operand fold: widen, normalize and publish every per-token "
-        "operand into the sequence's scratch, in one launch.",
-        py::arg("read"), py::arg("write"), py::arg("g_write"), py::arg("v"), py::arg("amp_read"),
-        py::arg("amp_write"), py::arg("g_out"), py::arg("v_out"), py::arg("normalize"));
+  //: contract, own consumer, frozen config. Two of its four entries are capacity GATES
+  //: rather than operations -- docs/internals/rola_api.md#registered-entries
+  //: THE WHOLE STEP: the operand fold, the support expansion and the gather-GEMV in ONE
+  //: launch, over the caller's raw `[B, 1, H, *]` views -- docs/internals/rola_api.md#the-step
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
-        "RoLA T=1 decode: bitmap support expansion + token-stationary gather-GEMV",
-        py::arg("amp_read"), py::arg("amp_write"), py::arg("amp_clock"), py::arg("dials"),
-        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("bits"), py::arg("pc_coarse"),
-        py::arg("ws"), py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"),
-        py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("heads"), py::arg("n_split"),
-        py::arg("eps"),
+        "RoLA T=1 decode step: operand fold + bitmap support expansion + "
+        "token-stationary gather-GEMV, in one kernel.",
+        py::arg("read"), py::arg("write"), py::arg("normalize"), py::arg("dials"),
+        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("work"), py::arg("ws"),
+        py::arg("ctr"), py::arg("level_widths"), py::arg("level_strides"), py::arg("level_spans"),
+        py::arg("level_row_offsets"), py::arg("n_split"), py::arg("eps"),
         //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
         //: backing, where the slot IS the atom and the bytes are the same.
         py::arg("page_table") = c10::optional<at::Tensor>(),
         //: `gate` is the probe's reduced verdict: nonzero makes the whole step a no-op,
         //: which is what lets it be enqueued before the verdict is host-visible.
         py::arg("gate") = c10::optional<at::Tensor>());
-  //: The step's PRECONDITION, not a mode of it: one CTA per batch-head expands the write
-  //: side and ANDs it against residency, so the host learns whether the step needs the
-  //: exact admission preamble at all. It publishes the condensation it judged
+  //: The step's PRECONDITION, not a mode of it: one CTA per batch-head folds and expands
+  //: the write side and ANDs it against residency, so the host learns whether the step
+  //: needs the exact admission preamble at all. It publishes the condensation it judged
   //: (`atom_bits`), which is what a growth step admits from --
   //: docs/internals/rola_api.md#growth-probe
   m.def("rola_decode_growth_probe", &rola::decode::rola_decode_growth_probe,
         "RoLA T=1 decode growth probe: does this step write an atom the page table does "
         "not map? Publishes the step's write-atom set beside the verdict.",
-        py::arg("amp_write"), py::arg("page_table"), py::arg("bits"), py::arg("growth"),
-        py::arg("growth_any"), py::arg("probe_ctr"), py::arg("atom_bits"), py::arg("level_widths"),
-        py::arg("level_strides"), py::arg("level_spans"));
+        py::arg("write"), py::arg("page_table"), py::arg("work"), py::arg("probe_bits"),
+        py::arg("growth"), py::arg("growth_any"), py::arg("probe_ctr"), py::arg("atom_bits"),
+        py::arg("heads"), py::arg("n_split"), py::arg("level_widths"), py::arg("level_strides"),
+        py::arg("level_spans"));
+  //: The expansion's global scratch size per CTA -- `0` wherever the bitmap fits in
+  //: shared memory, which is every shipped topology -- docs/internals/rola_api.md#work-words
+  m.def("rola_decode_work_words", &rola::decode::rola_decode_work_words,
+        "int32 the decode expansion needs in global memory PER CTA; 0 means the bitmap "
+        "never leaves shared memory.",
+        py::arg("level_widths"), py::arg("d_v"), py::arg("decay"), py::arg("device_index"));
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

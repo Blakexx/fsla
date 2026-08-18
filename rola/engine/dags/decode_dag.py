@@ -80,28 +80,17 @@ def scratch(f):
     return bodies.DecodeScratch.build(f["geometry"], f["BH"], f["device"])
 
 
-@node(gives=("amp_read", "amp_write", "amp_clock", "dials", "g_write", "v_folded"),
-      needs=("routes", "v", "decay", "geometry", "scratch"), stream="main",
-      masks=_DECODE, capturable=True)
-def fold_operands(f):
-    """The step's OPERAND PASS: one launch, into the scratch the sequence already owns.
-
-    The read levels arrive RAW and the simplex normalization happens INSIDE the fold:
-    `read_simplex` is a reduction and a divide per level, and what this node exists to
-    be is one launch (docs/internals/decode/decode_fold.md).
-    """
-    routes = f["routes"]
-    return bodies.fold_operands(routes.read, routes.write, routes.g_write, f["v"],
-                                f["decay"], f["geometry"], f["scratch"],
-                                normalize=routes.read_needs_normalization())
-
-
-@node(gives=("gate",), needs=("amp_write", "geometry", "state", "scratch"),
+@node(gives=("gate",), needs=("routes", "geometry", "state", "scratch"),
       stream="main", masks=(Mask.M4,), capturable=True)
 def growth_probe(f):
-    """The step's own stats pass, and the GATE is its output the step reads."""
-    workspace = f["scratch"]
-    bodies.growth_probe(f["amp_write"], f["geometry"], f["state"].page_table, workspace)
+    """The step's own stats pass, and the GATE is its output the step reads.
+
+    It reads the producer's RAW write side and folds it itself, with the same device
+    function the step folds with (docs/internals/decode/decode_fold.md).
+    """
+    routes, workspace = f["routes"], f["scratch"]
+    bodies.growth_probe(routes.write, routes.heads, f["geometry"],
+                        f["state"].page_table, workspace)
     return workspace.growth_any
 
 
@@ -126,20 +115,29 @@ def state_plane(f):
 
 
 @node(gives=("plan",),
-      needs=("geometry", "routes", "amp_read", "amp_write", "amp_clock", "dials",
-             "g_write", "v_folded", "state_plane", "page_table", "scratch", "gate"),
-      masks=_DECODE, capturable=True)
+      needs=("geometry", "routes", "v", "decay", "state_plane", "page_table", "scratch",
+             "gate"),
+      stream="main", masks=_DECODE, capturable=True)
 def build_plan(f):
+    """The launch's arguments, over the producer's OWN views.
+
+    It carries a stream because the decay arm's dials are derived here: a per-HEAD
+    constant, the one operand the step kernel does not fold
+    (docs/internals/decode/decode_fold.md).
+    """
+    routes, geometry = f["routes"], f["geometry"]
     return DecodePlan(
-        config=f["geometry"], heads=f["routes"].heads, amp_read=f["amp_read"],
-        amp_write=f["amp_write"], amp_clock=f["amp_clock"], dials=f["dials"],
-        g_write=f["g_write"], v=f["v_folded"], state_plane=f["state_plane"],
+        config=geometry, heads=routes.heads, read=routes.read, write=routes.write,
+        normalize=tuple(routes.read_needs_normalization()),
+        dials=bodies.leaf_rate_dials_for(f["decay"], geometry, f["v"].device),
+        g_write=routes.g_write, v=f["v"], state_plane=f["state_plane"],
         page_table=f["page_table"], scratch=f["scratch"], gate=f["gate"])
 
 
 @node(gives=("y",), needs=("plan",), stream="main", masks=_DECODE, capturable=True)
-def execute(f):
-    return bodies.execute(f["plan"])
+def step(f):
+    """THE STEP: fold, expand and walk, in one launch."""
+    return bodies.step(f["plan"])
 
 
 @node(needs=("scratch",), stream="main", masks=(Mask.M4,))
@@ -185,12 +183,11 @@ DECODE_STEP = (
     rules.decode_mask.node,
     geometry,
     scratch,
-    fold_operands,
     growth_probe,
     backing,
     state_plane,
     build_plan,
-    execute,
+    step,
 )
 
 #: The same tuple with the host-visible verdict spliced in: the copy and the event are

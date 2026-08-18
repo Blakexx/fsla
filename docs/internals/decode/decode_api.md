@@ -35,9 +35,21 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
-`rola_decode_forward` is the single data-plane entry: it validates, expands the
-support, and launches the GEMV. Its argument checks and workspace contracts are
-documented with the definition, in [`decode.md`](decode.md#flat-bits).
+<a id="the-step"></a>`rola_decode_forward` is the single data-plane entry, and it launches
+ONE kernel: the fold, the support expansion and the gather-GEMV are three phases of it. Its
+operands are the caller's RAW `[B, 1, H, *]` views — `read`, `write`, `g_write`, `v`, plus
+the per-read-level `normalize` flags — because the fold is inside the kernel and there is
+no operand plane to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an
+argument: `v`'s own `[B, 1, H, d_v]` shape carries it. Its argument checks and workspace
+contracts are documented with the definition, in [`decode.md`](decode.md#flat-bits).
+
+<a id="work-words"></a>`rola_decode_work_words` reports how many int32 the expansion needs
+in GLOBAL memory PER CTA — `0` wherever the bitmap fits in shared memory, which is every
+shipped topology. The host multiplies by `BH * n_split` and allocates that. It is bound
+because the alternative is a Python mirror of the kernel's own sizing arithmetic against
+the device's real shared-memory budget, and a mirror of a sizing rule is the classic drift
+surface: an under-sized buffer is an out-of-bounds write, not a refusal
+([`decode_expand.md`](decode_expand.md#smem-arm)).
 
 ## <a id="paged-state"></a>3. `page_table` — which backing the state is
 
@@ -66,18 +78,21 @@ the bytes are the pre-P67-a path's exactly.
 
 The probe is bound as its own entry because it is a different HOST ORDER, not an option on
 the step. It runs BEFORE `rola_decode_forward` so the host can learn whether this step's
-write set is already resident WITHOUT deriving that set itself. It writes three things and
+write set is already resident WITHOUT deriving that set itself. It writes four things and
 nothing else — no state, no `y`, no page table: the `[BH]` int32 verdict (`growth`), its
 `[1]` int32 reduction (`growth_any`, which the STEP reads as its `gate` —
-[`decode.md` §4c](decode.md#the-gate)), and the `[BH, atoms_per_bh]` bool write-atom set
-that verdict was read off (`atom_bits`), which is what a growth step then admits from.
+[`decode.md` §4c](decode.md#the-gate)), the `[BH, atoms_per_bh]` bool write-atom set that
+verdict was read off (`atom_bits`), which is what a growth step then admits from, and the
+`[BH, n_words]` leaf map it condensed that set out of (`probe_bits` —
+[`decode_expand.md`](decode_expand.md#published-map)).
 
 Its argument list is the subset of the step's that an expansion needs, plus those
-outputs: `amp_write`, the three per-level integer vectors, the `page_table` it tests
-residency against, the step's own flat `bits` workspace, `growth`, `growth_any` and the
-reducing CTA's `probe_ctr`, and `atom_bits`. There
-is no `v`, no read side, no `n_split`, no `eps`, because none of them participates in the
-question. `atom_bits` is REQUIRED rather than optional: the kernel must condense to answer
+outputs: the RAW `write` views (it folds them itself, exactly as the step does), the three
+per-level integer vectors, `heads` — which `v` would have carried on the step and there is
+no `v` here — the `page_table` it tests residency against, the shared `work` scratch and
+the `n_split` that sizes its stride, `growth`, `growth_any`, the reducing CTA's
+`probe_ctr`, `atom_bits` and `probe_bits`. There is no `v`, no read side, no `eps`, because
+none of them participates in the question. `atom_bits` is REQUIRED rather than optional: the kernel must condense to answer
 at all, so a caller who declined the buffer would be asking for the same work with the
 result discarded.
 

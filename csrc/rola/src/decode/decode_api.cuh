@@ -25,37 +25,37 @@ namespace decode {
 int64_t rola_decode_capacity();
 int64_t rola_decode_producer_width_mirror();
 
-//: THE OPERAND PASS, bound separately because it is not a mode of the step: the growth
-//: probe consumes the folded write side before the step's own kernels exist, so the fold
-//: cannot live inside either of them without one backing or one mask losing it. Its
-//: destinations are the sequence's own scratch, which is what lets ONE launch replace the
-//: whole torch operand chain inside a capture: docs/internals/decode/decode_fold.md
-void rola_decode_fold(std::vector<at::Tensor> read, std::vector<at::Tensor> write,
-                      at::Tensor g_write, at::Tensor v, std::vector<at::Tensor> amp_read,
-                      std::vector<at::Tensor> amp_write, at::Tensor g_out, at::Tensor v_out,
-                      std::vector<int64_t> normalize);
+//: THE EXPANSION'S GLOBAL SCRATCH, in int32 PER CTA, and `0` at every shipped topology.
+//: The host multiplies by `BH * n_split`. Asking the kernel's own sizing function is what
+//: keeps the buffer from being sized by a host-side mirror that can drift:
+//: docs/internals/decode/decode_api.md#work-words
+int64_t rola_decode_work_words(std::vector<int64_t> level_widths, int64_t d_v, bool decay,
+                               int64_t device_index);
 
-at::Tensor rola_decode_forward(std::vector<at::Tensor> amp_read, std::vector<at::Tensor> amp_write,
-                               c10::optional<std::vector<at::Tensor>> amp_clock,
-                               c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v,
-                               at::Tensor state, at::Tensor bits, at::Tensor pc_coarse,
+//: THE WHOLE STEP IN ONE LAUNCH -- fold, expand, walk -- over the caller's RAW
+//: `[B, 1, H, *]` views. There is no operand plane between the producer and the walk:
+//: docs/internals/decode/decode_api.md#the-step
+at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Tensor> write,
+                               std::vector<int64_t> normalize, c10::optional<at::Tensor> dials,
+                               at::Tensor g_write, at::Tensor v, at::Tensor state, at::Tensor work,
                                at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
                                std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
-                               std::vector<int64_t> level_row_offsets, int64_t heads,
-                               int64_t n_split, double eps, c10::optional<at::Tensor> page_table,
+                               std::vector<int64_t> level_row_offsets, int64_t n_split, double eps,
+                               c10::optional<at::Tensor> page_table,
                                c10::optional<at::Tensor> gate);
 
 //: THE GROWTH PROBE, bound separately because it is a different HOST ORDER and not a
 //: mode of the step: it runs BEFORE the step so the host can learn whether this step's
-//: write set is already resident WITHOUT deriving that set itself. It writes the verdict
-//: (`growth`, and its `growth_any` reduction -- the step's GATE), and the write-atom set
-//: that verdict was reached from (`atom_bits`, which is what a growth step then admits)
-//: -- no state, no `y`, no table: docs/internals/decode/decode_api.md#growth-probe
-void rola_decode_growth_probe(std::vector<at::Tensor> amp_write, at::Tensor page_table,
-                              at::Tensor bits, at::Tensor growth, at::Tensor growth_any,
-                              at::Tensor probe_ctr, at::Tensor atom_bits,
-                              std::vector<int64_t> level_widths, std::vector<int64_t> level_strides,
-                              std::vector<int64_t> level_spans);
+//: write set is already resident WITHOUT deriving that set itself. It folds and expands
+//: its own write side, and writes the verdict (`growth`, and its `growth_any` reduction --
+//: the step's GATE) beside the write-atom set that verdict was reached from (`atom_bits`,
+//: which is what a growth step then admits) -- no state, no `y`, no table:
+//: docs/internals/decode/decode_api.md#growth-probe
+void rola_decode_growth_probe(std::vector<at::Tensor> write, at::Tensor page_table, at::Tensor work,
+                              at::Tensor probe_bits, at::Tensor growth, at::Tensor growth_any,
+                              at::Tensor probe_ctr, at::Tensor atom_bits, int64_t heads,
+                              int64_t n_split, std::vector<int64_t> level_widths,
+                              std::vector<int64_t> level_strides, std::vector<int64_t> level_spans);
 
 }  // namespace decode
 }  // namespace rola
