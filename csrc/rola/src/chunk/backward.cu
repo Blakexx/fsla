@@ -86,7 +86,6 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   const int B_ = (int)v.size(0), L = (int)v.size(1), H = (int)v.size(2);
-  TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   const int BH = B_ * H;
   auto opts = v.options().dtype(torch::kFloat32);
   //: BOTH OUTPUTS ARE FAN-IN TARGETS, so the identity of the sum has to be there
@@ -233,7 +232,6 @@ std::vector<torch::Tensor> scan_a_probe(torch::Tensor pr, torch::Tensor pw, torc
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
   const int B_ = (int)v.size(0), L = (int)v.size(1), H = (int)v.size(2);
-  TORCH_CHECK(L % chunk == 0, "L must be a multiple of the chunk");
   const int BH = B_ * H;
   auto opts = v.options().dtype(torch::kFloat32);
   auto dpr = torch::zeros({B_, H, (long)L, pr.size(-1)}, opts);
@@ -275,7 +273,7 @@ std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t 
   check_arch_table();
   TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32,
               "the union table is a contiguous int32 tensor of packed bits");
-  TORCH_CHECK(L > 0 && L % chunk == 0, "L must be a positive multiple of the chunk");
+  TORCH_CHECK(L > 0, "L is the caller's token count, and it is positive");
   //: THE BATCH COMES FROM THE CALLER, not from the table's extent: a plan whose
   //: blocks span the whole slot space builds NO table rows, so a zero-element
   //: table is legal and carries no batch to divide out.

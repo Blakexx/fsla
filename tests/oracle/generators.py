@@ -30,13 +30,11 @@ from rola.routing.types import (
 )
 from tests.oracle.families import Family
 
-#: The operator's token quantum, re-exported so a family fixture and the
-#: checkers that read a "word" of tokens both name ONE number. P67 D2-b
-#: re-anchored it: it used to be the tiled planner's `TOKEN_WORD` (the 32-token
-#: scan word `build_schedule` worked in), and it is now the chunk arm's chunk
-#: length -- the SAME 32, but now the quantum the shipped operator actually
-#: has, with `T % CHUNK_TOKENS != 0` refused by the dispatch rather than
-#: handled as a partial word.
+#: The chunk arm's chunk length, re-exported so a family fixture and the
+#: checkers that read a "word" of tokens both name ONE number. It is the
+#: MAXIMUM a super-chunk gathers, not a quantum the caller must land on: `T` is
+#: arbitrary and a short final super-chunk is the compaction's ordinary
+#: outcome, so a family is free to state a ragged `T` and still run the kernel.
 TOKEN_WORD = CHUNK_TOKENS
 
 _ROUTING = IndependentRouting(
@@ -101,10 +99,9 @@ class Case:
         self.family = family
         self.widths, self.d_v = tuple(c["widths"]), c["d_v"]
         self.B, self.T, self.H = c["B"], c["T"], c["H"]
-        # `BT` is the token quantum the tail and chunk-boundary geometry below
-        # are written against ("one word"). It is not a config axis and never
-        # was a template parameter; post-P67-D2 it is the chunk arm's own chunk
-        # length, and a `T` that is not a multiple of it has no kernel at all.
+        # `BT` is the chunk length the tail and chunk-boundary geometry below are
+        # written against ("one word"). It is not a config axis and never was a
+        # template parameter.
         self.BT = CHUNK_TOKENS
         self.norm, self.paging = c["norm"], c["paging"]
         self.topology = _topology(self.widths)

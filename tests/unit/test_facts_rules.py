@@ -173,7 +173,7 @@ def test_the_arm_takes_no_width_threshold():
 
 def test_the_arm_envelope_names_each_clause_in_order():
     good = dict(widths=(64, 64), d_v=64, normalization="global", decay=None,
-                tokens=64, arm=Arm(32, 128))
+                arm=Arm(32, 128))
     assert arm_envelope(**good) is None
     assert arm_envelope(**{**good, "d_v": 48}) == "d_v=48; the chunk matrix is built at d_v=64"
     assert arm_envelope(**{**good, "normalization": "local"}) == (
@@ -183,15 +183,13 @@ def test_the_arm_envelope_names_each_clause_in_order():
         "widths=(64, 16); the built manifest is uniform-width")
     assert arm_envelope(**{**good, "arm": None}) == (
         "topology (D=2, B=64) has no built arm in the manifest")
-    assert arm_envelope(**{**good, "tokens": 48}) == (
-        "T=48 is not a multiple of the chunk C=32")
 
 
 def test_the_arm_envelope_refuses_the_widest_clause_first():
     """A call outside several clauses is named by the FIRST one, so the sentence a
     caller reads is stable rather than a race between checks."""
     assert arm_envelope(widths=(64, 16), d_v=48, normalization="local", decay=object(),
-                        tokens=48, arm=None).startswith("d_v=48")
+                        arm=None).startswith("d_v=48")
 
 
 def test_the_operand_envelope_names_the_activation_before_the_device():

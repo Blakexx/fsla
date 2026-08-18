@@ -117,7 +117,6 @@ REFUSAL_CLAUSES: Mapping[str, str] = {
     "decay": "decay",
     "widths": "widths=",
     "topology": "topology (",
-    "T": "T=",
 }
 
 
@@ -142,6 +141,4 @@ def kernel_refusal(config: Mapping[str, Any]) -> str | None:
         return "widths"
     if (len(widths), widths[0]) not in BUILT_TOPOLOGIES:
         return "topology"
-    if config["T"] % CHUNK_TOKENS:
-        return "T"
     return None

@@ -443,13 +443,20 @@ def test_a_jagged_topology_refuses_and_names_its_widths():
 
 
 @_CUDA
-def test_a_token_count_off_the_chunk_refuses():
-    """`T` must be a multiple of the chunk `C`; a ragged tail has no arm."""
+def test_a_token_count_off_the_chunk_runs_on_the_kernel():
+    """A ragged `T` is a kernel call, not a refusal: the consumer's schedule is a
+    compaction over live tokens and its last super-chunk closes short.
+
+    The layer is where this matters -- a short or ragged prompt is what starts a
+    sequence, and it must not be the fp64 reference that answers it. The numbers are
+    `tests/oracle/test_chunk_ragged_tail.py`'s; what is asserted here is the ARM.
+    """
     torch.manual_seed(24)
     layer = _layer(decay="none")
     x = torch.randn(1, 48, _HIDDEN, device="cuda")
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="multiple of the chunk"):
+    with torch.no_grad():
         layer(x)
+    assert layer.last_execution_backend == "cuda"
 
 
 @pytest.mark.cuda

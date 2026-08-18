@@ -131,8 +131,11 @@ closes it, at the same tolerance and over the same three lengths (measured slope
 consumer's token quantum, chosen per launch by reading the realized routing, and
 gated by fixtures built long enough to force the wide arm. Both the axis and its
 kernel retired in P67 D2 ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
-chunk arm's token quantum is `rola.engine.rules.arm.CHUNK_TOKENS = 32`, a build fact, and `T` not being a
-multiple of it is a named refusal rather than a second formulation to gate.
+chunk arm's chunk `rola.engine.rules.arm.CHUNK_TOKENS = 32` is a build fact and not a
+second formulation to gate. It is a CEILING on one super-chunk's gathered entries,
+not a quantum the caller lands on, so `T` is an ordinary length axis here:
+`tests/oracle/test_chunk_ragged_tail.py` holds the ragged lengths against the oracle,
+forward, state and both gradients.
 
 ### Tolerance discipline
 
@@ -142,7 +145,8 @@ multiple of it is a named refusal rather than a second formulation to gate.
    exactness gate. There is no separate `tf32x3` tolerance to widen it against or
    to protect — the fp64 oracle is the exactness reference this bound is measured
    against directly.
-2. The **kernel-vs-oracle arm** is `tests/oracle/test_chunk_op.py` plus
+2. The **kernel-vs-oracle arm** is `tests/oracle/test_chunk_op.py`,
+   `tests/oracle/test_chunk_ragged_tail.py` (the length axis off the chunk) plus
    the conformance tier's kernel families. The CPU-only fp64 transcription that
    used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
    kernel's control structure and retired with that kernel (P67 D2); the

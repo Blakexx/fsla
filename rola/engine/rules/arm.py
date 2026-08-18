@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from rola.engine import Arm, rule
 
-#: THE CHUNK LENGTH -- the operator's token quantum. `T` must be a multiple of it,
-#: and shaping a sequence to it is the CALLER's job, which is why this is public
-#: rather than only reachable through a refusal message.
+#: THE CHUNK LENGTH -- the CEILING on one super-chunk's gathered entries, not a
+#: quantum the caller lands on: the schedule is a compaction over live tokens and a
+#: short final super-chunk is its ordinary outcome, so `T` is arbitrary. Public
+#: because the sizing of a launch is stated in it.
 CHUNK_TOKENS = 32
 
 #: The pinned plan: a fixed preference order over MEASURED arms, never a tuned

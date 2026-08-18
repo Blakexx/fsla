@@ -13,7 +13,7 @@ cell.
 
 **`gradcheck` ITSELF IS NOT USED AGAINST THE KERNEL AND CANNOT BE.** Finite
 differences need perturbations far below bf16 resolution, and the kernel's envelope
-forbids the tiny shapes `gradcheck` wants (`T % 32`, `d_v = 64`, built arms). It
+forbids the shapes `gradcheck` wants (`d_v = 64`, built arms). It
 belongs on the ORACLE, certifying the reference's own autograd against finite
 differences, and that is what the first test here does — a crown-jewels gate on the
 reference, cheap, at fp64 and a size `gradcheck` can afford.

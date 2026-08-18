@@ -69,7 +69,7 @@ the no-fallback rule forbids.
 | `normalization` | `"global"` | refused |
 | widths | uniform (`len(set(widths)) == 1`) | refused (a jagged topology) |
 | `(D, B)` | the manifest's combinations (`rola.engine.facts.manifest`'s `chunk_arms()`) | refused |
-| `T` | a multiple of the chunk `C = 32` | refused |
+| `T` | any length | — |
 | `decay` | not implemented in the chunk arm (decode has it) | refused |
 | an unratified activation | — | refused |
 

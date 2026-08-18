@@ -66,7 +66,7 @@ DECODE_RTOL = BF16_RTOL
 
 
 def _chunk_tokens() -> int:
-    """The prefill arm's token quantum. Imported through the function so this
+    """The prefill arm's chunk length. Imported through the function so this
     module stays importable without the extension for a collection-only run."""
     from rola.engine.rules.arm import CHUNK_TOKENS
 

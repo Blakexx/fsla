@@ -66,8 +66,8 @@ REGIME_AXES: Mapping[str, tuple[str, ...]] = {
     #: one digit; ``cold_read`` names the regime where read mass sits on leaves
     #: no write ever touched (the carve-out's data-side twin).
     "mass": ("spread", "concentrated", "cold_read"),
-    #: The token tail. ``ragged`` is T not a multiple of BT (and, under a split,
-    #: segments of unequal tile count) — the off-by-one surface.
+    #: The token tail. ``ragged`` is T not a multiple of the chunk length (and,
+    #: under a split, segments of unequal tile count) — the off-by-one surface.
     "tail": ("divisible", "ragged"),
     #: Per-token support cardinality stratum: exactly one digit, some, all.
     "support": ("singleton", "partial", "full"),
@@ -238,9 +238,9 @@ _STRATIFIED: tuple[Family, ...] = (
         dict(density="sparse", coherence="iid", rw_correlation="independent",
              mass="spread", tail="ragged", support="partial"),
         _cfg(seed=109, T=83, p_read=0.6, p_write=0.6, norm="global"),
-        basis="T = 83, not a multiple of the fixed 32-token scan word "
-              "(`TOKEN_WORD`): a partial word. The stratified twin of the "
-              "adversarial ragged corner, at mid-box density."),
+        basis="T = 83, not a multiple of the 32-token chunk (`TOKEN_WORD`): the "
+              "consumer's last super-chunk closes short. The stratified twin of "
+              "the adversarial ragged corner, at mid-box density."),
     #: ARM VARIANTS. The named cells above run at one decay arm each; these
     #: close the near-default census holes — each variant exists because the
     #: join listed its (DECAY x regime) pair as empty and the pair is CHEAP to
