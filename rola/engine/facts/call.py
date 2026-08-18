@@ -1,21 +1,26 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""One call's facts, read off the routing bundle and the value stream.
+"""One call's facts, read off the routing bundle and the value stream, and the
+envelope those facts fold into: whether the built arm has an arm for this call.
 
 The rules fold VALUES -- that is what makes them testable with no device present --
 so something has to read those values off the objects a caller actually holds. This
-is that adapter and nothing else: it finds facts and applies one rule each, and it
-decides nothing of its own (docs/internals/engine/engine.md).
+is that adapter and nothing else: it finds facts and applies the rules over them, and
+it decides nothing of its own (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from rola.engine import rules
+from rola.engine import BackwardNotImplemented, rules
 from rola.engine.facts import manifest
+from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
+    import torch
+
     from rola.engine import Arm
+    from rola.routing.factors import RouteFactors
 
 
 def widths_of(routes) -> tuple[int, ...]:
@@ -55,3 +60,56 @@ def backward_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
     clauses = envelope_clauses(routes, decay, d_v=d_v)
     return rules.backward_envelope(rules.arm_envelope(*clauses), clauses[0],
                                    clauses[-1], manifest.scan_arms())
+
+
+def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
+    """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
+
+    THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
+    before calling and get the sentence the refusal will carry. It is a CALLER of the
+    rule layer: the sentences are :mod:`rola.engine.rules.envelope`'s and this function reads
+    the facts they fold. The clauses that exist only on the grad path are
+    :func:`require_envelope`'s.
+    """
+    reason = rules.envelope(tuple(routes.topology.unratified_activations), routes.device)
+    if reason is not None:
+        return reason
+    return arm_refusal(routes, decay, d_v=v.shape[-1])
+
+
+def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
+                     state: Any = None) -> None:
+    """Refuse anything the built arm cannot run. THE FAST-FAIL, in one place.
+
+    There is no second arm to route to: the fp64 oracle is the executable spec, not a
+    fallback, and a caller who wants it calls it (:func:`rola.ops.naive.naive_rola`).
+
+    **THE GRADIENT IS NO LONGER A CLAUSE HERE.** It was, while the operator was
+    forward-only; the two-pass backward is built and gated, so a grad-bearing call
+    now runs. What remains is the CONFIGURATION envelope, which refuses whether or
+    not a gradient is attached, plus one clause that exists only on the grad path:
+    a carried STATE. Training in v1 is stateless (P65 R-D) -- the state plane is
+    caller-owned and mutated in place, and `d initial_state` is not in the scans --
+    so `state=` and a gradient are mutually exclusive, by name, at the boundary
+    rather than silently.
+    """
+    grad = requires_backward(*operands_of(routes, v, decay))
+    stateless = rules.training_envelope(grad, state)
+    if stateless is not None:
+        raise BackwardNotImplemented(stateless)
+    if grad and routes.device.type == "cuda":
+        #: THE REVERSE PASS' ARM MATRIX IS NARROWER THAN THE FORWARD'S, so a call
+        #: that would run forward and fail backward is refused HERE rather than
+        #: three launches later with the operands already consumed.
+        back = backward_refusal(routes, decay, d_v=v.shape[-1])
+        if back is not None:
+            raise BackwardNotImplemented(
+                f"rola_op can run this call but cannot differentiate it: {back}. Run "
+                "it under torch.no_grad() with the operands detached, or move to an "
+                "arm the reverse pass carries.")
+    reason = envelope_refusal(routes, v, decay)
+    if reason is not None:
+        raise NotImplementedError(
+            f"rola_op runs the BUILT envelope only and there is no arm for this call: "
+            f"{reason}. Nothing else is reachable through this surface "
+            "(docs/api.md §1).")

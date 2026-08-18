@@ -56,7 +56,7 @@ the consumer accepts.
 
 `CHUNK_ARMS_X` is not merely what this TU can launch; since the tiled consumer stopped
 being reachable from production it is the whole of what the package ships a kernel for.
-`rola.interface.envelope_refusal` reads `rola.engine.rules.envelope`, and everything
+`rola.engine.facts.call.envelope_refusal` reads `rola.engine.rules.envelope`, and everything
 outside the matrix is REFUSED by the clause that names it — the same treatment decay
 and an unratified activation get, in the same words, so there is one authority on what
 this kernel runs and it is this file's arm list. The envelope's user-facing statement,

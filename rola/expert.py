@@ -12,7 +12,7 @@ a package into its privates is worse than a marked door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
 these objects and pass them; do not assert on their fields. What
-:func:`~rola.interface.envelope_refusal` reports moves with the built matrix.
+:func:`~rola.engine.facts.call.envelope_refusal` reports moves with the built matrix.
 
 Importing this module is a statement that you accept that. The op never requires it.
 """
@@ -22,7 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rola.interface import envelope_refusal, require_envelope, requires_backward
+from rola.engine.facts.call import envelope_refusal, require_envelope
+from rola.interface import requires_backward
 from rola.routing.side_gain import GainConfig
 
 __all__ = [

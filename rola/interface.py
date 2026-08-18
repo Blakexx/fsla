@@ -24,8 +24,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from rola._state import RoLAState
-from rola.engine import rules
-from rola.engine.facts.call import arm_refusal, backward_refusal
+from rola.engine import BackwardNotImplemented, rules
 from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
@@ -35,9 +34,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BackwardNotImplemented",
     "ChunkConsumer",
-    "envelope_refusal",
     "operands_of",
-    "require_envelope",
     "requires_backward",
     "rola_op",
 ]
@@ -46,9 +43,6 @@ __all__ = [
 BACKWARD_ARRIVES_WITH = (
     "the backward arrives with the native backward (docs/open-work.md W9); until then "
     "there is no training path through this surface")
-
-class BackwardNotImplemented(NotImplementedError):
-    """Raised when a gradient is demanded of the forward-only kernel surface."""
 
 # ---------------------------------------------------------------------------
 # The public op
@@ -108,70 +102,15 @@ def rola_op(
     state._kernel_commit(plan.state_out)
     return y, state
 
-# ---------------------------------------------------------------------------
-# The envelope
-# ---------------------------------------------------------------------------
-
-def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
-    """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
-
-    THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
-    before calling and get the sentence the refusal will carry. It is a CALLER of the
-    rule layer: the sentences are :mod:`rola.engine.rules.envelope`'s and this function reads
-    the facts they fold. The clauses that exist only on the grad path are
-    :func:`require_envelope`'s.
-    """
-    reason = rules.envelope(tuple(routes.topology.unratified_activations), routes.device)
-    if reason is not None:
-        return reason
-    return arm_refusal(routes, decay, d_v=v.shape[-1])
-
-def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
-                     state: Any = None) -> None:
-    """Refuse anything the built arm cannot run. THE FAST-FAIL, in one place.
-
-    There is no second arm to route to: the fp64 oracle is the executable spec, not a
-    fallback, and a caller who wants it calls it (:func:`rola.ops.naive.naive_rola`).
-
-    **THE GRADIENT IS NO LONGER A CLAUSE HERE.** It was, while the operator was
-    forward-only; the two-pass backward is built and gated, so a grad-bearing call
-    now runs. What remains is the CONFIGURATION envelope, which refuses whether or
-    not a gradient is attached, plus one clause that exists only on the grad path:
-    a carried STATE. Training in v1 is stateless (P65 R-D) -- the state plane is
-    caller-owned and mutated in place, and `d initial_state` is not in the scans --
-    so `state=` and a gradient are mutually exclusive, by name, at the boundary
-    rather than silently.
-    """
-    grad = requires_backward(*operands_of(routes, v, decay))
-    stateless = rules.training_envelope(grad, state)
-    if stateless is not None:
-        raise BackwardNotImplemented(stateless)
-    if grad and routes.device.type == "cuda":
-        #: THE REVERSE PASS' ARM MATRIX IS NARROWER THAN THE FORWARD'S, so a call
-        #: that would run forward and fail backward is refused HERE rather than
-        #: three launches later with the operands already consumed.
-        back = backward_refusal(routes, decay, d_v=v.shape[-1])
-        if back is not None:
-            raise BackwardNotImplemented(
-                f"rola_op can run this call but cannot differentiate it: {back}. Run "
-                "it under torch.no_grad() with the operands detached, or move to an "
-                "arm the reverse pass carries.")
-    reason = envelope_refusal(routes, v, decay)
-    if reason is not None:
-        raise NotImplementedError(
-            f"rola_op runs the BUILT envelope only and there is no arm for this call: "
-            f"{reason}. Nothing else is reachable through this surface "
-            "(docs/api.md §1).")
-
 class ChunkConsumer(torch.autograd.Function):
     """The CHUNK consumer as an autograd node whose backward refuses, loudly.
 
     ``rola.ops.chunk.execute`` is a bare extension call: reached from a gradient-requiring
     context it returns a perfectly good tensor with no ``grad_fn``, and the symptom is
     ``x.grad is None`` several files away (the layer-dispatch autograd gap).
-    :func:`require_envelope` is what keeps that from happening; this node is what makes
-    it LOUD if the refusal is ever bypassed -- a first line and a last line, not one
-    line twice.
+    :func:`rola.engine.facts.call.require_envelope` is what keeps that from happening;
+    this node is what makes it LOUD if the refusal is ever bypassed -- a first line and
+    a last line, not one line twice.
 
     ``forward`` takes the routing tensors it does not read. That is the mechanism, not
     an oversight: autograd inspects the FLAT argument list for grad-requiring tensors,

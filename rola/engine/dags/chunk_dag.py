@@ -16,6 +16,7 @@ import torch
 
 from rola.engine import SUPPLIABLE, ChunkPlan, node, rules, run, validate_dag
 from rola.engine.facts import nodes
+from rola.engine.facts.call import require_envelope
 
 _SEEDS = ("routes", "v", "decay", "state", "expert", "want_state", "given_state_in",
           "given_arena")
@@ -97,7 +98,6 @@ def validate_context(ctx: ChunkContext) -> None:
     this point, and a check that is checkable here belongs here and nowhere else.
     """
     from rola._state import RoLAState
-    from rola.interface import require_envelope
     from rola.routing.factors import RouteFactors
 
     illegal = sorted(set(ctx.supplied) - SUPPLIABLE)

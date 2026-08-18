@@ -25,8 +25,8 @@ from einops import rearrange
 
 import rola
 from rola import RoLA, dense_routing, union_routing
-from rola.expert import PlanOverrides
-from rola.interface import BackwardNotImplemented, envelope_refusal
+from rola.expert import PlanOverrides, envelope_refusal
+from rola.interface import BackwardNotImplemented
 from rola.ops.naive import naive_rola
 
 BF16_RTOL = 1e-2

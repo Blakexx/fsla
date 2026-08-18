@@ -1,6 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The facts engine's value types: the call class, the mask it selects, the arm.
+"""The facts engine's value types: the call class, the mask it selects, the arm, and
+the refusal every no-backward clause raises.
 
 Every fact is an immutable value. Tensor-valued facts are held by REFERENCE and
 nothing here allocates (docs/internals/engine/engine.md).
@@ -20,6 +21,10 @@ if TYPE_CHECKING:
 #: ``constexpr`` cannot supply here; :meth:`rola.ops.paging.PageArena.__init__` checks
 #: it against the atom geometry it addresses.
 MMA_K_QUANTUM = 16
+
+
+class BackwardNotImplemented(NotImplementedError):
+    """Raised when a gradient is demanded of the forward-only kernel surface."""
 
 
 class Mask(IntEnum):
