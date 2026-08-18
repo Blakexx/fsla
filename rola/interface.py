@@ -39,11 +39,6 @@ __all__ = [
     "rola_op",
 ]
 
-#: The one sentence every no-backward refusal in the package ends with.
-BACKWARD_ARRIVES_WITH = (
-    "the backward arrives with the native backward (docs/open-work.md W9); until then "
-    "there is no training path through this surface")
-
 # ---------------------------------------------------------------------------
 # The public op
 # ---------------------------------------------------------------------------

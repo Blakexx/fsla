@@ -190,10 +190,11 @@ def guard_no_grad(operands) -> None:
     if not torch.is_grad_enabled():
         return
     if any(t is not None and torch.is_tensor(t) and t.requires_grad for t in operands):
-        from rola.interface import BACKWARD_ARRIVES_WITH, BackwardNotImplemented
+        from rola.interface import BackwardNotImplemented
 
         raise BackwardNotImplemented(
-            f"rola decode is forward-only: {BACKWARD_ARRIVES_WITH}. Reaching it from a "
+            "rola decode is forward-only: the single-token arm has no reverse pass -- "
+            "the two-pass backward is the chunk arm's. Reaching it from a "
             "grad-requiring context would return a tensor with no grad_fn and silently "
             "sever the graph (the x.grad-is-None failure class). Use eval mode / "
             "torch.no_grad.")
