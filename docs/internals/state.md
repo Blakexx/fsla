@@ -160,9 +160,15 @@ impossibility and not a policy, which is the only kind of refusal this surface h
 
 ## <a id="clone"></a>6. `clone()` is the transition
 
-`clone()` is an EAGER deep copy: a paged state's copy gets its own arena with the same
-residency and its own pages; a dense state's copy gets its own plane. Nothing is
-shared, and nothing else is copied — a clone has no rings and no scratch to copy,
+**THE CONTRACT IS STRATEGY-INVARIANT.** `clone()` returns an independent sequence:
+either handle may be passed into any op with no effect on the other, ever. The strategy
+chooses the MECHANISM — dense: plane copy; paged: referenced-slot copy; cow, future:
+table copy + refcounts — and the contract does not vary. That is what makes COW a
+drop-in optimization behind this method ([§9.1](#cow)) rather than a second semantics.
+
+Today's mechanism is an EAGER deep copy: a paged state's copy gets its own arena with
+the same residency and its own pages; a dense state's copy gets its own plane. Nothing
+is shared, and nothing else is copied — a clone has no rings and no scratch to copy,
 because it holds none.
 
 It is also the ONLY sanctioned strategy change (`clone(strategy=...)`). A live mutable

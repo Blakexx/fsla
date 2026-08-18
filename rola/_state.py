@@ -151,6 +151,11 @@ class RoLAState:
     def clone(self, strategy: str | None = None) -> RoLAState:
         """An EAGER deep copy, and the only sanctioned strategy change.
 
+        `clone()` returns an independent sequence: either handle may be passed into any
+        op with no effect on the other, ever. The strategy chooses the MECHANISM
+        (dense: plane copy; paged: referenced-slot copy; cow, future: table copy +
+        refcounts) -- the contract does not vary.
+
         The copy shares nothing: a paged state's copy gets its own arena with the
         same residency, a dense one's its own plane. Changing strategy crosses a
         clone by rule (`s0_design.md` amendment 10 revised) -- a live ancestor is a
