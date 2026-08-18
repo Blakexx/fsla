@@ -50,12 +50,14 @@ std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t 
                                       std::vector<int64_t> widths, int64_t L, int64_t BH);
 std::vector<std::vector<int64_t>> scan_b_census();
 std::vector<std::vector<int64_t>> scan_a_census();
-//: THE BACKWARD LADDER'S RUNG 0 (csrc/rola/src/chunk/ladder_r0.cu): the dense
-//: two-pass backward on per-slot coefficients -- no routing, no mass, no gains.
+//: THE BACKWARD LADDER'S RUNGS 0-1 (csrc/rola/src/chunk/ladder_r0.cu): the dense
+//: two-pass backward on per-slot coefficients, with the mass column and the
+//: self-normalizing readout's adjoint -- no routing, no gains, no ragged tail.
 std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::Tensor dnum,
-                                       int64_t chunk, int64_t bc);
+                                       torch::Tensor dden, int64_t chunk, int64_t bc);
 std::vector<torch::Tensor> rung0_pass2(torch::Tensor r, torch::Tensor w, torch::Tensor v,
-                                       torch::Tensor dnum, int64_t chunk, int64_t bc);
+                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
+                                       int64_t bc);
 std::vector<std::vector<int64_t>> rung0_census();
 
 }  // namespace rola::chunk

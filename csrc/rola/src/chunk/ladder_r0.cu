@@ -28,8 +28,8 @@ static cudaError_t launch_rung0_pass1(const Rung0Params& p, cudaStream_t stream)
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  rung0_pass1_kernel<C, BC>
-      <<<(unsigned)p.BH, threads_for(BC), sm, stream>>>(p.w, p.v, p.dnum, p.dr, p.L, p.v_row_bytes);
+  rung0_pass1_kernel<C, BC><<<(unsigned)p.BH, threads_for(BC), sm, stream>>>(
+      p.w, p.v, p.dnum, p.dden, p.dr, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -44,7 +44,7 @@ static cudaError_t launch_rung0_pass2(const Rung0Params& p, cudaStream_t stream)
     configured = true;
   }
   rung0_pass2_kernel<C, BC><<<(unsigned)p.BH, threads_for(BC), sm, stream>>>(
-      p.r, p.w, p.v, p.dnum, p.dv, p.dw, p.L, p.v_row_bytes);
+      p.r, p.w, p.v, p.dnum, p.dden, p.dv, p.dw, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -66,7 +66,8 @@ static std::array<int64_t, 8> rung0_census_arm(K kernel) {
 }
 
 static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
-                           const torch::Tensor& dnum, int64_t chunk, int64_t bc) {
+                           const torch::Tensor& dnum, const torch::Tensor& dden, int64_t chunk,
+                           int64_t bc) {
   TORCH_CHECK(w.is_cuda() && w.is_contiguous() && w.scalar_type() == torch::kBFloat16
                   && w.dim() == 3 && w.size(2) == bc,
               "rung 0's coefficients are a contiguous bf16 [BH, L, BC] plane: at this "
@@ -77,8 +78,13 @@ static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
   TORCH_CHECK(dnum.is_cuda() && dnum.is_contiguous() && dnum.scalar_type() == torch::kBFloat16
                   && dnum.dim() == 3 && dnum.size(2) == kD,
               "dnum must be a contiguous bf16 [BH, L, 64] tensor");
+  TORCH_CHECK(dden.is_cuda() && dden.is_contiguous() && dden.scalar_type() == torch::kBFloat16
+                  && dden.dim() == 2,
+              "dden must be a contiguous bf16 [BH, L] tensor: it is the readout's mass "
+              "seed and the ones column of the transposed staircase");
   TORCH_CHECK(w.size(0) == v.size(0) * v.size(2) && w.size(0) == dnum.size(0)
-                  && w.size(1) == v.size(1) && w.size(1) == dnum.size(1),
+                  && w.size(0) == dden.size(0) && w.size(1) == v.size(1)
+                  && w.size(1) == dnum.size(1) && w.size(1) == dden.size(1),
               "the coefficient, value and seed planes must agree on (BH, L)");
   //: RAGGED T IS A LATER RUNG.  A partial final chunk is refused rather than
   //: masked: the mask is rung b6's, and a fallback here would be the special case
@@ -89,9 +95,9 @@ static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
 }
 
 std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::Tensor dnum,
-                                       int64_t chunk, int64_t bc) {
+                                       torch::Tensor dden, int64_t chunk, int64_t bc) {
   check_arch_table();
-  check_operands(w, v, dnum, chunk, bc);
+  check_operands(w, v, dnum, dden, chunk, bc);
   const int BH = (int)w.size(0), L = (int)w.size(1);
   auto dr = torch::empty({(long)BH, (long)L, bc}, w.options().dtype(torch::kFloat32));
 #define R0_PASS1_X(C_, BC_)                                                                    \
@@ -100,6 +106,7 @@ std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::
                   reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
+                  reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
                   dr.data_ptr<float>(),                                                        \
                   nullptr,                                                                     \
                   nullptr,                                                                     \
@@ -115,9 +122,10 @@ std::vector<torch::Tensor> rung0_pass1(torch::Tensor w, torch::Tensor v, torch::
 }
 
 std::vector<torch::Tensor> rung0_pass2(torch::Tensor r, torch::Tensor w, torch::Tensor v,
-                                       torch::Tensor dnum, int64_t chunk, int64_t bc) {
+                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
+                                       int64_t bc) {
   check_arch_table();
-  check_operands(w, v, dnum, chunk, bc);
+  check_operands(w, v, dnum, dden, chunk, bc);
   TORCH_CHECK(r.sizes() == w.sizes() && r.is_contiguous() && r.scalar_type() == torch::kBFloat16,
               "the read coefficients share the write side's plane shape");
   const int BH = (int)w.size(0), L = (int)w.size(1);
@@ -130,6 +138,7 @@ std::vector<torch::Tensor> rung0_pass2(torch::Tensor r, torch::Tensor w, torch::
                   reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
+                  reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
                   nullptr,                                                                     \
                   dv.data_ptr<float>(),                                                        \
                   dwo.data_ptr<float>(),                                                       \

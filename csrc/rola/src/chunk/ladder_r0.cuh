@@ -1,10 +1,10 @@
-// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNG 0: the dense
+// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNGS 0-1: the dense
 // chunked linear-attention backward, written in RoLA's own quantities as a
-// two-pass pair.  Pass 1 ascends, rebuilding the state from zero and emitting the
-// read side's per-slot cotangent; pass 2 descends, carrying the adjoint and
-// emitting the value cotangent and the write side's per-slot one.  Dense routing,
-// contiguous chunks, no mass column, no write gain, no digits -- every RoLA
-// feature is a later rung.  docs/internals/chunk/ladder_r0.md
+// two-pass pair.  Pass 1 ascends, rebuilding the state and its mass column from
+// zero and emitting the read side's per-slot cotangent; pass 2 descends, carrying
+// both adjoints and emitting the value cotangent and the write side's per-slot
+// one.  Dense routing, contiguous chunks, no write gain, no digits -- those are
+// later rungs.  docs/internals/chunk/ladder_r0.md
 #pragma once
 
 #include "chunk_kernel.cuh"
@@ -14,7 +14,7 @@ namespace rola::chunk {
 //: Rung 0's launch arguments.  The coefficients are PER SLOT: at this rung the
 //: slot panel is the identity, so there is no digit arithmetic and no producer.
 struct Rung0Params {
-  const __nv_bfloat16 *r, *w, *v, *dnum;
+  const __nv_bfloat16 *r, *w, *v, *dnum, *dden;
   float *dr, *dv, *dw;
   int BH, L, v_row_bytes;
 };
@@ -23,13 +23,16 @@ struct Rung0Params {
 //: falsified per arm by the census' spill and budget columns.  It is a single number
 //: rather than a `BC` row because the rung is built at one block width; the pass that
 //: peaks is the descending one, which carries the adjoint state through every block.
-constexpr int reg_floor_r0() { return 176; }
+constexpr int reg_floor_r0() { return 192; }
 
 //: RUNG 0'S GEOMETRY.  Every stream the kernel consumes over time rides the ring:
-//: the two value-shaped panels always, the write coefficients always, and the read
-//: coefficients in the pass that carries the adjoint.  The published state's rows
-//: are UNPADDED -- it is read four times per unit per visit, where the pad would
-//: buy nothing and cost the CTA target -- docs/internals/chunk/ladder_r0.md
+//: the two value-shaped panels always, the write coefficients always, the read
+//: coefficients in the pass that carries the adjoint, and the readout's mass seed
+//: inside the `dnum` panel's own row pad, which costs no bytes at all.  The
+//: published state's rows are UNPADDED -- it is read four times per unit per visit,
+//: where the pad would buy nothing and cost the CTA target.  Pass 2 sits EXACTLY on
+//: the two-CTA shared-memory ceiling, which is why the mass column may not claim a
+//: buffer -- docs/internals/chunk/ladder_r0.md
 template <int C, int BC, bool PASS2>
 struct GeomR0 {
   static constexpr int LdV = kD + kPadE;
@@ -84,16 +87,43 @@ struct TileStage {
 
 #define R0_ADDR(b_, ld_, R_, g_) ((b_) + (uint32_t)(((R_) * (ld_) + (g_) * 8) * 2))
 
+//: THE MASS SEED'S SEAT, in the `dnum` panel's row pad: entry `i` at row `i / 8`,
+//: column `d_v + i % 8`.  Eight-wide groups are what makes `(i, i + 1)` adjacent for
+//: every even `i`, which is the whole reason for the shape -- the fold reads the seed
+//: as an mma A fragment, whose lanes want exactly those pairs.
+#define R0_DDEN(ld_, i_) (((i_) >> 3) * (ld_) + kD + ((i_) & 7))
+
+//: THE SEED'S SEATS, RESOLVED ONCE.  Every consumer's entry index is a fixed
+//: function of the lane, so the seat arithmetic is loop-invariant and only the ring
+//: slot's base moves; carrying the offsets is what keeps the visit's added work to
+//: the arithmetic the mass terms actually are.
+template <int LD, int ROWS>
+__device__ __forceinline__ void r0_dden_seats(int (&off)[ROWS][2], int row0, int stride) {
+#pragma unroll
+  for (int i = 0; i < ROWS; ++i) {
+    off[i][0] = R0_DDEN(LD, row0 + i * stride);
+    off[i][1] = R0_DDEN(LD, row0 + i * stride + 8);
+  }
+}
+
+//: The mass folds contract a token axis against a coefficient panel with an A
+//: operand that is EXACTLY representable in bf16 -- ones on the write side, the
+//: bf16 seed plane itself on the read side -- so the fold rides the tensor pipe
+//: without a compensated split.  `kOnesFrag` is bf16 `1.0` in both halves.
+static constexpr uint32_t kOnesFrag = 0x3F803F80u;
+
 //: THE STAIRCASE, DENSE: chunk-local token indices, and a write entry is kept when
 //: its token is at or before the read entry's.
 #define R0_STAIR(v_, tc_, tr_) ((tc_) <= (tr_) ? (v_) : 0.f)
 
-//: PASS 1 -- the ascending rebuild.  It carries `S` and emits
-//: `dR[i,s] = <dnum_i, S_a[s,:]> + sum_{j<=i} W[j,s] <dnum_i, v_j>`.
+//: PASS 1 -- the ascending rebuild.  It carries `S` and its mass column `z`, and
+//: emits `dR[i,s] = <dnum_i, S_a[s,:]> + dden_i z_a[s] + sum_{j<=i} W[j,s] Gd'[i,j]`
+//: with `Gd'[i,j] = <dnum_i, v_j> + dden_i`.
 template <int C, int BC>
 __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void rung0_pass1_kernel(
     const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16* __restrict__ v,
-    const __nv_bfloat16* __restrict__ dnum, float* __restrict__ dr, int L, int v_row_bytes) {
+    const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
+    float* __restrict__ dr, int L, int v_row_bytes) {
   using G = GeomR0<C, BC, false>;
   constexpr int kThreads = threads_for(BC);
   constexpr int kWarps = kThreads / 32;
@@ -112,6 +142,8 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory maximum");
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
+  static_assert(C % 8 == 0 && kPadE >= 8 && C / 8 <= C,
+                "the mass seed seats in the value panel's row pad, eight entries to a row");
   constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
   constexpr int NSPLIT_RAW = kWarps / MSPLIT;
   constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
@@ -135,6 +167,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   const __nv_bfloat16* const vPlane =
       pin_address(v + (long)(blockIdx.x / heads) * L * vRowElems + (long)(blockIdx.x % heads) * kD);
   const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)blockIdx.x * L * kD);
+  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)blockIdx.x * L);
   const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)blockIdx.x * L * BC);
   float* const drPlane = pin_address(dr + (long)blockIdx.x * L * BC);
 
@@ -146,6 +179,10 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   const uint32_t offFs = (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t offFg = (uint32_t)((rF * LdG + cF * 8) * 2);
   const uint32_t offFd = (uint32_t)((rF * LdDs + cF * 8) * 2);
+  const int gm0 = (warp / NSPLIT) * MPW, gn0 = (warp % NSPLIT) * NPW;
+  int ddG[MPW][2], ddM[MTOK][2];
+  r0_dden_seats<LdV, MPW>(ddG, gm0 * 16 + (lane >> 2), 16);
+  r0_dden_seats<LdV, MTOK>(ddM, lane >> 2, 16);
 
   const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn), swB = smem_addr(sw);
   const uint32_t sgF = smem_addr(sg) + offFg;
@@ -157,6 +194,16 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   for (int j = 0; j < NDV; ++j)
 #pragma unroll
     for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
+
+  //: THE MASS COLUMN, in the accumulator layout its one consumer already reads.
+  //: `A` is all ones, so every `m` row of the tile carries the same slot total and
+  //: elements 0/1 are the pair the entry-mass term wants; no reduction exists.
+  float zac[NSLOT][4];
+#pragma unroll
+  for (int n = 0; n < NSLOT; ++n)
+#pragma unroll
+    for (int e = 0; e < 4; ++e) zac[n][e] = 0.f;
+  const uint32_t ones[4] = {kOnesFrag, kOnesFrag, kOnesFrag, kOnesFrag};
 
   TileStage<C, kD, LdV, kThreads> stV;
   TileStage<C, BC, LdS, kThreads> stS;
@@ -179,6 +226,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
       stV.issue(svB + stgV, vPlane, tok0, vRowB);
       stV.issue(sdnB + stgV, dnPlane, tok0, kDnRowB);
       stS.issue(swB + stgS, wPlane, tok0, kSRowB);
+      if (tid < C) sdn[(stgV >> 1) + R0_DDEN(LdV, tid)] = ddPlane[(int)tok0 + tid];
     }
     stgV += kVSlotB;
     if (stgV == kVRingB) stgV = 0;
@@ -203,6 +251,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
     const uint32_t aVT = svB + cmpV + offTv;
     const uint32_t aDF = sdnB + cmpV + offFv;
     const uint32_t aWF = swB + cmpS + offFs;
+    const __nv_bfloat16* const dd = sdn + (cmpV >> 1);
     const uint32_t tokBase = (uint32_t)(c * C);
     cmpV += kVSlotB;
     if (cmpV == kVRingB) cmpV = 0;
@@ -220,9 +269,8 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
       store_bf16x2(&sds[(c0 + 8) * LdDs + s0], pack_bf16x2(st[nj][2], st[nj][3]));
     }
 
-    // ---- the d_v Gram: Gd = staircase(dnum . v^T) ----------------------------
+    // ---- the d_v Gram: Gd' = staircase(dnum . v^T + dden (x) 1) --------------
     if (warp < GWARPS) {
-      const int gm0 = (warp / NSPLIT) * MPW, gn0 = (warp % NSPLIT) * NPW;
 #pragma unroll
       for (int m = 0; m < MPW; ++m) {
         float g[GPAIR][2][4];
@@ -245,16 +293,17 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
           }
         }
         const int tr = (gm0 + m) * 16 + (lane >> 2);
+        const float m0 = __bfloat162float(dd[ddG[m][0]]), m1 = __bfloat162float(dd[ddG[m][1]]);
 #pragma unroll
         for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
           for (int h = 0; h < 2; ++h) {
             const int tc = (gn0 + u * 2 + h) * 8 + (lane & 3) * 2;
-            store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(R0_STAIR(g[u][h][0], tc, tr),
-                                                         R0_STAIR(g[u][h][1], tc + 1, tr)));
+            store_bf16x2(&sg[tr * LdG + tc], pack_bf16x2(R0_STAIR(g[u][h][0] + m0, tc, tr),
+                                                         R0_STAIR(g[u][h][1] + m0, tc + 1, tr)));
             store_bf16x2(&sg[(tr + 8) * LdG + tc],
-                         pack_bf16x2(R0_STAIR(g[u][h][2], tc, tr + 8),
-                                     R0_STAIR(g[u][h][3], tc + 1, tr + 8)));
+                         pack_bf16x2(R0_STAIR(g[u][h][2] + m1, tc, tr + 8),
+                                     R0_STAIR(g[u][h][3] + m1, tc + 1, tr + 8)));
           }
       }
     }
@@ -302,6 +351,20 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
             mma(acc[m][2 * np + 1], ga, &wb[2]);
           }
         }
+      //: the ENTRY MASS, `dden_i z_a[s]`: an OUTER product of a per-read-token
+      //: value and a per-slot one, so it is a rank-1 add and not a broadcast.
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m) {
+        const float d0 = __bfloat162float(dd[ddM[m][0]]);
+        const float d1 = __bfloat162float(dd[ddM[m][1]]);
+#pragma unroll
+        for (int n = 0; n < NSLOT; ++n) {
+          acc[m][n][0] += d0 * zac[n][0];
+          acc[m][n][1] += d0 * zac[n][1];
+          acc[m][n][2] += d1 * zac[n][0];
+          acc[m][n][3] += d1 * zac[n][1];
+        }
+      }
 #pragma unroll
       for (int m = 0; m < MTOK; ++m)
 #pragma unroll
@@ -320,7 +383,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
         }
     }
 
-    // ---- the fold: S^T += V^T . W --------------------------------------------
+    // ---- the fold: S^T += V^T . W, and z += 1^T . W --------------------------
 #pragma unroll
     for (int kk = 0; kk < MTOK; ++kk) {
       uint32_t a[4];
@@ -333,17 +396,33 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
         mma(st[2 * nj + 1], a, &b[2]);
       }
     }
+    //: the mass fold takes the SAME operand from the SAME tiles the per-slot term
+    //: reads, so it re-reads rather than outliving the fold's own k-run.
+    {
+      const int n0 = warp * NSLOT;
+#pragma unroll
+      for (int kk = 0; kk < MTOK; ++kk)
+#pragma unroll
+        for (int np = 0; np < NPAIR; ++np) {
+          uint32_t wb[4];
+          load_frag_t(wb, R0_ADDR(aWF, LdS, kk * 16, n0 + np * 2));
+          mma(zac[2 * np], ones, &wb[0]);
+          mma(zac[2 * np + 1], ones, &wb[2]);
+        }
+    }
   }
 }
 
-//: PASS 2 -- the descending adjoint.  It carries `dS` and emits
-//: `dv[j,:] = sum_s W[j,s] dS_after[j,s,:]` and
-//: `dW[j,s] = <dS_a[s,:], v_j> + sum_{i>=j} R[i,s] <dnum_i, v_j>`.
+//: PASS 2 -- the descending adjoint.  It carries `dS` and its mass column `dz`, and
+//: emits `dv[j,:] = sum_s W[j,s] dS_after[j,s,:]` and
+//: `dW[j,s] = <dS_a[s,:], v_j> + dz_a[s] + sum_{i>=j} R[i,s] Gd'[i,j]`.  `dv` is a
+//: value-channel quantity and the mass column does not enter it.
 template <int C, int BC>
 __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void rung0_pass2_kernel(
     const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16* __restrict__ wcoef,
     const __nv_bfloat16* __restrict__ v, const __nv_bfloat16* __restrict__ dnum,
-    float* __restrict__ dv, float* __restrict__ dw, int L, int v_row_bytes) {
+    const __nv_bfloat16* __restrict__ dden, float* __restrict__ dv, float* __restrict__ dw, int L,
+    int v_row_bytes) {
   using G = GeomR0<C, BC, true>;
   constexpr int kThreads = threads_for(BC);
   constexpr int kWarps = kThreads / 32;
@@ -359,6 +438,8 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   static_assert(design::smem_fits(G::bytes),
                 "this arm does not fit this architecture's per-CTA shared-memory maximum");
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
+  static_assert(C % 8 == 0 && kPadE >= 8 && C / 8 <= C,
+                "the mass seed seats in the value panel's row pad, eight entries to a row");
   constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
   constexpr int NSPLIT_RAW = kWarps / MSPLIT;
   constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
@@ -384,6 +465,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   const __nv_bfloat16* const vPlane =
       pin_address(v + (long)(blockIdx.x / heads) * L * vRowElems + (long)(blockIdx.x % heads) * kD);
   const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)blockIdx.x * L * kD);
+  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)blockIdx.x * L);
   const __nv_bfloat16* const rPlane = pin_address(rcoef + (long)blockIdx.x * L * BC);
   const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)blockIdx.x * L * BC);
   float* const dvPlane = pin_address(dv + (long)blockIdx.x * L * kD);
@@ -399,6 +481,10 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   const uint32_t offFg = (uint32_t)((rF * LdG + cF * 8) * 2);
   const uint32_t offTg = (uint32_t)((rT * LdG + cT * 8) * 2);
   const uint32_t offFd = (uint32_t)((rF * LdDs + cF * 8) * 2);
+  const int gm0 = (warp / NSPLIT) * MPW, gn0 = (warp % NSPLIT) * NPW;
+  int ddG[MPW][2], ddK[MTOK][2];
+  r0_dden_seats<LdV, MPW>(ddG, gm0 * 16 + (lane >> 2), 16);
+  r0_dden_seats<LdV, MTOK>(ddK, (lane & 3) * 2, 16);
 
   const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn);
   const uint32_t srB = smem_addr(sr), swB = smem_addr(sw);
@@ -412,6 +498,15 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   for (int j = 0; j < NDV; ++j)
 #pragma unroll
     for (int e = 0; e < 4; ++e) dst[j][e] = 0.f;
+
+  //: THE ADJOINT MASS COLUMN, in the accumulator layout the write-side term reads.
+  //: Its `A` operand is the staged seed broadcast down `m`, which the seed plane's
+  //: own bf16 makes exact.
+  float dzc[NSLOT][4];
+#pragma unroll
+  for (int n = 0; n < NSLOT; ++n)
+#pragma unroll
+    for (int e = 0; e < 4; ++e) dzc[n][e] = 0.f;
 
   TileStage<C, kD, LdV, kThreads> stV;
   TileStage<C, BC, LdS, kThreads> stS;
@@ -436,6 +531,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
       stV.issue(sdnB + stgV, dnPlane, tok0, kDnRowB);
       stS.issue(srB + stgS, rPlane, tok0, kSRowB);
       stS.issue(swB + stgS, wPlane, tok0, kSRowB);
+      if (tid < C) sdn[(stgV >> 1) + R0_DDEN(LdV, tid)] = ddPlane[(int)tok0 + tid];
     }
     stgV += kVSlotB;
     if (stgV == kVRingB) stgV = 0;
@@ -461,6 +557,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
     const uint32_t aDF = sdnB + cmpV + offFv, aDT = sdnB + cmpV + offTv;
     const uint32_t aRF = srB + cmpS + offFs;
     const uint32_t aWF = swB + cmpS + offFs, aWT = swB + cmpS + offTs;
+    const __nv_bfloat16* const dd = sdn + (cmpV >> 1);
     const uint32_t tokBase = (uint32_t)(c * C);
     cmpV += kVSlotB;
     if (cmpV == kVRingB) cmpV = 0;
@@ -479,7 +576,6 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
 
     // ---- both Grams: Gu = staircase(R . W^T) over slots, Gd over channels -----
     if (warp < GWARPS) {
-      const int gm0 = (warp / NSPLIT) * MPW, gn0 = (warp % NSPLIT) * NPW;
 #pragma unroll
       for (int m = 0; m < MPW; ++m) {
         float gu[GPAIR][2][4];
@@ -518,6 +614,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
           }
         }
         const int tr = (gm0 + m) * 16 + (lane >> 2);
+        const float m0 = __bfloat162float(dd[ddG[m][0]]), m1 = __bfloat162float(dd[ddG[m][1]]);
 #pragma unroll
         for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
@@ -528,11 +625,11 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
             store_bf16x2(&sgu[(tr + 8) * LdG + tc],
                          pack_bf16x2(R0_STAIR(gu[u][h][2], tc, tr + 8),
                                      R0_STAIR(gu[u][h][3], tc + 1, tr + 8)));
-            store_bf16x2(&sgd[tr * LdG + tc], pack_bf16x2(R0_STAIR(gd[u][h][0], tc, tr),
-                                                          R0_STAIR(gd[u][h][1], tc + 1, tr)));
+            store_bf16x2(&sgd[tr * LdG + tc], pack_bf16x2(R0_STAIR(gd[u][h][0] + m0, tc, tr),
+                                                          R0_STAIR(gd[u][h][1] + m0, tc + 1, tr)));
             store_bf16x2(&sgd[(tr + 8) * LdG + tc],
-                         pack_bf16x2(R0_STAIR(gd[u][h][2], tc, tr + 8),
-                                     R0_STAIR(gd[u][h][3], tc + 1, tr + 8)));
+                         pack_bf16x2(R0_STAIR(gd[u][h][2] + m1, tc, tr + 8),
+                                     R0_STAIR(gd[u][h][3] + m1, tc + 1, tr + 8)));
           }
       }
     }
@@ -629,6 +726,17 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
             mma(acc[m][2 * np + 1], ga, &rb[2]);
           }
         }
+      //: the ENTRY ADJOINT MASS, `dz_a[s]`: per-slot and constant down the write
+      //: tokens, so it is a broadcast along the accumulator's `m` axis.
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m)
+#pragma unroll
+        for (int n = 0; n < NSLOT; ++n) {
+          acc[m][n][0] += dzc[n][0];
+          acc[m][n][1] += dzc[n][1];
+          acc[m][n][2] += dzc[n][0];
+          acc[m][n][3] += dzc[n][1];
+        }
 #pragma unroll
       for (int m = 0; m < MTOK; ++m)
 #pragma unroll
@@ -647,7 +755,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
         }
     }
 
-    // ---- the fold: dS^T += dnum^T . R ----------------------------------------
+    // ---- the fold: dS^T += dnum^T . R, and dz += dden^T . R ------------------
 #pragma unroll
     for (int kk = 0; kk < MTOK; ++kk) {
       uint32_t a[4];
@@ -660,11 +768,30 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
         mma(dst[2 * nj + 1], a, &b[2]);
       }
     }
+    {
+      const int n0 = warp * NSLOT;
+#pragma unroll
+      for (int kk = 0; kk < MTOK; ++kk) {
+        //: the seed broadcast down `m`: a lane's A fragment is one k-pair repeated,
+        //: and the pad's eight-wide groups are what make that pair adjacent.
+        uint32_t da[4];
+        da[0] = da[1] = *reinterpret_cast<const uint32_t*>(&dd[ddK[kk][0]]);
+        da[2] = da[3] = *reinterpret_cast<const uint32_t*>(&dd[ddK[kk][1]]);
+#pragma unroll
+        for (int np = 0; np < NPAIR; ++np) {
+          uint32_t rb[4];
+          load_frag_t(rb, R0_ADDR(aRF, LdS, kk * 16, n0 + np * 2));
+          mma(dzc[2 * np], da, &rb[0]);
+          mma(dzc[2 * np + 1], da, &rb[2]);
+        }
+      }
+    }
   }
 }
 
 #undef R0_ADDR
 #undef R0_STAIR
+#undef R0_DDEN
 
 // THE RUNG'S ARM SET, GENERATED: tools/gen_shards.py owns the one list.
 #include "../instantiations/ladder_r0_arms.inc"

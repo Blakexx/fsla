@@ -115,15 +115,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: both would be a floor claim about a kernel nobody measured.
   m.def("chunk_scan_a_census", &rola::chunk::scan_a_census,
         "chunk consumer, Scan A: the same eight columns, measured on Scan A's kernel");
-  //: THE LADDER'S RUNG 0: the dense two-pass backward on PER-SLOT coefficients.
-  //: It is not the production path and says so in its name -- no routing, no mass
-  //: column, no write gain, contiguous chunks (docs/internals/chunk/ladder_r0.md).
+  //: THE LADDER'S RUNGS 0-1: the dense two-pass backward on PER-SLOT coefficients,
+  //: carrying the mass column.  It is not the production path and says so in its
+  //: name -- no routing, no write gain, contiguous chunks
+  //: (docs/internals/chunk/ladder_r0.md).
   m.def("chunk_rung0_pass1", &rola::chunk::rung0_pass1,
-        "backward ladder rung 0, pass 1: the ascending rebuild's per-slot dR", py::arg("w"),
-        py::arg("v"), py::arg("dnum"), py::arg("chunk"), py::arg("bc"));
+        "backward ladder rung 1, pass 1: the ascending rebuild's per-slot dR", py::arg("w"),
+        py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("chunk"), py::arg("bc"));
   m.def("chunk_rung0_pass2", &rola::chunk::rung0_pass2,
-        "backward ladder rung 0, pass 2: the descending adjoint's dv and per-slot dW", py::arg("r"),
-        py::arg("w"), py::arg("v"), py::arg("dnum"), py::arg("chunk"), py::arg("bc"));
+        "backward ladder rung 1, pass 2: the descending adjoint's dv and per-slot dW", py::arg("r"),
+        py::arg("w"), py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("chunk"),
+        py::arg("bc"));
   m.def("chunk_rung0_census", &rola::chunk::rung0_census,
         "backward ladder rung 0: per (arm, pass) registers, spill bytes, shared "
         "bytes, staging depth, CTA target, the declared register floor, the budget "

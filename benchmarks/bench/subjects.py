@@ -184,27 +184,30 @@ def _rung0_operands(fx):
         return out.to(torch.bfloat16).contiguous()
 
     ones = torch.ones(bh, tokens, bc, device=pr.device)
+    dnum, dden = _seeds(fx)
     return {"r": expand(pr, ones), "w": expand(pw, gain * ones), "v": fx["v_kernel"],
-            "dnum": _seeds(fx)[0].reshape(bh, tokens, 64).contiguous(),
+            "dnum": dnum.reshape(bh, tokens, 64).contiguous(),
+            "dden": dden.reshape(bh, tokens).contiguous(),
             "c": fx["C"], "bc": bc}
 
 
 def rung0_pass1(fx) -> Arm:
-    """THE LADDER, RUNG 0, PASS 1: the ascending rebuild's per-slot `dR`."""
+    """THE LADDER, RUNG 1, PASS 1: the ascending rebuild's per-slot `dR`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass1(o["w"], o["v"], o["dnum"], o["c"], o["bc"])
+        return m.chunk_rung0_pass1(o["w"], o["v"], o["dnum"], o["dden"], o["c"], o["bc"])
 
     return Arm(name="rung0_pass1", call=call)
 
 
 def rung0_pass2(fx) -> Arm:
-    """THE LADDER, RUNG 0, PASS 2: the descending adjoint's `dv` and per-slot `dW`."""
+    """THE LADDER, RUNG 1, PASS 2: the descending adjoint's `dv` and per-slot `dW`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass2(o["r"], o["w"], o["v"], o["dnum"], o["c"], o["bc"])
+        return m.chunk_rung0_pass2(o["r"], o["w"], o["v"], o["dnum"], o["dden"], o["c"],
+                                   o["bc"])
 
     return Arm(name="rung0_pass2", call=call)
 

@@ -23,8 +23,8 @@
   }
  },
  "source": {
-  "csrc_sha256": "85d55a0ac7660bd912489c94a8a24a27fb1adb64b8970111bb8e7f05ca541a2f",
-  "date": "2026-08-17"
+  "csrc_sha256": "94e4433473defebf55c08d7ba549db7dd22bba1b7f84e4366a32169acfc13bac",
+  "date": "2026-08-18"
  },
  "shards": {
   "chunk_s0": {
@@ -809,37 +809,37 @@
    "local_ops": 0,
    "sass_sha256": "a5cd15011dbe26849d9d34099be49ad6c9ea36d709fab776ee98be3cb89df02a"
   },
-  "sm_86:_ZN4rola5chunk18rung0_pass1_kernelILi16ELi64EEEvPK13__nv_bfloat16S4_S4_Pfii": {
-   "regs": 112,
+  "sm_86:_ZN4rola5chunk18rung0_pass1_kernelILi16ELi64EEEvPK13__nv_bfloat16S4_S4_S4_Pfii": {
+   "regs": 125,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "9ed4d27cebab0f76d1352452888074e1c62923cced044e72a2f294e844f37595"
+   "sass_sha256": "e2ad6c6339c72cae4c5eaf5138ccadf6b5171f946c00b204f5cdcbd7a1ca9ec1"
   },
-  "sm_86:_ZN4rola5chunk18rung0_pass1_kernelILi32ELi64EEEvPK13__nv_bfloat16S4_S4_Pfii": {
-   "regs": 130,
+  "sm_86:_ZN4rola5chunk18rung0_pass1_kernelILi32ELi64EEEvPK13__nv_bfloat16S4_S4_S4_Pfii": {
+   "regs": 142,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "1e63879686781d08b40b890368286f1f3c926bbabfa6ebf4b447e347b9037ed9"
+   "sass_sha256": "e8ef3552103fb7d024ac1c36ecb5efda4709d14eef7f04b506a57cb29e89cbec"
   },
-  "sm_86:_ZN4rola5chunk18rung0_pass2_kernelILi16ELi64EEEvPK13__nv_bfloat16S4_S4_S4_PfS5_ii": {
-   "regs": 152,
+  "sm_86:_ZN4rola5chunk18rung0_pass2_kernelILi16ELi64EEEvPK13__nv_bfloat16S4_S4_S4_S4_PfS5_ii": {
+   "regs": 154,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "9c87e8fd7971f1f9de615632d6d8e9ae0d90b5a37c363f1ca1e112372e1b7b13"
+   "sass_sha256": "be724ada75f50ffb4f94b25bb5dbcf261ba350b0889e019116b87141eda1cb66"
   },
-  "sm_86:_ZN4rola5chunk18rung0_pass2_kernelILi32ELi64EEEvPK13__nv_bfloat16S4_S4_S4_PfS5_ii": {
-   "regs": 174,
+  "sm_86:_ZN4rola5chunk18rung0_pass2_kernelILi32ELi64EEEvPK13__nv_bfloat16S4_S4_S4_S4_PfS5_ii": {
+   "regs": 172,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "997c6735b2e3bff2cda19f9b9c7e5fbdb028ff27950a31a25ba24df90539ec62"
+   "sass_sha256": "2adae913fc057351a283599a3add1d2a3d6fa50c3c4be4d74ac3382335c2c73e"
   },
   "sm_86:_ZN4rola5chunk19block_bitmap_kernelILi1ELi256ELi64EEEvPKjPKiPhi": {
    "regs": 40,
