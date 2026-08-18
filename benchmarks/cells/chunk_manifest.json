@@ -55,6 +55,34 @@
   "write_nonzero": 834137,
   "write_support_frac": 0.795495
  },
+ "chunk-bwd-splitk": {
+  "B": 1,
+  "BC": 128,
+  "BH": 2,
+  "C": 32,
+  "H": 2,
+  "N": 65536,
+  "T": 512,
+  "alpha": 1.5,
+  "amplitudes_total": 524288,
+  "atoms_total": 8192,
+  "d_v": 64,
+  "decode_steps": 0,
+  "dtype": "bf16",
+  "hidden": 512,
+  "live_atom_frac": 1.0,
+  "live_atoms": 8192,
+  "logit_gain": 1.0,
+  "name": "chunk-bwd-splitk",
+  "read_nonzero": 98866,
+  "seed": 9,
+  "widths": [
+   256,
+   256
+  ],
+  "write_nonzero": 98866,
+  "write_support_frac": 0.188572
+ },
  "chunk-deadblocks-T64": {
   "B": 2,
   "BC": 128,

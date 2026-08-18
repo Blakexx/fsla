@@ -46,15 +46,32 @@ DV = 64
 EPS32 = 2.0 ** -24
 ULP_BF16_PAIR = 2.0 ** -7
 
-#: `(C, BC)` -- the built rung-0 arms. `(32, 64)` is the head-to-head arm: it is
-#: where a scan arm's `N` equals its `BC`, so rung 0 and the shipped scans run the
-#: same dense cell.
-ARMS = [(32, 64), (16, 64)]
+#: `(C, BC)` -- the built ladder arms. `(32, 64)` is the head-to-head arm: it is
+#: where a scan arm's `N` equals its `BC`, so the ladder and the shipped scans run the
+#: same one-block cell. `(32, 128)` is the SHIPPED block width and the one the carve
+#: of rung b2 buys; it is a TWO-GROUP block, so a cell that runs it exercises the
+#: group split as well as the block lattice.
+ARMS = [(32, 64), (16, 64), (32, 128)]
 
-#: The TOPOLOGIES the dense coefficients are drawn from, both reaching `N = 64`:
-#: the square `(8, 8)` and the flat `(64,)`. Both are scan arms, which is what makes
-#: the head-to-head comparison a comparison and not an analogy.
-TOPOLOGIES = [(8, 8), (64,)]
+#: The TOPOLOGIES the dense coefficients are drawn from. `(8, 8)` and `(64,)` reach
+#: `N = 64` and are the ONE-BLOCK control at `BC = 64`; `(16, 16)` reaches `N = 256`
+#: and `(32, 32)` reaches `N = 1024`, so both are MULTI-BLOCK at either block width.
+#: `N > BC` is the whole of rung b2: it is where `dv`'s partials fan in.
+TOPOLOGIES = [(8, 8), (64,), (16, 16), (32, 32)]
+
+
+def _slots(widths) -> int:
+    n = 1
+    for w in widths:
+        n *= w
+    return n
+
+
+#: `(arm, widths)` for every pair whose slot space is a whole number of blocks. A
+#: topology narrower than the block width is not a smaller problem, it is an unbuilt
+#: one, and it is skipped rather than padded.
+CELLS_XB = [(arm, widths) for arm in ARMS for widths in TOPOLOGIES
+            if _slots(widths) >= arm[1] and _slots(widths) % arm[1] == 0]
 
 #: THE MASS REGIMES. `dden = 0` is the b0 configuration and every mass-bearing term
 #: is then identically zero, so it is the regression cell and not a gate on b1; the
@@ -254,8 +271,7 @@ CELLS = [
 ]
 
 
-@pytest.mark.parametrize("arm", ARMS, ids=str)
-@pytest.mark.parametrize("widths", TOPOLOGIES, ids=str)
+@pytest.mark.parametrize("arm,widths", CELLS_XB, ids=str)
 @pytest.mark.parametrize("mass", MASS)
 @pytest.mark.parametrize("chunks", [p.values[0] for p in CELLS], ids=[p.id for p in CELLS])
 def test_the_ladder_matches_the_rounded_reference(arm, widths, mass, chunks):
@@ -263,12 +279,11 @@ def test_the_ladder_matches_the_rounded_reference(arm, widths, mass, chunks):
     T = C * chunks
     inputs = _inputs(widths, T, seed=11, mass=mass)
     ref = _rounded(*inputs, C)
-    _check(_run(arm, inputs), ref, T, BC,
-           f"arm {arm} widths={widths} mass={mass} T={T}")
+    _check(_run(arm, inputs), ref, T, _slots(widths),
+           f"arm {arm} widths={widths} blocks={_slots(widths) // BC} mass={mass} T={T}")
 
 
-@pytest.mark.parametrize("arm", ARMS, ids=str)
-@pytest.mark.parametrize("widths", TOPOLOGIES, ids=str)
+@pytest.mark.parametrize("arm,widths", CELLS_XB, ids=str)
 @pytest.mark.parametrize("mass", MASS)
 def test_the_ladder_matches_the_fp64_autograd_oracle(arm, widths, mass):
     """The kernel against the RECURRENCE, not against the kernel's own association.
@@ -292,8 +307,7 @@ def test_the_ladder_matches_the_fp64_autograd_oracle(arm, widths, mass):
             f"lands orders of magnitude outside this.")
 
 
-@pytest.mark.parametrize("arm", ARMS, ids=str)
-@pytest.mark.parametrize("widths", TOPOLOGIES, ids=str)
+@pytest.mark.parametrize("arm,widths", CELLS_XB, ids=str)
 def test_the_ladder_is_the_self_normalizing_readouts_backward(arm, widths):
     """THE RATIO, END TO END. `y = num / den` is differentiated by autograd in fp64,
     the two seeds are derived from that same readout, and the kernel is handed only
@@ -332,6 +346,33 @@ def test_the_mass_column_varies_over_the_slots():
         assert (col.std() / col.abs().mean()).item() > 0.05, (
             f"the cell's {key} is effectively flat over the slots, so the mass adjoint "
             f"it gates is vacuous")
+
+
+@pytest.mark.parametrize("arm,widths", [((32, 64), (16, 16)), ((32, 128), (16, 16)),
+                                        ((32, 64), (32, 32)), ((32, 128), (32, 32))], ids=str)
+def test_the_fan_in_has_more_than_one_live_contributor(arm, widths):
+    """NON-VACUITY OF THE SPLIT-K FAN-IN, as a property of the cell.
+
+    `dv` is the one output every block of the lattice contributes to, and a gate run on
+    a cell where one block carried the whole sum would pass against a kernel that
+    STORED instead of adding. So this asserts of the cell itself that every block's
+    partial is a material share of the total -- and `test_the_ladder_matches_the_rounded
+    _reference` at the same cell is then the statement that they were in fact summed.
+    """
+    C, BC = arm
+    T, N = C * 4, _slots(widths)
+    nblk = N // BC
+    assert nblk > 1, "this cell is not multi-block and cannot gate a fan-in"
+    inputs = _inputs(widths, T, seed=23)
+    total = _rounded(*inputs, C)["dv"].abs().sum()
+    for b in range(nblk):
+        sl = slice(b * BC, (b + 1) * BC)
+        part = _rounded(inputs[0][:, :, sl].contiguous(), inputs[1][:, :, sl].contiguous(),
+                        *inputs[2:], C)["dv"]
+        share = (part.abs().sum() / total).item()
+        assert share > 0.05, (
+            f"block {b} of {nblk} contributes {share:.4f} of dv at arm {arm} "
+            f"widths={widths}: the fan-in is vacuous on this cell")
 
 
 FAULTS = ["no-intra", "exclusive-staircase", "no-ones-column", "no-entry-mass", "flat-mass"]
@@ -397,15 +438,25 @@ def test_the_ladder_addresses_every_batch_head():
 
 def test_the_ladder_census_is_spill_free():
     """The rung declares one register floor for both passes; the census is where the
-    claim is falsified, per arm and per pass."""
+    claim is falsified, per arm and per pass.
+
+    THE RESIDENCY STATEMENT IS WARPS PER SM, not CTAs. It became so at rung b2, where
+    the block gained a second slot group: `BC = 128` runs ONE CTA of eight warps where
+    `BC = 64` runs two of four, and the quantity the carve holds constant across that
+    split -- the one the forward is at, and the one the ideal regime is stated in -- is
+    the eight. A gate written on the CTA count alone would have called the split a
+    regression and a gate written on nothing would have missed a real one.
+    """
     rows = extension().chunk_rung0_census()
     assert rows, "the ladder reports no built arm"
     for row in rows:
         arm, pas = tuple(row[:2]), row[2]
-        assert row[4] == 0, f"arm {arm} pass {pas} spills {row[4]} bytes"
-        assert row[3] <= row[10], (
-            f"arm {arm} pass {pas} holds {row[3]} registers against a budget of {row[10]}")
-        assert row[6] >= 2, f"arm {arm} pass {pas} staged at depth {row[6]}"
-        assert row[7] == 2, (
-            f"arm {arm} pass {pas} reaches {row[7]} CTAs: the rung's residency is the "
-            f"forward's and moving it is a carve decision, not a side effect")
+        regs, spill, stages, cta, budget, threads = row[3], row[4], row[6], row[7], row[10], row[11]
+        assert spill == 0, f"arm {arm} pass {pas} spills {spill} bytes"
+        assert regs <= budget, (
+            f"arm {arm} pass {pas} holds {regs} registers against a budget of {budget}")
+        assert stages >= 2, f"arm {arm} pass {pas} staged at depth {stages}"
+        assert cta * threads // 32 == 8, (
+            f"arm {arm} pass {pas} reaches {cta} CTAs of {threads} threads = "
+            f"{cta * threads // 32} warps/SM: the rung's residency is the forward's "
+            f"eight and moving it is a carve decision, not a side effect")

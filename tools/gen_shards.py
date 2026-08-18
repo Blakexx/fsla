@@ -190,15 +190,17 @@ SCAN_ARMS: tuple = (
 )
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 
-#: THE BACKWARD LADDER'S RUNG-0 ARMS -- `(C, BC)` and nothing else. Rung 0 is the
-#: DENSE two-pass backward: the slot space IS the block (`N = BC`, one block, no
-#: carve), so a topology is not one of its axes and its list carries no `(D, B)`.
-#: Its head-to-head arm is the scans' `(C = 32, BC = 64)`, which is where a scan
-#: arm's `N` equals its `BC` and the two therefore run the same dense cell; `C = 16`
-#: is the second point on the chunk axis.
+#: THE BACKWARD LADDER'S ARMS -- `(C, BC)` and nothing else. The ladder is the DENSE
+#: two-pass backward: a topology reaches it only through `N`, which is a runtime plane
+#: width and not a compiled axis, so the list carries no `(D, B)`. `(32, 64)` is the
+#: head-to-head arm -- where a scan arm's `N` equals its `BC`, so the ladder and the
+#: shipped scans run the same ONE-BLOCK cell and their walls compare; `(16, 64)` is
+#: the second point on the chunk axis; `(32, 128)` is the SHIPPED block width, the one
+#: the pinned and the scale cells both resolve to, and the one rung b2's carve buys.
 LADDER_R0_ARMS: tuple = (
     (32, 64),
     (16, 64),
+    (32, 128),
 )
 assert {(c, bc) for c, bc in LADDER_R0_ARMS} <= {(a[0], a[1]) for a in CHUNK_ARMS}, \
     "a rung-0 arm's (C, BC) must be a shape the consumer is built at"

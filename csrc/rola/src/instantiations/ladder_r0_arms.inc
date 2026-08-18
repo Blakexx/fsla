@@ -4,5 +4,6 @@
 // clang-format off
 #define LADDER_R0_ARMS_X(X) \
   X(32, 64) \
-  X(16, 64)
+  X(16, 64) \
+  X(32, 128)
 // clang-format on

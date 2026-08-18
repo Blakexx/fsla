@@ -1,9 +1,10 @@
-// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNGS 0-1: the dense
+// csrc/rola/src/chunk/ladder_r0.cuh -- THE BACKWARD LADDER, RUNGS 0-2: the dense
 // chunked linear-attention backward, written in RoLA's own quantities as a
 // two-pass pair.  Pass 1 ascends, rebuilding the state and its mass column from
 // zero and emitting the read side's per-slot cotangent; pass 2 descends, carrying
 // both adjoints and emitting the value cotangent and the write side's per-slot
-// one.  Dense routing, contiguous chunks, no write gain, no digits -- those are
+// one.  The slot space is carved into blocks and `dv`'s partials fan in across
+// them.  Dense routing, contiguous chunks, no write gain, no digits -- those are
 // later rungs.  docs/internals/chunk/ladder_r0.md
 #pragma once
 
@@ -11,49 +12,76 @@
 
 namespace rola::chunk {
 
-//: Rung 0's launch arguments.  The coefficients are PER SLOT: at this rung the
+//: The ladder's launch arguments.  The coefficients are PER SLOT: at this rung the
 //: slot panel is the identity, so there is no digit arithmetic and no producer.
+//: `N` is the SLOT SPACE and it is a runtime width, not a compiled axis -- the
+//: block lattice `N / BC` is the grid's own x extent.
 struct Rung0Params {
   const __nv_bfloat16 *r, *w, *v, *dnum, *dden;
   float *dr, *dv, *dw;
-  int BH, L, v_row_bytes;
+  int BH, L, N, v_row_bytes;
 };
 
 //: THE RUNG'S LIVE REGISTER SET, one measured DECLARATION for both passes and
 //: falsified per arm by the census' spill and budget columns.  It is a single number
-//: rather than a `BC` row because the rung is built at one block width; the pass that
-//: peaks is the descending one, which carries the adjoint state through every block.
-constexpr int reg_floor_r0() { return 192; }
+//: rather than a `BC` row because a GROUP's geometry does not move with the block
+//: width; the pass that peaks is the descending one, which carries the adjoint state
+//: through every block.  Re-measured at b2: peak 157, and 176 is the declaration --
+//: the floor is also the budget `cta_target` is DERIVED from, and a declaration below
+//: 171 derives a third CTA at the `(16, 64)` arm, which is a residency decision and
+//: not the side effect of a re-measurement.
+constexpr int reg_floor_r0() { return 176; }
 
-//: RUNG 0'S GEOMETRY.  Every stream the kernel consumes over time rides the ring:
+//: THE LADDER'S OWN GROUP THRESHOLD, and it is LOWER than the forward's (which
+//: splits at `BC = 256`, `groups_for`).  The adjoint carries two costs the forward
+//: does not: a SECOND coefficient panel on the ring, and the PUBLICATION -- the
+//: `[d_v, BCg]` transpose of the state that lets a unit finish a contraction over
+//: the carved channel axis.  Both scale with the group's slot width, and at
+//: `BCg = 128` their sum puts the ring 24 KB past the two-CTA ceiling with no
+//: overlay available, because all four operand buffers are live across the whole
+//: visit.  Splitting the BLOCK into two 64-slot groups holds the ring at the width
+//: that fits and keeps the warps per SM at the forward's eight -- one CTA of eight
+//: warps where `BC = 64` runs two of four -- while the value ring and the channel
+//: Gram, which are slot-independent, are shared rather than duplicated.
+//: docs/internals/chunk/ladder_r0.md#the-group-threshold
+constexpr int r0_groups_for(int BC) { return BC >= 128 ? 2 : 1; }
+constexpr int r0_threads_for(int BC) { return kGroupThreads * r0_groups_for(BC); }
+
+//: THE LADDER'S GEOMETRY.  Every stream the kernel consumes over time rides the ring:
 //: the two value-shaped panels always, the write coefficients always, the read
 //: coefficients in the pass that carries the adjoint, and the readout's mass seed
 //: inside the `dnum` panel's own row pad, which costs no bytes at all.  The
 //: published state's rows are UNPADDED -- it is read four times per unit per visit,
-//: where the pad would buy nothing and cost the CTA target.  Pass 2 sits EXACTLY on
-//: the two-CTA shared-memory ceiling, which is why the mass column may not claim a
-//: buffer -- docs/internals/chunk/ladder_r0.md
+//: where the pad would buy nothing and cost the CTA target.  The GROUP is the unit
+//: of coefficient, Gram and publication geometry; the value ring and the `d_v` Gram
+//: are CTA-wide because neither carries a slot axis.  At `GRP = 1` every line below
+//: is b1's byte for byte -- docs/internals/chunk/ladder_r0.md
 template <int C, int BC, bool PASS2>
 struct GeomR0 {
+  static constexpr int GRP = r0_groups_for(BC);
+  static constexpr int BCg = BC / GRP;
   static constexpr int LdV = kD + kPadE;
-  static constexpr int LdS = BC + kPadE;
+  static constexpr int LdS = BCg + kPadE;
   static constexpr int LdG = C + kPadE;
-  static constexpr int LdDs = BC;
-  static constexpr int grams = PASS2 ? 2 : 1;
+  static constexpr int LdDs = BCg;
+  //: the SLOT Gram is one per group (it contracts over the group's own slots); the
+  //: channel Gram is one per CTA (it has no slot axis at all).
+  static constexpr int slot_grams = PASS2 ? 1 : 0;
   static constexpr int coef_panels = PASS2 ? 2 : 1;
-  static constexpr int slot = (2 * C * LdV + coef_panels * C * LdS) * (int)sizeof(__nv_bfloat16);
-  static constexpr int gram_bytes = grams * C * LdG * (int)sizeof(__nv_bfloat16);
-  static constexpr int ds_bytes = kD * LdDs * (int)sizeof(__nv_bfloat16);
+  static constexpr int slot =
+      (2 * C * LdV + GRP * coef_panels * C * LdS) * (int)sizeof(__nv_bfloat16);
+  static constexpr int gram_bytes = (GRP * slot_grams + 1) * C * LdG * (int)sizeof(__nv_bfloat16);
+  static constexpr int ds_bytes = GRP * kD * LdDs * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed = gram_bytes + ds_bytes;
-  static constexpr int stages = design::stages_for(slot, fixed, threads_for(BC), reg_floor_r0());
+  static constexpr int stages = design::stages_for(slot, fixed, r0_threads_for(BC), reg_floor_r0());
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
 template <int C, int BC, bool PASS2>
 constexpr int kR0CtaTarget =
-    design::cta_target((int)GeomR0<C, BC, PASS2>::bytes, threads_for(BC), reg_floor_r0());
+    design::cta_target((int)GeomR0<C, BC, PASS2>::bytes, r0_threads_for(BC), reg_floor_r0());
 
-//: A [C, COLS] tile of a contiguous plane, staged asynchronously.  Rung 0's chunks
+//: A [C, COLS] tile of a contiguous plane, staged asynchronously.  The ladder's chunks
 //: are contiguous token runs, so a tile's rows are the plane's own and the schedule
 //: contributes no gather.
 template <int C, int COLS, int LD, int THREADS>
@@ -120,23 +148,24 @@ static constexpr uint32_t kOnesFrag = 0x3F803F80u;
 //: emits `dR[i,s] = <dnum_i, S_a[s,:]> + dden_i z_a[s] + sum_{j<=i} W[j,s] Gd'[i,j]`
 //: with `Gd'[i,j] = <dnum_i, v_j> + dden_i`.
 template <int C, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void rung0_pass1_kernel(
-    const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16* __restrict__ v,
-    const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
-    float* __restrict__ dr, int L, int v_row_bytes) {
+__global__ __launch_bounds__(r0_threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
+rung0_pass1_kernel(const __nv_bfloat16* __restrict__ wcoef, const __nv_bfloat16* __restrict__ v,
+                   const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
+                   float* __restrict__ dr, int L, int N, int v_row_bytes) {
   using G = GeomR0<C, BC, false>;
-  constexpr int kThreads = threads_for(BC);
+  constexpr int kThreads = r0_threads_for(BC);
   constexpr int kWarps = kThreads / 32;
+  constexpr int GRP = G::GRP, BCg = G::BCg;
   constexpr int STAGES = G::stages;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdG = G::LdG, LdDs = G::LdDs;
   constexpr int MTOK = C / kMmaM, NTOK = C / kMmaN;
-  constexpr int KD = BC / kMmaK, NDV = BC / kMmaN, KV = kD / kMmaK;
+  constexpr int KD = BCg / kMmaK, NDV = BCg / kMmaN, KV = kD / kMmaK;
   //: the per-slot output splits over the SLOT axis: every unit runs the whole
-  //: channel contraction out of the published state, so the four outputs are
-  //: disjoint and no cross-unit sum exists.
+  //: channel contraction out of its group's published state, so the four outputs
+  //: are disjoint and no cross-unit sum exists.
   constexpr int NSLOT = NDV / kUnits;
   constexpr int NPAIR = NSLOT / 2;
-  static_assert(kWarps == kUnits, "rung 0 is the one-group carve");
+  static_assert(kWarps == GRP * kUnits, "a group is the carve: four units, one per d_v quarter");
   static_assert(NDV == kUnits * NSLOT && NSLOT == 2 * NPAIR,
                 "a unit's slot run must be a whole number of ldmatrix pairs");
   static_assert(design::smem_fits(G::bytes),
@@ -144,8 +173,10 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   static_assert(C % 8 == 0 && kPadE >= 8 && C / 8 <= C,
                 "the mass seed seats in the value panel's row pad, eight entries to a row");
-  constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
-  constexpr int NSPLIT_RAW = kWarps / MSPLIT;
+  //: the `d_v` Gram has NO slot axis, so it is formed once for the whole CTA by the
+  //: warps of group zero and read by every group.
+  constexpr int MSPLIT = MTOK >= kUnits ? kUnits : MTOK;
+  constexpr int NSPLIT_RAW = kUnits / MSPLIT;
   constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
   constexpr int MPW = MTOK / MSPLIT;
   constexpr int NPW = NTOK / NSPLIT;
@@ -153,23 +184,30 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   constexpr int GPAIR = NPW / 2;
 
   const int tid = threadIdx.x;
-  const int warp = tid >> 5, lane = tid & 31;
+  const int lane = tid & 31;
+  const int grp = tid / kGroupThreads, gtid = tid % kGroupThreads;
+  const int warp = gtid >> 5;
 
   extern __shared__ __align__(16) char smem_raw[];
   __nv_bfloat16* sv = reinterpret_cast<__nv_bfloat16*>(smem_raw);
   __nv_bfloat16* sdn = sv + STAGES * C * LdV;
   __nv_bfloat16* sw = sdn + STAGES * C * LdV;
-  __nv_bfloat16* sg = sw + STAGES * C * LdS;
-  __nv_bfloat16* sds = sg + C * LdG;
+  __nv_bfloat16* sg = sw + STAGES * GRP * C * LdS;
+  __nv_bfloat16* sds = sg + C * LdG + grp * kD * LdDs;
 
+  const int bh = (int)blockIdx.y;
+  //: THE BLOCK LATTICE.  A block owns `BC` of the `N` slots and a group owns `BCg`
+  //: of the block's; the per-slot outputs are DISJOINT over that partition, so
+  //: nothing about `dR` fans in -- what fans in is `dv`, in pass 2.
+  const long slot0 = (long)blockIdx.x * BC + (long)grp * BCg;
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kD;
   const __nv_bfloat16* const vPlane =
-      pin_address(v + (long)(blockIdx.x / heads) * L * vRowElems + (long)(blockIdx.x % heads) * kD);
-  const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)blockIdx.x * L * kD);
-  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)blockIdx.x * L);
-  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)blockIdx.x * L * BC);
-  float* const drPlane = pin_address(dr + (long)blockIdx.x * L * BC);
+      pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kD);
+  const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)bh * L * kD);
+  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)bh * L);
+  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)bh * L * N + slot0);
+  float* const drPlane = pin_address(dr + (long)bh * L * N + slot0);
 
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
@@ -184,7 +222,9 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
   r0_dden_seats<LdV, MPW>(ddG, gm0 * 16 + (lane >> 2), 16);
   r0_dden_seats<LdV, MTOK>(ddM, lane >> 2, 16);
 
-  const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn), swB = smem_addr(sw);
+  constexpr uint32_t kGrpS = (uint32_t)(C * LdS * (int)sizeof(__nv_bfloat16));
+  const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn);
+  const uint32_t swB = smem_addr(sw) + (uint32_t)grp * kGrpS;
   const uint32_t sgF = smem_addr(sg) + offFg;
   const uint32_t sdsF = smem_addr(sds) + offFd;
 
@@ -205,18 +245,21 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
     for (int e = 0; e < 4; ++e) zac[n][e] = 0.f;
   const uint32_t ones[4] = {kOnesFrag, kOnesFrag, kOnesFrag, kOnesFrag};
 
+  //: the value ring is staged by the WHOLE CTA and the coefficient ring by each
+  //: group over its own slot slice, which is why the two carry different thread
+  //: counts and the coefficient one is indexed by the in-group thread.
   TileStage<C, kD, LdV, kThreads> stV;
-  TileStage<C, BC, LdS, kThreads> stS;
+  TileStage<C, BCg, LdS, kGroupThreads> stS;
   stV.init(tid);
-  stS.init(tid);
+  stS.init(gtid);
   constexpr uint32_t kVSlotB = (uint32_t)(C * LdV * 2);
-  constexpr uint32_t kSSlotB = (uint32_t)(C * LdS * 2);
+  constexpr uint32_t kSSlotB = (uint32_t)(GRP * C * LdS * 2);
   constexpr uint32_t kVRingB = (uint32_t)STAGES * kVSlotB;
   constexpr uint32_t kSRingB = (uint32_t)STAGES * kSSlotB;
   const uint32_t vRowB = (uint32_t)v_row_bytes;
   constexpr uint32_t kDnRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
-  constexpr uint32_t kSRowB = (uint32_t)(BC * (int)sizeof(__nv_bfloat16));
-  constexpr uint32_t kDrRowB = (uint32_t)(BC * (int)sizeof(float));
+  const uint32_t kSRowB = (uint32_t)(N * (int)sizeof(__nv_bfloat16));
+  const uint32_t kDrRowB = (uint32_t)(N * (int)sizeof(float));
   uint32_t stgV = 0, cmpV = 0, stgS = 0, cmpS = 0;
 
   const int NC = L / C;
@@ -270,7 +313,9 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
     }
 
     // ---- the d_v Gram: Gd' = staircase(dnum . v^T + dden (x) 1) --------------
-    if (warp < GWARPS) {
+    //: ONE Gram for the whole CTA.  It contracts over channels and carries no slot
+    //: axis, so a second group would form the same object twice.
+    if (grp == 0 && warp < GWARPS) {
 #pragma unroll
       for (int m = 0; m < MPW; ++m) {
         float g[GPAIR][2][4];
@@ -418,21 +463,22 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, false>)) void
 //: `dW[j,s] = <dS_a[s,:], v_j> + dz_a[s] + sum_{i>=j} R[i,s] Gd'[i,j]`.  `dv` is a
 //: value-channel quantity and the mass column does not enter it.
 template <int C, int BC>
-__global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void rung0_pass2_kernel(
-    const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16* __restrict__ wcoef,
-    const __nv_bfloat16* __restrict__ v, const __nv_bfloat16* __restrict__ dnum,
-    const __nv_bfloat16* __restrict__ dden, float* __restrict__ dv, float* __restrict__ dw, int L,
-    int v_row_bytes) {
+__global__ __launch_bounds__(r0_threads_for(BC), (kR0CtaTarget<C, BC, true>)) void
+rung0_pass2_kernel(const __nv_bfloat16* __restrict__ rcoef, const __nv_bfloat16* __restrict__ wcoef,
+                   const __nv_bfloat16* __restrict__ v, const __nv_bfloat16* __restrict__ dnum,
+                   const __nv_bfloat16* __restrict__ dden, float* __restrict__ dv,
+                   float* __restrict__ dw, int L, int N, int v_row_bytes) {
   using G = GeomR0<C, BC, true>;
-  constexpr int kThreads = threads_for(BC);
+  constexpr int kThreads = r0_threads_for(BC);
   constexpr int kWarps = kThreads / 32;
+  constexpr int GRP = G::GRP, BCg = G::BCg;
   constexpr int STAGES = G::stages;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdG = G::LdG, LdDs = G::LdDs;
   constexpr int MTOK = C / kMmaM, NTOK = C / kMmaN;
-  constexpr int KD = BC / kMmaK, NDV = BC / kMmaN, KV = kD / kMmaK;
+  constexpr int KD = BCg / kMmaK, NDV = BCg / kMmaN, KV = kD / kMmaK;
   constexpr int NSLOT = NDV / kUnits;
   constexpr int NPAIR = NSLOT / 2;
-  static_assert(kWarps == kUnits, "rung 0 is the one-group carve");
+  static_assert(kWarps == GRP * kUnits, "a group is the carve: four units, one per d_v quarter");
   static_assert(NDV == kUnits * NSLOT && NSLOT == 2 * NPAIR,
                 "a unit's slot run must be a whole number of ldmatrix pairs");
   static_assert(design::smem_fits(G::bytes),
@@ -440,8 +486,8 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   static_assert(C % 8 == 0 && kPadE >= 8 && C / 8 <= C,
                 "the mass seed seats in the value panel's row pad, eight entries to a row");
-  constexpr int MSPLIT = MTOK >= kWarps ? kWarps : MTOK;
-  constexpr int NSPLIT_RAW = kWarps / MSPLIT;
+  constexpr int MSPLIT = MTOK >= kUnits ? kUnits : MTOK;
+  constexpr int NSPLIT_RAW = kUnits / MSPLIT;
   constexpr int NSPLIT = NSPLIT_RAW < NTOK / 2 ? NSPLIT_RAW : NTOK / 2;
   constexpr int MPW = MTOK / MSPLIT;
   constexpr int NPW = NTOK / NSPLIT;
@@ -449,27 +495,33 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   constexpr int GPAIR = NPW / 2;
 
   const int tid = threadIdx.x;
-  const int warp = tid >> 5, lane = tid & 31;
+  const int lane = tid & 31;
+  const int grp = tid / kGroupThreads, gtid = tid % kGroupThreads;
+  const int warp = gtid >> 5;
 
   extern __shared__ __align__(16) char smem_raw[];
   __nv_bfloat16* sv = reinterpret_cast<__nv_bfloat16*>(smem_raw);
   __nv_bfloat16* sdn = sv + STAGES * C * LdV;
   __nv_bfloat16* sr = sdn + STAGES * C * LdV;
-  __nv_bfloat16* sw = sr + STAGES * C * LdS;
-  __nv_bfloat16* sgu = sw + STAGES * C * LdS;
-  __nv_bfloat16* sgd = sgu + C * LdG;
-  __nv_bfloat16* sds = sgd + C * LdG;
+  __nv_bfloat16* sw = sr + STAGES * GRP * C * LdS;
+  //: the SLOT Gram is one per group; the channel Gram is one for the CTA.
+  __nv_bfloat16* sguAll = sw + STAGES * GRP * C * LdS;
+  __nv_bfloat16* sgu = sguAll + grp * C * LdG;
+  __nv_bfloat16* sgd = sguAll + GRP * C * LdG;
+  __nv_bfloat16* sds = sgd + C * LdG + grp * kD * LdDs;
 
+  const int bh = (int)blockIdx.y;
+  const long slot0 = (long)blockIdx.x * BC + (long)grp * BCg;
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kD;
   const __nv_bfloat16* const vPlane =
-      pin_address(v + (long)(blockIdx.x / heads) * L * vRowElems + (long)(blockIdx.x % heads) * kD);
-  const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)blockIdx.x * L * kD);
-  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)blockIdx.x * L);
-  const __nv_bfloat16* const rPlane = pin_address(rcoef + (long)blockIdx.x * L * BC);
-  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)blockIdx.x * L * BC);
-  float* const dvPlane = pin_address(dv + (long)blockIdx.x * L * kD);
-  float* const dwPlane = pin_address(dw + (long)blockIdx.x * L * BC);
+      pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kD);
+  const __nv_bfloat16* const dnPlane = pin_address(dnum + (long)bh * L * kD);
+  const __nv_bfloat16* const ddPlane = pin_address(dden + (long)bh * L);
+  const __nv_bfloat16* const rPlane = pin_address(rcoef + (long)bh * L * N + slot0);
+  const __nv_bfloat16* const wPlane = pin_address(wcoef + (long)bh * L * N + slot0);
+  float* const dvPlane = pin_address(dv + (long)bh * L * kD);
+  float* const dwPlane = pin_address(dw + (long)bh * L * N + slot0);
 
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
@@ -486,8 +538,10 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
   r0_dden_seats<LdV, MPW>(ddG, gm0 * 16 + (lane >> 2), 16);
   r0_dden_seats<LdV, MTOK>(ddK, (lane & 3) * 2, 16);
 
+  constexpr uint32_t kGrpS = (uint32_t)(C * LdS * (int)sizeof(__nv_bfloat16));
   const uint32_t svB = smem_addr(sv), sdnB = smem_addr(sdn);
-  const uint32_t srB = smem_addr(sr), swB = smem_addr(sw);
+  const uint32_t srB = smem_addr(sr) + (uint32_t)grp * kGrpS;
+  const uint32_t swB = smem_addr(sw) + (uint32_t)grp * kGrpS;
   const uint32_t sguF = smem_addr(sgu) + offFg;
   const uint32_t sgdT = smem_addr(sgd) + offTg;
   const uint32_t sdsF = smem_addr(sds) + offFd;
@@ -509,18 +563,18 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
     for (int e = 0; e < 4; ++e) dzc[n][e] = 0.f;
 
   TileStage<C, kD, LdV, kThreads> stV;
-  TileStage<C, BC, LdS, kThreads> stS;
+  TileStage<C, BCg, LdS, kGroupThreads> stS;
   stV.init(tid);
-  stS.init(tid);
+  stS.init(gtid);
   constexpr uint32_t kVSlotB = (uint32_t)(C * LdV * 2);
-  constexpr uint32_t kSSlotB = (uint32_t)(C * LdS * 2);
+  constexpr uint32_t kSSlotB = (uint32_t)(GRP * C * LdS * 2);
   constexpr uint32_t kVRingB = (uint32_t)STAGES * kVSlotB;
   constexpr uint32_t kSRingB = (uint32_t)STAGES * kSSlotB;
   const uint32_t vRowB = (uint32_t)v_row_bytes;
   constexpr uint32_t kDnRowB = (uint32_t)(kD * (int)sizeof(__nv_bfloat16));
-  constexpr uint32_t kSRowB = (uint32_t)(BC * (int)sizeof(__nv_bfloat16));
+  const uint32_t kSRowB = (uint32_t)(N * (int)sizeof(__nv_bfloat16));
   constexpr uint32_t kDvRowB = (uint32_t)(kD * (int)sizeof(float));
-  constexpr uint32_t kDwRowB = (uint32_t)(BC * (int)sizeof(float));
+  const uint32_t kDwRowB = (uint32_t)(N * (int)sizeof(float));
   uint32_t stgV = 0, cmpV = 0, stgS = 0, cmpS = 0;
 
   const int NC = L / C;
@@ -556,7 +610,7 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
     const uint32_t aVF = svB + cmpV + offFv, aVT = svB + cmpV + offTv;
     const uint32_t aDF = sdnB + cmpV + offFv, aDT = sdnB + cmpV + offTv;
     const uint32_t aRF = srB + cmpS + offFs;
-    const uint32_t aWF = swB + cmpS + offFs, aWT = swB + cmpS + offTs;
+    const uint32_t aWT = swB + cmpS + offTs;
     const __nv_bfloat16* const dd = sdn + (cmpV >> 1);
     const uint32_t tokBase = (uint32_t)(c * C);
     cmpV += kVSlotB;
@@ -578,17 +632,16 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
     if (warp < GWARPS) {
 #pragma unroll
       for (int m = 0; m < MPW; ++m) {
+        const int tr = (gm0 + m) * 16 + (lane >> 2);
+        //: THE SLOT GRAM, one per GROUP: it contracts over the group's own slots and
+        //: is therefore a partial of the block's, which is what makes `dv` a fan-in.
         float gu[GPAIR][2][4];
-        float gd[GPAIR][2][4];
 #pragma unroll
         for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
           for (int h = 0; h < 2; ++h)
 #pragma unroll
-            for (int e = 0; e < 4; ++e) {
-              gu[u][h][e] = 0.f;
-              gd[u][h][e] = 0.f;
-            }
+            for (int e = 0; e < 4; ++e) gu[u][h][e] = 0.f;
 #pragma unroll
         for (int kk = 0; kk < KD; ++kk) {
           uint32_t qa[4];
@@ -602,20 +655,6 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
           }
         }
 #pragma unroll
-        for (int kk = 0; kk < KV; ++kk) {
-          uint32_t qa[4];
-          load_frag(qa, R0_ADDR(aDF, LdV, (gm0 + m) * 16, 2 * kk));
-#pragma unroll
-          for (int u = 0; u < GPAIR; ++u) {
-            uint32_t bf[4];
-            load_frag(bf, R0_ADDR(aVT, LdV, (gn0 + u * 2) * 8, 2 * kk));
-            mma(gd[u][0], qa, &bf[0]);
-            mma(gd[u][1], qa, &bf[2]);
-          }
-        }
-        const int tr = (gm0 + m) * 16 + (lane >> 2);
-        const float m0 = __bfloat162float(dd[ddG[m][0]]), m1 = __bfloat162float(dd[ddG[m][1]]);
-#pragma unroll
         for (int u = 0; u < GPAIR; ++u)
 #pragma unroll
           for (int h = 0; h < 2; ++h) {
@@ -625,12 +664,43 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
             store_bf16x2(&sgu[(tr + 8) * LdG + tc],
                          pack_bf16x2(R0_STAIR(gu[u][h][2], tc, tr + 8),
                                      R0_STAIR(gu[u][h][3], tc + 1, tr + 8)));
-            store_bf16x2(&sgd[tr * LdG + tc], pack_bf16x2(R0_STAIR(gd[u][h][0] + m0, tc, tr),
-                                                          R0_STAIR(gd[u][h][1] + m0, tc + 1, tr)));
-            store_bf16x2(&sgd[(tr + 8) * LdG + tc],
-                         pack_bf16x2(R0_STAIR(gd[u][h][2] + m1, tc, tr + 8),
-                                     R0_STAIR(gd[u][h][3] + m1, tc + 1, tr + 8)));
           }
+        //: THE CHANNEL GRAM, one for the CTA: it has no slot axis, so a second group
+        //: would form the same object twice.
+        if (grp == 0) {
+          float gd[GPAIR][2][4];
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+            for (int h = 0; h < 2; ++h)
+#pragma unroll
+              for (int e = 0; e < 4; ++e) gd[u][h][e] = 0.f;
+#pragma unroll
+          for (int kk = 0; kk < KV; ++kk) {
+            uint32_t qa[4];
+            load_frag(qa, R0_ADDR(aDF, LdV, (gm0 + m) * 16, 2 * kk));
+#pragma unroll
+            for (int u = 0; u < GPAIR; ++u) {
+              uint32_t bf[4];
+              load_frag(bf, R0_ADDR(aVT, LdV, (gn0 + u * 2) * 8, 2 * kk));
+              mma(gd[u][0], qa, &bf[0]);
+              mma(gd[u][1], qa, &bf[2]);
+            }
+          }
+          const float m0 = __bfloat162float(dd[ddG[m][0]]), m1 = __bfloat162float(dd[ddG[m][1]]);
+#pragma unroll
+          for (int u = 0; u < GPAIR; ++u)
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+              const int tc = (gn0 + u * 2 + h) * 8 + (lane & 3) * 2;
+              store_bf16x2(&sgd[tr * LdG + tc],
+                           pack_bf16x2(R0_STAIR(gd[u][h][0] + m0, tc, tr),
+                                       R0_STAIR(gd[u][h][1] + m0, tc + 1, tr)));
+              store_bf16x2(&sgd[(tr + 8) * LdG + tc],
+                           pack_bf16x2(R0_STAIR(gd[u][h][2] + m1, tc, tr + 8),
+                                       R0_STAIR(gd[u][h][3] + m1, tc + 1, tr + 8)));
+            }
+        }
       }
     }
 
@@ -670,6 +740,12 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
           mma(acc[2 * np + 1], a, &b[2]);
         }
       }
+      //: THE SPLIT-K FAN-IN.  `dv` contracts over the WHOLE slot space, so every
+      //: group of every block holds a partial of it and the arena is the only place
+      //: they meet.  The identity is written ONCE, by the allocation, before any
+      //: contribution -- a per-output fill would be `nblk` fills of the same plane
+      //: and a race besides.  `fan_in_add` is the non-returning form, so this
+      //: assembles as `RED` and nothing waits -- docs/internals/chunk/ladder_r0.md#fan-in
       const int c0 = warp * kMmaM + (lane >> 2);
 #pragma unroll
       for (int j = 0; j < NTOK; ++j) {
@@ -679,10 +755,10 @@ __global__ __launch_bounds__(threads_for(BC), (kR0CtaTarget<C, BC, true>)) void 
         float* p1 = reinterpret_cast<float*>(gather_ptr(
             dvPlane,
             (tokBase + (uint32_t)(t0 + 1)) * kDvRowB + (uint32_t)(c0 * (int)sizeof(float))));
-        store_f32(p0, acc[j][0]);
-        store_f32(p1, acc[j][1]);
-        store_f32(p0 + 8, acc[j][2]);
-        store_f32(p1 + 8, acc[j][3]);
+        fan_in_add(p0, acc[j][0]);
+        fan_in_add(p1, acc[j][1]);
+        fan_in_add(p0 + 8, acc[j][2]);
+        fan_in_add(p1 + 8, acc[j][3]);
       }
     }
 

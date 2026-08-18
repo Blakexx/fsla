@@ -192,6 +192,24 @@ def _cells() -> dict[str, Cell]:
              note="N = BC = 64, dense: the one shape where rung 0 and the shipped "
                   "scans run the same problem"),
 
+        #: **THE LADDER'S SPLIT-K CELL.** Widths `(256, 256)` -- the arm
+        #: `(32, 128, 2, 256)`, `N = 65536`, the SCALE rung's own geometry, and a block
+        #: lattice of 512. It is where the fan-in is stated at the depth the campaign
+        #: actually runs: `dv` takes 512 partial contributions per (bh, token, channel)
+        #: against the pinned cell's 32, and `nblk = N / BC` is the growth axis every
+        #: fan-in design has to answer on.
+        #:
+        #: `B = 1, H = 2, T = 512` and not the pinned cell's shape, and the reason is
+        #: arithmetic rather than taste: the LADDER's coefficients are PER SLOT (it has
+        #: no digit gradients until rung b3), so its operand planes are `[BH, T, N]` bf16
+        #: and its per-slot gradients `[BH, T, N]` fp32 -- 134 MB and 268 MB apiece here,
+        #: where the pinned cell's `B2 H8 T2048` would ask for 4.3 GB and 8.6 GB. The
+        #: cell is sized so the LATTICE is at scale and the plane is not.
+        Cell(name="chunk-bwd-splitk", widths=(256, 256), B=1, T=512, H=2, hidden=512,
+             alpha=1.5, seed=9,
+             note="N = 65536 at BC = 128: a 512-block lattice, the split-K fan-in's "
+                  "own depth"),
+
         #: **THE DEEP-ARM CELL.** `D = 4` at width 8 -- the deepest topology the built
         #: manifest carries, and the one the paging bench uses for the same reason. It
         #: moves the level count while `N = 4096` is held identical to the pinned cell's,

@@ -1,13 +1,15 @@
-# `csrc/rola/src/chunk/ladder_r0.{cuh,cu}` — the backward ladder, rungs 0–1
+# `csrc/rola/src/chunk/ladder_r0.{cuh,cu}` — the backward ladder, rungs 0–2
 
 The reverse pass, rebuilt by the FORWARD's methodology: start from an efficient dense
 chunked linear-attention backward and add one RoLA feature per rung, pricing each in
-both currencies. This component is the ladder's base plus its first rung — the mass
-column and the self-normalizing readout's adjoint. It is **not the production path**;
-the two scans in [`backward.md`](backward.md) are.
+both currencies. This component is the ladder's base plus two rungs — the mass
+column with the self-normalizing readout's adjoint, and the carve with its split-K
+fan-in. It is **not the production path**; the two scans in
+[`backward.md`](backward.md) are.
 
 Symbols, defined once and used unqualified below: `C` chunk tokens, `BC` slots per CTA
-block, `N` the slot space, `d_v = 64` value channels, `T`/`L` tokens, `R[i,s]`/`W[j,s]`
+block, `BCg` slots per slot GROUP, `GRP` groups per block, `N` the slot space,
+`nblk = N / BC` the block lattice, `d_v = 64` value channels, `T`/`L` tokens, `R[i,s]`/`W[j,s]`
 the read/write coefficients, `S` the forward state `[N, d_v]` and `z` its mass column
 `[N]`, `dS`/`dz` their adjoints, `dnum`/`dden` the readout's two cotangent seeds,
 "visit" one CTA's pass over one chunk, "rendezvous" a `__syncthreads()`.
@@ -16,9 +18,9 @@ the read/write coefficients, `S` the forward state `[N, d_v]` and `z` its mass c
 
 One kernel pair, on RoLA's own quantities, with every remaining RoLA feature absent:
 
-* **dense**: `N = BC`, one block, no carve, no fan-in — the slot panel is the identity,
-  so there is no `Producer`, no digit arithmetic and no digit gradient. The
-  coefficients arrive PER SLOT, `[BH, L, BC]`;
+* **dense, per slot**: the slot panel is the identity, so there is no `Producer`, no
+  digit arithmetic and no digit gradient. The coefficients arrive PER SLOT,
+  `[BH, L, N]`, and the per-slot gradients leave in the same shape;
 * **contiguous chunks**: no union table, no `Descent`/`Ascent`, no compaction, no
   causal-threshold walk — chunk `c` is tokens `[cC, (c+1)C)` and `J(i) = i + 1`;
 * **no gains**: the write coefficient carries whatever gain its caller folded in;
@@ -119,8 +121,8 @@ Two consequences make it affordable, and both are geometry rather than luck:
   spare: 50,176 bytes IS the largest carve admitting two CTAs per SM on sm_86;
 * the value cotangent `dv` needs no publication at all: its contraction runs over
   SLOTS, which the channel carve leaves whole, so each unit emits its own sixteen
-  channels complete and stores them straight to global. There is no `so` staging
-  buffer and no fan-in, because at `N = BC` one CTA owns the whole slot space.
+  channels complete and there is no `so` staging buffer. What its slot axis does cost
+  is the fan-in below.
 
 ## <a id="ring"></a>Every consumed stream rides the ring
 
@@ -133,25 +135,96 @@ its destination stride is a row, which is neither of the shapes `cp.async` copie
 chunks are contiguous, so `TileStage` contributes no gather: a tile's rows are the
 plane's own rows and a row's address is one 32-bit displacement off a pinned base.
 
-The ring's cost is what bounds the rung's block width. At `C = 32, BC = 64` pass 2
+The ring's cost is what bounds the rung's GROUP width. At `C = 32, BCg = 64` pass 2
 carves 50,176 bytes, which is exactly the largest carve that admits two CTAs per SM on
-sm_86; `BC = 128` does not fit at any depth, and widening it is rung b2's carve
-question rather than a constant to raise here. That zero margin is also why the mass
-column is placed the way it is: a 256-byte `[BC]` fp32 publication buffer would have
-cost the residency outright.
+sm_86; that zero margin is why the mass column is placed the way it is — a 256-byte
+`[BCg]` fp32 publication buffer would have cost the residency outright — and it is why
+a 128-slot group does not exist. See [the group threshold](#the-group-threshold).
+
+## <a id="the-group-threshold"></a>The group threshold, and why it is 128 and not 256
+
+The forward splits a block into two slot GROUPS at `BC >= 256`, where one group's
+k-run would exceed its measured shape. The ladder splits at **128**, and the reason is
+that the adjoint carries two costs per group's slot width the forward does not: a
+SECOND coefficient panel on the ring, and the publication. Held at `C = 32` with the
+ring at its derived depth of two:
+
+| buffer | `BCg = 64` | `BCg = 128` |
+|---|---:|---:|
+| value ring (`V`, `dnum`), CTA-wide | 18,432 | 18,432 |
+| coefficient ring (`R`, `W`), per group | 18,432 | 34,816 |
+| the Grams | 5,120 | 5,120 |
+| the publication `[d_v][BCg]` | 8,192 | 16,384 |
+| **pass 2 total** | **50,176** | **74,752** |
+
+The two-CTA ceiling is 50,176. A 128-slot group is 24,576 bytes past it and **no
+reordering recovers the difference, because all four buffers are live across the whole
+visit**: the publication is irreducible (the object that must cross the units is
+`d_v x BCg` bf16 however it is sliced, and publishing it in the contraction's own
+k-tiles costs a rendezvous per tile), single-buffering the coefficient panels saves
+17,408 and costs a third rendezvous, and killing every `ldmatrix` pad recovers ~4,096
+against tiles that carry ~600 MMA a visit.
+
+So `BC = 128` is not a wider group; it is TWO of them. A block of two groups is one
+CTA of 256 threads, and what that holds constant is the quantity the ideal regime is
+stated in — **warps per SM**: eight, either as two CTAs of four warps at `BC = 64` or
+as one CTA of eight at `BC = 128`. The register set per warp is unchanged, because a
+group's geometry is unchanged.
+
+Two objects are shared rather than duplicated across the groups, and each is shared
+for a stated reason: the **value ring** (`V`, `dnum` carry no slot axis, so both groups
+stage one copy — half the global traffic of two separate CTAs) and the **`d_v` Gram**
+(`Gd'` contracts over channels and has no slot axis either, so group zero forms it once
+for the CTA — half the Gram MMA). The **slot Gram** `Gu` is per group, because it
+contracts over the group's own slots; it is therefore a partial of the block's, which
+is the same statement as `dv` fanning in.
+
+## <a id="fan-in"></a>The split-K fan-in
+
+A block owns `BC` of the `N` slots and a group `BCg` of the block's. Over that
+partition:
+
+* `dR` and `dW` are **slot-disjoint**. Their slot axis is the OUTPUT's, so a block
+  writes its own columns of `[BH, L, N]` and writes each exactly once. They are
+  allocated and never filled, and nothing about them fans in. (At rung b3 the digit
+  gradients replace them and that changes: a digit is shared across blocks, so a digit
+  gradient IS a fan-in and inherits the mechanism below.)
+* `dv` is **not**. Its contraction `dv[j,:] = Σ_s W[j,s] dS_a[s,:]` runs over the whole
+  slot space, and so does the intra term's `Gu`, so every group of every block holds a
+  partial and the arena is the only place they meet.
+
+The mechanism is `fan_in_add` — the non-returning `atomicAdd`, which assembles as
+`RED` and not `ATOM`, so the issuing warp never waits on a return value. The two
+alternatives were priced and rejected on the GROWTH AXIS rather than on today's cell: a
+per-block partial arena reduced by a second kernel is `nblk` copies of `[BH, L, d_v]`
+fp32 and `nblk = N / BC` is the axis the design scales along, and a slot-ownership
+partition cannot apply at all, because `dv`'s sum IS over the partitioned axis.
+
+**The identity is written once, by the allocation, before any contribution.** `dv` is
+`torch::zeros` and every other output is `torch::empty`; a fill per contributing block
+would be `nblk` fills of the same plane and a race besides. That is the recovery
+batch's lesson stated as a rule: a fan-in target needs its identity before the first
+contribution, and there is exactly one target here.
+
+At `N = BC` the lattice is one block, `GRP` is one, and the single contribution lands
+on the arena's zero — so the one-block cell is BIT-IDENTICAL to the rung that preceded
+the carve, which is how the carve is gated.
 
 ## <a id="arms"></a>The arm list, and why it is `(C, BC)` alone
 
 `LADDER_R0_ARMS` is GENERATED, from `tools/gen_shards.py` — the same generator that
 owns `CHUNK_ARMS` and `SCAN_ARMS` — and each `(C, BC)` is checked at generation time
-against a shape the consumer is built at. A topology is not one of rung 0's axes: the
-slot space IS the block, so `(D, B)` has nothing to say to it.
+against a shape the consumer is built at. A topology is not one of the ladder's
+COMPILED axes: `N` reaches the kernel as a runtime plane width and the block lattice as
+the grid's own x extent, so `(D, B)` has nothing to say to the arm list.
 
 `(32, 64)` is the HEAD-TO-HEAD arm. It is the one place a scan arm's `N` equals its
 `BC` — the scan arms `(32, 64, 2, 8)` and `(32, 64, 1, 64)` both have `N = 64` — so it
-is the only shape at which rung 0 and the shipped scans run the same problem over the
-same grid, and therefore the only shape at which their walls compare. `(16, 64)` is
-the second point on the chunk axis.
+is the only shape at which the ladder and the shipped scans run the same problem over
+the same ONE-BLOCK grid, and therefore where their walls compare most directly.
+`(16, 64)` is the second point on the chunk axis. `(32, 128)` is the SHIPPED block
+width: the pinned cell `(32, 128, 2, 64)` and the scale cell `(32, 128, 2, 256)` both
+resolve to it, it is a two-group block, and it is what rung b2's carve buys.
 
 ## <a id="gates"></a>What gates it
 
@@ -180,6 +253,17 @@ mass column stays out of the value channels. Both mass regimes run: `dden = 0` i
 configuration in which every mass term is identically zero, and it is a regression
 row rather than a gate.
 
+The fan-in has its own two gates. `test_the_fan_in_has_more_than_one_live_contributor`
+asserts of each multi-block cell that EVERY block's partial is a material share of
+`dv` — on a cell where one block carried the sum, a kernel that stored instead of
+adding would pass everything else — and the one-block cell is checked BIT-IDENTICAL to
+the rung before the carve, which is the statement that the addressing changed and the
+arithmetic did not.
+
 The census (`chunk_rung0_census`) carries both halves of the floor claim per arm and
-per pass — the declared live set and the budget its CTA target admits — and the gate
+per pass — the declared live set and the budget its target admits — and the gate
 asserts zero spill, a staging depth of at least two, and the forward's own residency.
+That last is stated in **warps per SM** rather than in CTAs, and it became so at rung
+b2: `BC = 128` runs one CTA of eight warps where `BC = 64` runs two of four, and the
+eight is what the carve holds constant. The twelfth census column is the thread count,
+so the gate can say so.

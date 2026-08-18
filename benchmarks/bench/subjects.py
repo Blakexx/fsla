@@ -158,37 +158,44 @@ def scan_b(fx) -> Arm:
 
 
 def _rung0_operands(fx):
-    """The ladder's rung-0 operands, expanded from THIS cell's own routing.
+    """The ladder's operands, expanded from THIS cell's own routing.
 
-    Rung 0's coefficients are PER SLOT, so the packed amplitudes are multiplied out into
-    the Kronecker product ONE BLOCK wide -- the slot run a single CTA of the shipped
-    scans owns, at the same `(C, BC)`. The write side carries its gain, because rung 0
-    has no separate gain to carry it. Built here, outside the timed callable, exactly as
-    the union table and the packed sides are for every other subject.
+    The ladder's coefficients are PER SLOT (digit gradients are rung b3), so the packed
+    amplitudes are multiplied out into the Kronecker product over the cell's WHOLE slot
+    space -- `N`, not one block. That is rung b2's own subject: the block lattice is
+    `N / BC` blocks and `dv`'s partials fan in across it. The write side carries its
+    gain, because the ladder has no separate gain to carry it. Built here, outside the
+    timed callable, exactly as the union table and the packed sides are for every other
+    subject.
+
+    The expansion multiplies IN PLACE, one level at a time: at the split-K cell the
+    plane is `[BH, T, 65536]` and a functional fold would hold three of them at once.
     """
-    plan, widths, bc = fx["plan"], _widths(fx), fx["BC"]
+    plan, widths = fx["plan"], _widths(fx)
     bh, tokens = plan.read_plane.shape[0] * plan.read_plane.shape[1], plan.read_plane.shape[2]
+    n = fx["cell"].N
     pr = plan.read_plane.reshape(bh, tokens, -1).float()
     pw = plan.write_plane.reshape(bh, tokens, -1).float()
     gain = plan.g_write.reshape(bh, tokens, 1).float()
-    slot = torch.arange(bc, device=pr.device)
+    slot = torch.arange(n, device=pr.device)
 
-    def expand(packed, out):
-        #: a leaf's digits are its mixed-radix expansion over the FULL slot space, and
-        #: block zero's leaves are the first `bc` of them by the leaf-order law.
-        place, off = fx["cell"].N, 0
+    def expand(packed, seed):
+        #: a leaf's digits are its mixed-radix expansion over the slot space in the
+        #: leaf-order law's own order, so slot `s` of block `b` is leaf `b * BC + s`.
+        out = seed.expand(bh, tokens, n).clone()
+        place, off = n, 0
         for w in widths:
             place //= w
-            out = out * packed[:, :, off + (slot // place) % w]
+            out.mul_(packed[:, :, off + (slot // place) % w])
             off += w
         return out.to(torch.bfloat16).contiguous()
 
-    ones = torch.ones(bh, tokens, bc, device=pr.device)
+    one = torch.ones(bh, tokens, 1, device=pr.device)
     dnum, dden = _seeds(fx)
-    return {"r": expand(pr, ones), "w": expand(pw, gain * ones), "v": fx["v_kernel"],
+    return {"r": expand(pr, one), "w": expand(pw, gain), "v": fx["v_kernel"],
             "dnum": dnum.reshape(bh, tokens, 64).contiguous(),
             "dden": dden.reshape(bh, tokens).contiguous(),
-            "c": fx["C"], "bc": bc}
+            "c": fx["C"], "bc": fx["BC"]}
 
 
 def rung0_pass1(fx) -> Arm:
