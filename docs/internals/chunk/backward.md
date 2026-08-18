@@ -198,13 +198,34 @@ It reuses `GeomB` unchanged: it needs strictly less of the readout window (no `d
 staging), and sharing the geometry keeps both halves of a training step at one
 occupancy. 236 registers, zero spill, zero stack frame.
 
-**ONE ADDRESSING RULE THIS SCAN PAID TO LEARN.** Each side's table row is formed
-FROM THE TABLE, not from the other side. Writing the write row as
-`read + entries * tok_words` makes its offset a CONSTANT times a register, which
-ptxas re-derives inside the chunk loop rather than keeping — an `IMAD.WIDE` per
-chunk, which the gate refuses. Formed independently the multiply is register times
-register and it stays put. Pinning does not substitute: `pin_address` launders a
-value, it does not make rematerialising it more expensive than keeping it.
+### <a id="addressing"></a>The addressing rule this scan paid to learn
+
+One rule, four sites, and the gate that enforces it is the hot-loop clause: no
+`IMAD.WIDE` inside the chunk loop. A global address is a 64-bit base formed ONCE
+outside the loop, pinned, plus a 32-bit byte displacement formed inside it. What
+breaks the rule is anything that lets ptxas fold a loop-varying term into the
+64-bit add, and it breaks in four distinguishable ways:
+
+* **each side's table row is formed FROM THE TABLE, not from the other side.**
+  Writing the write row as `read + entries * tok_words` makes its offset a
+  CONSTANT times a register, which ptxas re-derives inside the loop rather than
+  keeping. Formed independently the multiply is register times register and it
+  stays put. Pinning does not substitute: `pin_address` launders a value, it does
+  not make rematerialising it more expensive than keeping it;
+* **the head's offset rides the displacement, not the base.** `V` is
+  `[B, T, H, d_v]`, so a head is a fixed byte offset INSIDE a row. Folded into the
+  gather's displacement, the base carries the batch term alone and the 64-bit
+  multiply the head term would otherwise contribute is gone;
+* **the gathered `dnum` row is pinned at the gather.** `dnum`'s row stride is a
+  compile-time constant, so `token * stride` is exactly the shape ptxas folds into
+  the 64-bit add — once per staged row. `V`'s gather needs no such pin: its stride
+  is a runtime argument and there is nothing to fold;
+* **the digit-gradient plane is a `char*`** on the stride its displacements already
+  carry, so the fan-in's address is one 32-bit add off a pinned base rather than a
+  typed-pointer scale.
+
+The same rule is why the partition probe forms its three output plane bases once
+and pins them: every store inside the walk is a byte displacement off one of them.
 
 ## <a id="readout-window"></a>The readout window is two things in sequence
 
@@ -225,6 +246,11 @@ pass at a time — `[kPassSlots + kMmaN][d_v + kPadE]` bf16 = 5,760 B, a CONSTAN
 since the pass width is the mma carve's and not `BC`'s — it fits inside this window
 beside `dz` with room over at every arm, so the whole per-slot `dW` phase costs no
 shared memory beyond what `dv` already owns.
+
+The `+ kMmaN` on the ROW count is not slack. `ldmatrix` reads SIXTEEN rows from an
+eight-row tile's base, so the last unit of a pass addresses eight rows past the
+pass' own slots; without them the transposed state's read runs off the buffer. The
+`+ kPadE` on the row STRIDE is the tree's usual bank skew and is a different thing.
 
 ## <a id="two-grams"></a>Two Grams, one buffer
 
@@ -283,12 +309,14 @@ so
     d gw[j] = ⟨ sum_s U[j,s] · d̃S_after[j,s,:] , ṽ[j,:] ⟩
 
 — the UNGAINED `dv` readout widened by one column, contracted against `v` with a
-trailing one. Two consequences worth stating before anything is built:
+trailing one. Two consequences, and both are what the kernel does:
 
-* the write panel should hold `U` and the gain should be applied once, at the
-  `so` store, on the `n` axis (`gw[j]` is uniform along the accumulator's token
-  index). `dv` is unaffected — `sum_s W · dS = gw[j] · sum_s U · dS` — and the
-  slot Gram becomes the UNGAINED `Gu`, which is what `d gw`'s intra term wants;
+* **the write panel is produced UNGAINED and the gain lands once, at the `so`
+  store**, on the `n` axis — `gw[j]` is uniform along the accumulator's token
+  index, so one multiply per stored entry is the same number. `dv` is unaffected
+  (`sum_s W · dS = gw[j] · sum_s U · dS`), the slot Gram is therefore the UNGAINED
+  `Gu` which is what `d gw`'s intra term wants, and the level product is left
+  standing — the operand (A.11) needs and the one a decay clock will tap;
 * the value channels then need no separate contraction at all: `acc` — the
   ungained readout, inter and intra together — IS `sum_s U[j,s] dS_after[j,s,:]`,
   so `d gw`'s value half is `⟨acc[j,:], v[j,:]⟩`, read straight off the
@@ -481,6 +509,18 @@ has 12,256 to give, so the accumulator can be register-resident or tiled, but it
 cannot be a shared plane at this occupancy. The kernel tiles it and reduces in
 place: the tile is produced, reduced over its slots and folded into the per-token
 partial, so the live accumulator is 8 registers rather than 128.
+
+**NO OPERAND k-RUN IS HOISTED, anywhere in Scan B, and that is a decision the
+forward never has to make.** The forward's mma loops may keep a whole k-run of
+fragments live because nothing else of theirs is; Scan B carries the adjoint state
+`dst[NDV][4]` through every one of its blocks, so `KD * 4` more live registers is
+the difference between 255-with-no-spill and a spill. Three sites pay it and none
+of them pays anything for it: the slot Gram re-reads one k-tile of each panel per
+step (`MPW` is one at every arm, so nothing is read twice), `dv`'s readout re-packs
+the adjoint and re-issues the `ldmatrix` the loop was going to issue anyway, and
+the fold re-reads the `R` panel a tile at a time for the same `ldmatrix` count.
+The rule to read off this: at this ceiling a live range that merely OUTLIVES its
+use is a spill, which is why `dv`'s whole term is written inside its own scope.
 
 ## <a id="ctx-contract"></a>The ctx the forward hands over
 
