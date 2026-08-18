@@ -181,27 +181,31 @@ def _rung0_operands(fx):
     return {"pr": pr, "pw": pw.to(torch.bfloat16).contiguous(), "v": fx["v_kernel"],
             "dnum": dnum.reshape(bh, tokens, 64).contiguous(),
             "dden": dden.reshape(bh, tokens).contiguous(),
+            #: RUNG b4 REPLAYS the table rather than rebuilding it, so the subject hands
+            #: over the plan's OWN union table -- the same object the shipped scans are
+            #: handed, which is what keeps the two head to head.
+            "tbl": plan.union_table,
             "c": fx["C"], "bc": fx["BC"], "d": len(widths), "b": widths[0]}
 
 
 def rung0_pass1(fx) -> Arm:
-    """THE LADDER, RUNG 3, PASS 1: the ascending rebuild's per-level `d pr`."""
+    """THE LADDER, RUNG 4, PASS 1: the ascending rebuild's per-level `d pr`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass1(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["c"],
-                                   o["bc"], o["d"], o["b"])
+        return m.chunk_rung0_pass1(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["tbl"],
+                                   o["c"], o["bc"], o["d"], o["b"])
 
     return Arm(name="rung0_pass1", call=call)
 
 
 def rung0_pass2(fx) -> Arm:
-    """THE LADDER, RUNG 3, PASS 2: the descending adjoint's `dv` and per-level `d pw`."""
+    """THE LADDER, RUNG 4, PASS 2: the descending adjoint's `dv` and per-level `d pw`."""
     m, o = extension(), _rung0_operands(fx)
 
     def call():
-        return m.chunk_rung0_pass2(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["c"],
-                                   o["bc"], o["d"], o["b"])
+        return m.chunk_rung0_pass2(o["pr"], o["pw"], o["v"], o["dnum"], o["dden"], o["tbl"],
+                                   o["c"], o["bc"], o["d"], o["b"])
 
     return Arm(name="rung0_pass2", call=call)
 

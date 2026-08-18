@@ -1,10 +1,11 @@
-# `csrc/rola/src/chunk/ladder_r0.{cuh,cu}` — the backward ladder, rungs 0–3
+# `csrc/rola/src/chunk/ladder_r0.{cuh,cu}` — the backward ladder, rungs 0–4
 
 The reverse pass, rebuilt by the FORWARD's methodology: start from an efficient dense
 chunked linear-attention backward and add one RoLA feature per rung, pricing each in
-both currencies. This component is the ladder's base plus three rungs — the mass
+both currencies. This component is the ladder's base plus four rungs — the mass
 column with the self-normalizing readout's adjoint, the carve with its split-K fan-in,
-and the ROUTED operand with its digit gradients. It is **not the production path**;
+the ROUTED operand with its digit gradients, and the COMPACTION that replays the saved
+union table. It is **not the production path**;
 the two scans in [`backward.md`](backward.md) are.
 
 Symbols, defined once and used unqualified below: `C` chunk tokens, `BC` slots per CTA
@@ -28,8 +29,10 @@ One kernel pair, on RoLA's own quantities, with every remaining RoLA feature abs
   rung b2 staged; the gradients leave in the same `[BH, L, D·Bw]` shape as per-level
   digit gradients. Nothing per-slot crosses the kernel boundary in either direction —
   see [the operand](#the-operand) and [the digit reduction](#the-digit-reduction);
-* **contiguous chunks**: no union table, no `Descent`/`Ascent`, no compaction, no
-  causal-threshold walk — chunk `c` is tokens `[cC, (c+1)C)` and `J(i) = i + 1`;
+* **compacted**: the token axis is the WALK's, not a chunk base's. Both passes replay
+  the saved union table through the same `Ascent`/`Descent` components the forward and
+  the shipped scans drive, and visit only the tokens a block's clause admits — see
+  [the replay](#the-replay);
 * **no gains**: the write coefficient carries whatever gain its caller folded in;
 * **no ragged tail**: `L % C != 0` is REFUSED at the entry rather than masked. The
   mask is rung b6's, and a fallback here would be the special case that rung deletes.
@@ -54,8 +57,10 @@ which one MMA unit owns sixteen of the sixty-four value channels.
 | adjoint fold `dS += q dO^T` | `dS^T += dnum^T·R`, `dz += dden^T·R` | pass 2 |
 
 The staircase is one predicate in both passes and in both Grams — rows are read
-tokens, columns write tokens, and a write is kept at or before the read. The lists are
-the identity here, so it is `tc <= tr` on chunk-local indices.
+ENTRIES, columns write ENTRIES, and a write is kept at or before the read TOKEN. The
+walk resolves that once, at close, as the per-read-entry threshold `J`, so the kernel
+tests `tc < J[tr]`. At a fully live cell `J[i] = i + 1` and the predicate is the
+chunk-local `tc <= tr` rungs b0–b3 ran.
 
 ## <a id="mass"></a>The mass column, and why it costs no barrier and no byte
 
@@ -92,19 +97,48 @@ The eight-wide pad groups are load-bearing rather than incidental: they are what
 `(i, i+1)` adjacent for every even `i`, which is exactly the pair an MMA `A` fragment's
 lane wants.
 
-## <a id="phases"></a>Two rendezvous per visit, and what buys them
+## <a id="phases"></a>Two rendezvous per visit ascending, three descending
 
 The forward's per-visit shape is one barrier for "the staged tile is visible and the
-last visit is drained" and one for "the produced operands are visible". Rung 0 spends
-the same two, in both passes:
+last visit is drained" and one for "the produced operands are visible". Pass 1 spends
+exactly those two; pass 2 spends a third, and which one it is has a single cause.
 
 ```
-stage_wait<STAGES-2>(); rendezvous()   # (1) this chunk's tiles and seed visible
-stage the chunk STAGES-1 ahead; commit
-publish the entry state; form the Gram(s), ones column included
-rendezvous()                           # (2) the state and the Grams are visible
-the per-slot term with its entry mass; the value term; the state and mass folds
+                                       # pass 1, ascending
+cook the super-chunk AHEAD; load the panel's amplitudes (global, read-only)
+stage_wait<STAGES-2>(); rendezvous()   # (1) this super-chunk's tiles and seed visible
+finish the walk; refill the form ring; stage the next super-chunk; commit
+STORE the coefficient panel; publish the entry state; form Gd', ones column included
+rendezvous()                           # (2) the panel, the state and the Gram are visible
+the per-slot term with its entry mass; the digit emit; the state and mass folds
 ```
+
+```
+                                       # pass 2, descending
+cook AHEAD; load BOTH panels' amplitudes
+stage_wait<STAGES-2>(); rendezvous()   # (1)
+finish the walk; refill; stage; commit
+STORE both panels; publish the entry adjoint
+rendezvous()                           # (2) the panels and the adjoint are visible
+form Gu = staircase(R·Wᵀ) AND Gd'
+rendezvous()                           # (3) both Grams are visible
+dv; the per-slot term; the digit emit; the adjoint and mass folds
+```
+
+**The third barrier is the SLOT Gram's, and nothing else's.** `Gd'` contracts `dnum`
+against `V` — two ring-staged tiles — so pass 1 can form it in the very phase that
+stores the panel. `Gu` contracts `R` against `W`, which ARE the panels that phase
+stores, so it cannot be formed until they are visible. That is the whole of the
+asymmetry, and it is the price of [the panel leaving the
+ring](#the-panel-leaves-the-ring).
+
+Counted in the SASS over the whole body, the two kernels carry 10 and 11 `BAR.SYNC`
+against the shipped scans' 16–20 and 21–25. The difference between those numbers and
+the 2 and 3 above is the SCHEDULE MACHINERY, and it is the same decomposition the
+shipped scans have: two in the prologue that fill the formed ring once, two per
+schedule-ahead step in the prologue, and two inside `walk_wait` at each of its two call
+sites — a CONDITIONAL pair that fires only when a super-chunk outruns the formed ring.
+The unconditional per-visit count is what the budget is stated in.
 
 The mass column adds no phase to this. Both entry mass columns live in ACCUMULATOR
 registers rather than in shared memory, so the only thing that must cross threads is
@@ -131,49 +165,122 @@ Two consequences make it affordable, and both are geometry rather than luck:
   channels complete and there is no `so` staging buffer. What its slot axis does cost
   is the fan-in below.
 
-## <a id="ring"></a>Every consumed stream rides the ring
+## <a id="ring"></a>What rides the ring, and what stopped
 
-Two staged streams in either pass (`V`, `dnum`), each a contiguous `[C, d_v]` tile of
-its plane, moved through the `cp.async` ring at the depth `design::stages_for` derives;
-the coefficient panels — two in pass 2 (`R`, `W`) and one in pass 1 (`W`; the read side
-is a write-side pass's operand only) — occupy the SAME ring slots at the SAME bytes but
-are PRODUCED into them rather than copied, because at rung b3 their contents do not
-exist in memory. Plus the
-`[C]` mass seed, which rides in the `dnum` tile's pad and is therefore the one stream
-staged by a plain load/store rather than by `cp.async`: its entries are two bytes and
-its destination stride is a row, which is neither of the shapes `cp.async` copies. The
-chunks are contiguous, so `TileStage` contributes no gather: a tile's rows are the
-plane's own rows and a row's address is one 32-bit displacement off a pinned base.
+Two staged streams in either pass (`V`, `dnum`), each a `[C, d_v]` tile moved through
+the `cp.async` ring at the depth `design::stages_for` derives; the `[C]` mass seed,
+which rides in the `dnum` tile's pad and is therefore staged by a plain load/store
+rather than by `cp.async` (its entries are two bytes and its destination stride is a
+row, which is neither of the shapes `cp.async` copies); and — since rung b4 — the
+SCHEDULE's own index slot, one per cooked super-chunk.
 
-The ring's cost is what bounds the rung's GROUP width. At `C = 32, BCg = 64` pass 2
-carves 50,176 bytes, which is exactly the largest carve that admits two CTAs per SM on
-sm_86; that zero margin is why the mass column is placed the way it is — a 256-byte
-`[BCg]` fp32 publication buffer would have cost the residency outright — and it is why
-a 128-slot group does not exist. See [the group threshold](#the-group-threshold).
+At rung b4 the tiles are GATHERED: a tile's rows are the tokens one side's index list
+names, offset by the super-chunk's window base, and a row past the gathered count reads
+the list's zero and lands on token zero. Every consumer of such a row is either masked
+by the causal threshold — which is zero there — or multiplied by a coefficient row this
+rung zeroed at production.
+
+### <a id="the-panel-leaves-the-ring"></a>The coefficient panel leaves the ring
+
+Rung b2 staged the coefficient panel with `cp.async` and rung b3 replaced that with an
+in-kernel expansion while leaving the panel where b2 had put it: on the ring, one copy
+per stage. Rung b4 takes it off, and the reason is a byte count with no slack in it.
+
+The replay needs two shared buffers the ladder never carried: the INDEX RING —
+`IRING = STAGES − 1 + kAheadExtra + 2 = 3` slots of `16 + ⌈5C/16⌉·16` bytes, the header,
+the two `uint16` index lists and the `uint8` threshold list — and the FORM RING,
+`2·kFormWords·4 + kCookSlots·4 = 1,040` bytes. At `C = 32` that is 1,568 bytes, and
+**pass 2 at `BC = 64` had exactly zero of them**: 50,176 B is the largest carve that
+still holds two CTAs on sm_86 (`102400 / (round_up(smem,128) + 1024) ≥ 2`), and rungs
+b0–b3 sat on it to the byte. One byte more drops the arm to one CTA of four warps.
+
+An expansion's latency is not the ring's to hide. It is hidden instead by SPLITTING the
+expansion: the LOAD reads global memory the visit does not own, races with nothing, and
+is issued BEFORE the visit's first rendezvous, where the previous visit's tail covers
+it; only the STORE waits, and it waits on the rendezvous that retires the last visit's
+readers. What that costs is `passes · 4` registers per panel — the carried run — and
+what it gives back is one whole panel copy per group, which is 9,216 bytes at `BC = 64`
+and 18,432 at `BC = 128` pass 2. The carve FALLS at every arm:
+
+| arm | pass | b3 | **b4** | CTA | warps/SM |
+|---|---|---:|---:|---:|---:|
+| `(32,128,2,·)` | 1 | 55,808 | **48,160** | 1 | 8 |
+| | 2 | 79,360 | **62,496** | 1 | 8 |
+| `(32,64,·,·)` | 1 | 38,400 | **35,360** | 2 | 8 |
+| | 2 | 50,176 | **42,528** | 2 | 8 |
+| `(16,64,2,16)` | 1 | 22,784 | **21,808** | 2 | 8 |
+| | 2 | 28,160 | **24,880** | 2 | 8 |
+
+The price is pass 2's third rendezvous ([above](#phases)): a single-buffered panel is
+stored in the phase after the visit opens, and the slot Gram reads it.
+
+## <a id="the-replay"></a>The replay: the ladder visits only live work
+
+**The backward REPLAYS the union table and never rebuilds it.** The table is the
+forward's one retained byproduct (`backward.md`), an `[BH, 2, entries, ⌈L/32⌉]` plane of
+packed membership bits, one row set per side; a block's membership is the AND over the
+TESTED levels of one row each, selected by `LevelPlan::entry_at`. Pass 1 drives
+`Ascent` and pass 2 `Descent` — the same objects the forward, Scan A, Scan B and the
+partition probe drive, so the closing rule has one implementation and the probe's
+verdict is this kernel's verdict too.
+
+Per visit the walk publishes a super-chunk: `nr` read entries, `nw` write entries, the
+window it lives in, and the causal threshold `J` per read entry. The visit then:
+
+* GATHERS every operand through those lists — the two value-shaped tiles, both
+  coefficient panels, the mass seed, and, at the emit, the leave-one-out amplitudes;
+* SKIPS whole phases on per-side liveness. `nr = 0` deletes the read-side term, the
+  emit and the folds that carry `dnum`; `nw = 0` deletes `dv`, the write panel and the
+  state fold; the Grams need both sides present. Every one of those tests is read out
+  of shared memory and is CTA-uniform, so no barrier moves;
+* EMITS nothing for an entry past the gathered count. The threshold does most of that
+  work by itself — a row the walk did not gather carries `J = 0`, so its Gram row is
+  empty — and the digit emit and `dv`'s drain carry the one explicit count test each.
+
+### <a id="skipped-is-zero"></a>Why skipping is exact, and where it is not
+
+A token that is not a member of a block failed that block's clause at some level,
+which means EVERY amplitude in that block's digit span at that level is zero — so
+every coefficient the block owns is exactly zero for that token. Three consequences,
+and the oracle gates them as three separate statements:
+
+1. **`dv` loses nothing.** It contracts the coefficients, and a skipped pair's are
+   zero, so the compacted `dv` equals the DENSE gradient with no allowance at all;
+2. **the digit gradient loses nothing at the levels the clause did not fail on**,
+   because its leave-one-out product carries the zeroed level as a factor;
+3. **what IS dropped is the digit gradient at the columns the clause failed ON** — and
+   those columns are OFF THE SUPPORT, where the amplitude is zero and an entmax
+   Jacobian is zero with it, so nothing downstream can read them. The kernel writes
+   EXACTLY the identity there, which is the executable form of "the visits it did not
+   make contributed nothing". This is the shipped scans' own semantics (Scan A's
+   reference carries the same liveness factor) and not a rung-local convention.
 
 ## <a id="the-group-threshold"></a>The group threshold, and why it is 128 and not 256
 
 The forward splits a block into two slot GROUPS at `BC >= 256`, where one group's
 k-run would exceed its measured shape. The ladder splits at **128**, and the reason is
 that the adjoint carries two costs per group's slot width the forward does not: a
-SECOND coefficient panel on the ring, and the publication. Held at `C = 32` with the
-ring at its derived depth of two:
+SECOND coefficient panel, and the publication. Held at `C = 32` with the ring at its
+derived depth of two, as rung b4 carves it:
 
 | buffer | `BCg = 64` | `BCg = 128` |
 |---|---:|---:|
 | value ring (`V`, `dnum`), CTA-wide | 18,432 | 18,432 |
-| coefficient ring (`R`, `W`), per group | 18,432 | 34,816 |
+| coefficient panels (`R`, `W`), per group, SINGLE | 9,216 | 17,408 |
 | the Grams | 5,120 | 5,120 |
 | the publication `[d_v][BCg]` | 8,192 | 16,384 |
-| **pass 2 total** | **50,176** | **74,752** |
+| the schedule: index ring + form ring | 1,568 | 1,568 |
+| **pass 2 total** | **42,528** | **58,912** |
 
-The two-CTA ceiling is 50,176. A 128-slot group is 24,576 bytes past it and **no
-reordering recovers the difference, because all four buffers are live across the whole
+The two-CTA ceiling is 50,176 and a 128-slot group is 8,736 bytes past it. **No
+reordering recovers the difference, because every buffer is live across the whole
 visit**: the publication is irreducible (the object that must cross the units is
 `d_v x BCg` bf16 however it is sliced, and publishing it in the contraction's own
-k-tiles costs a rendezvous per tile), single-buffering the coefficient panels saves
-17,408 and costs a third rendezvous, and killing every `ldmatrix` pad recovers ~4,096
-against tiles that carry ~600 MMA a visit.
+k-tiles costs a rendezvous per tile), the panel is already single-buffered — that was
+rung b4's own move and it already spent the third rendezvous it costs, [see
+above](#the-panel-leaves-the-ring) — and killing every `ldmatrix` pad recovers ~4,096
+against tiles that carry ~600 MMA a visit. Rungs b0–b3 read this table at 50,176 and
+74,752 with the panel double-buffered; the threshold's verdict did not move.
 
 So `BC = 128` is not a wider group; it is TWO of them. A block of two groups is one
 CTA of 256 threads, and what that holds constant is the quantity the ideal regime is

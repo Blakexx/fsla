@@ -30,10 +30,9 @@ static cudaError_t launch_rung0_pass1(const Rung0Params& p, cudaStream_t stream)
   }
   //: THE LATTICE IS COMPILED at rung b3: `N = Bw^D` is the arm's own geometry and
   //: not a plane width the caller hands in.
-  const dim3 grid((unsigned)(DigitR0<D, Bw, BC, GeomR0<C, BC, false>::BCg>::slots / BC),
-                  (unsigned)p.BH);
+  const dim3 grid((unsigned)LevelPlan<D, Bw, BC>::blocks, (unsigned)p.BH);
   rung0_pass1_kernel<C, BC, D, Bw><<<grid, r0_threads_for(BC), sm, stream>>>(
-      p.pr, p.pw, p.v, p.dnum, p.dden, p.dpr, p.L, p.v_row_bytes);
+      p.pr, p.pw, p.v, p.dnum, p.dden, p.tbl, p.dpr, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -47,10 +46,9 @@ static cudaError_t launch_rung0_pass2(const Rung0Params& p, cudaStream_t stream)
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  const dim3 grid((unsigned)(DigitR0<D, Bw, BC, GeomR0<C, BC, true>::BCg>::slots / BC),
-                  (unsigned)p.BH);
+  const dim3 grid((unsigned)LevelPlan<D, Bw, BC>::blocks, (unsigned)p.BH);
   rung0_pass2_kernel<C, BC, D, Bw><<<grid, r0_threads_for(BC), sm, stream>>>(
-      p.pr, p.pw, p.v, p.dnum, p.dden, p.dv, p.dpw, p.L, p.v_row_bytes);
+      p.pr, p.pw, p.v, p.dnum, p.dden, p.tbl, p.dv, p.dpw, p.L, p.v_row_bytes);
   return cudaGetLastError();
 }
 
@@ -112,9 +110,23 @@ static void check_operands(const torch::Tensor& w, const torch::Tensor& v,
               w.size(1), " D*B=", w.size(2));
 }
 
+//: THE SAVED UNION TABLE, CHECKED AS A REPLAY OPERAND.  Rung b4 consumes the
+//: forward's one retained byproduct and never rebuilds it, so what this asserts is
+//: SHAPE AGREEMENT with the arm's own level plan -- a table built at another `BC`
+//: has a different entry count and would be replayed as another block's membership.
+static void check_table(const torch::Tensor& tbl, const torch::Tensor& w, int64_t entries) {
+  TORCH_CHECK(tbl.is_cuda() && tbl.is_contiguous() && tbl.scalar_type() == torch::kInt32
+                  && tbl.dim() == 4 && tbl.size(0) == w.size(0) && tbl.size(1) == 2
+                  && tbl.size(2) == entries && tbl.size(3) == (w.size(1) + 31) / 32,
+              "the ladder REPLAYS the saved union table: it must be the contiguous "
+              "int32 [BH, 2, entries, ceil(L/32)] plane the forward's facts pass "
+              "emitted at THIS arm (entries = ",
+              entries, ")");
+}
+
 std::vector<torch::Tensor> rung0_pass1(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
-                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
-                                       int64_t bc, int64_t depth, int64_t width) {
+                                       torch::Tensor dnum, torch::Tensor dden, torch::Tensor tbl,
+                                       int64_t chunk, int64_t bc, int64_t depth, int64_t width) {
   check_arch_table();
   check_operands(pw, v, dnum, dden, chunk, depth, width);
   TORCH_CHECK(
@@ -129,11 +141,13 @@ std::vector<torch::Tensor> rung0_pass1(torch::Tensor pr, torch::Tensor pw, torch
   auto dpr = torch::zeros({(long)BH, (long)L, (long)P}, pw.options().dtype(torch::kFloat32));
 #define R0_PASS1_X(C_, BC_, D_, B_)                                                            \
   if (chunk == C_ && bc == BC_ && depth == D_ && width == B_) {                                \
+    check_table(tbl, pw, LevelPlan<D_, B_, BC_>::entries);                                     \
     Rung0Params p{reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
                   reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
+                  reinterpret_cast<const uint32_t*>(tbl.data_ptr()),                           \
                   dpr.data_ptr<float>(),                                                       \
                   nullptr,                                                                     \
                   nullptr,                                                                     \
@@ -150,8 +164,8 @@ std::vector<torch::Tensor> rung0_pass1(torch::Tensor pr, torch::Tensor pw, torch
 }
 
 std::vector<torch::Tensor> rung0_pass2(torch::Tensor pr, torch::Tensor pw, torch::Tensor v,
-                                       torch::Tensor dnum, torch::Tensor dden, int64_t chunk,
-                                       int64_t bc, int64_t depth, int64_t width) {
+                                       torch::Tensor dnum, torch::Tensor dden, torch::Tensor tbl,
+                                       int64_t chunk, int64_t bc, int64_t depth, int64_t width) {
   check_arch_table();
   check_operands(pw, v, dnum, dden, chunk, depth, width);
   TORCH_CHECK(
@@ -166,11 +180,13 @@ std::vector<torch::Tensor> rung0_pass2(torch::Tensor pr, torch::Tensor pw, torch
   auto dpw = torch::zeros({(long)BH, (long)L, (long)P}, opts);
 #define R0_PASS2_X(C_, BC_, D_, B_)                                                            \
   if (chunk == C_ && bc == BC_ && depth == D_ && width == B_) {                                \
+    check_table(tbl, pw, LevelPlan<D_, B_, BC_>::entries);                                     \
     Rung0Params p{reinterpret_cast<const __nv_bfloat16*>(pr.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(pw.data_ptr()),                       \
                   reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),                        \
                   reinterpret_cast<const __nv_bfloat16*>(dnum.data_ptr()),                     \
                   reinterpret_cast<const __nv_bfloat16*>(dden.data_ptr()),                     \
+                  reinterpret_cast<const uint32_t*>(tbl.data_ptr()),                           \
                   nullptr,                                                                     \
                   dv.data_ptr<float>(),                                                        \
                   dpw.data_ptr<float>(),                                                       \

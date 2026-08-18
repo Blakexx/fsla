@@ -53,6 +53,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from rola.engine.types import Mask
 from rola.ops._ext import extension, is_available
 
 pytestmark = pytest.mark.skipif(
@@ -144,11 +145,25 @@ def _inputs(arm, T, seed, dev="cuda", mass=True):
                                                              v, dnum, dden))
 
 
+def _table(arm, pr, pw):
+    """THE SAVED UNION TABLE, built by the FORWARD's own facts pass.
+
+    Rung b4 replays it and never rebuilds it, so the gate must hand over the very
+    object the forward retains -- which is also the object the shipped scans are
+    handed, and that is what keeps the two head to head. The planes go in as
+    `[B, H, L, D*Bw]` because that is the facts pass' own operand shape; the ladder's
+    are `[BH, L, D*Bw]`, the same bytes with the first two axes fused."""
+    C, BC, D, Bw = arm
+    return extension().chunk_facts(pr.unsqueeze(0), pw.unsqueeze(0), C, BC, [Bw] * D,
+                                   Mask.M1, False)[0]
+
+
 def _run(arm, inputs):
     pr, pw, v, dnum, dden = inputs
     m = extension()
-    (dpr,) = m.chunk_rung0_pass1(pr, pw, v, dnum, dden, *arm)
-    dv, dpw = m.chunk_rung0_pass2(pr, pw, v, dnum, dden, *arm)
+    tbl = _table(arm, pr, pw)
+    (dpr,) = m.chunk_rung0_pass1(pr, pw, v, dnum, dden, tbl, *arm)
+    dv, dpw = m.chunk_rung0_pass2(pr, pw, v, dnum, dden, tbl, *arm)
     return dpr[0], dv[0], dpw[0]
 
 # ---------------------------------------------------------------- the oracle
@@ -211,8 +226,16 @@ def _fp64_ratio_oracle(arm, pr, pw, v, dy):
 
 
 # ------------------------------------------------------- the rounded reference
+def _dense_chunks(T, C):
+    """The contiguous partition, which is what the ASCENDING walk produces at a fully
+    live cell and, reversed, what the descending one does -- so a dense cell's
+    reference is byte-for-byte rung b3's."""
+    return [torch.arange(c0, c0 + C, device="cuda") for c0 in range(0, T, C)]
+
+
 def _rounded(arm, pr, pw, v, dnum, dden, *, intra=True, exclusive=False, ones=True,
-             entry_mass=True, flat_mass=False, loo_level=None, slot_mask=None):
+             entry_mass=True, flat_mass=False, loo_level=None, slot_mask=None,
+             chunks_up=None, chunks_dn=None, gathered_r=None, gathered_w=None):
     """The kernel's own association, with every stored operand rounded where the kernel
     rounds it, plus the magnitude accumulation the budget is derived from.
 
@@ -232,11 +255,12 @@ def _rounded(arm, pr, pw, v, dnum, dden, *, intra=True, exclusive=False, ones=Tr
     V, dn = _rb(v)[0, :, 0], _rb(dnum)[0]
     dd = _rb(dden)[0]
     T, N = R.shape
-    tok = torch.arange(C, device=dev)
-    #: rows are READ tokens and columns WRITE tokens, and a write is kept at or
-    #: before the read; the exclusive form is the planted fault, not a variant.
-    stair = ((tok.unsqueeze(1) > tok.unsqueeze(0)) if exclusive
-             else (tok.unsqueeze(1) >= tok.unsqueeze(0))).float()
+    #: THE STAIRCASE IS PER SUPER-CHUNK AT RUNG b4, because a super-chunk's tokens are
+    #: no longer `arange(C)`: rows are READ entries and columns WRITE entries, and a
+    #: write is kept at or before the read TOKEN -- which is what the walk resolved
+    #: once, at close, as the threshold `J`. The exclusive form is the planted fault,
+    #: not a variant.
+    tokens = torch.arange(T, device=dev)
 
     def flat(col):
         return col.mean().expand_as(col) if flat_mass else col
@@ -247,9 +271,11 @@ def _rounded(arm, pr, pw, v, dnum, dden, *, intra=True, exclusive=False, ones=Tr
     aS = torch.zeros(N, DV, device=dev)
     z = torch.zeros(N, device=dev)
     az = torch.zeros(N, device=dev)
-    for c0 in range(0, T, C):
-        idx = slice(c0, c0 + C)
+    for idx in (chunks_up if chunks_up is not None else _dense_chunks(T, C)):
         Sb = _rb(S)
+        tokc = tokens[idx]
+        stair = (tokc.unsqueeze(1) >= tokc.unsqueeze(0)).float() if exclusive is False else (
+            tokc.unsqueeze(1) > tokc.unsqueeze(0)).float()
         #: the ones column rides INSIDE the Gram's single rounding, because the
         #: kernel adds it to the accumulator before the store converts.
         col = dd[idx].unsqueeze(1) if ones else 0.0
@@ -272,9 +298,11 @@ def _rounded(arm, pr, pw, v, dnum, dden, *, intra=True, exclusive=False, ones=Tr
     adS = torch.zeros(N, DV, device=dev)
     dz = torch.zeros(N, device=dev)
     adz = torch.zeros(N, device=dev)
-    for c0 in range(T - C, -1, -C):
-        idx = slice(c0, c0 + C)
+    for idx in (chunks_dn if chunks_dn is not None else _dense_chunks(T, C)[::-1]):
         dSb = _rb(dS)
+        tokc = tokens[idx]
+        stair = (tokc.unsqueeze(1) >= tokc.unsqueeze(0)).float() if exclusive is False else (
+            tokc.unsqueeze(1) > tokc.unsqueeze(0)).float()
         Gu = _rb(R[idx] @ Wc[idx].T) * stair
         col = dd[idx].unsqueeze(1) if ones else 0.0
         Gd = _rb(dn[idx] @ V[idx].T + col) * stair
@@ -292,12 +320,18 @@ def _rounded(arm, pr, pw, v, dnum, dden, *, intra=True, exclusive=False, ones=Tr
     #: THE DIGIT REDUCTION, and the FAULT that swaps which level is left out. At depth
     #: two the leave-one-out factor IS the other level's amplitude, so the swap is the
     #: exact defect (A.10)'s own gate exchanges.
+    #: THE EMISSION IS THE GATHER'S, and this is where rung b4 enters the reference:
+    #: a digit gradient is emitted for the entries a block GATHERED and for no others.
+    #: Off the support that is not an approximation -- the columns it drops are the
+    #: ones whose amplitude is zero, where the entmax Jacobian is zero too.
+    er = torch.ones(T, 1, device=dev) if gathered_r is None else gathered_r.float()[:, None]
+    ew = torch.ones(T, 1, device=dev) if gathered_w is None else gathered_w.float()[:, None]
     swap = PR if loo_level == "read" else PW if loo_level == "write" else None
-    return {"d_pr": _reduce_digits(dR, swap if swap is not None else PR, D, Bw),
+    return {"d_pr": _reduce_digits(dR * er, swap if swap is not None else PR, D, Bw),
             "dv": dv,
-            "d_pw": _reduce_digits(dW, swap if swap is not None else PW, D, Bw),
-            "a_pr": _reduce_digits(aR, PR.abs(), D, Bw), "adv": adv,
-            "a_pw": _reduce_digits(adW, PW.abs(), D, Bw),
+            "d_pw": _reduce_digits(dW * ew, swap if swap is not None else PW, D, Bw),
+            "a_pr": _reduce_digits(aR * er, PR.abs(), D, Bw), "adv": adv,
+            "a_pw": _reduce_digits(adW * ew, PW.abs(), D, Bw),
             #: the PER-SLOT gradients survive the return so the fan-in's non-vacuity row
             #: can restrict them to one block and reduce that; the kernel never stores
             #: them, and neither does any gate that is not about the lattice.
@@ -522,8 +556,9 @@ def test_the_ladder_addresses_every_batch_head(arm):
     v = torch.stack([torch.stack([rows[b * H + h][2][0, :, 0] for h in range(H)], dim=1)
                      for b in range(B)]).contiguous()
     m = extension()
-    (dpr,) = m.chunk_rung0_pass1(pr, pw, v, dnum, dden, *arm)
-    dv, dpw = m.chunk_rung0_pass2(pr, pw, v, dnum, dden, *arm)
+    tbl = _table(arm, pr, pw)
+    (dpr,) = m.chunk_rung0_pass1(pr, pw, v, dnum, dden, tbl, *arm)
+    dv, dpw = m.chunk_rung0_pass2(pr, pw, v, dnum, dden, tbl, *arm)
     for bh in range(B * H):
         _check((dpr[bh], dv[bh], dpw[bh]), _rounded(arm, *rows[bh]), T, Bw ** D,
                f"batch-head {bh} of {B * H} at arm {arm} blocks={Bw ** D // BC}")
@@ -564,3 +599,246 @@ def test_the_ladder_census_is_spill_free():
             f"arm {arm} pass {pas} reaches {cta} CTAs of {threads} threads = "
             f"{cta * threads // 32} warps/SM: the rung's residency is the forward's "
             f"eight and moving it is a carve decision, not a side effect")
+
+
+# ============================ RUNG b4: THE ROUTED SPARSE CELLS ============================
+#
+# WHAT COMPACTION HAS TO BE TRUE FOR, stated before any of it is gated. A block's
+# membership is the AND, over the TESTED levels, of "some amplitude in this block's
+# digit span is nonzero". So when a token is NOT a member of a block:
+#
+#   * every coefficient that block owns is EXACTLY ZERO for that token, because the
+#     Kronecker product carries the zeroed level as a factor;
+#   * `dv` therefore loses nothing at all -- it contracts the coefficients -- so the
+#     compacted kernel's `dv` must equal the DENSE oracle's, with no allowance;
+#   * the digit gradient at the levels the block did NOT fail loses nothing either,
+#     because its leave-one-out product carries the zeroed level;
+#   * what IS dropped is the digit gradient at the columns the block failed ON -- and
+#     those columns are OFF THE SUPPORT, where entmax's own Jacobian is zero, so
+#     nothing downstream can read them. The kernel emits EXACTLY ZERO there.
+#
+# That is the whole correctness content of the rung, and it is gated as three separate
+# statements below rather than as one tolerance.
+
+
+def _level_plan(arm):
+    """`LevelPlan`'s span/entry geometry, mirrored here for depth one and two so the
+    constructors below can name a block's own clause columns."""
+    _, BC, D, Bw = arm
+    N = Bw ** D
+    whole = D if BC >= N else (1 if Bw <= BC else 0)
+    partial = BC // (Bw ** whole)
+    singles = D - whole - (1 if partial > 1 else 0)
+    span = [1] * singles + ([partial] if partial > 1 else []) + [Bw] * whole
+    assert len(span) == D, f"the level plan does not cover {arm}"
+    groups = [Bw // sp for sp in span]
+    return span, groups, singles + (1 if partial > 1 else 0)
+
+
+def _clause_cols(arm, blk):
+    """The amplitude columns of each TESTED level that block `blk`'s clause is taken
+    over -- the union table's own map, `entry_at` written out."""
+    _, _, D, Bw = arm
+    span, groups, clauses = _level_plan(arm)
+    suffix = [1] * (D + 1)
+    for l in range(D - 1, -1, -1):
+        suffix[l] = groups[l] * suffix[l + 1]
+    return [(l, l * Bw + ((blk // suffix[l + 1]) % groups[l]) * span[l], span[l])
+            for l in range(clauses)]
+
+
+def _member(arm, p, blk):
+    """Which tokens block `blk` gathers, computed the way the FACTS PASS computes it:
+    the AND over tested levels of "some amplitude in this block's span is nonzero"."""
+    live = torch.ones(p.shape[0], dtype=torch.bool, device=p.device)
+    for _, c0, sp in _clause_cols(arm, blk):
+        live &= (p[:, c0:c0 + sp] != 0).any(dim=1)
+    return live
+
+
+def _sparse_amps(arm, T, gen, dev, keep):
+    """ONE DUTY'S AMPLITUDES WITH DEAD GROUPS. A whole level-zero entry group is zeroed
+    or kept per token, which is exactly the grain the table votes at: a token then has
+    a DIFFERENT membership per block, so the two walks cut the token axis differently
+    for every block of the lattice -- which is the case a per-token liveness could
+    never produce and the case compaction exists for.
+
+    A token whose groups are ALL zeroed is dead everywhere: that is the token-sparse
+    row, and it rides the same constructor rather than a second one.
+    """
+    _, _, D, Bw = arm
+    p = _amps(D, Bw, T, gen, dev)
+    span, groups, clauses = _level_plan(arm)
+    if clauses:
+        on = (torch.rand(T, groups[0], device=dev, generator=gen) < keep).float()
+        p[:, :Bw] = p[:, :Bw] * torch.repeat_interleave(on, span[0], dim=1)
+    return p
+
+
+def _sparse_inputs(arm, T, seed, keep=0.4, dev="cuda"):
+    g = torch.Generator(device=dev).manual_seed(seed)
+    pr = _sparse_amps(arm, T, g, dev, keep)
+    pw = _sparse_amps(arm, T, g, dev, keep)
+    v = torch.randn(1, T, 1, DV, device=dev, generator=g)
+    dnum = torch.randn(1, T, DV, device=dev, generator=g)
+    dden = torch.randn(1, T, device=dev, generator=g)
+    return tuple(t.to(torch.bfloat16).contiguous() for t in (pr.unsqueeze(0), pw.unsqueeze(0),
+                                                             v, dnum, dden))
+
+
+#: the arms whose lattice tests a clause at all. The one-block arms `(32,64,2,8)` and
+#: `(32,64,1,64)` span the WHOLE slot space, so their clause is empty and every token
+#: is a member however sparse the amplitudes are -- which is not a gap but the union
+#: table's own law, and it is what makes those two arms the DENSE control.
+SPARSE_ARMS = [a for a in ARMS if _level_plan(a)[2] > 0]
+DENSE_ONLY_ARMS = [a for a in ARMS if _level_plan(a)[2] == 0]
+
+
+def test_the_one_block_arms_have_an_empty_clause():
+    """Stated as a property of the lattice rather than assumed by the cells below: a
+    block that spans the slot space is a member of every token, so the replay there is
+    the dense walk and the bit-identity control is available."""
+    assert DENSE_ONLY_ARMS, "no one-block arm is built, so the dense control has no cell"
+    for arm in DENSE_ONLY_ARMS:
+        assert arm[3] ** arm[2] == arm[1], f"{arm} has an empty clause without being one block"
+        tbl = _table(arm, *_inputs(arm, 4 * arm[0], seed=5)[:2])
+        assert tbl.shape[2] == 0, f"{arm} names {tbl.shape[2]} table entries"
+
+
+@pytest.mark.parametrize("arm", SPARSE_ARMS, ids=str)
+def test_the_lattice_gathers_different_tokens_per_block(arm):
+    """NON-VACUITY OF THE COMPACTION ITSELF. Every cell below is worthless if the
+    walk's partition happens to be the dense one, so this asserts of the CELL that the
+    blocks disagree about which tokens they gather and that a material share is
+    skipped."""
+    C, BC, D, Bw = arm
+    T = 4 * C
+    pr, pw, *_ = _sparse_inputs(arm, T, seed=41)
+    p = _rb(pr)[0]
+    nblk = Bw ** D // BC
+    live = [_member(arm, p, b) for b in range(min(nblk, 8))]
+    frac = torch.stack(live).float().mean().item()
+    assert 0.05 < frac < 0.95, f"the cell's read membership is {frac:.3f}: nothing is skipped"
+    assert any(not torch.equal(live[0], l) for l in live[1:]), (
+        "every block gathers the same tokens, so this cell cannot tell a replay from a "
+        "dense walk")
+
+
+def _partition_up(live_r, live_w, T, C):
+    """The ASCENDING walk's super-chunks -- the forward's own closing rule, which the
+    ladder's pass 1 drives through the same `Ascent` component."""
+    chunks, cur, nr, nw = [], [], 0, 0
+    for t in range(T):
+        if (live_r[t] and nr == C) or (live_w[t] and nw == C):
+            chunks.append(cur)
+            cur, nr, nw = [], 0, 0
+        cur.append(t)
+        nr += int(live_r[t])
+        nw += int(live_w[t])
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _partition_dn(live_r, live_w, T, C):
+    """The DESCENDING walk's, each super-chunk ascending in token order: walking down,
+    a token is excluded from the open super-chunk when it is live on a side that has
+    already gathered `C` entries above it."""
+    chunks, cur, nr, nw = [], [], 0, 0
+    for t in range(T - 1, -1, -1):
+        if (live_r[t] and nr == C) or (live_w[t] and nw == C):
+            chunks.append(sorted(cur))
+            cur, nr, nw = [], 0, 0
+        cur.append(t)
+        nr += int(live_r[t])
+        nw += int(live_w[t])
+    if cur:
+        chunks.append(sorted(cur))
+    return chunks
+
+
+def _rounded_lattice(arm, inputs, **kw):
+    """THE ROUNDED REFERENCE, BLOCK BY BLOCK AND WALK BY WALK.
+
+    At rung b3 one partition served the whole lattice. It cannot at b4: a block's
+    membership is its own, so its two walks cut the token axis differently from every
+    other block's, and the reference has to be run per block against that block's own
+    partition and its own slot slice. What the lattice sums -- `dv` and both digit
+    gradients -- is then the fan-in the kernel performs.
+    """
+    C, BC, D, Bw = arm
+    T, N = inputs[0].shape[1], Bw ** D
+    pr, pw = _rb(inputs[0])[0], _rb(inputs[1])[0]
+    out = None
+    for b in range(N // BC):
+        mask = torch.zeros(N, device=pr.device)
+        mask[b * BC:(b + 1) * BC] = 1.0
+        lr, lw = _member(arm, pr, b).tolist(), _member(arm, pw, b).tolist()
+        part = _rounded(arm, *inputs, slot_mask=mask,
+                        gathered_r=_member(arm, pr, b), gathered_w=_member(arm, pw, b),
+                        chunks_up=[torch.tensor(c, device=pr.device)
+                                   for c in _partition_up(lr, lw, T, C)],
+                        chunks_dn=[torch.tensor(c, device=pr.device)
+                                   for c in _partition_dn(lr, lw, T, C)], **kw)
+        if out is None:
+            out = {k: part[k].clone() for k in part}
+        else:
+            for k in out:
+                out[k] += part[k]
+    return out
+
+
+@pytest.mark.parametrize("arm", [a for a in SPARSE_ARMS if a[3] ** a[2] // a[1] <= 4], ids=str)
+@pytest.mark.parametrize("chunks", [1, 4], ids=["T=C", "T=4C"])
+def test_the_compacted_ladder_matches_the_rounded_reference(arm, chunks):
+    """THE b3 APPARATUS AT A ROUTED SPARSE CELL, which is where it becomes load-bearing.
+
+    Everything the reference rounds, it rounds where the kernel rounds it -- and it now
+    also CHUNKS where the kernel chunks, per block, off the same closing rule the walk
+    runs. Only summation order is left to separate them.
+    """
+    C, BC, D, Bw = arm
+    T, N = C * chunks, Bw ** D
+    inputs = _sparse_inputs(arm, T, seed=43)
+    ref = _rounded_lattice(arm, inputs)
+    _check(_run(arm, inputs), ref, T, N,
+           f"the ROUTED SPARSE cell at arm {arm} blocks={N // BC} T={T}")
+
+
+@pytest.mark.parametrize("arm", SPARSE_ARMS, ids=str)
+def test_the_skipped_work_contributed_exactly_zero(arm):
+    """THE RUNG'S OWN GATE, in three statements.
+
+    1. `dv` contracts the coefficients, and a skipped (token, block) pair's are exactly
+       zero -- so the compacted `dv` must equal the DENSE fp64 oracle's with no
+       allowance for the skipping at all;
+    2. both digit gradients must equal it ON THE SUPPORT, which is every column an
+       entmax Jacobian can carry a gradient through;
+    3. off the support the kernel must emit EXACTLY ZERO -- not "something small". That
+       is the executable form of "the visits it did not make contributed nothing".
+    """
+    C, BC, D, Bw = arm
+    T = 4 * C
+    inputs = _sparse_inputs(arm, T, seed=47)
+    dpr, dv, dpw = _run(arm, inputs)
+    oPR, oPW, oV = _fp64_oracle(arm, *inputs)
+    sup_r, sup_w = _rb(inputs[0])[0] != 0, _rb(inputs[1])[0] != 0
+    assert (~sup_r).any() and (~sup_w).any(), "this cell has no dead group and gates nothing"
+
+    rel = (dv.to(torch.float64) - oV).abs().max() / oV.abs().max()
+    assert rel < 3e-2, (
+        f"the compacted dv disagrees with the DENSE fp64 oracle at arm {arm}: relative "
+        f"error {rel:.3e}. Nothing the walk skipped may reach dv -- a skipped block's "
+        f"coefficients are exactly zero, so this gate carries no allowance for the "
+        f"skipping and only bf16's own resolution.")
+
+    for name, got, want, sup in (("d_pr", dpr, oPR, sup_r), ("d_pw", dpw, oPW, sup_w)):
+        rel = ((got.to(torch.float64) - want).abs() * sup).max() / (want.abs() * sup).max()
+        assert rel < 3e-2, (
+            f"the compacted {name} disagrees with the dense fp64 oracle ON THE SUPPORT at "
+            f"arm {arm}: relative error {rel:.3e}")
+        off = (got * ~sup).abs().max().item()
+        assert off == 0.0, (
+            f"the compacted {name} emitted {off:.3e} off the support at arm {arm}: a "
+            f"column whose amplitude is zero is a column no block that owns it gathered "
+            f"the token for, so the kernel must write EXACTLY the identity there")
