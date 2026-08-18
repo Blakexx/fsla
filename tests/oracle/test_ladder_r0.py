@@ -1,13 +1,13 @@
-"""THE BACKWARD LADDER, RUNGS 0-1 — the dense two-pass backward, against the oracle.
+"""THE BACKWARD LADDER, RUNGS 0-2 — the dense two-pass backward, against the oracle.
 
 Vocabulary, defined here and used unqualified below: `C` = chunk tokens; `BC` =
-slots per CTA block, which at this rung IS the slot space (`N = BC`, one block);
+slots per CTA block and `N` the slot space, which the block lattice `N / BC` covers;
 `T` = tokens; `d_v = 64`; `R`/`Wc` = the per-slot read/write coefficients; `S` = the
 forward state `[N, d_v]` and `z` its mass column `[N]`; `dS`/`dz` their adjoints;
 `dnum`/`dden` = the readout's two cotangent seeds, one per value channel and one for
 the mass. The readout is SELF-NORMALIZING: `y[t] = (R[t] @ S) / (R[t] @ z)`, and
-`dden` is what carries the denominator's half of that. Rung b1 carries no write gain
-and no digits: those are later rungs.
+`dden` is what carries the denominator's half of that. The ladder carries no write
+gain and no digits: those are later rungs.
 
 **WHAT IS GATED, AND AGAINST WHAT.** Three references, and all three are needed:
 
@@ -30,6 +30,12 @@ one with the entry mass absent, and one whose mass column is flattened to its me
 The last of those is what makes the mass adjoint NON-VACUOUS: a per-slot quantity that
 never varies over slots is indistinguishable from a scalar, and the cells here are
 drawn so that it varies.
+
+RUNG b2 ADDS THE LATTICE. Every cell here runs at its topology's whole `N`, so most
+run MANY blocks, and `dv` -- the one output whose contraction is over the slot axis --
+is a fan-in across them. Its own non-vacuity row asserts that every block's partial is
+a material share, because a gate taken on a cell where one block carried the sum would
+pass against a kernel that stored instead of adding.
 """
 from __future__ import annotations
 
@@ -411,15 +417,24 @@ def test_the_budget_rejects_a_planted_fault(fault):
             assert moved, f"the {key} budget accepts the {fault} reference"
 
 
-def test_the_ladder_addresses_every_batch_head():
-    """One CTA per (bh), and the value plane is the operator's own `[B, T, H, d_v]`.
+@pytest.mark.parametrize("arm,widths", [((32, 64), (8, 8)), ((32, 64), (16, 16)),
+                                        ((32, 128), (16, 16))], ids=str)
+def test_the_ladder_addresses_every_batch_head(arm, widths):
+    """The grid is `(nblk, BH)`, and BOTH extents are gated here, together.
 
     A single-head cell cannot see a head stride at all: every plane's base would be
     correct by accident. Here `B = 2, H = 3` and each (bh) carries its own draw, so a
     base formed from the wrong half of the index lands on another head's data. The
     mass seed is a `[BH, L]` plane and rides the same test.
+
+    The MULTI-BLOCK rows are why this is parametrized. `blockIdx.x` selects the slot
+    block and `blockIdx.y` the batch-head, and the two are combined into one linear
+    plane offset -- a swap, or a stride taken against `BC` where it should be `N`,
+    is invisible while either extent is one. Every other cell in this file runs at
+    `BH = 1`, so without these rows the lattice and the head stride would never have
+    been wrong at the same time.
     """
-    arm, widths, C = (32, 64), (8, 8), 32
+    C = arm[0]
     B, H, T = 2, 3, 4 * C
     rows = [_inputs(widths, T, seed=31 + i) for i in range(B * H)]
     r = torch.cat([x[0] for x in rows]).contiguous()
@@ -432,8 +447,9 @@ def test_the_ladder_addresses_every_batch_head():
     (dr,) = m.chunk_rung0_pass1(w, v, dnum, dden, *arm)
     dv, dw = m.chunk_rung0_pass2(r, w, v, dnum, dden, *arm)
     for bh in range(B * H):
-        _check((dr[bh], dv[bh], dw[bh]), _rounded(*rows[bh], C), T, arm[1],
-               f"batch-head {bh} of {B * H}")
+        _check((dr[bh], dv[bh], dw[bh]), _rounded(*rows[bh], C), T, _slots(widths),
+               f"batch-head {bh} of {B * H} at arm {arm} widths={widths} "
+               f"blocks={_slots(widths) // arm[1]}")
 
 
 def test_the_ladder_census_is_spill_free():
