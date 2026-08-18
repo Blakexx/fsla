@@ -22,64 +22,64 @@
    "within_session_iqr_ms": 0.001024
   },
   "backward_seeds|chunk-bwd-smalln": {
-   "iqr_ms": 0.000608,
-   "median_ms": 0.030528,
+   "iqr_ms": 0.001024,
+   "median_ms": 0.030656,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.029984,
-    0.03056,
-    0.030592,
-    0.029952,
-    0.030528,
-    0.029984,
+    0.030496,
+    0.03072,
+    0.030656,
+    0.029696,
+    0.029696,
+    0.03072,
     0.03072
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000768
+   "within_session_iqr_ms": 0.000864
   },
   "backward_seeds|chunk-deadblocks-T64": {
-   "iqr_ms": 0.000192,
-   "median_ms": 0.005024,
+   "iqr_ms": 0.000608,
+   "median_ms": 0.00496,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.004416,
     0.00496,
-    0.004928,
-    0.00512,
-    0.00512,
-    0.004896,
-    0.00512,
-    0.005024
+    0.004416,
+    0.005024,
+    0.005024,
+    0.004096,
+    0.005088
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.001024
+   "within_session_iqr_ms": 0.000992
   },
   "backward_seeds|chunk-decode-w16": {
-   "iqr_ms": 0.000832,
-   "median_ms": 0.004256,
+   "iqr_ms": 0.0,
+   "median_ms": 0.004096,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.00432,
-    0.004928,
-    0.004928,
     0.004096,
-    0.004256,
     0.004096,
+    0.004096,
+    0.004096,
+    0.004096,
+    0.004288,
     0.004096
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0008
+   "within_session_iqr_ms": 0.0
   },
   "backward_seeds|chunk-deep-D4-w8": {
    "iqr_ms": 0.0,
@@ -99,7 +99,7 @@
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0
+   "within_session_iqr_ms": 0.00016
   },
   "backward_seeds|chunk-dense-D2": {
    "iqr_ms": 0.0,
@@ -122,44 +122,44 @@
    "within_session_iqr_ms": 0.0
   },
   "backward_seeds|chunk-dense-NL4096": {
-   "iqr_ms": 0.0,
+   "iqr_ms": 9.6e-05,
    "median_ms": 0.055296,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.0552,
     0.055296,
     0.055296,
     0.055296,
     0.055296,
     0.055296,
-    0.055296,
-    0.055296
+    0.055168
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 3.2e-05
+   "within_session_iqr_ms": 9.6e-05
   },
   "backward_seeds|chunk-p73-pinned": {
-   "iqr_ms": 0.000832,
+   "iqr_ms": 0.00016,
    "median_ms": 0.029696,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.029696,
-    0.03072,
     0.029696,
     0.029696,
     0.029696,
-    0.030528,
-    0.030528
+    0.029856,
+    0.029696,
+    0.02992
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000128
+   "within_session_iqr_ms": 0.001024
   },
   "backward_seeds|chunk-sparse-gain8": {
    "iqr_ms": 0.0,
@@ -179,76 +179,16 @@
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000224
+   "within_session_iqr_ms": 0.0
   },
   "chunk_block_bits|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.00016,
-   "median_ms": 0.004096,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.003904,
-    0.003968,
-    0.004096,
-    0.004096,
-    0.004096,
-    0.004096,
-    0.003936
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 3.2e-05
-  },
-  "chunk_block_bits|chunk-bwd-smalln": {
-   "iqr_ms": 0.0008,
-   "median_ms": 0.004096,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.004096,
-    0.004896,
-    0.00512,
-    0.004096,
-    0.004864,
-    0.004096,
-    0.004096
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000896
-  },
-  "chunk_block_bits|chunk-deadblocks-T64": {
-   "iqr_ms": 0.000192,
-   "median_ms": 0.00496,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.004864,
-    0.005056,
-    0.00496,
-    0.005056,
-    0.004992,
-    0.00496,
-    0.004384
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000864
-  },
-  "chunk_block_bits|chunk-decode-w16": {
    "iqr_ms": 0.0,
    "median_ms": 0.004096,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.004864,
+    0.004096,
     0.004096,
     0.004096,
     0.004096,
@@ -259,7 +199,67 @@
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000608
+   "within_session_iqr_ms": 9.6e-05
+  },
+  "chunk_block_bits|chunk-bwd-smalln": {
+   "iqr_ms": 0.000736,
+   "median_ms": 0.004352,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.004352,
+    0.004832,
+    0.00416,
+    0.004928,
+    0.004096,
+    0.004096,
+    0.004448
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.00064
+  },
+  "chunk_block_bits|chunk-deadblocks-T64": {
+   "iqr_ms": 0.000832,
+   "median_ms": 0.004832,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.00416,
+    0.004832,
+    0.004352,
+    0.004128,
+    0.005024,
+    0.004992,
+    0.004928
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000832
+  },
+  "chunk_block_bits|chunk-decode-w16": {
+   "iqr_ms": 0.00032,
+   "median_ms": 0.004096,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.004096,
+    0.004096,
+    0.004416,
+    0.004416,
+    0.004448,
+    0.004096,
+    0.004096
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000192
   },
   "chunk_block_bits|chunk-deep-D4-w8": {
    "iqr_ms": 6.4e-05,
@@ -268,38 +268,38 @@
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.00512,
+    0.00512,
+    0.005056,
+    0.00512,
+    0.00512,
     0.004928,
-    0.00512,
-    0.005056,
-    0.005056,
-    0.00512,
-    0.00512,
     0.00512
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000704
+   "within_session_iqr_ms": 3.2e-05
   },
   "chunk_block_bits|chunk-dense-D2": {
-   "iqr_ms": 0.00016,
-   "median_ms": 0.004928,
+   "iqr_ms": 0.000128,
+   "median_ms": 0.004992,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.004864,
-    0.004928,
+    0.004992,
+    0.00432,
     0.005024,
-    0.005088,
-    0.004928,
-    0.005056,
-    0.004896
+    0.00496,
+    0.004896,
+    0.004992,
+    0.005024
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000704
+   "within_session_iqr_ms": 0.000128
   },
   "chunk_block_bits|chunk-dense-NL4096": {
    "iqr_ms": 0.0,
@@ -311,7 +311,7 @@
     0.00512,
     0.00512,
     0.00512,
-    0.005088,
+    0.00512,
     0.00512,
     0.00512,
     0.00512
@@ -319,7 +319,7 @@
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000128
+   "within_session_iqr_ms": 0.0
   },
   "chunk_block_bits|chunk-p73-pinned": {
    "iqr_ms": 0.000192,
@@ -328,52 +328,52 @@
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.005024,
+    0.00512,
+    0.00496,
     0.00512,
     0.004928,
-    0.00512,
-    0.004928,
+    0.004096,
     0.00512,
     0.00512
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000128
+   "within_session_iqr_ms": 9.6e-05
   },
   "chunk_block_bits|chunk-sparse-gain8": {
-   "iqr_ms": 9.6e-05,
-   "median_ms": 0.00496,
+   "iqr_ms": 0.000832,
+   "median_ms": 0.004864,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.005024,
-    0.004928,
-    0.00512,
+    0.004864,
     0.004896,
-    0.00496,
+    0.004096,
     0.004928,
-    0.004992
+    0.004864,
+    0.00496,
+    0.004096
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000192
+   "within_session_iqr_ms": 9.6e-05
   },
   "chunk_facts|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.0,
+   "iqr_ms": 6.4e-05,
    "median_ms": 0.007168,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.007168,
-    0.007168,
-    0.007168,
+    0.007104,
     0.007168,
     0.007168,
     0.007104,
+    0.007168,
     0.007168
    ],
    "sessions": 7,
@@ -382,24 +382,24 @@
    "within_session_iqr_ms": 0.0
   },
   "chunk_facts|chunk-bwd-smalln": {
-   "iqr_ms": 0.000832,
+   "iqr_ms": 0.0008,
    "median_ms": 0.01104,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.0104,
     0.01024,
     0.01104,
-    0.011136,
-    0.011072,
-    0.01024,
     0.01104,
-    0.01024
+    0.0112,
+    0.0112,
+    0.010496
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0
+   "within_session_iqr_ms": 0.000768
   },
   "chunk_facts|chunk-deadblocks-T64": {
    "iqr_ms": 0.0,
@@ -422,24 +422,24 @@
    "within_session_iqr_ms": 0.0
   },
   "chunk_facts|chunk-decode-w16": {
-   "iqr_ms": 0.000128,
-   "median_ms": 0.008192,
+   "iqr_ms": 0.000192,
+   "median_ms": 0.008,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.008064,
     0.007168,
-    0.008192,
+    0.008,
+    0.008,
+    0.00816,
+    0.007968,
     0.008096,
-    0.008192,
-    0.008192,
     0.008192
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000192
+   "within_session_iqr_ms": 0.000832
   },
   "chunk_facts|chunk-deep-D4-w8": {
    "iqr_ms": 0.0,
@@ -462,64 +462,64 @@
    "within_session_iqr_ms": 0.0
   },
   "chunk_facts|chunk-dense-D2": {
-   "iqr_ms": 0.00016,
-   "median_ms": 0.016288,
+   "iqr_ms": 0.000128,
+   "median_ms": 0.016224,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.016288,
-    0.016288,
+    0.016224,
+    0.01536,
+    0.016384,
     0.016192,
     0.016288,
-    0.016288,
-    0.016096,
-    0.016128
+    0.016224,
+    0.01632
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.00096
+  },
+  "chunk_facts|chunk-dense-NL4096": {
+   "iqr_ms": 0.00592,
+   "median_ms": 0.063456,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.065536,
+    0.063456,
+    0.068608,
+    0.063456,
+    0.069632,
+    0.062688,
+    0.062656
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 6.4e-05
+  },
+  "chunk_facts|chunk-p73-pinned": {
+   "iqr_ms": 0.000128,
+   "median_ms": 0.039936,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.039936,
+    0.039808,
+    0.039872,
+    0.039776,
+    0.039936,
+    0.039936,
+    0.039936
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
    "within_session_iqr_ms": 0.000256
-  },
-  "chunk_facts|chunk-dense-NL4096": {
-   "iqr_ms": 0.020608,
-   "median_ms": 0.06272,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.06272,
-    0.062464,
-    0.067584,
-    0.083072,
-    0.062464,
-    0.09216,
-    0.062464
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.001024
-  },
-  "chunk_facts|chunk-p73-pinned": {
-   "iqr_ms": 0.000896,
-   "median_ms": 0.03968,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.039232,
-    0.038912,
-    0.038944,
-    0.03968,
-    0.039904,
-    0.03984,
-    0.03984
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000608
   },
   "chunk_facts|chunk-sparse-gain8": {
    "iqr_ms": 0.00016,
@@ -529,32 +529,32 @@
    "rounds": 3,
    "session_medians": [
     0.016288,
-    0.016288,
-    0.01536,
-    0.016192,
-    0.016384,
     0.016224,
-    0.016352
+    0.016384,
+    0.016384,
+    0.016384,
+    0.01536,
+    0.016288
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.001024
+   "within_session_iqr_ms": 0.000192
   },
   "chunk_forward|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.000768,
+   "iqr_ms": 0.001024,
    "median_ms": 0.188416,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.188416,
-    0.188512,
     0.188416,
-    0.18848,
     0.188416,
-    0.187712,
-    0.187392
+    0.188736,
+    0.18944,
+    0.18944,
+    0.18832
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -562,64 +562,64 @@
    "within_session_iqr_ms": 0.0
   },
   "chunk_forward|chunk-bwd-smalln": {
-   "iqr_ms": 0.001024,
-   "median_ms": 0.194816,
+   "iqr_ms": 0.002048,
+   "median_ms": 0.195584,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.195584,
-    0.19456,
-    0.19456,
-    0.195616,
-    0.194816,
     0.195584,
-    0.193536
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.001024
-  },
-  "chunk_forward|chunk-deadblocks-T64": {
-   "iqr_ms": 0.000128,
-   "median_ms": 0.037888,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.037888,
-    0.03776,
-    0.037888,
-    0.037888,
-    0.037888,
-    0.037888,
-    0.0376
+    0.196608,
+    0.19456,
+    0.195584,
+    0.196608,
+    0.19456
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
    "within_session_iqr_ms": 0.0
   },
+  "chunk_forward|chunk-deadblocks-T64": {
+   "iqr_ms": 0.000256,
+   "median_ms": 0.038816,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.038656,
+    0.03872,
+    0.038816,
+    0.038912,
+    0.038848,
+    0.038016,
+    0.038912
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.0008
+  },
   "chunk_forward|chunk-decode-w16": {
-   "iqr_ms": 3.2e-05,
+   "iqr_ms": 0.0,
    "median_ms": 0.017408,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.017568,
     0.017408,
     0.017408,
     0.017408,
     0.017408,
-    0.01744,
+    0.017408,
+    0.017408,
     0.017408
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.00016
+   "within_session_iqr_ms": 0.0
   },
   "chunk_forward|chunk-deep-D4-w8": {
    "iqr_ms": 0.0,
@@ -642,7 +642,7 @@
    "within_session_iqr_ms": 0.0
   },
   "chunk_forward|chunk-dense-D2": {
-   "iqr_ms": 0.002048,
+   "iqr_ms": 0.0,
    "median_ms": 0.28672,
    "reps": 33,
    "reps_per_round": 11,
@@ -651,70 +651,70 @@
     0.28672,
     0.28672,
     0.28672,
-    0.287072,
     0.28672,
-    0.284672,
-    0.284672
+    0.287008,
+    0.28672,
+    0.28672
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.001024
+   "within_session_iqr_ms": 0.0
   },
   "chunk_forward|chunk-dense-NL4096": {
-   "iqr_ms": 0.495328,
-   "median_ms": 2.446624,
+   "iqr_ms": 0.1792,
+   "median_ms": 2.3296,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    2.333696,
-    2.31248,
-    2.446624,
-    2.807808,
-    2.669568,
-    3.267456,
-    2.302976
+    2.387968,
+    2.312192,
+    2.490368,
+    2.300928,
+    2.510816,
+    2.3296,
+    2.311168
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.0008
+  },
+  "chunk_forward|chunk-p73-pinned": {
+   "iqr_ms": 0.00512,
+   "median_ms": 0.806912,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.804864,
+    0.805888,
+    0.806912,
+    0.806688,
+    0.811008,
+    0.811008,
+    0.806912
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
    "within_session_iqr_ms": 0.001024
   },
-  "chunk_forward|chunk-p73-pinned": {
-   "iqr_ms": 0.003072,
-   "median_ms": 0.805888,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.805888,
-    0.804864,
-    0.805888,
-    0.807936,
-    0.807936,
-    0.809984,
-    0.804864
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.00176
-  },
   "chunk_forward|chunk-sparse-gain8": {
-   "iqr_ms": 0.00096,
-   "median_ms": 0.058368,
+   "iqr_ms": 0.0,
+   "median_ms": 0.059392,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.058496,
-    0.059328,
-    0.058368,
-    0.058368,
-    0.059328,
-    0.058368,
-    0.058368
+    0.059392,
+    0.059392,
+    0.059392,
+    0.059392,
+    0.059712,
+    0.059392,
+    0.059392
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -722,38 +722,38 @@
    "within_session_iqr_ms": 0.001024
   },
   "decode_step|chunk-decode-w16": {
-   "iqr_ms": 0.085952,
-   "median_ms": 0.39328,
+   "iqr_ms": 0.205984,
+   "median_ms": 0.361344,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.36352,
-    0.45056,
-    0.39328,
-    0.393216,
-    0.46688,
-    0.490176,
-    0.380928
+    0.560128,
+    0.354144,
+    0.355328,
+    0.436224,
+    0.586752,
+    0.352256,
+    0.361344
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.018144
+   "within_session_iqr_ms": 0.013536
   },
   "divide_pass|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.000832,
-   "median_ms": 0.018592,
+   "iqr_ms": 0.000288,
+   "median_ms": 0.018656,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.018592,
-    0.019392,
-    0.018432,
+    0.018656,
     0.01872,
-    0.018432,
     0.019264,
+    0.018432,
+    0.018432,
+    0.018688,
     0.018432
    ],
    "sessions": 7,
@@ -762,7 +762,7 @@
    "within_session_iqr_ms": 0.0008
   },
   "divide_pass|chunk-bwd-smalln": {
-   "iqr_ms": 0.000704,
+   "iqr_ms": 0.0,
    "median_ms": 0.019456,
    "reps": 33,
    "reps_per_round": 11,
@@ -770,19 +770,19 @@
    "session_medians": [
     0.019456,
     0.019456,
-    0.018752,
-    0.019168,
     0.019456,
     0.019456,
-    0.01872
+    0.019456,
+    0.019456,
+    0.019328
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000224
+   "within_session_iqr_ms": 0.000704
   },
   "divide_pass|chunk-deadblocks-T64": {
-   "iqr_ms": 0.00016,
+   "iqr_ms": 0.0,
    "median_ms": 0.004096,
    "reps": 33,
    "reps_per_round": 11,
@@ -790,9 +790,9 @@
    "session_medians": [
     0.004096,
     0.004096,
-    0.004384,
     0.004096,
-    0.004256,
+    0.004096,
+    0.004096,
     0.004096,
     0.004096
    ],
@@ -808,121 +808,121 @@
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.004224,
     0.004096,
     0.004096,
     0.004096,
     0.004096,
     0.004096,
-    0.004096
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000128
-  },
-  "divide_pass|chunk-deep-D4-w8": {
-   "iqr_ms": 6.4e-05,
-   "median_ms": 0.00512,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.00512,
-    0.00512,
-    0.00512,
-    0.005984,
-    0.00512,
-    0.005184,
-    0.00512
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.0
-  },
-  "divide_pass|chunk-dense-D2": {
-   "iqr_ms": 0.0008,
-   "median_ms": 0.00512,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.005952,
-    0.00592,
-    0.00512,
-    0.00512,
-    0.00512,
-    0.00512,
-    0.005216
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000864
-  },
-  "divide_pass|chunk-dense-NL4096": {
-   "iqr_ms": 9.6e-05,
-   "median_ms": 0.035648,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.035648,
-    0.035584,
-    0.03568,
-    0.034816,
-    0.035648,
-    0.035648,
-    0.035744
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.000896
-  },
-  "divide_pass|chunk-p73-pinned": {
-   "iqr_ms": 0.0,
-   "median_ms": 0.019456,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.019456,
-    0.019456,
-    0.018432,
-    0.019456,
-    0.019456,
-    0.019456,
-    0.019456
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.0
-  },
-  "divide_pass|chunk-sparse-gain8": {
-   "iqr_ms": 0.0008,
-   "median_ms": 0.00512,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.00512,
-    0.00512,
-    0.005248,
-    0.00592,
-    0.00512,
-    0.006144,
-    0.00512
+    0.004096,
+    0.004128
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
    "within_session_iqr_ms": 0.00016
   },
+  "divide_pass|chunk-deep-D4-w8": {
+   "iqr_ms": 3.2e-05,
+   "median_ms": 0.00512,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.005152,
+    0.00512,
+    0.00512,
+    0.005152,
+    0.00512,
+    0.00512,
+    0.00512
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 6.4e-05
+  },
+  "divide_pass|chunk-dense-D2": {
+   "iqr_ms": 0.000224,
+   "median_ms": 0.00512,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.005344,
+    0.00512,
+    0.005888,
+    0.00512,
+    0.005152,
+    0.00512,
+    0.00512
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000768
+  },
+  "divide_pass|chunk-dense-NL4096": {
+   "iqr_ms": 0.0008,
+   "median_ms": 0.035744,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.035648,
+    0.035776,
+    0.03504,
+    0.03584,
+    0.035744,
+    0.034816,
+    0.03584
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000224
+  },
+  "divide_pass|chunk-p73-pinned": {
+   "iqr_ms": 0.00096,
+   "median_ms": 0.019232,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.019232,
+    0.019392,
+    0.01872,
+    0.018432,
+    0.019392,
+    0.019456,
+    0.018432
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000864
+  },
+  "divide_pass|chunk-sparse-gain8": {
+   "iqr_ms": 6.4e-05,
+   "median_ms": 0.00512,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.005184,
+    0.00512,
+    0.00512,
+    0.00512,
+    0.005216,
+    0.00512,
+    0.00512
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.000768
+  },
   "entmax_solve|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.000128,
+   "iqr_ms": 0.0,
    "median_ms": 0.023552,
    "reps": 33,
    "reps_per_round": 11,
@@ -931,18 +931,18 @@
     0.023552,
     0.023552,
     0.023552,
-    0.023424,
-    0.022656,
     0.023552,
+    0.023552,
+    0.023424,
     0.023552
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000128
+   "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-bwd-smalln": {
-   "iqr_ms": 6.4e-05,
+   "iqr_ms": 0.0,
    "median_ms": 0.052224,
    "reps": 33,
    "reps_per_round": 11,
@@ -953,28 +953,28 @@
     0.052224,
     0.052224,
     0.052224,
-    0.05216,
-    0.052032
+    0.052224,
+    0.052224
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.00016
+   "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-deadblocks-T64": {
    "iqr_ms": 0.000768,
-   "median_ms": 0.023552,
+   "median_ms": 0.024256,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.023552,
-    0.023552,
+    0.024256,
     0.02432,
     0.023552,
-    0.024544,
+    0.024416,
     0.023552,
-    0.023552
+    0.02432
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -982,24 +982,24 @@
    "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-decode-w16": {
-   "iqr_ms": 0.000704,
-   "median_ms": 0.012096,
+   "iqr_ms": 0.0008,
+   "median_ms": 0.012,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.011264,
+    0.011264,
+    0.012064,
     0.012192,
-    0.012096,
-    0.012096,
-    0.012128,
-    0.012128,
-    0.011424,
-    0.011264
+    0.012,
+    0.011264,
+    0.012
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000128
+   "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-deep-D4-w8": {
    "iqr_ms": 0.0,
@@ -1022,7 +1022,7 @@
    "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-dense-D2": {
-   "iqr_ms": 0.000736,
+   "iqr_ms": 0.0,
    "median_ms": 0.027648,
    "reps": 33,
    "reps_per_round": 11,
@@ -1031,39 +1031,39 @@
     0.027648,
     0.027648,
     0.027648,
-    0.028352,
-    0.028384,
     0.027648,
-    0.028416
+    0.027648,
+    0.027648,
+    0.027648
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0
+   "within_session_iqr_ms": 0.000896
   },
   "entmax_solve|chunk-dense-NL4096": {
-   "iqr_ms": 0.000736,
+   "iqr_ms": 0.000256,
    "median_ms": 0.135008,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.135008,
-    0.13488,
     0.135168,
+    0.135008,
     0.134144,
-    0.135136,
-    0.134432,
-    0.135168
+    0.135168,
+    0.13504,
+    0.134912,
+    0.134944
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000992
+   "within_session_iqr_ms": 0.001024
   },
   "entmax_solve|chunk-p73-pinned": {
-   "iqr_ms": 0.0,
-   "median_ms": 0.161792,
+   "iqr_ms": 0.001024,
+   "median_ms": 0.162048,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
@@ -1071,10 +1071,10 @@
     0.161792,
     0.161792,
     0.161792,
-    0.161792,
-    0.161792,
-    0.161792,
-    0.161792
+    0.162816,
+    0.162816,
+    0.162816,
+    0.162048
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -1082,239 +1082,239 @@
    "within_session_iqr_ms": 0.0
   },
   "entmax_solve|chunk-sparse-gain8": {
-   "iqr_ms": 6.4e-05,
+   "iqr_ms": 0.0,
    "median_ms": 0.054272,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.054272,
-    0.05424,
     0.054272,
     0.054272,
     0.054272,
-    0.05408,
-    0.054208
+    0.054272,
+    0.054176,
+    0.054272
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 9.6e-05
+   "within_session_iqr_ms": 0.0
   },
   "layer_step|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.001248,
+   "iqr_ms": 0.001024,
    "median_ms": 0.381952,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.381952,
-    0.381856,
-    0.381952,
     0.381952,
     0.382976,
-    0.380704,
-    0.379904
+    0.382976,
+    0.381952,
+    0.381088,
+    0.381952
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.001024
+   "within_session_iqr_ms": 0.00176
   },
   "layer_step|chunk-bwd-smalln": {
-   "iqr_ms": 0.084992,
-   "median_ms": 0.467968,
+   "iqr_ms": 0.02272,
+   "median_ms": 0.443392,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.498784,
+    0.441472,
     0.442368,
-    0.467968,
-    0.459776,
-    0.52736,
-    0.618496,
-    0.477184,
-    0.439296
+    0.442368,
+    0.445184,
+    0.443392,
+    0.465088
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000288
+   "within_session_iqr_ms": 0.101504
   },
   "layer_step|chunk-deadblocks-T64": {
-   "iqr_ms": 0.077824,
-   "median_ms": 0.207872,
+   "iqr_ms": 0.055296,
+   "median_ms": 0.1984,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.3328,
+    0.188416,
+    0.243712,
+    0.1984,
+    0.19968,
     0.192512,
-    0.207872,
-    0.214016,
-    0.277504,
-    0.2048,
-    0.305472,
-    0.19968
+    0.182272
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.01136
+   "within_session_iqr_ms": 0.007904
   },
   "layer_step|chunk-decode-w16": {
-   "iqr_ms": 0.114688,
-   "median_ms": 0.429888,
+   "iqr_ms": 0.033408,
+   "median_ms": 0.392192,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.396288,
-    0.410624,
-    0.485376,
-    0.406528,
-    0.636928,
-    0.521216,
-    0.429888
+    0.395264,
+    0.391456,
+    0.390144,
+    0.45568,
+    0.423712,
+    0.390304,
+    0.392192
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.005184
+   "within_session_iqr_ms": 0.016384
   },
   "layer_step|chunk-deep-D4-w8": {
-   "iqr_ms": 0.047072,
-   "median_ms": 0.4352,
+   "iqr_ms": 0.146208,
+   "median_ms": 0.485376,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.4352,
-    0.43008,
-    0.48128,
-    0.4352,
-    0.51712,
-    0.447488,
-    0.434208
+    0.485376,
+    0.417792,
+    0.41984,
+    0.499936,
+    0.415744,
+    0.564,
+    0.564064
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.023296
+   "within_session_iqr_ms": 0.002912
   },
   "layer_step|chunk-dense-D2": {
-   "iqr_ms": 0.312128,
-   "median_ms": 0.43008,
+   "iqr_ms": 0.001184,
+   "median_ms": 0.425984,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.428032,
-    0.426272,
-    0.43008,
-    0.649216,
-    0.7384,
-    0.758784,
-    0.42496
+    0.425728,
+    0.425984,
+    0.42608,
+    0.427008,
+    0.427008,
+    0.425824,
+    0.425952
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.00064
+   "within_session_iqr_ms": 0.000576
   },
   "layer_step|chunk-dense-NL4096": {
-   "iqr_ms": 0.035776,
-   "median_ms": 2.971648,
+   "iqr_ms": 0.003104,
+   "median_ms": 3.009536,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    2.994112,
-    3.008512,
-    2.968448,
-    2.971648,
-    2.958336,
-    2.976576,
-    2.956192
+    2.987168,
+    3.009536,
+    3.009536,
+    3.006464,
+    3.009408,
+    3.01056,
+    3.009568
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0256
+   "within_session_iqr_ms": 0.023552
   },
   "layer_step|chunk-p73-pinned": {
-   "iqr_ms": 0.012352,
-   "median_ms": 1.302784,
+   "iqr_ms": 0.011264,
+   "median_ms": 1.302528,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    1.302528,
-    1.309696,
-    1.302784,
-    1.313568,
-    1.306624,
-    1.297344,
-    1.296224
+    1.30048,
+    1.302496,
+    1.303552,
+    1.312768,
+    1.311744,
+    1.30048,
+    1.302528
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.001024
+   "within_session_iqr_ms": 0.000128
   },
   "layer_step|chunk-sparse-gain8": {
-   "iqr_ms": 0.078848,
-   "median_ms": 0.246752,
+   "iqr_ms": 0.002944,
+   "median_ms": 0.241664,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.385024,
-    0.246752,
+    0.284672,
+    0.241568,
     0.241664,
-    0.244736,
-    0.320512,
-    0.27136,
-    0.241664
+    0.241792,
+    0.243584,
+    0.24064,
+    0.24064
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.172032
+   "within_session_iqr_ms": 0.009088
   },
   "prefill_decode|chunk-decode-w16": {
-   "iqr_ms": 1.250464,
-   "median_ms": 10.500096,
+   "iqr_ms": 2.860032,
+   "median_ms": 9.401408,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    9.617248,
-    10.867712,
-    10.79808,
-    9.536512,
-    12.45072,
-    10.500096,
-    10.125312
+    12.269568,
+    9.1904,
+    8.879104,
+    12.050432,
+    9.4464,
+    9.235456,
+    9.401408
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.349152
+   "within_session_iqr_ms": 0.529408
   },
   "rung0_pass1|chunk-bwd-dense-N64": {
    "iqr_ms": 0.0,
-   "median_ms": 0.116736,
+   "median_ms": 0.135168,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.116736,
-    0.116736,
-    0.116736,
-    0.116736,
-    0.116736,
-    0.11776,
-    0.115968
+    0.135168,
+    0.135168,
+    0.135168,
+    0.135168,
+    0.135168,
+    0.135168,
+    0.135168
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -1322,19 +1322,19 @@
    "within_session_iqr_ms": 0.0
   },
   "rung0_pass1|chunk-bwd-smalln": {
-   "iqr_ms": 0.0,
-   "median_ms": 0.116736,
+   "iqr_ms": 3.2e-05,
+   "median_ms": 0.135168,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.11776,
-    0.116736,
-    0.116736,
-    0.116736,
-    0.116736,
-    0.11664,
-    0.116736
+    0.135168,
+    0.135168,
+    0.135168,
+    0.135168,
+    0.136192,
+    0.1352,
+    0.135168
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -1352,7 +1352,7 @@
     0.011264,
     0.011264,
     0.011264,
-    0.011232,
+    0.011264,
     0.011264,
     0.011264
    ],
@@ -1362,119 +1362,119 @@
    "within_session_iqr_ms": 0.0
   },
   "rung0_pass2|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.00016,
-   "median_ms": 0.161792,
+   "iqr_ms": 0.0,
+   "median_ms": 0.1792,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.161792,
-    0.161632,
-    0.161728,
-    0.161792,
-    0.161792,
-    0.161792,
-    0.160768
-   ],
-   "sessions": 7,
-   "source": "cuda_events",
-   "warmup": 10,
-   "within_session_iqr_ms": 0.0
-  },
-  "rung0_pass2|chunk-bwd-smalln": {
-   "iqr_ms": 0.001024,
-   "median_ms": 0.160832,
-   "reps": 33,
-   "reps_per_round": 11,
-   "rounds": 3,
-   "session_medians": [
-    0.161792,
-    0.160768,
-    0.160832,
-    0.16176,
-    0.160768,
-    0.160768,
-    0.162816
+    0.1792,
+    0.1792,
+    0.1792,
+    0.1792,
+    0.1792,
+    0.1792,
+    0.1792
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
    "within_session_iqr_ms": 9.6e-05
   },
+  "rung0_pass2|chunk-bwd-smalln": {
+   "iqr_ms": 0.000896,
+   "median_ms": 0.1792,
+   "reps": 33,
+   "reps_per_round": 11,
+   "rounds": 3,
+   "session_medians": [
+    0.1792,
+    0.1792,
+    0.178432,
+    0.1792,
+    0.180032,
+    0.180224,
+    0.179136
+   ],
+   "sessions": 7,
+   "source": "cuda_events",
+   "warmup": 10,
+   "within_session_iqr_ms": 0.0
+  },
   "rung0_pass2|chunk-decode-w16": {
-   "iqr_ms": 0.000128,
+   "iqr_ms": 0.0,
    "median_ms": 0.014336,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
     0.014336,
-    0.013312,
     0.014336,
     0.014336,
-    0.014208,
-    0.014272,
+    0.014336,
+    0.014336,
+    0.014304,
     0.014336
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0
+   "within_session_iqr_ms": 6.4e-05
   },
   "scan_a|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.001088,
-   "median_ms": 0.268288,
+   "iqr_ms": 0.001024,
+   "median_ms": 0.267264,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.267264,
+    0.267264,
     0.268288,
     0.268288,
-    0.268288,
-    0.268288,
-    0.268288,
-    0.26624,
-    0.2672
+    0.269312,
+    0.267264,
+    0.267264
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 9.6e-05
+   "within_session_iqr_ms": 0.000128
   },
   "scan_a|chunk-bwd-smalln": {
-   "iqr_ms": 0.001024,
-   "median_ms": 0.26624,
+   "iqr_ms": 0.002048,
+   "median_ms": 0.266048,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.26624,
+    0.266048,
     0.265216,
+    0.265984,
     0.26624,
-    0.26624,
-    0.26624,
-    0.265216,
+    0.267264,
+    0.267264,
     0.265216
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0
+   "within_session_iqr_ms": 0.0008
   },
   "scan_a|chunk-deadblocks-T64": {
    "iqr_ms": 0.0,
-   "median_ms": 0.041984,
+   "median_ms": 0.039936,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.041984,
-    0.041984,
-    0.041984,
-    0.041984,
-    0.041984,
-    0.041984,
-    0.041984
+    0.039936,
+    0.039936,
+    0.039936,
+    0.039936,
+    0.039936,
+    0.039936,
+    0.039936
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -1490,7 +1490,7 @@
    "session_medians": [
     0.02048,
     0.02048,
-    0.020512,
+    0.02048,
     0.02048,
     0.02048,
     0.02048,
@@ -1499,82 +1499,82 @@
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 3.2e-05
+   "within_session_iqr_ms": 0.0
   },
   "scan_a|chunk-dense-D2": {
-   "iqr_ms": 0.002816,
-   "median_ms": 0.430208,
+   "iqr_ms": 0.0,
+   "median_ms": 0.43008,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.431072,
     0.43008,
-    0.430208,
-    0.431872,
-    0.755712,
-    0.429056,
+    0.43008,
+    0.43008,
+    0.431104,
+    0.43008,
+    0.43008,
     0.429056
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000224
+   "within_session_iqr_ms": 0.002048
   },
   "scan_a|chunk-dense-NL4096": {
-   "iqr_ms": 0.01536,
-   "median_ms": 3.570688,
+   "iqr_ms": 0.006144,
+   "median_ms": 3.59424,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    3.5736,
-    3.566592,
-    3.570688,
-    3.56352,
-    3.517248,
-    3.57888,
-    3.580928
+    3.591168,
+    3.596288,
+    3.597312,
+    3.616768,
+    3.571712,
+    3.593088,
+    3.59424
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.00512
+   "within_session_iqr_ms": 0.02576
   },
   "scan_a|chunk-p73-pinned": {
-   "iqr_ms": 0.017408,
-   "median_ms": 1.241088,
+   "iqr_ms": 0.023552,
+   "median_ms": 1.235808,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    1.241088,
-    1.221632,
-    1.254272,
-    1.240064,
-    1.242112,
-    1.23184,
-    1.249248
+    1.224704,
+    1.220608,
+    1.248256,
+    1.262592,
+    1.236992,
+    1.235808,
+    1.224704
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.029696
+   "within_session_iqr_ms": 0.022624
   },
   "scan_a|chunk-sparse-gain8": {
-   "iqr_ms": 0.001024,
-   "median_ms": 0.077792,
+   "iqr_ms": 0.0,
+   "median_ms": 0.077824,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.077824,
     0.077824,
     0.077824,
     0.077792,
-    0.077728,
-    0.0768,
-    0.0768
+    0.077824,
+    0.077824,
+    0.077824,
+    0.077824
    ],
    "sessions": 7,
    "source": "cuda_events",
@@ -1582,67 +1582,67 @@
    "within_session_iqr_ms": 0.0
   },
   "scan_b|chunk-bwd-dense-N64": {
-   "iqr_ms": 0.002208,
+   "iqr_ms": 0.001024,
    "median_ms": 0.437248,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.438112,
     0.437248,
     0.437248,
+    0.436224,
     0.437248,
-    0.437408,
-    0.4352,
-    0.4352
+    0.437248,
+    0.434176,
+    0.437248
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000992
+   "within_session_iqr_ms": 0.0
   },
   "scan_b|chunk-bwd-smalln": {
-   "iqr_ms": 0.002048,
-   "median_ms": 0.4352,
+   "iqr_ms": 0.003072,
+   "median_ms": 0.434368,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.4352,
-    0.4352,
     0.434176,
+    0.434368,
+    0.434336,
     0.4352,
-    0.4352,
-    0.433152,
-    0.432896
+    0.437248,
+    0.438272,
+    0.434176
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 9.6e-05
+   "within_session_iqr_ms": 0.0
   },
   "scan_b|chunk-deadblocks-T64": {
-   "iqr_ms": 0.000992,
-   "median_ms": 0.058176,
+   "iqr_ms": 0.0,
+   "median_ms": 0.057344,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    0.058336,
-    0.058368,
-    0.058336,
-    0.057664,
-    0.058176,
+    0.057344,
+    0.057344,
+    0.057344,
+    0.057568,
+    0.057344,
     0.057344,
     0.057344
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.0008
+   "within_session_iqr_ms": 0.000736
   },
   "scan_b|chunk-decode-w16": {
-   "iqr_ms": 0.0008,
+   "iqr_ms": 0.0,
    "median_ms": 0.033792,
    "reps": 33,
    "reps_per_round": 11,
@@ -1650,9 +1650,9 @@
    "session_medians": [
     0.033792,
     0.033792,
-    0.034592,
-    0.034592,
-    0.033856,
+    0.03392,
+    0.033792,
+    0.033792,
     0.033792,
     0.033792
    ],
@@ -1662,67 +1662,67 @@
    "within_session_iqr_ms": 0.0
   },
   "scan_b|chunk-dense-D2": {
-   "iqr_ms": 0.538624,
-   "median_ms": 0.708608,
+   "iqr_ms": 0.003072,
+   "median_ms": 0.707456,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
+    0.70656,
+    0.709632,
+    0.707456,
+    0.71168,
     0.707584,
-    0.708608,
-    0.708608,
-    1.086464,
-    1.246208,
-    1.278976,
-    0.704512
+    0.70656,
+    0.70672
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.006144
+   "within_session_iqr_ms": 0.001024
   },
   "scan_b|chunk-dense-NL4096": {
-   "iqr_ms": 0.038912,
-   "median_ms": 5.808128,
+   "iqr_ms": 0.037888,
+   "median_ms": 5.843968,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    5.837824,
-    5.783552,
-    5.821312,
-    5.822464,
-    5.792768,
-    5.764096,
-    5.808128
+    5.838848,
+    5.840896,
+    5.843968,
+    5.851136,
+    5.835776,
+    5.878784,
+    5.876736
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.006144
+   "within_session_iqr_ms": 0.018368
   },
   "scan_b|chunk-p73-pinned": {
-   "iqr_ms": 0.017408,
-   "median_ms": 2.021376,
+   "iqr_ms": 0.006144,
+   "median_ms": 2.03776,
    "reps": 33,
    "reps_per_round": 11,
    "rounds": 3,
    "session_medians": [
-    2.009088,
-    2.03264,
-    2.016256,
-    2.0224,
-    2.021376,
-    2.015232,
-    2.039808
+    2.034688,
+    2.036736,
+    2.039808,
+    2.04288,
+    2.049888,
+    2.03776,
+    2.036736
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.011232
+   "within_session_iqr_ms": 0.005152
   },
   "scan_b|chunk-sparse-gain8": {
-   "iqr_ms": 0.000192,
+   "iqr_ms": 0.0,
    "median_ms": 0.11776,
    "reps": 33,
    "reps_per_round": 11,
@@ -1732,29 +1732,29 @@
     0.11776,
     0.11776,
     0.11776,
+    0.118784,
     0.11776,
-    0.116736,
-    0.117568
+    0.11776
    ],
    "sessions": 7,
    "source": "cuda_events",
    "warmup": 10,
-   "within_session_iqr_ms": 0.000768
+   "within_session_iqr_ms": 0.0
   }
  },
  "build_stamp": {
-  "manifest_sha256": "5376cc512dbdd4c5a120950af17a80a2280a7797a9bfda7be8d0f10fcb4c82c8",
+  "manifest_sha256": "eec4ea595d6ebe60b12d9038487f53aa9f149b97378a06509d024d637b266c5f",
   "version": "0.1.0.dev0"
  },
  "provenance": {
   "driver_cuda": "12.4",
   "gpu": "NVIDIA GeForce RTX 3080 Ti",
-  "manifest_sha256": "5376cc512dbdd4c5a120950af17a80a2280a7797a9bfda7be8d0f10fcb4c82c8",
+  "manifest_sha256": "eec4ea595d6ebe60b12d9038487f53aa9f149b97378a06509d024d637b266c5f",
   "ptxas": "ptxas: NVIDIA (R) Ptx optimizing assembler Copyright (c) 2005-2024 NVIDIA Corporation Built on Tue_Feb_27_16:15:50_PST_2024 Cuda compilation tools, release 12.4, V12.4.99 Build cuda_12.4.r12.4/compiler.33961263_0",
   "rola": "0.1.0.dev0",
   "sm": "sm_86",
   "torch": "2.6.0+cu124"
  },
  "sessions": 7,
- "sha": "531bce0c57dce15b72db59b9fce22ae0a58a40f8"
+ "sha": "6a6a95eb7afc0c7fb3048b0346e4634df1f7cbe5"
 }
