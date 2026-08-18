@@ -1,12 +1,16 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""The T=1 decode family's BODIES: the geometry, the scratch, the folds, the launches.
+"""The T=1 decode family's BODIES: the geometry, the scratch, the launches.
 
 The decode DAG (:mod:`rola.engine.dags.decode_dag`) declares these as nodes and composes the
 step; the facade lives there with it. What is here is one function per thing that is
 done, and the raw-tensor entry :func:`_decode_step` is those same functions in the
 step's order, for a caller holding tensors rather than a bundle.
+
+THE STEP IS ONE LAUNCH. Every per-token operand is folded inside the step kernel, from
+the producer's own views, so there is no operand plane between them
+(docs/internals/decode/decode_fold.md).
 
 The bypass is architectural rather than a cheap default
 (docs/internals/decode/decode.md#no-stage-2), the support is a Kronecker product the
@@ -41,9 +45,9 @@ __all__ = [
     "C_DECODE_TARGET_CTAS_PER_SM",
     "DecodeScratch",
     "derive_decode_geometry",
-    "execute",
-    "fold_operands",
     "growth_probe",
+    "leaf_rate_dials_for",
+    "step",
     "step_plane",
 ]
 
@@ -118,8 +122,16 @@ class DecodeScratch:
     stays capturable in a CUDA graph.
     """
 
-    bits: torch.Tensor
-    pc_coarse: torch.Tensor
+    #: The expansion's GLOBAL scratch, and empty at every shipped topology: the step and
+    #: the probe each build their side maps in shared memory, and this is what they fall
+    #: back to when the leaf space is too wide for it
+    #: (docs/internals/decode/decode_expand.md#smem-arm).
+    work: torch.Tensor
+    #: `[BH, ceil(N/32)]` int32, THE PROBE'S PUBLISHED EXPANSION: the exact write-leaf map
+    #: it condenses to atoms and ANDs against residency. The step publishes no such
+    #: object -- its two maps live and die inside the CTA that built them
+    #: (docs/internals/decode/decode_expand.md#growth-probe).
+    probe_bits: torch.Tensor
     ws: torch.Tensor
     ctr: torch.Tensor
     #: The growth probe's device answer and its PINNED landing buffer. Pinned is what
@@ -140,26 +152,20 @@ class DecodeScratch:
     #: condensed on the device from the expansion the verdict was read off. A growth
     #: step admits from THIS -- the host derives nothing: docs/internals/decode/decode.md#growth
     atom_bits: torch.Tensor
-    #: THE FOLD'S DESTINATIONS, one set per side plus the gain and the value. They are
-    #: here rather than returned by the fold because a tensor a step allocates is a step
-    #: a capture cannot hold: docs/internals/decode/decode_fold.md
-    amp_read: tuple[torch.Tensor, ...]
-    amp_write: tuple[torch.Tensor, ...]
-    g_write: torch.Tensor
-    v: torch.Tensor
 
     @staticmethod
     def build(config: DecodeGeometry, BH: int, device) -> DecodeScratch:
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
+        #: The kernel's own sizing function answers whether the expansion fits in shared
+        #: memory; a host-side mirror of that arithmetic is what would drift.
+        per_cta = extension().rola_decode_work_words(
+            level_widths=list(config.widths), d_v=config.d_v, decay=config.has_decay,
+            device_index=torch.device(device).index or 0) if cuda else 0
         return DecodeScratch(
-            amp_read=tuple(torch.empty(BH, width, **f32) for width in config.widths),
-            amp_write=tuple(torch.empty(BH, width, **f32) for width in config.widths),
-            g_write=torch.empty(BH, **f32),
-            v=torch.empty(BH, config.d_v, **f32),
-            bits=torch.empty(4 * BH * config.n_words, **i32),
-            pc_coarse=torch.empty(BH, config.n_groups + 1, **i32),
+            work=torch.empty(per_cta * BH * config.n_split, **i32),
+            probe_bits=torch.empty(BH, config.n_words, **i32),
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
             ctr=torch.zeros(BH, **i32),
             growth=torch.empty(BH, **i32),
@@ -187,9 +193,9 @@ def _fold(t: torch.Tensor) -> torch.Tensor:
 def fold_levels(levels) -> list[torch.Tensor]:
     """The per-level amplitude stream, in torch: ``[BH, width_l]`` fp32.
 
-    AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds in one
-    launch, into the sequence's scratch (:func:`fold_operands`); a gate that fed the
-    kernel its own fold's output would prove nothing about the fold
+    AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds inside
+    the step kernel, from the producer's own views; a gate that fed the kernel its own
+    fold's output would prove nothing about the fold
     (docs/internals/decode/decode_fold.md#the-gate).
     """
     return [_fold(t).float() for t in levels]
@@ -207,45 +213,6 @@ def guard_no_grad(operands) -> None:
             "grad-requiring context would return a tensor with no grad_fn and silently "
             "sever the graph (the x.grad-is-None failure class). Use eval mode / "
             "torch.no_grad.")
-
-
-def fold_operands(read_levels, write_levels, g_write: torch.Tensor, v: torch.Tensor,
-                  decay, config: DecodeGeometry, scratch: DecodeScratch,
-                  normalize=None):
-    """``(amp_read, amp_write, amp_clock, dials, g_write, v)`` -- the step's operands.
-
-    ONE LAUNCH, into ``scratch``. Decode is an fp32 boundary by contract (out of the P09
-    bf16-memory family's scope -- a ``[BH, width]`` object with no measured pressure), so
-    what the fold does is widen every per-token operand, normalize the read levels the
-    producer did not already leave on the simplex, and publish the results where the three
-    step kernels read them (docs/internals/decode/decode_fold.md).
-
-    ``normalize`` is the per-level answer to "does this read level still carry its own
-    mass" -- :meth:`~rola.routing.factors.RouteFactors.read_needs_normalization` states it
-    once; ``None`` is the raw-tensor entry's case, where the caller is already on the
-    simplex.
-
-    ``amp_clock`` IS ``amp_write``: the clock is ``c[t, s] = prod_l p_write[t, d_l(s)]``,
-    a pure product of the STORED allocations with no side gain (``g_write`` scales the
-    deposit, not the clock), so ``stored != 0 => live != 0`` holds by identity rather
-    than by check (docs/internals/decode/decode.md#detached-clock).
-
-    ``dials`` is the ONE operand the fold does not touch: it is a per-HEAD constant of
-    the decay arm, not a per-token operand, and its fp32 cast carries a refusal the host
-    has to raise (:func:`rola.ops.decay.leaf_rate_dials`).
-    """
-    if normalize is None:
-        normalize = (False,) * config.D
-    extension().rola_decode_fold(
-        read=list(read_levels), write=list(write_levels), g_write=g_write, v=v,
-        amp_read=list(scratch.amp_read), amp_write=list(scratch.amp_write),
-        g_out=scratch.g_write, v_out=scratch.v,
-        normalize=[int(bool(flag)) for flag in normalize])
-    amp_clock = scratch.amp_write if decay is not None else None
-    dials = (leaf_rate_dials(decay, config).to(v.device).float() if decay is not None
-             else None)
-    return (scratch.amp_read, scratch.amp_write, amp_clock, dials,
-            scratch.g_write, scratch.v)
 
 
 def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
@@ -288,9 +255,25 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
     return state
 
 
-def growth_probe(amp_write, config: DecodeGeometry, page_table: torch.Tensor,
-                 scratch: DecodeScratch) -> None:
+def leaf_rate_dials_for(decay, config: DecodeGeometry, device) -> torch.Tensor | None:
+    """``[H, sum_l width_l]`` fp32 -- the decay arm's per-HEAD constant, or ``None``.
+
+    It is the ONE operand the step kernel does not fold: a per-HEAD constant rather than a
+    per-token one, and its fp32 cast carries a refusal the host has to raise
+    (:func:`rola.ops.decay.leaf_rate_dials`).
+    """
+    if decay is None:
+        return None
+    return leaf_rate_dials(decay, config).to(device).float()
+
+
+def growth_probe(write_levels, heads: int, config: DecodeGeometry,
+                 page_table: torch.Tensor, scratch: DecodeScratch) -> None:
     """Does this step deposit into an atom the page table does not map? ASKED, not read.
+
+    It folds its own write side from the producer's views -- the same device function the
+    step folds with -- so the probe and the step's admission agree about the write support
+    by the call graph rather than by an audit.
 
     THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``scratch.atom_bits``
     and IS what a growth step admits, so the write-atom set is derived exactly once per
@@ -299,48 +282,55 @@ def growth_probe(amp_write, config: DecodeGeometry, page_table: torch.Tensor,
     it.
     """
     extension().rola_decode_growth_probe(
-        amp_write=amp_write,
+        write=list(write_levels),
         page_table=page_table,
-        bits=scratch.bits,
+        work=scratch.work,
+        probe_bits=scratch.probe_bits,
         growth=scratch.growth,
         growth_any=scratch.growth_any,
         probe_ctr=scratch.probe_ctr,
         atom_bits=scratch.atom_bits,
+        heads=heads,
+        n_split=config.n_split,
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span))
 
 
-def execute(plan: DecodePlan) -> torch.Tensor:
-    """THE LAUNCH, in place on ``plan.state_plane``. Returns ``y`` as ``[B, 1, H, d_v]``.
+def step(plan: DecodePlan) -> torch.Tensor:
+    """THE STEP, in ONE launch, in place on ``plan.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
+
+    Fold, expand and walk are one kernel: the per-token operands are gathered from the
+    producer's own views straight into the CTA's shared memory, the support bitmap is
+    built there, and the walk consumes both without either ever reaching DRAM
+    (docs/internals/decode/decode.md#per-cta-prologue).
 
     Every touched row has exactly one owning CTA, warp and lane, so the update needs no
     atomic and is bitwise reproducible.
     """
-    config, H = plan.config, plan.heads
+    config = plan.config
     y = extension().rola_decode_forward(
-        amp_read=plan.amp_read,
-        amp_write=plan.amp_write,
-        amp_clock=plan.amp_clock,
+        read=list(plan.read),
+        write=list(plan.write),
+        normalize=[int(bool(flag)) for flag in plan.normalize],
         dials=plan.dials,
         g_write=plan.g_write,
         v=plan.v,
         state=plan.state_plane,
-        bits=plan.scratch.bits,
-        pc_coarse=plan.scratch.pc_coarse,
+        work=plan.scratch.work,
         ws=plan.scratch.ws,
         ctr=plan.scratch.ctr,
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span),
         level_row_offsets=list(config.level_row_offset),
-        heads=H,
         n_split=config.n_split,
         eps=config.eps,
         page_table=plan.page_table,
         gate=plan.gate,
     )
-    return y.view(plan.v.shape[0] // H, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
+    B, _T, H, _d_v = plan.v.shape
+    return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
 def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
@@ -370,6 +360,7 @@ def _decode_step(
     state: torch.Tensor,
     *,
     decay=None,
+    normalize: tuple[bool, ...] | None = None,
     workspace: DecodeScratch | None = None,
     page_table: torch.Tensor | None = None,
     gate: torch.Tensor | None = None,
@@ -381,6 +372,11 @@ def _decode_step(
     global arm. ``state`` is the dense ``[B, H, N, d_v + 1]`` plane, or the arena's
     ``[slots, 16, d_v + 1]`` one under ``page_table``.
 
+    ``normalize`` is the per-read-level answer to "does this level still carry its own
+    mass"; ``None`` is the ordinary case here, a caller already on the simplex. The
+    bundle entry reads it off :meth:`~rola.routing.factors.RouteFactors.read_needs_normalization`
+    instead.
+
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
     """
     guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
@@ -389,10 +385,10 @@ def _decode_step(
     BH = v.shape[0] * v.shape[2]
     if workspace is None:
         workspace = DecodeScratch.build(config, BH, v.device)
-    amp_read, amp_write, amp_clock, dials, g, folded_v = fold_operands(
-        read_levels, write_levels, g_write, v, decay, config, workspace)
-    y = execute(DecodePlan(
-        config=config, heads=v.shape[2], amp_read=amp_read, amp_write=amp_write,
-        amp_clock=amp_clock, dials=dials, g_write=g, v=folded_v, state_plane=plane,
-        page_table=page_table, scratch=workspace, gate=gate))
+    y = step(DecodePlan(
+        config=config, heads=v.shape[2], read=read_levels, write=write_levels,
+        normalize=(False,) * config.D if normalize is None else tuple(normalize),
+        dials=leaf_rate_dials_for(decay, config, v.device),
+        g_write=g_write, v=v, state_plane=plane, page_table=page_table,
+        scratch=workspace, gate=gate))
     return y, state, workspace

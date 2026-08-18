@@ -47,6 +47,16 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 constexpr int kDecodeThreads = 256;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 
+//: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
+//: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
+//: and the census is what proves it met it without spilling. The walk is a latency-bound
+//: stream over state rows, so residency is the one thing it trades registers FOR.
+//: The DECAY arm gets one fewer, because it carries a second per-leaf product and a
+//: survival exponential through the same loop and does not fit the tighter cap without
+//: spilling. It is keyed on the TEMPLATE AXIS, not on a measured size.
+//: docs/internals/decode/decode.md#declared-residency
+__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay) { return decay ? 4 : 5; }
+
 //: Bitmap words per COARSE GROUP. `pc_coarse` is one exclusive-prefix entry per group
 //: plus a total: a CTA resolves its row range without a pass over the bitmap, and the
 //: walk skips empty groups with it. docs/internals/decode/decode.md#coarse-group
@@ -61,17 +71,36 @@ constexpr int kAtomShift = 4;
 constexpr int kAtomMask = kAtomLeaves - 1;
 static_assert(1 << kAtomShift == kAtomLeaves, "kAtomShift must be log2(kAtomLeaves)");
 
+//: ONE OPERAND'S ADDRESS, as the producer left it: the base and the three strides the
+//: fold walks over a `[B, 1, H, W]` view. `sw` is `0` for the per-token scalars, which
+//: have no last axis. docs/internals/decode/decode_fold.md#the-identity
+struct Span {
+  const void* base;
+  int64_t sb;
+  int64_t sh;
+  int64_t sw;
+};
+
 //: EVERY POINTER AND EXTENT ONE DECODE STEP NEEDS, and nothing the kernel could cheaply
 //: recompute. Field by field: docs/internals/decode/decode.md#params-amps
 struct DecodeParams {
-  //: `[BH, b_l]` CONTIGUOUS -- the `T = 1` degeneracy of the tiled consumer's
-  //: `[BH, n_tiles, BT, pitch]` streams. There is no pitch; the fold IS the contiguity.
-  const float* amp_read[kMaxLevels];
-  const float* amp_write[kMaxLevels];
-  //: The DETACHED clock stream; nullptr under `decay = None`. Its
-  //: "stored != 0 => live != 0" guarantee is why this kernel has NO entry sweep and NO
-  //: exit sweep: docs/internals/decode/decode.md#detached-clock
-  const float* amp_clock[kMaxLevels];
+  //: THE RAW PER-TOKEN OPERANDS, ADDRESSED RATHER THAN COPIED: both sides' routing
+  //: levels, the write gain and the token's value, each as the caller's own view. There
+  //: is no `[BH, b_l]` plane between the producer and the walk -- the step folds these
+  //: into shared memory itself: docs/internals/decode/decode_fold.md
+  Span read[kMaxLevels];
+  Span write[kMaxLevels];
+  Span g_write;
+  Span v;
+  //: Per READ level: does it still carry its own mass, so the fold divides it by its row
+  //: sum? The write side is never normalized.
+  int normalize[kMaxLevels];
+  //: The storage type of each operand family, `1` = bfloat16 and `0` = float. Branching
+  //: on STORAGE selects a typed gather loop once per side, never a test per element:
+  //: docs/internals/decode/decode_fold.md#the-dtype-arms
+  int levels_bf16;
+  int g_bf16;
+  int v_bf16;
 
   int level_width[kMaxLevels];       // b_l
   int level_stride[kMaxLevels];      // leaf_stride[l] = prod(b_{l+1..D-1})
@@ -79,9 +108,7 @@ struct DecodeParams {
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
-  const float* dials;    // [H, total_rows] or nullptr
-  const float* g_write;  // [BH]
-  const float* v;        // [BH, d_v]
+  const float* dials;  // [H, total_rows] or nullptr
 
   //: DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + is_global`.
   //: Read AND written in place by the SAME lane in program order:
@@ -111,12 +138,17 @@ struct DecodeParams {
   bool* atom_bits;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
-  //: The exact support. `bits_r | bits_w` is formed word-by-word in a REGISTER at
-  //: walk time and never stored: docs/internals/decode/decode.md#bitmap-fields
-  uint32_t* bits_r;    // [BH, n_words]
-  uint32_t* bits_w;    // [BH, n_words]
-  uint32_t* scratch;   // [BH, 2 * n_words] -- the expansion's ping-pong partner
-  int32_t* pc_coarse;  // [BH, n_groups + 1] exclusive prefix, entry n_groups = M
+  //: THE EXPANSION'S SCRATCH, and only when it does not fit in shared memory: `4 *
+  //: n_words` words per CTA at `(bh * n_split + seg)`, carrying the two published side
+  //: maps and the recursion's ping-pong pair. `nullptr` is the ordinary arm, where the
+  //: whole bitmap lives in SMEM and never reaches DRAM at all:
+  //: docs/internals/decode/decode_expand.md#smem-arm
+  uint32_t* work;
+  //: `[BH, n_words]`, THE GROWTH PROBE'S PUBLISHED EXPANSION: the exact write-leaf map it
+  //: condenses to atoms and ANDs against residency. The step publishes no such object --
+  //: its two maps live and die inside the CTA that built them:
+  //: docs/internals/decode/decode_expand.md#growth-probe
+  uint32_t* probe_bits;
 
   //: Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
   //: makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
@@ -176,18 +208,30 @@ __device__ __forceinline__ uint32_t keep_low_set_bits(uint32_t word, int k) {
   return out;
 }
 
+//: The expansion's own shared-memory need, in WORDS per CTA. The step holds four: both
+//: published side maps and the recursion's ping-pong pair. The growth probe holds the
+//: ping-pong pair alone, because its ONE published map is its output.
+//: docs/internals/decode/decode_expand.md#smem-arm
+constexpr int kExpandBufWords = 4;
+constexpr int kProbeBufWords = 2;
+
 // ---------------------------------------------------------------------------
-// The two TUs' entry points. `decode_expand.cu` owns the first group,
-// `decode.cu` the second; `rola_api.cpp` binds only the last two.
+// The two TUs' entry points. `decode_expand.cu` owns the growth probe,
+// `decode.cu` the step; `rola_api.cpp` binds only the host entries.
 // ---------------------------------------------------------------------------
 
-size_t decode_expand_smem_bytes(int n_words);
-bool decode_expand_uses_smem(int n_words, int64_t smem_budget);
-void launch_decode_expand(const DecodeParams& p, int64_t smem_budget);
+size_t decode_probe_smem_bytes(int total_rows, int n_words, bool in_smem);
 void launch_decode_growth_probe(const DecodeParams& p, int64_t smem_budget);
 
-size_t decode_gemv_smem_bytes(int total_rows, int d_v, int cols, bool decay);
-void launch_decode_gemv(const DecodeParams& p, int d_v, bool decay);
+size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_words,
+                              int n_groups, bool in_smem);
+void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
+
+//: The GLOBAL words one CTA needs when the SMEM arm does not hold, taken over the step
+//: and the probe together so that ONE buffer serves both. `0` is the ordinary answer.
+//: docs/internals/decode/decode_expand.md#smem-arm
+int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_words,
+                                  int n_groups, int64_t smem_budget);
 
 }  // namespace decode
 }  // namespace rola

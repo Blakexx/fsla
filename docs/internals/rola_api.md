@@ -52,10 +52,10 @@ that.
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
 | the chunk consumer (the prefill arm) | `chunk_facts`, `chunk_block_bits`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
-| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
+| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_growth_probe`, `rola_decode_work_words`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
-Two of the decode entries are gates rather than operations, and their docstrings say
+Two of the five decode entries are gates rather than operations, and their docstrings say
 so: `rola_decode_capacity` reports the decode path's maximum level width, which must be
 `>=` the producer's `MAX_BRANCH_WIDTH` (`tests/unit/test_decode_capacity.py` pins the
 pair), and `rola_decode_producer_width_mirror` is the C++ mirror of that producer
@@ -116,16 +116,21 @@ meaning it has no business holding ([`paging/vmm_owner.md`](paging/vmm_owner.md)
 `target_chunk_bytes` defaults to 64 MiB at this boundary; the arena overrides it with the
 device's own allocation granularity, which is the finest commitment the driver admits.
 
-## <a id="decode-fold"></a>7a. `rola_decode_fold` — the step's operand pass
+## <a id="the-step"></a>7a. `rola_decode_forward` — the whole step, one launch
 
-Bound as its own entry for the same reason the probe below is: it is a STAGE of the
-step's order, not a mode of it. The growth probe consumes the folded write side before
-either of the step's own kernels exists, and the dense backing runs no probe at all, so a
-fold living inside either kernel would leave one caller or one mask without it. Its
-destinations are the sequence's `DecodeScratch` buffers, passed IN rather than returned,
-which is what lets one launch replace the whole torch operand chain inside a CUDA-graph
-capture. Its contract, and the DECLARED summation order its normalization is held to, are
-[`decode/decode_fold.md`](decode/decode_fold.md).
+The decode step is ONE kernel: the operand fold, the support expansion and the
+token-stationary gather-GEMV are three phases of it, so what the boundary passes is the
+caller's RAW `[B, 1, H, *]` views and not a widened plane. There is no separate fold entry
+and no `heads` argument — the fold is inside the kernel and `v`'s own shape carries `H`.
+The phases, and why the fold is not its own launch, are
+[`decode/decode_fold.md`](decode/decode_fold.md); the step is
+[`decode/decode.md`](decode/decode.md).
+
+<a id="work-words"></a>`rola_decode_work_words` is bound beside it because the expansion's
+GLOBAL scratch is sized by a kernel-side rule — does the bitmap fit in this device's shared
+memory? — and mirroring that rule in Python would put a drift surface in front of an
+out-of-bounds write. It answers `0` at every shipped topology
+([`decode/decode_api.md` §2](decode/decode_api.md#work-words)).
 
 ## <a id="growth-probe"></a>7b. `rola_decode_growth_probe` — bound beside the step
 
@@ -135,7 +140,8 @@ host runs it first and the STEP reads its reduced verdict as a `gate`, so the st
 enqueued behind the probe and the host learns the answer afterwards — planning, when it
 must, from the write-atom set the probe published beside that verdict. Binding it
 separately is what keeps that ordering visible at the boundary instead of implied by a
-flag. Its contract is
+flag. It takes the same RAW write views the step does and folds them itself, with the same
+device function, so the two agree about the write support by the call graph. Its contract is
 [`decode/decode_api.md` §4](decode/decode_api.md#growth-probe).
 
 ## The chunk consumer's entries (operator adoption)

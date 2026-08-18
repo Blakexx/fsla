@@ -329,31 +329,39 @@ The same array is consulted DURING the walk to skip wholly-empty groups
 (`pc_coarse[g + 1] == pc_coarse[g]`), which is what keeps the bitmap read from
 dominating a high-batch, high-sparsity step. See [§24](#coarse-consult).
 
-## <a id="params-amps"></a>9. `DecodeParams` — the amplitude streams
+## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
-`amp_read[l]` / `amp_write[l]` are `[BH, b_l]` CONTIGUOUS: the `T = 1` degeneracy
-of the tiled consumer's `[BH, n_tiles, BT, pitch]` streams with `n_tiles = BT = 1`.
-There is no pitch, because the decode op folds `[B, 1, H, b_l] -> [BH, b_l]` and
-**the fold IS the contiguity**.
+`read[l]` / `write[l]` / `g_write` / `v` are `Span`s: a base pointer and the `(b, h, w)`
+strides of the CALLER'S OWN `[B, 1, H, *]` view. There is no `[BH, b_l]` plane between the
+producer and the walk — the step folds these into shared memory itself
+([`decode_fold.md`](decode_fold.md)), so the `[B, 1, H, W] -> [BH, W]` fold is an ADDRESS
+the kernel computes rather than a pass that ran.
 
-`level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the
-flat `sum_l b_l` SMEM arrays. It is host-computed and carried rather than
-recomputed, because the kernel needs it on the innermost path.
+`normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
+it by its row sum. `levels_bf16`, `g_bf16` and `v_bf16` name each operand family's storage
+type; the fold branches on them once per side, never per element
+([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
+
+`level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
+`sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because
+the kernel needs it on the innermost path.
 
 The remaining per-level integers are `level_width[l] = b_l`,
 `level_stride[l] = prod(b_{l+1..D-1})`, `level_span[l] = S_l` (with `S_0 = N`) and
 `level_row_offset[l]`, an offset into the flattened per-head dial array.
 
-## <a id="detached-clock"></a>10. `amp_clock` — the detached clock, and why there is no sweep
+## <a id="detached-clock"></a>10. The detached clock, and why there is no sweep
 
-`amp_clock[l]` is the DETACHED clock stream (`build_clock_stream`'s stored write
-amplitude), and is `nullptr` under `decay = None`.
+The clock is the STORED WRITE ALLOCATION ITSELF — `c[t, s] = prod_l p_write[t, d_l(s)]`,
+carrying no side gain, because `g_write` scales the deposit and not the clock. It is
+therefore not a stream of its own: the step reads the same staged write rows the deposit
+reads, and a second fold of one fact would be a second derivation of it.
 
-Its `stored != 0 => live != 0` guarantee is what makes §2.4's no-sweep claim
-EXACT: a leaf outside `supp(W)` has a zero factor at some level, so its clock is
-`0`, so `keep^0 == 1` exactly and its stored state is unchanged. Decay therefore
-fires only on written rows — and written rows are streamed anyway. **There is no
-entry sweep and no exit sweep in this kernel.**
+Its `stored != 0 => live != 0` guarantee is what makes §2.4's no-sweep claim EXACT: a leaf
+outside `supp(W)` has a zero factor at some level, so its clock is `0`, so `keep^0 == 1`
+exactly and its stored state is unchanged. Decay therefore fires only on written rows —
+and written rows are streamed anyway. **There is no entry sweep and no exit sweep in this
+kernel.**
 
 ## <a id="state-in-place"></a>11. `state` is read and written in place
 
@@ -367,21 +375,27 @@ are [§27](#update-then-read).
 
 `y` is `[BH, d_v]` — the FUSED ratio readout, `num / (den + eps)`.
 
-## <a id="bitmap-fields"></a>12. The bitmap fields, and the union that is never stored
+## <a id="bitmap-fields"></a>12. The bitmaps never leave the CTA that builds them
 
-`bits_r` and `bits_w` are `[BH, n_words]` each — [§2](#kronecker-support)'s exact
-support. `scratch` is the expansion's ping-pong partner and is
-`[BH, 2 * n_words]` — the host carve hands it the last two of the flat
-allocation's four `BH * n_words` blocks, and `decode_expand.cu` indexes it as
-`p.scratch + bh * 2 * nw`. (The field's own trailing comment in `decode.cuh` says
-`[BH, n_words]`; that comment is stale, and the extent above is the one the code
-computes.) Why the pair is needed at all:
-[`decode_expand.md`](decode_expand.md#ping-pong). `pc_coarse` is
-`[BH, n_groups + 1]`, an exclusive prefix whose entry `n_groups` is `M`.
+[§2](#kronecker-support)'s exact support — `bits_r` and `bits_w`, `n_words` each — and the
+expansion's ping-pong partner are `4 * n_words` words of SHARED MEMORY, built by the CTA
+that is about to walk them. Nothing on the step path publishes them: the arm that spills
+them to `work` exists only for a leaf space too wide for the budget
+([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)), and the one leaf-level map
+anything does publish is the growth probe's `probe_bits`, which is its OUTPUT
+([`decode_expand.md#growth-probe`](decode_expand.md#growth-probe)).
 
-`bits_r | bits_w` is formed word-by-word in a REGISTER at walk time and never
-stored: it is one instruction and one third of the storage a materialized third
-bitmap would cost.
+The coarse index `pc` is `n_groups + 1` words of the same shared memory, an exclusive
+prefix whose entry `n_groups` is `M`.
+
+<a id="coarse-index"></a>`pc[g]` counts the set bits of `bits_r | bits_w` in groups
+strictly before `g`. It is taken from the PUBLISHED words rather than accumulated per side,
+because the two sides' popcounts do not sum to `popcount(r | w)`. This is the ONE place the
+union is formed outside a register, and it is formed as a COUNT.
+
+`bits_r | bits_w` is otherwise formed word-by-word in a REGISTER at walk time and never
+stored: it is one instruction and one third of the storage a materialized third bitmap
+would cost.
 
 ## <a id="splitk-workspace"></a>13. The split-K workspace
 
@@ -506,10 +520,16 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 
 | block | extent | what it holds |
 |---|---|---|
-| `sa_r`, `sa_w` | `[total_rows]` fp32 | the per-level amplitude rows, UNCOMPACTED and indexed by DIGIT |
-| `sa_c`, `sd` | `[total_rows]` fp32 | clock amplitudes and this head's dial row; `DECAY` only |
+| `sa_r`, `sa_w` | `[total_rows]` fp32 | both sides' amplitude rows, UNCOMPACTED and indexed by DIGIT |
+| `sd` | `[total_rows]` fp32 | this head's dial row; `DECAY` only |
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
+| `pc` | `[n_groups + 1]` i32 | the coarse popcount index |
+| `bits` | `[4 * n_words]` u32 | both side maps and the expansion's ping-pong; `IN_SMEM` only |
+
+Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
+step allocates no plane, reads no `[BH, b_l]` intermediate and publishes no bitmap. That is
+the whole of [§21b](#per-cta-prologue).
 
 The amplitude rows are indexed by DIGIT and are not compacted: **the bitmap
 carries membership, so the digit IS the index**, and no compaction, id list or
@@ -519,6 +539,29 @@ flag packing exists on this path.
 on distinct banks. The fold reads DOWN the warp axis, so an unpadded stride
 sharing a factor with 32 would collide. `gcd(cols + 3, 32)` is 4 at `cols = 65`
 and 1 at `cols = 32` and at `cols = 64 + 3`.
+
+## <a id="per-cta-prologue"></a>21b. The prologue is per-CTA, and that is the design
+
+The step is one kernel with three phases — fold, expand, walk — and the grid is
+`(n_split, BH)`, so the first two run once per SPLIT-K CTA rather than once per batch-head.
+Every CTA re-derives the same amplitude rows and the same support bitmap for its `bh`, then
+walks only its own row range.
+
+That redundancy is the price of two properties, and it was measured before it was taken:
+
+- **The support map never reaches DRAM.** A shared per-`bh` map would have to be written by
+  someone and read by everyone, which is a global round trip on the walk's hottest index —
+  or a launch boundary to order the write against the reads, which is the launch this
+  design exists to delete.
+- **The split partition stays.** The alternative — one CTA per batch-head, `n_split = 1` —
+  costs no recompute at all and was priced directly: at widths `(64, 64)` the GEMV goes
+  16.2 → 63.5 µs at `B = 2` and 67.3 → 131.5 µs at `B = 32` (RTX 3080 Ti, dense, captured
+  replay). The walk is row-starved without the split, and a topology's `N` is exactly what
+  decides that, so there is no regime where collapsing the grid is the better shape.
+
+The recompute itself is an address walk over `2 * sum_l b_l` floats and `ceil(N / 32)`
+words — bounded by the topology, not by the state — which is why paying it `n_split` times
+still lands ahead of paying one extra launch once.
 
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
@@ -639,23 +682,68 @@ same expression with zero combine steps.
 The counter is reset to `0` by the last CTA, so no `memset` launch stands between
 two decode steps and the counter is safe to capture in a CUDA graph.
 
+## <a id="declared-residency"></a>30b. The residency is DECLARED, and it is the whole
+perf story of the fusion
+
+`decode_step_kernel` carries `__launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY))`
+— 5 CTAs/SM without decay, 4 with — and that second argument is not decoration. It is a
+REGISTER CAP the assembler must meet, and the census is what proves it met it with zero
+spills.
+
+**Why it has to be declared.** The fusion moved a prologue into a kernel whose loop was
+already the whole point, and the assembler priced the new live values the way it prices
+anything: it took more registers. Left alone it took 57 on the shipped `(d_v=64, D=2,
+no decay)` arm against the pre-fusion GEMV's 48 — which is 4 CTAs/SM instead of 5, a fifth
+of the residency, on a walk that is LATENCY-BOUND over state rows. Measured: at widths
+`(64, 64)`, `B = 32`, dense, that alone cost +10.8 % of the whole step and turned a
+launch-count win into a wall-clock loss. With the budget declared it is 48 registers again,
+no spills, and the same cell lands within noise of the pre-fusion wall while running one
+kernel instead of three.
+
+The lesson is the standing register policy read in the other direction: registers are worth
+spending when they buy fewer instructions or a tensor-core op in the hot loop, and this
+kernel's extra ones bought neither — they were prologue state the allocator kept alive
+across a loop that never reads it. A budget is how that gets said in code rather than
+hoped for.
+
+The DECAY arm gets one fewer CTA because it carries a second per-leaf product (`o_rate`)
+and a survival exponential through the same loop; it does not fit the tighter cap without
+spilling, and the arm is a TEMPLATE AXIS, so the budget is a compile-time function of it
+rather than a threshold on a measurement.
+
+**What the fusion also had to buy back, in barriers.** The prologue is
+`fold_row_sums` → one barrier → both sides' rows, the value and the dials → one barrier →
+one expansion over BOTH sides sharing `D - 1` barriers and every integer division. Written
+as the obvious two sequential per-side folds and two sequential per-side expansions it was
+6 barriers at `D = 2` instead of 4, and the same cell paid ~3 % for it.
+
 ## <a id="instantiation-matrix"></a>31. The instantiation matrix
 
-`DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one
-token), no `BC` (no owner blocking), no `MmaPrec`/precision split (there is no
-MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else —
-`DELETIONS.md`), no `GLOBAL` (raw normalization is dead; the mass column is
-unconditional — [§20](#template-axes)). Every axis is a structural plan fact with
-few legal values, which is the standing *"branch on structure, not thresholds"*
-rule. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1,
-4]` is refused in the dispatch's `default`.
+`DV(2) x D(4) x DECAY(2) x IN_SMEM(2) = 32`. Note what is **not** an axis: no `BT` (one
+token), no `BC` (no owner blocking), no `MmaPrec`/precision split (there is no MMA, and the
+tf32x3/bf16 split died with the `PREC` axis everywhere else — `DELETIONS.md`), no `GLOBAL`
+(raw normalization is dead; the mass column is unconditional — [§20](#template-axes)), and
+no OPERAND STORAGE TYPE. The last is the interesting one: the fold reads three independent
+dtype families, so making them template axes would multiply the matrix by eight for a few
+hundred bytes of gather. They are runtime flags selecting a typed loop instead
+([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)). `IN_SMEM` earns its
+place where they do not: it decides the ADDRESS SPACE the whole walk indexes, which a
+runtime pointer would make generic. Every axis is a structural plan fact with few legal
+values, which is the standing *"branch on structure, not thresholds"* rule. `d_v` is
+restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1, 4]` is refused in the
+dispatch's `default`.
 
-## <a id="flat-bits"></a>32. The `bits` workspace is ONE flat allocation
+## <a id="flat-bits"></a>32. `work` — the expansion's scratch, and usually empty
 
-Carved into `bits_r | bits_w | scratch` blocks of `[BH, n_words]`, `[BH, n_words]`
-and `[BH, 2 * n_words]`. Flat rather than shaped, because a `[BH, 4 * n_words]`
-shape would imply a per-`bh` interleaving the carve does not use — **and a shape
-that lies is worse than no shape.**
+`work` is `[BH * n_split * 4 * n_words]` int32 when the expansion does not fit in shared
+memory, and ZERO-LENGTH when it does — which is every shipped topology. Its extent is one
+authority's answer (`rola_decode_work_words`, which asks the kernel's own sizing function
+against the device's real budget) rather than a host-side mirror of the same arithmetic,
+because a mirror is the thing that drifts.
+
+It is indexed PER CTA at `(bh * n_split + seg)`, not per batch-head: every split-K CTA
+expands its own copy ([§21b](#per-cta-prologue)), so the slices are private by construction
+and no two CTAs ever write the same word.
 
 ## <a id="producer-width-mirror"></a>33. Why the producer-width mirror is bound separately
 
@@ -680,12 +768,13 @@ rather than as a plausible zero is what a gate wants.
 ## <a id="smem-refusal"></a>35. The staged-amplitude SMEM budget is a declared capacity
 
 The host entry queries `cudaDevAttrMaxSharedMemoryPerBlock` and `TORCH_CHECK`s
-`decode_gemv_smem_bytes(total_rows, d_v, cols, decay)` against it, naming
-`sum_l width_l` in the message. It is **refused loudly rather than taken as a
-slower path** — there is no spill-to-global arm for the staged rows.
+`decode_step_smem_bytes(...)` against it, naming `sum_l width_l` in the message. It is
+**refused loudly rather than taken as a slower path** — there is no spill-to-global arm for
+the staged amplitude rows.
 
-The expansion's arm selection is not this check; it is structural and lives in
-[`decode_expand.md`](decode_expand.md#smem-arm).
+The BITMAP's arm selection is not this check; it is structural, it comes first, and the
+refusal above applies to what is left after it
+([`decode_expand.md`](decode_expand.md#smem-arm)).
 
 ---
 

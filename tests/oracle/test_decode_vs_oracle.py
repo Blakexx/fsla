@@ -86,6 +86,9 @@ def _chunk_tokens() -> int:
 #:   (7, 9)      S_1 = 9    < 32,  N = 63 (a ragged last word)
 #:   (33,)       D = 1,     N = 33 spans two words with a ragged tail
 #:   (64, 64)    the aligned case, N = 4096
+#: `kCoarseGroupWords * 32` -- the leaves one coarse group covers.
+kCOARSE_GROUP_LEAVES = 32 * 32
+
 _TOPOLOGIES = [(16,), (33,), (8, 16), (7, 9), (4, 4, 4), (3, 5, 7), (2, 3, 4, 4), (64, 64)]
 
 
@@ -109,19 +112,31 @@ def _leaf_support(levels, widths, B, H, device):
     return mask
 
 
-def _pack(mask):
-    """``[BH, N]`` bool -> ``[BH, ceil(N/32)]`` int64 holding the packed words."""
-    BH, N = mask.shape
-    n_words = (N + 31) // 32
-    padded = torch.zeros(BH, n_words * 32, dtype=torch.int64, device=mask.device)
-    padded[:, :N] = mask.to(torch.int64)
-    weights = (1 << torch.arange(32, device=mask.device, dtype=torch.int64))
-    return (padded.view(BH, n_words, 32) * weights).sum(-1)
+def _kernel_expansion(levels, widths, B, H, device, d_v=64):
+    """The step kernel's OWN expansion of one side's amplitudes, as ``[BH, N]`` bool.
 
+    The expansion is ONE device function and it does not know which side it is serving,
+    so the amplitudes go in through the WRITE port, where the leaf set they expand to is
+    exactly the set of state rows the step deposits into. Membership is then read off the
+    STATE DIFF -- observable at any topology, and bit for bit, which is what the fused
+    step's shared-memory bitmaps are not.
 
-def _u32(t):
-    """The kernel's int32 words as unsigned values, for comparison against ``_pack``."""
-    return t.to(torch.int64) & 0xFFFFFFFF
+    The read side is left empty so the walk's union is the expansion under test, the
+    state starts at zero and ``v`` is all ones, so a deposited row is a nonzero row and
+    the correspondence is exact rather than statistical.
+    """
+    topology = _topology(widths)
+    N = math.prod(widths)
+    BH = B * H
+    config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=BH, device=device)
+    f32 = dict(device=device, dtype=torch.float32)
+    empty_read = tuple(torch.zeros(B, 1, H, w, **f32) for w in widths)
+    write = tuple(t.float() for t in levels)
+    g_write = torch.ones(B, 1, H, **f32)
+    v = torch.ones(B, 1, H, d_v, **f32)
+    state = torch.zeros(B, H, N, config.cols, **f32)
+    _y, state, _ws = _decode_step(v, empty_read, write, None, g_write, config, state)
+    return (state.reshape(BH, N, config.cols) != 0).any(-1)
 
 
 def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
@@ -206,53 +221,46 @@ def _assert_oracle(out, tol=DECODE_RTOL):
 @pytest.mark.parametrize("widths", _TOPOLOGIES)
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
 def test_g3_expansion_is_the_exact_leaf_support(widths, p_read, p_write):
-    """The expanded bitmaps ARE the per-level exact-nonzero support, leaf for leaf.
+    """The expansion IS the per-level exact-nonzero support, leaf for leaf.
 
     This is the one place the decode path's "membership is ``amp != 0``" claim is
     checked rather than argued. It is a bit-for-bit gate on a bit-for-bit object: a
     funnel shift that is off by one at an ``S_{l+1} % 32 != 0`` boundary moves exactly
     one bit, and nothing downstream would necessarily notice — the leaf it wrongly
     includes may carry a zero amplitude and contribute nothing to ``y``.
+
+    Both sides go through the SAME device function, so both are stated here.
     """
     out = _case(widths, 64, 2, 3, "global", p_read, p_write, seed=17)
-    BH, n_words = out["B"] * out["H"], out["config"].n_words
-    bits = out["workspace"].bits
-    got_r = _u32(bits[:BH * n_words].view(BH, n_words))
-    got_w = _u32(bits[BH * n_words:2 * BH * n_words].view(BH, n_words))
-
-    want_r_mask = _leaf_support(out["read_levels"][0], widths, out["B"], out["H"], out["device"])
-    want_w_mask = _leaf_support(out["write_levels"][0], widths, out["B"], out["H"], out["device"])
-    assert torch.equal(got_r, _pack(want_r_mask)), "the read bitmap is not the exact read support"
-    assert torch.equal(got_w, _pack(want_w_mask)), "the write bitmap is not the exact write support"
-
-    # and the coarse index's total is the touched-row count the walk will visit
-    union = want_r_mask | want_w_mask
-    assert torch.equal(out["workspace"].pc_coarse[:, -1].to(torch.int64),
-                       union.sum(-1)), "pc_coarse's total is not |supp(R) union supp(W)|"
+    B, H, device = out["B"], out["H"], out["device"]
+    want_r = _leaf_support(out["read_levels"][0], widths, B, H, device)
+    want_w = _leaf_support(out["write_levels"][0], widths, B, H, device)
+    assert torch.equal(_kernel_expansion(out["read_levels"][0], widths, B, H, device),
+                       want_r), "the read expansion is not the exact read support"
+    assert torch.equal(_kernel_expansion(out["write_levels"][0], widths, B, H, device),
+                       want_w), "the write expansion is not the exact write support"
 
 
-@pytest.mark.parametrize("widths", [(8, 16), (3, 5, 7)])
-def test_g3_coarse_index_is_the_group_prefix(widths):
-    """``pc_coarse[g]`` is the exclusive popcount prefix over 32-word groups.
+def test_g3_the_coarse_index_carries_a_sparse_multi_group_topology():
+    """``pc[g]`` is the exclusive popcount prefix, gated where it is load-bearing.
 
-    Gated separately from the total because the WALK consults it to skip empty groups: a
-    prefix that is right only in aggregate would skip a group that has rows in it, and
-    those rows would silently vanish from ``y`` rather than fail loudly.
+    The coarse index lives and dies inside the CTA that builds it, so what states it is
+    the WALK it drives: a prefix that is wrong by one skips a group that has rows in it,
+    and those rows vanish from ``y`` and from the state rather than failing loudly. The
+    cell therefore asserts the fixture actually has empty groups to skip and a row range
+    to partition, and then holds the whole step to the fp64 oracle.
     """
-    out = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=99)
-    BH, n_words = out["B"] * out["H"], out["config"].n_words
-    bits = out["workspace"].bits
-    got_r = _u32(bits[:BH * n_words].view(BH, n_words))
-    got_w = _u32(bits[BH * n_words:2 * BH * n_words].view(BH, n_words))
-    per_word = torch.tensor(
-        [[bin(int(x)).count("1") for x in row] for row in (got_r | got_w).cpu()],
-        dtype=torch.int64)
-    n_groups = out["config"].n_groups
-    padded = torch.zeros(BH, n_groups * 32, dtype=torch.int64)
-    padded[:, :n_words] = per_word
-    group = padded.view(BH, n_groups, 32).sum(-1)
-    want = torch.cat([torch.zeros(BH, 1, dtype=torch.int64), group.cumsum(-1)], dim=-1)
-    assert torch.equal(out["workspace"].pc_coarse.cpu().to(torch.int64), want)
+    widths = (64, 64)
+    out = _case(widths, 64, 2, 3, "global", 0.05, 0.05, seed=99)
+    config = out["config"]
+    assert config.n_groups > 1, "the fixture is one coarse group: nothing is being skipped"
+    assert config.n_split > 1, "the fixture is one CTA: no row range is being resolved"
+    union = (_leaf_support(out["read_levels"][0], widths, out["B"], out["H"], out["device"])
+             | _leaf_support(out["write_levels"][0], widths, out["B"], out["H"], out["device"]))
+    per_group = union.view(-1, config.n_groups, kCOARSE_GROUP_LEAVES).any(-1)
+    assert bool(union.any()), "the fixture touches no leaf at all"
+    assert bool((~per_group).any()), "the fixture has no empty group for the walk to skip"
+    _assert_oracle(out)
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +305,9 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
     m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
     state = m0.clone()
-    y, state, workspace = _decode_step(v, zeros, zeros, None, g_write, config, state)
-    assert int(workspace.pc_coarse[:, -1].max()) == 0, "the fixture did not produce M = 0"
+    y, state, _workspace = _decode_step(v, zeros, zeros, None, g_write, config, state)
+    assert not _leaf_support(zeros, widths, B, H, device).any(), (
+        "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
     assert torch.equal(state, m0), "an untouched state must be byte-unchanged"
 

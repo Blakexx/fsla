@@ -1,51 +1,33 @@
-# `csrc/rola/src/decode/decode_fold.cu` — the decode step's operand pass
+# `csrc/rola/src/decode/decode_fold.cuh` — the decode step's operand pass
 
-Every per-token operand a decode step consumes, widened, normalized where the producer
-did not already leave the level on the simplex, and published into the sequence's own
-scratch — in ONE launch, before the step's three kernels run.
+Every per-token operand a decode step consumes, widened, normalized where the producer did
+not already leave the level on the simplex, and staged in the SHARED MEMORY of the CTA
+that is about to consume it.
 
 Symbols: `B` batch, `H` heads, `BH = B * H`, `bh = b * H + h`; `D` levels; `b_l` level
 `l`'s width; `d_v` the value width. The operands are the read and write amplitude rows
-(`[BH, b_l]` fp32 each), the write gain (`[BH]` fp32) and the token's value
-(`[BH, d_v]` fp32).
+(`[B, 1, H, b_l]` each, in the producer's own layout), the write gain (`[B, 1, H]`) and the
+token's value (`[B, 1, H, d_v]`).
 
 ---
 
-## <a id="why-a-kernel"></a>1. Why the fold is a kernel at all
+## <a id="why-a-header"></a>1. Why the fold is not a launch
 
-The operands are TINY — `2 * sum_l b_l + d_v + 1` floats per batch-head, kilobytes at
-any shipped topology. The fold is not there to move bytes faster; it is there to be ONE
-launch instead of eight.
+The operands are TINY — `2 * sum_l b_l + d_v + 1` values per batch-head, kilobytes at any
+shipped topology. The fold was never about moving bytes faster; it is about not being a
+launch.
 
 A decode step is launch-bound. Measured on an RTX 3080 Ti at `B = 2`, widths `(16, 16)`,
-`d_v = 64`, paged backing, the captured step ran three RoLA kernels and eight torch
-operand launches; the eight were 15.8 µs of a 39.1 µs device chain — 40 % of the step
-spent preparing 512 floats. The eight were the per-level normalizing sum (`D`), its
-divide (`D`), and the widening cast on both sides (`2D`); each one launches, reads a
-handful of values, writes a handful, and returns.
+`d_v = 64`, paged backing: the torch operand chain was eight launches and 15.8 µs of a 39.1
+µs device chain, one CUDA kernel replaced them at 29.9 µs, and folding that kernel into the
+step took the step to 24.6 µs on 2 launches. Each step of that is the same argument — the
+work was always the consuming CTA's own business, and every boundary drawn around it cost
+more than the work.
 
-Nothing about that work is hard. All of it is the same CTA's business.
+So the fold is a HEADER. The step folds its own operands, the growth probe folds its own
+write side, and between them there is no launch, no plane and no ordering constraint.
 
-## <a id="not-in-a-kernel-we-have"></a>2. Why it is its own kernel and not part of one
-
-The obvious economy would be to fold inside `decode_expand_kernel`, which already runs
-one CTA per batch-head and already reads exactly these rows. It does not work, and the
-reason is the WALK ORDER rather than the arithmetic:
-
-- The **growth probe** consumes the folded WRITE side, and it runs BEFORE the expansion
-  — that is the whole of its design (`decode_expand.md` §7): the host learns whether the
-  step's write set is resident without deriving that set itself. A fold living inside the
-  expansion would leave the probe with raw operands.
-- Folding inside the PROBE instead moves the problem: the probe exists only under the
-  paged mask, and the dense backing runs no probe at all
-  (`docs/internals/engine/decode_dag.md`). The dense step would then need its own fold,
-  which is the per-mask duplication the engine's one-walk rule refuses.
-- A growth step is the same walk twice around an admission. Folding once, ahead of both,
-  is also what makes the second walk free of operand work.
-
-So the fold is a node of its own, ahead of the probe, on both masks.
-
-## <a id="the-identity"></a>3. The fold is an address, not a copy pass
+## <a id="the-identity"></a>2. The fold is an address, not a copy pass
 
 For a CONTIGUOUS operand the fold is not even that: `[B, 1, H, W]` contiguous has element
 `(b, 0, h, w)` at `b*H*W + h*W + w`, and `[BH, W]` with `bh = b*H + h` has it at
@@ -53,29 +35,54 @@ For a CONTIGUOUS operand the fold is not even that: `[B, 1, H, W]` contiguous ha
 never transpositions; they were `.float()` casts that had to allocate a destination.
 
 A routing level is not generally contiguous, though: the producer hands out VIEWS of one
-packed plane, and `.contiguous()` on the way in would be exactly the launch this kernel
+packed plane, and `.contiguous()` on the way in would be exactly the launch this design
 exists to delete. So each operand arrives as a `Span` — its base and its `(b, h, w)`
-strides — and the fold is the address the kernel computes, `bh -> (b, h)` by the
-consumer's own convention.
+strides — and the fold is the address the kernel computes, `bh -> (b, h)` by the consumer's
+own convention.
 
-What the entry refuses is `T != 1`: the fold is defined on one token and a second one
-would be silently dropped.
+What the entry refuses is `T != 1`: the fold is defined on one token and a second one would
+be silently dropped.
 
-The widening rounds nothing — bf16 and fp32 both embed exactly in fp32 — so every
-cast-only output is bit-identical to the torch fold it replaced, and
-`tests/integration/test_decode_fold.py` cell 1 states that as `torch.equal`, on strided
-views as well as contiguous ones.
+The widening rounds nothing — bf16 and fp32 both embed exactly in fp32 — so a cast-only
+operand reaches the walk with the bytes the torch fold would have produced, and
+`tests/integration/test_decode_fold.py` cell 1 states that through the step's own output,
+on strided views as well as contiguous ones.
+
+## <a id="the-dtype-arms"></a>3. The dtype arms are runtime, and the step's template axes are not
+
+The fold reads three INDEPENDENT storage families: the routing levels, the write gain and
+the value, each `float` or `bfloat16` — independent because the routing bundle and the
+value projection are different producers, so a bundle carrying bf16 levels beside an fp32
+gain is the ordinary case rather than an oddity.
+
+Making them template axes would multiply the step kernel's instantiation matrix by EIGHT,
+for a few hundred bytes of gather in a prologue. So `DecodeParams` carries three flags and
+each gather site picks a fully typed loop from them:
+
+```
+if (p.levels_bf16) fold_side<__nv_bfloat16>(...); else fold_side<float>(...);
+```
+
+The branch is taken once per SIDE, not once per element, and both arms are complete — this
+is a dispatch, not a fast path with a fallback. A dtype outside the pair is a REFUSAL at
+the host entry, never a silent widening.
+
+Contrast `IN_SMEM`, which IS a template axis
+([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)): it decides the ADDRESS SPACE
+the walk's hottest index lives in, and a runtime pointer there would make every bitmap
+access generic.
 
 ## <a id="declared-order"></a>4. The normalizing sum, and its DECLARED order
 
-A read level the producer did not already leave on the simplex still carries its own
-mass, and the decode arm is defined on the simplex, so that level is divided by its row
-sum (`RouteFactors.read_needs_normalization` is the predicate, stated once and read by
-both this fold and `RouteFactors.read_simplex`).
+A read level the producer did not already leave on the simplex still carries its own mass,
+and the decode arm is defined on the simplex, so that level is divided by its row sum
+(`RouteFactors.read_needs_normalization` is the predicate, stated once and read by both the
+step's `normalize` argument and `RouteFactors.read_simplex`). The write side is never
+normalized, whatever the read side's flags say.
 
 A sum has an ORDER, and floating-point addition is not associative. The torch reduction
-this replaced had whatever order that release's `reduce_kernel` chose — an order no gate
-can hold anything to, because it is not written down anywhere. This one is:
+this replaced had whatever order that release's `reduce_kernel` chose — an order no gate can
+hold anything to, because it is not written down anywhere. This one is:
 
 > **The declared order.** Lane `j` of the level's warp accumulates
 > `row[j], row[j+32], row[j+64], …` into an fp32 register in ASCENDING index order.
@@ -83,49 +90,34 @@ can hold anything to, because it is not written down anywhere. This one is:
 > `16, 8, 4, 2, 1`, each adding lane `j + off` into lane `j`. Lane 0 holds the sum.
 > Lanes past the row's width contribute an exact `0.0f`.
 
-That is a total order over the additions, reproducible on any device, and
-`tests/integration/test_decode_fold.py` reimplements exactly it in torch and holds the
-kernel to `torch.equal` against it. Cell 4 of that file is the declaration's teeth: on a
-row where summation order is observable, the declared order and a plain ascending one
-DISAGREE — so the gate is answering a question about order and not merely about
-arithmetic.
+That is a total order over the additions, reproducible on any device.
 
-<a id="the-gate"></a>**The gate's independence.** `rola.ops.decode.fold_levels` is the
-torch fold the gates compare against, kept for that purpose and called from nowhere on
-the shipped path — the same arrangement as `_write_atom_bitmap` and for the same reason:
-a fold checked against its own output proves nothing.
+<a id="the-gate"></a>**How it is gated now that nothing publishes it.** The fold has no
+output a test can read — its destination is shared memory the walk consumes and discards.
+So `tests/integration/test_decode_fold.py` gates it through the STEP, on a fixture where
+the step's whole arithmetic collapses onto the divisor: `D = 1`, a read level that is
+nonzero everywhere, an empty write side, and a state whose rows are zero except at one leaf
+`s0`. Then `y[c] = a * e[c] / (a * m + eps)` with `a = row[s0] / row_sum(row)` — one
+multiply per column and one divide, so `y` is a function of the divisor's last bits and of
+nothing else. The reference computes exactly that from a torch reimplementation of the
+declared order.
 
-**What did NOT stay bit-identical.** `y` is not guaranteed bit-identical to the
-pre-fusion step, because the divisor's summation order changed. It is identical whenever
-the addends are bf16 — an fp32 accumulator absorbs bf16 addends exactly, so every order
-agrees, which covers the producer's own output. Where it can differ (fp32 read levels
-carrying their own mass) it differs by the divisor's last bits, and the step stays inside
-`tests/oracle/test_decode_vs_oracle.py`'s tolerance against the fp64 oracle. The
-dense-versus-paged `torch.equal` is untouched by any of this: both backings consume the
-same folded operands.
+Two cells are the declaration's teeth: one shows the declared order and a plain ascending
+one DISAGREE on a row where summation order is observable, and one puts that row through
+the step and shows `y` follows the declared order rather than the ascending one. So the
+gate is answering a question about order and not merely about arithmetic in general.
 
-## <a id="the-shape"></a>5. The launch
+`rola.ops.decode.fold_levels` is the torch fold those references are built on, kept for
+that purpose and called from nowhere on the shipped path — the same arrangement as
+`_write_atom_bitmap` and for the same reason: a fold checked against its own output proves
+nothing.
 
-One CTA per batch-head, `kDecodeThreads` threads, no dynamic shared memory. Warp `l < D`
-owns level `l`'s normalizing sum (`D <= 4 <= kDecodeWarps`, so one barrier separates the
-sums from every publication); the whole CTA then writes both sides' rows, the value and
-the gain. Warps past `D` idle through the first phase — the alternative is a second
-partition of a kernel whose entire body is a few hundred bytes of traffic.
+## <a id="no-allocation"></a>5. Nothing here allocates, and nothing is left behind
 
-The instantiation matrix is the storage type of the routing levels, of the gain and of
-the value, each in `{float, bfloat16}` — eight arms. The three are independent because
-the routing bundle and the value projection are different producers: a bundle carrying
-bf16 levels beside an fp32 gain is the ordinary case, not an oddity. A dtype outside that
-set is a REFUSAL at the entry, never a host-side widening.
+The fold's destinations are shared memory, so there is nothing per-step to allocate, retain
+or address-pin. That is what makes it capturable by construction: the phase reads no device
+value on the host, and a captured graph replays it with no buffer identity to preserve.
 
-## <a id="no-allocation"></a>6. Nothing here allocates
-
-Every destination is a `DecodeScratch` field, allocated once per sequence and memoized
-above any captured region (`decode.md` §capture). That is what makes the fold capturable
-by construction: the node reads no device value on the host, and the buffers it writes
-are the same addresses on every replay. The torch chain it replaced allocated a fresh
-tensor per operand per step.
-
-`dials` is the one operand the fold does not touch, and the boundary is principled: it is
-a per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
+`dials` is the one operand the fold does not touch, and the boundary is principled: it is a
+per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
 carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.

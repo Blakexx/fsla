@@ -1,8 +1,9 @@
-# `csrc/rola/src/decode/decode_expand.cu` — the `T = 1` support expansion
+# `csrc/rola/src/decode/decode_expand.{cuh,cu}` — the `T = 1` support expansion
 
-`supp(R)` and `supp(W)` as EXACT leaf bitmaps. One CTA per batch-head: it builds
-two `N`-bit maps by Kronecker broadcast and emits the coarse popcount index the
-GEMV partitions and skips with.
+`supp(R)` and `supp(W)` as EXACT leaf bitmaps, built by Kronecker broadcast. The RECURSION
+is the header (`decode_expand.cuh`), called by the step for both sides and by the growth
+probe for the write side; the TU (`decode_expand.cu`) is the growth probe and nothing
+else.
 
 Why the support is a Cartesian product at `T = 1`, and therefore why a bitmap is
 the natural object at all, is [`decode.md`
@@ -52,7 +53,8 @@ are visible against a very sparse high-batch step; see the findings doc.
 
 ## <a id="the-recursion"></a>3. `expand_side` — the recursion over levels, innermost first
 
-The expansion, for ONE side; `amp` is that side's per-level amplitude row set.
+The expansion, for ONE side; `amp` is that side's flat `[sum_l b_l]` staged row set, the
+one the fold left in shared memory ([`decode_fold.md`](decode_fold.md)).
 
 Level `D-1` seeds one inner block of `b_{D-1}` bits from its own amplitudes. Each
 outer level `l` then broadcasts the `S_{l+1}`-bit block it has into every LIVE
@@ -82,64 +84,68 @@ and never once per BIT. The gather itself is
 <a id="ping-pong"></a>**PING-PONG, not in place.** Destination word 0 is read by
 the thread writing destination word 100 — every digit broadcasts the SAME source
 block — so writing into the source would be a read-write race that no barrier
-placement can fix. The two buffers are the fix, and they are why the SMEM arm
-costs `2 * n_words` words.
+placement can fix. The two buffers are the fix, and they are why every caller pays
+`2 * n_words` words on top of whatever it publishes into.
 
 ## <a id="smem-arm"></a>5. `IN_SMEM` is a structure-driven arm, not a threshold
 
-The ping-pong pair is `2 * n_words` words; `n_words` is a TOPOLOGY fact
-(`ceil(N/32)`) and the SMEM budget is a HARDWARE fact, and spec I2 admits both as
-branch inputs. The two arms compute the IDENTICAL function — only where the
-intermediate levels live moves — which is why the G3 gate runs both arms against
-the same expected bitmaps.
+`n_words` is a TOPOLOGY fact (`ceil(N/32)`) and the SMEM budget is a HARDWARE fact, and
+spec I2 admits both as branch inputs. The two arms compute the IDENTICAL function — only
+where the maps live moves.
 
-`decode_expand_smem_bytes` is the ping-pong pair and nothing else: the
-coarse-index scan's storage is static `__shared__`, sized by the block rather than
-by the topology. It is host-visible so the launcher picks the arm from the
-device's real budget rather than from a literal.
+It is a TEMPLATE axis rather than a runtime pointer because it decides the ADDRESS SPACE
+the walk's hottest index is in: `IN_SMEM ? smem : work` folds at compile time, so the true
+arm's bitmap accesses are shared-memory instructions rather than generic ones.
+
+The two callers hold different counts:
+
+| caller | words per CTA | why |
+|---|---|---|
+| the step | `4 * n_words` | both published side maps plus the ping-pong pair |
+| the growth probe | `2 * n_words` | the ping-pong pair; its ONE map is its output (`probe_bits`) |
+
+`decode_work_words_per_cta` is the single authority over whether either overflows, taken
+over both so ONE global buffer serves both, and it answers `0` at every shipped topology.
+The host asks it (`rola_decode_work_words`) rather than mirroring its arithmetic in Python,
+because a mirror is the thing that drifts. The global arm's slices are indexed per CTA at
+`(bh * n_split + seg)` — the step's split-K CTAs each expand their own copy
+([`decode.md` §21b](decode.md#per-cta-prologue)) — so no two CTAs ever write the same word.
 
 ## <a id="coarse-index"></a>6. The coarse popcount index
 
-`pc_coarse[g]` is the number of set bits of `bits_r | bits_w` in groups strictly
-before `g`; `pc_coarse[n_groups]` is `M`, the exact touched-row count. The GEMV
-binary-searches it to resolve a ROW range into a WORD range
-([`decode.md` §19](decode.md#locate-row)), and consults it again DURING the walk
-to skip a wholly empty group without reading its 32 words
-([`decode.md` §24](decode.md#coarse-consult)).
-
-The count is taken from the PUBLISHED words rather than accumulated per side
-during publication, and the reason is arithmetic rather than tidiness: the two
-sides' popcounts SUM to something that is not `popcount(r | w)` — a leaf in both
-supports would be counted twice, and `M` has to be the row count the GEMV will
-actually visit.
-
-This is the ONE place the union is formed outside a register, and it is formed as
-a COUNT. No third bitmap is ever stored.
-
-The block-wide exclusive sum is `cub::BlockScan`, carried across the outer
-`base`-strided loop by a `__shared__ int running`. That is a commodity primitive
-on a scalar fold; the digit algebra above it is semantics and is written out.
+The index the walk partitions and skips with belongs to the STEP, which is where it is
+built and where it is documented: [`decode.md` §12](decode.md#coarse-index). It is not part
+of the expansion — the growth probe never forms it, because it partitions nothing.
 
 ## <a id="growth-probe"></a>7. The growth probe — the same expansion, asked one step earlier
 
-`decode_growth_probe_kernel` is the second kernel in this TU and it exists so a paged
-decode step can skip its admission preamble. It answers one question — does this step
+`decode_growth_probe_kernel` is this TU's whole content, and it exists so a paged decode
+step can skip its admission preamble. It answers one question — does this step
 deposit into an atom the page table does not map? — and PUBLISHES the object it answered
 that question from: `atom_bits`, `[BH, atoms_per_bh]` bool, the step's exact write-atom
 set. A step that does grow admits from that buffer, so the set is derived ONCE, here,
 instead of once here and again on the host.
 
-**It is here, and not in `paging.py`, for one reason.** It calls `expand_side` — the same
-device function `decode_expand_kernel` calls, over the same `amp_write` pointers — so the
-write support it tests IS the write support the step will expand. Any other placement would
+**It is here, and not in `paging.py`, for one reason.** It calls `fold_side` and then
+`expand_side` — the same two device functions the step calls, over the same raw write views
+— so the write support it tests IS the write support the step will expand. Any other placement would
 mean a second derivation of the same rule, and a residency answer derived from a support
 that could drift is worse than no answer: a missed atom is a deposit written into a `slot <
 0` row, which is silently dropped.
 
 It runs BEFORE the step rather than inside it, which is the one thing the placement cannot
-be talked out of. The expansion in the step's own launch is followed immediately by the
-GEMV, and the GEMV is what needs the corrected page table; a flag read after that launch is
-a flag read one step too late.
+be talked out of. The step's own expansion is followed, in the same kernel, by the walk that
+deposits; the walk is what needs the corrected page table, so a flag the step itself raised
+would be a flag raised one phase too late.
+
+<a id="published-map"></a>**Its expansion is PUBLISHED, and the step's is not.** The probe
+writes its `N`-bit write map to `probe_bits` (`[BH, n_words]`) and condenses the atoms out
+of it, so the object the residency answer was reached from is a real buffer rather than an
+internal — which is also what lets `tests/integration/test_decode_growth_trigger.py` hold
+it to `_leaf_support`, the definition written in torch. The step publishes nothing: its two
+maps live and die in the shared memory of the CTA that built them, and the gate on THAT
+expansion reads it off the state diff instead
+(`tests/oracle/test_decode_vs_oracle.py::test_g3_expansion_is_the_exact_leaf_support`).
 
 <a id="growth-reduction"></a>**THE REDUCTION, and why it is all-or-nothing.** Every CTA
 writes its own `growth[bh]` unconditionally, so that buffer needs no zero-fill; the

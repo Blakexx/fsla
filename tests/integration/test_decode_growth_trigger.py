@@ -20,7 +20,7 @@ harmless in one direction is not evidence about the other.
 
 The claim is cheap to make exactly because the two sides SHARE a definition rather than
 mirror one: `rola_decode_growth_probe` calls `decode_expand.cu`'s own `expand_side` over
-the same `amp_write` pointers the step itself expands, and `_write_atom_bitmap` is the
+the same raw write levels the step itself folds, and `_write_atom_bitmap` is the
 torch derivation the exact preamble plans from. So this file checks an EQUALITY the call
 graph already forces, which is the only kind of agreement worth gating: the failure it
 can catch is a condensation or a residency test that drifted, not a second copy of the
@@ -41,7 +41,6 @@ import torch
 from rola.ops.decode import (
     DecodeScratch,
     _write_atom_bitmap,
-    fold_levels,
     growth_probe,
 )
 from rola.ops.paging import PageArena
@@ -66,7 +65,7 @@ def _probe(fixture, config, arena):
     _v, _read, write, _g = _f32(fixture)
     BH = fixture["B"] * fixture["H"]
     workspace = DecodeScratch.build(config, BH, torch.device("cuda"))
-    growth_probe(fold_levels(write), config, arena.page_table, workspace)
+    growth_probe(write, fixture["H"], config, arena.page_table, workspace)
     workspace.growth_host.copy_(workspace.growth_any)
     fired = bool(workspace.growth_host[0])
     #: The reduction the gate reads and the per-`bh` vector it reduces must agree, on
@@ -197,8 +196,9 @@ def test_an_absent_atom_the_step_does_not_write_is_not_growth(arm):
 def test_the_probe_expands_the_same_write_support_the_preamble_derives(arm, support):
     """The bitmap the probe leaves behind, against the definition -- not against itself.
 
-    The probe publishes its expansion into the step's own `bits_w` workspace, so the
-    leaf-level object it ANDed against the table is READABLE, and it is checked against
+    The probe publishes its expansion into `probe_bits` -- the buffer it condenses from
+    and the one leaf-level object on this path anything publishes -- so what it ANDed
+    against the table is READABLE, and it is checked against
     `_leaf_support` -- `schedule.py`'s `write_mask` taken to leaf granularity in torch.
     This is what makes the two cells above a claim about the TRIGGER rather than about
     two derivations that happen to agree on these fixtures.
@@ -213,8 +213,8 @@ def test_the_probe_expands_the_same_write_support_the_preamble_derives(arm, supp
     _fired, workspace = _probe(fixture, config, arena)
     torch.cuda.synchronize()
 
-    n_words = config.n_words
-    published = workspace.bits[BH * n_words:2 * BH * n_words].view(BH, n_words)
+
+    published = workspace.probe_bits
     bit = torch.arange(config.N, device="cuda")
     expanded = (published[:, bit // 32] >> (bit % 32).to(torch.int32)) & 1
     assert torch.equal(expanded.bool(), _leaf_support(write, widths)), (

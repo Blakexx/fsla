@@ -106,11 +106,15 @@ class DecodePlan:
 
     config: DecodeGeometry
     heads: int
-    amp_read: list[torch.Tensor]
-    amp_write: list[torch.Tensor]
-    #: the DETACHED clock, which is the write allocations themselves and carries no side
-    #: gain (docs/internals/decode/decode.md#detached-clock); `None` without decay.
-    amp_clock: list[torch.Tensor] | None
+    #: The producer's own `[B, 1, H, width_l]` views, per side. The step kernel folds them
+    #: itself, so no `[BH, width_l]` plane stands between the two
+    #: (docs/internals/decode/decode_fold.md).
+    read: tuple[torch.Tensor, ...]
+    write: tuple[torch.Tensor, ...]
+    #: Per READ level: does it still carry its own mass, so the fold divides it by its row
+    #: sum? The write side is never normalized, and the DETACHED clock IS the write
+    #: allocation (docs/internals/decode/decode.md#detached-clock).
+    normalize: tuple[bool, ...]
     dials: torch.Tensor | None
     g_write: torch.Tensor
     v: torch.Tensor
