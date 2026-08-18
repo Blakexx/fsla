@@ -44,9 +44,9 @@ it at all:
 
 * `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
-  `validate_capturable`), the value types and the refusal every no-backward clause
-  raises — `BackwardNotImplemented` — (`types.py`) and the per-family plans
-  (`plan.py`).
+  `validate_capturable`), the value types, the pins a caller may set over axes the op
+  decides — `PlanOverrides` — and the refusal every no-backward clause raises —
+  `BackwardNotImplemented` — (`types.py`), and the per-family plans (`plan.py`).
 * `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
   bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the operand list
   (`operands.py`), the adapters that read those facts off a routing bundle and the
@@ -180,6 +180,14 @@ and the facade calls the engine, never the reverse. `envelope_refusal` beside it
 same composition without the raise, which is what lets a caller ask before calling —
 `rola.expert` re-exports it as the public address (`docs/api.md` §4.1), and that
 re-export is the only direction the dependency runs.
+
+`PlanOverrides` is the same statement from the other end. A pin is a VALUE a rule
+folds — `rules/paging.py` reads it and returns a bool — so it is engine vocabulary and
+`types.py` is where it is defined; `rola.expert` re-exports it as the marked door
+(`docs/api.md` §6). NO MODULE UNDER `rola/engine/` IMPORTS `rola.interface` OR
+`rola.expert`, at import time or inside a body: a deferred import in a function body
+hides an inversion from the import graph without removing it, so the rule layer holds
+none.
 
 ## <a id="the-plan"></a>9. What a plan may hold
 

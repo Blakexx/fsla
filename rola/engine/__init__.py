@@ -33,6 +33,7 @@ from rola.engine.types import (
     BackwardNotImplemented,
     CallClass,
     Mask,
+    PlanOverrides,
     Seeds,
 )
 
@@ -48,6 +49,7 @@ __all__ = [
     "DecodePlan",
     "Mask",
     "Node",
+    "PlanOverrides",
     "Seeds",
     "node",
     "rule",

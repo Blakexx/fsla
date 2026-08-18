@@ -53,6 +53,13 @@ fold is the case where that discipline is visible rather than abstract: its thre
 inputs are the entry-state plane, the exit-state plane and the page table, and it
 reads exactly whether each is there.
 
+What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
+the import graph: `paging_preference`'s `expert` is a `PlanOverrides` from `types.py`,
+imported from `rola.engine` like every other core name, so no module here names
+`rola.expert` or `rola.interface` ([`engine.md` §8](engine.md#refusals)). The
+alternative shape — a rule reaching up into the facade for the type of a value it was
+handed — survives an import-graph check only while the import hides in a function body.
+
 ## <a id="rules-are-nodes"></a>3. Rules are nodes, not a phase
 
 There is no second executor and no rule pass. Band 2 runs INTERLEAVED with band 1 in

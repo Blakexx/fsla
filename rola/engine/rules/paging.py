@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rola.engine import rule
+from rola.engine import PlanOverrides, rule
 
 
 @rule(gives=("paging",), needs=("expert",))
@@ -20,13 +20,11 @@ def paging_preference(expert: Any) -> bool:
     """Whether a state bound by this call gets a PAGED backing. Default: yes.
 
     The expert may set ``paging=False`` and only False -- ``paging=True`` is refused
-    by :class:`rola.expert.PlanOverrides` itself, because there is nothing to turn on.
-    That is the "expert overrides the MAPPING only" ruling, made mechanical.
+    by :class:`rola.engine.types.PlanOverrides` itself, because there is nothing to
+    turn on. That is the "expert overrides the MAPPING only" ruling, made mechanical.
     """
     if expert is None:
         return True
-    from rola.expert import PlanOverrides
-
     return PlanOverrides.of(expert).paging is not False
 
 
