@@ -310,10 +310,9 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
                        layer_idx=0).to(device, torch.float32)
     deep.train()
     x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    before = dict(deep.execution_backend_counts)
     with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
         deep(x1)
-    assert dict(deep.execution_backend_counts) == before
+    assert deep.last_execution_backend is None, "the refusal let a kernel run first"
 
     # LEG 2 — eval prefill: the chunk CUDA arm, carried state out.
     layer.eval()
@@ -321,15 +320,12 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     carried = rola.state()
     with torch.no_grad():
         layer(x_seq[:, :T], state=(carried, None))
-    after = dict(layer.execution_backend_counts)
-    assert after["cuda"] == before["cuda"] + 1, "the prefill leg did not take the kernel arm"
+    assert layer.last_execution_backend == "cuda", "the prefill leg did not take the kernel arm"
 
     # LEG 3 — eval decode: the decode arm, consuming the kernel arm's state.
-    before = after
     with torch.no_grad():
         y_dec, _ = layer(x_seq[:, T:T + 1], state=(carried, None))
-    after = dict(layer.execution_backend_counts)
-    assert after["decode"] == before["decode"] + 1, "the step did not take the decode arm"
+    assert layer.last_execution_backend == "decode", "the step did not take the decode arm"
 
     # THE SEAM, stated at layer level: one whole-sequence run over all T + 1 tokens
     # must agree with prefill-T-then-decode-1 on the last token. The whole-sequence
@@ -369,8 +365,7 @@ def test_a_decay_configured_layer_refuses_every_prefill_arm():
                         normalization="global", decay="learned",
                         layer_idx=0).to(device, torch.float32).eval()
     x = torch.randn(2, 8, 128, device=device)
-    before = dict(layer.execution_backend_counts)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="decay"):
         layer(x)
-    assert dict(layer.execution_backend_counts) == before
+    assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 

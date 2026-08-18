@@ -347,8 +347,11 @@ independently of gradient reachability, because reentrant gradient checkpointing
 its first pass under `no_grad()` with the module still in training mode — and a
 forward that pass could take would be a forward no backward can follow.
 
-`layer.execution_backend_counts` reports which of `oracle` / `cuda` / `decode` ran, which
-is a fact about the branch rather than an inference from a timing.
+`layer.last_execution_backend` names the arm the last forward took — `'cuda'` or
+`'decode'`, and `None` until one completes. It is a fact about the branch rather than an
+inference from a timing, and it is published for exactly that: a benchmark process
+cannot spy on the call it is timing, and wall-clock cannot tell two arms apart. It is a
+SCALAR, not a tally — a caller that needs how many times an arm ran spies on the arm.
 
 ### 4.1 The bf16 projection arm
 

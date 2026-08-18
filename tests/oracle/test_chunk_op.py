@@ -82,12 +82,11 @@ def test_the_layer_stateless_eval_path_runs_the_chunk_consumer():
                         normalization="global", decay=None,
                         layer_idx=0).cuda().float().eval()
     x = torch.randn(1, 128, 128, device="cuda")
-    before = dict(layer.execution_backend_counts)
     with torch.no_grad():
         y_cuda, _ = layer(x)
+        assert layer.last_execution_backend == "cuda"
         v = rearrange(layer.v_proj(x), "b l (h d) -> b l h d", d=layer.head_v_dim)
         y_ref = layer.o_proj(_oracle(layer.routes(x), v).to(x.dtype).reshape(x.shape[0], x.shape[1], -1))
-    assert layer.execution_backend_counts["cuda"] == before["cuda"] + 1
     rel = float((y_cuda.double() - y_ref.double()).norm() / y_ref.double().norm())
     assert rel < 1e-2, f"layer chunk path off the oracle: rel={rel:.3e}"
 

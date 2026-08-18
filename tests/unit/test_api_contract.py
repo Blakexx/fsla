@@ -346,7 +346,7 @@ def test_training_mode_alone_is_no_longer_a_refusal():
     layer = rola.RoLA(_routes()).double().train()
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
-    assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
+    assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 
 
 def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():

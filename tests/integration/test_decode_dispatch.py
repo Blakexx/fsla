@@ -8,13 +8,14 @@ failure class it exists to close: a forward-only kernel reachable from a
 grad-requiring context does not raise — it returns a tensor with no ``grad_fn`` and the
 graph is silently severed at this layer (the fleet-smoke ``x.grad = None`` failure,
 fixed at ``fab325ae``). Both RoLA kernels are forward-only, so every row below asserts
-**which branch actually ran**, read off ``execution_backend_counts`` — a timing
-comparison would be an inference; a counter delta is a fact — or that the call was
-REFUSED, which is what everything outside the built envelope now is.
+**which branch actually ran**, read off ``last_execution_backend`` — a timing
+comparison would be an inference; the arm the layer recorded is a fact — or that the
+call was REFUSED, which is what everything outside the built envelope now is. Every row
+drives exactly ONE forward, which is what makes the last arm the arm.
 
-``'decode'`` is a separate counter key rather than a sub-count of ``'cuda'`` precisely
-so this table can tell the two CUDA branches apart. A test that could not would pass
-while the wrong kernel ran.
+``'decode'`` is a separate name rather than a shade of ``'cuda'`` precisely so this
+table can tell the two CUDA branches apart. A test that could not would pass while the
+wrong kernel ran.
 
 **The threshold-adjacent rows are the point.** ``L = 1`` and ``L = 2`` are both
 exercised because a mis-stated predicate hides exactly there, and both ``L = 1``
@@ -126,23 +127,23 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
     layer.eval()
     cache = _prime(layer, device) if carried else rola.state()
     layer.train(training)
-    before = layer.execution_backend_counts
+    before = layer.last_execution_backend
 
     if expected.startswith("refuses"):
         error, match = _REFUSALS[expected]
         with pytest.raises(error, match=match):
             _step(layer, cache, device, L=L, requires_grad=requires_grad,
                   grad_enabled=grad_enabled)
-        assert layer.execution_backend_counts == before, (
-            "the refusal must happen BEFORE a kernel runs; a counter that moved means "
-            "some backend ran and then the call unwound")
+        assert layer.last_execution_backend == before, (
+            "the refusal must happen BEFORE a kernel runs; a recorded arm that moved "
+            "means some backend ran and then the call unwound")
         return
 
     _step(layer, cache, device, L=L, requires_grad=requires_grad,
           grad_enabled=grad_enabled)
-    after = layer.execution_backend_counts
-    moved = {k for k in after if after[k] != before[k]}
-    assert moved == {expected}, f"expected the {expected!r} backend, counters moved {moved}"
+    assert layer.last_execution_backend == expected, (
+        f"expected the {expected!r} backend, the forward took "
+        f"{layer.last_execution_backend!r}")
 
 
 @pytest.mark.cuda
@@ -204,11 +205,9 @@ def test_a_dense_pinned_layer_still_reaches_decode():
     layer.eval()
     with torch.no_grad():
         cache = _prime(layer, device)
-        before = layer.execution_backend_counts
-        _step(layer, cache, device, L=1, grad_enabled=False)  # noqa: E501
-    after = layer.execution_backend_counts
-    assert after['decode'] == before['decode'] + 1, "the decode fork did not run"
-    assert after['cuda'] == before['cuda']
+        assert layer.last_execution_backend == "cuda", "the prime did not take prefill"
+        _step(layer, cache, device, L=1, grad_enabled=False)
+    assert layer.last_execution_backend == "decode", "the decode fork did not run"
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +229,8 @@ def test_a_decay_step_runs_on_decode_which_has_the_arm():
     plain = _layer(device).eval()
     cache = _prime(plain, device)
     layer = _layer(device, decay="leaf_mass").eval()
-    before = layer.execution_backend_counts
     _step(layer, cache, device, L=1, grad_enabled=False)
-    after = layer.execution_backend_counts
-    assert {k for k in after if after[k] != before[k]} == {"decode"}
+    assert layer.last_execution_backend == "decode"
 
 
 @pytest.mark.cuda
@@ -244,7 +241,8 @@ def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     plain = _layer(device).eval()
     cache = _prime(plain, device) if carried else rola.state()
     layer = _layer(device, decay="leaf_mass").eval()
-    before = layer.execution_backend_counts
     with pytest.raises(NotImplementedError, match="decay"):
         _step(layer, cache, device, L=L, grad_enabled=False)
-    assert layer.execution_backend_counts == before
+    assert layer.last_execution_backend is None, (
+        "the refusal must happen BEFORE a kernel runs; a recorded arm means some "
+        "backend ran and then the call unwound")

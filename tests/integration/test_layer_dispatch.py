@@ -100,6 +100,26 @@ def _sparsity(layer: RoLA, x: torch.Tensor) -> float:
     return zeros / sum(t.shape[-1] for t in write)
 
 
+def _prefill_calls(monkeypatch) -> list:
+    """Every invocation of the prefill arm, spied at the binding the layer calls.
+
+    `last_execution_backend` names the arm of the LAST forward, which is the whole
+    claim wherever a cell drives one; a cell whose claim is that a forward ran TWICE
+    needs the invocations themselves.
+    """
+    import rola.layer
+
+    calls = []
+    real = rola.layer.rola_op
+
+    def spy(*args, **kwargs):
+        calls.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(rola.layer, "rola_op", spy)
+    return calls
+
+
 def _support_fraction(layer: RoLA, x: torch.Tensor) -> float:
     """The realized WRITE-side support fraction on the same routing a forward used."""
     routes = layer.routes(x)
@@ -150,7 +170,7 @@ def test_a_grad_bearing_forward_carries_the_graph_all_the_way_to_the_producer(ro
         assert param.grad.abs().max() > 0, (
             f"{name}'s gradient is identically zero -- the cotangent that reaches it "
             f"is not being computed")
-    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
+    assert layer.last_execution_backend == "cuda"
 
 
 @pytest.mark.parametrize("decay", ["leaf_mass"])
@@ -180,7 +200,7 @@ def test_training_mode_is_no_longer_a_clause_at_all():
     with torch.no_grad():
         out, _ = layer(x)
     assert torch.isfinite(out).all()
-    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
+    assert layer.last_execution_backend == "cuda"
 
 
 @_CUDA
@@ -204,13 +224,15 @@ def test_the_decay_dials_alone_are_still_a_grad_bearing_operation_input():
 
 @pytest.mark.parametrize("use_reentrant", [True, False])
 @_CUDA
-def test_checkpointing_a_training_mode_layer_now_trains_under_both_modes(use_reentrant):
+def test_checkpointing_a_training_mode_layer_now_trains_under_both_modes(
+        use_reentrant, monkeypatch):
     """Both checkpoint modes, both passes. Before the fast-fail this cell asserted the
     oracle ran twice; under the fast-fail it asserted a refusal; now it asserts the
     thing checkpointing is FOR -- the forward runs twice and the gradient arrives."""
     torch.manual_seed(31)
     layer = _layer(decay="none", branches=_TRAIN_BRANCHES).train()
     x = torch.randn(1, 96, _HIDDEN, device="cuda", requires_grad=True)
+    prefills = _prefill_calls(monkeypatch)
 
     def run(inp):
         out, _ = layer(inp)
@@ -220,7 +242,10 @@ def test_checkpointing_a_training_mode_layer_now_trains_under_both_modes(use_ree
     out.sum().backward()
     assert x.grad is not None and torch.isfinite(x.grad).all()
     #: recomputation means the forward ran twice, which is the whole mechanism
-    assert layer.execution_backend_counts["cuda"] == 2
+    assert len(prefills) == 2, (
+        f"the prefill arm ran {len(prefills)} times, not twice -- recomputation is "
+        f"what checkpointing is for")
+    assert layer.last_execution_backend == "cuda"
 
 
 def test_cpu_operands_refuse_because_there_is_no_cpu_lowering():
@@ -250,7 +275,7 @@ def test_a_no_grad_cuda_context_takes_the_kernel_arm():
         assert envelope_refusal(layer.routes(x), v) is None, (
             "fixture rot: this topology must be a BUILT chunk arm for the row above to "
             "mean anything")
-    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
+    assert layer.last_execution_backend == "cuda"
 
 
 @_CUDA
@@ -265,7 +290,7 @@ def test_the_kernel_arm_holds_on_a_deeper_built_arm():
         layer(x)
         assert envelope_refusal(layer.routes(x), v) is None, (
             "fixture rot: this topology must be a BUILT chunk arm")
-    assert layer.execution_backend_counts == {"cuda": 1, "decode": 0}
+    assert layer.last_execution_backend == "cuda"
 
 
 @_CUDA
@@ -278,11 +303,12 @@ def test_the_routing_is_re_measured_every_step_not_cached():
     x = torch.randn(1, 128, _HIDDEN, device="cuda")
     with torch.no_grad():
         layer(x)
+        assert layer.last_execution_backend == "cuda"
         dense = _support_fraction(layer, x)
         layer.routes.route_W.mul_(16.0)
         layer(x)
+        assert layer.last_execution_backend == "cuda"
         sharp = _support_fraction(layer, x)
-    assert layer.execution_backend_counts == {"cuda": 2, "decode": 0}
     assert sharp < 0.5 < dense, (
         "the sharpening did not move the routing it is supposed to move: the realized "
         f"write support went {dense:.3f} -> {sharp:.3f}")
@@ -385,7 +411,9 @@ def test_a_d_v_outside_the_built_matrix_refuses_and_names_the_clause():
     x = torch.randn(1, 64, _HIDDEN, device="cuda")
     with torch.no_grad(), pytest.raises(NotImplementedError, match="d_v=48"):
         layer(x)
-    assert layer.execution_backend_counts == {"cuda": 0, "decode": 0}
+    assert layer.last_execution_backend is None, (
+        "the refusal must happen BEFORE a kernel runs; a recorded arm means one ran "
+        "and the call then unwound")
     v = torch.randn(1, 64, _H, 48, device="cuda")
     with torch.no_grad():
         assert "d_v=48" in envelope_refusal(layer.routes(x), v)

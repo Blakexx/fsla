@@ -146,11 +146,11 @@ class RoLA(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        # Execution telemetry. Plain attributes, not buffers: diagnostic state must not
-        # enter a state_dict and must not be cast by `_apply`. Which kernel ran is
-        # asserted from these rather than from wall-clock, which cannot tell two arms
-        # apart.
-        self._execution_backend_counts = {"cuda": 0, "decode": 0}
+        #: Which kernel the last forward took. A plain attribute, not a buffer:
+        #: diagnostic state must not enter a state_dict and must not be cast by
+        #: `_apply`. It is PUBLISHED for the measurement guards -- a benchmark process
+        #: cannot spy on the call it is timing, and wall-clock cannot tell two arms
+        #: apart.
         self.last_execution_backend: str | None = None
 
     # --- accessors ----------------------------------------------------------
@@ -167,11 +167,6 @@ class RoLA(nn.Module):
     @property
     def normalization(self) -> str:
         return self.routes.normalization
-
-    @property
-    def execution_backend_counts(self) -> dict[str, int]:
-        """How many forwards took each backend, since construction. Read-only view."""
-        return dict(self._execution_backend_counts)
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
@@ -265,7 +260,6 @@ class RoLA(nn.Module):
             out, state = rola_op(routes, v, decay, state=state, expert=self.expert)
             backend = "cuda"
 
-        self._execution_backend_counts[backend] += 1
         self.last_execution_backend = backend
         conv_rings = (tuple(conv_states)
                       if self.value_conv is not None or self.route_conv is not None
