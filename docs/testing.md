@@ -367,7 +367,7 @@ is now a rule about the file that holds the pair.
 
 ## The build-shape gates
 
-Four checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
+Five checks are about the SHAPE OF THE BUILD rather than about arithmetic, and
 they are here because each one guards a property whose failure leaves every other
 gate green.
 
@@ -388,6 +388,20 @@ recorded at build time. The tiled partition derived its sharded AXES from a
 priority list; the chunk matrix is an explicit arm list with no axes to
 prioritize, so the block rule makes the same statement over the structure that
 exists. CPU only.
+
+**`tests/unit/test_arch_coverage.py`** checks the partition's COMPLETENESS across
+architectures. `ArmRule` degrades a topology onto another `BC` when its pinned one
+was not built, but it cannot degrade onto another `(D, B)`: a topology class with no
+arm on an architecture does not run there at all. So the topology classes are
+collected as the UNION over the ratified manifests, and every ratified manifest must
+carry at least one chunk arm for each — and, stated separately because the trainable
+set is narrower, at least one scan arm for each class any manifest scans. An arm-list
+edit or a partial re-ratification that leaves one arch short of one class is what
+this refuses, and it is the failure no single-card battery can see. Tabulated
+architectures with no manifest are REPORTED, not failed: that is the *not ratified —
+will refuse to load* row `tools/supported.py` prints, and the test asserts the
+generated table says so. Manifests only, no device — it passes under
+`CUDA_VISIBLE_DEVICES=""`.
 
 **`python tools/fatbin_entries.py --check <so>`** is the one that needs a built
 binary, and the only one that can see a FAILED split. It reads device entry points

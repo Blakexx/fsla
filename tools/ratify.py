@@ -355,6 +355,22 @@ def arm_of_shape(shape: dict) -> tuple:
     return (shape["C"], shape["BC"], shape["D"], shape["B"], shape["state"])
 
 
+#: The two SCANS' mangled template arguments, in their DECLARATION order:
+#: `scan_a_kernel<int C, int D, int B, int BC>`, and `scan_b_kernel`'s is the same.
+#: Decoded here beside the chunk's for the same reason: the manifest key is what the
+#: assembler saw, and one decode is what keeps the arm tuple a single spelling.
+SCAN_TPL = re.compile(r"scan_[ab]_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E")
+
+
+def parse_scan_arm(mangled: str) -> tuple | None:
+    """The arm tuple `(C, BC, D, B)` off a scan instantiation's mangled name, or None."""
+    m = SCAN_TPL.search(mangled)
+    if not m:
+        return None
+    c, d, b, bc = (int(g) for g in m.groups())
+    return (c, bc, d, b)
+
+
 def shard_of_key(mangled: str) -> str:
     """The translation unit that owns a ratified instantiation.
 
