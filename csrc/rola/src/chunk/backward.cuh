@@ -1,12 +1,7 @@
-// csrc/rola/src/chunk/backward.cuh -- SCAN B, the reverse adjoint of the chunk
-// consumer (P65).  It carries the two adjoint accumulators, the descending walk,
-// both operand panels, the slot Gram with its staircase, dv COMPLETE, and the one
-// new arithmetic primitive (a contraction whose k axis is d_v).  It does NOT yet
-// carry the d_v Gram, the per-slot dW or the digit reduction, so d gw is the
-// inter-chunk part alone and d pr / d pw are not emitted.
-// What it computes, what it omits, why the walk needs no reversed table, why two
-// Grams do not fit at once, and the register arithmetic behind the mass column:
-// docs/internals/chunk/backward.md
+// csrc/rola/src/chunk/backward.cuh -- the chunk consumer's reverse pass: SCAN B,
+// which walks the token axis down carrying the adjoint state, and SCAN A, which
+// walks it up rebuilding the forward's.  Between them they emit dv, d gw, d pw and
+// d pr.  docs/internals/chunk/backward.md
 #pragma once
 
 #include "chunk_kernel.cuh"
@@ -24,10 +19,9 @@ struct ScanBParams {
   int v_row_bytes;
 };
 
-//: THE PER-SLOT dW PASS WIDTH.  Each unit consumes an eight-row operand tile of
-//: the transposed state, so a pass covers `kUnits` such tiles -- a STRUCTURAL
-//: constant of the mma carve, independent of `BC`.  It is the whole of the pass
-//: law -- docs/internals/chunk/backward.md#pass-law
+//: THE PER-SLOT dW PASS WIDTH is STRUCTURAL, a constant of the mma carve rather
+//: than a `BC`-derived one: each unit consumes one eight-row operand tile of the
+//: transposed state -- docs/internals/chunk/backward.md#pass-law
 static constexpr int kPassSlots = kUnits * kMmaN;
 
 //: SCAN B'S GEOMETRY.  It is NOT `Geom`: the ring carries TWO value-shaped
@@ -51,12 +45,9 @@ struct GeomB {
   static constexpr int slot = 2 * C * LdV * (int)sizeof(__nv_bfloat16) + idx_slot;
   static constexpr int form_bytes =
       2 * kFormWords * (int)sizeof(uint32_t) + kCookSlots * (int)sizeof(int);
-  //: THE CHANNEL CONTRACTION'S k AXIS IS d_v, WHICH IS THE CARVE'S OWN AXIS, so
-  //: every unit holds a PARTIAL and the sum across units is structural.  One row
-  //: per unit, one column per token, is the whole of it.
-  //: `grad` is the units' rendezvous for `d gw`; `dden_bytes` is the chunk's own
-  //: readout seed for the mass column, staged once per chunk instead of gathered
-  //: per k-tile per lane.
+  //: THE UNITS' RENDEZVOUS: one row per mma unit, one column per token.  The
+  //: channel contraction's k axis is the carve's own, so every unit holds a
+  //: PARTIAL -- docs/internals/chunk/backward.md#channel-contraction
   static constexpr int grad_bytes = kUnits * C * (int)sizeof(float);
   static constexpr int dden_bytes = C * (int)sizeof(float);
   //: the chunk's write GAINS, staged per write entry: the panel is produced
@@ -67,30 +58,21 @@ struct GeomB {
   //: leave-one-out factor the inner level's digit gradient is weighted by.  At
   //: depth one there is no outer level and the buffer does not exist.
   static constexpr int pw0_bytes = (D >= 2 ? kOuterSpan : 0) * C * (int)sizeof(float);
-  //: THE READOUT WINDOW IS TWO THINGS IN SEQUENCE, and it is sized for the
-  //: larger: `dv`'s fp32 staging until the drain frees it, then `dz` published
-  //: per slot for `d gw`'s token-major reduction.  They never overlap, so the
-  //: mass column costs nothing.  The phase that comes next -- the per-slot dW's
-  //: transposed adjoint state -- is carved to fit here as well:
+  //: THE READOUT WINDOW IS PHASES IN SEQUENCE AND IS SIZED FOR THE LARGEST, which
+  //: is what `win_bytes` below and its `static_assert` hold it at --
   //: docs/internals/chunk/backward.md#readout-window
   static constexpr int dz_bytes = BCg * (int)sizeof(float);
-  //: THE TRANSPOSED ADJOINT STATE, ONE PASS of the slots at a time.  (A.18)'s k
-  //: axis is `d_v`, which is the carve's own axis, so no unit can finish the
-  //: contraction from its own registers; each writes its 16 channels here, the
-  //: writes are DISJOINT, and every unit then reads all `d_v` for its own slots.
-  //: The row count carries `kMmaN` of pad because `ldmatrix` reads sixteen rows
-  //: from an eight-row tile's base -- docs/internals/chunk/backward.md#readout-window
+  //: THE TRANSPOSED ADJOINT STATE, ONE PASS at a time.  The row count carries
+  //: `kMmaN` past the pass because `ldmatrix` reads sixteen rows from an eight-row
+  //: tile's base -- docs/internals/chunk/backward.md#readout-window
   static constexpr int LdDs = kD + kPadE;
   static constexpr int DsRows = kPassSlots + kMmaN;
   static constexpr int ds_bytes = DsRows * LdDs * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static constexpr int late_bytes = dz_bytes + ds_bytes;
   static constexpr int win_bytes = out_bytes > late_bytes ? out_bytes : late_bytes;
-  //: ONE GRAM BUFFER, AND SCAN B NEEDS TWO GRAMS.  `dv`'s intra term contracts
-  //: over SLOTS (the forward's own `R.W^T`) and `dW`'s contracts over `d_v`
-  //: (`dnum.v^T`); two resident buffers reach `cta_target = 1` and the arm's
-  //: occupancy is not negotiable, so the two share this one across disjoint
-  //: phases -- docs/internals/chunk/backward.md#two-grams
+  //: ONE BUFFER FOR TWO GRAMS, shared across disjoint phases: two resident reach
+  //: `cta_target = 1` -- docs/internals/chunk/backward.md#two-grams
   static constexpr int gram_bytes = C * LdG * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed = GRP * (2 * C * LdS) * (int)sizeof(__nv_bfloat16) + GRP * win_bytes
                                + grad_bytes + dden_bytes + gain_bytes + pw0_bytes + gram_bytes
@@ -100,10 +82,9 @@ struct GeomB {
   static constexpr size_t bytes = (size_t)stages * slot + fixed;
 };
 
-//: THE CTA TARGET SCAN B IS BOUND AT, and it is checked against the forward's at
-//: the instantiation site: a backward resident at MORE CTAs than its forward
-//: would be a launch bound nothing measured, and the two targets are carried per
-//: arm in the census so neither moves unnoticed.
+//: THE CTA TARGET BOTH SCANS ARE BOUND AT.  It is checked against the forward's at
+//: each instantiation site and carried beside it per arm in the census --
+//: docs/internals/chunk/backward.md#reg-floor-scan
 template <int C, int BC, int D, int B>
 constexpr int kScanBCtaTarget =
     design::cta_target((int)GeomB<C, BC, D, B>::bytes, threads_for(BC), reg_floor_scan(BC));
@@ -154,12 +135,9 @@ __device__ __forceinline__ void form_desc_impl(int& formLow, int limit, int tid,
   formLow = limit;
 }
 
-//: THE DESCENDING SCHEDULE, as a component rather than as a closure.  Scan B and
-//: the partition probe must run the SAME walk -- a probe that re-implemented the
-//: closing rule would gate its own copy -- so the ring, the cook's carry and the
-//: index slots live here and both kernels drive them.
-//: The lists it publishes are ASCENDING; only the CHUNK ORDER is reversed.
-//: docs/internals/chunk/backward.md
+//: THE DESCENDING SCHEDULE, a component because Scan B and the partition probe must
+//: drive the SAME walk.  The lists it publishes are ASCENDING; only the CHUNK ORDER
+//: is reversed -- docs/internals/chunk/backward.md#no-reversed-table
 template <int C, int kClauses, int kThreadsT, int kIdxSlotT, int kHdrT>
 struct Descent {
   char* sidx;
@@ -334,16 +312,9 @@ struct Descent {
   }
 };
 
-//: THE PARTITION PROBE.  Scan B's schedule is the one thing in P65 with no
-//: forward counterpart to inherit, and its correctness is a SCHEDULE fact rather
-//: than a numeric one: an arithmetic gate can only reach it through a reference
-//: that replays the partition, which stops being writable the moment two blocks
-//: of one head are live on different tokens.  So the walk is run alone and what
-//: it published is emitted.  Per (bh, block, token): the ordinal of the chunk
-//: that gathered the token and its position in that chunk's list, one plane per
-//: side, plus the causal threshold the read entry carries.  `-1` is "not
-//: gathered", which is what makes "exactly once" a checkable claim rather than a
-//: covering one.  docs/internals/chunk/backward.md#partition-probe
+//: THE PARTITION PROBE: the walk run ALONE, emitting what it published per
+//: (bh, block, token).  `-1` is "not gathered", which is what makes "gathered
+//: exactly once" checkable -- docs/internals/chunk/backward.md#partition-probe
 template <int C, int D, int B, int BC>
 __global__ __launch_bounds__(threads_for(BC)) void walk_probe_kernel(
     const uint32_t* __restrict__ tbl, int* __restrict__ stampR, int* __restrict__ stampW,
@@ -556,9 +527,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   float* sgw = sdd + C;
   float* spw0 = sgw + C;
   char* sidx = reinterpret_cast<char*>(spw0) + G::pw0_bytes;
-  //: THE READOUT WINDOW, RE-READ.  `so` stages `dv` until the drain frees it;
-  //: `sdz` then publishes the entry mass column for `d gw` in the same bytes.
-  //: One region, two phases, a barrier between --
+  //: THE READOUT WINDOW, RE-READ: one region, two phases, a barrier between --
   //: docs/internals/chunk/backward.md#readout-window
   float* const sdz = so;
   __nv_bfloat16* const sds = reinterpret_cast<__nv_bfloat16*>(sdz + BCg);
@@ -621,14 +590,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 #pragma unroll
     for (int e = 0; e < 4; ++e) dst[j][e] = 0.f;
 
-  //: THE ADJOINT MASS COLUMN, `kSlotThreads` THREADS PER SLOT.  The forward rides
-  //: its mass channel on the value mma, which spends a 16-row m quantum to carry
-  //: ONE real row -- sixteen registers per lane for one slot's worth of
-  //: information. Scan B cannot afford that beside the adjoint state, and it does
-  //: not need to: `dz` is a per-SLOT quantity, so it is a scalar whose fold is a
-  //: segment of the dot product over the chunk's read entries.  The segment total
-  //: is COLLAPSED onto `mpart == 0`, which keeps the accumulator a single sum
-  //: across chunks -- docs/internals/chunk/backward.md#mass-column
+  //: THE ADJOINT MASS COLUMN, `kSlotThreads` THREADS PER SLOT.  The segment total
+  //: is COLLAPSED onto `mpart == 0` rather than broadcast, which is what keeps a
+  //: slot's value ONE sum across chunks -- docs/internals/chunk/backward.md#mass-column
   static_assert(kGroupThreads % BCg == 0,
                 "a slot's threads must be a whole lane group, so the segment "
                 "reduction is one butterfly over adjacent lanes");
@@ -678,10 +642,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   const int fanE = fanRow * LdO + fanCol;
 
   const int oq = (lane & 3) * 2, om = lane >> 2;
-  //: ONE STAGING OFFSET, NOT FOUR.  The accumulator's other three entries sit at
-  //: compile-time displacements of the first (`+LdO` down the token axis, `+8`
-  //: across the channel axis), and holding them as separate live values is three
-  //: registers this kernel does not have -- docs/internals/chunk/backward.md#residency
+  //: ONE STAGING OFFSET, NOT FOUR: the other three sit at compile-time
+  //: displacements of this one, and holding them live is three registers this
+  //: kernel does not have -- docs/internals/chunk/backward.md#residency
   const int oE0 = oq * LdO + dv0 + om;
 
   //: THE STAGE IS WHAT IS SKIPPED; THE RING SLOT IS NOT.  Both panels ride one
@@ -745,11 +708,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     }
   };
 
-  //: THE UNITS' PARTIAL CONTRACTIONS MEET HERE, which is the same shape the
-  //: forward's denominator drain has and for the same reason: the contraction's
-  //: k axis is the carve's axis, so no unit holds the whole sum.
-  //: WHAT DRAINS HERE IS `sum_s dW[j,s]`, NOT `d gw` -- see
-  //: docs/internals/chunk/backward.md#dw-slotsum
+  //: WHAT DRAINS HERE IS `sum_s dW[j,s]`, WHICH IS NOT `d gw`: it carries d gw's
+  //: shape and not its value -- docs/internals/chunk/backward.md#dw-slotsum
   auto drain_dwsum = [&](int d, int nw) {
     if (gtid < C && gtid < nw) {
       float s = 0.f;
@@ -862,15 +822,12 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
       const uint32_t wOff = (uint32_t)iwrite(dc)[prow] * kPRowB + winP;
       const uint32_t winG = (uint32_t)ihdr(dc)[3] * (uint32_t)(kWindow * 2);
       const uint32_t winP0 = winP;
-      //: BOTH PANELS ARE PRODUCED UNGAINED.  The write gain is a per-TOKEN scale
-      //: and the readout's `n` axis is the token, so applying it once at the `so`
-      //: store is the same number -- and it leaves the level product alone, which
-      //: is the operand (A.11) needs and the one a decay clock will tap.
+      //: BOTH PANELS ARE PRODUCED UNGAINED; the write gain lands once, at the `so`
+      //: store -- docs/internals/chunk/backward.md#dw-slotsum
       produce(pRead, dstR, rOff, prow < nr, kOneSplat);
       produce(pWrite, dstW, wOff, prow < nw, kOneSplat);
-      //: THE PER-CHUNK ROWS, STAGED ONCE: the mass seed per READ entry and the
-      //: gain per WRITE entry, both exactly zero past their counts so the
-      //: reductions below can run the whole chunk unbounded.
+      //: THE PER-CHUNK ROWS, STAGED ONCE, and exactly zero past their counts so
+      //: the reductions below can run the whole chunk unbounded.
       if (tid < C) {
         sdd[tid] = tid < nr
                        ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(
@@ -916,19 +873,13 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     if (cmpSlot == kRing) cmpSlot = 0;
 
     // ---- THE SLOT GRAM: G = staircase(R . W^T), the forward's, verbatim ------
-    //: `dv[j]` reads the adjoint state the WRITE token j leaves the chunk with,
-    //: which is the entry state plus every read token ABOVE j.  Factoring that
-    //: sum over slots is this Gram -- the forward's own, contracted over slots --
-    //: and the mask is the forward's staircase unchanged: read entry `tr` keeps
-    //: write entries `tc < J[tr]`.
+    //: the mask is the forward's staircase unchanged -- read entry `tr` keeps write
+    //: entries `tc < J[tr]` -- docs/internals/chunk/backward.md#two-grams
     if (liveR && liveW && gwarp < GWARPS) {
       const uint8_t* ljt = ithr(dc);
-      //: THE OPERAND TILES ARE NOT HOISTED, and that is a REGISTER decision the
-      //: forward does not have to make: Scan B carries the adjoint state through
-      //: this block, so holding both panels' whole k-runs live (2 * KD * 4
-      //: registers) puts sm_80's allocator over its bound and spills. One k-tile
-      //: of each at a time costs nothing at this arm -- `MPW` is one, so nothing
-      //: is re-read -- docs/internals/chunk/backward.md#two-grams
+      //: NO OPERAND k-RUN IS HOISTED ANYWHERE IN THIS KERNEL: the adjoint state is
+      //: live through every block, so a held k-run spills --
+      //: docs/internals/chunk/backward.md#residency
 #pragma unroll
       for (int m = 0; m < MPW; ++m) {
         float g[GPAIR][2][4];
@@ -969,19 +920,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 
     rendezvous();  // (1b) the slot Gram is visible to every unit
 
-    //: BOTH WRITE-SIDE TERMS READ THE STATE THIS CHUNK ENTERS WITH -- the
-    //: adjoint arriving from the FUTURE -- so both run before the fold.
-    //: d gw's value half outlives the readout's accumulator: one partial per
-    //: (token pair, n-tile), summed over this unit's channels, carried from the
-    //: readout to the fan-in phase two barriers later.
+    //: BOTH WRITE-SIDE TERMS READ THE STATE THIS CHUNK ENTERS WITH -- the adjoint
+    //: arriving from the FUTURE -- so both run before the fold.  `pa` outlives the
+    //: readout's accumulator: it is carried to the fan-in two barriers later.
     float pa[NTOK][2];
 #pragma unroll
     for (int j = 0; j < NTOK; ++j) pa[j][0] = pa[j][1] = 0.f;
 
     if (liveW) {
-      //: dv's WHOLE TERM IS ONE SCOPE, so the accumulator and both operand
-      //: fragments are dead before the channel contraction opens.  At this
-      //: register ceiling a live range that merely OUTLIVES its use is a spill.
+      //: dv's WHOLE TERM IS ONE SCOPE: at this ceiling a live range that merely
+      //: OUTLIVES its use is a spill -- docs/internals/chunk/backward.md#residency
       {
         // ---- (A.17) dv^T = dS^T . W^T, the forward's readout with the write panel
         float acc[NTOK][4];
@@ -989,12 +937,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
         for (int j = 0; j < NTOK; ++j)
 #pragma unroll
           for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
-        //: NEITHER OPERAND IS HOISTED, and that is a REGISTER decision the forward
-        //: does not have to make.  The whole packed adjoint (`2 * KD * 4` registers)
-        //: plus the whole W k-run put sm_80's allocator over its bound and spilled;
-        //: the pack is a register op repeated `MTOK` times and the panel tile is an
-        //: `ldmatrix` the loop was going to issue anyway, so both are re-formed per
-        //: k-tile -- docs/internals/chunk/backward.md#residency
+        //: the pack and the panel tile are re-formed per k-tile, never hoisted --
+        //: docs/internals/chunk/backward.md#residency
 #pragma unroll
         for (int m = 0; m < MTOK; ++m)
 #pragma unroll
@@ -1027,11 +971,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
           }
         }
 
-        //: d gw's VALUE HALF, taken here because `acc` IS the ungained readout
-        //: `sum_s U[j,s] dS_after[j,s,:]` and (A.11) contracts exactly that
-        //: against `v[j,:]`.  The contraction runs over THIS unit's channels, so
-        //: what leaves the shuffle is a partial and the four units meet at the
-        //: fan-in -- docs/internals/chunk/backward.md#dw-slotsum
+        //: d gw's VALUE HALF, taken HERE because `acc` is the ungained readout that
+        //: (A.11) contracts against `v[j,:]`.  Over THIS unit's channels, so what
+        //: leaves is a partial -- docs/internals/chunk/backward.md#dw-slotsum
 #pragma unroll
         for (int j = 0; j < NTOK; ++j) {
           const int t0 = oq + j * 8;
@@ -1041,9 +983,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
           pa[j][1] = acc[j][1] * __bfloat162float(vpan[(t0 + 1) * LdV + c0])
                      + acc[j][3] * __bfloat162float(vpan[(t0 + 1) * LdV + c0 + 8]);
         }
-        //: THE GAIN LANDS HERE AND NOWHERE ELSE.  `gw[j]` is uniform along the
-        //: accumulator's token axis, so one multiply per stored entry turns the
-        //: ungained readout into `dv`.
+        //: THE GAIN LANDS HERE AND NOWHERE ELSE: `gw[j]` is uniform along the
+        //: accumulator's token axis, so one multiply per stored entry is `dv`.
 #pragma unroll
         for (int j = 0; j < NTOK; ++j) {
           const int jo = j * 8 * LdO;
@@ -1066,13 +1007,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
         tok[m][0] = 0.f;
         tok[m][1] = 0.f;
       }
-      //: TILE BY TILE, REDUCED IN PLACE.  Holding the whole C x BCg gradient
-      //: accumulator is the measured alternative and it does not fit -- neither
-      //: in the register budget nor beside the ring (docs/internals/chunk/backward.md).
-      //: THIS IS THE INTER-CHUNK PART ONLY.  Its intra half rides a SECOND Gram
-      //: whose write side carries a ones column, so the staircase covers the mass
-      //: channel as well as the value channels -- the design's (A.19) drops that
-      //: term -- docs/internals/chunk/backward.md#mass-gram
+      //: TILE BY TILE, REDUCED IN PLACE, and the INTER-CHUNK part only -- the intra
+      //: half rides the d_v Gram below, whose ones column carries the mass channel
+      //: -- docs/internals/chunk/backward.md#mass-gram
 #pragma unroll
       for (int n = 0; n < NDV; ++n) {
         uint32_t db[2];
@@ -1088,11 +1025,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
           tok[m][1] += g[m][2] + g[m][3];
         }
       }
-      //: The mass column's share is slot-only, so it is ONE number per unit and
-      //: it lands on every token of the chunk exactly once through the sum below.
-      //: Its slots are spread over the whole unit -- the padding rows are
-      //: identically zero, so the reduction needs no lane predicate, only every
-      //: lane.
+      //: THE MASS COLUMN'S SHARE IS SLOT-ONLY: one number per unit, landing on every
+      //: token of the chunk exactly once.  The padding slots are identically zero,
+      //: so the reduction needs no lane predicate -- only every lane.
       float dzs = dz_s;
 #pragma unroll
       for (int b2 = 1; b2 < 32; b2 <<= 1) dzs += __shfl_xor_sync(0xFFFFFFFFu, dzs, b2);
@@ -1124,19 +1059,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 
     //: `dz` AS THIS CHUNK ENTERS IT -- the adjoint arriving from the future, which
     //: is what every write-side term reads.  The fold updates it at the end of the
-    //: iteration, so this is the entry value, and it goes into the window the
-    //: readout has just given up.
+    //: iteration, so this is the entry value.
     if (mpart == 0) sdz[mslot] = dz_s;
 
     rendezvous();  // (2b') the entry mass column is visible
 
-    //: (A.11) d gw[j] = sum_s dW[j,s] * U[j,s], assembled from three partials that
-    //: all land in `sgrad` and all meet at the same fan-in:
-    //:   A  <acc[j,:], v[j,:]>            this unit's channels   (taken above)
-    //:   B  sum_s U[j,s] * dz_a[s]        this quarter's slots
-    //:   H  sum_i [j<J(i)] dden[i] Gu[i,j]  this quarter's read entries
-    //: A is per-UNIT and B/H are per-QUARTER, and the drain sums four of each --
-    //: which is why A must be stored once per unit and B/H added once.
+    //: (A.11)'s THREE PARTIALS all land in `sgrad` and meet at ONE fan-in.  A is
+    //: per-UNIT and is therefore STORED once; B and H are per-QUARTER and are
+    //: therefore ADDED once -- docs/internals/chunk/backward.md#dw-slotsum
     if (liveW) {
       sgrad[gwarp * C + lane] = 0.f;
       __syncwarp();
@@ -1189,12 +1119,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     rendezvous();  // (2d) `sgrad` is drained and the slot Gram is dead
 
     // ---- THE d_v GRAM, with the R-b ONES COLUMN ------------------------------
-    //: `Gd'[i,j] = <dnum[i,:], v[j,:]> + dden[i]`.  The `+ dden[i]` is the design's
-    //: (A.19) correction: `dW` differentiates BOTH uses of `W`, so the adjoint
-    //: entering write entry `j` carries the in-chunk mass as well as the state,
-    //: and a ones column on the write side puts both under ONE staircase.  It is
-    //: a row broadcast of the `dden` row already staged, not a second contraction
-    //: -- docs/internals/chunk/backward.md#mass-gram
+    //: the ones column puts state and in-chunk mass under ONE staircase, as a row
+    //: broadcast of the staged `dden` -- docs/internals/chunk/backward.md#mass-gram
     if (liveR && liveW && gwarp < GWARPS) {
       const uint8_t* ljt = ithr(dc);
 #pragma unroll
@@ -1238,10 +1164,8 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     rendezvous();  // (2e) the d_v Gram is visible
 
     // ---- THE PER-SLOT dW, ONE PASS OF THE SLOTS AT A TIME --------------------
-    //: `u1` is the INNER level's digit gradient and needs no reduction at all:
-    //: a pass fixes each unit's outer digit, and each `(token, inner digit)` cell
-    //: is held by exactly one lane.  `u0` is the OUTER level's and reduces over
-    //: the lane's slot run and then over the units.
+    //: `u1` (INNER) needs no reduction at all; `u0` (OUTER) reduces over the lane's
+    //: slot run, then over the units -- docs/internals/chunk/backward.md#pass-law
     float u1[kU1Slots][MTOK][4];
     float u0[kU0Slots][MTOK][2];
 
@@ -1297,10 +1221,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 #pragma unroll
             for (int hh = 0; hh < 2; ++hh) u0[o][m][hh] = 0.f;
       }
-      //: THE PASS INDEX IS COMPILE-TIME, and that is not a scheduling preference:
-      //: `u0`/`u1` are indexed by the pass' own digit class, and a runtime index
-      //: into a register array is a stack frame -- the same rule the forward's
-      //: clause scalars are written to.
+      //: THE PASS INDEX MUST BE COMPILE-TIME: `u0`/`u1` are indexed by the pass'
+      //: own digit class, and a runtime index into a register array is a stack
+      //: frame -- docs/internals/chunk/backward.md#digit-reduction
 #pragma unroll
       for (int pq = 0; pq < kPassCount; ++pq) {
         //: EACH UNIT WRITES ITS OWN CHANNELS, so the writes are disjoint and the
@@ -1464,13 +1387,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 #undef ADDR_V
 }
 
-//: SCAN A -- the forward rebuild, and the READ side's digit gradient.
-//: It is Scan B with the two sides exchanged: the ASCENDING schedule, the
-//: forward's own fold rebuilding `S` from zero over the SAVED table, and `dR`
-//: contracted against the read amplitudes instead of the write ones.  The `d_v`
-//: Gram is the SAME `Gd'` Scan B forms, ones column and all -- expanding the
-//: inclusive `S`/`z` over the chunk collapses the design's (A.14)+(A.15) into one
-//: masked contraction -- docs/internals/chunk/backward.md#scan-a
+//: SCAN A -- the forward rebuild, and the READ side's digit gradient.  It is Scan B
+//: with the two sides exchanged, and its `d_v` Gram is the SAME `Gd'` Scan B forms,
+//: ones column and all -- docs/internals/chunk/backward.md#scan-a
 template <int C, int D, int B, int BC>
 __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) void scan_a_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
@@ -1539,11 +1458,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   const int tokWords = tok_words(L);
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kD;
-  //: THE HEAD'S OFFSET RIDES THE 32-BIT DISPLACEMENT, not the 64-bit base.  V is
-  //: `[B, T, H, d_v]`, so a head is a fixed byte offset inside a row; folding it
-  //: into the gather's displacement leaves the base with the BATCH term alone and
-  //: removes a 64-bit multiply the compiler otherwise re-derives inside the chunk
-  //: loop -- docs/internals/chunk/backward.md#scan-a
+  //: THE HEAD'S OFFSET RIDES THE 32-BIT DISPLACEMENT, not the 64-bit base, which
+  //: leaves the base carrying the BATCH term alone --
+  //: docs/internals/chunk/backward.md#addressing
   const uint32_t vHeadOff = (uint32_t)(blockIdx.y % heads) * (uint32_t)(kD * 2);
   const __nv_bfloat16* const vPlane = pin_address(v + (long)(blockIdx.y / heads) * L * vRowElems);
   const long base = (long)blockIdx.y * L * kD;
@@ -1555,7 +1472,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   const __nv_bfloat16* const gWrite = pin_address(gwrite + (long)blockIdx.y * L);
   //: THE DIGIT-GRADIENT PLANE IS A BYTE POINTER on the stride its displacements
   //: already carry, so the fan-in's address is one 32-bit add off a pinned base
-  //: -- docs/internals/chunk/backward.md#scan-a
+  //: -- docs/internals/chunk/backward.md#addressing
   char* const dprPlane =
       pin_address(reinterpret_cast<char*>(dpr) + (long)blockIdx.y * L * (kWtot * 4));
   const uint32_t clauseStride = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
@@ -1581,11 +1498,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   float* const sz = so;
   __nv_bfloat16* const sds = reinterpret_cast<__nv_bfloat16*>(sz + BCg);
 
-  //: EACH SIDE'S TABLE ROW IS FORMED FROM THE TABLE, not from the other side.
-  //: Writing the write row as `read + entries * tok_words` makes its offset a
-  //: CONSTANT times a register, which ptxas re-derives inside the chunk loop
-  //: rather than keeping -- one `IMAD.WIDE` per chunk, which the gate refuses.
-  //: Formed independently the multiply is register times register, and it stays.
+  //: EACH SIDE'S TABLE ROW IS FORMED FROM THE TABLE, not from the other side: the
+  //: derived form is a constant times a register, which ptxas rematerialises inside
+  //: the chunk loop -- docs/internals/chunk/backward.md#addressing
   Ascent<C, LP::clauses, kThreads, G::idx_slot, G::hdr> aw{
       sidx,
       sfR,
@@ -1689,11 +1604,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 #pragma unroll
       for (int p = 0; p < kPasses; ++p) {
         const uint32_t off = (uint32_t)lrd[ldRow + p * kRowsPerPass] * kDnRowB + winCol;
-        //: THE GATHERED ROW IS PINNED.  `dnum`'s row stride is a compile-time
-        //: constant, so ptxas will otherwise fold `token * stride` into the 64-bit
-        //: add and issue an `IMAD.WIDE` per staged row -- inside the chunk loop,
-        //: which the gate refuses.  V's gather does not need this because its
-        //: stride is a runtime argument and there is nothing to fold.
+        //: THE GATHERED ROW IS PINNED: `dnum`'s row stride is a compile-time
+        //: constant, which is the shape ptxas folds into the 64-bit add.  V's
+        //: gather needs no pin -- docs/internals/chunk/backward.md#addressing
         stage_tile(sdnL + stgSlot + (uint32_t)(p * kRowsPerPass * LdV * 2),
                    pin_address(gather_ptr(dnumPlane, off)));
       }

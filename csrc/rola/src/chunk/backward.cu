@@ -1,9 +1,8 @@
-// csrc/rola/src/chunk/backward.cu -- SCAN B's translation unit: the arm
-// surface, the census query and the torch entry.  A TU OF ITS OWN, on
-// `factor.cu`'s rule: the backward's instantiations must not enter a shard whose
-// per-`cicc` footprint the build's job formula was measured on
-// (docs/build.md, tools/build_flags.py).  What Scan B computes at this stage and
-// what it does not: docs/internals/chunk/backward.md
+// csrc/rola/src/chunk/backward.cu -- the reverse pass' translation unit: the arm
+// surface, the census query and the torch entries.  A TU OF ITS OWN, on
+// `factor.cu`'s rule -- these instantiations must not enter a shard whose per-`cicc`
+// footprint the build's job formula was measured on (docs/build.md).
+// docs/internals/chunk/backward.md
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda_bf16.h>
@@ -40,10 +39,9 @@ static cudaError_t launch_scan_b_arm(const ScanBParams& p, cudaStream_t stream) 
   return cudaGetLastError();
 }
 
-//: THE CENSUS ROW CARRIES BOTH HALVES OF THE FLOOR CLAIM: the DECLARED live set
-//: the CTA target was derived from, and the BUDGET that target actually admits.
-//: A row where the measured `numRegs` exceeds the budget is a spill waiting for a
-//: different part -- docs/internals/chunk/backward.md#reg-floor-scan
+//: THE CENSUS ROW CARRIES BOTH HALVES OF THE FLOOR CLAIM -- the DECLARED live set
+//: and the BUDGET the target admits.  A row whose measured `numRegs` exceeds the
+//: budget is a spill waiting -- docs/internals/chunk/backward.md#reg-floor-scan
 template <int C, int BC, int D, int B>
 static std::array<int64_t, 8> scan_b_census_arm() {
   cudaFuncAttributes a{};
@@ -129,11 +127,9 @@ std::vector<torch::Tensor> scan_b_probe(torch::Tensor pr, torch::Tensor pw, torc
               ": no scan is built for it (rola/ops/chunk.py's scan_arms()).");
 }
 
-//: THE SEEDS, IN ONE ELEMENTWISE PASS -- the mirror of `divide_pass`, and the
-//: only place the eps floor is differentiated.  Both scans consume `dnum`/`dden`
-//: as mma operands, so both are emitted bf16; `dm` is fp32 for the reason
-//: `read_mass` is (bf16 would quantize the floor itself).
-//: The three closed forms and why `dm` is not zero: docs/internals/chunk/backward.md#seeds
+//: THE SEEDS, IN ONE ELEMENTWISE PASS -- the mirror of `divide_pass` and the ONE
+//: place the eps floor is differentiated.  The three closed forms, the dtypes and
+//: why `dm` is not zero: docs/internals/chunk/backward.md#seeds
 __device__ __forceinline__ float as_float(const __nv_bfloat16& x) { return __bfloat162float(x); }
 __device__ __forceinline__ float as_float(const float& x) { return x; }
 
@@ -272,9 +268,8 @@ std::vector<torch::Tensor> scan_a_probe(torch::Tensor pr, torch::Tensor pw, torc
 }
 
 //: THE PARTITION PROBE'S ENTRY.  It takes the table and nothing else: the walk
-//: reads no amplitude, so a probe that took one would be gating a wider surface
-//: than the schedule.  Three int32 planes `[BH, blocks, L]` come back, `-1` where
-//: no chunk gathered the token.
+//: reads no amplitude, so a probe that took one would gate a wider surface than
+//: the schedule -- docs/internals/chunk/backward.md#partition-probe
 std::vector<torch::Tensor> walk_probe(torch::Tensor tbl, int64_t chunk, int64_t bc,
                                       std::vector<int64_t> widths, int64_t L, int64_t BH) {
   check_arch_table();
