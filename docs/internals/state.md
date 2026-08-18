@@ -105,7 +105,7 @@ allocating `[B, H, N, cols]` is exactly what paging exists to avoid.
 ## <a id="backing-policy"></a>4. What the state contributes to a kernel call
 
 The ORDER of a stateful call is the chunk DAG's and is stated there
-([`facts/chunk_dag.md` §4](facts/chunk_dag.md#host-order)). What is the STATE's own
+([`engine/chunk_dag.md` §4](engine/chunk_dag.md#host-order)). What is the STATE's own
 is this: `_kernel_entry` plans the call's atoms into slots and hands back
 `(s_in, arena)`, and `_kernel_commit` takes the final plane for a dense-backed state
 (a paged one already owns its own).
@@ -139,7 +139,7 @@ and returns the state exactly as `rola_op` does. Three things live behind that s
 * **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`) are the
   decode DAG's own memoized nodes, not the state's — launch machinery fails the
   membership test. The ORDER and the two memo disciplines are that DAG's page
-  ([`facts/decode_dag.md` §5](facts/decode_dag.md#host-carrier)); what the state owes
+  ([`engine/decode_dag.md` §5](engine/decode_dag.md#host-carrier)); what the state owes
   them is only its identity, which is what the `per_state` table is keyed on.
 * **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
   or a VIEW of the dense plane — the view is what makes the kernel's in-place update
@@ -252,6 +252,22 @@ built is settled, and the settlement is what must not be re-litigated:
   state bytes. The answer is a two-level (paged) page table copying only diverged table
   pages. It is decided when COW is scheduled; eager `clone()` ships first and COW is its
   drop-in optimization behind the same contract.
+* **Audited against the machinery that exists**, on the two paths a fork or a rollback
+  touches that are not the state's own storage. THE PER-STATE CACHES: the decode DAG's
+  scratch is keyed weakly on the state OBJECT and holds rebuildable transients only
+  ([`engine/engine.md` §7](engine/engine.md#memoization)), so a COW step's new handle
+  keys a new entry and builds its own buffers from the same geometry, and a rollback
+  that resubmits an older handle finds that handle's own entry. Handle IS sequence in
+  both directions; a cache holding a fact ABOUT the sequence would be the thing a fork
+  had to copy or invalidate, and there is none. THE CAPTURE PATH: a branch is its own
+  page table over the refcounted shared arena, and a captured step reads that table
+  through a pointer, so a fork MUTATES THE TABLE IN PLACE and needs no re-capture —
+  the growth admission is the precedent (`plan_exact(..., fresh=False)` rewrites the
+  same table under the same capture, [`decode/decode.md` §4b](decode/decode.md#growth)).
+  THE FORK TEST is an intersection of two sets that both already exist: the step's
+  write-atom set, condensed on the device by the growth probe, AND the slots whose
+  refcount is `> 1`. Those slots are copied before the write; every other write goes in
+  place, which is what keeps a fork proportional to divergence.
 
 ### 9.2 A device-side ADMISSION
 

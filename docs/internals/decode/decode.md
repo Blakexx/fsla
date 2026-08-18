@@ -692,7 +692,7 @@ The expansion's arm selection is not this check; it is structural and lives in
 # Part C — the host side (`rola/ops/decode.py`, `rola/engine/dags/decode_dag.py`)
 
 The step's ORDER, the two memo disciplines and the capturability declaration are the
-DAG's page ([`facts/decode_dag.md`](../facts/decode_dag.md)); what follows is what the
+DAG's page ([`engine/decode_dag.md`](../engine/decode_dag.md)); what follows is what the
 KERNELS impose on the host.
 
 ## <a id="decay-domain"></a>36. Decode's decay domain is strictly larger, as a consequence
