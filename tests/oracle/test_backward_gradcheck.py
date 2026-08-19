@@ -192,8 +192,11 @@ def test_every_cotangent_matches_the_oracles(T, gain, D, W):
              + (["read_mass"] if mass else []))
 
     y_ref = _oracle_y(routes, v)
-    dy = torch.randn(y_ref.shape, device=y_ref.device, generator=None,
-                     dtype=torch.float64)
+    #: THE COTANGENT IS SEEDED, and to ONE constant for every cell: an unseeded draw
+    #: makes a cell's verdict a function of how many cells were COLLECTED before it,
+    #: so widening the scan matrix moves rows that did not change.
+    torch.manual_seed(0)
+    dy = torch.randn(y_ref.shape, device=y_ref.device, dtype=torch.float64)
     want = torch.autograd.grad(y_ref, inputs, dy, retain_graph=True)
 
     #: THE FLOOR: the same gradient with the operands held the way the kernel holds

@@ -54,10 +54,15 @@ struct GeomB {
   //: ungained so `d gw` can read the level product alone, and the gain is applied
   //: once, on the readout's token axis -- docs/internals/chunk/backward.md#dw-slotsum
   static constexpr int gain_bytes = C * (int)sizeof(float);
-  //: the OUTER level's amplitudes for this block's digits, per write entry -- the
-  //: leave-one-out factor the inner level's digit gradient is weighted by.  At
-  //: depth one there is no outer level and the buffer does not exist.
-  static constexpr int pw0_bytes = (D >= 2 ? kOuterSpan : 0) * C * (int)sizeof(float);
+  //: THE LEAVE-ONE-OUT PLANES, per write entry and per composite outer digit: the
+  //: outer levels' whole product first (what the INNERMOST level's digit gradient
+  //: is weighted by), then one plane per outer level carrying the product WITHOUT
+  //: it (what that level's own digit gradient is weighted by).  At depth two the
+  //: one outer level's leave-one-out factor is the empty product, so only the
+  //: whole-product plane exists; at depth one there is no outer level at all.
+  static constexpr int kLooPlanes = D >= 3 ? D - 1 : 0;
+  static constexpr int pw0_planes = D >= 2 ? 1 + kLooPlanes : 0;
+  static constexpr int pw0_bytes = pw0_planes * kOuterSpan * C * (int)sizeof(float);
   //: THE READOUT WINDOW IS PHASES IN SEQUENCE AND IS SIZED FOR THE LARGEST, which
   //: is what `win_bytes` below and its `static_assert` hold it at --
   //: docs/internals/chunk/backward.md#readout-window
@@ -88,6 +93,51 @@ struct GeomB {
 template <int C, int BC, int D, int B>
 constexpr int kScanBCtaTarget =
     design::cta_target((int)GeomB<C, BC, D, B>::bytes, threads_for(BC), reg_floor_scan(BC));
+
+//: ONE TOKEN'S OUTER-LEVEL AMPLITUDES at one composite outer digit, held together
+//: so a level's leave-one-out product costs ONE load per level rather than one per
+//: (level, product) -- docs/internals/chunk/backward.md#leave-one-out
+#define ROLA_OUTER_LEVELS(BODY_) \
+  BODY_(0)                       \
+  BODY_(1)                       \
+  BODY_(2)
+
+template <class LP, int D>
+struct OuterAmps {
+  static constexpr int kLevels = D - 1;
+  float a[kLevels > 0 ? kLevels : 1];
+
+  __device__ __forceinline__ void load(const void* plane, uint32_t row, int blk, int o) {
+#define ROLA_OUTER_LOAD(LV_)                                                      \
+  if constexpr ((LV_) < kLevels)                                                  \
+    a[LV_] = __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr( \
+        plane, row                                                                \
+                   + (uint32_t)((LP::col_base(LV_) + LP::off_at(LV_, blk)         \
+                                 + LP::template outer_digit<(LV_)>(o))            \
+                                * 2))));
+    ROLA_OUTER_LEVELS(ROLA_OUTER_LOAD)
+#undef ROLA_OUTER_LOAD
+  }
+
+  //: the factor level `Skip`'s OWN digit gradient carries; `Skip < 0` is the whole
+  //: product, the factor the INNERMOST level's carries
+  template <int Skip>
+  __device__ __forceinline__ float without() const {
+    float w = 1.f;
+#define ROLA_OUTER_WITHOUT(LV_) \
+  if constexpr ((LV_) < kLevels && (LV_) != Skip) w *= a[LV_];
+    ROLA_OUTER_LEVELS(ROLA_OUTER_WITHOUT)
+#undef ROLA_OUTER_WITHOUT
+    return w;
+  }
+
+  template <int Skip>
+  static __device__ __forceinline__ float product(const void* plane, uint32_t row, int blk, int o) {
+    OuterAmps r;
+    r.load(plane, row, blk, o);
+    return r.template without<Skip>();
+  }
+};
 
 //: THE FORM, DESCENDING.  `form_impl`'s body with the token axis walked the
 //: other way: `formLow` is the LOWEST word formed, so the ring holds
@@ -410,6 +460,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     const uint32_t* __restrict__ tbl, float* __restrict__ dv, float* __restrict__ dwsum,
     float* __restrict__ dgw, float* __restrict__ dpw, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
+  using OA = OuterAmps<LP, D>;
   using G = GeomB<C, BC, D, B>;
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);
@@ -735,9 +786,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   const int oBase = leadLocal;
   [[maybe_unused]] uint32_t colFast = 0;
   if constexpr (kDepth >= 2)
-    colFast =
-        (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
-                   * 2);
+    colFast = (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk)
+                          + LP::template outer_digit<kDepth - 2>(oBase))
+                         * 2);
   const uint32_t colInner =
       (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
   constexpr int kUppers = kDepth - 2;
@@ -745,14 +796,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   if constexpr (kUppers >= 1) {
     constexpr int lA = kDepth - 3;
     colUpA =
-        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + (oBase / kFastSpan) % LP::span_at(lA))
+        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + LP::template outer_digit<lA>(oBase))
                    * 2);
   }
   if constexpr (kUppers >= 2) {
     constexpr int lB = kDepth - 4;
-    colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk)
-                         + (oBase / (kFastSpan * LP::span_at(kDepth - 3))) % LP::span_at(lB))
-                        * 2);
+    colUpB =
+        (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk) + LP::template outer_digit<lB>(oBase))
+                   * 2);
   }
   const int slot0 = leadLocal * kInnerSpan + tailLocal;
   char* dstR = reinterpret_cast<char*>(sr) + prow * (int)(LdS * 2) + slot0 * 2;
@@ -838,13 +889,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
                                   gather_ptr(gWrite, (uint32_t)iwrite(dc)[tid] * 2u + winG)))
                             : 0.f;
         if constexpr (kDepth >= 2) {
-#pragma unroll
+          const uint32_t wrow = (uint32_t)iwrite(dc)[tid] * kPRowB + winP0;
+#pragma unroll 1
           for (int o = 0; o < kOuterSpan; ++o) {
-            const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winP0;
-            spw0[o * C + tid] =
-                tid < nw ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
-                               gather_ptr(pWrite, (uint32_t)iwrite(dc)[tid] * kPRowB + col)))
-                         : 0.f;
+            spw0[o * C + tid] = tid < nw ? OA::template product<-1>(pWrite, wrow, blk, o) : 0.f;
+#define ROLA_LOO_PLANE(LV_)                                                          \
+  if constexpr ((LV_) < G::kLooPlanes)                                               \
+    spw0[(((LV_) + 1) * kOuterSpan + o) * C + tid] =                                   \
+        tid < nw ? OA::template product<(LV_)>(pWrite, wrow, blk, o) : 0.f;
+            ROLA_OUTER_LEVELS(ROLA_LOO_PLANE)
+#undef ROLA_LOO_PLANE
           }
         }
       }
@@ -1187,10 +1241,10 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
                   sgw[tk] * a1[m][e]);
           }
       };
-      //: THE OUTER LEVEL sums over this lane's slot run first -- two shuffles --
-      //: and then over the units, which the fan-in does.
+      //: THE OUTER LEVELS sum over this lane's slot run first -- two shuffles --
+      //: and then over the units, which the fan-in does.  EVERY outer level takes
+      //: its digit gradient off that one sum, weighted by the OTHERS' amplitudes.
       auto emit_u0 = [&](int od, float(&a0)[MTOK][2]) {
-        const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + od) * 4) + winPw;
 #pragma unroll
         for (int m = 0; m < MTOK; ++m)
 #pragma unroll
@@ -1199,10 +1253,23 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
             for (int b2 = 1; b2 < 4; b2 <<= 1)
               a0[m][hh] += __shfl_xor_sync(0xFFFFFFFFu, a0[m][hh], b2);
             const int tk = m * 16 + (lane >> 2) + hh * 8;
-            if ((lane & 3) == 0 && tk < nw)
-              fan_in_add(reinterpret_cast<float*>(
-                             gather_ptr(dpwPlane, (uint32_t)iwrite(dc)[tk] * kPRowW + col)),
-                         sgw[tk] * a0[m][hh]);
+            if ((lane & 3) == 0 && tk < nw) {
+              const uint32_t rowW = (uint32_t)iwrite(dc)[tk] * kPRowW + winPw;
+              const float* loop = spw0 + od * C + tk;
+#define ROLA_OUTER_EMIT(LV_)                                                          \
+  if constexpr ((LV_) < OA::kLevels) {                                                \
+    const uint32_t col = (uint32_t)((LP::col_base(LV_) + LP::off_at(LV_, blk)         \
+                                     + LP::template outer_digit<(LV_)>(od))           \
+                                    * 4);                                             \
+    float loo = 1.f;                                                                  \
+    if constexpr (G::kLooPlanes > 0)                                                  \
+      loo = loop[((LV_) + 1) * kOuterSpan * C];                          \
+    fan_in_add(reinterpret_cast<float*>(gather_ptr(dpwPlane, rowW + col)),           \
+               sgw[tk] * a0[m][hh] * loo);                                                              \
+  }
+              ROLA_OUTER_LEVELS(ROLA_OUTER_EMIT)
+#undef ROLA_OUTER_EMIT
+            }
           }
       };
       if constexpr (kOuterPerUnit > 1) {
@@ -1397,6 +1464,7 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
     const __nv_bfloat16* __restrict__ dnum, const __nv_bfloat16* __restrict__ dden,
     const uint32_t* __restrict__ tbl, float* __restrict__ dpr, int L, int v_row_bytes) {
   using LP = LevelPlan<D, B, BC>;
+  using OA = OuterAmps<LP, D>;
   using G = GeomB<C, BC, D, B>;
   constexpr int GROUPS = groups_for(BC);
   constexpr int kThreads = threads_for(BC);
@@ -1625,9 +1693,9 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   const int oBase = leadLocal;
   [[maybe_unused]] uint32_t colFast = 0;
   if constexpr (kDepth >= 2)
-    colFast =
-        (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk) + oBase % kFastSpan)
-                   * 2);
+    colFast = (uint32_t)((LP::col_base(kDepth - 2) + LP::off_at(kDepth - 2, blk)
+                          + LP::template outer_digit<kDepth - 2>(oBase))
+                         * 2);
   const uint32_t colInner =
       (uint32_t)((LP::col_base(kDepth - 1) + LP::off_at(kDepth - 1, blk) + tailLocal) * 2);
   constexpr int kUppers = kDepth - 2;
@@ -1635,14 +1703,14 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
   if constexpr (kUppers >= 1) {
     constexpr int lA = kDepth - 3;
     colUpA =
-        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + (oBase / kFastSpan) % LP::span_at(lA))
+        (uint32_t)((LP::col_base(lA) + LP::off_at(lA, blk) + LP::template outer_digit<lA>(oBase))
                    * 2);
   }
   if constexpr (kUppers >= 2) {
     constexpr int lB = kDepth - 4;
-    colUpB = (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk)
-                         + (oBase / (kFastSpan * LP::span_at(kDepth - 3))) % LP::span_at(lB))
-                        * 2);
+    colUpB =
+        (uint32_t)((LP::col_base(lB) + LP::off_at(lB, blk) + LP::template outer_digit<lB>(oBase))
+                   * 2);
   }
   const int slot0 = leadLocal * kInnerSpan + tailLocal;
   char* dstR = reinterpret_cast<char*>(sr) + prow * (int)(LdS * 2) + slot0 * 2;
@@ -1705,13 +1773,16 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
                                   gather_ptr(ddenPlane, (uint32_t)iread(dc)[tid] * 2u + winG)))
                             : 0.f;
         if constexpr (kDepth >= 2) {
-#pragma unroll
+          const uint32_t rrow = (uint32_t)iread(dc)[tid] * kPRowB + winPc;
+#pragma unroll 1
           for (int o = 0; o < kOuterSpan; ++o) {
-            const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + o) * 2) + winPc;
-            spr0[o * C + tid] =
-                tid < nr ? __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(
-                               gather_ptr(pRead, (uint32_t)iread(dc)[tid] * kPRowB + col)))
-                         : 0.f;
+            spr0[o * C + tid] = tid < nr ? OA::template product<-1>(pRead, rrow, blk, o) : 0.f;
+#define ROLA_LOO_PLANE(LV_)                                                          \
+  if constexpr ((LV_) < G::kLooPlanes)                                               \
+    spr0[(((LV_) + 1) * kOuterSpan + o) * C + tid] =                                   \
+        tid < nr ? OA::template product<(LV_)>(pRead, rrow, blk, o) : 0.f;
+            ROLA_OUTER_LEVELS(ROLA_LOO_PLANE)
+#undef ROLA_LOO_PLANE
           }
         }
       }
@@ -1799,7 +1870,6 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
           }
       };
       auto emit_u0 = [&](int od, float(&a0)[MTOK][2]) {
-        const uint32_t col = (uint32_t)((LP::col_base(0) + LP::off_at(0, blk) + od) * 4) + winPw;
 #pragma unroll
         for (int m = 0; m < MTOK; ++m)
 #pragma unroll
@@ -1808,10 +1878,23 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
             for (int b2 = 1; b2 < 4; b2 <<= 1)
               a0[m][hh] += __shfl_xor_sync(0xFFFFFFFFu, a0[m][hh], b2);
             const int tk = m * 16 + (lane >> 2) + hh * 8;
-            if ((lane & 3) == 0 && tk < nr)
-              fan_in_add(reinterpret_cast<float*>(
-                             gather_ptr(dprPlane, (uint32_t)iread(dc)[tk] * kPRowW + col)),
-                         a0[m][hh]);
+            if ((lane & 3) == 0 && tk < nr) {
+              const uint32_t rowW = (uint32_t)iread(dc)[tk] * kPRowW + winPw;
+              const float* loop = spr0 + od * C + tk;
+#define ROLA_OUTER_EMIT(LV_)                                                          \
+  if constexpr ((LV_) < OA::kLevels) {                                                \
+    const uint32_t col = (uint32_t)((LP::col_base(LV_) + LP::off_at(LV_, blk)         \
+                                     + LP::template outer_digit<(LV_)>(od))           \
+                                    * 4);                                             \
+    float loo = 1.f;                                                                  \
+    if constexpr (G::kLooPlanes > 0)                                                  \
+      loo = loop[((LV_) + 1) * kOuterSpan * C];                          \
+    fan_in_add(reinterpret_cast<float*>(gather_ptr(dprPlane, rowW + col)),           \
+               a0[m][hh] * loo);                                                              \
+  }
+              ROLA_OUTER_LEVELS(ROLA_OUTER_EMIT)
+#undef ROLA_OUTER_EMIT
+            }
           }
       };
       if constexpr (kOuterPerUnit > 1) {
@@ -1990,3 +2073,5 @@ __global__ __launch_bounds__(threads_for(BC), (kScanBCtaTarget<C, BC, D, B>)) vo
 }
 
 }  // namespace rola::chunk
+
+#undef ROLA_OUTER_LEVELS

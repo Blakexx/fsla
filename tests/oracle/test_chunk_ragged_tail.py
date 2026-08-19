@@ -12,9 +12,11 @@ same object. What made `T` off the quantum unreachable was host-side guards, not
 structure in the walk, which is why this file's claims are the same claims the
 quantum-aligned cells make and not weaker ones.
 
-Both routing depths run because the produce's outer chain differs between them, and
-the stateful cells run because the state fold at a short final super-chunk is the
-one place a wrong tail would show as a WRONG NUMBER rather than as noise. The
+A flat and a depth-four topology both run because the produce's outer chain differs
+between them, and the reverse cells run every topology the scans carry, which is now
+that same span; the stateful cells run because the state fold at a short final
+super-chunk is the one place a wrong tail would show as a WRONG NUMBER rather than
+as noise. The
 continuation chain is the sharpest of them: a first call whose length is off the
 quantum hands its final state to a second, and the pair must be the whole sequence.
 """

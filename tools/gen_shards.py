@@ -172,9 +172,9 @@ CHUNK_PER_SHARD = 8
 
 #: THE ARMS THE TWO SCANS ARE BUILT FOR -- the reverse pass' own list, and a
 #: SUBSET of `CHUNK_ARMS`: a backward whose forward is not built could not run a
-#: training step. It is narrower than the forward's because the scans carry the
-#: campaign's TRAINABLE topologies, not every arm the forward can infer at
-#: (`rola/engine/rules/envelope.py:backward_envelope` refuses the difference).
+#: training step (`rola/engine/rules/envelope.py:backward_envelope` refuses the
+#: difference).  It carries every DEPTH the forward carries; what it does not carry
+#: is the forward's spread of `C` and `BC` at a given topology.
 SCAN_ARMS: tuple = (
     (32, 128, 2, 64),
     (32, 128, 2, 256),
@@ -182,6 +182,9 @@ SCAN_ARMS: tuple = (
     (32, 64, 2, 16),
     (32, 64, 1, 64),
     (32, 64, 1, 256),
+    (32, 128, 3, 16),
+    (32, 128, 4, 8),
+    (32, 32, 4, 8),
 )
 assert set(SCAN_ARMS) <= set(CHUNK_ARMS), "every scan arm needs its forward arm"
 

@@ -47,6 +47,26 @@ gradient. At depth two the leave-one-out factor is simply the OTHER level's
 amplitude, and the two digit gradients differ ONLY in that choice, which is what
 the gate's non-vacuity row exchanges.
 
+<a id="leave-one-out"></a>**Above depth two there is no "the outer level".** A
+block's slot splits into the innermost digit and a COMPOSITE outer index whose place
+values are the outer spans, level `D-2` fastest — `LevelPlan::outer_digit` is that
+radix, and it is the same one the producer's column chain walks, which is why both
+read it from the plan rather than from a local expression. Every level `0..D-2` has
+a digit gradient of its own off that one composite index, and each carries a
+DIFFERENT leave-one-out factor, so the depth-two shape (one weight for the inner
+level, none for the outer) does not generalize by widening a loop: it generalizes by
+naming the level.
+
+The factors are STAGED, per gathered entry and per composite outer digit, in the
+plane buffer the inner level's weight already used: plane 0 is the whole outer
+product and plane `1+l` is the product WITHOUT level `l`. Depth two leaves one outer
+level whose leave-one-out factor is the EMPTY product, so it has no plane and the
+buffer is the single one it always was; depth one has no outer level at all and the
+buffer does not exist. `OuterAmps` forms the products from one load per level, and
+the staging loop is deliberately NOT unrolled — it is per-chunk, not hot, and
+unrolling it over the deep topologies' wider outer index cost the registers the
+depth-three arm needs to reach zero spill.
+
 The slots are walked ONE PASS at a time, and a pass is chosen so the digit
 structure falls out of the geometry rather than being computed. Every
 `(token, inner digit)` cell of a pass is held by **exactly one lane**, so the
@@ -599,10 +619,16 @@ for column, and `tests/oracle/test_scan_a.py` reads it in the same twelve-column
 `SCAN_B_ARMS_X` is GENERATED, from `tools/gen_shards.py`'s `SCAN_ARMS` — the same
 generator that owns the forward's `CHUNK_ARMS`, which is what makes "every scan arm
 has a forward arm" a check at generation time rather than a hope. The scans' list is
-the narrower one: it carries the campaign's TRAINABLE topologies, and
+the narrower one — narrower in `C` and `BC`, not in DEPTH — and
 `rola.engine.rules.envelope.backward_envelope` refuses the difference at the facade rather
 than three launches later.
 
 It is not free to widen. This translation unit peaks at 2.75 GB per `cicc`, which is
 decode-class, so an arm added here is a re-measurement of `tools/build_flags.py`'s
 job formula. It is a translation unit of its own for the same reason `factor.cu` is.
+
+The list carries the DEEP topologies its forward carries: `(32,128,3,16)`,
+`(32,128,4,8)` and `(32,32,4,8)`, all at `N = 4096`. The last is the three-clause
+arm — two single-digit levels above a partial one — and the only built scan arm with
+`BC = 32`, so it is where `kSlotThreads = 4` and a one-pass slot axis are exercised
+at all.

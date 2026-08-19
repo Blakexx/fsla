@@ -161,6 +161,26 @@ struct LevelPlan {
   static __device__ __forceinline__ int off_at(int l, int blk) {
     return ((blk / suffix_groups(l + 1)) % groups_at(l)) * span_at(l);
   }
+  //: THE COMPOSITE OUTER INDEX'S RADIX. A block's slot splits into an innermost
+  //: digit and a composite outer index whose place values are the outer spans,
+  //: level D-2 fastest -- docs/internals/chunk/chunk_kernel.md#outer-radix
+  static constexpr int outer_place(int l) {
+    return l >= D - 2 ? 1 : span_at(l + 1) * outer_place(l + 1);
+  }
+  //: THE LEVEL IS A TEMPLATE PARAMETER for the same reason `base_term`'s is: a
+  //: runtime divisor does not fold.  A single-digit level has one digit and the
+  //: MOST significant outer level cannot wrap, so neither pays the residue.
+  template <int Lv>
+  static __device__ __forceinline__ int outer_digit(int o) {
+    constexpr int kPlace = outer_place(Lv);
+    constexpr int kSpan = span_at(Lv);
+    if constexpr (kSpan == 1)
+      return 0;
+    else if constexpr (Lv == 0)
+      return o / kPlace;
+    else
+      return (o / kPlace) % kSpan;
+  }
   //: table entries per side: full width per single-digit level, width/run for
   //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
   //: product, which is why the table does not grow with N.
