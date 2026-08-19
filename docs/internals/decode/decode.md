@@ -6,7 +6,7 @@ and the `.cu` carries the GEMV kernel, its dispatch and its host entry. The
 mirror rule is one doc per source basename, so `decode.cuh` and `decode.cu` land
 here together. **Part A** is the header; **Part B** is the translation unit.
 
-`decode_expand.cu` — the support expansion that runs first — has its own doc,
+`decode_expand.cuh` — the support expansion the prologue runs — has its own doc,
 [`decode_expand.md`](decode_expand.md). The host-facing declaration split is
 [`decode_api.md`](decode_api.md).
 
@@ -82,7 +82,7 @@ this path therefore does not carry, are in
 
 Owner grouping is a property of how the TILED consumer amortizes a `[BC][cols]`
 block across many tokens; with one token there is nothing to amortize. Nothing in
-`decode.cuh`, `decode_expand.cu` or `decode.cu` is an expression in `BC`:
+`decode.cuh`, `decode_expand.cuh` or `decode.cu` is an expression in `BC`:
 
 - the support is leaf-granular;
 - the work partition is over 32-leaf bitmap WORDS — a machine quantity, not a

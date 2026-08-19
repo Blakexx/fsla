@@ -17,12 +17,12 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**444 entries per architecture**, measured on the current tree: **108 for the chunk
+**460 entries per architecture**, measured on the current tree: **108 for the chunk
 family** — 44 `compacted_kernel` (one per built `(C, BC, D, B)` arm crossed with the
 state axis), 24 `chunk_facts_tables` (12 `(D, B, BC)` crossed with the two prefill
 call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel`, 6
 `walk_probe_kernel` and the reverse pass' 14 (6 `scan_a_kernel`, 6 `scan_b_kernel`,
-2 `seed_kernel`) — plus 16 `decode_gemv_kernel` (`DV x D x DECAY`) and the
+2 `seed_kernel`) — plus 32 `decode_step_kernel` (`DV x D x DECAY x IN_SMEM`) and the
 entmax solves' 320. The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
 product that four shards once carried retired in P67 D2
 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
