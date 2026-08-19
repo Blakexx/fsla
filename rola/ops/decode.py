@@ -45,7 +45,6 @@ __all__ = [
     "C_DECODE_TARGET_CTAS_PER_SM",
     "DecodeScratch",
     "derive_decode_geometry",
-    "growth_probe",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
@@ -117,40 +116,35 @@ def derive_decode_geometry(
 class DecodeScratch:
     """Per-sequence scratch, allocated once and reused across steps.
 
-    ``ctr`` is zeroed exactly once here: the last-arriving CTA of every step resets it,
-    so no ``memset`` launch ever stands between two decode steps and the whole step
-    stays capturable in a CUDA graph.
+    ``ctr``, ``growth_ctr`` and ``done`` are zeroed exactly once here: every one of them
+    is reset by the last-arriving CTA that reads it, so no ``memset`` launch ever stands
+    between two decode steps and the whole step stays capturable in a CUDA graph.
     """
 
-    #: The expansion's GLOBAL scratch, and empty at every shipped topology: the step and
-    #: the probe each build their side maps in shared memory, and this is what they fall
-    #: back to when the leaf space is too wide for it
+    #: The expansion's GLOBAL scratch, and empty at every shipped topology: the step
+    #: builds its side maps in shared memory, and this is what it falls back to when the
+    #: leaf space is too wide for that
     #: (docs/internals/decode/decode_expand.md#smem-arm).
     work: torch.Tensor
-    #: `[BH, ceil(N/32)]` int32, THE PROBE'S PUBLISHED EXPANSION: the exact write-leaf map
-    #: it condenses to atoms and ANDs against residency. The step publishes no such
-    #: object -- its two maps live and die inside the CTA that built them
-    #: (docs/internals/decode/decode_expand.md#growth-probe).
-    probe_bits: torch.Tensor
     ws: torch.Tensor
     ctr: torch.Tensor
-    #: The growth probe's device answer and its PINNED landing buffer. Pinned is what
-    #: makes the read one DMA rather than a staging copy, and holding both here is what
-    #: keeps a steady step free of allocation: docs/internals/decode/decode.md#growth-probe
+    #: `[BH]` int32, THE PER-BATCH-HEAD VERDICT, and the `[1]` int32 OR of it that the
+    #: host reads through a PINNED mirror -- pinned so the read is one DMA rather than a
+    #: staging copy, and held here so a steady step allocates nothing
+    #: (docs/internals/decode/decode.md#per-bh-verdict).
     growth: torch.Tensor
-    #: The probe's REDUCTION over batch-heads and the step's GATE are the same `[1]`
-    #: int32 buffer: the step reads it on the device, the host reads its pinned mirror.
-    #: `probe_ctr` is the reducing CTA's self-resetting arrival counter, zeroed exactly
-    #: once here: docs/internals/decode/decode.md#the-gate
     growth_any: torch.Tensor
-    probe_ctr: torch.Tensor
+    #: The reducing CTA's self-resetting arrival counter.
+    growth_ctr: torch.Tensor
     growth_host: torch.Tensor
-    #: Recorded after the verdict's copy and BEFORE the step is enqueued, so the host's
-    #: wait for a 4-byte flag overlaps the launches it used to sit in front of.
-    verdict: torch.cuda.Event | None
-    #: The probe's OTHER output: `[BH, N/16]` bool, the step's own write-atom set,
-    #: condensed on the device from the expansion the verdict was read off. A growth
-    #: step admits from THIS -- the host derives nothing: docs/internals/decode/decode.md#growth
+    #: `[BH]` int32, THE DONE FLAGS: which batch-heads have already deposited this step.
+    #: A replay re-walks a done batch-head for its `y` and deposits nothing, which is what
+    #: makes the caller's replay advance every sequence EXACTLY ONCE
+    #: (docs/internals/decode/decode.md#done-flags).
+    done: torch.Tensor
+    #: `[BH, N/16]` bool, the step's own write-atom set, condensed on the device from the
+    #: expansion the verdict was read off. A host admission plans from THIS -- the host
+    #: derives nothing: docs/internals/decode/decode.md#atom-bits
     atom_bits: torch.Tensor
 
     @staticmethod
@@ -165,14 +159,13 @@ class DecodeScratch:
             device_index=torch.device(device).index or 0) if cuda else 0
         return DecodeScratch(
             work=torch.empty(per_cta * BH * config.n_split, **i32),
-            probe_bits=torch.empty(BH, config.n_words, **i32),
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
             ctr=torch.zeros(BH, **i32),
-            growth=torch.empty(BH, **i32),
+            growth=torch.zeros(BH, **i32),
             growth_any=torch.zeros(1, **i32),
-            probe_ctr=torch.zeros(1, **i32),
+            growth_ctr=torch.zeros(1, **i32),
             growth_host=torch.empty(1, dtype=torch.int32, pin_memory=cuda),
-            verdict=torch.cuda.Event() if cuda else None,
+            done=torch.zeros(BH, **i32),
             atom_bits=torch.empty(BH, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                                   device=device))
 
@@ -267,36 +260,6 @@ def leaf_rate_dials_for(decay, config: DecodeGeometry, device) -> torch.Tensor |
     return leaf_rate_dials(decay, config).to(device).float()
 
 
-def growth_probe(write_levels, heads: int, config: DecodeGeometry,
-                 page_table: torch.Tensor, scratch: DecodeScratch) -> None:
-    """Does this step deposit into an atom the page table does not map? ASKED, not read.
-
-    It folds its own write side from the producer's views -- the same device function the
-    step folds with -- so the probe and the step's admission agree about the write support
-    by the call graph rather than by an audit.
-
-    THE CONDENSATION IS THE OUTPUT, not an internal: it lands in ``scratch.atom_bits``
-    and IS what a growth step admits, so the write-atom set is derived exactly once per
-    step, on the device. The verdict lands in ``growth_any``, which the step reads on the
-    device (docs/internals/decode/decode.md#the-gate) and the host reads after enqueueing
-    it.
-    """
-    extension().rola_decode_growth_probe(
-        write=list(write_levels),
-        page_table=page_table,
-        work=scratch.work,
-        probe_bits=scratch.probe_bits,
-        growth=scratch.growth,
-        growth_any=scratch.growth_any,
-        probe_ctr=scratch.probe_ctr,
-        atom_bits=scratch.atom_bits,
-        heads=heads,
-        n_split=config.n_split,
-        level_widths=list(config.widths),
-        level_strides=list(config.leaf_stride),
-        level_spans=list(config.level_span))
-
-
 def step(plan: DecodePlan) -> torch.Tensor:
     """THE STEP, in ONE launch, in place on ``plan.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
@@ -307,8 +270,14 @@ def step(plan: DecodePlan) -> torch.Tensor:
 
     Every touched row has exactly one owning CTA, warp and lane, so the update needs no
     atomic and is bitwise reproducible.
+
+    THE ADMISSION QUESTION IS PART OF IT: the write map the walk needs is the map the
+    residency test reads, so the test is a pass over shared memory rather than a launch,
+    and the verdict it publishes is per batch-head
+    (docs/internals/decode/decode.md#absorbed-verdict).
     """
     config = plan.config
+    pool = plan.pool
     y = extension().rola_decode_forward(
         read=list(plan.read),
         write=list(plan.write),
@@ -320,6 +289,11 @@ def step(plan: DecodePlan) -> torch.Tensor:
         work=plan.scratch.work,
         ws=plan.scratch.ws,
         ctr=plan.scratch.ctr,
+        growth=plan.scratch.growth,
+        growth_any=plan.scratch.growth_any,
+        growth_ctr=plan.scratch.growth_ctr,
+        done=plan.scratch.done,
+        atom_bits=plan.scratch.atom_bits,
         level_widths=list(config.widths),
         level_strides=list(config.leaf_stride),
         level_spans=list(config.level_span),
@@ -327,7 +301,9 @@ def step(plan: DecodePlan) -> torch.Tensor:
         n_split=config.n_split,
         eps=config.eps,
         page_table=plan.page_table,
-        gate=plan.gate,
+        pool_slots=None if pool is None else pool.pool_slots,
+        pool_cursor=None if pool is None else pool.pool_cursor,
+        pool_map=None if pool is None else pool.pool_map,
     )
     B, _T, H, _d_v = plan.v.shape
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
@@ -363,7 +339,7 @@ def _decode_step(
     normalize: tuple[bool, ...] | None = None,
     workspace: DecodeScratch | None = None,
     page_table: torch.Tensor | None = None,
-    gate: torch.Tensor | None = None,
+    pool=None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
     """The RAW-TENSOR entry: the step's own bodies, in the step's order.
 
@@ -390,5 +366,5 @@ def _decode_step(
         normalize=(False,) * config.D if normalize is None else tuple(normalize),
         dials=leaf_rate_dials_for(decay, config, v.device),
         g_write=g_write, v=v, state_plane=plane, page_table=page_table,
-        scratch=workspace, gate=gate))
+        scratch=workspace, pool=pool))
     return y, state, workspace

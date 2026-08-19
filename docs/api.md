@@ -46,6 +46,15 @@ compiled into it at all. Read the carried state with
 capacity; that is a bridge for the oracle and for a test, never a measured path. See
 [`docs/internals/state.md`](internals/state.md).
 
+`rola.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
+a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
+step can admit into itself, with no host round trip. `0.0` — the default — is exact
+commitment, unchanged from before the knob existed. Two calls read and refill it off the
+step's own path: `rola.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
+thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
+See [`internals/state.md`](internals/state.md#the-slack-pool) and
+[`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
+
 There is no plan argument, no configuration argument, and no statistics argument. Those
 are not model facts — they are how the op RUNS, and the op decides how it runs, per
 call, from the routing it was actually given. They live behind

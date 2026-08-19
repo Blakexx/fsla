@@ -376,8 +376,7 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 #: the dispatch and the torch entries only, and compiles like the host file it is.
 SOURCES = [
     "csrc/rola/rola_api.cpp",
-    # TRACK D (thunder §6b): the T=1 decode path, two TUs.
-    "csrc/rola/src/decode/decode_expand.cu",
+    # TRACK D (thunder §6b): the T=1 decode path, one TU.
     "csrc/rola/src/decode/decode.cu",
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",

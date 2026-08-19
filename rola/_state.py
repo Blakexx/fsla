@@ -39,9 +39,15 @@ _BUILT_STRATEGIES = ("mutable",)
 _NAMED_UNBUILT_STRATEGIES = ("cow",)
 
 
-def state(strategy: str = "mutable") -> RoLAState:
-    """A fresh UNBOUND state. Everything but the strategy binds at the first call."""
-    return RoLAState(strategy=strategy)
+def state(strategy: str = "mutable", pool_slack: float = 0.0) -> RoLAState:
+    """A fresh UNBOUND state. Everything but the two knobs binds at the first call.
+
+    ``pool_slack`` is STORAGE MECHANICS, which is why it lives here and not on the op: a
+    fraction of full residency, reserved per ``bh`` as physical slots a decode step can
+    admit into by itself. ``0.0`` -- the default -- is exact commitment, and every growth
+    step asks the host, exactly as it always did (docs/internals/state.md#the-slack-pool).
+    """
+    return RoLAState(strategy=strategy, pool_slack=pool_slack)
 
 
 class RoLAState:
@@ -67,10 +73,10 @@ class RoLAState:
     """
 
 
-    __slots__ = ("strategy", "_shape", "_device", "_paging", "_arena", "_plane",
-                 "__weakref__")
+    __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
+                 "_plane", "__weakref__")
 
-    def __init__(self, *, strategy: str = "mutable") -> None:
+    def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0) -> None:
         if strategy in _NAMED_UNBUILT_STRATEGIES:
             raise NotImplementedError(
                 f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
@@ -80,6 +86,7 @@ class RoLAState:
             raise ValueError(
                 f"strategy must be one of {_BUILT_STRATEGIES}, got {strategy!r}")
         self.strategy = strategy
+        self.pool_slack = float(pool_slack)
         self._shape: tuple[int, int, int, int] | None = None
         self._device: torch.device | None = None
         self._paging = True
@@ -162,7 +169,8 @@ class RoLAState:
         standing alias onto shared slots, so a cheaper transition would hand a
         descendant a guarantee its ancestor can break.
         """
-        out = RoLAState(strategy=self.strategy if strategy is None else strategy)
+        out = RoLAState(strategy=self.strategy if strategy is None else strategy,
+                        pool_slack=self.pool_slack)
         if not self.bound:
             return out
         out._shape, out._device, out._paging = self._shape, self._device, self._paging
@@ -258,21 +266,22 @@ class RoLAState:
                 "returns.")
 
     def _decode_entry(self, routes):
-        """`(plane, page_table)` for one decode step, over the residency it already has.
+        """`(plane, page_table, arena)` for one step, over the residency it already has.
 
         A step CONTINUES a sequence, so unlike :meth:`_kernel_entry` there is no fresh
-        case to serve and nothing to admit: the step's own device probe answers whether
-        it writes an atom the table does not map, and the admission that answer calls
-        for is :meth:`_decode_entry_arena`, between two walks of the step
-        (docs/internals/engine/decode_dag.md#the-two-masks).
+        case to serve and nothing to admit here: the step asks its own residency question
+        on the device, admits from the slack pool where there is one, and where there is
+        not, the admission its verdict calls for is :meth:`_decode_entry_arena`, between
+        two walks of the step (docs/internals/engine/decode_dag.md#the-two-masks). The
+        arena rides along for its pool buffers alone; a dense state has none.
 
         Dense states hand back a VIEW of their own plane, which is what makes the
         kernel's in-place update the state's update.
         """
         self._require_carrying()
         if self._arena is not None:
-            return self._arena.state, self._arena.page_table
-        return self._plane.view(self._shape), None
+            return self._arena.state, self._arena.page_table, self._arena
+        return self._plane.view(self._shape), None, None
 
     def _decode_entry_arena(self, bitmap: torch.Tensor):
         """Admit `bitmap`'s atoms into the carried arena and hand it back.
@@ -294,4 +303,4 @@ class RoLAState:
     def _new_arena(self, widths: tuple[int, ...], BC: int) -> PageArena:
         keying = self._keying
         return PageArena(widths=widths, BC=int(BC), cols=keying.cols, BH=keying.BH,
-                         device=self._device)
+                         device=self._device, pool_slack=self.pool_slack)

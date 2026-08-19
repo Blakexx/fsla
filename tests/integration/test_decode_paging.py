@@ -16,11 +16,11 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64
 (`rola.ops.paging.MMA_K_QUANTUM`); **slot** = the physical page an atom is mapped to,
 `-1` for an atom no plan committed; `M` = the step's touched-row count.
 
-**FOUR CLAIMS.**
+**FIVE CLAIMS.**
 
 1. *The write-atom derivation is EXACT.* `rola.ops.decode._write_atom_bitmap` is the
    ENUMERATED REFERENCE for the set a step admits -- the shipped path takes that set from
-   the growth probe's device-side condensation, and this is the independent derivation it
+   the step's own device-side condensation, and this is the independent derivation it
    is gated against (`test_decode_growth_trigger.py`). It is checked here against the leaf
    support's own definition
    (`schedule.py`'s `write_mask = tuple(level != 0 ...)`, taken to leaf granularity and
@@ -42,6 +42,12 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64
 4. *Growth is planned-exact, per step.* A step that deposits into an atom no previous
    step reached admits exactly those atoms and no others, in place, without moving a
    base pointer -- and the answer is the oracle's.
+
+5. *A slack pool changes WHO admits and nothing else.* The same chain with the host
+   admitting nothing -- every atom taken by the step itself, from the pool -- reaches the
+   oracle's answer and is `torch.equal` to the host-admitted chain. A pool slot is an
+   ordinary zeroed arena slot, so there is nothing for an atom to be admitted "into a
+   pool" as (`docs/internals/paging/paging.md#the-slack-pool`).
 
 The FACADE-level continuation (prefill on the chunk arm, then decode steps on the same
 state object) is `tests/integration/test_decode_continuation.py`; this file stays at
@@ -145,9 +151,9 @@ def _leaf_support(levels, widths):
     return mask
 
 
-def _arena(widths, BC, BH):
+def _arena(widths, BC, BH, pool_slack=0.0):
     return PageArena(widths=widths, BC=BC, cols=_COLS, BH=BH,
-                     device=torch.device("cuda"))
+                     device=torch.device("cuda"), pool_slack=pool_slack)
 
 
 def _seed_from_dense(arena, dense):
@@ -366,3 +372,60 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     err_s = float((state.double() - ref_state).abs().max()) / scale_s
     assert err_y < DECODE_RTOL, f"the grown step's y left the oracle band: {err_y:.3e}"
     assert err_s < DECODE_RTOL, f"the grown state left the oracle band: {err_s:.3e}"
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
+def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(arm):
+    """The same two steps with the host never admitting anything: the DEVICE admits.
+
+    A slack pool makes growth the step's own business, so this cell runs the chain with
+    no `plan_exact` between the steps at all -- the arena starts EMPTY and each step takes
+    what it needs. Two claims, and the second is the one that matters: the chain is the
+    chained fp64 oracle's, and it is `torch.equal` to the host-admitted chain, because a
+    pool slot is an ordinary zeroed arena slot and an atom admitted into one is
+    indistinguishable from an atom `plan_exact` admitted.
+    """
+    widths, BC = arm
+    config = _config(widths, _fixture(widths, seed=0))
+    BH = 2 * 3
+    first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.25)
+    second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5)
+    bits = [_write_atom_bitmap(_f32(step)[2], config) for step in (first, second)]
+    assert int((bits[1] & ~bits[0]).sum()) > 0, "the second step grows nothing here"
+
+    admitted = _arena(widths, BC, BH)
+    pooled = _arena(widths, BC, BH, pool_slack=1.0)
+    ys = {}
+    for name, arena, pool in (("host", admitted, None), ("pool", pooled, pooled)):
+        out = []
+        for step, bitmap in zip((first, second), bits):
+            if pool is None:
+                arena.plan_exact(bitmap, fresh=False)
+                arena.wait()
+            v, read, write, g_write = _f32(step)
+            y, _, _ = _decode_step(v, read, write, None, g_write, config, arena.state,
+                                   page_table=arena.page_table, pool=pool)
+            out.append(y)
+        ys[name] = out
+
+    assert torch.equal(pooled.page_table >= 0, bits[0] | bits[1]), (
+        "the device admitted a different residency than the two steps' write sets")
+    assert torch.equal(ys["pool"][-1], ys["host"][-1]), (
+        "a pool-admitted step's y differs from a host-admitted one's")
+    assert torch.equal(pooled.materialize(), admitted.materialize()), (
+        "a pool-admitted state differs from a host-admitted one")
+
+    ref_state = None
+    y_ref = None
+    for step in (first, second):
+        y_ref, ref_state = naive_rola(
+            step["v"], step["read"], step["write"], None, step["g_write"],
+            _topology(widths), None, "global",
+            initial_state=ref_state, output_final_state=True)
+    state = pooled.materialize().view(2, 3, config.N, _COLS)
+    err_y = float((ys["pool"][-1].double() - y_ref).abs().max()) / max(
+        1e-30, float(y_ref.abs().max()))
+    err_s = float((state.double() - ref_state).abs().max()) / max(
+        1e-30, float(ref_state.abs().max()))
+    assert err_y < DECODE_RTOL, f"the pool-admitted y left the oracle band: {err_y:.3e}"
+    assert err_s < DECODE_RTOL, f"the pool-admitted state left the oracle band: {err_s:.3e}"

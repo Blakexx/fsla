@@ -30,10 +30,12 @@ published (execution checklist E12); until then this file is the list.
 ## M-4 — Decode kernel + decode bench cells (filed 2026-08-01, user question)
 
 **THE KERNEL HALF IS DONE.** A dedicated `T = 1` decode path ships: bitmap support
-expansion + token-stationary gather-GEMV (`csrc/rola/src/decode{,_expand}.cu`), behind
-the same state facade as the chunk arm (`decode_forward(routes, v, state)`), with a
-PAGED backing whose address is the 16-leaf atom and a device-side growth probe that keeps
-a steady step off the admission preamble (`docs/internals/decode/decode.md`). Gated by
+expansion + token-stationary gather-GEMV, fold and walk in ONE kernel
+(`csrc/rola/src/decode/decode.cu`), behind the same state facade as the chunk arm
+(`decode_forward(routes, v, state)`), with a PAGED backing whose address is the 16-leaf
+atom and the step's own per-batch-head residency verdict, reached off the write map the
+walk builds anyway, that keeps a steady step off any admission preamble at all
+(`docs/internals/decode/decode.md`). Gated by
 `tests/oracle/test_decode_vs_oracle.py`, `test_decode_continuation.py` (6),
 `tests/integration/test_decode_paging.py` (24), `test_decode_growth_trigger.py` (33),
 `test_decode_bc_blindness.py` (4) and `tests/integration/test_decode_dispatch.py` (18).
@@ -63,7 +65,7 @@ doc section rather than a line here, because the contract is what a future build
 
 | # | Item | The contract |
 |---|---|---|
-| **P67-a** | **A device-side ADMISSION.** The gate and `decode_step_gated` took the host out of the STEADY step (a captured step is 0.037–0.057 ms against 0.247–0.325 ms eager, and the caller's thread spends 0.008 ms in it). A GROWTH step still surfaces to the host once, because `plan_exact` is host code. What is left is an allocator cursor and a page-table patch on the device, over committed headroom the host tops up lazily. | [`internals/decode/decode.md` §4d](internals/decode/decode.md#capture) |
+| **P67-a** | **A device-side ADMISSION. DONE** (K21/K23). `rola.state(pool_slack=...)` reserves a fraction of each batch-head's residency as pre-committed, pre-zeroed ordinary slots; a growth step claims into them itself, replicated and canonical across its CTAs with no atomic, via a shadow table row folded into the real table by the batch-head's last-arriving CTA. Exhaustion degrades to exactly the pool-free host round trip. `pool_headroom`/`refill_pool` are the host's off-path knobs for restocking it. | [`internals/paging/paging.md` §the-slack-pool](internals/paging/paging.md#the-slack-pool) |
 | **P67-b** | **Lifting the 4 GiB state-plane bound.** The chunk consumer addresses state by a 32-bit byte displacement from a pinned origin. The dense backing hits the bound first and the paged backing is the answer to it; the two need different lifts (one per-`bh` 64-bit base vs arena sharding). | [`internals/chunk/chunk_kernel.md`](internals/chunk/chunk_kernel.md#plane-bound) |
 | **P67-c** | **Copy-on-write state branching.** `strategy="cow"` is refused by name today. The semantics are SETTLED (strategy on the state as a stamp, plan-overridable; fresh-slot writes; every returned state stays valid and resubmitting one IS branching; refcounts for GC and the never-write-a-shared-slot invariant; a strategy change is a full deep copy in both directions), as is the known cost and its known fix (the per-step table copy wants a two-level page table). | [`internals/state.md` §9.1](internals/state.md#cow) |
 | **P67-e** | **Retire the legacy V3 tiled consumer. DONE** (D2-a `d45f92f` … D2-d, this row's own phase). The dispatch repointed onto the built chunk matrix, ~6,900 test LOC re-anchored or retired, then 53 files and 11,615 lines deleted whole — csrc, the planner package, the tiled measurement apparatus — with the protected surface proven unmoved (310 non-consumer SASS bodies: 0 missing, 0 extra, 0 differing) and the docs made truthful. Every capability removed has a row in [`internals/DELETIONS.md`](internals/DELETIONS.md) with its evidence and revival SHA (`c7eaeb9`). | [`internals/DELETIONS.md`](internals/DELETIONS.md) |

@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """The decode family's DAG, read top to bottom, its context, and its four entries.
 
-M3 (decode-dense) and M4 (decode-paged) are ONE tuple: M3 is M4 with the growth band
-masked out. A GROWTH STEP IS NOT A THIRD GRAPH -- it is this same tuple walked twice
-around an admission, which is what makes the replay self-correcting and the step
-capturable (docs/internals/engine/decode_dag.md).
+M3 (decode-dense) and M4 (decode-paged) are ONE tuple, and after the step absorbed its
+own residency question they are the same tuple: what the mask still separates is the
+host-visible verdict band of :data:`DECODE_VERDICT`, which a dense step has no fact for.
+A GROWTH STEP IS NOT A THIRD GRAPH -- it is this same tuple walked twice around an
+admission, which is what makes the replay self-correcting and the step capturable
+(docs/internals/engine/decode_dag.md).
 """
 from __future__ import annotations
 
@@ -74,33 +76,20 @@ def scratch(f):
 
     The weakness is required rather than incidental: a dropped sequence must drop its
     scratch, and two concurrent sequences must never share a buffer. Being memoized is
-    also what hoists the allocation and the one-time zeroing of `ctr`/`probe_ctr` above
+    also what hoists the allocation and the one-time zeroing of the counters and flags above
     any captured region (docs/internals/decode/decode.md#capture).
     """
     return bodies.DecodeScratch.build(f["geometry"], f["BH"], f["device"])
 
 
-@node(gives=("gate",), needs=("routes", "geometry", "state", "scratch"),
-      stream="main", masks=(Mask.M4,), capturable=True)
-def growth_probe(f):
-    """The step's own stats pass, and the GATE is its output the step reads.
-
-    It reads the producer's RAW write side and folds it itself, with the same device
-    function the step folds with (docs/internals/decode/decode_fold.md).
-    """
-    routes, workspace = f["routes"], f["scratch"]
-    bodies.growth_probe(routes.write, routes.heads, f["geometry"],
-                        f["state"].page_table, workspace)
-    return workspace.growth_any
-
-
-@node(gives=("carried_plane", "page_table"), needs=("state", "routes"), stream="main",
-      masks=_DECODE, capturable=True)
+@node(gives=("carried_plane", "page_table", "pool"), needs=("state", "routes"),
+      stream="main", masks=_DECODE, capturable=True)
 def backing(f):
-    """The state's own plane and table, over the residency the step already has.
+    """The state's own plane, table and slack pool, over the residency it already has.
 
-    A step admits NOTHING inside the walk: the admission a growth verdict calls for is
-    :func:`admit_growth`, between two walks, because the verdict is a host fact.
+    A step admits from its POOL inside the kernel and from nowhere else: the admission a
+    verdict the pool could not cover calls for is :func:`admit_growth`, between two walks,
+    because that verdict is a host fact.
     """
     return f["state"]._decode_entry(f["routes"])
 
@@ -116,7 +105,7 @@ def state_plane(f):
 
 @node(gives=("plan",),
       needs=("geometry", "routes", "v", "decay", "state_plane", "page_table", "scratch",
-             "gate"),
+             "pool"),
       stream="main", masks=_DECODE, capturable=True)
 def build_plan(f):
     """The launch's arguments, over the producer's OWN views.
@@ -131,34 +120,26 @@ def build_plan(f):
         normalize=tuple(routes.read_needs_normalization()),
         dials=bodies.leaf_rate_dials_for(f["decay"], geometry, f["v"].device),
         g_write=routes.g_write, v=f["v"], state_plane=f["state_plane"],
-        page_table=f["page_table"], scratch=f["scratch"], gate=f["gate"])
+        page_table=f["page_table"], scratch=f["scratch"], pool=f["pool"])
 
 
 @node(gives=("y",), needs=("plan",), stream="main", masks=_DECODE, capturable=True)
 def step(f):
-    """THE STEP: fold, expand and walk, in one launch."""
+    """THE STEP: fold, expand, walk and the residency verdict, in one launch."""
     return bodies.step(f["plan"])
-
-
-@node(needs=("scratch",), stream="main", masks=(Mask.M4,))
-def request_verdict(f):
-    """Enqueue the verdict's read BEFORE the step it gates, and record the event.
-
-    THE HOST ORDER, and the whole of P67-a: the step is enqueued BEHIND ITS OWN VERDICT,
-    gated so a growth step is a device-side no-op, and the host's wait for the 4-byte
-    flag is spent on the launches instead of in front of them
-    (docs/internals/decode/decode.md#the-gate).
-    """
-    workspace = f["scratch"]
-    workspace.growth_host.copy_(workspace.growth_any, non_blocking=True)
-    workspace.verdict.record()
 
 
 @node(gives=("grow",), needs=("scratch", "y"), masks=(Mask.M4,), host_sync=True)
 def read_verdict(f):
-    """The ONE 4-byte device-to-host read, after the launches it was enqueued ahead of."""
+    """The ONE 4-byte device-to-host read, and it CANNOT precede the step any more.
+
+    The verdict is now the step's OWN output, published by the last CTA of its single
+    launch, so there is nothing left to enqueue the read ahead of: the step is the last
+    launch either way and the copy is behind it by data dependence, not by policy
+    (docs/internals/decode/decode.md#per-bh-verdict).
+    """
     workspace = f["scratch"]
-    workspace.verdict.synchronize()
+    workspace.growth_host.copy_(workspace.growth_any)
     return bool(workspace.growth_host[0])
 
 
@@ -168,8 +149,8 @@ def write_atom_bitmap(f):
     """The gate's INDEPENDENT second derivation of the write-atom set.
 
     Declared so that `validate_dag`'s refusal of a reference_only node has something to
-    refuse: the shipped path derives this set on the device, inside the probe, and a
-    gate that compared the probe against itself would prove nothing
+    refuse: the shipped path derives this set on the device, inside the step, and a gate
+    that compared the step against itself would prove nothing
     (docs/internals/decode/decode.md#second-derivation).
     """
     return bodies._write_atom_bitmap(f["routes"].write, f["geometry"])
@@ -183,23 +164,15 @@ DECODE_STEP = (
     rules.decode_mask.node,
     geometry,
     scratch,
-    growth_probe,
     backing,
     state_plane,
     build_plan,
     step,
 )
 
-#: The same tuple with the host-visible verdict spliced in: the copy and the event are
-#: enqueued AHEAD of the step, the read follows it. Two nodes and not one, because a
-#: single epilogue node would enqueue the copy behind the launches it is meant to
-#: overlap.
-DECODE_VERDICT = (
-    DECODE_STEP[:DECODE_STEP.index(backing)]
-    + (request_verdict,)
-    + DECODE_STEP[DECODE_STEP.index(backing):]
-    + (read_verdict,)
-)
+#: The same tuple with the host-visible verdict read appended. ONE node, and it is the
+#: only place a decode step touches the host at all.
+DECODE_VERDICT = DECODE_STEP + (read_verdict,)
 
 validate_dag(DECODE_STEP, _SEEDS)
 validate_dag(DECODE_VERDICT, _SEEDS)
@@ -244,19 +217,22 @@ def _scratch_of(state):
 def decode_step_gated(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     """ONE decode step with NO host participation -- the CAPTURE-SAFE entry.
 
-    Same kernels in the same order as :func:`decode_forward`, minus the verdict read:
-    the step is gated on the probe's device-side answer, so a step whose write set is
-    not resident is a NO-OP that leaves the state exactly as the admission needs it.
-    The CALLER owns the verdict, at whatever synchronization it already has:
+    Same kernel in the same order as :func:`decode_forward`, minus the verdict read: each
+    batch-head is gated on the step's own device-side answer, so one whose write set it
+    can neither address nor admit is a NO-OP that leaves the state exactly as the
+    admission needs it. The CALLER owns the verdict, at whatever synchronization it
+    already has:
 
         y, state = decode_step_gated(...)   # or graph.replay()
         if growth_pending(state):
             admit_growth(state)
             y, state = decode_step_gated(...)   # or graph.replay(); now it runs
 
-    A REPLAY IS SELF-CORRECTING because the probe re-runs inside it: after the
-    admission its verdict is 0 and the same captured graph performs the step.
-    docs/internals/decode/decode.md#capture
+    A REPLAY IS SELF-CORRECTING because the verdict is re-derived inside it: after the
+    admission it is 0 and the same captured graph performs the step. It advances every
+    sequence EXACTLY ONCE across the pair -- a batch-head that ran in the first walk
+    carries a done flag into the second and re-reads for its `y` without depositing again
+    (docs/internals/decode/decode.md#done-flags).
     """
     ctx = DecodeContext(routes=routes, v=v, state=state, decay=decay, expert=expert)
     validate_context(ctx)
@@ -273,11 +249,28 @@ def growth_pending(state) -> bool:
 
 
 def admit_growth(state) -> None:
-    """Admit the pending step's write atoms, from the probe's own condensation."""
+    """Admit the pending step's write atoms, from the step's own condensation."""
     workspace = _scratch_of(state)
     if workspace is None:
         raise RuntimeError("admit_growth wants the workspace a gated step leaves behind")
     state._decode_entry_arena(workspace.atom_bits).wait()
+
+
+def pool_headroom(state) -> int:
+    """Slack slots the thinnest batch-head still has. A HOST READ, AT LEISURE.
+
+    Pool-covered growth raises no verdict -- the step admitted itself and there is nothing
+    urgent for the host -- so this is the level a serving loop polls to decide when to
+    :func:`refill_pool`, on its own schedule and off the step's path.
+    """
+    return 0 if state._arena is None else state._arena.pool_headroom()
+
+
+def refill_pool(state) -> int:
+    """Replace the slack slots the device claimed, and return how many. HOST, OFF PATH."""
+    if state._arena is None:
+        raise RuntimeError("a pool refill wants a paged state; this one is dense")
+    return state._arena.refill_pool()
 
 
 def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
@@ -298,8 +291,9 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     facts = run(DECODE_VERDICT, _facts(ctx))
     if not facts["grow"]:
         return facts["y"], state
-    #: The gated step deposited nothing and read nothing, so the state is exactly where
-    #: the admission needs it, and `scratch.atom_bits` is the probe's own condensation --
-    #: the host derives no support (docs/internals/decode/decode.md#second-derivation).
+    #: The batch-heads that could not advance deposited nothing and read nothing, so the
+    #: state is exactly where the admission needs it, and `scratch.atom_bits` is the
+    #: step's own condensation -- the host derives no support
+    #: (docs/internals/decode/decode.md#second-derivation).
     admit_growth(state)
     return run(DECODE_STEP, _facts(ctx))["y"], state

@@ -32,10 +32,8 @@ namespace (`rola::decode::detail`, `rola::entmax::detail`), so those names are a
 function of source content and toolchain only -- build the two trees anywhere, side by
 side or one checked out over the other.
 
-`decode_expand.cu` is on the same rule (`rola::decode::detail`; it became ratified
-when the decode unification added the file to the manifest), so NO kernel in the
-binary carries an anonymous-namespace name and a whole-binary dump is path-stable
-too.
+Every other translation unit follows the same rule, so NO kernel in the binary carries
+an anonymous-namespace name and a whole-binary dump is path-stable too.
 
 **A WRITTEN MAP CARRIES THE HASHER'S VERSION, AND A MISMATCH IS REFUSED.** What is
 hashed is a property of the SCANNER, not of the binary: widening the capture once
@@ -61,8 +59,7 @@ Usage:
     python tools/sass_bodies.py --compare a.json b.json
 
 Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
-version-stamp note above. They no longer need to have been built at the same path
-(P19; completed by `decode_expand.cu`'s move to `rola::decode::detail`).
+version-stamp note above. They no longer need to have been built at the same path (P19).
 """
 from __future__ import annotations
 

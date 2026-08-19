@@ -133,153 +133,200 @@ where the previous code paid one per ROW, so the change strictly reduces it.
 
 <a id="absent-atom"></a>**An absent atom (`slot < 0`) reads as zeros and is not
 written.** That is exact rather than defensive: a step's plan admits its write set
-EXACTLY (the growth probe's published condensation, [§4b](#growth)), so an atom with no
-slot is outside
-it, and a never-deposited leaf holds zeros in the dense backing too. The
+EXACTLY (the step's own published condensation, [§4b](#atom-bits)), and a batch-head
+whose write set it cannot cover does not walk at all ([§4c](#per-bh-verdict)), so an atom
+with no slot is outside the write set, and a never-deposited leaf holds zeros in the dense backing too. The
 self-normalizing readout then contributes exactly nothing through it — the
 mechanical form of the dead-leaf argument, gated by
 `tests/integration/test_decode_paging.py`.
 
-## <a id="growth"></a>4b. Growth — the step's own new work
+## <a id="growth"></a>4b. Growth — the step's own new work, and its own question
 
 A step may deposit into an atom that is not resident. At `T = 1` the write support is
 a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is the
-per-level exact-nonzero indicators' product ORed 16-deep — and the probe below computes
-exactly that, on the device, as a by-product of the question it was launched to answer.
+per-level exact-nonzero indicators' product ORed 16-deep.
 
-**MOST STEPS HAVE NO GROWTH, AND THE STEP FINDS THAT OUT FIRST.** The exact admission is
-dear against the launch it precedes — a `plan_exact` and a cross-stream event against a
-0.09 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a sequence whose routing has
-settled writes atoms that are already resident. So the order per step is a QUESTION and
-then, only if the answer is yes, `rola_op`'s order at `L = 1`:
+<a id="absorbed-verdict"></a>**THE STEP ASKS THE QUESTION ITSELF, IN ITS OWN PROLOGUE.**
+The exact admission is dear against the launch it precedes — a `plan_exact` and a
+cross-stream event against a 0.09 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a
+sequence whose routing has settled writes atoms that are already resident. What makes the
+question nearly free is that the step has already built the object it is asked about: the
+write bitmap is in shared memory, expanded from the raw levels by the same
+[`expand_sides`](decode_expand.md#the-recursion) the walk consumes, so the residency test
+is a pass over `n_words` words and an indirection per atom, and no second launch, no second
+fold and no second expansion exist at all. There is nothing left for a probe kernel to be.
+
+So the order per step is ONE kernel, and then, only where the answer was yes and no pool
+covered it, `rola_op`'s order at `L = 1`:
 
 ```
-growth_probe(amp_write) ->  one kernel: anything new? and, either way, the
-                                       step's write-ATOM set and the reduced verdict
-growth_host.copy_(growth_any)      ->  async into pinned; the event records on it
-execute(plan, gate=growth_any)     ->  ENQUEUED BEHIND THE VERDICT, gated on it
-verdict.synchronize()              ->  the wait, now spent on the launches above
+decode_step        ->  fold, expand, THE VERDICT, walk, and the write-ATOM set,
+                       per batch-head, in one launch
+growth_host.copy_  ->  the ONE 4-byte read, after the launch that produced it
   no  -> done                      ->  the walk ran, against the residency it had
   yes -> state._decode_entry_arena ->  plan_exact(scratch.atom_bits, fresh=False)
          arena.wait()              ->  the ONE event the launch waits on
-         _decode_step              ->  the walk, resolving through the grown table
+         _decode_step              ->  the same step again, and the batch-heads that
+                                       already ran do not run twice ([§4c](#done-flags))
 ```
 
-**THE SET IS DERIVED ONCE, AND ON THE DEVICE.** The probe has to condense the write
-expansion to atoms in order to test it against the table, so publishing that condensation
-costs one byte per atom and removes the host derivation from a growth step entirely.
-Measured (RTX 3090, medians of 15 x 50, the same three cells): a growth step is
-0.615–0.626 ms against 0.756–0.862 ms for the same step planning from a host-derived
-bitmap, i.e. −17% to −27%; a steady step is 0.222–0.242 ms, of which the probe is
-0.118–0.156. So the trigger is no longer a trade at all — it makes steady steps ~3x
-cheaper AND growth steps cheaper than the preamble-every-step order that preceded it.
+<a id="the-table-test"></a>**THE TABLE TEST.** A bitmap WORD is exactly TWO atoms, because
+the atom is 16 leaves and leaf order is the bitmap's bit order, so an atom's write
+membership is a HALF-WORD TEST and no loop over leaves exists on this path. The count of
+atoms that are written and unmapped is a block reduction over those tests. Every CTA of a
+batch-head computes it, independently and identically: the two objects it reads are the
+CTA's own expansion and a page table that no launch mutates until every CTA of that
+batch-head has arrived ([§4c](#the-last-arriver)). Recomputing beat publishing when it was
+measured — the split CTAs' recompute of the fold and the expansion is what removed the
+launch — and the same argument governs here.
+
+<a id="atom-bits"></a>**THE CONDENSATION IS PUBLISHED, and it is the only thing that is.**
+The test already has the write-atom set in hand, so writing it out costs one byte per atom
+and removes the host derivation from a growth step entirely: `plan_exact` plans from
+`scratch.atom_bits` and derives no support. One CTA per batch-head (`seg == 0`) publishes
+it, UNCONDITIONALLY — a dead atom's `false` is as much of the set as a live one's `true`,
+and publishing only the growing batch-heads would leave the buffer carrying an older step's
+answer for the others, which is the very buffer the admission then plans from.
+
+The leaf-granular map is published by NOTHING. Both side maps live and die inside the CTA
+that built them ([§12](#bitmap-fields)); the step's one leaf-level output is this
+16-deep condensation of one of them.
 
 `rola.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
 condensation — the same set derived from the Cartesian-product definition in torch, with
-the comparison in `tests/integration/test_decode_growth_trigger.py` as its only
-caller. It is not a fallback and not a second path a caller may select; it is what makes
-the gate a check rather than the kernel agreeing with itself.
+the comparison in `tests/integration/test_decode_growth_trigger.py` as its only caller. It
+is not a fallback and not a second path a caller may select; it is what makes the gate a
+check rather than the kernel agreeing with itself ([§39](#second-derivation)).
 
-The pool is reserved once, so admission never moves a base pointer and there is nothing for
-the kernel to discover. `plan_exact`'s single size read is the only host synchronization a
-growth step adds beyond the probe's own.
+## <a id="the-gate"></a>4c. The verdict is PER BATCH-HEAD, and the done flags are what make a replay idempotent
 
-## <a id="the-gate"></a>4c. The gate — the step is a no-op it can enqueue blind
+<a id="per-bh-verdict"></a>**WHY A VERDICT AT ALL.** A deposit into an ABSENT atom is
+DROPPED ([§4](#absent-atom)) — `if (in_w && atom_present)`. So a host that read the growth
+verdict LAZILY (every `K` steps, a pinned poll) would run steps whose writes are silently
+lost. Laziness is not an available design at any `K > 1`; the only sound shapes are
+per-step synchronization, or a step that DECLINES TO RUN where its writes are not yet
+addressable. This is the second, and it is what turns the verdict from a host decision into
+a device one — which is in turn what lets the step be enqueued before any host has seen it,
+and captured in a graph ([§4d](#capture)).
 
-<a id="gate-before-anything"></a>**HAZARD `gate-before-anything`.** `DecodeParams::gate`
-is a `[1]` int32 (or `nullptr`). Both decode kernels test it in their FIRST statement and
-return; nothing downstream may be reordered above that test, because the whole contract is
-that a gated step touches nothing — not `y`, not the state, not `ctr`, not a bitmap word.
-`tests/integration/test_decode_graph_step.py` states it as `torch.equal` on the plane
-across a gated step.
+A NEEDY batch-head — one whose write set it can neither address nor admit — runs nothing:
+no walk, no `y`, no state, no counter beyond its arrival. Its verdict lands in `growth[bh]`
+and its write-atom set in `atom_bits`, which is exactly what the host admission needs and
+all of it.
 
-**WHY IT EXISTS, AND THE FACT THAT FORCED IT.** A deposit into an ABSENT atom is DROPPED
-([§4](#absent-atom)) — `if (in_w && atom_present)`. So a host that read the growth verdict
-LAZILY (every `K` steps, a pinned poll) would run steps whose writes are silently lost.
-Laziness is not an available design at any `K > 1`; the only sound shapes are per-step
-synchronization, or a step that DECLINES TO RUN when its writes are not yet addressable.
-The gate is the second, and it is what turns the verdict from a host decision into a
-device one.
+The skip is PER BATCH-HEAD and not all-or-nothing, and the thing that used to make that
+unsafe is the done flags below. A batch that shares one verdict wastes every resident
+sequence's step on the rarest one's growth; a batch that skips per sequence must answer
+what a replay does to the sequences that already deposited.
 
-The probe reduces its per-`bh` verdict into one `[1]` int32 and the step reads THAT — the
-skip is all-or-nothing across batch-heads on purpose
-([`decode_expand.md`](decode_expand.md#growth-reduction)): a per-`bh` skip would need a
-per-`bh` replay, and a replay that re-ran an already-deposited `bh` would double its write.
+<a id="done-flags"></a>**THE DONE FLAGS.** `DecodeScratch.done` is `[BH]` int32, zeroed
+ONCE at build. A batch-head that advances sets its flag. On the caller's replay a done
+batch-head **walks and reads but does not deposit** — and reproduces its `y` BIT FOR BIT
+while doing so, because [update-then-read](#update-then-read) means the rows it would
+deposit into already hold the deposit and the same expression is their readout. So `y` is
+complete for the whole batch after the replay without `y` ever becoming a buffer that
+survives between steps, and the contract the caller sees is:
 
-**WHAT IT BUYS THE EAGER PATH.** The verdict's copy is issued asynchronously, an event is
-recorded on it, and the step is enqueued GATED behind it; the host then waits on the
-event, having spent the wait on the launches instead of in front of them. Measured (RTX
-3080 Ti, medians of 15 x 50, one steady paged step, `d_v = 64`, `BH = 6`), a loop of steps
-with one synchronize at the end:
+> gated step -> `growth_pending` -> `admit_growth` -> replay
+> advances every sequence EXACTLY ONCE.
 
-| cell | steady, S4b order | steady, gated order | steady, CAPTURED | growth, S4b | growth, gated |
-|---|---|---|---|---|---|
-| 16x16 BC64    | 0.2468 | 0.2046 | **0.0367** | 0.7720 | 0.9107 |
-| 8x8x8x8 BC128 | 0.3254 | 0.2220 | **0.0573** | 0.8048 | 0.9672 |
-| 64x64 BC256   | 0.2811 | 0.2127 | **0.0553** | 0.6517 | 0.7780 |
+`tests/integration/test_decode_growth_trigger.py` states it as `torch.equal` on `y` AND on
+the gathered plane against the admit-everything-first order, over a MIXED batch — one
+batch-head needy, the rest not — which is the cell that can tell the per-batch-head
+contract from the global skip it replaced.
 
-The host time the caller's thread spends per steady step falls from 0.259–0.318 ms to
-0.008–0.010 ms under capture: the host-wait floor S4b measured (launch-to-visible ~0.05–0.08
-ms on this WSL2 host) is not tuned away, it is left with nothing to sit in front of.
+<a id="the-last-arriver"></a>**EVERY CROSS-LAUNCH MUTATION HAPPENS AT ONE POINT, AND THAT
+IS THE WHOLE RACE ARGUMENT.** The done flag, the page table's fold ([§4e](#the-claim)) and
+the pool cursor are all read by the PROLOGUE of every CTA of a batch-head, and all written
+by that batch-head's LAST-ARRIVING CTA — elected from `ctr[bh]`, the split-K counter that
+already existed, which the needy path increments too so that the election is the same
+statement in both branches. A CTA arrives only after it has finished reading, so no CTA of
+a launch can observe a value its own launch wrote. Without that, a done flag set early
+would make a sibling CTA skip its own share of the SAME step, and two CTAs' claims would
+disagree about which atoms are free.
 
-**THE ONE PRICE, STATED.** A growth step now pays a wasted gated launch before its
-admission: +0.126 to +0.163 ms (+16% to +20%). It is the same trade the probe itself was:
-the rare step subsidizes the common one, and in a settled sequence steady steps outnumber
-growth steps by orders of magnitude.
+<a id="growth-reduction"></a>**THE REDUCTION, AND THE RESET.** The last of those per-batch-head
+writers to arrive at `growth_ctr` ORs `growth` into the `[1]` `growth_any` the host reads.
+Nothing needy is the same statement as every batch-head done, so that one test also decides
+whether the done flags are zeroed for the next step: the flags reset themselves exactly
+when the round is over, no `memset` launch stands between two decode steps, and the whole
+thing is safe to capture. `growth_ctr` resets itself the same way `ctr` does.
+
+## <a id="the-claim"></a>4e. The slack pool — a growth step that admits itself
+
+Where the state reserves slack ([`paging.md#the-slack-pool`](../paging/paging.md#the-slack-pool)),
+a batch-head whose write set is not resident does not have to go to the host at all: it
+takes slots from its own pool region and advances. `pool_cap = 0` — the shipped default —
+is exact commitment, and the paragraphs below describe machinery that does not run.
+
+**THE ASSIGNMENT IS REPLICATED, NOT COMMUNICATED.** Every CTA of the batch-head computes
+the same mapping: the touched-unmapped atoms in ASCENDING ATOM ID take
+`pool_slots[bh][cursor + rank]`, with `rank` from a block scan over that batch-head's
+atoms. No atomic claims a slot, nothing spins, and nothing is broadcast — which is what
+keeps the step one launch and keeps it capturable. It is ALL-OR-NOTHING: a demand larger
+than the batch-head's remaining pool is a needy batch-head and the host path exactly
+([§4c](#per-bh-verdict)), because a partial claim would deposit part of a step and leave
+the replay to deposit the rest twice.
+
+**IT WRITES A SHADOW ROW, NOT THE TABLE, AND THAT IS FORCED.** The claim's predicate is
+`page_tbl[a] < 0`. A prologue write into the table would change a sibling CTA's predicate,
+which would change its ranks, and two CTAs would then assign the same slot to different
+atoms — the ordering ambiguity that makes replicated assignment unsound. So the claim
+writes `pool_map[bh]`: a WHOLE copy of that batch-head's table row with the claim merged
+in, every atom present, claimed or resident or absent. The walk then addresses through
+THAT ROW INSTEAD of the table, by one pointer chosen once in the prologue, and the walk's
+own body knows nothing about pools — no extra test, no extra load, no register held across
+it. The batch-head's last-arriving CTA folds the row's new entries into the real table and
+advances the cursor ([§4c](#the-last-arriver)), so by the next step the claim is ordinary
+residency and the shadow row is dead.
+
+**AN ADMITTED ATOM IS AN ADMITTED ATOM.** Pool slots are ordinary arena slots, committed
+and ZEROED by the host before they are named, so an atom the device admitted is
+indistinguishable from one `plan_exact` admitted: same bytes, same table format, no
+migration and no copy anywhere. That is what keeps the dense-vs-paged `torch.equal` gate a
+statement about ADDRESSING, and it is asserted directly — a pooled arena and a
+host-admitted one reach the same state and the same `y`.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
 With no host read inside it the step is capturable, and `rola.engine.dags.decode_dag.decode_step_gated`
-is that entry: the same kernels in the same order as `decode_forward` minus the verdict
+is that entry: the same kernel in the same order as `decode_forward` minus the verdict
 read. The CALLER owns the verdict, at whatever synchronization it already has (a decode
 loop syncs once per token to sample):
 
 ```
 y, state = decode_step_gated(...)   # or graph.replay()
 if growth_pending(state):           # one 4-byte read, at the caller's own sync
-    admit_growth(state)             # plan_exact from the probe's own condensation
+    admit_growth(state)             # plan_exact from the step's own condensation
     y, state = decode_step_gated(...)  # or graph.replay(); now it runs
 ```
 
-**A REPLAY IS SELF-CORRECTING**, which is what makes one captured graph enough: the probe
-re-runs inside it, so after the admission its verdict is 0 and the same graph performs the
-step it had skipped. Nothing in the loop reallocates — the workspace is built once, `ctr`
-is reset by the step's own last CTA, `probe_ctr` by the probe's, and the arena's base
-address and page table are objects an admission writes IN PLACE (the reservation never
-moves), so a graph captured over them survives growth. The eager `decode_forward` remains
-THE base path; capture is an optimization the caller selects, not a fallback either way.
+**A REPLAY IS SELF-CORRECTING**, which is what makes one captured graph enough: the verdict
+is re-derived inside it, so after the admission it is 0 and the same graph performs the
+step it had skipped — for the batch-heads that had skipped it, and for no others
+([§4c](#done-flags)). Nothing in the loop reallocates — the workspace is built once, every
+counter and flag is reset by the last CTA that reads it, and the arena's base address and
+page table are objects an admission writes IN PLACE (the reservation never moves), so a
+graph captured over them survives growth. The eager `decode_forward` remains THE base
+path; capture is an optimization the caller selects, not a fallback either way.
 
-Still open, and NOT what this section does: a device-side ADMISSION. `plan_exact` is host
-code, so a growth step still surfaces to the host once. What P67-a removes is the host's
-participation in the steady step, which is all of them but a few.
+Measured before the absorption (RTX 3080 Ti, medians of 15 x 50, one steady paged step,
+`d_v = 64`, `BH = 6`), a loop of steps with one synchronize at the end, against the
+admit-preamble-every-step order that preceded the device-side verdict:
 
-<a id="growth-probe"></a>**THE PROBE, and why it is exact.** `rola_decode_growth_probe` is
-a kernel BESIDE the expansion, in `decode_expand.cu`, and it calls that TU's own
-`expand_side` over the same `amp_write` pointers the step itself expands. It condenses the
-result 16-deep — a bitmap word is exactly two atoms, because the atom is 16 leaves and leaf
-order is bit order — PUBLISHES that condensation as `[BH, N/16]` bool, ANDs it against
-`page_table >= 0`, and writes one `[BH]` int32. So "the probe and the admission agree about
-the write support" is a property of the CALL GRAPH rather than of an audit — the admission
-plans from the very bytes the verdict was read off; what
-`tests/integration/test_decode_growth_trigger.py` can still catch is a condensation or
-a residency test that drifted, and it sweeps both directions of the agreement.
+| cell | steady, S4b order | steady, verdict order | steady, CAPTURED |
+|---|---|---|---|
+| 16x16 BC64    | 0.2468 | 0.2046 | **0.0367** |
+| 8x8x8x8 BC128 | 0.3254 | 0.2220 | **0.0573** |
+| 64x64 BC256   | 0.2811 | 0.2127 | **0.0553** |
 
-Every CTA writes its own entry unconditionally, so the buffer needs no zero-fill and the
-reduction needs no atomic. The host read is ONE BLOCKING pinned device-to-host copy into a
-workspace-owned buffer: measured against the same copy issued asynchronously and awaited on
-an event, 0.093 ms against 0.152 (medians of 15 x 100). The host must wait for the kernel
-either way, and the event path adds a record and a query on top of the wait the copy
-already performs.
+The host time the caller's thread spends per steady step falls from 0.259–0.318 ms to
+0.008–0.010 ms under capture: the host-wait floor S4b measured (launch-to-visible ~0.05–0.08
+ms on this WSL2 host) is not tuned away, it is left with nothing to sit in front of.
 
-**Why not the prefill arm's stats pass.** The facts pass reduces over a
-`[BH, T, sum_l width_l]` routing stream; at a population of one that launch would be pure
-overhead, and it would be a THIRD derivation of a set the step's own expansion already
-holds. The reference derivation `_write_atom_bitmap` keeps for the gate costs `D - 1`
-broadcast ANDs over a `[BH, N]` bool — four times the page table's own bytes, transient,
-measured at 0.130–0.236 ms, which is what the published condensation removes from a growth
-step. Deriving at atom grain directly, without the leaf expansion, is not available in
-general: an atom is 16 CONSECUTIVE leaves and the mixed radix does not align a level
-boundary with it.
+Host-side ADMISSION is what the slack pool removes for a growth step that fits it
+([§4e](#the-claim)); a step that overruns the pool, or a state with no pool at all,
+surfaces to the host exactly as it always did.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 
@@ -379,11 +426,10 @@ are [§27](#update-then-read).
 
 [§2](#kronecker-support)'s exact support — `bits_r` and `bits_w`, `n_words` each — and the
 expansion's ping-pong partner are `4 * n_words` words of SHARED MEMORY, built by the CTA
-that is about to walk them. Nothing on the step path publishes them: the arm that spills
+that is about to walk them. NOTHING PUBLISHES THEM: the arm that spills
 them to `work` exists only for a leaf space too wide for the budget
-([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)), and the one leaf-level map
-anything does publish is the growth probe's `probe_bits`, which is its OUTPUT
-([`decode_expand.md#growth-probe`](decode_expand.md#growth-probe)).
+([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)), and the step's one leaf-level
+output is the write map's 16-deep condensation ([§4b](#atom-bits)), not the map.
 
 The coarse index `pc` is `n_groups + 1` words of the same shared memory, an exclusive
 prefix whose entry `n_groups` is `M`.
@@ -801,26 +847,24 @@ The decode kernels have no backward. The layer's decode envelope check already
 refuses training mode and gradient reachability before the decode fork is reached, so
 the module's own check exists for a direct caller.
 
-## <a id="probe-blocking-read"></a>38. The probe's read is ASYNCHRONOUS, and the gate is why it can be
+## <a id="verdict-read"></a>38. The verdict's read is ONE BLOCKING pinned copy, and it cannot be anything else
 
-`growth_probe` publishes the verdict into `growth_any`; the eager path copies that
-one `[1]` int32 into a workspace-owned PINNED buffer asynchronously, records an event, and
-enqueues the GATED step before waiting on it. Blocking was the measured choice while the
-read stood IN FRONT of the step (0.093 ms against 0.152 for an event, RTX 3090, medians of
-15 × 100 — the host had to wait for the kernel either way, and the event added a record
-and a query on top of the wait the copy already performed). The gate removes that premise:
-the wait now has the step's own launches to overlap, and the event is what lets it (see
-[§4c](#the-gate) for the measured effect and its one price). Under capture the read leaves
-the step entirely — the caller performs it, at its own synchronization
-([§4d](#capture)).
+The step publishes `growth_any` at the end of its own launch, so the eager path's read is
+behind it BY DATA DEPENDENCE and there is nothing left to enqueue it in front of: the step
+is the only launch either way. It is one `[1]` int32 into a workspace-owned PINNED buffer,
+copied blocking. That was already the measured choice for a read standing in front of a
+kernel (0.093 ms against 0.152 for an asynchronous copy plus an event, RTX 3090, medians of
+15 × 100 — the host must wait for the kernel either way, and the event adds a record and a
+query on top of the wait the copy already performs), and with the ordering forced there is
+no second shape to compare.
 
-The kernel expands the write side with `decode_expand.cu`'s OWN `expand_side`, over the
-same amplitude pointers the step itself uses, and ANDs the 16-deep condensation against
-`page_table >= 0`.
+Under capture the read leaves the step entirely — the caller performs it, at its own
+synchronization ([§4d](#capture)) — which is where the host's participation in a steady
+step actually goes.
 
 ## <a id="second-derivation"></a>39. `_write_atom_bitmap` is the gate's independent second derivation
 
-The shipped path derives the write-atom set on the device (the probe publishes it), so
+The shipped path derives the write-atom set on the device (the step publishes it), so
 `_write_atom_bitmap` has no production caller and is not meant to acquire one. It
 survives deliberately as a SECOND derivation of an object the kernel computes, written
 from the definition rather than from the kernel's structure, so the equality
@@ -831,5 +875,5 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `rola.engine.facts.planes.atom_bits` produces for the chunk arm and the same one the probe
+object `rola.engine.facts.planes.atom_bits` produces for the chunk arm and the same one the step
 condenses, reached by neither's route.

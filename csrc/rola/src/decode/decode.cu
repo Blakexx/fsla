@@ -108,11 +108,72 @@ __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bi
   out_skip = row - acc;
 }
 
+//: Is atom `a` in the write map? A bitmap WORD is exactly TWO atoms, because the atom is
+//: 16 leaves and leaf order is the bitmap's bit order, so the membership of an atom is a
+//: HALF-WORD TEST and no loop over leaves exists anywhere on this path.
+//: docs/internals/decode/decode.md#atom-bits
+__device__ __forceinline__ bool atom_written(uint32_t word, int a) {
+  return (word & (0x0000ffffu << ((a & 1) << 4))) != 0u;
+}
+
+//: THE TABLE TEST: how many atoms this batch-head's write side reaches that the page
+//: table does not map. Every CTA of the batch-head computes it independently from the
+//: same two objects -- its own expansion and a table no launch mutates until every CTA
+//: of that batch-head has arrived -- so the answer is a RECOMPUTE and never a
+//: communication. docs/internals/decode/decode.md#the-table-test
+__device__ __forceinline__ int unmapped_write_atoms(const DecodeParams& p, const uint32_t* bits_w,
+                                                    const int32_t* page_row,
+                                                    BlockScanT::TempStorage& scan_temp) {
+  int found = 0;
+  for (int w = threadIdx.x; w < p.n_words; w += kDecodeThreads) {
+    const uint32_t word = bits_w[w];
+    for (int half = 0; half < 2; ++half) {
+      const int a = (w << 1) + half;
+      if (a >= p.atoms_per_bh) break;
+      if (atom_written(word, a) && page_row[a] < 0) ++found;
+    }
+  }
+  int excl = 0;
+  int total = 0;
+  BlockScanT(scan_temp).ExclusiveSum(found, excl, total);
+  return total;
+}
+
+//: THE CLAIM, replicated and canonical: the batch-head's touched-unmapped atoms take
+//: pool slots in ASCENDING ATOM ID from its own cursor, so every CTA of the batch-head
+//: derives the identical mapping with no atomic and no arrival.
+//:
+//: IT BUILDS A SHADOW TABLE ROW rather than writing the page table, and both halves of
+//: that are load-bearing. Not the table, because the table is the claim's own predicate
+//: and a prologue write would move a sibling CTA's ranks. A WHOLE ROW -- every atom,
+//: claimed or resident or absent -- because then the walk addresses through this row
+//: INSTEAD of the table, by one pointer, and the walk's own body knows nothing about
+//: pools. The fold back into the table happens once, later, where it is safe.
+//: docs/internals/decode/decode.md#the-claim
+__device__ __forceinline__ void claim_pool(const DecodeParams& p, const uint32_t* bits_w,
+                                           const int32_t* page_row, const int32_t* slots,
+                                           int32_t* shadow_row, int cursor,
+                                           BlockScanT::TempStorage& scan_temp, int& running) {
+  const int tid = threadIdx.x;
+  if (tid == 0) running = 0;
+  __syncthreads();
+  for (int base = 0; base < p.atoms_per_bh; base += kDecodeThreads) {
+    const int a = base + tid;
+    const bool live = a < p.atoms_per_bh;
+    const bool want = live && atom_written(bits_w[a >> 1], a) && page_row[a] < 0;
+    int excl = 0;
+    int aggregate = 0;
+    BlockScanT(scan_temp).ExclusiveSum(want ? 1 : 0, excl, aggregate);
+    if (live) shadow_row[a] = want ? slots[cursor + running + excl] : page_row[a];
+    __syncthreads();
+    if (tid == 0) running += aggregate;
+    __syncthreads();
+  }
+}
+
 template <int DV, int D, bool DECAY, bool IN_SMEM>
 __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY)) void
 decode_step_kernel(DecodeParams p) {
-  //: HAZARD gate-before-anything -- docs/internals/decode/decode.md#gate-before-anything
-  if (p.gate != nullptr && *p.gate != 0) return;
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
   //: template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
   constexpr int cols = DV + 1;
@@ -206,276 +267,399 @@ decode_step_kernel(DecodeParams p) {
   const uint32_t* bits_w = bits + 2 * nw + parity * nw;
   coarse_index(p, bits_r, bits_w, pc, scan_temp, s_running);
 
-  // ---- resolve this CTA's ROW range into a WORD range -------------------------
-  // Defined in ROWS (popcount-balanced by construction), handed out in WORDS; the two
-  // boundary words are cut by dropping / keeping set bits, exact rather than by an index
-  // comparison. docs/internals/decode/decode.md#row-range-to-words
-  if (tid == 0) {
-    const int M = pc[ng];
-    const int row_lo = static_cast<int>(static_cast<int64_t>(seg) * M / p.n_split);
-    const int row_hi = static_cast<int>(static_cast<int64_t>(seg + 1) * M / p.n_split);
-    if (row_hi <= row_lo) {
-      s_w_start = 1;
-      s_w_last = 0;  // empty range: the walk below runs zero iterations
-      s_drop = 0;
-      s_keep = 0;
-    } else {
-      int w0, skip0, w1, skip1;
-      locate_row(pc, bits_r, bits_w, nw, ng, row_lo, w0, skip0);
-      locate_row(pc, bits_r, bits_w, nw, ng, row_hi - 1, w1, skip1);
-      s_w_start = w0;
-      s_drop = skip0;
-      s_w_last = w1;
-      s_keep = skip1 + 1;
+  // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
+  //: The step is its own growth probe: the write map is in shared memory and the page
+  //: table is one indirection away, so the verdict costs a pass over the map's words and
+  //: no launch at all. What it decides is PER BATCH-HEAD, and the three outcomes are
+  //: ADVANCE (nothing unmapped, or the pool covers it), NO-OP (the host must admit) and
+  //: RE-READ (this batch-head already deposited this step and the walk is running again
+  //: for another one's sake): docs/internals/decode/decode.md#absorbed-verdict
+  //: NO ADDRESS SURVIVES INTO THE WALK. Each of the three places that needs this
+  //: batch-head's table row forms it again from `bh`, because a 64-bit base held live
+  //: across the walk costs two of the registers the declared residency is spending:
+  //: docs/internals/decode/decode.md#declared-residency
+  const bool paged = p.page_tbl != nullptr;
+  const bool done = paged && p.done[bh] != 0;
+  const bool deposit = !done;
+  bool claimed = false;
+  bool needy = false;
+  if (paged && !done) {
+    const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
+    __syncthreads();
+    const int demand = unmapped_write_atoms(p, bits_w, p.page_tbl + row_base, scan_temp);
+    __syncthreads();
+    if (demand > 0) {
+      const int cursor = (p.pool_cap > 0) ? p.pool_cursor[bh] : 0;
+      claimed = demand <= p.pool_cap - cursor;
+      needy = !claimed;
+      if (claimed) {
+        claim_pool(p, bits_w, p.page_tbl + row_base,
+                   p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap, p.pool_map + row_base,
+                   cursor, scan_temp, s_running);
+      }
+    }
+  }
+  //: THE CONDENSATION, published UNCONDITIONALLY by one CTA per batch-head: a dead
+  //: atom's `false` is as much of the set as a live one's `true`, and publishing only
+  //: the growing batch-heads would leave the buffer carrying an older step's answer for
+  //: the others -- which is the set a host admission then plans from.
+  if (paged && seg == 0) {
+    bool* atom_row = p.atom_bits + static_cast<int64_t>(bh) * p.atoms_per_bh;
+    for (int w = tid; w < nw; w += kDecodeThreads) {
+      const uint32_t word = bits_w[w];
+      for (int half = 0; half < 2; ++half) {
+        const int a = (w << 1) + half;
+        if (a >= p.atoms_per_bh) break;
+        atom_row[a] = atom_written(word, a);
+      }
     }
   }
   __syncthreads();
 
-  const int w_start = s_w_start;
-  const int w_last = s_w_last;
-  const int drop_first = s_drop;
-  const int keep_last = s_keep;
+  //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter beyond its
+  //: arrival -- which is what lets the step be enqueued before the admission it needs is
+  //: known, and what makes the caller's replay THE SAME STEP rather than a second one.
+  //: docs/internals/decode/decode.md#per-bh-verdict
+  if (!needy) {
+    // ---- resolve this CTA's ROW range into a WORD range -------------------------
+    // Defined in ROWS (popcount-balanced by construction), handed out in WORDS; the two
+    // boundary words are cut by dropping / keeping set bits, exact rather than by an index
+    // comparison. docs/internals/decode/decode.md#row-range-to-words
+    if (tid == 0) {
+      const int M = pc[ng];
+      const int row_lo = static_cast<int>(static_cast<int64_t>(seg) * M / p.n_split);
+      const int row_hi = static_cast<int>(static_cast<int64_t>(seg + 1) * M / p.n_split);
+      if (row_hi <= row_lo) {
+        s_w_start = 1;
+        s_w_last = 0;  // empty range: the walk below runs zero iterations
+        s_drop = 0;
+        s_keep = 0;
+      } else {
+        int w0, skip0, w1, skip1;
+        locate_row(pc, bits_r, bits_w, nw, ng, row_lo, w0, skip0);
+        locate_row(pc, bits_r, bits_w, nw, ng, row_hi - 1, w1, skip1);
+        s_w_start = w0;
+        s_drop = skip0;
+        s_w_last = w1;
+        s_keep = skip1 + 1;
+      }
+    }
+    __syncthreads();
 
-  float acc[NC];
+    const int w_start = s_w_start;
+    const int w_last = s_w_last;
+    const int drop_first = s_drop;
+    const int keep_last = s_keep;
+
+    float acc[NC];
 #pragma unroll
-  for (int k = 0; k < NC; ++k) acc[k] = 0.0f;
-  float acc_m = 0.0f;
+    for (int k = 0; k < NC; ++k) acc[k] = 0.0f;
+    float acc_m = 0.0f;
 
-  // ---- THE WALK --------------------------------------------------------------
-  int dig[D];
-  float o_r = 1.0f, o_w = 1.0f, o_rate = 1.0f;
-  auto recompute_outer = [&]() {
-    o_r = 1.0f;
-    o_w = 1.0f;
-    o_rate = 1.0f;
+    // ---- THE WALK --------------------------------------------------------------
+    int dig[D];
+    float o_r = 1.0f, o_w = 1.0f, o_rate = 1.0f;
+    auto recompute_outer = [&]() {
+      o_r = 1.0f;
+      o_w = 1.0f;
+      o_rate = 1.0f;
 #pragma unroll
-    for (int l = 0; l < D - 1; ++l) {
-      const int off = p.level_amp_offset[l] + dig[l];
-      o_r *= sa_r[off];
-      o_w *= sa_w[off];
-      if (DECAY) o_rate *= sd[off];
-    }
-  };
+      for (int l = 0; l < D - 1; ++l) {
+        const int off = p.level_amp_offset[l] + dig[l];
+        o_r *= sa_r[off];
+        o_w *= sa_w[off];
+        if (DECAY) o_rate *= sd[off];
+      }
+    };
 
-  const int b_last = p.level_width[D - 1];
-  const int off_last_base = p.level_amp_offset[D - 1];
+    const int b_last = p.level_width[D - 1];
+    const int off_last_base = p.level_amp_offset[D - 1];
 
-  //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is pinned
-  //: here (a plain origin, no per-atom widening multiply); the cache is keyed on the atom
-  //: VALUE, so it is correct whatever order the walk reaches leaves in and costs at most
-  //: two int32 loads per 32-leaf bitmap word. `atom_base` is the atom's first row as an
-  //: ELEMENT offset from `p.state`: dense is `bh * N + (atom << 4)` (which is why a
-  //: topology whose `N` is not a whole number of atoms still addresses correctly -- the
-  //: two halves recombine to `bh * N + leaf`), paged is `slot << 4`.
-  //: docs/internals/decode/decode.md#paged-address
-  const int32_t* page_row =
-      (p.page_tbl == nullptr) ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
-  const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
-  int cached_atom = -1;
-  int64_t atom_base = 0;
-  bool atom_present = false;
+    //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is pinned
+    //: here (a plain origin, no per-atom widening multiply); the cache is keyed on the atom
+    //: VALUE, so it is correct whatever order the walk reaches leaves in and costs at most
+    //: two int32 loads per 32-leaf bitmap word. `atom_base` is the atom's first row as an
+    //: ELEMENT offset from `p.state`: dense is `bh * N + (atom << 4)` (which is why a
+    //: topology whose `N` is not a whole number of atoms still addresses correctly -- the
+    //: two halves recombine to `bh * N + leaf`), paged is `slot << 4`.
+    //: docs/internals/decode/decode.md#paged-address
+    //: A CLAIMING STEP WALKS THE SHADOW ROW, and that is the whole of the pool inside
+    //: the walk: one pointer, chosen once: docs/internals/decode/decode.md#the-claim
+    const int32_t* page_row =
+        !paged ? nullptr
+               : (claimed ? p.pool_map : p.page_tbl) + static_cast<int64_t>(bh) * p.atoms_per_bh;
+    const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
+    int cached_atom = -1;
+    int64_t atom_base = 0;
+    bool atom_present = false;
 
-  int w = w_start + warp;
-  int g_cached = -1;
-  bool g_empty = false;
-  while (w <= w_last) {
-    //: THE COARSE-INDEX CONSULT AT WALK TIME: a group whose prefix does not advance
-    //: holds no touched row, so its 32 words are never read. Once per GROUP, not once
-    //: per word: docs/internals/decode/decode.md#coarse-consult
-    const int grp = w >> 5;
-    if (grp != g_cached) {
-      g_cached = grp;
-      g_empty = (pc[grp + 1] == pc[grp]);
-    }
-    if (g_empty) {
-      const int next = (grp + 1) << 5;
-      w += ceil_div_int(next - w, kDecodeWarps) * kDecodeWarps;
-      continue;
-    }
+    int w = w_start + warp;
+    int g_cached = -1;
+    bool g_empty = false;
+    while (w <= w_last) {
+      //: THE COARSE-INDEX CONSULT AT WALK TIME: a group whose prefix does not advance
+      //: holds no touched row, so its 32 words are never read. Once per GROUP, not once
+      //: per word: docs/internals/decode/decode.md#coarse-consult
+      const int grp = w >> 5;
+      if (grp != g_cached) {
+        g_cached = grp;
+        g_empty = (pc[grp + 1] == pc[grp]);
+      }
+      if (g_empty) {
+        const int next = (grp + 1) << 5;
+        w += ceil_div_int(next - w, kDecodeWarps) * kDecodeWarps;
+        continue;
+      }
 
-    const uint32_t rw_word = bits_r[w];
-    const uint32_t ww_word = bits_w[w];
-    //: THE UNION, formed in a REGISTER and never stored.
-    uint32_t u = rw_word | ww_word;
-    //: HAZARD boundary-cut-order -- docs/internals/decode/decode.md#boundary-cut-order
-    if (w == w_last) u = keep_low_set_bits(u, keep_last);
-    if (w == w_start) u = drop_low_set_bits(u, drop_first);
-    if (u == 0u) {
+      const uint32_t rw_word = bits_r[w];
+      const uint32_t ww_word = bits_w[w];
+      //: THE UNION, formed in a REGISTER and never stored.
+      uint32_t u = rw_word | ww_word;
+      //: HAZARD boundary-cut-order -- docs/internals/decode/decode.md#boundary-cut-order
+      if (w == w_last) u = keep_low_set_bits(u, keep_last);
+      if (w == w_start) u = drop_low_set_bits(u, drop_first);
+      if (u == 0u) {
+        w += kDecodeWarps;
+        continue;
+      }
+
+      const int leaf_base = w * 32;
+      //: The `D` integer divisions are paid ONCE PER WORD, not once per row -- a per-row
+      //: decomposition would make the A100 dense arm instruction-bound:
+      //: docs/internals/decode/decode.md#divisions-per-word
+      {
+        int rem = leaf_base;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          const int s = p.level_stride[l];
+          dig[l] = rem / s;
+          rem -= dig[l] * s;
+        }
+      }
+      recompute_outer();
+
+      int q = 0;
+      int cur = dig[D - 1];
+      //: The word is walked in ALIGNED SUB-RANGES, each inside ONE inner block, so the
+      //: innermost digit needs no division and the outer digits are constant. ONE uniform
+      //: loop that degenerates, not a fast path with a fallback:
+      //: docs/internals/decode/decode.md#aligned-subranges
+      while (q < 32) {
+        int take = b_last - cur;
+        if (take > 32 - q) take = 32 - q;
+        uint32_t sub = (take >= 32) ? u : ((u >> q) & ((1u << take) - 1u));
+        while (sub != 0u) {
+          const int t = __ffs(static_cast<int>(sub)) - 1;
+          sub &= sub - 1u;
+          const int bit = q + t;
+          //: Bits at or beyond `N` are never set (the expansion's loop stops at
+          //: `span_out`), so the walk needs no leaf bound test.
+          const int leaf = leaf_base + bit;
+          const int off_last = off_last_base + cur + t;
+          const bool in_r = ((rw_word >> bit) & 1u) != 0u;
+          const bool in_w = ((ww_word >> bit) & 1u) != 0u;
+
+          const int atom = leaf >> kAtomShift;
+          if (atom != cached_atom) {
+            cached_atom = atom;
+            if (page_row != nullptr) {
+              const int slot = page_row[atom];
+              atom_present = slot >= 0;
+              atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+            } else {
+              atom_present = true;
+              atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+            }
+          }
+
+          //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
+          //: plan admits the step's write set exactly, so an atom with no slot is outside
+          //: it, and a never-deposited leaf holds zeros in the dense backing too. The
+          //: self-normalizing readout then contributes exactly nothing through it.
+          //: docs/internals/decode/decode.md#absent-atom
+          float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
+          float sv[NC];
+#pragma unroll
+          for (int k = 0; k < NC; ++k) sv[k] = 0.0f;
+          float smass = 0.0f;
+          if (atom_present) {
+#pragma unroll
+            for (int k = 0; k < NC; ++k) sv[k] = row[lane + 32 * k];
+            if (lane == 0) smass = row[DV];
+          }
+
+          //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
+          //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole
+          //: causal intra Gram collapses into reading the row after it is written. A row
+          //: in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression
+          //: is its readout too -- one path, no arm.
+          //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
+          //: BIT FOR BIT while doing so: the rows it would deposit into already hold the
+          //: deposit, and update-then-read is exactly what makes re-reading them the same
+          //: expression: docs/internals/decode/decode.md#done-flags
+          //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
+          if (in_w && atom_present && deposit) {
+            //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
+            //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly
+            //: the identity, so ONE `expf` replaces its three. `log1pf` IS the composition
+            //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
+            //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
+            float keep = 1.0f;
+            const float wa = o_w * sa_w[off_last];
+            if (DECAY) {
+              const float rate = o_rate * sd[off_last];
+              //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
+              //: what makes "stored != 0 => live != 0" an identity:
+              //: docs/internals/decode/decode.md#detached-clock
+              keep = expf(fminf(wa * log1pf(-rate), kDecodeMaxExponent));
+            }
+            const float wv = wa * sw;
+#pragma unroll
+            for (int k = 0; k < NC; ++k) {
+              sv[k] = keep * sv[k] + wv * v_tok[lane + 32 * k];
+              row[lane + 32 * k] = sv[k];
+            }
+            //: The mass column is the `v := 1` column of the identical recurrence.
+            if (lane == 0) {
+              smass = keep * smass + wv;
+              row[DV] = smass;
+            }
+          }
+          if (in_r) {
+            const float a = o_r * sa_r[off_last];
+#pragma unroll
+            for (int k = 0; k < NC; ++k) acc[k] += a * sv[k];
+            if (lane == 0) acc_m += a * smass;
+          }
+        }
+        q += take;
+        cur += take;
+        if (cur >= b_last) {
+          cur = 0;
+#pragma unroll
+          for (int l = D - 2; l >= 0; --l) {
+            if (++dig[l] < p.level_width[l]) break;
+            dig[l] = 0;
+          }
+          recompute_outer();
+        }
+      }
       w += kDecodeWarps;
-      continue;
     }
 
-    const int leaf_base = w * 32;
-    //: The `D` integer divisions are paid ONCE PER WORD, not once per row -- a per-row
-    //: decomposition would make the A100 dense arm instruction-bound:
-    //: docs/internals/decode/decode.md#divisions-per-word
-    {
-      int rem = leaf_base;
+    // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
+    //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
+    const int fold_pitch = cols + 3;
 #pragma unroll
-      for (int l = 0; l < D; ++l) {
-        const int s = p.level_stride[l];
-        dig[l] = rem / s;
-        rem -= dig[l] * s;
-      }
+    for (int k = 0; k < NC; ++k) fold[warp * fold_pitch + lane + 32 * k] = acc[k];
+    if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
+    __syncthreads();
+    if (tid < cols) {
+      float t = 0.0f;
+#pragma unroll
+      for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
+      part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
     }
-    recompute_outer();
+    __syncthreads();
 
-    int q = 0;
-    int cur = dig[D - 1];
-    //: The word is walked in ALIGNED SUB-RANGES, each inside ONE inner block, so the
-    //: innermost digit needs no division and the outer digits are constant. ONE uniform
-    //: loop that degenerates, not a fast path with a fallback:
-    //: docs/internals/decode/decode.md#aligned-subranges
-    while (q < 32) {
-      int take = b_last - cur;
-      if (take > 32 - q) take = 32 - q;
-      uint32_t sub = (take >= 32) ? u : ((u >> q) & ((1u << take) - 1u));
-      while (sub != 0u) {
-        const int t = __ffs(static_cast<int>(sub)) - 1;
-        sub &= sub - 1u;
-        const int bit = q + t;
-        //: Bits at or beyond `N` are never set (the expansion's loop stops at
-        //: `span_out`), so the walk needs no leaf bound test.
-        const int leaf = leaf_base + bit;
-        const int off_last = off_last_base + cur + t;
-        const bool in_r = ((rw_word >> bit) & 1u) != 0u;
-        const bool in_w = ((ww_word >> bit) & 1u) != 0u;
-
-        const int atom = leaf >> kAtomShift;
-        if (atom != cached_atom) {
-          cached_atom = atom;
-          if (page_row != nullptr) {
-            const int slot = page_row[atom];
-            atom_present = slot >= 0;
-            atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
-          } else {
-            atom_present = true;
-            atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
-          }
-        }
-
-        //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
-        //: plan admits the step's write set exactly, so an atom with no slot is outside
-        //: it, and a never-deposited leaf holds zeros in the dense backing too. The
-        //: self-normalizing readout then contributes exactly nothing through it.
-        //: docs/internals/decode/decode.md#absent-atom
-        float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
-        float sv[NC];
-#pragma unroll
-        for (int k = 0; k < NC; ++k) sv[k] = 0.0f;
-        float smass = 0.0f;
-        if (atom_present) {
-#pragma unroll
-          for (int k = 0; k < NC; ++k) sv[k] = row[lane + 32 * k];
-          if (lane == 0) smass = row[DV];
-        }
-
-        //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
-        //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole
-        //: causal intra Gram collapses into reading the row after it is written. A row
-        //: in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression
-        //: is its readout too -- one path, no arm.
-        //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
-        if (in_w && atom_present) {
-          //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
-          //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly
-          //: the identity, so ONE `expf` replaces its three. `log1pf` IS the composition
-          //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
-          //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
-          float keep = 1.0f;
-          const float wa = o_w * sa_w[off_last];
-          if (DECAY) {
-            const float rate = o_rate * sd[off_last];
-            //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
-            //: what makes "stored != 0 => live != 0" an identity:
-            //: docs/internals/decode/decode.md#detached-clock
-            keep = expf(fminf(wa * log1pf(-rate), kDecodeMaxExponent));
-          }
-          const float wv = wa * sw;
-#pragma unroll
-          for (int k = 0; k < NC; ++k) {
-            sv[k] = keep * sv[k] + wv * v_tok[lane + 32 * k];
-            row[lane + 32 * k] = sv[k];
-          }
-          //: The mass column is the `v := 1` column of the identical recurrence.
-          if (lane == 0) {
-            smass = keep * smass + wv;
-            row[DV] = smass;
-          }
-        }
-        if (in_r) {
-          const float a = o_r * sa_r[off_last];
-#pragma unroll
-          for (int k = 0; k < NC; ++k) acc[k] += a * sv[k];
-          if (lane == 0) acc_m += a * smass;
-        }
+    // ---- the deterministic split-K combine, and the fused divide ---------------
+    if (p.n_split > 1) {
+      float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
+      if (tid < cols) slot[tid] = part[tid];
+      __threadfence();
+      __syncthreads();
+      if (tid == 0) {
+        s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
       }
-      q += take;
-      cur += take;
-      if (cur >= b_last) {
-        cur = 0;
-#pragma unroll
-        for (int l = D - 2; l >= 0; --l) {
-          if (++dig[l] < p.level_width[l]) break;
-          dig[l] = 0;
-        }
-        recompute_outer();
+      __syncthreads();
+      if (s_last_cta == 0) return;
+
+      //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
+      //: the reader sees the stores the `__threadfence` above made visible.
+      //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
+      if (tid < cols) {
+        const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
+        float t = 0.0f;
+        for (int s = 0; s < p.n_split; ++s)
+          t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
+        part[tid] = t;
       }
+      __syncthreads();
+      //: Reset for the next step: no `memset` launch between two decode steps, and the
+      //: counter is safe to capture in a CUDA graph.
+      if (tid == 0) p.ctr[bh] = 0;
     }
-    w += kDecodeWarps;
-  }
-
-  // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
-  //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
-  const int fold_pitch = cols + 3;
-#pragma unroll
-  for (int k = 0; k < NC; ++k) fold[warp * fold_pitch + lane + 32 * k] = acc[k];
-  if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
-  __syncthreads();
-  if (tid < cols) {
-    float t = 0.0f;
-#pragma unroll
-    for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
-    part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
-  }
-  __syncthreads();
-
-  // ---- the deterministic split-K combine, and the fused divide ---------------
-  if (p.n_split == 1) {
     if (tid < DV) {
       const float den = part[DV];
       p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
     }
-    return;
+  } else if (p.n_split > 1) {
+    //: A needy batch-head's CTAs ARRIVE ANYWAY. The arrival is what elects one CTA to
+    //: publish the verdict below, and electing it from the same counter the combine uses
+    //: is what makes "no CTA of this batch-head is still reading" the SAME argument in
+    //: both branches: docs/internals/decode/decode.md#the-last-arriver
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) {
+      s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
+    }
+    __syncthreads();
+    if (s_last_cta == 0) return;
+    if (tid == 0) p.ctr[bh] = 0;
   }
 
-  float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
-  if (tid < cols) slot[tid] = part[tid];
+  if (!paged) return;
+
+  // ---- the per-batch-head publication, by its LAST-ARRIVING CTA ---------------
+  //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE -- the
+  //: done flag, the page table's fold and the pool cursor. All three are inputs to the
+  //: prologue of every CTA of this batch-head, and all three are written only after the
+  //: last of them has arrived, which is what keeps the replicated claim from diverging
+  //: and the done flag from skipping its own launch:
+  //: docs/internals/decode/decode.md#the-last-arriver
+  if (claimed) {
+    //: The claim's SIZE is re-derived rather than carried: the table is still unfolded
+    //: here, so this is the same count the prologue reached, and a register held across
+    //: the whole walk for it would come out of the declared residency
+    //: (docs/internals/decode/decode.md#declared-residency).
+    const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
+    int32_t* page_row = p.page_tbl + row_base;
+    const int32_t* pool_row = p.pool_map + row_base;
+    const int taken = unmapped_write_atoms(p, bits_w, page_row, scan_temp);
+    __syncthreads();
+    for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) {
+      const int slot = pool_row[a];
+      if (slot >= 0 && page_row[a] < 0) page_row[a] = slot;
+    }
+    if (tid == 0) p.pool_cursor[bh] += taken;
+  }
+  if (tid == 0) {
+    p.growth[bh] = needy ? 1 : 0;
+    if (!needy) p.done[bh] = 1;
+  }
   __threadfence();
   __syncthreads();
-  if (tid == 0) {
-    s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
-  }
+  if (tid == 0) s_last_cta = (atomicAdd(p.growth_ctr, 1) == p.BH - 1) ? 1 : 0;
   __syncthreads();
   if (s_last_cta == 0) return;
 
-  //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so the
-  //: reader sees the stores the `__threadfence` above made visible.
-  //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
-  if (tid < cols) {
-    const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
-    float t = 0.0f;
-    for (int s = 0; s < p.n_split; ++s) t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
-    part[tid] = t;
-  }
+  //: THE REDUCTION THE HOST READS, and the done flags' self-reset. Nothing needy means
+  //: every batch-head is done, so the two answers are ONE test and no launch stands
+  //: between two steps: docs/internals/decode/decode.md#growth-reduction
+  __shared__ int s_any;
+  if (tid == 0) s_any = 0;
   __syncthreads();
-  if (tid < DV) {
-    const float den = part[DV];
-    p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
+  int seen = 0;
+  for (int i = tid; i < p.BH; i += kDecodeThreads) seen |= __ldcg(p.growth + i);
+  if (seen) s_any = 1;
+  __syncthreads();
+  if (s_any == 0) {
+    for (int i = tid; i < p.BH; i += kDecodeThreads) p.done[i] = 0;
   }
-  //: Reset for the next step: no `memset` launch between two decode steps, and the
-  //: counter is safe to capture in a CUDA graph.
-  if (tid == 0) p.ctr[bh] = 0;
+  if (tid == 0) {
+    *p.growth_any = s_any;
+    *p.growth_ctr = 0;
+  }
 }
 
 }  // namespace detail
@@ -494,9 +678,7 @@ int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay,
   const bool step_fits = static_cast<int64_t>(decode_step_smem_bytes(total_rows, d_v, cols, decay,
                                                                      n_words, n_groups, true))
                          <= smem_budget;
-  const bool probe_fits =
-      static_cast<int64_t>(decode_probe_smem_bytes(total_rows, n_words, true)) <= smem_budget;
-  return (step_fits && probe_fits) ? 0 : static_cast<int64_t>(kExpandBufWords) * n_words;
+  return step_fits ? 0 : static_cast<int64_t>(kExpandBufWords) * n_words;
 }
 
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
@@ -644,14 +826,15 @@ int64_t rola_decode_work_words(std::vector<int64_t> level_widths, int64_t d_v, b
                                    decay, n_words, n_groups, detail::smem_budget_of(device_index));
 }
 
-at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Tensor> write,
-                               std::vector<int64_t> normalize, c10::optional<at::Tensor> dials,
-                               at::Tensor g_write, at::Tensor v, at::Tensor state, at::Tensor work,
-                               at::Tensor ws, at::Tensor ctr, std::vector<int64_t> level_widths,
-                               std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
-                               std::vector<int64_t> level_row_offsets, int64_t n_split, double eps,
-                               c10::optional<at::Tensor> page_table,
-                               c10::optional<at::Tensor> gate) {
+at::Tensor rola_decode_forward(
+    std::vector<at::Tensor> read, std::vector<at::Tensor> write, std::vector<int64_t> normalize,
+    c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v, at::Tensor state,
+    at::Tensor work, at::Tensor ws, at::Tensor ctr, at::Tensor growth, at::Tensor growth_any,
+    at::Tensor growth_ctr, at::Tensor done, at::Tensor atom_bits, std::vector<int64_t> level_widths,
+    std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
+    std::vector<int64_t> level_row_offsets, int64_t n_split, double eps,
+    c10::optional<at::Tensor> page_table, c10::optional<at::Tensor> pool_slots,
+    c10::optional<at::Tensor> pool_cursor, c10::optional<at::Tensor> pool_map) {
   const int D = static_cast<int>(read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
   TORCH_CHECK(static_cast<int>(write.size()) == D && static_cast<int>(normalize.size()) == D
@@ -680,9 +863,9 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Ten
   //: the bound. docs/internals/decode/decode_api.md#paged-state
   int64_t N = 0;
   int atoms_per_bh = 0;
-  const int32_t* page_ptr = nullptr;
+  int32_t* page_ptr = nullptr;
   if (page_table.has_value()) {
-    const at::Tensor& tbl = *page_table;
+    at::Tensor& tbl = *page_table;
     detail::check_i32(tbl, "page_table");
     TORCH_CHECK(tbl.dim() == 2 && tbl.size(0) == BH, "page_table must be [BH, N / ", kAtomLeaves,
                 "] int32");
@@ -691,7 +874,7 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Ten
     TORCH_CHECK(state.dim() == 3 && state.size(1) == kAtomLeaves && state.size(2) == cols,
                 "under a page table the state is the arena's plane, [slots, ", kAtomLeaves,
                 ", d_v + 1]");
-    page_ptr = tbl.data_ptr<int32_t>();
+    page_ptr = tbl.mutable_data_ptr<int32_t>();
   } else {
     TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
                 "state must be [BH, N, d_v + 1]");
@@ -726,6 +909,25 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Ten
               "ws must be [BH, n_split, cols]");
   TORCH_CHECK(ctr.dim() == 1 && ctr.size(0) == BH, "ctr must be [BH] int32");
 
+  //: THE ADMISSION BUFFERS, checked whichever backing this is: the step's own verdict
+  //: lands in them under a page table and they are untouched without one, and validating
+  //: them either way is what keeps the two backings ONE ABI:
+  //: docs/internals/decode/decode_api.md#the-step
+  detail::check_i32(growth, "growth");
+  detail::check_i32(growth_any, "growth_any");
+  detail::check_i32(growth_ctr, "growth_ctr");
+  detail::check_i32(done, "done");
+  TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
+  TORCH_CHECK(done.dim() == 1 && done.size(0) == BH, "done must be [BH] int32");
+  TORCH_CHECK(growth_any.dim() == 1 && growth_any.size(0) == 1, "growth_any must be [1] int32");
+  TORCH_CHECK(growth_ctr.dim() == 1 && growth_ctr.size(0) == 1, "growth_ctr must be [1] int32");
+  TORCH_CHECK(
+      atom_bits.is_cuda() && atom_bits.scalar_type() == at::kBool && atom_bits.is_contiguous(),
+      "atom_bits must be a contiguous CUDA bool tensor, got ", atom_bits.scalar_type());
+  TORCH_CHECK(
+      atom_bits.dim() == 2 && atom_bits.size(0) == BH && atom_bits.size(1) == N / kAtomLeaves,
+      "atom_bits must be [BH, N / ", kAtomLeaves, "] bool, got ", atom_bits.sizes());
+
   const bool decay = dials.has_value();
   const int64_t budget = detail::smem_budget_of(v.device().index());
   const int64_t per_cta =
@@ -753,10 +955,36 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Ten
   p.work = want_work == 0 ? nullptr : reinterpret_cast<uint32_t*>(work.data_ptr<int32_t>());
   p.ws = ws.data_ptr<float>();
   p.ctr = ctr.data_ptr<int32_t>();
-  if (gate.has_value()) {
-    detail::check_i32(*gate, "gate");
-    TORCH_CHECK(gate->dim() == 1 && gate->size(0) == 1, "gate must be [1] int32");
-    p.gate = gate->data_ptr<int32_t>();
+  p.growth = growth.data_ptr<int32_t>();
+  p.growth_any = growth_any.data_ptr<int32_t>();
+  p.growth_ctr = growth_ctr.data_ptr<int32_t>();
+  p.done = done.data_ptr<int32_t>();
+  p.atom_bits = atom_bits.data_ptr<bool>();
+
+  //: THE SLACK POOL, present or absent as ONE decision -- three buffers and a capacity,
+  //: or four zeros and exact-commit. There is no half-configured pool:
+  //: docs/internals/paging/paging.md#the-slack-pool
+  const bool pooled = pool_slots.has_value();
+  TORCH_CHECK(pooled == pool_cursor.has_value() && pooled == pool_map.has_value(),
+              "the slack pool is its three buffers together: pass pool_slots, pool_cursor "
+              "and pool_map, or none of them");
+  if (pooled) {
+    TORCH_CHECK(page_table.has_value(),
+                "a slack pool admits into a page table and this state is dense-backed");
+    detail::check_i32(*pool_slots, "pool_slots");
+    detail::check_i32(*pool_cursor, "pool_cursor");
+    detail::check_i32(*pool_map, "pool_map");
+    TORCH_CHECK(pool_slots->dim() == 2 && pool_slots->size(0) == BH,
+                "pool_slots must be [BH, pool_cap] int32, got ", pool_slots->sizes());
+    TORCH_CHECK(pool_cursor->dim() == 1 && pool_cursor->size(0) == BH,
+                "pool_cursor must be [BH] int32");
+    TORCH_CHECK(
+        pool_map->dim() == 2 && pool_map->size(0) == BH && pool_map->size(1) == atoms_per_bh,
+        "pool_map must be the page table's shape [BH, N / ", kAtomLeaves, "] int32");
+    p.pool_slots = pool_slots->data_ptr<int32_t>();
+    p.pool_cursor = pool_cursor->data_ptr<int32_t>();
+    p.pool_map = pool_map->data_ptr<int32_t>();
+    p.pool_cap = static_cast<int>(pool_slots->size(1));
   }
   p.N = N;
   p.BH = BH;
@@ -769,80 +997,6 @@ at::Tensor rola_decode_forward(std::vector<at::Tensor> read, std::vector<at::Ten
 
   launch_decode_step(p, d_v, decay, budget);
   return y;
-}
-
-void rola_decode_growth_probe(std::vector<at::Tensor> write, at::Tensor page_table, at::Tensor work,
-                              at::Tensor probe_bits, at::Tensor growth, at::Tensor growth_any,
-                              at::Tensor probe_ctr, at::Tensor atom_bits, int64_t heads,
-                              int64_t n_split, std::vector<int64_t> level_widths,
-                              std::vector<int64_t> level_strides,
-                              std::vector<int64_t> level_spans) {
-  const int D = static_cast<int>(write.size());
-  TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
-  TORCH_CHECK(static_cast<int>(level_widths.size()) == D
-                  && static_cast<int>(level_strides.size()) == D
-                  && static_cast<int>(level_spans.size()) == D,
-              "the three per-level integer vectors must each have D entries");
-  detail::check_i32(page_table, "page_table");
-  detail::check_i32(work, "work");
-  detail::check_i32(probe_bits, "probe_bits");
-  detail::check_i32(growth, "growth");
-  TORCH_CHECK(page_table.dim() == 2, "page_table must be [BH, N / ", kAtomLeaves, "] int32");
-  const int BH = static_cast<int>(page_table.size(0));
-  const int atoms_per_bh = static_cast<int>(page_table.size(1));
-  const int64_t N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
-  detail::check_i32(growth_any, "growth_any");
-  detail::check_i32(probe_ctr, "probe_ctr");
-  TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
-  TORCH_CHECK(growth_any.dim() == 1 && growth_any.size(0) == 1, "growth_any must be [1] int32");
-  TORCH_CHECK(probe_ctr.dim() == 1 && probe_ctr.size(0) == 1, "probe_ctr must be [1] int32");
-  TORCH_CHECK(
-      atom_bits.is_cuda() && atom_bits.scalar_type() == at::kBool && atom_bits.is_contiguous(),
-      "atom_bits must be a contiguous CUDA bool tensor, got ", atom_bits.scalar_type());
-  TORCH_CHECK(atom_bits.dim() == 2 && atom_bits.size(0) == BH && atom_bits.size(1) == atoms_per_bh,
-              "atom_bits must be the page table's shape [BH, N / ", kAtomLeaves, "] bool, got ",
-              atom_bits.sizes());
-  TORCH_CHECK(heads >= 1 && BH % heads == 0, "heads must divide BH");
-  TORCH_CHECK(n_split >= 1, "n_split must be >= 1, got ", n_split);
-
-  DecodeParams p{};
-  p.D = D;
-  const int total_rows =
-      detail::fill_levels(p, write, level_widths, level_strides, level_spans, BH, N);
-  const at::ScalarType level_dtype = write[0].scalar_type();
-  for (int l = 0; l < D; ++l) {
-    TORCH_CHECK(write[l].scalar_type() == level_dtype,
-                "every routing level shares one dtype; level ", l, " disagrees");
-  }
-  p.levels_bf16 = detail::is_bf16(level_dtype, "the routing levels");
-
-  const int n_words = static_cast<int>((N + 31) / 32);
-  const int64_t budget = detail::smem_budget_of(page_table.device().index());
-  const int64_t per_cta = static_cast<int64_t>(decode_probe_smem_bytes(total_rows, n_words, true)
-                                                       <= static_cast<size_t>(budget)
-                                                   ? 0
-                                                   : kExpandBufWords * n_words);
-  TORCH_CHECK(work.numel() >= per_cta * BH * n_split, "the expansion's global scratch must hold ",
-              per_cta * BH * n_split, " int32 for this geometry, got ", work.numel());
-  TORCH_CHECK(probe_bits.dim() == 2 && probe_bits.size(0) == BH && probe_bits.size(1) == n_words,
-              "probe_bits must be [BH, ceil(N/32)] int32, got ", probe_bits.sizes());
-
-  p.page_tbl = page_table.data_ptr<int32_t>();
-  p.growth = growth.data_ptr<int32_t>();
-  p.growth_any = growth_any.data_ptr<int32_t>();
-  p.probe_ctr = probe_ctr.data_ptr<int32_t>();
-  p.atom_bits = atom_bits.data_ptr<bool>();
-  p.work = work.numel() == 0 ? nullptr : reinterpret_cast<uint32_t*>(work.data_ptr<int32_t>());
-  p.probe_bits = reinterpret_cast<uint32_t*>(probe_bits.data_ptr<int32_t>());
-  p.atoms_per_bh = atoms_per_bh;
-  p.N = N;
-  p.BH = BH;
-  p.H = static_cast<int>(heads);
-  p.n_words = n_words;
-  p.n_split = static_cast<int>(n_split);
-  p.total_rows = total_rows;
-
-  launch_decode_growth_probe(p, budget);
 }
 
 }  // namespace decode

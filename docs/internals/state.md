@@ -39,6 +39,17 @@ A `RoLAState` is a paged tensor and nothing more:
 | the logical shape | `[B, H, N, cols]` (`state.shape`) |
 | device, dtype | `state.device`, `state.dtype` — the STORAGE's |
 | `strategy` | storage mechanics: what a write does to this object's own storage |
+| `pool_slack` | storage mechanics: the slack pool's size, a FRACTION of full residency |
+
+<a id="the-slack-pool"></a>**`pool_slack`** (`rola.state(pool_slack=0.0)`, default `0.0`)
+is the other storage-mechanics knob, and it lives here for the same reason `strategy`
+does: it governs what a paged arena PRE-COMMITS, not what a call computes. A fraction
+above `0.0` reserves that fraction of each batch-head's full residency as physical slots
+a decode step can admit into ON THE DEVICE, with no host round trip — `0.0` is EXACT
+COMMITMENT, unchanged from before the pool existed. The mechanics — sizing, the
+pre-zeroed ordinary slots, the device-side claim and its shadow row, exhaustion and
+refill — are [`paging/paging.md` §the-slack-pool](paging/paging.md#the-slack-pool); what
+the pool changes at THIS seam is [§5b](#decode-seam).
 
 **THE MEMBERSHIP TEST is a question, and it is the whole design rule: would a paged
 tensor know this?** A tensor knows its layout and its contiguity, so `strategy` stays.
@@ -171,13 +182,17 @@ and returns the state exactly as `rola_op` does. Three things live behind that s
   membership test. The ORDER and the two memo disciplines are that DAG's page
   ([`engine/decode_dag.md` §5](engine/decode_dag.md#host-carrier)); what the state owes
   them is only its identity, which is what the `per_state` table is keyed on.
-* **The backing is invisible.** `_decode_entry` hands back the arena's plane and table,
-  or a VIEW of the dense plane — the view is what makes the kernel's in-place update
-  the state's update. Dense and paged compute the same bytes
-  ([`decode/decode.md` §4](decode/decode.md#paged-address)).
+* **The backing is invisible.** `_decode_entry` returns `(plane, page_table, arena)`: the
+  arena's plane and table (and its slack pool, ridden along for the pool buffers alone —
+  a dense state has none), or a dense state's VIEW of its own plane with the other two
+  `None`. The view is what makes the kernel's in-place update the state's update. Dense
+  and paged compute the same bytes ([`decode/decode.md` §4](decode/decode.md#paged-address)).
 * **Growth is CONDITIONAL, and the condition arrives from the device.** `_decode_entry`
-  admits nothing: it hands back the residency the state already has. When the device
-  growth probe finds an atom this step writes that the table does not map,
+  admits nothing itself: it hands back the residency the state already has, plus the
+  pool a paged step can admit ITSELF into on the device
+  ([`paging/paging.md` §the-slack-pool](paging/paging.md#the-slack-pool)) — a claim the
+  pool covers never reaches this seam at all. When the step's own verdict finds a
+  batch-head that writes an atom neither the table nor the pool can address,
   `_decode_entry_arena` plans it with `plan_exact(..., fresh=False)` — residency becomes
   the UNION and the launch waits on the one event — and the step is walked again
   ([`decode/decode.md` §4b](decode/decode.md#growth)).
@@ -243,7 +258,7 @@ it is not a second stateful surface, and the layer will not import either packag
 
 ## <a id="future-work"></a>9. NAMED FUTURE WORK
 
-Three items are designed and NOT BUILT. They are here rather than in a workflow ledger
+Two items are designed and NOT BUILT. They are here rather than in a workflow ledger
 because the repository has to carry its own contracts: a reader ten years from now gets
 the design, not an archaeology exercise. None of them is scheduled.
 
@@ -295,19 +310,11 @@ built is settled, and the settlement is what must not be re-litigated:
   the growth admission is the precedent (`plan_exact(..., fresh=False)` rewrites the
   same table under the same capture, [`decode/decode.md` §4b](decode/decode.md#growth)).
   THE FORK TEST is an intersection of two sets that both already exist: the step's
-  write-atom set, condensed on the device by the growth probe, AND the slots whose
+  write-atom set, condensed on the device as `atom_bits`, AND the slots whose
   refcount is `> 1`. Those slots are copied before the write; every other write goes in
   place, which is what keeps a fork proportional to divergence.
 
-### 9.2 A device-side ADMISSION
-
-A captured decode step no longer needs the host per steady token
-([`decode/decode.md` §4d](decode/decode.md#capture)), but `plan_exact` is still host code,
-so a GROWTH step surfaces once. Removing that last round trip means admitting on the
-device — an allocator cursor and a page-table patch inside the step, drawing on
-committed headroom the host tops up lazily.
-
-### 9.3 Lifting the 4 GiB state-plane bound
+### 9.2 Lifting the 4 GiB state-plane bound
 
 The chunk consumer's state addressing is a 32-bit byte displacement from a pinned plane
 origin, which bounds a plane at 4 GiB (~1,032,192 pages) and is refused loudly above it.

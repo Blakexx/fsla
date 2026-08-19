@@ -16,7 +16,7 @@ extent policy and scope live in docs/internals/paging/paging.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import prod
+from math import ceil, prod
 
 import torch
 
@@ -264,6 +264,16 @@ class PageArena:
     either never-binding or a self-inflicted refusal, and the storage it would have
     sized is the storage paging exists not to touch.
 
+    **THE SLACK POOL (``pool_slack``, a FRACTION of full residency, default ``0.0``).**
+    ``ceil(pool_slack * atoms_per_bh)`` slots are reserved PER ``bh`` up front, committed
+    and zeroed, and a decode step admits into them ITSELF, on the device, with no host
+    round trip. They are ordinary slots from this same allocator, so an atom admitted
+    from the pool is indistinguishable from one :meth:`plan_exact` admitted -- which is
+    what keeps the dense-vs-paged equality a claim about addressing and not about who
+    allocated. ``0.0`` is EXACT COMMITMENT: no pool exists, and every growth step goes to
+    the host exactly as it always did. Exhaustion degrades to that same path
+    (docs/internals/paging/paging.md#the-slack-pool).
+
     **THE TWO BACKINGS, AND WHY NEITHER IS A FALLBACK.** ``backing='vmm'`` reserves the
     dense limit as ADDRESS SPACE (free) and asks the CUDA driver for physical memory only
     as the allocator hands out slots -- which is the entire physical-memory promise of
@@ -290,7 +300,7 @@ class PageArena:
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,
                  device: torch.device, extent_atoms: int | None = None,
-                 backing: str = "auto") -> None:
+                 backing: str = "auto", pool_slack: float = 0.0) -> None:
         N = prod(widths)
         self.widths = tuple(widths)
         self.BC = int(BC)
@@ -309,6 +319,17 @@ class PageArena:
             resolved_extent = int(C_EXTENT_ATOMS)
         self.extent_atoms = resolved_extent
         self._allocator = ExtentAllocator(self.logical_pages, self.extent_atoms)
+
+        if not 0.0 <= float(pool_slack) <= 1.0:
+            raise ValueError(
+                f"pool_slack is a FRACTION of full residency and must lie in [0, 1], got "
+                f"{pool_slack!r}")
+        self.pool_slack = float(pool_slack)
+        #: Per ``bh``, because the device claim is per ``bh``: every CTA of a batch-head
+        #: derives its slots from that batch-head's own region and cursor, which is what
+        #: removes the cross-CTA communication a shared cursor would need
+        #: (docs/internals/paging/paging.md#the-slack-pool).
+        self.pool_capacity = ceil(self.pool_slack * self.keying.atoms_per_bh)
 
         self.backing = _resolve_backing(backing, self.device)
 
@@ -349,6 +370,36 @@ class PageArena:
             self._value_base = torch.zeros(
                 (self.logical_pages, MMA_K_QUANTUM, self.cols),
                 dtype=torch.float32, device=self.device)
+        self._pool_slots = torch.empty((self.BH, self.pool_capacity), dtype=torch.int32,
+                                       device=self.device)
+        self._pool_cursor = torch.zeros(self.BH, dtype=torch.int32, device=self.device)
+        #: The device's own claim, read by the walk until the step folds it into the
+        #: table. Sized like the table because that is what it indexes.
+        self._pool_map = torch.full((self.BH, self.keying.atoms_per_bh), _ABSENT_PAGE,
+                                    dtype=torch.int32, device=self.device)
+        self._cursor_host = torch.empty(self.BH, dtype=torch.int32,
+                                        pin_memory=self.device.type == "cuda")
+        self._reserve_pool()
+
+    def _reserve_pool(self) -> None:
+        """Hand the pool `pool_capacity` slots per `bh`, COMMITTED AND ZEROED.
+
+        A pool slot is an ORDINARY arena slot -- taken from the same allocator, physically
+        present before it is named, and holding zeros -- so an atom the device admits into
+        one is indistinguishable from an atom `plan_exact` admitted, and no migration or
+        copy exists anywhere in the design.
+        """
+        if not self.pool_capacity:
+            return
+        total = self.BH * self.pool_capacity
+        first = self._allocator.take(total)
+        self._commit(self._allocator.allocated)
+        self._value_base[first:first + total].zero_()
+        self._pool_slots.copy_(
+            torch.arange(first, first + total, dtype=torch.int32,
+                         device=self.device).view(self.BH, self.pool_capacity))
+        self._pool_cursor.zero_()
+        self.peak_pages = max(self.peak_pages, self._allocator.allocated)
 
     def _commit(self, pages: int) -> None:
         """Make ``pages`` slots PHYSICALLY exist. The bridge's already do.
@@ -452,6 +503,10 @@ class PageArena:
         self._allocator.reset()
         self.peak_pages = 0
         self._ready = None
+        #: The pool's slots came from the allocator that was just rewound, so they are
+        #: re-taken here rather than kept: a pool naming slots the allocator may hand out
+        #: again is the one way a device claim could alias a host admission.
+        self._reserve_pool()
 
     # -- THE ONE DATA-MOVEMENT BOUNDARY -----------------------------------
 
@@ -579,6 +634,65 @@ class PageArena:
             allocated_bytes=self.allocated_bytes(), dense_bytes=self.dense_bytes(),
             committed_bytes=self.committed_bytes)
         return self.last_result
+
+    # -- the slack pool ---------------------------------------------------
+
+    @property
+    def pool_slots(self) -> torch.Tensor | None:
+        """``[BH, pool_capacity]`` int32 slot ids, or ``None`` under exact commitment."""
+        return self._pool_slots if self.pool_capacity else None
+
+    @property
+    def pool_cursor(self) -> torch.Tensor | None:
+        """``[BH]`` int32 -- pool slots each batch-head has spent."""
+        return self._pool_cursor if self.pool_capacity else None
+
+    @property
+    def pool_map(self) -> torch.Tensor | None:
+        """``[BH, atoms_per_bh]`` int32 -- the device's claim, before the fold."""
+        return self._pool_map if self.pool_capacity else None
+
+    def pool_headroom(self) -> int:
+        """Pool slots the THINNEST batch-head still has. A host read, at leisure.
+
+        The minimum and not the mean, because the pool is spent per ``bh`` and the first
+        batch-head to run out is the one that sends the step back to the host. It is what
+        a serving loop polls to decide when to :meth:`refill_pool`, and it is deliberately
+        NOT on the step's path: a step that exhausts the pool degrades to the host
+        admission it always had.
+        """
+        if not self.pool_capacity:
+            return 0
+        self._cursor_host.copy_(self._pool_cursor, non_blocking=False)
+        return self.pool_capacity - int(self._cursor_host.max())
+
+    def refill_pool(self) -> int:
+        """Replace the slots the device claimed. Returns how many. HOST, OFF THE PATH.
+
+        A claimed slot is ordinary residency now -- the step folded it into the table --
+        so a refill does not reclaim anything: it takes fresh slots for the spent
+        positions, commits and zeroes them, and rewinds the cursors. Between two decode
+        steps, on whatever stream the caller is on.
+        """
+        if not self.pool_capacity:
+            return 0
+        self._cursor_host.copy_(self._pool_cursor, non_blocking=False)
+        spent = self._cursor_host.tolist()
+        total = sum(spent)
+        if not total:
+            return 0
+        first = self._allocator.take(total)
+        self._commit(self._allocator.allocated)
+        self._value_base[first:first + total].zero_()
+        fresh = torch.arange(first, first + total, dtype=torch.int32, device=self.device)
+        at = 0
+        for bh, count in enumerate(spent):
+            if count:
+                self._pool_slots[bh, :count] = fresh[at:at + count]
+                at += count
+        self._pool_cursor.zero_()
+        self.peak_pages = max(self.peak_pages, self._allocator.allocated)
+        return total
 
     def wait(self) -> None:
         """The ONE event-wait before the consumer launch.

@@ -54,14 +54,14 @@ that.
 | producer per-side solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the chunk consumer (the prefill arm) | `chunk_facts`, `chunk_block_bits`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
 | the chunk consumer's reverse pass | `chunk_backward_seeds`, `chunk_scan_a_probe`, `chunk_scan_b_probe`, `chunk_walk_probe`, `chunk_scan_a_census`, `chunk_scan_b_census` |
-| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_growth_probe`, `rola_decode_work_words`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
+| the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_work_words`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
 The two scans carry a census EACH. They share a geometry and not a live set, so one row
 for both would be a floor claim about a kernel nobody measured
 ([`chunk/backward.md`](chunk/backward.md#reg-floor-scan)).
 
-Two of the five decode entries are gates rather than operations, and their docstrings say
+Two of the four decode entries are gates rather than operations, and their docstrings say
 so: `rola_decode_capacity` reports the decode path's maximum level width, which must be
 `>=` the producer's `MAX_BRANCH_WIDTH` (`tests/unit/test_decode_capacity.py` pins the
 pair), and `rola_decode_producer_width_mirror` is the C++ mirror of that producer
@@ -124,31 +124,28 @@ device's own allocation granularity, which is the finest commitment the driver a
 
 ## <a id="the-step"></a>7a. `rola_decode_forward` — the whole step, one launch
 
-The decode step is ONE kernel: the operand fold, the support expansion and the
-token-stationary gather-GEMV are three phases of it, so what the boundary passes is the
-caller's RAW `[B, 1, H, *]` views and not a widened plane. There is no separate fold entry
-and no `heads` argument — the fold is inside the kernel and `v`'s own shape carries `H`.
-The phases, and why the fold is not its own launch, are
-[`decode/decode_fold.md`](decode/decode_fold.md); the step is
-[`decode/decode.md`](decode/decode.md).
+The decode step is ONE kernel: the operand fold, the support expansion, the
+token-stationary gather-GEMV and the step's OWN per-batch-head residency verdict are
+phases of it, so what the boundary passes is the caller's RAW `[B, 1, H, *]` views and not
+a widened plane. There is no separate fold entry and no `heads` argument — the fold is
+inside the kernel and `v`'s own shape carries `H`. There is no separate admission-probe
+entry either: the residency test reads the write map the walk was going to build anyway,
+so what used to be a launch ahead of the step is now a pass over shared memory inside it.
+The phases, and why neither the fold nor the admission question is its own launch, are
+[`decode/decode_fold.md`](decode/decode_fold.md) and [`decode/decode.md`
+§4c](decode/decode.md#absorbed-verdict); the step is [`decode/decode.md`](decode/decode.md).
+
+`growth`, `growth_any`, `growth_ctr`, `done` and `atom_bits` are the verdict's own
+buffers — bound as required arguments whichever backing the call is, so one ABI serves
+both. `pool_slots`, `pool_cursor` and `pool_map` are the slack pool, present exactly on a
+paged step whose state reserved one. Both groups are [`decode/decode_api.md`
+§4-5](decode/decode_api.md#the-verdict).
 
 <a id="work-words"></a>`rola_decode_work_words` is bound beside it because the expansion's
 GLOBAL scratch is sized by a kernel-side rule — does the bitmap fit in this device's shared
 memory? — and mirroring that rule in Python would put a drift surface in front of an
 out-of-bounds write. It answers `0` at every shipped topology
 ([`decode/decode_api.md` §2](decode/decode_api.md#work-words)).
-
-## <a id="growth-probe"></a>7b. `rola_decode_growth_probe` — bound beside the step
-
-The probe is registered as its own entry rather than as an argument to
-`rola_decode_forward`, because it is a PRECONDITION of the step and not a mode of it: the
-host runs it first and the STEP reads its reduced verdict as a `gate`, so the step is
-enqueued behind the probe and the host learns the answer afterwards — planning, when it
-must, from the write-atom set the probe published beside that verdict. Binding it
-separately is what keeps that ordering visible at the boundary instead of implied by a
-flag. It takes the same RAW write views the step does and folds them itself, with the same
-device function, so the two agree about the write support by the call graph. Its contract is
-[`decode/decode_api.md` §4](decode/decode_api.md#growth-probe).
 
 ## The chunk consumer's entries (operator adoption)
 

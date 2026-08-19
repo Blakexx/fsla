@@ -45,9 +45,9 @@ The pool is sized EXACTLY, not grown: the popcount of the atom condensation is t
 number of atoms this call will touch, so the arena knows its own footprint before the
 consumer launches, and there is nothing to discover. The condensation comes from the
 call's own arm and never from a second derivation — the facts pass at `T > 1`
-([`stats.md`](stats.md)), the decode growth probe's published `atom_bits` at `T = 1`
-([`decode/decode_expand.md` §7](../decode/decode_expand.md#growth-probe)) — and both are EXACT rather
-than a bound, which is what makes `resident == realized` a fact instead of a hope.
+([`stats.md`](stats.md)), the decode step's own published `atom_bits` at `T = 1`
+([`decode/decode_api.md` §4](../decode/decode_api.md#the-verdict)) — and both are EXACT
+rather than a bound, which is what makes `resident == realized` a fact instead of a hope.
 
 Allocation and zero-init issue on a SIDE STREAM as soon as the epilogue lands, and the
 consumer launch waits on ONE event. That is the whole of the asynchrony: no polling, no
@@ -68,6 +68,75 @@ with the paged-state-I/O integration (P67 S3b).
 The consequence downstream is that admission is TOTAL: every atom the routing realizes
 is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one
 predicate and the arena publishes exactly one of them (the table).
+
+## <a id="the-slack-pool"></a>The Slack Pool — A Decode Step Admits Itself
+
+`plan_exact` is a HOST call: the admission it performs is exactly what a paged decode
+step needs when it grows, and every growth step before this feature reached the host for
+it, once. `rola.state(pool_slack=...)` is the escape from that reach, and it is storage
+mechanics rather than a mode — the same class of fact as ``strategy`` or the backing
+itself.
+
+**SIZING.** ``pool_slack`` is a FRACTION of full residency, resolved PER `bh`:
+`PageArena.pool_capacity = ceil(pool_slack * atoms_per_bh)` slots are reserved for EACH
+batch-head, not for the arena as a whole. Per `bh`, because the device claim below is per
+`bh` too — every CTA of one batch-head derives its slots from that batch-head's own
+region and cursor, and a shared cursor across batch-heads is exactly the cross-CTA
+communication the design has to avoid. `pool_slack = 0.0`, the default, reserves nothing:
+`pool_capacity` is `0`, the three pool tensors are `None`, and every growth step goes to
+the host exactly as it always did. This is EXACT COMMITMENT, restated: the pool is an
+addition to it, never a replacement, and turning it off costs nothing that was not already
+being paid.
+
+**THE SLOTS ARE ORDINARY, PRE-COMMITTED AND PRE-ZEROED.** A pool's slots come from the
+same `ExtentAllocator` every other admission draws from — taken and committed at
+`PageArena` construction (and again at `reset()`, since the allocator cursor they came
+from is rewound there too) — and zeroed on the host's own time, off the step's critical
+path. An atom the device later claims into one of them is therefore BYTE-INDISTINGUISHABLE
+from one `plan_exact` admitted: no migration, no copy, and the dense-vs-paged equality
+gate is untouched by the pool existing.
+
+**THE DEVICE CLAIM is replicated and canonical, with no atomic and no cross-CTA
+communication.** Every CTA of a batch-head independently computes the SAME mapping: the
+batch-head's touched-unmapped atoms, in ASCENDING ATOM ID, taken from `pool_slots[bh]`
+starting at `pool_cursor[bh]`, via a block scan every CTA runs identically over the same
+inputs. It is all-or-nothing per batch-head — a CTA either finds the demand fits under
+`pool_cap - cursor` and claims the whole of it, or claims nothing and the batch-head is
+`needy` exactly as an unpooled one would be.
+
+<a id="the-shadow-row"></a>**WHY IT WRITES A SHADOW ROW, AND NOT THE TABLE.** The claim's
+predicate is `page_tbl[a] < 0` — an atom not yet mapped. Writing a claimed slot into the
+real table during the prologue would move that predicate out from under a SIBLING CTA
+still computing its own claim, and two CTAs' independently-replicated claims would then
+diverge over which atoms remain unclaimed. The claim instead writes `pool_map[bh]` — a
+WHOLE SHADOW COPY of that batch-head's table row, the claim merged in — and the walk
+addresses through THAT row instead of the table, by choosing one base pointer once,
+before the walk starts. The walk's own body knows nothing about pools: it is the same
+loop over `page_row[atom]` whether `page_row` is the table or the shadow. The batch-head's
+LAST-ARRIVING CTA — elected from the same split-K `ctr[bh]` the combine uses — folds the
+shadow row's new entries into the real table and advances the cursor, once, after every
+sibling CTA is done reading either row.
+
+**EXHAUSTION DEGRADES TO THE POOL-FREE PATH, EXACTLY.** A batch-head whose demand exceeds
+`pool_cap - cursor` claims nothing and is `needy`: the verdict, the per-`bh` no-op, the
+host's `admit_growth`, and the replay are the same four steps an unpooled growth step
+always took. There is no new failure mode and no partial claim to unwind.
+
+**POOL-COVERED GROWTH RAISES NO VERDICT.** The step admitted itself, so there is nothing
+urgent for the host — `growth_pending` reads `False`. What a serving loop watches instead
+is `rola.engine.dags.decode_dag.pool_headroom(state)`: the MINIMUM free slots over
+batch-heads (the first one to run out is the one that will need the host), a plain host
+read with no synchronization forced by the read itself. `refill_pool(state)` takes fresh
+slots for exactly the positions the device spent, commits and zeroes them, and rewinds the
+cursors — on whatever schedule the caller likes, entirely off the step's path. A claimed
+slot is ordinary residency the moment the table fold lands, so a refill never reclaims
+anything; it only restocks.
+
+**`PageArena.reset()` RE-RESERVES THE POOL.** The pool's slots came from the allocator
+cursor `reset()` rewinds, so leaving them in place would let a future admission hand out
+slots the pool still names as its own — the one way a device claim could alias a host
+admission. `reset()` therefore re-runs the same reservation `__init__` did, on the freshly
+rewound allocator.
 
 ## <a id="backings"></a>The Two Backings, And The Receipt
 

@@ -101,8 +101,8 @@ step does not: it is `M4` walked twice around an admission
 
 A bool per fact would be `2^n` specializations of everything downstream, so intra-mask
 variation is carried as a null plan FIELD instead — `read_mass is None`,
-`state_in is None`, a dense step's `gate is None` — which is free and costs no hot-loop
-register.
+`state_in is None`, a dense step's `page_table is None` — which is free and costs no
+hot-loop register.
 
 ## <a id="the-suppliable-set"></a>5. The suppliable set is closed
 

@@ -11,7 +11,7 @@
 //   1. supp(R) = prod_l supp_l(R) at T = 1, so the exact support is an N-bit Kronecker
 //      object and it is MATERIALIZED, not bounded: no candidate list, no
 //      over-enumeration, no per-row membership test anywhere on this path.
-//   2. BC IS ABSENT AND THAT IS THE POINT. Nothing here, in decode_expand.cu
+//   2. BC IS ABSENT AND THAT IS THE POINT. Nothing here, in decode_expand.cuh
 //      or in decode.cu is an expression in BC; work is partitioned over bitmap WORDS.
 //   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
 //      what keeps the address BC-free; a null page table means the slot IS the atom and
@@ -41,7 +41,7 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: Both decode kernels launch 256 threads. The number is pinned by three facts at once
+//: The decode step launches 256 threads. The number is pinned by three facts at once
 //: (lane-to-column mapping, the tiled consumer's block size, sm_86 occupancy) and is
 //: not free-floating: docs/internals/decode/decode.md#decode-threads
 constexpr int kDecodeThreads = 256;
@@ -116,26 +116,38 @@ struct DecodeParams {
   float* state;
   //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
   //: slot IS the atom. ONE base translation for both: docs/internals/decode/decode.md#paged-address
-  const int32_t* page_tbl;
-  //: `[BH]` int32, the GROWTH PROBE's verdict: `1` where this batch-head writes an
-  //: atom the table does not map, `0` where it does not. Every CTA writes its own entry
-  //: unconditionally, so the buffer needs no zero-fill and the probe needs no atomic:
-  //: docs/internals/decode/decode_expand.md#growth-probe
+  //: MUTABLE because a pool claim folds into it, and only ever at the point where the
+  //: batch-head's last CTA has arrived: docs/internals/decode/decode.md#the-claim
+  int32_t* page_tbl;
+  //: `[BH]` int32, THE PER-BATCH-HEAD VERDICT: `1` where this step writes an atom no
+  //: table entry and no pool slot can address, `0` where it advanced. Written by the
+  //: batch-head's last-arriving CTA: docs/internals/decode/decode.md#per-bh-verdict
   int32_t* growth;
-  //: `[1]` int32, the OR of `growth` over batch-heads, reduced by the probe's
-  //: last-arriving CTA, and that CTA's `[1]` int32 self-resetting arrival counter:
-  //: docs/internals/decode/decode_expand.md#growth-reduction
+  //: `[1]` int32, the OR of `growth` over batch-heads, and the `[1]` int32
+  //: self-resetting arrival counter of the CTA that reduces it:
+  //: docs/internals/decode/decode.md#growth-reduction
   int32_t* growth_any;
-  int32_t* probe_ctr;
-  //: `[1]` int32 or `nullptr`. NONZERO MAKES THE STEP A NO-OP -- no `y`, no state, no
-  //: scratch touched -- which is the only thing that lets a step be ENQUEUED before its
-  //: admission is known: docs/internals/decode/decode.md#the-gate
-  const int32_t* gate;
-  //: `[BH, atoms_per_bh]` bool, the GROWTH PROBE's second output: this step's own write
-  //: set, condensed to atoms. It is what a growth step's `plan_exact` admits from, so the
-  //: host never re-derives the set the probe has already expanded:
-  //: docs/internals/decode/decode_expand.md#growth-probe
+  int32_t* growth_ctr;
+  //: `[BH]` int32, THE DONE FLAGS -- `1` where a batch-head has already deposited this
+  //: step. A replay re-walks a done batch-head for its `y` and deposits NOTHING, which
+  //: is what makes "exactly once per sequence" hold across the admission the replay
+  //: exists for: docs/internals/decode/decode.md#done-flags
+  int32_t* done;
+  //: `[BH, atoms_per_bh]` bool, this step's own write set condensed to atoms. It is what
+  //: a growth step's `plan_exact` admits from, so the host never re-derives the set the
+  //: step has already expanded: docs/internals/decode/decode.md#atom-bits
   bool* atom_bits;
+
+  //: THE SLACK POOL -- physical slots pre-committed and pre-zeroed by the host, from
+  //: which a growth step admits ITSELF. `pool_slots` is `[BH, pool_cap]` slot ids,
+  //: `pool_cursor` `[BH]` how many of each batch-head's are spent, `pool_map`
+  //: `[BH, atoms_per_bh]` the claim the walk addresses through before the fold.
+  //: `pool_cap = 0` (and three null pointers) is EXACT-COMMIT: every growth step goes to
+  //: the host, which is the shipped default: docs/internals/decode/decode.md#the-claim
+  const int32_t* pool_slots;
+  int32_t* pool_cursor;
+  int32_t* pool_map;
+  int pool_cap;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   //: THE EXPANSION'S SCRATCH, and only when it does not fit in shared memory: `4 *
@@ -144,11 +156,6 @@ struct DecodeParams {
   //: whole bitmap lives in SMEM and never reaches DRAM at all:
   //: docs/internals/decode/decode_expand.md#smem-arm
   uint32_t* work;
-  //: `[BH, n_words]`, THE GROWTH PROBE'S PUBLISHED EXPANSION: the exact write-leaf map it
-  //: condenses to atoms and ANDs against residency. The step publishes no such object --
-  //: its two maps live and die inside the CTA that built them:
-  //: docs/internals/decode/decode_expand.md#growth-probe
-  uint32_t* probe_bits;
 
   //: Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
   //: makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
@@ -208,28 +215,22 @@ __device__ __forceinline__ uint32_t keep_low_set_bits(uint32_t word, int k) {
   return out;
 }
 
-//: The expansion's own shared-memory need, in WORDS per CTA. The step holds four: both
-//: published side maps and the recursion's ping-pong pair. The growth probe holds the
-//: ping-pong pair alone, because its ONE published map is its output.
+//: The expansion's own shared-memory need, in WORDS per CTA: both published side maps
+//: and the recursion's ping-pong pair.
 //: docs/internals/decode/decode_expand.md#smem-arm
 constexpr int kExpandBufWords = 4;
-constexpr int kProbeBufWords = 2;
 
 // ---------------------------------------------------------------------------
-// The two TUs' entry points. `decode_expand.cu` owns the growth probe,
-// `decode.cu` the step; `rola_api.cpp` binds only the host entries.
+// The step's entry points. `decode.cu` owns the step and the host entry;
+// `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
-
-size_t decode_probe_smem_bytes(int total_rows, int n_words, bool in_smem);
-void launch_decode_growth_probe(const DecodeParams& p, int64_t smem_budget);
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_words,
                               int n_groups, bool in_smem);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
-//: The GLOBAL words one CTA needs when the SMEM arm does not hold, taken over the step
-//: and the probe together so that ONE buffer serves both. `0` is the ordinary answer.
-//: docs/internals/decode/decode_expand.md#smem-arm
+//: The GLOBAL words one CTA needs when the SMEM arm does not hold. `0` is the ordinary
+//: answer. docs/internals/decode/decode_expand.md#smem-arm
 int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_words,
                                   int n_groups, int64_t smem_budget);
 

@@ -136,8 +136,9 @@ def _bitmap(fixture, widths):
     return planes.atom_bits(_packed(fixture)[1], widths).bool()
 
 
-def _arena(widths, BC, BH):
-    return PageArena(widths=widths, BC=BC, cols=_COLS, BH=BH, device=torch.device("cuda"))
+def _arena(widths, BC, BH, pool_slack=0.0):
+    return PageArena(widths=widths, BC=BC, cols=_COLS, BH=BH, device=torch.device("cuda"),
+                     pool_slack=pool_slack)
 
 
 def _paged(fixture, widths, C, BC, arena, *, s_in=None):
@@ -196,6 +197,41 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
         f"{(dense - paged).abs().max().item():.3e} over "
         f"{int((dense != paged).sum())} elements")
     _assert_y(y_dense, y_paged, y_control, widths, BC, "the paged y differs from the dense y")
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: f"{'x'.join(map(str, a[0]))}-C{a[1]}-BC{a[2]}")
+def test_a_reserved_slack_pool_is_bitwise_invisible(arm):
+    """A pool moves every residency slot and must move NO byte of the state.
+
+    The slack pool exists for the decode step, which admits into it on the device; the
+    prefill arm never touches it. But its slots come off the SAME allocator, ahead of the
+    routing's own, so a pooled arena assigns different slot ids to the same atoms -- and
+    "which slot" is exactly what a backing is not allowed to be able to say. This is
+    `test_a_fragmented_non_monotone_slot_arena_is_bitwise_invisible` reached through the
+    knob a caller actually turns, and the claim is the same claim as cell 1's.
+    """
+    widths, C, BC = arm
+    fixture = _fixture(widths, T=2 * C, support=0.5, seed=len(widths) * 31 + BC)
+    BH = fixture[3].shape[0] * fixture[3].shape[2]
+    bitmap = _bitmap(fixture, widths)
+
+    y_dense, dense = _dense(fixture, widths, C, BC)
+    y_control, _ = _dense(fixture, widths, C, BC)
+
+    plain = _arena(widths, BC, BH)
+    plain.plan_exact(bitmap)
+    pooled = _arena(widths, BC, BH, pool_slack=0.25)
+    pooled.plan_exact(bitmap)
+    y_pooled, state_pooled = _paged(fixture, widths, C, BC, pooled)
+
+    assert pooled.pool_capacity > 0, "this cell needs a pool"
+    assert not torch.equal(plain.page_table, pooled.page_table), (
+        "the pool did not move a single slot id, so this cell exercised no translation")
+    assert torch.equal(dense, state_pooled), (
+        "the reserved pool moved the state: some address is keyed on atom RANK rather "
+        "than on the page table")
+    _assert_y(y_dense, y_pooled, y_control, widths, BC,
+              "the pooled arena's y differs from the dense y")
 
 
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: f"{'x'.join(map(str, a[0]))}-C{a[1]}-BC{a[2]}")

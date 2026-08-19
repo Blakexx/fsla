@@ -187,12 +187,11 @@ Verified non-vacuously: master built in a fresh worktree fails exactly as descri
 above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
 its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-`decode_expand.cu`'s kernel block is `rola::decode::detail` on the same rule (it
-became ratified when the decode unification added the file to the manifest, which is
-what promotes the naming from hygiene to a gate requirement), so NO kernel in the
-binary carries an anonymous-namespace name: every ratified name is a function of
-source content and toolchain only, a worktree build passes the post-build gates, and
-a same-tip SASS comparison across paths is 0-differing over the whole matrix.
+The decode path is now `decode.cu` alone — fold, expansion and walk are one kernel, one
+TU, one `rola::decode::detail` block — so NO kernel in the binary carries an
+anonymous-namespace name: every ratified name is a function of source content and
+toolchain only, a worktree build passes the post-build gates, and a same-tip SASS
+comparison across paths is 0-differing over the whole matrix.
 
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
 changes the assembled code of 1,073 of the 1,228 entries then present, which under the

@@ -98,10 +98,10 @@ class DecodeGeometry:
 class DecodePlan:
     """Everything one decode launch reads, and nothing it does not.
 
-    NO FIELD IS DERIVED AT THE LAUNCH SITE. `gate` is an input and never a mode: it is
-    the `[1]` int32 the growth probe reduces into, present exactly on a paged step, and
-    the kernel's own conditional is what makes a growth step a device-side no-op
-    (docs/internals/decode/decode.md#the-gate).
+    NO FIELD IS DERIVED AT THE LAUNCH SITE. `pool` is an input and never a mode: the
+    arena whose slack slots a growth step admits itself into, present exactly on a paged
+    step that has one, and the kernel's own per-batch-head verdict is what makes a step it
+    cannot cover a device-side no-op (docs/internals/decode/decode.md#per-bh-verdict).
     """
 
     config: DecodeGeometry
@@ -121,7 +121,7 @@ class DecodePlan:
     state_plane: torch.Tensor
     page_table: torch.Tensor | None
     scratch: object
-    gate: torch.Tensor | None
+    pool: object
 
 
 @dataclass(frozen=True, slots=True)

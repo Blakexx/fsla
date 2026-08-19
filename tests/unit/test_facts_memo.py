@@ -331,13 +331,26 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
 
 
 def test_the_decode_dag_is_walkable_and_masks_the_growth_band_off_the_dense_step():
-    from rola.engine.dags.decode_dag import DECODE_STEP, growth_probe
+    """The step is the LAST node, and the host-visible verdict band is the dense mask's.
 
-    assert all(isinstance(step, Node) for step in DECODE_STEP)
-    assert growth_probe.masks == (Mask.M4,), (
-        "the growth probe is the paged backing's own stats pass; asking it of a dense "
-        "step would launch a probe against a page table that does not exist")
-    order = [step.name for step in DECODE_STEP]
-    assert order.index("growth_probe") < order.index("step"), (
-        "the step reads the probe's verdict on the device, so the probe must be "
-        "enqueued ahead of it")
+    RESTATED with the absorption: the growth band used to be a node ahead of the step,
+    which the dense mask dropped and which the ordering assertion pinned in front. There
+    is no such node -- the step derives the verdict itself, in its own launch -- so what
+    is left to state is where the verdict can be READ: after the launch that publishes
+    it, and only where there is a page table to publish about.
+    """
+    from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, read_verdict
+
+    assert all(isinstance(node, Node) for node in DECODE_STEP)
+    assert read_verdict.masks == (Mask.M4,), (
+        "the verdict is the paged backing's own fact; asking it of a dense step would "
+        "read a growth flag no launch wrote")
+    assert read_verdict not in DECODE_STEP, (
+        "DECODE_STEP is the CAPTURABLE tuple and a host read cannot be captured")
+    order = [node.name for node in DECODE_VERDICT]
+    assert order.index("step") < order.index("read_verdict"), (
+        "the verdict is the step's own output, so the read cannot precede it")
+    assert order[-1] == "read_verdict", "the read is the last thing a decode step does"
+    assert DECODE_VERDICT[:len(DECODE_STEP)] == DECODE_STEP, (
+        "the two tuples must be one recipe: the verdict tuple is the captured one plus a "
+        "read, never a different walk")
