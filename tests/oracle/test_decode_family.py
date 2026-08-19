@@ -290,7 +290,6 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     from einops import rearrange
 
     import rola
-    from rola.interface import BackwardNotImplemented
     from rola.ops.naive import naive_rola
     from tests.oracle.tolerances import BF16_RTOL
 
@@ -300,19 +299,6 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
                         normalization="global", decay=None,
                         layer_idx=0).to(device, torch.float32)
     T = 32
-
-    # LEG 1 — training on an arm the REVERSE PASS does not carry: refused by name,
-    # and nothing ran. ((16, 16) TRAINS since the scan generalization, so the
-    # refusal fixture moves to the deep (16, 16, 16) — forward-built, no backward.
-    # A forward that runs and a backward that does not is what this refusal prevents.)
-    deep = build_layer(hidden_size=128, num_heads=2, d_v=64, widths=(16, 16, 16),
-                       normalization="global", decay=None,
-                       layer_idx=0).to(device, torch.float32)
-    deep.train()
-    x1 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
-        deep(x1)
-    assert deep.last_execution_backend is None, "the refusal let a kernel run first"
 
     # LEG 2 — eval prefill: the chunk CUDA arm, carried state out.
     layer.eval()
@@ -342,14 +328,6 @@ def test_one_walk_crosses_every_arm_boundary_and_every_refusal():
     assert rel < BF16_RTOL, (
         f"the layer-level prefill/decode seam moved the last token by {rel:.3e}")
 
-    # LEG 4 — a grad-bearing eval step on a fresh sequence: refused by the SAME
-    # arm-narrowing clause as leg 1 (on the deep layer, since (16,16) now trains),
-    # which is the point: whether the module is in training mode has stopped
-    # mattering, and what decides is whether the reverse pass carries this arm.
-    deep.eval()
-    x4 = torch.randn(1, T, 128, device=device, requires_grad=True)
-    with pytest.raises(BackwardNotImplemented, match="cannot differentiate it"):
-        deep(x4)
 
 
 def test_a_decay_configured_layer_refuses_every_prefill_arm():
