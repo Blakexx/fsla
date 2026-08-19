@@ -125,8 +125,10 @@ always took. There is no new failure mode and no partial claim to unwind.
 **POOL-COVERED GROWTH RAISES NO VERDICT.** The step admitted itself, so there is nothing
 urgent for the host — `growth_pending` reads `False`. What a serving loop watches instead
 is `rola.engine.dags.decode_dag.pool_headroom(state)`: the MINIMUM free slots over
-batch-heads (the first one to run out is the one that will need the host), a plain host
-read with no synchronization forced by the read itself. `refill_pool(state)` takes fresh
+batch-heads (the first one to run out is the one that will need the host). It IS a
+device-to-host read and it does synchronize, which is why it is not on the step's path
+and why the pool exists in the first place: the caller polls it on its own schedule,
+between steps, at a cadence the pool's depth makes safe. `refill_pool(state)` takes fresh
 slots for exactly the positions the device spent, commits and zeroes them, and rewinds the
 cursors — on whatever schedule the caller likes, entirely off the step's path. A claimed
 slot is ordinary residency the moment the table fold lands, so a refill never reclaims

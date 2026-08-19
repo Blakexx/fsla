@@ -268,15 +268,10 @@ decode_step_kernel(DecodeParams p) {
   coarse_index(p, bits_r, bits_w, pc, scan_temp, s_running);
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
-  //: The step is its own growth probe: the write map is in shared memory and the page
-  //: table is one indirection away, so the verdict costs a pass over the map's words and
-  //: no launch at all. What it decides is PER BATCH-HEAD, and the three outcomes are
-  //: ADVANCE (nothing unmapped, or the pool covers it), NO-OP (the host must admit) and
-  //: RE-READ (this batch-head already deposited this step and the walk is running again
-  //: for another one's sake): docs/internals/decode/decode.md#absorbed-verdict
-  //: NO ADDRESS SURVIVES INTO THE WALK. Each of the three places that needs this
-  //: batch-head's table row forms it again from `bh`, because a 64-bit base held live
-  //: across the walk costs two of the registers the declared residency is spending:
+  //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
+  //: docs/internals/decode/decode.md#absorbed-verdict
+  //: NO 64-BIT ADDRESS MAY SURVIVE INTO THE WALK -- each place that needs this
+  //: batch-head's table row forms it again, at two registers of the declared residency:
   //: docs/internals/decode/decode.md#declared-residency
   const bool paged = p.page_tbl != nullptr;
   const bool done = paged && p.done[bh] != 0;
@@ -611,17 +606,11 @@ decode_step_kernel(DecodeParams p) {
   if (!paged) return;
 
   // ---- the per-batch-head publication, by its LAST-ARRIVING CTA ---------------
-  //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE -- the
-  //: done flag, the page table's fold and the pool cursor. All three are inputs to the
-  //: prologue of every CTA of this batch-head, and all three are written only after the
-  //: last of them has arrived, which is what keeps the replicated claim from diverging
-  //: and the done flag from skipping its own launch:
-  //: docs/internals/decode/decode.md#the-last-arriver
+  //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, which
+  //: is why it is safe: docs/internals/decode/decode.md#the-last-arriver
   if (claimed) {
-    //: The claim's SIZE is re-derived rather than carried: the table is still unfolded
-    //: here, so this is the same count the prologue reached, and a register held across
-    //: the whole walk for it would come out of the declared residency
-    //: (docs/internals/decode/decode.md#declared-residency).
+    //: The claim's SIZE is re-derived, not carried: the table is still unfolded here, so
+    //: this is the prologue's own count and no register crosses the walk for it.
     const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
     int32_t* page_row = p.page_tbl + row_base;
     const int32_t* pool_row = p.pool_map + row_base;
