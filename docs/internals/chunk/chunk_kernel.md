@@ -413,6 +413,19 @@ advances by a compare instead. `cols` is 260 bytes and not sixteen-byte aligned,
 row cannot move by a vector access either; these are plain float accesses, coalesced
 across the group.
 
+<a id="outer-radix"></a>**The composite outer index is a radix, and the plan owns
+it.** A block's slot is an innermost digit plus a composite outer index over levels
+`0..D-2`, whose place values are the outer spans with level `D-2` fastest.
+`LevelPlan::outer_digit<Lv>` is that decomposition; the level is a template parameter
+for the same reason `base_term`'s is, because a runtime divisor does not fold. Two
+residues in it are provably redundant and are not emitted: a single-digit level has
+one digit, and the MOST significant outer level cannot wrap. The reverse pass reads
+it — its producer columns and its leave-one-out staging both
+([leave-one-out](backward.md#leave-one-out)). The FORWARD's producer chain still
+spells the same decomposition out inline: dropping those two residues moves twenty
+`compacted_kernel` bodies, several of them upward in registers, so repointing it is a
+measured change of its own and not a tidy-up.
+
 <a id="atom-index"></a>**A group's first logical atom** is the leaf-order law's: a block's
 leaves are one aligned run starting at `LevelPlan::block_base`, so the index is that base
 over the quantum, which is `AtomKeying.atom_of` verbatim. It is derived INSIDE each state

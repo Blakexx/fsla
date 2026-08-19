@@ -34,7 +34,8 @@ def chunk_arms() -> tuple[Arm4, ...]:
 def scan_arms() -> frozenset[Arm4]:
     """The `(C, BC, D, B)` arms the two SCANS are built for.
 
-    Narrower than the consumer's: the reverse pass carries the TRAINABLE topologies
-    (`tools/gen_shards.py`'s `SCAN_ARMS`), not every arm the forward can infer at.
+    Narrower than the consumer's (`tools/gen_shards.py`'s `SCAN_ARMS`), and narrower
+    in `C` and `BC` rather than in DEPTH: every topology class the forward carries has
+    a scan arm, which `tests/unit/test_arch_coverage.py` asserts per arch.
     """
     return frozenset(tuple(row[:4]) for row in extension().chunk_scan_b_census())
