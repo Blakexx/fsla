@@ -20,7 +20,7 @@ direction is not evidence about the other.
 
 The claim is cheap to make exactly because the two sides SHARE a definition rather than
 mirror one: the residency test reads the very map the walk walks, expanded by
-`decode_expand.cuh`'s own `expand_sides` from the raw write levels, and
+`decode_expand.cuh`'s own `expand_inner` and `SideView` from the raw write levels, and
 `_write_atom_bitmap` is the torch derivation the exact preamble plans from. So this file
 checks an EQUALITY the call graph already forces, which is the only kind of agreement
 worth gating: the failure it can catch is a condensation or a residency test that drifted,

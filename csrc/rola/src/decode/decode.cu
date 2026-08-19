@@ -48,45 +48,114 @@ using BlockScanT = cub::BlockScan<int, kDecodeThreads>;
 //: exponential in the repository: docs/internals/decode/decode.md#decode-max-exponent
 constexpr float kDecodeMaxExponent = 88.0f;
 
-//: `pc[g]` = set bits of `bits_r | bits_w` in groups strictly before `g`; `pc[n_groups]`
-//: = `M`, the exact touched-row count. Taken from the PUBLISHED words rather than
-//: accumulated per side, because the two sides' popcounts do not sum to
-//: `popcount(r | w)`. This is the ONE place the union is formed outside a register, and
-//: it is formed as a COUNT: docs/internals/decode/decode.md#coarse-index
-__device__ __forceinline__ void coarse_index(const DecodeParams& p, const uint32_t* bits_r,
-                                             const uint32_t* bits_w, int32_t* pc,
-                                             BlockScanT::TempStorage& scan_temp, int& running) {
+//: THE FACTORIZED INDEX, in three objects and no pass over the leaf space.
+//:
+//: `digit_class(d)` names which sides carry amplitude at outer digit `d`; class `0` is a
+//: DEAD digit, whose whole `S_1`-leaf range is empty on both sides. Every count below is
+//: a lookup keyed on it, because level 0 broadcasts ONE inner block into every live
+//: digit and nothing else: docs/internals/decode/decode.md#the-factorized-index
+__device__ __forceinline__ int digit_class(const float* ar, const float* aw, int d) {
+  return (ar[d] != 0.0f ? 1 : 0) | (aw[d] != 0.0f ? 2 : 0);
+}
+
+__device__ __forceinline__ uint32_t class_word(int c, int k, const uint32_t* ir,
+                                               const uint32_t* iw) {
+  if (c == 0) return 0u;
+  if (c == 1) return ir[k];
+  if (c == 2) return iw[k];
+  return ir[k] | iw[k];
+}
+
+//: Set bits of class `c`'s inner block in words strictly before `upto`. A SERIAL loop,
+//: not a prefix table: the callers are one thread per outer digit and one per coarse
+//: group, so the block covers `inner_words` work per thread in parallel -- which is never
+//: more than the bitmap-wide popcount this index replaces, and at every shipped topology
+//: is a handful of words.
+__device__ __forceinline__ int class_popc(int c, const uint32_t* ir, const uint32_t* iw, int upto) {
+  int acc = 0;
+  for (int k = 0; k < upto; ++k) acc += __popc(class_word(c, k, ir, iw));
+  return acc;
+}
+
+//: `cum[d]` = union rows in outer digits strictly before `d`, so `cum[b_0]` is `M`, the
+//: exact touched-row count; `lw` is the ascending list of digits the WRITE side reaches,
+//: which is what the atom enumeration walks instead of the atom space.
+//: ONE SCAN EACH, and that is structural: a level is at most `kDecodeMaxLevelWidth` wide
+//: and the block is exactly that many threads.
+__device__ __forceinline__ void digit_index(const DecodeParams& p, const float* ar, const float* aw,
+                                            const uint32_t* ir, const uint32_t* iw, int32_t* cum,
+                                            int32_t* lw, int& n_live,
+                                            BlockScanT::TempStorage& scan_temp) {
+  static_assert(kDecodeMaxLevelWidth <= kDecodeThreads,
+                "the digit index scans one level in a single block pass");
   const int tid = threadIdx.x;
-  const int nw = p.n_words;
-  const int ng = p.n_groups;
-  if (tid == 0) running = 0;
+  const int b0 = p.level_width[0];
+  const int c = (tid < b0) ? digit_class(ar, aw, tid) : 0;
+  int excl = 0;
+  int total = 0;
+  BlockScanT(scan_temp).ExclusiveSum((tid < b0) ? class_popc(c, ir, iw, p.inner_words) : 0, excl,
+                                     total);
+  if (tid < b0) cum[tid] = excl;
+  if (tid == 0) cum[b0] = total;
   __syncthreads();
-  for (int base = 0; base < ng; base += kDecodeThreads) {
-    const int g = base + tid;
-    int count = 0;
-    if (g < ng) {
-      const int w0 = g * kCoarseGroupWords;
-      const int w1 = min(w0 + kCoarseGroupWords, nw);
-      for (int w = w0; w < w1; ++w) count += __popc(bits_r[w] | bits_w[w]);
-    }
-    int excl = 0;
-    int aggregate = 0;
-    BlockScanT(scan_temp).ExclusiveSum(count, excl, aggregate);
-    if (g < ng) pc[g] = running + excl;
-    __syncthreads();
-    if (tid == 0) running += aggregate;
-    __syncthreads();
+  const int live = (tid < b0 && (c & 2) != 0) ? 1 : 0;
+  int lex = 0;
+  int ltot = 0;
+  BlockScanT(scan_temp).ExclusiveSum(live, lex, ltot);
+  if (live) lw[lex] = tid;
+  if (tid == 0) n_live = ltot;
+  __syncthreads();
+}
+
+//: Union rows before leaf `X`: whole outer digits from `cum`, then the partial digit's
+//: own words. The two sides' popcounts do not sum to `popcount(r | w)`, which is why the
+//: CLASS -- not the sides -- is what is counted.
+__device__ __forceinline__ int rows_before(const DecodeParams& p, const float* ar, const float* aw,
+                                           const uint32_t* ir, const uint32_t* iw,
+                                           const int32_t* cum, int X) {
+  const int span = p.inner_span;
+  const int d = X / span;
+  const int r = X - d * span;
+  int acc = cum[d];
+  if (r != 0) {
+    const int c = digit_class(ar, aw, d);
+    const int k = r >> 5;
+    acc += class_popc(c, ir, iw, k);
+    const int rem = r & 31;
+    if (rem != 0) acc += __popc(class_word(c, k, ir, iw) & ((1u << rem) - 1u));
   }
-  if (tid == 0) pc[ng] = running;
+  return acc;
+}
+
+//: `pc[g]` = union rows in coarse groups strictly before `g`; `pc[n_groups]` = `M`. The
+//: values are the ones a full bitmap popcount would produce, at one `rows_before` each:
+//: docs/internals/decode/decode.md#coarse-index
+__device__ __forceinline__ void coarse_index(const DecodeParams& p, const float* ar,
+                                             const float* aw, const uint32_t* ir,
+                                             const uint32_t* iw, const int32_t* cum, int32_t* pc) {
+  const int ng = p.n_groups;
+  const int n = static_cast<int>(p.N);
+  for (int g = threadIdx.x; g <= ng; g += kDecodeThreads) {
+    const int leaf = g * (kCoarseGroupWords * 32);
+    pc[g] = rows_before(p, ar, aw, ir, iw, cum, leaf < n ? leaf : n);
+  }
   __syncthreads();
 }
 
 //: Locate the bitmap word holding global set-bit index `row`, and how many set bits of
 //: that word precede it. Two steps, NEITHER a scan of the bitmap: a binary search over
-//: the coarse index, then at most 32 popcounts. docs/internals/decode/decode.md#locate-row
-__device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bits_r,
-                                           const uint32_t* bits_w, int n_words, int n_groups,
-                                           int row, int& out_word, int& out_skip) {
+//: the coarse index, then ONE WARP-WIDE popcount of the group it lands in.
+//:
+//: ONE LANE PER GROUP WORD, which is exact because the coarse group IS a warp's width;
+//: a serial walk of the group's words was, measured, the step's single largest barrier
+//: stall -- one thread chaining dependent shared loads while the block waited.
+//: docs/internals/decode/decode.md#locate-row
+__device__ __forceinline__ void locate_row(const DecodeParams& p, const int32_t* pc,
+                                           const uint32_t* inner, const float* sa_r,
+                                           const float* sa_w, int n_words, int n_groups, int row,
+                                           int& out_word, int& out_skip) {
+  static_assert(kCoarseGroupWords == 32, "locate_row resolves a coarse group in one warp");
+  const int lane = threadIdx.x & 31;
   int lo = 0;
   int hi = n_groups;
   while (lo < hi - 1) {
@@ -96,16 +165,26 @@ __device__ __forceinline__ void locate_row(const int32_t* pc, const uint32_t* bi
     else
       hi = mid;
   }
-  int acc = pc[lo];
-  int w = lo * kCoarseGroupWords;
-  while (w < n_words) {
-    const int c = __popc(bits_r[w] | bits_w[w]);
-    if (acc + c > row) break;
-    acc += c;
-    ++w;
+  const int w = lo * kCoarseGroupWords + lane;
+  const int base = w << 5;
+  const int g = base / p.inner_span;
+  const int i = base - g * p.inner_span;
+  const int c =
+      (w < n_words)
+          ? __popc(view_r_at(p, inner, sa_r, base, g, i) | view_w_at(p, inner, sa_w, base, g, i))
+          : 0;
+  int incl = c;
+#pragma unroll
+  for (int s = 1; s < 32; s <<= 1) {
+    const int t = __shfl_up_sync(0xffffffffu, incl, s);
+    if (lane >= s) incl += t;
   }
-  out_word = w;
-  out_skip = row - acc;
+  const int excl = incl - c;
+  const int target = row - pc[lo];
+  const unsigned hit = __ballot_sync(0xffffffffu, c != 0 && excl <= target && target < incl);
+  const int sel = __ffs(static_cast<int>(hit)) - 1;
+  out_word = __shfl_sync(0xffffffffu, w, sel);
+  out_skip = target - __shfl_sync(0xffffffffu, excl, sel);
 }
 
 //: Is atom `a` in the write map? A bitmap WORD is exactly TWO atoms, because the atom is
@@ -116,22 +195,40 @@ __device__ __forceinline__ bool atom_written(uint32_t word, int a) {
   return (word & (0x0000ffffu << ((a & 1) << 4))) != 0u;
 }
 
+//: THE WRITE SIDE'S CANDIDATE ATOMS, enumerated through the outer digits that carry
+//: write amplitude rather than through the atom space: a dead digit's whole `S_1`-leaf
+//: range is dead, so this rectangle is the WRITE SUPPORT's size, not `N / 16`.
+//: An atom straddling two live digits is taken by the LOWER one, which keeps the
+//: enumeration a PARTITION in ascending atom id -- the pool claim's canonical ranks
+//: depend on exactly that. docs/internals/decode/decode.md#candidate-atoms
+__device__ __forceinline__ int atoms_per_digit(int span) {
+  return ceil_div_int(span, kAtomLeaves) + 1;
+}
+
+__device__ __forceinline__ int candidate_atom(const DecodeParams& p, const int32_t* lw, int idx,
+                                              int per) {
+  const int span = p.inner_span;
+  const int k = idx / per;
+  const int d = lw[k];
+  const int a = (d * span) / kAtomLeaves + (idx - k * per);
+  if (a >= p.atoms_per_bh || a > ((d + 1) * span - 1) / kAtomLeaves) return -1;
+  if (k > 0 && a <= ((lw[k - 1] + 1) * span - 1) / kAtomLeaves) return -1;
+  return a;
+}
+
 //: THE TABLE TEST: how many atoms this batch-head's write side reaches that the page
 //: table does not map. Every CTA of the batch-head computes it independently from the
 //: same two objects -- its own expansion and a table no launch mutates until every CTA
 //: of that batch-head has arrived -- so the answer is a RECOMPUTE and never a
 //: communication. docs/internals/decode/decode.md#the-table-test
-__device__ __forceinline__ int unmapped_write_atoms(const DecodeParams& p, const uint32_t* bits_w,
-                                                    const int32_t* page_row,
+__device__ __forceinline__ int unmapped_write_atoms(const DecodeParams& p, const uint32_t* inner,
+                                                    const float* sa_w, const int32_t* page_row,
+                                                    const int32_t* lw, int n_live, int per,
                                                     BlockScanT::TempStorage& scan_temp) {
   int found = 0;
-  for (int w = threadIdx.x; w < p.n_words; w += kDecodeThreads) {
-    const uint32_t word = bits_w[w];
-    for (int half = 0; half < 2; ++half) {
-      const int a = (w << 1) + half;
-      if (a >= p.atoms_per_bh) break;
-      if (atom_written(word, a) && page_row[a] < 0) ++found;
-    }
+  for (int i = threadIdx.x; i < n_live * per; i += kDecodeThreads) {
+    const int a = candidate_atom(p, lw, i, per);
+    if (a >= 0 && atom_written(view_w_word(p, inner, sa_w, a >> 1), a) && page_row[a] < 0) ++found;
   }
   int excl = 0;
   int total = 0;
@@ -150,21 +247,25 @@ __device__ __forceinline__ int unmapped_write_atoms(const DecodeParams& p, const
 //: INSTEAD of the table, by one pointer, and the walk's own body knows nothing about
 //: pools. The fold back into the table happens once, later, where it is safe.
 //: docs/internals/decode/decode.md#the-claim
-__device__ __forceinline__ void claim_pool(const DecodeParams& p, const uint32_t* bits_w,
-                                           const int32_t* page_row, const int32_t* slots,
-                                           int32_t* shadow_row, int cursor,
+__device__ __forceinline__ void claim_pool(const DecodeParams& p, const uint32_t* inner,
+                                           const float* sa_w, const int32_t* page_row,
+                                           const int32_t* slots, int32_t* shadow_row,
+                                           const int32_t* lw, int n_live, int per, int cursor,
                                            BlockScanT::TempStorage& scan_temp, int& running) {
   const int tid = threadIdx.x;
+  for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) shadow_row[a] = page_row[a];
   if (tid == 0) running = 0;
   __syncthreads();
-  for (int base = 0; base < p.atoms_per_bh; base += kDecodeThreads) {
-    const int a = base + tid;
-    const bool live = a < p.atoms_per_bh;
-    const bool want = live && atom_written(bits_w[a >> 1], a) && page_row[a] < 0;
+  const int total = n_live * per;
+  for (int base = 0; base < total; base += kDecodeThreads) {
+    const int i = base + tid;
+    const int a = (i < total) ? candidate_atom(p, lw, i, per) : -1;
+    const bool want =
+        a >= 0 && atom_written(view_w_word(p, inner, sa_w, a >> 1), a) && page_row[a] < 0;
     int excl = 0;
     int aggregate = 0;
     BlockScanT(scan_temp).ExclusiveSum(want ? 1 : 0, excl, aggregate);
-    if (live) shadow_row[a] = want ? slots[cursor + running + excl] : page_row[a];
+    if (want) shadow_row[a] = slots[cursor + running + excl];
     __syncthreads();
     if (tid == 0) running += aggregate;
     __syncthreads();
@@ -172,7 +273,7 @@ __device__ __forceinline__ void claim_pool(const DecodeParams& p, const uint32_t
 }
 
 template <int DV, int D, bool DECAY, bool IN_SMEM>
-__global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY)) void
+__global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, IN_SMEM)) void
 decode_step_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
   //: template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
@@ -201,23 +302,30 @@ decode_step_kernel(DecodeParams p) {
   //   v_tok        [DV]         fp32   the token's value, resident
   //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded (see below)
   //   pc           [ng + 1]     i32    the coarse popcount index
-  //   bits         [4 * nw]     u32    the two side maps and the expansion's ping-pong,
-  //                                    on the IN_SMEM arm
+  //   cum          [b0 + 1]     i32    union rows before each outer digit
+  //   lw           [b0]         i32    the write side's live outer digits, ascending
+  //   bits     [4 * iwords]     u32    the two sides' inner blocks and the expansion's
+  //                                    ping-pong, on the IN_SMEM arm
+  const int b0 = p.level_width[0];
+  const int iwords = p.inner_words;
   float* sa_r = reinterpret_cast<float*>(smem_raw);
   float* sa_w = sa_r + total_rows;
   float* sd = sa_w + total_rows;
   float* v_tok = sd + (DECAY ? total_rows : 0);
   float* fold = v_tok + DV;
   int32_t* pc = reinterpret_cast<int32_t*>(fold + kDecodeWarps * (cols + 3));
-  uint32_t* smem_bits = reinterpret_cast<uint32_t*>(pc + ng + 1);
+  int32_t* cum = pc + ng + 1;
+  int32_t* lw = cum + b0 + 1;
+  uint32_t* smem_bits = reinterpret_cast<uint32_t*>(lw + b0);
   uint32_t* global_bits =
-      p.work + (static_cast<int64_t>(bh) * p.n_split + seg) * kExpandBufWords * nw;
+      p.work + (static_cast<int64_t>(bh) * p.n_split + seg) * kExpandBufWords * iwords;
   uint32_t* bits = IN_SMEM ? smem_bits : global_bits;
 
   __shared__ float part[cols + 3];
   __shared__ float s_sum[kMaxLevels];
   __shared__ typename BlockScanT::TempStorage scan_temp;
   __shared__ int s_running;
+  __shared__ int s_n_live;
   __shared__ int s_w_start, s_w_last, s_drop, s_keep;
   __shared__ int s_last_cta;
 
@@ -261,11 +369,18 @@ decode_step_kernel(DecodeParams p) {
   const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
   __syncthreads();
 
-  // ---- THE EXPANSION: both sides' exact leaf bitmaps, and the coarse index -----
-  const int parity = expand_sides<2>(p, sa_r, sa_w, bits);
-  const uint32_t* bits_r = bits + parity * nw;
-  const uint32_t* bits_w = bits + 2 * nw + parity * nw;
-  coarse_index(p, bits_r, bits_w, pc, scan_temp, s_running);
+  // ---- THE EXPANSION: the inner block, and the index built on top of it -------
+  //: LEVEL 0 IS NOT MATERIALIZED. `view_*_at` apply its broadcast where a word is asked
+  //: for, and the index below is counted from the inner block and the digit classes, so
+  //: nothing in this prologue is a pass over the leaf space:
+  //: docs/internals/decode/decode.md#the-factorized-index
+  const int parity = expand_inner<D>(p, sa_r, sa_w, bits);
+  const uint32_t* inner_r = bits + parity * iwords;
+  const uint32_t* inner_w = bits + 2 * iwords + parity * iwords;
+  digit_index(p, sa_r, sa_w, inner_r, inner_w, cum, lw, s_n_live, scan_temp);
+  coarse_index(p, sa_r, sa_w, inner_r, inner_w, cum, pc);
+  const int n_live = s_n_live;
+  const int per_digit = atoms_per_digit(p.inner_span);
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -281,16 +396,17 @@ decode_step_kernel(DecodeParams p) {
   if (paged && !done) {
     const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
     __syncthreads();
-    const int demand = unmapped_write_atoms(p, bits_w, p.page_tbl + row_base, scan_temp);
+    const int demand = unmapped_write_atoms(p, inner_r, sa_w, p.page_tbl + row_base, lw, n_live,
+                                            per_digit, scan_temp);
     __syncthreads();
     if (demand > 0) {
       const int cursor = (p.pool_cap > 0) ? p.pool_cursor[bh] : 0;
       claimed = demand <= p.pool_cap - cursor;
       needy = !claimed;
       if (claimed) {
-        claim_pool(p, bits_w, p.page_tbl + row_base,
-                   p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap, p.pool_map + row_base,
-                   cursor, scan_temp, s_running);
+        claim_pool(p, inner_r, sa_w, p.page_tbl + row_base,
+                   p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap, p.pool_map + row_base, lw,
+                   n_live, per_digit, cursor, scan_temp, s_running);
       }
     }
   }
@@ -300,13 +416,11 @@ decode_step_kernel(DecodeParams p) {
   //: the others -- which is the set a host admission then plans from.
   if (paged && seg == 0) {
     bool* atom_row = p.atom_bits + static_cast<int64_t>(bh) * p.atoms_per_bh;
-    for (int w = tid; w < nw; w += kDecodeThreads) {
-      const uint32_t word = bits_w[w];
-      for (int half = 0; half < 2; ++half) {
-        const int a = (w << 1) + half;
-        if (a >= p.atoms_per_bh) break;
-        atom_row[a] = atom_written(word, a);
-      }
+    for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) atom_row[a] = false;
+    __syncthreads();
+    for (int i = tid; i < n_live * per_digit; i += kDecodeThreads) {
+      const int a = candidate_atom(p, lw, i, per_digit);
+      if (a >= 0 && atom_written(view_w_word(p, inner_r, sa_w, a >> 1), a)) atom_row[a] = true;
     }
   }
   __syncthreads();
@@ -320,23 +434,28 @@ decode_step_kernel(DecodeParams p) {
     // Defined in ROWS (popcount-balanced by construction), handed out in WORDS; the two
     // boundary words are cut by dropping / keeping set bits, exact rather than by an index
     // comparison. docs/internals/decode/decode.md#row-range-to-words
-    if (tid == 0) {
-      const int M = pc[ng];
-      const int row_lo = static_cast<int>(static_cast<int64_t>(seg) * M / p.n_split);
-      const int row_hi = static_cast<int>(static_cast<int64_t>(seg + 1) * M / p.n_split);
-      if (row_hi <= row_lo) {
+    const int M = pc[ng];
+    const int row_lo = static_cast<int>(static_cast<int64_t>(seg) * M / p.n_split);
+    const int row_hi = static_cast<int>(static_cast<int64_t>(seg + 1) * M / p.n_split);
+    if (row_hi <= row_lo) {
+      if (tid == 0) {
         s_w_start = 1;
         s_w_last = 0;  // empty range: the walk below runs zero iterations
         s_drop = 0;
         s_keep = 0;
-      } else {
-        int w0, skip0, w1, skip1;
-        locate_row(pc, bits_r, bits_w, nw, ng, row_lo, w0, skip0);
-        locate_row(pc, bits_r, bits_w, nw, ng, row_hi - 1, w1, skip1);
-        s_w_start = w0;
-        s_drop = skip0;
-        s_w_last = w1;
-        s_keep = skip1 + 1;
+      }
+      //: THE TWO BOUNDARIES ARE ONE WARP EACH, resolved side by side.
+    } else if (warp < 2) {
+      int w, skip;
+      locate_row(p, pc, inner_r, sa_r, sa_w, nw, ng, warp == 0 ? row_lo : row_hi - 1, w, skip);
+      if (lane == 0) {
+        if (warp == 0) {
+          s_w_start = w;
+          s_drop = skip;
+        } else {
+          s_w_last = w;
+          s_keep = skip + 1;
+        }
       }
     }
     __syncthreads();
@@ -406,8 +525,25 @@ decode_step_kernel(DecodeParams p) {
         continue;
       }
 
-      const uint32_t rw_word = bits_r[w];
-      const uint32_t ww_word = bits_w[w];
+      const int leaf_base = w * 32;
+      //: The `D` integer divisions are paid ONCE PER WORD, not once per row -- a per-row
+      //: decomposition would make the A100 dense arm instruction-bound:
+      //: docs/internals/decode/decode.md#divisions-per-word
+      //: IT COMES BEFORE THE WORDS because level 0's broadcast needs exactly this leaf
+      //: position, so the two sides' words cost no division of their own.
+      int inner_off = 0;
+      {
+        int rem = leaf_base;
+#pragma unroll
+        for (int l = 0; l < D; ++l) {
+          const int s = p.level_stride[l];
+          dig[l] = rem / s;
+          rem -= dig[l] * s;
+          if (l == 0) inner_off = rem;
+        }
+      }
+      const uint32_t rw_word = view_r_at(p, inner_r, sa_r, leaf_base, dig[0], inner_off);
+      const uint32_t ww_word = view_w_at(p, inner_r, sa_w, leaf_base, dig[0], inner_off);
       //: THE UNION, formed in a REGISTER and never stored.
       uint32_t u = rw_word | ww_word;
       //: HAZARD boundary-cut-order -- docs/internals/decode/decode.md#boundary-cut-order
@@ -416,20 +552,6 @@ decode_step_kernel(DecodeParams p) {
       if (u == 0u) {
         w += kDecodeWarps;
         continue;
-      }
-
-      const int leaf_base = w * 32;
-      //: The `D` integer divisions are paid ONCE PER WORD, not once per row -- a per-row
-      //: decomposition would make the A100 dense arm instruction-bound:
-      //: docs/internals/decode/decode.md#divisions-per-word
-      {
-        int rem = leaf_base;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          const int s = p.level_stride[l];
-          dig[l] = rem / s;
-          rem -= dig[l] * s;
-        }
       }
       recompute_outer();
 
@@ -609,17 +731,25 @@ decode_step_kernel(DecodeParams p) {
   //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, which
   //: is why it is safe: docs/internals/decode/decode.md#the-last-arriver
   if (claimed) {
-    //: The claim's SIZE is re-derived, not carried: the table is still unfolded here, so
-    //: this is the prologue's own count and no register crosses the walk for it.
+    //: THE CLAIM'S SIZE FALLS OUT OF THE FOLD ITSELF -- an atom the shadow row maps and
+    //: the table does not IS a claimed atom -- so it is neither carried across the walk
+    //: nor re-derived from the write-support enumeration. Both of those keep values alive
+    //: through the loop the register budget is tight in, and both were measured to spill:
+    //: docs/internals/decode/decode.md#declared-residency
     const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
     int32_t* page_row = p.page_tbl + row_base;
     const int32_t* pool_row = p.pool_map + row_base;
-    const int taken = unmapped_write_atoms(p, bits_w, page_row, scan_temp);
-    __syncthreads();
+    int folded = 0;
     for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) {
       const int slot = pool_row[a];
-      if (slot >= 0 && page_row[a] < 0) page_row[a] = slot;
+      if (slot >= 0 && page_row[a] < 0) {
+        page_row[a] = slot;
+        ++folded;
+      }
     }
+    int excl = 0;
+    int taken = 0;
+    BlockScanT(scan_temp).ExclusiveSum(folded, excl, taken);
     if (tid == 0) p.pool_cursor[bh] += taken;
   }
   if (tid == 0) {
@@ -653,21 +783,22 @@ decode_step_kernel(DecodeParams p) {
 
 }  // namespace detail
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_words,
-                              int n_groups, bool in_smem) {
+size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_groups,
+                              int outer_width, int inner_words, bool in_smem) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t index = static_cast<size_t>(n_groups) + 1;
-  const size_t bits = in_smem ? static_cast<size_t>(kExpandBufWords) * n_words : 0;
+  const size_t index = static_cast<size_t>(n_groups) + 1 + 2 * static_cast<size_t>(outer_width) + 1;
+  const size_t bits = in_smem ? static_cast<size_t>(kExpandBufWords) * inner_words : 0;
   return (amps + static_cast<size_t>(d_v) + fold + index + bits) * sizeof(float);
 }
 
-int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_words,
-                                  int n_groups, int64_t smem_budget) {
-  const bool step_fits = static_cast<int64_t>(decode_step_smem_bytes(total_rows, d_v, cols, decay,
-                                                                     n_words, n_groups, true))
-                         <= smem_budget;
-  return step_fits ? 0 : static_cast<int64_t>(kExpandBufWords) * n_words;
+int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_groups,
+                                  int outer_width, int inner_words, int64_t smem_budget) {
+  const bool step_fits =
+      static_cast<int64_t>(decode_step_smem_bytes(total_rows, d_v, cols, decay, n_groups,
+                                                  outer_width, inner_words, true))
+      <= smem_budget;
+  return step_fits ? 0 : static_cast<int64_t>(kExpandBufWords) * inner_words;
 }
 
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
@@ -676,11 +807,12 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   //: type -- is the interesting part: docs/internals/decode/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
-  const bool in_smem = static_cast<int64_t>(decode_step_smem_bytes(p.total_rows, d_v, cols, decay,
-                                                                   p.n_words, p.n_groups, true))
-                       <= smem_budget;
-  const size_t smem =
-      decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.n_words, p.n_groups, in_smem);
+  const bool in_smem =
+      static_cast<int64_t>(decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.n_groups,
+                                                  p.level_width[0], p.inner_words, true))
+      <= smem_budget;
+  const size_t smem = decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.n_groups,
+                                             p.level_width[0], p.inner_words, in_smem);
   TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget, "the decode step's staged operands need ",
               smem, " B of shared memory against a per-block budget of ", smem_budget,
               " B; sum_l width_l = ", p.total_rows,
@@ -811,8 +943,11 @@ int64_t rola_decode_work_words(std::vector<int64_t> level_widths, int64_t d_v, b
   }
   const int n_words = static_cast<int>((N + 31) / 32);
   const int n_groups = (n_words + kCoarseGroupWords - 1) / kCoarseGroupWords;
+  const int outer_width = static_cast<int>(level_widths.at(0));
+  const int inner_span = static_cast<int>(N / outer_width);
   return decode_work_words_per_cta(total_rows, static_cast<int>(d_v), static_cast<int>(d_v) + 1,
-                                   decay, n_words, n_groups, detail::smem_budget_of(device_index));
+                                   decay, n_groups, outer_width, ceil_div_int(inner_span, 32),
+                                   detail::smem_budget_of(device_index));
 }
 
 at::Tensor rola_decode_forward(
@@ -917,10 +1052,15 @@ at::Tensor rola_decode_forward(
       atom_bits.dim() == 2 && atom_bits.size(0) == BH && atom_bits.size(1) == N / kAtomLeaves,
       "atom_bits must be [BH, N / ", kAtomLeaves, "] bool, got ", atom_bits.sizes());
 
+  //: `S_1 = N / b_0` -- the INNER span, which at `D == 1` is the empty product `1` and
+  //: comes out of the same expression because `b_0` is then `N` itself.
+  p.inner_span = static_cast<int>(N / p.level_width[0]);
+  p.inner_words = ceil_div_int(p.inner_span, 32);
+
   const bool decay = dials.has_value();
   const int64_t budget = detail::smem_budget_of(v.device().index());
-  const int64_t per_cta =
-      decode_work_words_per_cta(total_rows, d_v, cols, decay, n_words, n_groups, budget);
+  const int64_t per_cta = decode_work_words_per_cta(total_rows, d_v, cols, decay, n_groups,
+                                                    p.level_width[0], p.inner_words, budget);
   const int64_t want_work = per_cta * BH * n_split;
   TORCH_CHECK(work.dim() == 1 && work.size(0) == want_work,
               "the expansion's global scratch must be [", want_work,

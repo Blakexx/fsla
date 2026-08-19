@@ -9,8 +9,9 @@
 //
 // Three facts a reader must not miss:
 //   1. supp(R) = prod_l supp_l(R) at T = 1, so the exact support is an N-bit Kronecker
-//      object and it is MATERIALIZED, not bounded: no candidate list, no
-//      over-enumeration, no per-row membership test anywhere on this path.
+//      object: EXACT, never bounded -- no candidate list, no over-enumeration, no per-row
+//      membership test anywhere on this path. Level 0 is SERVED rather than stored;
+//      what a CTA materializes is the inner block: decode_expand.cuh.
 //   2. BC IS ABSENT AND THAT IS THE POINT. Nothing here, in decode_expand.cuh
 //      or in decode.cu is an expression in BC; work is partitioned over bitmap WORDS.
 //   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
@@ -51,11 +52,15 @@ constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
 //: and the census is what proves it met it without spilling. The walk is a latency-bound
 //: stream over state rows, so residency is the one thing it trades registers FOR.
-//: The DECAY arm gets one fewer, because it carries a second per-leaf product and a
-//: survival exponential through the same loop and does not fit the tighter cap without
-//: spilling. It is keyed on the TEMPLATE AXIS, not on a measured size.
+//: TWO TEMPLATE AXES MOVE IT, each by one CTA, and neither is a measured size:
+//: the DECAY arm carries a second per-leaf product and a survival exponential through the
+//: same loop; the GLOBAL-scratch arm (`!in_smem`) carries a 64-bit inner-block base
+//: through the walk and reads that block through global loads rather than shared ones,
+//: which is a different memory regime and not a bigger version of the same one.
 //: docs/internals/decode/decode.md#declared-residency
-__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay) { return decay ? 4 : 5; }
+__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, bool in_smem) {
+  return (decay ? 4 : 5) - (in_smem ? 0 : 1);
+}
 
 //: Bitmap words per COARSE GROUP. `pc_coarse` is one exclusive-prefix entry per group
 //: plus a total: a CTA resolves its row range without a pass over the bitmap, and the
@@ -151,9 +156,9 @@ struct DecodeParams {
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   //: THE EXPANSION'S SCRATCH, and only when it does not fit in shared memory: `4 *
-  //: n_words` words per CTA at `(bh * n_split + seg)`, carrying the two published side
-  //: maps and the recursion's ping-pong pair. `nullptr` is the ordinary arm, where the
-  //: whole bitmap lives in SMEM and never reaches DRAM at all:
+  //: inner_words` words per CTA at `(bh * n_split + seg)`, carrying the two sides' inner
+  //: blocks and the recursion's ping-pong pair. `nullptr` is the ordinary arm, where the
+  //: block lives in SMEM and never reaches DRAM at all:
   //: docs/internals/decode/decode_expand.md#smem-arm
   uint32_t* work;
 
@@ -170,6 +175,11 @@ struct DecodeParams {
   int D;
   int n_words;
   int n_groups;
+  //: THE INNER BLOCK'S GEOMETRY: `S_1 = N / b_0` (`1` at `D == 1`) and its word count.
+  //: This -- never `n_words` -- is what a split CTA materializes:
+  //: docs/internals/decode/decode_expand.md#the-view
+  int inner_span;
+  int inner_words;
   int n_split;
   int total_rows;  // sum_l b_l
   float eps;
@@ -215,8 +225,8 @@ __device__ __forceinline__ uint32_t keep_low_set_bits(uint32_t word, int k) {
   return out;
 }
 
-//: The expansion's own shared-memory need, in WORDS per CTA: both published side maps
-//: and the recursion's ping-pong pair.
+//: The expansion's own shared-memory need, as a MULTIPLE OF `inner_words` per CTA: both
+//: sides' inner blocks and the recursion's ping-pong pair.
 //: docs/internals/decode/decode_expand.md#smem-arm
 constexpr int kExpandBufWords = 4;
 
@@ -225,14 +235,14 @@ constexpr int kExpandBufWords = 4;
 // `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_words,
-                              int n_groups, bool in_smem);
+size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_groups,
+                              int outer_width, int inner_words, bool in_smem);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 //: The GLOBAL words one CTA needs when the SMEM arm does not hold. `0` is the ordinary
 //: answer. docs/internals/decode/decode_expand.md#smem-arm
-int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_words,
-                                  int n_groups, int64_t smem_budget);
+int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_groups,
+                                  int outer_width, int inner_words, int64_t smem_budget);
 
 }  // namespace decode
 }  // namespace rola
