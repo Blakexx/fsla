@@ -299,103 +299,112 @@ decode_step_kernel(DecodeParams p) {
     //: THE UNIT IS THE (owner, sub-box) PAIR and the grid partitions its rank space, so
     //: every touched leaf has exactly one owning CTA, warp and lane and the state needs
     //: no atomic: docs/internals/decode/decode.md#the-unit-partition
-    for (int unit = seg + p.n_split * warp; unit < units; unit += p.n_split * kDecodeWarps) {
-      const SubBox<D> sb = resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, unit);
-      if (!sb.valid || (!sb.live_r && !sb.live_w)) continue;
-      const int sub_base = (sb.owner * p.lat_m + sb.cap) * kd;
+    //: A WARP TAKES A WHOLE OWNER, never a stride of sub-boxes: an owner's leaves are one
+    //: contiguous `BC`-aligned lattice run BY DEFINITION, so the owner is the walk's
+    //: locality granule and splitting it across warps would scatter the one run the
+    //: order exists to make contiguous.
+    const int ranks = units >> p.lat_msb;
+    for (int rank = seg + p.n_split * warp; rank < ranks; rank += p.n_split * kDecodeWarps) {
+      for (int cap = 0; cap < p.lat_m; ++cap) {
+        const int unit = (rank << p.lat_msb) | cap;
+        const SubBox<D> sb =
+            resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, unit);
+        if (!sb.valid || (!sb.live_r && !sb.live_w)) continue;
+        const int sub_base = (sb.owner * p.lat_m + sb.cap) * kd;
 
-      //: The sub-box's leaves in ASCENDING `C`, which is ascending leaf order, which is
-      //: what makes `cached_atom` the walk's only reuse and enough of it:
-      //: docs/internals/decode/decode.md#aligned-subranges
-      for (int C = 0; C < kd; ++C) {
-        bool in_r = sb.live_r;
-        bool in_w = sb.live_w;
+        //: The sub-box's leaves in ASCENDING `C`, which is ascending leaf order, which is
+        //: what makes `cached_atom` the walk's only reuse and enough of it:
+        //: docs/internals/decode/decode.md#aligned-subranges
+        for (int C = 0; C < kd; ++C) {
+          bool in_r = sb.live_r;
+          bool in_w = sb.live_w;
 #pragma unroll
-        for (int l = 0; l < D; ++l) {
-          const int c = (C >> p.lat_cshift[l]) & (k - 1);
-          in_r = in_r && ((sb.cr[l] >> c) & 1u) != 0u;
-          in_w = in_w && ((sb.cw[l] >> c) & 1u) != 0u;
-        }
-        if (!in_r && !in_w) continue;
-
-        float ar = 1.0f;
-        float aw = 1.0f;
-        float rate = 1.0f;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          const int off = sb.dbase[l] + ((C >> p.lat_cshift[l]) & (k - 1));
-          ar *= sa_r[off];
-          aw *= sa_w[off];
-          if (DECAY) rate *= sd[off];
-        }
-
-        const int leaf = sub_base + C;
-        const int atom = leaf >> kAtomShift;
-        if (atom != cached_atom) {
-          cached_atom = atom;
-          if (page_row != nullptr) {
-            const int slot = page_row[atom];
-            atom_present = slot >= 0;
-            atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
-          } else {
-            atom_present = true;
-            atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+          for (int l = 0; l < D; ++l) {
+            const int c = (C >> p.lat_cshift[l]) & (k - 1);
+            in_r = in_r && ((sb.cr[l] >> c) & 1u) != 0u;
+            in_w = in_w && ((sb.cw[l] >> c) & 1u) != 0u;
           }
-        }
+          if (!in_r && !in_w) continue;
 
-        //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
-        //: plan admits the step's write set exactly, so an atom with no slot is outside
-        //: it, and a never-deposited leaf holds zeros in the dense backing too. The
-        //: self-normalizing readout then contributes exactly nothing through it.
-        //: docs/internals/decode/decode.md#absent-atom
-        float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
-        float sv[NC];
+          float ar = 1.0f;
+          float aw = 1.0f;
+          float rate = 1.0f;
 #pragma unroll
-        for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
-        float smass = 0.0f;
-        if (atom_present) {
-#pragma unroll
-          for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
-          if (lane == 0) smass = row[DV];
-        }
+          for (int l = 0; l < D; ++l) {
+            const int off = sb.dbase[l] + ((C >> p.lat_cshift[l]) & (k - 1));
+            ar *= sa_r[off];
+            aw *= sa_w[off];
+            if (DECAY) rate *= sd[off];
+          }
 
-        //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
-        //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole causal
-        //: intra Gram collapses into reading the row after it is written. A row in
-        //: `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
-        //: its readout too -- one path, no arm.
-        //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
-        //: BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
-        //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
-        if (in_w && atom_present && deposit) {
-          //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
-          //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
-          //: identity, so ONE `expf` replaces its three. `log1pf` IS the composition
-          //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
-          //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
-          float keep = 1.0f;
-          if (DECAY) {
-            //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
-            //: what makes "stored != 0 => live != 0" an identity:
-            //: docs/internals/decode/decode.md#detached-clock
-            keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
+          const int leaf = sub_base + C;
+          const int atom = leaf >> kAtomShift;
+          if (atom != cached_atom) {
+            cached_atom = atom;
+            if (page_row != nullptr) {
+              const int slot = page_row[atom];
+              atom_present = slot >= 0;
+              atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+            } else {
+              atom_present = true;
+              atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+            }
           }
-          const float wv = aw * sw;
+
+          //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
+          //: plan admits the step's write set exactly, so an atom with no slot is outside
+          //: it, and a never-deposited leaf holds zeros in the dense backing too. The
+          //: self-normalizing readout then contributes exactly nothing through it.
+          //: docs/internals/decode/decode.md#absent-atom
+          float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
+          float sv[NC];
 #pragma unroll
-          for (int q = 0; q < NC; ++q) {
-            sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
-            row[lane + 32 * q] = sv[q];
-          }
-          //: The mass column is the `v := 1` column of the identical recurrence.
-          if (lane == 0) {
-            smass = keep * smass + wv;
-            row[DV] = smass;
-          }
-        }
-        if (in_r) {
+          for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
+          float smass = 0.0f;
+          if (atom_present) {
 #pragma unroll
-          for (int q = 0; q < NC; ++q) acc[q] += ar * sv[q];
-          if (lane == 0) acc_m += ar * smass;
+            for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
+            if (lane == 0) smass = row[DV];
+          }
+
+          //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
+          //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole causal
+          //: intra Gram collapses into reading the row after it is written. A row in
+          //: `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
+          //: its readout too -- one path, no arm.
+          //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
+          //: BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
+          //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
+          if (in_w && atom_present && deposit) {
+            //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
+            //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
+            //: identity, so ONE `expf` replaces its three. `log1pf` IS the composition
+            //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
+            //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
+            float keep = 1.0f;
+            if (DECAY) {
+              //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
+              //: what makes "stored != 0 => live != 0" an identity:
+              //: docs/internals/decode/decode.md#detached-clock
+              keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
+            }
+            const float wv = aw * sw;
+#pragma unroll
+            for (int q = 0; q < NC; ++q) {
+              sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
+              row[lane + 32 * q] = sv[q];
+            }
+            //: The mass column is the `v := 1` column of the identical recurrence.
+            if (lane == 0) {
+              smass = keep * smass + wv;
+              row[DV] = smass;
+            }
+          }
+          if (in_r) {
+#pragma unroll
+            for (int q = 0; q < NC; ++q) acc[q] += ar * sv[q];
+            if (lane == 0) acc_m += ar * smass;
+          }
         }
       }
     }
