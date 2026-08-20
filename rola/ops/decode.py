@@ -42,7 +42,6 @@ from rola.routing.types import Topology
 
 __all__ = [
     "C_DECODE_ROWS_PER_CTA",
-    "C_DECODE_TARGET_CTAS_PER_SM",
     "DecodeScratch",
     "derive_decode_geometry",
     "leaf_rate_dials_for",
@@ -57,7 +56,10 @@ __all__ = [
 #: with too many merely serializes. The terminal cycle fills them from a rows-per-CTA
 #: sweep at the at-scale cell and an occupancy-oracle query on the shipped footprint.
 C_DECODE_ROWS_PER_CTA = 256
-C_DECODE_TARGET_CTAS_PER_SM = 12  # 2 waves x the design's 6 CTAs/SM residency estimate
+#: (the 2-waves-of-a-guess constant died here: the split is ONE WAVE of the DECLARED
+#: residency, read device-side -- see the cap below. K31 R3's kernel-independent
+#: finding: a second wave re-pays the per-CTA prologue for work the first wave could
+#: have finished; measured 41.3 -> 33.0 us at the wide sparse paged arm.)
 
 
 def derive_decode_geometry(
@@ -102,7 +104,9 @@ def derive_decode_geometry(
             sms = torch.cuda.get_device_properties(dev).multi_processor_count
         else:
             sms = 1
-        cap = max(1, math.ceil(sms * C_DECODE_TARGET_CTAS_PER_SM / max(1, BH)))
+        from rola.ops._ext import extension
+        residency = int(extension().rola_decode_residency(bool(decay)))
+        cap = max(1, math.ceil(sms * residency / max(1, BH)))
         n_split = min(max(1, math.ceil(m_ceiling / C_DECODE_ROWS_PER_CTA)), cap)
 
     return DecodeGeometry(

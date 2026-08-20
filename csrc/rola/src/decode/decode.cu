@@ -922,6 +922,17 @@ int64_t smem_budget_of(int64_t device_index) {
 
 int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 
+//: THE STEP'S DECLARED RESIDENCY, in CTAs per SM, read off the same `constexpr` the
+//: `__launch_bounds__` are built from -- a python mirror of a launch bound is exactly
+//: the constant that drifts. The split policy sizes ONE WAVE from it; the minimum over
+//: the IN_SMEM axis is taken because the plan freezes the split before the arm, and a
+//: conservative wave never over-launches: docs/internals/decode/decode_api.md
+int64_t rola_decode_residency(bool decay) {
+  const int a = decode_step_blocks_per_sm(decay, false);
+  const int b = decode_step_blocks_per_sm(decay, true);
+  return a < b ? a : b;
+}
+
 //: The MIRRORED copy of the producer's `MAX_BRANCH_WIDTH`, bound separately from the
 //: capacity because the two are DIFFERENT CLAIMS -- the second is what stops the
 //: `static_assert` being satisfied by a stale mirror:

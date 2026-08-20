@@ -131,6 +131,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");
+  m.def("rola_decode_residency", &rola::decode::rola_decode_residency,
+        "the step's declared CTAs/SM off the launch bound (min over the IN_SMEM axis)");
   m.def("rola_decode_producer_width_mirror", &rola::decode::rola_decode_producer_width_mirror,
         "the C++ mirror of the producer's MAX_BRANCH_WIDTH; pinned EQUAL to the Python "
         "constant so a stale mirror cannot silently satisfy the capacity static_assert");

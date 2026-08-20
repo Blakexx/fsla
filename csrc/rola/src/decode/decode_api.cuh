@@ -23,6 +23,7 @@ namespace decode {
 //: `static_assert` cannot read a Python constant:
 //: docs/internals/decode/decode_api.md#bound-surface
 int64_t rola_decode_capacity();
+int64_t rola_decode_residency(bool decay);
 int64_t rola_decode_producer_width_mirror();
 
 //: THE EXPANSION'S GLOBAL SCRATCH, in int32 PER CTA, and `0` at every shipped topology.
