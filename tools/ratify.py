@@ -335,24 +335,36 @@ SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
-#: The FACTS kernels' mangled template arguments, in DECLARATION order:
-#: `chunk_facts_tables<int D, int B, int BC, int MASK>`,
-#: `atom_bitmap_kernel<int D, int B>`, `block_bitmap_kernel<int D, int B, int BC>`.
-#: Decoded in ONE place: the manifest key is what the assembler saw, and every
-#: consumer of it -- the census's per-key grouping, the hot-loop gate's reporting,
-#: the fatbin gate's ownership check -- goes through here.
-FACTS_TPL = re.compile(r"(chunk_facts_tables|atom_bitmap_kernel|block_bitmap_kernel)"
-                       r"ILi(\d+)ELi(\d+)(?:ELi(\d+))?(?:ELi(\d+))?E")
+#: The FACTS kernels' mangled template arguments, in DECLARATION order.  The
+#: union-table pass is templated on the PLAN TYPE since K31-i-d, so its key
+#: carries the plan's `(D, B, s_0..s_3)` -- the SPANS, which is what the pass is
+#: actually parameterized by -- rather than the `BC` a lex arm is named by;
+#: `atom_bitmap_kernel<int D, int B>` and `block_bitmap_kernel<int D, int B, int BC>`
+#: are lex-only reductions and keep their integer keys.  Decoded in ONE place: the
+#: manifest key is what the assembler saw, and every consumer of it -- the census's
+#: per-key grouping, the hot-loop gate's reporting, the fatbin gate's ownership
+#: check -- goes through here.
+FACTS_TPL = re.compile(r"(atom_bitmap_kernel|block_bitmap_kernel)"
+                       r"ILi(\d+)ELi(\d+)(?:ELi(\d+))?E")
+PLAN_TPL = re.compile(r"(chunk_facts_tables)I[A-Za-z0-9_]*?8SpanPlan"
+                      r"ILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)EEELi(\d+)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
     """Shape axes off a facts instantiation's mangled name, or None."""
+    m = PLAN_TPL.search(mangled)
+    if m:
+        D, B = int(m.group(2)), int(m.group(3))
+        spans = tuple(int(m.group(4 + i)) for i in range(4))
+        bc = 1
+        for l in range(D):
+            bc *= spans[l]
+        return dict(kernel=m.group(1), D=D, B=B, spans=spans, mask=int(m.group(8)), BC=bc)
     m = FACTS_TPL.search(mangled)
     if not m:
         return None
     return dict(kernel=m.group(1), D=int(m.group(2)), B=int(m.group(3)),
-                BC=int(m.group(4)) if m.group(4) else None,
-                mask=int(m.group(5)) if m.group(5) else None)
+                BC=int(m.group(4)) if m.group(4) else None, spans=None, mask=None)
 
 
 def shard_of_key(mangled: str) -> str:
@@ -1154,10 +1166,14 @@ def census_report(entries: dict, unhonored: list[str],
         #: which translation unit would have to be recompiled to move it, which is
         #: what turns "re-ratify only these shards" from a plan into a checkable
         #: claim: csrc/rola/src/instantiations/README.md
+        #: the SPANS name a plan; `BC` alone no longer does (two plans of one
+        #: depth can share a `BC` and differ in how it is partitioned).
+        span = ("x".join(str(x) for x in shape["spans"][:shape["D"]])
+                if shape["spans"] else str(shape["BC"] or 0))
         k = (arch, shard_of_key(name.split(":", 1)[1]), shape["kernel"][:5],
-             shape["BC"] if shape["BC"] is not None else 0, f"{shape['D']}x{shape['B']}")
+             span, f"{shape['D']}x{shape['B']}")
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':10} {'kern':>5} {'BC':>4} "
+    print(f"\n{'arch':6} {'shard':10} {'kern':>5} {'spans':>9} "
           f"{'DxB':>7} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
           f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
@@ -1170,7 +1186,7 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:10} {k[2]:>5} {k[3]:>4} "
+        print(f"{k[0]:6} {k[1]:10} {k[2]:>5} {k[3]:>9} "
               f"{k[4]:>7} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())

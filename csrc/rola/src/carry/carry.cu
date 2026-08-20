@@ -31,8 +31,28 @@
 
 #include "carry_api.cuh"
 #include "carry_kernel.cuh"
+#include "facts/facts_kernel.cuh"
+
+//: THE OWNER BALLOT ROWS, DECLARED (K31-i-d).  The facts family owns the pass and
+//: its instantiation shard owns the arms; this TU sees a DECLARATION, exactly as the
+//: facts dispatch TU does, so nothing here can satisfy an arm locally.  The SPANS the
+//: carry asks for are `BoxPlan::s(l)` -- the lattice's balanced owner runs, which is
+//: the vocabulary the lex plan could not state.
+namespace rola::chunk {
+template <int D, int B, int S0, int S1, int S2, int S3, int MASK>
+cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
+                                  int BH, int L, cudaStream_t stream);
+}  // namespace rola::chunk
 
 namespace rola::carry {
+
+//: the plan the carry's rows are voted under, named ONCE: a `BoxPlan`'s spans as a
+//: `SpanPlan`.  `D` is at most four and a level past `D` carries `B`.
+template <int D, int B, int K, int M>
+using OwnerRows =
+    rola::chunk::SpanPlan<D, B, BoxPlan<D, B, K, M>::s(0), (D > 1 ? BoxPlan<D, B, K, M>::s(1) : B),
+                          (D > 2 ? BoxPlan<D, B, K, M>::s(2) : B),
+                          (D > 3 ? BoxPlan<D, B, K, M>::s(3) : B)>;
 
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
@@ -152,6 +172,41 @@ std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t
 #undef CARRY_CENSUS
   TORCH_CHECK(false, "unbuilt carry arm");
   return r;
+}
+
+//: THE TABLE, AS A TENSOR: `[BH, 2, entries, L/32]` packed bits, read rows then
+//: write rows, one row per (level, owner-group).  A SEPARATE ENTRY POINT while the
+//: carry's own liveness scan still exists, so the two can be compared bit for bit
+//: (`tests/k31/test_owner_rows.py`); the kernel consumes the table through the same
+//: launch once M2 wires it.
+template <int D, int B, int K, int M>
+static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
+                                      int L) {
+  using RP = OwnerRows<D, B, K, M>;
+  auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
+                          pr.options().dtype(torch::kInt32));
+  C10_CUDA_CHECK(
+      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
+                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
+          (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
+          reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
+  return tbl;
+}
+
+torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
+                         int64_t m) {
+  TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && pr.is_contiguous() && pw.is_contiguous(),
+              "contiguous cuda planes");
+  TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16,
+              "the operand planes are bf16");
+  TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 3, "expect packed amplitudes [BH, L, sumW]");
+  const int BH = (int)pr.size(0), L = (int)pr.size(1);
+#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_)                       \
+  if (is_arm(widths, D_, B_) && k == K_ && m == M_)                   \
+    return build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);
+  CARRY_ARMS_X(CARRY_ROWS)
+#undef CARRY_ROWS
+  TORCH_CHECK(false, "unbuilt carry arm");
 }
 
 std::vector<std::vector<int64_t>> arms() {

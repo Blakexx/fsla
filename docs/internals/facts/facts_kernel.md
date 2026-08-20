@@ -11,14 +11,25 @@ mangled keys do not move with the file.
 
 ## The geometry law
 
-<a id="geometry-law"></a>**The geometry law.** `LevelPlan` quantifies it over `D`
+<a id="geometry-law"></a>**The geometry law.** `SpanPlan` quantifies it over `D`
 levels of one uniform power-of-two width `B` (the compile matrix is 8 widths × 4 depths
-= 32 topologies, and `N = B^D` is the reachable grid). Reading levels
-most-significant first: every level ABOVE the boundary is spanned at EXACTLY ONE digit;
-AT MOST ONE level is spanned PARTIALLY, by an aligned run whose width divides `B`; every
-level BELOW is spanned ENTIRELY; and `BC = B^whole * partial_span`. A `(widths, BC)`
-pair that breaks a clause does not compile — every clause is a `static_assert` on the
-plan.
+= 32 topologies, and `N = B^D` is the reachable grid). It is stated on the quantity it
+is about: THE PER-LEVEL SPANS `s_l`, GIVEN. Each span is an aligned run that divides
+its level; `BC = prod_l s_l` is a consequence rather than an input, which makes "`BC`
+is a rectangle in digit space" true by construction; and the levels that carry table
+rows (`s_l < B`) must be a PREFIX of the levels, because the two bitmap reductions
+address the innermost clause as `prefix_entries(clauses - 1)` and carve their grid on
+`suffix_groups`. A `(widths, spans)` tuple that breaks a clause does not compile.
+
+<a id="lex-policy"></a>**`LevelPlan<D, B, BC>` is the LEX POLICY, an alias.** It is one
+way of CHOOSING spans from a `BC`: reading levels most-significant first, every level
+above the boundary is spanned at exactly one digit, at most one level is spanned
+partially, and every level below is spanned entirely — so `BC = B^whole * partial_span`
+and at most one span is neither `1` nor `B`. That shape is what K31-i-d ran into: the
+box lattice's owner runs are `D` BALANCED spans (the flagship's `(16, 8)`), which the
+policy forbids arithmetically and not accidentally. The plan now takes the spans, the
+policy computes them, and every consumer reads `span_at` / `entries_at` / `col_base`
+exactly as it did.
 
 The WIDTHS POLICY is an accessor, not a constant: every consumer reads level widths
 through `width(l)`, which the uniform policy answers with `B`. A jagged policy answers
@@ -36,8 +47,11 @@ in canonical leaf order, so the block is named by its first leaf and an atom
 index is that leaf over sixteen — `rola.ops.paging.AtomKeying.atom_of`. Levels
 below the partial one are spanned whole and least significant, the partial run is
 aligned and divides its level, and levels above contribute one digit each; the
-per-level statement of that is `LevelPlan::base_aligned`, `static_assert`ed at
-every instantiation, and `LevelPlan::block_base` is the map. The law is what the
+per-level statement of that is `SpanPlan::base_aligned`, `static_assert`ed by the two
+reductions that walk canonical blocks (`atom_bitmap_kernel`, `block_bitmap_kernel`) —
+it is a claim about CANONICAL leaf order, so it belongs to those consumers and not to
+every plan; the box lattice's owners are aligned runs in LATTICE order and are not
+canonical rectangles. `SpanPlan::block_base` is the map. The law is what the
 final-state gate checks end to end: a misordered base shows up there as a
 permutation, not as noise.
 
@@ -75,14 +89,19 @@ measured change of its own and not a tidy-up.
 
 ## The facts pass, one launch over the amplitude planes
 
-<a id="the-facts-pass"></a>**`chunk_facts_tables<D, B, BC, MASK>` emits BOTH ballot
-row sets from one pass.** A lockstep unit takes thirty-two consecutive tokens, one per
+<a id="the-facts-pass"></a>**`chunk_facts_tables<PLAN, MASK>` emits BOTH ballot
+row sets from one pass.** It is templated on the PLAN TYPE, so the pass is
+parameterized by the SPANS it votes and not by a `BC` some policy derived them from;
+its mangled name — the ratification manifest's key — carries `(D, B, s_0..s_3)`
+accordingly, and `tools/ratify.py:parse_shape` is the one decoder. A lockstep unit takes thirty-two consecutive tokens, one per
 lane, and votes once per entry; the vote IS the word, so nothing is packed afterwards
 and nothing is zeroed first. A token past the end reads token zero and votes dead —
 its bit has no consumer, and reading in range is what keeps the unit converged.
 
 The two row sets are the same expression at two grains. The OWNER rows, both sides,
-come out of `LevelPlan<D, B, BC>` and are what the consumer's clause pointers address.
+come out of `PLAN` and are what the consumer's clause pointers address; `PLAN` is
+`LevelPlan<D, B, BC>` for the lex arms and the lattice's `SpanPlan<D, B, s_0..s_3>` for
+the `rola::carry` family's owner rows (`launch_span_facts_arm`).
 The ATOM rows, write side only, come out of `LevelPlan<D, B, kAtomLeaves>` and are what
 the atom bitmap reduces into residency (`docs/internals/paging/stats.md`). A lane's
 amplitude row is a fact about the token and not about any block geometry — the packed

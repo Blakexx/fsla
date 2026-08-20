@@ -118,6 +118,18 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
         int(window), int(chunk), int(carve), state_in)
 
 
+def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
+    """The owner BALLOT ROWS the liveness pass consumes: ``[BH, 2, entries, L/32]``.
+
+    Row ``(side, prefix_entries(l) + o_l)`` bit ``t`` answers "token ``t``'s
+    level-``l`` support on this side intersects the owner group ``o_l``'s digit run
+    ``[o_l*s_l, (o_l+1)*s_l)``" -- the owner rectangle test, one word per 32 tokens.
+    ``entries = sum_l B/s_l`` is SIGMA-shaped: the table does not grow with ``N``.
+    """
+    return extension().carry_owner_rows(pack_side(read_levels), pack_side(write_levels),
+                                        list(widths), int(k), int(m))
+
+
 def build_stamp(widths, k, m, window, chunk, carve):
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
                                          int(chunk), int(carve))
