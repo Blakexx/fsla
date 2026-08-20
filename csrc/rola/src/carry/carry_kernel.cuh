@@ -225,7 +225,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   int* const sscan = reinterpret_cast<int*>(slist + 2 * kListStride);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
-  //: shipped addressing discipline (docs/internals/chunk/chunk_kernel.md#state-addressing).
+  //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kDv;
   const __nv_bfloat16* const vPlane =

@@ -153,3 +153,18 @@ construction (a global window grid instead of per-CTA super-chunks, a two-MMA lo
 instead of the fused drain). Conformance is the fp64 oracle within the repository's one
 bf16 family bound (`tests/oracle/tolerances.py`). Operands are bf16, accumulators fp32,
 the state plane fp32 — the shipped kernel's conventions.
+
+<a id="state-addressing"></a>
+## Plane addressing: one 64-bit base, 32-bit displacements
+
+Every gathered row is a base formed ONCE per plane plus a 32-bit BYTE displacement,
+never a base plus an element index. The arithmetic is the contract: at element type the
+compiler is entitled to re-derive `base + index` as a widening multiply per access, and
+it does — measured at 30 `IMAD.WIDE` in a loop the displacement form emits none for. The
+caller owns the 32-bit bound, and every plane the family reads is inside it at every
+admitted length.
+
+The base is additionally declared a GLOBAL address. An address whose storage class the
+compiler cannot infer turns the fan-in's reduction into a generic read-modify-write and
+every gathered load into a generic one, so the assumption restores what the displacement
+arithmetic hid. Both halves live in `common/ops.cuh`'s `gather_ptr` and `pin_address`.

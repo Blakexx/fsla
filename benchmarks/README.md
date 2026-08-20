@@ -46,3 +46,11 @@ flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py gate               # r
 `benchmarks/bench_layer.py`, `bench_scaling.py` and `bench_paging.py` predate this harness
 and are curve and attribution studies rather than gated cells; they state their own usage
 lines and use the same statistics.
+
+`benchmarks/bench_prefill.py`, `bench_intra.py` and `bench_prefill_backward.py` are the
+K31 family's own tables. They are NOT gates — the acceptance bars live on the queue card
+— and they take every row in ONE process on one quiet card, including the
+flash-attention row, because a number from another session carries that session's clock
+and card temperature as alternative explanations. `bench_prefill_backward.py` reports the
+reverse pass beside the forward's own wall and splits the two carry scans from the intra
+backward, since those are the two halves a ratio can move for different reasons.

@@ -213,7 +213,11 @@ STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   "entmax/factor.cu",
                   #: K31 R1: the carry family is shipped codegen the moment it is in
                   #: SOURCES, so it is measured like every other shipped TU.
-                  "carry/carry.cu", "intra/intra.cu")
+                  "carry/carry.cu", "intra/intra.cu",
+                  #: K31 R4: the reverse pass's two TUs, on the same footing -- a
+                  #: kernel's launch bound is a property of the kernel, and the two
+                  #: scans declare their register floors separately.
+                  "carry/backward.cu", "intra/intra_backward.cu")
 
 
 def shard_paths() -> list[Path]:
