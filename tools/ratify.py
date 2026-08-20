@@ -204,10 +204,10 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: was the probe.
 #:
 #: Now the gate compiles the shipped sources themselves: the generated instantiation
-#: shards, plus `decode.cu` and `entmax.cu` as the translation units they are in the
-#: build. The chunk keys are unchanged by construction -- `compacted_kernel` lives in
-#: a NAMED namespace, so its mangled name does not depend on which translation unit
-#: expands it -- and the decode/entmax keys now name the symbols that are actually in
+#: shard, plus `decode.cu` and `entmax.cu` as the translation units they are in the
+#: build. The facts keys are stable by construction -- the kernels live in a NAMED
+#: namespace, so their mangled names do not depend on which translation unit
+#: expands them -- and the decode/entmax keys name the symbols that are actually in
 #: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
 STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   "entmax/factor.cu")

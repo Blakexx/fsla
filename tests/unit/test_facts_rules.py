@@ -10,7 +10,7 @@ run table was reachable only through a launch and the arm only through a built
 extension (docs/internals/engine/rules.md).
 
 The run-table rows are the DERIVATION, not a spot check: every one of the eight
-liveness bytes is asserted against every row of `chunk.md#run-table`, and the row
+liveness bytes is asserted against every row of `engine/rules.md#run-table`, and the row
 lines themselves are matched against that document so the doc and the rule cannot
 drift apart.
 """
@@ -258,7 +258,7 @@ def test_admission_is_all_or_nothing_at_the_ceiling():
 
 _PRESENT = object()
 
-#: `docs/internals/chunk/chunk.md#run-table`, transcribed: the row's line as it must
+#: `docs/internals/engine/rules.md#run-table`, transcribed: the row's line as it must
 #: appear in that document, the three PRESENCE facts it is keyed by, and its rule.
 _DOC_ROWS = (
     ("| stateless `y`-only | absent | absent | absent | `R && W` |",
@@ -288,9 +288,9 @@ _DOC_ROWS = (
 def test_the_documented_rows_are_the_rows_the_document_carries():
     """The seven-row prose became an executable fixture, and this is the tie that
     keeps it one: a doc edit that changes a rule fails here."""
-    doc = (ROOT / "docs" / "internals" / "chunk" / "chunk.md").read_text()
+    doc = (ROOT / "docs" / "internals" / "engine" / "rules.md").read_text()
     missing = [row for row, _triples, _rule in _DOC_ROWS if row not in doc]
-    assert not missing, f"chunk.md#run-table no longer carries {missing}"
+    assert not missing, f"rules.md#run-table no longer carries {missing}"
 
 
 @pytest.mark.parametrize("row,triples,predicate", _DOC_ROWS,

@@ -84,13 +84,13 @@ batch's reverse pass; baseline = tag `baseline/pre-k31`):
 * `run_table` IS in the chunk tuple, last before the terminal node, so it folds after
   `backing` has produced the three presences it reads and without stepping between two
   launches. Its `uint32` is a `ChunkPlan` field and a launch argument
-  ([`chunk.md#run-table`](../chunk/chunk.md#run-table)).
+  ([`#run-table`](#run-table)).
 
 ## <a id="derive-never-author"></a>4. Derive; never hand-author the derived artefact
 
 `run_table` is the pattern in miniature and the pattern the whole layer copies: write
 the RULE once in readable form — the rows of
-[`chunk.md#run-table`](../chunk/chunk.md#run-table) — and DERIVE the mask by evaluating
+[`#run-table`](#run-table) — and DERIVE the mask by evaluating
 it over all eight bit values. The kernel's predicate is then one shift and one AND with
 no call-class knowledge in it.
 
@@ -118,3 +118,82 @@ FACT explicitly — and that named fact goes through the fact-node review, as a 
 launch, a new mask and a new byte cost, separately. There is no third path in which a
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
+
+## <a id="run-table"></a>The run table: the skip predicate is a host decision
+
+*(Moved from the deleted `docs/internals/chunk/chunk.md` in the K31 batch — the
+rule outlives the consumer: the liveness facts and the fold survive, and K31 R2
+re-consumes the `uint32` as a launch argument.)*
+
+The liveness epilogue (`chunk_block_bits`, reducing the union table this call already
+built — `../facts/facts_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `READ`,
+`WRITE`, `STATE`. It does not emit a verdict, because the verdict is not a property of the
+routing. What a skipped block would have cost differs by call class and by backing, and a
+call class here is the PRESENCE of the three launch arguments — the entry-state plane, the
+exit-state plane and the page table — never the engagement bits the facade classifies with
+(`rola/engine/types.py`'s `CallClass`), because it is the argument that decides the cost:
+
+| call class | `s_in` | `s_out` | `page_tbl` | rule |
+|---|---|---|---|---|
+| stateless `y`-only | absent | absent | absent | `R && W` |
+| state-in `y`-only, paged | present | absent | present | `R && (W \| S)` |
+| state-in `y`-only, dense | present | absent | absent | `R` |
+| continued state-out, paged | present | present | present | `(R && (W \| S)) \| W` |
+| fresh state-out, paged | absent | present | present | `W` |
+| continued state-out, dense | present | present | absent | `R \| W` |
+| fresh state-out, dense | absent | present | absent | always run |
+
+`rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
+`uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
+eight values, so the rule is written once in readable form and the mask is derived, never
+hand-authored. The kernel's whole predicate is then one shift and one AND, with no branching
+taxonomy and no call-class knowledge in it. The eighth argument triple — a page table with
+no state at all — is refused at the binding before the derivation is reached, and derives
+the stateless row in any case.
+
+**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule and
+its `uint32` is a `ChunkPlan` field; the deleted consumer's entries took it as a launch
+argument beside the bitmap it predicates over, and K31 R2's will again. The kernel read
+`ChunkParams::run_table` and derived nothing: a second derivation behind the
+extension boundary could not promise that the table a call PLANS is the table it RUNS, and
+the seven rows above could only be exercised through a launch. They are now device-free unit
+cells over all eight liveness bytes × all seven rows (`tests/unit/test_facts_rules.py`), and
+`tests/unit/test_facts_rules.py` transcribes the rows above and holds the doc and the rule to each other.
+
+**The two paged state-out rows differ, and the difference is the entry state.** A CONTINUED
+sequence may hold value in a block it does not write this call, and only a read of that
+block's carried state can produce it — hence the `S` term. A FRESH one has no entry plane
+to read, so a block that writes nothing has nothing any read could observe, and the
+predicate collapses to `W`. Both are sound; the fresh row is simply tighter, and a
+derivation that gave it the continued row's rule would run blocks that are provably inert.
+
+**Why each row is what it is.** A skipped block's contribution to `y` and to `den` is the
+exact additive identity, not a negligible one: its mass accumulator is initialised to `+0.0`
+and only ever written inside the write-side gate, and `x + (+0.0)` is the identity in
+round-to-nearest for every `x` the zero-initialised accumulator can hold. That is what makes
+`R && W` sound for a stateless call — a write-only block folds into the register state and
+then discards it, so it is provably inert. A carried entry state breaks that argument, which
+is what `S` restores where a page table can witness it; the dense backing has no residency
+map, so its predicate degrades to `R` and says so.
+
+**The two dense state-out rows differ for the same reason the paged pair does, and the
+carry-through is what separates them.** A dense CONTINUATION updates its plane IN PLACE:
+`s_out` IS `s_in`, one plane and no swap (`state.md#the-dense-continuation`). A skipped
+block therefore leaves its own atoms holding what it carried in, which is both the paged
+unchanged-slot semantics and the exact final state of a block this call never writes into.
+What the dense backing still cannot do is WITNESS residency — with no page table there is
+no `S` to read — so the `y` term must assume the block carries and degrades to `R`, and the
+store term is `W`; together, `R | W`. That is the paged continued row with `S` forced true,
+which is precisely what having no residency map means.
+
+**The dense FRESH row is the one that cannot skip at all.** A fresh bind has no entry plane,
+and its `s_out` is allocated uninitialised precisely because it is written WHOLE — the owner
+blocks tile the leaf space exactly, so every atom is stored by exactly one CTA. Skipping a
+block there would leave that block's atoms as garbage in the returned state. The paged
+backing never has that problem: an unmapped atom is already a no-op in the epilogue, and a
+mapped slot either was zero-initialised on admission or is carried from a previous call,
+which a skipped block must leave UNCHANGED — which is what skipping does.
+
+**Every arm takes the bitmap.** The predicate is a load and a branch above every register
+the body allocates, so there is no arm whose census cannot hold it — including the one at
+`reg_floor` 255.

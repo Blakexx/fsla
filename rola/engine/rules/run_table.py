@@ -4,7 +4,7 @@
 
 The rule is written once, in readable form, and the mask is DERIVED by evaluating it
 over all eight bit values; the kernel's whole predicate is then one shift and one AND
-(docs/internals/chunk/chunk.md#run-table). This fold is the ONE derivation and the
+(docs/internals/engine/rules.md#run-table). This fold is the ONE derivation and the
 `uint32` is a launch argument: the table a call PLANS is the table it RUNS, which a
 second derivation behind the extension boundary could not promise.
 

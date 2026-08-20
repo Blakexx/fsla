@@ -268,8 +268,9 @@ def _sequence():
                                            BC=64)
         arena.wait()
         _y_ref, oracle_state = naive_rola(
-            v[:, :_T], routes.read, routes.write, routes.g_read, routes.g_write,
-            routes.topology, None, routes.normalization, output_final_state=True)
+            v[:, :_T], routes.read_simplex(), routes.write, routes.g_read,
+            routes.g_write, routes.topology, None, routes.normalization,
+            output_final_state=True)
         atoms = oracle_state.float().reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)
         table = arena.page_table
         present = table >= 0

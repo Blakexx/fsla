@@ -18,12 +18,11 @@ and what the kernel envelope is stated in, so those three are the census's
 left-hand side.
 
 **Declared here, CHECKED against the shipped arm list.** `tools/gen_shards.py`'s
-`CHUNK_ARMS` is THE enumeration of built `(C, BC, D, B)` arms — the same tuple
-list the generated instantiation TUs and the `chunk_arms.inc` X-macro come from,
-so it cannot disagree with the binary the way a hand-kept list can. The value
-sets below are asserted equal to its projections (`test_conformance_census.py`),
-which keeps the old M1 property — *a new instantiation axis value fails at
-collection until it is declared and rowed* — on the axes that survived.
+`FACTS_ARMS` is THE enumeration of the built `(C, BC, D, B)` dispatch vocabulary
+— the same tuple list the generated instantiation TU and the `facts_arms.inc`
+X-macro come from, so it cannot disagree with the binary the way a hand-kept
+list can. (The conformance census that asserted the projections went with the
+chunk consumer in the K31 deletion batch; baseline = tag `baseline/pre-k31`.)
 
 **Pure data and pure CPU.** No torch, no device, no extension: the census runs
 in the CPU CI job, and so does the kernel-envelope predicate below.
@@ -42,9 +41,9 @@ if str(_REPO / "tools") not in sys.path:
 
 import gen_shards  # noqa: E402
 
-#: `(C, BC, D, B)` -- every built chunk arm, read from the generator that emits
-#: the instantiation TUs rather than transcribed.
-CHUNK_ARMS: tuple[tuple[int, int, int, int], ...] = tuple(gen_shards.CHUNK_ARMS)
+#: `(C, BC, D, B)` -- the built dispatch vocabulary, read from the generator that
+#: emits the instantiation TU rather than transcribed.
+CHUNK_ARMS: tuple[tuple[int, int, int, int], ...] = tuple(gen_shards.FACTS_ARMS)
 
 #: The `(D, B)` topologies the dispatch can reach. The engine's arm fold pins
 #: `C = CHUNK_TOKENS` and picks `BC` from the manifest, so an arm at any other

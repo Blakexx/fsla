@@ -148,7 +148,7 @@ paying for the second plane deliberately rather than on every call.
 
 Two consequences follow and are stated where they belong: a dense continuation can SKIP
 blocks, because a skipped block leaves its own atoms carrying what they held
-([`chunk/chunk.md#run-table`](chunk/chunk.md#run-table)), and a FRESH dense bind cannot —
+([`engine/rules.md#run-table`](engine/rules.md#run-table)), and a FRESH dense bind cannot —
 its plane is uninitialized and is written whole.
 
 `plan_exact`'s single device-to-host size read is the only host synchronization in

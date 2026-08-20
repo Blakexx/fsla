@@ -502,7 +502,7 @@ band-2 fold fed plain values -- tuples, ints, a fake manifest, a `torch.device` 
 asserted on its decision, plus the marker sweep that makes `rola/engine/rules/` an inventory
 rather than a folder (an unmarked function there fails). The run table is the case that
 was unreachable without a device at all: it is derived over all eight liveness bytes
-against every row of `chunk.md#run-table`, and the row LINES are matched against that
+against every row of `engine/rules.md#run-table`, and the row LINES are matched against that
 document, so a doc edit and a rule edit cannot drift apart. It must pass under
 `CUDA_VISIBLE_DEVICES=""`, and it asserts that the battery never resolved the compiled
 extension.

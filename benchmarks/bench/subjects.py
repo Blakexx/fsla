@@ -114,9 +114,8 @@ def decode_step(fx) -> Arm:
 
 
 #: THE UNIT ROSTER: one entry per surviving custom kernel, mirroring the oracle
-#: tests.  The consumer subjects (`chunk_forward`, `divide_pass`,
-#: `backward_seeds`, `scan_a`, `scan_b`) and the compositions over them
-#: (`layer_step`, `prefill_decode`) left with the K31 deletion batch
+#: tests.  The consumer subjects and the compositions over them left with the
+#: K31 deletion batch
 #: (baseline = tag `baseline/pre-k31`); the R1 rebuild re-registers its own.
 SUBJECTS = {
     "chunk_facts": chunk_facts,

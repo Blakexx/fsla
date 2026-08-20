@@ -134,7 +134,7 @@ makes the AND-over-levels-then-OR-over-tokens evaluation exact rather than a bou
 skipped block would have COST, however, is not a property of the routing: it differs by
 call class (stateless, state-in, state-out) and by backing (dense, paged). So the facts
 are emitted separately and the predicate over them is the host's
-(`docs/internals/chunk/chunk.md#run-table`).
+(`docs/internals/engine/rules.md#run-table`).
 
 `STATE` is the residency witness for "this block may carry a nonzero entry state": an atom
 with no page has provably zero entry fragments, so an unmapped block cannot read anything
