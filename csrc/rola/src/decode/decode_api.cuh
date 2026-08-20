@@ -25,6 +25,11 @@ namespace decode {
 int64_t rola_decode_capacity();
 int64_t rola_decode_producer_width_mirror();
 
+//: THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the split policy sizes one wave from
+//: the launch bound itself rather than from a python mirror of it:
+//: docs/internals/decode/decode_api.md#residency
+int64_t rola_decode_residency(bool decay, int64_t levels);
+
 //: THE DEVICE-SIDE BUILD STAMP, a fact only the loaded binary can produce. A path check
 //: or a hash of the sources cannot catch a stale `.so` at the right path:
 //: docs/internals/decode/decode_api.md#build-stamp

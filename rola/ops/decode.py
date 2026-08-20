@@ -43,24 +43,21 @@ from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import Topology
 
 __all__ = [
-    "C_DECODE_TARGET_CTAS_PER_SM",
     "C_DECODE_UNITS_PER_CTA",
     "DecodeScratch",
     "derive_decode_geometry",
+    "derive_n_split",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
 ]
 
 
-#: CALIBRATION PLACEHOLDERS. Both defaults are chosen so that a WRONG value
-#: degrades to today's behaviour and never to a new behaviour: they only move how many
-#: CTAs share a step's UNITS -- the (owner, sub-box) pairs the walk partitions -- and a
-#: CTA with no units exits after one L2 read while a CTA with too many merely serializes.
-#: The terminal cycle fills them from a units-per-CTA sweep at the at-scale cell and an
-#: occupancy-oracle query on the shipped footprint.
+#: THE SMALLEST UNIT SHARE worth a CTA's prologue. A CTA pays the fold and the factor
+#: tables before it can walk anything, so splitting past this point buys parallelism the
+#: replicated prologue immediately spends. It bounds the split on SMALL topologies, where
+#: the wave below is not the binding constraint.
 C_DECODE_UNITS_PER_CTA = 16
-C_DECODE_TARGET_CTAS_PER_SM = 12  # 2 waves x the design's 6 CTAs/SM residency estimate
 
 
 def derive_decode_geometry(
@@ -76,10 +73,8 @@ def derive_decode_geometry(
     """Build the carrier once, at the boundary.
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
-    reintroduce exactly the per-step selection the design dissolves. CTAs whose unit range
-    starts beyond the realized live-unit count read one L2 word and exit; that
-    over-launching is the price of never reading a device value back to the host, which
-    is the one thing a decode step must not do.
+    reintroduce exactly the per-step selection the design dissolves
+    (:func:`derive_n_split`).
     """
     widths = tuple(topology.widths)
     D = len(widths)
@@ -91,22 +86,38 @@ def derive_decode_geometry(
         acc += w
 
     if n_split is None:
-        # The UNIT CEILING: every level contributes its full owner grid, so the whole
-        # lattice is N / k^D units. The realized live-unit count is a device fact and
-        # reading it back is the one thing a decode step must not do, so the split is
-        # sized for the whole rank space -- more CTAs, never fewer.
-        unit_ceiling = math.prod(widths) // k**D
-        dev = torch.device(device)
-        if dev.type == "cuda":
-            sms = torch.cuda.get_device_properties(dev).multi_processor_count
-        else:
-            sms = 1
-        cap = max(1, math.ceil(sms * C_DECODE_TARGET_CTAS_PER_SM / max(1, BH)))
-        n_split = min(max(1, math.ceil(unit_ceiling / C_DECODE_UNITS_PER_CTA)), cap)
+        n_split = derive_n_split(widths, k, decay=decay, BH=BH, device=device)
 
     return DecodeGeometry(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
         d_v=int(d_v), has_decay=decay, eps=eps, n_split=int(n_split))
+
+
+def derive_n_split(widths, lattice_k: int, *, decay: bool, BH: int, device) -> int:
+    """CTAs per batch-head: ONE WAVE of the step's own declared residency, work permitting.
+
+    THE SPLIT IS A WAVE, not a target. Every CTA pays the fold and the factor tables before
+    it can walk anything, so a second wave re-pays that whole prologue for work the first
+    wave could have finished -- which is why over-launching is not free the way a
+    `beyond-realized CTA exits early` argument suggests. One wave is where the replicated
+    prologue is paid exactly once per SM slot.
+
+    The residency comes from :func:`rola.ops._ext.extension().rola_decode_residency`, i.e.
+    off the same ``constexpr`` the kernel's ``__launch_bounds__`` are built from: a python
+    mirror of a launch bound is exactly the constant that drifts.
+
+    ``n_split`` is FROZEN by the caller for the sequence and never re-selected per step.
+    """
+    D = len(widths)
+    unit_ceiling = math.prod(widths) // lattice_k**D
+    dev = torch.device(device)
+    if dev.type != "cuda":
+        return 1
+    sms = torch.cuda.get_device_properties(dev).multi_processor_count
+    residency = extension().rola_decode_residency(decay=bool(decay), levels=D)
+    wave = max(1, (sms * int(residency)) // max(1, BH))
+    supply = max(1, math.ceil(unit_ceiling / C_DECODE_UNITS_PER_CTA))
+    return min(supply, wave)
 
 
 @dataclass(slots=True)

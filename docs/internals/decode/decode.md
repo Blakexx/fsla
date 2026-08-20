@@ -630,6 +630,19 @@ the walk itself, not a tuning outcome: the leaf-space bitmap this design replace
 construction, its cost and its removal are recorded in `DELETIONS.md`) DID carry a term in
 `N`, which is the gap this design exists to close.
 
+<a id="the-split-policy"></a>**The split is ONE WAVE of the declared residency.** Because
+the prologue is per-CTA, a grid deeper than the machine can hold at once re-pays that
+whole prologue in a second wave for work the first wave could have finished, and the
+`beyond-realized CTAs exit early` argument does not cover it: a CTA cannot exit before it
+knows its own range, and knowing its range means running the prologue. So
+`rola.ops.decode.derive_n_split` takes `SMs * residency / BH`, with the residency read
+back off the launch bound itself
+([`decode_api.md` §2](decode_api.md#residency)), bounded below by the UNIT SUPPLY so a
+small topology does not launch CTAs there is no work for. Both bounds are static facts —
+an occupancy fact and a geometry fact. The remaining slack is not: the wall-optimal split
+sits somewhat under one wave and its position depends on the REALIZED work, which is a
+device fact and reading it back is the one thing a decode step must not do.
+
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
 At `T = 1` there is no owner rectangle, so the per-LEVEL factors the tiled kernel

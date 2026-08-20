@@ -35,6 +35,14 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
+<a id="residency"></a>`rola_decode_residency(decay, levels)` returns the step's DECLARED
+CTAs per SM for that arm, read off the same `constexpr` the kernel's `__launch_bounds__`
+are built from. The host's split policy sizes ONE WAVE from it
+([`decode.md` §7](decode.md#declared-residency)), and it is bound rather than mirrored in
+Python for the reason the whole bound surface exists: a launch bound is exactly the
+constant that drifts when it is written down twice. The two arms differ because the decay
+arm and the deep arms each carry more live state through the same loop.
+
 <a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds `sizeof(DecodeParams)`, `sizeof(SubBox<4>)` and `kDecodeMaxSubBox` into one

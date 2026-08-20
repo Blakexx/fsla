@@ -727,6 +727,15 @@ int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 //: docs/internals/decode/decode.md#producer-width-mirror
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
+//: THE STEP'S DECLARED RESIDENCY, in CTAs per SM, read off the same `constexpr` the
+//: `__launch_bounds__` are built from. The split policy needs it to size one wave, and a
+//: python mirror of a launch bound is exactly the constant that drifts:
+//: docs/internals/decode/decode_api.md#residency
+int64_t rola_decode_residency(bool decay, int64_t levels) {
+  TORCH_CHECK(levels >= 1 && levels <= kMaxLevels, "D must be in [1, 4], got ", levels);
+  return decode_step_blocks_per_sm(decay, static_cast<int>(levels));
+}
+
 //: THE BUILD STAMP: a path or hash check cannot catch a stale `.so` at the right path,
 //: and only a device-side fact can: docs/internals/decode/decode_api.md#build-stamp
 int64_t rola_decode_build_stamp() {

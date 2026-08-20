@@ -124,6 +124,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: THE DEVICE-SIDE BUILD STAMP: a fact only the loaded binary can produce, which is the
   //: only kind of check an extension trap cannot survive --
   //: docs/internals/rola_api.md#decode-build-stamp
+  m.def("rola_decode_residency", &rola::decode::rola_decode_residency,
+        "the decode step's declared CTAs per SM for this arm, read off the launch bound",
+        py::arg("decay"), py::arg("levels"));
   m.def("rola_decode_build_stamp", &rola::decode::rola_decode_build_stamp,
         "the decode step's own footprint, read back off a kernel this translation unit "
         "compiles");
