@@ -63,6 +63,16 @@ struct BoxPlan {
   //: the offset of `local`'s level-`l` digit INSIDE the owner's run, `r_l = u_l*K + c_l`.
   static constexpr int run_of(int l, int local) { return u_of(l, local) * K + c_of(l, local); }
 
+  //: THE OWNER'S BALLOT ROWS in the facts table (`SpanPlan<D, B, s_0..s_D-1>`'s
+  //: entry accounting, mirrored here for the same reason the seam derives its own
+  //: strides: two derivations disagree exactly when one is wrong).  A level spanned
+  //: WHOLE by the owner emits no rows -- its clause is true for every token and
+  //: drops out of the conjunction on its own.
+  static constexpr int row_g(int l) { return s(l) < B ? g(l) : 0; }
+  static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
+  static constexpr int kRows = row_entries(0);
+  static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
+
   //: the level's column base in the packed `[BH, L, sum_l B_l]` amplitude plane.
   static constexpr int col_base(int l) { return l * B; }
   static constexpr int kWtot = D * B;

@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "af5c7ddc81ee0e8fddf8b5b9910800d29b26e66652d655fdd72452238e25ab1a",
+  "csrc_sha256": "9670a769741b2150a2038ad7b6552ab26ef2d6db9f6ed59d81535ab6b8318164",
   "date": "2026-08-20"
  },
  "shards": {
@@ -33,29 +33,29 @@
   }
  },
  "entries": {
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PfS5_iiPKfS5_": {
+  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 165,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "a5f2b3869afd5592cc6dc1360ff41141f5f597b9a8ab2896fe308d73df8598d1"
+   "sass_sha256": "590a9395a97e55883d495ba67ce79d6c15b025654f9b0a646374c7f58a45cc33"
   },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PfS5_iiPKfS5_": {
+  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 165,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "7c872028c300360325a8b425e535f49fb9fe77d5d9dc402701ff300c6f37f7d9"
+   "sass_sha256": "b1013fb4cc8cc4ad4f803533f4f277b6b718178ba1dcef93bb13d34740e966a2"
   },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PfS5_iiPKfS5_": {
+  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 165,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "68302a7bd1e1d07601be1e75a2fc0b090a3f26818eae446d5391162cbbaeee01"
+   "sass_sha256": "e27a6ff7cf977e373450efd3f62efce2d4144e08edca594247356326d7afa917"
   },
   "sm_80:_ZN4rola5carry18stamp_kernel_entryEPi": {
    "regs": 12,
@@ -63,7 +63,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "0f0edf1b19ac7fefdbf53ad6bf6561d0c0229417901d7a171872dca181752347"
+   "sass_sha256": "4e7378833c30d5f064a7074cea723903caf4547f8d506bd95b5a9dc6bfff6a36"
   },
   "sm_80:_ZN4rola5chunk18atom_bitmap_kernelILi1ELi256EEEvPKjPhi": {
    "regs": 32,

@@ -66,8 +66,9 @@ using OwnerRows =
 //: something else.
 template <int D, int B, int K, int M, int W, int C, int CV>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
-                          const __nv_bfloat16* v, float* o, float* den, int BH, int L,
-                          int v_row_bytes, const float* s_in, float* s_out, cudaStream_t stream) {
+                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
+                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
+                          float* s_out, cudaStream_t stream) {
   static_assert(CV == 1, "channel-split is the built carve");
   const auto fn = &carry_kernel<D, B, K, M, W, C, true>;
   constexpr size_t sm = CarryGeom<D, B, K, M, W, C>::bytes;
@@ -79,7 +80,8 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
     configured = true;
   }
   const dim3 grid((unsigned)BoxPlan<D, B, K, M>::kOwners, (unsigned)BH);
-  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, o, den, L, v_row_bytes, s_in, s_out);
+  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words, v_row_bytes, s_in,
+                                     s_out);
   return cudaGetLastError();
 }
 
@@ -108,6 +110,25 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
   return true;
 }
 
+//: THE TABLE, AS A TENSOR: `[BH, 2, entries, L/32]` packed bits, read rows then
+//: write rows, one row per (level, owner-group).  A SEPARATE ENTRY POINT while the
+//: carry's own liveness scan still exists, so the two can be compared bit for bit
+//: (`tests/k31/test_owner_rows.py`); the kernel consumes the table through the same
+//: launch once M2 wires it.
+template <int D, int B, int K, int M>
+static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
+                                      int L) {
+  using RP = OwnerRows<D, B, K, M>;
+  auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
+                          pr.options().dtype(torch::kInt32));
+  C10_CUDA_CHECK(
+      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
+                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
+          (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
+          reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
+  return tbl;
+}
+
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
@@ -134,13 +155,22 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   const float* sin_p = s_in.has_value() ? s_in->data_ptr<float>() : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t err = cudaErrorInvalidValue;
+  //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d).  One pass over the
+  //: amplitude planes votes every owner's rectangle test once; the kernel below then
+  //: reads WORDS instead of re-reading those planes per (owner, window, token).  The
+  //: table is a TRANSIENT of this call -- nothing else asks for it -- and it is held
+  //: here rather than inside the dispatch so its lifetime outlives the launch.
+  torch::Tensor rows;
+  const int tok_words = rola::chunk::tok_words(L);
 #define CARRY_DISPATCH(D_, B_, K_, M_, W_, C_, CV_)                                        \
   if (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_           \
       && carve == CV_) {                                                                    \
+    rows = build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);                                 \
     err = launch<D_, B_, K_, M_, W_, C_, CV_>(                                              \
         (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),           \
         (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),            \
-        o.data_ptr<float>(), den.data_ptr<float>(), BH, L, v_row_bytes, sin_p,              \
+        reinterpret_cast<const uint32_t*>(rows.data_ptr()), o.data_ptr<float>(),            \
+        den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p,                        \
         s_out.data_ptr<float>(), stream);                                                   \
   } else
   CARRY_ARMS_X(CARRY_DISPATCH) { TORCH_CHECK(false, "unbuilt carry arm"); }
@@ -172,25 +202,6 @@ std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t
 #undef CARRY_CENSUS
   TORCH_CHECK(false, "unbuilt carry arm");
   return r;
-}
-
-//: THE TABLE, AS A TENSOR: `[BH, 2, entries, L/32]` packed bits, read rows then
-//: write rows, one row per (level, owner-group).  A SEPARATE ENTRY POINT while the
-//: carry's own liveness scan still exists, so the two can be compared bit for bit
-//: (`tests/k31/test_owner_rows.py`); the kernel consumes the table through the same
-//: launch once M2 wires it.
-template <int D, int B, int K, int M>
-static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
-                                      int L) {
-  using RP = OwnerRows<D, B, K, M>;
-  auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
-                          pr.options().dtype(torch::kInt32));
-  C10_CUDA_CHECK(
-      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
-                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
-          (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
-          reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
-  return tbl;
 }
 
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
