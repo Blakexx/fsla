@@ -120,7 +120,10 @@ a bit permutation a thread's slot run is a sub-lattice: per level the digits it 
 are a CONTIGUOUS run of the owner's own run at a runtime base, and WHICH element of that
 run each of its slots wants is a compile-time function of the unrolled slot index. So
 the expansion is `Σ_l n_l` amplitude loads followed by `SPT` products of register values
-at constant indices — no dynamic indexing, no spill.
+at constant indices — no dynamic indexing, no spill. `load_run<n>` covers a level's run
+at the widest access that fits it, `n ∈ {2, 4, 8, 16}`; at the built arms (`SPT = 32`,
+`s = (8, 16)`) that is one 4-byte access at level 0 (`n_0 = 2`) and two 16-byte accesses
+at level 1 (`n_1 = 16`).
 
 The innermost level supplies the adjacent bf16 PAIR (its `c` field owns bit 0) and every
 level above it a per-pair scalar, which is the shipped producer's multiply chain. `have`

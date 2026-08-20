@@ -111,8 +111,8 @@ FACTS_ARMS: tuple = (
 #: `rola::carry` family's ballot rows, so the list mirrors the carry's built arms
 #: -- `tests/unit/test_shard_partition.py` is where the two are held together.
 SPAN_FACTS_ARMS: tuple = (
-    (2, 256, 16, 8, 256, 256),
-    (2, 64, 16, 8, 64, 64),
+    (2, 256, 8, 16, 256, 256),
+    (2, 64, 8, 16, 64, 64),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and

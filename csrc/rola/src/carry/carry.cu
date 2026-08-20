@@ -6,9 +6,9 @@
 // which the dispatch admits at its one ruled value.
 //
 // The arms:
-//   flagship   (256,256) D=2  k=4 m=8  s=(16,8)  BC=128  W=384  C=32
-//   flagship+  (256,256) D=2  k=4 m=8  s=(16,8)  BC=128  W=512  C=32
-//   small      ( 64, 64) D=2  k=4 m=8  s=(16,8)  BC=128  W=64   C=32
+//   flagship   (256,256) D=2  k=4 m=8  s=(8,16)  BC=128  W=384  C=32
+//   flagship+  (256,256) D=2  k=4 m=8  s=(8,16)  BC=128  W=512  C=32
+//   small      ( 64, 64) D=2  k=4 m=8  s=(8,16)  BC=128  W=64   C=32
 // The window is the architecture doc's TWO-CONSTRAINT quantity (integration rung
 // I1(b)): the C* cost basin is shallow, and the intra kernel -- which runs on the
 // SAME window grid -- has ideal arithmetic intensity `W/4` flop/byte and needs

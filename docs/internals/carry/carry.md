@@ -11,9 +11,9 @@ so the three cannot drift apart — the shipped family's `CHUNK_ARMS_X` discipli
 
 | arm | topology | `k` | `m` | `s_l` | `BC` | owners | `W` | `C` | SMEM | regs |
 |---|---|---|---|---|---|---|---|---|---|---|
-| flagship | `(256,256)` | 4 | 8 | (16,8) | 128 | 512 | 384 | 32 | 37 440 B | 176 |
-| flagship+ | `(256,256)` | 4 | 8 | (16,8) | 128 | 512 | 512 | 32 | 37 952 B | 176 |
-| small | `(64,64)` | 4 | 8 | (16,8) | 128 | 32 | 64 | 32 | 36 160 B | 176 |
+| flagship | `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 384 | 32 | 37 440 B | 176 |
+| flagship+ | `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 512 | 32 | 37 952 B | 176 |
+| small | `(64,64)` | 4 | 8 | (8,16) | 128 | 32 | 64 | 32 | 36 160 B | 176 |
 
 `W` is the architecture doc's TWO-CONSTRAINT quantity. The C\* cost law
 (`sqrt(v/kappa p)`) has a shallow basin around it, so moving off the C\*-optimal 256

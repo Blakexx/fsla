@@ -9,7 +9,7 @@ owner-grid extent at level ``l``, ``k_tok`` a token's nonzeros per level (a
 property of the DRAW and of nothing in the kernel), ``T`` the sequence length.
 
 WHAT IS UNDER TEST.  The facts pass is templated on the PLAN TYPE since K31-i-d,
-so a plan whose spans are GIVEN -- the lattice's balanced ``(16, 8)`` -- votes the
+so a plan whose spans are GIVEN -- the lattice's ``(8, 16)`` -- votes the
 same rows the lex plan votes for its own spans.  The claim is bit-level: row
 ``(side, prefix_entries(l) + o_l)``'s word ``w`` bit ``i`` is exactly "token
 ``32w + i``'s level-``l`` support on that side has a nonzero in the owner group
@@ -62,7 +62,7 @@ def test_the_lattice_spans_vote_the_rows_the_claim_names(widths, T, k_tok):
     assert_fresh_binary()
     k, m = 4, 8
     _, spans, groups, bc, _ = carry_ops.box_shape(widths, k, m)
-    assert spans == [16, 8], f"the flagship lattice's spans are (16, 8); got {spans}"
+    assert spans == [8, 16], f"the lattice's spans are (8, 16); got {spans}"
     cell = Cell(widths, T, k_tok=k_tok, seed=11)
 
     got = carry_ops.owner_rows(cell.read_bf, cell.write_bf, widths, k=k, m=m)

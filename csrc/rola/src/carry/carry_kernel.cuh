@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010012;
+static constexpr int kCarryBuildMagic = 31010013;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -55,7 +55,7 @@ static constexpr int kPadE = 8;        // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;        // fp32 row padding, elements (16 B)
 static constexpr int kWarps = 4;
 static constexpr int kThreads = kWarps * 32;
-static constexpr int kAtomLeaves = kMmaK;  // 16, the page granule
+static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 
 //: A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a
 //: register-array index, so the level index must be a constant expression; a
@@ -150,8 +150,11 @@ struct ProduceMap {
 //: and a sub-box's at a multiple of `K`), so this is one, two or four accesses.
 template <int n>
 __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p) {
-  static_assert(n == 4 || n == 8 || n == 16, "an admissible (k, m) run is 4, 8 or 16 wide");
-  if constexpr (n == 4) {
+  static_assert(n == 2 || n == 4 || n == 8 || n == 16,
+                "an admissible (k, m) run is 2, 4, 8 or 16 wide");
+  if constexpr (n == 2) {
+    *reinterpret_cast<unsigned int*>(dst) = *reinterpret_cast<const unsigned int*>(p);
+  } else if constexpr (n == 4) {
     *reinterpret_cast<uint2*>(dst) = *reinterpret_cast<const uint2*>(p);
   } else {
 #pragma unroll

@@ -20,10 +20,15 @@ namespace rola::carry {
 constexpr int ilog2c(int x) { return x <= 1 ? 0 : 1 + ilog2c(x >> 1); }
 constexpr long ipowl_c(int b, int e) { return e == 0 ? 1 : b * ipowl_c(b, e - 1); }
 
+//: the page granule: the leaves one atom holds, and the unit every DRAM gather
+//: moves.  It is an addressing constant of the lattice, which is why the box's
+//: constraints (K2, K3, K13) are stated against it here rather than at a consumer.
+static constexpr int kAtomLeaves = 16;
+
 //: THE OWNER'S SHAPE, DERIVED.  Nothing in this struct is a table: every field is
 //: a product or a bit width, so an owner's addressing is shifts and masks at every
-//: use site.  The balanced round-robin distribution of `M` across the levels is
-//: spec section 2.5 -- level 0 grows first, and the exponents differ by at most one.
+//: use site.  The distribution of `M` across the levels is spec section 2.5 --
+//: innermost first, so K13 holds, and balanced over what remains.
 template <int D, int B, int K, int M>
 struct BoxPlan {
   static constexpr int kLevels = D;
@@ -34,8 +39,20 @@ struct BoxPlan {
   static constexpr int kBeta = ilog2c(B);
   static constexpr int kJ = ilog2c(M);
 
-  //: spec section 2.5: `a_l = floor(j/D) + [l < j mod D]`.
-  static constexpr int a(int l) { return kJ / D + ((l < (kJ % D)) ? 1 : 0); }
+  //: spec section 2.5.  The innermost level takes whatever K13 requires -- never
+  //: less than its balanced share -- and the rest of `j` is spread balanced over the
+  //: outer levels, innermost first, so the exponents differ by at most one there.
+  static constexpr int kAtomBits = ilog2c(kAtomLeaves);
+  static constexpr int kAFloor = kAtomBits > kKappa ? kAtomBits - kKappa : 0;
+  static constexpr int kAShare = kJ / D + ((kJ % D) ? 1 : 0);
+  static constexpr int kAInner = kAShare > kAFloor ? kAShare : kAFloor;
+  static constexpr int kJOuter = kJ - kAInner;
+
+  static constexpr int a(int l) {
+    return (l == D - 1 || D == 1)
+               ? kAInner
+               : kJOuter / (D - 1) + ((l >= (D - 1) - (kJOuter % (D - 1))) ? 1 : 0);
+  }
   static constexpr int m_l(int l) { return 1 << a(l); }
   static constexpr int s(int l) { return K * m_l(l); }
   static constexpr int g(int l) { return B / s(l); }
@@ -57,12 +74,10 @@ struct BoxPlan {
   //: fastest.  This is the K33 enabler (queue card, enabler 2): a bucket keyed on
   //: level `l`'s digit owns a run of `prod_{l' > l} s_l'` leaves at stride
   //: `s_l`-independent places, and for the OUTERMOST level that run is contiguous
-  //: and `BC / s_0` wide, which at the flagship is exactly one `kMmaN` tile -- so a
-  //: fold bucket accumulates DIRECTLY into whole state tiles with zero padding.
-  //: (It replaces the R0 spec's `[u_0|..|u_{D-1}|c_0|..|c_{D-1}]` interleave, which
-  //: split each level's run across two fields and gave no level a contiguous run.
-  //: `pi` is still a fixed BIT PERMUTATION of the canonical index -- more simply so,
-  //: since a level's whole field is now one contiguous bit run.)
+  //: and `BC / s_0` wide, which at the flagship is two `kMmaN` tiles -- so a fold
+  //: bucket accumulates DIRECTLY into whole state tiles with zero padding.  `pi`
+  //: is a fixed BIT PERMUTATION of the canonical index: a level's whole field is
+  //: one contiguous bit run.
   static constexpr int span_bits(int l) { return kKappa + a(l); }  // log2 s_l
   static constexpr int sum_span(int l) { return l >= D ? 0 : span_bits(l) + sum_span(l + 1); }
   static constexpr int run_shift(int l) { return sum_span(l + 1); }
@@ -93,7 +108,12 @@ struct BoxPlan {
     return (int)((ell / ipowl_c(B, D - 1 - l)) % B);
   }
 
-  static_assert(kBC % 16 == 0, "K2: an atom must not straddle two owners");
+  static_assert(kBC % kAtomLeaves == 0, "K2: an atom must not straddle two owners");
+  //: K13: the innermost level's span covers a whole atom, so a token's run over a
+  //: level that is DENSE for its side fills atoms rather than straddling them --
+  //: the leaf order's contribution to the decode walk's DRAM sectors.
+  static_assert(kJOuter >= 0 && s(D - 1) >= kAtomLeaves,
+                "K13: the innermost span must cover an atom; this (k, m) cannot reach it");
   //: K3/K4: an atom is 16 consecutive `local` values at a multiple of 16, so under
   //: the mixed-radix order it is the set that agrees on every bit above bit 3 --
   //: the levels whose fields lie above are FIXED, the level straddling bit 4 keeps

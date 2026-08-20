@@ -36,7 +36,7 @@ static constexpr int kAtomLeaves = 16;
 //: THE SPANS ARE GIVEN, NOT DERIVED (K31-i-d).  The lex policy below -- `singles`
 //: levels at one digit, at most one partial run, whole levels beneath -- is ONE way
 //: of choosing them, and it admits at most one span that is neither `1` nor `B`.
-//: The box lattice's owner runs are `D` BALANCED spans (the flagship's `(16, 8)`),
+//: The box lattice's owner runs are `D` spans (the flagship's `(8, 16)`),
 //: which that shape forbids arithmetically rather than accidentally.  So the plan
 //: TAKES the spans and the lex policy becomes `LevelPlan`, an alias that computes
 //: them: one plan type, two ways of arriving at it, and every consumer below reads

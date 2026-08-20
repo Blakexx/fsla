@@ -36,7 +36,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010012
+BUILD_MAGIC = 31010013
 
 MMA_K_QUANTUM = 16
 
@@ -44,19 +44,30 @@ MMA_K_QUANTUM = 16
 def box_shape(widths, k: int, m: int):
     """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box on ``widths``.
 
-    The balanced round-robin distribution of ``m`` across the levels is R0 spec
-    section 2.5 -- level 0 grows first and the exponents differ by at most one.
-    Derived here rather than imported from the device header for the same reason
-    the oracle derives its own strides: two derivations disagree when one is wrong.
+    The distribution of ``m`` across the levels is R0 spec section 2.5 -- the
+    innermost level takes whatever K13 (``s_{D-1} >= MMA_K_QUANTUM``) requires and
+    never less than its balanced share, and the rest is spread balanced over the
+    outer levels, innermost first. Derived here rather than imported from the device
+    header for the same reason the oracle derives its own strides: two derivations
+    disagree when one is wrong.
     """
     D = len(widths)
     j = int(math.log2(m))
     assert 2 ** j == m, "m is a power of two"
-    a = [j // D + (1 if l < (j % D) else 0) for l in range(D)]
+    kappa = int(math.log2(k))
+    assert 2 ** kappa == k, "k is a power of two"
+    floor_inner = max(0, int(math.log2(MMA_K_QUANTUM)) - kappa)
+    a_inner = max(j // D + (1 if j % D else 0), floor_inner)
+    j_outer = j - a_inner
+    assert j_outer >= 0, "K13: the innermost span cannot reach an atom under this (k, m)"
+    a = [a_inner if l == D - 1 else
+         j_outer // (D - 1) + (1 if l >= (D - 1) - (j_outer % (D - 1)) else 0)
+         for l in range(D)]
     m_l = [1 << x for x in a]
     s = [k * x for x in m_l]
     g = [w // t for w, t in zip(widths, s)]
     assert all(w % t == 0 for w, t in zip(widths, s)), "K6: an owner sits inside a level"
+    assert s[-1] >= MMA_K_QUANTUM, "K13: the innermost span must cover an atom"
     bc = math.prod(s)
     return m_l, s, g, bc, math.prod(g)
 
@@ -84,7 +95,7 @@ def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
         #: significant level first, so each level's digits are CONTIGUOUS in
         #: ``local`` -- the K33 enabler (`box.cuh`'s `run_of`): a bucket keyed on the
         #: outermost sparse level's digit owns one contiguous ``BC / s_0``-wide run,
-        #: which at the flagship is exactly one MMA n-tile.
+        #: which at the flagship is two MMA n-tiles.
         local += (d % s[l]) * math.prod(s[l + 1:])
     return o_term * bc + local
 

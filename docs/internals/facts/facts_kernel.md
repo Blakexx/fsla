@@ -26,7 +26,7 @@ way of CHOOSING spans from a `BC`: reading levels most-significant first, every 
 above the boundary is spanned at exactly one digit, at most one level is spanned
 partially, and every level below is spanned entirely — so `BC = B^whole * partial_span`
 and at most one span is neither `1` nor `B`. That shape is what K31-i-d ran into: the
-box lattice's owner runs are `D` BALANCED spans (the flagship's `(16, 8)`), which the
+box lattice's owner runs are `D` spans (the flagship's `(8, 16)`), which the
 policy forbids arithmetically and not accidentally. The plan now takes the spans, the
 policy computes them, and every consumer reads `span_at` / `entries_at` / `col_base`
 exactly as it did.
