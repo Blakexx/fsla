@@ -186,14 +186,34 @@ struct CarryGeom {
   static constexpr int LdV = kDv + kPadE;
   static constexpr int LdO = kDv + kPadF;
 
-  //: THE DRAIN GROUP: two `kMmaK` steps of entries.  It is the fold's contraction
-  //: extent and four of the readout's `kMmaN` output tiles, so one number sizes both
-  //: sides' panels, the value ring and the output staging.  It is TWICE the mma's
-  //: own extent for a MEASURED reason: at `kMmaK` the group count doubles and every
-  //: group carries a produce, two barriers and a fan-in pass -- the first K33 build
-  //: censused 1.13G instructions against 109M mma issues, with BARRIER its largest
-  //: stall at 2.24 warps per issue-active (ncu, dense cell).
-  static constexpr int kGrp = 2 * kMmaK;
+  //: THE FOLD'S CONSUMER SET, and the ONE rule that covers both structures.  A
+  //: fold bucket's leaves are a contiguous run; the warps that own leaves in it are
+  //: its CONSUMERS, and there are `kWarps` of them when the bucket is the whole box
+  //: (a side with no key) and exactly ONE when it is narrower than a warp's run.
+  //: The bucket's panel and its `V` rows are produced BY ITS CONSUMERS, SPLIT BY
+  //: ROW, and waited on a NAMED barrier over exactly those threads -- so a keyed
+  //: fold never crosses a warp and a dense fold gathers `V` exactly once, which the
+  //: obvious alternative (a private ring per warp) would have turned into `kWarps`
+  //: times the DRAM traffic, a movement-hierarchy violation and not a tuning
+  //: choice.  `kFoldGroups` such sets run CONCURRENTLY, so the ring is per set.
+  static constexpr int kFoldCons = (WS::kWidth >= BP::kBC / kWarps) ? kWarps : 1;
+  static constexpr int kFoldThr = kFoldCons * 32;
+  static constexpr int kFoldGroups = kWarps / kFoldCons;
+  //: THE FOLD'S DRAIN GROUP, SIZED SO THE CTA'S IN-FLIGHT FOLD FOOTPRINT DOES NOT
+  //: DEPEND ON THE STRUCTURE.  Ownership makes `kFoldGroups` consumer sets drain
+  //: CONCURRENTLY, each with its own panel ring and its own value ring, so the
+  //: group scales inversely with that count and `kGrp * kFoldGroups` is the same
+  //: number for every key pair.  The floor is `kMmaK`, because a group shorter than
+  //: the mma's contraction extent would pad the fold's own `k` axis.
+  //:
+  //: K33 doubled this for a measured reason -- "every group carries a produce, TWO
+  //: BARRIERS and a fan-in pass" -- and that reason EXPIRES with the barriers where
+  //: ownership deletes them: a private group's produce, staging and fan-in are the
+  //: warp's own and cost a `__syncwarp`.  Where ownership does NOT delete them (a
+  //: side with no key, whose one bucket every warp consumes) the group stays at
+  //: K33's value, which is what the formula says.
+  static constexpr int kGrpMin = 2 * kMmaK / kFoldGroups;
+  static constexpr int kGrp = kGrpMin < kMmaK ? kMmaK : kGrpMin;
   //: THE SCATTER CHUNK is the CTA's width, walked by ONE warp in lockstep units: an
   //: entry's rank inside its bucket is then `popc(vote & below)` against a base only
   //: lane zero advances, so the append needs no cross-warp scan, no atomic and NO
@@ -230,29 +250,28 @@ struct CarryGeom {
   static constexpr int kImgBytes = kWarps * kMmaM * LdImg * (int)sizeof(__nv_bfloat16);
   static constexpr int kMassBytes = LdImg * (int)sizeof(__nv_bfloat16);
 
-  //: THE READOUT'S UNIT.  Its entries are the accumulator's `n` axis and a warp
-  //: now spans every CHANNEL m-tile, so the unit sizes the register cost directly:
-  //: `MDV * (kGrpR / kMmaN) * 4` floats.  Half the fold's group keeps that at 32
-  //: registers while leaving two whole n-tiles, which is what lets ONE `ldmatrix`
-  //: of the panel feed both mma of a k-step.
-  static constexpr int kGrpR = kGrp / 2;
+  //: THE READOUT'S UNIT, and it is `kMmaK` for every key pair.  Its entries are the
+  //: accumulator's `n` axis and a warp spans every CHANNEL m-tile, so the unit sizes
+  //: the register cost directly (`MDV * (kGrpR / kMmaN) * 4` floats) AND the private
+  //: panel's shared footprint (`kWarps * kGrpR * LdRP`), and both are binding at the
+  //: widest panel -- a DENSE read side, whose bucket is the whole box.  Sixteen
+  //: entries is 32 accumulator registers and two whole n-tiles, so one `ldmatrix` of
+  //: the panel still feeds both mma of a k-step.
+  static constexpr int kGrpR = kMmaK;
   static constexpr int LdRP = stride16(PRP);
   static constexpr int LdWP = stride16(WS::kWidth);
-  //: TWO PANEL SLOTS PER SIDE, and what they buy is latency, not bytes: a group's
-  //: panel is expanded while the PREVIOUS group's mma block runs, so the amplitude
-  //: gather sits underneath arithmetic instead of in front of it.
-  //: ONE PANEL SLOT PER WARP, not two per CTA: the ring bought latency the
+  //: ONE READOUT PANEL SLOT PER WARP, not two per CTA: the ring bought latency the
   //: shared form could not otherwise hide, and the private form does not need it
   //: (micro-probe 3: producing one bucket ahead is neutral-to-worse once the warps
   //: are free-running).  Same bytes, four private producers.
   static constexpr int rp_bytes = kWarps * kGrpR * LdRP * (int)sizeof(__nv_bfloat16);
-  static constexpr int wp_bytes = 2 * kGrp * LdWP * (int)sizeof(__nv_bfloat16);
-  //: THE VALUE RING: two free-on-consume slots of one drain group's rows.  `V`
-  //: rides the WRITE buckets and is gathered once per write entry, at its own
-  //: bucket's stage (single-touch stream law); the gather for the next group is
-  //: issued before the current group's mma block and waited after it.
+  static constexpr int wp_bytes = 2 * kFoldGroups * kGrp * LdWP * (int)sizeof(__nv_bfloat16);
+  //: THE VALUE RING: two free-on-consume slots of one drain group's rows, PER
+  //: CONSUMER SET.  `V` rides the WRITE buckets and is gathered once per write
+  //: entry, at its own bucket's stage (single-touch stream law); the gather for the
+  //: next group is issued before the current group's mma block and waited after it.
   static constexpr int kStages = 2;
-  static constexpr int v_bytes = kStages * kGrp * LdV * (int)sizeof(__nv_bfloat16);
+  static constexpr int v_bytes = kStages * kFoldGroups * kGrp * LdV * (int)sizeof(__nv_bfloat16);
   //: A BUCKET ENTRY: the GLOBAL token index (an entry outlives its window) and the
   //: key digit's coefficient.
   static constexpr int entry_bytes(int nb) {
@@ -380,7 +399,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   using RS = typename G::RS;
   using WS = typename G::WS;
   using RPM = PanelMap<D, B, K, M, G::kGrpR, RK, 32>;
-  using WPM = PanelMap<D, B, K, M, G::kGrp, WK>;
+  using WPM = PanelMap<D, B, K, M, G::kGrp, WK, G::kFoldThr>;
 
   constexpr int BC = BP::kBC;
   constexpr int NDV = BC / kMmaN;  // the box's n-tiles (leaves)
@@ -392,6 +411,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: 2048 accumulator floats), and the readout is untouched by the rotation because
   //: its `A` operand transits the SMEM state image, not the registers.
   constexpr int kGrp = G::kGrp, kGrpR = G::kGrpR, kCap = G::kCap;
+  constexpr int kFoldCons = G::kFoldCons, kFoldThr = G::kFoldThr;
+  constexpr int kFoldGroups = G::kFoldGroups;
   constexpr int NBR = RS::kSpan, PR = RS::kWidth, PRP = G::PRP;
   constexpr int NBW = WS::kSpan, PW = WS::kWidth;
   constexpr int LdImg = G::LdImg, LdRP = G::LdRP, LdWP = G::LdWP;
@@ -446,8 +467,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   uint32_t* const btok = reinterpret_cast<uint32_t*>(srp + kWarps * kGrpR * LdRP);
   __nv_bfloat16* const bval = reinterpret_cast<__nv_bfloat16*>(btok + NBR * kCap);
   __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem);
-  __nv_bfloat16* const swp = sv + G::kStages * kGrp * LdV;
-  uint32_t* const wtok = reinterpret_cast<uint32_t*>(swp + 2 * kGrp * LdWP);
+  __nv_bfloat16* const swp = sv + G::kStages * kFoldGroups * kGrp * LdV;
+  uint32_t* const wtok = reinterpret_cast<uint32_t*>(swp + 2 * kFoldGroups * kGrp * LdWP);
   __nv_bfloat16* const wval = reinterpret_cast<__nv_bfloat16*>(wtok + NBW * kCap);
   float* const so = reinterpret_cast<float*>(carry_smem + G::phase_bytes);
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + kWarps * kMmaN * LdO);
@@ -495,19 +516,26 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   //: the warp's LEAF origin.  Its channel origin is zero: it holds every channel.
   const int leaf0 = warp * kBCW;
+  //: THE FOLD'S CONSUMER SET: which set this warp is in, and its rank inside it.
+  //: At `kFoldCons == 1` the set IS the warp and `fgtid` is the lane; at
+  //: `kFoldCons == kWarps` the set is the CTA and `fgtid` is the thread id.  Named
+  //: barrier zero is the CTA's, so the sets take ids from one.
+  const int fgrp = warp / kFoldCons;
+  const int fgtid = (warp % kFoldCons) * 32 + lane;
+  const int fbar = fgrp + 1;
   const int chan0 = warp * kMmaM;  // the READOUT's channel tile (carve-independent)
 
   //: the readout's `A` base carries NO channel origin: the warp walks every
   //: channel m-tile of the image, and the tile's row offset is added at the load.
   const uint32_t aImg = smem_addr(simg) + (uint32_t)(rA * LdImg + cA) * 2;
   const uint32_t aMass = smem_addr(smass) + (uint32_t)cA * 2;
-  const uint32_t bRP =
-      smem_addr(srp) + (uint32_t)((warp * kGrpR + rT) * LdRP + cT * 8) * 2;
-  const uint32_t bWP = smem_addr(swp) + (uint32_t)(rF * LdWP + cF * 8) * 2;
-  const uint32_t bWP2 = smem_addr(swp) + (uint32_t)((lane & 15) * LdWP) * 2;
+  const uint32_t bRP = smem_addr(srp) + (uint32_t)((warp * kGrpR + rT) * LdRP + cT * 8) * 2;
+  const uint32_t bWP = smem_addr(swp) + (uint32_t)((fgrp * 2 * kGrp + rF) * LdWP + cF * 8) * 2;
+  const uint32_t bWP2 = smem_addr(swp) + (uint32_t)((fgrp * 2 * kGrp + (lane & 15)) * LdWP) * 2;
   //: the fold's `A` operand walks the CHANNEL m-tiles now, so its base carries no
   //: channel origin and the tile's offset is added at the load.
-  const uint32_t aV = smem_addr(sv) + (uint32_t)(rT * LdV + cT * 8) * 2;
+  const uint32_t aV =
+      smem_addr(sv) + (uint32_t)((fgrp * G::kStages * kGrp + rT) * LdV + cT * 8) * 2;
   constexpr uint32_t kWpSlot = (uint32_t)(kGrp * LdWP) * 2;
   constexpr uint32_t kVSlot = (uint32_t)(kGrp * LdV) * 2;
   constexpr int kMTok = kGrp / kMmaM;    // entry m-tiles of a FOLD group
@@ -544,8 +572,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   static_assert(kThreads > kCols && kThreads < 2 * kCols,
                 "the page sweep's step must cross one row boundary, so its row "
                 "cursor advances by one or two and never by a division");
-  static_assert(kWarps * kMmaN * LdO >= kPageElems,
-                "the staging buffer must hold one page");
+  static_assert(kWarps * kMmaN * LdO >= kPageElems, "the staging buffer must hold one page");
   auto page_sweep = [&](uint32_t pageOff, auto&& body) {
     int e = tid;
     int row = tid < kCols ? 0 : 1;
@@ -604,7 +631,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: the readout panel is expanded by ONE WARP into its own slot, so its row map
   //: is a LANE map; the fold's panel is still the CTA's.
   const int rprow = lane / RPM::kRowThr, rslot0 = (lane % RPM::kRowThr) * RPM::SPT;
-  const int wprow = tid / WPM::kRowThr, wslot0 = (tid % WPM::kRowThr) * WPM::SPT;
+  const int wprow = fgtid / WPM::kRowThr, wslot0 = (fgtid % WPM::kRowThr) * WPM::SPT;
   int rcol[D], wcol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
@@ -623,11 +650,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
   // ---- V staging: one drain group's rows, asynchronous ---------------------
   constexpr int kChunkV = kDv / 8;
-  constexpr int kVRows = kThreads / kChunkV;
+  constexpr int kVRows = kFoldThr / kChunkV;
   constexpr int kVPasses = kGrp / kVRows;
   static_assert(kVPasses * kVRows == kGrp, "the staging passes cover the group exactly");
-  const int ldRow = tid / kChunkV, ldCol = (tid % kChunkV) * 8;
-  const uint32_t svL = smem_addr(sv) + (uint32_t)(ldRow * LdV + ldCol) * 2;
+  const int ldRow = fgtid / kChunkV, ldCol = (fgtid % kChunkV) * 8;
+  const uint32_t svL =
+      smem_addr(sv) + (uint32_t)((fgrp * G::kStages * kGrp + ldRow) * LdV + ldCol) * 2;
 
   // ---- THE STATE IMAGE: the readout's A operand, bucket-major -------------
   //: THE RATIFIED SUBSTITUTE for the card's constexpr slice-pack.  A bucket's
@@ -804,9 +832,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             constexpr int mt = decltype(Mc)::value;
 #pragma unroll
             for (int k = 0; k < 4; ++k)
-              store_f32(&sow[((lane & 3) * 2 + (k & 1)) * LdO + mt * kMmaM + (lane >> 2) +
-                             8 * (k >> 1)],
-                        acc[mt][j][k] * ((k & 1) ? r1 : r0));
+              store_f32(
+                  &sow[((lane & 3) * 2 + (k & 1)) * LdO + mt * kMmaM + (lane >> 2) + 8 * (k >> 1)],
+                  acc[mt][j][k] * ((k & 1) ? r1 : r0));
           });
           if (lane < 4) {
 #pragma unroll
@@ -820,8 +848,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           for (int e = 0; e < kMmaN; ++e) {
             const int ent = j * kMmaN + e;
             if (ent < cnt) {
-              float* dp = reinterpret_cast<float*>(gather_ptr(
-                  oPlane, btok[b * kCap + off + ent] * (uint32_t)(kDv * 4) + fanColB));
+              float* dp = reinterpret_cast<float*>(
+                  gather_ptr(oPlane, btok[b * kCap + off + ent] * (uint32_t)(kDv * 4) + fanColB));
               fan_in_add(dp, sow[e * LdO + lane]);
               fan_in_add(dp + 32, sow[e * LdO + lane + 32]);
             }
@@ -864,27 +892,38 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                    gather_ptr(vPlane, wtok[d * kCap + off + r] * (uint32_t)v_row_bytes
                                           + (uint32_t)(ldCol * 2)));
       else
-        store_vec16(&sv[slot * kGrp * LdV + r * LdV + ldCol], uint4{0u, 0u, 0u, 0u});
+        store_vec16(&sv[(fgrp * G::kStages + slot) * kGrp * LdV + r * LdV + ldCol],
+                    uint4{0u, 0u, 0u, 0u});
     }
     stage_commit();
   };
   auto produce_write = [&](int d, int off, int cnt, int slot) {
     const bool alive = wprow < cnt;
-    produce_row<WPM, D, WK>(pW, swp + slot * (kGrp * LdWP) + wprow * LdWP + wslot0, wcol,
-                            wtok[d * kCap + off + (alive ? wprow : 0)] * kWtotB,
+    produce_row<WPM, D, WK>(pW, swp + (fgrp * 2 + slot) * (kGrp * LdWP) + wprow * LdWP + wslot0,
+                            wcol, wtok[d * kCap + off + (alive ? wprow : 0)] * kWtotB,
                             alive ? kOneSplat : 0u);
   };
   auto drain_write = [&](bool flush) {
+    //: THE IMAGE DIES BEFORE THE FOLD TOUCHES ITS BYTES, not after: the value ring
+    //: and the write panel are the phase union's other tenant, so the flag has to
+    //: fall before the first write and not on the last mma.  It falls HERE, on
+    //: every thread, because the warps no longer walk the same buckets and
+    //: `ensure_image`'s rendezvous is CTA-wide: a flag some warps set and others
+    //: did not would be a deadlock, not a stale image.
+    img_valid = false;
 #pragma unroll 1
     for (int d = 0; d < NBW; ++d) {
+      //: A WARP DRAINS THE BUCKETS IT OWNS LEAVES IN.  When a bucket is narrower
+      //: than a warp's run that is exactly one warp, and the four warps drain four
+      //: different buckets CONCURRENTLY with nothing shared; when the bucket is the
+      //: whole box every warp is a consumer and the set is the CTA.
+      if constexpr (PW < kBCW) {
+        if ((d * PW) / kBCW != warp) continue;
+      }
       const int n = wcnt[d];
       const int groups = flush ? (n + kGrp - 1) / kGrp : n / kGrp;
-      if (tid == 0) wdone[d] = 0;
+      if (fgtid == 0) wdone[d] = 0;
       if (groups == 0) continue;
-      //: THE IMAGE DIES BEFORE THE FOLD TOUCHES ITS BYTES, not after: the value ring
-      //: and the write panel are the phase union's other tenant, so the flag has to
-      //: fall on the first write and not on the last mma.
-      img_valid = false;
       //: V RIDES THE WRITE BUCKETS and is gathered once per write entry, at its own
       //: bucket's stage.  The gather for the next group is issued before this
       //: group's mma block and waited after it.
@@ -898,7 +937,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         const uint32_t wp = bWP + (uint32_t)(g & 1) * kWpSlot;
         const uint32_t wp2 = bWP2 + (uint32_t)(g & 1) * kWpSlot;
         stage_wait<0>();
-        rendezvous();
+        rendezvous_group(fbar, kFoldThr);
         if (g + 1 < groups) {
           const int noff = off + kGrp;
           stage_v(d, noff, (n - noff) < kGrp ? (n - noff) : kGrp, (g + 1) & 1);
@@ -1002,10 +1041,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           const int noff = off + kGrp;
           produce_write(d, noff, (n - noff) < kGrp ? (n - noff) : kGrp, (g + 1) & 1);
         }
-        rendezvous();
+        rendezvous_group(fbar, kFoldThr);
       }
-      if (tid == 0) wdone[d] = groups * kGrp < n ? groups * kGrp : n;
+      if (fgtid == 0) wdone[d] = groups * kGrp < n ? groups * kGrp : n;
     }
+    //: the compaction is the ONE place the whole CTA meets again, and it must:
+    //: every bucket's residual is compacted here, whichever warp owns it.
     rendezvous();
 #pragma unroll 1
     for (int d = 0; d < NBW; ++d) {
