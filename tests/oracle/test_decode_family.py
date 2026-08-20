@@ -35,6 +35,7 @@ import torch
 from rola.engine.facts.call import arm_refusal
 from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
@@ -96,10 +97,10 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
 
     K31: the prefill leg ran on the PRODUCTION chunk arm until the deletion
     batch removed it (baseline = tag `baseline/pre-k31`). What this seam is
-    about -- the canonical leaf-major entry state is the state the recurrent
-    arm continues, cold leaves included -- survives on the oracle's
-    `output_final_state`, narrowed to the kernel's fp32 exactly as the deleted
-    arm's plane was.
+    about -- a prefilled entry state is the state the recurrent arm continues,
+    cold leaves included -- survives on the oracle's `output_final_state`,
+    narrowed to the kernel's fp32 and crossed into the lattice leaf order the
+    kernel's plane is in.
     """
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9000 + int(decay_on))
@@ -131,7 +132,8 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device)
-    state = ref_state.float().clone()
+    #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
+    state = to_lattice(ref_state.float(), _WIDTHS, config.lattice_k, config.lattice_m)
     workspace, cold_seen = None, False
     for s in range(steps):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
@@ -143,7 +145,9 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
             topology, decay, "global", initial_state=ref_state, output_final_state=True)
         assert g.relative(y, y_ref) < DECODE_RTOL, f"step {s}: y off the oracle"
-        assert g.relative(state, ref_state) < DECODE_RTOL, f"step {s}: state off the oracle"
+        canonical = to_canonical(state, _WIDTHS, config.lattice_k, config.lattice_m)
+        assert g.relative(canonical, ref_state) < DECODE_RTOL, (
+            f"step {s}: state off the oracle")
 
         R = g._leaf_product(step["read"], _WIDTHS) != 0
         written = (g._leaf_product(pre["write"], _WIDTHS) != 0).any(dim=1, keepdim=True)
@@ -177,7 +181,8 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=True, BH=_B * _H,
                                   device=device)
-    state, ref_state = m0.float().clone(), m0
+    state = to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m)
+    ref_state = m0
     workspace, errors = None, {}
     for s in range(1, max(_CHECKPOINTS) + 1):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
@@ -189,7 +194,8 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
             topology, decay, "global", initial_state=ref_state, output_final_state=True)
         if s in _CHECKPOINTS:
-            err_y, err_s = g.relative(y, y_ref), g.relative(state, ref_state)
+            canonical = to_canonical(state, _WIDTHS, config.lattice_k, config.lattice_m)
+            err_y, err_s = g.relative(y, y_ref), g.relative(canonical, ref_state)
             errors[s] = (err_y, err_s)
             assert err_y < DECODE_RTOL and err_s < DECODE_RTOL, (
                 f"checkpoint {s}: (y, state) = ({err_y:.3e}, {err_s:.3e}) exceeds "
@@ -199,7 +205,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     # NON-VACUITY: the horizon must actually accumulate fp32-vs-fp64 distance —
     # a zero at the far end would mean the comparison is comparing nothing.
     assert errors[max(_CHECKPOINTS)][1] > 0.0
-    assert not torch.equal(state.double(), m0), "32 steps left the state untouched"
+    assert not torch.equal(canonical.double(), m0), "32 steps left the state untouched"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +238,8 @@ def test_the_decode_split_is_performance_only_under_drift():
 
     outcomes = {}
     for name, config in configs.items():
-        state, workspace, ys = m0.float().clone(), None, []
+        state = to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m)
+        workspace, ys = None, []
         for step in steps:
             fs = _f32(step)
             y, state, workspace = _decode_step(
