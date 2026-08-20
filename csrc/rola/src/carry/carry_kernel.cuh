@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010013;
+static constexpr int kCarryBuildMagic = 31010014;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -747,16 +747,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //:
   //: `flush` executes a partial group; otherwise only WHOLE groups run and the
   //: residual stays for the next window (the gated cross-window batching).
-  //: A UNIT SHORTER THAN ITS TILE COSTS WHAT IT HOLDS.  `live` is the unit's live
-  //: n-tile count -- a LIST LENGTH, which law 1 names as the legal form of
-  //: adaptivity -- and the produce, the mma block, the staging and the fan-in all
-  //: stop at it.  Without this a bucket that a window leaves half full pays a full
-  //: unit: at the graded ALT cell the read buckets hold about eight entries against
-  //: a sixteen-entry unit, so half of every readout was expanding, multiplying and
-  //: staging rows that the fan-in then declined to write.
+  //: A DEAD ROW IS EXPANDED AND GATED TO ZERO rather than skipped.  Predicating the
+  //: produce, the mma block, the staging and the fan-in on the unit's live n-tile
+  //: count was BUILT AND MEASURED (wave-2 round 3) and is not here: neutral at the
+  //: graded ALT cell and half a millisecond WORSE at dense, because a warp-private
+  //: unit's dead rows cost stores into its own panel and nothing else, while the
+  //: predicate costs a branch inside every unrolled tile loop.
   auto produce_read = [&](int b, int off, int cnt) {
-    const int rows = ((cnt + kMmaN - 1) / kMmaN) * kMmaN;
-    if (rprow < rows) {
+    {
       const bool alive = rprow < cnt;
       produce_row<RPM, D, RK>(pR, srp + warp * (kGrpR * LdRP) + rprow * LdRP + rslot0, rcol,
                               btok[b * kCap + off + (alive ? rprow : 0)] * kWtotB,
@@ -790,7 +788,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         if ((unit & (kWarps - 1)) != warp) continue;
         const int off = g * kGrpR;
         const int cnt = (n - off) < kGrpR ? (n - off) : kGrpR;
-        const int live = (cnt + kMmaN - 1) / kMmaN;
         produce_read(b, off, cnt);
         __syncwarp();
         //: the warp spans EVERY channel of its entries, so the accumulator walks
@@ -818,8 +815,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             uint32_t af[4];
             load_frag(af, aImg + (uint32_t)(mt * kMmaM * LdImg + b * PR + kk * kMmaK) * 2);
 #pragma unroll
-            for (int j = 0; j < kNTokR; ++j)
-              if (j < live) mma(acc[mt][j], af, &rb[2 * j]);
+            for (int j = 0; j < kNTokR; ++j) mma(acc[mt][j], af, &rb[2 * j]);
           });
           //: THE MASS ROW IS THE WARP'S OWN NOW.  It was carved across the warps by
           //: k-step and met in `sden` because under the channel carve no single warp
@@ -828,8 +824,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           uint32_t mf[4];
           load_frag(mf, aMass + (uint32_t)(b * PR + kk * kMmaK) * 2);
 #pragma unroll
-          for (int j = 0; j < kNTokR; ++j)
-            if (j < live) mma(macc[j], mf, &rb[2 * j]);
+          for (int j = 0; j < kNTokR; ++j) mma(macc[j], mf, &rb[2 * j]);
         }
         //: R4: THE BUCKET SCALAR IS APPLIED HERE AND NOT IN THE PRODUCE.  The entry
         //: axis is the accumulator's `n` axis, so `acc` literally IS the backward's
@@ -845,7 +840,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         float* const sow = so + warp * kMmaN * LdO;
 #pragma unroll
         for (int j = 0; j < kNTokR; ++j) {
-          if (j >= live) break;
           const float r0 = rs(j * 8 + (lane & 3) * 2);
           const float r1 = rs(j * 8 + (lane & 3) * 2 + 1);
           static_for<MDV>([&](auto Mc) {
@@ -926,11 +920,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   auto drain_write = [&](bool flush) {
     //: THE IMAGE DIES BEFORE THE FOLD TOUCHES ITS BYTES, not after: the value ring
     //: and the write panel are the phase union's other tenant, so the flag has to
-    //: fall before the first write and not on the last mma.  It falls HERE, on
-    //: every thread, because the warps no longer walk the same buckets and
-    //: `ensure_image`'s rendezvous is CTA-wide: a flag some warps set and others
-    //: did not would be a deadlock, not a stale image.
-    img_valid = false;
+    //: fall before the first write and not on the last mma.  It falls HERE, on a
+    //: CTA-UNIFORM condition read from the shared bucket counts, because the warps
+    //: no longer walk the same buckets and `ensure_image`'s rendezvous is CTA-wide:
+    //: a flag some warps set and others did not would be a deadlock, not a stale
+    //: image.  The condition is "some bucket will drain", which every thread can
+    //: evaluate from `wcnt` alone.
+    {
+      int p = 0;
+#pragma unroll
+      for (int i = 0; i < NBW; ++i) p += wcnt[i] >= (flush ? 1 : kGrp) ? 1 : 0;
+      if (p > 0) img_valid = false;
+    }
 #pragma unroll 1
     for (int d = 0; d < NBW; ++d) {
       //: A WARP DRAINS THE BUCKETS IT OWNS LEAVES IN.  When a bucket is narrower
