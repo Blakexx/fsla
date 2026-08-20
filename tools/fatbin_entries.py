@@ -130,11 +130,19 @@ def expected_shards() -> dict[str, str]:
 
 
 def shape_key(mangled: str) -> str | None:
-    """A chunk instantiation's mangled name, as the generator's canonical tuple."""
+    """A facts instantiation's mangled name, as the generator's canonical tuple."""
     shape = ratify.parse_shape(mangled)
     if shape is None:
         return None
-    return gen_shards.chunk_canonical(ratify.arm_of_shape(shape))
+    kind = {"chunk_facts_tables": "FACTS", "block_bitmap_kernel": "BLOCK",
+            "atom_bitmap_kernel": "ATOM"}[shape["kernel"]]
+    if kind == "FACTS":
+        row = ("FACTS", shape["D"], shape["B"], shape["BC"], shape["mask"])
+    elif kind == "BLOCK":
+        row = ("BLOCK", shape["D"], shape["B"], shape["BC"])
+    else:
+        row = ("ATOM", shape["D"], shape["B"])
+    return gen_shards.chunk_canonical(row)
 
 
 def check(so: Path, arches=None) -> bool:

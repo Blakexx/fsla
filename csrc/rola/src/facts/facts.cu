@@ -95,6 +95,14 @@ template <int D, int B, int BC>
 cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
                                           uint8_t* block_bits, int BH, int L, cudaStream_t stream);
 
+//: THE FACTS, AS TENSORS: the union table `[B*H, 2, entries, L/32]` of packed bits,
+//: sides apart because the cook wants them apart, and -- when this call has
+//: residency to plan -- the atom-grain write bitmap `[B*H, N/16]` the page plan
+//: admits from.  ONE PASS over the amplitude planes emits both row sets; the
+//: atom-grain TABLE is a transient, allocated and freed here, because nothing else
+//: asks for it.  The bitmap's own launch stays keyed `(D, B)`, so the published fact
+//: is BC-free however this pass was templated (docs/internals/paging/stats.md).
+template <int D, int B, int BC>
 static std::pair<torch::Tensor, c10::optional<torch::Tensor>> build_facts(const torch::Tensor& pr,
                                                                           const torch::Tensor& pw,
                                                                           int BH, int L, int mask,
@@ -185,6 +193,11 @@ static const int32_t* page_table(const c10::optional<torch::Tensor>& t, int BH, 
   return t->data_ptr<int32_t>();
 }
 
+//: THE LIVENESS EPILOGUE: `[BH, N/BC]` uint8, bits {READ, WRITE, STATE}, reduced
+//: from the union table THIS launch already built.  A SEPARATE ENTRY POINT, on
+//: the union table's own rule: a per-call reduction that the sparse grid pays
+//: for must be reported on its own line and never folded into a kernel delta.
+template <int D, int B, int BC>
 static torch::Tensor build_block_bits(const torch::Tensor& tbl, const int32_t* pageTbl, int BH,
                                       int L) {
   auto bits =
