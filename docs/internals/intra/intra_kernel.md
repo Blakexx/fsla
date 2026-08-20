@@ -9,8 +9,9 @@ The design it implements is `development/plans/K31_BOX_NATIVE_KERNEL_STUDY_2026-
 ## What it computes
 
 For a window `w` of `W` tokens (`W` is an instantiation axis; the built arms are
-`W = 384`, the flagship, and `W = 64`, the conformance cell — the same two the carry
-family builds, because the two kernels share ONE global window grid),
+`W = 384` and `W = 512` — the two ends of the architecture doc's band — and `W = 64`,
+the conformance cell. They are the same three the carry family builds, because the two
+kernels share ONE global window grid),
 
     A[t, t'] = gain(t') * prod_l G_l[t, t'],   G_l = R_l · W_l^T over level l's B = 256 digits
     o[t]   += sum_{t' <= t in w} A[t, t'] · v[t']
@@ -22,7 +23,8 @@ summed — the mass the ones-column of the oracle's recurrence produces — so t
 kernel carries no second matrix for it.
 
 `[W x W]` is never materialized. The window's `(W/64) x (W/64)` tile grid of `[64 x 64]`
-output blocks is walked lower-triangular (21 tile-pairs at `W = 384`); the diagonal blocks
+output blocks is walked lower-triangular (21 tile-pairs at `W = 384`, 36 at `W = 512`);
+the diagonal blocks
 carry the within-tile staircase. Per tile-pair the per-level Gram accumulates in
 registers over the full 256-digit axis, the levels are Hadamard-multiplied there,
 and the result becomes the A operand of the value MMA **in place** — the
@@ -82,12 +84,25 @@ The two levers that raise the intensity are structural, not tuning: a larger `W`
 (intensity is linear in it) and a larger output tile (`C = 128` takes the re-read
 factor from 2.5x to 1.5x for +20% issued MMA).
 
-The FIRST lever is now pulled. The integration rung made `W` an instantiation axis and
-moved the flagship to 384: ideal intensity 96 flop/byte, just over the 94 balance, which
-is the architecture doc's sizing law. The cost is register-neutral — the per-window tile
+The FIRST lever is now pulled, and it did NOT finish the job. The integration rung made
+`W` an instantiation axis and moved the flagship to 384–512: ideal intensity 96–128
+flop/byte, over the 94 balance, which is the architecture doc's sizing law. Measured at
+`W = 512`: DRAM 500–525 GB/s (~56% of peak) and the tensor pipe at 17.3%, against 51%
+and 12.5% at `W = 256`. The move bought ~40% on the tensor pipe and left the term
+bandwidth-heavy, because the RE-READ factor grows with `W` too — 2.5x at 256, 3.5x at
+384, 4.5x at 512 — and measured DRAM read is 4.8x the ideal, which is the re-read factor
+and nothing else. So the SECOND lever, which cuts re-read rather than raising ideal
+intensity, is the one that now matters (`docs/open-work.md`, K31-i-b).
+
+The cost of the first lever is register-neutral — the per-window tile
 LOOP grows 4→6 row-tiles and 10→21 tile-pairs, but the `gram[D][8][4]` accumulators are
 per-tile-PAIR and do not — measured at 154 registers (`W = 384`) against 152 at
 `W = 256`, zero spill, zero local. Shared memory grows only by the masks, one word per
-(tile, level, side, 32 digits): 46 976 B at `W = 384`. The tile-re-read factor rises with
-the grid (21 pairs over 6+6 distinct tiles = 3.5x), so the second lever — the `C = 128`
-output tile — is the named follow-up and is gated on its own register census.
+(tile, level, side, 32 digits): 46 976 B at `W = 384`. The `C = 128` output tile is the named
+follow-up and is gated on its own register census.
+
+The slab gate, measured, is a CLUSTERING mechanism and not a sparsity one: at
+`k_tok = 4` SCATTERED the kernel runs 1.40 ms against dense's 1.32 (indistinguishable),
+and at cohort 64 it runs 0.46 ms with DRAM down 2.8x. That is the same fact the
+ballot-intersection tier's `k_tok ~ 7` crossover records, seen from the built side, and
+it is why that tier is not built.
