@@ -157,6 +157,19 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
                : "r"(a));
 }
 
+//: THE HALF-WIDTH TRANSPOSED FORM, for a contraction whose FREE axis is exactly
+//: one `kMmaN` tile.  An operand whose n extent is eight does not have a second
+//: tile to load, and issuing the x4 form for it would move -- and pay bank traffic
+//: for -- sixteen columns to use eight.  Only the low sixteen lanes supply
+//: addresses; the rest are ignored by the instruction.  (K33's fold: a bucket keyed
+//: on the outermost sparse level owns `BC / s_0` leaves, which is one n-tile at the
+//: flagship, so this is the shape the fold's B operand actually has.)
+__device__ __forceinline__ void load_frag_pair_t(uint32_t (&r)[2], SmemAddr a) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0,%1}, [%2];\n"
+               : "=r"(r[0]), "=r"(r[1])
+               : "r"(a));
+}
+
 //: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.  The contract is about
 //: MAPS and not about data: an accumulator spreads its two axes over the unit's
 //: lanes one way and a `k`-side operand spreads its two the other way, so a

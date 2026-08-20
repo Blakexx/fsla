@@ -105,7 +105,50 @@ CELLS = [
     ("alt-k16-cohort64-W384", 1920, 384, ALT, 16, 64),
     ("write-both-k4-W512", 2048, 512, WRITE_BOTH, 4, False),
     ("read-one-k4-W512", 2048, 512, READ_ONE, 4, False),
+    #: THE MULTI-LIVE-DIGIT CELL.  `clustered` draws a CONTIGUOUS digit window, so
+    #: with `k_tok = 16` against the lattice spans `(16, 8)` a token routinely has
+    #: several live digits inside ONE owner's run at the keyed level -- which is the
+    #: distribution K33's exactness claim rests on and which
+    #: `test_a_multi_live_digit_entry_appears_once_per_digit` counts before it is
+    #: relied on here.
+    ("alt-k16-cohort1-W512", 2048, 512, ALT, 16, 1),
 ]
+
+
+def test_a_multi_live_digit_entry_appears_once_per_digit():
+    """K33's exactness is BY DISTRIBUTION over the key level's live digits.
+
+    A bucket entry is a (token, key digit) pair, so a token with several live
+    digits inside one owner's run at the keyed level is scheduled SEVERAL TIMES,
+    each with that digit's own coefficient, and the sum over those entries is the
+    contraction the one-bucket form would have computed in a single panel. This
+    cell (a) counts the multi-digit tokens, so the claim is not tested against a
+    draw that has none, and (b) checks the result against the fp64 oracle.
+
+    The count is a property of the DRAW and is computed here on the host. The
+    kernel is never told it, and nothing in the kernel branches on it.
+    """
+    assert_fresh_binary()
+    T, window, k_tok = 2048, 512, 16
+    read, write, g, v = cell(T, ALT, k_tok=k_tok, clustered=1, seed=4242)
+    #: ALT is (WRITE_SPARSE, READ_SPARSE), so the READ side keys level 1 and its
+    #: owner run is `s_1 = 8` digits wide; the WRITE side keys level 0 at `s_0 = 16`.
+    for side, level, span in ((read, 1, 8), (write, 0, 16)):
+        live = (side[level][0, :, 0].reshape(T, -1, span) != 0).sum(-1)
+        multi = int((live > 1).sum())
+        assert multi > 0, (
+            f"side keyed at level {level}: this draw has no token with two live "
+            f"digits in one owner's {span}-digit run, so it cannot test the claim")
+        assert int(live.max()) >= 2
+
+    num, den, plane = prefill(read, write, g, v, WIDTHS, k=K, m=M, window=window,
+                              modes=ALT)
+    y_ref, s_ref = oracle(read, write, g, v)
+    assert relative(readout(num, den, T), y_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, WIDTHS, K, M)
+    assert relative(got, s_ref.reshape(1, 65536, 65)) < BF16_RTOL
+    del num, den, plane, y_ref, s_ref, got
+    torch.cuda.empty_cache()
 
 
 @pytest.mark.parametrize("name,T,window,modes,k_tok,clustered", CELLS,

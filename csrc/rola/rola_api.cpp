@@ -66,11 +66,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 carry kernel: the INTER (carried-state) term, undivided, plus the "
         "final state plane in lattice leaf order",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
-        py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
+        py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"), py::arg("modes"),
         py::arg("s_in") = py::none());
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
-        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"));
+        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
+        py::arg("modes"));
   m.def("carry_owner_rows", &rola::carry::owner_rows,
         "K31 carry kernel: the owner ballot rows at the lattice's spans");
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");

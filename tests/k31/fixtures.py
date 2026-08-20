@@ -86,7 +86,7 @@ def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap."""
     import rola
     stamp = carry_ops.build_stamp((256, 256), 4, 8, carry_ops.WINDOW, 32,
-                                  carry_ops.CHANNEL_SPLIT)
+                                  carry_ops.CHANNEL_SPLIT, 0)
     assert stamp[0] == carry_ops.BUILD_MAGIC, (
         f"stale binary: the carry kernel's device stamp is {stamp[0]}, not "
         f"{carry_ops.BUILD_MAGIC}. rola is {rola.__file__}")
