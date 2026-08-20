@@ -105,6 +105,51 @@ FACTS_ARMS: tuple = (
     (32, 128, 2, 256),
 )
 
+#: THE GIVEN-SPAN FACTS ARMS -- the box lattice's owner rows (K31-i-d).  A row is
+#: `(D, B, s_0, s_1, s_2, s_3)`: the owner's per-level SPAN, given rather than
+#: derived, with a level past `D` carrying `B` (the identity).  These are the
+#: `rola::carry` family's ballot rows, so the list mirrors the carry's built arms
+#: -- `tests/unit/test_shard_partition.py` is where the two are held together.
+SPAN_FACTS_ARMS: tuple = (
+    (2, 256, 16, 8, 256, 256),
+    (2, 64, 16, 8, 64, 64),
+)
+
+#: the span arms are STATELESS only: residency is the paging layer's question and
+#: the carry family does not ask it, so no atom-grain row set is emitted.
+SPAN_FACTS_MASKS = (1,)
+
+
+def lex_whole(D: int, B: int, BC: int) -> int:
+    for w, lim in ((D, B ** D), (3, B ** 3), (2, B ** 2), (1, B)):
+        if lim <= BC:
+            return w
+    return 0
+
+
+def lex_span(D: int, B: int, BC: int, l: int) -> int:
+    """The lex policy's span at level ``l`` -- the python mirror of the header's.
+
+    A mirror and not an import: the mangled name a manifest keys on carries the
+    SPANS now, so this side has to be able to say which spans a `(D, B, BC)` arm
+    means, and two derivations disagree exactly when one of them is wrong.
+    """
+    if l >= D:
+        return B
+    whole = lex_whole(D, B, BC)
+    partial = BC // (B ** whole)
+    singles = D - whole - (1 if partial > 1 else 0)
+    if l < singles:
+        return 1
+    if partial > 1 and l == singles:
+        return partial
+    return B
+
+
+def lex_spans(D: int, B: int, BC: int) -> tuple:
+    return tuple(lex_span(D, B, BC, l) for l in range(4))
+
+
 #: THE FACTS PASS' CALL-CLASS AXIS: the prefill half of the four masks
 #: (`rola/engine/types.py`), and both values are built.  The stateless class
 #: compiles no atom-grain emission at all; decode's two masks never reach this
@@ -128,12 +173,27 @@ def facts_atom_arms() -> tuple:
     return tuple(sorted({(a[2], a[3]) for a in FACTS_ARMS}))
 
 
+def facts_plans() -> tuple:
+    """Every PLAN the union-table pass is instantiated on, as `(D, B, s_0..s_3)`.
+
+    The kernel is templated on the PLAN TYPE, so its mangled name -- the
+    manifest's key -- carries the spans and not the `BC` a lex arm was named by.
+    The lex arms project onto their spans here; the given-span arms are already
+    spans. Two lex arms that happen to share a plan (a `BC` repeated across chunk
+    lengths cannot, but a topology could) resolve to ONE instantiation.
+    """
+    lex = {(d, b) + lex_spans(d, b, bc) for (d, b, bc) in facts_tables()}
+    return tuple(sorted(lex | set(SPAN_FACTS_ARMS)))
+
+
 def chunk_rows() -> tuple:
     """Every built facts instantiation, as canonical-hashable tuples."""
-    rows = [("FACTS", d, b, bc, m) for (d, b, bc) in facts_tables() for m in FACTS_MASKS]
+    rows = [("FACTS",) + plan + (m,) for plan in sorted(
+        {(d, b) + lex_spans(d, b, bc) for (d, b, bc) in facts_tables()}) for m in FACTS_MASKS]
+    rows += [("FACTS",) + plan + (m,) for plan in SPAN_FACTS_ARMS for m in SPAN_FACTS_MASKS]
     rows += [("BLOCK", d, b, bc) for (d, b, bc) in facts_tables()]
     rows += [("ATOM", d, b) for (d, b) in facts_atom_arms()]
-    return tuple(rows)
+    return tuple(sorted(set(rows), key=lambda r: (r[0], r[1:])))
 
 
 def chunk_canonical(row) -> str:
@@ -195,6 +255,14 @@ def facts_shard_source(name: str, rows: list) -> str:
                         f"{mask}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, uint32_t*,\n"
                         "    int, int, cudaStream_t);\n")
+    body.append("\n//: the GIVEN-SPAN arms -- the box lattice's owner ballot rows,\n"
+                "//: consumed by the rola::carry family (K31-i-d).\n")
+    for (d, b, s0, s1, s2, s3) in SPAN_FACTS_ARMS:
+        for mask in SPAN_FACTS_MASKS:
+            body.append(f"template cudaError_t launch_span_facts_arm<{d}, {b}, {s0}, {s1}, "
+                        f"{s2}, {s3}, {mask}>(\n"
+                        "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
+                        "    cudaStream_t);\n")
     body.append("\n//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the\n"
                 "//: table it reduces.\n")
     for (d, b, bc) in facts_tables():

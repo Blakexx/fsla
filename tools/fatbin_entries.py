@@ -137,7 +137,7 @@ def shape_key(mangled: str) -> str | None:
     kind = {"chunk_facts_tables": "FACTS", "block_bitmap_kernel": "BLOCK",
             "atom_bitmap_kernel": "ATOM"}[shape["kernel"]]
     if kind == "FACTS":
-        row = ("FACTS", shape["D"], shape["B"], shape["BC"], shape["mask"])
+        row = ("FACTS", shape["D"], shape["B"]) + shape["spans"] + (shape["mask"],)
     elif kind == "BLOCK":
         row = ("BLOCK", shape["D"], shape["B"], shape["BC"])
     else:

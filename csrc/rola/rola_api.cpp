@@ -71,6 +71,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
         py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"));
+  m.def("carry_owner_rows", &rola::carry::owner_rows,
+        "K31 carry kernel: the owner ballot rows at the lattice's spans");
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   m.def("chunk_arms", &rola::chunk::arms,
         "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");

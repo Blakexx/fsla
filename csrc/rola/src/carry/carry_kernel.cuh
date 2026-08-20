@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010010;
+static constexpr int kCarryBuildMagic = 31010012;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -59,8 +59,8 @@ static constexpr int kAtomLeaves = kMmaK;  // 16, the page granule
 
 //: A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a
 //: register-array index, so the level index must be a constant expression; a
-//: `for (int l = 0; l < D; ++l)` would make `or_run<s(l)>` ill-formed and would turn
-//: `lv[l][...]` into a dynamic index, which is a stack frame.
+//: `for (int l = 0; l < D; ++l)` would make `load_run<n_l(l)>` ill-formed and would
+//: turn `lv[l][...]` into a dynamic index, which is a stack frame.
 template <int N, class F>
 __device__ __forceinline__ void static_for(F&& f) {
   if constexpr (N > 0) {
@@ -126,17 +126,23 @@ struct ProduceMap {
   static constexpr int kRowThr = kThreads / C;
   static constexpr int SPT = BP::kBC / kRowThr;
   static constexpr int kJBits = ilog2c(SPT);
-  //: level `l`'s sub-box multiplicity field lies entirely inside the thread's own
-  //: slot index, or entirely above it.  Straddling would break the contiguity.
-  static constexpr bool in_j(int l) { return BP::u_shift(l) + BP::a(l) <= kJBits; }
-  static constexpr bool above_j(int l) { return BP::u_shift(l) >= kJBits; }
-  static constexpr int n_l(int l) { return in_j(l) ? BP::s(l) : K; }
+  //: HOW MANY OF LEVEL `l`'s DIGITS ONE THREAD TOUCHES.  Under the mixed-radix
+  //: order the level's run offset is the bit field at `run_shift(l)`, and the
+  //: thread's own slot index varies exactly the bottom `kJBits` bits, so the count
+  //: is `SPT >> run_shift(l)` clamped into `[1, s_l]`: the whole span when the field
+  //: is below the thread's index, one digit when it is entirely above, and an
+  //: ALIGNED contiguous sub-run when it straddles (the sub-run is aligned because
+  //: `slot0` is a multiple of `SPT`, so its bits below `kJBits` are zero).
+  static constexpr int vary(int l) { return SPT >> BP::run_shift(l); }
+  static constexpr int n_l(int l) {
+    return vary(l) < 1 ? 1 : (vary(l) > BP::s(l) ? BP::s(l) : vary(l));
+  }
   static constexpr int max_n(int l) {
     return l == D ? 1 : (n_l(l) > max_n(l + 1) ? n_l(l) : max_n(l + 1));
   }
   static constexpr int kMaxN = max_n(0);
   //: element of level `l`'s loaded run that unrolled slot `j` wants.
-  static constexpr int idx_of(int l, int j) { return BP::u_of(l, j) * K + BP::c_of(l, j); }
+  static constexpr int idx_of(int l, int j) { return (j >> BP::run_shift(l)) & (n_l(l) - 1); }
 };
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
@@ -167,8 +173,8 @@ template <int D, int B, int K, int M, int W, int C, bool STATE>
 __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    float* __restrict__ o, float* __restrict__ den, int L, int v_row_bytes,
-    const float* __restrict__ s_in, float* __restrict__ s_out) {
+    const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
+    int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C>;
   using PM = ProduceMap<D, B, K, M, C>;
@@ -194,7 +200,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   static_assert(PM::kRowThr * PM::SPT == BC, "the row's threads cover the box exactly");
   static_assert(PM::SPT % 2 == 0, "a thread publishes whole bf16 pairs");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
-  static_assert(BP::kKappa >= 1, "the innermost level supplies the adjacent pair");
+  static_assert(BP::span_bits(D - 1) >= 1, "the innermost level supplies the adjacent pair");
+  static_assert(W % kBallotLanes == 0 && kThreads % kBallotLanes == 0,
+                "a warp's tokens must be exactly one ballot word of the owner's row");
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -229,11 +237,25 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   //: `o_l` is a bit-field extract of the owner index: the lattice's owner
   //: coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
   int runCol[D];
+  //: AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row the
+  //: facts pass voted for this owner group at this level (K31-i-d).  The liveness
+  //: pass reads these words instead of re-reading the amplitude runs itself -- once
+  //: per (owner, window, level, side) 32 tokens, against `2*D*s_l` bf16 per TOKEN.
+  uint32_t rowOff[D];
+  const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
+    rowOff[l] = (uint32_t)(BP::row_prefix(l) + o_l) * rowBytes;
   });
+  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
+  //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
+  //: admitted length.
+  const uint32_t* const rowsR =
+      pin_address(rows + (long)(2 * bh + 0) * (long)BP::kRows * (long)tok_words);
+  const uint32_t* const rowsW =
+      pin_address(rows + (long)(2 * bh + 1) * (long)BP::kRows * (long)tok_words);
 
   // ---- lane-invariant operand addressing (the shipped idiom) ---------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -349,7 +371,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + BP::u_of(l, slot0) * K;
+    lvCol[l] = runCol[l] + BP::run_of(l, slot0);
   });
 
   //: `gain == 0` zeroes the row -- a padding row of a partial batch has no token,
@@ -438,34 +460,44 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
     //: rewritten).  Per level at most ONE side is sparse, so there is one stored row
     //: set per level -- but the two sides' CLAUSE SETS are different level subsets,
-    //: and a dense side's clause is absent-means-full.  Voting each side by its own
-    //: amplitudes IS that AND over exactly the levels where that side is sparse: a
-    //: dense level's `or_run` is nonzero for every token and drops out of the
-    //: conjunction on its own, with no structure fact carried into the kernel.  Union
-    //: routing (one support serving both sides) is then the special case where the
-    //: two votes coincide, and it needs no separate code.
+    //: and a dense side's clause is absent-means-full.  ANDing each side's OWN rows
+    //: IS that conjunction over exactly the levels where that side is sparse: a dense
+    //: level's ballot word is all ones for every token and drops out on its own, with
+    //: no structure fact carried into the kernel.  Union routing (one support serving
+    //: both sides) is then the special case where the two row sets coincide, and it
+    //: needs no separate code.
     //:
     //: Per-side lists make activity AIRTIGHT: a side's simplex weights are strictly
     //: positive on its own support, so a listed entry is live for that side by
     //: construction.  There is no union-superset padding anywhere, by design.
     if (tid < 2) sscan[8 + tid] = 0;
     rendezvous();
+    //: THE SCAN IS A TABLE READ (K31-i-d).  A warp's thirty-two tokens are one
+    //: BALLOT WORD of the owner's row, so the conjunction over levels is `D` word
+    //: ANDs per side for the whole warp, and the lane reads its own bit out of the
+    //: result -- where the amplitude scan it replaces re-read `2 * sum_l s_l`
+    //: bf16 PER TOKEN, per owner, at owner-specific columns that coalesced with
+    //: nothing.  A level the owner spans WHOLE emits no row: its clause is true for
+    //: every token and drops out of the conjunction with no structure fact carried
+    //: into the kernel, which is exactly what the amplitude form's `or_run` did.
 #pragma unroll 1
     for (int p0 = 0; p0 < W; p0 += kThreads) {
       const int loc = p0 + tid;
       bool inR = loc < wLen, inW = loc < wLen;
       if (loc < wLen) {
-        const uint32_t off = winP + (uint32_t)loc * (uint32_t)(BP::kWtot * 2);
+        //: the word is the WARP's, not the lane's: `tok0` and `p0` are both whole
+        //: numbers of words, so warp `u` owns word `(tok0 + p0)/32 + u`.
+        const uint32_t wordB = (uint32_t)(((tok0 + p0) >> 5) + warp) * (uint32_t)sizeof(uint32_t);
+        uint32_t mR = 0xFFFFFFFFu, mW = 0xFFFFFFFFu;
         static_for<D>([&](auto Lc) {
           constexpr int l = decltype(Lc)::value;
-          const uint32_t cb = off + (uint32_t)(runCol[l] * 2);
-          const uint32_t ar =
-              or_run<BP::s(l)>(reinterpret_cast<const __nv_bfloat16*>(gather_ptr(pR, cb)));
-          const uint32_t aw =
-              or_run<BP::s(l)>(reinterpret_cast<const __nv_bfloat16*>(gather_ptr(pW, cb)));
-          inR = inR && ((ar & kBf16MagnitudeMask) != 0u);
-          inW = inW && ((aw & kBf16MagnitudeMask) != 0u);
+          if constexpr (BP::row_g(l) > 0) {
+            mR &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, rowOff[l] + wordB));
+            mW &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsW, rowOff[l] + wordB));
+          }
         });
+        inR = ((mR >> lane) & 1u) != 0u;
+        inW = ((mW >> lane) & 1u) != 0u;
       }
       const uint32_t voteR = lane_ballot(inR), voteW = lane_ballot(inW);
       const uint32_t below = (1u << lane) - 1u;

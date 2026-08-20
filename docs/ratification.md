@@ -17,14 +17,16 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**404 entries per architecture**, measured on the current tree: 396 in the three
+**406 entries per architecture**, measured on the current tree: 398 in the three
 long-standing families below, plus the K31 box-native families' 8 — 3 `carry_kernel`
 `<D, B, K, M, W, C, STATE>` arms, 3 `intra_kernel<D, W>` arms and the two device build
 stamps. (The carve axis left `carry_kernel`'s signature in the integration rung, which
 is why its mangled names moved; the intra kernel gained a window axis in the same
-commit.) The 396: **44 for the facts
-family** — 24 `chunk_facts_tables` (12 `(D, B, BC)` tables crossed with the two
-prefill call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` — plus 32
+commit.) The 398: **46 for the facts
+family** — 26 `chunk_facts_tables<PLAN, MASK>` (12 lex `(D, B, BC)` plans crossed with
+the two prefill call classes, plus the 2 GIVEN-SPAN owner-row plans the `rola::carry`
+family consumes, stateless only), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` —
+plus 32
 `decode_step_kernel` (`DV x D x DECAY x IN_SMEM`) and the entmax solves' 320. (The
 chunk consumer's 44 `compacted_kernel`, the walk probe's 6 and the reverse pass'
 14 left with the K31 deletion batch; baseline = tag `baseline/pre-k31`.) The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
@@ -32,7 +34,7 @@ product that four shards once carried retired in P67 D2
 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
 the closed-world codegen surface carries no `#define` this gate has to pin. Two
-ratified architectures (`sm_80`, `sm_86`) make **888 entries total**. The manifest is
+ratified architectures (`sm_80`, `sm_86`) make **812 entries total**. The manifest is
 the authority on the count and no comment restates it independently. The mangled
 name is the key because it is exact, stable, and encodes every template argument
 — an entry cannot be silently re-pointed at a different instantiation by a rename

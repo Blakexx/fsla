@@ -53,7 +53,13 @@ sys.path.insert(0, str(REPO / "tools"))
 
 gen_shards = pytest.importorskip("gen_shards")
 
+#: the LEX arm is still named by `(D, B, BC)`; the union-table kernel it stands on
+#: is templated on the PLAN, so the committed row is that arm's SPANS -- read here
+#: through the generator's own lex policy, which is the only place that map lives.
 _FACTS = re.compile(r"template cudaError_t launch_chunk_facts_arm<(\d+), (\d+), (\d+), (\d+)>")
+#: the GIVEN-SPAN arm names its spans outright (K31-i-d).
+_SPAN = re.compile(r"template cudaError_t launch_span_facts_arm<(\d+), (\d+), (\d+), (\d+), "
+                   r"(\d+), (\d+), (\d+)>")
 _BLOCK = re.compile(r"template cudaError_t launch_chunk_block_bitmap_arm<(\d+), (\d+), (\d+)>")
 _ATOM = re.compile(r"template cudaError_t launch_chunk_atom_bitmap_arm<(\d+), (\d+)>")
 
@@ -66,8 +72,10 @@ def _committed() -> list[tuple]:
     nothing.
     """
     text = (SHARD_DIR / "facts_s0.cu").read_text()
-    rows = [("FACTS", int(d), int(b), int(bc), int(m))
+    rows = [("FACTS", int(d), int(b)) + gen_shards.lex_spans(int(d), int(b), int(bc)) + (int(m),)
             for d, b, bc, m in _FACTS.findall(text)]
+    rows += [("FACTS", int(d), int(b), int(s0), int(s1), int(s2), int(s3), int(m))
+             for d, b, s0, s1, s2, s3, m in _SPAN.findall(text)]
     rows += [("BLOCK", int(d), int(b), int(bc)) for d, b, bc in _BLOCK.findall(text)]
     rows += [("ATOM", int(d), int(b)) for d, b in _ATOM.findall(text)]
     assert rows, "facts_s0.cu instantiates nothing"

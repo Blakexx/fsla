@@ -27,44 +27,82 @@ static constexpr int kAtomLeaves = 16;
 
 // --------------------------------------------------------------- block plan
 
-//: THE GEOMETRY LAW over D levels of one uniform power-of-two width B. Every
-//: clause below is the law's, and a (widths, BC) pair breaking one does not
-//: compile. Widths are read through `width(l)` so a jagged policy can answer from
-//: a table without touching a loop nest -- docs/internals/facts/facts_kernel.md#geometry-law
+//: THE GEOMETRY LAW over D levels of one uniform power-of-two width B, stated on
+//: the quantity it is actually about: THE PER-LEVEL SPANS `s_l`.  Every clause
+//: below is the law's, and a (widths, spans) tuple breaking one does not compile.
+//: Widths are read through `width(l)` so a jagged policy can answer from a table
+//: without touching a loop nest -- docs/internals/facts/facts_kernel.md#geometry-law
+//:
+//: THE SPANS ARE GIVEN, NOT DERIVED (K31-i-d).  The lex policy below -- `singles`
+//: levels at one digit, at most one partial run, whole levels beneath -- is ONE way
+//: of choosing them, and it admits at most one span that is neither `1` nor `B`.
+//: The box lattice's owner runs are `D` BALANCED spans (the flagship's `(16, 8)`),
+//: which that shape forbids arithmetically rather than accidentally.  So the plan
+//: TAKES the spans and the lex policy becomes `LevelPlan`, an alias that computes
+//: them: one plan type, two ways of arriving at it, and every consumer below reads
+//: `span_at` / `entries_at` / `col_base` exactly as it did.
 constexpr long ipowl(int b, int e) { return e == 0 ? 1 : b * ipowl(b, e - 1); }
 
-template <int D, int B, int BC>
-struct LevelPlan {
+//: THE LEX POLICY, as free functions so `LevelPlan` can be an alias template.  A
+//: level past `D` answers `B`, which is the identity for every quantity derived
+//: from a span (`entries_at` 0, `groups_at` 1, `prod_span` unaffected).
+constexpr int lex_whole(int D, int B, int BC) {
+  return (long)BC >= ipowl(B, D)   ? D
+         : (long)BC >= ipowl(B, 3) ? 3
+         : (long)BC >= ipowl(B, 2) ? 2
+         : BC >= B                 ? 1
+                                   : 0;
+}
+constexpr int lex_partial(int D, int B, int BC) {
+  return (int)(BC / ipowl(B, lex_whole(D, B, BC)));
+}
+constexpr int lex_singles(int D, int B, int BC) {
+  return D - lex_whole(D, B, BC) - (lex_partial(D, B, BC) > 1 ? 1 : 0);
+}
+constexpr int lex_span(int D, int B, int BC, int l) {
+  return l >= D                                                      ? B
+         : l < lex_singles(D, B, BC)                                 ? 1
+         : (lex_partial(D, B, BC) > 1 && l == lex_singles(D, B, BC)) ? lex_partial(D, B, BC)
+                                                                     : B;
+}
+
+template <int D, int B, int S0, int S1, int S2, int S3>
+struct SpanPlan {
   static_assert(D >= 1 && D <= 4, "the level plan is built to depth four");
   static_assert((B & (B - 1)) == 0 && B >= 8 && B <= 256,
                 "one uniform power-of-two width per topology");
+  static constexpr int kWidth = B;
   static constexpr long slots = ipowl(B, D);
-  //: how many trailing levels the block spans ENTIRELY
-  static constexpr int whole = BC >= ipowl(B, D)         ? D
-                               : (long)BC >= ipowl(B, 3) ? 3
-                               : (long)BC >= ipowl(B, 2) ? 2
-                               : BC >= B                 ? 1
-                                                         : 0;
-  //: the one partially spanned level's run (1 = no partial level)
-  static constexpr int partial_span = (int)(BC / ipowl(B, whole));
-  static_assert((long)partial_span * ipowl(B, whole) == BC,
-                "BLOCK GEOMETRY: BC is not a rectangle in digit space");
-  static_assert(partial_span == 1 || B % partial_span == 0,
-                "BLOCK GEOMETRY: the partial run must divide its level");
-  static constexpr int singles = D - whole - (partial_span > 1 ? 1 : 0);
-  static_assert(singles >= 0, "BLOCK GEOMETRY: more block than slot space");
   static constexpr int width(int) { return B; }  // the uniform widths policy
-  static constexpr long blocks = slots / BC;
-  //: per-level spans, most-significant level first: `singles` levels at one
-  //: digit, then the partial run (if any), then the whole levels.
-  static constexpr int span_at(int l) {
-    return l < singles ? 1 : (partial_span > 1 && l == singles) ? partial_span : B;
-  }
+  //: per-level spans, most-significant level first -- GIVEN.
+  static constexpr int span_at(int l) { return l == 0 ? S0 : l == 1 ? S1 : l == 2 ? S2 : S3; }
+  static_assert(S0 >= 1 && S0 <= B && B % S0 == 0 && S1 >= 1 && S1 <= B && B % S1 == 0 && S2 >= 1
+                    && S2 <= B && B % S2 == 0 && S3 >= 1 && S3 <= B && B % S3 == 0,
+                "BLOCK GEOMETRY: every span is an aligned run that divides its level");
+  static constexpr int prod_span(int l) { return l >= D ? 1 : span_at(l) * prod_span(l + 1); }
+  //: `BC` is a CONSEQUENCE of the spans rather than the input they were derived
+  //: from, which makes "BC is a rectangle in digit space" true by construction.
+  static constexpr int kBC = prod_span(0);
+  static constexpr long blocks = slots / kBC;
   //: a level's table-entry count: its group count when tested, zero when whole
   static constexpr int entries_at(int l) { return span_at(l) < B ? B / span_at(l) : 0; }
   static constexpr int groups_at(int l) { return span_at(l) < B ? B / span_at(l) : 1; }
-  //: how many clause words the form ANDs per side
-  static constexpr int clauses = singles + (partial_span > 1 ? 1 : 0);
+  //: how many clause words the form ANDs per side -- the levels that HAVE rows.
+  static constexpr int count_clauses(int l) {
+    return l >= D ? 0 : (entries_at(l) > 0 ? 1 : 0) + count_clauses(l + 1);
+  }
+  static constexpr int clauses = count_clauses(0);
+  //: THE CLAUSE LEVELS ARE A PREFIX, and the two bitmap reductions require it:
+  //: they address the innermost clause row as `prefix_entries(clauses - 1)` and
+  //: carve their grid on `suffix_groups`.  Under the lex policy it holds by
+  //: construction (whole levels are the trailing ones); under a GIVEN-span plan it
+  //: is a clause of the law, checked rather than assumed.
+  static constexpr bool clauses_prefix(int l) {
+    return l >= D || (((entries_at(l) > 0) == (l < clauses)) && clauses_prefix(l + 1));
+  }
+  static_assert(clauses_prefix(0),
+                "BLOCK GEOMETRY: the levels carrying table rows must be a PREFIX of "
+                "the levels; a whole level above a tested one has no clause index");
   //: all-INT arithmetic: the suffix products are bounded by the block count,
   //: and int-by-constexpr-pow2 is shifts -- the long form dragged 64-bit ops
   //: into two knife-edge register floors and spilled them.
@@ -109,10 +147,13 @@ struct LevelPlan {
     else
       return (o / kPlace) % kSpan;
   }
-  //: table entries per side: full width per single-digit level, width/run for
-  //: the partial one, NOTHING for a whole level -- a SUM over levels, never a
-  //: product, which is why the table does not grow with N.
-  static constexpr int entries = singles * B + (partial_span > 1 ? B / partial_span : 0);
+  //: table entries per side: a level's group count when it is tested, NOTHING
+  //: when it is spanned whole -- a SUM over levels, never a product, which is why
+  //: the table does not grow with N.
+  static constexpr int sum_entries(int l) {
+    return l >= D ? 0 : entries_at(l) + sum_entries(l + 1);
+  }
+  static constexpr int entries = sum_entries(0);
   //: A block's leaves are a CONTIGUOUS, BC-ALIGNED run in canonical leaf order, so
   //: the block is named by its first leaf -- docs/internals/facts/facts_kernel.md#leaf-order-law
   //: THE LEVEL IS A TEMPLATE PARAMETER, not an argument: `off_at`'s recursive
@@ -137,14 +178,18 @@ struct LevelPlan {
   //: a whole number of blocks.  A whole level contributes nothing (one group).
   static constexpr bool base_aligned(int l) {
     return l >= D
-           || ((groups_at(l) == 1 || (ipowl(B, D - 1 - l) * span_at(l)) % BC == 0)
+           || ((groups_at(l) == 1 || (ipowl(B, D - 1 - l) * span_at(l)) % kBC == 0)
                && base_aligned(l + 1));
   }
-  static_assert(base_aligned(0),
-                "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its "
-                "leaves are not one aligned run and the state's atom addressing "
-                "does not hold");
 };
+
+//: THE LEX PLAN, an ALIAS.  `LevelPlan<D, B, BC>` is the span plan whose spans the
+//: lex policy derives from `BC`, so every existing consumer keeps its spelling and
+//: every existing instantiation keeps its geometry -- what moved is that the spans
+//: are now the plan's input rather than its private derivation.
+template <int D, int B, int BC>
+using LevelPlan = SpanPlan<D, B, lex_span(D, B, BC, 0), lex_span(D, B, BC, 1),
+                           lex_span(D, B, BC, 2), lex_span(D, B, BC, 3)>;
 
 //: (G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED.  Its geometry
 //: law and its union-table entry accounting live in LevelPlan above, where
@@ -179,12 +224,14 @@ enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 //: Its cost does not depend on `BC`: a lane reads its token's amplitude row once
 //: per level that has entries, whatever the spans partition it into.
 //: docs/internals/facts/facts_kernel.md#the-facts-pass
-template <int D, int B, int BC, int MASK>
+template <class PLAN, int MASK>
 __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
                                    const __nv_bfloat16* __restrict__ pwrite,
                                    uint32_t* __restrict__ tbl, uint32_t* __restrict__ atom_tbl,
                                    int L) {
-  using LP = LevelPlan<D, B, BC>;
+  using LP = PLAN;
+  constexpr int D = LP::depth;
+  constexpr int B = LP::kWidth;
   using AP = LevelPlan<D, B, kAtomLeaves>;
   constexpr int kWtot = LP::col_base(LP::depth);
   static_assert(kWtot == AP::col_base(AP::depth),
@@ -320,6 +367,9 @@ template <int D, int B>
 __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
                                    uint8_t* __restrict__ atom_bits, int L) {
   using LP = LevelPlan<D, B, kAtomLeaves>;
+  static_assert(LP::base_aligned(0),
+                "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its leaves "
+                "are not one aligned run and the state's atom addressing does not hold");
   constexpr int kClauses = LP::clauses;
   constexpr int kAtoms = (int)LP::blocks;
   //: the innermost clause level's group count: the atoms of one prefix, and by
@@ -438,6 +488,9 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
                                     const int32_t* __restrict__ page_tbl,
                                     uint8_t* __restrict__ block_bits, int L) {
   using LP = LevelPlan<D, B, BC>;
+  static_assert(LP::base_aligned(0),
+                "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its leaves "
+                "are not one aligned run and the state's atom addressing does not hold");
   constexpr int kClauses = LP::clauses;
   constexpr int kBlocks = (int)LP::blocks;
   constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;

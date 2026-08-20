@@ -31,8 +31,28 @@
 
 #include "carry_api.cuh"
 #include "carry_kernel.cuh"
+#include "facts/facts_kernel.cuh"
+
+//: THE OWNER BALLOT ROWS, DECLARED (K31-i-d).  The facts family owns the pass and
+//: its instantiation shard owns the arms; this TU sees a DECLARATION, exactly as the
+//: facts dispatch TU does, so nothing here can satisfy an arm locally.  The SPANS the
+//: carry asks for are `BoxPlan::s(l)` -- the lattice's balanced owner runs, which is
+//: the vocabulary the lex plan could not state.
+namespace rola::chunk {
+template <int D, int B, int S0, int S1, int S2, int S3, int MASK>
+cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
+                                  int BH, int L, cudaStream_t stream);
+}  // namespace rola::chunk
 
 namespace rola::carry {
+
+//: the plan the carry's rows are voted under, named ONCE: a `BoxPlan`'s spans as a
+//: `SpanPlan`.  `D` is at most four and a level past `D` carries `B`.
+template <int D, int B, int K, int M>
+using OwnerRows =
+    rola::chunk::SpanPlan<D, B, BoxPlan<D, B, K, M>::s(0), (D > 1 ? BoxPlan<D, B, K, M>::s(1) : B),
+                          (D > 2 ? BoxPlan<D, B, K, M>::s(2) : B),
+                          (D > 3 ? BoxPlan<D, B, K, M>::s(3) : B)>;
 
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
@@ -46,8 +66,9 @@ namespace rola::carry {
 //: something else.
 template <int D, int B, int K, int M, int W, int C, int CV>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
-                          const __nv_bfloat16* v, float* o, float* den, int BH, int L,
-                          int v_row_bytes, const float* s_in, float* s_out, cudaStream_t stream) {
+                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
+                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
+                          float* s_out, cudaStream_t stream) {
   static_assert(CV == 1, "channel-split is the built carve");
   const auto fn = &carry_kernel<D, B, K, M, W, C, true>;
   constexpr size_t sm = CarryGeom<D, B, K, M, W, C>::bytes;
@@ -59,7 +80,8 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
     configured = true;
   }
   const dim3 grid((unsigned)BoxPlan<D, B, K, M>::kOwners, (unsigned)BH);
-  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, o, den, L, v_row_bytes, s_in, s_out);
+  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words, v_row_bytes, s_in,
+                                     s_out);
   return cudaGetLastError();
 }
 
@@ -88,6 +110,25 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
   return true;
 }
 
+//: THE TABLE, AS A TENSOR: `[BH, 2, entries, L/32]` packed bits, read rows then
+//: write rows, one row per (level, owner-group).  A SEPARATE ENTRY POINT while the
+//: carry's own liveness scan still exists, so the two can be compared bit for bit
+//: (`tests/k31/test_owner_rows.py`); the kernel consumes the table through the same
+//: launch once M2 wires it.
+template <int D, int B, int K, int M>
+static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
+                                      int L) {
+  using RP = OwnerRows<D, B, K, M>;
+  auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
+                          pr.options().dtype(torch::kInt32));
+  C10_CUDA_CHECK(
+      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
+                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
+          (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
+          reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
+  return tbl;
+}
+
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
@@ -114,13 +155,22 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   const float* sin_p = s_in.has_value() ? s_in->data_ptr<float>() : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t err = cudaErrorInvalidValue;
+  //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d).  One pass over the
+  //: amplitude planes votes every owner's rectangle test once; the kernel below then
+  //: reads WORDS instead of re-reading those planes per (owner, window, token).  The
+  //: table is a TRANSIENT of this call -- nothing else asks for it -- and it is held
+  //: here rather than inside the dispatch so its lifetime outlives the launch.
+  torch::Tensor rows;
+  const int tok_words = rola::chunk::tok_words(L);
 #define CARRY_DISPATCH(D_, B_, K_, M_, W_, C_, CV_)                                        \
   if (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_           \
       && carve == CV_) {                                                                    \
+    rows = build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);                                 \
     err = launch<D_, B_, K_, M_, W_, C_, CV_>(                                              \
         (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),           \
         (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),            \
-        o.data_ptr<float>(), den.data_ptr<float>(), BH, L, v_row_bytes, sin_p,              \
+        reinterpret_cast<const uint32_t*>(rows.data_ptr()), o.data_ptr<float>(),            \
+        den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p,                        \
         s_out.data_ptr<float>(), stream);                                                   \
   } else
   CARRY_ARMS_X(CARRY_DISPATCH) { TORCH_CHECK(false, "unbuilt carry arm"); }
@@ -152,6 +202,22 @@ std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t
 #undef CARRY_CENSUS
   TORCH_CHECK(false, "unbuilt carry arm");
   return r;
+}
+
+torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
+                         int64_t m) {
+  TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && pr.is_contiguous() && pw.is_contiguous(),
+              "contiguous cuda planes");
+  TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16,
+              "the operand planes are bf16");
+  TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 3, "expect packed amplitudes [BH, L, sumW]");
+  const int BH = (int)pr.size(0), L = (int)pr.size(1);
+#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_)                       \
+  if (is_arm(widths, D_, B_) && k == K_ && m == M_)                   \
+    return build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);
+  CARRY_ARMS_X(CARRY_ROWS)
+#undef CARRY_ROWS
+  TORCH_CHECK(false, "unbuilt carry arm");
 }
 
 std::vector<std::vector<int64_t>> arms() {
