@@ -747,11 +747,27 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //:
   //: `flush` executes a partial group; otherwise only WHOLE groups run and the
   //: residual stays for the next window (the gated cross-window batching).
+  //: A UNIT SHORTER THAN ITS TILE COSTS WHAT IT HOLDS.  `live` is the unit's live
+  //: n-tile count -- a LIST LENGTH, which law 1 names as the legal form of
+  //: adaptivity -- and the produce, the mma block, the staging and the fan-in all
+  //: stop at it.  Without this a bucket that a window leaves half full pays a full
+  //: unit: at the graded ALT cell the read buckets hold about eight entries against
+  //: a sixteen-entry unit, so half of every readout was expanding, multiplying and
+  //: staging rows that the fan-in then declined to write.
   auto produce_read = [&](int b, int off, int cnt) {
-    const bool alive = rprow < cnt;
-    produce_row<RPM, D, RK>(pR, srp + warp * (kGrpR * LdRP) + rprow * LdRP + rslot0, rcol,
-                            btok[b * kCap + off + (alive ? rprow : 0)] * kWtotB,
-                            alive ? kOneSplat : 0u);
+    const int rows = ((cnt + kMmaN - 1) / kMmaN) * kMmaN;
+    if (rprow < rows) {
+      const bool alive = rprow < cnt;
+      produce_row<RPM, D, RK>(pR, srp + warp * (kGrpR * LdRP) + rprow * LdRP + rslot0, rcol,
+                              btok[b * kCap + off + (alive ? rprow : 0)] * kWtotB,
+                              alive ? kOneSplat : 0u);
+    }
+    //: THE SLACK COLUMNS ARE ZEROED ON EVERY PRODUCE, and by every lane.  A bucket
+    //: narrower than one `k` tile leaves columns the mma still reads, and the phase
+    //: union hands those bytes to the value ring between one readout and the next --
+    //: so they are not zero from last time.  This loop is a LANE stride and must not
+    //: sit behind the dead-row return above: that combination zeroes only part of
+    //: the pad, which the (READ_SPARSE, DENSE_BOTH) conformance cell catches.
     if constexpr (PRP > PR) {
       __nv_bfloat16* const pad = srp + warp * (kGrpR * LdRP);
       for (int e = lane; e < kGrpR * (PRP - PR); e += 32) {
@@ -774,6 +790,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         if ((unit & (kWarps - 1)) != warp) continue;
         const int off = g * kGrpR;
         const int cnt = (n - off) < kGrpR ? (n - off) : kGrpR;
+        const int live = (cnt + kMmaN - 1) / kMmaN;
         produce_read(b, off, cnt);
         __syncwarp();
         //: the warp spans EVERY channel of its entries, so the accumulator walks
@@ -800,8 +817,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             constexpr int mt = decltype(Mc)::value;
             uint32_t af[4];
             load_frag(af, aImg + (uint32_t)(mt * kMmaM * LdImg + b * PR + kk * kMmaK) * 2);
-            mma(acc[mt][0], af, &rb[0]);
-            mma(acc[mt][1], af, &rb[2]);
+#pragma unroll
+            for (int j = 0; j < kNTokR; ++j)
+              if (j < live) mma(acc[mt][j], af, &rb[2 * j]);
           });
           //: THE MASS ROW IS THE WARP'S OWN NOW.  It was carved across the warps by
           //: k-step and met in `sden` because under the channel carve no single warp
@@ -809,8 +827,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           //: it, so the rotation, the `sden` buffer and its cross-warp sum all go.
           uint32_t mf[4];
           load_frag(mf, aMass + (uint32_t)(b * PR + kk * kMmaK) * 2);
-          mma(macc[0], mf, &rb[0]);
-          mma(macc[1], mf, &rb[2]);
+#pragma unroll
+          for (int j = 0; j < kNTokR; ++j)
+            if (j < live) mma(macc[j], mf, &rb[2 * j]);
         }
         //: R4: THE BUCKET SCALAR IS APPLIED HERE AND NOT IN THE PRODUCE.  The entry
         //: axis is the accumulator's `n` axis, so `acc` literally IS the backward's
@@ -826,6 +845,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         float* const sow = so + warp * kMmaN * LdO;
 #pragma unroll
         for (int j = 0; j < kNTokR; ++j) {
+          if (j >= live) break;
           const float r0 = rs(j * 8 + (lane & 3) * 2);
           const float r1 = rs(j * 8 + (lane & 3) * 2 + 1);
           static_for<MDV>([&](auto Mc) {
@@ -1075,43 +1095,55 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     constexpr int KL = decltype(KeyC)::value;
     constexpr int NB = decltype(NbC)::value;
     constexpr int KS = (KL < 0) ? 1 : BP::s(KL);
-    //: ONE WARP APPENDS.  Its lanes hold one lockstep unit of the token list, so a
-    //: digit's ballot gives both the count and every entry's RANK inside it, against
-    //: a base only lane zero advances -- no cross-warp scan, no atomic, no barrier
-    //: inside, and an order that is a function of the token list alone.
-    if (warp == 0) {
+    //: EVERY WARP APPENDS, TO THE BUCKETS IT OWNS.  A warp's lanes hold one lockstep
+    //: unit of the token list -- the SAME unit in every warp, because `idx` does not
+    //: depend on the warp -- so a digit's ballot gives both the count and every
+    //: entry's RANK inside it, against a base only lane zero advances: no cross-warp
+    //: scan, no atomic, no barrier inside, and an order that is a function of the
+    //: token list alone.  A bucket is touched by exactly one warp, so all of that
+    //: survives the split.
+    //:
+    //: THE SPLIT IS WHY IT IS WORTH IT.  The append's cost is `NB` ballots per
+    //: lockstep unit and it ran on ONE warp while the other three waited at the
+    //: rendezvous below: at the graded ALT cell that is sixteen ballots per
+    //: thirty-two tokens on a quarter of the CTA, and BARRIER was the kernel's top
+    //: stall at 29.2 warps per hundred issue-active (ncu).  The bucket-to-warp map
+    //: is the CONTIGUOUS one, so a write bucket is scattered by the same warp that
+    //: will fold it, and a side with no key still appends on warp zero alone.
+    constexpr int kScatW = NB < kWarps ? 0 : -1;
 #pragma unroll 1
-      for (int u = 0; u < G::kChunk; u += kBallotLanes) {
-        const int idx = c0 + u + lane;
-        const bool has = idx < n;
-        const uint32_t gtok = has ? (uint32_t)(tok0 + (int)list[idx]) : 0u;
-        unsigned short krun[KS];
+    for (int u = 0; u < G::kChunk; u += kBallotLanes) {
+      const int idx = c0 + u + lane;
+      const bool has = idx < n;
+      const uint32_t gtok = has ? (uint32_t)(tok0 + (int)list[idx]) : 0u;
+      unsigned short krun[KS];
 #pragma unroll
-        for (int i = 0; i < KS; ++i) krun[i] = 0;
-        if constexpr (KL >= 0) {
-          if (has) load_run<KS>(krun, gather_ptr(amp, gtok * kWtotB + (uint32_t)(runCol[KL] * 2)));
-        }
-        uint32_t gain = kOneSplat;
-        if (gained && has)
-          gain = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, gtok * 2u)));
-        static_for<NB>([&](auto Db) {
-          constexpr int d = decltype(Db)::value;
-          const bool live = has && ((KL < 0) || ((krun[d] & 0x7FFFu) != 0u));
-          const uint32_t vote = lane_ballot(live);
-          const int base = cnt[d];
-          if (live) {
-            const int pos = base + bit_count(vote & below);
-            tokArr[d * kCap + pos] = gtok;
-            //: the stored scalar is the KEY DIGIT's coefficient, times the write gain
-            //: on the write side.  The panel never sees either.
-            const uint32_t kv =
-                (KL < 0) ? kOneSplat : (((uint32_t)krun[d] << 16) | (uint32_t)krun[d]);
-            *reinterpret_cast<unsigned short*>(&valArr[d * kCap + pos]) =
-                (unsigned short)((gained ? mul_bf16x2(kv, gain) : kv) & 0xFFFFu);
-          }
-          if (lane == 0) cnt[d] = base + bit_count(vote);
-        });
+      for (int i = 0; i < KS; ++i) krun[i] = 0;
+      if constexpr (KL >= 0) {
+        if (has) load_run<KS>(krun, gather_ptr(amp, gtok * kWtotB + (uint32_t)(runCol[KL] * 2)));
       }
+      uint32_t gain = kOneSplat;
+      if (gained && has)
+        gain = splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, gtok * 2u)));
+      static_for<NB>([&](auto Db) {
+        constexpr int d = decltype(Db)::value;
+        constexpr int kMine = kScatW == 0 ? 0 : (d * kWarps) / NB;
+        if (warp != kMine) return;
+        const bool live = has && ((KL < 0) || ((krun[d] & 0x7FFFu) != 0u));
+        const uint32_t vote = lane_ballot(live);
+        const int base = cnt[d];
+        if (live) {
+          const int pos = base + bit_count(vote & below);
+          tokArr[d * kCap + pos] = gtok;
+          //: the stored scalar is the KEY DIGIT's coefficient, times the write gain
+          //: on the write side.  The panel never sees either.
+          const uint32_t kv =
+              (KL < 0) ? kOneSplat : (((uint32_t)krun[d] << 16) | (uint32_t)krun[d]);
+          *reinterpret_cast<unsigned short*>(&valArr[d * kCap + pos]) =
+              (unsigned short)((gained ? mul_bf16x2(kv, gain) : kv) & 0xFFFFu);
+        }
+        if (lane == 0) cnt[d] = base + bit_count(vote);
+      });
     }
     rendezvous();
   };
