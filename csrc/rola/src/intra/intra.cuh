@@ -44,6 +44,20 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
                    const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
                    int64_t level_modes, int64_t window);
 
+//: R4's reverse pass: it REDUCES the within-window half of the four cotangents into
+//: planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and
+//: ``dden`` is ``[BH, L]`` fp32 -- the seeds the op seam forms from the division.
+void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
+                    const at::Tensor& v, const at::Tensor& dnum, const at::Tensor& dden,
+                    at::Tensor& d_pr, at::Tensor& d_pw, at::Tensor& d_gw, at::Tensor& d_v,
+                    int64_t levels, int64_t level_modes, int64_t window);
+
+//: the reverse arms: (levels, window, smem, regs, local, threads).
+std::vector<std::vector<int64_t>> intra_backward_arms();
+
+//: the reverse pass's own device stamp.
+int64_t intra_backward_stamp();
+
 //: the built (levels, window) arms, one row each.
 std::vector<std::vector<int64_t>> intra_arms();
 

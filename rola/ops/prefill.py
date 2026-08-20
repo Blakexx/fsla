@@ -104,4 +104,102 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     return num, den, state_out
 
 
-__all__ = ["LEVEL_WIDTH", "WINDOW", "WINDOW_WIDE", "prefill"]
+__all__ = ["LEVEL_WIDTH", "WINDOW", "WINDOW_WIDE", "prefill", "prefill_autograd"]
+
+
+class _Prefill(torch.autograd.Function):
+    """The whole operator as ONE autograd node: three kernels forward, three reverse.
+
+    The node is over the UNDIVIDED ``(num, den, state_out)``, so the division's
+    backward is ordinary autograd at whatever forms ``num / (den + eps)`` -- there is
+    no seam formula to keep in step with the kernels. The ctx retains the op's own
+    inputs and NOTHING ELSE: no state, no lists, no thresholds, no pairwise coefficient.
+    """
+
+    @staticmethod
+    def forward(ctx, D, widths, k, m, window, modes, chunk, state_in, g_write, v, *levels):
+        pread = carry_ops.pack_side(levels[:D])
+        pwrite = carry_ops.pack_side(levels[D:])
+        gwrite = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
+        gwrite = gwrite.reshape(gwrite.shape[0] * gwrite.shape[1], -1)
+        value = v.to(torch.bfloat16).contiguous()
+
+        ext = extension()
+        num, den, state_out = ext.carry_forward_inter(
+            pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
+            int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
+        ext.intra_forward(pread, pwrite, gwrite, value, num, den, D,
+                          intra_ops.pack_modes(tuple(modes)), int(window))
+
+        ctx.save_for_backward(pread, pwrite, gwrite, value, state_in)
+        ctx.shape = (v.shape, g_write.shape, tuple(x.shape[-1] for x in levels))
+        ctx.dtypes = tuple(x.dtype for x in (g_write, v) + levels)
+        ctx.plan = (D, tuple(widths), int(k), int(m), int(window), tuple(modes), int(chunk))
+        return num, den, state_out
+
+    @staticmethod
+    def backward(ctx, d_num, d_den, d_state_out):
+        pread, pwrite, gwrite, value, state_in = ctx.saved_tensors
+        D, widths, k, m, window, modes, chunk = ctx.plan
+        (Bn, T, H, dv), _, level_widths = ctx.shape
+        bh = Bn * H
+        if d_num is None:
+            d_num = torch.zeros((bh, T, dv), dtype=torch.float32, device=pread.device)
+        if d_den is None:
+            d_den = torch.zeros((bh, T), dtype=torch.float32, device=pread.device)
+        d_num = d_num.contiguous()
+        d_den = d_den.contiguous()
+
+        vt = carry_ops.pack_cols(value.permute(0, 2, 1, 3).reshape(bh, T, dv), 1.0)
+        dn = carry_ops.pack_cols(d_num, d_den)
+        d_pr, d_pw, d_gw, d_v, d_state_in, _ = extension().carry_backward_inter(
+            pread, pwrite, gwrite, vt, dn, list(widths), int(k), int(m), int(window),
+            int(chunk), state_in, d_state_out, False)
+        #: SAME STREAM, SAME PLANES.  The intra REDs its within-window half into the
+        #: buffers the two scans just wrote, exactly as the forward intra REDs into
+        #: `num`/`den`; nothing is summed on the host.
+        extension().intra_backward(
+            pread, pwrite, gwrite, value, d_num.to(torch.bfloat16).contiguous(),
+            d_den.to(torch.float32).contiguous(), d_pr, d_pw, d_gw, d_v, D,
+            intra_ops.pack_modes(tuple(modes)), int(window))
+
+        def unflatten(plane, base_dtype):
+            out, off = [], 0
+            for width in level_widths[:D]:
+                part = plane[:, :, off:off + width].reshape(Bn, H, T, width)
+                out.append(part.permute(0, 2, 1, 3).to(base_dtype))
+                off += width
+            return out
+
+        g_read = unflatten(d_pr, ctx.dtypes[2])
+        g_write_levels = unflatten(d_pw, ctx.dtypes[2 + D])
+        g_gain = d_gw.reshape(Bn, H, T).permute(0, 2, 1).to(ctx.dtypes[0])
+        g_value = d_v.reshape(Bn, H, T, dv).permute(0, 2, 1, 3).to(ctx.dtypes[1])
+        g_state = d_state_in if ctx.needs_input_grad[7] else None
+        return (None, None, None, None, None, None, None, g_state, g_gain, g_value,
+                *g_read, *g_write_levels)
+
+
+def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
+                     window: int, modes, chunk: int = 32,
+                     state_in: torch.Tensor | None = None):
+    """:func:`prefill`, differentiable -- the same three kernels with R4's reverse pass.
+
+    Returns the same undivided ``(num, den, state_out)``. ``state_in`` and every
+    routing operand carry gradients; ``widths``, ``k``, ``m``, ``window`` and ``modes``
+    are configuration and carry none.
+    """
+    D = len(widths)
+    if len(modes) != D:
+        raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
+    if any(w != LEVEL_WIDTH for w in widths):
+        raise ValueError(
+            f"the combined prefill is built at level width {LEVEL_WIDTH} only "
+            f"(the intra kernel's instantiation); got widths {tuple(widths)}.")
+    length = read_levels[0].shape[1]
+    if length % window:
+        raise ValueError(
+            f"L = {length} is not a whole number of {window}-token windows; the "
+            f"intra kernel's tile grid is a compile-time count per arm.")
+    return _Prefill.apply(D, tuple(widths), k, m, window, tuple(modes), chunk, state_in,
+                          g_write, v, *read_levels, *write_levels)

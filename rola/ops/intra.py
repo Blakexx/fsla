@@ -82,7 +82,47 @@ __all__ = [
     "WINDOW_WIDE",
     "WRITE_SPARSE",
     "arms",
+    "backward_arms",
+    "backward_stamp",
     "build_stamp",
+    "intra_backward",
     "intra_forward",
     "pack_modes",
 ]
+
+
+def intra_backward(pread, pwrite, gwrite, v, dnum, dden, modes, *, window=WINDOW,
+                   d_pr=None, d_pw=None, d_gw=None, d_v=None):
+    """RED the WITHIN-WINDOW half of the four cotangents into the gradient planes.
+
+    ``dnum`` is ``[BH, L, 64]`` bf16 and ``dden`` ``[BH, L]`` fp32 -- the seeds the op
+    seam forms from the division's backward. The planes are the carry's reverse scans'
+    too, so a standalone conformance run allocates its own zeros and a run beside the
+    scans must not.
+    """
+    bh, length, width = pread.shape
+    levels = len(modes)
+    if width != levels * LEVEL_WIDTH:
+        raise ValueError(f"the plane is {width} wide; {levels} levels want {levels * LEVEL_WIDTH}")
+    opt = {"dtype": torch.float32, "device": pread.device}
+    if d_pr is None:
+        d_pr = torch.zeros((bh, length, width), **opt)
+    if d_pw is None:
+        d_pw = torch.zeros((bh, length, width), **opt)
+    if d_gw is None:
+        d_gw = torch.zeros((bh, length), **opt)
+    if d_v is None:
+        d_v = torch.zeros((bh, length, VALUE_WIDTH), **opt)
+    extension().intra_backward(pread, pwrite, gwrite, v, dnum, dden, d_pr, d_pw, d_gw, d_v,
+                               levels, pack_modes(modes), int(window))
+    return d_pr, d_pw, d_gw, d_v
+
+
+def backward_arms():
+    """The built reverse ``(levels, window, smem, regs, local, threads)`` rows."""
+    return extension().intra_backward_arms()
+
+
+def backward_stamp() -> int:
+    """A fact only the loaded binary can produce -- the reverse pass's extension check."""
+    return extension().intra_backward_stamp()

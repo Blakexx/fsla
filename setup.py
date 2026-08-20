@@ -388,6 +388,8 @@ SOURCES = [
     "csrc/rola/src/carry/backward.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
+    # K31 R4: the intra term's reverse pass, its own TU.
+    "csrc/rola/src/intra/intra_backward.cu",
 ]
 
 

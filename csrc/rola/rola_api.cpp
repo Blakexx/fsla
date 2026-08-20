@@ -82,6 +82,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("widths"), py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"),
         py::arg("s_in") = py::none(), py::arg("ds_out") = py::none(),
         py::arg("want_replay") = false);
+  m.def("intra_backward", &rola::intra::intra_backward,
+        "K31 R4: the within-window half of the four cotangents, REDUCED into the "
+        "planes the carry's two scans also write",
+        py::arg("pread"), py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("dnum"),
+        py::arg("dden"), py::arg("d_pr"), py::arg("d_pw"), py::arg("d_gw"), py::arg("d_v"),
+        py::arg("levels"), py::arg("level_modes"), py::arg("window"));
+  m.def("intra_backward_arms", &rola::intra::intra_backward_arms,
+        "K31 R4: the built reverse intra arms and their census");
+  m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
+        "K31 R4: the reverse intra's device build stamp");
   m.def("carry_backward_stamp", &rola::carry::backward_build_stamp,
         "K31 R4: device-side build identity + the per-kernel census", py::arg("widths"),
         py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"));
