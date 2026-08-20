@@ -14,8 +14,9 @@ the producer's own views, so there is no operand plane between them
 
 The bypass is architectural rather than a cheap default
 (docs/internals/decode/decode.md#no-stage-2), the support is a Kronecker product the
-kernel expands exactly (docs/internals/decode/decode.md#kronecker-support), and decode's
-decay domain is strictly larger than the chunk arm's as a CONSEQUENCE
+kernel WALKS from its factors rather than materializing
+(docs/internals/decode/decode.md#kronecker-support), and decode's decay domain is
+strictly larger than the chunk arm's as a CONSEQUENCE
 (docs/internals/decode/decode.md#decay-domain).
 
 FORWARD ONLY. The decode kernels have no backward; the guard below is defence in depth
@@ -37,12 +38,13 @@ from rola.engine.plan import DecodeGeometry, DecodePlan
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
+from rola.ops.lattice import derive_lattice, permutation
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import Topology
 
 __all__ = [
-    "C_DECODE_ROWS_PER_CTA",
     "C_DECODE_TARGET_CTAS_PER_SM",
+    "C_DECODE_UNITS_PER_CTA",
     "DecodeScratch",
     "derive_decode_geometry",
     "leaf_rate_dials_for",
@@ -53,10 +55,11 @@ __all__ = [
 
 #: CALIBRATION PLACEHOLDERS. Both defaults are chosen so that a WRONG value
 #: degrades to today's behaviour and never to a new behaviour: they only move how many
-#: CTAs share a step's rows, and a CTA with no rows exits after one L2 read while a CTA
-#: with too many merely serializes. The terminal cycle fills them from a rows-per-CTA
-#: sweep at the at-scale cell and an occupancy-oracle query on the shipped footprint.
-C_DECODE_ROWS_PER_CTA = 256
+#: CTAs share a step's UNITS -- the (owner, sub-box) pairs the walk partitions -- and a
+#: CTA with no units exits after one L2 read while a CTA with too many merely serializes.
+#: The terminal cycle fills them from a units-per-CTA sweep at the at-scale cell and an
+#: occupancy-oracle query on the shipped footprint.
+C_DECODE_UNITS_PER_CTA = 16
 C_DECODE_TARGET_CTAS_PER_SM = 12  # 2 waves x the design's 6 CTAs/SM residency estimate
 
 
@@ -73,43 +76,37 @@ def derive_decode_geometry(
     """Build the carrier once, at the boundary.
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
-    reintroduce exactly the per-step selection the design dissolves. CTAs whose row range starts
-    beyond the realized touched-row count read one L2 word and exit; that
+    reintroduce exactly the per-step selection the design dissolves. CTAs whose unit range
+    starts beyond the realized live-unit count read one L2 word and exit; that
     over-launching is the price of never reading a device value back to the host, which
     is the one thing a decode step must not do.
     """
     widths = tuple(topology.widths)
     D = len(widths)
-    N = math.prod(widths)
-    leaf_stride = tuple(math.prod(widths[l + 1:]) for l in range(D))
-    level_span = tuple(math.prod(widths[l:]) for l in range(D))
+    k, m = derive_lattice(widths)
     row_offset = []
     acc = 0
     for w in widths:
         row_offset.append(acc)
         acc += w
-    n_words = (N + 31) // 32
-    n_groups = (n_words + 31) // 32
 
     if n_split is None:
-        # M_ceiling: every level contributes its full width. The realized touched-row
-        # count is a device fact and reading it back is the one thing a decode step must
-        # not do, so the split is sized for the whole row space -- more CTAs, never
-        # fewer.
-        m_ceiling = N
+        # The UNIT CEILING: every level contributes its full owner grid, so the whole
+        # lattice is N / k^D units. The realized live-unit count is a device fact and
+        # reading it back is the one thing a decode step must not do, so the split is
+        # sized for the whole rank space -- more CTAs, never fewer.
+        unit_ceiling = math.prod(widths) // k**D
         dev = torch.device(device)
         if dev.type == "cuda":
             sms = torch.cuda.get_device_properties(dev).multi_processor_count
         else:
             sms = 1
         cap = max(1, math.ceil(sms * C_DECODE_TARGET_CTAS_PER_SM / max(1, BH)))
-        n_split = min(max(1, math.ceil(m_ceiling / C_DECODE_ROWS_PER_CTA)), cap)
+        n_split = min(max(1, math.ceil(unit_ceiling / C_DECODE_UNITS_PER_CTA)), cap)
 
     return DecodeGeometry(
-        D=D, widths=widths, leaf_stride=leaf_stride, level_span=level_span,
-        level_row_offset=tuple(row_offset), n_words=n_words, n_groups=n_groups,
-        d_v=int(d_v), has_decay=decay,
-        eps=eps, n_split=int(n_split))
+        D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
+        d_v=int(d_v), has_decay=decay, eps=eps, n_split=int(n_split))
 
 
 @dataclass(slots=True)
@@ -121,11 +118,6 @@ class DecodeScratch:
     between two decode steps and the whole step stays capturable in a CUDA graph.
     """
 
-    #: The expansion's GLOBAL scratch, and empty at every shipped topology: the step
-    #: builds its side maps in shared memory, and this is what it falls back to when the
-    #: leaf space is too wide for that
-    #: (docs/internals/decode/decode_expand.md#smem-arm).
-    work: torch.Tensor
     ws: torch.Tensor
     ctr: torch.Tensor
     #: `[BH]` int32, THE PER-BATCH-HEAD VERDICT, and the `[1]` int32 OR of it that the
@@ -152,13 +144,7 @@ class DecodeScratch:
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
-        #: The kernel's own sizing function answers whether the expansion fits in shared
-        #: memory; a host-side mirror of that arithmetic is what would drift.
-        per_cta = extension().rola_decode_work_words(
-            level_widths=list(config.widths), d_v=config.d_v, decay=config.has_decay,
-            device_index=torch.device(device).index or 0) if cuda else 0
         return DecodeScratch(
-            work=torch.empty(per_cta * BH * config.n_split, **i32),
             ws=torch.empty(BH, config.n_split, config.cols, **f32),
             ctr=torch.zeros(BH, **i32),
             growth=torch.zeros(BH, **i32),
@@ -286,7 +272,6 @@ def step(plan: DecodePlan) -> torch.Tensor:
         g_write=plan.g_write,
         v=plan.v,
         state=plan.state_plane,
-        work=plan.scratch.work,
         ws=plan.scratch.ws,
         ctr=plan.scratch.ctr,
         growth=plan.scratch.growth,
@@ -295,9 +280,9 @@ def step(plan: DecodePlan) -> torch.Tensor:
         done=plan.scratch.done,
         atom_bits=plan.scratch.atom_bits,
         level_widths=list(config.widths),
-        level_strides=list(config.leaf_stride),
-        level_spans=list(config.level_span),
         level_row_offsets=list(config.level_row_offset),
+        lattice_k=config.lattice_k,
+        lattice_m=config.lattice_m,
         n_split=config.n_split,
         eps=config.eps,
         page_table=plan.page_table,
@@ -314,16 +299,21 @@ def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
     gate's reference; calling it on a shipped path would delete the gate's independence
-    (docs/internals/decode/decode.md#second-derivation).
+    (docs/internals/decode/decode.md#second-derivation). It derives the CANONICAL leaf
+    support digit by digit and crosses into lattice order through ``pi``, so it shares no
+    step of the kernel's own enumeration.
     """
     device = write_levels[0].device
     index = torch.arange(config.N, device=device)
     live = None
     for level, width in enumerate(config.widths):
-        digit = (index // config.leaf_stride[level]) % width
+        digit = (index // math.prod(config.widths[level + 1:])) % width
         column = _fold(write_levels[level])[:, digit] != 0
         live = column if live is None else (live & column)
-    return live.view(-1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
+    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
+    lattice_live = torch.empty_like(live)
+    lattice_live.index_copy_(1, pi, live)
+    return lattice_live.view(-1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
 
 
 def _decode_step(

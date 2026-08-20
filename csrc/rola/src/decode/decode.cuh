@@ -8,18 +8,18 @@
 // TOKEN-STATIONARY, STATE-STREAMING gather-GEMV.
 //
 // Three facts a reader must not miss:
-//   1. supp(R) = prod_l supp_l(R) at T = 1, so the exact support is an N-bit Kronecker
-//      object: EXACT, never bounded -- no candidate list, no over-enumeration, no per-row
-//      membership test anywhere on this path. Level 0 is SERVED rather than stored;
-//      what a CTA materializes is the inner block: decode_expand.cuh.
-//   2. BC IS ABSENT AND THAT IS THE POINT. Nothing here, in decode_expand.cuh
-//      or in decode.cu is an expression in BC; work is partitioned over bitmap WORDS.
+//   1. THE LEAF ORDER IS THE LATTICE. A leaf is named by its owner, its sub-box and its
+//      intra-sub-box digits, and the step reaches it by WALKING those factors -- there is
+//      no leaf map, no bitmap over the leaf space, and no term in `N` in the step's
+//      fixed cost.
+//   2. supp(R) = prod_l supp_l(R) at T = 1, so the touched set is a PRODUCT at every
+//      lattice granularity and the walk prunes at each one.
 //   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
 //      what keeps the address BC-free; a null page table means the slot IS the atom and
 //      the bytes are the dense path's, exactly.
 //
-// The degeneracy table, the Kronecker size ledger, the BC argument and the paged base
-// translation: docs/internals/decode/decode.md
+// The lattice, the walk's cost accounting and the paged base translation:
+// docs/internals/decode/decode.md
 
 #include <cstdint>
 
@@ -48,24 +48,25 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 constexpr int kDecodeThreads = 256;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 
+//: THE LATTICE'S DECLARED CAPACITIES, each refused loudly at the host entry: an owner's
+//: per-level span and the capacity multiplier are read as SINGLE 32-bit slices, and the
+//: intra-sub-box scan is a fixed cost per live sub-box.
+//: docs/internals/decode/decode_lattice.md#capacities
+constexpr int kDecodeMaxSpan = 32;
+constexpr int kDecodeMaxCap = 32;
+constexpr int kDecodeMaxSubBox = 64;
+
 //: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
 //: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
 //: and the census is what proves it met it without spilling. The walk is a latency-bound
-//: stream over state rows, so residency is the one thing it trades registers FOR.
-//: TWO TEMPLATE AXES MOVE IT, each by one CTA, and neither is a measured size:
-//: the DECAY arm carries a second per-leaf product and a survival exponential through the
-//: same loop; the GLOBAL-scratch arm (`!in_smem`) carries a 64-bit inner-block base
-//: through the walk and reads that block through global loads rather than shared ones,
-//: which is a different memory regime and not a bigger version of the same one.
-//: docs/internals/decode/decode.md#declared-residency
-__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, bool in_smem) {
-  return (decay ? 4 : 5) - (in_smem ? 0 : 1);
+//: stream over state rows, so residency is the one thing it trades registers FOR. TWO
+//: TEMPLATE AXES MOVE IT, each by one CTA: the DECAY arm carries a second per-leaf
+//: product and a survival exponential through the same loop, and the DEEPEST arm carries
+//: three more live registers per level (the staging offset and both sides' intra-sub-box
+//: slices) through the same one. docs/internals/decode/decode.md#declared-residency
+__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
+  return (decay || levels >= kMaxLevels) ? 4 : 5;
 }
-
-//: Bitmap words per COARSE GROUP. `pc_coarse` is one exclusive-prefix entry per group
-//: plus a total: a CTA resolves its row range without a pass over the bitmap, and the
-//: walk skips empty groups with it. docs/internals/decode/decode.md#coarse-group
-constexpr int kCoarseGroupWords = 32;
 
 //: THE PAGE GRANULE, `page_states := MMA_K_QUANTUM`, mirrored here because
 //: the decode TUs share no header with the tiled consumer. It is geometry-owned and
@@ -107,20 +108,50 @@ struct DecodeParams {
   int g_bf16;
   int v_bf16;
 
-  int level_width[kMaxLevels];       // b_l
-  int level_stride[kMaxLevels];      // leaf_stride[l] = prod(b_{l+1..D-1})
-  int level_span[kMaxLevels];        // S_l = prod(b_{l..D-1});  S_0 = N
+  int level_width[kMaxLevels];       // B_l
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
+  //: THE (k, m) LATTICE, the R0 spec's LATTICE-1 arithmetic in runtime scalars:
+  //: `lat_s[l] = k * lat_m_l[l]` is an owner's span at level `l`, `lat_g[l] = B_l /
+  //: lat_s[l]` its owner-grid extent, and a leaf's index is `(O*lat_m + U)*lat_sub + C`
+  //: over the three mixed-radix numbers `O`, `U`, `C`. The suffix products are held
+  //: rather than recomputed because the walk forms them once per unit.
+  //: docs/internals/decode/decode_lattice.md
+  int lat_k;
+  int lat_m;
+  int lat_msb;  // log2(lat_m)
+  int lat_sub;  // k^D, the leaves one sub-box holds
+  int lat_bc;   // lat_m * lat_sub, the leaves one owner holds
+  int lat_m_l[kMaxLevels];
+  int lat_s[kMaxLevels];
+  int lat_g[kMaxLevels];
+  int lat_gsuf[kMaxLevels];    // prod_{l' > l} lat_g[l']
+  int lat_msuf[kMaxLevels];    // prod_{l' > l} lat_m_l[l']
+  int lat_cshift[kMaxLevels];  // log2(k) * (D - 1 - l)
+  //: The digit masks' word layout: level `l` owns `mask_words[l]` words at `mask_off[l]`
+  //: of a `mask_total`-word plane, one plane per side.
+  int mask_off[kMaxLevels];
+  int mask_words[kMaxLevels];
+  int mask_total;
+  //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
+  int olist_off[kMaxLevels];
+  int olist_total;
+  //: Atoms per sub-box, `lat_sub / kAtomLeaves`. PAGED BACKING ONLY -- the host refuses a
+  //: page table under a lattice whose sub-box is thinner than an atom, because then an
+  //: atom would straddle two sub-boxes and the claim's enumeration would not be an
+  //: ascending partition: docs/internals/decode/decode.md#candidate-atoms
+  int atoms_per_sub;
+
   const float* dials;  // [H, total_rows] or nullptr
 
-  //: DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + is_global`.
+  //: DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + 1`.
   //: Read AND written in place by the SAME lane in program order:
   //: docs/internals/decode/decode.md#state-in-place
   float* state;
   //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
-  //: slot IS the atom. ONE base translation for both: docs/internals/decode/decode.md#paged-address
+  //: slot IS the atom. ONE base translation for both:
+  //: docs/internals/decode/decode.md#paged-address
   //: MUTABLE because a pool claim folds into it, and only ever at the point where the
   //: batch-head's last CTA has arrived: docs/internals/decode/decode.md#the-claim
   int32_t* page_tbl;
@@ -155,13 +186,6 @@ struct DecodeParams {
   int pool_cap;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
-  //: THE EXPANSION'S SCRATCH, and only when it does not fit in shared memory: `4 *
-  //: inner_words` words per CTA at `(bh * n_split + seg)`, carrying the two sides' inner
-  //: blocks and the recursion's ping-pong pair. `nullptr` is the ordinary arm, where the
-  //: block lives in SMEM and never reaches DRAM at all:
-  //: docs/internals/decode/decode_expand.md#smem-arm
-  uint32_t* work;
-
   //: Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
   //: makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
   //: on purpose: docs/internals/decode/decode.md#determinism
@@ -173,13 +197,6 @@ struct DecodeParams {
   int BH;
   int H;
   int D;
-  int n_words;
-  int n_groups;
-  //: THE INNER BLOCK'S GEOMETRY: `S_1 = N / b_0` (`1` at `D == 1`) and its word count.
-  //: This -- never `n_words` -- is what a split CTA materializes:
-  //: docs/internals/decode/decode_expand.md#the-view
-  int inner_span;
-  int inner_words;
   int n_split;
   int total_rows;  // sum_l b_l
   float eps;
@@ -189,8 +206,8 @@ struct DecodeParams {
 __host__ __device__ __forceinline__ int ceil_div_int(int n, int d) { return (n + d - 1) / d; }
 
 //: EXTRACT `count` bits of a packed bitmap starting at BIT index `start`, returned in
-//: the low `count` bits (`count <= 32`) -- the shift-and-merge the Kronecker copy is
-//: built from, written once because it is the one place a funnel shift can be off by
+//: the low `count` bits (`count <= 32`) -- the shift-and-merge every lattice slice is
+//: read through, written once because it is the one place a funnel shift can be off by
 //: one. docs/internals/decode/decode.md#extract-bits
 __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_words, int start,
                                                  int count) {
@@ -203,46 +220,14 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
   return (count >= 32) ? v : (v & ((1u << count) - 1u));
 }
 
-//: Drop the LOWEST `k` set bits of `word` (`k <= 32`) -- how the CTA's FIRST bitmap word
-//: is cut where it is shared with the previous CTA's range. Exact by construction, which
-//: is what lets the partition be defined in ROWS while work is handed out in WORDS.
-__device__ __forceinline__ uint32_t drop_low_set_bits(uint32_t word, int k) {
-  for (int i = 0; i < k && word != 0u; ++i) word &= word - 1u;
-  return word;
-}
-
-//: Keep only the LOWEST `k` set bits of `word` -- the mirror, for the CTA's LAST word.
-//: The order in which the two are applied is load-bearing:
-//: docs/internals/decode/decode.md#boundary-cut-order
-__device__ __forceinline__ uint32_t keep_low_set_bits(uint32_t word, int k) {
-  uint32_t out = 0u;
-  uint32_t rest = word;
-  for (int i = 0; i < k && rest != 0u; ++i) {
-    const uint32_t low = rest & (~rest + 1u);
-    out |= low;
-    rest &= rest - 1u;
-  }
-  return out;
-}
-
-//: The expansion's own shared-memory need, as a MULTIPLE OF `inner_words` per CTA: both
-//: sides' inner blocks and the recursion's ping-pong pair.
-//: docs/internals/decode/decode_expand.md#smem-arm
-constexpr int kExpandBufWords = 4;
-
 // ---------------------------------------------------------------------------
 // The step's entry points. `decode.cu` owns the step and the host entry;
 // `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int n_groups,
-                              int outer_width, int inner_words, bool in_smem);
+size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
+                              int olist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
-
-//: The GLOBAL words one CTA needs when the SMEM arm does not hold. `0` is the ordinary
-//: answer. docs/internals/decode/decode_expand.md#smem-arm
-int64_t decode_work_words_per_cta(int total_rows, int d_v, int cols, bool decay, int n_groups,
-                                  int outer_width, int inner_words, int64_t smem_budget);
 
 }  // namespace decode
 }  // namespace rola
