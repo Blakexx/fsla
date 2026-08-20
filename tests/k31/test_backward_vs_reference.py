@@ -180,3 +180,30 @@ def test_the_off_support_digit_gradients_are_never_read(k_tok):
             scale = max(1e-30, float(full.abs().max()))
             assert float((mine - full).abs().max()) / scale < 1e-2
             off += width
+
+
+@pytest.mark.parametrize("window", [carry_ops.WINDOW, carry_ops.WINDOW_WIDE])
+def test_the_replay_is_bit_identical_at_the_flagship_arm(window):
+    """THE CHEAPEST STRONG GATE IN THE RUNG, at the arm the flagship actually runs.
+
+    Scan A's slab at the end of its walk is the forward's own ``state_out``: same window
+    grid, same lists, same batch order, same k-loop order. A drifting replay is exactly
+    the failure a loose band hides, so the claim is EQUALITY and not a band -- and it
+    needs no fp64 reference, which is what lets it run at ``N = 65536``.
+    """
+    from tests.k31.intra_reference import _simplex
+    widths, T = (256, 256), 4 * window
+    gen = torch.Generator(device="cuda").manual_seed(19)
+    read = tuple(_simplex((1, T, w), 4, gen, "cuda", False).reshape(1, T, 1, w).to(
+        torch.bfloat16) for w in widths)
+    write = tuple(_simplex((1, T, w), None, gen, "cuda", False).reshape(1, T, 1, w).to(
+        torch.bfloat16) for w in widths)
+    g = (0.5 + torch.rand(1, T, 1, device="cuda", generator=gen)).to(torch.bfloat16)
+    v = torch.randn(1, T, 1, 64, device="cuda", generator=gen).to(torch.bfloat16)
+    d_num = torch.randn(1, T, 64, device="cuda", generator=gen)
+    d_den = torch.randn(1, T, device="cuda", generator=gen)
+    replay = carry_ops.carry_backward(read, write, g.double(), v.double(), d_num, d_den,
+                                      widths, k=K, m=M, window=window, want_replay=True)[5]
+    state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
+                                      window=window)[2]
+    assert torch.equal(replay, state_out)
