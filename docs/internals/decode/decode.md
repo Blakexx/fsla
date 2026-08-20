@@ -6,30 +6,34 @@ and the `.cu` carries the GEMV kernel, its dispatch and its host entry. The
 mirror rule is one doc per source basename, so `decode.cuh` and `decode.cu` land
 here together. **Part A** is the header; **Part B** is the translation unit.
 
-`decode_expand.cuh` — the support expansion the prologue runs — has its own doc,
-[`decode_expand.md`](decode_expand.md). The host-facing declaration split is
+`decode_lattice.cuh` — the `(k, m)` box lattice's factor tables the prologue
+builds and the walk resolves a unit from — has its own doc,
+[`decode_lattice.md`](decode_lattice.md). The host-facing declaration split is
 [`decode_api.md`](decode_api.md).
 
 Symbols used throughout: `N` is the leaf count; `D` the number of routing levels
-(`1 <= D <= 4`); `b_l` level `l`'s width and `S_l = prod(b_{l..D-1})` its span, so
-`S_0 = N`; `BH = B * H` the flattened batch-head axis; `d_v` the value width and
-`cols = d_v + 1` (the mass column is unconditional; raw normalization is dead —
-there is no `GLOBAL` axis anywhere in this repository, decode included);
-`n_words = ceil(N/32)`; `M` the number of touched rows (`popcount(bits_r |
-bits_w)`); `n_split` the split-K degree; `BT`/`BC` are the tiled consumer's token
-and owner tiles, which appear here only to be ruled out.
+(`1 <= D <= 4`); `b_l` level `l`'s width; `BH = B * H` the flattened batch-head
+axis; `d_v` the value width and `cols = d_v + 1` (the mass column is
+unconditional; raw normalization is dead — there is no `GLOBAL` axis anywhere in
+this repository, decode included); `n_split` the split-K degree; `k`, `m`,
+`s_l`, `g_l`, `BC` the `(k, m)` lattice's own symbols
+([`decode_lattice.md`](decode_lattice.md), spec `K31_R0_ABI_RIPPLE_SPEC.md`
+§§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
+be ruled out.
 
 **The tiled consumer, in this document, is a RETIRED arm.** It was the prefill
-kernel this path was designed against, and P67 D2 deleted it whole — sources,
-mirror docs and all (`DELETIONS.md`; revival `git show c7eaeb9:<path>`). The
-contrasts drawn against it below are kept deliberately and read in the past
-tense: decode's shape is what it is BECAUSE of what it declined to inherit, and a
-design record that erases the thing declined leaves the decision unexplained.
-Where a section says a constant is restated rather than included, the header it
-was not included from is one of the deleted ones, and the restatement is now
-simply this file's own constant. The surviving prefill arm is the CHUNK consumer
-([`chunk/chunk.md`](chunk/chunk.md)) — a different kernel, named as such wherever
-it is meant.
+kernel this path was designed against; P67 D2 deleted its shipped shape whole
+and K31 R2 deleted what remained of it entirely, extracting what decode and
+paging still need into `csrc/rola/src/facts/` (`DELETIONS.md`; revival by tag
+`baseline/pre-k31` or the deletion commits' parents). The contrasts drawn
+against it below are kept deliberately and read in the past tense: decode's
+shape is what it is BECAUSE of what it declined to inherit, and a design record
+that erases the thing declined leaves the decision unexplained. Where a section
+says a constant is restated rather than included, the header it was not
+included from is one of the deleted ones, and the restatement is now simply
+this file's own constant. There is no surviving prefill consumer to name a
+current doc for; the prefill arm is deleted pending K31 R2's rebuild (queue K31
+card).
 
 ---
 
@@ -61,49 +65,57 @@ At `T = 1` a leaf `s` is in the token's read support iff EVERY level's digit
 supp(R) = prod_l supp_l(R)                      (a Cartesian product)
 ```
 
-and the support's BITMAP is therefore a Kronecker product of the per-level
-indicator vectors. That makes the exact support an `N`-bit object that EXPANDS BY
-BROADCAST-COPY:
+a Cartesian product at EVERY granularity the `(k, m)` lattice names: an owner,
+a sub-box, a digit. That is the one fact the walk rests on, and it prunes at
+each granularity in turn rather than at one:
 
-| `N` | exact support bitmap | state stream |
-|---|---|---|
-| 65,536 | 8 KiB | 130 MiB |
-| 1,048,576 | 128 KiB | 2 GiB |
+- an owner or a sub-box with an entirely absent slice on a side is dead on
+  that side WHOLE — one register test kills every leaf it would have held
+  (`SubBox.live_r`/`.live_w`, [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit));
+- what survives that is walked digit by digit, inside the sub-box, over
+  `k^D <= kDecodeMaxSubBox` leaves — a fixed, capped cost per live sub-box, not
+  a cost that grows with `N`.
 
-**Materializing the truth is cheaper than bounding it.** That is why there is no
-candidate list, no over-enumeration and no per-row membership test anywhere on
-this path: the step serves `supp(R)` and `supp(W)` exactly and `__ffs`-walks
-them, touching only rows that ARE in the support. It serves them rather than
-storing them — level 0 is a broadcast, not data
-([`decode_expand.md`](decode_expand.md#the-view)) — which is a statement about
-where the truth lives, not about how exact it is. What a bounded candidate enumeration would cost instead, and the objects
-this path therefore does not carry, are in
-[`decode_expand.md`](decode_expand.md#why-a-bitmap).
+**The leaf order IS the lattice, so there is no map over the leaf space to
+consult, exact or bounded.** The step's factor tables — `sum_l ceil(B_l/32)`
+mask bits and at most `sum_l g_l` owner-list entries per side
+([`decode_lattice.md`](decode_lattice.md)) — are the whole apparatus the walk
+reaches a leaf through; nothing here is a term in `N`, and nothing here is
+materialized and then swept the way a leaf-granular bitmap would be. The walk
+composes a leaf from three small factors instead of testing membership in a
+big one.
 
-## <a id="bc-absent"></a>3. `BC` is absent, and that is the point (spec I1)
+## <a id="bc-absent"></a>3. `BC` names TWO different things, and only one of them is decode's
 
-Owner grouping is a property of how the TILED consumer amortizes a `[BC][cols]`
-block across many tokens; with one token there is nothing to amortize. Nothing in
-`decode.cuh`, `decode_expand.cuh` or `decode.cu` is an expression in `BC`:
+Owner-blocked AMORTIZATION is a property of how the TILED consumer shares a
+`[BC][cols]` block's cost across many tokens; with one token there is nothing
+to amortize, and `DecodeGeometry`'s own docstring is explicit that `BC` MUST
+NOT become one of its fields — that arm never existed here
+([`engine/plan.py`](../../../rola/engine/plan.py)).
 
-- the support is leaf-granular;
-- the work partition is over 32-leaf bitmap WORDS — a machine quantity, not a
-  plan quantity;
-- the DENSE state address is `(bh * N + leaf) * cols + c`, which is leaf-major
-  already: owner `o`'s leaf `i` sits at row `o * BC + i = leaf` in the tiled
-  kernel's own layout;
-- the PAGED one is keyed to the 16-leaf atom ([§4](#paged-address)), which mentions
-  no `BC` either — that re-key is what buys it.
-
-`BC` is a launch-shape fact of that kernel and never a layout fact.
+The `(k, m)` lattice's `BC = prod_l s_l` is a different quantity that DOES
+exist on this path: the leaf count one OWNER holds, i.e. one unit of the grid
+partition the walk enumerates ([`decode_lattice.md`](decode_lattice.md)).
+Nothing about it is a launch shape or an amortization decision — it is a
+LAYOUT fact, the same one the tiled consumer's `[BC][cols]` block address used
+before it (spec §2.6's survivor table: `λ / BC = O`, by construction rather
+than by a checked property). The DENSE state address is `(bh * N + leaf) *
+cols + c`, leaf-major already, and the PAGED one is keyed to the 16-leaf ATOM
+([§4](#paged-address)) rather than to the owner — so even where `BC` names a
+real quantity here, no address in either backing is computed FROM it directly;
+it is the walk's unit boundary, not a term either address expression carries.
 
 ## <a id="paged-address"></a>4. Paged and dense are ONE walk
 
 <a id="the-atom"></a>The page granule is the **atom** — `kAtomLeaves = 16`
-consecutive leaves in canonical leaf order, spec §4.5's
-`page_states := MMA_K_QUANTUM`. It is geometry-owned and fixed across every config
-forever, which is exactly why the paged address is `BC`-free and why this path can
-carry it without acquiring a `BC` ([§3](#bc-absent)). `kAtomLeaves` is mirrored in
+consecutive leaves in LATTICE leaf order, spec §4.5's
+`page_states := MMA_K_QUANTUM`. Spec §3.2 proves an atom lies inside one owner AND one
+sub-box (`16 | BC` and `16 | k^D`, both checked at [`fill_lattice`](decode_lattice.md#the-refusals))
+and, where `log2(k) | 4` also holds, inside one DIGIT RECTANGLE — a whole trailing `c`
+field per level, which is what the candidate-atom test ([§4b](#candidate-atoms)) reads a
+level's membership from with one bit rather than four. `kAtomLeaves` is geometry-owned and
+fixed across every config forever, which is exactly why the paged address addresses
+through the atom rather than through `BC` ([§3](#bc-absent)); it is mirrored in
 `decode.cuh` rather than included, for the same reason `kMaxLevels` is
 ([§5](#max-levels)): the decode TUs share no header with the tiled consumer.
 
@@ -123,10 +135,11 @@ that matters: a topology whose `N` is NOT a whole number of atoms (`(3, 5, 7)`,
 simply has no paged keying at all — `AtomKeying` refuses to build one.
 
 **The resolve is once per touched ATOM, not per row.** It is a value-keyed cache
-(`if ((leaf >> 4) != cached_atom) reload`), so it costs at most two `int32` loads per
-32-leaf bitmap word and — the part worth stating — it is correct whatever order the
-walk reaches leaves in. The canonical order that makes 16 consecutive rows share a
-slot is what makes it CHEAP; nothing about its correctness depends on it.
+(`if ((leaf >> 4) != cached_atom) reload`), so it costs at most one `int32` load per
+16-leaf atom, and — the part worth stating — it is correct whatever order the walk
+reaches leaves in. The lattice's own ASCENDING `C` order ([§26](#aligned-subranges)) is
+what makes 16 consecutive leaves share a slot and makes the cache CHEAP; nothing about
+its correctness depends on that order.
 
 The table row is pinned as a plain origin and everything per atom is a displacement
 from it, which is the addressing discipline the chunk consumer's SASS gate forced and
@@ -149,14 +162,13 @@ a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is
 per-level exact-nonzero indicators' product ORed 16-deep.
 
 <a id="absorbed-verdict"></a>**THE STEP ASKS THE QUESTION ITSELF, IN ITS OWN PROLOGUE.**
-The exact admission is dear against the launch it precedes — a `plan_exact` and a
-cross-stream event against a 0.09 to 0.10 ms kernel (RTX 3090, medians of 15 x 50) — and a
-sequence whose routing has settled writes atoms that are already resident. What makes the
-question nearly free is that the step has already built the object it is asked about: the
-write map is the one the walk consumes, served over the inner block the same
-[`expand_inner`](decode_expand.md#the-recursion) built, so the residency test is a pass
-over the WRITE SUPPORT's candidate atoms ([§4b](#candidate-atoms)) and an indirection
-each, and no second launch, no second fold and no second expansion exist at all. There is nothing left for a probe kernel to be.
+The exact admission is dear against the launch it precedes, and a sequence whose routing
+has settled writes atoms that are already resident. What makes the question nearly free is
+that the step has already built the objects it is asked about: the write-side factor tables
+([`decode_lattice.md`](decode_lattice.md)) are the ones the walk itself resolves units from,
+so the residency test is a pass over the WRITE list's candidate atoms
+([§4b](#candidate-atoms)) and a page-table indirection each, and no second launch, no second
+fold and no second factor pass exist at all. There is nothing left for a probe kernel to be.
 
 So the order per step is ONE kernel, and then, only where the answer was yes and no pool
 covered it, `rola_op`'s order at `L = 1`:
@@ -172,26 +184,31 @@ growth_host.copy_  ->  the ONE 4-byte read, after the launch that produced it
                                        already ran do not run twice ([§4c](#done-flags))
 ```
 
-<a id="the-table-test"></a>**THE TABLE TEST.** A bitmap WORD is exactly TWO atoms, because
-the atom is 16 leaves and leaf order is the bitmap's bit order, so an atom's write
-membership is a HALF-WORD TEST and no loop over leaves exists on this path. The count of
-atoms that are written and unmapped is a block reduction over those tests. Every CTA of a
-batch-head computes it, independently and identically: the two objects it reads are the
-CTA's own expansion and a page table that no launch mutates until every CTA of that
-batch-head has arrived ([§4c](#the-last-arriver)). Recomputing beat publishing when it was
-measured — the split CTAs' recompute of the fold and the expansion is what removed the
-launch — and the same argument governs here.
+<a id="the-table-test"></a>**THE TABLE TEST.** The count of atoms that are written and unmapped
+is a block reduction (`cub::BlockScan::ExclusiveSum`) over one `page_row[a] < 0` test per
+candidate atom. Every CTA of a batch-head computes it, independently and identically: the
+two objects it reads are the CTA's own factor tables and a page table that no launch
+mutates until every CTA of that batch-head has arrived ([§4c](#the-last-arriver)).
+Recomputing beat publishing when it was measured — the split CTAs' recompute of the fold
+and the factor tables is what removed the launch — and the same argument governs here.
 
-<a id="candidate-atoms"></a>**THE TEST RUNS OVER THE WRITE SUPPORT, NOT THE ATOM SPACE.**
-An outer digit with no write amplitude has a wholly dead `S_1`-leaf range, so only the
-digits in `lw` ([§12](#the-factorized-index)) can contribute. The enumeration is the
-rectangle `[n_live x atoms_per_digit(S_1)]`: entry `k` contributes the atoms its digit's
-leaf range touches, and an atom straddling two live digits is taken by the LOWER one
-(`a > a_hi(k-1)`, exact because `a_hi` is monotone along an ascending digit list). That
-makes the rectangle a PARTITION mapping monotonically onto ascending atom ids — which is
-not a convenience: the pool claim's canonical ranks ([§4e](#the-claim)) are defined in
-ascending atom id and this enumeration is where that order comes from. The same
-enumeration serves the claim and the condensation.
+<a id="candidate-atoms"></a>**THE CANDIDATE ATOMS ARE ENUMERATED FROM THE SAME LATTICE
+PRODUCT THE WALK USES, RESTRICTED TO THE WRITE LIST.** `candidate_atom(i)` splits `i` into a
+write-side UNIT (`i >> atoms_per_sub_shift`, resolved through `resolve_unit` over the
+`kListWrite` owner lists — [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) and
+an ATOM-WITHIN-SUB-BOX index `a` (the low `atoms_per_sub_shift` bits). An atom is live
+where its owning sub-box is `valid && live_w` and, for every level whose `c`-field the
+atom's 4-bit window covers wholly (`lat_cshift[l] >= kAtomShift`), the level's `k`-wide
+write slice has the atom's `c` digit set. `atoms_per_sub_shift = log2(k^D / kAtomLeaves)`
+is a PAGED-ONLY quantity (`decode_lattice.md#capacities`): the host refuses a lattice whose
+sub-box is thinner than an atom, so this is well-defined whenever a page table is present.
+
+The whole enumeration is `n_candidates = units[kListWrite] << atoms_per_sub_shift` — a
+PARTITION mapping monotonically onto ascending atom ids by construction, because unit rank
+and intra-sub-box atom index are BOTH ascending in the lattice's own leaf order. That
+ordering is not a convenience: the pool claim's canonical ranks ([§4e](#the-claim)) are
+defined in ascending atom id and this enumeration is where that order comes from. The same
+enumeration serves the table test, the claim and the condensation below.
 
 <a id="atom-bits"></a>**THE CONDENSATION IS PUBLISHED, and it is the only thing that is.**
 The test already has the write-atom set in hand, so writing it out costs one byte per atom
@@ -205,9 +222,9 @@ outside the write support is false" is a statement about the whole row while the
 is not. The clear is the one remaining term in a steady step that scales with `N`, and it
 is one byte per atom on one CTA per batch-head.
 
-The leaf-granular map is published by NOTHING. Both side maps live and die inside the CTA
-that built them ([§12](#bitmap-fields)); the step's one leaf-level output is this
-16-deep condensation of one of them.
+The leaf-granular map is published by NOTHING. The factor tables live and die inside the
+CTA that built them ([§12](#factor-tables)); the step's one leaf-level output is this
+16-deep condensation of the write side's.
 
 `rola.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
 condensation — the same set derived from the Cartesian-product definition in torch, with
@@ -350,9 +367,10 @@ surfaces to the host exactly as it always did.
 Spec §1 gives `1 <= D <= 4`. `decode.cuh` states that bound itself rather than
 inheriting it from a prefill header: it was restated rather than included from the
 tiled consumer's `consumer.cuh` because the decode TUs shared no other object with
-that kernel and a one-way include would have implied they did — and the same holds
-of the chunk consumer today. The SPEC is the shared authority here; a header is
-not.
+that kernel and a one-way include would have implied they did. There is no prefill
+consumer left to include it from at all today (`DELETIONS.md`), which makes the same
+choice load-bearing for a different reason now: the SPEC is the shared authority here,
+a header is not, and a header cannot be even where one exists.
 
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
@@ -382,17 +400,6 @@ things pin it:
    arms of that era agreed on a block size;
 3. 6 CTAs of 256 fill sm_86's 1536-thread limit exactly.
 
-## <a id="coarse-group"></a>8. `kCoarseGroupWords = 32` — the coarse popcount index
-
-Bitmap words per COARSE GROUP, and it is exactly a warp. `pc_coarse` holds one
-exclusive-prefix entry per group plus a total, so a CTA resolves its row range with one
-binary search over `ceil(n_words / 32)` entries and one WARP-WIDE popcount of the group it
-lands in ([§19](#locate-row)), instead of a pass over the bitmap.
-
-The same array is consulted DURING the walk to skip wholly-empty groups
-(`pc_coarse[g + 1] == pc_coarse[g]`), which is what keeps the bitmap read from
-dominating a high-batch, high-sparsity step. See [§24](#coarse-consult).
-
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
 `read[l]` / `write[l]` / `g_write` / `v` are `Span`s: a base pointer and the `(b, h, w)`
@@ -410,9 +417,12 @@ type; the fold branches on them once per side, never per element
 `sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because
 the kernel needs it on the innermost path.
 
-The remaining per-level integers are `level_width[l] = b_l`,
-`level_stride[l] = prod(b_{l+1..D-1})`, `level_span[l] = S_l` (with `S_0 = N`) and
-`level_row_offset[l]`, an offset into the flattened per-head dial array.
+The remaining per-level integers are `level_width[l] = b_l` and
+`level_row_offset[l]`, an offset into the flattened per-head dial array. Everything a
+LEAF-order walk would need beyond that — a level's stride or span in the flattened leaf
+space — has no counterpart here: the walk never addresses a leaf as a flat integer, only
+as the `(owner, sub-box, digit)` triple the `(k, m)` lattice fields carry
+([`decode_lattice.md`](decode_lattice.md), and `lat_*` fields on this same struct).
 
 ## <a id="detached-clock"></a>10. The detached clock, and why there is no sweep
 
@@ -439,48 +449,24 @@ are [§27](#update-then-read).
 
 `y` is `[BH, d_v]` — the FUSED ratio readout, `num / (den + eps)`.
 
-## <a id="bitmap-fields"></a>12. The bitmaps never leave the CTA that builds them, and level 0 is never built at all
+## <a id="factor-tables"></a>12. The factor tables never leave the CTA that builds them
 
-[§2](#kronecker-support)'s exact support is served by two `SideView`s over one INNER BLOCK
-of `4 * inner_words` words of SHARED MEMORY, built by the CTA that is about to walk it
-([`decode_expand.md#the-view`](decode_expand.md#the-view)). NOTHING PUBLISHES ANYTHING:
-the arm that spills the block to `work` exists only for an INNER span too wide for the
-budget ([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)), and the step's one
-leaf-level output is the write map's 16-deep condensation ([§4b](#atom-bits)).
+[§2](#kronecker-support)'s exact support is served by the `(k, m)` lattice's factor tables
+— the digit masks and the two owner-coordinate lists
+([`decode_lattice.md`](decode_lattice.md)) — built in SHARED MEMORY by the CTA that is
+about to walk them. NOTHING PUBLISHES ANYTHING: the step's one leaf-level output is the
+write map's 16-deep condensation ([§4b](#atom-bits)), and the tables themselves die with
+the CTA.
 
-<a id="the-factorized-index"></a>**THE INDEX IS COUNTED, NOT SCANNED.** With level 0 a
-broadcast rather than data, the row count is a function of two small objects:
-
-| block | extent | what it holds |
-|---|---|---|
-| `cum` | `[b_0 + 1]` i32 | union rows in outer digits strictly before `d`; `cum[b_0] = M` |
-| `lw` | `[b_0]` i32 | the outer digits the WRITE side reaches, ascending |
-
-A digit's CLASS is which sides carry amplitude there — `0` is dead on both — and every
-leaf in that digit's range takes the inner block's bits for that class. So the rows in
-digit `d` are one class popcount of the inner block, `cum` is one block scan over
-`b_0 <= kDecodeMaxLevelWidth == kDecodeThreads` (hence exactly one pass), and
-`rows_before(X)` is `cum[X / S_1]` plus the partial digit's own words. `lw` is the second
-scan of the same pass and is what the atom enumeration walks
-([§4b](#candidate-atoms)).
-
-The class popcounts are a SERIAL loop over the inner block rather than a prefix table:
-the callers are one thread per outer digit and one per coarse group, so the block covers
-`inner_words` of work per thread in parallel, which is never more than the bitmap-wide
-popcount this index replaces.
-
-The coarse index `pc` is `n_groups + 1` words of the same shared memory, an exclusive
-prefix whose entry `n_groups` is `M`.
-
-<a id="coarse-index"></a>`pc[g]` counts the set bits of `bits_r | bits_w` in groups
-strictly before `g` — the same VALUES a bitmap-wide popcount produces, at one
-`rows_before` each, which is what leaves the row partition, `locate_row` and the walk's
-group skip untouched by the factorization. The count is taken per CLASS rather than per
-side because the two sides' popcounts do not sum to `popcount(r | w)`.
-
-`bits_r | bits_w` is otherwise formed word-by-word in a REGISTER at walk time and never
-stored: it is one instruction and one third of the storage a materialized third bitmap
-would cost.
+The walk is COUNTED, NOT SCANNED, in the same sense a leaf-space bitmap walk never was:
+`resolve_unit` decomposes a unit index by shifts into an owner rank and a sub-box index
+directly ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so there is no
+prefix-sum structure over the leaf or row space left to consult here at all — the row
+count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
+question this design asks. What replaces it is the owner-list's own realized count `n_o`
+per (list, level) — a single small array the block-scan in
+[`build_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
+directly at unit-resolve time rather than through a second index over it.
 
 ## <a id="splitk-workspace"></a>13. The split-K workspace
 
@@ -492,9 +478,11 @@ RUN-REPRODUCIBLE. Why that diverges from the tiled consumer on purpose is
 ## <a id="extract-bits"></a>14. `extract_bits` — the funnel shift, written once
 
 Extract `count` bits of a packed bitmap starting at BIT index `start`, returned in
-the low `count` bits (`count <= 32`). This is the shift-and-merge the Kronecker
-copy is built from, and it is written once because it is the one place a funnel
-shift can be off by one.
+the low `count` bits (`count <= 32`). This is the shift-and-merge every lattice
+slice ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)'s
+`level_slice`) is read through — an owner's span or a sub-box's span, each one
+extract — and it is written once because it is the one place a funnel shift can
+be off by one.
 
 <a id="shift-32-ub"></a>The `(start & 31) == 0` fork is **not** an aligned fast path bolted onto a general
 one — it is the C++ shift operator's undefined behaviour at a shift width of 32,
@@ -502,14 +490,6 @@ avoided at the one site that can reach it (`lo >> 0 | hi << 32`). Both arms
 compute the same function. The standing *"no branch to dodge edge cases"* rule is
 satisfied because there is ONE strategy here — gather 32 bits from at most two
 source words — and the fork is inside it.
-
-`drop_low_set_bits(word, k)` drops the LOWEST `k` set bits (`k <= 32`):
-`word & (word - 1)` clears the lowest set bit, so `k` applications drop exactly
-the `k` rows that belong to the CTA before this one. `keep_low_set_bits(word, k)`
-is its mirror, for the CTA's last word. Both are exact by construction rather than
-by an index comparison, which is what lets the row partition be defined in ROW
-counts while the work is handed out in WORDS. The order in which they are applied
-is load-bearing: [§23](#boundary-cut-order).
 
 ---
 
@@ -519,7 +499,7 @@ is load-bearing: [§23](#boundary-cut-order).
 
 §6b's ratified shape, literally: the token's routing weights and value are
 RESIDENT (SMEM/registers), the STATE streams past, and the grid partitions the
-support.
+lattice's UNIT RANK SPACE ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)).
 
 What makes it a GEMV rather than a GEMM is that there is one token, so the
 contraction index is the LEAF and the output index is the COLUMN. That is why
@@ -553,14 +533,19 @@ The STATE is unconditionally reproducible for a stronger reason: the row
 partition is a PARTITION, so every written row has exactly one owning CTA, warp
 and lane, and no atomic touches `state` at all.
 
-## <a id="no-barrier"></a>17. No barrier per anything
+## <a id="no-barrier"></a>17. No barrier per LEAF, and that is the axis that matters
 
-Two `__syncthreads` per CTA per step (three when `n_split > 1`), against the
-tiled consumer's six per candidate tile. The tiled kernel spends one of its six
-ordering the tile's readout against the tile's fold; at `T = 1` the two are a
-single lane's two statements on one row in program order, and the ordering is
-UPDATE-THEN-READ because §2's survival is inclusive at `j = t`
-([§27](#update-then-read)).
+The fold and factor-table prologue costs `O(D)` barriers — two fixed ones (row
+sums, then both sides' rows/value/dials) plus one per (list, level) pair inside
+[`build_owner_lists`](decode_lattice.md#the-owner-lists), because each level's
+owner-grid block scan needs its own barrier before the next level's can reuse
+the same `TempStorage` (at most `2 * kMaxLevels = 8`, `D <= 4`, plus three more
+where `n_split > 1`). That is a function of `D` and never of `N` or of a
+leaf-space bitmap's word count, which is the axis the tiled consumer's
+per-candidate-tile barriers scaled on. Once the tables are built the WALK
+itself needs none: a lane's read contribution and its write-back are one
+statement in program order, and the ordering is UPDATE-THEN-READ because §2's
+survival is inclusive at `j = t` ([§27](#update-then-read)).
 
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here
 
@@ -581,27 +566,12 @@ the repository, and so a future decay form that CAN go positive finds the clamp
 already in place. `tests/unit/test_decode_capacity.py` pins the two constants
 equal.
 
-## <a id="locate-row"></a>19. `locate_row` — two steps, neither a scan of the bitmap
-
-Locate the bitmap word holding global set-bit index `row`, and how many set bits
-of that word precede it. A binary search over the coarse index lands in a 32-word
-group, then ONE LANE PER GROUP WORD popcounts the group at once, a warp prefix places the
-row and a ballot selects the word. This is what the coarse index is FOR, and it is the
-same array the walk consults to skip empty groups ([§24](#coarse-consult)).
-
-**ONE WARP, NOT ONE THREAD, AND THAT IS A MEASURED CHOICE.** The coarse group is exactly a
-warp wide, so the whole group resolves in one parallel popcount. Walking those 32 words
-serially on `tid == 0` while the block waited was, under the sampling profiler, the step's
-single largest barrier stall — 32 % of all samples at the load immediately after that
-barrier, 100 % of them attributed to it. The two boundaries (`row_lo` and `row_hi - 1`)
-then take one warp each, side by side.
-
 ## <a id="template-axes"></a>20. Why there is no `GLOBAL` axis, and what `NC` is
 
 Raw normalization is dead everywhere in this repository (revival = git;
 [`DELETIONS.md`](DELETIONS.md)): the mass column and the `num/den` divide are
 UNCONDITIONAL, so `cols = DV + 1` at every instantiation and there is nothing left
-for a `GLOBAL` template axis to select between. `decode_gemv_kernel<DV, D,
+for a `GLOBAL` template axis to select between. `decode_step_kernel<DV, D,
 DECAY>` takes exactly three template parameters.
 
 `NC = DV / 32` is columns per lane. The row load is `NC` fully coalesced 128 B
@@ -616,16 +586,14 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `sd` | `[total_rows]` fp32 | this head's dial row; `DECAY` only |
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
-| `pc` | `[n_groups + 1]` i32 | the coarse popcount index |
-| `cum` | `[b_0 + 1]` i32 | union rows before each outer digit; `cum[b_0] = M` |
-| `lw` | `[b_0]` i32 | the write side's live outer digits, ascending |
-| `bits` | `[4 * inner_words]` u32 | both sides' inner blocks and the expansion's ping-pong; `IN_SMEM` only |
+| `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
+| `olist` | `[2][olist_total]` i32 | the union and write owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
 
 Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
 step allocates no plane, reads no `[BH, b_l]` intermediate and publishes no bitmap. That is
 the whole of [§21b](#per-cta-prologue).
 
-The amplitude rows are indexed by DIGIT and are not compacted: **the bitmap
+The amplitude rows are indexed by DIGIT and are not compacted: **the digit mask
 carries membership, so the digit IS the index**, and no compaction, id list or
 flag packing exists on this path.
 
@@ -636,36 +604,31 @@ and 1 at `cols = 32` and at `cols = 64 + 3`.
 
 ## <a id="per-cta-prologue"></a>21b. The prologue is per-CTA, and that is the design
 
-The step is one kernel with three phases — fold, expand, walk — and the grid is
+The step is one kernel with three phases — fold, factor, walk — and the grid is
 `(n_split, BH)`, so the first two run once per SPLIT-K CTA rather than once per batch-head.
-Every CTA re-derives the same amplitude rows and the same support bitmap for its `bh`, then
-walks only its own row range.
+Every CTA re-derives the same amplitude rows and the same factor tables for its `bh`, then
+walks only its own share of the unit rank space.
 
-That redundancy is the price of two properties, and it was measured before it was taken:
+That redundancy is the price of two properties:
 
-- **The support map never reaches DRAM.** A shared per-`bh` map would have to be written by
-  someone and read by everyone, which is a global round trip on the walk's hottest index —
-  or a launch boundary to order the write against the reads, which is the launch this
-  design exists to delete.
-- **The split partition stays.** The alternative — one CTA per batch-head, `n_split = 1` —
-  costs no recompute at all and was priced directly: at widths `(64, 64)` the GEMV goes
-  16.2 → 63.5 µs at `B = 2` and 67.3 → 131.5 µs at `B = 32` (RTX 3080 Ti, dense, captured
-  replay). The walk is row-starved without the split, and a topology's `N` is exactly what
-  decides that, so there is no regime where collapsing the grid is the better shape.
+- **The factor tables never reach DRAM.** A shared per-`bh` table would have to be written
+  by someone and read by everyone, which is a global round trip on the walk's hottest
+  index — or a launch boundary to order the write against the reads, which is the launch
+  this design exists to delete.
+- **The split partition stays.** Collapsing the grid to one CTA per batch-head
+  (`n_split = 1`) costs no recompute at all, but the walk is row-starved without the
+  split — a topology's `N` is exactly what decides how starved, so there is no regime
+  where collapsing the grid is the better shape.
 
-The recompute itself is an address walk over `2 * sum_l b_l` floats, `ceil(S_1 / 32)`
-words of inner block and `b_0` digit classes — bounded by the LEVEL WIDTHS, not by the leaf
-space and not by the state — which is why paying it `n_split` times still lands ahead of
-paying one extra launch once.
-
-**IT USED TO BE BOUNDED BY THE LEAF SPACE, AND THAT WAS THE FLOOR.** With level 0
-materialized the recompute was `ceil(N/32)` words per side per CTA, and `n_split` grows
-with `N` (`min(ceil(N/256), ...)`), so the step's fixed cost was quadratic in the leaf
-space: 22.5 µs at `N = 256` against 101.4 µs at `N = 65,536` for a step whose touched-row
-count had barely moved. Serving level 0 as a broadcast instead
-([`decode_expand.md#the-cost`](decode_expand.md#the-cost)) takes that cell to 36.9 µs, and
-takes the shared-memory footprint from 39.5 KiB to 9.0 KiB — which is the difference
-between 2 CTAs/SM and the 5 the kernel declares ([§30b](#declared-residency)).
+**Nothing in the recompute's fixed cost is a term in `N`.** Building both masks is
+`sum_l ceil(B_l/32)` words per side; building both owner lists is a block scan per
+(list, level), `D` levels, over an array at most `lat_g[l] <= kDecodeThreads` wide
+([`decode_lattice.md`](decode_lattice.md)) — bounded by the LEVEL WIDTHS and the OWNER-GRID
+EXTENTS, never by the leaf space and never by the state, which is why paying it `n_split`
+times still lands ahead of paying one extra launch once. This is a structural property of
+the walk itself, not a tuning outcome: the leaf-space bitmap this design replaced (its
+construction, its cost and its removal are recorded in `DELETIONS.md`) DID carry a term in
+`N`, which is the gap this design exists to close.
 
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
@@ -676,49 +639,34 @@ the product is the same product either way. What remains here is exactly the
 per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
 `g_read := 1`; raw is dead, so there is no arm where it is anything else).
 
-## <a id="row-range-to-words"></a>23. The CTA's row range, resolved into a word range
+## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending `C`, one intra-sub-box digit index
 
-The partition is defined in ROWS — popcount-balanced by construction,
-`row_lo = seg * M / n_split` — and handed out in WORDS. The two boundary words are
-cut by dropping / keeping set bits ([§14](#extract-bits)), which is exact rather
-than an index comparison. An empty range is expressed as `w_start = 1,
-w_last = 0`, so the walk below runs zero iterations without a separate arm.
+<a id="the-unit-partition"></a>The grid partitions the UNIT rank space directly — `for
+(unit = seg + n_split*warp; unit < units; unit += n_split*kDecodeWarps)` — so there is no
+separate row-range-to-word resolution step: a unit IS the CTA's own share, by
+construction, and `resolve_unit` ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit))
+is what turns a unit index into the `(owner, sub-box)` pair before any leaf inside it is
+touched. Every touched leaf therefore has exactly one owning CTA, warp and lane — the
+unit partition is a PARTITION over owners and sub-boxes, so no atomic ever touches
+`state` ([§16](#determinism)).
 
-<a id="boundary-cut-order"></a>`keep_low_set_bits` is applied BEFORE `drop_low_set_bits`, so that when a CTA's
-whole row range lies inside ONE word the two together leave exactly bits
-`[drop, keep)`. Reversing them silently truncates that case.
+Within one resolved sub-box the walk visits `C` from `0` to `k^D - 1` — ascending, which
+is ascending LEAF order — and reads each level's `k`-wide intra-sub-box digit off the
+already-resolved `cr[l]`/`cw[l]` bitfields (`(C >> lat_cshift[l]) & (k - 1)`, no division:
+`lat_cshift[l]` is a per-level SHIFT WIDTH, not a stride to divide by). That ascending
+order is what makes `cached_atom` — the paged base translation's one piece of reuse
+([§4](#paged-address)) — correct and cheap at once: 16 consecutive `C` values share an
+atom, so the translation changes at most once per 16 iterations of a loop that is already
+bounded by `kDecodeMaxSubBox`.
 
-## <a id="coarse-consult"></a>24. The coarse-index consult at walk time
+The trip count per sub-box is `k^D`, capped at `kDecodeMaxSubBox = 64`
+([`decode_lattice.md#capacities`](decode_lattice.md#capacities)) — a fixed, small,
+compile-time-boundable cost per LIVE sub-box, never a cost that varies with the topology
+the way a 32-bit-word-aligned walk's trip count would have.
 
-A group whose prefix does not advance holds no touched row, so its 32 words need
-not be read at all. It is consulted once per GROUP rather than once per word — the
-two `pc` loads would otherwise cost as much as the bitmap words they save — which
-is what keeps the bitmap read from dominating a high-batch, high-sparsity step.
-The boundary words `w_start` and `w_last` are non-empty by construction, so a skip
-can never cross them.
-
-The union `bits_r[w] | bits_w[w]` is formed in a REGISTER and never stored: one
-instruction, one third of the storage a materialized third bitmap would cost.
-
-## <a id="divisions-per-word"></a>25. The `D` integer divisions are paid once per WORD
-
-NVIDIA hardware has no integer divide (~20 instructions each), so a per-row
-mixed-radix decomposition would put ~80 instructions on a row whose payload is
-`cols * 4` bytes — inside the sm_86 budget but **not** the sm_80 one, i.e. it
-would make the A100 dense arm instruction-bound. Amortized over a word it is ~2.5
-per row on the dense arm.
-
-## <a id="aligned-subranges"></a>26. The word is walked in aligned sub-ranges
-
-Each sub-range lies inside ONE inner block, so the innermost digit is
-`cur + (bit - q)` with no division, and the outer digits are constant across it.
-The trip count is `ceil(32 / b_{D-1})`: **1** for every topology whose innermost
-width reaches a word (`widths = (256, 256)`) and **2** at the flagship `(8, 16)`.
-ONE uniform loop that degenerates — not a fast path with a fallback.
-
-Bits at or beyond `N` are never set: the expansion's destination-word loop stops
-at `span_out`, which is `S_0 = N` at level 0, leaving the tail zero. So the walk
-needs no leaf bound test and never fabricates a row.
+A leaf outside the lattice's own partition of `N` is never visited: `owners * BC == N`
+exactly (`decode_lattice.md#the-refusals`), so the walk needs no leaf bound test and never
+fabricates a row.
 
 ## <a id="update-then-read"></a>27. Update first, then read the updated row — and that order IS the semantics
 
@@ -790,81 +738,44 @@ two decode steps and the counter is safe to capture in a CUDA graph.
 perf story of the fusion
 
 `decode_step_kernel` carries
-`__launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, IN_SMEM))`
-— 5 CTAs/SM on the shipped arm, one fewer for decay and one fewer again for the
-global-scratch arm — and that second argument is not decoration. It is a
-REGISTER CAP the assembler must meet, and the census is what proves it met it with zero
-spills.
+`__launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D))`, and that second
+argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census
+is what proves it met it without spilling. `decode_step_blocks_per_sm` is
+`(decay || levels >= kMaxLevels) ? 4 : 5` — TWO TEMPLATE AXES move the declared residency,
+each by exactly one CTA:
 
-**Why it has to be declared.** The fusion moved a prologue into a kernel whose loop was
-already the whole point, and the assembler priced the new live values the way it prices
-anything: it took more registers. Left alone it took 57 on the shipped `(d_v=64, D=2,
-no decay)` arm against the pre-fusion GEMV's 48 — which is 4 CTAs/SM instead of 5, a fifth
-of the residency, on a walk that is LATENCY-BOUND over state rows. Measured: at widths
-`(64, 64)`, `B = 32`, dense, that alone cost +10.8 % of the whole step and turned a
-launch-count win into a wall-clock loss. With the budget declared it is 48 registers again,
-no spills, and the same cell lands within noise of the pre-fusion wall while running one
-kernel instead of three.
+- **DECAY** carries a second per-leaf product (the decay rate) and a survival
+  exponential through the same loop as the undecayed arm's amplitude product;
+- **DEEPEST** (`D == kMaxLevels == 4`) carries three more live registers per level — the
+  staging offset and both sides' intra-sub-box digit slices (`dbase[l]`, `cr[l]`, `cw[l]`
+  on `SubBox<D>`, [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — through the
+  same loop.
 
-The lesson is the standing register policy read in the other direction: registers are worth
-spending when they buy fewer instructions or a tensor-core op in the hot loop, and this
-kernel's extra ones bought neither — they were prologue state the allocator kept alive
-across a loop that never reads it. A budget is how that gets said in code rather than
-hoped for.
-
-The DECAY arm gets one fewer CTA because it carries a second per-leaf product (`o_rate`)
-and a survival exponential through the same loop; it does not fit the tighter cap without
-spilling, and the arm is a TEMPLATE AXIS, so the budget is a compile-time function of it
-rather than a threshold on a measurement.
-
-The GLOBAL-SCRATCH arm (`!IN_SMEM`) gets one fewer again, for the same kind of reason and
-on the same kind of axis: its inner block lives in DEVICE memory, so a 64-bit base
-survives into the walk and every bitmap word is a global load rather than a shared
-instruction. It is a different memory regime, not a bigger version of the same one, and at
-48 registers it spilled while every shared-memory arm did not. No shipped topology selects
-it ([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)), so the CTA it gives up costs
-nothing that is measured; what it buys is a census with zero spills everywhere.
+Both are compile-time functions of a template axis rather than a threshold read off a
+measurement, which is what the standing *"branch on structure, not thresholds"* rule asks
+for: a config that is DECAY or `D == 4` gets one fewer CTA/SM, unconditionally, and every
+other config gets the wider budget.
 
 **The claim's SIZE comes out of the fold that applies it** — an atom the shadow row maps
-and the table does not IS a claimed atom — rather than being carried across the walk or
-re-derived from the write-support enumeration afterwards. Both alternatives were built and
-both spilled: carrying it holds an int through the loop, and re-deriving it holds the
-enumeration's three operands (the inner block, the live-digit list, its length) instead.
-Counting it where the fold already touches every atom holds nothing at all.
-
-**What the fusion also had to buy back, in barriers.** The prologue is
-`fold_row_sums` → one barrier → both sides' rows, the value and the dials → one barrier →
-one expansion over BOTH sides sharing `D - 1` barriers and every integer division. Written
-as the obvious two sequential per-side folds and two sequential per-side expansions it was
-6 barriers at `D = 2` instead of 4, and the same cell paid ~3 % for it.
+and the table does not IS a claimed atom ([§4e](#the-claim)) — rather than being carried
+across the walk or re-derived from the write-support enumeration afterwards. Both
+alternatives hold state alive across the loop the register budget is tight in; counting it
+where the fold already touches every atom holds nothing at all.
 
 ## <a id="instantiation-matrix"></a>31. The instantiation matrix
 
-`DV(2) x D(4) x DECAY(2) x IN_SMEM(2) = 32`. Note what is **not** an axis: no `BT` (one
-token), no `BC` (no owner blocking), no `MmaPrec`/precision split (there is no MMA, and the
-tf32x3/bf16 split died with the `PREC` axis everywhere else — `DELETIONS.md`), no `GLOBAL`
-(raw normalization is dead; the mass column is unconditional — [§20](#template-axes)), and
-no OPERAND STORAGE TYPE. The last is the interesting one: the fold reads three independent
-dtype families, so making them template axes would multiply the matrix by eight for a few
-hundred bytes of gather. They are runtime flags selecting a typed loop instead
-([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)). `IN_SMEM` earns its
-place where they do not: it decides the ADDRESS SPACE the whole walk indexes, which a
-runtime pointer would make generic. Every axis is a structural plan fact with few legal
-values, which is the standing *"branch on structure, not thresholds"* rule. `d_v` is
-restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1, 4]` is refused in the
-dispatch's `default`.
-
-## <a id="flat-bits"></a>32. `work` — the expansion's scratch, and usually empty
-
-`work` is `[BH * n_split * 4 * inner_words]` int32 when the inner block does not fit in
-shared memory, and ZERO-LENGTH when it does — which is every shipped topology. Its extent is one
-authority's answer (`rola_decode_work_words`, which asks the kernel's own sizing function
-against the device's real budget) rather than a host-side mirror of the same arithmetic,
-because a mirror is the thing that drifts.
-
-It is indexed PER CTA at `(bh * n_split + seg)`, not per batch-head: every split-K CTA
-expands its own copy ([§21b](#per-cta-prologue)), so the slices are private by construction
-and no two CTAs ever write the same word.
+`DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one token), no `BC`
+(no owner-blocked amortization — [§3](#bc-absent)), no `MmaPrec`/precision split (there is
+no MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else —
+`DELETIONS.md`), no `GLOBAL` (raw normalization is dead; the mass column is unconditional
+— [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads three independent dtype
+families as runtime flags selecting a typed loop instead — a template axis there would
+multiply the matrix by eight for a few hundred bytes of gather,
+[`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)), and — the axis this rung
+removed — no ADDRESS-SPACE arm: the factor tables are shared memory unconditionally, at
+every shipped topology, so there is no second arm for a template parameter to select
+between. `d_v` is restricted to `{32, 64}` by a `TORCH_CHECK`, and `D` outside `[1, 4]` is
+refused in the dispatch's `default`.
 
 ## <a id="producer-width-mirror"></a>33. Why the producer-width mirror is bound separately
 
@@ -889,13 +800,13 @@ rather than as a plausible zero is what a gate wants.
 ## <a id="smem-refusal"></a>35. The staged-amplitude SMEM budget is a declared capacity
 
 The host entry queries `cudaDevAttrMaxSharedMemoryPerBlock` and `TORCH_CHECK`s
-`decode_step_smem_bytes(...)` against it, naming `sum_l width_l` in the message. It is
-**refused loudly rather than taken as a slower path** — there is no spill-to-global arm for
-the staged amplitude rows.
-
-The BITMAP's arm selection is not this check; it is structural, it comes first, and the
-refusal above applies to what is left after it
-([`decode_expand.md`](decode_expand.md#smem-arm)).
+`decode_step_smem_bytes(...)` against it, naming `sum_l width_l` in the message. That
+function's total is the staged amplitude rows, the dial row, the token value, the
+cross-warp fold buffer and BOTH factor-table blocks (the digit masks and the owner-list
+planes — `2 * mask_total + 2 * olist_total` words, [`decode_lattice.md`](decode_lattice.md)):
+everything a step's prologue puts in shared memory, all of it. It is **refused loudly
+rather than taken as a slower path** — there is no spill-to-global arm for any of it, and
+there is no second address space for the factor tables to fall back to either.
 
 ---
 
@@ -950,5 +861,5 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `rola.engine.facts.planes.atom_bits` produces for the chunk arm and the same one the step
-condenses, reached by neither's route.
+object `rola.engine.facts.planes.atom_bits` derives from the facts pass and the same one
+the step condenses, reached by neither's route.

@@ -187,7 +187,7 @@ Verified non-vacuously: master built in a fresh worktree fails exactly as descri
 above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
 its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
 
-The decode path is now `decode.cu` alone — fold, expansion and walk are one kernel, one
+The decode path is now `decode.cu` alone — fold, factor and walk are one kernel, one
 TU, one `rola::decode::detail` block — so NO kernel in the binary carries an
 anonymous-namespace name: every ratified name is a function of source content and
 toolchain only, a worktree build passes the post-build gates, and a same-tip SASS

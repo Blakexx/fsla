@@ -56,10 +56,11 @@ it at all:
 * `rola/engine/rules/` — band 2, one declared fold per decision.
 * `rola/engine/dags/` — the per-family compositions: the tuple, its context, its
   terminal node.
-* `rola/ops/` — the launches and the bodies around them. `chunk.py` is `execute`, the
-  seeds, the two scans and the un-packing; `decode.py` is the geometry, the scratch,
-  the folds, the probe and `execute`, plus `_decode_step` — those same bodies in the
-  step's order for a caller holding tensors rather than a bundle.
+* `rola/ops/` — the launches and the bodies around them. `decode.py` is the geometry,
+  the scratch and `step`, plus `_decode_step` — those same bodies in the step's order
+  for a caller holding tensors rather than a bundle; the fold and the factor tables are
+  IN the step's one launch and have no separate body here
+  ([`decode/decode_fold.md`](../decode/decode_fold.md), [`decode/decode_lattice.md`](../decode/decode_lattice.md)).
 
 **A domain reaches the core through the ROOT, never through a sibling domain.**
 `rola/engine/__init__.py` re-exports the core for exactly that: `from rola.engine
