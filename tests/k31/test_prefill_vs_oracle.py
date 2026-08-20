@@ -16,6 +16,8 @@ docstring names. The band is the repository's one bf16 family bound.
 """
 from __future__ import annotations
 
+import zlib
+
 import pytest
 import torch
 
@@ -101,8 +103,11 @@ CELLS = [
                          ids=[c[0] for c in CELLS])
 def test_prefill_matches_the_fp64_oracle(name, T, window, modes, k_tok, clustered):
     assert_fresh_binary()
+    #: A SEED THAT IS A PROPERTY OF THE CELL: `hash(str)` is salted per process,
+    #: so a cell seeded from it is a different draw on every run and a failure
+    #: cannot be reproduced from its own name.
     read, write, g, v = cell(T, modes, k_tok=k_tok, clustered=clustered,
-                             seed=hash(name) & 0xFFFF)
+                             seed=zlib.crc32(name.encode()) & 0xFFFF)
     num, den, plane = prefill(read, write, g, v, WIDTHS, k=K, m=M, window=window,
                               modes=modes)
     y_ref, s_ref = oracle(read, write, g, v)
