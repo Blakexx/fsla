@@ -9,8 +9,15 @@
 //      the leaf space is never represented.
 //   2. Membership is the EXACT-NONZERO test on the amplitude, never a threshold -- the
 //      same defining expression the schedule's support bitmap uses.
-//   3. The owner list is a UNION list carrying both sides' flags, because the walk prunes
-//      on `read-alive OR write-alive` and stops at the first level where neither holds.
+//   3. THE RANK SPACE IS A BIT FIELD, not a mixed radix over the realized counts: each
+//      level's live count is padded up to a power of two so a unit decomposes by shifts.
+//      A device integer division is tens of cycles and the enumeration runs once per
+//      candidate atom per CTA, which is where it would be paid.
+//
+// TWO LISTS: the walk enumerates the UNION (a leaf either side reaches), the candidate
+// atoms enumerate the WRITE side alone (an atom the step deposits into). One list would
+// make the second enumeration the first one's size, and a page-table probe per entry is
+// what that costs.
 //
 // The lattice's formulas, the capacities and the cost accounting:
 // docs/internals/decode/decode_lattice.md
@@ -24,11 +31,10 @@ namespace decode {
 
 using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
 
-//: An owner-list entry: the coordinate in the low 16 bits, its two side flags above.
-constexpr int kOwnerFlagShift = 16;
-constexpr int kOwnerCoordMask = 0xffff;
-constexpr int kSideRead = 1;
-constexpr int kSideWrite = 2;
+//: The two enumerations, as the index of one owner-list plane.
+constexpr int kListUnion = 0;
+constexpr int kListWrite = 1;
+constexpr int kLists = 2;
 
 //: One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
 //: thread owns one destination word and reads the amplitudes it covers, so the pass is
@@ -62,31 +68,57 @@ __device__ __forceinline__ uint32_t level_slice(const DecodeParams& p, const uin
   return extract_bits(mask + p.mask_off[l], p.mask_words[l], lo, count);
 }
 
-//: THE UNION OWNER LISTS: per level, the ascending coordinates at which either side has
-//: amplitude, each carrying its two flags. `n_o[l]` is the level's count and the product
-//: of those counts is the walk's OWNER RANK SPACE -- the object the grid partitions.
-//: One block scan per level; `lat_g[l] <= kDecodeThreads` follows from the level-width
-//: capacity. The caller's barrier before this must have published both masks.
+__device__ __forceinline__ int ceil_log2_dev(int n) {
+  int bits = 0;
+  while ((1 << bits) < n) ++bits;
+  return bits;
+}
+
+//: THE OWNER LISTS: per list and level, the ascending coordinates at which that list's
+//: side has amplitude. `n_o` is the realized count, `bits` its power-of-two padding and
+//: `shift` the padded field's position in the rank, so a rank decomposes by shifts and a
+//: padded-past-the-end index is skipped rather than divided around. `units` is the whole
+//: enumeration -- the rank space times the capacity radix.
+//: One block scan per (list, level); `lat_g[l] <= kDecodeThreads` follows from the
+//: level-width capacity. The caller's barrier before this must have published both masks.
 template <int D>
 __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const uint32_t* mask_r,
                                                   const uint32_t* mask_w, int32_t* olist,
-                                                  int32_t* n_o,
+                                                  int32_t* n_o, int32_t* bits, int32_t* shift,
+                                                  int32_t* units,
                                                   LatticeScan::TempStorage& scan_temp) {
   const int tid = threadIdx.x;
 #pragma unroll
-  for (int l = 0; l < D; ++l) {
-    const int span = p.lat_s[l];
-    int flag = 0;
-    if (tid < p.lat_g[l]) {
-      const int lo = tid * span;
-      flag = (level_slice(p, mask_r, l, lo, span) != 0u ? kSideRead : 0)
-             | (level_slice(p, mask_w, l, lo, span) != 0u ? kSideWrite : 0);
+  for (int list = 0; list < kLists; ++list) {
+#pragma unroll
+    for (int l = 0; l < D; ++l) {
+      const int span = p.lat_s[l];
+      bool live = false;
+      if (tid < p.lat_g[l]) {
+        const int lo = tid * span;
+        const bool w = level_slice(p, mask_w, l, lo, span) != 0u;
+        live = (list == kListWrite) ? w : (w || level_slice(p, mask_r, l, lo, span) != 0u);
+      }
+      int excl = 0;
+      int total = 0;
+      LatticeScan(scan_temp).ExclusiveSum(live ? 1 : 0, excl, total);
+      if (live) olist[list * p.olist_total + p.olist_off[l] + excl] = tid;
+      if (tid == 0) n_o[list * kMaxLevels + l] = total;
+      __syncthreads();
     }
-    int excl = 0;
-    int total = 0;
-    LatticeScan(scan_temp).ExclusiveSum(flag != 0 ? 1 : 0, excl, total);
-    if (flag != 0) olist[p.olist_off[l] + excl] = (flag << kOwnerFlagShift) | tid;
-    if (tid == 0) n_o[l] = total;
+    if (tid == 0) {
+      int acc = 0;
+#pragma unroll
+      for (int l = D - 1; l >= 0; --l) {
+        shift[list * kMaxLevels + l] = acc;
+        acc += ceil_log2_dev(n_o[list * kMaxLevels + l]);
+        bits[list * kMaxLevels + l] = acc - shift[list * kMaxLevels + l];
+      }
+      bool empty = false;
+#pragma unroll
+      for (int l = 0; l < D; ++l) empty = empty || n_o[list * kMaxLevels + l] == 0;
+      units[list] = empty ? 0 : (1 << (acc + p.lat_msb));
+    }
     __syncthreads();
   }
 }
@@ -94,11 +126,13 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
 //: ONE UNIT of the walk: the (owner, sub-box) pair a rank names, with both sides'
 //: intra-sub-box digit slices and the staging offset each level's digits are read at.
 //: Every array is indexed by a COMPILE-TIME level, which is what keeps the whole object
-//: in registers. docs/internals/decode/decode_lattice.md#the-unit
+//: in registers. `valid` is false where the padded rank space overshoots a level's
+//: realized count. docs/internals/decode/decode_lattice.md#the-unit
 template <int D>
 struct SubBox {
   int owner;  // O, the owner's mixed-radix index
   int cap;    // U, the sub-box's index inside the owner
+  bool valid;
   bool live_r;
   bool live_w;
   int dbase[D];
@@ -106,25 +140,33 @@ struct SubBox {
   uint32_t cw[D];
 };
 
-//: THE UNIT INDEX, decomposed. The high bits are the OWNER RANK, which decomposes over
-//: the union lists; the low `log2(m)` are the capacity radix. A level whose slice is
-//: empty on a side kills that side for the whole sub-box, which is the pruning the
+//: THE UNIT INDEX, decomposed by shifts alone. The high bits are the OWNER RANK, one
+//: padded field per level; the low `log2(m)` are the capacity radix. A level whose slice
+//: is empty on a side kills that side for the whole sub-box, which is the pruning the
 //: product structure buys: docs/internals/decode/decode_lattice.md#the-unit
 template <int D>
 __device__ __forceinline__ SubBox<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
-                                                  const uint32_t* mask_w, const int32_t* olist,
-                                                  const int* n_o, const int* nsuf, int unit) {
+                                                  const uint32_t* mask_w, const int32_t* list,
+                                                  const int32_t* n_o, const int32_t* bits,
+                                                  const int32_t* shift, int unit) {
   SubBox<D> sb;
   sb.owner = 0;
   sb.cap = unit & (p.lat_m - 1);
+  sb.valid = true;
   sb.live_r = true;
   sb.live_w = true;
   const int rank = unit >> p.lat_msb;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
-    const int o = olist[p.olist_off[l] + (rank / nsuf[l]) % n_o[l]] & kOwnerCoordMask;
+    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
+    if (i >= n_o[l]) {
+      sb.valid = false;
+      i = 0;
+    }
+    const int o = list[p.olist_off[l] + i];
     sb.owner += o * p.lat_gsuf[l];
-    const int lo = o * p.lat_s[l] + ((sb.cap / p.lat_msuf[l]) % p.lat_m_l[l]) * p.lat_k;
+    const int u = (sb.cap >> p.lat_ushift[l]) & (p.lat_m_l[l] - 1);
+    const int lo = o * p.lat_s[l] + (u << p.lat_kshift);
     sb.dbase[l] = p.level_amp_offset[l] + lo;
     sb.cr[l] = level_slice(p, mask_r, l, lo, p.lat_k);
     sb.cw[l] = level_slice(p, mask_w, l, lo, p.lat_k);

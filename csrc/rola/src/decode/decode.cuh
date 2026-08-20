@@ -119,6 +119,7 @@ struct DecodeParams {
   //: rather than recomputed because the walk forms them once per unit.
   //: docs/internals/decode/decode_lattice.md
   int lat_k;
+  int lat_kshift;  // log2(k)
   int lat_m;
   int lat_msb;  // log2(lat_m)
   int lat_sub;  // k^D, the leaves one sub-box holds
@@ -127,7 +128,7 @@ struct DecodeParams {
   int lat_s[kMaxLevels];
   int lat_g[kMaxLevels];
   int lat_gsuf[kMaxLevels];    // prod_{l' > l} lat_g[l']
-  int lat_msuf[kMaxLevels];    // prod_{l' > l} lat_m_l[l']
+  int lat_ushift[kMaxLevels];  // log2(prod_{l' > l} lat_m_l[l'])
   int lat_cshift[kMaxLevels];  // log2(k) * (D - 1 - l)
   //: The digit masks' word layout: level `l` owns `mask_words[l]` words at `mask_off[l]`
   //: of a `mask_total`-word plane, one plane per side.
@@ -137,11 +138,11 @@ struct DecodeParams {
   //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
   int olist_off[kMaxLevels];
   int olist_total;
-  //: Atoms per sub-box, `lat_sub / kAtomLeaves`. PAGED BACKING ONLY -- the host refuses a
+  //: Atoms per sub-box as a shift, `log2(lat_sub / kAtomLeaves)`. PAGED BACKING ONLY -- the host refuses a
   //: page table under a lattice whose sub-box is thinner than an atom, because then an
   //: atom would straddle two sub-boxes and the claim's enumeration would not be an
   //: ascending partition: docs/internals/decode/decode.md#candidate-atoms
-  int atoms_per_sub;
+  int atoms_per_sub_shift;
 
   const float* dials;  // [H, total_rows] or nullptr
 

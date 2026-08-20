@@ -91,7 +91,7 @@ decode_step_kernel(DecodeParams p) {
   //   v_tok        [DV]         fp32   the token's value, resident
   //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
   //   mask_r,mask_w [mask_total] u32   one bit per digit, per side
-  //   olist    [olist_total]    i32    the union owner coordinates, per level
+  //   olist  [2][olist_total]   i32    the union and write owner coordinates, per level
   float* sa_r = reinterpret_cast<float*>(smem_raw);
   float* sa_w = sa_r + total_rows;
   float* sd = sa_w + total_rows;
@@ -105,9 +105,10 @@ decode_step_kernel(DecodeParams p) {
   __shared__ float s_sum[kMaxLevels];
   __shared__ typename LatticeScan::TempStorage scan_temp;
   __shared__ int s_running;
-  __shared__ int s_n_o[kMaxLevels];
-  __shared__ int s_nsuf[kMaxLevels];
-  __shared__ int s_units;
+  __shared__ int s_n_o[kLists * kMaxLevels];
+  __shared__ int s_bits[kLists * kMaxLevels];
+  __shared__ int s_shift[kLists * kMaxLevels];
+  __shared__ int s_units[kLists];
   __shared__ int s_last_cta;
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
@@ -156,21 +157,13 @@ decode_step_kernel(DecodeParams p) {
   build_digit_mask<D>(p, sa_r, mask_r);
   build_digit_mask<D>(p, sa_w, mask_w);
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, scan_temp);
-  if (tid == 0) {
-    int suffix = 1;
-#pragma unroll
-    for (int l = D - 1; l >= 0; --l) {
-      s_nsuf[l] = suffix;
-      suffix *= s_n_o[l];
-    }
-    s_units = suffix << p.lat_msb;
-  }
-  __syncthreads();
+  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, s_units, scan_temp);
 
-  const int units = s_units;
+  const int units = s_units[kListUnion];
   const int k = p.lat_k;
   const int kd = p.lat_sub;
+  const int32_t* wlist = olist + kListWrite * p.olist_total;
+  const int woff = kListWrite * kMaxLevels;
 
   //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses: one
   //: unit by its atoms-per-sub-box, which is an ascending-atom-id PARTITION with no
@@ -179,10 +172,10 @@ decode_step_kernel(DecodeParams p) {
   //: atom FIXES and the levels it leaves free are already in `live_w`.
   //: docs/internals/decode/decode.md#candidate-atoms
   auto candidate_atom = [&](int i) -> int {
-    const int a = i % p.atoms_per_sub;
-    const SubBox<D> sb =
-        resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_nsuf, i / p.atoms_per_sub);
-    bool live = sb.live_w;
+    const int a = i & ((1 << p.atoms_per_sub_shift) - 1);
+    const SubBox<D> sb = resolve_unit<D>(p, mask_r, mask_w, wlist, s_n_o + woff, s_bits + woff,
+                                         s_shift + woff, i >> p.atoms_per_sub_shift);
+    bool live = sb.valid && sb.live_w;
 #pragma unroll
     for (int l = 0; l < D; ++l) {
       if (p.lat_cshift[l] >= kAtomShift) {
@@ -194,7 +187,7 @@ decode_step_kernel(DecodeParams p) {
     return ((sb.owner * p.lat_m + sb.cap) * kd + a * kAtomLeaves) >> kAtomShift;
   };
 
-  const int n_candidates = units * p.atoms_per_sub;
+  const int n_candidates = s_units[kListWrite] << p.atoms_per_sub_shift;
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -307,8 +300,8 @@ decode_step_kernel(DecodeParams p) {
     //: every touched leaf has exactly one owning CTA, warp and lane and the state needs
     //: no atomic: docs/internals/decode/decode.md#the-unit-partition
     for (int unit = seg + p.n_split * warp; unit < units; unit += p.n_split * kDecodeWarps) {
-      const SubBox<D> sb = resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_nsuf, unit);
-      if (!sb.live_r && !sb.live_w) continue;
+      const SubBox<D> sb = resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, unit);
+      if (!sb.valid || (!sb.live_r && !sb.live_w)) continue;
       const int sub_base = (sb.owner * p.lat_m + sb.cap) * kd;
 
       //: The sub-box's leaves in ASCENDING `C`, which is ascending leaf order, which is
@@ -530,7 +523,7 @@ size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int
                               int olist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables = 2 * static_cast<size_t>(mask_total) + static_cast<size_t>(olist_total);
+  const size_t tables = 2 * static_cast<size_t>(mask_total) + 2 * static_cast<size_t>(olist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
@@ -631,6 +624,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   TORCH_CHECK(m <= kDecodeMaxCap, "the lattice capacity m = ", m, " exceeds the decode path's ",
               kDecodeMaxCap);
   p.lat_k = static_cast<int>(k);
+  p.lat_kshift = kappa;
   p.lat_m = static_cast<int>(m);
 
   const int D = p.D;
@@ -662,12 +656,12 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   p.lat_bc = static_cast<int>(bc);
 
   int gsuf = 1;
-  int msuf = 1;
+  int ushift = 0;
   for (int l = D - 1; l >= 0; --l) {
     p.lat_gsuf[l] = gsuf;
-    p.lat_msuf[l] = msuf;
+    p.lat_ushift[l] = ushift;
     gsuf *= p.lat_g[l];
-    msuf *= p.lat_m_l[l];
+    ushift += ilog2_exact(p.lat_m_l[l], "the level's capacity share m_l");
   }
 
   int mask_total = 0;
@@ -681,7 +675,8 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   }
   p.mask_total = mask_total;
   p.olist_total = olist_total;
-  p.atoms_per_sub = p.lat_sub >= kAtomLeaves ? p.lat_sub / kAtomLeaves : 1;
+  p.atoms_per_sub_shift =
+      p.lat_sub >= kAtomLeaves ? ilog2_exact(p.lat_sub / kAtomLeaves, "atoms per sub-box") : 0;
 }
 
 //: The per-level geometry every decode entry validates the same way, filled into `p` and
